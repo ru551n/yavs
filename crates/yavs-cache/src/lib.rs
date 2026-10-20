@@ -26,6 +26,9 @@ pub const DIR: &str = "yavs-cache";
 /// Entries kept per directory; the least recently used ones are removed when it grows past this.
 pub const MAX_ENTRIES: usize = 48;
 
+/// Notes ([`Store::note`]) kept per directory.
+pub const MAX_NOTES: usize = 512;
+
 const MAGIC: &[u8; 8] = b"YAVSIMG\0";
 const HEADER: usize = 8 + 4 + 32 + 8 + 8;
 
@@ -204,6 +207,34 @@ impl Store {
         Ok(())
     }
 
+    fn note_file(&self, kind: &str, key: &Key) -> PathBuf {
+        self.dir.join(format!("{kind}-{}.seen", key.hex()))
+    }
+
+    /// Whether [`Store::note`] was called for this entry before.
+    pub fn noted(&self, kind: &str, key: &Key) -> bool {
+        self.note_file(kind, key).exists()
+    }
+
+    /// Remember that a run wanted this entry and did not find it, as an empty file that costs
+    /// nothing to write: a caller that stores an entry only on the second request (a design
+    /// that runs once should not pay for the image) asks [`Store::noted`] first. Failures are
+    /// silent; the [`MAX_NOTES`] newest notes are kept.
+    pub fn note(&self, kind: &str, key: &Key) {
+        if fs::create_dir_all(&self.dir).is_err()
+            || fs::File::create(self.note_file(kind, key)).is_err()
+        {
+            return;
+        }
+        let mut all = self.files_ending(".seen");
+        if all.len() > MAX_NOTES {
+            all.sort_by_key(|e| std::cmp::Reverse(e.1));
+            for (p, _, _) in all.split_off(MAX_NOTES) {
+                let _ = fs::remove_file(p);
+            }
+        }
+    }
+
     /// Keep the [`MAX_ENTRIES`] most recently used entries.
     fn prune(&self) {
         let mut all = self.entries();
@@ -217,6 +248,10 @@ impl Store {
     }
 
     fn entries(&self) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
+        self.files_ending(".img")
+    }
+
+    fn files_ending(&self, ext: &str) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
         let Ok(rd) = fs::read_dir(&self.dir) else {
             return Vec::new();
         };
@@ -224,7 +259,7 @@ impl Store {
             let e = e.ok()?;
             let name = e.file_name();
             let name = name.to_str()?;
-            if !name.ends_with(".img") {
+            if !name.ends_with(ext) {
                 return None;
             }
             let m = e.metadata().ok()?;
@@ -243,7 +278,9 @@ impl Store {
         }
         if let Ok(rd) = fs::read_dir(&self.dir) {
             for e in rd.flatten() {
-                if e.file_name().to_string_lossy().starts_with(".tmp-") {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                if n.starts_with(".tmp-") || n.ends_with(".seen") {
                     let _ = fs::remove_file(e.path());
                 }
             }
@@ -332,6 +369,24 @@ mod tests {
         let s = Store::of_library(&f);
         s.put("t", &key("a"), b"x");
         assert_eq!(s.get("t", &key("a")), None);
+    }
+
+    #[test]
+    fn notes_are_remembered_and_cleaned() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        assert!(!s.noted("t", &key("a")));
+        s.note("t", &key("a"));
+        assert!(s.noted("t", &key("a")));
+        assert!(!s.noted("t", &key("b")));
+        assert!(!s.noted("u", &key("a")));
+        for i in 0..MAX_NOTES + 5 {
+            s.note("t", &key(&i.to_string()));
+        }
+        assert_eq!(s.files_ending(".seen").len(), MAX_NOTES);
+        assert_eq!(s.entries().len(), 0);
+        s.clean().unwrap();
+        assert!(!s.dir().exists());
     }
 
     #[test]

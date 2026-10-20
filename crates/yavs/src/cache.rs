@@ -242,6 +242,13 @@ pub fn analyze_closure(
     if r.is_err() {
         return (db, r);
     }
+    // The image of a closure is made on its second analysis: a design that runs once (one test of
+    // a suite) must not pay a fifth of its run for an image nobody reads.
+    if !store.noted(KIND, &k) {
+        store.note(KIND, &k);
+        debug(format!("note {}", k.hex()));
+        return (db, r);
+    }
     match db.to_image() {
         Ok(image) => {
             debug(format!("store {} ({} bytes)", k.hex(), image.len()));

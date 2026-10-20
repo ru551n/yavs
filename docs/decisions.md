@@ -2074,7 +2074,8 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
 - **Written by `elab`/`run`, not by `analyze`.** `yavs analyze` loads a file's dependencies on demand in
   demand order; the closure that `elab`/`run` analyze is in dependency order, so the two histories are
   different `Db`s and an image from one cannot serve the other. Writing from `analyze` would also cost a
-  second analysis per file. The first `elab` or `run` of a design stores the image; every later one hits.
+  second analysis per file. The first `elab` or `run` of a design notes it; the second stores the image
+  ("Prefix images and the image on the second analysis", below); every later one hits.
 - **Key and validation.** Key = sha256 over the cache format, the yavs build id (version, size and
   modification time of the executable), `--std`/`--relaxed`/`--psl`/`--encoding`/defines, the std/ieee
   tree, and the closure's files (library, path, recorded content hash, standard; the working directory
@@ -2501,7 +2502,7 @@ user's performance priority:
   arenas are moved to a detached thread; a failed spawn drops them in place. Peak memory is unchanged.
 
 
-## Prefix images (#426, #407, floor of a run, yavs decisions under the user's single-thread performance priority)
+## Prefix images and the image on the second analysis (#426, #407, floor of a run, yavs decisions under the user's single-thread performance priority)
 
 A suite runs one `yavs run` per test case and every test case is a new closure, so each run was a cold
 analysis of the library packages it shares with all the others (0.14 s of a 0.26 s small test of a verification library).
@@ -2526,3 +2527,9 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
 - **`Db::settle` finds the facts incrementally**: the facts of the first entries of the arenas are kept and
   only the entries added since are scanned (`Db::scan_facts`), so settling a restored prefix does not decode
   it. Analysis never changes an entry after the unit that made it is done.
+- **The image of a closure is made on its second analysis.** The first run of a closure writes an empty note
+  (`Store::note`, `<kind>-<key>.seen`, newest 512 kept, removed by `yavs cache clean`) and makes no image and
+  no lowered-package entry; the run that finds the note makes both. A run that happens once (a test case of a
+  suite) no longer pays the serialisation (a fifth of its run); a design run twice or more has its image from
+  the third run on. Prefix images are made at once: they are shared. Supersedes "The first `elab` or `run`
+  of a design stores the image".

@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the read payload, no copy; `into_parts` hands the buffer to a reader that decodes from it later), tests |
+| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `note`/`noted`: an empty `.seen` file that says a caller wanted an entry once, newest `MAX_NOTES` kept, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the read payload, no copy; `into_parts` hands the buffer to a reader that decodes from it later), tests |
 
 ## 3. Design decisions that bind this module
 
@@ -47,4 +47,4 @@ cargo test -p yavs --test cache      # the end-to-end gate
 
 ## 6. Coordination
 
-- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`); stage 3 (compiled code) would add one.
+- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`), `pre` (the analysis of the first files of a closure, shared by closures that start alike) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`); stage 3 (compiled code) would add one.

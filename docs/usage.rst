@@ -69,23 +69,24 @@ otherwise.
 Compilation cache
 -----------------
 
-The first ``elab`` or ``run`` of a design analyzes its files and stores the result in the work
-library, in ``yavs-cache/`` beside the manifest. Every later run of the same design reads it back,
-which is much faster for a short simulation (a test case of a large verification library mostly
-spends its time analyzing). Nothing changes in the results: the output, warnings and exit status
-are the same with and without it, at any ``--threads``.
-
-An entry is used only when it fits the run exactly: the same yavs, the same options (``--std``,
-``--relaxed``, ``--psl``, ``--encoding``) and the same files with the same contents. Edit a file,
-or a file it depends on, and the next run analyzes again and stores a new entry. A library
-directory that cannot be written is not cached into and works as before; entries that are
-damaged or from another yavs are ignored.
+``elab`` and ``run`` analyze the files of the design and keep the result in the work library, in
+``yavs-cache/`` beside the manifest. The first run of a design only notes it (a design that runs
+once pays nothing for an image nobody reads); the second stores the result, and every later run of
+the same design reads it back, which is much faster for a short simulation (a test case of a large
+verification library mostly spends its time analyzing). Nothing changes in the results: the output,
+warnings and exit status are the same with and without it, at any ``--threads``.
 
 The first files of a design are shared between designs. The test cases of one library start with
 the same packages; the analysis of those files is kept once, in the cache of the library of the
 last of them, and a design that starts with the same files and options continues from it. So the
 first run of a new test case of a library that other test cases already used analyzes only its
 own files.
+
+An entry is used only when it fits the run exactly: the same yavs, the same options (``--std``,
+``--relaxed``, ``--psl``, ``--encoding``) and the same files with the same contents. Edit a file,
+or a file it depends on, and the next run analyzes again and stores a new entry. A library
+directory that cannot be written is not cached into and works as before; entries that are
+damaged or from another yavs are ignored.
 
 The lowered form of the packages a design uses (the ones that hold signals, shared variables or
 values computed when the design starts) is kept in the same directory, so a short run skips that

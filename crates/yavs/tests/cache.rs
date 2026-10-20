@@ -102,6 +102,14 @@ impl Env {
         }
     }
 
+    /// A run that makes the entries. The first run of a closure only leaves a note (a design that
+    /// runs once does not pay for an image), the second stores; returns the second.
+    fn cold(&self, top: &str, more: &[&str]) -> Out {
+        let first = self.run_top(top, more);
+        assert!(note(&first, "note"), "{first:?}");
+        self.run_top(top, more)
+    }
+
     /// `yavs run` of the testbench, with more arguments.
     fn run(&self, more: &[&str]) -> Out {
         self.run_top("tb", more)
@@ -162,6 +170,11 @@ fn warm_run_is_identical_to_cold() {
         "the design should warn: {plain:?}"
     );
     assert_eq!(e.entries(), 0, "--no-cache must not write");
+    // The first run of a closure only notes it (no image, no lowered packages); the second stores.
+    let first = e.run(&[]);
+    assert!(note(&first, "note") && !note(&first, "store"), "{first:?}");
+    assert_eq!(e.entries(), 0);
+    assert_eq!(visible(&plain), visible(&first));
     let cold = e.run(&[]);
     assert!(note(&cold, "store"), "{cold:?}");
     assert_eq!(e.entries(), 1);
@@ -182,7 +195,7 @@ fn warm_run_is_identical_to_cold() {
 #[test]
 fn editing_a_dependency_invalidates() {
     let e = Env::new("edit");
-    assert!(e.run(&[]).stdout.contains("K=7 f=21"));
+    assert!(e.cold("tb", &[]).stdout.contains("K=7 f=21"));
     assert!(note(&e.run(&[]), "hit"));
     // a unit the design does not use changes: still a hit (its key is not in the closure)
     std::fs::write(e.tmp.join("other.vhd"), OTHER.replace("1", "2")).expect("write");
@@ -194,7 +207,7 @@ fn editing_a_dependency_invalidates() {
     // a unit the design uses changes: a miss, and the new value is what runs
     std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace("7", "8")).expect("write");
     assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "pkg.vhd"]).code, 0);
-    let after = e.run(&[]);
+    let after = e.cold("tb", &[]);
     assert!(note(&after, "store"), "{after:?}");
     assert!(after.stdout.contains("K=8 f=24"), "{after:?}");
     assert!(note(&e.run(&[]), "hit"));
@@ -203,7 +216,7 @@ fn editing_a_dependency_invalidates() {
 #[test]
 fn damaged_entries_are_ignored() {
     let e = Env::new("damaged");
-    let cold = e.run(&[]);
+    let cold = e.cold("tb", &[]);
     let img = std::fs::read_dir(e.cache_dir())
         .expect("dir")
         .flatten()
@@ -247,7 +260,7 @@ fn read_only_library_is_not_cached_into() {
 #[test]
 fn clean_removes_entries() {
     let e = Env::new("clean");
-    e.run(&[]);
+    e.cold("tb", &[]);
     assert_eq!(e.entries(), 1);
     let work = e.work();
     let o = e.yavs(&["cache", "clean", "--work", &work]);
@@ -264,6 +277,7 @@ fn clean_removes_entries() {
 fn parallel_cold_runs_agree() {
     let e = Env::new("parallel");
     let plain = visible(&e.run(&["--no-cache"]));
+    e.run(&[]); // leaves the note: the runs below all make the image
     std::thread::scope(|s| {
         let hs: Vec<_> = (0..4).map(|_| s.spawn(|| visible(&e.run(&[])))).collect();
         for h in hs {
@@ -296,7 +310,7 @@ fn old_sources_are_trusted_until_they_change() {
         age(&e.tmp.join(f));
         assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
     }
-    let cold = e.run(&[]);
+    let cold = e.cold("tb", &[]);
     assert!(note(&cold, "store"), "{cold:?}");
     let warm = e.run(&[]);
     assert!(note(&warm, "hit"), "{warm:?}");
@@ -324,7 +338,7 @@ fn lowered_packages_are_cached() {
     assert_eq!(plain.code, 0, "{plain:?}");
     assert!(plain.stdout.contains("ids 11 12 next 13 sg 3"), "{plain:?}");
     assert!(e.entry_files("low").is_empty(), "--no-cache must not write");
-    let cold = e.run_top("tb2", &[&format!("--wave={}", wave("cold.fst"))]);
+    let cold = e.cold("tb2", &[&format!("--wave={}", wave("cold.fst"))]);
     assert!(note(&cold, "store low"), "{cold:?}");
     assert_eq!(e.entry_files("low").len(), 1);
     let warm = e.run_top("tb2", &[&format!("--wave={}", wave("warm.fst"))]);
@@ -369,7 +383,7 @@ fn periodic_constant_does_not_block_the_lowering_cache() {
     let plain = e.run_top("bigtb", &["--no-cache"]);
     assert_eq!(plain.code, 0, "{plain:?}");
     assert!(plain.stdout.contains("probe 9 sg 3"), "{plain:?}");
-    let cold = e.run_top("bigtb", &[]);
+    let cold = e.cold("bigtb", &[]);
     assert!(note(&cold, "store low"), "{cold:?}");
     let image = e.entry_files("low");
     assert_eq!(image.len(), 1);
@@ -383,7 +397,7 @@ fn periodic_constant_does_not_block_the_lowering_cache() {
 #[test]
 fn editing_a_package_replaces_its_lowering() {
     let e = Env::new("lowedit");
-    assert!(e.run_top("tb2", &[]).stdout.contains("ids 11 12"));
+    assert!(e.cold("tb2", &[]).stdout.contains("ids 11 12"));
     assert!(note(&e.run_top("tb2", &[]), "hit low"));
     std::fs::write(
         e.tmp.join("rt.vhd"),
@@ -391,7 +405,7 @@ fn editing_a_package_replaces_its_lowering() {
     )
     .expect("write");
     assert_eq!(e.yavs(&["analyze", "--work", &e.work(), "rt.vhd"]).code, 0);
-    let after = e.run_top("tb2", &[]);
+    let after = e.cold("tb2", &[]);
     assert!(note(&after, "store low"), "{after:?}");
     assert!(after.stdout.contains("ids 21 22 next 23"), "{after:?}");
     assert!(note(&e.run_top("tb2", &[]), "hit low"));
@@ -400,7 +414,7 @@ fn editing_a_package_replaces_its_lowering() {
 #[test]
 fn damaged_lowering_is_ignored() {
     let e = Env::new("lowdamaged");
-    let cold = e.run_top("tb2", &[]);
+    let cold = e.cold("tb2", &[]);
     let img = e.entry_files("low").pop().expect("low entry");
     let good = std::fs::read(&img).expect("read");
     for bad in [good[..good.len() / 2].to_vec(), b"not an entry".to_vec()] {
@@ -417,6 +431,7 @@ fn damaged_lowering_is_ignored() {
 fn parallel_cold_runs_agree_on_lowering() {
     let e = Env::new("lowparallel");
     let plain = visible(&e.run_top("tb2", &["--no-cache"]));
+    e.run_top("tb2", &[]); // leaves the note: the runs below all make the entries
     std::thread::scope(|s| {
         let hs: Vec<_> = (0..4)
             .map(|_| s.spawn(|| visible(&e.run_top("tb2", &[]))))
@@ -455,7 +470,7 @@ fn warm_diagnostics_in_dependencies_render_identically() {
     assert_eq!(plain.code, 0, "{plain:?}");
     assert!(plain.stderr.matches("W1404").count() >= 2, "{plain:?}");
     assert!(plain.stderr.contains("noisy.vhd"), "{plain:?}");
-    let cold = e.run(&[]);
+    let cold = e.cold("tb", &[]);
     assert!(note(&cold, "store"), "{cold:?}");
     let warm = e.run(&[]);
     assert!(note(&warm, "hit"), "{warm:?}");
@@ -475,7 +490,7 @@ fn a_hit_without_diagnostics_does_not_read_the_sources() {
         age(&e.tmp.join(f));
         assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
     }
-    let cold = e.run(&[]);
+    let cold = e.cold("tb", &[]);
     assert!(note(&cold, "store"), "{cold:?}");
     assert!(cold.stdout.contains("K=7 f=21"), "{cold:?}");
     let pkg = e.tmp.join("pkg.vhd");
@@ -502,7 +517,7 @@ fn an_unavailable_source_drops_the_snippet_only() {
         assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
     }
     let noisy = e.tmp.join("noisy.vhd");
-    let cold = e.run(&[]);
+    let cold = e.cold("tb", &[]);
     assert!(note(&cold, "store"), "{cold:?}");
     assert!(cold.stderr.contains("\n9 | "), "{cold:?}");
     let modified = std::fs::metadata(&noisy)

@@ -81,7 +81,8 @@ pub struct ProcDriver {
 pub struct SharedState {
     /// Addressed by `AddrSpace::Shared`; `Program::shared_roots` is its root map.
     pub vars: Vec<u8>,
-    pub(crate) heap: Option<Heap>,
+    /// Boxed: a process that never allocates in it carries only the pointer.
+    pub(crate) heap: Option<Box<Heap>>,
     /// The shared-heap roots of every serial process that ran, as of its last suspension.
     pub(crate) procs: Vec<ProcRoots>,
     /// The simulation has started ([`SharedGc`] saw the start): until then, code run for
@@ -102,7 +103,7 @@ impl SharedState {
     pub fn new(vars: Vec<u8>) -> SharedState {
         SharedState {
             vars,
-            heap: Some(Heap::new(heap::SHARED)),
+            heap: Some(Box::new(Heap::new(heap::SHARED))),
             procs: Vec::new(),
             started: false,
         }
@@ -139,12 +140,12 @@ impl SharedState {
 
     /// Objects alive in the shared heap (for tests and statistics).
     pub fn heap_live(&self) -> usize {
-        self.heap.as_ref().map_or(0, Heap::live)
+        self.heap.as_ref().map_or(0, |h| h.live())
     }
 
     /// Slots of the shared heap, deallocated or not (for tests and statistics).
     pub fn heap_slots(&self) -> usize {
-        self.heap.as_ref().map_or(0, Heap::slots)
+        self.heap.as_ref().map_or(0, |h| h.slots())
     }
 }
 

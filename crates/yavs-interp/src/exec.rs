@@ -798,7 +798,7 @@ impl Machine {
             sh.procs.len() - 1
         });
         sh.procs[i] = ProcRoots { handles, pinned };
-        if sh.heap.as_ref().is_some_and(Heap::has_quarantine) {
+        if sh.heap.as_deref().is_some_and(Heap::has_quarantine) {
             let pinned = sh.pinned();
             if let Some(h) = sh.heap.as_mut() {
                 h.recycle(&pinned);
@@ -820,7 +820,7 @@ impl Machine {
         let due = self
             .sh
             .as_ref()
-            .and_then(|sh| sh.heap.as_ref())
+            .and_then(|sh| sh.heap.as_deref())
             .is_some_and(Heap::reclaim_due);
         if due {
             let mut pinned = self.pinned(SHARED_HEAP, true);
@@ -1448,7 +1448,9 @@ impl Machine {
     pub(crate) fn alloc_heap(&mut self, shared: bool) -> R<&mut Heap> {
         if shared || self.frames.last().is_some_and(|f| f.shared_alloc) {
             let sh = self.shared_mut()?;
-            Ok(sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED)))
+            Ok(&mut **sh
+                .heap
+                .get_or_insert_with(|| Box::new(Heap::new(heap::SHARED))))
         } else {
             Ok(&mut self.heap)
         }
@@ -1459,8 +1461,10 @@ impl Machine {
             heap::PRIVATE => Ok((&mut self.heap, HEAP)),
             heap::SHARED => {
                 let sh = self.shared_mut()?;
-                let h = sh.heap.get_or_insert_with(|| Heap::new(heap::SHARED));
-                Ok((h, SHARED_HEAP))
+                let h = sh
+                    .heap
+                    .get_or_insert_with(|| Box::new(Heap::new(heap::SHARED)));
+                Ok((&mut **h, SHARED_HEAP))
             }
             t => Err(ice(format!("access value with heap tag {t}"))),
         }

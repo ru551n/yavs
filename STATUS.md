@@ -241,7 +241,7 @@ analysis; analyzing bodies on demand needs a scope snapshot per body (visibility
 
 `std_logic_1164` gates, `not`, conversions and `rising_edge`, and `numeric_std` `+ - *`, relational
 operators, `to_integer`, `to_unsigned`, `to_signed`, `resize` and the shift helpers, and `math_real` (`sqrt`, `exp`, `log*`, `sin`, `cos`, `**`, rounding functions), run natively
-(`crates/yavs-interp/src/ieee.rs`); `numeric_bit`, division and `?=` still run from VHDL.
+(`crates/yavs-interp/src/ieee.rs`); the `?=` family, `std_match`, the vector/integer forms of `/` `rem` `mod` and the `std_logic_unsigned`/`numeric_std_unsigned` wrappers still run from VHDL (round 2 below).
 `crates/yavs/tests/ieee_native.rs` compares natives with the bodies (3 + 1 generated seeds, 2008 and
 2019, errors, edges). Per operation on 16-bit vectors, process loop of 20000, median CPU of 5, release build,
 host load about 16 (loop overhead about 2 us per iteration included):
@@ -262,6 +262,33 @@ Synopsys `std_logic_arith` helpers (`plus`, `minus`, `mult`, `conv_*`; a metaval
 functions, not the arithmetic, are most of the rest); the 20 `synopsys` difftest cases pass at `--threads 1` and 4.
 
 `tools/bench`: `ff_rtl` simulate 1.27 s to 0.05 s CPU (total 1.31 to 0.10), `compute_loop` 0.72 to 0.66.
+
+#### Round 2 (#414)
+
+Profile first (a per-function instruction count of each benchmark): after round 1 no `math_real` helper is
+hot; the remaining `ieee` share is `math_real.uniform` (1 to 3%), `to_hstring` (0.6 to 6%) and the
+`numeric_bit` conversions and shifts of the local design testbenches (8 to 13%). Natives added:
+`numeric_bit` (all of the `numeric_std` natives, with the package's warning texts), `shift_left`,
+`shift_right`, `rotate_left`, `rotate_right`, `/` `rem` `mod` of vectors (zero divisor handed back),
+`to_hstring`/`to_ostring`, `math_real.uniform` (the first native procedure), the `std_logic_arith`
+comparison helpers `is_less` ... and `make_binary` for every result type. Round 1's 32-bit INTEGER
+assumptions were fixed first (#416). Release build, total CPU seconds, median of 3, shared host
+(wall within 2%, noise about 5%):
+
+| Benchmark | round 1 | round 2 |
+|---|---|---|
+| `vai_pe_array` | 0.30 | 0.24 |
+| `vai_window_gen` | 2.26 | 2.13 |
+| `uvvm_util_rand_tb` | 6.07 | 5.71 |
+| `uvvm_axistream_vvc_tb` | 5.56 | 5.59 |
+| `osvvm_axistream` | 2.08 | 2.11 |
+
+Geometric mean of the ratio 0.94. The UVVM and OSVVM benches are dominated by their own string and
+logging code, not by `ieee`. The differential tests (`ieee_native.rs`, 9 tests: random operands,
+metavalues, null arrays, both directions, 64-bit INTEGER under 2019) pass natives on and off; with
+`YAVS_IEEE_TIER=llvm YAVS_IEEE_SCALE=12` (shrunk testbenches) eight of them pass on the compiled tier; the
+ninth (`native_matches_bodies_2008`) did not finish in 25 minutes of JIT compilation, which is the size
+of its straight-line process, not the natives. The 353 difftest cases pass at `--threads 1` and 4.
 
 ### Elaboration of short library tests (#383, 2026-10-19)
 

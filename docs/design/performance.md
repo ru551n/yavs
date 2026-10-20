@@ -213,7 +213,7 @@ parts, in this order, each landing separately with byte-identical output at 1, 4
   is entered only for a second assignment in the delta, a delay, a reject limit, a partial
   overlap or a transaction already pending. The per-element preemption rules of the general
   path stay untouched. Crate: `yavs-kernel` (`process.rs`, `signal.rs`).
-- *R2b: skip unchanged assignments.* Elaboration marks each signal "activity observable"
+- *R2b: skip unchanged assignments (done, #420: `docs/decisions.md` "Skipped unchanged assignments").* The first version uses one global flag (the design reads neither `'active` nor `'last_active`) plus kernel-side per-signal facts instead of an elaborator flag per signal. The original plan: elaboration marks each signal "activity observable"
   (`'active`, `'last_active`, `'transaction`, `'quiet`, `'stable`, `'delayed` users, guarded
   signals, forces, activity-reporting observers such as VHPI activity callbacks and the
   waveform sink if it records activity). For other signals a zero-delay assignment whose value

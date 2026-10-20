@@ -306,9 +306,17 @@ pub(crate) struct Signal {
     /// the cycle's last one left: an event even when the value ends up unchanged (#382).
     pub force_ev: SmallVec<[Range; 2]>,
     pub callouts: Vec<(crate::process::Severity, String)>,
+    /// An assignment of the value a source already has may be skipped (`Builder::build`).
+    pub skip_ok: bool,
 }
 
 impl Signal {
+    /// Every element of `r` has exactly one source.
+    pub fn sole(&self, r: Range) -> bool {
+        let i = self.segments.partition_point(|s| s.range.end() <= r.offset);
+        (self.segments.get(i)).is_some_and(|s| s.range.contains(r) && s.drivers.len() == 1)
+    }
+
     pub fn new(name: String, ty: SignalType, init: Buf, resolution: Option<Resolution>) -> Signal {
         let n = ty.len as usize;
         Signal {
@@ -337,6 +345,7 @@ impl Signal {
             live: false,
             force_ev: SmallVec::new(),
             callouts: Vec::new(),
+            skip_ok: false,
         }
     }
 
@@ -761,6 +770,9 @@ pub(crate) struct Waveform {
     /// Values of applied transactions, reused by the next assignments (no allocation per
     /// transaction in the steady state).
     pub spare: Vec<Buf>,
+    /// Zero-delay assignments of this run that changed nothing and were not queued
+    /// (`Ctx::assign`, `Config::skip_unchanged`).
+    pub phantom: Vec<Range>,
 }
 
 /// Per element of `t` (relative), whether its value equals `first` (covering `r`).

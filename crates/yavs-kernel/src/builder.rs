@@ -531,6 +531,9 @@ impl Builder {
             s.drivers.shrink_to_fit();
         }
         self.check_groups(&infos).map_err(usage)?;
+        if cfg.skip_unchanged {
+            self.mark_skippable();
+        }
         let mut slots = Vec::with_capacity(self.procs.len());
         let mut procs = Vec::with_capacity(self.procs.len());
         let mut names = Vec::with_capacity(self.procs.len());
@@ -568,6 +571,55 @@ impl Builder {
 }
 
 impl Builder {
+    /// Set `Signal::skip_ok` on the signals whose activity nothing can observe (R2b): those
+    /// that are not guarded, not resolved by a user function, not in a composite group, not
+    /// the source of an implicit signal, and not connected through ports to such a signal or
+    /// through a conversion (activity passes through ports and runs conversions).
+    fn mark_skippable(&mut self) {
+        fn root(p: &mut [usize], mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        let n = self.signals.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut bad = vec![false; n];
+        for (i, s) in self.signals.iter().enumerate() {
+            bad[i] = s.guard.is_some()
+                || matches!(s.resolution, Some(Resolution::Func(_)))
+                || !s.groups.is_empty();
+        }
+        for im in &self.implicits {
+            bad[im.sig.0 as usize] = true;
+            for s in std::iter::once(&im.src).chain(im.more.iter().map(|(s, _)| s)) {
+                bad[s.0 as usize] = true;
+            }
+        }
+        for p in &self.ports {
+            let ids: Vec<usize> = (p.formal.iter().chain(&p.actual))
+                .map(|(s, _)| s.0 as usize)
+                .collect();
+            let conv = p.conv.to_formal.is_some() || p.conv.to_actual.is_some();
+            for &i in &ids {
+                bad[i] |= conv;
+                let (a, b) = (root(&mut parent, ids[0]), root(&mut parent, i));
+                parent[b] = a;
+            }
+        }
+        for i in 0..n {
+            if bad[i] {
+                let r = root(&mut parent, i);
+                bad[r] = true;
+            }
+        }
+        for i in 0..n {
+            let r = root(&mut parent, i);
+            self.signals[i].skip_ok = !bad[r] && !bad[i];
+        }
+    }
+
     /// The parts of each resolved composite share their sources: same owners in the same
     /// order (a process driver or a port), each covering the part, and the same port level;
     /// the groups of a signal cover it.

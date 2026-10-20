@@ -1,0 +1,1 @@
+Assignments that give a signal the value it already has are no longer queued, so designs that re-drive their outputs simulate faster; delta cycles and reports are unchanged. Designs that read `'active` or `'last_active` are not affected.

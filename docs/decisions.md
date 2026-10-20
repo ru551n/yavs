@@ -2024,6 +2024,24 @@ user's performance priority:
   testbenches, which take the JIT many minutes at full size) makes `ieee_native.rs` run the
   on/off comparison on `--tier=llvm`.
 
+## Skipped unchanged assignments (yavs-kernel, yavs-elab, #420, 2026-10-20)
+
+- A zero-delay assignment (inertial without a rejection limit, or transport) that gives a
+  range the value its driver and its signal already hold queues no transaction when the
+  driver has nothing pending, the range has exactly one source and the signal allows it
+  (`Signal::skip_ok`, `Config::skip_unchanged`). The cycle that would have applied it still
+  happens (`SimControl::empty_delta`): delta numbers in reports, phases and `'last_event` are
+  unchanged. A later assignment of the same run to that driver first puts the skipped ones
+  back as real transactions (`Ctx::flush_phantoms`), so preemption is exactly the old one.
+- Allowed signals: not guarded, not resolved by a user function, not in a composite group, not
+  the source of an implicit signal, and not connected through ports to a signal that breaks one
+  of these or through a conversion function (activity passes through ports and calls
+  conversions and resolution functions). Static facts only, so the choice does not depend on
+  `--threads`.
+- Off unless `yavs_elab::reads_activity` finds no `'active` or `'last_active` anywhere in the
+  analysed units (they are the only activity readers the kernel cannot see), and with `--cov`,
+  `--dap`, `--vhpi` like the edge triggers. A new observer of activity must switch it off.
+
 ## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
 
 - A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or

@@ -101,6 +101,23 @@ pub(crate) struct ProcState {
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
     pub scheduled: Vec<(Time, DriverId)>,
+    /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
+    /// this run.
+    pub phantoms: Vec<u32>,
+}
+
+impl ProcState {
+    /// End of a run: whether skipped assignments are left, which the kernel must replace by an
+    /// empty delta.
+    pub fn take_phantoms(&mut self) -> bool {
+        let mut any = false;
+        for l in self.phantoms.drain(..) {
+            let p = &mut self.waveforms[l as usize].phantom;
+            any |= !p.is_empty();
+            p.clear();
+        }
+        any
+    }
 }
 
 pub(crate) struct DriverInfo {
@@ -314,6 +331,21 @@ impl Ctx<'_> {
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
         let local = self.own(d)?.local as usize;
+        if let [(delay, v)] = waveform
+            && *delay == Time::ZERO
+            && match mode {
+                DelayMode::Transport => true,
+                DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
+            }
+            && self.unchanged(sig, d, r, (*v).into())
+        {
+            let w = &mut self.st.waveforms[local];
+            if w.phantom.is_empty() {
+                self.st.phantoms.push(local as u32);
+            }
+            w.phantom.push(r);
+            return Ok(());
+        }
         let mut new = TxnList::new();
         for &(delay, v) in waveform {
             let (n, v) = (r.len as usize, v.into());
@@ -325,6 +357,49 @@ impl Ctx<'_> {
             self.push_txn(&mut new, r, delay, Some(buf))?;
         }
         self.schedule(d, r, &mut new, mode)
+    }
+
+    /// Whether a zero-delay assignment of `v` to `r` of driver `d` would change nothing: the
+    /// signal allows skipping (`Config::skip_unchanged`), `d` has nothing pending, `r` has no
+    /// other source, and the driver and the signal already hold `v`.
+    fn unchanged(&self, sig: usize, d: DriverId, r: Range, v: ValueRef<'_>) -> bool {
+        let s = &self.sh.signals[sig];
+        let Ok(info) = self.own(d) else {
+            return false;
+        };
+        if !s.skip_ok || !self.st.waveforms[info.local as usize].pending.is_empty() || !s.sole(r) {
+            return false;
+        }
+        let ds = &s.drivers[info.slot as usize];
+        let (rel, n) = ((r.offset - ds.range.offset) as usize, r.len as usize);
+        r.len > 0 && ds.value.same_as(rel, n, v) && s.cur.same_as(r.offset as usize, n, v)
+    }
+
+    /// The skipped assignments of driver `d` this run become real transactions again, before
+    /// a later assignment of the run preempts them as it would have.
+    fn flush_phantoms(&mut self, d: DriverId) -> Result<(), SimError> {
+        let info = self.own(d)?;
+        let (local, sig, slot) = (
+            info.local as usize,
+            info.signal.0 as usize,
+            info.slot as usize,
+        );
+        let ps = std::mem::take(&mut self.st.waveforms[local].phantom);
+        let ds = &self.sh.signals[sig].drivers[slot];
+        for r in ps {
+            let rel = (r.offset - ds.range.offset) as usize;
+            let value = Some(ds.value.extract(rel, r.len as usize));
+            let time = self.sh.now;
+            let mut t = TxnList::new();
+            t.push(Txn {
+                time,
+                range: r,
+                value,
+            });
+            self.st.waveforms[local].schedule(r, Some(time), &mut t);
+            self.st.scheduled.push((time, d));
+        }
+        Ok(())
     }
 
     /// `d <= value;` on the whole driver (zero-delay inertial).
@@ -402,6 +477,7 @@ impl Ctx<'_> {
         new: &mut TxnList,
         mode: DelayMode,
     ) -> Result<(), SimError> {
+        self.flush_phantoms(d)?;
         let fail = |m: &str| self.error(ErrorKind::InvalidAssign(m.into()));
         let Some(first) = new.first() else {
             return Ok(()); // every element was past TIME'HIGH (push_txn)

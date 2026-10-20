@@ -575,6 +575,7 @@ pub fn run(
             }
         }
     }
+    let observed_free = a.cov.is_none() && a.dap.is_none() && a.vhpi.is_empty();
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),
         shuffle: a.shuffle,
@@ -587,7 +588,8 @@ pub fn run(
         },
         // A process left suspended by its edge trigger would be visible to statement coverage,
         // a debugger stepping through it, and foreign callbacks.
-        edge_triggers: a.cov.is_none() && a.dap.is_none() && a.vhpi.is_empty(),
+        edge_triggers: observed_free,
+        skip_unchanged: observed_free && !yavs_elab::reads_activity(&db),
         ..Default::default()
     };
     let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do

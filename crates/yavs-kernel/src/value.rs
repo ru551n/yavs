@@ -375,6 +375,23 @@ impl Buf {
         }
     }
 
+    /// Whether elements `off .. off + n` equal `v` (false for a value of another kind or size).
+    pub fn same_as(&self, off: usize, n: usize, v: ValueRef<'_>) -> bool {
+        match (self, v) {
+            (Buf::Bytes { es, data }, ValueRef::Bytes(d)) => {
+                d.len() == n * es && data.get(off * es..(off + n) * es) == Some(d)
+            }
+            (Buf::Planes { len, b }, ValueRef::Logic(l)) => {
+                l.len() == n
+                    && off + n <= *len
+                    && chunks(n).all(|(c, k)| {
+                        get_block(b, off + c, k) == get_block(l.repr().blocks(), c, k)
+                    })
+            }
+            _ => false,
+        }
+    }
+
     /// Bitset of the elements `0..n` where `self[off + i] != other[ooff + i]`.
     pub fn diff(&self, off: usize, other: &Buf, ooff: usize, n: usize) -> Vec<u64> {
         chunks(n)

@@ -1392,3 +1392,91 @@ fn hook_names_the_reporting_process() {
     sim.run_until(ns(0)).unwrap();
     assert_eq!(*seen.lock().unwrap(), [":top:a", ":top:b"]);
 }
+
+/// Assignments that change nothing: with `skip_unchanged` they queue no transaction, yet every
+/// delta, phase and report is where it was.
+fn unchanged_scenario(skip: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let (s, t, u) = (
+        b.signal("s", BYTE, &[3]),
+        b.signal("t", BYTE, &[0]),
+        b.signal("u", BYTE, &[0]),
+    );
+    let (ds, dt, du) = (b.driver(s), b.driver(t), b.driver(u));
+    let post = ProcFlags {
+        postponed: true,
+        ..NONE
+    };
+    // Same value, in the first delta (an empty delta follows) and at 5 ns.
+    b.process(
+        "same",
+        NONE,
+        &[ds],
+        p(move |c| {
+            c.drive(ds, &[3])?;
+            if c.now() == Time::ZERO {
+                c.wait_for(ns(5))?;
+            }
+            Ok(())
+        }),
+    );
+    // Same value, then a different one after a delay that preempts the first (no delta at all),
+    // then a different value at once after the same one.
+    b.process(
+        "preempted",
+        NONE,
+        &[dt],
+        p(move |c| {
+            if c.now() == Time::ZERO {
+                c.drive(dt, &[0])?;
+                c.assign(dt, None, &[(ns(2), &[1u8])], DelayMode::INERTIAL)?;
+                c.wait_for(ns(4))?;
+            } else if c.now() == ns(4) {
+                c.drive(dt, &[1])?;
+                c.drive(dt, &[7])?;
+            }
+            Ok(())
+        }),
+    );
+    b.process(
+        "late",
+        NONE,
+        &[du],
+        p(move |c| {
+            c.wait_for(ns(9))?;
+            c.drive(du, &[0])
+        }),
+    );
+    b.process(
+        "watch",
+        post,
+        &[],
+        p(move |c| {
+            c.report(Severity::Note, format!("t={:?}", c.value(t)?));
+            c.wait_on(s)?;
+            c.wait_on(t)?;
+            c.wait_on(u)?;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b
+        .build(Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        })
+        .unwrap();
+    let trace = Trace {
+        phases: true,
+        ..Trace::default()
+    };
+    sim.subscribe(Box::new(trace.clone()));
+    sim.run_until(ns(20)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn skipped_unchanged_assignments_keep_the_deltas() {
+    let (off, on) = (unchanged_scenario(false), unchanged_scenario(true));
+    assert!(off.iter().any(|l| l.contains("+1 NextCycle")));
+    assert_eq!(off, on);
+}

@@ -40,6 +40,12 @@ pub struct Config {
     /// edge true (`Builder::edge_trigger`). Off where every activation is observable:
     /// statement coverage, a debugger, foreign callbacks.
     pub edge_triggers: bool,
+    /// A zero-delay assignment that gives an unguarded, not user-resolved signal the value it
+    /// already has, when its driver has nothing pending, queues no transaction (the delta
+    /// still happens). Only set where nothing reads activity: the design uses neither
+    /// `'active` nor `'last_active`, and no observer, coverage run or debugger sees it
+    /// (`docs/design/performance.md` R2b).
+    pub skip_unchanged: bool,
 }
 
 impl Default for Config {
@@ -51,6 +57,7 @@ impl Default for Config {
             resolution: Unit::Fs,
             stop_severity: Severity::Failure,
             edge_triggers: true,
+            skip_unchanged: false,
         }
     }
 }
@@ -156,6 +163,7 @@ pub struct Hook<'a> {
     ops: &'a mut Vec<SignalOp>,
     end: &'a mut Option<EndReason>,
     wakes: &'a mut Wakes,
+    empty_delta: &'a mut bool,
     slots: &'a [Mutex<Slot>],
     /// Index of the observer being called.
     observer: usize,
@@ -258,6 +266,7 @@ impl Hook<'_> {
         for (t, d) in slot.st.scheduled.drain(..) {
             self.queue.push(self.now, t, Entry::Driver(d.0));
         }
+        *self.empty_delta |= slot.st.take_phantoms();
         Ok(())
     }
 
@@ -462,6 +471,9 @@ pub struct SimControl {
     /// `callouts` (with their context) instead of the interpreter printing them (#372).
     live: bool,
     callouts: Vec<(Severity, String, String)>,
+    /// A skipped unchanged assignment (`Config::skip_unchanged`) left a delta that would have
+    /// been there: the next cycle runs although it has no transaction.
+    empty_delta: bool,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -593,6 +605,7 @@ impl SimControl {
             stats: Stats::default(),
             live: false,
             callouts: Vec::new(),
+            empty_delta: false,
         };
         sim.settle().map_err(SimError::new)?;
         sim.live = true;
@@ -969,7 +982,7 @@ impl SimControl {
     /// `Tn`: the time of the next cycle, dropping stale queue entries. Pending observer
     /// wake-ups count, so the simulation is not idle while one waits.
     fn next_time(&mut self) -> Option<Time> {
-        if !self.ops.is_empty() {
+        if !self.ops.is_empty() || self.empty_delta {
             return Some(self.now);
         }
         let wake = self.wakes.pending.first_key_value().map(|(id, _)| id.time);
@@ -1115,6 +1128,7 @@ impl SimControl {
     /// Records events in each signal's `changed`.
     fn update(&mut self) -> Result<(), ErrorKind> {
         let (now, cycle) = (self.now, self.cycle);
+        self.empty_delta = false;
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
         let mut up: BinaryHeap<(u32, Reverse<u32>)> = BinaryHeap::new();
         let mut down: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
@@ -1567,6 +1581,7 @@ impl SimControl {
             let effects = std::mem::take(&mut st.effects);
             if postponed
                 && (st.deadline == Some(self.now)
+                    || !st.phantoms.is_empty()
                     || st.scheduled.iter().any(|&(t, _)| t == self.now))
             {
                 let mut e = self.err(ErrorKind::PostponedDelta);
@@ -1576,6 +1591,7 @@ impl SimControl {
             for (t, d) in st.scheduled.drain(..) {
                 self.queue.push(self.now, t, Entry::Driver(d.0));
             }
+            self.empty_delta |= st.take_phantoms();
             if let Some(t) = st.deadline.take() {
                 self.queue.push(self.now, t, Entry::Timeout(p, generation));
             }
@@ -1688,6 +1704,7 @@ impl SimControl {
             ops: &mut self.ops,
             end: &mut self.end,
             wakes: &mut self.wakes,
+            empty_delta: &mut self.empty_delta,
             slots: &self.slots,
             observer: 0,
         };

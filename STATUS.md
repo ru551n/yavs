@@ -366,6 +366,29 @@ byte-identical before and after, the difftest corpus passes at `--threads 1` and
 the global allocator (a bump or thread-caching allocator gave 8 to 15% more CPU at the cost of 60 to 100%
 more peak RSS; not adopted, user's decision, #424).
 
+Cold semantic analysis, lookups and allocation (#442). A sampling profile of the 30 `vunit_vc30` cases
+(frame pointers, 8700 samples) is flat: visibility lookups about 15% of the process, expression typing
+(`complete_context`) 21%, declaration items 40%, parsing 17%. Changes: a region that has no use clauses and does
+not declare the key is answered by its parent's cached lookup (74% of the uncached lookups were such), names
+declared in the starting region are not cached, overload sets are shared `Arc`s, the lookup cache epoch is the
+summed version of the three tracked arenas (no global atomic read-modify-write per mutable access), candidate sets
+(`CandSet`), the temporaries of a lookup, `declare`, calls and operator candidate filtering use small vectors,
+operator overloads are filtered by the type of their first parameter before the declaration is opened (a side
+table, 37 overloads tested per operator on average, 8% of them fit), `complete_context` reuses emptied candidate
+memos instead of two new hash tables per expression, the linkage check walks an expression once and only
+looks further when a linkage port exists, body-to-spec matching and the newer-declaration passes of a lookup are
+skipped when they cannot find anything. Heap allocations of the 30 cases: 56.4 M -> 29.5 M (-48%). Measured
+on a host with load 17 to 30, so only repeated interleaved runs mean anything: `tools/bench/run.py --compare`
+(`YAVS_BENCH_RUN_FLAGS=--no-cache`, 5 runs) analyze phase 5.04 -> 4.89 s CPU, peak RSS 78.98 -> 75.34 MiB;
+the same 30 commands summed over 9 interleaved rounds (median / minimum): 6.06 -> 5.55 s / 5.66 -> 4.98 s of
+analyze CPU (-8% / -12%). The per-file analysis corpora do not move beyond noise (osvvm-2008 7.40 -> 6.47 s,
+uvvm-2008 10.46 -> 8.75 s in medians of 7 alternating runs, minima 6.09/6.20 and 8.57/8.56 s; peak RSS 36 MiB
+before and after): 69% of those runs is parsing the dependencies, three quarters of that package bodies that
+`yavs analyze` of one file never analyzes. Diagnostics of all analysis corpora (3851 calls) are byte-identical
+before and after, the difftest corpus passes at `--threads 1` and `4` (378 of 378). Tried and dropped (no
+measurable gain): presized arenas and lookup cache (page-touch cost of small runs: +6 MiB peak RSS), a per-list
+operator index, one classification per name node and context, a flag-carrying pass over the use-clause results.
+
 ### Native ieee operators (#395, #404)
 
 `std_logic_1164` gates, `not`, conversions and `rising_edge`, and `numeric_std` `+ - *`, relational

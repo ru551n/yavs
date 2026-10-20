@@ -167,6 +167,7 @@ impl AutoTier {
         let shared = Arc::new(Shared::default());
         let (table, sh) = (funcs.clone(), shared.clone());
         let sample = rt.sampler();
+        let native = rt.native_flags();
         let period = Duration::from_micros(if heat.eager() {
             1 << 20
         } else {
@@ -258,6 +259,7 @@ impl AutoTier {
                             match r {
                                 Ok(entry) => {
                                     table[id.0 as usize].set(entry);
+                                    native.set(id);
                                     note(id, level, Ok(t0.elapsed()));
                                     // Eager (tests): swap the O2 code in during the run too.
                                     if heat.eager() && upgrade && !o2 {

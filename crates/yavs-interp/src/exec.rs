@@ -171,6 +171,8 @@ const TIER_GO_SUSPEND: u64 = u64::MAX - 1;
 /// Jumps of an interpreted function without compiled code until the fast loop asks the tier
 /// again (`run_ops`).
 const RECHECK: u32 = 256;
+/// Events (jumps, calls, returns) between two looks of the loop that has no compiled code yet.
+const WATCH: u32 = 128;
 
 /// The body of `Machine::push_frame` and `push_frame_pre`.
 macro_rules! push_frame_body {
@@ -284,6 +286,9 @@ enum Flow {
     Call,
     Ret(Option<u64>),
     Suspend,
+    /// The fast loop without a compiled tier's bookkeeping hands over to the one with it; the
+    /// top frame's pc is where to go on.
+    Retier,
 }
 
 struct Dbg {
@@ -937,13 +942,19 @@ impl Machine {
     pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Quick {
         let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
         let r = match rt.tier.get() {
-            Some(tier) => {
+            Some(tier) if rt.native.any.load(Ordering::Acquire) => {
                 let r = self.exec_fast::<true>(&rt, Some(&**tier), ctx, 0);
                 // Nothing interpreted on this thread until the next run.
                 crate::slot().store(0, Ordering::Relaxed);
                 r
             }
-            None => self.exec_fast::<false>(&rt, None, ctx, 0),
+            tier => {
+                let r = self.exec_fast::<false>(&rt, tier.map(|t| &**t), ctx, 0);
+                if tier.is_some() {
+                    crate::slot().store(0, Ordering::Relaxed);
+                }
+                r
+            }
         };
         self.rt_run = Some(rt);
         match r {
@@ -2458,13 +2469,19 @@ impl Machine {
         let prog = &rt.prog;
         if !DEBUG {
             return match rt.tier.get() {
-                Some(tier) => {
+                Some(tier) if rt.native.any.load(Ordering::Acquire) => {
                     let r = self.exec_fast::<true>(rt, Some(&**tier), ctx, base);
                     // Nothing interpreted on this thread until the next run.
                     crate::slot().store(0, Ordering::Relaxed);
                     r
                 }
-                None => self.exec_fast::<false>(rt, None, ctx, base),
+                tier => {
+                    let r = self.exec_fast::<false>(rt, tier.map(|t| &**t), ctx, base);
+                    if tier.is_some() {
+                        crate::slot().store(0, Ordering::Relaxed);
+                    }
+                    r
+                }
             };
         }
         loop {
@@ -2682,6 +2699,9 @@ impl Machine {
                         self.top().pc += 1;
                         return Ok(Outcome::Suspended);
                     }
+                    Flow::Retier => {
+                        return Err(ice("a hand-over of the fast loop under a debugger"));
+                    }
                 }
             }
         }
@@ -2731,6 +2751,13 @@ impl Machine {
                     self.top().pc += 1;
                     return Ok(Outcome::Suspended);
                 }
+                Flow::Retier => {
+                    if let Some(t) = tier
+                        && !TIER
+                    {
+                        return self.exec_fast::<true>(rt, Some(t), ctx, base);
+                    }
+                }
                 // A jump to the block the machine pauses at.
                 Flow::Next | Flow::Jump(_) => return Ok(Outcome::Suspended),
             }
@@ -2779,35 +2806,48 @@ impl Machine {
                 Err(flow) => return Ok(flow),
             },
         };
-        // Whether compiled code can run now.
+        let nat: &[std::sync::atomic::AtomicU8] = &rt.native.func;
+        // A tier is set but has no compiled code yet: the loop without its bookkeeping looks
+        // for some every `RECHECK` jumps and hands over to the one with (`Flow::Retier`).
+        let watch = !TIER && tier.is_some();
+        // Whether compiled code can run now (1; 2: the tier is asked to compile the function).
         macro_rules! ready {
             () => {
-                tier.is_some_and(|t| t.ready(func))
+                match nat.get(func.0 as usize) {
+                    Some(n) => {
+                        let st = n.load(Ordering::Acquire);
+                        if st == 2 {
+                            if let Some(t) = tier {
+                                n.store(0, Ordering::Relaxed);
+                                t.hot(func);
+                            }
+                        }
+                        st == 1
+                    }
+                    None => false,
+                }
             };
         }
         // `TIER`: this thread's sampling slot names the function being run, and whether it runs
         // compiled (`Runtime::sampler`); compiled code entered from compiled code keeps the
         // slot naming its caller, which calls it in place.
-        let slot = if TIER { Some(crate::slot()) } else { None };
+        let slot = if TIER || watch {
+            Some(crate::slot())
+        } else {
+            None
+        };
+        let tag = u64::from(rt.id) << 32;
         // Whether the function has compiled code to run (asked on entry, then every
         // `RECHECK` jumps while it has none: it may be compiled while its loop runs).
         let mut native = false;
-        let mut recheck = RECHECK;
+        let mut recheck = if watch { WATCH } else { RECHECK };
         // The function is entered: mark it, look for its compiled code.
         macro_rules! bind {
             () => {
                 if TIER {
-                    if rt.eager.load(Ordering::Relaxed)
-                        && let Some(t) = tier
-                    {
-                        t.hot(func);
-                    }
                     native = ready!();
                     if let Some(s) = slot {
-                        s.store(
-                            u64::from(rt.id) << 32 | u64::from(native) << 31 | u64::from(func.0),
-                            Ordering::Relaxed,
-                        );
+                        s.store(tag | u64::from(func.0), Ordering::Relaxed);
                     }
                 }
             };
@@ -2842,6 +2882,25 @@ impl Machine {
                 enter!();
             };
         }
+        // `watch`: every `WATCH` jumps, calls and returns, name the function being run for the
+        // sampler and look for compiled code to hand over to (the next op is `k` of frame `top`).
+        macro_rules! tick {
+            () => {
+                if watch {
+                    recheck -= 1;
+                    if recheck == 0 {
+                        recheck = WATCH;
+                        if let Some(s) = slot {
+                            s.store(tag | u64::from(func.0), Ordering::Relaxed);
+                        }
+                        if rt.native.any.load(Ordering::Acquire) {
+                            self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                            return Ok(Flow::Retier);
+                        }
+                    }
+                }
+            };
+        }
         // A jump to op `to`.
         macro_rules! go {
             ($to:expr) => {{
@@ -2853,6 +2912,7 @@ impl Machine {
                     }
                 }
                 k = $to as usize;
+                tick!();
                 enter!();
             }};
         }
@@ -2869,24 +2929,22 @@ impl Machine {
             };
         }
         // The callers of the frames this loop pushed (innermost last): their function, code
-        // and the op after the call, so a return looks nothing up (not with a tier, whose
-        // compiled code pushes and pops frames too).
+        // and the op after the call, so a return looks nothing up. Compiled code leaves this
+        // loop when it keeps frames (`TIER_UNWIND`), so the list stays right.
         let mut saved: [Option<(FuncId, &Func, &pre::Code, u32)>; 8] = [None; 8];
         let mut depth = 0usize;
         macro_rules! save_caller {
             () => {
-                if !TIER {
-                    if depth < saved.len() {
-                        let ret = code
-                            .at
-                            .get(k)
-                            .and_then(|&p| code.entry.get(p as usize + 1))
-                            .copied()
-                            .unwrap_or(pre::NONE);
-                        saved[depth] = Some((func, f, code, ret));
-                    }
-                    depth += 1;
+                if depth < saved.len() {
+                    let ret = code
+                        .at
+                        .get(k)
+                        .and_then(|&p| code.entry.get(p as usize + 1))
+                        .copied()
+                        .unwrap_or(pre::NONE);
+                    saved[depth] = Some((func, f, code, ret));
                 }
+                depth += 1;
             };
         }
         // The eight bytes at `off` of the frame's slots.
@@ -3345,6 +3403,7 @@ impl Machine {
                         first => first as usize,
                     };
                     rebind!();
+                    tick!();
                 }
                 Op::CallProt {
                     func: callee,
@@ -3377,6 +3436,7 @@ impl Machine {
                         first => first as usize,
                     };
                     rebind!();
+                    tick!();
                 }
                 Op::Ret { v } => {
                     let v = (v != pre::NONE).then(|| self.regs[v as usize]);
@@ -3396,12 +3456,16 @@ impl Machine {
                     caller.pc += 1;
                     let pc = caller.pc;
                     // The caller this loop entered the callee from: no lookups.
-                    if !TIER && depth > 0 {
+                    if depth > 0 {
                         depth -= 1;
                         if let Some(&Some((sf, sff, sc, rk))) = saved.get(depth)
                             && rk != pre::NONE
                         {
                             (func, f, code, k) = (sf, sff, sc, rk as usize);
+                            if TIER {
+                                rebind!();
+                            }
+                            tick!();
                             continue;
                         }
                     }
@@ -3415,6 +3479,7 @@ impl Machine {
                         .code;
                     k = entry!(pc)? as usize;
                     rebind!();
+                    tick!();
                 }
                 Op::SigReadScalar { dst, sig } => {
                     self.regs[dst as usize] = t!(self.sig_read_scalar(Reg(sig), ctx));

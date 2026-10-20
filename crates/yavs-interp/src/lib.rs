@@ -437,10 +437,30 @@ pub struct Runtime {
     pub(crate) replay: std::sync::atomic::AtomicBool,
     /// This runtime's mark in the sampling slots (`sampler`).
     pub(crate) id: u32,
-    /// `set_eager`: the fast loop asks the tier to compile every function it enters.
-    pub(crate) eager: std::sync::atomic::AtomicBool,
+    /// Which functions have compiled code (`set_tier` and the tier keep it).
+    native: Arc<NativeFlags>,
     /// Live registers at the safepoints of each function a collection met (`roots`).
     live: Vec<std::sync::OnceLock<roots::LiveRefs>>,
+}
+
+/// Which functions have compiled code, for the fast loop (`Runtime::native_flags`).
+pub struct NativeFlags {
+    /// Some function has compiled code (or `set_eager` asks for it): until then the fast loop
+    /// runs without the compiled tier's bookkeeping and looks here now and then.
+    any: std::sync::atomic::AtomicBool,
+    /// Per function: 1 when it has compiled code (`Tier::ready`), so the fast loop asks
+    /// without a virtual call; 2 asks the tier to compile it on the next entry (`set_eager`).
+    func: Box<[std::sync::atomic::AtomicU8]>,
+}
+
+impl NativeFlags {
+    /// `func` has compiled code now.
+    pub fn set(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.store(1, Ordering::Release);
+        }
+        self.any.store(true, Ordering::Release);
+    }
 }
 
 /// What each simulation thread interprets, for the sampler of a compiled tier
@@ -526,7 +546,10 @@ impl Runtime {
                 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
                 NEXT.fetch_add(1, Ordering::Relaxed)
             },
-            eager: Default::default(),
+            native: Arc::new(NativeFlags {
+                any: Default::default(),
+                func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
         }))
@@ -636,14 +659,27 @@ impl Runtime {
     /// Elaboration-time code that already ran stayed interpreted; a debugger keeps a
     /// process interpreted. Returns `false` if a tier was set before.
     pub fn set_tier(&self, tier: Arc<dyn Tier>) -> bool {
+        for (i, n) in self.native.func.iter().enumerate() {
+            if tier.ready(FuncId(i as u32)) {
+                self.native.set(FuncId(i as u32));
+            } else {
+                n.store(0, Ordering::Relaxed);
+            }
+        }
         self.tier.set(tier).is_ok()
+    }
+
+    /// The flags `set_tier` fills: a tier that compiles later calls `NativeFlags::set` once
+    /// `Tier::ready(func)` holds.
+    pub fn native_flags(&self) -> Arc<NativeFlags> {
+        self.native.clone()
     }
 
     /// What a compiled tier calls to sample where the time goes (`yavs run --tier=auto`): it
     /// appends the functions the simulation threads run at that moment, and whether they run
     /// compiled code.
     pub fn sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
-        let id = u64::from(self.id);
+        let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
             for s in SLOTS
                 .lock()
@@ -652,7 +688,12 @@ impl Runtime {
             {
                 let v = s.load(Ordering::Relaxed);
                 if v >> 32 == id {
-                    out.push((FuncId(v as u32 & !(1 << 31)), v & 1 << 31 != 0));
+                    let func = v as u32;
+                    let compiled = native
+                        .func
+                        .get(func as usize)
+                        .is_some_and(|n| n.load(Ordering::Relaxed) == 1);
+                    out.push((FuncId(func), compiled));
                 }
             }
         }
@@ -661,7 +702,10 @@ impl Runtime {
     /// Ask the tier (`Tier::hot`) to compile every function the fast loop enters, from now on
     /// (tests: compiled code swapped in at the first call or jump).
     pub fn set_eager(&self) {
-        self.eager.store(true, Ordering::Relaxed);
+        for n in self.native.func.iter() {
+            let _ = n.compare_exchange(0, 2, Ordering::Relaxed, Ordering::Relaxed);
+        }
+        self.native.any.store(true, Ordering::Release);
     }
 
     /// Coverage counter values.

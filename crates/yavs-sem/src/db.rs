@@ -165,6 +165,10 @@ pub struct Db {
     /// The same for name nodes.
     #[serde(skip)]
     pub(crate) name_memo: HashMap<usize, crate::expr::CandSet>,
+    /// Per declaration (by index): what its first parameter's type says about the operands it
+    /// can take, 0 when not worked out yet (`expr/cands.rs` `first_param_key`).
+    #[serde(skip)]
+    pub(crate) first_param: Vec<u32>,
     /// Emptied pairs of memos kept for the next complete context, so that its tables start
     /// with the capacity the last ones grew to.
     #[serde(skip)]
@@ -284,6 +288,7 @@ impl Db {
             lookup_cache,
             memo,
             name_memo,
+            first_param,
             memo_pool,
             files,
             ext_memo,
@@ -468,6 +473,7 @@ impl Db {
             lookup_cache: HashMap::with_capacity_and_hasher(1 << 13, Default::default()),
             memo: HashMap::default(),
             name_memo: HashMap::default(),
+            first_param: Vec::new(),
             memo_pool: Vec::new(),
             pending_implicit: Vec::new(),
             validated: Default::default(),

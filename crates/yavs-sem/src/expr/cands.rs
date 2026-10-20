@@ -10,7 +10,7 @@ use yavs_syntax::ast::{self, BinaryOp, UnaryOp};
 use super::{CandSet, ClassMask, Expected, Interp, Via};
 use crate::db::Db;
 use crate::decl::{DeclKind, operator_key};
-use crate::ids::{DeclId, ScopeId, TypeId};
+use crate::ids::{DeclId, Id, ScopeId, TypeId};
 use crate::scope::Visible;
 use crate::types::TypeKind;
 
@@ -67,6 +67,10 @@ pub fn binary_symbol(op: BinaryOp) -> &'static str {
         Pow => "**",
     }
 }
+
+const FIRST_NONE: u32 = 1;
+const FIRST_WILD: u32 = 2;
+const FIRST_TYPE: u32 = 3;
 
 impl Db {
     pub(crate) fn cands(&mut self, scope: ScopeId, e: &ast::Expr) -> CandSet {
@@ -258,7 +262,8 @@ impl Db {
 
     /// The overloads of operator `sym` whose operands can all match.
     fn operator_cands(&mut self, scope: ScopeId, sym: &str, operands: &[&ast::Expr]) -> CandSet {
-        let ocs: Vec<CandSet> = operands.iter().map(|o| self.cands(scope, o)).collect();
+        let ocs: smallvec::SmallVec<[CandSet; 2]> =
+            operands.iter().map(|o| self.cands(scope, o)).collect();
         if ocs.iter().any(|c| self.is_poison_set(c)) {
             return self.poison_cands();
         }
@@ -266,55 +271,116 @@ impl Db {
             return CandSet::Types(Default::default());
         };
         let mut out = super::Interps::new();
-        for &d in ds.iter() {
-            let e = self.entity(d);
-            let Some(s) = self.decls[e].kind.subprogram() else {
-                continue;
+        // An operator set holds hundreds of declarations (every visible type has its own
+        // `=`), and an operand of a known type fits those of that type and the poison or
+        // error type: the first parameter's type decides before the declaration is opened.
+        // Not for short sets, a universal literal operand that converts to any numeric type,
+        // a literal class, or anonymous generic parameter types.
+        let by_first = ds.len() >= 12
+            && self.generic.implicit.is_empty()
+            && match &ocs[0] {
+                CandSet::Types(is) => !is.iter().any(|i| i.convertible),
+                CandSet::Class(_) => false,
             };
-            let Some(ret) = s.ret else { continue };
-            if s.params.len() != operands.len() {
-                continue;
-            }
-            let mut ret = self.base(ret);
-            let mut convs = 0;
-            let mut ok = true;
-            // An anonymous parameter type takes any type of its class; a result of such a
-            // type is the type its operand binds (#308).
-            let mut bound: Vec<(TypeId, TypeId)> = Vec::new();
-            for (c, p) in ocs.iter().zip(&s.params) {
-                let f = self.base(p.subtype);
-                let cost = if self.anonymous_param(e, f) {
-                    if !bound.iter().any(|b| b.0 == f)
-                        && let Some(t) = self.anonymous_binding(c, f)
-                    {
-                        bound.push((f, t));
-                    }
-                    self.anonymous_cost(c, f)
-                } else {
-                    self.best_cost(c, Expected::Type(f))
+        for &d in ds.iter() {
+            if by_first {
+                let CandSet::Types(is) = &ocs[0] else {
+                    unreachable!("by_first needs a type set")
                 };
-                match cost {
-                    Some(k) => convs += k,
-                    None => {
-                        ok = false;
-                        break;
-                    }
+                match self.first_param_key(d) {
+                    FIRST_NONE => continue,
+                    FIRST_WILD => {}
+                    k if is.iter().any(|i| FIRST_TYPE + i.ty.index() as u32 == k) => {}
+                    _ => continue,
                 }
             }
-            if ok && self.anonymous_param(e, ret) {
-                match bound.iter().find(|b| b.0 == ret) {
-                    Some(b) => ret = b.1,
-                    None => ok = false,
-                }
-            }
-            if ok {
-                out.push(Interp {
-                    convs,
-                    ..Interp::new(ret, Via::Call(d))
-                });
+            if let Some(i) = self.operator_interp(d, &ocs) {
+                out.push(i);
             }
         }
+        #[cfg(debug_assertions)]
+        if by_first {
+            let all: super::Interps = ds
+                .iter()
+                .filter_map(|&d| self.operator_interp(d, &ocs))
+                .collect();
+            assert_eq!(
+                out, all,
+                "first parameter filter misses a candidate of `{sym}`"
+            );
+        }
         CandSet::Types(out)
+    }
+
+    /// What decides whether overload `d` can take an operand of type `t` as its first
+    /// operand: [`FIRST_NONE`] (not a subprogram with a result and a parameter),
+    /// [`FIRST_WILD`] (the parameter has the poison or an error type: fits every operand) or
+    /// `FIRST_TYPE + ` the index of its base type. Kept per declaration once it is a
+    /// subprogram (its profile never changes after).
+    fn first_param_key(&mut self, d: DeclId) -> u32 {
+        if let Some(&k) = self.first_param.get(d.index())
+            && k != 0
+        {
+            return k;
+        }
+        let e = self.entity(d);
+        let (DeclKind::Subprogram(s) | DeclKind::GenericSubprogram(s)) = &self.decls[e].kind else {
+            // Not (yet) a subprogram: a placeholder may still become one.
+            return FIRST_NONE;
+        };
+        let k = match (s.ret, s.params.first()) {
+            (Some(_), Some(p)) => {
+                let f = self.base(p.subtype);
+                if f == self.poison.ty || matches!(self.types[f].kind, TypeKind::Error) {
+                    FIRST_WILD
+                } else {
+                    FIRST_TYPE + f.index() as u32
+                }
+            }
+            _ => FIRST_NONE,
+        };
+        if self.first_param.len() <= d.index() {
+            self.first_param
+                .resize(self.decls.len().max(d.index() + 1), 0);
+        }
+        self.first_param[d.index()] = k;
+        k
+    }
+
+    /// The interpretation of operator overload `d` for operands with candidates `ocs`.
+    fn operator_interp(&self, d: DeclId, ocs: &[CandSet]) -> Option<Interp> {
+        let e = self.entity(d);
+        let s = self.decls[e].kind.subprogram()?;
+        let ret = s.ret?;
+        if s.params.len() != ocs.len() {
+            return None;
+        }
+        let mut ret = self.base(ret);
+        let mut convs = 0;
+        // An anonymous parameter type takes any type of its class; a result of such a
+        // type is the type its operand binds (#308).
+        let mut bound: Vec<(TypeId, TypeId)> = Vec::new();
+        for (c, p) in ocs.iter().zip(&s.params) {
+            let f = self.base(p.subtype);
+            let cost = if self.anonymous_param(e, f) {
+                if !bound.iter().any(|b| b.0 == f)
+                    && let Some(t) = self.anonymous_binding(c, f)
+                {
+                    bound.push((f, t));
+                }
+                self.anonymous_cost(c, f)
+            } else {
+                self.best_cost(c, Expected::Type(f))
+            };
+            convs += cost?;
+        }
+        if self.anonymous_param(e, ret) {
+            ret = bound.iter().find(|b| b.0 == ret)?.1;
+        }
+        Some(Interp {
+            convs,
+            ..Interp::new(ret, Via::Call(d))
+        })
     }
 
     pub(crate) fn is_poison_set(&self, c: &CandSet) -> bool {

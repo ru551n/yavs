@@ -571,9 +571,25 @@ only for a constant pool up to 1 MiB (the constant is a repeated element: fixed 
 generics grows the `Db`, and then the entry is not used. Checks: output of the 30 test cases of
 `vunit_vc30` byte-identical (md5 of stdout, stderr and exit status) with the cache off, cold and warm,
 at `--threads 1` and `4`; the difftest corpus passes (362 of 362, 1 and 4 threads); waveform files of a
-cold and a warm run are identical (`crates/yavs/tests/cache.rs`). Not done: step 2, the package state
-after initialisation (15 to 20 ms of the elaboration, more than all of step 1); it touches the heap
-structures that #422 is changing.
+cold and a warm run are identical (`crates/yavs/tests/cache.rs`). Step 2 (the package state after initialisation) is below.
+
+Stage 2, step 2 (#407): the package state after initialisation is cached (`init-<key>.img`, `docs/decisions.md`
+"Compilation cache"): package data, the shared variables area and the shared heap are stored as they are and
+restored instead of running the initialisers; an initialiser's reports are recorded and printed and counted again,
+file operations, environment and clock reads and foreign calls keep the state from being stored (reason with
+`YAVS_LOG=debug`). A restore of the 36 packages of a verification-component testbench takes 5 ms (3 MB image) against
+17 to 25 ms of initialisation. Release build, `--compare` of main (746a4dca) with this work, 7 runs, median CPU
+seconds, runs pinned to one performance core (`vunit_vc30` elaborate 1.79 / 1.48, total 3.58 / 3.32; the other
+benchmarks within noise: `osvvm_axistream` elaborate 0.06 / 0.05, `uvvm_axistream_vvc_tb` 0.07 / 0.06,
+`uvvm_util_rand_tb` and `elab_heavy` unchanged). One process of a short test, min of 25 interleaved runs, wall ms:
+`tb_axi_stream` 204 / 192, `tb_axi_lite_master` 113 / 98, UVVM AXI-stream elaboration 139 / 132, others within noise.
+Checks: difftest corpus (410) at 4 threads (which also runs 1), 4 shuffled, with every `run` executed twice so the second is warm,
+on the interpreter, `--tier=llvm` and `--tier=auto` and a `gc-stress` build (all pass; the one exception under the
+twice-run wrapper is `textio/file_append_2019`, which appends to a file); the external runner's 11 suites (1344 tests) pass; the `.pro` regression passes 314/314 under 2008
+and 2019; the verification library suite gives 102 pass, 9 fail, 26 skip, as main. Tests: `crates/yavs/tests/cache.rs`
+(`init` entries: protected and heap state grown by elaboration-time calls, the simulation-start path and the time
+resolution key, edit invalidates, reports replayed, a file-opening package not cached, damaged entry, parallel cold
+runs), `state::tests` (block packing). The store keeps 96 entries now (three per design).
 
 Compact composite constants (#446, `Fx::konst_comp`): a folded record or array-of-composites constant is
 lowered as runs of repeated bytes (repeated elements, record fields with padding, one-valued logic arrays), and the

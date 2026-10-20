@@ -790,7 +790,14 @@ pub fn run(
         }
     }
     let code = if out.errors > 0 { code.max(1) } else { code };
-    out.finish(code)
+    let done = out.finish(code);
+    // The process ends now: freeing the design and the runtime piece by piece only hands memory
+    // back to an operating system that takes it anyway (a tenth of the run for a large design).
+    // Runs with a waveform file or a plugin keep their orderly teardown.
+    if a.wave.is_none() && a.vhpi.is_empty() {
+        std::mem::forget((sim, built, rt, e, db));
+    }
+    done
 }
 
 fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {

@@ -1942,6 +1942,9 @@ user's performance priority:
 - **Cache entries carry an xxh3 checksum of the payload instead of sha256** (format 2) and are read into one
   buffer without copying the payload out. Keys stay sha256. The checksum finds a damaged or truncated file;
   nothing here defends against someone who can write the library directory (they could edit the sources).
+- **`run` does not free the design and the runtime before the process ends** (not with `--wave` or
+  `--vhpi`, whose teardown is orderly): the operating system takes the memory back; for a large design
+  it was a tenth of the run time.
 
 ## Native ieee operators (#395)
 

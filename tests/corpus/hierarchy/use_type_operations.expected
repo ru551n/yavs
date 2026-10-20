@@ -1,0 +1,2 @@
+exit	0
+diag	note	1000000	0	:tb_use_type_operations:_p0	called overloaded =

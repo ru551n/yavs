@@ -506,7 +506,8 @@ impl Db {
     }
 
     /// 12.4: a use clause naming a type also makes its enumeration literals, its
-    /// units and its implicitly declared operations potentially visible.
+    /// units and its operations potentially visible, the implicitly declared ones and the
+    /// subprograms of the same region that take or return the type (#452).
     fn with_type_associates(&self, region: ScopeId, mut ds: Vec<DeclId>) -> Vec<DeclId> {
         let types: Vec<crate::ids::TypeId> = ds
             .iter()
@@ -522,7 +523,7 @@ impl Db {
         for &d in &self.scopes[region].order {
             let assoc = match &self.decls[d].kind {
                 DeclKind::EnumLit { ty, .. } | DeclKind::PhysUnit { ty, .. } => types.contains(ty),
-                DeclKind::Subprogram(sp) if self.decls[d].implicit => {
+                DeclKind::Subprogram(sp) => {
                     sp.params
                         .iter()
                         .any(|p| types.contains(&self.base(p.subtype)))

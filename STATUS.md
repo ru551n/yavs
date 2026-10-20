@@ -2432,6 +2432,55 @@ of `ff` runs predecoded operations and native calls, `xor`, `nor` and `rising_ed
 (#434); array and slice assignments of logic still build a value and two lists in `Machine::drive`; the update
 phase still touches each element of a vector once per cycle (`mark_active`, `set_event`).
 
+### Second pass on the wake-up cost (#440), 2026-10-21
+
+Same designs and method, but profiled with `perf` and timed pinned to one performance core (core 4, min of 9 runs
+of user + system CPU seconds, `--threads 1`, release build with the `llvm` feature) against sim1
+(`-H 64m -e --no-save --jit -r`, min of 5, same core). "Before" is main at `a65c180b`, "after" is this work on top
+of main with the interpreter's round 7 (`f19068e4`), so the interpreter's gains are in the after column.
+
+| Design | tier | before | after | sim1 | before / sim1 | after / sim1 |
+|---|---|---:|---:|---:|---:|---:|
+| ff: 4096 registers x 2000 cycles | interp | 2.66 | 2.05 | 0.54 | 4.9x | 3.8x |
+| | llvm | 2.52 | 1.93 | | 4.7x | 3.6x |
+| lfsr: 512 x 16-bit x 5000 | interp | 1.71 | 1.50 | 0.16 | 10.7x | 9.4x |
+| | llvm | 1.79 | 1.57 | | 11.2x | 9.8x |
+| chain: 1000 stages x 2000 | interp | 0.92 | 0.60 | 0.15 | 6.1x | 4.0x |
+| | llvm | 1.07 | 0.78 | | 7.1x | 5.2x |
+| fan: 4000 x 5000 | interp | 2.29 | 1.76 | 1.01 | 2.3x | 1.7x |
+| | llvm | 2.93 | 2.30 | | 2.9x | 2.3x |
+| bus: 32 drivers x 20000 | interp | 0.39 | 0.34 | 0.68 | 0.6x | 0.5x |
+| | llvm | 0.50 | 0.46 | | 0.7x | 0.7x |
+
+What changed, each its own commit: a zero-delay assignment of one `std_ulogic` element to a driver with nothing
+pending is appended to the waveform directly (`Ctx::assign_code`: the general path was about 1250 instructions of
+the roughly 5000 of one `ff` activation); a process that waits for the same signals twice in a row without a
+timeout keeps its waiters (resident waiters: no removal, no list push, no sorted batch, since the processes wake
+in registration order); the wake scan asks interned trigger ids in the waiters instead of the process table, and
+a clock whose waiters all share a trigger that holds is not asked per waiter; per-process waveform, sensitivity
+and schedule lists are inline; the commit is one pass; the sort of the batch for the delta-limit report is only
+done when that error happens; a one-signal update has no job lists; one `next_time` per cycle; no atomic exchange
+per cycle for callouts; observers have phase masks of their own and the shared-heap collector is only called after
+a serial process ran (`Observer::phase_after_serial`), which took a mutex and a hook per delta cycle from every
+design without a serial process; a logic element is read and copied by its four plane bits (`Buf::code`,
+`Buf::copy` of one element); an edge the kernel resumed a process for is known to `Ctx::edge` (the interpreter's
+test repeated the kernel's answer); a one-element event updates and scans with shorter paths.
+
+Where the time is now (perf, `ff`, `--tier=llvm`): about 28% in the kernel (commit and batch 5%, the cycle 3%, the
+wake scan 3%, driver update 3%, assignment 3%, wait 2%, element codes 3%, activity stamps 2%), the rest in the
+interpreter and compiled code entry (`TierHost::signal`, `yavs_rt_signal`, `sig_read_scalar`, scratch buffers).
+`lfsr` is 60% interpreter (vector slice operations; the assignment of a 16-element slice still builds a value and
+two lists in `Machine::drive`). `chain` is the one design that is mostly kernel (about 50%: delta cycle set-up,
+the waiter scan of one process per element, the element update). Left: the update of a vector with one driver per
+element touches each element four times per cycle (`apply_driver`, `compute_driving`, `update_effective`,
+activity stamps); a static per-clock process list would remove the wake scan of thousands of resident waiters
+(3% of `ff`).
+
+Checks at this work's tip: difftest corpus 410 of 410 at 1 and 4 threads and at 4 shuffled threads for the
+interpreter, `--tier=llvm` and `--tier=auto`; `external.py --oracle --check` on both reference lists (857 and 393
+tests); the external runner's 11 suites all pass (1344 tests, `-p 2`); the `.pro` regression 314 of 314 under 2008 and
+2019; the verification library suite 102 pass, 9 fail, 26 skip, as before.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

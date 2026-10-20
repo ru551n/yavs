@@ -124,6 +124,9 @@ impl Mem {
 
     /// Forget the objects found before a step, except constants (they never move or change).
     fn forget(&mut self) {
+        if self.obj_next == 0 {
+            return;
+        }
         let objs = std::mem::replace(&mut self.objs, [NO_OBJ; OBJS]);
         self.obj_next = 0;
         for o in objs {

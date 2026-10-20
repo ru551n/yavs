@@ -3087,7 +3087,7 @@ impl Machine {
                     && self.pause.is_none()
                     && let Some(tier) = tier
                 {
-                    match self.tier_go(tier, prog, func, f, code, top, k, ctx)? {
+                    match self.tier_go(tier, rt, func, f, code, top, k, ctx)? {
                         TIER_GO_CALL => return Ok(Flow::Call),
                         TIER_GO_SUSPEND => return Ok(Flow::Suspend),
                         go => {
@@ -4139,7 +4139,7 @@ impl Machine {
     fn tier_go(
         &mut self,
         tier: &dyn crate::Tier,
-        prog: &Program,
+        rt: &Runtime,
         func: FuncId,
         f: &Func,
         code: &pre::Code,
@@ -4148,7 +4148,8 @@ impl Machine {
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<u64> {
         let pc = code.at.get(k).copied().unwrap_or(0) as usize;
-        let (next, ran) = self.run_tier(tier, prog, f, pc, ctx)?;
+        let prog = &*rt.prog;
+        let (next, ran) = self.run_tier(tier, rt, f, pc, ctx)?;
         // Frames compiled code pushed and did not finish: the interpreter goes on with the
         // top one.
         if next == crate::TIER_UNWIND as usize {
@@ -4275,7 +4276,7 @@ impl Machine {
     fn run_tier(
         &mut self,
         tier: &dyn crate::Tier,
-        prog: &Program,
+        rt: &Runtime,
         f: &Func,
         pc: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
@@ -4283,7 +4284,8 @@ impl Machine {
         let func = self.top().func;
         let mut host = Host {
             m: self,
-            prog,
+            rt,
+            prog: &rt.prog,
             f,
             up: Vec::new(),
             ctx,
@@ -4524,11 +4526,11 @@ impl Machine {
         func: FuncId,
         args: yavs_ir::Regs,
         dst: Option<Reg>,
+        rt: &Runtime,
     ) -> R<Flow> {
         let callee = prog
             .func(func)
             .ok_or_else(|| ice(format!("call of missing function {func}")))?;
-        let rt = self.rt.clone();
         let pre = rt
             .pre(func, callee)
             .ok_or_else(|| ice(format!("no function {func}")))?;
@@ -5694,6 +5696,7 @@ impl Machine {
 /// The interpreter under compiled code (`Machine::run_tier`).
 struct Host<'a, 'c, 'x> {
     m: &'a mut Machine,
+    rt: &'a Runtime,
     prog: &'a Program,
     /// The top frame's function; `up` those of the frames below it that compiled code
     /// pushed through `step`.
@@ -5714,7 +5717,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
         m.top().pc = at;
         let r = match f.code.get(at as usize) {
             // As the fast loop calls (`Op::Call`).
-            Some(&Inst::Call { func, args, dst }) => m.call_regs(self.prog, f, func, args, dst),
+            Some(&Inst::Call { func, args, dst }) => {
+                m.call_regs(self.prog, f, func, args, dst, self.rt)
+            }
             Some(&inst) => m.step(self.prog, f, inst, self.ctx),
             None => Err(ice(format!(
                 "compiled code stepped pc {at} beyond `{}`",

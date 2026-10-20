@@ -14,8 +14,6 @@ use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 pub(crate) struct Pre {
     /// Initial registers: the preloaded values, zero elsewhere.
     init: Vec<u64>,
-    /// The preloaded registers and their values: (register, value).
-    sparse: Vec<(u32, u64)>,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
     /// For each pc (and one past the end), the first pc at or after it that is not a
@@ -24,17 +22,10 @@ pub(crate) struct Pre {
 }
 
 impl Pre {
-    /// Set `regs` up for a frame at index `idx`: the preloaded registers have their values;
-    /// the others are written before they are read, so whatever they hold stays.
+    /// Set `regs` up for a frame at index `idx`: the preloaded registers have their values,
+    /// the others are zero.
     pub(crate) fn fill(&self, regs: &mut Vec<u64>, idx: u32) -> R<()> {
-        if self.sparse.len() * 8 >= self.init.len() {
-            regs.clone_from(&self.init);
-        } else {
-            regs.resize(self.init.len(), 0);
-            for &(r, v) in &self.sparse {
-                regs[r as usize] = v;
-            }
-        }
+        regs.clone_from(&self.init);
         for &(r, off) in &self.frame {
             regs[r as usize] = mk_addr(FRAME, idx, off)?;
         }
@@ -55,19 +46,16 @@ impl Pre {
         }
         let mut init = vec![0u64; n];
         let mut frame = Vec::new();
-        let mut set: Vec<u32> = Vec::new();
         let mut next = vec![f.code.len() as u32; f.code.len() + 1];
         for pc in (0..f.code.len()).rev() {
             let once = |r: yavs_ir::Reg| defs.get(r.0 as usize) == Some(&1);
             let hit = match f.code[pc] {
                 Inst::Const { dst, v } if once(dst) => {
                     init[dst.0 as usize] = v as u64;
-                    set.push(dst.0);
                     true
                 }
                 Inst::ConstF { dst, v } if once(dst) => {
                     init[dst.0 as usize] = v.to_bits();
-                    set.push(dst.0);
                     true
                 }
                 Inst::AddrOf { dst, space, off } if once(dst) => {
@@ -85,7 +73,6 @@ impl Pre {
                     };
                     if let Some(a) = a {
                         init[dst.0 as usize] = a;
-                        set.push(dst.0);
                     }
                     a.is_some()
                 }
@@ -118,15 +105,6 @@ impl Pre {
                 *n = *t;
             }
         }
-        let sparse = (0..n as u32)
-            .filter(|&r| init[r as usize] != 0)
-            .map(|r| (r, init[r as usize]))
-            .collect();
-        Pre {
-            init,
-            sparse,
-            frame,
-            next,
-        }
+        Pre { init, frame, next }
     }
 }

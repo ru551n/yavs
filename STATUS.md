@@ -418,6 +418,20 @@ main before this work (7445284d) against main with it and the work that landed a
 cache #407, array fills #405, native ieee operators #395, b9dcddb6): verification components 700 to
 106, `check` 34 to 12; all tests pass with both.
 
+### External test runner: where the wall time goes (2026-10-20)
+
+The runner's own suites at `-p 1` (host load average about 25, so wall is noisy; CPU is the
+comparison), median of 3 interleaved runs, before (one `yavs analyze` per file) against after (files
+compiled in batches by the runner's yavs interface, and `analyze` keeping its manifest in memory and
+syncing once per call): `string_ops` 3.2 s wall / 2.7 s CPU to 0.9 s / 0.9 s, `path` 3.7 / 2.7 to 1.1 / 0.9,
+`run` 4.2 / 3.5 to 1.8 / 1.7, `logging` 19.5 / 14.8 to 16.3 / 13.0, `check` 28.1 / 24.7 to 24.7 / 22.4. Compile step
+(62 to 91 files per suite): 1.4 to 2.7 s wall to 0.14 to 0.21 s. What is left is the runner's own Python (about
+0.5 s of fixed start-up plus 10 to 25 ms per test, none of it in yavs) and one `yavs run` per test. A warm
+`yavs run` of a short test (`check` suite, about 100 ms): analyze phase 17 ms (closure and key about 3 ms,
+image restore about 14 ms), elaborate 23 ms, init 22 ms, simulate 38 ms; process start and exit under 3 ms. In the
+verification-component suite: analyze 35 to 60 ms (closure 3.5 ms, image restore 30 ms), elaborate 35 to 140 ms.
+The next levers are the image restore (#426) and caching elaboration (#407).
+
 ### Compilation cache (#407)
 
 `elab`/`run` keep the analyzed closure (and the package bodies elaboration loads) in

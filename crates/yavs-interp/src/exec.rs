@@ -159,25 +159,109 @@ pub(crate) fn add_addr(a: u64, delta: u64) -> R<u64> {
 /// again (`run_ops`).
 const RECHECK: u32 = 256;
 
+/// The body of `Machine::push_frame` and `push_frame_pre`.
+macro_rules! push_frame_body {
+    ($self:ident, $pre:ident, $f:ident, $func:ident, $link:ident, $ret:ident) => {{
+        let idx = $self.frames.len();
+        if idx >= $self.rt.limits.max_depth as usize {
+            return $self.depth_fail($f);
+        }
+        let slen = $pre.slots as usize;
+        let (rbase, sbase) = if idx == 0 {
+            $self.regs.v.clear();
+            $self.root.clear();
+            $self.root.resize(slen, 0);
+            (0, 0)
+        } else {
+            let sbase = $self.sstack.len();
+            $self.sstack.resize(sbase + slen, 0);
+            ($self.regs.v.len(), sbase)
+        };
+        // The stacks are indexed by `u32` (a frame is 28 bytes smaller for it).
+        let (Ok(rb), Ok(sb), Ok(tb)) = (
+            u32::try_from(rbase),
+            u32::try_from(sbase),
+            u32::try_from($self.temp.len()),
+        ) else {
+            return stack_fail($f);
+        };
+        $self.regs.base = rbase;
+        $pre.fill(&mut $self.regs.v, idx as u32)?;
+        // A root frame entered with the shared state attached is elaboration code
+        // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
+        // root frame before it first takes the shared state, and allocates in the shared
+        // heap when it is serial: what it allocates may end up in a shared variable (#303).
+        let shared_alloc = match $self.frames.last() {
+            Some(top) => top.shared_alloc,
+            None => {
+                $self.sh.is_some() || $f.kind == FuncKind::Process && $self.rt.prog.is_serial($func)
+            }
+        };
+        $self.frames.push(Frame {
+            func: $func,
+            pc: 0,
+            rbase: rb,
+            sbase: sb,
+            slen: $pre.slots,
+            link: $link,
+            ret: $ret,
+            temp_base: tb,
+            shared_alloc,
+        });
+    }};
+}
+
+#[cold]
+#[inline(never)]
+fn stack_fail(f: &Func) -> R<()> {
+    rt_err(format!("call stack exceeds 4 GiB calling `{}`", f.name))
+}
+
 pub(crate) struct Frame {
     pub func: FuncId,
     pub pc: u32,
     /// First register of the frame in `Machine::regs`.
-    pub rbase: usize,
+    pub rbase: u32,
     /// The frame's slots: all of `Machine::root` for frame 0, else `slen` bytes of
     /// `Machine::sstack` from `sbase`.
-    pub sbase: usize,
-    pub slen: usize,
+    pub sbase: u32,
+    pub slen: u32,
     /// Static link: index of the lexically enclosing frame.
     pub link: Option<u32>,
     /// Caller register receiving the result.
     pub ret: Option<Reg>,
     /// Temporary-area top when the frame was entered.
-    pub temp_base: usize,
+    pub temp_base: u32,
     /// Allocators allocate in the shared heap (`Machine::alloc_heap`): inside a method of a
     /// protected object in the shared heap (#184), in elaboration code run with the shared
     /// state, whose private heap dies with the call (#246), and in everything they call.
     pub shared_alloc: bool,
+}
+
+/// The slots of frame `i`, from the machine's fields (so the caller can borrow others).
+#[inline(always)]
+fn slots_of<'a>(frames: &[Frame], root: &'a [u8], sstack: &'a [u8], i: usize) -> Option<&'a [u8]> {
+    let fr = frames.get(i)?;
+    if i == 0 {
+        Some(root)
+    } else {
+        sstack.get(fr.sbase as usize..(fr.sbase + fr.slen) as usize)
+    }
+}
+
+#[inline(always)]
+fn slots_of_mut<'a>(
+    frames: &[Frame],
+    root: &'a mut [u8],
+    sstack: &'a mut [u8],
+    i: usize,
+) -> Option<&'a mut [u8]> {
+    let fr = frames.get(i)?;
+    if i == 0 {
+        Some(root)
+    } else {
+        sstack.get_mut(fr.sbase as usize..(fr.sbase + fr.slen) as usize)
+    }
 }
 
 enum Flow {
@@ -685,48 +769,26 @@ impl Machine {
         link: Option<u32>,
         ret: Option<Reg>,
     ) -> R<()> {
-        let idx = self.frames.len();
-        if idx >= self.rt.limits.max_depth as usize {
-            return self.depth_fail(f);
-        }
         let pre = self
             .rt
             .pre(func, f)
             .ok_or_else(|| ice(format!("no function {func}")))?;
-        let slen = f.frame as usize;
-        let (rbase, sbase) = if idx == 0 {
-            self.regs.v.clear();
-            self.root.clear();
-            self.root.resize(slen, 0);
-            (0, 0)
-        } else {
-            let sbase = self.sstack.len();
-            self.sstack.resize(sbase + slen, 0);
-            (self.regs.v.len(), sbase)
-        };
-        self.regs.base = rbase;
-        pre.fill(&mut self.regs.v, idx as u32)?;
-        // A root frame entered with the shared state attached is elaboration code
-        // (`call_shared`, `init_package`, `call_values_shared`); a process enters its
-        // root frame before it first takes the shared state, and allocates in the shared
-        // heap when it is serial: what it allocates may end up in a shared variable (#303).
-        let shared_alloc = match self.frames.last() {
-            Some(top) => top.shared_alloc,
-            None => {
-                self.sh.is_some() || f.kind == FuncKind::Process && self.rt.prog.is_serial(func)
-            }
-        };
-        self.frames.push(Frame {
-            func,
-            pc: 0,
-            rbase,
-            sbase,
-            slen,
-            link,
-            ret,
-            temp_base: self.temp.len(),
-            shared_alloc,
-        });
+        push_frame_body!(self, pre, f, func, link, ret);
+        Ok(())
+    }
+
+    /// `push_frame` for a caller that has the function's `Pre` (from the `Runtime` it runs
+    /// with, which is not borrowed from the machine).
+    #[inline(always)]
+    pub(crate) fn push_frame_pre(
+        &mut self,
+        f: &Func,
+        func: FuncId,
+        pre: &pre::Pre,
+        link: Option<u32>,
+        ret: Option<Reg>,
+    ) -> R<()> {
+        push_frame_body!(self, pre, f, func, link, ret);
         Ok(())
     }
 
@@ -754,11 +816,11 @@ impl Machine {
     /// caller holds a pointer to its registers, `TierHost::ret`).
     fn pop_frame_in_place(&mut self) -> Option<Frame> {
         let fr = self.frames.pop()?;
-        self.regs.v.truncate(fr.rbase);
+        self.regs.v.truncate(fr.rbase as usize);
         match self.frames.last() {
             Some(top) => {
-                self.regs.base = top.rbase;
-                self.sstack.truncate(fr.sbase);
+                self.regs.base = top.rbase as usize;
+                self.sstack.truncate(fr.sbase as usize);
             }
             None => {
                 self.regs.base = 0;
@@ -778,22 +840,12 @@ impl Machine {
     /// The slots of frame `i`.
     #[inline(always)]
     pub(crate) fn fslots(&self, i: usize) -> Option<&[u8]> {
-        let fr = self.frames.get(i)?;
-        if i == 0 {
-            Some(&self.root)
-        } else {
-            self.sstack.get(fr.sbase..fr.sbase + fr.slen)
-        }
+        slots_of(&self.frames, &self.root, &self.sstack, i)
     }
 
     #[inline(always)]
     pub(crate) fn fslots_mut(&mut self, i: usize) -> Option<&mut [u8]> {
-        let fr = self.frames.get(i)?;
-        if i == 0 {
-            Some(&mut self.root)
-        } else {
-            self.sstack.get_mut(fr.sbase..fr.sbase + fr.slen)
-        }
+        slots_of_mut(&self.frames, &mut self.root, &mut self.sstack, i)
     }
 
     /// The slots of the top frame.
@@ -902,7 +954,7 @@ impl Machine {
             if regs {
                 let live = self.rt.live_refs(fr.func)?;
                 for &reg in live.get(fr.pc)? {
-                    let v = *self.regs.v.get(fr.rbase + reg.0 as usize)?;
+                    let v = *self.regs.v.get(fr.rbase as usize + reg.0 as usize)?;
                     match f.reg_ty.get(reg.0 as usize)? {
                         yavs_ir::RegTy::Handle => r.handles.push(v),
                         yavs_ir::RegTy::Ptr => r.addrs.push(v),
@@ -1112,6 +1164,31 @@ impl Machine {
             .ok_or_else(|| ice("shared state accessed by a process that is not marked serial"))
     }
 
+    /// The object of the spaces that are accessed all the time, without error paths.
+    #[inline(always)]
+    fn mem_fast(&self, sp: u8, idx: u32) -> Option<&[u8]> {
+        match sp {
+            FRAME => self.fslots(idx as usize),
+            TEMP => Some(&self.temp),
+            INST => Some(&self.inst.data),
+            HEAP => self.heap.data(idx),
+            _ => None,
+        }
+    }
+
+    /// `rd` with the common spaces inline.
+    #[inline(always)]
+    fn rd_hot(&self, a: u64, n: u64) -> R<&[u8]> {
+        let (sp, idx, off) = split(a);
+        match self
+            .mem_fast(sp, idx)
+            .and_then(|m| m.get(off as usize..(off + n) as usize))
+        {
+            Some(b) => Ok(b),
+            None => self.rd(a, n),
+        }
+    }
+
     pub(crate) fn rd(&self, a: u64, n: u64) -> R<&[u8]> {
         let (sp, idx, off) = split(a);
         let mem = self.obj(sp, idx)?;
@@ -1222,8 +1299,21 @@ impl Machine {
         })
     }
 
+    #[inline]
     pub(crate) fn put(&mut self, a: u64, bytes: &[u8]) -> R<()> {
-        self.wr(a, bytes.len() as u64)?.copy_from_slice(bytes);
+        let (sp, idx, off) = split(a);
+        let n = bytes.len();
+        let mem = match sp {
+            FRAME => self.fslots_mut(idx as usize),
+            TEMP => Some(&mut self.temp[..]),
+            HEAP => self.heap.data_mut(idx),
+            _ => None,
+        };
+        if let Some(b) = mem.and_then(|m| m.get_mut(off as usize..off as usize + n)) {
+            b.copy_from_slice(bytes);
+            return Ok(());
+        }
+        self.wr(a, n as u64)?.copy_from_slice(bytes);
         Ok(())
     }
 
@@ -1233,12 +1323,7 @@ impl Machine {
         // Fast path: a frame (registers spill to frame slots all the time), temporary or
         // instance memory.
         let (sp, idx, off) = split(a);
-        let mem: Option<&[u8]> = match sp {
-            FRAME => self.fslots(idx as usize),
-            TEMP => Some(&self.temp),
-            INST => Some(&self.inst.data),
-            _ => None,
-        };
+        let mem = self.mem_fast(sp, idx);
         if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
             return Ok(cell_w(b, w));
         }
@@ -1249,7 +1334,7 @@ impl Machine {
     #[inline(always)]
     fn dim_of(&self, base: u64, dim: u64) -> R<(i64, i64, u64)> {
         let d = add_addr(base, dim * 24)?;
-        let b = self.rd(d, 24)?;
+        let b = self.rd_hot(d, 24)?;
         let word = |k: usize| {
             b.get(k * 8..k * 8 + 8)
                 .map(le_bytes)
@@ -1262,11 +1347,12 @@ impl Machine {
     pub(crate) fn store(&mut self, a: u64, w: Width, v: u64) -> R<()> {
         let n = w.bytes().min(8) as usize;
         let (sp, idx, off) = split(a);
-        if sp == FRAME
-            && let Some(b) = self
-                .fslots_mut(idx as usize)
-                .and_then(|s| s.get_mut(off as usize..off as usize + n))
-        {
+        let mem = match sp {
+            FRAME => self.fslots_mut(idx as usize),
+            HEAP => self.heap.data_mut(idx),
+            _ => None,
+        };
+        if let Some(b) = mem.and_then(|s| s.get_mut(off as usize..off as usize + n)) {
             put_le(b, v);
             return Ok(());
         }
@@ -1770,6 +1856,15 @@ impl Machine {
     /// Word `k` of the layout of `ty` constrained by the descriptor at `desc`, without
     /// writing the layout to memory (a `LayoutOf` whose result only one load reads).
     fn layout_word(&mut self, prog: &Program, ty: TyId, desc: u64, k: u32) -> R<u64> {
+        // A memoized array of scalars: the word straight from the bounds.
+        if let Some(Some(m)) = self.layouts.get(ty.0 as usize)
+            && let Some(n) = m.simple
+            && let Ok(d) = self.rd_hot(desc, m.dsz)
+            && let Some(w) = simple_words(n, d)
+            && let Some(&v) = w.get(k as usize)
+        {
+            return Ok(v);
+        }
         let words = self.layout_words(prog, ty, desc)?;
         let o = k as usize * 8;
         match words.get(o..o + 8) {
@@ -1779,6 +1874,204 @@ impl Machine {
                 words.len()
             ))),
         }
+    }
+
+    /// `Inst::LGet`: the std_ulogic code of element `i` of the logic vector at `base`.
+    #[inline(always)]
+    fn lget(&self, base: u64, i: u64) -> R<u64> {
+        let b = self.rd(add_addr(base, i / 64 * 32)?, 32)?;
+        Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p))
+    }
+
+    /// `Inst::LSet`: set element `i` of the logic vector at `base` to `code`.
+    #[inline(always)]
+    fn lset(&mut self, base: u64, i: u64, code: u64) -> R<()> {
+        if code > 8 {
+            return Err(ice(format!("std_ulogic code {code}")));
+        }
+        let a = add_addr(base, i / 64 * 32)?;
+        let b = self.wr(a, 32)?;
+        let s = i % 64;
+        for p in 0..4 {
+            let w = plane_word(b, p) & !(1 << s) | (code >> p & 1) << s;
+            b[p * 8..p * 8 + 8].copy_from_slice(&w.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    /// `Inst::Copy`: `n` bytes from `s` to `d`.
+    #[inline(always)]
+    fn copy_mem(&mut self, d: u64, s: u64, n: u64) -> R<()> {
+        if self.copy_fast(d, s, n) {
+            return Ok(());
+        }
+        self.copy_staged(d, s, n)
+    }
+
+    /// The bytes through a staging buffer, errors included.
+    #[inline(never)]
+    fn copy_staged(&mut self, d: u64, s: u64, n: u64) -> R<()> {
+        let mut b = self.take_bytes();
+        let r = self
+            .rd(s, n)
+            .map(|s| b.extend_from_slice(s))
+            .and_then(|()| self.put(d, &b));
+        self.give_bytes(b);
+        r
+    }
+
+    /// Copy directly when both ends are in memory the machine holds in fields of their own:
+    /// inside one object (`copy_within`), or from frame, temporary, instance, constant or heap
+    /// memory into temporary, frame or heap memory. `false`: nothing was copied (another
+    /// combination, or an address that does not resolve: the staged path reports it).
+    #[inline(always)]
+    fn copy_fast(&mut self, d: u64, s: u64, n: u64) -> bool {
+        let (dsp, didx, doff) = split(d);
+        let (ssp, sidx, soff) = split(s);
+        let (n, doff, soff) = (n as usize, doff as usize, soff as usize);
+        let Machine {
+            frames,
+            root,
+            sstack,
+            temp,
+            heap,
+            inst,
+            rt,
+            ..
+        } = self;
+        if dsp == ssp && didx == sidx {
+            let b = match dsp {
+                FRAME => slots_of_mut(frames, root, sstack, didx as usize),
+                TEMP => Some(&mut temp[..]),
+                HEAP => heap.data_mut(didx),
+                _ => None,
+            };
+            let Some(b) = b else { return false };
+            if doff + n <= b.len() && soff + n <= b.len() {
+                b.copy_within(soff..soff + n, doff);
+                return true;
+            }
+            return false;
+        }
+        let dst = match dsp {
+            TEMP => {
+                let src = match ssp {
+                    FRAME => slots_of(frames, root, sstack, sidx as usize),
+                    INST => Some(&inst.data[..]),
+                    CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
+                    HEAP => heap.data(sidx),
+                    _ => None,
+                };
+                (src, temp.get_mut(doff..doff + n))
+            }
+            FRAME => {
+                let src = match ssp {
+                    TEMP => Some(&temp[..]),
+                    INST => Some(&inst.data[..]),
+                    CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
+                    HEAP => heap.data(sidx),
+                    _ => None,
+                };
+                (
+                    src,
+                    slots_of_mut(frames, root, sstack, didx as usize)
+                        .and_then(|b| b.get_mut(doff..doff + n)),
+                )
+            }
+            HEAP => {
+                let src = match ssp {
+                    FRAME => slots_of(frames, root, sstack, sidx as usize),
+                    TEMP => Some(&temp[..]),
+                    INST => Some(&inst.data[..]),
+                    CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
+                    _ => None,
+                };
+                (
+                    src,
+                    heap.data_mut(didx).and_then(|b| b.get_mut(doff..doff + n)),
+                )
+            }
+            _ => return false,
+        };
+        match dst {
+            (Some(src), Some(out)) if soff + n <= src.len() => {
+                out.copy_from_slice(&src[soff..soff + n]);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `Inst::MakeDope`: the values of `parts` as words at `at`.
+    #[inline(always)]
+    fn make_dope(&mut self, at: u64, parts: &[Reg]) -> R<()> {
+        let mut buf = [0u8; 64];
+        if parts.len() <= 8 {
+            for (c, &r) in buf.as_chunks_mut::<8>().0.iter_mut().zip(parts) {
+                *c = self.r(r).to_le_bytes();
+            }
+            return self.put(at, &buf[..parts.len() * 8]);
+        }
+        let mut out = Vec::with_capacity(parts.len() * 8);
+        for &r in parts {
+            out.extend_from_slice(&self.r(r).to_le_bytes());
+        }
+        self.put(at, &out)
+    }
+
+    /// `Inst::CopyConst`: constant `c` to the memory at `a`.
+    #[inline(always)]
+    fn copy_const(&mut self, a: u64, c: yavs_ir::ConstId) -> R<()> {
+        // A compact constant is written straight to its copy, never expanded and kept in the
+        // runtime (#446).
+        if matches!(
+            self.rt.prog.consts.get(c),
+            Some(ConstData::Repeat { .. } | ConstData::Runs(_))
+        ) {
+            let rt = self.rt.clone();
+            if let Some(d) = rt.prog.consts.get(c) {
+                let n = compact_len(d)?;
+                fill_compact(d, self.wr(a, n)?);
+            }
+            return Ok(());
+        }
+        let n = const_bytes(&self.rt, c)?.len() as u64;
+        self.copy_mem(a, mk_addr(CONST, c.0, 0)?, n)
+    }
+
+    /// `Inst::Deref`: the address of the object the access value `h` designates.
+    #[inline(always)]
+    fn deref(&mut self, h: u64, what: yavs_ir::CheckMsgId) -> R<u64> {
+        if h == 0 {
+            // NVC's wording; the statement span names the place.
+            return rt_err("null access dereference");
+        }
+        let (hp, space) = self.heap_of(h)?;
+        match hp.resolve(h) {
+            Ok(i) => mk_addr(space, i, 0),
+            Err(e) => self.deref_fail(e, what),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn deref_fail(&self, e: HeapError, what: yavs_ir::CheckMsgId) -> R<u64> {
+        match e {
+            HeapError::Stale => {
+                let (w, _) = self.check_msg(what);
+                rt_err(format!(
+                    "access value designates an object that was deallocated: {w}"
+                ))
+            }
+            e => Err(ice(format!("dereference: {e:?}"))),
+        }
+    }
+
+    /// `Inst::Field`: the address of field `n` of the record at `base`, laid out by `layout`.
+    #[inline(always)]
+    fn field_addr(&self, base: u64, layout: u64, n: u32) -> R<u64> {
+        let off = self.load(add_addr(layout, 16 + 8 * u64::from(n))?, Width::B8)?;
+        add_addr(base, off)
     }
 
     /// `step` out of line: the fast loop stays small.
@@ -1975,7 +2268,7 @@ impl Machine {
     /// The temporaries of the statement that ended (`Inst::Stmt`).
     #[inline(always)]
     fn end_stmt(&mut self) {
-        let base = self.top().temp_base;
+        let base = self.top().temp_base as usize;
         self.temp.truncate(base);
         if !self.troots.is_empty() {
             self.troots.retain(|t| (t.off as usize) < base);
@@ -2399,6 +2692,30 @@ impl Machine {
                 }
             };
         }
+        // The eight bytes at `off` of the frame's slots.
+        macro_rules! slot8 {
+            ($off:expr) => {{
+                let off: u32 = $off;
+                match self
+                    .fslots(top)
+                    .and_then(|s| s.get(off as usize..))
+                    .and_then(|s| s.first_chunk::<8>())
+                {
+                    Some(b) => u64::from_le_bytes(*b),
+                    None => t!(mk_addr(FRAME, top as u32, off.into())
+                        .and_then(|a| self.load(a, Width::B8))),
+                }
+            }};
+        }
+        // The message of the `Pos` the current op starts with.
+        macro_rules! pos_what {
+            () => {
+                match code.at.get(k).and_then(|&p| f.code.get(p as usize)) {
+                    Some(&Inst::Pos { what, .. }) => what,
+                    _ => yavs_ir::CheckMsgId(0),
+                }
+            };
+        }
         enter!();
         loop {
             match code.ops[k] {
@@ -2454,6 +2771,140 @@ impl Machine {
                             mk_addr(FRAME, top as u32, off.into()).and_then(|a| self.load(a, w))
                         ),
                     };
+                    k += 1;
+                }
+                Op::LoadSlot8 { dst, off } => {
+                    self.regs[dst as usize] = slot8!(off);
+                    k += 1;
+                }
+                Op::StmtLoadSlot8 { dst, off } => {
+                    self.end_stmt();
+                    self.regs[dst as usize] = slot8!(off);
+                    k += 1;
+                }
+                Op::LoadSlot8x2 { d1, o1, d2, o2 } => {
+                    self.regs[d1 as usize] = slot8!(o1);
+                    self.regs[d2 as usize] = slot8!(o2);
+                    k += 1;
+                }
+                Op::LoadSlot8CmpBr {
+                    ld,
+                    off,
+                    other,
+                    t,
+                    f: e,
+                    m,
+                    side,
+                } => {
+                    let v = slot8!(off);
+                    self.regs[ld as usize] = v;
+                    let o = self.regs[other as usize];
+                    let (x, y) = if side == 0 { (v, o) } else { (o, v) };
+                    go!(if pre::cmp_holds(m, x as i64, y as i64) {
+                        t
+                    } else {
+                        e
+                    });
+                }
+                Op::StoreSlotStmt { src, off, w } => {
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    let v = self.regs[src as usize];
+                    match self.fslots_mut(top).and_then(|s| s.get_mut(o..o + n)) {
+                        Some(b) => put_le(b, v),
+                        None => t!(mk_addr(FRAME, top as u32, off.into())
+                            .and_then(|a| self.store(a, w, v))),
+                    }
+                    self.end_stmt();
+                    k += 1;
+                }
+                Op::MoveBr { dst, src, to } => {
+                    self.regs[dst as usize] = self.regs[src as usize];
+                    go!(to);
+                }
+                Op::PosIndex {
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    stride,
+                    dim,
+                } => {
+                    let p = t!(self.pos_of_with(
+                        self.regs[dope as usize],
+                        dim,
+                        self.regs[idx as usize] as i64,
+                        || pos_what!()
+                    ));
+                    self.regs[dst as usize] = t!(index_addr(self.regs[base as usize], p, stride));
+                    k += 1;
+                }
+                Op::PosIndexLoad {
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    stride,
+                    w,
+                    dim,
+                } => {
+                    let p = t!(self.pos_of_with(
+                        self.regs[dope as usize],
+                        dim,
+                        self.regs[idx as usize] as i64,
+                        || pos_what!()
+                    ));
+                    let a = t!(index_addr(self.regs[base as usize], p, stride));
+                    self.regs[dst as usize] = t!(self.load(a, w));
+                    k += 1;
+                }
+                Op::PosIndexStore {
+                    src,
+                    dope,
+                    idx,
+                    base,
+                    stride,
+                    w,
+                    dim,
+                } => {
+                    let p = t!(self.pos_of_with(
+                        self.regs[dope as usize],
+                        dim,
+                        self.regs[idx as usize] as i64,
+                        || pos_what!()
+                    ));
+                    let a = t!(index_addr(self.regs[base as usize], p, stride));
+                    t!(self.store(a, w, self.regs[src as usize]));
+                    k += 1;
+                }
+                Op::IndexLoad {
+                    dst,
+                    base,
+                    pos,
+                    stride,
+                    w,
+                } => {
+                    let a = t!(index_addr(
+                        self.regs[base as usize],
+                        self.regs[pos as usize],
+                        stride
+                    ));
+                    self.regs[dst as usize] = t!(self.load(a, w));
+                    k += 1;
+                }
+                Op::IndexStore {
+                    src,
+                    base,
+                    pos,
+                    stride,
+                    w,
+                } => {
+                    let a = t!(index_addr(
+                        self.regs[base as usize],
+                        self.regs[pos as usize],
+                        stride
+                    ));
+                    t!(self.store(a, w, self.regs[src as usize]));
                     k += 1;
                 }
                 Op::StoreSlot { src, off, w } => {
@@ -2547,25 +2998,27 @@ impl Machine {
                     };
                     k += 1;
                 }
-                Op::Cmp { op, dst, a, b } => {
-                    let v = cmp(
-                        op,
-                        (self.regs[a as usize] as i64).cmp(&(self.regs[b as usize] as i64)),
+                Op::Cmp { m, dst, a, b } => {
+                    let v = pre::cmp_holds(
+                        m,
+                        self.regs[a as usize] as i64,
+                        self.regs[b as usize] as i64,
                     );
                     self.regs[dst as usize] = v.into();
                     k += 1;
                 }
                 Op::CmpBr {
-                    op,
+                    m,
                     dst,
                     a,
                     b,
                     t,
                     f: e,
                 } => {
-                    let v = cmp(
-                        op,
-                        (self.regs[a as usize] as i64).cmp(&(self.regs[b as usize] as i64)),
+                    let v = pre::cmp_holds(
+                        m,
+                        self.regs[a as usize] as i64,
+                        self.regs[b as usize] as i64,
                     );
                     self.regs[dst as usize] = v.into();
                     go!(if v { t } else { e });
@@ -2651,18 +3104,54 @@ impl Machine {
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
-                    self.call_regs(prog, f, FuncId(callee), args, dst)?;
+                    let cid = FuncId(callee);
+                    let cf = prog
+                        .func(cid)
+                        .ok_or_else(|| ice(format!("call of missing function {cid}")))?;
+                    let cpre = rt
+                        .pre(cid, cf)
+                        .ok_or_else(|| ice(format!("no function {cid}")))?;
+                    self.call_pre(f, cf, cid, cpre, args, dst, None)?;
                     // The callee's ops go on in this loop.
                     top += 1;
-                    func = FuncId(callee);
-                    f = prog
-                        .func(func)
-                        .ok_or_else(|| ice(format!("no function {func}")))?;
-                    code = &rt
-                        .pre(func, f)
-                        .ok_or_else(|| ice(format!("no function {func}")))?
-                        .code;
-                    k = entry!(0)? as usize;
+                    func = cid;
+                    f = cf;
+                    code = &cpre.code;
+                    k = match code.first {
+                        pre::NONE => entry!(0)? as usize,
+                        first => first as usize,
+                    };
+                    rebind!();
+                }
+                Op::CallProt {
+                    func: callee,
+                    obj,
+                    start,
+                    len,
+                    dst,
+                } => {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    t!(self.shared());
+                    let h = self.regs[obj as usize];
+                    let args = yavs_ir::Regs { start, len };
+                    let dst = (dst != pre::NONE).then_some(Reg(dst));
+                    let cid = FuncId(callee);
+                    let cf = prog
+                        .func(cid)
+                        .ok_or_else(|| ice(format!("call of missing function {cid}")))?;
+                    let cpre = rt
+                        .pre(cid, cf)
+                        .ok_or_else(|| ice(format!("no function {cid}")))?;
+                    self.call_pre(f, cf, cid, cpre, args, dst, Some(h))?;
+                    self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
+                    top += 1;
+                    func = cid;
+                    f = cf;
+                    code = &cpre.code;
+                    k = match code.first {
+                        pre::NONE => entry!(0)? as usize,
+                        first => first as usize,
+                    };
                     rebind!();
                 }
                 Op::Ret { v } => {
@@ -2729,6 +3218,60 @@ impl Machine {
                 }
                 Op::Alloc { dst, size } => {
                     self.regs[dst as usize] = t!(self.temp_alloc(self.regs[size as usize]));
+                    k += 1;
+                }
+                Op::Const { dst, v } => {
+                    self.regs[dst as usize] = v as u64;
+                    k += 1;
+                }
+                Op::Copy { dst, src, bytes } => {
+                    t!(self.copy_mem(
+                        self.regs[dst as usize],
+                        self.regs[src as usize],
+                        self.regs[bytes as usize]
+                    ));
+                    k += 1;
+                }
+                Op::CopyConst { dst, c } => {
+                    t!(self.copy_const(self.regs[dst as usize], yavs_ir::ConstId(c)));
+                    k += 1;
+                }
+                Op::MakeDope { at, start, len } => {
+                    let parts = t!(f
+                        .regs(yavs_ir::Regs { start, len })
+                        .ok_or_else(|| ice("operand list")));
+                    let a = self.regs[at as usize];
+                    t!(self.make_dope(a, parts));
+                    k += 1;
+                }
+                Op::Deref { dst, handle, what } => {
+                    self.regs[dst as usize] = t!(self.deref(self.regs[handle as usize], what));
+                    k += 1;
+                }
+                Op::Field {
+                    dst,
+                    base,
+                    layout,
+                    n,
+                } => {
+                    self.regs[dst as usize] = t!(self.field_addr(
+                        self.regs[base as usize],
+                        self.regs[layout as usize],
+                        n
+                    ));
+                    k += 1;
+                }
+                Op::LGet { dst, base, idx } => {
+                    self.regs[dst as usize] =
+                        t!(self.lget(self.regs[base as usize], self.regs[idx as usize]));
+                    k += 1;
+                }
+                Op::LSet { base, idx, v } => {
+                    t!(self.lset(
+                        self.regs[base as usize],
+                        self.regs[idx as usize],
+                        self.regs[v as usize]
+                    ));
                     k += 1;
                 }
                 Op::CondBr { c, t, f: e } => {
@@ -2855,7 +3398,7 @@ impl Machine {
     /// The top frame's slots (`TierFrame::slots`).
     fn slots_ptr(&mut self) -> *mut u8 {
         let top = self.frames.len() - 1;
-        let sbase = self.frames[top].sbase;
+        let sbase = self.frames[top].sbase as usize;
         let slots = if top == 0 {
             &mut self.root
         } else {
@@ -2868,7 +3411,7 @@ impl Machine {
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
         let top = self.frames.len() - 1;
         let fr = &self.frames[top];
-        let (rbase, slen, temp_base) = (fr.rbase, fr.slen, fr.temp_base);
+        let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);
         tf.slots = self.slots_ptr();
         tf.slots_len = slen as u64;
         tf.frame = top as u64;
@@ -3060,8 +3603,7 @@ impl Machine {
         Ok(Flow::Call)
     }
 
-    /// `Inst::Call` of a function by its IR id: the arguments go from the caller's registers
-    /// straight into the parameter slots of the new frame, no argument cells in between.
+    /// `Inst::Call` of a function by its IR id (compiled code's calls, `TierHost::step`).
     fn call_regs(
         &mut self,
         prog: &Program,
@@ -3073,15 +3615,38 @@ impl Machine {
         let callee = prog
             .func(func)
             .ok_or_else(|| ice(format!("call of missing function {func}")))?;
-        let link = if callee.parent.is_none() {
-            None
-        } else {
+        let rt = self.rt.clone();
+        let pre = rt
+            .pre(func, callee)
+            .ok_or_else(|| ice(format!("no function {func}")))?;
+        self.call_pre(f, callee, func, pre, args, dst, None)?;
+        Ok(Flow::Call)
+    }
+
+    /// `Inst::Call` of function `func` (`callee`, with its `pre`): the arguments go from the
+    /// caller's registers (`f`) straight into the parameter slots of the new frame, no
+    /// argument cells in between.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn call_pre(
+        &mut self,
+        f: &Func,
+        callee: &Func,
+        func: FuncId,
+        pre: &pre::Pre,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        first: Option<u64>,
+    ) -> R<()> {
+        let link = if pre.nested {
             self.static_link(callee, None)?
+        } else {
+            None
         };
         let caller = self.regs.base;
-        self.push_frame(callee, func, link, dst)?;
+        self.push_frame_pre(callee, func, pre, link, dst)?;
         let fr = &self.frames[self.frames.len() - 1];
-        let (sbase, slen) = (fr.sbase, fr.slen);
+        let (sbase, slen) = (fr.sbase as usize, fr.slen as usize);
         let regs = f
             .regs(args)
             .ok_or_else(|| ice("operand list out of range"))?;
@@ -3089,25 +3654,38 @@ impl Machine {
             .sstack
             .get_mut(sbase..sbase + slen)
             .ok_or_else(|| ice("frame outside the slot stack"))?;
-        let mut params = callee.params.iter();
-        for &r in regs {
-            let Some(p) = params.next() else { break };
-            let v = self.regs.v[caller + r.0 as usize];
-            let n = p.width.bytes() as usize;
+        let mut params = pre.params.iter();
+        // The protected object of a method call is its first parameter.
+        if let Some(h) = first
+            && let Some(&(slot, w)) = params.next()
+        {
+            let n = w.bytes() as usize;
             let dst = slots
-                .get_mut(p.slot as usize..p.slot as usize + n)
-                .ok_or_else(|| ice(format!("parameter slot {} outside the frame", p.slot)))?;
-            if p.width == Width::Sig {
+                .get_mut(slot as usize..slot as usize + n)
+                .ok_or_else(|| ice(format!("parameter slot {slot} outside the frame")))?;
+            put_le(dst, h);
+        }
+        for &r in regs {
+            let Some(&(slot, w)) = params.next() else {
+                break;
+            };
+            let v = self.regs.v[caller + r.0 as usize];
+            let n = w.bytes() as usize;
+            let dst = slots
+                .get_mut(slot as usize..slot as usize + n)
+                .ok_or_else(|| ice(format!("parameter slot {slot} outside the frame")))?;
+            if w == Width::Sig {
                 dst[..8].copy_from_slice(&v.to_le_bytes());
                 dst[8..].copy_from_slice(&self.regs.v[caller + r.0 as usize + 1].to_le_bytes());
             } else {
-                dst.copy_from_slice(&v.to_le_bytes()[..n]);
+                put_le(dst, v);
             }
         }
-        if let Some(p) = params.next() {
-            return Err(ice(format!("missing argument {}", p.name)));
+        if params.next().is_some() {
+            let name = &callee.params[regs.len() + usize::from(first.is_some())].name;
+            return Err(ice(format!("missing argument {name}")));
         }
-        Ok(Flow::Call)
+        Ok(())
     }
 
     /// Call `func` with the argument cells of `args` after `first` (a protected object).
@@ -3212,12 +3790,24 @@ impl Machine {
     /// The checked position of index `i` in dimension `dim` of the descriptor at `dope`.
     #[inline(always)]
     fn pos_of(&self, dope: u64, dim: u8, i: i64, what: yavs_ir::CheckMsgId) -> R<u64> {
+        self.pos_of_with(dope, dim, i, || what)
+    }
+
+    /// `pos_of` with the failure message looked up only when it fails.
+    #[inline(always)]
+    fn pos_of_with(
+        &self,
+        dope: u64,
+        dim: u8,
+        i: i64,
+        what: impl FnOnce() -> yavs_ir::CheckMsgId,
+    ) -> R<u64> {
         let (l, rr, dir) = self.dim_of(dope, u64::from(dim))?;
         let pos = match dir {
             // The distance fits a u64 even when it does not fit an i64.
             0 if l <= i && i <= rr => i.wrapping_sub(l),
             1 if rr <= i && i <= l => l.wrapping_sub(i),
-            _ => return self.pos_fail(l, rr, dir, i, what).map(|()| 0),
+            _ => return self.pos_fail(l, rr, dir, i, what()).map(|()| 0),
         };
         Ok(pos as u64)
     }
@@ -3414,19 +4004,7 @@ impl Machine {
                 };
                 self.set(dst, a);
             }
-            Inst::CopyConst { dst, c } => {
-                let rt = self.rt.clone();
-                let a = self.r(dst);
-                match rt.prog.consts.get(c) {
-                    // A compact constant is written straight to its copy, never expanded
-                    // and kept in the runtime (#446).
-                    Some(d @ (ConstData::Repeat { .. } | ConstData::Runs(_))) => {
-                        let n = compact_len(d)?;
-                        fill_compact(d, self.wr(a, n)?);
-                    }
-                    _ => self.put(a, const_bytes(&rt, c)?)?,
-                }
-            }
+            Inst::CopyConst { dst, c } => self.copy_const(self.r(dst), c)?,
             Inst::Alloc { dst, size } => {
                 let a = self.temp_alloc(self.r(size))?;
                 self.set(dst, a);
@@ -3471,13 +4049,7 @@ impl Machine {
             Inst::Load { dst, addr, w } => self.do_load(dst, addr, w)?,
             Inst::Store { addr, src, w } => self.do_store(addr, src, w)?,
             Inst::Copy { dst, src, bytes } => {
-                let mut b = self.take_bytes();
-                let r = self
-                    .rd(self.r(src), self.r(bytes))
-                    .map(|s| b.extend_from_slice(s))
-                    .and_then(|()| self.put(self.r(dst), &b));
-                self.give_bytes(b);
-                r?;
+                self.copy_mem(self.r(dst), self.r(src), self.r(bytes))?;
             }
             Inst::Fill { dst, elem, n, size } => {
                 let mut e = self.take_bytes();
@@ -3517,8 +4089,7 @@ impl Machine {
                 layout,
                 n,
             } => {
-                let off = self.load(add_addr(self.r(layout), 16 + 8 * u64::from(n))?, Width::B8)?;
-                let a = add_addr(self.r(base), off)?;
+                let a = self.field_addr(self.r(base), self.r(layout), n)?;
                 self.set(dst, a);
             }
             Inst::Bin { op, dst, a, b } => self.do_bin(op, dst, a, b)?,
@@ -3685,25 +4256,10 @@ impl Machine {
                 self.set(dst, v.into());
             }
             Inst::LGet { dst, base, idx } => {
-                let i = self.r(idx);
-                let b = self.rd(add_addr(self.r(base), i / 64 * 32)?, 32)?;
-                let code = (0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p);
+                let code = self.lget(self.r(base), self.r(idx))?;
                 self.set(dst, code);
             }
-            Inst::LSet { base, idx, v } => {
-                let i = self.r(idx);
-                let code = self.r(v);
-                if code > 8 {
-                    return Err(ice(format!("std_ulogic code {code}")));
-                }
-                let a = add_addr(self.r(base), i / 64 * 32)?;
-                let b = self.wr(a, 32)?;
-                let s = i % 64;
-                for p in 0..4 {
-                    let w = plane_word(b, p) & !(1 << s) | (code >> p & 1) << s;
-                    b[p * 8..p * 8 + 8].copy_from_slice(&w.to_le_bytes());
-                }
-            }
+            Inst::LSet { base, idx, v } => self.lset(self.r(base), self.r(idx), self.r(v))?,
             Inst::LCopy {
                 dst,
                 dst_off,
@@ -3729,11 +4285,7 @@ impl Machine {
             } => self.do_check(kind, v, lo, hi, what)?,
             Inst::MakeDope { at, parts } => {
                 let regs = f.regs(parts).ok_or_else(|| ice("operand list"))?;
-                let mut out = Vec::with_capacity(regs.len() * 8);
-                for &r in regs {
-                    out.extend_from_slice(&self.r(r).to_le_bytes());
-                }
-                self.put(self.r(at), &out)?;
+                self.make_dope(self.r(at), regs)?;
             }
             Inst::DopeLen { dst, dope, dim } => {
                 let n = self.dope_len(self.r(dope), dim)?;
@@ -3896,23 +4448,7 @@ impl Machine {
                 self.deallocate(self.r(ptr))?;
             }
             Inst::Deref { dst, handle, what } => {
-                let h = self.r(handle);
-                if h == 0 {
-                    // NVC's wording; the statement span names the place.
-                    return rt_err("null access dereference");
-                }
-                let (hp, space) = self.heap_of(h)?;
-                let i = match hp.resolve(h) {
-                    Ok(i) => i,
-                    Err(HeapError::Stale) => {
-                        let (w, _) = self.check_msg(what);
-                        return rt_err(format!(
-                            "access value designates an object that was deallocated: {w}"
-                        ));
-                    }
-                    Err(e) => return Err(ice(format!("dereference: {e:?}"))),
-                };
-                let a = mk_addr(space, i, 0)?;
+                let a = self.deref(self.r(handle), what)?;
                 self.set(dst, a);
             }
             Inst::SigVal {

@@ -13,7 +13,7 @@
 //! resolved to op indices, loads and stores through a preloaded frame or instance address
 //! reading that memory directly, an offset by a constant folded into the access, a compare
 //! fused with the branch on it and a `LayoutOf` with the one instruction that reads its
-//! result. Everything else is `Op::Step`: the IR instruction
+//! result, and further common sequences (#443, `Op` below). Everything else is `Op::Step`: the IR instruction
 //! through `Machine::step`. `Code::at` maps each op back to its IR pc, which frames keep
 //! (`Frame::pc`), so traces, messages, coverage, root maps and the debug loop see the IR.
 
@@ -24,6 +24,11 @@ use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 pub(crate) struct Pre {
     /// Initial registers: the preloaded values, zero elsewhere.
     init: Vec<u64>,
+    /// The function's frame size in bytes (`Func::frame`), its parameters' slots and widths and
+    /// whether it is nested: what a call needs, without touching the function itself.
+    pub slots: u32,
+    pub params: Box<[(u32, Width)]>,
+    pub nested: bool,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
     /// For each pc (and one past the end), the first pc at or after it that is not a
@@ -139,6 +144,9 @@ impl Pre {
         let code = Code::new(f, &skip, &known, &next);
         Pre {
             init,
+            slots: f.frame,
+            params: f.params.iter().map(|p| (p.slot, p.width)).collect(),
+            nested: f.parent.is_some(),
             frame,
             next,
             code,
@@ -182,6 +190,89 @@ pub(crate) enum Op {
     LoadSlot {
         dst: u32,
         off: u32,
+        w: Width,
+    },
+    /// `LoadSlot` of eight bytes.
+    LoadSlot8 {
+        dst: u32,
+        off: u32,
+    },
+    /// `Stmt`, then `LoadSlot8`.
+    StmtLoadSlot8 {
+        dst: u32,
+        off: u32,
+    },
+    /// Two `LoadSlot8`s.
+    LoadSlot8x2 {
+        d1: u32,
+        o1: u32,
+        d2: u32,
+        o2: u32,
+    },
+    /// `LoadSlot8` and the compare-and-branch on it against `other` (the loaded register is
+    /// the left operand when `side` is 0, else the right one); the compare's own result
+    /// register is read by nothing else and not written.
+    LoadSlot8CmpBr {
+        ld: u32,
+        off: u32,
+        other: u32,
+        t: u32,
+        f: u32,
+        m: u8,
+        side: u8,
+    },
+    /// `StoreSlot`, then `Stmt`.
+    StoreSlotStmt {
+        src: u32,
+        off: u32,
+        w: Width,
+    },
+    /// `Move`, then the jump.
+    MoveBr {
+        dst: u32,
+        src: u32,
+        to: u32,
+    },
+    /// `Pos` and the `Index` by it (its message is read from the IR when it fails).
+    PosIndex {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        base: u32,
+        stride: u32,
+        dim: u8,
+    },
+    PosIndexLoad {
+        dst: u32,
+        dope: u32,
+        idx: u32,
+        base: u32,
+        stride: u32,
+        w: Width,
+        dim: u8,
+    },
+    PosIndexStore {
+        src: u32,
+        dope: u32,
+        idx: u32,
+        base: u32,
+        stride: u32,
+        w: Width,
+        dim: u8,
+    },
+    /// `Index` and the load or store at it.
+    IndexLoad {
+        dst: u32,
+        base: u32,
+        pos: u32,
+        stride: u32,
+        w: Width,
+    },
+    IndexStore {
+        src: u32,
+        base: u32,
+        pos: u32,
+        stride: u32,
         w: Width,
     },
     StoreSlot {
@@ -243,14 +334,14 @@ pub(crate) enum Op {
         hi: u32,
     },
     Cmp {
-        op: CmpOp,
+        m: u8,
         dst: u32,
         a: u32,
         b: u32,
     },
     /// `Cmp` and the `CondBr` on its result.
     CmpBr {
-        op: CmpOp,
+        m: u8,
         dst: u32,
         a: u32,
         b: u32,
@@ -292,6 +383,46 @@ pub(crate) enum Op {
         dst: u32,
         size: u32,
     },
+    /// `Inst::Const` or `ConstF` (`v` the bits), defined more than once in the function.
+    Const {
+        dst: u32,
+        v: i64,
+    },
+    Deref {
+        dst: u32,
+        handle: u32,
+        what: CheckMsgId,
+    },
+    Copy {
+        dst: u32,
+        src: u32,
+        bytes: u32,
+    },
+    CopyConst {
+        dst: u32,
+        c: u32,
+    },
+    MakeDope {
+        at: u32,
+        start: u32,
+        len: u32,
+    },
+    Field {
+        dst: u32,
+        base: u32,
+        layout: u32,
+        n: u32,
+    },
+    LGet {
+        dst: u32,
+        base: u32,
+        idx: u32,
+    },
+    LSet {
+        base: u32,
+        idx: u32,
+        v: u32,
+    },
     /// `Inst::Call`; `dst` is `NONE` for a procedure.
     Call {
         func: u32,
@@ -302,6 +433,14 @@ pub(crate) enum Op {
     /// `Inst::CallNative`; `dst` is `NONE` without a result.
     CallNative {
         native: u32,
+        start: u32,
+        len: u32,
+        dst: u32,
+    },
+    /// `Inst::CallProt`: a call with the protected object `obj` as the first argument.
+    CallProt {
+        func: u32,
+        obj: u32,
         start: u32,
         len: u32,
         dst: u32,
@@ -353,9 +492,30 @@ pub(crate) struct Code {
     /// For each IR pc (and one past the end), the op execution goes on at from there;
     /// `NONE` inside a fused op, which no frame ever stops at.
     pub entry: Vec<u32>,
+    /// `entry[0]`, so a call finds the first op without reading `entry`.
+    pub first: u32,
 }
 
 pub(crate) const NONE: u32 = u32::MAX;
+
+/// A comparison as a mask over the three outcomes of `Ord::cmp`: bit `ord + 1` is set when
+/// the comparison holds for that outcome (`cmp_holds`), so no dispatch on the operator.
+pub(crate) fn cmp_mask(op: CmpOp) -> u8 {
+    match op {
+        CmpOp::Lt => 0b001,
+        CmpOp::Eq => 0b010,
+        CmpOp::Le => 0b011,
+        CmpOp::Gt => 0b100,
+        CmpOp::Ne => 0b101,
+        CmpOp::Ge => 0b110,
+    }
+}
+
+/// Whether the comparison of `cmp_mask` `m` holds for `a` and `b`.
+#[inline(always)]
+pub(crate) fn cmp_holds(m: u8, a: i64, b: i64) -> bool {
+    m >> (a.cmp(&b) as i8 + 1) & 1 != 0
+}
 
 impl Code {
     fn new(f: &Func, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
@@ -419,13 +579,95 @@ impl Code {
             // The last instruction this op stands for.
             let mut last = pc;
             let op = match f.code[pc] {
-                Inst::Stmt => Op::Stmt,
-                Inst::Move { dst, src } => Op::Move {
-                    dst: dst.0,
-                    src: src.0,
+                Inst::Stmt => {
+                    // Statements in a row end one set of temporaries once.
+                    let mut p = pc;
+                    while let Some((n2, Inst::Stmt)) = after(p) {
+                        p = n2;
+                    }
+                    last = p;
+                    match after(p) {
+                        Some((
+                            n2,
+                            Inst::Load {
+                                dst,
+                                addr,
+                                w: Width::B8,
+                            },
+                        )) if let Some(&Known::Frame(off)) = known.get(addr.0 as usize) => {
+                            last = n2;
+                            Op::StmtLoadSlot8 { dst: dst.0, off }
+                        }
+                        _ => Op::Stmt,
+                    }
+                }
+                Inst::Move { dst, src } => match fusable {
+                    Some(Inst::Br { to }) if target(to).is_some() => {
+                        last = nx;
+                        Op::MoveBr {
+                            dst: dst.0,
+                            src: src.0,
+                            to: target(to).unwrap_or(0),
+                        }
+                    }
+                    _ => Op::Move {
+                        dst: dst.0,
+                        src: src.0,
+                    },
                 },
                 Inst::Load { dst, addr, w } if w != Width::Sig => {
                     match known.get(addr.0 as usize) {
+                        Some(&Known::Frame(off)) if w == Width::B8 => {
+                            // Two loads, or a load and the branch on its compare.
+                            let cmp_br = match fusable.and_then(|_| after(nx)) {
+                                Some((n2, Inst::CondBr { c, t, f: e }))
+                                    if let Some(Inst::Cmp { op, dst: cd, a, b }) = fusable
+                                        && c == cd
+                                        && once(cd)
+                                        && (a == dst || b == dst)
+                                        && target(t).is_some()
+                                        && target(e).is_some() =>
+                                {
+                                    let (side, other) = if a == dst { (0, b) } else { (1, a) };
+                                    Some((
+                                        n2,
+                                        Op::LoadSlot8CmpBr {
+                                            ld: dst.0,
+                                            off,
+                                            other: other.0,
+                                            t: target(t).unwrap_or(0),
+                                            f: target(e).unwrap_or(0),
+                                            m: cmp_mask(op),
+                                            side,
+                                        },
+                                    ))
+                                }
+                                _ => None,
+                            };
+                            match (cmp_br, fusable) {
+                                (Some((n2, op)), _) => {
+                                    last = n2;
+                                    op
+                                }
+                                (
+                                    None,
+                                    Some(Inst::Load {
+                                        dst: d2,
+                                        addr: a2,
+                                        w: Width::B8,
+                                    }),
+                                ) if let Some(&Known::Frame(o2)) = known.get(a2.0 as usize) => {
+                                    last = nx;
+                                    Op::LoadSlot8x2 {
+                                        d1: dst.0,
+                                        o1: off,
+                                        d2: d2.0,
+                                        o2,
+                                    }
+                                }
+                                _ => Op::LoadSlot8 { dst: dst.0, off },
+                            }
+                        }
                         Some(&Known::Frame(off)) => Op::LoadSlot { dst: dst.0, off, w },
                         Some(&Known::Inst(off)) => Op::LoadInst { dst: dst.0, off, w },
                         _ => Op::Load {
@@ -437,6 +679,10 @@ impl Code {
                 }
                 Inst::Store { addr, src, w } if w != Width::Sig => {
                     match known.get(addr.0 as usize) {
+                        Some(&Known::Frame(off)) if matches!(fusable, Some(Inst::Stmt)) => {
+                            last = nx;
+                            Op::StoreSlotStmt { src: src.0, off, w }
+                        }
                         Some(&Known::Frame(off)) => Op::StoreSlot { src: src.0, off, w },
                         _ => Op::Store {
                             addr: addr.0,
@@ -483,6 +729,30 @@ impl Code {
                             base: base.0,
                             off,
                         },
+                        (None, Some(Inst::Load { dst: d, addr, w }))
+                            if once(dst) && addr == dst && w != Width::Sig =>
+                        {
+                            last = nx;
+                            Op::IndexLoad {
+                                dst: d.0,
+                                base: base.0,
+                                pos: pos.0,
+                                stride,
+                                w,
+                            }
+                        }
+                        (None, Some(Inst::Store { addr, src, w }))
+                            if once(dst) && addr == dst && src != dst && w != Width::Sig =>
+                        {
+                            last = nx;
+                            Op::IndexStore {
+                                src: src.0,
+                                base: base.0,
+                                pos: pos.0,
+                                stride,
+                                w,
+                            }
+                        }
                         _ => Op::Index {
                             dst: dst.0,
                             base: base.0,
@@ -497,13 +767,76 @@ impl Code {
                     dim,
                     idx,
                     what,
-                } => Op::Pos {
-                    dst: dst.0,
-                    dope: dope.0,
-                    idx: idx.0,
-                    what,
-                    dim,
-                },
+                } => {
+                    // The `Index` by this position (nothing else reads it), then maybe the
+                    // load or store at that address (nothing else reads it either).
+                    let fused = match fusable {
+                        Some(Inst::Index {
+                            dst: a,
+                            base,
+                            pos,
+                            stride,
+                        }) if pos == dst && once(dst) && int(pos).is_none() => match after(nx) {
+                            Some((n2, Inst::Load { dst: d, addr, w }))
+                                if addr == a && once(a) && w != Width::Sig =>
+                            {
+                                Some((
+                                    n2,
+                                    Op::PosIndexLoad {
+                                        dst: d.0,
+                                        dope: dope.0,
+                                        idx: idx.0,
+                                        base: base.0,
+                                        stride,
+                                        w,
+                                        dim,
+                                    },
+                                ))
+                            }
+                            Some((n2, Inst::Store { addr, src, w }))
+                                if addr == a && once(a) && src != a && w != Width::Sig =>
+                            {
+                                Some((
+                                    n2,
+                                    Op::PosIndexStore {
+                                        src: src.0,
+                                        dope: dope.0,
+                                        idx: idx.0,
+                                        base: base.0,
+                                        stride,
+                                        w,
+                                        dim,
+                                    },
+                                ))
+                            }
+                            _ => Some((
+                                nx,
+                                Op::PosIndex {
+                                    dst: a.0,
+                                    dope: dope.0,
+                                    idx: idx.0,
+                                    base: base.0,
+                                    stride,
+                                    dim,
+                                },
+                            )),
+                        },
+                        _ => None,
+                    };
+                    match fused {
+                        Some((p, op)) => {
+                            last = p;
+                            op
+                        }
+                        None => Op::Pos {
+                            dst: dst.0,
+                            dope: dope.0,
+                            idx: idx.0,
+                            what,
+                            dim,
+                        },
+                    }
+                }
                 Inst::Bin { op, dst, a, b } => Op::Bin {
                     op,
                     dst: dst.0,
@@ -532,7 +865,7 @@ impl Code {
                     {
                         last = nx;
                         Op::CmpBr {
-                            op,
+                            m: cmp_mask(op),
                             dst: dst.0,
                             a: a.0,
                             b: b.0,
@@ -541,7 +874,7 @@ impl Code {
                         }
                     }
                     _ => Op::Cmp {
-                        op,
+                        m: cmp_mask(op),
                         dst: dst.0,
                         a: a.0,
                         b: b.0,
@@ -648,6 +981,18 @@ impl Code {
                     len: args.len,
                     dst: dst.map_or(NONE, |d| d.0),
                 },
+                Inst::CallProt {
+                    func,
+                    obj,
+                    args,
+                    dst,
+                } => Op::CallProt {
+                    func: func.0,
+                    obj: obj.0,
+                    start: args.start,
+                    len: args.len,
+                    dst: dst.map_or(NONE, |d| d.0),
+                },
                 Inst::CallNative { native, args, dst } => Op::CallNative {
                     native: native.0,
                     start: args.start,
@@ -666,6 +1011,48 @@ impl Code {
                 Inst::Alloc { dst, size } => Op::Alloc {
                     dst: dst.0,
                     size: size.0,
+                },
+                Inst::Const { dst, v } => Op::Const { dst: dst.0, v },
+                Inst::ConstF { dst, v } => Op::Const {
+                    dst: dst.0,
+                    v: v.to_bits() as i64,
+                },
+                Inst::Copy { dst, src, bytes } => Op::Copy {
+                    dst: dst.0,
+                    src: src.0,
+                    bytes: bytes.0,
+                },
+                Inst::CopyConst { dst, c } => Op::CopyConst { dst: dst.0, c: c.0 },
+                Inst::MakeDope { at, parts } => Op::MakeDope {
+                    at: at.0,
+                    start: parts.start,
+                    len: parts.len,
+                },
+                Inst::Deref { dst, handle, what } => Op::Deref {
+                    dst: dst.0,
+                    handle: handle.0,
+                    what,
+                },
+                Inst::Field {
+                    dst,
+                    base,
+                    layout,
+                    n,
+                } => Op::Field {
+                    dst: dst.0,
+                    base: base.0,
+                    layout: layout.0,
+                    n,
+                },
+                Inst::LGet { dst, base, idx } => Op::LGet {
+                    dst: dst.0,
+                    base: base.0,
+                    idx: idx.0,
+                },
+                Inst::LSet { base, idx, v } => Op::LSet {
+                    base: base.0,
+                    idx: idx.0,
+                    v: v.0,
                 },
                 Inst::CondBr { c, t, f: e } => match (target(t), target(e)) {
                     (Some(t), Some(e)) => Op::CondBr { c: c.0, t, f: e },
@@ -692,6 +1079,29 @@ impl Code {
             let ir = at[k];
             *op = match *op {
                 Op::Br { to: t } => to(t).map_or(Op::Step(ir), |t| Op::Br { to: t }),
+                Op::MoveBr { dst, src, to: t } => {
+                    to(t).map_or(Op::Step(NONE), |t| Op::MoveBr { dst, src, to: t })
+                }
+                Op::LoadSlot8CmpBr {
+                    ld,
+                    off,
+                    other,
+                    t,
+                    f: e,
+                    m,
+                    side,
+                } => match (to(t), to(e)) {
+                    (Some(t), Some(e)) => Op::LoadSlot8CmpBr {
+                        ld,
+                        off,
+                        other,
+                        t,
+                        f: e,
+                        m,
+                        side,
+                    },
+                    _ => Op::Step(NONE),
+                },
                 Op::BrBody { to: t, block } => {
                     to(t).map_or(Op::Step(ir), |t| Op::BrBody { to: t, block })
                 }
@@ -700,7 +1110,7 @@ impl Code {
                     _ => Op::Step(ir),
                 },
                 Op::CmpBr {
-                    op,
+                    m,
                     dst,
                     a,
                     b,
@@ -708,7 +1118,7 @@ impl Code {
                     f: e,
                 } => match (to(t), to(e)) {
                     (Some(t), Some(e)) => Op::CmpBr {
-                        op,
+                        m,
                         dst,
                         a,
                         b,
@@ -720,6 +1130,12 @@ impl Code {
                 o => o,
             };
         }
-        Code { ops, at, entry }
+        let first = entry.first().copied().unwrap_or(NONE);
+        Code {
+            ops,
+            at,
+            entry,
+            first,
+        }
     }
 }

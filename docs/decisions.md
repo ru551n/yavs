@@ -2097,10 +2097,15 @@ decodes on demand:
   from `Db::facts()`, found by `Db::settle` and stored in the image; `facts()` recomputes when the
   expression or statement arena grew since.
 - **The source map stores no text**: per file the path, the line starts and an xxh3 digest. `SourceFile::text()`
-  and `bytes()` read the file again on first use (built-in files from the binary) and check the digest; a
-  file that changed since is an internal-error panic, never a rendering of the wrong text. Ceiling: a file
-  whose size and modification time are unchanged (trusted by the closure, "Per-run overhead") but whose
-  content differs is now caught when a diagnostic needs it, where it was silently shown from the image before.
+  and `bytes()` read the file again on first use (built-in files from the binary) and check the digest. A
+  file that changed since (same size and modification time, which the closure trusts, "Per-run overhead")
+  or that cannot be read is never an internal error and never shown as stale text (user decision
+  2026-10-20): the renderer (`SourceFile::try_text`) omits the snippet and keeps code, message, the
+  `--> file:line:col` location, the labels as notes ("label at L:C: text") and a note "source of FILE
+  changed since it was analysed; snippet omitted" (or "could not be read"), in the human, short and json
+  formats (json gets no snippet lines in `rendered`; its spans are unchanged). Ceiling: without the text the
+  column of such a location counts bytes, not characters. `text()`/`bytes()` stay for code that needs the
+  text itself (re-scans in `yavs-sem`, coverage) and still panic for these files.
   The line starts stay, so source locations of run-time messages never read a file.
 - **Symbols are interned on first read** (`DecodeTable`): the table is one string plus end offsets and an
   `OnceLock<Symbol>` per entry. Symbol numbers now depend on the order of first use (they are never

@@ -567,7 +567,7 @@ change `Arena` in the analysis hot path.
 
 Lazy image decode (follow-up): the image is no longer decoded as a whole. Arena entries decode 64 at a
 time on first read, symbols are interned on first read, the source map keeps a digest instead of the text
-(read again for a diagnostic), the elaborator's whole-design scans come from facts stored in the image, and
+(read again for a diagnostic; a source that changed or cannot be read costs the diagnostic its snippet only, with a note), the elaborator's whole-design scans come from facts stored in the image, and
 processes are found by statement through an index (#435). Release builds, `yavs run` on a host at a load
 average of about 30, so medians and CPU: a trivial testbench (`std_logic_1164`, `numeric_std`, `textio`), CPU
 per run 7.7 to 4.8 ms; one `tb_axi_stream` test of the verification components, CPU per run 261 to 249 ms

@@ -485,3 +485,67 @@ fn a_hit_without_diagnostics_does_not_read_the_sources() {
     assert!(note(&warm, "hit"), "{warm:?}");
     assert_eq!(visible(&cold), visible(&warm));
 }
+
+/// A source that changed without moving its size or modification time (so the hit trusts it), or
+/// that cannot be read, costs the diagnostic its snippet and nothing else: code, location, labels
+/// and a note stay, in every message format. Never an internal error, never the old text.
+#[cfg(unix)]
+#[test]
+fn an_unavailable_source_drops_the_snippet_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new("srcnote");
+    std::fs::write(e.tmp.join("noisy.vhd"), NOISY).expect("write");
+    let tb = TB.replace("use work.p.all;", "use work.p.all; use work.n.all;");
+    std::fs::write(e.tmp.join("tb.vhd"), tb).expect("write");
+    for f in ["noisy.vhd", "tb.vhd"] {
+        age(&e.tmp.join(f));
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    let noisy = e.tmp.join("noisy.vhd");
+    let cold = e.run(&[]);
+    assert!(note(&cold, "store"), "{cold:?}");
+    assert!(cold.stderr.contains("\n9 | "), "{cold:?}");
+    let modified = std::fs::metadata(&noisy)
+        .and_then(|m| m.modified())
+        .expect("mtime");
+    let check = |o: &Out, why: &str| {
+        assert!(note(o, "hit"), "{o:?}");
+        assert_eq!(o.code, 0, "{o:?}");
+        assert!(!o.stderr.contains("internal error"), "{o:?}");
+        assert!(!o.stderr.contains("panicked"), "{o:?}");
+        assert!(!o.stderr.contains("\n9 | "), "no snippet: {o:?}");
+        assert!(o.stderr.contains("W1404"), "{o:?}");
+        assert!(o.stderr.contains("noisy.vhd:9:"), "location: {o:?}");
+        assert!(
+            o.stderr.contains(&format!("{why}; snippet omitted")),
+            "{o:?}"
+        );
+    };
+    // Changed, with the same size and modification time.
+    std::fs::write(&noisy, NOISY.replace("false", "true_")).expect("write");
+    std::fs::File::options()
+        .write(true)
+        .open(&noisy)
+        .and_then(|f| f.set_modified(modified))
+        .expect("restore mtime");
+    let warm = e.run(&[]);
+    check(&warm, "changed since it was analysed");
+    let json = e.run(&["--message-format=json"]);
+    assert!(json.stderr.contains("\"code\":\"W1404\""), "{json:?}");
+    assert!(json.stderr.contains("\"line_start\":9"), "{json:?}");
+    assert!(!json.stderr.contains("\\n9 | "), "{json:?}");
+    let short = e.run(&["--message-format=short"]);
+    assert!(short.stderr.contains("noisy.vhd:9:"), "{short:?}");
+    assert!(!short.stderr.contains("internal error"), "{short:?}");
+    // Unreadable.
+    std::fs::write(&noisy, NOISY).expect("write");
+    std::fs::File::options()
+        .write(true)
+        .open(&noisy)
+        .and_then(|f| f.set_modified(modified))
+        .expect("restore mtime");
+    std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    let warm = e.run(&[]);
+    std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    check(&warm, "could not be read");
+}

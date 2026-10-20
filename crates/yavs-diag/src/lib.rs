@@ -30,7 +30,7 @@
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 
-use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
+use annotate_snippets::{AnnotationKind, Group, Level, Origin, Renderer, Snippet};
 
 /// Index of a file in a [`SourceMap`].
 #[derive(
@@ -89,7 +89,7 @@ impl std::fmt::Debug for Span {
 pub struct SourceFile {
     pub path: String,
     line_starts: Vec<u32>,
-    full: std::sync::OnceLock<Full>,
+    full: std::sync::OnceLock<Result<Full, Unavailable>>,
     /// Set for a file restored from an image: how to read it again.
     lazy: Option<Lazy>,
 }
@@ -101,6 +101,29 @@ struct Full {
     raw: Option<Vec<u8>>,
     /// File offsets of the bytes of a Latin-1 file that are two bytes in `text`.
     high: Vec<u32>,
+}
+
+/// Why the text of a file restored from an image cannot be shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unavailable {
+    /// The file no longer has the bytes the image was made from.
+    Changed,
+    /// The file cannot be read.
+    Unreadable,
+}
+
+impl Unavailable {
+    /// The note a diagnostic carries in place of its snippet.
+    pub fn note(self, path: &str) -> String {
+        match self {
+            Unavailable::Changed => {
+                format!("source of {path} changed since it was analysed; snippet omitted")
+            }
+            Unavailable::Unreadable => {
+                format!("source of {path} could not be read; snippet omitted")
+            }
+        }
+    }
 }
 
 struct Lazy {
@@ -135,30 +158,36 @@ fn latin1_text(bytes: &[u8]) -> String {
 }
 
 impl SourceFile {
+    fn load(&self) -> Result<&Full, Unavailable> {
+        self.full
+            .get_or_init(|| {
+                let l = self.lazy.as_ref().expect("an eager file is always loaded");
+                let bytes = (l.read)(&self.path).map_err(|_| Unavailable::Unreadable)?;
+                if digest(&bytes) != l.digest {
+                    return Err(Unavailable::Changed);
+                }
+                Ok(if l.latin1 {
+                    Full::new(latin1_text(&bytes), Some(bytes))
+                } else {
+                    let text = String::from_utf8(bytes)
+                        .expect("a UTF-8 file stays UTF-8 (digest checked)");
+                    Full::new(text, None)
+                })
+            })
+            .as_ref()
+            .map_err(|e| *e)
+    }
+
+    /// The loaded file, for the callers that need the text and cannot go on without it (a
+    /// re-scan of a construct); a diagnostic uses [`SourceFile::try_text`] instead.
     fn full(&self) -> &Full {
-        self.full.get_or_init(|| {
-            let l = self.lazy.as_ref().expect("an eager file is always loaded");
-            let bytes = match (l.read)(&self.path) {
-                Ok(b) if digest(&b) == l.digest => b,
-                // A file changed after the run verified it: nothing sensible can be shown.
-                Ok(_) => panic!(
-                    "internal error: source file `{}` changed during the run",
-                    self.path
-                ),
-                Err(e) => panic!(
-                    "internal error: source file `{}` cannot be read again: {e}",
-                    self.path
-                ),
-            };
-            if l.latin1 {
-                Full::new(latin1_text(&bytes), Some(bytes))
-            } else {
-                Full::new(
-                    String::from_utf8(bytes).expect("a UTF-8 file stays UTF-8 (digest checked)"),
-                    None,
-                )
-            }
-        })
+        self.load()
+            .unwrap_or_else(|e| panic!("internal error: {}", e.note(&self.path)))
+    }
+
+    /// The decoded text, or why it cannot be shown.
+    pub fn try_text(&self) -> Result<&str, Unavailable> {
+        self.load().map(|f| f.text.as_str())
     }
 
     fn digest(&self) -> u64 {
@@ -201,16 +230,25 @@ impl SourceFile {
         t
     }
 
-    /// 1-based line and column (in characters) of a file byte offset.
+    /// 1-based line and column (in characters) of a file byte offset. When the text of a
+    /// restored file is unavailable, the line comes from the stored line starts and the column
+    /// counts bytes (the 3 above is a byte column).
     pub fn line_col(&self, offset: u32) -> (usize, usize) {
-        let offset = self.text_offset(offset) as u32;
-        let line = self.line_starts.partition_point(|&s| s <= offset) - 1;
+        let Ok(f) = self.load() else {
+            let line = self.line_starts.partition_point(|&s| s <= offset).max(1) - 1;
+            return (line + 1, (offset - self.line_starts[line]) as usize + 1);
+        };
+        let t = self.text_offset(offset);
+        let line = self
+            .line_starts
+            .partition_point(|&s| s as usize <= t)
+            .max(1)
+            - 1;
         let start = self.line_starts[line] as usize;
-        let text = self.text();
-        let end = (offset as usize).min(text.len());
-        let col = text
-            .get(start..end)
-            .map_or(end - start, |s| s.chars().count());
+        let col = f
+            .text
+            .get(start..t)
+            .map_or(t - start, |s| s.chars().count());
         (line + 1, col + 1)
     }
 }
@@ -282,7 +320,7 @@ impl SourceMap {
         self.files.push(SourceFile {
             path,
             line_starts,
-            full: std::sync::OnceLock::from(Full::new(text, raw)),
+            full: std::sync::OnceLock::from(Ok(Full::new(text, raw))),
             lazy: None,
         });
         FileId(self.files.len() as u32 - 1)
@@ -492,6 +530,7 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
         title = title.id(diag.code);
     }
     let mut group = Group::with_title(title);
+    let mut omitted = Vec::new();
     // One snippet per file, primary file first.
     let mut files: Vec<FileId> = Vec::new();
     for l in diag.primary.iter().chain(&diag.secondary) {
@@ -501,6 +540,10 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
     }
     for file in files {
         let src = sources.get(file);
+        if let Err(e) = src.try_text() {
+            omitted.push((file, e));
+            continue;
+        }
         // Hand over only the annotated lines, not the whole file.
         let labels = || {
             diag.primary
@@ -543,7 +586,28 @@ fn render_human(sources: &SourceMap, diag: &Diagnostic, color: bool) -> String {
         }
         group = group.element(snippet);
     }
-    for n in &diag.notes {
+    // Text unavailable: the location, the labels and why, as notes in place of the snippet.
+    let mut gone = Vec::new();
+    for &(file, e) in &omitted {
+        let src = sources.get(file);
+        let labels = diag
+            .primary
+            .iter()
+            .map(|l| (l, true))
+            .chain(diag.secondary.iter().map(|l| (l, false)));
+        let mut labels = labels.filter(|(l, _)| l.span.file == file).peekable();
+        if let Some((l, _)) = labels.peek() {
+            let (line, col) = src.line_col(l.span.start);
+            group = group.element(Origin::path(src.path.as_str()).line(line).char_column(col));
+        }
+        for (l, primary) in labels.filter(|(l, _)| !l.message.is_empty()) {
+            let (line, col) = src.line_col(l.span.start);
+            let kind = if primary { "label" } else { "secondary label" };
+            gone.push(format!("{kind} at {line}:{col}: {}", l.message));
+        }
+        gone.push(e.note(&src.path));
+    }
+    for n in gone.iter().chain(&diag.notes) {
         group = group.element(Level::NOTE.message(n.as_str()));
     }
     for h in &diag.help {
@@ -712,12 +776,35 @@ mod tests {
             );
         }
         assert!(back.get(u).full.get().is_some());
-        // A file that changed since the image was made is never shown as the old one.
+        // A file that changed since the image was made is never shown as the old one: the
+        // diagnostic loses its snippet but keeps code, location, labels and a note.
         std::fs::write(&utf8, "changed\n").expect("write");
         let back: SourceMap = postcard::from_bytes(&bytes).expect("deserialize");
-        let changed =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| back.get(u).text().len()));
-        assert!(changed.is_err());
+        let d = Diagnostic::error("E0001", "m")
+            .with_primary(Span::new(u, 7, 8), "here")
+            .with_secondary(Span::new(u, 0, 1), "there");
+        let path = utf8.display().to_string();
+        let human = render(&back, &d, MessageFormat::Human, false);
+        let want = format!(
+            "error[E0001]: m\n --> {path}:2:3\n  = note: label at 2:3: here\n  = note: secondary label at 1:1: there\n  = note: source of {path} changed since it was analysed; snippet omitted\n\n"
+        );
+        assert_eq!(human, want);
+        assert_eq!(
+            render(&back, &d, MessageFormat::Short, false),
+            format!("{path}:2:3: error[E0001]: m\n")
+        );
+        let j = render(&back, &d, MessageFormat::Json, false);
+        assert!(j.contains("\"line_start\":2,\"column_start\":3"), "{j}");
+        assert!(!j.contains("1 | "), "{j}");
+        // An unreadable file likewise.
+        std::fs::remove_file(&utf8).expect("remove");
+        let back: SourceMap = postcard::from_bytes(&bytes).expect("deserialize");
+        let human = render(&back, &d, MessageFormat::Human, false);
+        assert!(
+            human.contains("could not be read; snippet omitted") && !human.contains(" | "),
+            "{human}"
+        );
+        assert_eq!(back.get(u).try_text(), Err(Unavailable::Unreadable));
         std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 

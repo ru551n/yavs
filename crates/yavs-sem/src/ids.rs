@@ -76,7 +76,7 @@ struct Lazy<T> {
     len: usize,
     /// Start of each chunk in `data`, and the end of the last.
     starts: Vec<u32>,
-    data: Shared,
+    data: yavs_diag::Slice,
     chunks: Vec<std::sync::OnceLock<Vec<T>>>,
     syms: Option<yavs_syntax::DecodeTable>,
     /// Decodes `n` entries from a chunk's bytes (monomorphic: made where `T: Deserialize` is known).
@@ -171,70 +171,6 @@ impl<I, T> Arena<I, T> {
     }
 }
 
-// The buffer an image is being read from, so that arenas can keep a range of it instead of a copy.
-thread_local! {
-    static SOURCE: std::cell::RefCell<Option<std::sync::Arc<Vec<u8>>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Run `f` (which deserializes arenas of the image in `buf`) so that the arenas share `buf`.
-pub(crate) fn sharing<R>(buf: &std::sync::Arc<Vec<u8>>, f: impl FnOnce() -> R) -> R {
-    let before = SOURCE.with(|s| s.borrow_mut().replace(buf.clone()));
-    let r = f();
-    SOURCE.with(|s| *s.borrow_mut() = before);
-    r
-}
-
-/// A range of a shared buffer.
-struct Shared {
-    buf: std::sync::Arc<Vec<u8>>,
-    start: usize,
-    end: usize,
-}
-
-impl Shared {
-    fn get(&self) -> &[u8] {
-        &self.buf[self.start..self.end]
-    }
-}
-
-/// A byte string, deserialized in one piece (not byte by byte as a `Vec<u8>` would be): a range
-/// of the image buffer when the bytes lie in it, else a copy.
-impl<'de> serde::Deserialize<'de> for Shared {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = Shared;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("bytes")
-            }
-            fn visit_borrowed_bytes<E: serde::de::Error>(self, v: &'de [u8]) -> Result<Shared, E> {
-                let at = SOURCE.with(|s| {
-                    let s = s.borrow();
-                    let buf = s.as_ref()?;
-                    let start = (v.as_ptr() as usize).checked_sub(buf.as_ptr() as usize)?;
-                    (start + v.len() <= buf.len()).then(|| (buf.clone(), start))
-                });
-                Ok(match at {
-                    Some((buf, start)) => Shared {
-                        buf,
-                        start,
-                        end: start + v.len(),
-                    },
-                    None => self.visit_bytes(v)?,
-                })
-            }
-            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Shared, E> {
-                Ok(Shared {
-                    buf: std::sync::Arc::new(v.to_vec()),
-                    start: 0,
-                    end: v.len(),
-                })
-            }
-        }
-        d.deserialize_bytes(V)
-    }
-}
-
 /// The image form of an arena: the entries of each chunk are one postcard sequence, so that a
 /// chunk can be decoded on its own.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -280,14 +216,12 @@ impl serde::Serialize for BytesRef<'_> {
 impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I, T> {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        let (img, data) = <(Image, Shared)>::deserialize(d)?;
+        let (img, data) = <(Image, yavs_diag::Slice)>::deserialize(d)?;
         let chunks = img.len.div_ceil(CHUNK);
         let starts = img.starts.into_owned();
         if starts.len() != chunks + 1
             || starts.windows(2).any(|w| w[0] > w[1])
-            || starts
-                .last()
-                .is_none_or(|&e| e as usize != data.end - data.start)
+            || starts.last().is_none_or(|&e| e as usize != data.len())
         {
             return Err(D::Error::custom("arena chunk table"));
         }
@@ -346,9 +280,9 @@ mod tests {
             a.push(format!("item {i}"));
         }
         let bytes = postcard::to_stdvec(&a).expect("serialize");
-        let buf = std::sync::Arc::new(bytes);
+        let buf = yavs_diag::Buffer::new(bytes);
         let mut b: Arena<DeclId, String> =
-            sharing(&buf, || postcard::from_bytes(&buf)).expect("deserialize");
+            yavs_diag::sharing(&buf, || postcard::from_bytes(&buf)).expect("deserialize");
         assert_eq!(b.len(), n);
         // Only the chunk read is decoded.
         let l = b.lazy.as_ref().expect("lazy");

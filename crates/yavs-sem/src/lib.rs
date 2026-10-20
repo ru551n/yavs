@@ -91,7 +91,7 @@ pub struct Options {
 /// [`Db::extent`] of the `Db` the stage ran on, so that a `Db` that elaboration has grown
 /// since the analysis (instantiation) has no entries. A write failure is silent.
 pub trait StageCache: Send + Sync + std::fmt::Debug {
-    fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Vec<u8>>;
+    fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<yavs_diag::Buffer>;
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]);
     /// A reason an entry was not made, for `YAVS_LOG=debug`.
     fn note(&self, _msg: &str) {}

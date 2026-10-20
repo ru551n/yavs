@@ -11,13 +11,14 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - Does not: know VHDL, `Db`, or when to cache (`crates/yavs/src/cache.rs` decides; `yavs-sem`
   `image.rs` makes the bytes), lock anything, or ever fail a run: a write error is silent (`YAVS_LOG=debug`
   notes it), a bad read is a miss.
-- Depends on: `sha2`. Called by: `yavs`.
+- Depends on: `sha2`, `twox-hash`, `memmap2`. Called by: `yavs`.
 
 ## 2. Map
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `note`/`noted`: an empty `.seen` file that says a caller wanted an entry once, newest `MAX_NOTES` kept, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the read payload, no copy; `into_parts` hands the buffer to a reader that decodes from it later), tests |
+| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `note`/`noted`: an empty `.seen` file that says a caller wanted an entry once, newest `MAX_NOTES` kept, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the payload of a validated entry, mapped from the file: it implements `AsRef<[u8]>`, so it becomes a `yavs_diag::Buffer` and readers keep ranges of it), tests |
+| `src/map.rs` | Maps an entry file (reads it where mapping is not possible); the only `unsafe` in the crate |
 
 ## 3. Design decisions that bind this module
 
@@ -28,13 +29,16 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Writes: temporary file in the same directory, then `rename`; no lock | Concurrent runs never see half an entry; readers need no lock | same |
 | `put` never returns an error to the caller | The cache can only make a run faster | same |
 | Pruning by modification time, which `get` refreshes | Keep what is in use | same |
+| An entry is mapped, validated before use, and never written in place | No read and no copy of a 7 MB image; a mapping stays valid when the name is replaced or removed (Unix) | `docs/decisions.md` "Zero-copy cache entries" |
 
 ## 4. Invariants and pitfalls
 
 - Bump `FORMAT` when the header layout changes. A change of the payload type is covered by `build_id`.
 - Key parts are length-prefixed (`KeyBuilder::part`): never concatenate before hashing.
-- Windows: `rename` over an entry another process has open fails; the writer drops its temporary
-  file and the existing entry (same key, same content) stays.
+- Windows: `rename` over an entry another process has open or mapped fails; the writer drops its temporary
+  file and the existing entry (same key, same content) stays. A prune cannot remove a mapped entry either (ignored).
+- Never write to an entry file in place or truncate one: a run may hold it mapped (a damaged file is found when
+  `get` validates it, not later). `unsafe` stays in `map.rs`.
 
 ## 5. How to work here
 

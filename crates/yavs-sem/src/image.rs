@@ -13,19 +13,15 @@ use crate::ids::{Id, LibId};
 use crate::loader::LibSource;
 use crate::{LangRev, Options};
 
-/// The bytes of an image as read from the store: the buffer, and where the image starts in it.
-/// The restored `Db` keeps the buffer and decodes from it on demand.
+/// The bytes of an image as read from the store (a mapped file). The restored `Db` keeps the
+/// buffer and decodes from it on demand.
 pub struct Image {
-    buf: std::sync::Arc<Vec<u8>>,
-    start: usize,
+    buf: yavs_diag::Buffer,
 }
 
 impl Image {
-    pub fn new(buf: Vec<u8>, start: usize) -> Image {
-        Image {
-            buf: std::sync::Arc::new(buf),
-            start,
-        }
+    pub fn new(buf: yavs_diag::Buffer) -> Image {
+        Image { buf }
     }
 }
 
@@ -130,7 +126,7 @@ impl Db {
         verified: &dyn Fn(&str) -> bool,
     ) -> Result<Db, ImageError> {
         let corrupt = |s: &str| ImageError::Corrupt(s.into());
-        let bytes = &image.buf[image.start..];
+        let bytes = &image.buf[..];
         let n = bytes
             .get(..8)
             .and_then(|b| <[u8; 8]>::try_from(b).ok())
@@ -141,7 +137,7 @@ impl Db {
             postcard::from_bytes(table_bytes).map_err(|e| ImageError::Corrupt(e.to_string()))?;
         let payload = &bytes[8 + n..];
         let mut db: Db = yavs_syntax::DecodeTable::new(table)
-            .run(|| crate::ids::sharing(&image.buf, || postcard::from_bytes(payload)))
+            .run(|| yavs_diag::sharing(&image.buf, || postcard::from_bytes(payload)))
             .map_err(|e| ImageError::Corrupt(e.to_string()))?;
         if db.rev != opts.rev {
             return Err(ImageError::Stale("design revision".into()));

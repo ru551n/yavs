@@ -112,7 +112,10 @@ const LOWERING_MAX_CONSTS: usize = yavs_lower::IMAGE_MAX_CONSTS;
 impl LoweringKey {
     fn get(&self) -> Option<Lowering<'static>> {
         let bytes = self.cache.get(&self.extent, "ir", &self.part)?;
-        postcard::from_bytes(&bytes).ok()
+        // The function bodies stay in `bytes` until a function is first called.
+        yavs_diag::sharing(&bytes, || {
+            yavs_ir::lazy_bodies(|| postcard::from_bytes(&bytes).ok())
+        })
     }
 
     /// Whether `program` is worth storing: reading a big constant pool back costs more than

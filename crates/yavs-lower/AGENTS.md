@@ -102,7 +102,7 @@ rule 24).
 - `tests/corpus.rs` writes its library to a fixed `temp_dir()/yavs-lower-work`, which collides
   between worktrees and parallel runs (#160); until fixed, do not run two of them at once.
 - A folded logic-array constant of arrays of unconstrained arrays (`Fx::encode`/`codes`) must carry the descriptor of every level, not only the first element level (#329).
-- **`Cx`, `UnitIr`, `PackageIr` and what they hold are serialised (`Lowerer::image`, #407).** A new field of `Cx` derives `serde::Serialize`/`Deserialize` or is `#[serde(skip)]` because it is empty between lowerings (`diags`); a field that holds anything outside the `Db`'s ids and the IR (a reference, a pointer) cannot be added. The image is valid only for the `Db` it was made from, which the caller (`yavs-elab` `package_lowerer`) guarantees.
+- **`Cx`, `UnitIr`, `PackageIr` and what they hold are serialised (`Lowerer::image`, #407).** A new field of `Cx` derives `serde::Serialize`/`Deserialize` or is `#[serde(skip)]` because it is empty between lowerings (`diags`); a field that holds anything outside the `Db`'s ids and the IR (a reference, a pointer) cannot be added. The image is valid only for the `Db` it was made from, which the caller (`yavs-elab` `package_lowerer`) guarantees. `Lowerer::from_image` reads the program with `yavs_ir::lazy_bodies`: the lowerer reads the headers of functions it restored, never their code, and must keep doing so (#481).
 - A shared `CARGO_TARGET_DIR` can link another worktree's crates into the test binary (#7).
 
 ## 5. How to work here

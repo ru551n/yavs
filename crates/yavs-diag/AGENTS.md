@@ -16,7 +16,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 ## 2. Map
 
-Everything is in `src/lib.rs` (about 530 lines).
+Everything is in `src/lib.rs` (about 530 lines) except `src/shared.rs`.
 
 | Item | Role |
 |---|---|
@@ -26,6 +26,7 @@ Everything is in `src/lib.rs` (about 530 lines).
 | `Diagnostic::error/warning/new`, `with_primary`, `with_secondary`, `with_note`, `with_help` | Builder |
 | `MessageFormat` (`Human`, `Short`, `Json`), `ColorChoice::use_color` (TTY and `NO_COLOR`) | Output options |
 | `render(sources, diag, format, color) -> String` | The one renderer; ends with a newline |
+| `Buffer`, `Slice`, `sharing` (`shared.rs`) | Shared immutable bytes (a mapped cache entry) and ranges of them that a deserializer run under `sharing` hands out instead of copies; used by the compilation cache (`docs/decisions.md` "Zero-copy cache entries") |
 
 ## 3. Design decisions that bind this module
 

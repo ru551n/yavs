@@ -158,8 +158,9 @@ mod packed {
     #[derive(Serialize)]
     struct Out<'a>(u64, #[serde(with = "yavs_ir::bytes")] &'a [u8]);
 
+    /// The packed bytes are read in place, not copied out of the entry first.
     #[derive(Deserialize)]
-    struct In(u64, #[serde(with = "yavs_ir::bytes")] Vec<u8>);
+    struct In<'a>(u64, &'a [u8]);
 
     pub fn serialize<S: Serializer, T: AsRef<[u8]>>(v: &T, s: S) -> Result<S::Ok, S::Error> {
         let v = v.as_ref();
@@ -172,13 +173,13 @@ mod packed {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let In(n, bytes) = In::deserialize(d)?;
         if n == 0 {
-            return Ok(bytes);
+            return Ok(bytes.to_vec());
         }
         let n = usize::try_from(n)
             .ok()
             .filter(|&n| n <= super::PACK_MAX)
             .ok_or_else(|| de::Error::custom("block too long"))?;
-        super::unpack(&bytes, n).ok_or_else(|| de::Error::custom("damaged block"))
+        super::unpack(bytes, n).ok_or_else(|| de::Error::custom("damaged block"))
     }
 }
 

@@ -10,6 +10,9 @@
 //! Writes are a temporary file plus an atomic rename, so concurrent readers and writers (parallel
 //! test runs sharing a library) never see a half-written entry and need no lock.
 
+#[allow(unsafe_code)]
+mod map;
+
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -53,26 +56,30 @@ pub fn build_id() -> &'static str {
     })
 }
 
-/// The payload of an entry that was read: the file's bytes without copying them out of the buffer
-/// they were read into.
-#[derive(Debug, PartialEq, Eq)]
+/// The payload of an entry that was read: the file mapped into memory (or, where that is not
+/// possible, read), not copied. It can be kept for as long as the values decoded from it need it.
+#[derive(Debug)]
 pub struct Entry {
-    bytes: Vec<u8>,
-}
-
-impl Entry {
-    /// The buffer the entry was read into and where the payload starts in it, for a reader that
-    /// keeps the payload and decodes from it later without a copy.
-    pub fn into_parts(self) -> (Vec<u8>, usize) {
-        (self.bytes, HEADER)
-    }
+    data: map::Data,
 }
 
 impl std::ops::Deref for Entry {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        &self.bytes[HEADER..]
+        &self.data[HEADER..]
+    }
+}
+
+impl AsRef<[u8]> for Entry {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl PartialEq for Entry {
+    fn eq(&self, o: &Entry) -> bool {
+        **self == **o
     }
 }
 
@@ -156,7 +163,7 @@ impl Store {
     /// The entry, or `None` for anything that is not a complete, intact entry for this key.
     pub fn get(&self, kind: &str, key: &Key) -> Option<Entry> {
         let path = self.file(kind, key);
-        let bytes = fs::read(&path).ok()?;
+        let bytes = map::open(&path)?;
         if !check(&bytes, key) {
             debug(format!("{} is not a valid entry", path.display()));
             return None;
@@ -165,7 +172,7 @@ impl Store {
         if let Ok(f) = fs::File::options().write(true).open(&path) {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
-        Some(Entry { bytes })
+        Some(Entry { data: bytes })
     }
 
     /// Store `payload` atomically. Failures are only noted with `YAVS_LOG=debug`.
@@ -356,8 +363,26 @@ mod tests {
         assert_eq!(s.get("t", &k), None);
         fs::write(&p, b"junk").unwrap();
         assert_eq!(s.get("t", &k), None);
+        fs::write(&p, b"").unwrap();
+        assert_eq!(s.get("t", &k), None);
         fs::write(&p, &good).unwrap();
         assert!(s.get("t", &k).is_some());
+    }
+
+    /// An entry that is replaced (a writer renames a new file over it) or removed while a run
+    /// holds it keeps showing the bytes it was read with.
+    #[test]
+    fn a_held_entry_survives_replacement_and_removal() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        let k = key("a");
+        s.put("t", &k, &[7u8; 100_000]);
+        let held = s.get("t", &k).unwrap();
+        s.put("t", &k, b"new");
+        assert_eq!(&*held, &[7u8; 100_000][..]);
+        assert_eq!(s.get("t", &k).as_deref(), Some(&b"new"[..]));
+        let _ = s.clean();
+        assert_eq!(&*held, &[7u8; 100_000][..]);
     }
 
     #[test]

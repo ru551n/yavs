@@ -67,6 +67,7 @@ the same commit (root `AGENTS.md` rule 24).
   record any change under "Changes" (an exhaustive `match` on `ForeignArg` or `Inst` needs new
   arms in `yavs-interp` and `yavs-lower`).
 - **The IR is serialised (`Program`, `ProgramBuilder`; the compilation cache stores lowered packages, #407).** A new type reachable from them derives `serde::Serialize`/`Deserialize`; derived caches (`Func::opt`, `Program::layouts`) are `#[serde(skip)]` and rebuilt on use. Big byte strings go through the `bytes` module of `program.rs` (a sequence of numbers decodes at a byte per call).
+- **A stored program may hold function bodies as bytes (`yavs_ir::lazy_bodies`, #481).** `Program::funcs` entries of a program read that way have their header only (`code`, `loc`, `operands`, `resume` empty): read a function through `Program::func`, or through `Func::full` when you need the lowered code of an entry of `funcs` (the optimiser and the verifier do). The serialised form of `funcs` is the one in `program.rs` `funcs`; a new field of `Func` that is part of the body goes into `Body`/`BodyRef` there.
 - Verifier errors are ICEs of the producer: never relax the verifier to make lowering pass
   without an ir.md note.
 - The descriptor format and the fat pair `[data, dope]` for unconstrained results are shared with

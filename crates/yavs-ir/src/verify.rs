@@ -44,7 +44,7 @@ pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
     let mut errs = Vec::new();
     for (id, _) in prog.funcs.iter().skip(first) {
         if let Some(f) = prog.funcs.get(id) {
-            verify_func(prog, id, f, &mut errs);
+            verify_func(prog, id, f.full(), &mut errs);
         }
     }
     for (id, t) in prog.cases.iter() {

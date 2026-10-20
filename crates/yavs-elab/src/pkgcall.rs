@@ -130,7 +130,7 @@ impl InitKey {
         p
     }
 
-    fn get(&self, resolution: yavs_std::arith::TimeResolution) -> Option<Vec<u8>> {
+    fn get(&self, resolution: yavs_std::arith::TimeResolution) -> Option<yavs_diag::Buffer> {
         self.cache.get(&self.extent, "init", &self.part(resolution))
     }
 

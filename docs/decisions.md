@@ -2335,7 +2335,7 @@ user's performance priority:
   `verified` predicate): the closure verified them and the key holds their hashes. Only the built-in
   `std`/`ieee` text is compared.
 - **Cache entries carry an xxh3 checksum of the payload instead of sha256** (format 2) and are read into one
-  buffer without copying the payload out. Keys stay sha256. The checksum finds a damaged or truncated file;
+  buffer without copying the payload out (mapped since #481, "Zero-copy cache entries"). Keys stay sha256. The checksum finds a damaged or truncated file;
   nothing here defends against someone who can write the library directory (they could edit the sources).
 - **`run` does not free the design and the runtime before the process ends** (not with `--wave` or
   `--vhpi`, whose teardown is orderly): the operating system takes the memory back; for a large design
@@ -2662,6 +2662,37 @@ user's performance priority:
   design one by one took a fifth of a short run (#409 freed them for the peak, the drop sat in the run). The
   arenas are moved to a detached thread; a failed spawn drops them in place. Peak memory is unchanged.
 
+
+## Zero-copy cache entries (yavs-cache, yavs-diag `shared.rs`, yavs-ir, #481 item 2, #407, yavs decisions under the user's single-thread performance priority)
+
+A warm run of a short test spent 3% (small UVVM testbench) to 17% (one VUnit component test; 25% over the 30 test
+cases of the `vunit_vc30` benchmark) of its CPU on the cache entries: reading the file into a buffer, copying that
+buffer once more for the stages (`StageCache::get`), and decoding. Decoding was 14% of the 30-test suite. Decisions:
+
+- **An entry is mapped, not read** (`yavs-cache` `map.rs`, `memmap2`, the crate's only `unsafe`; a file that cannot
+  be mapped is read instead). `Store::get` still validates before it hands anything out: magic, format, key, exact
+  length, xxh3 checksum of the payload; a damaged, truncated or empty entry is a miss. The mapped bytes do not change
+  while a run holds them: a writer renames a new file over the entry and a prune or `yavs cache clean` removes the
+  name, which on Unix leaves a held mapping valid (on Windows, removing or replacing a file another run has mapped
+  fails and is ignored by the writer, as for an open file before). Something outside yavs that truncates an entry in
+  place could make a read of it fault; nothing in yavs does.
+- **No copy between the store and the decoders.** `yavs_diag::Buffer` (a shared immutable byte buffer, here the mapped
+  entry) is what `StageCache::get` returns and what `Image` holds. `yavs_diag::Slice` (moved there from the analysis
+  arenas) is a byte string deserialized as a range of the buffer set by `yavs_diag::sharing`, else a copy. The
+  packed blocks of the `init` entry are read in place and the stored optimised copies of functions (`OptCopy`)
+  are ranges of the buffer.
+- **Function bodies are decoded when a function first runs.** A `Program` writes each function as its header and
+  the body (`code`, `loc`, `operands`, `resume`) as one byte string. Read through `yavs_ir::lazy_bodies` (the `ir`
+  entry and the lowered packages, `low`), the body stays bytes in the buffer and `Func::full` decodes it once, when
+  `Program::func` hands the function out or the optimiser or the verifier needs its raw code (a restored function
+  that has a stored optimised copy never decodes its own body). Without `lazy_bodies` (the builder's own use, tests)
+  the bodies are decoded with the program. The format is the same either way, and a program that was read lazily
+  writes back the bytes of the bodies it never decoded. Code outside `yavs-ir` reads `Program::func`, never the
+  `code` of `Program::funcs`: `funcs` entries of a restored program may hold their header only.
+- **Not done, because it did not pay or does not apply:** rkyv or another archived layout of the analysis image (the
+  arenas already decode a chunk at a time and the rest of its cost is the symbol table and the library re-read, 1 ms
+  of a 100 ms test); unpacking the `init` entry (6 MB of heap bytes from 3 MB) is a memory-bandwidth and page-fault
+  cost that a mapping would only move; a copy-on-write mapping of the heap is not attempted.
 
 ## Prefix images and the image on the second analysis (#426, #407, floor of a run, yavs decisions under the user's single-thread performance priority)
 

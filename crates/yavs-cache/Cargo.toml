@@ -8,10 +8,15 @@ publish.workspace = true
 
 [dependencies]
 sha2 = "0.11"
+memmap2 = "0.9.11"
 twox-hash = { version = "2.1", default-features = false, features = ["xxhash3_64"] }
 
 [dev-dependencies]
 tempfile = "3"
 
-[lints]
-workspace = true
+# Not `workspace = true`: the workspace forbids unsafe code, and `forbid` cannot be relaxed by a
+# crate attribute. Mapping a file needs unsafe, so this crate denies it everywhere and allows it
+# only in `map`.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

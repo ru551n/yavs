@@ -926,6 +926,38 @@ fn lowered_design_is_cached() {
     }
 }
 
+/// A run that calls more functions than the ones the entry knows writes the entry again from the
+/// program it read (whose function bodies are decoded on first use, #481); the next run reads
+/// that entry and behaves as the run without the cache.
+#[test]
+fn an_entry_that_learns_is_written_again_and_read_back() {
+    let e = Env::new("irlearn");
+    let plain = e.run(&["--no-cache"]);
+    assert!(plain.stdout.contains("f=21"), "{plain:?}");
+    // Stops before the process calls `f`.
+    let short = ["--stop-time=500ps"];
+    let _ = e.cold("tb", &short);
+    let before = e.entry_files("ir");
+    assert_eq!(before.len(), 1);
+    let size = |p: &PathBuf| std::fs::metadata(p).expect("entry").len();
+    let small = size(&before[0]);
+    let grown = e.run(&[]);
+    assert!(
+        note(&grown, "hit ir") && note(&grown, "store ir"),
+        "{grown:?}"
+    );
+    assert_eq!(visible(&plain), visible(&grown));
+    assert!(size(&before[0]) > small, "the entry holds the call of `f`");
+    for _ in 0..2 {
+        let warm = e.run(&[]);
+        assert!(
+            note(&warm, "hit ir") && !note(&warm, "store ir"),
+            "{warm:?}"
+        );
+        assert_eq!(visible(&plain), visible(&warm));
+    }
+}
+
 /// Editing a package whose function only the architecture reaches replaces the lowered design,
 /// and a damaged entry is a miss that is stored again.
 #[test]

@@ -133,7 +133,7 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     if !enabled() {
         return None;
     }
-    let raw = prog.funcs.get(id)?;
+    let raw = prog.funcs.get(id)?.full();
     if matches!(raw.kind, FuncKind::Elab | FuncKind::Thunk) || raw.code.len() < 2 {
         return None;
     }

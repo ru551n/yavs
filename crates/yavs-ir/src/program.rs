@@ -11,6 +11,7 @@ use crate::{
 /// A whole lowered design: immutable and `Send + Sync` once built.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct Program {
+    #[serde(with = "funcs")]
     pub funcs: IdVec<FuncId, Func>,
     pub types: IdVec<TyId, Ty>,
     pub consts: IdVec<ConstId, ConstData>,
@@ -44,14 +45,13 @@ pub struct Program {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct OptCopy {
     pub func: FuncId,
-    #[serde(with = "bytes")]
-    pub bytes: Vec<u8>,
+    pub bytes: yavs_diag::Slice,
 }
 
 /// Serialised optimised copies by function id, used instead of running the optimiser. A copy
 /// of the program starts without them.
 #[derive(Default, Debug)]
-pub struct StoredOpt(std::sync::Mutex<std::collections::HashMap<u32, Vec<u8>>>);
+pub struct StoredOpt(std::sync::Mutex<std::collections::HashMap<u32, yavs_diag::Slice>>);
 
 impl Clone for StoredOpt {
     fn clone(&self) -> Self {
@@ -60,7 +60,7 @@ impl Clone for StoredOpt {
 }
 
 impl StoredOpt {
-    fn map(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u32, Vec<u8>>> {
+    fn map(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<u32, yavs_diag::Slice>> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -76,7 +76,7 @@ impl Program {
         let raw = self.funcs.get(f)?;
         match raw.opt.get() {
             Some(Some(o)) => Some(o),
-            Some(None) => Some(raw),
+            Some(None) => Some(raw.full()),
             None => Some(self.optimized(raw, f)),
         }
     }
@@ -88,7 +88,7 @@ impl Program {
             .get_or_init(|| {
                 if self.lazy_verify.is_some_and(|from| f.0 >= from) {
                     let mut errs = Vec::new();
-                    crate::verify::verify_func(self, f, raw, &mut errs);
+                    crate::verify::verify_func(self, f, raw.full(), &mut errs);
                     // A producer bug: the kernel turns the panic into an internal error.
                     assert!(
                         errs.is_empty(),
@@ -100,7 +100,7 @@ impl Program {
                     .or_else(|| crate::opt::optimize_func(self, f))
             })
             .as_deref()
-            .unwrap_or(raw)
+            .unwrap_or_else(|| raw.full())
     }
 
     /// The optimised copy of `f` an earlier run stored, if it is still the one this run would make.
@@ -109,7 +109,7 @@ impl Program {
             return None;
         }
         let bytes = self.stored_opt.map().remove(&f.0)?;
-        postcard::from_bytes::<Func>(&bytes).ok().map(Box::new)
+        postcard::from_bytes::<Func>(bytes.get()).ok().map(Box::new)
     }
 
     /// Make the optimised copies `copies` (from [`Program::export_optimized`] of a run of the same
@@ -146,9 +146,10 @@ impl Program {
             .funcs
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
-                Some(Some(o)) => postcard::to_stdvec(&**o)
-                    .ok()
-                    .map(|bytes| OptCopy { func: id, bytes }),
+                Some(Some(o)) => postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
+                    func: id,
+                    bytes: bytes.into(),
+                }),
                 _ => None,
             })
             .collect();
@@ -324,6 +325,112 @@ pub struct Func {
     /// lowered).
     #[serde(skip)]
     pub opt: std::sync::OnceLock<Option<Box<Func>>>,
+    /// The body (`code`, `loc`, `operands`, `resume`) of a function read from a stored program
+    /// (see [`lazy_bodies`]): these four are empty here and [`Func::full`] decodes them.
+    #[serde(skip)]
+    pub(crate) lazy: Option<Box<LazyBody>>,
+}
+
+/// A function body not decoded yet.
+#[derive(Debug)]
+pub(crate) struct LazyBody {
+    src: yavs_diag::Slice,
+    full: std::sync::OnceLock<Box<Func>>,
+}
+
+impl Clone for LazyBody {
+    fn clone(&self) -> Self {
+        let full = std::sync::OnceLock::new();
+        if let Some(f) = self.full.get() {
+            let _ = full.set(f.clone());
+        }
+        LazyBody {
+            src: self.src.clone(),
+            full,
+        }
+    }
+}
+
+/// The part of a function that [`funcs`] stores apart from the rest.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Body {
+    code: Vec<Inst>,
+    loc: Vec<StmtId>,
+    operands: Vec<Reg>,
+    resume: Vec<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct BodyRef<'a> {
+    code: &'a [Inst],
+    loc: &'a [StmtId],
+    operands: &'a [Reg],
+    resume: &'a [u32],
+}
+
+thread_local! {
+    static LAZY_BODIES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f`, which deserializes a [`Program`], so that the programs it reads keep the bodies of
+/// their functions as bytes and decode one when [`Program::func`] first hands it out (a run
+/// calls a fraction of the functions of a lowered design). The bytes should come from a
+/// [`yavs_diag::sharing`] buffer, else every body is copied once. Without this the bodies are
+/// decoded with the program.
+pub fn lazy_bodies<R>(f: impl FnOnce() -> R) -> R {
+    let before = LAZY_BODIES.with(|l| l.replace(true));
+    let r = f();
+    LAZY_BODIES.with(|l| l.set(before));
+    r
+}
+
+/// How a program stores its functions: the function without its body, then the body as one
+/// byte string, so that a reader can leave the body undecoded.
+mod funcs {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::{Body, BodyRef, Func, LAZY_BODIES, LazyBody};
+    use crate::{FuncId, IdVec};
+
+    pub fn serialize<S: Serializer>(v: &IdVec<FuncId, Func>, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeSeq};
+        let mut seq = s.serialize_seq(Some(v.len()))?;
+        for f in v.values() {
+            let body: yavs_diag::Slice = match &f.lazy {
+                Some(l) => l.src.clone(),
+                None => postcard::to_stdvec(&BodyRef {
+                    code: &f.code,
+                    loc: &f.loc,
+                    operands: &f.operands,
+                    resume: &f.resume,
+                })
+                .map_err(S::Error::custom)?
+                .into(),
+            };
+            seq.serialize_element(&(f.shell(), body))?;
+        }
+        seq.end()
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<IdVec<FuncId, Func>, D::Error> {
+        use serde::de::Error;
+        let lazy = LAZY_BODIES.with(std::cell::Cell::get);
+        let stored = Vec::<(Func, yavs_diag::Slice)>::deserialize(d)?;
+        let mut out = IdVec::new();
+        for (mut f, src) in stored {
+            if lazy {
+                f.lazy = Some(Box::new(LazyBody {
+                    src,
+                    full: Default::default(),
+                }));
+            } else {
+                let b: Body = postcard::from_bytes(src.get()).map_err(D::Error::custom)?;
+                (f.code, f.loc, f.operands, f.resume) = (b.code, b.loc, b.operands, b.resume);
+            }
+            out.push(f);
+        }
+        Ok(out)
+    }
 }
 
 impl Func {
@@ -350,7 +457,25 @@ impl Func {
             defined: self.defined,
             nested: self.nested,
             opt: Default::default(),
+            lazy: None,
         }
+    }
+
+    /// The function with its body in place: `self`, or for a function whose body is still
+    /// bytes ([`lazy_bodies`]) a copy with the body decoded, made once. Everything that reads
+    /// `code`, `loc`, `operands` or `resume` of a function out of [`Program::funcs`] asks this.
+    pub fn full(&self) -> &Func {
+        let Some(l) = &self.lazy else {
+            return self;
+        };
+        l.full.get_or_init(|| {
+            // The checksum of the entry matched, so a body that does not decode is a producer bug.
+            let b: Body = postcard::from_bytes(l.src.get())
+                .unwrap_or_else(|e| panic!("internal error: corrupt function body: {e}"));
+            let mut f = self.shell();
+            (f.code, f.loc, f.operands, f.resume) = (b.code, b.loc, b.operands, b.resume);
+            Box::new(f)
+        })
     }
 
     pub fn nregs(&self) -> u32 {

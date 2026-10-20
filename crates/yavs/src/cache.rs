@@ -73,11 +73,11 @@ impl Stages {
 }
 
 impl StageCache for Stages {
-    fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Vec<u8>> {
+    fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<yavs_diag::Buffer> {
         let k = self.key(extent, kind, part)?;
         let e = self.store.get(kind, &k)?;
         debug(format!("hit {kind} {}", k.hex()));
-        Some(e.to_vec())
+        Some(yavs_diag::Buffer::new(e))
     }
 
     fn note(&self, msg: &str) {
@@ -178,10 +178,7 @@ pub fn analyze_closure(
         files.iter().map(|f| f.path.display().to_string()).collect();
     let restore = |bytes: yavs_cache::Entry, what: &str| match Db::from_image(
         opts.clone(),
-        {
-            let (buf, start) = bytes.into_parts();
-            yavs_sem::image::Image::new(buf, start)
-        },
+        yavs_sem::image::Image::new(yavs_diag::Buffer::new(bytes)),
         &|p| verified.contains(p),
     ) {
         Ok(db) => Some(db),

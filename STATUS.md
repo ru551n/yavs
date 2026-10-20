@@ -1415,6 +1415,21 @@ stored). Small library testbench, second run onwards, pinned to one performance 
 (min of 15): total 191 to 111 ms (elaborate 110 to 72, init 21 to 3, simulate 35 to 7). Left: the
 elaboration walk and session (about 40 ms) and a prefix-keyed form for closures that run once.
 
+### floor of a run: zero-copy cache entries (#481 item 2, #407)
+
+Where a warm run spent its time on the cache entries (timers inside the process, pinned to a performance core, median
+of warm runs; UVVM `generic_queue_tb`, OSVVM `TbStream_AxiSendGetRandomParam2`, the first `vunit_vc30` case, and all
+30): read the file 1.7 / 3.5 / 5.4 ms (127 ms for the 30), the checksum 0.2 / 0.6 / 0.9 (22), the extra copy in
+`StageCache::get` 0.5 / 1.8 / 3.4 (83), decode 3.3 / 10.4 / 13.5 (303); together 7% / 4% / 17% (25% of the 30 cases).
+Now (`docs/decisions.md` "Zero-copy cache entries"): entries are mapped and validated on open, no copy, the `init`
+blocks and stored optimised copies are read in place, and function bodies of the `ir` and `low` entries are decoded
+when a function first runs. Same host, pinned core, back to back with alternating order, CPU time of a warm run
+(sum of the medians; host load average about 17): UVVM queue testbench 86.2 to 81.9 ms (-5.0%), OSVVM AxiStream 461.6
+to 448.2 ms (-2.9%), the 30 `vunit_vc30` cases 2103 to 1783 ms (-15.2%). In-process timers after the change, for the
+30 cases: read 6 ms, checksum 25 (page faults of the mapping moved here), copy 0, decode 165 (was 303: `init` 53,
+`sem` 43 plus its symbol table 16, `ir` 38, `low` 15). What is left in decode is the `init` heap unpack (6 MB written
+from 3 MB), the analysis arena chunks and symbol table, and the headers of the 900 functions of an `ir` entry.
+
 ### Heap collection threshold (`--gc-threshold`)
 
 `yavs run --gc-threshold SIZE` sets `Limits::gc_threshold` (default 1 MiB): the heap is collected once more was

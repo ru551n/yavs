@@ -22,12 +22,12 @@ pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, ElabOp, FOp, FUnOp, ForceKind, Inst,
     IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES, Width,
 };
-pub use program::bytes;
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
     ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, OptCopy, Param, ParamClass,
     Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam,
 };
+pub use program::{bytes, lazy_bodies};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;
 pub use yavs_kernel::StmtId;

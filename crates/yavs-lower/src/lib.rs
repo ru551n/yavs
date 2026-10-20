@@ -892,8 +892,13 @@ impl<'a> Lowerer<'a> {
     /// Go on from [`Lowerer::image`]'s bytes for `db`, which must be the `Db` (and `opts` the
     /// options) the image was made with. `None` when the bytes do not decode or were made with
     /// other options.
-    pub fn from_image(db: &'a Db, opts: LowerOptions, bytes: &[u8]) -> Option<Self> {
-        let i: Image = postcard::from_bytes(bytes).ok()?;
+    pub fn from_image(db: &'a Db, opts: LowerOptions, bytes: &yavs_diag::Buffer) -> Option<Self> {
+        // The function bodies stay in `bytes` until a function runs: the builder goes on from
+        // the functions it has (it reads their headers only) and `Program::func` decodes one
+        // when it is first called.
+        let i: Image = yavs_diag::sharing(bytes, || {
+            yavs_ir::lazy_bodies(|| postcard::from_bytes(bytes).ok())
+        })?;
         if i.opts != opts {
             return None;
         }

@@ -27,6 +27,10 @@
 //! A code is never reused for a different meaning. An empty code is only for
 //! summary lines such as "aborting due to 2 previous errors".
 
+mod shared;
+
+pub use shared::{Buffer, Slice, sharing};
+
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 

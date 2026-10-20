@@ -2085,8 +2085,11 @@ impl Machine {
         // after a jump and after an op compiled code leaves to the interpreter.
         macro_rules! enter {
             () => {
+                // Not while the machine pauses at a block (`prestart`): compiled code would jump
+                // past it.
                 if TIER
                     && native
+                    && self.pause.is_none()
                     && let Some(tier) = tier
                 {
                     let pc = code.at.get(k).copied().unwrap_or(0) as usize;

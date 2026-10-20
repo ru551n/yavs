@@ -187,7 +187,9 @@ Within a delta the kernel has two phases that never overlap:
   Within the `several_waits` group the concurrent procedure calls (`ProcFlags::concurrent_call`
   or `Process::concurrent_call`; the interpreter takes it from the IR `IMPLICIT` flag of the
   entry function together with `!single_suspend`) come first, then the other processes; each
-  sub-group in reverse elaboration order (#281, user 2026-10-19).
+  sub-group in reverse elaboration order (#281, user 2026-10-19). A process that a signal
+  resumes after it was resumed before (`ProcMeta::resumed`, not a concurrent call) counts as
+  one-wait: elaboration order (#417, `docs/decisions.md` "Process order within a cycle").
 - **Serial processes** (`ProcFlags::serial`, or `Process::serial` returning true) run one at a
   time, in batch order, after the parallel batch. Through M3 every process that touches a
   non-protected shared variable, calls a protected type or touches a disk file is serial (user

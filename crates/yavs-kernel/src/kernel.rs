@@ -355,6 +355,8 @@ pub(crate) struct ProcMeta {
     pub ready: bool,
     /// The pending resumption is a timeout (orders the batch, `SimControl::order`).
     pub by_timeout: bool,
+    /// Has been resumed since initialisation (`SimControl::order`).
+    pub resumed: bool,
     /// Resumes for an event only on this edge (`Builder::edge_trigger`).
     pub trigger: Option<crate::EdgeTrigger>,
 }
@@ -1505,7 +1507,10 @@ impl SimControl {
         }
         pids.sort_unstable_by_key(|&p| {
             let m = &self.procs[p as usize];
-            if m.flags.several_waits {
+            // A process resumed by a signal after earlier resumptions runs in elaboration
+            // order like a one-wait process (#417).
+            let settled = m.resumed && !m.by_timeout && !m.flags.concurrent_call;
+            if m.flags.several_waits && !settled {
                 (true, m.by_timeout, !m.flags.concurrent_call, Reverse(p))
             } else {
                 (false, false, false, Reverse(u32::MAX - p))
@@ -1580,6 +1585,11 @@ impl SimControl {
         }
         self.stats.process_runs += pids.len() as u64;
         self.order(&mut pids, init);
+        if !init {
+            for &p in &pids {
+                self.procs[p as usize].resumed = true;
+            }
+        }
         let mut first_err = None;
         for &p in &pids {
             self.procs[p as usize].ready = false;

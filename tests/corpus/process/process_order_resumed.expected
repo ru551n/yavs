@@ -1,0 +1,19 @@
+exit	0
+diag	note	25000000	0	:process_order_resumed:mon	monitor
+diag	note	35000000	0	:process_order_resumed:mon	monitor
+diag	note	35000000	0	:process_order_resumed:main	main send
+diag	note	45000000	0	:process_order_resumed:mon	monitor
+diag	note	45000000	1	:process_order_resumed:main	main send
+diag	note	55000000	0	:process_order_resumed:mon	monitor
+diag	note	55000000	0	:process_order_resumed:main	main send
+diag	note	65000000	0	:process_order_resumed:mon	monitor
+diag	note	65000000	0	:process_order_resumed:main	main send
+diag	note	75000000	0	:process_order_resumed:mon	monitor
+diag	note	75000000	0	:process_order_resumed:main	main drain
+diag	note	85000000	0	:process_order_resumed:mon	monitor
+diag	note	85000000	0	:process_order_resumed:main	main drain
+diag	note	95000000	0	:process_order_resumed:mon	monitor
+diag	note	95000000	0	:process_order_resumed:main	main drain
+diag	note	105000000	0	:process_order_resumed:mon	monitor
+diag	note	105000000	0	:process_order_resumed:main	main drain
+diag	finish	105000000	0	-	0

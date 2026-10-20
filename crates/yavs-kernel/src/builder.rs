@@ -561,6 +561,7 @@ impl Builder {
                 generation: 0,
                 ready: false,
                 by_timeout: false,
+                resumed: false,
                 trigger: p.trigger,
             });
         }

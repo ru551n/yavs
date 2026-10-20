@@ -1647,7 +1647,8 @@ so shared-variable, protected-type and file users run in order at any `--threads
 of the processes of one cycle is fixed (#252): elaboration order at initialisation; then the
 processes with one suspension point in elaboration order, then the others
 (`Process::several_waits`) in reverse, signal-resumed before timeout-resumed; concurrent
-procedure calls (`Process::concurrent_call`) before the other several-wait ones (#281). Observers
+procedure calls (`Process::concurrent_call`) before the other several-wait ones (#281); a process a
+signal resumes after earlier resumptions counts as one-wait (#417). Observers
 schedule and cancel wake-ups at an absolute time (`Hook::wake_at`, `Hook::cancel`,
 `Observer::wake`, #268): a wake-up gives a cycle at its time with the usual phase callbacks,
 forces and deposits from it apply in that cycle, a wake-up in the past is E3005, and the

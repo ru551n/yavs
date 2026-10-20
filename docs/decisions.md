@@ -1720,6 +1720,15 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   one-wait testbench at the first edge) and matches the majority in the shapes of the real test;
   no rule over process shape, order and resume reason matches every sub-case. Kernel:
   `ProcFlags::concurrent_call`, `Process::concurrent_call`.
+- **Later resumptions (#417, rule 15):** a process with several waits that a signal resumes
+  after it has been resumed before (any reason, any earlier cycle after initialisation) runs
+  like a one-wait process, in elaboration order. Why: for two loops with several waits on one
+  clock edge (a monitor declared before a testbench process, the common shape) three of the
+  four reference simulators run the earlier declared one first and the fourth varies, while
+  the reverse rule above made a testbench that tests a queue the monitor empties on that
+  edge end one clock period later than all of them (`process/process_order_resumed`). The
+  first resumption after initialisation, timeouts and concurrent procedure calls keep the
+  rule above (there the references are split or agree with it). Kernel: `ProcMeta::resumed`.
 - Corpus tests whose processes report in one cycle and whose order the reference simulator does
   not share carry `ignore=order`; `process/process_order` is `ref=hand`.
 - **Formals with open dimensions and constrained elements** (`Fx::param_dope`, #257): the

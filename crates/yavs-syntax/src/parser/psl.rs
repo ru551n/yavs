@@ -730,7 +730,7 @@ impl Parser<'_> {
                 g.decl(&names, sub, None);
                 let cur = var("cur");
                 let sub = g.subtype(g.attr(obj(self)?, "subtype"));
-                g.decl(&[cur.clone()], sub, None);
+                g.decl(std::slice::from_ref(&cur), sub, None);
                 let now = self.psl_reparse_at(xname.span.start)?;
                 g.pre.push(g.stmt(SeqStmtKind::VariableAssign {
                     target: g.var(&cur),
@@ -756,7 +756,7 @@ impl Parser<'_> {
             ("countones" | "onehot" | "onehot0", 1) => {
                 let cnt = var("n");
                 g.decl(
-                    &[cnt.clone()],
+                    std::slice::from_ref(&cnt),
                     g.simple_subtype("natural"),
                     Some(g.int("0")),
                 );

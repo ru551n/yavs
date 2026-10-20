@@ -279,8 +279,31 @@ thread_local! {
 
 struct LayoutMemo {
     dsz: u64,
+    /// A one-dimensional array of scalars: the element size, or 0 for a logic array (bit
+    /// planes). Its layout words come straight from the bounds, without the memo's descriptor.
+    simple: Option<u64>,
     desc: Vec<u8>,
     words: Vec<u8>,
+}
+
+/// The layout words `[size, align, stride, count]` of a one-dimensional array of `n`-byte
+/// scalars (`n` 0: of logic elements) from its bounds; `None` for a bad direction or a size
+/// beyond 64 bits (the general path reports those).
+fn simple_words(n: u64, d: &[u8]) -> Option<[u64; 4]> {
+    let b = d.get(..24)?;
+    let dir = le_bytes(&b[16..]);
+    if dir > 1 {
+        return None;
+    }
+    let count = yavs_ir::dim_len(
+        le_bytes(&b[..8]) as i64,
+        le_bytes(&b[8..16]) as i64,
+        dir == 1,
+    )?;
+    if n == 0 {
+        return Some([count.div_ceil(64).checked_mul(32)?, 8, 0, count]);
+    }
+    Some([n.checked_mul(count)?, n, n, count])
 }
 
 fn sev(v: u64) -> R<Severity> {
@@ -1586,22 +1609,53 @@ impl Machine {
                 .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?,
         };
         let d = self.rd(desc, dsz)?;
+        if let Some(m) = memo.as_mut()
+            && let Some(n) = m.simple
+            && let Some(w) = simple_words(n, d)
+        {
+            m.words.clear();
+            for w in w {
+                m.words.extend_from_slice(&w.to_le_bytes());
+            }
+            let m = self.layouts[t].insert(memo.take().ok_or_else(|| ice("layout memo missing"))?);
+            return Ok(&m.words);
+        }
         if memo.as_ref().is_none_or(|m| m.desc != d) {
             let (l, _) = Ty::layout(&prog.types, &prog.consts, ty, d).map_err(|e| match e {
                 LayoutError::TooLarge => Fault::Runtime(e.to_string()),
                 LayoutError::Malformed(_) => ice(e.to_string()),
             })?;
-            let mut words = vec![l.size, l.align];
-            if l.offsets.is_empty() {
-                words.extend([l.stride, l.count]);
-            } else {
-                words.extend(&l.offsets);
-            }
-            memo = Some(LayoutMemo {
+            // Refill the old memo in place: strings of changing lengths miss at nearly every
+            // call, and the memo must not allocate then.
+            let m = memo.get_or_insert_with(|| LayoutMemo {
                 dsz,
-                desc: d.to_vec(),
-                words: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
+                simple: match prog.types.get(ty) {
+                    Some(Ty::Array {
+                        elem,
+                        elem_desc: None,
+                        dims: 1,
+                    }) => match prog.types.get(*elem) {
+                        Some(Ty::Enum { logic: Some(_), .. }) => Some(0),
+                        Some(e) if Ty::logic_leaf(&prog.types, ty).is_none() => e.elem_size(),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                desc: Vec::new(),
+                words: Vec::new(),
             });
+            m.desc.clear();
+            m.desc.extend_from_slice(d);
+            m.words.clear();
+            let sc = [l.stride, l.count];
+            let tail = if l.offsets.is_empty() {
+                sc.as_slice()
+            } else {
+                l.offsets.as_slice()
+            };
+            for w in [l.size, l.align].iter().chain(tail) {
+                m.words.extend_from_slice(&w.to_le_bytes());
+            }
         }
         let m = self.layouts[t].insert(memo.ok_or_else(|| ice("layout memo missing"))?);
         Ok(&m.words)

@@ -1,0 +1,19 @@
+exit	0
+diag	note	0	0	:layout_memo_lengths:_p0	str 1194 16656 0 6990
+diag	note	0	0	:layout_memo_lengths:_p0	int 8117 2022 0
+diag	note	0	0	:layout_memo_lengths:_p0	real 3014 5125
+diag	note	0	0	:layout_memo_lengths:_p0	bits 500022 2558306 0
+diag	note	0	0	:layout_memo_lengths:_p0	aa|hello, worldhello, world||abcdeabcde
+diag	note	0	0	:layout_memo_lengths:_p0	rec 7
+diag	note	0	0	:layout_memo_lengths:_p0	str 1194 16656 0 6990
+diag	note	0	0	:layout_memo_lengths:_p0	int 8117 2022 0
+diag	note	0	0	:layout_memo_lengths:_p0	real 3014 5125
+diag	note	0	0	:layout_memo_lengths:_p0	bits 500022 2558306 0
+diag	note	0	0	:layout_memo_lengths:_p0	aa|hello, worldhello, world||abcdeabcde
+diag	note	0	0	:layout_memo_lengths:_p0	rec 8
+diag	note	0	0	:layout_memo_lengths:_p0	str 1194 16656 0 6990
+diag	note	0	0	:layout_memo_lengths:_p0	int 8117 2022 0
+diag	note	0	0	:layout_memo_lengths:_p0	real 3014 5125
+diag	note	0	0	:layout_memo_lengths:_p0	bits 500022 2558306 0
+diag	note	0	0	:layout_memo_lengths:_p0	aa|hello, worldhello, world||abcdeabcde
+diag	note	0	0	:layout_memo_lengths:_p0	rec 9

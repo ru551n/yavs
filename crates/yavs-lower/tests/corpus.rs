@@ -30,6 +30,7 @@ const PASS: &[&str] = &[
     "arith/time_arith",
     "composite/sig_array_part",
     "composite/narrow_int_storage",
+    "composite/layout_memo_lengths",
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/aggregate_target_logic_fields",

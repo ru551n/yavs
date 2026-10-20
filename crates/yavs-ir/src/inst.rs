@@ -434,6 +434,23 @@ pub enum Inst {
         src_off: Reg,
         n: Reg,
     },
+    /// Concatenation: store the pieces of `parts`, leftmost first, into the one-dimensional
+    /// array of `n` elements at `dst`. A piece is two registers in the list: the address of an
+    /// array and its element count, or (bit `k` of `scalars` set for piece `k`) one element in
+    /// the register itself, the count ignored. Each element is `m` units: plane elements of
+    /// a logic array (`logic`; a scalar piece is the std_ulogic code position plus `bias`)
+    /// or bytes (a scalar piece is stored with width `w`). The stores are those of `LCopy`
+    /// and `LSet` (logic) or `Copy` and `Store` at the piece's byte offset, in order.
+    Cat {
+        dst: Reg,
+        n: Reg,
+        m: Reg,
+        parts: Regs,
+        scalars: u16,
+        bias: u8,
+        logic: bool,
+        w: Width,
+    },
     // checks
     Check {
         kind: CheckKind,
@@ -738,7 +755,7 @@ impl Inst {
     /// The operand list, if any.
     pub fn list(&self) -> Option<Regs> {
         match *self {
-            Inst::MakeDope { parts, .. } => Some(parts),
+            Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
             | Inst::CallForeign { args, .. }
@@ -945,6 +962,11 @@ impl Inst {
                 f(src, Use, p);
                 f(src_off, Use, i);
                 f(n, Use, i);
+            }
+            Inst::Cat { dst, n, m, .. } => {
+                f(dst, Use, p);
+                f(n, Use, i);
+                f(m, Use, i);
             }
             Inst::Check {
                 v, lo, hi, kind, ..

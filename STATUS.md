@@ -981,6 +981,26 @@ Instructions per activation (steady state, deterministic) and core cycles of a w
 
 Where the remaining instructions are (lfsr, 7400 per activation): the op fetch and dispatch 19%, the kernel assignment behind `Drive` 19% (ff and chain: 28% and 41%), single-element signal reads 160 each (the kernel read is inlined into the op), the vector concatenation sequence the lowering emits for `a(14 downto 0) & b` (about 30 ops: two descriptors, a length test, three `LayoutOf` + `Alloc` pairs, `LCopy`, `LSet`, `SubtypeCheck`, `Copy`), and a fixed 330 per activation for the scratch swap, `run_quick`, `exec_fast` and `after_suspend` (30% of `fan`). The kernel side of the same profile (assignment layers `schedule`/`own`/`same_as`/`unchanged`, the re-registration of the static sensitivity after every activation, the edge test of a process the kernel resumed because of that very edge) is commented on #443.
 
+### Interpreter, concatenation and descriptor folds (#443)
+
+Round 7 of the clocked-process work. The lowering of `a(14 downto 0) & b` was about 30 instructions and, as the profile of `lfsr` showed, most of the rest of its interpreter cost; the measured per-activation ops of that process were 93. Changes:
+
+- `Inst::Cat` (`yavs-ir`, `docs/decisions.md` "Concatenation instruction and descriptor-length folds"): the pieces of a concatenation, or of a positional aggregate of arrays and elements, stored in order into the result block in one instruction; the interpreter combines the plane words of a result of up to 64 elements in registers. Bound checks, the null-operand rule and the `SubtypeCheck` of the result stay separate instructions, so every message and pc is as before. `LCopy` and `Copy` remain the slice copy; a slice assignment needed no instruction of its own.
+- The optimiser knows descriptor lengths: a `MakeDope` of constants, a pool descriptor or a layout of a one-dimensional array type under such a descriptor fold `DopeLen`, the null test of a slice or concatenation, an equal-length `SubtypeCheck` and the size loads of `LayoutOf`; a block only `MakeDope` writes is dropped. The folds need facts to survive writes to other blocks (`Cls::Block`), a join after a folded branch (up to four more walks) and, in processes, blocks reached from the entry. Positions and checks repeated with another message are one expression.
+- Register sharing kept the temporaries of index arithmetic apart no more, so the predecoder's linear runs (`ReadPL`, `ReadPR`, `Aff*`, round 6) fire in functions over 31 registers again: the process of `lfsr` had nine ops per element read in the previous build.
+
+Pinned `perf stat` (one performance core, `--threads 1`, A and B on the same core, median of 3), main at `fbb4f911` against this change, and the reference simulator (same core, `--jit`):
+
+| Design | cycles before (G) | now (G) | instructions before (G) | now (G) | now / before | reference (G) | now / reference (before) |
+|---|---|---|---|---|---|---|---|
+| lfsr | 6.13 | 4.52 | 31.06 | 21.46 | 0.74 | 0.54 | 8.4 (11.3) |
+| ff | 7.85 | 7.15 | 39.87 | 35.97 | 0.91 | 1.89 | 3.8 (4.1) |
+| chain | 2.27 | 2.12 | 11.08 | 10.46 | 0.93 | 0.52 | 4.1 (4.4) |
+
+Under `--tier=llvm` and `--tier=auto` the same design takes 4.9 and 4.6 G cycles (5.9 and 6.2 before). `strings_heavy`, `uvvm_util_rand_tb`, `osvvm_axistream`, `protected_scoreboard`, `access_heavy` and `calls` (min of 5 interleaved runs): ratios 1.00, 1.00, 0.95, 1.00, 1.00, 1.00 of simulate CPU. What the profile of `lfsr` shows now (8400 instructions per activation): the loop 31%, the kernel's sorting of the changed ranges of one 512-process signal 8%, `update_effective` 6%, `Buf::select` 5%, `Machine::cat` 4% (about 350 instructions a call), the rest kernel assignment and wake paths.
+
+Verification at this change: the differential corpus (412) passes at 1 and 4 threads on the interpreter, `--tier=llvm` and `--tier=auto`, and at 4 threads with the `gc-stress` feature (interpreter and LLVM tier) and shuffled; the external runner's own suites pass (all eleven, no failure); its pass lists check green with `--oracle --check` (857 and 393 tests); the second verification library's `.pro` regression passes 314/314 under 2008 and 2019; the verification library suite runs 102 pass, 9 fail, 26 skip (as before).
+
 ### Interpreter dispatch, round 4 (#443)
 
 Two measurements pick the work (scratch builds, not in the repository): a dynamic histogram of the ops

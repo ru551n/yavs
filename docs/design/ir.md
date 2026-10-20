@@ -154,7 +154,7 @@ signals (the kernel stores logic leaves as yavs-logic planes, K7) and temporarie
 | In records | a logic-array field is its own plane vector at its field offset, padded to whole 32-byte blocks |
 | Size | `ceil(n / 64) * 32` bytes (`LayoutOf` computes it; `u64`) |
 | Element access | `LGet{dst, base, idx}` / `LSet{base, idx, v}`: block `idx / 64`, bit `idx % 64` in each plane; `Index` on a logic array lowers to these; `LFill{base, idx, n, v}` is `LSet` of one code at the `n` plane elements from `idx` (a default, an `others` choice: one instruction, whole plane words at a time, instead of a loop) |
-| Slices, concatenation, aggregates | `LCopy{dst, dst_off, src, src_off, n}`: word-wise copy with funnel shifts (64 elements per step, any alignment); `Copy` when both ends are block aligned |
+| Slices, concatenation, aggregates | `LCopy{dst, dst_off, src, src_off, n}`: word-wise copy with funnel shifts (64 elements per step, any alignment); `Copy` when both ends are block aligned; `Cat{dst, n, m, parts, scalars, bias, logic, w}`: the pieces of a concatenation (or of a positional aggregate of arrays and elements) stored in order into the result block, as the `LCopy`/`LSet` (planes) or `Copy`/`Store` (bytes) of each piece would (docs/decisions.md "Concatenation instruction") |
 | Operators | `LogicOp`/`LNum` call yavs-logic bit-parallel ops (`and`..`xnor`, `not`, `to_x01`, `resolve`, `match_eq`, shifts, `add_num`, `cmp_num`); 0/1-only values take the `BitVec` word path |
 | Parameters | in-mode: by reference when block aligned, else `LCopy` into a temp; out/inout of an unaligned slice: copy-in/copy-out (LRM 6.5.6.2 allows either) |
 | Constants | `ConstData::Runs` expand per block (`others => '0'` is a block fill) |
@@ -194,7 +194,7 @@ has a `StmtId` in `Func.loc`.
 | memory | `Load{dst, addr, w}`, `Store{addr, src, w}`, `Copy{dst, src, bytes}`, `Fill{dst, elem, n, size}`, `Index{dst, base, dope, idx...}` (bounds-checked), `Field{dst, base, layout, n}` |
 | int (checked, rule 7) | `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Mod`/`Pow`/`Neg`/`Abs` on i64: overflow and zero divisors raise `Runtime` through `yavs_std::arith`; never wrap |
 | real | `FAdd`..`FPow`, `FCmp`, `IToF`, `FToI` (checked round per LRM, `real_to_int`) |
-| compare/logic | `Cmp{op, dst, a, b}`, `And/Or/Xor/Not` on booleans, `LogicOp{op, dst, a, b, n}`, `LNum{op, dst, a, b, signed}` on logic arrays via yavs-logic (bit-planes, 1.3); `LGet`/`LSet`/`LCopy` element and slice access |
+| compare/logic | `Cmp{op, dst, a, b}`, `And/Or/Xor/Not` on booleans, `LogicOp{op, dst, a, b, n}`, `LNum{op, dst, a, b, signed}` on logic arrays via yavs-logic (bit-planes, 1.3); `LGet`/`LSet`/`LCopy` element and slice access, `Cat` concatenation |
 | checks | `Check{kind: Range\|Index\|Length\|Null\|Discrete, v, lo, hi, what: CheckMsgId}`; `lo/hi` are regs, so runtime bounds and static bounds use one instruction |
 | subtypes | `MakeDope{dst, dims...}`, `DopeLen{dst, dope, dim}`, `LayoutOf{dst, desc}`, `SubtypeCheck{value, desc}` (composite conversion and constraint checks) |
 | control | `Br{blk}`, `CondBr{c, t, f}`, `Case{v, table: CaseTableId, default}` (ranges and choices as sorted table), `Ret`, `Unreachable` |

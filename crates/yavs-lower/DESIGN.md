@@ -146,7 +146,7 @@ a call into your module in a small commit.
 | `Call` implicit `eq neq lt le gt ge` on scalars | `Cmp` / `FCmp` |
 | `Call` implicit `and or xor nand nor xnor not` on BOOLEAN/BIT | short-circuit `CondBr` for `and`/`or`/`nand`/`nor` (LRM 9.2.2), else `And/Or/Xor/Not` |
 | `Call` implicit `minimum maximum` scalar | `Cmp` + select |
-| `Call` implicit on arrays (`cat`, relational, logical, shifts) | logic arrays: `LCopy` / `LogicOp`; others: `CallNative` with the family symbol |
+| `Call` implicit on arrays (`cat`, relational, logical, shifts) | `cat` (and the pieces of a positional aggregate): one `Cat` into the result block after the bounds, `Check{Index}` and `SubtypeCheck`; logic arrays: `LCopy` / `LogicOp`; others: `CallNative` with the family symbol |
 | `Call` implicit `to_string`, `'image` and friends | `CallNative` (NATIVE.md section 2 symbol, yavs-std implements) |
 | `Call` with `Body::Native(sym)` | `CallNative` |
 | `Call` with `Body::Hir` | `Call{func}` with arguments per 3. Subprograms |

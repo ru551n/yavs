@@ -464,6 +464,8 @@ pub(crate) enum Op {
         a: u32,
         b: u32,
     },
+    /// `Inst::Cat` (read from the IR at the op's pc).
+    Cat,
     /// `Inst::LCopy`.
     LCopy {
         dst: u32,
@@ -1708,6 +1710,7 @@ impl Code {
                     soff: src_off.0,
                     n: n.0,
                 },
+                Inst::Cat { .. } => Op::Cat,
                 Inst::SigRead { dst, sig } => Op::SigReadVec {
                     dst: dst.0,
                     sig: sig.0,

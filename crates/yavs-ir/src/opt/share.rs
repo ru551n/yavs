@@ -310,7 +310,22 @@ pub(super) fn plan(
             && l.uses == 1
             && l.hi > l.lo
             && (loose[l.hi as usize] - loose[l.lo as usize + 1]) == l.hi - l.lo - 1;
-        let pinned = (l.konst && l.defs == 1) || fused;
+        // The temporaries of a linear run (`Bin`, `Pos`, `DopeLen`) read within their block:
+        // the predecoder folds the run into one op per result something else reads, which it
+        // can do only for registers defined once.
+        let linear = l.defs == 1
+            && l.uses >= 1
+            && l.ext_lo == NONE
+            && l.ext_hi < 0
+            && matches!(
+                f.code[l.lo as usize],
+                Inst::Bin {
+                    op: IntOp::Add | IntOp::Sub | IntOp::Mul,
+                    ..
+                } | Inst::Pos { dim: 0, .. }
+                    | Inst::DopeLen { dim: 0, .. }
+            );
+        let pinned = (l.konst && l.defs == 1) || fused || linear;
         match class(t).filter(|_| !pinned) {
             None => {
                 map[k] = ty.len() as u32;

@@ -2192,6 +2192,114 @@ impl Machine {
         Ok(())
     }
 
+    /// `Inst::Cat`: the pieces `ps` (pairs of an address or element and a count) one after
+    /// another into the array of `n` elements at `d`, by the stores of the `LCopy`, `LSet`,
+    /// `Copy` and `Store` it stands for.
+    #[allow(clippy::too_many_arguments)]
+    fn cat(
+        &mut self,
+        d: u64,
+        n: u64,
+        m: u64,
+        ps: &[Reg],
+        scalars: u16,
+        bias: u8,
+        logic: bool,
+        w: Width,
+    ) -> R<()> {
+        let big = || Fault::Runtime("object larger than 4 GiB".into());
+        let total = n.wrapping_mul(m);
+        if logic && total <= 64 && self.cat_block(d, total, m, ps, scalars, bias)? {
+            return Ok(());
+        }
+        let mut k = 0u64;
+        for (j, pr) in ps.as_chunks::<2>().0.iter().enumerate() {
+            let v = self.r(pr[0]);
+            let scalar = scalars >> j & 1 == 1;
+            let len = if scalar { 1 } else { self.r(pr[1]) };
+            if logic {
+                let units = if scalar { 1 } else { len.wrapping_mul(m) };
+                let off = total.wrapping_sub(k.wrapping_mul(m)).wrapping_sub(units);
+                if scalar {
+                    self.lset(d, off, v.wrapping_add(u64::from(bias)))?;
+                } else {
+                    self.lcopy(d, off, v, 0, units)?;
+                }
+            } else {
+                let at = index_addr(d, k.checked_mul(m).ok_or_else(big)?, 1)?;
+                if scalar {
+                    self.store(at, w, v)?;
+                } else {
+                    self.copy_mem(at, v, len.wrapping_mul(m))?;
+                }
+            }
+            k = k.wrapping_add(len);
+        }
+        Ok(())
+    }
+
+    /// `Inst::Cat` of a logic array of at most 64 plane elements (one block of planes): the
+    /// planes of all pieces combined in registers and written once. `false` when a piece
+    /// does not fit the pattern (nothing is written; the caller stores piece by piece).
+    fn cat_block(
+        &mut self,
+        d: u64,
+        total: u64,
+        m: u64,
+        ps: &[Reg],
+        scalars: u16,
+        bias: u8,
+    ) -> R<bool> {
+        let mut words = [0u64; 4];
+        let mut mask = 0u64;
+        let mut k = 0u64;
+        for (j, pr) in ps.as_chunks::<2>().0.iter().enumerate() {
+            let v = self.r(pr[0]);
+            let (units, bits) = if scalars >> j & 1 == 1 {
+                let code = v.wrapping_add(u64::from(bias));
+                if code > 8 {
+                    return Ok(false);
+                }
+                (1, [code & 1, code >> 1 & 1, code >> 2 & 1, code >> 3 & 1])
+            } else {
+                let units = self.r(pr[1]).wrapping_mul(m);
+                if units == 0 {
+                    continue;
+                }
+                if units > 64 {
+                    return Ok(false);
+                }
+                let mut b = [0u64; 4];
+                fill_blocks(self.rd_hot(v, 32)?, std::slice::from_mut(&mut b));
+                (units, b)
+            };
+            if k.wrapping_add(units) > total {
+                return Ok(false);
+            }
+            let off = total - k - units;
+            let pm = if units == 64 { !0 } else { (1u64 << units) - 1 };
+            for (w, b) in words.iter_mut().zip(bits) {
+                *w |= (b & pm) << off;
+            }
+            mask |= pm << off;
+            k += units;
+        }
+        if mask == 0 {
+            return Ok(true);
+        }
+        // A block just allocated (zeroed) and covered by the pieces needs no read.
+        let mut cur = [0u64; 4];
+        if !(split(d).0 == TEMP && k == total) {
+            fill_blocks(self.rd_hot(d, 32)?, std::slice::from_mut(&mut cur));
+        }
+        let mut out = [0u8; 32];
+        for ((o, c), w) in out.as_chunks_mut::<8>().0.iter_mut().zip(cur).zip(words) {
+            *o = (c & !mask | w).to_le_bytes();
+        }
+        self.put(d, &out)?;
+        Ok(true)
+    }
+
     /// `Inst::Copy`: `n` bytes from `s` to `d`.
     #[inline(always)]
     fn copy_mem(&mut self, d: u64, s: u64, n: u64) -> R<()> {
@@ -3725,6 +3833,35 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::Cat => {
+                    let pc = code.at.get(k).copied().unwrap_or(0);
+                    let Some(&Inst::Cat {
+                        dst,
+                        n,
+                        m,
+                        parts,
+                        scalars,
+                        bias,
+                        logic,
+                        w,
+                    }) = f.code.get(pc as usize)
+                    else {
+                        return Err(ice(format!("pc {pc} is not a concatenation")));
+                    };
+                    let ps = t!(f.regs(parts).ok_or_else(|| ice("operand list")));
+                    t!(self.cat(
+                        self.regs[dst.0 as usize],
+                        self.regs[n.0 as usize],
+                        self.regs[m.0 as usize],
+                        ps,
+                        scalars,
+                        bias,
+                        logic,
+                        w
+                    ));
+                    k += 1;
+                    enter!();
+                }
                 Op::SigReadVec { dst, sig } => {
                     if self.is_multi(Reg(sig)) {
                         // A reference of several parts: the step.
@@ -5185,6 +5322,28 @@ impl Machine {
             Inst::LSet { base, idx, v } => self.lset(self.r(base), self.r(idx), self.r(v))?,
             Inst::LFill { base, idx, n, v } => {
                 self.lfill(self.r(base), self.r(idx), self.r(n), self.r(v))?;
+            }
+            Inst::Cat {
+                dst,
+                n,
+                m,
+                parts,
+                scalars,
+                bias,
+                logic,
+                w,
+            } => {
+                let ps = f.regs(parts).ok_or_else(|| ice("operand list"))?;
+                self.cat(
+                    self.r(dst),
+                    self.r(n),
+                    self.r(m),
+                    ps,
+                    scalars,
+                    bias,
+                    logic,
+                    w,
+                )?;
             }
             Inst::LCopy {
                 dst,

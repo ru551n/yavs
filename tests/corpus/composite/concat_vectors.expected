@@ -1,0 +1,19 @@
+exit	0
+diag	note	0	0	:concat_vectors:_p0	10XZUW- UW-10XZ 10XZ1 010XZ HZ
+diag	note	0	0	:concat_vectors:_p0	10XZ|10XZ|7 6 0
+diag	note	0	0	:concat_vectors:_p0	11111111111 1LLLLL
+diag	note	0	0	:concat_vectors:_p0	1111111 11110000
+diag	note	0	0	:concat_vectors:_p0	11111111111111111111111111111110
+diag	note	0	0	:concat_vectors:_p0	10XZ10XZ10XZ10XZ10XZ10XZ10XZ10XZ
+diag	note	0	0	:concat_vectors:_p0	10101100111000011010110011100001
+diag	note	0	0	:concat_vectors:_p0	01011001110000101010110011100001
+diag	note	0	0	:concat_vectors:_p0	11001 11101
+diag	note	0	0	:concat_vectors:_p0	10,20,30,40,50,- 10,20,5,- 7,30,40,50,- 10,20,- 30,40,50,- 10,20,30,40,50,10,20,-
+diag	note	0	0	:concat_vectors:_p0	true,false,true,false,- true,false,true,- false,true,false,-
+diag	note	0	0	:concat_vectors:_p0	abcxabcyz
+diag	note	0	0	:concat_vectors:_p0	16
+diag	note	0	0	:concat_vectors:_p0	1010
+diag	note	0	0	:concat_vectors:_p0	10010 9
+diag	note	0	0	:concat_vectors:_p0	10010
+diag	note	2000000	0	:concat_vectors:_p0	0101100111000011
+diag	note	3000000	0	:concat_vectors:_p0	1010110011100001

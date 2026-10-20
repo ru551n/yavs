@@ -352,6 +352,8 @@ enum Cls {
     Space(AddrSpace),
     Heap,
     Temp,
+    /// The block one `Alloc` made (the register), disjoint from every other.
+    Block(u32),
 }
 
 /// Is the byte range `[a, a + n)` clear of every range in `rs`?
@@ -360,20 +362,21 @@ fn clear_of(rs: &[(i64, i64)], a: i64, n: i64) -> bool {
         .all(|&(s, z)| a + n <= s || s.saturating_add(z) <= a)
 }
 
-/// An available expression. Memory-dependent ones (loads, descriptor reads) are dropped when
+/// An available expression. A check or position repeated with another message is the same
+/// key: the earlier one failed first, with its message, or this one passes. Memory-dependent ones (loads, descriptor reads) are dropped when
 /// something may write the memory they read.
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Key {
     Bin(IntOp, Opn, Opn),
-    BinRange(IntOp, Opn, Opn, Opn, Opn, CheckMsgId),
+    BinRange(IntOp, Opn, Opn, Opn, Opn),
     Un(IntUnOp, Opn),
     Cmp(CmpOp, Opn, Opn),
     Bool(BoolOp, Opn, Opn),
     Index(Opn, Opn, u32),
-    Check(CheckKind, Opn, Opn, Opn, CheckMsgId),
+    Check(CheckKind, Opn, Opn, Opn),
     Load(Opn, Width),
     Dope(Opn, u8),
-    Pos(Opn, u8, Opn, CheckMsgId),
+    Pos(Opn, u8, Opn),
     Field(Opn, Opn, u32),
     /// The temporary layout of a type under a descriptor: gone at the next `Stmt`.
     Layout(TyId, Opn),
@@ -539,6 +542,10 @@ struct Opt<'a> {
     /// Result registers of `LayoutOf` of a type whose layout is the same under every
     /// descriptor: the type.
     slay: FxMap<Reg, TyId>,
+    /// Result registers of `LayoutOf` whose words are known (a descriptor of known lengths):
+    /// the words, and the registers `Index`ing into them: (layout register, byte offset).
+    lwords: FxMap<Reg, Vec<u64>>,
+    lat: FxMap<Reg, (Reg, i64)>,
     /// Field offsets of the static record layouts met so far (shared by the functions of one
     /// batch).
     layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
@@ -547,6 +554,9 @@ struct Opt<'a> {
     /// The blocks some path from the entry reaches; definitions in the others do not count.
     reach: Vec<bool>,
     changed: bool,
+    /// A branch on a constant was replaced by a jump: the join after it has one predecessor
+    /// less, which the next walk can use.
+    pruned: bool,
 }
 
 impl<'a> Opt<'a> {
@@ -597,10 +607,13 @@ impl<'a> Opt<'a> {
             new_regs: Vec::new(),
             inserts: Vec::new(),
             slay: FxMap::default(),
+            lwords: FxMap::default(),
+            lat: FxMap::default(),
             layouts,
             uses: Vec::new(),
             reach: Vec::new(),
             changed: false,
+            pruned: false,
         }
     }
 
@@ -741,7 +754,10 @@ impl<'a> Opt<'a> {
                         self.set_cls(dst, Cls::Temp);
                         self.slay.insert(dst, ty);
                     }
-                    Inst::Alloc { dst, .. } | Inst::LayoutOf { dst, .. } if self.single(dst) => {
+                    Inst::Alloc { dst, .. } if self.single(dst) => {
+                        self.set_cls(dst, Cls::Block(dst.0));
+                    }
+                    Inst::LayoutOf { dst, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Temp);
                     }
                     Inst::Index { dst, base, pos, .. } if self.single(dst) => {
@@ -764,12 +780,10 @@ impl<'a> Opt<'a> {
         }
     }
 
-    /// The blocks some path from the entry reaches.
+    /// The blocks some path from the entry reaches. Code that suspends resumes right after
+    /// the instruction: in the same block, unless that ends the block, and then the next
+    /// block is entered by no branch.
     fn reachable(&self) -> Vec<bool> {
-        // Code that suspends resumes at points no branch leads to: every block counts.
-        if !self.nosusp || self.f.body.is_some() || self.f.flags.contains(FuncFlags::MAY_SUSPEND) {
-            return vec![true; self.blocks.len()];
-        }
         let mut seen = vec![false; self.blocks.len()];
         let mut work = vec![0usize];
         while let Some(b) = work.pop() {
@@ -781,6 +795,20 @@ impl<'a> Opt<'a> {
             while let Some(s) = self.succ(b, k) {
                 work.push(s);
                 k += 1;
+            }
+            if !self.nosusp
+                || self.f.body.is_some()
+                || self.f.flags.contains(FuncFlags::MAY_SUSPEND)
+            {
+                let (start, end) = self.blocks[b];
+                for pc in start..end {
+                    if self.is_susp(&self.code[pc as usize])
+                        && pc + 1 == end
+                        && let Some(n) = self.blocks.iter().position(|x| x.0 == end && x.1 > end)
+                    {
+                        work.push(n);
+                    }
+                }
             }
         }
         seen
@@ -852,6 +880,18 @@ impl<'a> Opt<'a> {
             self.dce();
             self.reanalyse();
             self.hide_inits(inited);
+            self.pass();
+        }
+        // Folded branches leave joins with fewer predecessors: facts now reach past them.
+        let mut again = 0;
+        while self.pruned && again < 4 {
+            self.pruned = false;
+            again += 1;
+            self.dce();
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
             self.pass();
         }
         // The loops of subprograms are where the passes below pay: they cost optimiser time at
@@ -1583,6 +1623,38 @@ impl<'a> Opt<'a> {
                     }
                 }
             }
+            // A descriptor whose bounds are constants: its lengths are known to the readers.
+            // The value goes into a block of its own: no fact is about it.
+            Inst::SigRead { dst, .. }
+            | Inst::LSet { base: dst, .. }
+            | Inst::LFill { base: dst, .. }
+            | Inst::LCopy { dst, .. }
+            | Inst::Cat { dst, .. } => {
+                let a = self.opn(dst);
+                self.kill(a, i64::MAX / 4);
+            }
+            Inst::MakeDope { at, parts } => {
+                let a = self.opn(at);
+                self.kill(a, 8 * i64::from(parts.len));
+                if let Some(k) = self.kopn(at) {
+                    for d in 0..parts.len / 3 {
+                        let w = |j: u32| match self.operands.get((parts.start + 3 * d + j) as usize)
+                        {
+                            Some(&r) => match self.opn(r) {
+                                Opn::K(v) => Some(v),
+                                _ => None,
+                            },
+                            None => None,
+                        };
+                        if let (Some(l), Some(r), Some(dir)) = (w(0), w(1), w(2))
+                            && let Some(n) =
+                                dim_len(l, r, dir == 1).filter(|&n| n <= i64::MAX as u64)
+                        {
+                            self.tbl.put(Key::Dope(k, d as u8), Val::K(n as i64));
+                        }
+                    }
+                }
+            }
             // A debugger stopped here may have written a variable: forget what is known of
             // scalar locals and of memory reached through pointers; the rest stays.
             Inst::Stmt => {
@@ -1595,7 +1667,7 @@ impl<'a> Opt<'a> {
                     Some((Opn::A(AddrSpace::Frame, o), lo, n)) => {
                         !clear_of(named, i64::from(o) + lo, n)
                     }
-                    Some((a, ..)) => this.cls_of(a) != Some(Cls::Temp),
+                    Some((a, ..)) => !matches!(this.cls_of(a), Some(Cls::Temp | Cls::Block(_))),
                 };
                 let gone: Vec<Key> = self
                     .tbl
@@ -1804,6 +1876,35 @@ impl<'a> Opt<'a> {
         Some((w(0) as i64, w(1) as i64, w(2)))
     }
 
+    /// The length of dimension `k` of the descriptor in `r`, when a pool constant or a
+    /// `MakeDope` of constants on this path says.
+    fn dope_known(&self, r: Reg, k: u8) -> Option<u64> {
+        if let Some((l, rr, dir)) = self.const_dim(self.opn(r), k) {
+            return dim_len(l, rr, dir == 1);
+        }
+        match self.kopn(r).and_then(|d| self.tbl.get(&Key::Dope(d, k))) {
+            Some(Val::K(n)) => Some(n as u64),
+            _ => None,
+        }
+    }
+
+    /// The layout words of `ty` under a one-dimensional descriptor of known length: the
+    /// layout depends on the length alone.
+    fn known_layout(&self, ty: TyId, desc: Reg) -> Option<Vec<u64>> {
+        let types = &self.prog.types;
+        if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. }))
+        {
+            return None;
+        }
+        let n = self.dope_known(desc, 0)?;
+        let mut d = [0u8; 24];
+        d[8..16].copy_from_slice(&(n as i64).wrapping_sub(1).to_le_bytes());
+        let (l, _) = Ty::layout(types, &self.prog.consts, ty, &d).ok()?;
+        l.offsets
+            .is_empty()
+            .then(|| vec![l.size, l.align, l.stride, l.count])
+    }
+
     fn simplify(&mut self, pc: usize) {
         let inst = self.code[pc];
         match inst {
@@ -1831,7 +1932,7 @@ impl<'a> Opt<'a> {
                 b,
                 lo,
                 hi,
-                what,
+                ..
             } => {
                 if let (Opn::K(x), Opn::K(y), Opn::K(l), Opn::K(h)) =
                     (self.opn(a), self.opn(b), self.opn(lo), self.opn(hi))
@@ -1844,7 +1945,7 @@ impl<'a> Opt<'a> {
                 if let (Some(a), Some(b), Some(l), Some(h)) =
                     (self.kopn(a), self.kopn(b), self.kopn(lo), self.kopn(hi))
                 {
-                    self.cse(pc, Some(dst), Key::BinRange(op, a, b, l, h, what));
+                    self.cse(pc, Some(dst), Key::BinRange(op, a, b, l, h));
                 }
             }
             Inst::Un { op, dst, a } => {
@@ -1912,6 +2013,18 @@ impl<'a> Opt<'a> {
                 {
                     return;
                 }
+                if let (Opn::R(x), Opn::K(c)) = (self.opn(base), self.opn(pos))
+                    && self.single(dst)
+                {
+                    let (l, off) = self.lat.get(&x).copied().unwrap_or((x, 0));
+                    if self.lwords.contains_key(&l)
+                        && let Some(o) = c
+                            .checked_mul(i64::from(stride))
+                            .and_then(|d| off.checked_add(d))
+                    {
+                        self.lat.insert(dst, (l, o));
+                    }
+                }
                 if let (Some(x), Some(y)) = (self.kopn(base), self.kopn(pos)) {
                     self.cse(pc, Some(dst), Key::Index(x, y, stride));
                 }
@@ -1922,6 +2035,7 @@ impl<'a> Opt<'a> {
                         to: if v != 0 { t } else { f },
                     };
                     self.changed = true;
+                    self.pruned = true;
                 }
             }
             Inst::Case { v, table } => {
@@ -1935,14 +2049,11 @@ impl<'a> Opt<'a> {
                         .map_or(t.default, |a| a.2);
                     self.code[pc] = Inst::Br { to };
                     self.changed = true;
+                    self.pruned = true;
                 }
             }
             Inst::Check {
-                kind,
-                v,
-                lo,
-                hi,
-                what,
+                kind, v, lo, hi, ..
             } => {
                 use CheckKind::*;
                 let (nv, nl, nh) = (self.opn(v), self.opn(lo), self.opn(hi));
@@ -1964,11 +2075,22 @@ impl<'a> Opt<'a> {
                     _ => (nl, nh),
                 };
                 if self.key_ok(nv) && self.key_ok(nl) && self.key_ok(nh) {
-                    self.cse(pc, None, Key::Check(kind, nv, nl, nh, what));
+                    self.cse(pc, None, Key::Check(kind, nv, nl, nh));
                 }
             }
             Inst::Load { dst, addr, w } if w != Width::Sig => {
                 let a = self.opn(addr);
+                if w == Width::B8
+                    && let Opn::R(x) = a
+                {
+                    let (l, off) = self.lat.get(&x).copied().unwrap_or((x, 0));
+                    if let Some(words) = self.lwords.get(&l)
+                        && off % 8 == 0
+                        && let Some(&v) = words.get((off / 8) as usize)
+                    {
+                        return self.make_const(pc, dst, v as i64);
+                    }
+                }
                 let n = w.bytes() as usize;
                 let mut x = [0u8; 8];
                 if self.const_read(a, &mut x[..n]) {
@@ -1994,12 +2116,24 @@ impl<'a> Opt<'a> {
                     self.cse(pc, Some(dst), Key::Dope(d, dim));
                 }
             }
+            // Two descriptors of known, equal lengths: the check passes.
+            Inst::SubtypeCheck {
+                dope, want, dims, ..
+            } => {
+                if (0..dims).all(|k| {
+                    let a = self.dope_known(dope, k);
+                    a.is_some() && a == self.dope_known(want, k)
+                }) {
+                    self.code[pc] = dead();
+                    self.changed = true;
+                }
+            }
             Inst::Pos {
                 dst,
                 dope,
                 dim,
                 idx,
-                what,
+                ..
             } => {
                 if let (Some((l, r, dir)), Opn::K(i)) =
                     (self.const_dim(self.opn(dope), dim), self.opn(idx))
@@ -2014,10 +2148,16 @@ impl<'a> Opt<'a> {
                     }
                 }
                 if let (Some(d), Some(i)) = (self.kopn(dope), self.kopn(idx)) {
-                    self.cse(pc, Some(dst), Key::Pos(d, dim, i, what));
+                    self.cse(pc, Some(dst), Key::Pos(d, dim, i));
                 }
             }
             Inst::LayoutOf { dst, ty, desc } => {
+                if self.single(dst)
+                    && let Some(w) = self.known_layout(ty, desc)
+                {
+                    self.lwords.insert(dst, w);
+                    return;
+                }
                 if let Some(d) = self.kopn(desc) {
                     self.cse(pc, Some(dst), Key::Layout(ty, d));
                 }
@@ -2306,6 +2446,8 @@ impl<'a> Opt<'a> {
         }
         self.nrep = 0;
         self.slay.clear();
+        self.lwords.clear();
+        self.lat.clear();
         self.esc = None;
         self.analyse();
     }
@@ -2619,12 +2761,16 @@ impl<'a> Opt<'a> {
             }
             r
         };
-        // Follow the renames and count the readers in one pass.
+        // Follow the renames and count the readers in one pass. A block that only
+        // `MakeDope`s write (`wonly` of its readers) is never read.
         let rename = self.nrep > 0;
+        let mut wonly = vec![0u32; self.defs.len()];
         for i in &mut self.code {
             if is_dead(i) {
                 continue;
             }
+            // (The one register `MakeDope` reads outside its list is the block it writes.)
+            let writes = matches!(i, Inst::MakeDope { .. });
             i.visit_mut(&mut |r, role, _| {
                 if role == Role::Use {
                     if rename {
@@ -2632,6 +2778,9 @@ impl<'a> Opt<'a> {
                     }
                     if let Some(u) = uses.get_mut(r.0 as usize) {
                         *u += 1;
+                    }
+                    if writes && let Some(w) = wonly.get_mut(r.0 as usize) {
+                        *w += 1;
                     }
                 }
             });
@@ -2653,8 +2802,54 @@ impl<'a> Opt<'a> {
         // One backward sweep removes whole chains: a user comes after its operands.
         for pc in (0..self.code.len()).rev() {
             let i = self.code[pc];
+            // The writers of a block nobody reads, then its allocation.
+            match i {
+                Inst::MakeDope { at, .. }
+                    if self.single(at)
+                        && uses.get(at.0 as usize) == wonly.get(at.0 as usize)
+                        && matches!(self.cls_of(Opn::R(at)), Some(Cls::Block(b)) if b == at.0) =>
+                {
+                    let mut dead_uses: Vec<Reg> = Vec::new();
+                    i.visit(&mut |r, role, _| {
+                        if role == Role::Use {
+                            dead_uses.push(r);
+                        }
+                    });
+                    if let Some(l) = i.list() {
+                        dead_uses.extend(
+                            self.operands
+                                .get(l.start as usize..(l.start + l.len) as usize)
+                                .unwrap_or(&[]),
+                        );
+                    }
+                    for r in dead_uses {
+                        if let Some(u) = uses.get_mut(r.0 as usize) {
+                            *u = u.saturating_sub(1);
+                        }
+                    }
+                    wonly[at.0 as usize] = wonly[at.0 as usize].saturating_sub(1);
+                    self.code[pc] = dead();
+                    self.changed = true;
+                    continue;
+                }
+                Inst::Alloc { dst, size }
+                    if self.single(dst) && uses.get(dst.0 as usize) == Some(&0) =>
+                {
+                    if let Some(u) = uses.get_mut(size.0 as usize) {
+                        *u = u.saturating_sub(1);
+                    }
+                    self.code[pc] = dead();
+                    self.changed = true;
+                    continue;
+                }
+                _ => {}
+            }
             let dst = match i {
-                Inst::LayoutOf { dst, .. } if self.slay.contains_key(&dst) => Some(dst),
+                Inst::LayoutOf { dst, .. }
+                    if self.slay.contains_key(&dst) || self.lwords.contains_key(&dst) =>
+                {
+                    Some(dst)
+                }
                 _ => removable_dst(&i),
             };
             let Some(dst) = dst else {
@@ -2758,6 +2953,7 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::LSet { .. }
             | Inst::LFill { .. }
             | Inst::LCopy { .. }
+            | Inst::Cat { .. }
             | Inst::LEq { .. }
             | Inst::MemEq { .. }
             | Inst::Check { .. }

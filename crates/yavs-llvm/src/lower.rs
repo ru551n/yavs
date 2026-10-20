@@ -884,6 +884,7 @@ fn keeps_objects(i: &Inst) -> bool {
             | Inst::LGet { .. }
             | Inst::LSet { .. }
             | Inst::LCopy { .. }
+            | Inst::Cat { .. }
             | Inst::Check { .. }
             | Inst::FCheck { .. }
             | Inst::BinRange { .. }

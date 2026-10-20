@@ -1,0 +1,1 @@
+Concatenations of vectors and strings, and reads and writes of slices with constant bounds, take far fewer steps in the interpreter, so shift registers and similar clocked vector designs simulate faster, with identical results and the same error messages.

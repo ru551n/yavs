@@ -3464,6 +3464,32 @@ impl<'a> Fx<'a, '_> {
         pieces: &[(Reg, Option<Reg>)],
     ) {
         let one = self.int(1);
+        // One instruction for up to 16 pieces; more are stored piece by piece.
+        if pieces.len() <= 16
+            && let Ok(bias) = u8::try_from(bw.0)
+        {
+            let mut list = Vec::with_capacity(2 * pieces.len());
+            let mut scalars = 0u16;
+            for (j, &(r, len)) in pieces.iter().enumerate() {
+                list.push(r);
+                list.push(len.unwrap_or(one));
+                if len.is_none() {
+                    scalars |= 1 << j;
+                }
+            }
+            let parts = self.fb.regs(&list);
+            self.emit(Inst::Cat {
+                dst: data,
+                n,
+                m,
+                parts,
+                scalars,
+                bias,
+                logic,
+                w: bw.1,
+            });
+            return;
+        }
         let mut k = self.int(0);
         for &piece in pieces {
             self.put_at(data, n, logic, bw, m, k, piece);

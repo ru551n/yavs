@@ -2726,3 +2726,48 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
   The threshold applies to each process heap, so a larger default would multiply the worst case by the number of
   allocating processes for no measured gain. Collection is not why the tiny access test is slower than in the
   reference simulator (the interpreter is).
+
+## Concatenation instruction and descriptor-length folds (yavs-ir, yavs-interp, yavs-lower, yavs-llvm, #443)
+
+- **`Inst::Cat { dst, n, m, parts, scalars, bias, logic, w }` is the IR contract for `&` of
+  one-dimensional arrays and elements (and for positional aggregates with array-valued pieces).**
+  `dst` is the result block as lowering made it (`Alloc`, `alloc_val`, with the `TempRoot` typing of the
+  collector unchanged: `Cat` allocates nothing and roots nothing), `n` the result's element count, `m` the
+  units per element (plane elements of a logic array when `logic`, else bytes). `parts` holds two registers per
+  piece in order from the left: the address of an array and its element count, or, with bit `k` of `scalars` set,
+  one element in the register itself (the count register is ignored, lowering passes a constant). A scalar of a
+  logic array is the `std_ulogic` code position plus `bias` (2 for `bit` and `boolean`), of a byte array stored
+  with width `w`. The result is exactly that of the instructions it replaces, in order: per array piece an `LCopy`
+  from plane element 0 of the source to plane `(n - k - len) * m` (planes hold the leftmost element last), an
+  `LSet` for a scalar piece, or `Copy` and `Store` at byte `k * m`. Index bound errors, the null-operand rule and
+  `SubtypeCheck` of the result stay separate instructions before and after it, so messages and pcs are those of
+  the old sequence. Up to 16 pieces; lowering stores more piece by piece as before.
+  Why: the old sequence was about 30 instructions per concatenation (position arithmetic per piece) and was most
+  of the interpreter cost of a shift register; the interpreter writes a logic result of up to 64 plane elements as
+  one block of combined plane words (`Machine::cat_block`), and falls back to `lcopy`/`lset`.
+- **The optimiser treats `Cat` like `LCopy`:** it writes its block and nothing else (`effect` forgets facts about
+  that block only), reads its piece registers and `n`, `m`, allocates nothing (`may_allocate`).
+- **The LLVM tier runs `Cat` through the step side exit** (`keeps_objects` lists it); no code is generated for it.
+  A direct helper call can follow when a compiled body needs it.
+- **Descriptor lengths are facts.** A `MakeDope` whose parts are constants records the length of each dimension
+  (`Key::Dope`), so `DopeLen`, the null test of a slice or concatenation and the `SubtypeCheck` against another
+  descriptor of known length (a pool constant or another such `MakeDope`) fold; an equal-length
+  `SubtypeCheck` is dropped. `LayoutOf` of a one-dimensional array type under such a descriptor is computed at
+  optimisation time (the layout depends on the length alone) and the loads of its words become constants; an
+  `Alloc` block that only `MakeDope` writes goes with its writers (`dce`). Writes by `SigRead`, `LSet`, `LFill`,
+  `LCopy` and `Cat` forget only the facts about their own block: blocks made by different `Alloc`s are disjoint
+  (`Cls::Block`).
+- **A position or check repeated with another message is the same available expression** (`Key::Pos`,
+  `Key::Check`, `Key::BinRange` no longer include the message): the earlier one dominates and fails first with its
+  own message, or this one passes.
+- **Folded branches pay off in the same call:** when a walk replaced a branch on a constant by a jump, up to
+  four more walks run (the join after it has one predecessor less, so facts reach past it). Reachability for
+  code that suspends is from the entry (and the block after a suspension that ends a block) instead of "every
+  block": dead diamonds in processes are emptied like those in functions.
+- **Register sharing leaves the temporaries of linear runs alone** (`opt/share.rs`): a `Bin` (add, subtract,
+  multiply), `Pos` or first-dimension `DopeLen` defined once and read only within its block keeps its own cell,
+  because the predecoder fuses such runs (`pre::lin_run`) only for registers defined once; with shared cells every
+  element access of a function over 31 registers stayed nine instructions. Cost: a few more cells per frame.
+- **A slice assignment needs no instruction of its own:** `LCopy` (planes, any alignment) and `Copy` are the
+  slice copy, the checks around them are the shared `SubtypeCheck`; what a slice costs is the position arithmetic,
+  which the linear runs and the folds above remove.

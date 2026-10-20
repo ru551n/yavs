@@ -957,3 +957,231 @@ fn a_written_root_slot_lives_in_a_register_of_the_roots_type() {
     // An integer register is not a root: the value stays where the collector looks.
     assert_eq!(root_slot_stores(false, RegTy::I64), 1);
 }
+
+/// A descriptor `[left, right, dir]` in a fresh temporary.
+fn made(fb: &mut FuncBuilder<'_>, left: i64, right: i64, dir: i64) -> Reg {
+    let at = fb.reg(RegTy::Ptr);
+    let n = fb.int(24);
+    fb.emit(Inst::Alloc { dst: at, size: n });
+    let parts: Vec<Reg> = [left, right, dir].iter().map(|&v| fb.int(v)).collect();
+    let parts = fb.regs(&parts);
+    fb.emit(Inst::MakeDope { at, parts });
+    at
+}
+
+#[test]
+fn a_descriptor_of_constants_has_known_lengths() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let a = made(fb, 14, 0, 1);
+        let b = made(fb, 0, 14, 0);
+        let c = made(fb, 0, 3, 0);
+        let what = fb.program().check_msg("length", Dir::To);
+        // Equal lengths of opposite directions: the check passes and goes.
+        fb.emit(Inst::SubtypeCheck {
+            dope: a,
+            want: b,
+            dims: 1,
+            what,
+        });
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: n,
+            dope: a,
+            dim: 0,
+        });
+        // Different lengths: stays.
+        fb.emit(Inst::SubtypeCheck {
+            dope: a,
+            want: c,
+            dims: 1,
+            what,
+        });
+        fb.emit(Inst::Ret { v: Some(n) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::DopeLen { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::SubtypeCheck { .. })),
+        1,
+        "{code:?}"
+    );
+    assert!(
+        code.iter().any(|i| matches!(i, Inst::Const { v: 15, .. })),
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_descriptor_nobody_reads_goes_with_its_block() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let a = made(fb, 0, 3, 0);
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::DopeLen {
+            dst: n,
+            dope: a,
+            dim: 0,
+        });
+        fb.emit(Inst::Ret { v: Some(n) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::MakeDope { .. })),
+        0,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_position_repeated_with_another_message_is_shared() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let dope = fb.addr(AddrSpace::Inst, 16);
+        let m1 = fb.program().check_msg("first", Dir::To);
+        let m2 = fb.program().check_msg("second", Dir::To);
+        let (p, q) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        for (dst, what) in [(p, m1), (q, m2)] {
+            fb.emit(Inst::Pos {
+                dst,
+                dope,
+                dim: 0,
+                idx: x,
+                what,
+            });
+        }
+        let s = bin(fb, IntOp::Add, p, q);
+        fb.emit(Inst::Ret { v: Some(s) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Pos { .. })),
+        1,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn the_size_of_a_layout_of_known_length_is_a_constant() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let byte = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let arr = pb.ty(Ty::Array {
+        elem: byte,
+        elem_desc: None,
+        dims: 1,
+    });
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Return, sp());
+    let d = made(&mut fb, 1, 10, 0);
+    let l = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::LayoutOf {
+        dst: l,
+        ty: arr,
+        desc: d,
+    });
+    let size = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: size,
+        addr: l,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Ret { v: Some(size) });
+    fb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let code = &p.func(f).expect("f").code;
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::LayoutOf { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Alloc { .. })),
+        0,
+        "{code:?}"
+    );
+    assert!(
+        code.iter().any(|i| matches!(i, Inst::Const { v: 40, .. })),
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_concatenation_keeps_its_block_and_what_it_read() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let (a, b) = (made(fb, 0, 1, 0), made(fb, 0, 1, 0));
+        let n = fb.int(3);
+        let m = fb.int(1);
+        let one = fb.int(1);
+        let two = fb.int(2);
+        let size = fb.int(24);
+        let data = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: data, size });
+        let parts = fb.regs(&[a, two, x, one]);
+        fb.emit(Inst::Cat {
+            dst: data,
+            n,
+            m,
+            parts,
+            scalars: 0b10,
+            bias: 0,
+            logic: false,
+            w: Width::B8,
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: r,
+            addr: data,
+            w: Width::B8,
+        });
+        let _ = b;
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Cat { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        2,
+        "{code:?}"
+    );
+    // The descriptor `b` nobody reads goes with its allocation; `a` is read by the `Cat`.
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::MakeDope { .. })),
+        1,
+        "{code:?}"
+    );
+}

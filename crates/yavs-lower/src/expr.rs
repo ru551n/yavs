@@ -202,9 +202,15 @@ impl<'a> Fx<'a, '_> {
             },
             ExprKind::Index { prefix, indices } => match self.sig_elem(id, *prefix, span)? {
                 Some(v) => Ok(v),
-                None => self.index(*prefix, indices, span),
+                None => match self.sig_part(id, span)? {
+                    Some(v) => Ok(v),
+                    None => self.index(*prefix, indices, span),
+                },
             },
-            ExprKind::Slice { prefix, range } => self.slice(*prefix, range, span),
+            ExprKind::Slice { prefix, range } => match self.sig_part(id, span)? {
+                Some(v) => Ok(v),
+                None => self.slice(*prefix, range, span),
+            },
             ExprKind::Attr { attr, prefix, args } => {
                 self.attr(*attr, *prefix, args, e.subtype, span)
             }
@@ -3983,13 +3989,18 @@ impl<'a> Fx<'a, '_> {
     /// checks and their messages are those of `index`.
     fn sig_elem(&mut self, e: ExprId, prefix: ExprId, span: Span) -> R<Option<V>> {
         let db = self.db;
-        let ExprKind::Obj(d) = db.exprs[prefix].kind else {
-            return Ok(None);
+        let (d, nested) = match db.exprs[prefix].kind {
+            ExprKind::Obj(d) => (d, false),
+            // `s(i)(j)` of an array of arrays: the element of the element, alone.
+            _ => match self.nested_steps(prefix) {
+                Some((d, _)) => (d, true),
+                None => return Ok(None),
+            },
         };
         let et = db.base(db.exprs[e].subtype);
         if !matches!(self.cx.objs.get(&d), Some(Obj::Signal { .. }))
             || !db.types[et].kind.is_scalar()
-            || self.is_general(db.base(db.exprs[prefix].subtype), span)?
+            || (!nested && self.is_general(db.base(db.exprs[prefix].subtype), span)?)
         {
             return Ok(None);
         }
@@ -4005,6 +4016,33 @@ impl<'a> Fx<'a, '_> {
             return Ok(Some(V::S(f)));
         }
         Ok(Some(V::S(dst)))
+    }
+
+    /// `s(i)` or `s(i)(a to b)` of an array-of-arrays signal `s` (no records): read the part
+    /// the name selects, not the whole signal and then select (#436).
+    fn sig_part(&mut self, e: ExprId, span: Span) -> R<Option<V>> {
+        let db = self.db;
+        let Some((d, _)) = self.nested_steps(e) else {
+            return Ok(None);
+        };
+        let t = db.base(db.exprs[e].subtype);
+        let root_t = db.base(ty::obj_subtype(db, d).ok_or(Failed)?);
+        if !matches!(self.cx.objs.get(&d), Some(Obj::Signal { .. }))
+            || !ty::is_array(db, t)
+            || self.is_general(t, span)?
+            || !self.is_general(root_t, span)?
+        {
+            return Ok(None);
+        }
+        let (_, s, dope) = self.sig_name(e)?;
+        let Some(dope) = dope else {
+            return Ok(None);
+        };
+        let tid = self.ty(t, span)?;
+        let size = self.size_of(tid, dope);
+        let buf = self.alloc(size);
+        self.emit(Inst::SigRead { dst: buf, sig: s });
+        Ok(Some(V::A(buf, dope)))
     }
 
     fn index(&mut self, prefix: ExprId, indices: &[ExprId], span: Span) -> R<V> {

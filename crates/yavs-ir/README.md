@@ -40,6 +40,9 @@ textual dump.
 
 ## Changes
 
+- `Inst::MemEq` (#444): `dst` = 1 when `n` bytes at two addresses are equal. Lowering emits it for `=` and
+  `/=` of one-dimensional arrays of integer or enumeration elements (not logic arrays) after the
+  length test, instead of an element loop. The LLVM tier leaves it to the interpreter.
 - Optimiser (#444): interval analysis, branch threading and dead-definition removal (`opt/range.rs`, `opt/live.rs`); unreachable blocks now end in a jump to the next block, which the predecoder of yavs-interp runs as no operation. No instruction changes.
 - `Inst::NewFrame` (#444): made only by the optimiser. An object `[descriptor][value]` (the
   operands of `NewFill`) in the frame's temporary memory, whose address is the result; the

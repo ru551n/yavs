@@ -402,6 +402,14 @@ pub enum Inst {
         b: Reg,
         n: Reg,
     },
+    /// `dst` is 1 when the `n` bytes at `a` and at `b` are equal, else 0: equality of two
+    /// arrays of integer or enumeration elements of the same length.
+    MemEq {
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        n: Reg,
+    },
     LGet {
         dst: Reg,
         base: Reg,
@@ -898,6 +906,12 @@ impl Inst {
                 f(n, Use, i);
             }
             Inst::LEq { dst, a, b, n } => {
+                d(dst, i);
+                f(a, Use, p);
+                f(b, Use, p);
+                f(n, Use, i);
+            }
+            Inst::MemEq { dst, a, b, n } => {
                 d(dst, i);
                 f(a, Use, p);
                 f(b, Use, p);

@@ -1578,6 +1578,7 @@ impl<'a> Opt<'a> {
             | Inst::FCmp { .. }
             | Inst::Bool { .. }
             | Inst::LEq { .. }
+            | Inst::MemEq { .. }
             | Inst::LGet { .. }
             | Inst::Check { .. }
             | Inst::FCheck { .. }
@@ -2704,6 +2705,7 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::LFill { .. }
             | Inst::LCopy { .. }
             | Inst::LEq { .. }
+            | Inst::MemEq { .. }
             | Inst::Check { .. }
             | Inst::FCheck { .. }
             | Inst::DopeLen { .. }

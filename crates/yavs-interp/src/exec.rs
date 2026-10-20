@@ -4581,6 +4581,11 @@ impl Machine {
                 let v = self.planes(self.r(a), n)? == self.planes(self.r(b), n)?;
                 self.set(dst, v.into());
             }
+            Inst::MemEq { dst, a, b, n } => {
+                let n = self.r(n);
+                let v = self.rd(self.r(a), n)? == self.rd(self.r(b), n)?;
+                self.set(dst, v.into());
+            }
             Inst::LGet { dst, base, idx } => {
                 let code = self.lget(self.r(base), self.r(idx))?;
                 self.set(dst, code);

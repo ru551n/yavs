@@ -676,6 +676,7 @@ fn keeps_objects(i: &Inst) -> bool {
             | Inst::LogicOp { .. }
             | Inst::LNum { .. }
             | Inst::LEq { .. }
+            | Inst::MemEq { .. }
             | Inst::LGet { .. }
             | Inst::LSet { .. }
             | Inst::LCopy { .. }

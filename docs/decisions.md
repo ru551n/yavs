@@ -2482,3 +2482,12 @@ user's performance priority:
 - **Not changed:** processes and anything that may suspend, functions over a size budget
   (registers times blocks above 2^20), every check whose interval does not prove it.
 
+## Equality of arrays of integers and enumerations compares bytes (yavs-lower, yavs-interp, #444)
+
+- **What:** `=` and `/=` of one-dimensional arrays whose elements are integers, physical or
+  enumeration values (not logic arrays, which compare planes) test the lengths and then run one
+  `Inst::MemEq` over the bytes, instead of a loop of `Pos`/`Index`/`Load`/`Cmp` per element. Ordering
+  comparisons keep the loop.
+- **Why:** these values are equal exactly when their stored bytes are; the key comparison of the
+  data-types dictionary tests spent its time in that loop.
+

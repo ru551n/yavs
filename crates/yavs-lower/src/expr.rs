@@ -3197,6 +3197,28 @@ impl<'a> Fx<'a, '_> {
             self.at(j);
             return Ok(r);
         }
+        if !logic && matches!(op, CmpOp::Eq | CmpOp::Ne) {
+            // Equal when the lengths are and the bytes are (elements here are integers and
+            // enumerations, which compare as their bytes do).
+            let same = self.cmp(CmpOp::Eq, la, lb);
+            let (go, no, j) = (self.block(), self.block(), self.block());
+            self.branch(same, go, no);
+            self.at(go);
+            let stride = self.int(i64::from(w.bytes()));
+            let n = self.bin(IntOp::Mul, la, stride);
+            self.emit(Inst::MemEq {
+                dst: r,
+                a: ad,
+                b: bd,
+                n,
+            });
+            self.jump(j);
+            self.at(no);
+            self.emit(Inst::Const { dst: r, v: 0 });
+            self.jump(j);
+            self.at(j);
+            return Ok(if op == CmpOp::Ne { self.not(r) } else { r });
+        }
         let i = self.reg(RegTy::I64);
         self.emit(Inst::Const { dst: i, v: 0 });
         let lt = self.cmp(CmpOp::Lt, la, lb);

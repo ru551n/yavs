@@ -91,19 +91,113 @@ fn vh(m: &Machine, a: &[u64], i: usize) -> R<Vh> {
 }
 
 fn put(m: &mut Machine, o: &Vh) -> Ret {
-    let data = m.temp_alloc(o.v.len().div_ceil(64) as u64 * 32)?;
-    m.put_planes(data, &o.v)?;
-    let bytes: Vec<u8> = [o.left, o.right, i64::from(o.down)]
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect();
-    debug_assert_eq!(bytes.len() as u64, DOPE_DIM_BYTES);
-    let dope = m.temp_alloc(DOPE_DIM_BYTES)?;
-    m.put(dope, &bytes)?;
-    let fat = m.temp_alloc(16)?;
-    m.store(fat, Width::B8, data)?;
-    m.store(add_addr(fat, 8)?, Width::B8, dope)?;
+    // The fat pair, the dope vector and the planes in one block of temporary memory.
+    let blocks = o.v.repr().blocks();
+    let size = blocks.len() as u64 * 32;
+    let fat = m.temp_alloc(16 + DOPE_DIM_BYTES + size)?;
+    let (dope, data) = (add_addr(fat, 16)?, add_addr(fat, 16 + DOPE_DIM_BYTES)?);
+    let b = m.wr(fat, 16 + DOPE_DIM_BYTES + size)?;
+    let head = [data, dope, o.left as u64, o.right as u64, u64::from(o.down)];
+    for (d, w) in b
+        .chunks_exact_mut(8)
+        .zip(head.iter().chain(blocks.as_flattened()))
+    {
+        d.copy_from_slice(&w.to_le_bytes());
+    }
     Ok(Some(fat))
+}
+
+/// An array operand of 1 to 64 elements that holds only `0 1 L H` (`bit_vector`s included):
+/// numeric_std on such operands is plain integer arithmetic on one word, with no allocation.
+struct Small {
+    /// Element count.
+    n: usize,
+    /// The elements as bits, element 0 in bit 0.
+    bits: u64,
+    /// No element is `L` or `H`: operations that move elements around keep those as they are.
+    pure: bool,
+    left: i64,
+    right: i64,
+    down: bool,
+}
+
+/// The low `n` bits (`n` from 1 to 64).
+fn low(n: usize) -> u64 {
+    if n >= 64 { !0 } else { (1 << n) - 1 }
+}
+
+/// [`Small`] of the array operand `i`, or `None` for anything else (empty, longer, a
+/// metavalue), which the general path handles.
+fn small(m: &Machine, a: &[u64], i: usize) -> R<Option<Small>> {
+    let fat = arg(a, i)?;
+    let data = m.load(fat, Width::B8)?;
+    let dope = m.load(add_addr(fat, 8)?, Width::B8)?;
+    let left = m.load(dope, Width::B8)? as i64;
+    let right = m.load(add_addr(dope, 8)?, Width::B8)? as i64;
+    let down = m.load(add_addr(dope, 16)?, Width::B8)? == 1;
+    let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
+    if !(1..=64).contains(&n) {
+        return Ok(None);
+    }
+    let b = m.rd(data, 32)?;
+    let p = |k: usize| u64::from_le_bytes(std::array::from_fn(|j| b[k * 8 + j]));
+    let (p0, p1, p2, p3) = (p(0), p(1), p(2), p(3));
+    // `0` or `L`: plane 1 only (plane 2 is the weak bit); `1` or `H`: planes 0 and 1.
+    let (zero, one) = (!p3 & p1 & !p0, !p3 & p1 & p0);
+    let n = n as usize;
+    if (zero | one) & low(n) != low(n) {
+        return Ok(None);
+    }
+    Ok(Some(Small {
+        n,
+        bits: one & low(n),
+        pure: p2 & low(n) == 0,
+        left,
+        right,
+        down,
+    }))
+}
+
+/// The result `bits` of `n` elements, bounds `left`, `right`, `down`, as [`put`] writes it.
+fn put_small(m: &mut Machine, n: usize, bits: u64, left: i64, right: i64, down: bool) -> R<u64> {
+    let fat = m.temp_alloc(16 + DOPE_DIM_BYTES + 32)?;
+    let (dope, data) = (add_addr(fat, 16)?, add_addr(fat, 16 + DOPE_DIM_BYTES)?);
+    let b = m.wr(fat, 16 + DOPE_DIM_BYTES + 32)?;
+    let mask = low(n);
+    let words = [
+        data,
+        dope,
+        left as u64,
+        right as u64,
+        u64::from(down),
+        bits & mask,
+        mask,
+        0,
+        0,
+    ];
+    for (d, w) in b.chunks_exact_mut(8).zip(words) {
+        d.copy_from_slice(&w.to_le_bytes());
+    }
+    Ok(fat)
+}
+
+/// [`put_small`] with the bounds `(n-1 downto 0)` ([`Vh::down`]).
+fn put_down(m: &mut Machine, n: usize, bits: u64) -> R<u64> {
+    put_small(m, n, bits, n as i64 - 1, 0, true)
+}
+
+/// `bits` of `n` elements extended to `to` elements (`to >= n`): sign or zero.
+fn extend_bits(bits: u64, n: usize, to: usize, signed: bool) -> u64 {
+    if signed && n < to && bits >> (n - 1) & 1 == 1 {
+        (bits | !low(n)) & low(to)
+    } else {
+        bits
+    }
+}
+
+/// The value of `bits` of `n` elements as a signed integer.
+fn signed_of(bits: u64, n: usize) -> i64 {
+    ((bits << (64 - n)) as i64) >> (64 - n)
 }
 
 /// A report from a native, as `Inst::Report` does it. The process ends after a report at the
@@ -219,6 +313,19 @@ const GATES: [Gate; 6] = [
 
 fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let g = GATES[G as usize];
+    if let (Some(l), Some(r)) = (small(m, a, 0)?, small(m, a, 1)?)
+        && l.n == r.n
+    {
+        let bits = match g {
+            Gate::And => l.bits & r.bits,
+            Gate::Nand => !(l.bits & r.bits),
+            Gate::Or => l.bits | r.bits,
+            Gate::Nor => !(l.bits | r.bits),
+            Gate::Xor => l.bits ^ r.bits,
+            Gate::Xnor => !(l.bits ^ r.bits),
+        };
+        return put_small(m, l.n, bits, 1, l.n as i64, false).map(Some);
+    }
     let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
     if l.v.len() != r.v.len() {
         let n = gate_name(g);
@@ -248,6 +355,9 @@ fn not(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
 }
 
 fn vec_not(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    if let Some(l) = small(m, a, 0)? {
+        return put_small(m, l.n, !l.bits, 1, l.n as i64, false).map(Some);
+    }
     let l = vh(m, a, 0)?;
     put(m, &Vh::up1(l.v.not()))
 }
@@ -835,6 +945,28 @@ fn from_int(
     Ok(Vh::down(LogicVec::from_bitvec(&v)))
 }
 
+/// The bits of `TO_UNSIGNED (arg, size)` / `TO_SIGNED` for `size` from 1 to 64, with the same
+/// warning as [`from_int`].
+fn int_bits(
+    m: &mut Machine,
+    ctx: Cx<'_, '_, '_>,
+    arg: i64,
+    size: usize,
+    signed: bool,
+    bit: bool,
+) -> R<u64> {
+    let fits = if signed {
+        size >= 64 || (-(1i64 << (size - 1))..1i64 << (size - 1)).contains(&arg)
+    } else {
+        size >= 64 || (arg as u64) >> size == 0
+    };
+    if !fits {
+        let t = if signed { "TO_SIGNED" } else { "TO_UNSIGNED" };
+        warnb(m, ctx, &format!("NUMERIC_STD.{t}: vector truncated"), bit)?;
+    }
+    Ok(arg as u64 & low(size))
+}
+
 /// A NATURAL operand: the subtype check the body's formal makes.
 fn natural(m: &Machine, i: i64) -> R<i64> {
     if i < 0 {
@@ -859,6 +991,50 @@ fn add_vv(l: &LogicVec, r: &LogicVec, sub: bool, signed: bool) -> Vh {
     Vh::down(LogicVec::from_bitvec(&s))
 }
 
+/// [`add`] on operands of at most 64 elements without a metavalue; `None` for any other.
+fn add_small<const SUB: bool, const SIGNED: bool, const FORM: u8>(
+    m: &mut Machine,
+    ctx: Cx<'_, '_, '_>,
+    bit: bool,
+    a: &[u64],
+) -> R<Option<u64>> {
+    let (n, x, y) = match FORM {
+        0 => {
+            let (Some(l), Some(r)) = (small(m, a, 0)?, small(m, a, 1)?) else {
+                return Ok(None);
+            };
+            let n = l.n.max(r.n);
+            (
+                n,
+                extend_bits(l.bits, l.n, n, SIGNED),
+                extend_bits(r.bits, r.n, n, SIGNED),
+            )
+        }
+        1 => {
+            let Some(l) = small(m, a, 0)? else {
+                return Ok(None);
+            };
+            let i = int(a, 1)?;
+            let i = if SIGNED { i } else { natural(m, i)? };
+            (l.n, l.bits, int_bits(m, ctx, i, l.n, SIGNED, bit)?)
+        }
+        _ => {
+            let Some(r) = small(m, a, 1)? else {
+                return Ok(None);
+            };
+            let i = int(a, 0)?;
+            let i = if SIGNED { i } else { natural(m, i)? };
+            (r.n, int_bits(m, ctx, i, r.n, SIGNED, bit)?, r.bits)
+        }
+    };
+    let s = if SUB {
+        x.wrapping_sub(y)
+    } else {
+        x.wrapping_add(y)
+    };
+    put_down(m, n, s).map(Some)
+}
+
 fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
     m: &mut Machine,
     ctx: Cx<'_, '_, '_>,
@@ -866,6 +1042,9 @@ fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
     a: &[u64],
 ) -> Ret {
     let bit = t.is_some();
+    if let Some(r) = add_small::<SUB, SIGNED, FORM>(m, ctx, bit, a)? {
+        return Ok(Some(r));
+    }
     let out = match FORM {
         0 => add_vv(&vh(m, a, 0)?.v, &vh(m, a, 1)?.v, SUB, SIGNED),
         1 => {
@@ -1020,6 +1199,32 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
         )?;
         Ok(Some(u64::from(dflt)))
     };
+    // Operands of at most 64 elements without a metavalue: plain integers.
+    let ord = match FORM {
+        0 => match (small(m, a, 0)?, small(m, a, 1)?) {
+            (Some(l), Some(r)) if SIGNED => {
+                Some(signed_of(l.bits, l.n).cmp(&signed_of(r.bits, r.n)))
+            }
+            (Some(l), Some(r)) => Some(l.bits.cmp(&r.bits)),
+            _ => None,
+        },
+        _ => match small(m, a, usize::from(FORM != 1))? {
+            Some(v) => {
+                let i = int(a, usize::from(FORM == 1))?;
+                let i = if SIGNED { i } else { natural(m, i)? };
+                let o = if SIGNED {
+                    signed_of(v.bits, v.n).cmp(&i)
+                } else {
+                    v.bits.cmp(&(i as u64))
+                };
+                Some(if FORM == 1 { o } else { o.reverse() })
+            }
+            None => None,
+        },
+    };
+    if let Some(o) = ord {
+        return Ok(Some(u64::from(holds(c, o))));
+    }
     let (l, r) = match FORM {
         0 => (vh(m, a, 0)?.v, Some(vh(m, a, 1)?.v)),
         1 => (vh(m, a, 0)?.v, None),
@@ -1071,6 +1276,18 @@ fn to_integer<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let bit = t.is_some();
+    if let Some(v) = small(m, a, 0)? {
+        let neg = SIGNED && v.bits >> (v.n - 1) & 1 == 1;
+        if SIGNED && v.n == 1 && neg {
+            // The body negates `XARG + 1`, whose `TO_SIGNED (1, 1)` truncates.
+            warnb(m, ctx, "NUMERIC_STD.TO_SIGNED: vector truncated", bit)?;
+        }
+        let mag = if neg { !v.bits & low(v.n) } else { v.bits };
+        // Beyond INTEGER'HIGH the body's checked addition fails: the general path words it.
+        if mag <= m.rt.revision.integer_bounds().high as u64 {
+            return Ok(Some(if neg { (-(mag as i64) - 1) as u64 } else { mag }));
+        }
+    }
     let l = vh(m, a, 0)?.v;
     if l.is_empty() {
         warnb(
@@ -1120,6 +1337,10 @@ fn to_unsigned<const SIGNED: bool>(
     let (v, size) = (int(a, 0)?, int(a, 1)?);
     let v = if SIGNED { v } else { natural(m, v)? };
     let size = natural(m, size)?;
+    if (1..=64).contains(&size) {
+        let bits = int_bits(m, ctx, v, size as usize, SIGNED, bit)?;
+        return put_down(m, size as usize, bits).map(Some);
+    }
     let o = from_int(m, ctx, v, size, SIGNED, bit)?;
     put(m, &o)
 }
@@ -1130,6 +1351,21 @@ fn resize<const SIGNED: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
+    if let Some(v) = small(m, a, 0)?.filter(|v| v.pure) {
+        let new = natural(m, int(a, 1)?)? as usize;
+        if (1..=64).contains(&new) {
+            let bits = if SIGNED {
+                // The top element is the argument's sign element; below it the low elements.
+                let keep = v.n.min(new) - 1;
+                let sign = v.bits >> (v.n - 1) & 1 == 1;
+                let kept = if keep == 0 { 0 } else { v.bits & low(keep) };
+                kept | if sign { low(new) & !low(keep) } else { 0 }
+            } else {
+                v.bits & low(v.n.min(new))
+            };
+            return put_down(m, new, bits).map(Some);
+        }
+    }
     let l = vh(m, a, 0)?.v;
     let new = natural(m, int(a, 1)?)? as usize;
     if new < 1 {
@@ -1150,7 +1386,48 @@ fn resize<const SIGNED: bool>(
     put(m, &Vh::down(v))
 }
 
+/// `shift_of` on at most 64 elements without a metavalue, in one word; `None` when the
+/// general path is needed (and, for a rotation by an empty array, its error).
+fn shift_small<const K: u8>(m: &mut Machine, v: &Small, count: usize) -> R<Option<u64>> {
+    let n = v.n;
+    let bits = match K {
+        0 if count >= n => 0,
+        0 => v.bits << count,
+        1 if count >= n => 0,
+        1 => v.bits >> count,
+        2 => {
+            // XSRA returns its argument unchanged (its own bounds) for 0 or 1 elements.
+            if n <= 1 || count == 0 {
+                return put_small(m, n, v.bits, v.left, v.right, v.down).map(Some);
+            }
+            let k = count.min(n - 1);
+            ((signed_of(v.bits, n) >> k) as u64) & low(n)
+        }
+        3 => {
+            let k = count % n;
+            if k == 0 {
+                v.bits
+            } else {
+                v.bits << k | v.bits >> (n - k)
+            }
+        }
+        _ => {
+            let k = count % n;
+            if k == 0 {
+                v.bits
+            } else {
+                v.bits >> k | v.bits << (n - k)
+            }
+        }
+    };
+    put_down(m, n, bits).map(Some)
+}
+
 fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    if let Some(v) = small(m, a, 0)?.filter(|v| v.pure) {
+        let count = natural(m, int(a, 1)?)? as usize;
+        return shift_small::<K>(m, &v, count);
+    }
     let l = vh(m, a, 0)?;
     let count = natural(m, int(a, 1)?)? as usize;
     shift_of::<K>(m, l, count)
@@ -1159,6 +1436,10 @@ fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[
 /// `shift_left` ... `rotate_right`: the null array constant for a null argument, else the
 /// local function (`XSLL` ...) the body calls.
 fn shift_fn<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    if let Some(v) = small(m, a, 0)?.filter(|v| v.pure) {
+        let count = natural(m, int(a, 1)?)? as usize;
+        return shift_small::<K>(m, &v, count);
+    }
     let l = vh(m, a, 0)?;
     let count = natural(m, int(a, 1)?)? as usize;
     if l.v.is_empty() {

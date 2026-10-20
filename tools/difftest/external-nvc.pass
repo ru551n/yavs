@@ -231,6 +231,7 @@ ename6
 ename7
 ename8
 fact
+file11
 file2
 file3
 file4
@@ -435,6 +436,7 @@ issue293
 issue308
 issue309
 issue315
+issue323
 issue327
 issue335
 issue338
@@ -508,6 +510,7 @@ issue658
 issue668
 issue670
 issue674
+issue675
 issue676
 issue677
 issue681
@@ -643,6 +646,7 @@ protected10
 protected12
 protected2
 protected3
+protected4
 protected5
 protected6
 protected7

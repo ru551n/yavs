@@ -1689,6 +1689,32 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
             Ok(())
         }
         ObjClass::SharedVariable => crate::protected::shared_var(db, pb, cx, ir, d),
+        // A file of an architecture: a cell in the shared heap (instance data is read-only
+        // while processes run), made and opened by a thunk at elaboration; its instance cell
+        // holds the address (`Space::Region`, serial processes). One per instance only: a
+        // block or generate would need one per declaring region (#249).
+        ObjClass::File if cx.arch_scopes.contains(&decl.scope) => {
+            let off = cx.inst_alloc(8);
+            cx.objs.insert(
+                d,
+                Obj::Scalar {
+                    space: Space::Region(off),
+                    off: 0,
+                    w: Width::B4,
+                },
+            );
+            let init = thunk(db, pb, cx, &name, decl.span, |fx| fx.file_region(d))?;
+            ir.consts.push(InstConst {
+                decl: d,
+                name,
+                off,
+                w: Width::B8,
+                comp: None,
+                init,
+                instance_level: true,
+            });
+            Ok(())
+        }
         // A 2019 variable port: a cell holding the handle of its actual's protected object,
         // which the elaborator writes (`UnitIr::var_ports`, #188).
         ObjClass::Variable if o.role == ObjRole::Port => {

@@ -51,6 +51,38 @@ impl Fx<'_, '_> {
         self.open_file(d, Space::Frame(self.depth), off)
     }
 
+    /// The cell of file object `d` of an architecture: a closed cell in the shared heap,
+    /// opened as its declaration says; returns its address.
+    pub fn file_region(&mut self, d: DeclId) -> R<Reg> {
+        let db = self.db;
+        let decl = &db.decls[d];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(self.cx.ice(decl.span, "not an object"));
+        };
+        let tid = self.ty(db.base(o.subtype), decl.span)?;
+        let buf = self.alloc_n(8);
+        let z = self.int(0);
+        self.store(buf, z, Width::B8);
+        let size = self.int(8);
+        let h = self.reg(RegTy::Handle);
+        self.emit(yavs_ir::Inst::New {
+            dst: h,
+            ty: tid,
+            init: buf,
+            size,
+            shared: true,
+        });
+        let what = self.msg(&decl.name.to_string(), yavs_ir::Dir::To);
+        let p = self.reg(RegTy::Ptr);
+        self.emit(yavs_ir::Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        self.open_file_at(d, p)?;
+        Ok(p)
+    }
+
     /// Open file object `d` (its cell at `off` in `space`) as its declaration says, if it does.
     pub fn open_file(&mut self, d: DeclId, space: Space, off: u32) -> R<()> {
         let a = self.addr(space, off);

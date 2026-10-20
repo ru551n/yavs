@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:file_in_architecture:a:_p0	a read back a
+diag	note	0	0	:file_in_architecture:b:_p0	b read back b
+diag	note	1000000	0	:file_in_architecture:_p0	closed true

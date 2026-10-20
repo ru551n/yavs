@@ -357,6 +357,7 @@ const PASS: &[&str] = &[
     "sigassign/stable_quiet",
     "sigassign/transaction_init",
     "sigassign/waveforms",
+    "textio/file_in_architecture",
     "textio/file_roundtrip",
     "textio/std_logic_textio",
     "textio/text_write_raw",

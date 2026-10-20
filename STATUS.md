@@ -2051,7 +2051,7 @@ instructions, all translated before time 0), CPU seconds; the last column is its
 | Code generator | Translate | per IR instruction | Simulate |
 |---|---|---|---|
 | LLVM O2 (`--tier=llvm`) | 95.2 | 1043 us | 0.51 |
-| LLVM O0 (`YAVS_LLVM_OPT=O0`) | 6.2 | 68 us | 0.66 |
+| LLVM O0 (measured with a temporary knob) | 6.2 | 68 us | 0.66 |
 | Cranelift, no optimisation, backtracking RA (default) | 3.5 to 4.0 | 38 to 44 us | 0.54 |
 | Cranelift, no optimisation, single-pass RA (`YAVS_CLIFT_RA=single_pass`) | 1.2 to 1.5 | 13 to 16 us | 0.72 |
 | Cranelift, `opt_level=speed`, backtracking RA | 4.0 | 44 us | 0.57 |

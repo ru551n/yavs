@@ -339,8 +339,7 @@ milestone users care about works.
   38 to 44 us per IR instruction (LLVM O0 68 us, O2 1043 us) and the code is as fast as LLVM O0's;
   `opt_level=speed` helps pure loops by about a third (0.35 s to 0.23 s) and costs about as much to translate;
   single-pass register allocation translates 3x faster and runs the code 1.3x slower. The spike reads
-  `YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA` and `YAVS_CLIFT_VERIFY` to measure these, and `YAVS_LLVM_OPT` for the level
-  `--tier=llvm` uses; none is a supported interface.
+  `YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA` and `YAVS_CLIFT_VERIFY` to measure these; they are not a supported interface.
 - **Result (STATUS.md "clift"):** the tier is correct (corpus identical at 1 and 4 threads, collection stress) and translates the
   closure of a verification-library testbench in about 4 s instead of 95 s with LLVM O2, but like the LLVM tier it
   does not beat the interpreter on the testbench benchmarks (geometric mean of total CPU: `clift-auto` 1.37x, LLVM

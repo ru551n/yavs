@@ -681,12 +681,7 @@ fn use_llvm_tier(
                 .with_note("this is a bug in yavs"),
         )
     };
-    // Spike measurement knob (#481): the level `--tier=llvm` compiles at.
-    let opt = match std::env::var("YAVS_LLVM_OPT").as_deref() {
-        Ok("O0") => yavs_llvm::OptLevel::O0,
-        Ok("O1") => yavs_llvm::OptLevel::O1,
-        _ => yavs_llvm::OptLevel::O2,
-    };
+    let opt = yavs_llvm::OptLevel::O2;
     match a.tier {
         TierArg::Interp | TierArg::Clift | TierArg::CliftAuto => Ok(None),
         TierArg::Llvm => {

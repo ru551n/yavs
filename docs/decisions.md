@@ -1773,8 +1773,10 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   simulation (user decision, 2026-10-19: never block the simulation, merge queued batches);
   `docs/design/gui.md` 5.1 is updated to match.
 - **`--wave` and `--vhpi` work under `--dap`** (#325): the CLI attaches the same observers to the
-  debug build and the recorder finishes before `exited`. A VHPI plugin's stdout shares the
-  stdio transport, so `--vhpi` is debugged over a port (#389).
+  debug build and the recorder finishes before `exited`. Under `--dap=stdio` the CLI
+  moves file descriptor 1 (the C runtime's stdout, also on Windows) to standard error before
+  anything loads and gives the server a private duplicate of the original stdout, so a plugin's
+  prints cannot corrupt the framing (#389).
 - Details of ids, request routing and pause handling: `crates/yavs-dap/AGENTS.md` section 3.
 
 ## Code coverage (yavs-cov, yavs-lower, yavs-elab, CLI, M9, #131, 2026-10-19)

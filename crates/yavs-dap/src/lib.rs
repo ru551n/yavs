@@ -50,6 +50,14 @@ pub enum Transport {
     Tcp(u16),
 }
 
+static STDOUT: OnceLock<std::fs::File> = OnceLock::new();
+
+/// The descriptor `Transport::Stdio` writes to, when the process diverted its own standard
+/// output elsewhere (a plugin's prints must not reach the protocol, #389).
+pub fn set_stdout(f: std::fs::File) {
+    let _ = STDOUT.set(f);
+}
+
 /// Parse a `--dap` value: `stdio` or a port.
 pub fn parse_transport(s: &str) -> Result<Transport, String> {
     if s == "stdio" {
@@ -1675,7 +1683,17 @@ pub fn serve(
     // The socket, to close it gracefully at the end.
     let mut closer = None;
     let (reader, writer): (Box<dyn Read + Send>, Box<dyn Write + Send>) = match transport {
-        Transport::Stdio => (Box::new(std::io::stdin()), Box::new(std::io::stdout())),
+        Transport::Stdio => {
+            let out: Box<dyn Write + Send> = match STDOUT.get().map(std::fs::File::try_clone) {
+                Some(f) => {
+                    Box::new(std::io::BufWriter::new(f.map_err(|err| {
+                        io_err("cannot duplicate standard output", err)
+                    })?))
+                }
+                None => Box::new(std::io::stdout()),
+            };
+            (Box::new(std::io::stdin()), out)
+        }
         Transport::Tcp(port) => {
             let l = TcpListener::bind(("127.0.0.1", port))
                 .map_err(|err| io_err(&format!("cannot listen on port {port}"), err))?;

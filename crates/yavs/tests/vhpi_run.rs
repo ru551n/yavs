@@ -806,3 +806,56 @@ fn plugin_under_dap() {
     assert!(child.wait().expect("wait").success());
     assert!(out.contains("plugin: start of simulation"), "{out}");
 }
+
+/// #389: a plugin's prints must not reach the DAP stream on standard output; every byte of
+/// stdout is a framed message, and the prints come out on stderr.
+#[test]
+fn plugin_prints_stay_off_the_dap_stream() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let (lib, so) = setup();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args([
+            "run",
+            &lib,
+            &format!("--vhpi={}", so.display()),
+            "--dap=stdio",
+            "tb",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("yavs");
+    let mut w = child.stdin.take().expect("stdin");
+    let mut seq = 0;
+    // The adapter ends the session itself after configurationDone when the design finishes;
+    // `disconnect` makes that deterministic.
+    for c in ["initialize", "launch", "configurationDone", "disconnect"] {
+        seq += 1;
+        let b = format!(r#"{{"seq":{seq},"type":"request","command":"{c}","arguments":{{}}}}"#);
+        if write!(w, "Content-Length: {}\r\n\r\n{b}", b.len())
+            .and_then(|()| w.flush())
+            .is_err()
+        {
+            break;
+        }
+    }
+    drop(w);
+    let o = child.wait_with_output().expect("wait");
+    let mut rest = o.stdout.as_slice();
+    let mut messages = 0;
+    while !rest.is_empty() {
+        let s = std::str::from_utf8(rest).expect("utf-8");
+        let (head, tail) = s.split_once("\r\n\r\n").expect("a header");
+        let n: usize = head
+            .strip_prefix("Content-Length: ")
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("stray output on the DAP stream: {head:?}"));
+        rest = &tail.as_bytes()[n..];
+        messages += 1;
+    }
+    assert!(messages >= 4, "{}", String::from_utf8_lossy(&o.stdout));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("plugin: start of simulation"), "{err}");
+}

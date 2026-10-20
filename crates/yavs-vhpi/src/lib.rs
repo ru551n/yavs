@@ -30,7 +30,9 @@ mod types;
 mod value;
 
 pub use model::Control;
-pub use plugin::{ForeignLib, LoadError, PluginSpec, bind_foreign, load, load_foreign};
+pub use plugin::{
+    ForeignLib, LoadError, PluginSpec, bind_foreign, divert_stdout, load, load_foreign,
+};
 pub use sim::VhpiObserver;
 
 /// Keeps every exported `vhpi_*` symbol linked into the executable. An

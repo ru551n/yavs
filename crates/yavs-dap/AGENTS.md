@@ -68,7 +68,7 @@ The design is `docs/plan.md` (`yavs-dap`, M8) on the interpreter's debug hooks,
 - A queued force or deposit is lost when the session ends before the next cycle (disconnect).
 - The wave queue is written with `out` locked first, then the queue (`Shared::send`, the sender
   thread); never the other order. A subscription's recorder is locked inside `Shared::wave`.
-- A VHPI plugin's prints share stdout with `--dap=stdio` (#389): test `--vhpi` over a port.
+- Under `--dap=stdio` the CLI first dup2s descriptor 1 onto stderr (`yavs_vhpi::divert_stdout`) and hands the server a private duplicate of the original stdout (`set_stdout`), so plugin and foreign-library prints cannot corrupt the framing (#389). Any new stdout write in the CLI goes to stderr in such a run.
 - Codes owned: `E0700`-`E0799`/`W0700`-`W0799` (in use: `E0701` connection cannot be opened,
   `E0702` live waves failed).
 

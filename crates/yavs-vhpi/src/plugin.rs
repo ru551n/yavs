@@ -267,3 +267,47 @@ mod tests {
         assert_eq!(spec("lib.so:"), ("lib.so:".into(), None));
     }
 }
+
+/// Give the caller a private duplicate of standard output and point file descriptor 1 (the C
+/// runtime's `stdout`, which plugins and `vhpi_printf` write to) at standard error, so a
+/// plugin's prints cannot corrupt a protocol stream on standard output (#389).
+pub fn divert_stdout() -> std::io::Result<std::fs::File> {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    out.flush()?;
+    #[cfg(unix)]
+    let own = {
+        use std::os::fd::AsFd;
+        unsafe extern "C" {
+            fn dup2(old: i32, new: i32) -> i32;
+        }
+        let own = out.as_fd().try_clone_to_owned()?;
+        // SAFETY: both descriptors are open; dup2 replaces descriptor 1 atomically.
+        if unsafe { dup2(2, 1) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        own
+    };
+    #[cfg(windows)]
+    let own = {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        unsafe extern "C" {
+            fn _dup2(old: i32, new: i32) -> i32;
+        }
+        unsafe extern "system" {
+            fn SetStdHandle(which: u32, handle: *mut std::ffi::c_void) -> i32;
+        }
+        let own = out.as_handle().try_clone_to_owned()?;
+        // SAFETY: both descriptors are open; the UCRT re-points descriptor 1, and the Win32
+        // standard output handle (what Rust's `stdout` uses) follows explicitly.
+        if unsafe { _dup2(2, 1) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let err = std::io::stderr().as_raw_handle();
+        if unsafe { SetStdHandle(-11i32 as u32, err.cast()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        own
+    };
+    Ok(own.into())
+}

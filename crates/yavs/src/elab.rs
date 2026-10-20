@@ -626,6 +626,16 @@ pub fn run(
     if a.time_report {
         crate::timing::enable();
     }
+    // Before any plugin or foreign library loads: their prints must not reach the protocol.
+    if a.dap == Some(yavs_dap::Transport::Stdio) {
+        match yavs_vhpi::divert_stdout() {
+            Ok(f) => yavs_dap::set_stdout(f),
+            Err(err) => {
+                eprintln!("error: cannot protect standard output for `--dap=stdio`: {err}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
     let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
     // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.

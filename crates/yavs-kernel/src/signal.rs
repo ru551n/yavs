@@ -37,6 +37,7 @@ impl Range {
     }
 
     /// Share at least one element.
+    #[inline]
     pub const fn overlaps(self, o: Range) -> bool {
         self.len > 0 && o.len > 0 && self.offset < o.end() && o.offset < self.end()
     }
@@ -146,33 +147,42 @@ pub(crate) struct Waiter {
     seq: u64,
 }
 
-/// Elements per waiter bucket, and the most buckets a waiter is copied into before it goes
-/// to the wide list instead.
-const WAIT_CHUNK: u32 = 64;
+/// The most buckets a waiter is copied into before it goes to the wide list instead.
 const WAIT_NARROW: u32 = 4;
 
-/// The processes waiting on one signal, bucketed by chunk of `WAIT_CHUNK` elements, so an
-/// event looks only at the waiters of the chunks it touches: one process per element of a
-/// wide vector costs O(1) per event, not O(processes). Waiters over more than `WAIT_NARROW`
-/// chunks (or none) sit in a wide list that every event scans. Each list keeps its count
-/// right after the last compaction, so lists of signals that rarely change do not grow
-/// without bound.
+/// The processes waiting on one signal, bucketed by chunk of 8 elements (64 for a signal over
+/// 4096 elements, one bucket for one of at most 8), so an event looks only at the waiters of
+/// the chunks it touches: one process per element of a wide vector costs O(1) per event, not
+/// O(processes). Waiters over more than `WAIT_NARROW` chunks (or none) sit in a wide list that
+/// every event scans. Each list keeps its count right after the last compaction, so lists of
+/// signals that rarely change do not grow without bound. The lists are made when the first
+/// process waits: most signals never have one.
 #[derive(Default)]
 pub(crate) struct Waiters {
-    /// Per chunk, then the wide list last.
+    /// Per chunk, then the wide list last; empty until the first `add`.
     lists: SmallVec<[(SmallVec<[Waiter; 1]>, usize); 1]>,
     next: u64,
+    /// Elements of the signal, and log2 of the chunk size.
+    len: u32,
+    shift: u32,
 }
 
 impl Waiters {
     fn new(len: u32) -> Waiters {
-        // A signal of one chunk or less has one list: the chunk's and the wide one.
-        let chunks = len.div_ceil(WAIT_CHUNK) as usize;
-        let n = if chunks <= 1 { 1 } else { chunks + 1 };
+        let shift = if len > 4096 { 6 } else { 3 };
         Waiters {
-            lists: (0..n).map(|_| (SmallVec::new(), 0)).collect(),
+            lists: SmallVec::new(),
             next: 0,
+            len,
+            shift,
         }
+    }
+
+    fn init(&mut self) {
+        // A signal of one chunk or less has one list: the chunk's and the wide one.
+        let chunks = self.len.div_ceil(1 << self.shift) as usize;
+        let n = if chunks <= 1 { 1 } else { chunks + 1 };
+        self.lists = (0..n).map(|_| (SmallVec::new(), 0)).collect();
     }
 
     fn lists_of(&self, r: Range) -> std::ops::Range<usize> {
@@ -183,7 +193,7 @@ impl Waiters {
         if r.len == 0 {
             return wide..wide + 1;
         }
-        let (a, b) = (r.offset / WAIT_CHUNK, (r.end() - 1) / WAIT_CHUNK);
+        let (a, b) = (r.offset >> self.shift, (r.end() - 1) >> self.shift);
         if b - a >= WAIT_NARROW {
             return wide..wide + 1;
         }
@@ -197,6 +207,9 @@ impl Waiters {
         generation: u64,
         live: impl Fn(&Waiter) -> bool,
     ) {
+        if self.lists.is_empty() {
+            self.init();
+        }
         let seq = self.next;
         self.next += 1;
         for i in self.lists_of(range) {
@@ -224,17 +237,23 @@ impl Waiters {
         hold: impl Fn(&Waiter) -> bool,
         out: &mut Vec<(u64, u32)>,
     ) {
-        let hit = |r: Range| {
-            let i = runs.partition_point(|x| x.end() <= r.offset);
-            runs.get(i).is_some_and(|x| x.overlaps(r))
+        let hit = |r: Range| match runs {
+            [x] => x.overlaps(r),
+            _ => {
+                let i = runs.partition_point(|x| x.end() <= r.offset);
+                runs.get(i).is_some_and(|x| x.overlaps(r))
+            }
         };
         out.clear();
-        let wide = self.lists.len() - 1;
+        let Some(wide) = self.lists.len().checked_sub(1) else {
+            return;
+        };
+        let shift = self.shift;
         let mut scanned = 0;
         let mut last = usize::MAX;
         let chunks = runs.iter().flat_map(|r| {
             (r.len > 0)
-                .then(|| r.offset / WAIT_CHUNK..=(r.end() - 1) / WAIT_CHUNK)
+                .then(|| r.offset >> shift..=(r.end() - 1) >> shift)
                 .into_iter()
                 .flatten()
         });
@@ -428,15 +447,19 @@ impl Signal {
         }
         // Segments are sorted and disjoint: start at the first one that reaches `r`, so a
         // signal with one driver per element costs O(log n) per dirty range, not O(n).
-        let at = |i: usize| self.segments.get(i).is_some_and(|s| s.range.end() > r.offset);
-        let h = self.seg_hint;
-        let first = if at(h) && (h == 0 || !at(h - 1)) {
-            h
-        } else if at(h + 1) && !at(h) {
-            h + 1
-        } else {
-            self.segments.partition_point(|s| s.range.end() <= r.offset)
+        let at = |i: usize| {
+            self.segments
+                .get(i)
+                .is_some_and(|s| s.range.end() > r.offset)
         };
+        // The first segment that reaches `r`: the last one's, a neighbour (dirty ranges come
+        // in element order, ascending or descending), or a search.
+        let found = |i: usize| at(i) && (i == 0 || !at(i - 1));
+        let h = self.seg_hint;
+        let first = [h, h + 1, h.wrapping_sub(1)]
+            .into_iter()
+            .find(|&i| found(i))
+            .unwrap_or_else(|| self.segments.partition_point(|s| s.range.end() <= r.offset));
         self.seg_hint = first;
         for seg in &self.segments[first..] {
             if seg.range.offset >= r.end() {
@@ -1044,15 +1067,16 @@ mod tests {
     #[test]
     fn one_chunk_signal_has_one_waiter_list() {
         let all = |_: &Waiter| true;
-        let mut w = Waiters::new(40);
+        let mut w = Waiters::new(8);
+        assert!(w.lists.is_empty());
+        w.add(1, Range::new(6, 1), 0, all);
         assert_eq!(w.lists.len(), 1);
-        w.add(1, Range::new(30, 1), 0, all);
-        w.add(2, Range::new(0, 40), 0, all);
+        w.add(2, Range::new(0, 8), 0, all);
         w.add(3, Range::new(5, 0), 0, all); // null: never woken
         let mut out = Vec::new();
         w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);
-        w.take_woken(&[Range::new(30, 1)], all, |_| false, &mut out);
+        w.take_woken(&[Range::new(6, 1)], all, |_| false, &mut out);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
     }
 

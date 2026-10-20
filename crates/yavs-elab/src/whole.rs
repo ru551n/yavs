@@ -5,7 +5,7 @@
 //! of the composite, calls the resolution function and unpacks the result the same way.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use yavs_interp::{CallVal, InstData, Runtime};
 use yavs_ir::{ConstData, DOPE_DIM_BYTES, FuncId, LogicKind, Program, Ty, TyId};
@@ -354,6 +354,7 @@ pub(crate) fn resolver(
     (param, ty): (TyId, TyId),
     (left, down): (i64, bool),
     shape: &Shape,
+    shared: Option<Arc<Mutex<yavs_interp::SharedState>>>,
 ) -> Result<yavs_kernel::Resolver, String> {
     let map = Map::new(&rt.prog, ty, shape)?;
     let tail = match rt.prog.types.get(param) {
@@ -387,8 +388,15 @@ pub(crate) fn resolver(
             desc.extend(&map.desc);
         }
         let arg = CallVal::Composite { data, desc };
-        let r = yavs_interp::call_values(rt.clone(), func, inst.clone(), &[arg], Some(ty))
-            .map_err(|e| e.to_string())?;
+        let r = yavs_interp::call_values_shared(
+            rt.clone(),
+            func,
+            inst.clone(),
+            &[arg],
+            Some(ty),
+            shared.as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
         let Some(CallVal::Composite { data, desc }) = r else {
             return Err("the resolution function returned no composite value".into());
         };

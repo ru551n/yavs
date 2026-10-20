@@ -652,81 +652,89 @@ impl Elaborated {
             let d = self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base)?;
             res_inst.insert(leaf, d);
         }
-        let res =
-            |d: yavs_sem::DeclId, leaf: crate::LeafId| -> Result<yavs_kernel::Resolver, SimError> {
-                let f = *ir
-                    .resolvers
-                    .get(&d)
-                    .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
-                let rt = rt.clone();
-                let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
-                let index = *ir
-                    .res_index
-                    .get(&d)
-                    .ok_or_else(|| sim_err("resolution index not lowered".into()))?;
-                if let Some(LeafRes::Whole(_)) = self.nets.leaf(leaf).resolution {
-                    let tys = *ir.res_types.get(&d).ok_or_else(|| {
-                        sim_err("types of a composite resolution function not lowered".into())
-                    })?;
-                    let w = self.nets.whole_of(leaf).ok_or_else(|| {
-                        sim_err("a leaf resolved as a whole outside any composite".into())
-                    })?;
-                    let r = crate::whole::resolver(rt, f, inst, tys, index, &w.shape);
-                    return r.map_err(sim_err);
+        let res = |d: yavs_sem::DeclId,
+                   leaf: crate::LeafId|
+         -> Result<(yavs_kernel::Resolver, bool), SimError> {
+            let f = *ir
+                .resolvers
+                .get(&d)
+                .ok_or_else(|| sim_err("resolution function not lowered".into()))?;
+            let rt = rt.clone();
+            // A function touching shared variables runs with the shared state.
+            let serial = rt.prog.is_serial(f);
+            let sh = serial.then(|| shared.clone());
+            let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
+            let index = *ir
+                .res_index
+                .get(&d)
+                .ok_or_else(|| sim_err("resolution index not lowered".into()))?;
+            if let Some(LeafRes::Whole(_)) = self.nets.leaf(leaf).resolution {
+                let tys = *ir.res_types.get(&d).ok_or_else(|| {
+                    sim_err("types of a composite resolution function not lowered".into())
+                })?;
+                let w = self.nets.whole_of(leaf).ok_or_else(|| {
+                    sim_err("a leaf resolved as a whole outside any composite".into())
+                })?;
+                let r = crate::whole::resolver(rt, f, inst, tys, index, &w.shape, sh);
+                return r.map(|r| (r, serial)).map_err(sim_err);
+            }
+            // Element-wise: one call per element of the leaf (#293).
+            let (param, _) = *ir
+                .res_types
+                .get(&d)
+                .ok_or_else(|| sim_err("types of a resolution function not lowered".into()))?;
+            let pes = match rt.prog.types.get(param) {
+                Some(yavs_ir::Ty::Array { elem, .. }) => {
+                    rt.prog.types.get(*elem).and_then(yavs_ir::Ty::elem_size)
                 }
-                // Element-wise: one call per element of the leaf (#293).
-                let (param, _) = *ir
-                    .res_types
-                    .get(&d)
-                    .ok_or_else(|| sim_err("types of a resolution function not lowered".into()))?;
-                let pes = match rt.prog.types.get(param) {
-                    Some(yavs_ir::Ty::Array { elem, .. }) => {
-                        rt.prog.types.get(*elem).and_then(yavs_ir::Ty::elem_size)
-                    }
-                    _ => None,
-                };
-                let (w, logic) = match self.nets.leaf(leaf).ty.elem {
-                    yavs_kernel::Elem::Bytes(es) => (es as usize, None),
-                    yavs_kernel::Elem::Logic => {
-                        let (_, ret) = *ir.res_types.get(&d).ok_or_else(|| {
-                            sim_err("types of a resolution function not lowered".into())
-                        })?;
-                        let k = yavs_ir::Ty::logic_leaf(&rt.prog.types, ret).ok_or_else(|| {
-                            sim_err("logic signal resolved by a non-logic function".into())
-                        })?;
-                        (1, Some(k))
-                    }
-                };
-                // A resolution function is pure (E1225): the same driving values give the same
-                // result, so one that reported nothing is remembered (R3, `docs/decisions.md`).
-                let memo = Mutex::new((HashMap::<Vec<u8>, Vec<u8>>::new(), Vec::new()));
-                Ok(Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
-                    let (memo, key) = &mut *memo.lock().unwrap_or_else(|e| e.into_inner());
-                    for (k, o) in out.chunks_mut(w).enumerate() {
-                        let el: Vec<&[u8]> = vals
-                            .iter()
-                            .map(|v| v.get(k * w..(k + 1) * w).unwrap_or(&[]))
-                            .collect();
-                        key.clear();
-                        el.iter().for_each(|v| key.extend_from_slice(v));
-                        if let Some(r) = memo.get(&*key) {
-                            o.copy_from_slice(r);
-                            continue;
-                        }
-                        let reports = yavs_kernel::callout::captured();
-                        let es = pes.unwrap_or(w as u64);
-                        yavs_interp::resolve(rt.clone(), f, inst.clone(), &el, o, logic, index, es)
-                            .map_err(|e| e.to_string())?;
-                        if reports.is_some()
-                            && yavs_kernel::callout::captured() == reports
-                            && memo.len() < RES_MEMO
-                        {
-                            memo.insert(key.clone(), o.to_vec());
-                        }
-                    }
-                    Ok(())
-                }))
+                _ => None,
             };
+            let (w, logic) = match self.nets.leaf(leaf).ty.elem {
+                yavs_kernel::Elem::Bytes(es) => (es as usize, None),
+                yavs_kernel::Elem::Logic => {
+                    let (_, ret) = *ir.res_types.get(&d).ok_or_else(|| {
+                        sim_err("types of a resolution function not lowered".into())
+                    })?;
+                    let k = yavs_ir::Ty::logic_leaf(&rt.prog.types, ret).ok_or_else(|| {
+                        sim_err("logic signal resolved by a non-logic function".into())
+                    })?;
+                    (1, Some(k))
+                }
+            };
+            // A resolution function is pure (E1225): the same driving values give the same
+            // result, so one that reported nothing is remembered (R3, `docs/decisions.md`).
+            // One that touches shared state is not pure: no memo.
+            let memo = Mutex::new((HashMap::<Vec<u8>, Vec<u8>>::new(), Vec::new()));
+            let f = Arc::new(move |vals: &[&[u8]], out: &mut [u8]| {
+                let (memo, key) = &mut *memo.lock().unwrap_or_else(|e| e.into_inner());
+                for (k, o) in out.chunks_mut(w).enumerate() {
+                    let el: Vec<&[u8]> = vals
+                        .iter()
+                        .map(|v| v.get(k * w..(k + 1) * w).unwrap_or(&[]))
+                        .collect();
+                    key.clear();
+                    el.iter().for_each(|v| key.extend_from_slice(v));
+                    if let Some(r) = memo.get(&*key) {
+                        o.copy_from_slice(r);
+                        continue;
+                    }
+                    let reports = yavs_kernel::callout::captured();
+                    let es = pes.unwrap_or(w as u64);
+                    let a = (rt.clone(), f, inst.clone());
+                    yavs_interp::resolve(a.0, a.1, a.2, &el, o, logic, index, es, sh.as_ref())
+                        .map_err(|e| e.to_string())?;
+                    if reports.is_some()
+                        && sh.is_none()
+                        && yavs_kernel::callout::captured() == reports
+                        && memo.len() < RES_MEMO
+                    {
+                        memo.insert(key.clone(), o.to_vec());
+                    }
+                }
+                Ok(())
+            });
+            Ok((f, serial))
+        };
         let mut proc_index: HashMap<_, HashMap<_, usize>> = HashMap::new();
         let mut s = self.build_res(
             cfg,

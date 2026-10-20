@@ -278,6 +278,8 @@ pub(crate) struct Signal {
     pub segments: SmallVec<[Segment; 1]>,
     pub resolution: Option<Resolution>,
     pub guard: Option<GuardKind>,
+    /// The resolution function touches shared state: the signal is never updated in parallel.
+    pub serial_res: bool,
     /// Indices into the kernel's composite groups covering this signal: resolved together
     /// with parts of other leaves.
     pub groups: Vec<u32>,
@@ -330,6 +332,7 @@ impl Signal {
             segments: SmallVec::new(),
             resolution,
             guard: None,
+            serial_res: false,
             groups: Vec::new(),
             disconnect: Time::ZERO,
             force_eff: None,

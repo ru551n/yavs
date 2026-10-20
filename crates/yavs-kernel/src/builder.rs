@@ -201,6 +201,14 @@ impl Builder {
         self.groups.push(Group { parts: members, f });
     }
 
+    /// Mark the resolution function of `s` as touching shared state: the kernel then calls it
+    /// from one thread at a time, in signal order.
+    pub fn serial_resolution(&mut self, s: SignalId) {
+        if let Some((s, _)) = self.chk(s.into()) {
+            self.signals[s.0 as usize].serial_res = true;
+        }
+    }
+
     /// Make a resolved signal guarded (`bus` or `register`) with the disconnection time of
     /// its disconnection specification (0 if none).
     pub fn guard(&mut self, s: SignalId, kind: GuardKind, disconnect: Time) {

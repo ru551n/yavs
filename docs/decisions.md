@@ -2207,6 +2207,17 @@ user's performance priority:
   The lookup replaces the plan's tables built at elaboration by probing the function: nothing
   to probe, nothing silenced, and it covers integer and larger types too.
 
+## Resolution functions that touch shared state (yavs-elab, yavs-kernel, #392, 2026-10-20)
+
+- A resolution function that reaches a shared variable of a non-protected type (accepted with
+  `--relaxed`), a protected object or a file, however deep in its calls, runs with the shared
+  state locked (all four reference simulators run it). Rationale: the LRM does not forbid it
+  and a verification library logs through shared state from a resolution function.
+- Such a function is not pure in effect: its element-wise results are not remembered, and the
+  kernel (`Builder::serial_resolution`) never updates its signal in parallel, so the calls come
+  in signal order at any `--threads`. Composites resolved as a whole were already updated
+  serially.
+
 ## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
 
 - A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or

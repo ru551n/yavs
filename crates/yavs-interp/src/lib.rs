@@ -1306,8 +1306,18 @@ pub fn resolve(
     logic: Option<yavs_ir::LogicKind>,
     (left, down): (i64, bool),
     elem: u64,
+    shared: Option<&Arc<Mutex<SharedState>>>,
 ) -> Result<(), SimError> {
     let mut m = Machine::new(rt, inst, Vec::new(), func);
+    let mut guard = match shared {
+        Some(s) => Some(s.lock().map_err(|_| {
+            SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
+        })?),
+        None => None,
+    };
+    if let Some(g) = guard.as_mut() {
+        m.sh = Some(std::mem::take(&mut **g));
+    }
     let stride = out.len() as u64;
     let bias = match logic {
         Some(yavs_ir::LogicKind::StdULogic) | None => 0,
@@ -1351,6 +1361,9 @@ pub fn resolve(
         m.enter(func, &[data, dope])?;
         m.run(None, 0)
     })();
+    if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
+        **g = st;
+    }
     match r {
         Ok(Outcome::Returned(Some(v))) if logic.is_some() => {
             match u8::try_from(v).ok().and_then(|c| c.checked_add(bias)) {

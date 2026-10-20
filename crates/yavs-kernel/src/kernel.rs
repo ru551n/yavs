@@ -554,7 +554,10 @@ impl SimControl {
         };
         let mut ports_up = vec![Vec::new(); signals.len()];
         let mut ports_down = vec![Vec::new(); signals.len()];
-        let mut independent: Vec<bool> = signals.iter().map(|s| s.groups.is_empty()).collect();
+        let mut independent: Vec<bool> = signals
+            .iter()
+            .map(|s| s.groups.is_empty() && !s.serial_res)
+            .collect();
         for (i, p) in ports.iter().enumerate() {
             let i = i as u32;
             for &(f, _) in &p.formal {

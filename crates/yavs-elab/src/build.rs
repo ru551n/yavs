@@ -59,7 +59,7 @@ impl Elaborated {
         &self,
         cfg: Config,
         mut make: impl FnMut(&ProcInst, &[DriverId]) -> Result<Box<dyn Process>, SimError>,
-        res: impl Fn(yavs_sem::DeclId, crate::LeafId) -> Result<yavs_kernel::Resolver, SimError>,
+        res: impl Fn(yavs_sem::DeclId, crate::LeafId) -> Result<(yavs_kernel::Resolver, bool), SimError>,
     ) -> Result<SimControl, SimError> {
         let mut b = Builder::new();
         for (i, leaf) in self.nets.leaves.iter().enumerate() {
@@ -84,12 +84,15 @@ impl Elaborated {
                 }
                 // Joined into one resolved composite below.
                 (Some(LeafRes::Whole(_)), None) => b.signal(&name, leaf.ty, &leaf.init),
-                (Some(LeafRes::Func(d)), None) => b.resolved_signal(
-                    &name,
-                    leaf.ty,
-                    &leaf.init,
-                    Resolution::Func(res(*d, crate::LeafId(i as u32))?),
-                ),
+                (Some(LeafRes::Func(d)), None) => {
+                    // The flag: the function touches shared state (never updated in parallel).
+                    let (f, serial) = res(*d, crate::LeafId(i as u32))?;
+                    let id = b.resolved_signal(&name, leaf.ty, &leaf.init, Resolution::Func(f));
+                    if serial {
+                        b.serial_resolution(id);
+                    }
+                    id
+                }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
             if let Some(g) = leaf.guard {
@@ -104,7 +107,7 @@ impl Elaborated {
             if self.nets.leaf(a).implicit.is_some() {
                 continue;
             }
-            let f = res(w.func, a)?;
+            let (f, _) = res(w.func, a)?;
             for parts in &w.instances {
                 let parts: Vec<_> = (parts.iter())
                     .map(|&(l, r)| yavs_kernel::SignalId(l.0).slice(r.offset, r.len))

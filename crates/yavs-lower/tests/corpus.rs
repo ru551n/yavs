@@ -287,6 +287,7 @@ const PASS: &[&str] = &[
     "resolution/resolved_array_bounds",
     "resolution/resolved_memo",
     "resolution/resolved_record_port",
+    "resolution/shared_var_in_resolver",
     "resolution/std_logic_drivers",
     "resolution/std_logic_table",
     "resolution/user_logic_record",

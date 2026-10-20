@@ -367,12 +367,13 @@ impl Ctx<'_> {
         let Ok(info) = self.own(d) else {
             return false;
         };
-        if !s.skip_ok || !self.st.waveforms[info.local as usize].pending.is_empty() || !s.sole(r) {
+        if !s.skip_ok || !self.st.waveforms[info.local as usize].pending.is_empty() || r.len == 0 {
             return false;
         }
         let ds = &s.drivers[info.slot as usize];
         let (rel, n) = ((r.offset - ds.range.offset) as usize, r.len as usize);
-        r.len > 0 && ds.value.same_as(rel, n, v) && s.cur.same_as(r.offset as usize, n, v)
+        // The cheap tests first: most assignments of a running design change something.
+        ds.value.same_as(rel, n, v) && s.cur.same_as(r.offset as usize, n, v) && s.sole(r)
     }
 
     /// The skipped assignments of driver `d` this run become real transactions again, before

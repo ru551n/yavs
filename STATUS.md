@@ -603,14 +603,29 @@ Against a reference simulator (elaborate and run, its analysis excluded), main a
 The AXI-stream verification component testbench (first generic set, full run, 1 run each) took 577 s CPU on main
 before this work (`7110f09f`) and 173 s after it (most of the gain is the interpreter work of #386 and the native
 operators of #395 that landed in the same period); it now runs to the end and its alert summary fails (#419,
-identical before and after). Still open from `docs/design/performance.md` R2/R3: skipping unchanged assignments
-(R2b, needs the elaborator's activity analysis and an empty delta kept for delta numbering), resolution
-tables (R3), and edge triggers for `elsif` with an asynchronous reset (needs R2b: the skipped reset branch
-would re-assign the same values). Static sensitivity (R2c) was prototyped in the kernel (waiters that stay
+identical before and after). Static sensitivity (R2c) was prototyped in the kernel (waiters that stay
 registered while a process suspends on the same list) and measured: no change on the benchmarks above or on the
 kernel-only bench, so it was not kept. Sampled profiles after #420: 55 to 70 percent of `ff`/`lfsr`/`chain` is
 interpreter dispatch (instruction fetch and `step`), 15 to 25 percent kernel (wake scan, driving values, `Ctx`
 accessors), the rest allocation in the interpreter (`temp_alloc`, the part tables now removed).
+
+Round 3 (#420, `docs/decisions.md` "Skipped unchanged assignments", "Remembered results of user resolution
+functions", "Edge triggers for clocked processes"), CPU seconds, min of 3 to 5 interleaved runs, main before (`df071059`)
+and after, difftest corpus (357 tests) identical at 1 and 4 threads, shuffled, both tiers, raw output byte for byte:
+
+| Change | Benchmark | Before | After |
+|---|---|---|---|
+| R2b (unchanged zero-delay assignments queue nothing, their delta stays) and edge triggers for `if rst = '1' ... elsif rising_edge(clk)` | 2000 async-reset flip-flops, 500 cycles | 1.26 | 0.92 |
+| R3: remembered results of a user resolution function | 32-bit bus, 8 drivers, user enumeration | 0.98 | 0.10 |
+| all of the above, harness | `vai_window_gen` / `ff_rtl` / `resolved_bus` / `delta_chain` | 2.39 / 0.057 / 0.38 / 0.22 | 2.17 / 0.052 / 0.39 / 0.22 |
+
+`ff`, `fan`, `chain` and `bus` (synthetic kernel designs) are unchanged within the noise (their assignments change
+values and their clocked processes have no reset). Measured and not done: a level condition as trigger
+(`if rising_edge(clk) then if en = '1' then`): an activation that only tests a false enable costs 0.4 us, so even
+a permanently low enable would save 0.4 s per million activations, less than the trigger's bookkeeping would
+cost where the enable is often high; waiters grouped per trigger (a clock with 2000 ignoring processes costs 15 ns
+per process and ignored edge, 0.01 s of 0.4 s in the same design). The activation of a process (instruction
+dispatch and its assignments) stays the cost, 1 to 1.5 us for a flip-flop with an assignment.
 
 ### Interpreter dispatch, round 2 (#412)
 

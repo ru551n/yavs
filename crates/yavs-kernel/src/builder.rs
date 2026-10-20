@@ -573,6 +573,7 @@ impl Builder {
                 by_timeout: false,
                 resumed: false,
                 trigger: p.trigger,
+                perm: 0,
             });
         }
         SimControl::new(

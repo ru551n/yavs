@@ -98,6 +98,8 @@ pub(crate) struct ProcState {
     pub waveforms: Vec<Waveform>,
     pub effects: Vec<Effect>,
     pub sens: Vec<(SignalId, Range)>,
+    /// The sensitivity the last commit registered, when that wait had no timeout.
+    pub sens_prev: Vec<(SignalId, Range)>,
     pub deadline: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.

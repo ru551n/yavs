@@ -143,6 +143,8 @@ pub(crate) struct Waiter {
     pub proc: u32,
     pub range: Range,
     pub generation: u64,
+    /// Resident waiter (`ProcMeta::perm`): its epoch, 0 for a plain one.
+    pub perm: u64,
     /// Registration number on its signal: the order in which waiters wake.
     seq: u64,
 }
@@ -227,6 +229,7 @@ impl Waiters {
         proc: u32,
         range: Range,
         generation: u64,
+        perm: u64,
         trigger: Option<crate::EdgeTrigger>,
         live: impl Fn(&Waiter) -> bool,
     ) {
@@ -250,6 +253,7 @@ impl Waiters {
                 proc,
                 range,
                 generation,
+                perm,
                 seq,
             });
         }
@@ -303,7 +307,7 @@ impl Waiters {
                 }
                 if !hold(w) {
                     out.push((w.seq, w.proc));
-                    return false;
+                    return w.perm != 0;
                 }
                 true
             });
@@ -1080,11 +1084,11 @@ mod tests {
         let all = |_: &Waiter| true;
         let none = |_: &Waiter| false;
         let mut w = Waiters::new(300);
-        w.add(1, Range::new(200, 1), 0, None, all); // chunk 3
-        w.add(2, Range::new(0, 300), 0, None, all); // five chunks: the wide list
-        w.add(3, Range::new(60, 10), 0, None, all); // chunks 0 and 1
-        w.add(4, Range::new(100, 1), 0, None, all); // chunk 1
-        w.add(5, Range::new(0, 0), 0, None, all); // null: never woken
+        w.add(1, Range::new(200, 1), 0, 0, None, all); // chunk 3
+        w.add(2, Range::new(0, 300), 0, 0, None, all); // five chunks: the wide list
+        w.add(3, Range::new(60, 10), 0, 0, None, all); // chunks 0 and 1
+        w.add(4, Range::new(100, 1), 0, 0, None, all); // chunk 1
+        w.add(5, Range::new(0, 0), 0, 0, None, all); // null: never woken
         let mut out = Vec::new();
         let procs = |o: &[(u64, u32)]| o.iter().map(|x| x.1).collect::<Vec<_>>();
         w.take_woken(
@@ -1098,9 +1102,30 @@ mod tests {
         let live = |w: &Waiter| w.proc > 4;
         w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert!(out.is_empty());
-        w.add(6, Range::new(299, 1), 0, None, all);
+        w.add(6, Range::new(299, 1), 0, 0, None, all);
         w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
         assert_eq!(procs(&out), [6]);
+    }
+
+    #[test]
+    fn resident_waiters_stay_after_waking() {
+        let all = |_: &Waiter| true;
+        let mut w = Waiters::new(8);
+        w.add(1, Range::new(0, 1), 0, 7, None, all); // resident
+        w.add(2, Range::new(0, 1), 0, 0, None, all);
+        let mut out = Vec::new();
+        for want in [vec![1, 2], vec![1]] {
+            w.take_woken(&[Range::new(0, 1)], all, |_| false, &mut out);
+            assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), want);
+        }
+        // Its process waited for something else: the resident waiter is stale.
+        w.take_woken(
+            &[Range::new(0, 1)],
+            |w: &Waiter| w.perm == 0,
+            |_| false,
+            &mut out,
+        );
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -1108,10 +1133,10 @@ mod tests {
         let all = |_: &Waiter| true;
         let mut w = Waiters::new(8);
         assert!(w.lists.is_empty());
-        w.add(1, Range::new(6, 1), 0, None, all);
+        w.add(1, Range::new(6, 1), 0, 0, None, all);
         assert_eq!(w.lists.len(), 1);
-        w.add(2, Range::new(0, 8), 0, None, all);
-        w.add(3, Range::new(5, 0), 0, None, all); // null: never woken
+        w.add(2, Range::new(0, 8), 0, 0, None, all);
+        w.add(3, Range::new(5, 0), 0, 0, None, all); // null: never woken
         let mut out = Vec::new();
         w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);

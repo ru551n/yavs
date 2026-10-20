@@ -383,6 +383,22 @@ pub(crate) struct ProcMeta {
     pub depth: u32,
     /// Resumes for an event only on this edge (`Builder::edge_trigger`).
     pub trigger: Option<crate::EdgeTrigger>,
+    /// Epoch of the process's resident waiters (0: none): it waited for the same signals
+    /// twice in a row without a timeout, so its waiters stay in their lists across wake-ups
+    /// instead of being removed and added again (`SimControl::run_batch`).
+    pub perm: u64,
+}
+
+/// Whether a waiter still stands for its process: a resident one while its process keeps
+/// waiting for the same, a plain one until the process is resumed.
+#[inline(always)]
+pub(crate) fn alive(procs: &[ProcMeta], w: &Waiter) -> bool {
+    let m = &procs[w.proc as usize];
+    if w.perm != 0 {
+        m.perm == w.perm
+    } else {
+        m.generation == w.generation
+    }
 }
 
 /// A port association between a formal and an actual (K1), each one or more sub-element
@@ -503,6 +519,8 @@ pub struct SimControl {
     /// A skipped unchanged assignment (`Config::skip_unchanged`) left a delta that would have
     /// been there: the next cycle runs although it has no transaction.
     empty_delta: bool,
+    /// Last epoch given to resident waiters (`ProcMeta::perm`).
+    perm_epoch: u64,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -641,6 +659,7 @@ impl SimControl {
             live: false,
             callouts: Vec::new(),
             empty_delta: false,
+            perm_epoch: 0,
         };
         sim.settle().map_err(SimError::new)?;
         sim.live = true;
@@ -1141,7 +1160,7 @@ impl SimControl {
             runs.sort_unstable_by_key(|r| r.offset);
             let mut waiters = std::mem::take(&mut sig.waiters);
             let (procs, signals) = (&self.procs, &self.signals);
-            let live = |w: &Waiter| procs[w.proc as usize].generation == w.generation;
+            let live = |w: &Waiter| alive(procs, w);
             // The processes of one clock share a trigger: its answer is computed once.
             let hold = |w: &Waiter| {
                 self.cfg.edge_triggers
@@ -1730,8 +1749,29 @@ impl SimControl {
                 self.queue.push(self.now, t, Entry::Driver(d.0));
             }
             self.empty_delta |= st.take_phantoms();
+            let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
                 self.queue.push(self.now, t, Entry::Timeout(p, generation));
+            }
+            // The same wait as the last run, without a timeout: the waiters of the last run
+            // stay (resident, `ProcMeta::perm`), or become so now.
+            let same = !timed && !st.sens.is_empty() && st.sens == st.sens_prev;
+            let mut perm = 0;
+            if same {
+                perm = self.procs[p as usize].perm;
+                if perm == 0 {
+                    self.perm_epoch += 1;
+                    perm = self.perm_epoch;
+                    self.procs[p as usize].perm = perm;
+                } else {
+                    st.sens.clear();
+                }
+            } else {
+                self.procs[p as usize].perm = 0;
+                st.sens_prev.clear();
+                if !timed {
+                    st.sens_prev.extend_from_slice(&st.sens);
+                }
             }
             for (s, range) in st.sens.drain(..) {
                 let procs = &self.procs;
@@ -1739,8 +1779,9 @@ impl SimControl {
                     p,
                     range,
                     generation,
+                    perm,
                     procs[p as usize].trigger,
-                    |w| procs[w.proc as usize].generation == w.generation,
+                    |w| alive(procs, w),
                 );
             }
             let result = std::mem::replace(&mut slot.result, Ok(()));

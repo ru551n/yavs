@@ -70,7 +70,13 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   the lists are made when the first process waits), so an event looks only at the waiters of the chunks it touches
   and the wide list: one process per element of a wide vector costs O(1) per event, not
   O(processes). Waiters carry their registration number and wake in that order, each once.
-  Lists are compacted when they reach twice their live size.
+  Lists are compacted when they reach twice their live size. A process that waits for the
+  same signals as in its previous wait, without a timeout, gets resident waiters
+  (`ProcMeta::perm`, an epoch): they stay in their lists when they wake the process, so a
+  clocked process is not removed and added again each cycle; a different wait, or one with a
+  timeout, ends the epoch and the stale waiters go at the next scan of their list. Resident
+  waiters keep their first registration number, so processes of one signal wake in the order
+  they first waited, not in the order they last ran.
 
 ## The cycle
 

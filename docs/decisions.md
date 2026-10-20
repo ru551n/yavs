@@ -269,7 +269,11 @@ milestone users care about works.
   `--tier=auto` never runs more than 2% longer than `--tier=interp`. With the hidden
   `--tier-heat` (tests, tuning) there is no budget. Without any compiled code the fast loop
   samples every 128 events and hands over to the full loop once there is some, so a tier
-  that has not compiled costs about 1%.
+  that has not compiled costs about 1%. Proposal (user to decide): with these rules `--tier=auto`
+  stays within 4% of `--tier=interp` on every benchmark and kernel design measured (geometric
+  mean 1.006) and gains 3% to 5% on runs of several seconds, so it could become the default of a
+  build with the `llvm` feature; against it, loading the LLVM library costs every process about 11 ms
+  and 47 MiB, and the gain on testbenches is small.
 - **Tiers:** `yavs run --tier=llvm` compiles every non-elaboration function at O2 before time 0;
   `--tier=auto` compiles hot functions on a background thread (below). Both compiling tiers
   leave functions over `--tier-max-size` (default 50000 IR instructions) interpreted (user,

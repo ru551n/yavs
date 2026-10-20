@@ -1968,6 +1968,31 @@ an entry from interpreted code costs about what a short body costs. Difftest 409
 `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` (O0 and O2 swapped in mid-run) at 1 and 4
 threads; a `gc-stress` build 407/409 for both, the two `synopsys/` tests over the harness timeout.
 
+Tier-up within a budget (#432, 2026-10-21): `--tier=auto` was 1.23x the interpreter's CPU on the
+harness (geometric mean of 16, worst `protected_scoreboard` 1.52, `calls` 1.56, `access_heavy` 1.57) because
+it compiled every function seen for a few milliseconds, at O0 first, and a hot set of testbench
+functions gains under 10% even compiled before time 0 (22 library functions: 1.56 s to 1.44 s of
+simulation for 6 s of compile). Now: (1) the fast loop with a tier set but nothing compiled
+samples every 128 events and costs about 1% (it was the full loop, 10% on `calls`); (2) compiled
+calls no longer clone the runtime (a compiled call 0.73 s to 0.48 s per 3 million, now level with the
+interpreter's 0.52 s); (3) compile time halved (addresses other than frame offsets by one call,
+`LayoutOf`, `Alloc`, `DopeLen`, `SubtypeCheck` by helpers; the O2 compile of a 185-instruction
+loop 98 ms to 39 ms); (4) O2 only, a function after four times its estimated compile time, with
+its callees, and only while compile time is at most 2% (4% for compute loops) of the interpreted
+time sampled. Pinned to performance cores 2 and 3 (`taskset -c 2,3`, so the compile thread has its own),
+`tools/bench/run.py --compare` of one binary `--tier=interp` against `--tier=auto`, total CPU, median of 5:
+geometric mean 1.006, `compute_loop` 1.02, `ff_rtl` 1.03, `calls` 1.03, `protected_scoreboard` 1.00,
+`strings_heavy` 1.01, `uvvm_util_rand_tb` 1.02, `osvvm_axistream` 1.01, `uvvm_axistream_vvc_tb` 0.98,
+`vunit_vc30` 1.02, the rest 0.95 to 1.02 (the 0.04 s runs are noise of a few percent). Kernel designs
+(minimum of 5, same pinning): `ff` 1.02, `lfsr` 1.01, `chain` 1.02, `fan` 1.02, `bus` 1.04, `ram` 1.00, `rtl`
+0.96, `rtl2` 0.97. Long runs (3 runs): `compute_loop` N=20M 0.95, `strings_heavy` N=400k 0.95,
+`calls` N=15M 0.97, `protected_scoreboard` N=3M 0.97, `access_heavy` N=2M 0.99. Output is
+byte-identical: difftest 410/410 at 1 and 4 threads for `yavs-auto` (default, `--tier-heat=1,0,0`,
+`--tier-heat=1,0,20` shuffled) and `yavs-llvm`, on a normal and a `gc-stress` build. Not done:
+per-function feedback that takes compiled code back (the budget and static rules stand in for it), a
+direct call from the interpreter's `Call` to a compiled callee, side exits of `TempRoot`, `NewFrame`,
+`CallNative` (they are 2.5, 2.0 and 1.8 million of the 9 million steps of `uvvm_util_rand_tb`).
+
 The measurements before this work, for reference:
 
 Compile cost at O0 (release, per function, compile thread): about 2 ms plus 40 us per IR

@@ -1592,7 +1592,8 @@ impl SimControl {
             return;
         }
         let mut keyed: Vec<u64> = pids.iter().map(|&p| key(p)).collect();
-        keyed.sort_unstable();
+        // Stable sort: it follows the sorted runs a batch mostly consists of.
+        keyed.sort();
         for (p, k) in pids.iter_mut().zip(keyed) {
             *p = if k >> 34 != 0 { !(k as u32) } else { k as u32 };
         }

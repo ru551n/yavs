@@ -158,6 +158,25 @@ impl Db {
             }
             _ => self.entity_unit(scope, &c.entity)?,
         };
+        // 3.4.1: a configuration and its entity reside in one library; 2019 relaxes it
+        // (LCS-2016-023).
+        if self.units[entity].lib != lib && self.file_rev() < yavs_syntax::Std::Vhdl2019 {
+            let (own, other) = (
+                self.libs[lib].name.text,
+                self.libs[self.units[entity].lib].name.text,
+            );
+            return Err(self.error(
+                Diagnostic::error(
+                    diag::NOT_IN_REVISION,
+                    format!(
+                        "configuration `{}` is in library `{own}`, its entity `{}` in `{other}`",
+                        c.name.text, self.units[entity].name.text
+                    ),
+                )
+                .with_primary(c.entity.span, "entity of another library")
+                .with_note("a configuration declaration and its entity reside in the same library before VHDL-2019 (LRM 3.4.1)"),
+            ));
+        }
         self.decls_in(scope, &c.decls);
         let Some(b) = &c.block else {
             return Err(self.error(

@@ -53,7 +53,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 018a | `'INDEX` | supported | ok | reject | reject | ok |  |
 | 018d | `'DESIGNATED_SUBTYPE` | supported | ok | reject | reject | ok |  |
 | 019 | Constraints from initial values of signals and variables | supported | ok | reject | reject | ok |  |
-| 023 | Relax library requirement on configurations | not tested | ok | ok | ok | ok | only a plain configuration analyzes in all; the relaxed form was not identified |
+| 023 | Relax library requirement on configurations | supported | ok | reject | reject | ok | a configuration declaration may name an entity of another library (`configuration c of other.e`); before 2019 it is `E1007` as in all four references (#445) |
 | 026c | Long integers | supported | ok | ok (output differs) | fatal | fatal | 64-bit integer range; `integer'high` is 2**63-1 in yavs, 2**31-1 in sim2; sim3 and sim4 stop at the 62-bit type |
 | 030 | Garbage collection | not applicable | - | - | - | - | implementation property, no source syntax; `deallocate` and heap reuse are covered by the access type tests |
 | 032 | `PATH_NAME` and `INSTANCE_NAME` with protected types | supported | ok/ok (output differs) | reject/ok | ok/ok (output differs) | ok | `pt'path_name` inside a method: yavs and two references give `:top:pt`, one gives `:top:sv:`, one `:top:sv:pt:` (catalogued as `protected-path-name`) |

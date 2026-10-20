@@ -1476,6 +1476,96 @@ Against reference B the RTL designs are 2x (chain) to 19x (lfsr) and the library
 The remaining gaps are per-activation costs of clocked processes on `std_logic_vector` signals (lfsr, ff, 2a, 2b), library start-up
 (design 3: 1.7 s of 7.4 s) and the interpreted IEEE arithmetic of the original packages (the `synopsys/` testbenches).
 
+## performance against the two reference simulators, interpreter tier, second run 2026-10-20
+
+Measurement only, repeated on `380b4c5e` (release build, no `llvm` feature, so the interpreter) against
+the section of 2026-10-20 above (yavs at `f2ab69be`), same designs, parameters and method: median of 3
+interleaved runs, one simulation at a time under a memory cap, analysis not counted, startup is
+`--stop-time 0fs` (yavs, sim1 `--jit`, sim2 `-r`), sim1 `-e` (ahead of time), simulation is total minus startup, peak RSS of the full run. sim1 is measured both ways of
+the section above; `--jit` is the way the external test runner starts it (`-H 64m -e --no-save --jit -r`).
+The compilation cache is warm. Host: 24 cores shared with other agents, load average 8 to 14 during the
+runs, so read ratios, not seconds. Total seconds of yavs at `f2ab69be` are in brackets on the yavs rows.
+The designs are the same files and generics as before (the RTL set uses the defaults of the kernel benchmark files).
+
+Corpus rows: one timed run of every `tests/corpus` testbench per tool per rep, summed, 3 reps, median of
+the sums (359 testbenches now; 314 of them are those of 2026-10-19, the rest includes the 20
+`synopsys/` ones). The earlier corpus rows timed each run with a 10 ms clock, which rounds the many
+runs below 5 ms to zero and understates the cheap tools; these rows time each run with a nanosecond clock
+and subtract 4.7 ms per run for the timing wrapper (measured on `true`), so the corpus rows are not
+comparable to the earlier ones to better than about 1 s. `tools/bench` `vunit_vc30` (warm cache), median
+CPU seconds of 3 runs: analyze 0.67, elaborate 1.61, init 0.20, simulate 0.83, total 3.76 (5.04 at
+`f2ab69be`), peak 69 MiB (119).
+
+| Design | Tool | Startup s | Simulation s | Total s (min-max) | Peak RSS MB | yavs / tool |
+|---|---|---:|---:|---:|---:|---:|
+| 1 compute loop, 20M iterations | yavs interp | 0.00 | 2.52 | 2.52 (2.52-2.55) [4.51] | 11 |  |
+|  | sim1 `-e`, `-r` | 0.06 | 3.05 | 3.10 (3.09-3.12) | 54 | 0.8x |
+|  | sim1 `--jit` | 0.03 | 3.05 | 3.08 (2.88-3.13) | 55 | 0.8x |
+|  | sim2 | 0.00 | 0.27 | 0.27 (0.27-0.27) | 7 | 9.3x |
+| 2a 64 LFSR x 5000 cycles, XOR-reduced | yavs interp | 0.00 | 0.85 | 0.85 (0.82-0.91) [1.23] | 15 |  |
+|  | sim1 `-e`, `-r` | 0.06 | 0.01 | 0.07 (0.07-0.08) | 74 | 12.1x |
+|  | sim1 `--jit` | 0.03 | 0.02 | 0.05 (0.05-0.05) | 75 | 17.0x |
+|  | sim2 | 0.03 | 0.16 | 0.19 (0.19-0.19) | 11 | 4.5x |
+| 2b 64 LFSR x 20000 cycles | yavs interp | 0.00 | 1.89 | 1.89 (1.80-1.98) [2.99] | 14 |  |
+|  | sim1 `-e`, `-r` | 0.09 | 0.04 | 0.13 (0.11-0.31) | 74 | 14.5x |
+|  | sim1 `--jit` | 0.03 | 0.08 | 0.11 (0.09-0.12) | 74 | 17.2x |
+|  | sim2 | 0.02 | 0.37 | 0.39 (0.39-0.42) | 11 | 4.8x |
+| 3 queue/scoreboard testbench | yavs interp | 0.91 | 3.39 | 4.20 (3.69-4.53) [7.37] | 42 |  |
+|  | sim1 `-e`, `-r` | 0.19 | 0.26 | 0.49 (0.41-0.53) | 146 | 8.6x |
+|  | sim1 `--jit` | 0.57 | 0.02 | 0.58 (0.57-0.59) | 194 | 7.2x |
+|  | sim2 | 0.34 | 0.26 | 0.60 (0.53-0.61) | 50 | 7.0x |
+| 4 AXI-stream testbench | yavs interp | 0.09 | 0.89 | 1.03 (0.98-1.04) [2.10] | 52 |  |
+|  | sim1 `-e`, `-r` | 0.12 | 0.25 | 0.38 (0.37-0.39) | 158 | 2.7x |
+|  | sim1 `--jit` | 0.07 | 0.26 | 0.33 (0.30-0.34) | 160 | 3.1x |
+|  | sim2 | 0.26 | 0.11 | 0.38 (0.37-0.38) | 47 | 2.7x |
+| 6a window generator (13 tests) | yavs interp | 0.10 | 0.74 | 0.88 (0.84-0.96) [1.79] | 48 |  |
+|  | sim1 `-e`, `-r` | 0.20 | 0.13 | 0.32 (0.31-0.36) | 135 | 2.8x |
+|  | sim1 `--jit` | 0.11 | 0.16 | 0.26 (0.25-0.28) | 136 | 3.4x |
+|  | sim2 | 0.25 | 0.07 | 0.32 (0.30-0.32) | 42 | 2.8x |
+| 6b bias/requant (14 tests) | yavs interp | 0.10 | 0.00 | 0.10 (0.10-0.11) [0.22] | 48 |  |
+|  | sim1 `-e`, `-r` | 0.17 | 0.02 | 0.18 (0.18-0.22) | 119 | 0.6x |
+|  | sim1 `--jit` | 0.10 | 0.02 | 0.12 (0.11-0.13) | 120 | 0.8x |
+|  | sim2 | 0.23 | 0.00 | 0.21 (0.21-0.23) | 41 | 0.5x |
+| ff: 4096 flip-flops x 2000 cycles | yavs interp | 0.01 | 5.64 | 5.66 (4.93-5.72) [11.49] | 21 |  |
+|  | sim1 `-e`, `-r` | 0.35 | 0.31 | 0.66 (0.66-0.67) | 122 | 8.6x |
+|  | sim1 `--jit` | 0.18 | 0.29 | 0.48 (0.38-0.49) | 115 | 11.8x |
+|  | sim2 | 0.02 | 0.48 | 0.51 (0.46-0.56) | 28 | 11.1x |
+| lfsr: 512 x 5000 | yavs interp | 0.00 | 8.98 | 8.98 (8.89-9.33) [15.46] | 13 |  |
+|  | sim1 `-e`, `-r` | 0.04 | 0.13 | 0.17 (0.17-0.17) | 80 | 52.8x |
+|  | sim1 `--jit` | 0.02 | 0.13 | 0.15 (0.14-0.15) | 78 | 59.9x |
+|  | sim2 | 0.03 | 0.62 | 0.65 (0.65-0.71) | 15 | 13.8x |
+| chain: 1000 stages x 2000 | yavs interp | 0.00 | 1.75 | 1.75 (1.74-1.82) [2.90] | 14 |  |
+|  | sim1 `-e`, `-r` | 0.06 | 0.09 | 0.15 (0.15-0.16) | 84 | 11.7x |
+|  | sim1 `--jit` | 0.03 | 0.09 | 0.12 (0.11-0.12) | 82 | 14.6x |
+|  | sim2 | 0.01 | 0.99 | 1.00 (0.97-1.08) | 10 | 1.8x |
+| fan: 4000 x 5000 | yavs interp | 0.01 | 5.35 | 5.36 (5.11-6.22) [7.58] | 19 |  |
+|  | sim1 `-e`, `-r` | 0.33 | 0.78 | 1.13 (1.05-1.20) | 120 | 4.7x |
+|  | sim1 `--jit` | 0.17 | 0.80 | 0.97 (0.93-1.05) | 113 | 5.5x |
+|  | sim2 | 0.01 | 0.38 | 0.39 (0.34-0.41) | 11 | 13.7x |
+| bus: 32 drivers x 20000 | yavs interp | 0.00 | 0.82 | 0.82 (0.81-0.84) [1.09] | 12 |  |
+|  | sim1 `-e`, `-r` | 0.02 | 0.69 | 0.71 (0.68-0.89) | 75 | 1.2x |
+|  | sim1 `--jit` | 0.01 | 0.72 | 0.73 (0.69-0.98) | 75 | 1.1x |
+|  | sim2 | 0.01 | 0.26 | 0.27 (0.26-0.29) | 9 | 3.0x |
+| 5 corpus, the 314 testbenches of 2026-10-19 | yavs interp | - | - | 1.18 (1.04-1.22) [3.33] | 28 |  |
+|  | sim1 `-e`, `-r` | - | - | 9.20 (9.05-9.39) | 103 | 0.1x |
+|  | sim1 `--jit` | - | - | 4.90 (4.73-5.01) | 141 | 0.2x |
+|  | sim2 | - | - | 1.98 (1.83-2.06) | 19 | 0.6x |
+| 5 corpus, all 359 | yavs interp | - | - | 12.94 (12.48-14.00) [21.32] | 28 |  |
+|  | sim1 `-e`, `-r` | - | - | 11.96 (11.82-12.29) | 103 | 1.1x |
+|  | sim1 `--jit` | - | - | 7.02 (6.87-7.22) | 141 | 1.8x |
+|  | sim2 | - | - | 2.17 (2.01-2.27) | 19 | 6.0x |
+
+Reading it, total time, yavs now / sim1 `--jit` (at `f2ab69be`): the compute loop 0.8x (1.2x), 2a 17x
+(20x), 2b 17x (30x), design 3 7.2x (14.5x), design 4 3.1x (4.8x), 6a 3.4x (5.4x), 6b 0.8x (1.3x), ff 12x
+(17x), lfsr 60x (91x), chain 15x (21x), fan 5.5x (6.2x), bus 1.1x (1.0x), the corpus 0.24x on the 314
+testbenches and 1.8x over all 359. yavs is faster than at `f2ab69be` on every row (0.45x to 0.75x of the
+earlier seconds) and its peak memory fell from 57 to 100 MB to 11 to 52 MB, below sim1 (54 to 194 MB) on
+every design; sim2 stays at 7 to 50 MB. Against sim2 the RTL designs are 1.8x (chain) to 14x (lfsr) and
+the library testbenches 2.7x to 7x. The remaining gaps are unchanged in kind: per-activation cost of
+clocked processes on `std_logic_vector` signals (lfsr, ff, 2a, 2b, chain), library start-up (design 3:
+0.9 s of 4.2 s) and the interpreted IEEE arithmetic of the original packages (the `synopsys/`
+testbenches, 11.8 s of the 12.9 s corpus total).
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

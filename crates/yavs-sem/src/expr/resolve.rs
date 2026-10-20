@@ -33,6 +33,19 @@ impl Db {
         e: ExprId,
         target: bool,
     ) -> Result<(), crate::Reported> {
+        // Linkage ports are rare: look for one first, and work out the exceptions only then.
+        let mut linkage: smallvec::SmallVec<[ExprId; 2]> = smallvec::SmallVec::new();
+        self.walk_expr(e, &mut |x| {
+            if let ExprKind::Obj(d) = self.exprs[x].kind
+                && let crate::decl::DeclKind::Object(o) = &self.decls[d].kind
+                && o.mode == Some(crate::hir::Mode::Linkage)
+            {
+                linkage.push(x);
+            }
+        });
+        if linkage.is_empty() {
+            return Ok(());
+        }
         let mut all = Vec::new();
         self.walk_expr(e, &mut |x| all.push(x));
         let mut skip = Vec::new();
@@ -206,8 +219,9 @@ impl Db {
         exp: Expected,
         required: bool,
     ) -> ExprId {
-        let saved = std::mem::take(&mut self.memo);
-        let saved_names = std::mem::take(&mut self.name_memo);
+        let (fresh, fresh_names) = self.memo_pool.pop().unwrap_or_default();
+        let saved = std::mem::replace(&mut self.memo, fresh);
+        let saved_names = std::mem::replace(&mut self.name_memo, fresh_names);
         let saved_overflow = std::mem::take(&mut self.overflow);
         let saved_top = self.top_context.take();
         let mut top = e;
@@ -238,8 +252,14 @@ impl Db {
             };
             self.report(d);
         }
-        self.memo = saved;
-        self.name_memo = saved_names;
+        let mut used = std::mem::replace(&mut self.memo, saved);
+        let mut used_names = std::mem::replace(&mut self.name_memo, saved_names);
+        // A huge context (a big aggregate) does not leave its tables behind.
+        if used.capacity() <= 112 && used_names.capacity() <= 112 {
+            used.clear();
+            used_names.clear();
+            self.memo_pool.push((used, used_names));
+        }
         id
     }
 
@@ -444,7 +464,8 @@ impl Db {
         }
         // A user operator with anonymous parameter types goes to its instance for the
         // operands' types (#308).
-        let actuals: Vec<Option<&ast::Expr>> = operands.iter().map(|o| Some(*o)).collect();
+        let actuals: smallvec::SmallVec<[Option<&ast::Expr>; 2]> =
+            operands.iter().map(|o| Some(*o)).collect();
         let Some((callee, pre)) = self.implicit_instance_of(scope, callee, &actuals, span, span)
         else {
             return self.poison_expr();
@@ -452,7 +473,8 @@ impl Db {
         let Some(s) = self.decls[callee].kind.subprogram() else {
             return self.poison_expr();
         };
-        let formals: Vec<TypeId> = s.params.iter().map(|p| self.base(p.subtype)).collect();
+        let formals: smallvec::SmallVec<[TypeId; 2]> =
+            s.params.iter().map(|p| self.base(p.subtype)).collect();
         let ret = s.ret.unwrap_or(self.poison.subtype);
         let implicit = matches!(s.body, crate::decl::Body::Implicit(_));
         // 9.4.3: a pure function call with globally static actuals is globally static
@@ -465,7 +487,7 @@ impl Db {
         } else {
             Staticness::None
         };
-        let mut hargs = Vec::new();
+        let mut hargs: smallvec::SmallVec<[Arg; 2]> = smallvec::SmallVec::new();
         for (k, (o, f)) in operands.iter().zip(formals).enumerate() {
             let id = match pre.get(&k) {
                 Some(&id) => id,
@@ -481,7 +503,7 @@ impl Db {
         let id = self.add_expr(Expr {
             kind: ExprKind::Call {
                 callee,
-                args: hargs.into(),
+                args: hargs.into_vec().into(),
                 method_of: None,
                 implicit_cond: false,
             },

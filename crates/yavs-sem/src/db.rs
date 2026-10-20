@@ -165,6 +165,13 @@ pub struct Db {
     /// The same for name nodes.
     #[serde(skip)]
     pub(crate) name_memo: HashMap<usize, crate::expr::CandSet>,
+    /// Emptied pairs of memos kept for the next complete context, so that its tables start
+    /// with the capacity the last ones grew to.
+    #[serde(skip)]
+    pub(crate) memo_pool: Vec<(
+        HashMap<usize, crate::expr::CandSet>,
+        HashMap<usize, crate::expr::CandSet>,
+    )>,
     /// Units that depend on a failed unit: undeclared names in them are cascades (8.2).
     pub(crate) tainted: HashSet<UnitId>,
     /// The subtype the next complete context's top expression is resolved for
@@ -277,6 +284,7 @@ impl Db {
             lookup_cache,
             memo,
             name_memo,
+            memo_pool,
             files,
             ext_memo,
             ext_uses,
@@ -460,6 +468,7 @@ impl Db {
             lookup_cache: HashMap::with_capacity_and_hasher(1 << 13, Default::default()),
             memo: HashMap::default(),
             name_memo: HashMap::default(),
+            memo_pool: Vec::new(),
             pending_implicit: Vec::new(),
             validated: Default::default(),
             overflow: Vec::new(),

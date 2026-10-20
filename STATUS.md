@@ -94,6 +94,7 @@ and after #365 to #368 (2026-10-19):
 | first, after | 1070 | 20 | 798 | 52 | 3 | 39 | 55 | 52 | 51 |
 | second (`external.py ghdl`), before | 504 | 30 | 377 | 0 | 0 | 21 | 16 | 19 | 41 |
 | second, after | 504 | 30 | 381 | 0 | 0 | 21 | 12 | 19 | 41 |
+| second, after #447 to #461 (2026-10-20) | 504 | 30 | 392 | 0 | 0 | 22 | 9 | 15 | 36 |
 
 Skipped by the harness: 403 and 647 (other languages, VHPI, coverage, Tcl and shell scripts,
 second-suite scripts with control flow or tool options, negative analysis tests). The passing

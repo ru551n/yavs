@@ -297,6 +297,32 @@ pub(crate) enum Op {
         dst: u32,
         size: u32,
     },
+    /// `Inst::Call`; `dst` is `NONE` for a procedure.
+    Call {
+        func: u32,
+        start: u32,
+        len: u32,
+        dst: u32,
+    },
+    /// `Inst::CallNative`; `dst` is `NONE` without a result.
+    CallNative {
+        native: u32,
+        start: u32,
+        len: u32,
+        dst: u32,
+    },
+    SigReadScalar {
+        dst: u32,
+        sig: u32,
+    },
+    WaitOn {
+        sig: u32,
+    },
+    Suspend,
+    /// `Inst::Ret`; `v` is `NONE` without a value.
+    Ret {
+        v: u32,
+    },
     /// `LayoutOf` of type `ty`.
     Layout {
         dst: u32,
@@ -620,6 +646,27 @@ impl Code {
                     dst: dst.0,
                     dope: dope.0,
                     dim,
+                },
+                Inst::Call { func, args, dst } => Op::Call {
+                    func: func.0,
+                    start: args.start,
+                    len: args.len,
+                    dst: dst.map_or(NONE, |d| d.0),
+                },
+                Inst::CallNative { native, args, dst } => Op::CallNative {
+                    native: native.0,
+                    start: args.start,
+                    len: args.len,
+                    dst: dst.map_or(NONE, |d| d.0),
+                },
+                Inst::SigReadScalar { dst, sig } => Op::SigReadScalar {
+                    dst: dst.0,
+                    sig: sig.0,
+                },
+                Inst::WaitOn { sig } => Op::WaitOn { sig: sig.0 },
+                Inst::Suspend { .. } => Op::Suspend,
+                Inst::Ret { v } => Op::Ret {
+                    v: v.map_or(NONE, |r| r.0),
                 },
                 Inst::Alloc { dst, size } => Op::Alloc {
                     dst: dst.0,

@@ -1616,6 +1616,139 @@ impl Machine {
         }
     }
 
+    /// `Inst::SigReadScalar`: the value of the one element `sig` refers to.
+    fn sig_read_scalar(&mut self, sig: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+        // A table of one part (an association of one element) reads like a single range.
+        let (sr, ty) = if self.is_multi(sig) {
+            match self.sigparts(sig)?.as_slice() {
+                [(sr, ty, _)] => (*sr, *ty),
+                _ => return Err(ice("scalar read of a reference of several parts")),
+            }
+        } else {
+            self.sigref(sig)?
+        };
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err("signal or wait operation during elaboration");
+        };
+        let v = match ty.elem {
+            Elem::Bytes(es) if es <= 8 => cell(c.value(sr)?),
+            Elem::Logic => {
+                let Some(r) = sr.range.filter(|r| r.len > 0) else {
+                    return Err(ice("scalar read of a null signal range"));
+                };
+                // The first element in one block: its code is bit 0 of each plane.
+                let mut b = [0u8; 32];
+                c.read_into(sr.signal.slice(r.offset, 1), &mut b)?;
+                (0..4).fold(0, |v, p| v | u64::from(b[p * 8] & 1) << p)
+            }
+            Elem::Bytes(es) => {
+                return Err(ice(format!("scalar read of a {es}-byte element")));
+            }
+        };
+        Ok(v)
+    }
+
+    /// `Inst::WaitOn`.
+    fn wait_on(&mut self, sig: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<()> {
+        let Some(c) = ctx.as_deref_mut() else {
+            return rt_err("signal or wait operation during elaboration");
+        };
+        if self.is_multi(sig) {
+            for (sr, _, _) in self.sigparts(sig)? {
+                c.wait_on(sr)?;
+                if self.dbg.is_some() {
+                    self.waits.sens.push(sr);
+                }
+            }
+        } else {
+            let sr = self.sigref(sig)?.0;
+            c.wait_on(sr)?;
+            if self.dbg.is_some() {
+                self.waits.sens.push(sr);
+            }
+        }
+        Ok(())
+    }
+
+    /// The checks of `Inst::Suspend`; the caller then suspends.
+    fn suspend(&mut self, prog: &Program, f: &Func, ctx: &Option<&mut Ctx<'_>>) -> R<()> {
+        if let Some(fr) = self.frames.iter().find(|fr| {
+            prog.func(fr.func)
+                .is_some_and(|g| g.kind != FuncKind::Process && g.kind != FuncKind::Procedure)
+        }) {
+            return Err(ice(format!(
+                "wait inside {}, which cannot suspend",
+                fr.func
+            )));
+        }
+        if ctx.is_none() {
+            return rt_err("wait statement executed during elaboration");
+        }
+        if self.dbg.is_some() {
+            let fr = &self.frames[self.frames.len() - 1];
+            self.waits.stmt = f.loc.get(fr.pc as usize).copied();
+        }
+        Ok(())
+    }
+
+    /// `Inst::CallNative`: `Flow::Next`, or the flow a native ends with (a VHDL body it hands
+    /// the call to, the end of the process).
+    fn call_native(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Flow> {
+        self.reclaim();
+        let n = prog
+            .natives
+            .get(native)
+            .ok_or_else(|| ice(format!("no native {native}")))?;
+        let Some(fun) = self.rt.natives.get(native.0 as usize).copied().flatten() else {
+            return rt_err(format!(
+                "native subprogram `{}` is not implemented in yavs yet",
+                n.symbol
+            ));
+        };
+        // The argument cells go through `Machine::cells`: a native call allocates no vector.
+        let mut cells = std::mem::take(&mut self.cells);
+        cells.clear();
+        self.push_args(&mut cells, f, args, None, 0)?;
+        let v = fun(self, ctx, n.ty, &cells);
+        let v = match v {
+            Ok(v) => v,
+            Err(e) => {
+                self.cells = cells;
+                return Err(e);
+            }
+        };
+        if std::mem::take(&mut self.ieee_fallback) {
+            let r = self.ieee_body(prog, &n.symbol, &cells, dst);
+            self.cells = cells;
+            return r;
+        }
+        self.cells = cells;
+        if let Some(d) = dst {
+            let v = v.ok_or_else(|| ice(format!("native `{}` returned no value", n.symbol)))?;
+            self.set(d, v);
+        }
+        // `std.env.stop`/`finish` end the calling process at once (LRM 16.5): the
+        // simulation ends after this cycle, so execute no further, as for a report
+        // at the stop severity.
+        if std::mem::take(&mut self.ieee_stop) {
+            return Ok(Flow::Suspend);
+        }
+        if n.symbol.starts_with("yavs.env.")
+            && (n.symbol.starts_with("yavs.env.stop.") || n.symbol.starts_with("yavs.env.finish."))
+        {
+            return Ok(Flow::Suspend);
+        }
+        Ok(Flow::Next)
+    }
+
     /// The temporaries of the statement that ended (`Inst::Stmt`).
     #[inline(always)]
     fn end_stmt(&mut self) {
@@ -2217,6 +2350,48 @@ impl Machine {
                 Op::DopeLen { dst, dope, dim } => {
                     self.regs[dst as usize] = t!(self.dope_len(self.regs[dope as usize], dim));
                     k += 1;
+                }
+                Op::Call {
+                    func,
+                    start,
+                    len,
+                    dst,
+                } => {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    let args = yavs_ir::Regs { start, len };
+                    let dst = (dst != pre::NONE).then_some(Reg(dst));
+                    return self.call_with(prog, f, FuncId(func), None, args, dst);
+                }
+                Op::Ret { v } => {
+                    let v = (v != pre::NONE).then(|| self.regs[v as usize]);
+                    return Ok(Flow::Ret(v));
+                }
+                Op::SigReadScalar { dst, sig } => {
+                    self.regs[dst as usize] = t!(self.sig_read_scalar(Reg(sig), ctx));
+                    k += 1;
+                }
+                Op::WaitOn { sig } => {
+                    t!(self.wait_on(Reg(sig), ctx));
+                    k += 1;
+                }
+                Op::Suspend => {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    self.suspend(prog, f, ctx)?;
+                    return Ok(Flow::Suspend);
+                }
+                Op::CallNative {
+                    native,
+                    start,
+                    len,
+                    dst,
+                } => {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    let args = yavs_ir::Regs { start, len };
+                    let dst = (dst != pre::NONE).then_some(Reg(dst));
+                    match self.call_native(prog, f, yavs_ir::NativeId(native), args, dst, ctx)? {
+                        Flow::Next => k += 1,
+                        flow => return Ok(flow),
+                    }
                 }
                 Op::Alloc { dst, size } => {
                     self.regs[dst as usize] = t!(self.temp_alloc(self.regs[size as usize]));
@@ -3121,45 +3296,7 @@ impl Machine {
                 return Ok(flow);
             }
             Inst::CallNative { native, args, dst } => {
-                self.reclaim();
-                let n = prog
-                    .natives
-                    .get(native)
-                    .ok_or_else(|| ice(format!("no native {native}")))?;
-                let Some(fun) = self.rt.natives.get(native.0 as usize).copied().flatten() else {
-                    return rt_err(format!(
-                        "native subprogram `{}` is not implemented in yavs yet",
-                        n.symbol
-                    ));
-                };
-                // The argument cells go through `Machine::cells`: a native call allocates no vector.
-                let mut cells = std::mem::take(&mut self.cells);
-                cells.clear();
-                self.push_args(&mut cells, f, args, None, 0)?;
-                let v = fun(self, ctx, n.ty, &cells)?;
-                if std::mem::take(&mut self.ieee_fallback) {
-                    let r = self.ieee_body(prog, &n.symbol, &cells, dst);
-                    self.cells = cells;
-                    return r;
-                }
-                self.cells = cells;
-                if let Some(d) = dst {
-                    let v =
-                        v.ok_or_else(|| ice(format!("native `{}` returned no value", n.symbol)))?;
-                    self.set(d, v);
-                }
-                // `std.env.stop`/`finish` end the calling process at once (LRM 16.5): the
-                // simulation ends after this cycle, so execute no further, as for a report
-                // at the stop severity.
-                if std::mem::take(&mut self.ieee_stop) {
-                    return Ok(Flow::Suspend);
-                }
-                if n.symbol.starts_with("yavs.env.")
-                    && (n.symbol.starts_with("yavs.env.stop.")
-                        || n.symbol.starts_with("yavs.env.finish."))
-                {
-                    return Ok(Flow::Suspend);
-                }
+                return self.call_native(prog, f, native, args, dst, ctx);
             }
             Inst::CallForeign { foreign, args, dst } => {
                 let v = self.foreign(prog, f, foreign, args, ctx)?;
@@ -3292,31 +3429,7 @@ impl Machine {
                 c.read_into(sr, self.wr(self.r(dst), n)?)?;
             }
             Inst::SigReadScalar { dst, sig } => {
-                // A table of one part (an association of one element) reads like a single range.
-                let (sr, ty) = if self.is_multi(sig) {
-                    match self.sigparts(sig)?.as_slice() {
-                        [(sr, ty, _)] => (*sr, *ty),
-                        _ => return Err(ice("scalar read of a reference of several parts")),
-                    }
-                } else {
-                    self.sigref(sig)?
-                };
-                let c = kc!();
-                let v = match ty.elem {
-                    Elem::Bytes(es) if es <= 8 => cell(c.value(sr)?),
-                    Elem::Logic => {
-                        let Some(r) = sr.range.filter(|r| r.len > 0) else {
-                            return Err(ice("scalar read of a null signal range"));
-                        };
-                        // The first element in one block: its code is bit 0 of each plane.
-                        let mut b = [0u8; 32];
-                        c.read_into(sr.signal.slice(r.offset, 1), &mut b)?;
-                        (0..4).fold(0, |v, p| v | u64::from(b[p * 8] & 1) << p)
-                    }
-                    Elem::Bytes(es) => {
-                        return Err(ice(format!("scalar read of a {es}-byte element")));
-                    }
-                };
+                let v = self.sig_read_scalar(sig, ctx)?;
                 self.set(dst, v);
             }
             Inst::SigLastValue { dst, sig } => {
@@ -3442,22 +3555,7 @@ impl Machine {
                     kc!().release(sr, force_mode(kind))?;
                 }
             }
-            Inst::WaitOn { sig } => {
-                if self.is_multi(sig) {
-                    for (sr, _, _) in self.sigparts(sig)? {
-                        kc!().wait_on(sr)?;
-                        if self.dbg.is_some() {
-                            self.waits.sens.push(sr);
-                        }
-                    }
-                } else {
-                    let sr = self.sigref(sig)?.0;
-                    kc!().wait_on(sr)?;
-                    if self.dbg.is_some() {
-                        self.waits.sens.push(sr);
-                    }
-                }
-            }
+            Inst::WaitOn { sig } => self.wait_on(sig, ctx)?,
             Inst::WaitFor { t } => {
                 let t = to_time(self.ri(t))?;
                 let c = kc!();
@@ -3474,23 +3572,7 @@ impl Machine {
                 }
             }
             Inst::Suspend { .. } => {
-                if let Some(fr) = self.frames.iter().find(|fr| {
-                    prog.func(fr.func).is_some_and(|g| {
-                        g.kind != FuncKind::Process && g.kind != FuncKind::Procedure
-                    })
-                }) {
-                    return Err(ice(format!(
-                        "wait inside {}, which cannot suspend",
-                        fr.func
-                    )));
-                }
-                if ctx.is_none() {
-                    return rt_err("wait statement executed during elaboration");
-                }
-                if self.dbg.is_some() {
-                    let fr = &self.frames[self.frames.len() - 1];
-                    self.waits.stmt = f.loc.get(fr.pc as usize).copied();
-                }
+                self.suspend(prog, f, ctx)?;
                 return Ok(Flow::Suspend);
             }
             Inst::TimedOut { dst } => {

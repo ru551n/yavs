@@ -1,0 +1,29 @@
+exit	1
+diag	error	5000000	0	-	stable a
+diag	error	5000000	0	-	onehot0 v
+diag	error	15000000	0	-	rose b
+diag	error	15000000	0	-	stable a
+diag	error	15000000	0	-	onehot v
+diag	error	15000000	0	-	onehot0 v
+diag	error	25000000	0	-	fell a
+diag	error	25000000	0	-	two ones
+diag	error	25000000	0	-	a changed after b rose
+diag	error	35000000	0	-	stable a
+diag	error	35000000	0	-	prev a is 0
+diag	error	35000000	0	-	two ones
+diag	note	35000000	0	-	fell b
+diag	error	45000000	0	-	rose a
+diag	error	45000000	0	-	prev a is 0
+diag	error	45000000	0	-	prev2 v is 0011
+diag	error	45000000	0	-	onehot v
+diag	error	45000000	0	-	onehot0 v
+diag	error	55000000	0	-	stable a
+diag	error	55000000	0	-	prev2 v is 0011
+diag	error	55000000	0	-	onehot v
+diag	error	55000000	0	-	onehot0 v
+diag	error	65000000	0	-	stable a
+diag	error	65000000	0	-	four ones
+diag	error	75000000	0	-	stable a
+diag	error	75000000	0	-	four ones
+diag	error	85000000	0	-	stable a
+diag	error	85000000	0	-	four ones

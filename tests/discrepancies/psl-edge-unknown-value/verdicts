@@ -1,0 +1,5 @@
+# sim1: stops at elaboration ("argument to not is not boolean") on rose/fell of a std_logic; sim2: internal error on PSL_ROSE; sim3 and sim4 reject native PSL (sim3 run with the directives as comments reports an edge only between known values, as yavs does)
+sim1 2008 FATAL
+sim2 2008 CRASH
+sim3 2008 REJECT
+sim4 2008 REJECT

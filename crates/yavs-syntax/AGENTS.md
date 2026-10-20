@@ -26,7 +26,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/directive.rs` | `preprocess`: `` `if/elsif/else/end ``, `` `warning/error ``, unknown directives `W0002`; standard identifiers (`VHDL_VERSION`, `TOOL_*`) |
 | `src/parser/mod.rs` | `Parser`, `PResult`/`Recover`, resync, `MAX_DEPTH = 64`, fuel counter |
 | `src/parser/unit.rs`, `decl.rs`, `stmt.rs`, `expr.rs` | Design units, declarations, statements, expressions and names |
-| `src/parser/psl.rs` | The PSL subset: `default clock`, directives to checker processes (#226) |
+| `src/parser/psl.rs` | The PSL subset: `default clock`, directives to checker processes (#226), built-in function calls to process variables (#445) |
 | `src/ast.rs` | The tree: `DesignFile`, `DesignUnit`, `LibraryUnit`, `Decl`, `SeqStmt`, `ConcStmt`, `Expr`, `Name`/`NameKind::Apply`, `Range::Name`, `Ident` (`text`, `key`, `span`) |
 | `src/tests.rs` | Unit tests (about 1,000 lines) |
 

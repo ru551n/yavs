@@ -545,7 +545,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   fails only when `b` is true (`'X'` passes). Defaults: severity `error`, message `PSL assertion
   failed` (the first reference simulator's text); a `cover` prints its `report` text as a note on
   every hit and nothing without one (both references). A directive that does not fit (no clock,
-  SEREs, other operators, a PSL built-in call such as `rose(a)`, a name of a skipped `property`/
+  SEREs, other operators, a PSL built-in call other than the ones below (`ended`, `nondet`, `nondet_vector`, `next`), a name of a skipped `property`/
   `sequence`, anything left after the property) is parsed again as before and skipped with
   `W0004`; the attempt's diagnostics are dropped. `-- psl` comments are read only with the option
   `--psl` (`parse`, `analyze`, `elab`, `run`; user, 2026-10-19, as the references need one; the
@@ -555,6 +555,19 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   Prose such as `-- PSL assert failed` (in the 2019 `std.env` source) stays a comment. `->` is
   lexed as one token (never valid VHDL). yavs is permissive where the references reject: `@`
   clocks, `assume` and `severity` (catalogue rows `psl-*`).
+- **PSL built-in functions in the subset (agent, 2026-10-20, #445):** `prev(x[, n])`, `stable(x)`,
+  `rose(x)`, `fell(x)`, `isunknown(x)`, `countones(x)`, `onehot(x)` and `onehot0(x)` work inside
+  the expressions of the supported directives (`assert`/`assume`/`cover`, both sides of `->`). The
+  parser rewrites each call into variables of the checker process (`parser/psl.rs`, `Gen`),
+  set from the values at the clock event before the check and updated after it: `prev(x, n)` is
+  a chain of `n` variables of `x'subtype`, `rose`/`fell` keep whether the last value was true or
+  false (a value that is neither, such as `'X'`, is no edge), `countones` is a loop over `x'range`
+  and counts the true elements, `isunknown` is `ieee.std_logic_1164.is_x`. At the first tick
+  `prev(x)` is `x` (so no edge and `stable` is true; two references agree). Ceilings: `prev` and
+  `stable` need an object name, `countones`/`onehot`/`onehot0` a name of a one-dimensional array,
+  `isunknown` a std_logic-based argument and `prev(x, n)` a literal `n` of at most 256; any other
+  argument skips the directive with `W0004` as before. `ended`, `nondet`, `nondet_vector` and the
+  `next` function stay skipped. Catalogue row `psl-edge-unknown-value`.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993

@@ -163,6 +163,9 @@ identical to a run without it, at any `--threads`.
   disables it. `yavs cache clean --work=NAME:PATH [--map=NAME:PATH ...]` removes the entries of those
   library directories and prints what it removed (`E0123` if one cannot be removed). Deleting
   the `yavs-cache` directory by hand is equally safe.
+- A closure that starts with the files of a closure analyzed before (same options, same files with
+  the same contents) continues from a prefix entry (`pre-<key>.img`) kept in the cache of the library
+  of the prefix's last file; the output is the same as from source.
 - The lowered form of the packages with run-time objects (signals, shared variables, constants
   that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
   elaborated without instantiating anything at elaboration time and the lowering is neither tiny

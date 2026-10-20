@@ -365,6 +365,17 @@ fn package_externals(db: &mut Db) -> Result<Vec<(UnitId, DeclId)>, Vec<Diagnosti
 // ponytail: every loaded package, not a call graph walk; enough until designs with many
 // unused packages get slow.
 pub fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
+    load_bodies_in(db, None)
+}
+
+/// [`load_bodies`] for the packages of the libraries `only` accepts (by folded name), and for the
+/// instances (in creation order) up to the first one whose generic package body is not
+/// analyzed yet: what can be done while the files of the other libraries are still to be
+/// analyzed, in compile order, without loading a unit out of that order.
+pub fn load_bodies_in(
+    db: &mut Db,
+    only: Option<&dyn Fn(&str) -> bool>,
+) -> Result<(), Vec<Diagnostic>> {
     use yavs_sem::decl::Body;
     use yavs_sem::loader::{UnitKey, UnitSlot};
     let n_units = db.units.len();
@@ -373,6 +384,7 @@ pub fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
         .iter()
         .filter(|(_, u)| matches!(u.hir, UnitHir::Package { .. }))
         .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
+        .filter(|(_, u)| only.is_none_or(|f| f(db.libs[u.lib].name.key.as_str())))
         .map(|(id, _)| id)
         .collect();
     let mut errs = Vec::new();
@@ -425,6 +437,25 @@ pub fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
     if !errs.is_empty() {
         return Err(errs);
     }
+    if only.is_some() && db.units.len() > n_units {
+        return load_bodies_in(db, only);
+    }
+    if only.is_some() {
+        use yavs_sem::ids::Id;
+        for i in 0..db.insts.len() {
+            let i = yavs_sem::InstId::from_index(i);
+            if let DeclKind::Unit(u) = db.decls[db.insts[i].generic].kind {
+                let (lib, key) = (db.units[u].lib, UnitKey::body(db.units[u].name.key));
+                if !matches!(db.libs[lib].units.get(&key), Some(UnitSlot::Done(_))) {
+                    break;
+                }
+            }
+            if db.instance_body(i).is_err() {
+                return Err(db.take_diagnostics());
+            }
+        }
+        return Ok(());
+    }
     // Bodies of generic package and subprogram instances (cloned from the generic body),
     // also of the instances a cloned body declares.
     let mut done = 0;
@@ -440,7 +471,7 @@ pub fn load_bodies(db: &mut Db) -> Result<(), Vec<Diagnostic>> {
     // A body can load more packages (fixed_generic_pkg's body uses math_real): visit them too.
     // Loads are memoized, so a second pass only does the new ones.
     if db.units.len() > n_units {
-        return load_bodies(db);
+        return load_bodies_in(db, None);
     }
     Ok(())
 }

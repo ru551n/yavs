@@ -58,7 +58,7 @@ impl Db {
         self.context_subtype = None;
         self.top_context = None;
         self.files.clear();
-        self.facts = Some(self.scan_facts());
+        self.facts = Some(self.scan_facts(self.facts.as_ref()));
     }
 
     /// The store for stage results (`Options::stages`).

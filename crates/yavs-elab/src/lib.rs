@@ -29,7 +29,7 @@ pub use hier::{
 pub use sim::{Built, Ir};
 /// Values in IR memory and back (VHPI variables, #309).
 pub use value::{CellKind, DataLeaf, decode as ir_decode, encode as ir_encode, leaf_locs};
-pub use walk::load_bodies;
+pub use walk::{load_bodies, load_bodies_in};
 pub use yavs_interp::elaboration_reports;
 pub use yavs_lower::LowerOptions;
 

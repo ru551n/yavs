@@ -342,51 +342,49 @@ impl Db {
     }
 
     /// The [`Facts`] of the design as it is now: the stored ones when nothing was added since,
-    /// else found now.
+    /// else the stored ones extended by the entries added since (found now).
     pub fn facts(&self) -> std::borrow::Cow<'_, Facts> {
         match &self.facts {
             Some(f) if f.exprs == self.exprs.len() && f.stmts == self.stmts.len() => {
                 std::borrow::Cow::Borrowed(f)
             }
-            _ => std::borrow::Cow::Owned(self.scan_facts()),
+            f => std::borrow::Cow::Owned(self.scan_facts(f.as_ref())),
         }
     }
 
-    pub(crate) fn scan_facts(&self) -> Facts {
+    /// The facts of the design: those of `prev` (found in the first entries of the arenas, which
+    /// analysis never changes afterwards) and those of the entries added since, so that a `Db`
+    /// restored from an image does not decode the arenas of a prefix again to settle.
+    pub(crate) fn scan_facts(&self, prev: Option<&Facts>) -> Facts {
         use crate::hir::{ExprKind, PredefAttr, StmtKind};
-        Facts {
-            exprs: self.exprs.len(),
-            stmts: self.stmts.len(),
-            reads_activity: self.exprs.iter().any(|(_, e)| {
-                matches!(
-                    e.kind,
-                    ExprKind::Attr {
-                        attr: PredefAttr::Active | PredefAttr::LastActive,
-                        ..
-                    }
-                )
-            }),
-            forces: self
-                .stmts
-                .iter()
-                .filter(|(_, s)| {
-                    matches!(s.kind, StmtKind::Force { .. } | StmtKind::Release { .. })
-                })
-                .map(|(i, _)| i)
-                .collect(),
-            package_paths: self
-                .exprs
-                .iter()
-                .filter_map(|(e, x)| match x.kind {
-                    ExprKind::External(x)
-                        if self.externals[x].path_kind == yavs_syntax::ast::PathKind::Package =>
-                    {
-                        Some((e, x))
-                    }
-                    _ => None,
-                })
-                .collect(),
+        let mut f = prev.cloned().unwrap_or_default();
+        for i in f.exprs..self.exprs.len() {
+            let id = ExprId::from_index(i);
+            match self.exprs[id].kind {
+                ExprKind::Attr {
+                    attr: PredefAttr::Active | PredefAttr::LastActive,
+                    ..
+                } => f.reads_activity = true,
+                ExprKind::External(x)
+                    if self.externals[x].path_kind == yavs_syntax::ast::PathKind::Package =>
+                {
+                    f.package_paths.push((id, x));
+                }
+                _ => {}
+            }
         }
+        for i in f.stmts..self.stmts.len() {
+            let id = StmtId::from_index(i);
+            if matches!(
+                self.stmts[id].kind,
+                StmtKind::Force { .. } | StmtKind::Release { .. }
+            ) {
+                f.forces.push(id);
+            }
+        }
+        f.exprs = self.exprs.len();
+        f.stmts = self.stmts.len();
+        f
     }
 
     pub fn new(opts: Options) -> Db {

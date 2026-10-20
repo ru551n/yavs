@@ -549,3 +549,91 @@ fn an_unavailable_source_drops_the_snippet_only() {
     std::fs::set_permissions(&noisy, std::fs::Permissions::from_mode(0o644)).expect("chmod");
     check(&warm, "could not be read");
 }
+
+/// Two testbenches of one library share the analysis of the packages they both use: the first
+/// stores a prefix image next to the library of the last package, the second restores it and
+/// analyzes the rest, with the output of an analysis from source. Editing a package of the
+/// prefix invalidates it.
+#[test]
+fn closures_share_the_analysis_of_their_first_files() {
+    let tmp = tempdir("prefix");
+    let dir = |l: &str| tmp.join(l);
+    let spec = |l: &str| format!("{l}:{}", dir(l).display());
+    let analyze = |lib: &str, map: &[&str], file: &Path| {
+        let mut a = vec!["analyze".to_string(), format!("--work={}", spec(lib))];
+        a.extend(map.iter().map(|m| format!("--map={}", spec(m))));
+        a.push(file.display().to_string());
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(&a)
+            .output()
+            .expect("analyze");
+        assert!(o.status.success(), "{a:?}: {o:?}");
+    };
+    // A chain of ten packages in `liba`, so that every closure starts with ten files of it.
+    let pkg = |i: usize| {
+        let uses = if i == 0 {
+            String::new()
+        } else {
+            format!("use work.pa{}.all;\n", i - 1)
+        };
+        let prev = if i == 0 {
+            "0".to_string()
+        } else {
+            format!("k{}", i - 1)
+        };
+        format!("{uses}package pa{i} is\n  constant k{i} : integer := {prev} + {i};\nend;\n")
+    };
+    for i in 0..10 {
+        let f = tmp.join(format!("pa{i}.vhd"));
+        std::fs::write(&f, pkg(i)).expect("write");
+        analyze("liba", &[], &f);
+    }
+    let tb = |n: u32| {
+        format!(
+            "library liba; use liba.pa9.all;\nentity tb{n} is end;\narchitecture a of tb{n} is\nbegin\n  process\n  begin\n    \
+             report \"k=\" & integer'image(k9 + {n});\n    wait;\n  end process;\nend;\n"
+        )
+    };
+    for n in [1, 2] {
+        let f = tmp.join(format!("tb{n}.vhd"));
+        std::fs::write(&f, tb(n)).expect("write");
+        analyze("work", &["liba"], &f);
+    }
+    let run = |top: &str, more: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_LOG", "debug")
+            .args(["--color", "never", "run"])
+            .arg(format!("--work={}", spec("work")))
+            .arg(format!("--map={}", spec("liba")))
+            .args(more)
+            .arg(top)
+            .output()
+            .expect("run");
+        Out {
+            code: o.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        }
+    };
+    let plain1 = run("tb1", &["--no-cache"]);
+    let plain2 = run("tb2", &["--no-cache"]);
+    assert!(plain1.stdout.contains("k=46"), "{plain1:?}");
+    assert!(plain2.stdout.contains("k=47"), "{plain2:?}");
+    let first = run("tb1", &[]);
+    assert!(note(&first, "store prefix of 10 files"), "{first:?}");
+    assert_eq!(visible(&plain1), visible(&first));
+    let second = run("tb2", &[]);
+    assert!(note(&second, "hit prefix of 10 files"), "{second:?}");
+    assert!(!note(&second, "store prefix"), "{second:?}");
+    assert_eq!(visible(&plain2), visible(&second));
+    // The same testbench again is a hit of its own image.
+    assert!(note(&run("tb2", &[]), "hit"), "own image");
+    // A package of the prefix changes: no prefix image applies, and the new value is what runs.
+    let f = tmp.join("pa3.vhd");
+    std::fs::write(&f, pkg(3).replace("+ 3", "+ 4")).expect("write");
+    analyze("liba", &[], &f);
+    let edited = run("tb1", &[]);
+    assert!(!note(&edited, "hit prefix"), "{edited:?}");
+    assert!(edited.stdout.contains("k=47"), "{edited:?}");
+}

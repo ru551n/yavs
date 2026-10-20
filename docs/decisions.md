@@ -2500,3 +2500,29 @@ user's performance priority:
   design one by one took a fifth of a short run (#409 freed them for the peak, the drop sat in the run). The
   arenas are moved to a detached thread; a failed spawn drops them in place. Peak memory is unchanged.
 
+
+## Prefix images (#426, #407, floor of a run, yavs decisions under the user's single-thread performance priority)
+
+A suite runs one `yavs run` per test case and every test case is a new closure, so each run was a cold
+analysis of the library packages it shares with all the others (0.14 s of a 0.26 s small test of a verification library).
+Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run":
+
+- **A closure that misses continues from the longest cached prefix of its files** (`crates/yavs/src/cache.rs`
+  `bounds`). The files of a closure are in dependency order, so the testbenches of one library start with the
+  same files. The places where the library of the file changes (at least 8 files in, 8 files apart, at most
+  3) are the candidate ends of a prefix. `Db::from_image` restores the prefix image of the longest one that
+  exists, the rest of the files are analyzed on top of it, and every candidate end beyond the restored one
+  gets an image of its own (kind `pre`, key = the analysis key of the prefix's files). The entry is stored in
+  the cache of the library of the prefix's last file, because every closure with that prefix maps it; the work
+  library's cache is per testbench. Ceiling: a prefix is found only at a library change, and a shared library
+  directory keeps the usual 48 entries.
+- **The state at a prefix end is the same whether it was restored or computed**: the analysis of the files
+  up to the end, then the bodies of the packages outside the closure's own libraries
+  (`yavs_elab::load_bodies_in`: `ieee`, and the generic package instances whose generic body is analyzed
+  already, in creation order up to the first that is not; never a unit of the closure loaded out of its
+  compile order), then `Db::settle`. A closure's `Db` therefore depends on its files and the ends
+  only, not on which images happened to exist, which the `low` entries (keyed by the analysis key and the
+  arena sizes) rely on.
+- **`Db::settle` finds the facts incrementally**: the facts of the first entries of the arenas are kept and
+  only the entries added since are scanned (`Db::scan_facts`), so settling a restored prefix does not decode
+  it. Analysis never changes an entry after the unit that made it is done.

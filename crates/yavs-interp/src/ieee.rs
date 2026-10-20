@@ -556,6 +556,33 @@ fn syn_mult<const SIGNED: bool>(
     put(m, &Vh::down(LogicVec::from_bitvec(&p)))
 }
 
+/// `is_less` and friends: operands `(n-1 downto 0)` of one length whose elements are all `0` or
+/// `1` (the bodies compare elements with `'0'` and `'1'`, so `L` and `H` are the body's).
+fn syn_less<const OR_EQUAL: bool, const SIGNED: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let plain = |v: &Vh| {
+        let b = bin_down(v)?;
+        (LogicVec::from_bitvec(&b) == v.v).then_some(b)
+    };
+    let (Some(x), Some(y)) = (plain(&l), plain(&r)) else {
+        return fallback(m);
+    };
+    if x.len() != y.len() {
+        return fallback(m);
+    }
+    let o = x.cmp_num(&y, SIGNED);
+    Ok(Some(u64::from(if OR_EQUAL {
+        o.is_le()
+    } else {
+        o.is_lt()
+    })))
+}
+
 fn make_binary(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let l = vh(m, a, 0)?;
     let Some(b) = l.v.to_bitvec() else {
@@ -805,6 +832,80 @@ fn mul<const SIGNED: bool>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, 
     };
     let p = zero_ext(&x, n, SIGNED).mul_trunc(&zero_ext(&y, n, SIGNED), n);
     put(m, &Vh::down(LogicVec::from_bitvec(&p)))
+}
+
+/// Quotient (`num` long) and remainder (`den` long) of two unsigned vectors, `den` not zero.
+fn divmod(num: &BitVec, den: &BitVec) -> (BitVec, BitVec) {
+    let (n, d) = (num.len(), den.len());
+    if let (Some(a), Some(b)) = (num.to_u64(), den.to_u64()) {
+        return (BitVec::from_u64(n, a / b), BitVec::from_u64(d, a % b));
+    }
+    // Shift-subtract: the running remainder stays below `den`, so `d + 1` bits hold it.
+    let den = den.extend(d + 1, false);
+    let (mut q, mut r) = (BitVec::new(n), BitVec::new(d + 1));
+    for i in (0..n).rev() {
+        r = r.add(&r, false);
+        r.set(0, num.get(i));
+        if r.cmp_num(&den, false) != std::cmp::Ordering::Less {
+            r = r.sub(&den);
+            q.set(i, true);
+        }
+    }
+    (q, r.extend(d, false))
+}
+
+fn neg(x: &BitVec) -> BitVec {
+    BitVec::new(x.len()).sub(x)
+}
+
+/// `/`, `rem` and `mod` of `numeric_std` vectors (`KIND` 0, 1, 2), as the bodies compute them
+/// through `DIVMOD` on magnitudes. A zero divisor is the body's.
+fn divide<const KIND: u8, const SIGNED: bool>(
+    m: &mut Machine,
+    _: Cx<'_, '_, '_>,
+    _: Option<TyId>,
+    a: &[u64],
+) -> Ret {
+    let (l, r) = (vh(m, a, 0)?.v, vh(m, a, 1)?.v);
+    if l.is_empty() || r.is_empty() {
+        return put(m, &Vh::null());
+    }
+    let (Some(x), Some(y)) = (l.to_bitvec(), r.to_bitvec()) else {
+        let n = if KIND == 0 { l.len() } else { r.len() };
+        return put(m, &Vh::down(x_vec(n)));
+    };
+    let (xneg, yneg) = (SIGNED && x.get(x.len() - 1), SIGNED && y.get(y.len() - 1));
+    let (xm, ym) = (
+        if xneg { neg(&x) } else { x },
+        if yneg { neg(&y) } else { y },
+    );
+    if ym.words().iter().all(|w| *w == 0) {
+        return fallback(m);
+    }
+    let (q, mut rm) = divmod(&xm, &ym);
+    let out = match KIND {
+        0 if xneg != yneg => neg(&q),
+        0 => q,
+        1 => {
+            if xneg {
+                rm = neg(&rm);
+            }
+            rm
+        }
+        _ => {
+            let nonzero = rm.words().iter().any(|w| *w != 0);
+            if yneg && xneg {
+                neg(&rm)
+            } else if yneg && nonzero {
+                rm.sub(&ym)
+            } else if xneg && nonzero {
+                ym.sub(&rm)
+            } else {
+                rm
+            }
+        }
+    };
+    put(m, &Vh::down(LogicVec::from_bitvec(&out)))
 }
 
 fn cmp_name(c: Cmp) -> &'static str {
@@ -1086,6 +1187,14 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
             signed,
             form: f,
         } => pick3!(add, sub, signed, form(f)),
+        Op::Div { kind, signed } => match (kind, signed) {
+            (0, false) => divide::<0, false>,
+            (0, true) => divide::<0, true>,
+            (1, false) => divide::<1, false>,
+            (1, true) => divide::<1, true>,
+            (_, false) => divide::<2, false>,
+            (_, true) => divide::<2, true>,
+        },
         Op::Mul { signed: false } => mul::<false>,
         Op::Mul { signed: true } => mul::<true>,
         Op::Compare {
@@ -1127,6 +1236,12 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
         Op::Syn(Syn::Mult { signed: false }) => syn_mult::<false>,
         Op::Syn(Syn::Mult { signed: true }) => syn_mult::<true>,
         Op::Syn(Syn::MakeBinary) => make_binary,
+        Op::Syn(Syn::Less { or_equal, signed }) => match (or_equal, signed) {
+            (false, false) => syn_less::<false, false>,
+            (false, true) => syn_less::<false, true>,
+            (true, false) => syn_less::<true, false>,
+            (true, true) => syn_less::<true, true>,
+        },
         Op::Syn(Syn::Conv {
             from_signed: Some(false),
             ..

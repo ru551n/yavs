@@ -1958,6 +1958,38 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   warnings of the library functions nor `std_ulogic` tables per operand shape; the native call
   keeps one place that mirrors the library.
 
+### Round 2 (#414)
+
+- **Profile first:** a per-function instruction count of the benchmark set (`tools/bench` designs
+  and the external ones) showed that after round 1 no `math_real` helper is hot any more
+  (`ILOGB` and the series helpers were the cost of `log`/`exp`, now native); what is left of
+  `ieee` is `math_real.uniform` (1 to 3% of the instructions of the random and the verification
+  benches), `to_hstring` (3 to 6%) and the `numeric_bit` conversions and shifts of the local
+  design testbenches (8 to 13%). Those are the first natives of round 2.
+- **`numeric_bit` by the same natives:** a `bit` array is stored with the codes of `'0'` and `'1'`
+  of `std_ulogic` (bias 2), so the `numeric_std` natives run on it unchanged. The key of a
+  `numeric_bit` subprogram is the `numeric_std` one with `bit_vector` for `std_ulogic_vector`;
+  lowering gives such a native a type argument (the type of its first parameter) so the native
+  can name its warnings `NUMERIC_BIT.` instead of `NUMERIC_STD.`. There are no metavalues in
+  `bit` arrays, so the metavalue paths never run.
+- **Procedures and string results:** a native may be a procedure (`uniform`: seeds by reference,
+  `x` out, the body's two ERROR reports); `to_hstring`/`to_ostring` return a string and hand a
+  null vector back to the body (its index error is the answer). `shift_left` ... `rotate_right`
+  replace the wrapper functions around `xsll` ... too: the null array constant for a null
+  argument, else the shift.
+- **Division and the Synopsys comparisons:** `/`, `rem`, `mod` of `unsigned`/`signed` (both
+  packages) divide magnitudes as `DIVMOD` does (a `u64` fast path, shift-subtract beyond) and
+  negate as the bodies do; a zero divisor is handed back to the body (its report and the index
+  error after it). `is_less`, `is_less_or_equal`, `unsigned_is_less`, `unsigned_is_less_or_equal`
+  of `std_logic_arith` run natively for `(n-1 downto 0)` operands of one length with `0`/`1`
+  elements only (`L`/`H` compare differently in the bodies) and are handed back otherwise;
+  `make_binary` now covers every result type. The vector/integer forms of `/` `rem` `mod`,
+  `std_match`, the `?=` family and the `*_unsigned`/`std_logic_unsigned` wrappers stay VHDL:
+  none of them was above 0.5% of the instructions of any benchmark.
+- **Compiled tier:** `YAVS_IEEE_TIER=llvm` (with `YAVS_IEEE_SCALE=n` to shrink the straight-line
+  testbenches, which take the JIT many minutes at full size) makes `ieee_native.rs` run the
+  on/off comparison on `--tier=llvm`.
+
 ## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
 
 - A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or
@@ -1978,23 +2010,15 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   E;` and no other suspension point (decided after lowering: `Process::several_waits`) is
   recognised in the same way.
 
-### Round 2 (#414)
+## Edge triggers for clocked processes (yavs-elab, yavs-kernel, #385, 2026-10-19)
 
-- **Profile first:** a per-function instruction count of the benchmark set (`tools/bench` designs
-  and the external ones) showed that after round 1 no `math_real` helper is hot any more
-  (`ILOGB` and the series helpers were the cost of `log`/`exp`, now native); what is left of
-  `ieee` is `math_real.uniform` (1 to 3% of the instructions of the random and the verification
-  benches), `to_hstring` (3 to 6%) and the `numeric_bit` conversions and shifts of the local
-  design testbenches (8 to 13%). Those are the first natives of round 2.
-- **`numeric_bit` by the same natives:** a `bit` array is stored with the codes of `'0'` and `'1'`
-  of `std_ulogic` (bias 2), so the `numeric_std` natives run on it unchanged. The key of a
-  `numeric_bit` subprogram is the `numeric_std` one with `bit_vector` for `std_ulogic_vector`;
-  lowering gives such a native a type argument (the type of its first parameter) so the native
-  can name its warnings `NUMERIC_BIT.` instead of `NUMERIC_STD.`. There are no metavalues in
-  `bit` arrays, so the metavalue paths never run.
-- **Procedures and string results:** a native may be a procedure (`uniform`: seeds by reference,
-  `x` out, the body's two ERROR reports); `to_hstring`/`to_ostring` return a string and hand a
-  null vector back to the body (its index error is the answer). `shift_left` ... `rotate_right`
-  replace the wrapper functions around `xsll` ... too: the null array constant for a null
-  argument, else the shift.
-
+- A process `process (c) begin if rising_edge(c) then ... end if; end process;` (or
+  `falling_edge`, the IEEE 1164 functions; `c` a whole scalar signal, the only name in the
+  sensitivity list, no `else`/`elsif`, not postponed) is recognised at elaboration and handed to
+  the kernel as an edge trigger. The kernel does not resume it for an event that does not make
+  the edge true: running it would evaluate the condition and suspend again, nothing else.
+  Rationale: half the activations of a single-clock design are of that kind
+  (`docs/design/performance.md` R2d).
+- Off (`Config::edge_triggers`) with `--cov`, `--dap` and `--vhpi`: statement coverage, a
+  debugger and foreign callbacks can see the skipped activation. Output is otherwise unchanged;
+  the statistics count fewer process runs.

@@ -9,6 +9,20 @@ use std::fmt::Write;
 use std::path::Path;
 use std::process::{Command, Output};
 
+/// Iterations of a generator loop: `YAVS_IEEE_SCALE=4` runs a quarter (the compiled tier needs
+/// minutes for the full straight-line testbenches).
+fn iters(n: usize) -> usize {
+    (n / scale()).max(1)
+}
+
+fn scale() -> usize {
+    std::env::var("YAVS_IEEE_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|d| *d > 0)
+        .unwrap_or(1)
+}
+
 struct Rng(u64);
 
 impl Rng {
@@ -120,6 +134,27 @@ impl Gen {
             format!("{ty}(\"{}\", {})", b.0, b.1),
         )
     }
+    /// An operand with no all-zero value: a vector with a `1` (or a metavalue) or a null one.
+    fn nonzero(&mut self, ty: &str) -> String {
+        let (s, b) = self.vec();
+        let s = if s.chars().all(|c| c == '0') && !s.is_empty() {
+            format!("1{}", &s[1..])
+        } else {
+            s
+        };
+        format!("{ty}(\"{s}\", {b})")
+    }
+    fn nonzero_bit(&mut self, ty: &str) -> String {
+        let len = self.len();
+        let mut s: String = (0..len)
+            .map(|_| b"01"[self.rng.below(2) as usize] as char)
+            .collect();
+        if s.chars().all(|c| c == '0') && !s.is_empty() {
+            s.replace_range(0..1, "1");
+        }
+        let (l, asc) = (self.rng.below(9) as i64 - 3, self.rng.below(2) == 0);
+        format!("{ty}(\"{s}\", {l}, {asc})")
+    }
     fn operand(&mut self, ty: &str) -> String {
         let (s, b) = self.vec();
         format!("{ty}(\"{s}\", {b})")
@@ -200,6 +235,11 @@ fn testbench(seed: u64, per_op: usize) -> String {
                 g.case(&format!("{a} {op} {b}"), "img");
             }
             let nat = t == "unsigned";
+            // A zero divisor is the body's error; the generator avoids it.
+            let d = g.nonzero(ty);
+            for op in ["/", "rem", "mod"] {
+                g.case(&format!("{a} {op} {d}"), "img");
+            }
             for op in ["+", "-"] {
                 let i = g.int(nat);
                 g.case(&format!("{a} {op} {i}"), "img");
@@ -241,6 +281,11 @@ fn testbench(seed: u64, per_op: usize) -> String {
 fn run(dir: &Path, args: &[&str], native: bool) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
     c.args(args).current_dir(dir);
+    // `YAVS_IEEE_TIER=llvm` (a build with the `llvm` feature) runs the same comparison on the
+    // compiled tier.
+    if let (Some(t), Some("run")) = (std::env::var_os("YAVS_IEEE_TIER"), args.first().copied()) {
+        c.arg(format!("--tier={}", t.to_string_lossy()));
+    }
     if !native {
         c.env("YAVS_NO_NATIVE_IEEE", "1");
     }
@@ -250,7 +295,7 @@ fn run(dir: &Path, args: &[&str], native: bool) -> Output {
 fn compare(seed: u64, std: &str) {
     let dir = std::env::temp_dir().join(format!("yavs-ieee-{}-{seed}-{std}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
-    let src = testbench(seed, 25);
+    let src = testbench(seed, iters(25));
     std::fs::write(dir.join("t.vhd"), &src).expect("write");
     if let Some(keep) = std::env::var_os("YAVS_IEEE_KEEP") {
         let _ = std::fs::write(Path::new(&keep).join(format!("t{seed}.vhd")), &src);
@@ -269,7 +314,7 @@ fn compare(seed: u64, std: &str) {
         String::from_utf8_lossy(&v.stdout),
     );
     assert!(
-        ns.lines().count() > 1000,
+        ns.lines().count() > 1000 / scale(),
         "too few results:\n{}",
         String::from_utf8_lossy(&n.stderr)
     );
@@ -319,6 +364,9 @@ begin
       when 6 => v := "0101" and "010";
       when 7 => if r < n then null; end if;
       when 8 => r := shift_left(r, n);
+      when 9 => r := x"00"; r := r / r;
+      when 10 => r := x"07"; r := r mod (r - r);
+      when 11 => r := x"07"; r := r rem (r - r);
       when others => null;
     end case;
     report "end";
@@ -341,7 +389,7 @@ fn native_errors_match_bodies() {
         true,
     );
     assert!(a.status.success());
-    for k in 0..9 {
+    for k in 0..12 {
         let g = format!("-gk={k}");
         let go = |native| {
             run(
@@ -547,6 +595,8 @@ architecture a of ta is
   begin return img(std_ulogic_vector(x)); end function;
   function img (x : signed) return string is
   begin return img(std_ulogic_vector(x)); end function;
+  function img (b : boolean) return string is
+  begin return boolean'image(b); end function;
   function cv (c : character) return std_ulogic is
   begin
     case c is
@@ -585,7 +635,7 @@ fn native_synopsys_arith_matches_bodies() {
         out: String::new(),
         n: 0,
     };
-    for _ in 0..150 {
+    for _ in 0..iters(150) {
         for op in ["+", "-", "*"] {
             for (ta, tb) in [("uv", "uv"), ("gv", "gv"), ("uv", "gv"), ("gv", "uv")] {
                 let (a, b) = (g.operand(ta), g.operand(tb));
@@ -598,6 +648,15 @@ fn native_synopsys_arith_matches_bodies() {
                     "signed"
                 };
                 g.case(&format!("{r}'({a} {op} {b})"), "img");
+            }
+        }
+        for op in ["<", "<=", ">", ">=", "=", "/="] {
+            for (ta, tb) in [("uv", "uv"), ("gv", "gv"), ("uv", "gv"), ("gv", "uv")] {
+                let (a, b) = (g.operand(ta), g.operand(tb));
+                if a.contains("\"\"") || b.contains("\"\"") {
+                    continue;
+                }
+                g.case(&format!("{a} {op} {b}"), "img");
             }
         }
         for ty in ["uv", "gv"] {
@@ -650,7 +709,7 @@ fn native_synopsys_arith_matches_bodies() {
         String::from_utf8_lossy(&v.stdout),
     );
     assert!(
-        ns.lines().count() > 800,
+        ns.lines().count() > 800 / scale(),
         "{}",
         String::from_utf8_lossy(&n.stderr)
     );
@@ -721,7 +780,7 @@ fn native_uniform_and_strings_match_bodies() {
             g.case(&format!("sv(\"{lit}\", 3, true)"), f);
         }
     }
-    for _ in 0..120 {
+    for _ in 0..iters(120) {
         let n = 1 + g.rng.below(40) as usize;
         let (s, b) = g.vec_n(n);
         for f in ["to_hstring", "to_ostring"] {
@@ -731,7 +790,7 @@ fn native_uniform_and_strings_match_bodies() {
         }
     }
     let body = g.out;
-    diff_run("strings", &tb(&body), "t", "2008", 500);
+    diff_run("strings", &tb(&body), "t", "2008", 500 / scale());
     // Null vector: the body's index error is the answer.
     let nul = tb("    report \"null \" & to_hstring(sv(\"\", 0, false));\n");
     diff_run("strings_null", &nul, "t", "2008", 0);
@@ -753,7 +812,7 @@ fn native_uniform_and_strings_match_bodies() {
         );
     }
     u.push_str("    wait;\n  end process;\nend architecture;\n");
-    diff_run("uniform", &u, "u", "2008", 1500);
+    diff_run("uniform", &u, "u", "2008", 1500 / scale());
 }
 
 const BIT_HEAD: &str = r#"library ieee;
@@ -809,7 +868,7 @@ fn native_numeric_bit_matches_bodies() {
         out: String::new(),
         n: 0,
     };
-    for _ in 0..40 {
+    for _ in 0..iters(40) {
         for (ty, t) in [("uv", "unsigned"), ("gv", "signed")] {
             let mk = |g: &mut Gen, n: Option<usize>| {
                 let len = n.unwrap_or_else(|| g.len());
@@ -839,6 +898,10 @@ fn native_numeric_bit_matches_bodies() {
                 g.case(&format!("{a} {op} {b}"), "img");
             }
             let nat = t == "unsigned";
+            let d = g.nonzero_bit(ty);
+            for op in ["/", "rem", "mod"] {
+                g.case(&format!("{a} {op} {d}"), "img");
+            }
             for op in ["+", "-"] {
                 let i = g.int(nat);
                 g.case(&format!("{a} {op} {i}"), "img");
@@ -894,7 +957,7 @@ fn native_numeric_bit_matches_bodies() {
         "{BIT_HEAD}{}    wait;\n  end process;\nend architecture;\n",
         g.out
     );
-    diff_run("numeric_bit", &src, "t", "2008", 1000);
+    diff_run("numeric_bit", &src, "t", "2008", 1000 / scale());
 }
 
 /// 64-bit INTEGER (2019): conversions of wide vectors, large integer operands, `floor` and

@@ -94,6 +94,12 @@ pub enum Syn {
         signed: bool,
     },
     MakeBinary,
+    /// `is_less`, `is_less_or_equal` (signed) and `unsigned_is_less`, `unsigned_is_less_or_equal`:
+    /// `(n-1 downto 0)` operands of one length with `0`/`1` elements only.
+    Less {
+        or_equal: bool,
+        signed: bool,
+    },
     /// `conv_unsigned` / `conv_signed` of a vector (`from_signed`) or an integer (`None`).
     Conv {
         to_signed: bool,
@@ -125,6 +131,12 @@ pub enum Op {
         form: Form,
     },
     Mul {
+        signed: bool,
+    },
+    /// `/` (0), `rem` (1) or `mod` (2) of two vectors; a zero divisor is handed back to the
+    /// body (its error report and what follows).
+    Div {
+        kind: u8,
         signed: bool,
     },
     Compare {
@@ -218,6 +230,14 @@ pub fn parse(key: &str) -> Option<Op> {
                 signed: r == "signed",
             })
         }
+        ("numeric_std", n @ ("/" | "rem" | "mod"), [a, b], r)
+            if a == b && a == &r && (r == "unsigned" || r == "signed") =>
+        {
+            Some(Op::Div {
+                kind: ["/", "rem", "mod"].iter().position(|x| *x == n)? as u8,
+                signed: r == "signed",
+            })
+        }
         ("numeric_std", n @ (">" | "<" | "<=" | ">=" | "=" | "/="), ps, "boolean") => {
             let (signed, form, _) = num_form(ps)?;
             let cmp = match n {
@@ -290,9 +310,29 @@ pub fn parse(key: &str) -> Option<Op> {
             }))
         }
         ("std_logic_arith", "make_binary", [a], r)
-            if *a == r && ["unsigned", "signed", "std_ulogic_vector"].contains(&r) =>
+            if ["unsigned", "signed", "std_ulogic_vector"].contains(a)
+                && ["unsigned", "signed", "std_ulogic_vector"].contains(&r) =>
         {
+            // Same elements and bounds whatever the result type.
             Some(Op::Syn(Syn::MakeBinary))
+        }
+        (
+            "std_logic_arith",
+            n @ ("is_less" | "is_less_or_equal" | "unsigned_is_less" | "unsigned_is_less_or_equal"),
+            [a, b],
+            "boolean",
+        ) if a == b
+            && *a
+                == if n.starts_with("unsigned") {
+                    "unsigned"
+                } else {
+                    "signed"
+                } =>
+        {
+            Some(Op::Syn(Syn::Less {
+                or_equal: n.ends_with("equal"),
+                signed: !n.starts_with("unsigned"),
+            }))
         }
         ("std_logic_arith", n @ ("conv_unsigned" | "conv_signed"), [a, "integer"], r)
             if r == &n[5..] && ["unsigned", "signed", "integer"].contains(a) =>
@@ -404,7 +444,7 @@ pub fn array_param(key: &str, i: usize) -> bool {
 
 /// Whether the native of `op` may hand the call back to the VHDL body.
 pub fn has_fallback(op: Op) -> bool {
-    matches!(op, Op::Syn(_) | Op::Str(_))
+    matches!(op, Op::Syn(_) | Op::Str(_) | Op::Div { .. })
 }
 
 /// The native symbol (`yavs.ieee.<key>`) that replaces the body of the subprogram with this

@@ -506,6 +506,19 @@ wall off the 22 but no CPU, so it does not help a suite that already fills the h
 times slower and doubled the baseline RSS, so it is not adopted; lazily decoded arenas would save CPU but
 change `Arena` in the analysis hot path.
 
+Lazy image decode (follow-up): the image is no longer decoded as a whole. Arena entries decode 64 at a
+time on first read, symbols are interned on first read, the source map keeps a digest instead of the text
+(read again for a diagnostic), the elaborator's whole-design scans come from facts stored in the image, and
+processes are found by statement through an index (#435). Release builds, `yavs run` on a host at a load
+average of about 30, so medians and CPU: a trivial testbench (`std_logic_1164`, `numeric_std`, `textio`), CPU
+per run 7.7 to 4.8 ms; one `tb_axi_stream` test of the verification components, CPU per run 261 to 249 ms
+(analyze phase wall 50 to 12 ms, elaborate 140 to 166 ms: what the run reads is decoded there);
+`vunit_vc30` (30 runs, 5-run median), analyze phase wall 1.86 to 0.50 s, total CPU 4.09 to 3.76 s, total wall
+5.87 to 5.45 s, peak RSS 68.5 to 60.4 MiB; `elab_heavy` unchanged. About 60% of the declaration and scope
+entries and 30% of the expressions of a verification component testbench are read by a run: the run-time
+package lowering reads all of its packages' declarations, which the lowered-IR cache (#407 stage 2) would
+make unnecessary.
+
 ### Elaborate phase of library testbenches (#425)
 
 Profile of `yavs run --time-report` elaborate with a sampling debugger (hardware counters are not

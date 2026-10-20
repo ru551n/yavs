@@ -309,6 +309,17 @@ impl Buf {
 
     /// Copy `n` elements of `src` from `soff` to `off`.
     pub fn copy(&mut self, off: usize, src: &Buf, soff: usize, n: usize) {
+        // One logic element (a process per element of a vector): no block gather.
+        if n == 1
+            && let (Buf::Planes { b, .. }, Buf::Planes { b: sb, .. }) = (&mut *self, src)
+        {
+            let (w, s) = (off / 64, off % 64);
+            let (sw, ss) = (soff / 64, soff % 64);
+            for k in 0..4 {
+                b[w][k] = b[w][k] & !(1 << s) | (sb[sw][k] >> ss & 1) << s;
+            }
+            return;
+        }
         self.select(off, src, soff, n, &[!0; 1], None);
     }
 

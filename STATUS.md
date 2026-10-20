@@ -230,24 +230,26 @@ allocator in a scratch build) showed where it went, and the changes:
   instance (130 bytes) was inline.
 - The shared-state field of every interpreter process held an empty shared heap (184 bytes): boxed (64).
 
-Median of 5 runs, release build, `--threads 1`, interleaved A/B on a host with a load average near 20 (rows with
-simulate time dominating move by up to 8 percent between repeats; the 9-run interleaved re-check of the three
-simulation-heavy rows is in the last column). Before is main at `8742946a`, after is the series of #421:
+Median of 7 runs, release build, `--threads 1`, interleaved A/B (`tools/bench/run.py --compare`), before is main
+at that commit with the commits of #421 taken out (a scratch tree, so the other agents' commits in between are in both
+binaries):
 
-| Benchmark | peak MiB before | after | CPU s before | after | CPU, 9 runs before / after |
-|---|---|---|---|---|---|
-| `elab_heavy` | 271.1 | 159.9 | 0.64 | 0.45 | |
-| `vai_pe_array` | 50.5 | 50.1 | 0.26 | 0.25 | |
-| `vai_window_gen` | 53.0 | 51.4 | 1.95 | 2.10 | 1.94 / 1.80 |
-| `ff_rtl` | 14.7 | 13.4 | 0.05 | 0.05 | |
-| `resolved_bus` | 12.0 | 11.5 | 0.37 | 0.39 | 0.36 / 0.36 |
-| `uvvm_axistream_vvc_tb` | 91.6 | 90.4 | 3.72 | 4.01 | 3.58 / 3.53 |
-| `vunit_vc30` | 73.2 | 72.3 | 5.59 | 5.09 | |
+| Benchmark | peak MiB before | after | CPU s before | after |
+|---|---|---|---|---|
+| `elab_heavy` | 270.1 | 159.2 | 0.44 | 0.36 |
+| `vai_pe_array` | 49.8 | 49.9 | 0.18 | 0.18 |
+| `vai_window_gen` | 50.9 | 51.0 | 1.50 | 1.45 |
+| `ff_rtl` | 12.9 | 12.8 | 0.04 | 0.05 |
+| `resolved_bus` | 11.0 | 10.8 | 0.30 | 0.30 |
+| `uvvm_axistream_vvc_tb` | 90.2 | 89.4 | 2.98 | 2.95 |
+| `vunit_vc30` | 71.6 | 71.7 | 3.84 | 3.72 |
 
-`elab_heavy` phases (CPU s, before / after): elaborate 0.18 / 0.14, init 0.20 / 0.16, simulate 0.16 / 0.12; live
+`elab_heavy` phases (CPU s, before / after): elaborate 0.14 / 0.12, init 0.16 / 0.12, simulate 0.11 / 0.09; live
 allocations at the peak 1.82 million / 0.74 million, allocations over the run 7.07 million / 3.78 million. The
 memory is first-touch cost too: a third of the elaboration samples sat in the copy that writes a new element of
-the scope, object and leaf vectors into fresh pages.
+the scope, object and leaf vectors into fresh pages. A 184 microsecond AXI-stream testbench of the verification library benchmark (200 s) runs in the
+same time before and after (206 s against 223 s one at a time, 204 s against 196 s side by side on a loaded host:
+repeat runs of long tests differ by that much).
 
 Where the rest is (20000 instances, resident bytes at the end of the build, before the model is freed): the kernel
 signals (600-byte record, 40000 of them: 24 MiB), the interpreter processes (560 bytes each: 22 MiB), the

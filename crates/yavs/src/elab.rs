@@ -1026,6 +1026,14 @@ fn observers(
 struct Printer;
 
 impl yavs_kernel::Observer for Printer {
+    fn wants_phase(&self, _: yavs_kernel::Phase) -> bool {
+        false
+    }
+
+    fn wants_value_changes(&self) -> bool {
+        false
+    }
+
     fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
         let sev = match r.severity {
             yavs_kernel::Severity::Note => "Note",

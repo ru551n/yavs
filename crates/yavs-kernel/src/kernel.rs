@@ -87,6 +87,19 @@ pub enum Phase {
     EndOfSim,
 }
 
+const ALL_PHASES: [Phase; 10] = [
+    Phase::StartOfSim,
+    Phase::EndOfInit,
+    Phase::NextTimeStep,
+    Phase::NextCycle,
+    Phase::StartOfProcesses,
+    Phase::EndOfProcesses,
+    Phase::LastKnownDelta,
+    Phase::StartOfPostponed,
+    Phase::EndOfTimeStep,
+    Phase::EndOfSim,
+];
+
 /// Why the simulation ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EndReason {
@@ -311,6 +324,15 @@ impl Hook<'_> {
 
 /// A subscriber on the event bus: waves, VHPI, DAP, the GUI.
 pub trait Observer: Send {
+    /// Whether `phase` needs this observer: the kernel does not call `phase` for one that
+    /// says no (the default is yes), so an observer of a few phases costs nothing in the rest.
+    fn wants_phase(&self, _phase: Phase) -> bool {
+        true
+    }
+    /// Whether this observer reads `value_change` (the default is yes).
+    fn wants_value_changes(&self) -> bool {
+        true
+    }
     fn phase(&mut self, _hook: &mut Hook<'_>, _phase: Phase) {}
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
@@ -464,6 +486,9 @@ pub struct SimControl {
     end_fired: bool,
     failed: Option<SimError>,
     observers: Vec<Box<dyn Observer>>,
+    /// The phases some observer wants (bit `Phase as u32`), and whether one wants value changes.
+    phase_mask: u16,
+    watch_changes: bool,
     wakes: Wakes,
     pool: Option<rayon::ThreadPool>,
     rng: Option<u64>,
@@ -605,6 +630,8 @@ impl SimControl {
             end_fired: false,
             failed: None,
             observers: Vec::new(),
+            phase_mask: 0,
+            watch_changes: false,
             wakes: Wakes::default(),
             pool,
             interrupt: Interrupt::default(),
@@ -853,6 +880,11 @@ impl SimControl {
 
     pub fn subscribe(&mut self, o: Box<dyn Observer>) {
         self.observers.push(o);
+        self.phase_mask = ALL_PHASES
+            .iter()
+            .filter(|&&p| self.observers.iter().any(|o| o.wants_phase(p)))
+            .fold(0, |m, &p| m | 1 << p as u32);
+        self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
     }
 
     pub fn interrupt(&self) -> Interrupt {
@@ -1091,7 +1123,7 @@ impl SimControl {
         changed.dedup();
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
-        if !self.observers.is_empty() {
+        if self.watch_changes {
             for &s in &changed {
                 for r in self.signals[s as usize].changed.clone() {
                     self.notify(|o, h| o.value_change(h, SignalId(s), r));
@@ -1099,6 +1131,7 @@ impl SimControl {
             }
         }
         let mut woken = Vec::new();
+        let memo = std::cell::Cell::new(None);
         for &s in &changed {
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64;
@@ -1107,6 +1140,7 @@ impl SimControl {
             let mut waiters = std::mem::take(&mut sig.waiters);
             let (procs, signals) = (&self.procs, &self.signals);
             let live = |w: &Waiter| procs[w.proc as usize].generation == w.generation;
+            // The processes of one clock share a trigger: its answer is computed once.
             let hold = |w: &Waiter| {
                 self.cfg.edge_triggers
                     && procs[w.proc as usize]
@@ -1138,7 +1172,6 @@ impl SimControl {
         self.phase(Phase::StartOfProcesses);
         self.run_batch(ready, false, false)?;
         self.phase(Phase::EndOfProcesses);
-        let memo = std::cell::Cell::new(None);
 
         self.last_delta()
     }
@@ -1147,7 +1180,6 @@ impl SimControl {
     /// when no delta follows at time 0, so read-write and read-only observers see time 0 (#347).
     fn last_delta(&mut self) -> Result<(), SimError> {
         if self.next_time() != Some(self.now) {
-            // The processes of one clock share a trigger: its answer is computed once.
             self.phase(Phase::LastKnownDelta);
             if self.next_time() != Some(self.now) {
                 let postponed = std::mem::take(&mut self.postponed);
@@ -1752,10 +1784,14 @@ impl SimControl {
     }
 
     fn phase(&mut self, phase: Phase) {
-        if self.observers.is_empty() {
+        if self.phase_mask >> phase as u32 & 1 == 0 {
             return;
         }
-        self.notify(|o, h| o.phase(h, phase));
+        self.notify(|o, h| {
+            if o.wants_phase(phase) {
+                o.phase(h, phase)
+            }
+        });
     }
 
     fn notify(&mut self, mut f: impl FnMut(&mut dyn Observer, &mut Hook<'_>)) {

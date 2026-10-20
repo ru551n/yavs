@@ -167,6 +167,17 @@ pub struct SharedGc {
 }
 
 impl yavs_kernel::Observer for SharedGc {
+    fn wants_phase(&self, phase: yavs_kernel::Phase) -> bool {
+        matches!(
+            phase,
+            yavs_kernel::Phase::StartOfSim | yavs_kernel::Phase::NextCycle
+        )
+    }
+
+    fn wants_value_changes(&self) -> bool {
+        false
+    }
+
     fn phase(&mut self, _hook: &mut yavs_kernel::Hook<'_>, phase: yavs_kernel::Phase) {
         // A poisoned lock is reported by the next process that takes it.
         let Ok(mut s) = self.shared.lock() else {

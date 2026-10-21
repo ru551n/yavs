@@ -625,16 +625,20 @@ to the copy; the optimiser reads pool bytes through `ConstData::read`. Tests: `c
 
 Compiled code (#505, `docs/decisions.md` "Compiled code in the compilation cache"): the object file of every
 module the LLVM tier compiles is kept in `<work dir>/yavs-cache/obj/`, keyed by the module's LLVM IR, the level,
-the target and the build, and linked again by later runs (`yavs-llvm` `objcache.rs`). Measured with a release build
-pinned to P-core 1, wall seconds, base (the build before, no cache) / cold (compiled and stored) / warm (linked),
-output byte-identical in every row: `--tier=llvm` `uvvm_util_rand_tb` 296 / 272 / 3.5 (the 17 MB object of the whole
-program), `uvvm_sb_slv_tb` 231 / 203 / 1.9, `compute_h2h` 0.28 / 0.28 / 0.23. Writing the object costs nothing
-measurable; emitting it ourselves was even faster than handing ORC the IR. Test cases of one testbench share the
-object once the design's `ir` entry has converged (its optimised copies change the program the first runs see):
-`rand_tb` case 2 compiled, case 3 linked. `--tier=auto` compiles few functions, so warm and cold differ little except
-for compute loops, which are linked as soon as they are hot (`compute_h2h` warm 0.20 against 0.26 s without the
-probe); its per-function modules are shared between testbenches whose library comes from one `lib` entry (the second
-random testbench of the utility library linked the modules the first stored). Tests: `crates/yavs-llvm/tests/objcache.rs`
+the target and the build, and linked again by later runs (`yavs-llvm` `objcache.rs`). Measured with release builds
+pinned to P-core 1, wall seconds, cold (compiled and stored) / warm (linked), output byte-identical in every row. With
+the compile cost work of #432 (6ffcab58): `--tier=llvm` `uvvm_util_rand_tb` 140 / 2.3 (the program is one 17 MB
+object), `osvvm_axistream` 59 / 1.5, `vai_window_gen` 43 / 1.1; before it, against the build without the cache (base):
+`uvvm_util_rand_tb` base 296, cold 272, warm 3.5; `uvvm_sb_slv_tb` 231 / 203 / 1.9; `osvvm_axistream` 162 / 145 / 1.6;
+`uvvm_axistream_vvc_tb` 161 / 179 / 1.9; `vai_window_gen` 85 / 89 / 1.4; `protected_scoreboard` 0.24 / 0.23 / 0.03;
+`compute_h2h` 0.28 / 0.28 / 0.23. Storing costs nothing measurable (cold within the noise of base). `--tier=auto`
+compiles few functions, so warm and cold differ little except for compute loops, which are linked as soon as they are
+hot: `compute_h2h` 0.36 / 0.24, `uvvm_util_rand_tb` 1.26 / 1.12, `uvvm_sb_slv_tb` 1.28 / 1.26, `osvvm_axistream`,
+`uvvm_axistream_vvc_tb`, `vai_window_gen`, `protected_scoreboard` unchanged (3 runs, median). Test cases of one
+testbench share the `--tier=llvm` object once the design's `ir` entry has converged (its optimised copies change the
+program the first runs see): `rand_tb` case 2 compiled, case 3 linked. The per-function modules of `--tier=auto` are
+shared between testbenches whose library comes from one `lib` entry (the second random testbench of the utility
+library linked the modules the first stored). Tests: `crates/yavs-llvm/tests/objcache.rs`
 (cold, warm, damaged entry, the `--tier=auto` probe, unwritable directory), `crates/yavs/tests/cache.rs`
 (`compiled_code_is_cached`, `parallel_runs_share_compiled_code`, `read_only_library_gets_no_compiled_code`),
 `yavs-cache` (`objects_have_limits_of_their_own_and_are_cleaned_with_the_library`); the difftest corpus at 1 and 4

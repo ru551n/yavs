@@ -4282,6 +4282,13 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::SigRead1Slot { dst, sig, off } => {
+                    let o = slot8!(off);
+                    let (sr, ty) = t!(self.sig_elem(sig, o));
+                    self.regs[dst as usize] = t!(Self::read_elem(sr, ty, ctx));
+                    k += 1;
+                    enter!();
+                }
                 Op::EdgeSig {
                     dst,
                     sig,

@@ -609,6 +609,12 @@ pub(crate) enum Op {
         sig: u32,
         offset: u32,
     },
+    /// `LoadSlot8` of `off` and the `SigRead1` of the element it indexes.
+    SigRead1Slot {
+        dst: u32,
+        sig: u32,
+        off: u32,
+    },
     /// `SigVal` of one element and `rising_edge` / `falling_edge` of it.
     EdgeSig {
         dst: u32,
@@ -1046,9 +1052,95 @@ fn lin_run(cx: &LinCx, pc: usize) -> Option<LinRun> {
     })
 }
 
+/// The registers `i` reads, list operands included.
+fn reads(f: &Func, i: &Inst, mut each: impl FnMut(yavs_ir::Reg)) {
+    i.visit(&mut |r, role, _| {
+        if role == Role::Use {
+            each(r);
+        }
+    });
+    if let Some(rs) = i.list().and_then(|l| f.regs(l)) {
+        rs.iter().for_each(|&r| each(r));
+    }
+}
+
+/// Whether register `r` may be read after the instruction at `pc` and before it is written,
+/// on some path (an instruction it cannot follow counts as a read).
+fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
+    let mut seen = vec![false; f.code.len() + 1];
+    let mut stack = vec![pc + 1];
+    while let Some(mut p) = stack.pop() {
+        loop {
+            let Some(i) = f.code.get(p) else {
+                return true;
+            };
+            let (mut read, mut written) = (false, false);
+            reads(f, i, |x| read |= x == r);
+            i.visit(&mut |x, role, _| written |= role == Role::Def && x == r);
+            if read {
+                return true;
+            }
+            if written {
+                break;
+            }
+            let to = |b: yavs_ir::BlockId| f.blocks.get(b).map(|b| b.start as usize);
+            match *i {
+                Inst::Br { to: t } => {
+                    let Some(s) = to(t) else { return true };
+                    if !std::mem::replace(&mut seen[s], true) {
+                        stack.push(s);
+                    }
+                    break;
+                }
+                Inst::CondBr { t, f: e, .. } => {
+                    for b in [t, e] {
+                        let Some(s) = to(b) else { return true };
+                        if !std::mem::replace(&mut seen[s], true) {
+                            stack.push(s);
+                        }
+                    }
+                    break;
+                }
+                Inst::Ret { .. } | Inst::Unreachable { .. } => break,
+                Inst::Case { .. } => return true,
+                _ => p += 1,
+            }
+        }
+    }
+    false
+}
+
+/// The waveform buffer made at IR pc `from` (register `wave`) and written through `base` is
+/// read by the `Drive` at `to` and by nothing else: all in one block, `wave` read exactly by
+/// its three instructions (`Store`, `Index` and the `Drive`), `base` once, neither read later.
+fn waveform_is_private(
+    f: &Func,
+    block_start: &[bool],
+    from: usize,
+    to: usize,
+    wave: u32,
+    base: u32,
+) -> bool {
+    if from >= to || (from + 1..=to).any(|p| block_start.get(p).copied().unwrap_or(true)) {
+        return false;
+    }
+    let (mut nw, mut nb) = (0, 0);
+    for i in f.code.iter().take(to + 1).skip(from) {
+        reads(f, i, |r| {
+            nw += u32::from(r.0 == wave);
+            nb += u32::from(r.0 == base);
+        });
+    }
+    nw == 3
+        && nb == 1
+        && !live_after(f, to, yavs_ir::Reg(wave))
+        && !live_after(f, to, yavs_ir::Reg(base))
+}
+
 /// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
 /// first op's pc stays an entry, the others' pcs are not).
 fn peephole(
+    f: &Func,
     ops: &mut Vec<Op>,
     at: &mut Vec<u32>,
     start: &mut [u32],
@@ -1058,8 +1150,9 @@ fn peephole(
     known: &[Known],
 ) {
     let (old, old_at) = (std::mem::take(ops), std::mem::take(at));
-    // The waveform starts `WaveBuf` made so far: wave register to the register 8 bytes in.
-    let mut waves: Vec<(u32, u32)> = Vec::new();
+    // The waveform starts `WaveBuf` made so far: wave register, the register 8 bytes in and
+    // the IR pc of the `Alloc`.
+    let mut waves: Vec<(u32, u32, u32)> = Vec::new();
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
         _ => None,
@@ -1090,7 +1183,7 @@ fn peephole(
                     off: 8,
                 }),
             ) if addr == w && base == w && free(i + 1) && free(i + 2) => {
-                waves.push((w, e));
+                waves.push((w, e, old_at.get(i).copied().unwrap_or(0)));
                 (Some(Op::WaveBuf { w, size, time, e }), 3)
             }
             (
@@ -1107,9 +1200,10 @@ fn peephole(
             ) if free(i + 1)
                 && int(idx) == Some(0)
                 && int(n) == Some(1)
-                && waves.contains(&(wave, base))
-                && uses.get(wave as usize) == Some(&3)
-                && uses.get(base as usize) == Some(&1) =>
+                && let Some(&(_, _, from)) =
+                    waves.iter().rev().find(|w| (w.0, w.1) == (wave, base))
+                && let Some(&to) = old_at.get(i + 1)
+                && waveform_is_private(f, block_start, from as usize, to as usize, wave, base) =>
             {
                 (
                     Some(Op::LSetDrive {
@@ -1352,54 +1446,80 @@ impl Code {
                 Inst::Load { dst, addr, w } if w != Width::Sig => {
                     match known.get(addr.0 as usize) {
                         Some(&Known::Frame(off)) if w == Width::B8 => {
-                            // Two loads, or a load and the branch on its compare.
-                            let cmp_br = match fusable.and_then(|_| after(nx)) {
-                                Some((n2, Inst::CondBr { c, t, f: e }))
-                                    if let Some(Inst::Cmp { op, dst: cd, a, b }) = fusable
-                                        && c == cd
-                                        && once(cd)
-                                        && (a == dst || b == dst)
-                                        && target(t).is_some()
-                                        && target(e).is_some() =>
+                            // A load and the read of the signal element it indexes (the loaded
+                            // register is read by nothing else).
+                            let slot_read = match (fusable, fusable.and_then(|_| after(nx))) {
+                                (
+                                    Some(Inst::SigVal {
+                                        dst: sv,
+                                        sig,
+                                        offset,
+                                        len,
+                                    }),
+                                    Some((n2, Inst::SigReadScalar { dst: d, sig: r })),
+                                ) if offset == dst
+                                    && r == sv
+                                    && int(len) == Some(1)
+                                    && once(sv)
+                                    && (d == dst || !live_after(f, n2, dst)) =>
                                 {
-                                    let (side, other) = if a == dst { (0, b) } else { (1, a) };
-                                    Some((
-                                        n2,
-                                        Op::LoadSlot8CmpBr {
-                                            ld: dst.0,
-                                            off,
-                                            other: other.0,
-                                            t: target(t).unwrap_or(0),
-                                            f: target(e).unwrap_or(0),
-                                            m: cmp_mask(op),
-                                            side,
-                                        },
-                                    ))
+                                    Some((n2, Op::SigRead1Slot { dst: d.0, sig, off }))
                                 }
                                 _ => None,
                             };
-                            match (cmp_br, fusable) {
-                                (Some((n2, op)), _) => {
-                                    last = n2;
-                                    op
-                                }
-                                (
-                                    None,
-                                    Some(Inst::Load {
-                                        dst: d2,
-                                        addr: a2,
-                                        w: Width::B8,
-                                    }),
-                                ) if let Some(&Known::Frame(o2)) = known.get(a2.0 as usize) => {
-                                    last = nx;
-                                    Op::LoadSlot8x2 {
-                                        d1: dst.0,
-                                        o1: off,
-                                        d2: d2.0,
-                                        o2,
+                            if let Some((n2, op)) = slot_read {
+                                last = n2;
+                                op
+                            } else {
+                                // Two loads, or a load and the branch on its compare.
+                                let cmp_br = match fusable.and_then(|_| after(nx)) {
+                                    Some((n2, Inst::CondBr { c, t, f: e }))
+                                        if let Some(Inst::Cmp { op, dst: cd, a, b }) = fusable
+                                            && c == cd
+                                            && once(cd)
+                                            && (a == dst || b == dst)
+                                            && target(t).is_some()
+                                            && target(e).is_some() =>
+                                    {
+                                        let (side, other) = if a == dst { (0, b) } else { (1, a) };
+                                        Some((
+                                            n2,
+                                            Op::LoadSlot8CmpBr {
+                                                ld: dst.0,
+                                                off,
+                                                other: other.0,
+                                                t: target(t).unwrap_or(0),
+                                                f: target(e).unwrap_or(0),
+                                                m: cmp_mask(op),
+                                                side,
+                                            },
+                                        ))
                                     }
+                                    _ => None,
+                                };
+                                match (cmp_br, fusable) {
+                                    (Some((n2, op)), _) => {
+                                        last = n2;
+                                        op
+                                    }
+                                    (
+                                        None,
+                                        Some(Inst::Load {
+                                            dst: d2,
+                                            addr: a2,
+                                            w: Width::B8,
+                                        }),
+                                    ) if let Some(&Known::Frame(o2)) = known.get(a2.0 as usize) => {
+                                        last = nx;
+                                        Op::LoadSlot8x2 {
+                                            d1: dst.0,
+                                            o1: off,
+                                            d2: d2.0,
+                                            o2,
+                                        }
+                                    }
+                                    _ => Op::LoadSlot8 { dst: dst.0, off },
                                 }
-                                _ => Op::LoadSlot8 { dst: dst.0, off },
                             }
                         }
                         Some(&Known::Frame(off)) => Op::LoadSlot { dst: dst.0, off, w },
@@ -1992,6 +2112,7 @@ impl Code {
         ops.push(Op::Step(n as u32));
         at.push(n as u32);
         peephole(
+            f,
             &mut ops,
             &mut at,
             &mut start,

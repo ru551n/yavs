@@ -2872,6 +2872,12 @@ own entries, as before, and keeps its `ir` compact).
   function; a signal without codes, a null range, a part table or an edge that is not the known
   one goes through `TierHost::signal` as before. The pointers are valid for the whole run and
   the bytes change only in the update phase.
+- **The `LSetDrive` fusion of the predecoder tested "register used once" on whole-function use
+  counts, which the optimiser's register sharing (#443) broke for a scalar assignment in a
+  process with an assignment in two branches**; it now tests the buffer's reads between its `Alloc`
+  and the `Drive` and that nothing reads it afterwards (`pre::live_after`, a walk over the blocks
+  after the `Drive`). A frame load of an element offset and the `SigRead1` it feeds became one op
+  (`SigRead1Slot`). The clocked designs lose a tenth of their instructions.
 - Smaller: a per-driver flag for "another source on some element" replaces the segment search in the
   unchanged-assignment test; the known edge of a trigger is looked up in a table; a batch of one
   process or entry is not ordered or sorted; a phase wanted only after a serial process is skipped

@@ -121,6 +121,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 
 ```sh
 CARGO_BUILD_JOBS=6 cargo test -p yavs-llvm --features llvm
+CARGO_BUILD_JOBS=6 cargo test -p yavs-llvm --features llvm,gc-stress   # unit tests with a collection at every safepoint (#500)
 cargo build -p yavs --features llvm                    # yavs with --tier=llvm
 cargo clippy -p yavs-llvm --features llvm --all-targets -- -D warnings
 cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O0|O1|O2]

@@ -899,7 +899,7 @@ fn precise_roots_under_compiled_code() {
     let (prog, p) = gc_roots::program();
     let both = Both::new(prog);
     let tier: Arc<dyn Tier> = both.tier.clone();
-    let (r, vals, slots) = gc_roots::run(both.prog.clone(), p, Some(tier), 1);
+    let (r, vals, slots, live) = gc_roots::run(both.prog.clone(), p, Some(tier), 1);
     assert!(
         both.tier.1.load(Ordering::Relaxed) > 0,
         "compiled code never ran"
@@ -907,7 +907,7 @@ fn precise_roots_under_compiled_code() {
     assert_eq!(vals, gc_roots::WANT, "{r:?}");
     let e = r.unwrap_err();
     assert!(e.to_string().contains("deallocated"), "{e}");
-    assert!(slots < 200, "{slots} slots");
+    gc_roots::assert_churn_collected(slots, live);
 }
 
 /// `inc(a) = a + 1` (range checked up to 1_000_000), `run(n)` calling it `n` times in a loop,

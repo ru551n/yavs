@@ -125,6 +125,9 @@ YAVS_BIN=target/release/yavs python3 tools/difftest/difftest.py --candidate yavs
   holds a live handle. Run the corpus (both tiers: add `llvm`) and the library suites with it
   after changing roots, lowering of access values, the dispatch loop or compiled code; it is
   about 100 times slower, so two `synopsys/` tests exceed the harness timeout.
+  Its unit tests run under it too (`cargo test -p yavs-interp --features gc-stress`, and
+  `-p yavs-llvm --features llvm,gc-stress`; the CI `llvm` job does both on Linux, #500): a test that
+  counts heap slots checks the live objects there instead, because no slot is reused.
 
 - A new native: row in `lib/NATIVE.md` (see `lib/AGENTS.md`), implementation in `native.rs` /
   `implicit.rs` / `textio.rs` / `env.rs` / `reflect.rs`, a test in `tests/`.

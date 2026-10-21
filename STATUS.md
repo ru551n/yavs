@@ -2398,7 +2398,9 @@ external runner's suites `check`, `com`, `data_types`, `dictionary`, `logging`, 
 `verification_components` pass under `--tier=auto`; the other verification library's `.pro` regression passes 314/314 under 2008
 and 2019 under `--tier=auto` and its component suites give 102 / 9 / 26 as before. The `gc-stress` unit tests
 `heap::tests::handles_and_collection`, `precise_roots_inside_an_activation` and `freed_slots_recycled_within_an_activation`
-fail on main too (not looked at); `precise_roots_under_compiled_code` fails under `gc-stress` as well.
+fail on main too (not looked at); `precise_roots_under_compiled_code` fails under `gc-stress` as well. All four asserted
+slot counts, which the stress build changes (it never reuses a slot); fixed in #500 (they check live objects there) and
+the unit tests run under `gc-stress` in the CI `llvm` job.
 
 ## llvm (`crates/yavs-llvm`)
 

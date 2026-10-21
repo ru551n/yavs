@@ -295,13 +295,13 @@ pub fn program() -> (Program, FuncId) {
 }
 
 /// Run the process to its end at `threads` threads, with `tier` when given: the run's
-/// result, the values it read back and the shared heap's slot count.
+/// result, the values it read back and the shared heap's slot and live object counts.
 pub fn run(
     prog: Arc<Program>,
     p: FuncId,
     tier: Option<Arc<dyn Tier>>,
     threads: usize,
-) -> (Result<(), SimError>, Vec<u64>, usize) {
+) -> (Result<(), SimError>, Vec<u64>, usize, usize) {
     let b = Bindings {
         limits: Limits {
             gc_threshold: 256,
@@ -341,5 +341,16 @@ pub fn run(
         .chunks(8)
         .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
         .collect();
-    (r, vals, s.heap_slots())
+    (r, vals, s.heap_slots(), s.heap_live())
+}
+
+/// The `CHURN` dropped objects were collected. Slots are recycled for new objects, so the
+/// heap stays small; the `gc-stress` build never reuses a slot, so there the live objects
+/// are counted instead (every collection runs and frees them, the slots stay).
+pub fn assert_churn_collected(slots: usize, live: usize) {
+    if cfg!(feature = "gc-stress") {
+        assert!(live < 200, "{live} live objects of {slots} slots");
+    } else {
+        assert!(slots < 200, "{slots} slots");
+    }
 }

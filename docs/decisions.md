@@ -2755,13 +2755,18 @@ own entries, as before, and keeps its `ir` compact).
   the packages of the closure that belong to the prefix are the packages the entry lowered, in the same order; the
   digest matches; no coverage counters; not `--tier=llvm` (it compiles every function, and the library has thousands);
   the lowering options are in the key. A closure that fails one of these lowers as before.
-- **When it is made:** the first run of the first closure that asks for the prefix after it was seen once leaves a note
-  (`Store::note`), the next such run makes the entry, at the longest prefix of the closure only; one run makes it at a time
-  (`Store::claim`, 20 s), the others go on without. Measured on the second library's `.pro` regression (314 tests,
-  11 prefixes, four jobs): creating on the first sighting costs 0.4 to 1.7 s of wall and 1 to 3 s of CPU more than
-  creating on the second (every prefix of a suite pays for the library once, also the ones one test uses), so the second
-  sighting it is. One creation is about 0.25 s (two lowerings, one to find what depends on the design) and the entry about
-  10 MB for a library of 3500 subprograms.
+- **When it is made:** the first run of every closure that asks for a prefix and finds no entry is recorded
+  (`Store::sightings`: one empty `.seen` file per different closure, newest 512 kept); the run that makes the count
+  four makes the entry, at the longest prefix of the closure only, and one run makes it at a time (`Store::claim`,
+  20 s; the others go on without). Making it costs about 0.35 s of CPU (two lowerings, one to find what depends on
+  the design, and the image) and 10 MB of disk for a library of 3500 subprograms, and the first run of a closure saves
+  about 40 ms, so a library under fewer than about ten closures costs more than it saves; waiting for four is the
+  hedge (ski rental: a suite with that many closures of a prefix loses three runs' savings, one with fewer pays
+  nothing). Measured: on the second library's `.pro` regression (314 tests, 11 prefixes of 28 closures on average, four
+  jobs) creating on the first sighting costs 0.4 to 1.7 s of wall and 1 to 3 s of CPU more than creating on the second,
+  and the second and the fourth are the same within noise (17.3, 17.8, 17.2 s against 18.0, 17.5, 17.0 s); on the
+  first library's suite (one library directory per component, 137 runs of 1 to 16 closures per prefix, three prefixes
+  with two closures and one with sixteen) the second sighting makes four libraries and the fourth one.
 - **Decoding it:** the entry is mapped and the bodies of its functions stay bytes until a function runs ("Zero-copy
   cache entries"), so a library of thousands of functions costs its function headers and tables (about 5 ms of a
   100 ms run) and a body only when its function is called, and not even then when it has a stored optimised copy.

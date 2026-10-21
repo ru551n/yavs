@@ -41,6 +41,10 @@ fn note(o: &Out, what: &str) -> bool {
         .any(|l| l.starts_with("debug: cache: ") && l.contains(what))
 }
 
+/// How many different closures must ask for a prefix's library before it is made
+/// (`yavs-elab` `libstage::SIGHTINGS`).
+const SIGHTINGS: u32 = 4;
+
 /// A library `liba` of ten packages (so that every closure starts with ten files of it), one of
 /// which keeps state (a signal, a protected counter) and one of which has a deferred constant,
 /// and a work library of testbenches.
@@ -216,8 +220,8 @@ impl Libs {
     }
 }
 
-/// Testbenches of one library share what the library's files give: the second request for the
-/// prefix makes the lowered library (`lib`), the next runs read it, the state of its packages
+/// Testbenches of one library share what the library's files give: the request of the fourth
+/// closure for the prefix makes the lowered library (`lib`), the next runs read it, the state of its packages
 /// after initialisation (`libinit`) and the optimised copies of the library functions the runs
 /// called (`libopt`). Every run prints what a run without the cache prints, with an
 /// elaboration-time call of a package function (a session) and without, at one thread and four.
@@ -225,7 +229,7 @@ impl Libs {
 #[test]
 fn closures_share_the_lowered_library_and_its_state() {
     let l = Libs::new("share", false);
-    let tops: Vec<String> = (1..=7).map(|n| l.tb(n, n % 2 == 1)).collect();
+    let tops: Vec<String> = (1..=10).map(|n| l.tb(n, n % 2 == 1)).collect();
     let plain: Vec<Out> = tops
         .iter()
         .map(|t| visible(&l.run(t, &["--no-cache"])))
@@ -234,19 +238,28 @@ fn closures_share_the_lowered_library_and_its_state() {
         assert!(p.stdout.contains(&format!("k={}", 46 + n)), "{t}: {p:?}");
         assert_eq!(p.code, 0, "{p:?}");
     }
-    // The first closure leaves the prefix image and a note; nothing of the library is lowered.
+    // The first closure leaves the prefix image; the next ones, up to the one that makes it,
+    // lower what they reach themselves.
     let r1 = l.run(&tops[0], &[]);
     assert!(note(&r1, "store prefix of 10 files"), "{r1:?}");
-    assert!(!note(&r1, "store prefix lib"), "{r1:?}");
-    assert_eq!(visible(&r1), plain[0]);
-    // The second closure makes the lowered library.
-    let r2 = l.run(&tops[1], &[]);
-    assert!(note(&r2, "store prefix lib "), "{r2:?}");
-    assert_eq!(visible(&r2), plain[1]);
+    for (i, t) in tops.iter().enumerate().take(SIGHTINGS as usize - 1) {
+        let r = l.run(t, &[]);
+        assert!(
+            !note(&r, "store prefix lib ") && !note(&r, "hit prefix lib "),
+            "{t}: {r:?}"
+        );
+        assert_eq!(visible(&r), plain[i], "{t}");
+    }
+    assert!(l.entries("lib").is_empty());
+    // The fourth closure makes the lowered library.
+    let k = SIGHTINGS as usize - 1;
+    let r4 = l.run(&tops[k], &[]);
+    assert!(note(&r4, "store prefix lib "), "{r4:?}");
+    assert_eq!(visible(&r4), plain[k]);
     assert_eq!(l.entries("lib").len(), 1);
     // The next ones read it, with the state of the packages and the optimised copies.
     let mut seen = std::collections::HashSet::new();
-    for (i, t) in tops.iter().enumerate().skip(2) {
+    for (i, t) in tops.iter().enumerate().skip(k + 1) {
         let more: &[&str] = if i % 2 == 0 { &[] } else { &["--threads=4"] };
         let r = l.run(t, more);
         assert!(note(&r, "hit prefix lib "), "{t}: {r:?}");
@@ -263,9 +276,9 @@ fn closures_share_the_lowered_library_and_its_state() {
     assert_eq!(l.entries("libinit").len(), 1);
     // The same closure again makes and then reads its own image, not the library's.
     for _ in 0..2 {
-        let again = l.run(&tops[5], &[]);
+        let again = l.run(&tops[9], &[]);
         assert!(!note(&again, "hit prefix lib "), "{again:?}");
-        assert_eq!(visible(&again), plain[5]);
+        assert_eq!(visible(&again), plain[9]);
     }
 }
 
@@ -274,18 +287,19 @@ fn closures_share_the_lowered_library_and_its_state() {
 #[test]
 fn editing_a_package_of_the_prefix_replaces_the_library() {
     let l = Libs::new("edit", false);
-    for n in 1..=3 {
+    for n in 1..=SIGHTINGS {
         let t = l.tb(n, true);
         l.run(&t, &[]);
     }
-    let t4 = l.tb(4, true);
-    assert!(note(&l.run(&t4, &[]), "hit prefix lib "));
+    let t = l.tb(SIGHTINGS + 1, true);
+    assert!(note(&l.run(&t, &[]), "hit prefix lib "));
     let f = l.tmp.join("pa9.vhd");
     let text = std::fs::read_to_string(&f).expect("read");
     std::fs::write(&f, text.replace("+ 9", "+ 90")).expect("write");
     l.analyze("liba", &[], &f);
-    let mut hits = 0;
-    for n in 5..=8 {
+    // The new prefix is made by the fourth closure that sees it and read by the next.
+    let from = SIGHTINGS + 2;
+    for n in from..=from + SIGHTINGS {
         let t = l.tb(n, true);
         let plain = visible(&l.run(&t, &["--no-cache"]));
         assert!(
@@ -294,11 +308,17 @@ fn editing_a_package_of_the_prefix_replaces_the_library() {
         );
         let r = l.run(&t, &[]);
         assert_eq!(visible(&r), plain, "{t}");
-        // Two closures see the new prefix before it is read.
-        hits += usize::from(note(&r, "hit prefix lib "));
-        assert!(n >= 7 || !note(&r, "hit prefix lib "), "{t}: {r:?}");
+        assert_eq!(
+            note(&r, "hit prefix lib "),
+            n == from + SIGHTINGS,
+            "{t}: {r:?}"
+        );
+        assert_eq!(
+            note(&r, "store prefix lib "),
+            n == from + SIGHTINGS - 1,
+            "{t}: {r:?}"
+        );
     }
-    assert!(hits >= 1);
     assert_eq!(
         l.entries("lib").len(),
         2,
@@ -360,15 +380,19 @@ fn parallel_first_runs_into_one_library_agree() {
         .iter()
         .map(|t| visible(&l.run(t, &["--no-cache"])))
         .collect();
-    // The prefix has been seen once by this run, so the runs below all want the library.
-    l.run(&tops[0], &[]);
+    // The prefix has been seen by all but one of the closures that make the library, so one of
+    // the runs below makes it while the others go on.
+    let before = SIGHTINGS as usize - 1;
+    for (t, p) in tops.iter().zip(&plain).take(before) {
+        assert_eq!(visible(&l.run(t, &[])), *p);
+    }
     std::thread::scope(|s| {
         let hs: Vec<_> = tops
             .iter()
-            .skip(1)
+            .skip(before)
             .map(|t| s.spawn(|| visible(&l.run(t, &[]))))
             .collect();
-        for (h, p) in hs.into_iter().zip(plain.iter().skip(1)) {
+        for (h, p) in hs.into_iter().zip(plain.iter().skip(before)) {
             assert_eq!(*p, h.join().expect("join"));
         }
     });
@@ -406,11 +430,11 @@ fn parallel_first_runs_into_one_library_agree() {
 #[test]
 fn damaged_library_entries_are_ignored() {
     let l = Libs::new("damaged", false);
-    for n in 1..=3 {
+    for n in 1..=SIGHTINGS {
         let t = l.tb(n, true);
         l.run(&t, &[]);
     }
-    let mut n = 3;
+    let mut n = SIGHTINGS;
     for kind in ["lib", "libinit", "libopt"] {
         let img = l
             .entries(kind)

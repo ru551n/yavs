@@ -99,7 +99,7 @@ values computed when the design starts) is kept in the same directory, so a shor
 work too. The test cases of one library share this as well: the library's lowered code, the state
 of its packages after they start and the optimised code of the functions earlier test cases called
 are kept once next to the library (about 10 MB for a large verification library; a library
-directory keeps at most 512 MiB of entries), made when a second test case asks for them, so the
+directory keeps at most 512 MiB of entries), made when a few different test cases (four) have asked for them, so the
 first run of a new test case does not make them again.
 
 * ``--no-cache`` (``elab``, ``run``) neither reads nor writes the cache.

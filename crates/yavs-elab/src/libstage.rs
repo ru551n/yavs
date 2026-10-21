@@ -25,6 +25,12 @@ const LIB: &str = "lib";
 const OPT: &str = "libopt";
 pub(crate) const INIT: &str = "libinit";
 
+/// How many different closures must have asked for a prefix's library before it is made: making
+/// it costs about a third of a second (two lowerings and the image) and 10 MB of disk, and a first
+/// run of a closure saves about a twentieth of that, so a library under fewer closures than this
+/// costs more than it saves (a suite whose components have one or two closures each is the case).
+pub(crate) const SIGHTINGS: usize = 4;
+
 /// The smallest lowered library worth storing: packages of constants lower to almost nothing.
 const MIN_IMAGE: usize = 256;
 
@@ -79,7 +85,7 @@ fn closed(db: &Db, units: usize) -> bool {
 /// A lowerer with the library prefix's packages and subprograms lowered, then the rest of
 /// `packages`, for a closure with no entries of its own (its first run); `None` when no prefix
 /// serves: the closure is cached itself, coverage counters are on, the `Db` has grown since
-/// its analysis, or no prefix has been lowered yet (the second request for it makes it).
+/// its analysis, or fewer than [`SIGHTINGS`] closures have asked for the prefix's library yet.
 pub(crate) fn lowerer<'a>(
     db: &'a Db,
     packages: &[UnitId],
@@ -119,10 +125,10 @@ pub(crate) fn lowerer<'a>(
             .count();
         let bytes = match cache.prefix_get(level, LIB, &part) {
             Some(b) => b,
-            // Only the longest prefix is made, on its second request (a library lowered for
-            // one test would cost more than it saves).
+            // Only the longest prefix is made, when enough closures have asked for it (making it
+            // costs a third of a second and a run of a closure saves about a twentieth).
             None if level == 0
-                && cache.prefix_seen(level, LIB, &part)
+                && cache.prefix_sightings(level, LIB, &part) >= SIGHTINGS
                 && cache.prefix_claim(level, LIB, &part) =>
             {
                 let made = make(cache.as_ref(), level, opts);

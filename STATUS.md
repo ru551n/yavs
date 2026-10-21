@@ -1437,18 +1437,18 @@ A suite whose every test is a new closure (the second library's `.pro` regressio
 each) got only the analysis prefix from the cache: the lowered library, the state of its packages after
 initialisation and the optimised library functions were made again by every test. They are now kept per library
 prefix (`docs/decisions.md` "Library stages": kinds `lib`, `libinit`, `libopt` next to the prefix image, made on the
-second request for the prefix, read by the first run of every closure that starts with it), and a package body in a file of its own placed after its package in
+fourth closure that asks for the prefix, read by the first run of every closure that starts with it), and a package body in a file of its own placed after its package in
 the closure (the settings package of that library had its body last, after every prefix).
 
 Measured against main at 56744da3 (with the mapped entries and lazily decoded bodies of #481), release builds, one
-performance core (core 3) for single runs, the suites on cores 0-7 at four jobs, interleaved pairs, host load average 8
+performance core (core 3) for single runs, the suites on cores 0-7 at four jobs, interleaved pairs, host load average 4
 to 11 (CPU is the comparison; wall moves with the other agents' load):
 
 | | main | this change | note |
 |---|---:|---:|---|
 | First run of a new small test (library cache warm, min of 15, `--time-report`) | 106 to 109 ms | 70 to 71 ms | analyze 10 to 10, elaborate 27 to 22, init 11 to 9, simulate 57 to 30 |
 | Second and later runs of a test (`ir` hit) | 50 to 52 ms | 50 to 51 ms | unchanged |
-| `.pro` regression, 2008, 314 tests (3 pairs) | 26.7, 24.7, 22.7 s wall; 85.1, 80.6, 75.9 s CPU | 22.8, 21.5, 20.1 s; 73.6, 68.4, 65.1 s | wall -11 to -15 percent, CPU -14 to -15 percent |
+| `.pro` regression, 2008, 314 tests (3 pairs, load average 4) | 21.5, 24.8, 21.7 s wall; 73.5, 83.4, 73.6 s CPU | 18.0, 17.5, 17.0 s; 59.1, 54.5, 54.1 s | wall -16 to -30 percent, CPU -20 to -35 percent; at load 8 to 11: 26.7, 24.7, 22.7 s to 22.8, 21.5, 20.1 s |
 | `.pro` regression, 2019 (2 pairs) | 21.1, 23.3 s wall; 70.0, 78.2 s CPU | 19.0, 21.1 s; 60.4, 68.5 s | CPU -12 to -14 percent |
 
 Peak memory of a test run is 58 MB (main 49 MB: the 10 MB entry is mapped); the run that makes the library for a prefix
@@ -1462,6 +1462,11 @@ differential corpus passes 413/413 at 1 and 4 threads, three passes (cold, store
 (775), fmt, clippy. New tests: `crates/yavs/tests/cache_prefix.rs` (five: sharing, editing a package of the prefix, a
 body that follows the prefix, parallel first runs, damaged entries), the closure order, the prefix state,
 `context_dependent`, `Store::claim` and the byte limit.
+
+The library of a prefix is made by the fourth closure that asks for it (`libstage::SIGHTINGS`; making it costs 0.35 s of
+CPU, a first run saves 40 ms): on the first library's suite, whose components have one to sixteen closures per
+prefix, making it on the second request made four libraries, on the fourth one; on the `.pro` regression the two are the
+same within noise.
 
 Left: one lowered library per longest prefix (suites with several prefixes of one library make one each; sharing
 between them would need a program delta); the entry is still 10 MB and reading it is a few ms of a 70 ms run (a

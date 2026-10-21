@@ -246,6 +246,37 @@ impl Store {
         }
     }
 
+    /// Record that `member` wanted an entry of `group` (empty `.seen` files, each named by both, the
+    /// newest [`MAX_NOTES`] kept) and return how many different members have, this one included. A
+    /// caller that makes a big entry only when enough different designs ask for it (each of them
+    /// would have used it) asks this instead of [`Store::noted`].
+    pub fn sightings(&self, kind: &str, group: &Key, member: &Key) -> usize {
+        let name = |m: &str| format!("{kind}-{}.{m}.seen", group.hex());
+        let mine = self.dir.join(name(&member.hex()[..16]));
+        if !mine.exists() {
+            if fs::create_dir_all(&self.dir).is_err() || fs::File::create(&mine).is_err() {
+                return 1;
+            }
+            let all = self.files_ending(".seen");
+            if all.len() > MAX_NOTES {
+                let mut all = all;
+                all.sort_by_key(|e| std::cmp::Reverse(e.1));
+                for (p, _, _) in all.split_off(MAX_NOTES) {
+                    let _ = fs::remove_file(p);
+                }
+            }
+        }
+        let prefix = format!("{kind}-{}.", group.hex());
+        self.files_ending(".seen")
+            .iter()
+            .filter(|(p, _, _)| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
+            })
+            .count()
+            .max(1)
+    }
+
     fn claim_file(&self, kind: &str, key: &Key) -> PathBuf {
         self.dir.join(format!("{kind}-{}.making", key.hex()))
     }
@@ -513,6 +544,22 @@ mod tests {
         assert!(s.claim("t", &key("a"), std::time::Duration::ZERO));
         // Claims are not entries, and cleaning removes them.
         assert_eq!(s.entries().len(), 0);
+        s.clean().unwrap();
+        assert!(!s.dir().exists());
+    }
+
+    #[test]
+    fn sightings_count_different_members_per_group() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        let g = key("group");
+        assert_eq!(s.sightings("t", &g, &key("a")), 1);
+        assert_eq!(s.sightings("t", &g, &key("a")), 1, "the same member twice");
+        assert_eq!(s.sightings("t", &g, &key("b")), 2);
+        assert_eq!(s.sightings("t", &g, &key("c")), 3);
+        assert_eq!(s.sightings("t", &key("other"), &key("a")), 1);
+        assert_eq!(s.sightings("u", &g, &key("a")), 1, "another kind");
+        assert_eq!(s.entries().len(), 0, "notes are not entries");
         s.clean().unwrap();
         assert!(!s.dir().exists());
     }

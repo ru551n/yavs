@@ -190,7 +190,7 @@ identical to a run without it, at any `--threads`.
   prefix, kept in the cache of the library of the prefix's last file: the lowered library
   (`lib-<key>.img`: the packages and every subprogram they declare that does not depend on the design),
   the state of its first packages after initialisation (`libinit-<key>.img`) and the optimised copies
-  of its functions (`libopt-<key>.img`). The library is made on the second request for the prefix, by
+  of its functions (`libopt-<key>.img`). The library is made when four different closures have asked for the prefix, by
   one run at a time (`<kind>-<key>.making` while it does), and only when no package body follows the
   prefix, nothing was instantiated at elaboration time and the run has no coverage counters and is not
   `--tier=llvm`; otherwise the run lowers as before. Results, messages and waveforms are identical with

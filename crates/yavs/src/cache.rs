@@ -166,16 +166,15 @@ impl StageCache for Stages {
         ok
     }
 
-    fn prefix_seen(&self, level: usize, kind: &str, part: &[u8]) -> bool {
+    fn prefix_sightings(&self, level: usize, kind: &str, part: &[u8]) -> usize {
         let Some((l, k)) = self.level_key(level, kind, part) else {
-            return true;
+            return 0;
         };
-        if l.store.noted(kind, &k) {
-            return true;
-        }
-        l.store.note(kind, &k);
-        debug(format!("note prefix {kind} {}", k.hex()));
-        false
+        let mut me = KeyBuilder::new("closure");
+        me.text(&self.base);
+        let n = l.store.sightings(kind, &k, &me.finish());
+        debug(format!("prefix {kind} {} seen by {n}", k.hex()));
+        n
     }
 
     fn prefix_db(&self, level: usize) -> Option<Db> {

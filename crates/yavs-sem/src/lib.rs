@@ -121,9 +121,11 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
 
     fn prefix_put(&self, _level: usize, _kind: &str, _part: &[u8], _bytes: &[u8]) {}
 
-    /// Whether the entry was asked for before; the first call remembers the request.
-    fn prefix_seen(&self, _level: usize, _kind: &str, _part: &[u8]) -> bool {
-        true
+    /// How many different closures (this one included) have asked for the entry of this prefix and
+    /// not found it: the request is remembered. A stage that costs a fraction of a second to make
+    /// is made once enough closures would have used it.
+    fn prefix_sightings(&self, _level: usize, _kind: &str, _part: &[u8]) -> usize {
+        usize::MAX
     }
 
     /// Whether this run may make the entry: `false` while another run is making it (the claim

@@ -246,7 +246,6 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false"]
 stop = "200us"
-excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (#513)"
 
 [[test]]
 name = "neorv32_single_min"
@@ -259,7 +258,6 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false", "SMC_PSRAM_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false", "ICACHE_EN=false", "DCACHE_EN=false", "RISCV_ISA_Zknd=false", "RISCV_ISA_Zkne=false", "RISCV_ISA_Zknh=false", "RISCV_ISA_Zksed=false", "RISCV_ISA_Zksh=false", "RISCV_ISA_Zfinx=false", "RISCV_ISA_Xcfu=false"]
 stop = "300us"
-excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (#513)"
 
 [[test]]
 name = "neorv32_single_cache"
@@ -272,7 +270,6 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false"]
 stop = "300us"
-excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (#513)"
 
 [[test]]
 name = "osvvm_axis_random"

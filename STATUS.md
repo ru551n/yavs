@@ -4375,8 +4375,9 @@ reasons in `tools/realbench/tests.toml`). 30 tests pass on yavs and sim1: hdl-mo
 examples (2), en_cl_fix (1), PoC (5), fletcher (1), satcat5 (2), the two verification libraries (7: OSVVM and UVVM testbenches)
 and the maintainer's own project (3). Categories: clocked RTL datapaths, FSMs, resolved bus (I2C), records, wide vectors,
 `numeric_std` and fixed point, memories, protected types and scoreboards, string and textio code. Run lengths on sim1 are 0.06 s to 6 s;
-23 of the 30 take under 1 s (start-up, elaboration and a few thousand clock cycles). There is no CPU-core test and no many-instance
-test until #513 is fixed (the neorv32 testbench diverges from sim1).
+23 of the 30 take under 1 s (start-up, elaboration and a few thousand clock cycles). The baseline has no CPU-core test: the neorv32
+testbench diverged from sim1 then (#513). Fixed since 2026-10-22, its three configurations are back in the suite (not in the baseline
+numbers below); a probe run puts them at 7x to 9x of sim1 with the interpreter and slower still with `--tier=auto` (#521).
 
 Method (as `tools/bench/AGENTS.md` section 7): release build with the `llvm` feature of main at `55772743` (only STATUS and
 documentation commits since), `--threads 1`, every timed run pinned to performance core 6 or 7 (two tests at a time, all cells of
@@ -4482,7 +4483,6 @@ Followed by `sc5_timestamp` (3.0x) and `poc_cache_cpu` (2.9x, interpreter ops 48
 
 | test | reason |
 |---|---|
-| `neorv32_dual_full`, `neorv32_single_min`, `neorv32_single_cache` | the processor testbench: yavs and sim1 both exit 0, but the yavs core traps at its first GPIO store and sleeps, so the program diverges (#513) |
 | `hdlm_lfsr`, `hdlm_axi_crossbar`, `hdlm_register_file`, `hdlm_axis_bfm` | hdl-modules testbenches: E2106 at elaboration (#512) |
 | `poc_fifo_ic_assembly` | E2106 at elaboration (#515) |
 | `fletcher_bufferreader`, `fletcher_bufferwriter_prim32` | E2001 "call whose body is not analyzed" (#516) |

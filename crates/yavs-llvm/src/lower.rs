@@ -6159,13 +6159,16 @@ impl Gen {
             // codegen time with them; the heap, which most such accesses are, needed the call
             // anyway, and the compiled code is no slower (#432).
             // In a process, first the objects found before (`Mem::objs`, kept between
-            // activations): the heap variables of a clocked process are found there without
-            // a call.
-            let mut found = None;
+            // activations: the heap variables of a clocked process), then the temporary area
+            // (the results natives leave there), without a call.
+            let mut found = Vec::new();
+            let mut merge_at = std::ptr::null_mut();
             if c.objs_inline {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                let merge = self.block(c);
+                merge_at = merge;
                 let mut base = LLVMConstPointerNull(self.ptr);
                 let mut len = self.c64(0);
                 let mut hit = LLVMConstInt(LLVMInt1TypeInContext(self.ctx), 0, 0);
@@ -6183,22 +6186,35 @@ impl Gen {
                     len = LLVMBuildSelect(self.b, m, l, len, c"".as_ptr());
                     hit = self.or(hit, m);
                 }
-                let fits = self.icmp(IP::LLVMIntULE, n, len);
-                let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
-                let inside = self.icmp(IP::LLVMIntULE, o, rest);
-                let ok = LLVMBuildAnd(
-                    self.b,
-                    hit,
-                    LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
-                    c"".as_ptr(),
-                );
-                let (fast, call, merge) = (self.block(c), self.block(c), self.block(c));
-                LLVMBuildCondBr(self.b, ok, fast, call);
-                LLVMPositionBuilderAtEnd(self.b, fast);
-                let pf = self.gep(base, o);
-                LLVMBuildBr(self.b, merge);
-                LLVMPositionBuilderAtEnd(self.b, call);
-                found = Some((pf, fast, merge));
+                let temp_hi = self.c64(i64::from(space::TEMP) << 29);
+                let tbase = || self.mem_ld(c, MEM_TEMP, self.ptr);
+                let tlen = || self.mem_ld(c, MEM_TEMP_LEN, self.i64);
+                for (hit, base, len) in [
+                    (Some(hit), Some(base), len),
+                    (None, None, std::ptr::null_mut()),
+                ] {
+                    // The objects, then (on a miss) the temporary area.
+                    let (hit, len) = match hit {
+                        Some(h) => (h, len),
+                        None => (self.icmp(IP::LLVMIntEQ, hi, temp_hi), tlen()),
+                    };
+                    let fits = self.icmp(IP::LLVMIntULE, n, len);
+                    let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+                    let inside = self.icmp(IP::LLVMIntULE, o, rest);
+                    let ok = LLVMBuildAnd(
+                        self.b,
+                        hit,
+                        LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
+                        c"".as_ptr(),
+                    );
+                    let (fast, miss) = (self.block(c), self.block(c));
+                    LLVMBuildCondBr(self.b, ok, fast, miss);
+                    LLVMPositionBuilderAtEnd(self.b, fast);
+                    let pf = self.gep(base.unwrap_or_else(tbase), o);
+                    LLVMBuildBr(self.b, merge);
+                    found.push((pf, fast));
+                    LLVMPositionBuilderAtEnd(self.b, miss);
+                }
             }
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
             let phi = LLVMBuildCall2(
@@ -6211,14 +6227,16 @@ impl Gen {
             );
             self.guard(c, LLVMBuildIsNotNull(self.b, phi, c"".as_ptr()), slow);
             let mut p = phi;
-            if let Some((pf, fast, merge)) = found {
+            if !found.is_empty() {
                 let here = LLVMGetInsertBlock(self.b);
-                LLVMBuildBr(self.b, merge);
-                LLVMPositionBuilderAtEnd(self.b, merge);
+                LLVMBuildBr(self.b, merge_at);
+                LLVMPositionBuilderAtEnd(self.b, merge_at);
                 let m = LLVMBuildPhi(self.b, self.ptr, c"".as_ptr());
-                let mut vals = [pf, p];
-                let mut bbs = [fast, here];
-                LLVMAddIncoming(m, vals.as_mut_ptr(), bbs.as_mut_ptr(), 2);
+                let mut vals: Vec<LLVMValueRef> = found.iter().map(|f| f.0).collect();
+                let mut bbs: Vec<LLVMBasicBlockRef> = found.iter().map(|f| f.1).collect();
+                vals.push(p);
+                bbs.push(here);
+                LLVMAddIncoming(m, vals.as_mut_ptr(), bbs.as_mut_ptr(), vals.len() as u32);
                 p = m;
             }
             if !own.is_empty() {

@@ -3874,14 +3874,18 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   `TempRoot`: string helpers called often on short strings ran slower compiled.
 - **Object table.** `Mem::objs` is a direct-mapped table of 16 entries (`obj_at`: the low bits of the object index,
   which are also bits 32 and up of an access value), looked up inline by every access of unknown space in every
-  function (one load and compare; processes then try the temporary area). An entry also holds the access value a
-  `Deref` found it for: a `Deref` of that value is inline (`Gen` compares the entry's value; `UNREAD` marks an entry
-  whose bytes nobody asked for yet). Heap entries stay across a host call (step, native, `native_step`) when
-  `TierFrame::heap_epoch`, now the sum of the process heap's and the shared heap's epochs and refreshed with the
-  temporary area, did not change (`Mem::forget_since`): no object was deallocated or edited in place, so their bytes
-  and handles are where they were; other spaces are forgotten as before (frames and the temporary area may move).
-  ponytail: direct-mapped, two objects whose indices agree in the low four bits evict each other; ways if a profile
-  shows conflicts.
+  function (one load and compare; then, on a miss, the temporary area in a process and the instance data for a read).
+  An entry also holds the access value a `Deref` found it for: a `Deref` of that value is inline (`Gen` compares the
+  entry's value), and `FAST_DEREF` enters the object at once, writable, so the accesses after it are inline too.
+  How long an entry stays (`Life`): frame and temporary objects until the next host call; heap objects (process and
+  shared heap) while `TierFrame::heap_epoch`, the sum of both heaps' epochs refreshed with the temporary area, is
+  unchanged, so across host calls that deallocate nothing (`Mem::forget_since`) and from one activation or
+  `Tier::call` to the next on the same machine (`Mem::begin`); constants, instance data, package data and the shared
+  variables while the same machine runs (`TierFrame::owner`, a number unique to each machine: another machine may run
+  another program). Writable heap objects kept into a new activation or call count as written again
+  (`TierHost::wrote`, now also for the shared heap), so the waveform recorder's write counts stay right. ponytail:
+  direct-mapped, two objects whose indices agree in the low four bits evict each other; ways if a profile shows
+  conflicts.
 - **Calls from the interpreter on native frames (`Tier::call`).** Every function with native-frame code and no static
   link gets an adapter `f<id>_c(env, mem, depth, cells)`. The fast loop's `Op::Call` and `Op::CallProt` of a function
   `NativeFlags::set_call` marks ask `Tier::call` first (after a protected call's shared-state check): the argument

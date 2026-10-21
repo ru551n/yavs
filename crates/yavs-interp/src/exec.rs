@@ -357,6 +357,8 @@ impl std::ops::IndexMut<usize> for Regs {
 
 pub(crate) struct Machine {
     pub rt: Arc<Runtime>,
+    /// This machine for compiled code (`TierFrame::owner`): unique in the process.
+    owner: u64,
     /// The slots of the native frames of compiled code, for the frame indices `nwin_from` to
     /// `nwin_to`, while a call from a native frame runs (`TierHost::native_direct`).
     nwin: Option<Box<dyn crate::NativeSlots>>,
@@ -791,7 +793,9 @@ impl Machine {
         drivers: Vec<ProcDriver>,
         entry: FuncId,
     ) -> Machine {
+        static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Machine {
+            owner: OWNERS.fetch_add(1, Ordering::Relaxed),
             nwin: None,
             nwin_from: 0,
             nwin_to: 0,
@@ -5919,6 +5923,7 @@ impl Machine {
         tf.max_depth = u64::from(m.rt.limits.max_depth);
         tf.heap_epoch = m.heap_epochs();
         tf.flags = m.tier_flags();
+        tf.owner = m.owner;
         match c.known_edge() {
             Some((s, e, up)) => {
                 tf.known_sig = u64::from(s.0);
@@ -5972,6 +5977,7 @@ impl Machine {
         tf.max_depth = u64::from(self.rt.limits.max_depth);
         tf.heap_epoch = self.heap_epochs();
         tf.flags = self.tier_flags();
+        tf.owner = self.owner;
         let mut link = self.frames[top].link;
         for u in &mut tf.up {
             *u = match link {
@@ -7657,6 +7663,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let (sp, idx, _) = split(addr);
         if sp == HEAP {
             let _ = self.m.heap.data_mut(idx);
+        } else if sp == SHARED_HEAP
+            && let Some(h) = self.m.sh.as_mut().and_then(|sh| sh.heap.as_mut())
+        {
+            let _ = h.data_mut(idx);
         }
     }
 

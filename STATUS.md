@@ -4558,3 +4558,10 @@ In the compiled code of the queue the shared-heap lookups were 70 percent of the
 `TierHost::object`, `Machine::obj`); after, 62 percent of the cycles are compiled code. `--tier=auto` gains as much once
 the queue's functions are compiled (2.76 G cycles warm), but its tier-up policy does not compile them reliably within a run
 of one second yet (next section).
+
+Second step (same section, #510): the objects of the table live as long as they stay where they were found (frames and
+temporaries until the next host call; heap objects while neither heap deallocated anything, also into the next activation
+or `Tier::call` of the same machine; constants, instance and package data while the same machine runs), a `Deref` enters
+its object at once, and reads of the instance data are inline. On the window-generator testbench of the real-world suite
+(`vai_window_gen_interlock`, `--tier=auto` with a warm compilation cache after five runs) `yavs_rt_host` and
+`TierHost::object` went from 11.4 to 6.0 percent of the cycles.

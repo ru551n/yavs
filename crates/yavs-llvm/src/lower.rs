@@ -87,6 +87,9 @@ pub(crate) struct Mem {
     objs: [Obj; OBJS],
     /// Entries of `objs` in use, at most (0: none, nothing to forget).
     live: u64,
+    /// The `TierFrame::owner` and `heap_epoch` the objects were found at (`begin`).
+    objs_owner: u64,
+    objs_epoch: u64,
     /// `objs` changed since it was loaded from the process's record (`save_objs`).
     dirty: bool,
     /// Some entry of `objs` is not one `forget_end` keeps.
@@ -207,10 +210,6 @@ const NO_OBJ: Obj = Obj {
     h: 0,
 };
 
-/// The bytes of an object `Deref` found but nothing has read yet: found again on its first
-/// access (non-null, so no access of zero bytes yields a null pointer).
-const UNREAD: *mut u8 = std::ptr::NonNull::<u64>::dangling().as_ptr().cast();
-
 const MEM_SLOTS: u64 = std::mem::offset_of!(Mem, fr.slots) as u64;
 const MEM_SLOTS_LEN: u64 = std::mem::offset_of!(Mem, fr.slots_len) as u64;
 const MEM_FRAME: u64 = std::mem::offset_of!(Mem, fr.frame_hi) as u64;
@@ -254,6 +253,8 @@ impl Mem {
             fr,
             objs: [NO_OBJ; OBJS],
             live: 0,
+            objs_owner: 0,
+            objs_epoch: 0,
             dirty: false,
             transient: false,
             temp_seen: fr.temp_len,
@@ -273,14 +274,34 @@ impl Mem {
         }
     }
 
-    /// No object found yet (a `Mem` used before keeps its other words).
-    fn no_objs(&mut self) {
-        if self.live != 0 {
-            self.objs = [NO_OBJ; OBJS];
-        }
-        self.live = 0;
+    /// The start of an activation or a call from the interpreter, on a view just made: keep the
+    /// objects found before that are still where they were (`Life`), and count the writes of
+    /// the writable heap objects kept as this run's (`TierHost::wrote`).
+    fn begin(&mut self, host: &mut dyn TierHost) {
         self.dirty = false;
-        self.transient = false;
+        if self.live == 0 {
+            return;
+        }
+        let same = self.objs_owner == self.fr.owner;
+        let epoch = same && self.objs_epoch == self.fr.heap_epoch;
+        self.retain(|hi| match life(hi) {
+            Life::Machine => same,
+            Life::Heap => epoch,
+            Life::Volatile => false,
+        });
+        if epoch {
+            for o in &self.objs {
+                if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
+                    host.wrote(o.hi << 32);
+                }
+            }
+        }
+    }
+
+    /// The end of an activation or call: what `begin` checks next time.
+    fn end(&mut self) {
+        self.objs_owner = self.fr.owner;
+        self.objs_epoch = self.fr.heap_epoch;
     }
 
     /// Enter object `o` at its entry.
@@ -288,14 +309,16 @@ impl Mem {
     fn put_obj(&mut self, o: Obj) {
         let e = &mut self.objs[obj_at(o.hi)];
         self.live += u64::from(e.hi == u64::MAX);
+        self.transient |= life(o.hi) == Life::Volatile;
+        self.dirty = true;
         *e = o;
     }
 
-    /// The objects of a process's record (`save_objs`: up to four of `hi`, address, `len`, `w`).
+    /// The objects of a process's record (`save_objs`: up to four of `hi`, address, `len`, `w`),
+    /// entered where `begin` left no other.
     fn load_objs(&mut self, w: &[u64; 17]) {
-        self.no_objs();
         for k in w[..16].as_chunks::<4>().0 {
-            if k[0] != u64::MAX {
+            if k[0] != u64::MAX && self.objs[obj_at(k[0])].hi == u64::MAX {
                 self.put_obj(Obj {
                     hi: k[0],
                     ptr: k[1] as *mut u8,
@@ -305,9 +328,11 @@ impl Mem {
                 });
             }
         }
+        self.dirty = false;
     }
 
-    /// Keep (up to four of) the objects `forget_end` left for the next activation.
+    /// Keep (up to four of) the objects `forget_end` left for the next activation of this
+    /// process, whatever ran on the thread in between (`TierState`).
     fn save_objs(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
         if self.live == 0 {
             if let Some(st) = slot {
@@ -320,10 +345,7 @@ impl Mem {
             return;
         }
         st.words[..16].fill(u64::MAX);
-        let kept = self
-            .objs
-            .iter()
-            .filter(|o| o.hi != u64::MAX && o.ptr != UNREAD);
+        let kept = self.objs.iter().filter(|o| o.hi != u64::MAX);
         for (k, o) in st.words[..16].as_chunks_mut::<4>().0.iter_mut().zip(kept) {
             k.copy_from_slice(&[o.hi, o.ptr as u64, o.len, o.w]);
         }
@@ -331,20 +353,13 @@ impl Mem {
         st.used = true;
     }
 
-    /// The end of an activation: forget the objects found, except constants and the process
-    /// heap's objects, which stay valid while the heap's epoch does not change.
+    /// The end of an activation: forget the frame and temporary objects found.
     #[inline]
     fn forget_end(&mut self) {
         if !self.transient {
             return;
         }
-        let keep = |hi: u64| {
-            let sp = (hi >> 29) as u8;
-            sp == space::CONST || sp == space::HEAP
-        };
-        self.retain(keep);
-        self.dirty = true;
-        self.transient = false;
+        self.retain(|hi| life(hi) != Life::Volatile);
     }
 
     /// Drop the objects whose high half `keep` refuses.
@@ -355,10 +370,10 @@ impl Mem {
             if o.hi != u64::MAX {
                 if keep(o.hi) {
                     live += 1;
-                    let sp = (o.hi >> 29) as u8;
-                    transient |= sp != space::CONST && sp != space::HEAP;
+                    transient |= life(o.hi) == Life::Volatile;
                 } else {
                     *o = NO_OBJ;
+                    self.dirty = true;
                 }
             }
         }
@@ -366,28 +381,46 @@ impl Mem {
         self.transient = transient;
     }
 
-    /// Forget the objects found before a step, except constants (they never move or change).
+    /// Forget the objects found before a host call that may have moved frames, the temporary
+    /// area or heap objects; those of the machine stay (`Life`).
     fn forget(&mut self) {
         if self.live == 0 {
             return;
         }
-        self.retain(|hi| hi >> 29 == u64::from(space::CONST));
-        self.dirty = true;
+        self.retain(|hi| life(hi) == Life::Machine);
     }
 
     /// `forget` after a host call that started at heap epoch `epoch` (`TierFrame::heap_epoch`):
-    /// heap objects stay too while no heap object was deallocated or edited in place (other
-    /// memory may have moved with a frame or the temporary area).
+    /// heap objects stay too while no heap object was deallocated or edited in place.
     fn forget_since(&mut self, epoch: u64) {
         if self.live == 0 {
             return;
         }
         let heap = self.fr.heap_epoch == epoch;
-        self.retain(|hi| {
-            let sp = (hi >> 29) as u8;
-            sp == space::CONST || heap && (sp == space::HEAP || sp == space::SHARED_HEAP)
+        self.retain(|hi| match life(hi) {
+            Life::Volatile => false,
+            Life::Heap => heap,
+            _ => true,
         });
-        self.dirty = true;
+    }
+}
+
+/// How long an object of `Mem::objs` stays where it was found: until the next host call that
+/// may move frames or the temporary area; while the heaps' epoch is unchanged (heap objects);
+/// while the same machine runs (constants, instance data, package data, shared variables:
+/// another machine may run another program).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Life {
+    Volatile,
+    Heap,
+    Machine,
+}
+
+fn life(hi: u64) -> Life {
+    match (hi >> 29) as u8 {
+        space::CONST | space::INST | space::PKG | space::SHARED => Life::Machine,
+        space::HEAP | space::SHARED_HEAP => Life::Heap,
+        _ => Life::Volatile,
     }
 }
 
@@ -1072,24 +1105,24 @@ extern "C" fn yavs_rt_fast(
                 Ok(Some(addr)) => {
                     // SAFETY: `regs` holds register `dst`; `mem` as in `yavs_rt_step`.
                     unsafe { *regs.add(dst as usize) = addr };
-                    // The next `Deref` of `a` is found inline (`Gen::deref`); its bytes on the
-                    // first access, unless the entry has them already.
+                    // The object goes to its entry with `a`, writable (the accesses after a
+                    // `Deref` read and write it): the next `Deref` of `a` and the accesses are
+                    // inline.
                     let m = unsafe { &mut *mem };
                     let hi = addr >> 32;
                     let e = &mut m.objs[obj_at(hi)];
-                    if e.hi == hi {
+                    if e.hi == hi && e.w != 0 {
                         e.h = a;
-                    } else {
+                    } else if let Ok(Some((p, len))) =
+                        catch_unwind(AssertUnwindSafe(|| env.host.object(addr, true)))
+                    {
                         m.put_obj(Obj {
                             hi,
-                            ptr: UNREAD,
-                            len: 0,
-                            w: 0,
+                            ptr: p,
+                            len: len as u64,
+                            w: 1,
                             h: a,
                         });
-                        let sp = (hi >> 29) as u8;
-                        m.transient |= sp != space::CONST && sp != space::HEAP;
-                        m.dirty = true;
                     }
                     1
                 }
@@ -1133,9 +1166,6 @@ fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32) -> u32 {
                 w: u64::from(write),
                 h,
             });
-            let sp = (hi >> 29) as u8;
-            mem.transient |= sp != space::CONST && sp != space::HEAP;
-            mem.dirty = true;
             1
         }
         Ok(None) => 0,
@@ -1275,7 +1305,9 @@ fn enter_on(
     }
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
-    // The objects found at an earlier activation are good while the heap did not change.
+    // The objects found before on this thread, and those of the process's own record, which
+    // are good while the heaps did not change.
+    mem.begin(host);
     if let Some(Some(st)) = state.as_deref()
         && st.used
         && st.words[16] == mem.fr.heap_epoch
@@ -1283,12 +1315,10 @@ fn enter_on(
         mem.load_objs(&st.words);
         // The heap objects it may write count as written in this activation.
         for o in mem.objs {
-            if o.hi != u64::MAX && o.w != 0 && (o.hi >> 29) as u8 == space::HEAP {
+            if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
                 host.wrote(o.hi << 32);
             }
         }
-    } else {
-        mem.no_objs();
     }
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
@@ -1323,6 +1353,7 @@ fn enter_on(
     if let Some(slot) = state {
         mem.save_objs(slot);
     }
+    mem.end();
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(next)),
@@ -1386,7 +1417,7 @@ fn call_on(
     }
     mem.temp_seen = mem.fr.temp_len;
     mem.ndeopt = 0;
-    mem.no_objs();
+    mem.begin(host);
     // The callee of a protected call allocates in the shared heap when the object is there.
     if obj.is_some_and(|h| (h >> 56) as u8 == yavs_interp::SHARED_TAG) {
         mem.fr.flags |= yavs_interp::TIER_SHARED_ALLOC;
@@ -1433,7 +1464,8 @@ fn call_on(
     } else {
         Called::Done(v as u64)
     };
-    mem.no_objs();
+    mem.forget_end();
+    mem.end();
     match env.panic {
         Some(p) => Err(p),
         None => Ok(Some(out)),
@@ -6530,20 +6562,21 @@ impl Gen {
                 }
                 let base = self.load(self.ptr, self.gep(e, self.c64(OBJ_PTR as i64)));
                 let len = self.load(self.i64, self.gep(e, self.c64(OBJ_LEN as i64)));
-                let temp_hi = self.c64(i64::from(space::TEMP) << 29);
-                let tbase = || self.mem_ld(c, MEM_TEMP, self.ptr);
-                let tlen = || self.mem_ld(c, MEM_TEMP_LEN, self.i64);
-                // The object, then (in a process, on a miss) the temporary area.
-                let mut tries = vec![(hit, Some(base), len)];
+                // The object, then on a miss (in a process) the temporary area and (reading)
+                // the instance data: the view's bytes, found by the address's high half.
+                let at = |sp: u8| self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(sp) << 29));
+                let mut tries = vec![(hit, None)];
                 if c.objs_inline {
-                    tries.push((
-                        self.icmp(IP::LLVMIntEQ, hi, temp_hi),
-                        None,
-                        std::ptr::null_mut(),
-                    ));
+                    tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
                 }
-                for (hit, base, len) in tries {
-                    let len = if len.is_null() { tlen() } else { len };
+                if !write {
+                    tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));
+                }
+                for (hit, view) in tries {
+                    let (base, len) = match view {
+                        None => (base, len),
+                        Some((b, l)) => (self.mem_ld(c, b, self.ptr), self.mem_ld(c, l, self.i64)),
+                    };
                     let fits = self.icmp(IP::LLVMIntULE, n, len);
                     let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
                     let inside = self.icmp(IP::LLVMIntULE, o, rest);
@@ -6556,7 +6589,7 @@ impl Gen {
                     let (fast, miss) = (self.block(c), self.block(c));
                     LLVMBuildCondBr(self.b, ok, fast, miss);
                     LLVMPositionBuilderAtEnd(self.b, fast);
-                    let pf = self.gep(base.unwrap_or_else(tbase), o);
+                    let pf = self.gep(base, o);
                     LLVMBuildBr(self.b, merge_at);
                     found.push((pf, fast));
                     LLVMPositionBuilderAtEnd(self.b, miss);

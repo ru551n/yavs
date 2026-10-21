@@ -505,8 +505,8 @@ pub trait TierHost {
     /// machine's fields; `false` (nothing written) when it is not (use `view`).
     fn view_again(&mut self, fr: &mut TierFrame) -> bool;
 
-    /// Compiled code keeps writing the heap object at `addr` that it found writable at an
-    /// earlier activation (`TierState`): count this activation's writes as the object's
+    /// Compiled code keeps writing the heap object (process or shared heap) at `addr` that it
+    /// found writable at an earlier activation or call: count this one's writes as the object's
     /// (`Heap::data_mut`), which tells the waveform recorder the object may have changed.
     fn wrote(&mut self, addr: u64) {
         let _ = addr;
@@ -676,6 +676,9 @@ pub struct TierFrame {
     /// (the process may use the shared state): what native frames inherit and a protected call
     /// needs.
     pub flags: u64,
+    /// Which machine the view is of (a number no other machine of the process has): the
+    /// process heap, instance data and frames are that machine's.
+    pub owner: u64,
 }
 
 /// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
@@ -725,6 +728,7 @@ impl Default for TierFrame {
             known_up: 0,
             max_depth: 0,
             heap_epoch: 0,
+            owner: 0,
             flags: 0,
         }
     }

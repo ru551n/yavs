@@ -4002,3 +4002,160 @@ thread walking every slot after a pooled batch (live-output scan, commit without
 array, with the early commit in the worker, removes every regression and reaches 2.47x on rtl_fan and 1.67x on
 rtl_ff at 4 threads. Testbench-style designs cannot gain inside a delta even with perfect conflict handling (ceilings
 1.0x to 1.24x at 4 threads).
+
+## llvm: native clocked RTL against the interpreter and sim1, cold and warm (#440, #432, #505, 2026-10-21)
+
+Measurement only, nothing changed in the product. Release build with `--features llvm` of main at `3abd2fd7`, single
+thread, every timed run pinned to performance core 4 (`taskset -c 4`, builds on 8 to 23), median of 5, interleaved with
+the order swapped every round, host load average about 9 to 10 (wall time carries up to 10% noise: compare the
+instruction counts, `perf stat -e cpu_core/instructions/`). Wall time is the whole `yavs run` (elaborate + initialise +
+run + exit; analysis excluded) and sim1 is `-e` then `-r` (elaboration included). Each yavs cell is a fresh work
+library analysed beforehand: "cold" is the first run in it (empty object cache), "warm" the second run in it (machine code
+linked from the cache, #505). `--tier=llvm` compiles everything before time 0; `--tier=auto` tiers up on a compile
+thread that shares the one pinned core. Cells are `wall s (ratio to sim1)` and `instructions G (ratio to sim1)`. The 10x
+length is the default generic times ten (`-gCYC=` or `-gCYCLES=`). Script: a 60 line driver over `tools/bench/run.py`'s
+`timed`, in the author's scratch directory (not committed); `run.py --ref` itself cannot pass generics to sim1 or time
+cold and warm apart.
+
+### Normal length (defaults)
+
+| Design | interp | auto cold | auto warm | llvm cold | llvm warm | sim1 |
+|---|---:|---:|---:|---:|---:|---:|
+| rtl_ff wall s | 0.92 (1.46) | 0.87 (1.38) | 0.81 (1.29) | 0.87 (1.38) | 0.85 (1.35) | 0.63 |
+| rtl_ff instr G | 15.69 (1.99) | 16.12 (2.04) | 15.90 (2.01) | 15.97 (2.02) | 15.62 (1.98) | 7.89 |
+| rtl_lfsr wall s | 0.46 (2.09) | 0.41 (1.86) | 0.37 (1.68) | 0.42 (1.91) | 0.36 (1.64) | 0.22 |
+| rtl_lfsr instr G | 8.23 (2.85) | 8.07 (2.80) | 7.62 (2.64) | 7.78 (2.69) | 7.23 (2.51) | 2.89 |
+| rtl_chain wall s | 0.20 (1.33) | 0.21 (1.40) | 0.22 (1.47) | 0.29 (1.93) | 0.24 (1.60) | 0.15 |
+| rtl_chain instr G | 4.34 (2.15) | 4.44 (2.20) | 4.45 (2.20) | 5.41 (2.68) | 5.06 (2.50) | 2.02 |
+| rtl_fan wall s | 1.11 (1.02) | 1.15 (1.06) | 1.14 (1.05) | 1.30 (1.19) | 1.25 (1.15) | 1.09 |
+| rtl_fan instr G | 16.95 (1.01) | 17.85 (1.06) | 17.85 (1.06) | 21.02 (1.25) | 20.91 (1.25) | 16.78 |
+| rtl_bus wall s | 0.21 (0.36) | 0.22 (0.38) | 0.22 (0.38) | 0.25 (0.43) | 0.21 (0.36) | 0.58 |
+| rtl_bus instr G | 4.57 (0.55) | 4.65 (0.56) | 4.66 (0.56) | 5.00 (0.60) | 4.67 (0.56) | 8.32 |
+| rtl_ram wall s | 0.08 (0.89) | 0.09 (1.00) | 0.09 (1.00) | 0.99 (11.00) | 0.10 (1.11) | 0.09 |
+| rtl_ram instr G | 1.10 (1.94) | 1.14 (2.02) | 1.16 (2.05) | 11.91 (21.14) | 1.37 (2.43) | 0.56 |
+| lfsr64 wall s | 0.23 (2.56) | 0.23 (2.56) | 0.25 (2.78) | 0.25 (2.78) | 0.22 (2.44) | 0.09 |
+| lfsr64 instr G | 4.65 (2.95) | 4.75 (3.02) | 4.77 (3.03) | 5.13 (3.26) | 4.76 (3.02) | 1.58 |
+| lfsr64_xor wall s | 0.10 (0.83) | 0.11 (0.92) | 0.11 (0.92) | 0.19 (1.58) | 0.11 (0.92) | 0.12 |
+| lfsr64_xor instr G | 1.99 (2.32) | 2.04 (2.39) | 2.06 (2.41) | 2.93 (3.42) | 2.14 (2.51) | 0.86 |
+
+### 10x length
+
+| Design | interp | auto cold | auto warm | llvm cold | llvm warm | sim1 |
+|---|---:|---:|---:|---:|---:|---:|
+| rtl_ff wall s | 9.06 (2.71) | 8.20 (2.46) | 8.27 (2.48) | 8.16 (2.44) | 7.86 (2.35) | 3.34 |
+| rtl_ff instr G | 155.11 (2.23) | 154.69 (2.23) | 154.48 (2.22) | 154.25 (2.22) | 153.91 (2.22) | 69.46 |
+| rtl_lfsr wall s | 4.65 (4.95) | 3.29 (3.50) | 3.17 (3.37) | 3.00 (3.19) | 2.92 (3.11) | 0.94 |
+| rtl_lfsr instr G | 81.50 (3.26) | 70.32 (2.81) | 69.86 (2.79) | 71.40 (2.85) | 70.86 (2.83) | 25.03 |
+| rtl_chain wall s | 1.80 (1.91) | 1.91 (2.03) | 1.94 (2.06) | 2.32 (2.47) | 2.24 (2.38) | 0.94 |
+| rtl_chain instr G | 42.54 (2.50) | 43.26 (2.54) | 43.27 (2.55) | 49.51 (2.91) | 49.16 (2.89) | 17.00 |
+| rtl_fan wall s | 12.25 (1.44) | 12.04 (1.41) | 12.40 (1.46) | 13.90 (1.63) | 13.26 (1.56) | 8.51 |
+| rtl_fan instr G | 168.00 (1.06) | 176.71 (1.11) | 176.73 (1.11) | 207.30 (1.30) | 207.19 (1.30) | 159.13 |
+| rtl_bus wall s | 2.50 (0.42) | 2.46 (0.41) | 2.42 (0.41) | 2.40 (0.40) | 2.37 (0.40) | 5.93 |
+| rtl_bus instr G | 45.16 (0.56) | 45.68 (0.57) | 45.69 (0.57) | 45.93 (0.57) | 45.61 (0.57) | 80.23 |
+| rtl_ram wall s | 0.44 (3.14) | 0.59 (4.21) | 0.53 (3.79) | 1.60 (11.43) | 0.55 (3.93) | 0.14 |
+| rtl_ram instr G | 7.36 (3.55) | 8.54 (4.12) | 8.08 (3.90) | 19.16 (9.25) | 8.64 (4.17) | 2.07 |
+| lfsr64 wall s | 2.55 (3.86) | 2.64 (4.00) | 2.73 (4.14) | 2.46 (3.73) | 2.40 (3.64) | 0.66 |
+| lfsr64 instr G | 45.00 (3.44) | 45.74 (3.49) | 45.76 (3.50) | 45.79 (3.50) | 45.42 (3.47) | 13.09 |
+| lfsr64_xor wall s | 1.03 (4.12) | 1.04 (4.16) | 1.05 (4.20) | 1.10 (4.40) | 1.01 (4.04) | 0.25 |
+| lfsr64_xor instr G | 18.35 (4.12) | 18.59 (4.18) | 18.61 (4.18) | 19.85 (4.46) | 19.07 (4.29) | 4.45 |
+
+### Fixed costs: a run of one clock cycle (`-gCYC=1`)
+
+Wall seconds, same method (tier start-up, cold compile, cache link). The first column of each pair is `3abd2fd7`, the second
+main with `9d5a2438` (#501 part 2) rebuilt afterwards; only `rtl_ram` moved beyond the 10 ms noise.
+
+| Design | interp | auto cold | auto warm | llvm cold | llvm warm | sim1 |
+|---|---:|---:|---:|---:|---:|---:|
+| rtl_ff | 0.02 / 0.01 | 0.03 / 0.01 | 0.03 / 0.01 | 0.07 / 0.05 | 0.03 / 0.02 | 0.35 |
+| rtl_lfsr | 0.01 / 0.00 | 0.01 / 0.00 | 0.02 / 0.00 | 0.08 / 0.06 | 0.02 / 0.01 | 0.04 |
+| rtl_chain | 0.01 / 0.00 | 0.01 / 0.00 | 0.02 / 0.01 | 0.06 / 0.05 | 0.02 / 0.01 | 0.06 |
+| rtl_fan | 0.01 / 0.01 | 0.02 / 0.01 | 0.02 / 0.01 | 0.04 / 0.03 | 0.03 / 0.02 | 0.33 |
+| rtl_bus | 0.00 / 0.00 | 0.01 / 0.00 | 0.01 / 0.00 | 0.06 / 0.05 | 0.02 / 0.01 | 0.03 |
+| rtl_ram | 0.05 / 0.04 | 0.06 / 0.04 | 0.06 / 0.04 | 1.16 / 0.54 | 0.07 / 0.06 | 0.06 |
+| lfsr64 | 0.02 / 0.01 | 0.02 / 0.01 | 0.03 / 0.01 | 0.08 / 0.06 | 0.03 / 0.02 | 0.04 |
+| lfsr64_xor | 0.02 / 0.01 | 0.02 / 0.01 | 0.03 / 0.01 | 0.12 / 0.09 | 0.03 / 0.02 | 0.04 |
+
+Instructions of the one-cycle run: interp 0.06 to 0.38 G, `auto` cold +0.03 to +0.05 G (sampling and the compile
+thread), warm +0.01 G on top, `llvm` cold +0.15 to +0.9 G (+11 G on `rtl_ram` before `9d5a2438`, +7 G after: 0.54 s of
+compile for a 0.04 s design), `llvm` warm +0.05 to 0.17 G over the interpreter (object link, 10 to 20 ms). sim1 spends
+0.2 to 1 G on elaboration of the 4096 and 4000 process designs (0.33 to 0.35 s), which is why the short rows of `rtl_ff`
+and `rtl_fan` look better for yavs than their steady state.
+
+### What native RTL buys
+
+Native frames (6cadf280, 71032993) do not apply to processes: a process body stays in frame mode (crates/yavs-llvm
+AGENTS.md; `0 functions callable on native frames` in the `--tier=llvm --verbose` note of all eight designs but
+`rtl_ram`). Under `--tier=auto` only a process of 140 to 600 IR instructions without a loop is compiled (`auto.rs`
+`rtl`): of the eight designs that is `rtl_ff` (149), `rtl_lfsr` (262) and `rtl_ram` (277). `rtl_fan` (44 instructions,
+printed as "stays interpreted"), `rtl_chain` and `rtl_bus` (under 140) and `lfsr64`, `lfsr64_xor` (a loop in the process:
+with the default heat they are not compiled in 2.6 s of run; with `--tier-heat=1,0,0` they are) run the interpreter under
+`auto`, so their `auto` columns are the interpreter's plus the sampling cost.
+
+Compared with the interpreter, in instructions (the wall times agree within noise): `rtl_ff` -0.8% (155.1 to 153.9 G at
+10x), `rtl_lfsr` -13% (81.5 to 70.9 G), `lfsr64` +1%, `rtl_bus` +1%, `rtl_chain` +16%, `rtl_fan` +23% (`llvm`), `rtl_ram`
++17%, `lfsr64_xor` +4%. Ratio to sim1 at 10x, best of interp / auto / llvm warm (instructions; wall in brackets):
+`rtl_ff` 2.22 (2.35), `rtl_lfsr` 2.79 (3.11), `rtl_chain` 2.50 (1.91, interpreter), `rtl_fan` 1.06 (1.41), `rtl_bus` 0.56
+(0.40), `rtl_ram` 3.55 (3.14, interpreter), `lfsr64` 3.44 (3.64), `lfsr64_xor` 4.12 (4.04). So native RTL closes 0 to 13%
+of the instruction gap to sim1 on the designs where it is used and widens it on the others; the warm cache removes
+only the cold compile (40 to 130 ms per design, 0.5 s on `rtl_ram`), not any steady-state cost. Cold against warm at
+10x differs by less than the noise on every design but `rtl_ram` (`llvm` 1.60 against 0.55 s) and `rtl_chain` (`llvm`
+2.32 against 2.24 s).
+
+### Where an activation's instructions go (`--tier=llvm`, warm; sampling profile `perf record -e cpu_core/instructions/upp`
+at 25 M instruction intervals, the 10x runs, symbols grouped; instructions per activation = total / activations; sim1
+total for the same unit last)
+
+| Design | interp total | interp: body (`run_ops`) | llvm total | compiled body | native entry/exit | activation wrapper | callbacks (drive, wait, host pointer) | kernel | sim1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| rtl_ff | 1893 | 1043 | 1879 | 329 | 393 | 275 | 355 | 527 | 848 |
+| rtl_lfsr | 3184 | 1590 | 2768 | 612 | 485 | 272 | 381 | 1017 | 978 |
+| rtl_chain | 2127 | 546 | 2458 | 220 | 370 | 291 | 339 | 1231 | 850 |
+| rtl_fan | 840 | 450 | 1036 | 138 | 345 | 357 | 40 | 155 | 796 |
+| lfsr64 | 3515 | 1438 | 3548 | 653 | 526 | 253 | 832 | 1251 | 1023 |
+
+"Native entry/exit" is `lower::enter`, `Host::view_again`, the `NSLOTS` thread-local table push and pop, `run_cached`,
+the scratch borrow and release and the `memset` of it; "activation wrapper" is `Machine::run_quick` and
+`InterpProcess::run` (177 to 216 in the interpreter rows, 253 to 357 in the compiled ones: the wrapper itself grows by
+about 100); callbacks are `yavs_rt_drive`, `Host::drive_now`/`drive_block`,
+`yavs_rt_wait`, `Host::wait_again` and `yavs_rt_host` (the host-pointer lookup of a load or store compiled code does not
+inline: 110 per activation in `rtl_ff`, 502 in `lfsr64`); kernel is everything in `yavs_kernel`. The interpreter's
+`run_ops` is absent from every compiled row (0.0 to 0.1%): at steady state no instruction is executed by the
+interpreter, there are no side exits into it on these designs, and the "executed by the interpreter" counts in the
+`--verbose` note are callbacks and one-off instructions. Only `rtl_ram` leaves instructions to the interpreter at run
+time (#507). The activation count is `N x CYC` of the design (`rtl_chain` and `rtl_fan` have a few extra processes;
+`lfsr64` is 64 processes).
+
+The compiled body is 2.3x to 3.5x cheaper than the interpreted one (`rtl_ff` 1043 to 329), and then the entry and
+exit (about 370 to 530), the larger activation wrapper (+100) and the drive and wait callbacks (340 to 830) give all of
+it back. A native `rtl_ff` activation costs 329 body + 393 entry + 275 wrapper + 355 callbacks = 1352 outside the
+kernel, the interpreted one 1043 body + 177 wrapper + about 160 drive and wait = 1380: the totals (1879 and 1893) are
+level. The kernel (527 to 1251 per
+activation; 155 on `rtl_fan`, where a wake is one scalar) is the same in both tiers and by itself equals or exceeds
+sim1's whole activation on `rtl_ff`, `rtl_lfsr`, `rtl_chain` and `lfsr64`.
+
+### Levers, ranked by expected gain
+
+1. A lean activation path for process bodies. Entry plus wrapper is 660 to 780 instructions per activation (`rtl_ff`
+   668, `rtl_fan` 702, `lfsr64` 779) against 177 to 216 for the interpreter's wrapper alone. A process has no native-frame
+   callee in these designs, so the `NSLOTS` table (77 per activation in `rtl_ff`), the frame-view rebuild (88), the
+   scratch borrow, `memset` and release (about 100) and `run_cached`/`enter` (about 160) are paid for nothing. Getting entry
+   plus wrapper down to about 250 saves 400 per activation: `rtl_ff` 21%, `rtl_fan` 38% (it would then beat the
+   interpreter and could join `auto`), `rtl_chain` 16%, `lfsr64` 11%. Expected wall gain 10 to 30% on compiled designs.
+2. Fewer callbacks per activation: the host-pointer lookup `yavs_rt_host` (110 in `rtl_ff`, 502 in `lfsr64`, 4% of
+   `rtl_lfsr`) should come from base addresses kept in the process's frame view (instance data, heap objects the process
+   already holds, constants), and the scalar zero-delay drive and the repeated wait could be inline in the body with the
+   kernel call only when the queue is touched (`drive_now` 131 plus `yavs_rt_wait` 46 plus `wait_again` 34 in `rtl_ff`).
+   Expected 150 to 500 per activation (8% `rtl_ff`, 14% `lfsr64`).
+3. The kernel itself (28 to 50% of the instructions): the compiled tier cannot touch it and it is the largest bucket on
+   four designs (#440 continues). With levers 1 and 2 done and nothing else, `rtl_ff` would sit at about 1300 (329 body, 250
+   entry and wrapper, about 200 callbacks, 527 kernel) against sim1's 848: ratio 1.5 instead of 2.2, and the remaining
+   gap is the kernel and the body. Policy item on the way: `auto` should
+   count instructions it would leave to the interpreter before compiling a process (#507) and consider the loop
+   processes of `lfsr64` (compiled with `--tier=llvm` at the same speed as interpreted today, so only worth it after
+   levers 1 and 2).
+
+Verified: the instruction counts of the one-cycle and normal-length rows of `rtl_ff`, `rtl_fan` and `rtl_ram` on main
+with `9d5a2438` (the only commit after `3abd2fd7`) are within 1% of the table; the 10x rows, the profiles and the other
+five designs were not repeated on it. Not verified: the number of `yavs_rt_host` calls per activation (inferred from
+about 40 instructions per call), why `lfsr64` is not compiled under `auto` with the default heat, the cost split inside
+`enter` (symbol level only), and `--threads` above 1.

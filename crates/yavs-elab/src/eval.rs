@@ -933,7 +933,7 @@ impl Model {
     }
 
     /// LRM 14.4.2: a package constant whose initial value calls a subprogram of the same
-    /// package, whose body (in the package body) is not elaborated yet. NVC and Questa
+    /// package, whose body (in the package body) is not elaborated yet. sim1 and sim3
     /// report it; fail early with both spans.
     pub(crate) fn check_body_elaborated(db: &Db, e: ExprId, pkg: yavs_sem::ScopeId) -> R<()> {
         let Some((at, callee)) = find_call(db, e, &mut |c| {
@@ -1558,7 +1558,7 @@ pub fn encode(elem: Elem, bit01: bool, xs: &[&Val]) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// `-g NAME=VALUE` (plan rule 4, GHDL #1117): the text is a value of the generic's type,
+// `-g NAME=VALUE` (plan rule 4, sim2 #1117): the text is a value of the generic's type,
 // parsed with the `'value` parser of yavs-std.
 
 pub fn parse_override(

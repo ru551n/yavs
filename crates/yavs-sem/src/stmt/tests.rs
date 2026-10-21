@@ -604,7 +604,7 @@ fn lsp_keeps_static_indices_and_cuts_at_non_static() {
     let l = fx.db.lsp(si).unwrap();
     assert!(l.path.is_empty());
 
-    // A generate parameter (globally static) stays in the prefix (NVC #856).
+    // A generate parameter (globally static) stays in the prefix (sim1 #856).
     let g = fx.opaque(Staticness::Globally);
     let so = fx.obj(s);
     let sg = fx.index(so, g);
@@ -675,8 +675,8 @@ fn overlap_of_prefixes() {
     assert_eq!(db.overlap(&sg, &s1), Overlap::Maybe);
 }
 
-/// The NVC/GHDL cross-check cases a1 to a7 (crate notes in lsp.rs): GHDL
-/// rejects these at analysis, NVC at elaboration with the same verdicts.
+/// The sim1/sim2 cross-check cases a1 to a7 (crate notes in lsp.rs): sim2
+/// rejects these at analysis, sim1 at elaboration with the same verdicts.
 #[test]
 fn multiple_sources_cases() {
     // a1: s(0) and s(1) from two processes: fine.

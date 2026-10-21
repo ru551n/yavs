@@ -1,4 +1,4 @@
-//! Debug hooks (ir.md 3.4): what a Riviera-PRO / Questa style debugger (DAP, M8) needs.
+//! Debug hooks (ir.md 3.4): what a sim4 / sim3 style debugger (DAP, M8) needs.
 //!
 //! - **Line breakpoints** on a `StmtId`, with an optional condition (an IR `Function` whose
 //!   lexical parent is the function containing the statement, so it reads the stopped frame

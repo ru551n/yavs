@@ -1304,7 +1304,7 @@ fn observers(
     Ok(recorder)
 }
 
-/// Prints reports and `OUTPUT` text in NVC's format on stdout (cli-contract section 5;
+/// Prints reports and `OUTPUT` text in sim1's format on stdout (cli-contract section 5;
 /// tools/difftest parses it).
 struct Printer;
 

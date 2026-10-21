@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Generate VHDL testbenches that exercise std.standard/textio/env value
-conversion, run them on NVC (2008 and 2019) and write golden files.
+conversion, run them on sim1 (2008 and 2019) and write golden files.
 
-Usage: gen.py [--ghdl]   (run from anywhere)
+Usage: gen.py [--sim2]   (run from anywhere)
+The command of a label is key golden_cmd of its section in tools/sims.local.conf (bash; env STD, RUNDIR, VHD,
+TOP); key golden_name is the label's prefix of the golden file names (default: the label).
 
 Golden format, one case per line:
     func <TAB> arg <TAB> arg ... <TAB> [result]
@@ -21,6 +23,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+import simconf  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 CACHE = Path.home() / ".cache" / "yavs-std"
@@ -533,11 +538,10 @@ def sim(tool, std, vhd: Path, top: str, rundir: Path):
     rundir.mkdir(parents=True, exist_ok=True)
     for i, data in enumerate(READLINE_FILES):
         (rundir / f"rl{i}.txt").write_bytes(data)
-    if tool == "nvc":
-        cmd = ["nvc", f"--std={std}", f"--work=work:{rundir}/work", "-a", str(vhd),
-               "-e", "--no-save", top, "-r"]
-    else:
-        cmd = ["sh", "-c", f"ghdl -a --std=08 --workdir={rundir} {vhd} && ghdl --elab-run --std=08 --workdir={rundir} {top}"]
+    cmd = simconf.get(tool, "golden_cmd")
+    if cmd is None:
+        sys.exit(f"{tool}: key golden_cmd not configured (tools/sims.local.conf)")
+    cmd = ["env", f"STD={std}", f"RUNDIR={rundir}", f"VHD={vhd}", f"TOP={top}", "bash", "-c", cmd]
     full = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G",
             "--working-directory", str(rundir)] + cmd
     p = subprocess.run(full, cwd=rundir, capture_output=True)
@@ -562,7 +566,7 @@ def golden_line(c, result: bytes) -> bytes:
 def run_tool(tool, outdir: Path):
     all_cases = bulk_cases() + env_cases() + make_readline_cases() + make_writeline_cases()
     vcases = value_cases()
-    stds = STDS if tool == "nvc" else ["2008"]
+    stds = STDS if tool == "sim1" else ["2008"]
     for std in stds:
         base = CACHE / tool / std
         if base.exists():
@@ -571,7 +575,7 @@ def run_tool(tool, outdir: Path):
         bulk = [c for c in all_cases if std in c.stds]
         alone = [c for c in vcases if std in c.stds]
         # bulk in chunks; a chunk that fails is re-run one case at a time so
-        # that an abort (or an NVC crash) only marks that case as ERROR
+        # that an abort (or a crash of the simulator) only marks that case as ERROR
         chunks = [bulk[i:i + 100] for i in range(0, len(bulk), 100)] + [[c] for c in alone]
 
         def run_chunk(ci, chunk):
@@ -594,12 +598,12 @@ def run_tool(tool, outdir: Path):
                 r = single[(ci, k)] if (ci, k) in single else results[ci][1].get(k)
                 lines.append(golden_line(c, r))
         outdir.mkdir(parents=True, exist_ok=True)
-        (outdir / f"{tool}-{std}.txt").write_bytes(b"\n".join(lines) + b"\n")
+        (outdir / f"{simconf.get(tool, 'golden_name', tool)}-{std}.txt").write_bytes(b"\n".join(lines) + b"\n")
         print(f"{tool} {std}: {len(lines)} cases, {sum(1 for l in lines if l.endswith(b'ERROR'))} errors")
 
 
 if __name__ == "__main__":
-    if "--ghdl" in sys.argv:
-        run_tool("ghdl", CACHE / "ghdl-golden")
+    if "--sim2" in sys.argv:
+        run_tool("sim2", CACHE / "sim2-golden")
     else:
-        run_tool("nvc", HERE)
+        run_tool("sim1", HERE)

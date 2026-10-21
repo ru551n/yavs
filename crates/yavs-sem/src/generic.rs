@@ -14,7 +14,7 @@
 //!   instance's clones;
 //! - the implicit operations of a formal type become the same family's
 //!   predefined operation of the actual type (Q9, U-6: also for `=` on a 2008
-//!   `type T`, with `W1506` when NVC would pick a visible user `"="`);
+//!   `type T`, with `W1506` when sim1 would pick a visible user `"="`);
 //! - subtypes and expressions that mention none of the above keep their ids;
 //!   changed expressions lose their folded value and are folded again.
 
@@ -2183,7 +2183,7 @@ impl Db {
                 )
                 .with_primary(span, format!("the generic type's `=` is the predefined `=` of `{an}`"))
                 .with_secondary(self.decls[u].span, "this `\"=\"` is visible here but not used")
-                .with_note("LRM 6.5.3: the `=` of an interface type is the actual's predefined operator; NVC uses the visible user one instead (yavs decision U-6)")
+                .with_note("LRM 6.5.3: the `=` of an interface type is the actual's predefined operator; sim1 uses the visible user one instead (yavs decision U-6)")
                 .with_help("to use the user `\"=\"`, declare a formal `function \"=\" (l, r : t) return boolean is <>` in the generic"),
             );
         }
@@ -3306,7 +3306,7 @@ impl Db {
     /// Where a cloned object's bounds come from, from its substituted subtype: a
     /// generic type counts as fully constrained in the generic unit, the actual may
     /// not be (rule 1: decided again here, never inherited). A signal or variable
-    /// whose subtype is no longer fully constrained is `E1212`, as in NVC and Questa.
+    /// whose subtype is no longer fully constrained is `E1212`, as in sim1 and sim3.
     fn r_bounds(&mut self, r: &mut Remap, new: DeclId, o: &Object, st: SubtypeId) -> BoundsFrom {
         if o.bounds != BoundsFrom::Subtype || self.constrainedness(st) == Constrainedness::Full {
             return o.bounds;

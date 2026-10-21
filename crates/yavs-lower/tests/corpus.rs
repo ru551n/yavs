@@ -1,5 +1,5 @@
 //! The differential corpus through sem, lowering, the IR verifier, the interpreter and the
-//! kernel, compared with the NVC reference outputs (`tests/corpus/**/*.expected`, canonical
+//! kernel, compared with the sim1 reference outputs (`tests/corpus/**/*.expected`, canonical
 //! form of `tools/difftest/README.md`).
 //!
 //! Each file is elaborated with yavs-elab (which lowers through this crate) and run on the
@@ -16,7 +16,7 @@ use yavs_lower::{LowerOptions, Lowerer};
 use yavs_sem::hir::UnitHir;
 use yavs_sem::{Db, LangRev, Options};
 
-/// Corpus files whose output matches NVC's exactly.
+/// Corpus files whose output matches sim1's exactly.
 const PASS: &[&str] = &[
     "protected/access_method_call_2019",
     "textio/file_in_subprogram",
@@ -601,7 +601,7 @@ fn corpus_groups() {
     let mut failed = Vec::new();
     for g in GROUPS {
         let dir = match *g {
-            // This crate's own runnable tests (`.expected` blessed from NVC with
+            // This crate's own runnable tests (`.expected` blessed from sim1 with
             // `tools/difftest/difftest.py --corpus crates/yavs-lower/tests/vhdl/run --bless`).
             "run" => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vhdl/run")),
             g => corpus().join(g),

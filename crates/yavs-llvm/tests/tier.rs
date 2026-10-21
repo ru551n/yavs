@@ -1157,3 +1157,210 @@ fn native_frames() {
         assert_eq!(n, 1, "entries for {f} {k}");
     }
 }
+
+/// `vars(a, b)`: variables of the frame (a 64-bit, a 32-bit and an 8-bit one, each loaded and
+/// stored through an address of its own as the lowering does, and a fourth one whose address
+/// a `MakeDope` writes through) in a loop of `b mod 8` rounds with a call in it. Compiled code
+/// keeps the variables as values (`regs::Scalars`) and must write them back where the
+/// interpreter reads them: errors at any round, the call, the end.
+fn vars() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let msg = pb.check_msg("result", Dir::To);
+    let inc = pb.declare("inc", FuncKind::Function, None);
+    let f = pb.declare("vars", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(inc);
+        let s = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let p = fb.addr(AddrSpace::Frame, s);
+        let a = load(&mut fb, p, Width::B8);
+        let (one, lo, hi) = (fb.int(1), fb.int(-1000), fb.int(1000));
+        let dst = fb.reg(RegTy::I64);
+        fb.emit(Inst::BinRange {
+            op: IntOp::Add,
+            dst,
+            a,
+            b: one,
+            lo,
+            hi,
+            what: msg,
+        });
+        fb.emit(Inst::Ret { v: Some(dst) });
+        fb.finish();
+    }
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    let (vx, vy, vz, vw) = (fb.slot(8, 8), fb.slot(4, 4), fb.slot(1, 1), fb.slot(8, 8));
+    stmt(&mut fb);
+    let (pa, pb_) = (fb.addr(AddrSpace::Frame, sa), fb.addr(AddrSpace::Frame, sb));
+    let a = load(&mut fb, pa, Width::B8);
+    let b = load(&mut fb, pb_, Width::B8);
+    let eight = fb.int(8);
+    let n = fb.reg(RegTy::I64);
+    fb.emit(Inst::Bin {
+        op: IntOp::Mod,
+        dst: n,
+        a: b,
+        b: eight,
+    });
+    // x := 1; y := 2; z := 3; w := 4 (through an address a MakeDope uses)
+    for (slot, w, v) in [(vx, Width::B8, 1), (vy, Width::B4, 2), (vz, Width::B1, 3)] {
+        let at = fb.addr(AddrSpace::Frame, slot);
+        let c = fb.int(v);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: c,
+            w,
+        });
+    }
+    let at = fb.addr(AddrSpace::Frame, vw);
+    let four = fb.int(4);
+    let parts = fb.regs(&[four]);
+    fb.emit(Inst::MakeDope { at, parts });
+    let (head, body, done) = (fb.block(), fb.block(), fb.block());
+    let (i, one) = (fb.int(0), fb.int(1));
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Lt,
+        dst: c,
+        a: i,
+        b: n,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: body,
+        f: done,
+    });
+    fb.at(body);
+    stmt(&mut fb);
+    // x := x + a
+    let (ax, x) = (fb.addr(AddrSpace::Frame, vx), fb.reg(RegTy::I64));
+    fb.emit(Inst::Load {
+        dst: x,
+        addr: ax,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: x,
+        a: x,
+        b: a,
+    });
+    let ax2 = fb.addr(AddrSpace::Frame, vx);
+    fb.emit(Inst::Store {
+        addr: ax2,
+        src: x,
+        w: Width::B8,
+    });
+    // y := y * 3 + i, kept in 32 bits
+    let (ay, y) = (fb.addr(AddrSpace::Frame, vy), fb.reg(RegTy::I64));
+    fb.emit(Inst::Load {
+        dst: y,
+        addr: ay,
+        w: Width::B4,
+    });
+    let three = fb.int(3);
+    fb.emit(Inst::Bin {
+        op: IntOp::Mul,
+        dst: y,
+        a: y,
+        b: three,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: y,
+        a: y,
+        b: i,
+    });
+    let ay2 = fb.addr(AddrSpace::Frame, vy);
+    fb.emit(Inst::Store {
+        addr: ay2,
+        src: y,
+        w: Width::B4,
+    });
+    // z := z + x, kept in 8 bits; the callee reads nothing of ours
+    let (az, z) = (fb.addr(AddrSpace::Frame, vz), fb.reg(RegTy::I64));
+    fb.emit(Inst::Load {
+        dst: z,
+        addr: az,
+        w: Width::B1,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: z,
+        a: z,
+        b: x,
+    });
+    let az2 = fb.addr(AddrSpace::Frame, vz);
+    fb.emit(Inst::Store {
+        addr: az2,
+        src: z,
+        w: Width::B1,
+    });
+    let args = fb.regs(&[i]);
+    let k = fb.reg(RegTy::I64);
+    fb.emit(Inst::Call {
+        func: inc,
+        args,
+        dst: Some(k),
+    });
+    // w := w + k, written through the escaped address
+    let aw = fb.addr(AddrSpace::Frame, vw);
+    let w = load(&mut fb, aw, Width::B8);
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: w,
+        a: w,
+        b: k,
+    });
+    let parts = fb.regs(&[w]);
+    fb.emit(Inst::MakeDope { at: aw, parts });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: i,
+        a: i,
+        b: one,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.at(done);
+    let mut sum = fb.int(0);
+    for (slot, w) in [
+        (vx, Width::B8),
+        (vy, Width::B4),
+        (vz, Width::B1),
+        (vw, Width::B8),
+    ] {
+        let at = fb.addr(AddrSpace::Frame, slot);
+        let v = load(&mut fb, at, w);
+        let t = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: t,
+            a: sum,
+            b: v,
+        });
+        sum = t;
+    }
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    (pb.finish().unwrap(), f)
+}
+
+#[test]
+fn frame_variables_match_the_interpreter() {
+    let (prog, f) = vars();
+    let p = Both::new(prog);
+    // Loop counts 0 to 7 (the last argument mod 8) with values that overflow at some round.
+    for a in [0, 1, 7, 100, -3, 1 << 20, 1 << 61, i64::MAX, i64::MIN] {
+        for b in [0, 1, 2, 3, 5, 7, 8, 9, -1] {
+            let (x, y, n) = p.both(f, &[a as u64, b as u64]);
+            assert_eq!(x, y, "a={a} b={b}");
+            assert!(n > 0, "compiled code never ran");
+        }
+    }
+    let (x, y, _) = p.both(f, &[3, 5]);
+    assert!(x.is_ok() && x == y, "{x:?}");
+}

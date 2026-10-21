@@ -1,8 +1,8 @@
 //! `'IMAGE` and `TO_STRING` for scalar and bit-string values.
 //!
-//! Formats follow NVC byte for byte where the LRM leaves the format to the
+//! Formats follow sim1 byte for byte where the LRM leaves the format to the
 //! implementation (reals, physical values with a unit), so that report text
-//! matches the differential reference; they follow the LRM where NVC
+//! matches the differential reference; they follow the LRM where sim1
 //! deviates from it (extended identifiers keep their spelling). See
 //! docs/decisions.md.
 
@@ -35,7 +35,7 @@ pub fn integer_digits(v: i64, buf: &mut [u8; 20]) -> &[u8] {
 }
 
 /// `real'image` and `to_string(real)`: C `%.15g` (implementation-defined
-/// by the LRM; this is NVC's form).
+/// by the LRM; this is sim1's form).
 pub fn real_image(x: f64) -> Vec<u8> {
     printf::g(x, 15)
 }
@@ -135,7 +135,7 @@ fn unit_of(ty: &PhysicalType, unit: i64) -> Result<&crate::types::Unit, ConvErro
 
 /// `to_string(value, unit)` of a physical value (2008: TIME). The unit must
 /// be the value of one of the type's units. An exact multiple prints as an
-/// integer, anything else as `%.15g` of the quotient (NVC's form).
+/// integer, anything else as `%.15g` of the quotient (sim1's form).
 pub fn physical_to_string_unit(v: i64, ty: &PhysicalType, unit: i64) -> Result<Vec<u8>, ConvError> {
     let u = unit_of(ty, unit)?;
     let mut s = if v % u.value == 0 {

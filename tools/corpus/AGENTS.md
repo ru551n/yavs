@@ -21,7 +21,7 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 | `<name>.expected` | yavs expected list, one `PASS|FAIL <lib> <source>/<path>` per entry in order (PASS everywhere except the known yavs bugs; CI fails on any difference) |
 | `<name>.nvc.expected`, `<name>.nvc.md` | The reference simulator results and the validation note (tool version, accepted/rejected, flags) |
 | `rejects/<name>.json` | Files the reference simulators rejected during validation, with the first error line |
-| `run.py MANIFEST [--tool yavs|nvc] [--cmd T] [--keep-going] [--bless] [--expected none] [--log F]` | Analyze one file per call in manifest order and compare with the expected list; exit 0 as expected, 1 differences, 2 usage |
+| `run.py MANIFEST [--tool yavs|sim1] [--cmd T] [--keep-going] [--bless] [--expected none] [--log F]` | Analyze one file per call in manifest order and compare with the expected list; exit 0 as expected, 1 differences, 2 usage |
 | `gen_manifests.py [--root DIR] [NAME...]`, `--validate NAME...` | Generate manifests from each project's own build description (its compile-order scripts and project files, and `lib/ORDER.md`) |
 | `gen_external.py` | Specs for the external library corpora and their validation with the reference simulator plus the second reference simulator (2008) or the third reference simulator (2019) |
 | `unisim-2008.toml`, `gen_vendor.py` | Vendor primitive libraries (`unisim`, `unimacro`) read in place from `$YAVS_VENDOR_UNISIM` (the directory holding `unisims/` and `unimacro/`); `run.py` skips the manifest (exit 0) when unset, so CI skips it. No expected list: results depend on the installed version. `gen_vendor.py` regenerates it from the vendor's analyze-order lists. Files are never copied or committed (rule 7). `run.py --extra-map unisim:DIR/unisim` maps the built library into another run (the 6 hdl-modules files that need it) |
@@ -59,7 +59,7 @@ Decisions about the corpora go in this section in the same commit (root `AGENTS.
 tools/fetch-corpus.sh                                         # sources into ~/.cache/rsim-corpus
 python3 tools/corpus/run.py vunit-2008 --keep-going           # compare with vunit-2008.expected
 python3 tools/corpus/run.py vunit-2008 --bless                # accept, then review git diff
-python3 tools/corpus/run.py osvvm-2019 --tool nvc             # reference simulator
+python3 tools/corpus/run.py osvvm-2019 --tool sim1             # reference simulator
 python3 tools/corpus/gen_manifests.py vunit-2008              # regenerate a manifest
 tools/corpus/report.sh                                        # RESULTS.md
 ```

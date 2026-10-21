@@ -5,27 +5,30 @@ that make up the corpus (glob -> library, first match wins), skip rules with rea
 test benches. The candidate list is ordered with the regex dependency scan (gen_manifests.order_files).
 
 Validation (`gen_manifests.py --validate NAME...`): every candidate is analyzed in order, one file per call, by
-NVC and by GHDL (2008) or NVC and Questa (2019). A file the tools reject is dropped with the first error line as
-reason, the chain is re-run until it is clean, and the drops are recorded in external-rejects.json (which the
-generator reads, so the checked-in manifests are reproducible). Where NVC and GHDL disagree, Questa decides.
+sim1 and by sim2 (2008) or sim1 and sim3 (2019). A file the tools reject is dropped with the first error line as
+reason, the chain is re-run until it is clean, and the drops are recorded in rejects/<name>.json (which the
+generator reads, so the checked-in manifests are reproducible). Where sim1 and sim2 disagree, sim3 decides.
+The commands come from tools/sims.local.conf (keys gen_cmd, gen_setup, gen_licence; see tools/AGENTS.md).
 """
-import fnmatch, json, os, re, shutil, subprocess, sys
+import fnmatch, json, os, re, shlex, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+import simconf  # noqa: E402
 REJECTS = HERE / "rejects"  # one json per manifest name
 WRAP = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
-# The third reference simulator is taken from PATH (vcom, vlib, vmap). Its licence comes from the caller's
-# environment (LM_LICENSE_FILE, SALT_LICENSE_FILE or SALT_LICENSE_SERVER), passed through; its simulator (vsim)
-# insists on SALT_LICENSE_SERVER, so questa_env() fills that from the other two when it is unset. Values are
+# A reference that needs a licence (key gen_licence = 1) gets it from the caller's environment
+# (LM_LICENSE_FILE, SALT_LICENSE_FILE or SALT_LICENSE_SERVER), passed through; some insist on
+# SALT_LICENSE_SERVER, so licence_env() fills that from the other two when it is unset. Values are
 # never printed or written down.
 LICENCE_FAIL = re.compile(r"Unable to checkout|Unable to find the license|Invalid license environment|lmgrd|FlexNet", re.I)
 WORK = Path("~/.cache/rsim-corpus2").expanduser()
-GHDLSTD = {"2008": "08", "2019": "19"}
+STD2 = {"2008": "08", "2019": "19"}
 
 
-def questa_env():
+def licence_env():
     env = dict(os.environ)
     if "SALT_LICENSE_SERVER" not in env:
         for v in ("LM_LICENSE_FILE", "SALT_LICENSE_FILE"):
@@ -36,32 +39,32 @@ def questa_env():
 
 
 def run_tool(tool, std, lib, wd, path, flags=()):
+    """Analyze one file with the reference `tool` (a label); key gen_cmd is an argv template with
+    {std} {std2} {lib} {dir} {file} and {flags} (as a word of its own)."""
     wd = Path(wd)
     d = wd / tool
-    if tool == "nvc":
-        d.mkdir(parents=True, exist_ok=True)
-        argv = ["nvc", f"--std={std}", f"--work={lib}:{d}/{lib}", "-L", str(d), "-a", *flags, str(path)]
-    elif tool == "ghdl":
-        d.mkdir(parents=True, exist_ok=True)
-        argv = ["ghdl", "-a", f"--std={GHDLSTD[std]}", f"--work={lib}", f"--workdir={d}", f"-P{d}", *flags, str(path)]
-    else:  # questa: libraries are directories next to each other, mapped by modelsim.ini in cwd
-        d.mkdir(parents=True, exist_ok=True)
-        if not (d / lib).exists():
-            env = questa_env()
-            subprocess.run(["vlib", lib], cwd=d, env=env, capture_output=True)
-            subprocess.run(["vmap", lib, str(d / lib)], cwd=d, env=env, capture_output=True)
-        argv = ["vcom", f"-{std}", "-work", lib, "-quiet", str(path), *flags]
-        env = questa_env()
-        if not shutil.which("vcom"):
-            sys.exit("questa: vcom not found on PATH")
-        p = subprocess.run(WRAP + argv, capture_output=True, text=True, errors="replace", cwd=d, env=env)
-        out = p.stdout + p.stderr
-        if p.returncode and LICENCE_FAIL.search(out):
-            sys.exit("questa: vcom failed to get a licence; check LM_LICENSE_FILE, SALT_LICENSE_FILE or "
-                     "SALT_LICENSE_SERVER in the calling environment")
-        return p.returncode, out
-    p = subprocess.run(WRAP + argv, capture_output=True, text=True, errors="replace")
-    return p.returncode, p.stdout + p.stderr
+    d.mkdir(parents=True, exist_ok=True)
+    cmd = simconf.get(tool, "gen_cmd")
+    if cmd is None:
+        sys.exit(f"{tool}: key gen_cmd not configured (tools/sims.local.conf)")
+    env = licence_env() if simconf.get(tool, "gen_licence") else None
+    setup = simconf.get(tool, "gen_setup")  # once per library, in the tool's directory (library creation and mapping)
+    if setup and not (d / lib).exists():
+        subprocess.run(["bash", "-c", setup], cwd=d, env={**(env or os.environ), "LIB": lib, "LIBDIR": str(d / lib)}, capture_output=True)
+    argv = []
+    for w in shlex.split(cmd):
+        if w == "{flags}":
+            argv += list(flags)
+        else:
+            argv.append(w.format(std=std, std2=STD2[std], lib=lib, dir=d, file=path))
+    if env is not None and not shutil.which(argv[0]):
+        sys.exit(f"{tool}: {argv[0]} not found on PATH")
+    p = subprocess.run(WRAP + argv, capture_output=True, text=True, errors="replace", cwd=d if env is not None else None, env=env)
+    out = p.stdout + p.stderr
+    if env is not None and p.returncode and LICENCE_FAIL.search(out):
+        sys.exit(f"{tool}: failed to get a licence; check LM_LICENSE_FILE, SALT_LICENSE_FILE or "
+                 "SALT_LICENSE_SERVER in the calling environment")
+    return p.returncode, out
 
 
 def first_error(text):
@@ -84,13 +87,13 @@ def chain(tool, std, files, base, wd, flags):
 
 def validate(name, std, files, base, flags):
     """Returns (accepted files, {path: reason}, log lines)."""
-    second = "ghdl" if std == "2008" else "questa"
+    second = "sim2" if std == "2008" else "sim3"
     rej, log = {}, []
     cur = list(files)
     for it in range(12):
         wd, log = WORK / f"val-{name}", []
         with ThreadPoolExecutor(2) as ex:
-            fa = ex.submit(chain, "nvc", std, cur, base, wd, flags.get("nvc", []))
+            fa = ex.submit(chain, "sim1", std, cur, base, wd, flags.get("sim1", []))
             fb = ex.submit(chain, second, std, cur, base, wd, flags.get(second, []))
             a, b = fa.result(), fb.result()
         drop, third = [], None
@@ -100,23 +103,23 @@ def validate(name, std, files, base, flags):
                 continue
             why = []
             if not oa:
-                why.append("NVC: " + first_error(ta))
+                why.append("sim1: " + first_error(ta))
             if not ob:
                 why.append(f"{second}: " + first_error(tb))
             why = "; ".join(why)
-            if std == "2019":  # NVC is the reference; Questa lacks many 2019 features, so it can only add acceptances
+            if std == "2019":  # sim1 is the reference; sim3 lacks many 2019 features, so it can only add acceptances
                 ok = oa or ob
-                verdict = "" if ok else "rejected by NVC and Questa: "
+                verdict = "" if ok else "rejected by sim1 and sim3: "
                 if ok:
-                    log.append(f"kept {f[2]}: nvc={'ok' if oa else 'FAIL'} questa={'ok' if ob else 'FAIL'} ({why})")
+                    log.append(f"kept {f[2]}: sim1={'ok' if oa else 'FAIL'} sim3={'ok' if ob else 'FAIL'} ({why})")
             elif oa == ob:
                 ok, verdict = False, "rejected by the reference tools: "
-            else:  # NVC and GHDL disagree: Questa decides
+            else:  # sim1 and sim2 disagree: sim3 decides
                 if third is None:
-                    third = chain("questa", std, cur, base, wd, flags.get("questa", []))
+                    third = chain("sim3", std, cur, base, wd, flags.get("sim3", []))
                 ok = third[cur.index(f)][0]
-                verdict = f"NVC and GHDL disagree (nvc={'ok' if oa else 'FAIL'}, ghdl={'ok' if ob else 'FAIL'}), Questa rejects: "
-                log.append(f"disagree {f[2]}: nvc={'ok' if oa else 'FAIL'} ghdl={'ok' if ob else 'FAIL'} questa={'ok' if ok else 'FAIL'} ({why})")
+                verdict = f"sim1 and sim2 disagree (sim1={'ok' if oa else 'FAIL'}, sim2={'ok' if ob else 'FAIL'}), sim3 rejects: "
+                log.append(f"disagree {f[2]}: sim1={'ok' if oa else 'FAIL'} sim2={'ok' if ob else 'FAIL'} sim3={'ok' if ok else 'FAIL'} ({why})")
             if not ok:
                 drop.append((i, f, f"round {it + 1}: " + verdict + why))
         if not drop:
@@ -245,7 +248,7 @@ SPECS = {
 
     "open-logic": dict(
         stds=("2008",), prefix=["vunit"],
-        flags={"nvc": ["--relaxed"], "ghdl": ["-frelaxed-rules"], "yavs": ["--relaxed"]},
+        flags={"sim1": ["--relaxed"], "sim2": ["-frelaxed-rules"], "yavs": ["--relaxed"]},
         note="order: regex dependency scan; libraries olo (src + en_cl_fix) and olo_tb as in sim/run.py; VHDL STD",
         sources={"open-logic": ("https://github.com/open-logic/open-logic", "d9f123aae1c6022288782668067311f9794da0a2",
                                 "LGPL-2.1 with the PSI HDL library FPGA exception", "main, 2026-10-13"),
@@ -407,21 +410,22 @@ def neutral(s):
 
 
 def notes(name, std, nfiles, nprefix):
-    """Write <name>.nvc.md from the manifest numbers and the recorded rejects."""
+    """Write <name>.<suffix>.md from the manifest numbers and the recorded rejects (suffix: key corpus_suffix of sim1)."""
     import collections, subprocess as sp
     spec = SPECS[name.rsplit("-", 1)[0]]
-    ver = sp.run(["nvc", "--version"], capture_output=True, text=True).stdout.splitlines()[0]
+    suffix = simconf.get("sim1", "corpus_suffix", "sim1")
+    ver = sp.run(["bash", "-c", simconf.get("sim1", "gen_version", "echo sim1")], capture_output=True, text=True).stdout.splitlines()[0]
     d = load_rejects().get(name, {"rejects": {}, "log": []})
     rej = d["rejects"]
-    ne = HERE / f"{name}.nvc.expected"
+    ne = HERE / f"{name}.{suffix}.expected"
     nacc = sum(1 for x in ne.read_text().splitlines() if x.startswith("PASS")) if ne.exists() else nfiles
     L = [f"# {name}: reference simulator validation", "", neutral(ver), "",
          "sim1 is the primary reference simulator, sim2 the second and sim3 the third; the roles are fixed by the corpus tooling.", "",
-         f"Every manifest entry analyzed in order into `~/.cache/rsim-corpora/nvc-{name}` with `tools/corpus/run.py {name} --tool nvc --bless` "
+         f"Every manifest entry analyzed in order into `~/.cache/rsim-corpora/sim1-{name}` with `tools/corpus/run.py {name} --tool sim1 --bless` "
          f"(one file per call, `--std={std}`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).", "",
          f"- Files: {nfiles}; accepted by sim1: {nacc}; rejected by sim1: {nfiles - nacc}. The manifest lists only files the reference tools accept "
          f"({'sim1 and sim2, sim3 as tiebreaker' if std == '2008' else 'sim1, sim3 as second witness'}); the rest are under Excluded.",
-         f"- Flags needed: {', '.join(spec.get('flags', {}).get('nvc', [])) or 'none'}."]
+         f"- Flags needed: {', '.join(spec.get('flags', {}).get('sim1', [])) or 'none'}."]
     if nprefix:
         L.append(f"- The first {nprefix} entries are the {' + '.join(spec['prefix'])}-{std} library files the test benches need (the test runner library and a verification library); the project's own files follow.")
     src = spec["sources"]
@@ -444,4 +448,4 @@ def notes(name, std, nfiles, nprefix):
              [f"- `{x.split(None, 2)[2]}`" for x in ne.read_text().splitlines() if x.startswith("FAIL")]
     if d["log"]:
         L += ["", "## Tool disagreements", ""] + [f"- {neutral(x)}" for x in d["log"][:40]] + ([f"- ... {len(d['log']) - 40} more in rejects/{name}.json"] if len(d["log"]) > 40 else [])
-    (HERE / f"{name}.nvc.md").write_text("\n".join(L) + "\n")
+    (HERE / f"{name}.{suffix}.md").write_text("\n".join(L) + "\n")

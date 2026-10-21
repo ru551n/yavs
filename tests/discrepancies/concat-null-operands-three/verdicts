@@ -1,0 +1,5 @@
+sim1 2008 REJECT
+sim2 2008 CRASH
+sim3 2008 OK
+sim4 2008 OK*
+# 2026-10-21: sim2 CRASH (was FATAL): an internal error of the reference (its banner and exception), not an ordinary report.

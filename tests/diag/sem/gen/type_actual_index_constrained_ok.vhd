@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 6.5.7.2 (UVVM predefined_sb: a generic type actual with an index constraint; NVC and Questa accept)
+-- LRM 6.5.7.2 (UVVM predefined_sb: a generic type actual with an index constraint; sim1 and sim3 accept)
 library ieee; use ieee.std_logic_1164.all;
 package g is
   generic (type t_element; function element_match (a, b : t_element) return boolean);

@@ -987,7 +987,7 @@ fn bad_matching(db: &mut Db, ty: TypeId, span: Span) -> Reported {
 }
 
 /// `case?` on `std_ulogic` (10.9): a `'-'` choice matches every value;
-/// otherwise choices are compared by value. As NVC, choices overlapping only
+/// otherwise choices are compared by value. As sim1, choices overlapping only
 /// through `'-'` are accepted.
 fn std_ulogic_matching(
     db: &mut Db,
@@ -2128,7 +2128,7 @@ fn resolve_value(
     match (as_elem, as_piece) {
         (true, false) => elem_value(db, r, cx, value).map(Val::Elem),
         (false, true) => r.resolve(db, value, Expected::Type(cx.ty)).map(Val::Piece),
-        // No LRM tie-break (lrm-checks L8): the element type wins, as in NVC.
+        // No LRM tie-break (lrm-checks L8): the element type wins, as in sim1.
         (true, true) => elem_value(db, r, cx, value).map(Val::Elem),
         (false, false) => {
             // `others` gives an element value, never a piece (9.3.3.3).

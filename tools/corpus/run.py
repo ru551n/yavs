@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Run an analysis corpus manifest through a simulator and compare with the checked-in expected list.
 
-  tools/corpus/run.py MANIFEST.toml [--tool yavs|nvc] [--cmd TEMPLATE] [--keep-going] [--bless]
+  tools/corpus/run.py MANIFEST.toml [--tool yavs|sim1] [--cmd TEMPLATE] [--keep-going] [--bless]
 
 MANIFEST is a path or a bare name (vunit-2008 -> tools/corpus/vunit-2008.toml). Files are analyzed one per
 call, in manifest order. The result of every file (PASS = exit 0) is compared with <name>.expected (yavs) or
-<name>.nvc.expected (nvc), one `PASS|FAIL <lib> <source>/<path>` line per manifest entry in order. Any
+<name>.<suffix>.expected (a reference label), one `PASS|FAIL <lib> <source>/<path>` line per manifest entry in order. Any
 difference fails, until the list is updated (--bless rewrites it from this run, which then covers every file).
 Without --keep-going the run stops at the first difference (without an expected list: the first FAIL).
 
@@ -13,7 +13,8 @@ Command template words: {std} {lib} {dir} {file}; {map} (one --map=LIB:DIR/LIB p
 {flags} (the manifest's [flags] for --tool) expand to several arguments when they are a word of their own.
 Default templates:
   yavs: yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
-  nvc:  nvc --std={std} --work={lib}:{dir}/{lib} -L {dir} -a {flags} {file}
+A reference label (sim1, ...) takes its template, expected-file suffix, manifest [flags] key and optional
+standard.vhdl fixup from tools/sims.local.conf (keys corpus_cmd, corpus_suffix, corpus_flags_key, corpus_fixup).
 Every call runs under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` (--no-wrap to disable).
 A source with `env = "VAR"` (vendor primitive libraries, unisim-2008) is read in place from $VAR and the
 whole manifest is skipped (exit 0) when VAR is unset. --extra-map maps a library built by an earlier run.
@@ -24,18 +25,20 @@ Exit: 0 all as expected, 1 differences, 2 usage/environment error.
 import argparse, os, shlex, shutil, subprocess, sys, tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import simconf  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 TEMPLATES = {
     "yavs": "yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}",
-    "nvc": "nvc --std={std} --work={lib}:{dir}/{lib} -L {dir} -a {flags} {file}",
 }
 WRAP = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]
 
 
-def nvc_fixup(f, path, out):
-    """NVC bootstraps STD.STANDARD itself: --bootstrap, and for 2019 a copy with RANGE_DIRECTION
-    moved behind BOOLEAN (as tools/check-nvc.sh does). Returns (extra args, path)."""
+def std_fixup(f, path, out):
+    """The first reference bootstraps STD.STANDARD itself: --bootstrap, and for 2019 a copy with
+    RANGE_DIRECTION moved behind BOOLEAN (as tools/check-sim1.sh does). Returns (extra args, path)."""
     if f["path"].rsplit("/", 1)[-1] != "standard.vhdl":
         return [], path
     if f["std"] == "2019":
@@ -43,7 +46,7 @@ def nvc_fixup(f, path, out):
         i = next(k for k, l in enumerate(s) if l.startswith("  type RANGE_DIRECTION is ("))
         j = next(k for k, l in enumerate(s) if l.startswith("  type BOOLEAN is"))
         t = "\n".join(s[:i] + s[j:j + 1] + s[i:j] + s[j + 1:])
-        path = out / "standard-nvc.vhdl"
+        path = out / "standard-fixed.vhdl"
         path.write_text(t, encoding="latin-1")
     return ["--bootstrap"], path
 
@@ -56,7 +59,7 @@ def die(msg):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("manifest")
-    ap.add_argument("--tool", choices=sorted(TEMPLATES), default="yavs")
+    ap.add_argument("--tool", default="yavs", help="yavs or a reference label (sim1, ...)")
     ap.add_argument("--cmd")
     ap.add_argument("--root", action="append", default=[])
     ap.add_argument("--out", help="library directory (default ~/.cache/yavs-corpus-out/<tool>-<name>-<pid>, unique per run)")
@@ -67,6 +70,12 @@ def main():
     ap.add_argument("--log", help="write the full output of every failed file here")
     ap.add_argument("--no-wrap", action="store_true")
     a = ap.parse_args()
+    ref = a.tool != "yavs"
+    if ref and not (a.cmd or simconf.get(a.tool, "corpus_cmd")):
+        die(f"{a.tool}: key corpus_cmd not configured (tools/sims.local.conf)")
+    suffix = simconf.get(a.tool, "corpus_suffix", a.tool) if ref else ""
+    fkey = simconf.get(a.tool, "corpus_flags_key", a.tool) if ref else "yavs"
+    fixup = ref and simconf.get(a.tool, "corpus_fixup")
 
     mp = Path(a.manifest)
     if not mp.exists():
@@ -93,15 +102,15 @@ def main():
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
 
-    exp_path = None if a.expected == "none" else Path(a.expected or HERE / (name + (".nvc" if a.tool == "nvc" else "") + ".expected"))
+    exp_path = None if a.expected == "none" else Path(a.expected or HERE / (name + ("." + suffix if ref else "") + ".expected"))
     expected = None
     if exp_path and exp_path.exists() and not a.bless:
         expected = [ln.split(None, 1) for ln in exp_path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
     elif exp_path and not a.bless:
         print(f"note: {exp_path} missing; stopping at the first FAIL (create it with --bless)")
 
-    tmpl = shlex.split(a.cmd or TEMPLATES[a.tool])
-    flags = m.get("flags", {}).get(a.tool, [])
+    tmpl = shlex.split(a.cmd or (simconf.get(a.tool, "corpus_cmd") if ref else TEMPLATES[a.tool]))
+    flags = m.get("flags", {}).get(fkey, [])
     libs = sorted({f["lib"] for f in m["file"]} - (set() if "--bootstrap" in flags else {"std", "ieee"}))
     keep = a.keep_going or a.bless
     results, bad, stopped = [], 0, False
@@ -111,14 +120,14 @@ def main():
         key = f"{f['lib']} {f['source']}/{f['path']}"
         path = base[f["source"]] / f["path"]
         extra = []
-        if a.tool == "nvc":
-            extra, path = nvc_fixup(f, path, out)
+        if fixup:
+            extra, path = std_fixup(f, path, out)
         argv = []
         for t in tmpl:
             if t == "{map}":
                 argv += [f"--map={l}:{out}/{l}" for l in libs] + [f"--map={x}" for x in a.extra_map]
             elif t == "{flags}":
-                argv += flags + (extra if a.tool == "nvc" else [])
+                argv += flags + (extra if fixup else [])
             else:
                 argv.append(t.format(std=f["std"], lib=f["lib"], dir=out, file=path))
         (out / f["lib"]).parent.mkdir(parents=True, exist_ok=True)

@@ -2,7 +2,7 @@
 -- Implicit operations (LRM 2008 9.2): MINIMUM/MAXIMUM on scalars and arrays, shifts and
 -- rotates on BIT_VECTOR, matching relational operators, the condition operator, array
 -- concatenation and ordering, through sem, lowering and the interpreter (#163). Negative
--- shift amounts of sla/sra and null concatenation operands are left out: NVC deviates there
+-- shift amounts of sla/sra and null concatenation operands are left out: sim1 deviates there
 -- (docs/decisions.md "Implicit operation natives").
 entity ops is end entity;
 

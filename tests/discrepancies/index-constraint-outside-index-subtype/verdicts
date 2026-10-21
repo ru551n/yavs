@@ -1,4 +1,5 @@
+# sim4 re-recorded 2026-10-21: the first recording was a licence refusal (overlapping runs), not behaviour
 sim1 2008 FATAL
 sim2 2008 OK*
 sim3 2008 OK*
-sim4 2008 FATAL
+sim4 2008 REJECT

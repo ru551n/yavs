@@ -1143,7 +1143,7 @@ pub enum Known {
     Temp,
 }
 
-/// The registers `f` defines exactly once, by a `Const`, and their values.
+/// The registers `f` defines exactly once, by a `Const` or `ConstF` (its bits), and their values.
 pub fn fixed_consts(f: &Func) -> Vec<Option<i64>> {
     let n = f.reg_ty.len();
     let mut defs = vec![0u32; n + 1];
@@ -1161,10 +1161,14 @@ pub fn fixed_consts(f: &Func) -> Vec<Option<i64>> {
                 }
             }
         });
-        if let Inst::Const { dst, v } = *i
+        if let Inst::Const { dst, .. } | Inst::ConstF { dst, .. } = *i
             && let Some(x) = val.get_mut(dst.0 as usize)
         {
-            *x = Some(v);
+            *x = Some(match *i {
+                Inst::ConstF { v, .. } => v.to_bits() as i64,
+                Inst::Const { v, .. } => v,
+                _ => unreachable!(),
+            });
         }
     }
     (0..n)

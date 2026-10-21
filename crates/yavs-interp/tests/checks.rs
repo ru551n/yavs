@@ -1,4 +1,4 @@
-//! NVC-compatible check messages, real checks, 'value, to_hstring and thunks with a value.
+//! sim1-compatible check messages, real checks, 'value, to_hstring and thunks with a value.
 
 mod common;
 

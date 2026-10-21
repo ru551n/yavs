@@ -44,8 +44,8 @@ extend the VHPI conformance run (#273).
 | Times are printed in fs (callback time times the resolution) | Resolution defaults differ |
 | A zero diff is the goal, but not every difference is a yavs bug (for example the reference simulator reports upper-case names); judge each hunk, and file an issue for real ones | VHPI leaves details to the tool |
 
-| A third reference (`SIM3_BIN`, its bin directory, licence in `LM_LICENSE_FILE`) is run too: `vopt -access=rw+/.` for the design, the plugin loaded by its startup table (no function name), trace lines are prefixed `# `; its match count with yavs is printed, no table | Puts need full design access; sim3 refuses most callback reasons and some puts, so it is a vote, not a template |
-| A second reference (`SIM4_BIN`, the directory with its `vlib`, `vcom`, `vsim`; its licence variable must be set) gives a three-way table: each yavs line is `both` (matches the two references), `sim1`, `sim4` or `neither`, after case folding | A line only yavs has is a candidate gap; where the references differ from each other it is a reference quirk |
+| A third reference (`--refs sim3`, licence in `LM_LICENSE_FILE`) is run too: `vopt -access=rw+/.` for the design, the plugin loaded by its startup table (no function name), trace lines are prefixed `# `; its match count with yavs is printed, no table | Puts need full design access; sim3 refuses most callback reasons and some puts, so it is a vote, not a template |
+| A second reference (`--refs sim4`, configured by keys `vhpi_analyse` and `vhpi_run` in `tools/sims.local.conf`; its licence variable must be set) gives a three-way table: each yavs line is `both` (matches the two references), `sim1`, `sim4` or `neither`, after case folding | A line only yavs has is a candidate gap; where the references differ from each other it is a reference quirk |
 | The plugins load the second reference through the exported `conf_boot` function (`PLUGIN_INIT` defines it) and look signals up in the first region below the root when the root is a wrapper | That reference has a dummy root above the design and loads by function name |
 
 | A design with several cases names one top per case in `RUNS` (`(design, top)` pairs); the trace files are then named after the top | A case that crashes a reference must not hide the others |
@@ -65,7 +65,7 @@ extend the VHPI conformance run (#273).
 ## 5. How to work here
 
 ```sh
-YAVS_BIN=path/to/yavs [SIM4_BIN=dir] tools/vhpi-conformance/run.py [--only walk,put] [--show]
+YAVS_BIN=path/to/yavs tools/vhpi-conformance/run.py [--only walk,put] [--refs sim4] [--show]
 ```
 
 Exit status 1 when any trace differs. Add a plugin: write `plugins/<name>.c`, add it to `RUNS`.

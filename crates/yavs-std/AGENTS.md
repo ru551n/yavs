@@ -31,7 +31,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/error.rs` | `ConvError` (kind, input, span, expected form), `What`, `ErrorKind` |
 | `tests/golden.rs` | Differential test against the reference simulator goldens (`golden/nvc-2008.txt`, `nvc-2019.txt`) minus `golden/nvc-deviations.txt` |
 | `tests/roundtrip.rs` | proptest: `'value('image(x)) = x`, WRITE-then-READ |
-| `golden/gen.py`, `golden/mkdev.py` | Regenerate goldens with the reference simulator (`--ghdl` for the second reference simulator); build the deviation list |
+| `golden/gen.py`, `golden/mkdev.py` | Regenerate goldens with the reference simulator (`--sim2` for the second reference simulator; commands from `tools/sims.local.conf`); build the deviation list |
 
 ## 3. Design decisions that bind this module
 
@@ -65,7 +65,7 @@ Module-local decisions go in this section in the same commit; a new the referenc
 ## 5. How to work here
 
 ```sh
-CARGO_BUILD_JOBS=6 cargo test -p yavs-std          # goldens (no NVC needed), round trips, unit tests
+CARGO_BUILD_JOBS=6 cargo test -p yavs-std          # goldens (no sim1 needed), round trips, unit tests
 python3 crates/yavs-std/golden/gen.py              # regenerate goldens with the reference simulator (dev only)
 ```
 

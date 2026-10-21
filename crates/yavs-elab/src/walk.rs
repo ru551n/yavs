@@ -2186,7 +2186,7 @@ impl Elab<'_> {
                 }
             }
         };
-        // Incremental binding: its associations replace the primary's (NVC's permissive
+        // Incremental binding: its associations replace the primary's (sim1's permissive
         // reading; the LRM allows only formals the primary left open).
         for (g, p) in incremental {
             for (dst, src) in [(&mut bound.gmap, g), (&mut bound.pmap, p)] {
@@ -3297,7 +3297,7 @@ impl Model {
     }
 
     /// Bind external signal name `x` (LRM 8.7) against the hierarchy elaborated so far
-    /// (GHDL #548: a target that is not elaborated yet is an error, never a guess).
+    /// (sim2 #548: a target that is not elaborated yet is an error, never a guess).
     pub(crate) fn external(
         &mut self,
         db: &Db,

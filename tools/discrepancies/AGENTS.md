@@ -16,7 +16,7 @@ Read the root `AGENTS.md` and `tools/AGENTS.md` first. The catalogue is
 | File | What |
 |---|---|
 | `run.py` | Runner: `TEMPLATES` (command templates keyed by command name), config loading, verdict classification, `--record`, `--bless-yavs`, `--check` |
-| `sims.local.conf` | Untracked, git-ignored: `label = template name` per line (or `DISCREP_SIM<N>` variables) |
+| `../sims.local.conf` | Untracked, git-ignored (`tools/simconf.py`): key `discrep = analyse|||elaborate-and-run[|||crash regex]` in each label's section (or `DISCREP_SIM<N>` variables) |
 
 ## 3. Design decisions that bind this module
 

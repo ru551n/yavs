@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 8.7 (an external name as a port map actual; NVC accepts)
+-- LRM 8.7 (an external name as a port map actual; sim1 accepts)
 entity leaf is
   port (o : out bit);
 end entity;

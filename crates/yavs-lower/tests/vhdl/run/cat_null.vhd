@@ -1,5 +1,5 @@
 -- difftest: top=cat1 std=2008 ref=hand
--- ref=hand: NVC fails on a null & null concatenation; LRM 9.2.5 a: the result is the right operand.
+-- ref=hand: sim1 fails on a null & null concatenation; LRM 9.2.5 a: the result is the right operand.
 entity cat1 is end;
 architecture t of cat1 is
 begin

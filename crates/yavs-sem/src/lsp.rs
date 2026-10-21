@@ -1,7 +1,7 @@
 //! Longest static prefixes, drivers and `process (all)` sensitivity (sem.md
 //! 6.9; LRM 8.1, 10.2, 11.3, 14.7.2), and the multiple-source check for
 //! unresolved signals. Rule 2: everything here is per sub-element, keyed by
-//! longest static prefix, so M2 builds one driver map from it (NVC #856).
+//! longest static prefix, so M2 builds one driver map from it (sim1 #856).
 //!
 //! All functions work on resolved HIR. The data types live in [`crate::hir`].
 
@@ -56,7 +56,7 @@ impl Db {
 
     /// The longest static prefix of a name, or `None` when `e` is not an object
     /// name (a call, a literal, an aggregate, ...). Globally static indices are
-    /// kept (elab evaluates them, NVC #856); a non-static index or a
+    /// kept (elab evaluates them, sim1 #856); a non-static index or a
     /// dereference ends the prefix.
     pub fn lsp(&self, e: ExprId) -> Option<Lsp> {
         let (root, path, stat, _) = self.lsp_parts(e)?;

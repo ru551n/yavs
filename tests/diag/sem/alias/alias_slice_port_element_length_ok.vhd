@@ -1,7 +1,7 @@
 -- yavs-test: std=2008
 -- expect: none
 -- LRM 6.6.2, 9.4.3: 'length of an element of a port record is globally static like that of the port
--- (OSVVM WishboneRegisterSubordinate; NVC, GHDL and Questa accept)
+-- (OSVVM WishboneRegisterSubordinate; sim1, sim2 and sim3 accept)
 package p is
   type rec_t is record
     adr : bit_vector;

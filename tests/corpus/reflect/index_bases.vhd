@@ -1,7 +1,7 @@
 -- difftest: top=index_bases std=2019
 -- Index bases of std.reflection (#156, docs/decisions.md "Reflection: names, indices and
 -- case"): enumeration literals and record elements count from 0, physical units from 1
--- (the primary unit), as NVC 1.23.
+-- (the primary unit), as sim1 1.23.
 use std.reflection.all;
 entity index_bases is end entity;
 

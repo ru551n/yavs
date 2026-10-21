@@ -82,7 +82,7 @@ to, and those documents win over your memory.
    New codes are added to the registry in the same commit.
 
 ### Licensing and sources
-6. **Never copy code** from NVC or GHDL (GPL) or rust_hdl (MPL). Reading them for behaviour is
+6. **Never copy code** from sim1 or sim2 (GPL) or rust_hdl (MPL). Reading them for behaviour is
    fine. Write everything fresh from the LRM and our design docs.
 7. **External corpora are inputs, never repository content.** Fetch them with
    `tools/fetch-corpus.sh` into a cache directory. Never commit their files.
@@ -192,7 +192,7 @@ YAVS_BLESS=1 cargo test -p yavs                      # update rendered snapshots
 tools/fetch-corpus.sh                                # external corpora into ~/.cache/rsim-corpus
 YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus   # parse corpora
 tools/corpus/report.sh                               # analyze all corpora, write tools/corpus/RESULTS.md
-python3 tools/difftest/difftest.py --candidate nvc   # differential corpus (see tools/difftest/README.md)
+python3 tools/difftest/difftest.py --candidate sim1   # differential corpus (see tools/difftest/README.md)
 python3 tools/discrepancies/run.py --check           # simulator discrepancy catalogue (docs/design/simulator-discrepancies.md)
 cargo test -p yavs-llvm --features llvm              # LLVM tier (needs LLVM 21)
 cargo run -p yavs -- analyze --std=2008 --work=work:out/work file.vhd

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Differential test harness for yavs: run corpus testbenches on a candidate
-simulator and diff the normalised output against checked-in NVC reference
-outputs (`.expected`). Stdlib only. See README.md."""
+simulator and diff the normalised output against checked-in reference
+outputs of the first reference simulator (sim1) (`.expected`). Stdlib only. See README.md."""
 import gzip, shutil, argparse, zlib, concurrent.futures as cf, difflib, os, re, shlex, subprocess, sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import simconf  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -14,18 +17,15 @@ MAX_JOBS = 8
 TIMEOUT = 300
 GZ_MIN = 1 << 20  # outputs larger than this are stored as .expected.gz
 RC_ANALYSE, RC_ELAB = 97, 98
+BLESS_REF = "sim1"  # the label whose output the checked-in .expected files hold
 
 # Candidate command templates (run with bash -c). Placeholders: {file} {top}
 # {std} {std2} {stop} {stop_flag} {res_flag} {relaxed} {work} {threads} {shuffle}.
 # {psl} is `--psl` for the yavs template (header `psl`). {relaxed} is the candidate's own switch for the `relaxed` header (empty without it).
 # Analysis output is shown only when analysis fails: its warnings (those of `relaxed` tests)
 # are not simulation output.
-NVC = ("o=$(nvc --std={std} --work={work} -a --psl {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
-       "nvc --std={std} --work={work} -e {top} || exit 98; "
-       "nvc --std={std} --work={work} -r {top} {stop_flag}")
-GHDL = ("mkdir -p {work} && o=$(ghdl -a -fpsl --std={std2} --workdir={work} {relaxed} {file} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}; "
-        "ghdl -e -fpsl --std={std2} --workdir={work} {relaxed} {top} || exit 98; "
-        "ghdl -r -fpsl --std={std2} --workdir={work} {top} {stop_flag}")
+# The reference templates (labels sim1, sim2, ...) are not tracked: key `difftest` of the label's section in
+# tools/sims.local.conf (see tools/simconf.py), with the same placeholders and the 97/98 exit-code convention.
 # analyze fails -> 97; `yavs elab` fails (usage, elaboration, "not implemented") -> 98. `yavs run`
 # then passes its status through: `stop(2)` exits 2, the same code as an elaboration error.
 # --shuffle is a plain switch in yavs, so {shuffle_on} replaces the seeded {shuffle_flag}.
@@ -43,16 +43,16 @@ YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
 YAVS_CLIFT = YAVS.replace("--threads=", "--tier=clift --threads=")
 YAVS_CLIFT_AUTO = YAVS.replace("--threads=", "--tier=clift-auto --threads=")
 # yavs with Cranelift as the first level of tier-up and LLVM O2 for what stays hot (needs both
-# features); eager (`--tier-heat=0,0,0`) so every function is compiled at its first call and again at
-# O2 during the run.
+# features); eager (`--tier-heat=0,0,0`) so every function is compiled at its first call and again
+# at O2 during the run.
 YAVS_AUTO3 = YAVS.replace("--threads=", "--tier=auto3 --threads=")
 YAVS_AUTO3_EAGER = YAVS.replace("--threads=", "--tier=auto3 --tier-heat=0,0,0 --threads=")
-TEMPLATES = {"yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER, "nvc": NVC, "ghdl": GHDL, "yavs": YAVS, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO}
+TEMPLATES = {"yavs": YAVS, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904", "yavs-clift": "--relaxed -Wno-W1904", "yavs-clift-auto": "--relaxed -Wno-W1904", "yavs-auto3": "--relaxed -Wno-W1904", "yavs-auto3-eager": "--relaxed -Wno-W1904"}
-# Fields masked by default per builtin candidate (reference prints them all).
-DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": "", "yavs-llvm": "", "yavs-auto": "", "yavs-clift": "", "yavs-clift-auto": "", "yavs-auto3": "", "yavs-auto3-eager": ""}
+RELAXED = {"yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904", "yavs-clift": "--relaxed -Wno-W1904", "yavs-clift-auto": "--relaxed -Wno-W1904", "yavs-auto3": "--relaxed -Wno-W1904", "yavs-auto3-eager": "--relaxed -Wno-W1904"}
+# Fields masked by default per builtin candidate (a reference label: key `difftest_ignore`; the reference prints them all).
+DEFAULT_IGNORE = {"yavs": "", "yavs-llvm": "", "yavs-auto": "", "yavs-clift": "", "yavs-clift-auto": "", "yavs-auto3": "", "yavs-auto3-eager": ""}
 
 UNITS = {"fs": 1, "ps": 10**3, "ns": 10**6, "us": 10**9, "ms": 10**12, "sec": 10**15, "s": 10**15}
 
@@ -70,7 +70,7 @@ HDR = re.compile(r"^--\s*difftest:\s*(.*)$")
 
 
 def parse_header(path):
-    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "nvc", "ignore": "", "res": "",
+    h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "sim1", "ignore": "", "res": "",
          "relaxed": None, "psl": None}
     for line in path.read_text().splitlines()[:15]:
         m = HDR.match(line)
@@ -112,21 +112,22 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
 
 
 # ---------------------------------------------------------------- normalise
-NVC_HDR = re.compile(r"^\*\* (Note|Warning|Error|Failure|Fatal): (\d+)([a-z]+)\+(\d+): (.*)$")
-NVC_TRACE = re.compile(r"^\s+(Process|Procedure|Function|Protected|Instance|Package|Port conversion)\b\s*(\S*)")
+FMT1_HDR = re.compile(r"^\*\* (Note|Warning|Error|Failure|Fatal): (\d+)([a-z]+)\+(\d+): (.*)$")
+FMT1_TRACE = re.compile(r"^\s+(Process|Procedure|Function|Protected|Instance|Package|Port conversion)\b\s*(\S*)")
 # Source snippets, and the "Label L at file:line" line of a PSL directive with a report.
-NVC_SNIP = re.compile(r"^\s*(>|\||\d+ \||Label \S+ at \S+:\d+$)")
-NVC_CTL = re.compile(r"^(FINISH|STOP) called(?: with status (\d+))?$")
-GHDL_HDR = re.compile(r"^\S+?:\d+:\d+:@(\d+)([a-z]+):\((?:psl )?(?:report|assertion|assumption|cover) (\w+)\): (.*)$")
-GHDL_CTL = re.compile(r"^simulation (finished|stopped) @(\d+)([a-z]+)(?: with status (\d+))?$")
-GHDL_ERR = re.compile(r"^ghdl:error: (.*)$")
+FMT1_SNIP = re.compile(r"^\s*(>|\||\d+ \||Label \S+ at \S+:\d+$)")
+FMT1_CTL = re.compile(r"^(FINISH|STOP) called(?: with status (\d+))?$")
+FMT2_HDR = re.compile(r"^\S+?:\d+:\d+:@(\d+)([a-z]+):\((?:psl )?(?:report|assertion|assumption|cover) (\w+)\): (.*)$")
+FMT2_CTL = re.compile(r"^simulation (finished|stopped) @(\d+)([a-z]+)(?: with status (\d+))?$")
+FMT2_ERR = re.compile(r"^\w+:error: (.*)$")
+FMT2_INFO = re.compile(r"^\w+:info: ")
 YAVS_RTE = re.compile(r"^error\[(?:E3\d{3}|E9999)\]: (.*)$")
 YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)")
 
 
 def yavs_fatal(out, err):
     """yavs prints a runtime error as a rustc-style diagnostic on stderr (code E3xxx or E9999,
-    a `= note: at T, delta D` line): turn it into NVC's `** Fatal` line at the end of stdout,
+    a `= note: at T, delta D` line): turn it into sim1's `** Fatal` line at the end of stdout,
     where its other output is, and drop the block and the "aborting" summary."""
     lines, keep, fatal = err.splitlines(), [], []
     i = 0
@@ -148,7 +149,7 @@ def yavs_fatal(out, err):
 
 
 def norm_msg(m):
-    return "Assertion violation" if m == "Assertion violation." else m  # NVC adds a full stop
+    return "Assertion violation" if m == "Assertion violation." else m  # sim1 adds a full stop
 
 
 def normalise(rc, out, err, yavs=False):
@@ -164,7 +165,7 @@ def normalise(rc, out, err, yavs=False):
         nonlocal cur
         if cur:
             if cur[4] == "Assertion violation":
-                cur[3] = "-"  # NVC prints a source snippet, not the process, for the default message
+                cur[3] = "-"  # sim1 prints a source snippet, not the process, for the default message
             cur[4] = esc(cur[4])
             diags.append("\t".join(["diag"] + cur))
         cur = None
@@ -172,38 +173,38 @@ def normalise(rc, out, err, yavs=False):
     def ctl(kind, status, t, d):
         diags.append("\t".join(["diag", kind.lower(), t, d, "-", status]))
 
-    for stream, text in (("out", out), ("err", err)):  # GHDL: reports on stdout, errors on stderr
+    for stream, text in (("out", out), ("err", err)):  # sim2: reports on stdout, errors on stderr
         for line in text.splitlines():
-            if swallow and stream == "err" and (NVC_TRACE.match(line) or NVC_SNIP.match(line)):
+            if swallow and stream == "err" and (FMT1_TRACE.match(line) or FMT1_SNIP.match(line)):
                 continue
             swallow = False
-            m = NVC_HDR.match(line)
+            m = FMT1_HDR.match(line)
             if m:
                 flush()
                 sev, n, u, d, msg = m.groups()
                 t = to_fs(n, u)
-                c = NVC_CTL.match(msg)
+                c = FMT1_CTL.match(msg)
                 if c:
                     ctl(c.group(1), c.group(2) or "0", t, d)
                     swallow = True
                     continue
                 cur = [sev.lower(), t, d, "-", norm_msg(msg)]
                 continue
-            m = GHDL_HDR.match(line)
+            m = FMT2_HDR.match(line)
             if m:
                 flush()
                 n, u, sev, msg = m.groups()
                 cur = [sev, to_fs(n, u), "-", "-", norm_msg(msg)]
                 continue
-            m = GHDL_CTL.match(line)
+            m = FMT2_CTL.match(line)
             if m:
                 flush()
                 ctl({"finished": "finish", "stopped": "stop"}[m.group(1)], m.group(4) or "0",
                     to_fs(m.group(2), m.group(3)), "-")
                 continue
-            if line.startswith("ghdl:info: "):
+            if FMT2_INFO.match(line):
                 continue  # e.g. "simulation stopped by --stop-time"
-            m = GHDL_ERR.match(line)
+            m = FMT2_ERR.match(line)
             if m:
                 flush()
                 if m.group(1) not in ("assertion failed", "simulation failed"):
@@ -212,8 +213,8 @@ def normalise(rc, out, err, yavs=False):
             if line.startswith("  instance: ") or line.startswith("  from: "):
                 continue
             if cur and stream == "out" and yavs:
-                # yavs prints NVC's format on stdout (cli-contract), the process trace last.
-                t = NVC_TRACE.match(line)
+                # yavs prints sim1's format on stdout (cli-contract), the process trace last.
+                t = FMT1_TRACE.match(line)
                 if t:
                     if t.group(1) == "Process" and cur[3] == "-":
                         cur[3] = t.group(2)
@@ -222,11 +223,11 @@ def normalise(rc, out, err, yavs=False):
                     cur[4] += "\n" + line
                 continue
             if cur and stream == "err":
-                t = NVC_TRACE.match(line)
+                t = FMT1_TRACE.match(line)
                 if t:
                     if t.group(1) == "Process" and cur[3] == "-":
                         cur[3] = t.group(2)
-                elif not NVC_SNIP.match(line):
+                elif not FMT1_SNIP.match(line):
                     cur[4] += "\n" + line
                 continue
             flush()
@@ -235,14 +236,14 @@ def normalise(rc, out, err, yavs=False):
             elif line.strip():
                 outl.append("err\t" + esc(line))
         flush()
-    # NVC fatal runtime errors carry their text in the header: message kept
+    # sim1's fatal runtime errors carry their text in the header: message kept
     return ["exit\t%d" % rc] + diags + outl
 
 
 def mask(lines, ignore):
     if "errexit" in ignore and lines[0] == "exit\t1" and not any(
             l.startswith(("diag\tfailure\t", "diag\tfatal\t")) for l in lines):
-        lines = ["exit\t0"] + lines[1:]  # NVC exits 1 after `error` severity reports, GHDL 0
+        lines = ["exit\t0"] + lines[1:]  # sim1 exits 1 after `error` severity reports, sim2 0
     res, keys = [], []
     for l in lines:
         f = l.split("\t")
@@ -263,7 +264,7 @@ def mask(lines, ignore):
                 j += 1
             j = max(j, i + 1)
             # With paths, a stable sort by process keeps each process's own order; without
-            # them (GHDL) only the text is left to sort by.
+            # them (sim2) only the text is left to sort by.
             by = (lambda l: l) if "path" in ignore else (lambda l: l.split("\t")[4])
             out += sorted(res[i:j], key=by) if keys[i] is not None else res[i:j]
             i = j
@@ -301,11 +302,11 @@ def one(vhd, args, template, ignore):
     hdr = parse_header(vhd)
     base = CACHE / args.candidate_id / rel.with_suffix("")
     res = {"name": str(rel), "ok": True, "msg": ""}
-    hand = hdr["ref"] == "hand"  # .expected maintained by hand: NVC is known wrong here
+    hand = hdr["ref"] == "hand"  # .expected maintained by hand: sim1 is known wrong here
     ignore = ignore | set(hdr["ignore"].split(",")) - {""}  # per-test additions
     if hdr["relaxed"] is not None:  # a bash template gets the yavs switch
-        hdr["relaxed_flag"] = RELAXED.get(args.candidate, "--relaxed")
-    if hand and args.candidate == "nvc":
+        hdr["relaxed_flag"] = RELAXED.get(args.candidate) or simconf.get(args.candidate, "difftest_relaxed", "--relaxed")
+    if hand and args.candidate == BLESS_REF:
         return {**res, "msg": "skipped, hand-maintained .expected"}
     try:
         outs = []
@@ -327,7 +328,7 @@ def one(vhd, args, template, ignore):
             return {**res, "msg": "blessed"}
         text = read_expected(vhd)
         if text is None:
-            return {**res, "ok": False, "msg": "no .expected (run with --bless using --candidate nvc)"}
+            return {**res, "ok": False, "msg": "no .expected (run with --bless using --candidate sim1)"}
         want = mask(text.splitlines(), ignore)
         problems = []
         for th, o in zip(thread_list, outs):
@@ -348,8 +349,8 @@ def one(vhd, args, template, ignore):
 def main():
     global CORPUS
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--candidate", default="nvc", help="nvc | ghdl | yavs | a bash command template (see README)")
-    ap.add_argument("--bless", action="store_true", help="regenerate .expected from NVC (candidate must be nvc)")
+    ap.add_argument("--candidate", default=BLESS_REF, help="a reference label (sim1, sim2, ...), yavs, yavs-llvm, yavs-auto or a bash command template (see README)")
+    ap.add_argument("--bless", action="store_true", help="regenerate .expected from sim1 (candidate must be sim1)")
     ap.add_argument("--jobs", type=int, default=8, help=f"parallel simulations (max {MAX_JOBS})")
     ap.add_argument("--filter", default="", help="regex on the corpus-relative path")
     ap.add_argument("--threads", type=lambda s: [1] + [int(x) for x in s.split(",") if x and int(x) != 1],
@@ -363,11 +364,13 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     CORPUS = args.corpus.resolve()
-    if args.bless and args.candidate != "nvc":
-        sys.exit("--bless requires --candidate nvc")
-    template = TEMPLATES.get(args.candidate, args.candidate)
-    args.candidate_id = args.candidate if args.candidate in TEMPLATES else "custom-%x" % zlib.crc32(args.candidate.encode())
-    ignore = set((DEFAULT_IGNORE.get(args.candidate, "") if args.ignore is None else args.ignore).split(","))
+    if args.bless and args.candidate != BLESS_REF:
+        sys.exit(f"--bless requires --candidate {BLESS_REF}")
+    template = TEMPLATES.get(args.candidate) or simconf.get(args.candidate, "difftest") or args.candidate
+    known = args.candidate in TEMPLATES or simconf.get(args.candidate, "difftest")
+    args.candidate_id = args.candidate if known else "custom-%x" % zlib.crc32(args.candidate.encode())
+    default_ignore = DEFAULT_IGNORE.get(args.candidate) or simconf.get(args.candidate, "difftest_ignore", "")
+    ignore = set((default_ignore if args.ignore is None else args.ignore).split(","))
     tests = sorted(p for p in CORPUS.rglob("*.vhd") if re.search(args.filter, str(p.relative_to(CORPUS))))
     if args.list:
         print("\n".join(str(p.relative_to(CORPUS)) for p in tests)); return

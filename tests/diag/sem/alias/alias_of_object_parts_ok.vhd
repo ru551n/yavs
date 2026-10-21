@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 6.6.2 (VUnit run_api: aliases of slices; NVC and GHDL accept)
+-- LRM 6.6.2 (VUnit run_api: aliases of slices; sim1 and sim2 accept)
 package p is
   type rec is record a : bit_vector(7 downto 0); b : integer; end record;
   constant first : natural := 2;

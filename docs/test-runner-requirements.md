@@ -140,7 +140,7 @@ instance used to test the "not a record" failure.
   record type.
 - Mirror objects as `variable ... : inout value_mirror` parameters (protected type or access
   semantics), passed between subprograms and assigned to variables of other mirror types.
-- Conditional analysis: `` `if TOOL_NAME = "nvc" then ... `else ... `end if ``. yavs defines
+- Conditional analysis: `` `if TOOL_NAME = "sim1" then ... `else ... `end if ``. yavs defines
   `TOOL_NAME` as `yavs` (decisions.md), so it takes the LRM branch.
 - `std.env.resolution_limit` (2019).
 - 2019 call paths (`check_only_log` compares the log location), which yavs already reports through

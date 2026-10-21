@@ -75,7 +75,7 @@ through the orchestrator.
   and reports `E1401` on overflow.
 - **Revisions (0.1).** `db.rev` is the design revision `D`; `db.file_rev()` the file's own `F`.
   Declarations carry `since`; a reference with `F < since` is `E1007`.
-- **No copied code.** Never copy NVC or GHDL (GPL) or rust_hdl (MPL). Reading for behaviour is
+- **No copied code.** Never copy sim1 or sim2 (GPL) or rust_hdl (MPL). Reading for behaviour is
   fine; write it fresh from the LRM and sem.md.
 - **Style.** `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`, no em dashes in
   comments, docs or commits. Mark deliberate shortcuts with a `ponytail:` comment naming the

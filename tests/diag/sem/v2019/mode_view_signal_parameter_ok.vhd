@@ -1,6 +1,6 @@
 -- yavs-test: std=2019
 -- expect: none
--- LRM 2019 4.2.2.3, 6.5.2 (OSVVM AddressBusTransactionPkg: signal parameters with mode views; NVC and Questa accept)
+-- LRM 2019 4.2.2.3, 6.5.2 (OSVVM AddressBusTransactionPkg: signal parameters with mode views; sim1 and sim3 accept)
 library ieee; use ieee.std_logic_1164.all;
 package bus_pkg is
   type bus_t is record

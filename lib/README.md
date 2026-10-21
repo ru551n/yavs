@@ -34,7 +34,7 @@ the reference simulators (GPL).
 ## Tools
 
 - `tools/update-ieee-libs.sh [--check|--write]`: re-fetch at the pinned commit, verify hashes, compare or rewrite.
-- `tools/check-nvc.sh [2008|2019]`: analyze the tree with the reference simulator in `ORDER.md` order (scratch libraries under
+- `tools/check-sim1.sh [2008|2019]`: analyze the tree with the reference simulator in `ORDER.md` order (scratch libraries under
   `~/.cache/rsim-libs/work`, each run under `timeout 300 systemd-run --user --scope -p MemoryMax=2G`).
 
 ## The reference simulator analysis result (the reference simulator 1.23-devel)
@@ -43,7 +43,7 @@ the reference simulators (GPL).
 
 - `std/2019/standard.vhdl` is analyzed from a copy: the reference simulator hardcodes its own bootstrap and wants the
   type named `RANGE_DIRECTION` declared after `BOOLEAN` (the reference simulator limitation, the vendored LRM text is
-  valid). `tools/check-nvc.sh` renames and moves it. `--bootstrap` is needed for `standard.vhdl`.
+  valid). `tools/check-sim1.sh` renames and moves it. `--bootstrap` is needed for `standard.vhdl`.
 - `std/2019/env.vhdl` is **rejected**: `DIR_CLOSE (Dir : in DIRECTORY)` and the three
   `TO_STRING (call_path : ...)` functions have `in` parameters of types containing access types; the reference simulator
   requires class `variable` for those (LRM 4.2.2). This is an upstream defect in the IEEE file, kept

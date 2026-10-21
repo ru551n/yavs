@@ -158,7 +158,7 @@ enum Sign {
 /// character is replicated that many times, `D` is converted to the shortest binary number
 /// (zero is the empty string), then the length is adjusted: unsigned extends with `0` and may only
 /// drop `0`; signed extends with the leftmost character and may only drop characters equal to the
-/// leftmost one kept. Plain `B`/`O`/`X`/`D` are unsigned. This follows GHDL; NVC only requires the
+/// leftmost one kept. Plain `B`/`O`/`X`/`D` are unsigned. This follows sim2; sim1 only requires the
 /// dropped characters to equal each other.
 pub fn expand_bitstring(text: &str) -> Result<Vec<u8>, BitStringError> {
     use BitStringError::*;

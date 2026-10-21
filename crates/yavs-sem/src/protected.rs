@@ -11,7 +11,7 @@
 //! variables must be protected).
 //!
 //! Function methods follow the normal rule: pure unless declared `impure`
-//! (LRM 4.2.1; NVC agrees, and rejects a pure method reading the body's
+//! (LRM 4.2.1; sim1 agrees, and rejects a pure method reading the body's
 //! variables). The purity check itself is the general one (`E1830`).
 
 use yavs_diag::{Diagnostic, Span};

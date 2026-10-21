@@ -83,8 +83,8 @@ impl Sources {
     }
 }
 
-/// One element of a call path: the subprogram or process name (upper case, as NVC), the file
-/// name, the absolute directory and the line. `to_string` gives NVC's form
+/// One element of a call path: the subprogram or process name (upper case, as sim1), the file
+/// name, the absolute directory and the line. `to_string` gives sim1's form
 /// `<path>/<file>:<line>:<NAME>` (`Machine::element_text`).
 struct Element {
     name: String,
@@ -293,7 +293,7 @@ struct AssertState {
 
 impl Default for AssertState {
     fn default() -> AssertState {
-        // The read severity starts at ERROR, as NVC (the LRM gives no initial value).
+        // The read severity starts at ERROR, as sim1 (the LRM gives no initial value).
         AssertState {
             counts: [0; 4],
             enabled: [true; 4],
@@ -445,7 +445,7 @@ impl Asserts {
     }
 
     /// A report or assertion violation of severity `s`: false when that severity is disabled
-    /// (not shown, not counted, as NVC).
+    /// (not shown, not counted, as sim1).
     pub(crate) fn report(&self, ctx: &Ctx<'_>, s: Severity) -> bool {
         let on = self.with(ctx, None, |st| st.enabled[s as usize]);
         if on {
@@ -487,7 +487,7 @@ fn assert_native(
     rt.asserts.with(c, op, |st| f(st, a))
 }
 
-/// Warning, error and failure: what the no-argument forms count (as NVC).
+/// Warning, error and failure: what the no-argument forms count (as sim1).
 const VIOLATIONS: [usize; 3] = [1, 2, 3];
 
 macro_rules! assert_natives {

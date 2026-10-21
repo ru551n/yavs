@@ -1,5 +1,5 @@
 -- difftest: top=unconstrained_records std=2008 ref=hand
--- ref=hand: NVC gets this wrong (see README); .expected is hand-corrected to the LRM result.
+-- ref=hand: sim1 gets this wrong (see README); .expected is hand-corrected to the LRM result.
 entity unconstrained_records is end;
 architecture t of unconstrained_records is
   type vec is array (natural range <>) of integer;

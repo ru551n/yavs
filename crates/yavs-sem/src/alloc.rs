@@ -165,7 +165,7 @@ impl Db {
     }
 
     /// `E1221`: a 2008 access type designating a file or protected type
-    /// (5.4.1). 2019 allows both (NVC and GHDL accept them; Questa 2026.1
+    /// (5.4.1). 2019 allows both (sim1 and sim2 accept them; sim3 2026.1
     /// still rejects a file type).
     pub(crate) fn check_designated_type(
         &mut self,
@@ -235,7 +235,7 @@ impl Db {
             .with_note("LRM 5.4.2: before the full type declaration, an incomplete type may only be named in an access type definition");
         if in_profile {
             d = d
-                .with_note("only units of library `std` (e.g. `std.reflection`) may use an incomplete type in a protected method profile; NVC, GHDL and Questa reject it in user code")
+                .with_note("only units of library `std` (e.g. `std.reflection`) may use an incomplete type in a protected method profile; sim1, sim2 and sim3 reject it in user code")
                 .with_help(format!("declare an access type to `{name}` and use that in the profile"));
         }
         Err(self.error(d))

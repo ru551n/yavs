@@ -372,14 +372,14 @@ fn standard_matches_the_listing() {
         let got = b.all_ops(s);
         let (extra, missing) = diff(&got, &listing(rev));
         // Where the informative listing and the normative text disagree:
-        // 9.2.3: `?=` and `?/=` are predefined for arrays of BIT and STD_ULOGIC only (NVC, GHDL agree).
+        // 9.2.3: `?=` and `?/=` are predefined for arrays of BIT and STD_ULOGIC only (sim1, sim2 agree).
         let mut want_missing = vec![
             "\"?/=\"(boolean_vector, boolean_vector) return boolean",
             "\"?=\"(boolean_vector, boolean_vector) return boolean",
         ];
         let want_extra = if rev == LangRev::Vhdl2008 {
             // 5.3.2.4: TO_STRING on arrays only for elements with character literals only
-            // (CHARACTER has NUL etc.; NVC and GHDL reject `to_string(string)` in 2008).
+            // (CHARACTER has NUL etc.; sim1 and sim2 reject `to_string(string)` in 2008).
             want_missing.extend([
                 "to_string(boolean_vector) return string",
                 "to_string(integer_vector) return string",

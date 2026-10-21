@@ -104,7 +104,7 @@ pub struct EntityDecl {
 pub struct ArchitectureBody {
     pub name: Ident,
     /// `lib` in `architecture a of lib.e` (LRM 3.3.1: `entity_name` is a name;
-    /// NVC, GHDL and Questa accept a selected name).
+    /// sim1, sim2 and sim3 accept a selected name).
     pub entity_lib: Option<Ident>,
     pub entity: Ident,
     pub decls: Vec<Decl>,

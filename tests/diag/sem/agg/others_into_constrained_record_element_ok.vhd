@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 6.3, 9.3.3.3 (OSVVM InterruptGeneratorBit: TransRec.DataFromModel <= (others => '0'); NVC accepts)
+-- LRM 6.3, 9.3.3.3 (OSVVM InterruptGeneratorBit: TransRec.DataFromModel <= (others => '0'); sim1 accepts)
 package p is
   type srec is record d : bit_vector; n : integer; end record;
   subtype s8 is srec(d(7 downto 0));

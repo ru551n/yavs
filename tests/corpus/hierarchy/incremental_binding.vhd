@@ -1,6 +1,6 @@
 -- difftest: top=incremental_binding_cfg std=2008 ref=hand
--- ref=hand: NVC does not support incremental binding ("binding indication with generic map
--- aspect and OPEN entity aspect"); Questa accepts it. LRM 7.3.2.3: u2's configuration adds
+-- ref=hand: sim1 does not support incremental binding ("binding indication with generic map
+-- aspect and OPEN entity aspect"); sim3 accepts it. LRM 7.3.2.3: u2's configuration adds
 -- W => 3 to the primary binding of its configuration specification; u1 keeps the default.
 entity inv is generic (W : natural := 1); end;
 architecture rtl of inv is

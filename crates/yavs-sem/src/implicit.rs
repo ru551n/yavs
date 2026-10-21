@@ -27,7 +27,7 @@
 //!   `FILE_POSITION`, `FILE_SIZE`, `FILE_CANSEEK`).
 //! - 16.3: `RISING_EDGE`/`FALLING_EDGE` on BIT and BOOLEAN signals, and the `TO_STRING` overloads
 //!   with `DIGITS`, `FORMAT` and `UNIT`, declared in `std.standard`.
-//! - 2019 5.7: `TO_STRING` also on composite types whose elements have it (NVC agrees).
+//! - 2019 5.7: `TO_STRING` also on composite types whose elements have it (sim1 agrees).
 
 use yavs_diag::Span;
 use yavs_syntax::Symbol;

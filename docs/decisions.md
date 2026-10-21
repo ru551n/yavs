@@ -44,8 +44,8 @@ milestone users care about works.
   virtual root `<yavs>/lib`; `$YAVS_STDLIB` replaces it with a tree on disk. This supersedes
   the `lib/`-next-to-the-executable lookup of #43. Nothing is precompiled: analysis stays on
   demand from source, so there is still no cache.
-- **IEEE 1076.4 VITAL packages are built in, unmodified** (user, 2026-10-19, #118: "do as ghdl and
-  nvc"; supersedes reading them in place). `ieee.vital_timing`, `vital_primitives` and `vital_memory`
+- **IEEE 1076.4 VITAL packages are built in, unmodified** (user, 2026-10-19, #118: "do as sim2 and
+  sim1"; supersedes reading them in place). `ieee.vital_timing`, `vital_primitives` and `vital_memory`
   (VITAL 2000) live in `lib/ieee/{2008,2019}/vital_*` byte for byte from the IEEE text (origin,
   cross-check and licence in `lib/SOURCES.md`, `lib/LICENSE-IEEE-VITAL`, shipped in the release
   archive). They run as plain VHDL: functional, zero-delay use (no SDF back-annotation). Their pure
@@ -3371,8 +3371,8 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   native-frame code keep the old stores. Errors are identical: the interpreter re-executes the failing
   instruction from a frame that holds what it reads (tests: `arith/loop_overflow_last`, `arith/loop_range_last`).
   Why: design 1 of the head-to-head (a 3-million-iteration compute loop) took 317 instructions per iteration
-  compiled against 113 for the reference code generator. Not done (the same machinery would allow it): registers
-  carried across blocks as phis with entry stubs, frame variables as SSA values with write-back at exits.
+  compiled against 113 for the reference code generator. Done next ("Registers and frame variables across blocks"):
+  registers carried across blocks as phis with entry stubs, frame variables as SSA values with write-back at exits.
 - **`Stmt` markers are dropped in processes too** (`Opt::drop_statements`): a marker of a statement that allocates
   no temporary memory frees nothing (kept with a debugger). It cost 6 compiled instructions and a dispatch per
   statement, 12 per iteration of the loop above.
@@ -3383,3 +3383,88 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   `rtl` processes keep their factor (16).
 - `YAVS_LLVM_DUMP=<dir>` writes, for each compiled module, `<n>-pre.ll` and `<n>-post.ll` (before and after the
   pass pipeline) and `f<id>.ir` (the yavs IR of each function) for reading the generated code.
+
+## Kernel round 9: fewer stages per activation and per delta (yavs-kernel, #440, 2026-10-21)
+
+- **Every driver entry of a delta on one independent signal, in driver order, is applied in place** (`update`):
+  with no force or deposit queued and nothing from the later-time heap, the entries are checked in one pass
+  (ascending driver ids, one signal) and `apply_driver` runs straight from the entry list, then `finish_signal`.
+  No `indep` list, no sort of it, no second pass in `update_independent`; anything else takes the general path
+  unchanged. Same application order, so same events.
+- **A resident process that waited again and only scheduled drivers is committed right after it ran** (the inline
+  batch loop: always at `--threads 1`, small batches otherwise; `ProcMeta::ready` is cleared and the commit loop skips
+  it): its slot is still in the cache, the commit loop of 4000 processes read each slot a second time from the L3.
+  The queue pushes of such processes come before those of the processes that need the full commit; the queue
+  sorts its due entries (`update`), so nothing observable changes. Initial runs and postponed batches always
+  take the full commit.
+- **`ProcState::timed_out` and `known_edge` are set when the process runs** (`resumption`), from `ProcMeta::by_timeout` and
+  `tid`, instead of in `wake`: a wake touches only the process record. (Round 8 found no gain from this alone; with
+  the commit above it is 2 to 4% of the cycles of `fan` and `ff`.)
+- **A falling edge of a clock whose waiters are all held back by their edge trigger returns before the wake list is
+  touched**; when none is held back the list is walked with no per-waiter question.
+- **Batch order without a scan:** the processes with one suspension point wake into `ready`, the others into
+  `ready_several`; `ready_mono` (ascending process numbers) says `order` has nothing to do for the first, and the
+  few others are ordered alone and appended (their keys all sort after the plain ones). Same order as `order`.
+- **`poll_end` reads the interrupt flag with a plain load** and exchanges it only when set (a locked exchange per delta
+  was a few percent of the cycles of `chain`); `next_time` skips the wake-up map when it is empty.
+- **The unchanged-assignment test of a scalar asks the signal's code array first** (dense, in cache) and the driver
+  slot (one per process) only when the value would not change. The vector test is left as it was: asking the
+  signal first made `lfsr` 1% worse in instructions.
+- **Tried and dropped:** FUSE_MAX removed for signals nobody waits on (+9% instructions on `ff`: the block pass of the
+  dirty ranges is cheaper than a fused finish per element); `#[inline]` on `Waveform::idle`/`first_time` is kept but
+  moved nothing.
+- Measured (`perf stat`, cores 2 and 3, interpreter, instructions / cycles before to after): `ff` 17.03 G to 16.05 G / 4.0 G to 3.7 G,
+  `fan` 18.27 G to 17.21 G / 5.2 G to 4.5 G, `chain` 5.33 G to 5.15 G / 1.05 G to 0.95 G, `lfsr` 8.77 G to 8.55 G, `lfsr64` unchanged
+  instructions, -8% cycles. What is left of the kernel per activation of `ff` is ~800 instructions: wake and
+  commit ~250, apply and update ~250, the rest scattered over a dozen functions of 20 to 60 instructions each; the
+  lever that remains is the process side (entry, drive and wait callbacks) and the per-element stamps, not the cycle.
+
+
+## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
+
+Follow-up of "Tight compute loops": in compiled loops the registers and the frame's variables no longer go through
+the frame at each block boundary. Frame-mode code only (native frames already keep both in `alloca`s that LLVM
+promotes). Why: after the deferred stores, design 1 of the head-to-head (`compute_h2h`) still stored and loaded
+each variable and every live register at every block edge, and reloaded the base of the slots per block.
+
+- **Registers as phis in loops.** In the natural loops of a function (`regs::reach`: depth-first retreating edges
+  and what reaches each without the header) a deferred register (`regs::deferrable`) that is live into a block,
+  not preloaded and not a constant, is a phi there (`Plan`); an edge passes the deferred value, or loads the
+  register from the frame at the end of the predecessor. A block reached by exactly one edge, from an earlier
+  instruction, takes that edge's deferred values as they are (`Plan::single`, `inherit`). Every other block
+  takes its registers from the frame as before and `edge_prep` stores a deferred value that no phi takes, so
+  correctness never depends on which registers got a phi. A function whose phis would pass 100000 keeps the old
+  stores.
+- **Entry stubs.** The interpreter enters compiled code at the start, after a call, wait or report (`resumes`),
+  and at loop headers (and after the preloaded definitions of those). Only these have a switch case, each through
+  a stub that loads the phi values from the frame. Where the interpreter lands otherwise (a jump target that is no
+  loop header) it gets its pc back and runs to the next jump (`tier_go`, "No progress"). Before, every block start
+  was an entry, so every loop with more than one block was a multi-entry cycle that LLVM does not treat as a loop.
+- **Frame variables as values** (`regs::Scalars`, virtual register `nregs + k`). A slot is kept as a value when
+  every access is a `Load` or `Store` of one width through an address register defined once by `AddrOf` of that
+  slot, no other use of such a register exists, no escaping address can reach the bytes (an escaped address stands
+  for its whole variable, `Func::locals`, else the rest of the frame), the function has no nested function
+  (`Func::nested`), and an access is in a loop without a loud instruction. At most 12 slots. A `Load` is the
+  value (loaded once, kept through the block and the phis), a `Store` defines it with the width's truncation and
+  extension. Write-back uses the register machinery: `Live` has a bit per slot, used at every instruction that can
+  leave to the interpreter or call out (`Scalars::observes`), killed by a `Store`; `flush_row` writes the live ones
+  where the frame is looked at. A slot the function never writes is never written back.
+- **Quiet steps and calls.** A callback that returns to compiled code cannot read a variable no address of which
+  was made, unless it collects garbage or runs other code: only `Call*`, `New*`, `Free`, `Report`, `Output`,
+  waits, `Suspend`, `Elab`, `PkgAlloc` (`regs::loud`). Other stepped instructions write variables back only on the
+  path where they fail; a direct call to a native frame (no step, no allocation) likewise, on its
+  materialisation path. A loop with a loud instruction gets no variables as values.
+- **Base of the slots.** The pointer to the frame's slots is a pseudo register carried through loops
+  (`own_slots_cached`), forgotten after every callback (`call_go`: a pushed frame may move the slot stack) and,
+  because a value found in a branch does not dominate the join, restored at the join of a slow path to its
+  pre-branch value (`slow_path`, `slow_signal`; forgotten if the slow step is loud). A first version that kept
+  the value found in the branch produced IR that did not verify.
+- **Constants.** A register defined once by `ConstF` is its value everywhere, like `Const` (`fixed_consts`).
+- **Errors and traces are unchanged**: every exit stores what the interpreter re-executes from.
+- **Tried and dropped**: one shared exit block per set of written-back variables (LLVM moved its phi operands into
+  the loop: +8 instructions per iteration); phis in every block (compile time +20% for nothing outside loops).
+- **Result** (core 6, `perf stat`): `compute_h2h` under `--tier=llvm` 3.14 G to 2.74 G instructions for 20 million
+  iterations (157 to 137 per iteration with the start-up, 137 to 108 per iteration at the margin; the reference
+  code generator: 115 in total). Other rows are unchanged (`compute_loop` and the RTL rows are bound by heap
+  element access and the kernel). Cost: eager compilation of library-heavy designs takes 5 to 20% longer (IR +10 to
+  25% in loops); `--tier=auto` totals are within 5% (`compute_h2h` +5% from the longer compile).

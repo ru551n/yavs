@@ -89,7 +89,7 @@ pub enum Ty {
 
 /// A subtype as `std.reflection` sees it (LRM 2019 16.11): what a mirror needs beyond the
 /// value's [`Ty`]. Constraints of composites come from the descriptor at run time; scalar
-/// ranges are static. `name` is the subtype's simple name, upper case (as NVC reports it).
+/// ranges are static. `name` is the subtype's simple name, upper case (as sim1 reports it).
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct Refl {
     pub name: String,

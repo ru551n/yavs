@@ -4410,6 +4410,11 @@ and the maintainer's own project (3). Categories: clocked RTL datapaths, FSMs, r
 23 of the 30 take under 1 s (start-up, elaboration and a few thousand clock cycles). The baseline has no CPU-core test: the neorv32
 testbench diverged from sim1 then (#513). Fixed since 2026-10-22, its three configurations are back in the suite (not in the baseline
 numbers below); a probe run puts them at 7x to 9x of sim1 with the interpreter and slower still with `--tier=auto` (#521).
+Eight more tests (hdl-modules LFSR, crossbar, register file and stream BFM; PoC `fifo_ic_assembly`; fletcher buffer reader and
+prim32 writer; Open Logic `olo_fix_madd`) were excluded for elaboration bugs and run again since 2026-10-22 (#512, #515, #516, #517,
+#522; also not in the numbers below): the package bodies of units loaded while elaborating, the initialisation order of packages, a
+function that reads a protected shared variable of its region called during elaboration, and `s(d'range) <= d` with a parameter. A
+probe puts `hdlm_lfsr` at 10x and `fletcher_bufferreader` at 6.7x of sim1 (#523).
 
 Method (as `tools/bench/AGENTS.md` section 7): release build with the `llvm` feature of main at `55772743` (only STATUS and
 documentation commits since), `--threads 1`, every timed run pinned to performance core 6 or 7 (two tests at a time, all cells of

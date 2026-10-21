@@ -1,0 +1,1 @@
+The LLVM tier compiles much faster: functions get a short optimisation pipeline (compute loops keep the full one), less code is generated for memory accesses, and `--tier=auto` leaves the native-frame code of a hot function to the compiled callers that need it, so hot code is compiled sooner.

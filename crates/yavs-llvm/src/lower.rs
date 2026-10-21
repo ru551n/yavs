@@ -1233,6 +1233,8 @@ pub(crate) fn compile_one(
     if part == Part::Native && !native {
         return Err("no native-frame code for the function".into());
     }
+    let times = std::env::var_os("YAVS_LLVM_TIMES").is_some();
+    let t0 = std::time::Instant::now();
     let mut m = loop {
         let m = Module::new(&name);
         let g = Gen::new(&m);
@@ -1251,8 +1253,14 @@ pub(crate) fn compile_one(
         drop(g);
         break m;
     };
+    let t1 = std::time::Instant::now();
+    let ninst = if times { m.instruction_count() } else { 0 };
     m.verify().map_err(llvm)?;
-    m.optimize(opt).map_err(llvm)?;
+    let t2 = std::time::Instant::now();
+    let full = crate::auto::compute(prog, f);
+    m.optimize_as(opt, full).map_err(llvm)?;
+    let t3 = std::time::Instant::now();
+    let nopt = if times { m.instruction_count() } else { 0 };
     jit.add(m).map_err(llvm)?;
     let run = if part == Part::Native {
         None
@@ -1266,6 +1274,19 @@ pub(crate) fn compile_one(
     } else {
         0
     };
+    if times {
+        let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();
+        eprintln!(
+            "times f{} {opt:?} ir={} llvm={ninst} opt={nopt} gen={} verify={} pass={} codegen={} total={} us native={native}",
+            id.0,
+            f.code.len(),
+            us(t0, t1),
+            us(t1, t2),
+            us(t2, t3),
+            us(t3, std::time::Instant::now()),
+            t0.elapsed().as_micros(),
+        );
+    }
     Ok((run, f.reg_ty.len(), naddr))
 }
 
@@ -1338,7 +1359,7 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     };
     notes.extend(more);
     m.verify()?;
-    m.optimize(opt)?;
+    m.optimize_as(opt, false)?;
     let mut jit = new_jit(opt)?;
     jit.add(m)?;
     let mut funcs = vec![None; prog.funcs.len()];
@@ -5963,58 +5984,13 @@ impl Gen {
                 None => (Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
             };
             // Other memory through `yavs_rt_host` (`Mem::find`, then the objects the interpreter
-            // is asked for) unless the address is in the frame, the temporary area or the
-            // instance data: those the view holds.
-            let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
-            let fhi = self.mem_ld(c, MEM_FRAME, self.i64);
-            let isf = self.icmp(IP::LLVMIntEQ, hi, fhi);
-            let ist = self.icmp(
-                IP::LLVMIntEQ,
-                hi,
-                self.c64((u64::from(space::TEMP) << 29) as i64),
-            );
-            let mut in_view = self.or(isf, ist);
-            let isi = self.icmp(
-                IP::LLVMIntEQ,
-                hi,
-                self.c64((u64::from(space::INST) << 29) as i64),
-            );
-            if !write {
-                in_view = self.or(in_view, isi);
-            }
-            let sel = |f: LLVMValueRef, t: LLVMValueRef, i: LLVMValueRef| {
-                let ti = LLVMBuildSelect(self.b, ist, t, i, c"".as_ptr());
-                LLVMBuildSelect(self.b, isf, f, ti, c"".as_ptr())
-            };
-            let base = sel(
-                self.mem_ld(c, MEM_SLOTS, self.ptr),
-                self.mem_ld(c, MEM_TEMP, self.ptr),
-                self.mem_ld(c, MEM_INST, self.ptr),
-            );
-            let len = sel(
-                self.mem_ld(c, MEM_SLOTS_LEN, self.i64),
-                self.mem_ld(c, MEM_TEMP_LEN, self.i64),
-                self.mem_ld(c, MEM_INST_LEN, self.i64),
-            );
-            let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
-            let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-            let fits = self.icmp(IP::LLVMIntULE, n, len);
-            let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
-            let inside = self.icmp(IP::LLVMIntULE, o, rest);
-            let hit = LLVMBuildAnd(
-                self.b,
-                in_view,
-                LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
-                c"".as_ptr(),
-            );
-            let (fast, call, done) = (self.block(c), self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, hit, fast, call);
-            LLVMPositionBuilderAtEnd(self.b, fast);
-            let pf = self.gep(base, o);
-            LLVMBuildBr(self.b, done);
-            LLVMPositionBuilderAtEnd(self.b, call);
+            // is asked for). The temporary area and the instance data are reached the same way
+            // unless the generator knows the space (above): an inline test of the three view
+            // spaces and its select chain cost 30 LLVM instructions per access of unknown space and
+            // codegen time with them; the heap, which most such accesses are, needed the call
+            // anyway, and the compiled code is no slower (#432).
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
-            let pc = LLVMBuildCall2(
+            let phi = LLVMBuildCall2(
                 self.b,
                 self.host_ty,
                 self.host,
@@ -6022,13 +5998,6 @@ impl Gen {
                 6,
                 c"".as_ptr(),
             );
-            let call_end = LLVMGetInsertBlock(self.b);
-            LLVMBuildBr(self.b, done);
-            LLVMPositionBuilderAtEnd(self.b, done);
-            let phi = LLVMBuildPhi(self.b, self.ptr, c"".as_ptr());
-            let mut vals = [pf, pc];
-            let mut from = [fast, call_end];
-            LLVMAddIncoming(phi, vals.as_mut_ptr(), from.as_mut_ptr(), 2);
             self.guard(c, LLVMBuildIsNotNull(self.b, phi, c"".as_ptr()), slow);
             let mut p = phi;
             if !own.is_empty() {

@@ -214,7 +214,7 @@ fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 /// about 1.3 times faster compiled (the interpreter spends its time dispatching them), so it
 /// is worth compiling earlier than testbench code, whose time goes to what the interpreter's
 /// own functions do (#432).
-fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
+pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     let mut inside = vec![false; f.code.len()];
     if loops(prog, f) {
         for r in back_edges(prog, f) {
@@ -486,13 +486,17 @@ impl Worker {
                 .collect();
             let total = size(root) + todo.iter().map(|&i| size(i)).sum::<usize>();
             if total <= NATIVE_MAX {
-                let mut ids = vec![(root, Part::Both)];
+                // The root is entered from the interpreter: its native-frame code (the dearest
+                // part of a compile, several times the frame-mode code per instruction) waits
+                // for a compiled caller (`Part::Native` in the callers' trees).
+                let mut ids = vec![(root, Part::Frame)];
                 ids.extend(todo.into_iter().map(|i| (i, Part::Native)));
                 return ids;
             }
             return vec![(root, Part::Frame)];
         }
         let mut ids = vec![root];
+        let mut natives: Vec<(FuncId, Part)> = Vec::new();
         let mut total = size(root);
         let mut i = 0;
         while i < ids.len() && ids.len() < 16 {
@@ -517,10 +521,23 @@ impl Worker {
                 {
                     total += g.code.len();
                     ids.push(*func);
+                } else if self.done[func.0 as usize][0]
+                    && self.nat[func.0 as usize].0 == 0
+                    && !natives.iter().any(|n| n.0 == *func)
+                    && g.code.len() <= CALLEE_MAX
+                    && total + g.code.len() <= TREE_MAX
+                    && native_set(&self.prog, [*func]).contains(func)
+                {
+                    // Compiled for the interpreter's calls (frame-mode code only): its
+                    // native-frame code, for the calls of this function.
+                    total += g.code.len();
+                    natives.push((*func, Part::Native));
                 }
             }
         }
-        ids.into_iter().map(|i| (i, Part::Both)).collect()
+        let mut out: Vec<(FuncId, Part)> = ids.into_iter().map(|i| (i, Part::Both)).collect();
+        out.extend(natives);
+        out
     }
 
     /// Publish the native-frame code whose callees are all compiled.

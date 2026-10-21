@@ -55,11 +55,28 @@ unsafe fn take_message(msg: *mut c_char) -> String {
     }
 }
 
+/// Code generator switches (LLVM command line options, process-wide, set once before the first
+/// target machine). Instruction scheduling and the machine-level motion and clean-up passes
+/// (sinking, LICM, CSE, block placement, copy propagation, post-RA scheduling, if-conversion,
+/// tail duplication) cost about a quarter of the codegen time of the generated code and change
+/// the speed of the compiled code by less than the run-to-run noise of the benchmarks (#432);
+/// instruction selection, register allocation, peepholes and branch folding stay.
+const CODEGEN_ARGS: &str = "-enable-misched=false -enable-post-misched=false \
+    -disable-machine-sink -disable-machine-licm -disable-machine-cse -disable-block-placement \
+    -disable-copyprop -disable-post-ra -disable-early-ifcvt -disable-postra-machine-licm \
+    -disable-postra-machine-sink -disable-early-taildup";
+
 fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         // SAFETY: plain one-time LLVM initialisation.
         unsafe {
+            let dev = std::env::var("YAVS_LLVM_ARGS");
+            let a = dev.as_deref().unwrap_or(CODEGEN_ARGS);
+            let mut v: Vec<CString> = vec![CString::new("yavs").unwrap()];
+            v.extend(a.split_whitespace().map(|x| CString::new(x).unwrap()));
+            let p: Vec<*const c_char> = v.iter().map(|x| x.as_ptr()).collect();
+            llvm_sys::support::LLVMParseCommandLineOptions(p.len() as i32, p.as_ptr(), ptr::null());
             assert_eq!(LLVM_InitializeNativeTarget(), 0, "no native LLVM target");
             assert_eq!(
                 LLVM_InitializeNativeAsmPrinter(),
@@ -79,6 +96,18 @@ pub fn portable_cpu() -> &'static CStr {
         c"generic"
     }
 }
+
+/// The most LLVM instructions (before optimisation) a module may have to get the full `O2`
+/// pipeline. The generator asks for it only for compute loops (`optimize_as`); everything else
+/// (library and testbench functions, whose time goes to what the interpreter's own functions
+/// do) gets `LEAN`: it costs a third of `default<O2>` and the compiled code is as fast within
+/// the noise (#432).
+const FULL_MAX: usize = 3000;
+
+/// Scalar clean-up of the frame register traffic and the guards, no loop, inlining or
+/// vectorisation passes: promote, common subexpressions, one combine, branch folding.
+const LEAN: &CStr =
+    c"function(sroa,early-cse,instcombine<max-iterations=1;no-verify-fixpoint>,simplifycfg,adce)";
 
 /// Optimisation level for the new pass manager and for codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +261,12 @@ impl Module {
     /// Sets triple and data layout, then runs `default<On>` through the new
     /// pass manager (`LLVMRunPasses`).
     pub fn optimize(&mut self, opt: OptLevel) -> Result<()> {
+        self.optimize_as(opt, true)
+    }
+
+    /// As `optimize`; at `O2` the full pipeline only when `full` and the module is small
+    /// (`FULL_MAX`), else `LEAN`.
+    pub fn optimize_as(&mut self, opt: OptLevel, full: bool) -> Result<()> {
         let tm = target_machine(opt)?;
         // SAFETY: tm and module are live; everything created here is disposed.
         unsafe {
@@ -243,7 +278,19 @@ impl Module {
             LLVMDisposeTargetData(dl);
             dump(self.module, "pre");
             let opts = LLVMCreatePassBuilderOptions();
-            let err = LLVMRunPasses(self.module, opt.pipeline().as_ptr(), tm, opts);
+            let custom = std::env::var("YAVS_LLVM_PIPELINE")
+                .ok()
+                .and_then(|p| CString::new(p).ok());
+            let pipeline = match opt {
+                OptLevel::O2 if !full || self.instruction_count() > FULL_MAX => LEAN,
+                _ => opt.pipeline(),
+            };
+            let err = LLVMRunPasses(
+                self.module,
+                custom.as_deref().unwrap_or(pipeline).as_ptr(),
+                tm,
+                opts,
+            );
             dump(self.module, "post");
             LLVMDisposePassBuilderOptions(opts);
             LLVMDisposeTargetMachine(tm);

@@ -435,17 +435,29 @@ pub(crate) struct Cx {
     /// slots of instance data the elaborator fills ([`Lowerer::capture_free_objects`]).
     #[serde(skip)]
     pub capture_free: bool,
+    /// Also the protected shared variables of those regions: each a cell holding the handle of
+    /// its object ([`Lowerer::capture_free_objects`]).
+    #[serde(skip)]
+    pub capture_vars: bool,
     #[serde(skip)]
     pub free_objs: Vec<FreeObj>,
+    /// Which function reads which of `free_objs` (index), directly.
+    #[serde(skip)]
+    pub free_readers: Vec<(usize, FuncId)>,
+    /// The thunks that create the object of a captured shared variable ([`Lowerer::region_var_init`]).
+    #[serde(skip)]
+    pub region_inits: HashMap<DeclId, FuncId>,
 }
 
 /// A constant or generic of an enclosing region that a function called during elaboration
-/// reads: the elaborator writes its value to the instance data slot at `off`.
-#[derive(Clone, Debug)]
+/// reads: the elaborator writes its value to the instance data slot at `off`. A shared variable
+/// (`var`) has the handle of its object there.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct FreeObj {
     pub decl: DeclId,
     pub ty: TyId,
     pub off: u32,
+    pub var: bool,
 }
 
 /// One kernel signal of a record signal.
@@ -588,6 +600,11 @@ impl Suspended {
     pub fn restore(&mut self, program: Program) {
         self.pb.restore(program);
     }
+
+    /// [`Lowerer::forget_free_objects`] for a lowering set aside, after [`Suspended::restore`].
+    pub fn forget_free_objects(&mut self) {
+        forget_free_objects(&mut self.pb, &mut self.cx);
+    }
 }
 
 pub struct Lowerer<'a> {
@@ -643,7 +660,10 @@ impl<'a> Lowerer<'a> {
                 ext_early: false,
                 context_funcs: Vec::new(),
                 capture_free: false,
+                capture_vars: false,
                 free_objs: Vec::new(),
+                free_readers: Vec::new(),
+                region_inits: HashMap::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -653,13 +673,61 @@ impl<'a> Lowerer<'a> {
     /// Let the functions lowered next read constants and generics declared in the regions of
     /// an instance (the elaboration-time call of a function declared in a block, say): each
     /// gets a slot of instance data, listed by [`Lowerer::free_objects`] for the caller to fill.
-    pub fn capture_free_objects(&mut self) {
+    /// With `vars`, the protected shared variables of those regions are captured too: a slot
+    /// holding the handle of the object, which [`Lowerer::region_var_init`] creates. Functions
+    /// lowered this way read instance data laid out for the call, not for an architecture, so
+    /// they must be given up with [`Lowerer::forget_free_objects`] before the design is
+    /// lowered.
+    pub fn capture_free_objects(&mut self, vars: bool) {
         self.cx.capture_free = true;
+        self.cx.capture_vars = vars;
     }
 
     /// The captured objects and the bytes of instance data they need.
     pub fn free_objects(&self) -> (Vec<FreeObj>, u32) {
         (self.cx.free_objs.clone(), self.cx.inst_size)
+    }
+
+    /// The captured objects that `f` reads, itself or through the functions it calls.
+    pub fn free_for(&self, f: FuncId) -> Vec<FreeObj> {
+        let mut out = Vec::new();
+        for (i, o) in self.cx.free_objs.iter().enumerate() {
+            let readers: Vec<FuncId> = self
+                .cx
+                .free_readers
+                .iter()
+                .filter(|&&(k, _)| k == i)
+                .map(|&(_, r)| r)
+                .collect();
+            if readers.contains(&f) || self.pb.callers_of(&readers).contains(&f) {
+                out.push(o.clone());
+            }
+        }
+        out
+    }
+
+    /// A thunk that creates the object of shared variable `decl` (captured, or to be) and
+    /// returns its handle, run with the instance data of the captured objects it reads.
+    pub fn region_var_init(&mut self, decl: DeclId) -> Result<FuncId, Vec<Diagnostic>> {
+        if let Some(&f) = self.cx.region_inits.get(&decl) {
+            return Ok(f);
+        }
+        let r = func::region_var_init(self.db, &mut self.pb, &mut self.cx, decl);
+        self.drain();
+        match r {
+            Ok(f) if self.cx.diags.is_empty() => {
+                self.cx.region_inits.insert(decl, f);
+                Ok(f)
+            }
+            _ => Err(self.cx.take_failed()),
+        }
+    }
+
+    /// End the capture mode: the functions that read captured objects, and those that call
+    /// them, are forgotten (lowered again when the design needs them, for its instance data),
+    /// and so is every captured object. The old code stays in the program, unreferenced.
+    pub fn forget_free_objects(&mut self) {
+        forget_free_objects(&mut self.pb, &mut self.cx);
     }
 
     /// Lower an architecture: its signals, instance constants and processes.
@@ -1068,4 +1136,24 @@ pub(crate) fn func_kind(db: &Db, d: DeclId) -> FuncKind {
         Some(yavs_sem::decl::SubprogramKind::Procedure) => FuncKind::Procedure,
         _ => FuncKind::Function,
     }
+}
+
+fn forget_free_objects(pb: &mut yavs_ir::ProgramBuilder, cx: &mut Cx) {
+    let seeds: Vec<FuncId> = cx
+        .free_readers
+        .iter()
+        .map(|&(_, f)| f)
+        .chain(cx.region_inits.values().copied())
+        .collect();
+    let mut tainted: std::collections::HashSet<FuncId> =
+        pb.callers_of(&seeds).into_iter().collect();
+    tainted.extend(seeds);
+    cx.funcs.retain(|_, f| !tainted.contains(f));
+    for o in std::mem::take(&mut cx.free_objs) {
+        cx.objs.remove(&o.decl);
+    }
+    cx.free_readers.clear();
+    cx.region_inits.clear();
+    cx.capture_free = false;
+    cx.capture_vars = false;
 }

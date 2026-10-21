@@ -58,8 +58,8 @@ pub struct Ir {
     pub models: Vec<(yavs_ir::ForeignId, Arc<dyn yavs_interp::ForeignModel>)>,
     /// Thunks returning the handle of each package shared variable a variable port denotes.
     pub var_pkgs: HashMap<yavs_sem::DeclId, yavs_ir::FuncId>,
-    /// The functions of `Elaborated::elab_calls`, for the replay.
-    pub(crate) elab_sigs: HashMap<yavs_sem::DeclId, crate::pkgcall::Sig>,
+    /// The functions of `Elaborated::elab_calls` and what they read of regions, for the replay.
+    pub(crate) elab: crate::pkgcall::Items,
     /// The slot thunk (packages) and value type of each non-protected shared variable
     /// (`Lowerer::var_slots`), for [`Built::vars`].
     pub var_slots: Vec<yavs_lower::VarSlot>,
@@ -84,7 +84,7 @@ struct Rest {
     packages: Vec<yavs_lower::PackageIr>,
     shared_size: u32,
     var_pkgs: Vec<(yavs_sem::DeclId, yavs_ir::FuncId)>,
-    elab_sigs: Vec<(yavs_sem::DeclId, crate::pkgcall::Sig)>,
+    elab: crate::pkgcall::Items,
     var_slots: Vec<yavs_lower::VarSlot>,
     resolvers: Vec<(yavs_sem::DeclId, yavs_ir::FuncId)>,
     res_types: Vec<(yavs_sem::DeclId, (yavs_ir::TyId, yavs_ir::TyId))>,
@@ -374,7 +374,7 @@ impl Elaborated {
             packages: pkg_irs,
             shared_size,
             var_pkgs,
-            elab_sigs,
+            elab,
             var_slots,
             resolvers,
             res_types,
@@ -435,7 +435,7 @@ impl Elaborated {
             foreign_searched: String::new(),
             models: Vec::new(),
             var_pkgs: var_pkgs.into_iter().collect(),
-            elab_sigs: elab_sigs.into_iter().collect(),
+            elab,
             var_slots,
             start,
             learn,
@@ -483,11 +483,30 @@ impl Elaborated {
                 var_pkgs.push((d, l.package_value(d)?));
             }
         }
-        let mut elab_sigs: Vec<(yavs_sem::DeclId, crate::pkgcall::Sig)> = Vec::new();
+        // The functions of the logged calls, for the replay; those that read objects of regions
+        // are lowered for the calls' instance data and given up before the design is lowered.
+        let mut elab = crate::pkgcall::Items::default();
+        let captured = self.elab_calls.iter().any(|c| c.fill.is_some());
+        if captured {
+            l.capture_free_objects(true);
+        }
         for c in &self.elab_calls {
-            if !elab_sigs.iter().any(|&(x, _)| x == c.func) {
-                elab_sigs.push((c.func, crate::pkgcall::sig(&mut l, db, c.func)?));
+            if !elab.sigs.contains_key(&c.func) {
+                let sig = crate::pkgcall::sig(&mut l, db, c.func)?;
+                elab.needs
+                    .insert(c.func, crate::pkgcall::needs_of(&l, sig.func));
+                elab.sigs.insert(c.func, sig);
             }
+            for cr in c.fill.iter().flat_map(|f| &f.creates) {
+                if !elab.inits.contains_key(&cr.key.1) {
+                    let f = l.region_var_init(cr.key.1)?;
+                    elab.needs.insert(cr.key.1, crate::pkgcall::needs_of(&l, f));
+                    elab.inits.insert(cr.key.1, f);
+                }
+            }
+        }
+        if captured {
+            l.forget_free_objects();
         }
         let mut idx = Vec::new();
         for &a in archs {
@@ -516,7 +535,7 @@ impl Elaborated {
             packages: lowered.packages,
             shared_size: lowered.shared_size,
             var_pkgs,
-            elab_sigs,
+            elab,
             var_slots,
             resolvers,
             res_types,
@@ -537,6 +556,10 @@ impl Elaborated {
         session: Option<&crate::pkgcall::Start>,
     ) -> Option<LoweringKey> {
         use yavs_sem::Id;
+        // What was lowered for the objects of regions is not a function of these requests.
+        if session.is_some_and(|s| s.captured) || self.elab_calls.iter().any(|c| c.fill.is_some()) {
+            return None;
+        }
         let cache = db
             .stages()
             .filter(|c| !opts.coverage && c.closure())?
@@ -927,11 +950,21 @@ impl Elaborated {
         )?;
         match &start {
             // The packages hold what elaboration-time calls left; so does the assert state.
-            Some(s) => rt.inherit(&s.rt),
+            Some(s) => {
+                rt.inherit(&s.rt);
+                for &(k, h) in &s.vars {
+                    once.insert(k, CallVal::Cell(h));
+                }
+            }
             // The side effects of elaboration-time calls on package state, in their order
-            // (#77).
-            None => crate::pkgcall::replay(&rt, &shared, &ir.elab_sigs, &self.elab_calls)
-                .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?,
+            // (#77); the shared variables of regions they created are the instances' own.
+            None => {
+                let vars = crate::pkgcall::replay(&rt, &shared, &ir.elab, &self.elab_calls)
+                    .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?;
+                for (k, h) in vars {
+                    once.insert(k, CallVal::Cell(h));
+                }
+            }
         }
         let mut insts: HashMap<ScopeId, Arc<InstData>> = HashMap::new();
         // Instance data waiting for its external shared variables (#93).

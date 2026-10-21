@@ -1504,6 +1504,22 @@ pub(crate) fn thunk(
     v.map(|_| id)
 }
 
+/// The thunk that creates the object of protected shared variable `d` in the shared heap and
+/// returns its handle (`Lowerer::region_var_init`).
+pub(crate) fn region_var_init(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    d: DeclId,
+) -> R<yavs_ir::FuncId> {
+    let decl = &db.decls[d];
+    let DeclKind::Object(o) = &decl.kind else {
+        return Err(cx.ice(decl.span, "not an object"));
+    };
+    let (t, span, name) = (db.base(o.subtype), decl.span, decl.name.to_string());
+    thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))
+}
+
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
     let decl = &db.decls[d];
     if let DeclKind::Alias(_) | DeclKind::Subprogram(_) | DeclKind::Type(_) = decl.kind {

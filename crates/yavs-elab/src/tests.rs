@@ -776,6 +776,64 @@ fn impure_constant_at_run_time_warns() {
     assert_eq!(*got.lock().expect("lock"), ["0 0 first=1 late=7 third=2"]);
 }
 
+/// A function that reads a protected shared variable of its architecture is called during
+/// elaboration (#512): the variable is created for the call, later calls and the processes see
+/// its state, also when the simulation cannot start from the session's state and replays the
+/// calls (`start` dropped), and when a call is undone and the state rebuilt from the log.
+#[test]
+fn elaboration_calls_with_region_shared_variable() {
+    let src = "entity leaf is generic (base : natural); end;
+      architecture a of leaf is
+        type counter_t is protected
+          impure function bump return natural;
+        end protected;
+        type counter_t is protected body
+          variable n : natural := 0;
+          impure function bump return natural is begin n := n + 1; return n; end;
+        end protected body;
+        shared variable c : counter_t;
+        impure function next_id return natural is begin return base + c.bump; end;
+        signal x : bit := '1';
+        constant first : natural := next_id;
+        constant late : natural := next_id + x'path_name'length;
+        constant third : natural := next_id;
+      begin
+        process begin
+          report \"first=\" & integer'image(first) & \" late=\" & integer'image(late)
+            & \" third=\" & integer'image(third) & \" next=\" & integer'image(c.bump);
+          wait;
+        end process;
+      end;
+      entity t is end; architecture a of t is begin
+        u : entity work.leaf generic map (base => 10);
+        v : entity work.leaf generic map (base => 20);
+      end;";
+    for replay in [false, true] {
+        let (mut db, mut e) = elab("region_var", src, "t", &[]);
+        let w: Vec<&str> = e.warnings.iter().map(|d| d.code).collect();
+        assert_eq!(w, [codes::IMPURE_AT_RUN_TIME; 2]);
+        if replay {
+            e.start = None;
+        }
+        e.lower(&mut db).expect("lower");
+        let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        let mut got = got.lock().expect("lock").clone();
+        got.sort();
+        // `late` runs its call at the start of the simulation: after the elaboration-time ones.
+        assert_eq!(
+            got,
+            [
+                "0 0 first=11 late=19 third=12 next=4",
+                "0 1 first=21 late=29 third=22 next=4"
+            ],
+            "replay={replay}"
+        );
+    }
+}
+
 /// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).
 #[test]
 fn bit_and_boolean_use_std_ulogic_codes() {

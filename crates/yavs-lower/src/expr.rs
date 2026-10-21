@@ -390,6 +390,12 @@ impl<'a> Fx<'a, '_> {
         let db = self.db;
         let decl = &db.decls[d];
         let obj = self.cx.objs.get(&d).copied();
+        if self.cx.capture_free
+            && obj.is_some()
+            && let Some(i) = self.cx.free_objs.iter().position(|o| o.decl == d)
+        {
+            self.cx.free_readers.push((i, self.fb.id()));
+        }
         match obj {
             Some(Obj::RecSignal(_)) => {
                 // ponytail: any name below a composite signal reads all of it, then selects;
@@ -494,6 +500,42 @@ impl<'a> Fx<'a, '_> {
                     self.capture_free(d, o.subtype, span)?;
                     self.read_obj(d, span)
                 }
+                // A protected shared variable of an enclosing region: a slot holding the
+                // handle of its object, created and filled in by the elaborator.
+                DeclKind::Object(o)
+                    if self.cx.capture_free
+                        && self.cx.capture_vars
+                        && o.class == yavs_sem::decl::ObjClass::SharedVariable
+                        && matches!(
+                            db.types[db.base(o.subtype)].kind,
+                            yavs_sem::types::TypeKind::Protected { .. }
+                        )
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Entity
+                                | yavs_sem::scope::ScopeKind::Architecture
+                                | yavs_sem::scope::ScopeKind::Block
+                                | yavs_sem::scope::ScopeKind::Generate
+                        ) =>
+                {
+                    let t = self.ty(db.base(o.subtype), span)?;
+                    let off = self.cx.inst_alloc(8);
+                    self.cx.objs.insert(
+                        d,
+                        Obj::Scalar {
+                            space: Space::Inst,
+                            off,
+                            w: Width::B8,
+                        },
+                    );
+                    self.cx.free_objs.push(crate::FreeObj {
+                        decl: d,
+                        ty: t,
+                        off,
+                        var: true,
+                    });
+                    self.read_obj(d, span)
+                }
                 // A constant without run-time data (locally static) is evaluated from its
                 // folded initialiser.
                 DeclKind::Object(o)
@@ -551,6 +593,7 @@ impl<'a> Fx<'a, '_> {
             decl: d,
             ty: t,
             off,
+            var: false,
         });
         Ok(())
     }

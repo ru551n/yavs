@@ -801,9 +801,103 @@ impl Model {
                 crate::pkgcall::run(&rt, &sig, &vals, None, inst).map_err(failed)
             }
             // A function that uses package objects (shared variables, say) runs against the
-            // elaborated packages, in elaboration order (LRM 14.4).
-            Err(_) => self.session.call(db, callee, vals).map_err(failed),
+            // elaborated packages, in elaboration order (LRM 14.4); one that reads shared
+            // variables of its region runs there too, with their objects.
+            Err(_) => match self.session_call(db, callee, vals, scope, ex.span)? {
+                Ok(v) => Ok(v),
+                Err(f) => Err(failed(f)),
+            },
         }
+    }
+
+    /// Call `callee` in the session (package state, shared variables of regions): the objects
+    /// of its region that it reads are given as the values they have in `scope`; a shared
+    /// variable's object is created the first time a call needs it.
+    fn session_call(
+        &mut self,
+        db: &Db,
+        callee: DeclId,
+        vals: Vec<Val>,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<Result<Val, crate::pkgcall::Fail>> {
+        let needs = match self.session.needs(db, callee) {
+            Ok(n) => n,
+            Err(f) => return Ok(Err(f)),
+        };
+        if needs.free.is_empty() {
+            return Ok(self.session.call(db, callee, vals));
+        }
+        let items = match self.fill_items(db, &needs, scope, span) {
+            Ok(Ok(items)) => items,
+            Ok(Err(f)) => {
+                self.session.abandon();
+                return Ok(Err(f));
+            }
+            Err(d) => {
+                self.session.abandon();
+                return Err(d);
+            }
+        };
+        Ok(self.session.call_in(db, callee, vals, items))
+    }
+
+    /// What a session call reads of the regions around it (`needs`): the values the
+    /// constants and generics have in `scope`, and the shared variables, created now when they
+    /// do not exist yet.
+    fn fill_items(
+        &mut self,
+        db: &Db,
+        needs: &crate::pkgcall::Needs,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<Result<Vec<(DeclId, crate::pkgcall::FillItem)>, crate::pkgcall::Fail>> {
+        use crate::pkgcall::FillItem;
+        let mut items = Vec::new();
+        for f in &needs.free {
+            if !f.var {
+                let v = self.value_of(db, f.decl, scope, span)?;
+                items.push((f.decl, FillItem::Val(v)));
+                continue;
+            }
+            let name = &db.decls[f.decl].name;
+            let Some(region) = self.var_region(f.decl, scope) else {
+                return Err(err(
+                    codes::NOT_EVALUATED,
+                    span,
+                    format!("shared variable `{name}` does not exist yet where this is called"),
+                    "called during elaboration",
+                ));
+            };
+            let key = (region, f.decl);
+            if self.session.var(key).is_none() {
+                let n = match self.session.init_needs(db, f.decl) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(Err(e)),
+                };
+                let titems = match self.fill_items(db, &n, Some(region), span)? {
+                    Ok(i) => i,
+                    Err(e) => return Ok(Err(e)),
+                };
+                if let Err(e) = self.session.create_var(db, key, titems) {
+                    return Ok(Err(e));
+                }
+            }
+            items.push((f.decl, FillItem::Var(key)));
+        }
+        Ok(Ok(items))
+    }
+
+    /// The elaborated region, `scope` or one around it, that declares shared variable `decl`.
+    fn var_region(&self, decl: DeclId, scope: Option<ScopeId>) -> Option<ScopeId> {
+        let mut cur = scope;
+        while let Some(r) = cur {
+            if self.shared_vars.contains(&(r, decl)) {
+                return Some(r);
+            }
+            cur = self.hier.scope(r).parent;
+        }
+        None
     }
 
     /// The instance data a function called in `scope` reads its enclosing regions' constants
@@ -1424,7 +1518,7 @@ fn not_callable(db: &Db, f: DeclId, at: Span, why: &str) -> Box<Diagnostic> {
 fn lower_one(db: &Db, f: DeclId, capture: bool) -> Result<Lowered1, crate::pkgcall::Fail> {
     let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
     if capture {
-        l.capture_free_objects();
+        l.capture_free_objects(false);
     }
     let lowered = crate::pkgcall::sig(&mut l, db, f).and_then(|s| {
         let (free, size) = l.free_objects();

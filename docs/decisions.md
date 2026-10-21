@@ -1264,6 +1264,24 @@ a note and a help suggesting an access type, as the reference simulators reject 
   its users did not name before, so a package could come before one it calls into and its
   lowering stopped with E2001 for the other package's shared variable.
 
+- **Shared variables of regions in elaboration-time calls** (#512; LRM 14.4, 6.4.2.4): a
+  function declared in an architecture, block or generate that reads a protected shared variable
+  of its region (a testbench's random generator, say) is called during elaboration in the
+  session that holds the package state (`Session::call_in`), not in a program of its own. The
+  lowering captures the variable as a cell of instance data holding the handle of its object
+  (`Lowerer::capture_free_objects(true)`, `FreeObj::var`), and `Lowerer::region_var_init` is the
+  thunk that creates the object in the shared heap; the elaborator creates it the first time a
+  call needs it (`Model::fill_items`, one object per elaborated declaring region), so later
+  calls and constants see its state. The simulation starts with those objects (the session's
+  state moves to the build, `StartState::vars` seeds the instance data's `once` map); when it
+  cannot start from the session's state, the logged calls are replayed and create the
+  objects again (`Call::fill`, `Create`, `pkgcall::replay`). A call's log entry keeps the
+  objects it read by declaration (`FillItem`), not as bytes, since any lowering lays them
+  out. Functions lowered this way read instance data laid out for the call: they are given up
+  (`forget_free_objects`) before the design is lowered, which lowers them again for the
+  architecture. Such a lowering is never read from or stored in the stage cache. Not covered:
+  a non-protected (`--relaxed`) shared variable of a region, which stays `E2106`.
+
 ## Runtime: default exit severity (user, 2026-10-18)
 
 `yavs run` defaults to `--exit-severity=failure`, like the reference simulators. A report or assert of

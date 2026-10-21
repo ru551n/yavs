@@ -1381,6 +1381,42 @@ and counts the first frame under `crates/`); no hardware profiler on this host.
 Raw data: median tables above come from 3 interleaved runs per row (suites: 3 runs for the test-runner suites, 1
 run for the two verification-library suites and the difftest corpus numbers are medians of 3).
 
+## Interpreter round 8: fused sequences, search loops, chains of `&` (#443, 2026-10-21)
+
+Fused ops over the predecoded code, a search loop in one op, memoisation across the pieces of an `if` and one
+concatenation for a chain of `&` (`docs/decisions.md` "Interpreter round 8"). Pinned `perf stat` (core 2, performance
+cores, `--tier=interp`, median of 3 to 5), main `85eb0470` to this change; the reference column is the sim1 figure of the
+head-to-head below (`-H 64m -e <top> --no-save --jit -r`).
+
+| Row | cycles before (G) | after (G) | instructions before (G) | after (G) | ratio to sim1 before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| scoreboard testbench (`uvvm_sb_slv_tb`) | 6.51 | 4.59 | 24.27 | 18.10 | 3.0x | about 2.1x |
+| lfsr (512 x 16-bit x 5000) | 3.19 | 2.86 | 14.90 | 13.67 | 6.9x | 6.2x |
+| ff (4096 registers x 2000) | 4.59 | 4.45 | 21.55 | 21.13 | 2.6x | 2.5x |
+| 2a (64 LFSR x 5000, `rtl`) | 1.00 | 0.87 | 4.83 | 4.28 | 6.0x | 5.2x |
+| 2b (64 LFSR x 20000, `rtl2`) | 1.70 | 1.57 | 8.14 | 7.43 | 5.5x | 5.1x |
+| fan, chain, bus, ram | | | | | unchanged within 3 percent | |
+
+`tools/bench` (`--compare`, pinned, 3 runs, total CPU after / before): scoreboard testbench 0.68, `uvvm_util_rand_tb` 0.84,
+`osvvm_axistream` 0.93, `vunit_vc30` 0.98, `protected_scoreboard` 0.99 (geometric mean 0.88).
+
+What is where: the search loop of the string helpers (`pos_of_leftmost`, 26 percent of the executed ops of the scoreboard
+testbench) now runs in `Machine::scan_loop`; chains of `&` build no intermediate arrays; the fused ops remove 15 percent of
+the remaining dispatches. In lfsr the else arm of the clocked process was not memoised because lowering splits it into
+several blocks; `merge_chains` joins them (31 ops per activation instead of 38). Findings for later rounds: dispatch is
+still 14 to 20 percent of the instructions (the loop keeps its index and op slice on the stack: a split into a small
+hot loop did not help, the compiler spilled the index there too); a branch-miss count of 0.4 percent says the cost is
+instructions, not prediction; frame entry and exit are about 5 percent of the scoreboard testbench, so inlining small
+subprograms would not pay (not built); the kernel side of an activation (wake, run_batch, cycle, assign) is 25 percent of
+lfsr and ff.
+
+Verification at this change (release build with the `llvm` feature): differential corpus 415/415 at 1 thread, 4 threads
+and 4 shuffled threads on the interpreter, `--tier=llvm` and `--tier=auto`; 415/415 at 4 shuffled threads with
+`gc-stress` (interpreter and LLVM tier); `cargo test --workspace` green; the pass lists check green with `--oracle --check`
+(857 and 393); discrepancy catalogue green; the runner's own suites pass (10 at the default standard, `record_dict` under
+2019); the `.pro` regression 314/314 under 2008 and 2019; UVVM suite 102 pass, 9 fail, 26 skip (as before). A new corpus
+test (`composite/concat_chain`) covers chains of `&`.
+
 ## performance: head-to-head against the two reference simulators, 2026-10-21
 
 Measurement only (no code changed). yavs at `5ac6c1a6` (main), one release binary built with the `llvm` feature, so

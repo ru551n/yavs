@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:concat_chain:_p0	[xyzpqxyz] 1 8 8
+diag	note	0	0	:concat_chain:_p0	[<xyzpq>] 1 7 7
+diag	note	0	0	:concat_chain:_p0	[xyzpq] 1 5 5
+diag	note	0	0	:concat_chain:_p0	[xyzq] 1 4 4
+diag	note	0	0	:concat_chain:_p0	[abcd] 1 4 4
+diag	note	0	0	:concat_chain:_p0	[xyzmpqxyz] 1 9 9
+diag	note	0	0	:concat_chain:_p0	0 4 5
+diag	note	0	0	:concat_chain:_p0	0 5 6
+diag	note	0	0	:concat_chain:_p0	0 10 11

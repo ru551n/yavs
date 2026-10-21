@@ -3306,6 +3306,60 @@ impl<'a> Fx<'a, '_> {
         Ok(V::A(dst, ap))
     }
 
+    /// The operands of `&` expression `ex` with a flag for each telling whether it is an
+    /// element: those of a chain `a & b & c` (the left operand an array `&` of the same type)
+    /// in order.
+    fn cat_items(&self, op: &ImplicitOp, ex: &[ExprId]) -> Vec<(ExprId, bool)> {
+        let (ls, rs) = cat_scalars(op.form);
+        let mut right = vec![(ex[1], rs)];
+        let mut cur = (ex[0], ls);
+        while !cur.1
+            && let Some((l, r, inner)) = self.cat_args(cur.0, op)
+        {
+            let (ils, irs) = cat_scalars(inner.form);
+            right.push((r, irs));
+            cur = (l, ils);
+        }
+        right.push(cur);
+        right.reverse();
+        right
+    }
+
+    /// The operands and operation of expression `e` when it is a `&` of the type of `op`.
+    fn cat_args(&self, e: ExprId, op: &ImplicitOp) -> Option<(ExprId, ExprId, ImplicitOp)> {
+        let db = self.db;
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            ..
+        } = &db.exprs[e].kind
+        else {
+            return None;
+        };
+        let Body::Implicit(inner) = &db.decls[*callee].kind.subprogram()?.body else {
+            return None;
+        };
+        if inner.family != Family::Cat || inner.ty != op.ty {
+            return None;
+        }
+        match &args[..] {
+            [
+                Arg {
+                    formal: 0,
+                    actual: Actual::Expr(l),
+                    ..
+                },
+                Arg {
+                    formal: 1,
+                    actual: Actual::Expr(r),
+                    ..
+                },
+            ] => Some((*l, *r, *inner)),
+            _ => None,
+        }
+    }
+
     /// `&` of 1-D arrays and elements (LRM 2008 9.2.5): bounds from the index subtype.
     /// Composite elements (arrays of arrays, of records) are copied as rows; an element
     /// subtype the type leaves open takes its constraint from the left operand, and every
@@ -3321,18 +3375,19 @@ impl<'a> Fx<'a, '_> {
         let etid = self.ty(db.base(elem), span)?;
         let scalar = crate::composite::elem_w(self.fb.program(), etid);
         let logic = self.is_logic(tid);
-        let (left_scalar, right_scalar) = match op.form {
-            Form::ArrayScalar => (false, true),
-            Form::ScalarArray => (true, false),
-            Form::ScalarScalar => (true, true),
-            _ => (false, false),
+        // `a & b & c` of scalar elements is one concatenation of three operands, not two with
+        // an intermediate array (the result's bounds and the null-operand rule are the same).
+        let items = if scalar.is_some() {
+            self.cat_items(op, ex)
+        } else {
+            let (ls, rs) = cat_scalars(op.form);
+            vec![(ex[0], ls), (ex[1], rs)]
         };
         let one = self.int(1);
         // Per operand: (data or scalar, element count of an array, descriptor of an array
         // operand or of a composite element).
         let mut ops = Vec::new();
-        for (k, &e) in ex.iter().enumerate() {
-            let sc = if k == 0 { left_scalar } else { right_scalar };
+        for &(e, sc) in &items {
             let v = self.expr(e)?;
             ops.push(match (sc, scalar) {
                 (true, Some(_)) => (self.scal(v, span)?, None, None),
@@ -3346,9 +3401,10 @@ impl<'a> Fx<'a, '_> {
                 }
             });
         }
-        let la = ops[0].1.unwrap_or(one);
-        let lb = ops[1].1.unwrap_or(one);
-        let n = self.bin(IntOp::Add, la, lb);
+        let mut n = ops[0].1.unwrap_or(one);
+        for o in &ops[1..] {
+            n = self.bin(IntOp::Add, n, o.1.unwrap_or(one));
+        }
         let s = self.scalar_bounds(index, span)?;
         let last = self.bin(IntOp::Sub, n, one);
         let right = match s.dir {
@@ -3432,9 +3488,12 @@ impl<'a> Fx<'a, '_> {
         let bias = self.code_bias(tid);
         let pieces: Vec<_> = ops.iter().map(|o| (o.0, o.1)).collect();
         self.put_pieces(data, n, logic, (bias, w), m, &pieces);
-        // Two null operands: the result is the right operand (LRM 9.2.5 a).
-        if let (Some((_, false)), Some((rd, false))) = (ops[0].2, ops[1].2) {
-            let data = self.select(ok, data, ops[1].0, RegTy::Ptr);
+        // Null operands only: the result is the right operand (LRM 9.2.5 a), the last of a
+        // chain.
+        if let Some(&(last, _, Some((rd, false)))) = ops.last()
+            && ops.iter().all(|o| matches!(o.2, Some((_, false))))
+        {
+            let data = self.select(ok, data, last, RegTy::Ptr);
             let dope = self.select(ok, dope, rd, RegTy::Ptr);
             return Ok(V::A(data, dope));
         }
@@ -4883,6 +4942,16 @@ impl<'a> Fx<'a, '_> {
             Ok(())
         })?;
         Ok(V::A(data, dope))
+    }
+}
+
+/// Which operands of a `&` form are elements: (left, right).
+fn cat_scalars(form: Form) -> (bool, bool) {
+    match form {
+        Form::ArrayScalar => (false, true),
+        Form::ScalarArray => (true, false),
+        Form::ScalarScalar => (true, true),
+        _ => (false, false),
     }
 }
 

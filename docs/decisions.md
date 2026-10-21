@@ -2869,6 +2869,38 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
 - **`run_until` takes the next-event time from the end of the previous delta** (`known_next`), and the
   batch and update worklists are kept between cycles instead of being built and dropped per delta.
 
+## Interpreter round 8: fused sequences, search loops, chains of `&` (yavs-interp, yavs-ir, yavs-lower, #443, 2026-10-21)
+
+- **Sequences of predecoded ops are fused in a pass over the resolved ops** (`pre::superops`): the
+  first op of a known sequence is replaced by one that does all of it and steps over the rest, which
+  stay in place (a jump, a resumed frame or compiled code that enters in the middle runs them one by
+  one, so no op index, `Code::entry` or `Code::at` changes). The sequences: the latch of a loop
+  (compare and branch, add, jump back), a load and compare of an array element, a fat pair or a
+  descriptor built in temporary memory, a compare and the select on it, a dereference and the load
+  through it, a move and the branch on the moved value, the edge test and the branch on it, the wait
+  and the suspension after it, a memo flag and its branch, a slot and the signal reference it
+  indexes, and a concatenation of logic elements into a temporary that is only copied on (written to
+  its target directly when it fits one block of planes, read before written).
+- **A loop that searches an array** (element load and compare, then the latch of the same index)
+  runs its iterations in one op (`pre::SCAN`, `Machine::scan_loop`): the descriptor and the array are
+  looked up once, anything the generic ops handle (an index out of bounds, memory outside the common
+  spaces, an overflow) ends the run and the generic op takes that iteration. With a compiled tier
+  set the iterations count as jumps, so compilation is still looked for every `RECHECK` of them.
+- **The optimiser's memoisation pass first joins blocks that only a jump enters** (`opt/memo.rs`
+  `merge_chains`), so the pieces lowering leaves between the arms of an `if` are planned as one
+  block. Blocks entered by falling through (after a `Suspend` or a call), blocks that suspend or call,
+  the entry and the body are never joined; dead blocks do not count as predecessors and are not
+  joined into.
+- **A chain `a & b & c` of elements of a scalar type is one concatenation of all its operands**
+  (`yavs-lower` `cat_items`), not one per `&` with an array in between. The result's bounds and the
+  null-operand rule (all operands null: the last one) are those of the nested form; only the index
+  check of the result is made once, on the whole. (rationale: the intermediate arrays were most of
+  the work of message building)
+- Inlining small subprograms in the optimiser was measured before building it: frame entry and exit
+  (`Pre::fill`, `push_args`, `new_frame`, `pop_frame`, `Call`, `Ret`) are about 5 percent of the
+  instructions of the scoreboard testbench, so even removing all of it is below what the fused ops
+  gave, and error traces would need a record of the inlined frames. Not done.
+
 ## Kernel round 7: cheaper reads and one-element events (yavs-kernel, #440, 2026-10-21)
 
 - **A logic signal of at most 2^20 elements keeps the `std_ulogic` code of every element of its

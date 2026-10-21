@@ -172,6 +172,9 @@ enum Known {
     Inst(u32),
 }
 
+/// Bit of `PosIndexLoadCmpBr::dim`: the op heads a search loop (see there).
+pub(crate) const SCAN: u8 = 0x80;
+
 /// One predecoded operation (`Code`). Registers are `u32` indices into the frame's
 /// registers, jump targets op indices. Widths are never `Width::Sig` (those go to `Step`).
 #[derive(Clone, Copy, Debug)]
@@ -494,6 +497,128 @@ pub(crate) enum Op {
         b: u32,
         t: u32,
         f: u32,
+    },
+    /// A loop latch: the compare-and-branch (taken: `t`; not taken: the next op), then
+    /// `dst = src + delta` (the `Bin` after it, checked) and the jump to `head`. The three ops
+    /// stay in place after it, for any other way in.
+    CmpBrStep {
+        m: u8,
+        delta: i16,
+        a: u16,
+        b: u16,
+        dst: u16,
+        src: u16,
+        t: u32,
+        head: u32,
+    },
+    /// `PosIndexLoad` (of one byte or word at `dst`) and the `CmpBr` of `dst` (the left
+    /// operand; `m` is swapped when it was the right one) against `b`, which nothing else
+    /// reads the result of. Bit 7 of `dim` ([`SCAN`]) marks the head of a search loop: this op
+    /// goes on (`f`) with a `CmpBrStep` of the same index that goes back to it.
+    PosIndexLoadCmpBr {
+        m: u8,
+        w: Width,
+        dim: u8,
+        dst: u16,
+        dope: u16,
+        idx: u16,
+        base: u16,
+        b: u16,
+        stride: u16,
+        t: u32,
+        f: u32,
+    },
+    /// `Cmp` (its result read by nothing else) and the `Select` on it.
+    CmpSelect {
+        m: u8,
+        dst: u32,
+        a: u32,
+        b: u32,
+        x: u32,
+        y: u32,
+    },
+    /// `Deref`, and the `LoadOff` through its result (which is also written).
+    DerefLoadOff {
+        w: Width,
+        d1: u32,
+        handle: u32,
+        what: CheckMsgId,
+        d2: u32,
+        off: u32,
+    },
+    /// `MoveBr` to a `CondBr` on the moved register: the move, then the branch on it.
+    MoveCondBr {
+        dst: u32,
+        src: u32,
+        t: u32,
+        f: u32,
+    },
+    /// `EdgeSig` and the `CondBr` on its result (which is also written).
+    EdgeBr {
+        dst: u32,
+        rising: bool,
+        sig: u32,
+        offset: u32,
+        t: u32,
+        f: u32,
+    },
+    /// `WaitSig` and the `Suspend` after it.
+    WaitSuspend {
+        sig: u32,
+        offset: u32,
+    },
+    /// `StmtLoadSlot8` and the `CondBr` on the register it loaded (which is also written).
+    FlagBr {
+        dst: u32,
+        off: u32,
+        t: u32,
+        f: u32,
+    },
+    /// `LoadSlot8` (its register is also written) and the `SigVal` that indexes with it.
+    SigValSlot {
+        d: u32,
+        off: u32,
+        dst: u32,
+        sig: u32,
+        len: u32,
+    },
+    /// `AllocK`, a `Cat` into it and the `LCopy` of all of it (from and to element 0)
+    /// into `dst`: the concatenation of logic elements is written there directly
+    /// when it fits one block of planes (the temporary is dead).
+    CatLCopy {
+        tmp: u32,
+        size: u32,
+        dst: u32,
+        n: u32,
+    },
+    /// `Inst::TempRoot` of a fat pair.
+    FatRoot {
+        addr: u32,
+    },
+    /// `Inst::NewFrame` at this IR pc.
+    NewFrame(u32),
+    MemEq {
+        dst: u32,
+        a: u32,
+        b: u32,
+        n: u32,
+    },
+    /// `Alloc` of a size known at decode time.
+    AllocK {
+        dst: u32,
+        n: u32,
+    },
+    /// `AllocK` of 16 bytes and the two words `a` and `b` stored in it (a fat pair).
+    NewPair {
+        dst: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `AllocK` of `len` words and the `MakeDope` of the registers at `start` into it.
+    NewDope {
+        at: u32,
+        start: u32,
+        len: u32,
     },
     Check {
         kind: CheckKind,
@@ -1306,6 +1431,282 @@ fn peephole(
     *aff = new_aff;
 }
 
+/// Superinstructions over resolved ops: an op that starts a known sequence is replaced by one
+/// that does all of it; the ops after it stay as they are (a jump or a frame resumed there
+/// runs them one by one), so no index changes.
+fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {
+    let int = |r: u32| match known.get(r as usize) {
+        Some(&Known::Int(v)) => Some(v),
+        _ => None,
+    };
+    let once = |r: u32| uses.get(r as usize) == Some(&1);
+    let r16 = |r: u32| u16::try_from(r).ok();
+    for k in 0..ops.len() {
+        let fused = match (ops[k], ops.get(k + 1), ops.get(k + 2)) {
+            (
+                Op::Alloc { dst, size },
+                Some(&Op::Store {
+                    addr,
+                    src: a,
+                    w: Width::B8,
+                }),
+                Some(&Op::StoreOff {
+                    base,
+                    off: 8,
+                    src: b,
+                    w: Width::B8,
+                }),
+            ) if int(size) == Some(16) && addr == dst && base == dst && a != dst && b != dst => {
+                Some(Op::NewPair { dst, a, b })
+            }
+            (Op::Alloc { dst, size }, Some(&Op::MakeDope { at, start, len }), _)
+                if at == dst && len > 0 && int(size) == i64::from(len).checked_mul(8) =>
+            {
+                Some(Op::NewDope { at, start, len })
+            }
+            (Op::Cmp { m, dst: cd, a, b }, Some(&Op::Select { dst, c, a: x, b: y }), _)
+                if c == cd && once(cd) =>
+            {
+                Some(Op::CmpSelect { m, dst, a, b, x, y })
+            }
+            (
+                Op::Deref {
+                    dst: d1,
+                    handle,
+                    what,
+                },
+                Some(&Op::LoadOff {
+                    dst: d2,
+                    base,
+                    off,
+                    w,
+                }),
+                _,
+            ) if base == d1 => Some(Op::DerefLoadOff {
+                w,
+                d1,
+                handle,
+                what,
+                d2,
+                off,
+            }),
+            (Op::MoveBr { dst, src, to }, _, _)
+                if let Some(&Op::CondBr { c, t, f }) = ops.get(to as usize)
+                    && c == dst =>
+            {
+                Some(Op::MoveCondBr { dst, src, t, f })
+            }
+            (
+                Op::EdgeSig {
+                    dst,
+                    sig,
+                    offset,
+                    rising,
+                },
+                Some(&Op::CondBr { c, t, f }),
+                _,
+            ) if c == dst => Some(Op::EdgeBr {
+                dst,
+                rising,
+                sig,
+                offset,
+                t,
+                f,
+            }),
+            (Op::WaitSig { sig, offset }, Some(&Op::Suspend), _) => {
+                Some(Op::WaitSuspend { sig, offset })
+            }
+            (Op::StmtLoadSlot8 { dst, off }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
+                Some(Op::FlagBr { dst, off, t, f })
+            }
+            (
+                Op::LoadSlot8 { dst: d, off },
+                Some(&Op::SigVal {
+                    dst,
+                    sig,
+                    offset,
+                    len,
+                }),
+                _,
+            ) if offset == d && len != d && dst != d => Some(Op::SigValSlot {
+                d,
+                off,
+                dst,
+                sig,
+                len,
+            }),
+            (
+                Op::Alloc { dst: tmp, size: sz },
+                Some(&Op::Cat),
+                Some(&Op::LCopy {
+                    dst,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                }),
+            ) if let Some(size) = int(sz).and_then(|n| u32::try_from(n).ok())
+                && src == tmp
+                && doff == soff
+                && int(doff) == Some(0)
+                && dst != tmp
+                && let (Some(&cp), Some(&lp)) = (at.get(k + 1), at.get(k + 2))
+                && let Some(&Inst::Cat {
+                    dst: cd,
+                    logic: true,
+                    ..
+                }) = f.code.get(cp as usize)
+                && cd.0 == tmp
+                && !live_after(f, lp as usize, yavs_ir::Reg(tmp)) =>
+            {
+                Some(Op::CatLCopy { tmp, size, dst, n })
+            }
+            (Op::Alloc { dst, size }, _, _)
+                if let Some(n) = int(size).and_then(|n| u32::try_from(n).ok()) =>
+            {
+                Some(Op::AllocK { dst, n })
+            }
+            (
+                Op::CmpBr {
+                    m,
+                    dst: cd,
+                    a,
+                    b,
+                    t,
+                    f: e,
+                },
+                Some(&Op::Bin {
+                    op: bop @ (IntOp::Add | IntOp::Sub),
+                    dst,
+                    a: src,
+                    b: step,
+                }),
+                Some(&Op::Br { to: head }),
+            ) if e as usize == k + 1
+                && once(cd)
+                && let Some(v) = int(step)
+                && let Some(delta) = i16::try_from(if bop == IntOp::Add { v } else { -v }).ok()
+                && let (Some(a), Some(b), Some(dst), Some(src)) =
+                    (r16(a), r16(b), r16(dst), r16(src)) =>
+            {
+                Some(Op::CmpBrStep {
+                    m,
+                    delta,
+                    a,
+                    b,
+                    dst,
+                    src,
+                    t,
+                    head,
+                })
+            }
+            (
+                Op::PosIndexLoad {
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    stride,
+                    w,
+                    dim,
+                },
+                Some(&Op::CmpBr {
+                    m,
+                    dst: cd,
+                    a,
+                    b,
+                    t,
+                    f: e,
+                }),
+                _,
+            ) if once(cd) && (a == dst || b == dst) => {
+                let (m, other) = if a == dst {
+                    (m, b)
+                } else {
+                    // Swap the operands: lt and gt change places.
+                    ((m & 0b010) | (m & 1) << 2 | (m >> 2 & 1), a)
+                };
+                match (
+                    r16(dst),
+                    r16(dope),
+                    r16(idx),
+                    r16(base),
+                    r16(other),
+                    u16::try_from(stride).ok(),
+                ) {
+                    (Some(dst), Some(dope), Some(idx), Some(base), Some(b), Some(stride)) => {
+                        Some(Op::PosIndexLoadCmpBr {
+                            m,
+                            w,
+                            dim,
+                            dst,
+                            dope,
+                            idx,
+                            base,
+                            b,
+                            stride,
+                            t,
+                            f: e,
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(op) = fused {
+            ops[k] = op;
+        }
+    }
+    // The search loop: a load and compare of a position, then a step of the index that jumps
+    // back, with nothing else in the loop.
+    for k in 0..ops.len() {
+        if let Op::PosIndexLoadCmpBr {
+            m,
+            w,
+            dim,
+            dst,
+            dope,
+            idx,
+            base,
+            b,
+            stride,
+            t,
+            f,
+        } = ops[k]
+            && let Some(&Op::CmpBrStep {
+                a: sa,
+                b: sb,
+                dst: sd,
+                src,
+                head,
+                ..
+            }) = ops.get(f as usize)
+            && head as usize == k
+            && sd == idx
+            && src == idx
+            && dim & SCAN == 0
+            && [dope, idx, base, b, sa, sb].iter().all(|&r| r != dst)
+            && b != idx
+            && (sa == idx) != (sb == idx)
+        {
+            ops[k] = Op::PosIndexLoadCmpBr {
+                m,
+                w,
+                dim: dim | SCAN,
+                dst,
+                dope,
+                idx,
+                base,
+                b,
+                stride,
+                t,
+                f,
+            };
+        }
+    }
+}
+
 impl Code {
     fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
         let n = f.code.len();
@@ -2038,6 +2439,14 @@ impl Code {
                     reject: reject.map_or(NONE, |r| r.0),
                     inertial: mode == yavs_ir::DriveMode::Inertial,
                 },
+                Inst::TempRoot { addr, ty: None, .. } => Op::FatRoot { addr: addr.0 },
+                Inst::NewFrame { .. } => Op::NewFrame(pc as u32),
+                Inst::MemEq { dst, a, b, n } => Op::MemEq {
+                    dst: dst.0,
+                    a: a.0,
+                    b: b.0,
+                    n: n.0,
+                },
                 Inst::Suspend { .. } => Op::Suspend,
                 Inst::Ret { v } => Op::Ret {
                     v: v.map_or(NONE, |r| r.0),
@@ -2188,6 +2597,7 @@ impl Code {
                 o => o,
             };
         }
+        superops(&mut ops, &at, f, known, &uses);
         let first = entry.first().copied().unwrap_or(NONE);
         Code {
             ops,

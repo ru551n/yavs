@@ -328,11 +328,175 @@ fn plan_block(f: &crate::Func, b: usize, live_out: &[u64]) -> Option<Plan> {
     })
 }
 
+/// Is the instruction at `pc` entered by falling through from the one before it (a resume
+/// point after a `Suspend` or a call that may suspend)?
+fn falls_into(f: &crate::Func, pc: usize) -> bool {
+    pc > 0
+        && !matches!(
+            f.code[pc - 1],
+            Inst::Br { .. }
+                | Inst::CondBr { .. }
+                | Inst::Ret { .. }
+                | Inst::Unreachable { .. }
+                | Inst::Case { .. }
+        )
+}
+
+/// Does the block (a range of code) suspend, or call something that may? Merged blocks must
+/// not, so that no resume point ends up inside the part the pass copies.
+fn suspends(f: &crate::Func, (s, e): (usize, usize)) -> bool {
+    f.code[s..e].iter().any(|i| {
+        matches!(
+            i,
+            Inst::Suspend { .. }
+                | Inst::Call { .. }
+                | Inst::CallProt { .. }
+                | Inst::CallIndirect { .. }
+                | Inst::CallForeign { .. }
+        )
+    })
+}
+
+/// Join each block that only the unconditional jump ending another block enters to that block
+/// (the straight-line pieces lowering leaves between the arms of an `if`), so that the planner
+/// sees the whole run. The emptied block stays, unreachable. Returns whether anything moved.
+fn merge_chains(prog: &Program, f: &mut crate::Func) -> bool {
+    let succ = successors(prog, f);
+    let nb = f.blocks.len();
+    let body = f.body.map(|b| b.0 as usize);
+    // Blocks reachable from the entry (and the body): a dead block does not count as a
+    // predecessor.
+    let mut reach = vec![false; nb];
+    // Blocks a resume point enters (after a suspension, by falling through) are roots too.
+    let mut stack: Vec<usize> = std::iter::once(0)
+        .chain(body)
+        .chain((1..nb).filter(|&b| {
+            let r = f.blocks.values()[b];
+            r.end > r.start && falls_into(f, r.start as usize)
+        }))
+        .filter(|&b| b < nb)
+        .collect();
+    while let Some(b) = stack.pop() {
+        if !std::mem::replace(&mut reach[b], true) {
+            stack.extend(succ[b].iter().copied().filter(|&t| t < nb));
+        }
+    }
+    let mut preds = vec![0u32; nb];
+    for (b, s) in succ.iter().enumerate() {
+        if reach[b] {
+            for &t in s {
+                if t < nb {
+                    preds[t] += 1;
+                }
+            }
+        }
+    }
+    let ranges: Vec<(usize, usize)> = f
+        .blocks
+        .values()
+        .iter()
+        .map(|b| (b.start as usize, b.end as usize))
+        .collect();
+    let mut chain: Vec<Vec<usize>> = (0..nb).map(|b| vec![b]).collect();
+    let mut merged = false;
+    for a in 0..nb {
+        if chain[a].is_empty() || !reach[a] {
+            continue;
+        }
+        loop {
+            let last = *chain[a].last().unwrap_or(&a);
+            let (s, e) = ranges[last];
+            if e <= s {
+                break;
+            }
+            let Inst::Br { to } = f.code[e - 1] else {
+                break;
+            };
+            let b = to.0 as usize;
+            if b >= nb
+                || b == a
+                || b == 0
+                || Some(b) == body
+                || preds[b] != 1
+                || chain[b].is_empty()
+                || chain[b][0] != b
+                || ranges[b].1 <= ranges[b].0
+                || falls_into(f, ranges[b].0)
+                || suspends(f, ranges[b])
+                || chain[a].iter().any(|&c| suspends(f, ranges[c]))
+            {
+                break;
+            }
+            let moved = std::mem::take(&mut chain[b]);
+            chain[a].extend(moved);
+            merged = true;
+        }
+    }
+    if !merged {
+        return false;
+    }
+    let mut code = Vec::with_capacity(f.code.len());
+    let mut loc = Vec::with_capacity(f.code.len());
+    let mut new_ranges = vec![(0u32, 0u32); nb];
+    for b in 0..nb {
+        let start = code.len() as u32;
+        let parts = &chain[b];
+        for (k, &c) in parts.iter().enumerate() {
+            let (s, mut e) = ranges[c];
+            // The jump to the next piece goes away.
+            if k + 1 < parts.len() {
+                e -= 1;
+            }
+            code.extend_from_slice(&f.code[s..e]);
+            loc.extend_from_slice(&f.loc[s..e]);
+        }
+        if code.len() as u32 == start {
+            // A block merged into another stays (blocks are numbered), unreachable, as one jump.
+            let (s, e) = ranges[b];
+            let l = if e > s { f.loc[e - 1] } else { f.loc[0] };
+            code.push(Inst::Br {
+                to: crate::BlockId(b as u32),
+            });
+            loc.push(l);
+        }
+        new_ranges[b] = (start, code.len() as u32);
+    }
+    for (i, &(s, e)) in new_ranges.iter().enumerate() {
+        if let Some(b) = f.blocks.get_mut(crate::BlockId(i as u32)) {
+            b.start = s;
+            b.end = e;
+        }
+    }
+    f.code = code;
+    f.loc = loc;
+    true
+}
+
 /// Apply the pass to process `f`.
 pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     if f.kind != FuncKind::Process || f.code.len() > 6000 {
         return;
     }
+    let (code0, loc0, blocks0) = (
+        f.code.clone(),
+        f.loc.clone(),
+        f.blocks
+            .values()
+            .iter()
+            .map(|b| (b.start, b.end))
+            .collect::<Vec<_>>(),
+    );
+    merge_chains(prog, f);
+    let restore = |f: &mut crate::Func| {
+        f.code = code0.clone();
+        f.loc = loc0.clone();
+        for (i, &(s, e)) in blocks0.iter().enumerate() {
+            if let Some(b) = f.blocks.get_mut(crate::BlockId(i as u32)) {
+                b.start = s;
+                b.end = e;
+            }
+        }
+    };
     let succ = successors(prog, f);
     let nb = f.blocks.len();
     // Cheap test first: some cyclic block with a load from frozen memory.
@@ -353,6 +517,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     };
     let cands: Vec<usize> = (0..nb).filter(|&b| candidate(b)).collect();
     if cands.is_empty() {
+        restore(f);
         return;
     }
     let out = live_out(f, &succ);
@@ -361,6 +526,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
         .filter_map(|b| plan_block(f, b, &out[b]))
         .collect();
     if plans.is_empty() {
+        restore(f);
         return;
     }
     let base = f.frame.next_multiple_of(8);

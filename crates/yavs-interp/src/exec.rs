@@ -279,6 +279,30 @@ fn slots_of_mut<'a>(
     }
 }
 
+/// What a search loop (`pre::SCAN`) is made of.
+struct ScanLoop {
+    dope: u64,
+    dim: u8,
+    base: u64,
+    stride: u32,
+    w: Width,
+    m: u8,
+    m2: u8,
+    /// The step's compare has the index as its left operand.
+    idx_left: bool,
+    delta: i64,
+}
+
+/// Where a search loop stopped: the index and the element last read, which exit (1: the
+/// element compare, 2: the index compare, 0: neither, the generic ops go on) and the
+/// iterations that read an element.
+struct Scan {
+    i: i64,
+    ch: u64,
+    hit: u8,
+    iters: u32,
+}
+
 enum Flow {
     Next,
     Jump(yavs_ir::BlockId),
@@ -1595,6 +1619,7 @@ impl Machine {
         });
     }
 
+    #[inline]
     pub(crate) fn temp_alloc(&mut self, n: u64) -> R<u64> {
         let off = (self.temp.len() as u64).next_multiple_of(8);
         let end = off.saturating_add(n);
@@ -1602,6 +1627,18 @@ impl Machine {
             return rt_err("temporary memory of one statement exceeds 4 GiB");
         }
         self.temp.resize(end as usize, 0);
+        mk_addr(TEMP, 0, off)
+    }
+
+    /// A fat pair `[a, b]` in temporary memory.
+    fn new_pair(&mut self, a: u64, b: u64) -> R<u64> {
+        let off = (self.temp.len() as u64).next_multiple_of(8);
+        if off + 16 > u64::from(u32::MAX) {
+            return rt_err("temporary memory of one statement exceeds 4 GiB");
+        }
+        self.temp.resize(off as usize, 0);
+        self.temp.extend_from_slice(&a.to_le_bytes());
+        self.temp.extend_from_slice(&b.to_le_bytes());
         mk_addr(TEMP, 0, off)
     }
 
@@ -3965,6 +4002,112 @@ impl Machine {
                     self.regs[dst as usize] = v.into();
                     go!(if v { t } else { e });
                 }
+                Op::CmpBrStep {
+                    m,
+                    delta,
+                    a,
+                    b,
+                    dst,
+                    src,
+                    t,
+                    head,
+                } => {
+                    if pre::cmp_holds(
+                        m,
+                        self.regs[a as usize] as i64,
+                        self.regs[b as usize] as i64,
+                    ) {
+                        go!(t);
+                    } else {
+                        match bin(IntOp::Add, self.regs[src as usize] as i64, i64::from(delta)) {
+                            Ok(v) => self.regs[dst as usize] = v,
+                            Err(e) => {
+                                self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                                return Err(e);
+                            }
+                        }
+                        go!(head);
+                    }
+                }
+                Op::PosIndexLoadCmpBr {
+                    m,
+                    w,
+                    dim,
+                    dst,
+                    dope,
+                    idx,
+                    base,
+                    b,
+                    stride,
+                    t,
+                    f: e,
+                } => {
+                    if dim & pre::SCAN != 0
+                        && let Some(Op::CmpBrStep {
+                            m: m2,
+                            delta,
+                            a: sa,
+                            b: sb,
+                            t: end,
+                            ..
+                        }) = ops.get(e as usize).copied()
+                    {
+                        // A search loop: run its iterations here, off the dispatch.
+                        let other = if sa == idx { sb } else { sa };
+                        let mut limit = 1 << 16;
+                        if (TIER && !native) || watch {
+                            limit = limit.min(recheck.saturating_sub(1));
+                        }
+                        let sc = self.scan_loop(
+                            &ScanLoop {
+                                dope: self.regs[dope as usize],
+                                dim: dim & !pre::SCAN,
+                                base: self.regs[base as usize],
+                                stride: u32::from(stride),
+                                w,
+                                m,
+                                m2,
+                                idx_left: sa == idx,
+                                delta: i64::from(delta),
+                            },
+                            self.regs[idx as usize] as i64,
+                            self.regs[b as usize] as i64,
+                            self.regs[other as usize] as i64,
+                            limit,
+                        );
+                        if sc.iters > 0 {
+                            self.regs[dst as usize] = sc.ch;
+                            self.regs[idx as usize] = sc.i as u64;
+                            if (TIER && !native) || watch {
+                                recheck -= sc.iters.min(recheck - 1);
+                            }
+                            match sc.hit {
+                                1 => go!(t),
+                                2 => go!(end),
+                                // The next iteration is the generic one (a fault, a long loop).
+                                _ => {}
+                            }
+                            continue;
+                        }
+                    }
+                    let dim = dim & !pre::SCAN;
+                    let p = t!(self.pos_of_with(
+                        self.regs[dope as usize],
+                        dim,
+                        self.regs[idx as usize] as i64,
+                        || pos_what!()
+                    ));
+                    let a = t!(index_addr(self.regs[base as usize], p, u32::from(stride)));
+                    let v = t!(self.load(a, w));
+                    self.regs[dst as usize] = v;
+                    go!(
+                        if pre::cmp_holds(m, v as i64, self.regs[b as usize] as i64) {
+                            t
+                        } else {
+                            e
+                        }
+                    );
+                }
                 Op::Bool { op, dst, a, b } => {
                     let (x, y) = (self.regs[a as usize] != 0, self.regs[b as usize] != 0);
                     self.regs[dst as usize] = match op {
@@ -4358,6 +4501,168 @@ impl Machine {
                         }
                     }
                 }
+                Op::CmpSelect { m, dst, a, b, x, y } => {
+                    let c = pre::cmp_holds(
+                        m,
+                        self.regs[a as usize] as i64,
+                        self.regs[b as usize] as i64,
+                    );
+                    self.regs[dst as usize] = self.regs[if c { x } else { y } as usize];
+                    k += 2;
+                }
+                Op::DerefLoadOff {
+                    w,
+                    d1,
+                    handle,
+                    what,
+                    d2,
+                    off,
+                } => {
+                    let a = t!(self.deref(self.regs[handle as usize], what));
+                    self.regs[d1 as usize] = a;
+                    match add_addr(a, off.into()).and_then(|a| self.load(a, w)) {
+                        Ok(v) => self.regs[d2 as usize] = v,
+                        Err(e) => {
+                            self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                            return Err(e);
+                        }
+                    }
+                    k += 2;
+                }
+                Op::MoveCondBr { dst, src, t, f: e } => {
+                    let v = self.regs[src as usize];
+                    self.regs[dst as usize] = v;
+                    go!(if v != 0 { t } else { e });
+                }
+                Op::EdgeBr {
+                    dst,
+                    rising,
+                    sig,
+                    offset,
+                    t,
+                    f: e,
+                } => {
+                    let (sr, _) = t!(self.sig_elem(sig, self.regs[offset as usize]));
+                    let v = t!(Self::edge_elem(sr, rising, ctx));
+                    self.regs[dst as usize] = v;
+                    go!(if v != 0 { t } else { e });
+                }
+                Op::WaitSuspend { sig, offset } => {
+                    let (sr, _) = t!(self.sig_elem(sig, self.regs[offset as usize]));
+                    t!(Self::wait_elem(sr, ctx));
+                    self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                    self.suspend(prog, f, ctx)?;
+                    return Ok(Flow::Suspend);
+                }
+                Op::FlagBr { dst, off, t, f: e } => {
+                    self.end_stmt();
+                    let v = slot8!(off);
+                    self.regs[dst as usize] = v;
+                    go!(if v != 0 { t } else { e });
+                }
+                Op::SigValSlot {
+                    d,
+                    off,
+                    dst,
+                    sig,
+                    len,
+                } => {
+                    let o = slot8!(off);
+                    self.regs[d as usize] = o;
+                    let (a, b) = t!(self.sig_val(sig, o as i64, self.regs[len as usize] as i64));
+                    self.regs[dst as usize] = a;
+                    self.regs[dst as usize + 1] = b;
+                    k += 2;
+                    enter!();
+                }
+                Op::CatLCopy { tmp, size, dst, n } => {
+                    let pc = code.at.get(k + 1).copied().unwrap_or(0);
+                    let Some(&Inst::Cat {
+                        dst: _,
+                        n: cn,
+                        m,
+                        parts,
+                        scalars,
+                        bias,
+                        logic,
+                        w,
+                    }) = f.code.get(pc as usize)
+                    else {
+                        return Err(ice(format!("pc {pc} is not a concatenation")));
+                    };
+                    let ps = t!(f.regs(parts).ok_or_else(|| ice("operand list")));
+                    let d = self.regs[dst as usize];
+                    let total = self.regs[cn.0 as usize].wrapping_mul(self.regs[m.0 as usize]);
+                    // One block of planes into memory that is not a fresh temporary: written
+                    // once after every piece is read, so a piece may be in `d` itself.
+                    let direct = logic
+                        && total <= 64
+                        && self.regs[n as usize] == total
+                        && split(d).0 != TEMP
+                        && t!(self.cat_block(d, total, self.regs[m.0 as usize], ps, scalars, bias));
+                    if direct {
+                        k += 3;
+                    } else {
+                        let a = t!(self.temp_alloc(size.into()));
+                        self.regs[tmp as usize] = a;
+                        t!(self.cat(
+                            a,
+                            self.regs[cn.0 as usize],
+                            self.regs[m.0 as usize],
+                            ps,
+                            scalars,
+                            bias,
+                            logic,
+                            w
+                        ));
+                        t!(self.lcopy(d, 0, a, 0, self.regs[n as usize]));
+                        k += 3;
+                    }
+                }
+                Op::FatRoot { addr } => {
+                    t!(self.fat_root(self.regs[addr as usize]));
+                    k += 1;
+                }
+                Op::NewFrame(pc) => {
+                    let Some(&Inst::NewFrame {
+                        dst,
+                        desc,
+                        dsize,
+                        data,
+                        size,
+                        fill,
+                    }) = f.code.get(pc as usize)
+                    else {
+                        return Err(ice(format!("pc {pc} is not a NewFrame")));
+                    };
+                    t!(self.new_frame(dst, desc, dsize, data, size, fill));
+                    k += 1;
+                }
+                Op::MemEq { dst, a, b, n } => {
+                    let n = self.regs[n as usize];
+                    let v = t!(self.rd(self.regs[a as usize], n))
+                        == t!(self.rd(self.regs[b as usize], n));
+                    self.regs[dst as usize] = v.into();
+                    k += 1;
+                }
+                Op::AllocK { dst, n } => {
+                    self.regs[dst as usize] = t!(self.temp_alloc(n.into()));
+                    k += 1;
+                }
+                Op::NewPair { dst, a, b } => {
+                    let (x, y) = (self.regs[a as usize], self.regs[b as usize]);
+                    self.regs[dst as usize] = t!(self.new_pair(x, y));
+                    k += 3;
+                }
+                Op::NewDope { at, start, len } => {
+                    let parts = t!(f
+                        .regs(yavs_ir::Regs { start, len })
+                        .ok_or_else(|| ice("operand list")));
+                    let a = t!(self.temp_alloc(u64::from(len) * 8));
+                    self.regs[at as usize] = a;
+                    t!(self.make_dope(a, parts));
+                    k += 2;
+                }
                 Op::Alloc { dst, size } => {
                     self.regs[dst as usize] = t!(self.temp_alloc(self.regs[size as usize]));
                     k += 1;
@@ -4435,6 +4740,65 @@ impl Machine {
                 }
             }
         }
+    }
+
+    /// The iterations of a search loop (`pre::SCAN`) while neither exit is taken: the position
+    /// of the index in the descriptor, the element there, its compare with `x`, the compare of
+    /// the index with `e` and the step. The descriptor and the array are looked up once.
+    /// Stops at the first thing the generic ops should handle (an index outside the bounds,
+    /// memory out of the common spaces, an overflow): the result says how far it got.
+    #[inline(never)]
+    fn scan_loop(&self, p: &ScanLoop, i0: i64, x: i64, e: i64, limit: u32) -> Scan {
+        let mut sc = Scan {
+            i: i0,
+            ch: 0,
+            hit: 0,
+            iters: 0,
+        };
+        let Ok((l, r, dir)) = self.dim_of(p.dope, u64::from(p.dim)) else {
+            return sc;
+        };
+        let (sp, sidx, soff) = split(p.base);
+        let Some(mem) = self.mem_fast(sp, sidx) else {
+            return sc;
+        };
+        let n = p.w.bytes().min(8) as usize;
+        let mut i = i0;
+        while sc.iters < limit {
+            let pos = match dir {
+                0 if l <= i && i <= r => i.wrapping_sub(l) as u64,
+                1 if r <= i && i <= l => l.wrapping_sub(i) as u64,
+                _ => break,
+            };
+            let Some(off) = pos
+                .checked_mul(u64::from(p.stride))
+                .and_then(|d| d.checked_add(soff))
+                .filter(|&o| o <= u64::from(u32::MAX))
+            else {
+                break;
+            };
+            let Some(b) = mem.get(off as usize..off as usize + n) else {
+                break;
+            };
+            sc.ch = cell_w(b, p.w);
+            sc.i = i;
+            sc.iters += 1;
+            if pre::cmp_holds(p.m, sc.ch as i64, x) {
+                sc.hit = 1;
+                break;
+            }
+            let (a2, b2) = if p.idx_left { (i, e) } else { (e, i) };
+            if pre::cmp_holds(p.m2, a2, b2) {
+                sc.hit = 2;
+                break;
+            }
+            match i.checked_add(p.delta) {
+                Some(v) => i = v,
+                None => break,
+            }
+            sc.i = i;
+        }
+        sc
     }
 
     /// Run the compiled code of frame `top` (`func`, `f`) from op `k` (`run_ops`, kept out of

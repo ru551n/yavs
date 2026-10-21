@@ -860,7 +860,7 @@ fn closures_share_the_analysis_of_their_first_files() {
     assert_eq!(visible(&plain1), visible(&first));
     let second = run("tb2", &[]);
     assert!(note(&second, "hit prefix of 10 files"), "{second:?}");
-    assert!(!note(&second, "store prefix"), "{second:?}");
+    assert!(!note(&second, "store prefix of"), "{second:?}");
     assert_eq!(visible(&plain2), visible(&second));
     // The same testbench again is a hit of its own image.
     assert!(note(&run("tb2", &[]), "hit"), "own image");

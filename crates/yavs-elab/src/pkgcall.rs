@@ -115,12 +115,32 @@ pub(crate) fn run(
 }
 
 /// Where the package state after initialisation is kept (#407, stage 2 step 2): next to the lowered
-/// packages (`package_lowerer`) in the stage cache, for the same packages, options and `Db`.
+/// packages (`package_lowerer`) in the stage cache, for the same packages, options and `Db`; and
+/// the state of the packages of a library prefix, which every closure of it shares.
 #[derive(Clone, Debug)]
 pub(crate) struct InitKey {
     cache: Arc<dyn yavs_sem::StageCache>,
     extent: Vec<usize>,
     part: Vec<u8>,
+    lib: Option<LibInit>,
+}
+
+/// The state of the first `packages` packages of the design: those the library prefix lowered
+/// (`libstage`).
+#[derive(Clone)]
+struct LibInit {
+    cache: Arc<dyn yavs_sem::StageCache>,
+    level: usize,
+    part: Vec<u8>,
+    packages: usize,
+    /// Bytes of the shared variables area those packages use.
+    shared: u32,
+}
+
+impl std::fmt::Debug for LibInit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LibInit({} packages)", self.packages)
+    }
 }
 
 impl InitKey {
@@ -137,6 +157,17 @@ impl InitKey {
     fn put(&self, resolution: yavs_std::arith::TimeResolution, bytes: &[u8]) {
         self.cache
             .put(&self.extent, "init", &self.part(resolution), bytes);
+    }
+}
+
+impl LibInit {
+    /// The key part for the state of the first `n` packages (the session's initialisation caches
+    /// them all, a simulation start those before the first with a descriptor to write).
+    fn part(&self, resolution: yavs_std::arith::TimeResolution, n: usize) -> Vec<u8> {
+        let mut p = self.part.clone();
+        p.push(resolution as u8);
+        p.extend((n as u32).to_le_bytes());
+        p
     }
 }
 
@@ -160,6 +191,7 @@ pub(crate) fn init_packages(
     revision: yavs_std::types::Revision,
     start: Option<&[InstData]>,
     cache: Option<&InitKey>,
+    fix_writes: bool,
     mut fix: impl FnMut(&PackageIr, &mut InstData) -> Result<(), SimError>,
 ) -> Result<Arc<Runtime>, SimError> {
     let mut data: Vec<Arc<InstData>> = Vec::new();
@@ -180,7 +212,16 @@ pub(crate) fn init_packages(
         )));
     }
     let cache = cache.filter(|_| start.is_none() && !packages.is_empty());
-    if let Some(k) = cache
+    // The descriptors `fix` writes (`fix_writes`) are read by the initialisers that follow (a
+    // package array signal's bounds): the state is cached only up to the packages without any.
+    let dope = |ps: &[PackageIr]| {
+        fix_writes
+            && ps
+                .iter()
+                .any(|p| p.signals.iter().any(|s| s.dope.is_some()))
+    };
+    let whole = cache.filter(|_| !dope(packages));
+    if let Some(k) = whole
         && let Some(bytes) = k.get(resolution)
         && let vars = shared.lock().map_or(0, |s| s.vars.len())
         && let Some((d, st)) = yavs_interp::restore_state(&bytes, packages.len(), vars)
@@ -194,7 +235,34 @@ pub(crate) fn init_packages(
         let data: Vec<Arc<InstData>> = d.into_iter().map(Arc::new).collect();
         return Runtime::new(prog.clone(), bind(&data));
     }
-    for (i, p) in packages.iter().enumerate() {
+    // The packages of the library prefix up to the first with such a signal: read back, or made
+    // now and stored for the next closure.
+    let lib = cache.and_then(|k| k.lib.as_ref()).and_then(|l| {
+        let n = packages[..l.packages.min(packages.len())]
+            .iter()
+            .position(|p| dope(std::slice::from_ref(p)))
+            .unwrap_or(l.packages.min(packages.len()));
+        (n > 0).then_some((l, n))
+    });
+    let mut first = 0;
+    if let Some((l, n)) = lib
+        && let Some(bytes) =
+            l.cache
+                .prefix_get(l.level, crate::libstage::INIT, &l.part(resolution, n))
+        && let total = shared.lock().map_or(0, |s| s.vars.len())
+        && let Some((d, st)) =
+            yavs_interp::restore_state_prefix(&bytes, n, l.shared as usize, total)
+    {
+        st.replay_init_reports();
+        *shared.lock().map_err(|_| {
+            SimError::new(yavs_kernel::ErrorKind::Internal(
+                "shared state poisoned".into(),
+            ))
+        })? = st;
+        data = d.into_iter().map(Arc::new).collect();
+        first = n;
+    }
+    for (i, p) in packages.iter().enumerate().skip(first) {
         let mut d = match start {
             Some(s) => s[i].clone(),
             None => {
@@ -204,8 +272,25 @@ pub(crate) fn init_packages(
         };
         fix(p, &mut d)?;
         data.push(Arc::new(d));
+        if let Some((l, n)) = lib
+            && first == 0
+            && data.len() == n
+            && let Ok(s) = shared.lock()
+        {
+            match s.state_image_prefix(&data, l.shared as usize) {
+                Ok(image) => {
+                    l.cache.prefix_put(
+                        l.level,
+                        crate::libstage::INIT,
+                        &l.part(resolution, n),
+                        &image,
+                    );
+                }
+                Err(why) => l.cache.note(&format!("no library init entry: {why}")),
+            }
+        }
     }
-    if let Some(k) = cache
+    if let Some(k) = whole
         && let Ok(s) = shared.lock()
     {
         match s.state_image(&data) {
@@ -287,6 +372,8 @@ struct Live {
     /// functions to; `None` after a failed lowering.
     lowerer: Option<(yavs_lower::Suspended, Vec<UnitId>)>,
     shared_size: u32,
+    /// The library prefix the program starts with (`libstage`).
+    lib: Option<crate::libstage::LibUse>,
 }
 
 /// The package state elaboration left, for the simulation to start from instead of
@@ -299,6 +386,8 @@ pub(crate) struct Start {
     /// packages, it says what `lowerer`'s program holds.
     pub(crate) lowered: Vec<(DeclId, bool)>,
     pub(crate) state: Arc<StartState>,
+    /// The library prefix the program starts with (`libstage`).
+    pub(crate) lib: Option<crate::libstage::LibUse>,
 }
 
 /// [`Start`]'s state, copied by every build.
@@ -371,6 +460,7 @@ impl Session {
                 shared,
                 rt: live.rt,
             }),
+            lib: live.lib,
         })
     }
 
@@ -466,8 +556,8 @@ impl Session {
     /// Lower the packages and `lowered`, initialise the packages and replay the log.
     fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
-        let mut l = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
-        let init = init_key(db, &pkgs, &LowerOptions::default());
+        let (mut l, lib) = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
+        let init = init_key(db, &pkgs, &LowerOptions::default(), lib.as_ref());
         let mut sigs = HashMap::new();
         for &(d, constant) in &self.lowered {
             sigs.insert(d, item(&mut l, db, d, constant)?);
@@ -495,6 +585,7 @@ impl Session {
             revision_of(db),
             None,
             init.as_ref(),
+            false,
             |_, _| Ok(()),
         )
         .map_err(runtime)?;
@@ -505,6 +596,7 @@ impl Session {
             sigs,
             lowerer,
             shared_size: lw.shared_size,
+            lib,
         })
     }
 }
@@ -525,12 +617,27 @@ fn stage_part(packages: &[UnitId], opts: &LowerOptions) -> Vec<u8> {
 
 /// Where the state of `packages` after their initialisation is cached, if `db` has a stage cache
 /// and the run has no coverage counters.
-pub(crate) fn init_key(db: &Db, packages: &[UnitId], opts: &LowerOptions) -> Option<InitKey> {
+pub(crate) fn init_key(
+    db: &Db,
+    packages: &[UnitId],
+    opts: &LowerOptions,
+    lib: Option<&crate::libstage::LibUse>,
+) -> Option<InitKey> {
     let cache = db.stages().filter(|_| !opts.coverage)?;
     Some(InitKey {
         cache: cache.clone(),
         extent: db.extent(),
         part: stage_part(packages, opts),
+        lib: lib.map(|l| {
+            let (cache, level, part) = l.init_entry();
+            LibInit {
+                cache,
+                level,
+                part,
+                packages: l.packages,
+                shared: l.shared,
+            }
+        }),
     })
 }
 
@@ -541,7 +648,11 @@ pub(crate) fn package_lowerer<'a>(
     db: &'a Db,
     packages: &[UnitId],
     opts: LowerOptions,
-) -> Result<Lowerer<'a>, Vec<Diagnostic>> {
+) -> Result<(Lowerer<'a>, Option<crate::libstage::LibUse>), Vec<Diagnostic>> {
+    if let Some(r) = crate::libstage::lowerer(db, packages, opts) {
+        let (l, lib) = r?;
+        return Ok((l, Some(lib)));
+    }
     let cache = db.stages().filter(|_| !opts.coverage);
     let extent = db.extent();
     let part = stage_part(packages, &opts);
@@ -549,7 +660,7 @@ pub(crate) fn package_lowerer<'a>(
         && let Some(bytes) = c.get(&extent, "low", &part)
         && let Some(l) = Lowerer::from_image(db, opts, &bytes)
     {
-        return Ok(l);
+        return Ok((l, None));
     }
     let mut l = Lowerer::new(db, opts);
     for &u in packages {
@@ -561,7 +672,7 @@ pub(crate) fn package_lowerer<'a>(
     {
         c.put(&extent, "low", &part, &image);
     }
-    Ok(l)
+    Ok((l, None))
 }
 
 fn lower_fail(ds: Vec<Diagnostic>) -> Fail {

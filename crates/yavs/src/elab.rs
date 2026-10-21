@@ -245,6 +245,7 @@ pub enum SeverityArg {
 fn elaborate(
     c: &Common,
     coverage: bool,
+    compile_all: bool,
     collapse_ports: bool,
     format: MessageFormat,
     color: bool,
@@ -326,7 +327,7 @@ fn elaborate(
     opts.encoding = encoding;
     let work_dir = c.work.split_once(':').map_or("", |(_, d)| d);
     let (mut db, analyzed) =
-        crate::cache::analyze_closure(opts, &files, work_dir.as_ref(), !c.no_cache);
+        crate::cache::analyze_closure(opts, &files, work_dir.as_ref(), !c.no_cache, !compile_all);
     let diags = db.take_diagnostics();
     for d in &diags {
         out.emit(&db.sources, d);
@@ -495,7 +496,7 @@ pub fn elab(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    match elaborate(&a, false, true, format, color, encoding) {
+    match elaborate(&a, false, false, true, format, color, encoding) {
         Ok((out, db, e)) => {
             if a.print_hierarchy {
                 print_hierarchy(&db, &e);
@@ -686,11 +687,18 @@ pub fn run(
     let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
     // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
     let collapse = a.dap.is_none() && a.vhpi.is_empty();
-    let (mut out, mut db, e) =
-        match elaborate(&a.common, counters, collapse, format, color, encoding) {
-            Ok(x) => x,
-            Err((out, code)) => return out.finish(code),
-        };
+    let (mut out, mut db, e) = match elaborate(
+        &a.common,
+        counters,
+        a.tier == TierArg::Llvm,
+        collapse,
+        format,
+        color,
+        encoding,
+    ) {
+        Ok(x) => x,
+        Err((out, code)) => return out.finish(code),
+    };
     if a.common.print_hierarchy {
         print_hierarchy(&db, &e);
     }

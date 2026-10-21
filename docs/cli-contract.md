@@ -186,6 +186,15 @@ identical to a run without it, at any `--threads`.
   same order and counted for the exit status. It is not kept when an initialiser opened or used a
   file, read the environment or a clock, or called foreign code: those run every time. Results,
   messages and waveforms are identical with and without it. It counts toward the 96 entries.
+- A closure's first run also uses what the files it starts with give once for all closures of that
+  prefix, kept in the cache of the library of the prefix's last file: the lowered library
+  (`lib-<key>.img`: the packages and every subprogram they declare that does not depend on the design),
+  the state of its first packages after initialisation (`libinit-<key>.img`) and the optimised copies
+  of its functions (`libopt-<key>.img`). The library is made on the second request for the prefix, by
+  one run at a time (`<kind>-<key>.making` while it does), and only when no package body follows the
+  prefix, nothing was instantiated at elaboration time and the run has no coverage counters and is not
+  `--tier=llvm`; otherwise the run lowers as before. Results, messages and waveforms are identical with
+  and without it. A library directory keeps at most 96 entries and 512 MiB of them.
 - `yavs analyze` does not read or write the cache.
 
 ## 4. `yavs analyze`

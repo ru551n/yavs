@@ -95,6 +95,62 @@ pub trait StageCache: Send + Sync + std::fmt::Debug {
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]);
     /// A reason an entry was not made, for `YAVS_LOG=debug`.
     fn note(&self, _msg: &str) {}
+
+    /// Whether the closure has entries of its own (it was analyzed before: the images of a
+    /// closure are made on its second run). Without them only the library prefixes serve.
+    fn closure(&self) -> bool {
+        true
+    }
+
+    /// The [`Db::extent`] the analysis ended with: the library prefix entries are valid for a
+    /// `Db` that has not grown since.
+    fn analysed(&self) -> Vec<usize> {
+        Vec::new()
+    }
+
+    /// The library prefixes of the closure the analysis went through, longest first.
+    fn prefixes(&self) -> Vec<Prefix> {
+        Vec::new()
+    }
+
+    /// Entries of library prefix `level` ([`StageCache::prefixes`]): shared by every closure
+    /// that starts with the same files. `part` names what the stage was asked for.
+    fn prefix_get(&self, _level: usize, _kind: &str, _part: &[u8]) -> Option<yavs_diag::Buffer> {
+        None
+    }
+
+    fn prefix_put(&self, _level: usize, _kind: &str, _part: &[u8], _bytes: &[u8]) {}
+
+    /// Whether the entry was asked for before; the first call remembers the request.
+    fn prefix_seen(&self, _level: usize, _kind: &str, _part: &[u8]) -> bool {
+        true
+    }
+
+    /// Whether this run may make the entry: `false` while another run is making it (the claim
+    /// ends with [`StageCache::prefix_release`] or after a while).
+    fn prefix_claim(&self, _level: usize, _kind: &str, _part: &[u8]) -> bool {
+        true
+    }
+
+    /// End a [`StageCache::prefix_claim`].
+    fn prefix_release(&self, _level: usize, _kind: &str, _part: &[u8]) {}
+
+    /// The `Db` of library prefix `level` as it was when the prefix ended, read from its image:
+    /// what a prefix stage lowers from, so that its result depends on the prefix alone.
+    fn prefix_db(&self, _level: usize) -> Option<Db> {
+        None
+    }
+}
+
+/// A leading part of the files of a closure whose analysis is stored on its own and shared by
+/// the closures that start with the same files (`StageCache::prefixes`).
+#[derive(Clone, Debug)]
+pub struct Prefix {
+    /// The number of units the `Db` held when the prefix ended: a unit with a smaller index
+    /// belongs to it.
+    pub units: usize,
+    /// [`Db::extent`] when the prefix ended.
+    pub extent: Vec<usize>,
 }
 
 impl Options {

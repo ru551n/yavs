@@ -13,13 +13,16 @@ use std::sync::Arc;
 use yavs_cache::{Key, KeyBuilder, Store};
 use yavs_diag::{Diagnostic, MessageFormat, SourceMap};
 use yavs_lib::{ClosureFile, Libraries};
-use yavs_sem::{Db, Options, Reported, StageCache};
+use yavs_sem::{Db, Options, Prefix, Reported, StageCache};
 
 /// The kind name of analysis images in the store.
 const KIND: &str = "sem";
 
 /// The kind name of prefix images: the analysis of the first files of a closure (see [`bounds`]).
 const PREFIX_KIND: &str = "pre";
+
+/// How long a run that makes a library prefix entry is trusted to be at it.
+const CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The smallest prefix (in files) that gets an image of its own.
 const PREFIX_MIN: usize = 8;
@@ -52,23 +55,48 @@ fn key(kind: &str, opts: &Options, files: &[ClosureFile]) -> Key {
     k.finish()
 }
 
+/// A library prefix of the closure (see [`bounds`]) whose analysis is stored by itself.
+#[derive(Debug)]
+struct Level {
+    info: Prefix,
+    /// The cache of the library of the prefix's last file.
+    store: Store,
+    /// The key of the prefix's analysis image (`pre`), also the base of its stage entries.
+    key: Key,
+}
+
 /// What later stages cache for one analysis: entries keyed by the analysis' key and the stage's
-/// own part, valid only for a `Db` of the extent it was analyzed to (`StageCache`).
+/// own part, valid only for a `Db` of the extent it was analyzed to (`StageCache`); and the
+/// entries of the closure's library prefixes, which every closure that starts with the same
+/// files shares.
 #[derive(Debug)]
 struct Stages {
     store: Store,
     /// The analysis' key.
     base: String,
     extent: Vec<usize>,
+    /// Whether the closure has entries of its own (made on its second run).
+    closure: bool,
+    /// Longest first.
+    levels: Vec<Level>,
+    opts: Options,
+    verified: Arc<std::collections::HashSet<String>>,
 }
 
 impl Stages {
     fn key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Key> {
-        (extent == self.extent).then(|| {
+        (self.closure && extent == self.extent).then(|| {
             let mut k = KeyBuilder::new(kind);
             k.text(&self.base).part(part);
             k.finish()
         })
+    }
+
+    fn level_key(&self, level: usize, kind: &str, part: &[u8]) -> Option<(&Level, Key)> {
+        let l = self.levels.get(level)?;
+        let mut k = KeyBuilder::new(kind);
+        k.text(&l.key.hex()).part(part);
+        Some((l, k.finish()))
     }
 }
 
@@ -90,15 +118,98 @@ impl StageCache for Stages {
             self.store.put(kind, &k, bytes);
         }
     }
+
+    fn closure(&self) -> bool {
+        self.closure
+    }
+
+    fn analysed(&self) -> Vec<usize> {
+        self.extent.clone()
+    }
+
+    fn prefixes(&self) -> Vec<Prefix> {
+        self.levels.iter().map(|l| l.info.clone()).collect()
+    }
+
+    fn prefix_get(&self, level: usize, kind: &str, part: &[u8]) -> Option<yavs_diag::Buffer> {
+        let (l, k) = self.level_key(level, kind, part)?;
+        let e = l.store.get(kind, &k)?;
+        debug(format!("hit prefix {kind} {}", k.hex()));
+        Some(yavs_diag::Buffer::new(e))
+    }
+
+    fn prefix_put(&self, level: usize, kind: &str, part: &[u8], bytes: &[u8]) {
+        if let Some((l, k)) = self.level_key(level, kind, part) {
+            debug(format!(
+                "store prefix {kind} {} ({} bytes)",
+                k.hex(),
+                bytes.len()
+            ));
+            l.store.put(kind, &k, bytes);
+        }
+    }
+
+    fn prefix_release(&self, level: usize, kind: &str, part: &[u8]) {
+        if let Some((l, k)) = self.level_key(level, kind, part) {
+            l.store.release(kind, &k);
+        }
+    }
+
+    fn prefix_claim(&self, level: usize, kind: &str, part: &[u8]) -> bool {
+        let Some((l, k)) = self.level_key(level, kind, part) else {
+            return false;
+        };
+        let ok = l.store.claim(kind, &k, CLAIM_TTL);
+        if !ok {
+            debug(format!("prefix {kind} {} is being made", k.hex()));
+        }
+        ok
+    }
+
+    fn prefix_seen(&self, level: usize, kind: &str, part: &[u8]) -> bool {
+        let Some((l, k)) = self.level_key(level, kind, part) else {
+            return true;
+        };
+        if l.store.noted(kind, &k) {
+            return true;
+        }
+        l.store.note(kind, &k);
+        debug(format!("note prefix {kind} {}", k.hex()));
+        false
+    }
+
+    fn prefix_db(&self, level: usize) -> Option<Db> {
+        let l = self.levels.get(level)?;
+        let bytes = l.store.get(PREFIX_KIND, &l.key)?;
+        Db::from_image(
+            self.opts.clone(),
+            yavs_sem::image::Image::new(yavs_diag::Buffer::new(bytes)),
+            &|p| self.verified.contains(p),
+        )
+        .ok()
+    }
 }
 
-/// Let the stages after analysis keep their results next to the analysis image.
-fn with_stages(mut db: Db, store: Store, k: &Key) -> Db {
+/// Let the stages after analysis keep their results next to the analysis image (`closure`) and
+/// in the caches of the closure's library prefixes.
+fn with_stages(
+    mut db: Db,
+    store: Store,
+    k: &Key,
+    closure: bool,
+    levels: Vec<Level>,
+    opts: &Options,
+    verified: &Arc<std::collections::HashSet<String>>,
+) -> Db {
     let extent = db.extent();
     db.set_stages(Arc::new(Stages {
         store,
         base: k.hex(),
         extent,
+        closure,
+        levels,
+        opts: opts.clone(),
+        verified: verified.clone(),
     }));
     db
 }
@@ -161,6 +272,7 @@ pub fn analyze_closure(
     files: &[ClosureFile],
     work_dir: &Path,
     enabled: bool,
+    ahead: bool,
 ) -> (Db, Result<(), Reported>) {
     // ponytail: a custom std/ieee tree ($YAVS_STDLIB) is not cached (its files are not verified)
     let enabled = enabled && opts.stdlib == Path::new(yavs_sem::stdlib::EMBEDDED);
@@ -174,8 +286,8 @@ pub fn analyze_closure(
     let k = key(KIND, &opts, files);
     // The closure verified the content hash of its files (`yavs_lib::closure`), and the key
     // holds those hashes: only the files outside it (`std`, `ieee`) are compared again.
-    let verified: std::collections::HashSet<String> =
-        files.iter().map(|f| f.path.display().to_string()).collect();
+    let verified: Arc<std::collections::HashSet<String>> =
+        Arc::new(files.iter().map(|f| f.path.display().to_string()).collect());
     let restore = |bytes: yavs_cache::Entry, what: &str| match Db::from_image(
         opts.clone(),
         yavs_sem::image::Image::new(yavs_diag::Buffer::new(bytes)),
@@ -189,7 +301,10 @@ pub fn analyze_closure(
     };
     if let Some(db) = store.get(KIND, &k).and_then(|b| restore(b, "image")) {
         debug(format!("hit {}", k.hex()));
-        return (with_stages(db, store, &k), Ok(()));
+        return (
+            with_stages(db, store, &k, true, Vec::new(), &opts, &verified),
+            Ok(()),
+        );
     }
     let bounds = bounds(files);
     let mut start = 0;
@@ -206,6 +321,21 @@ pub fn analyze_closure(
         }
     }
     let mut db = db.unwrap_or_else(|| Db::new(opts.clone()));
+    // The prefixes this closure went through, shortest first (reversed at the end).
+    let mut levels: Vec<Level> = Vec::new();
+    let level = |db: &Db, b: usize| {
+        Some(Level {
+            info: Prefix {
+                units: db.units.len(),
+                extent: db.extent(),
+            },
+            store: prefix_store(&opts, files, b)?,
+            key: key(PREFIX_KIND, &opts, &files[..b]),
+        })
+    };
+    if start > 0 {
+        levels.extend(level(&db, start));
+    }
     let first = start;
     for &b in bounds.iter().filter(|&&b| b > first) {
         if let Err(r) = analyze(&mut db, &files[start..b]) {
@@ -223,6 +353,7 @@ pub fn analyze_closure(
             return (db, Err(Reported));
         }
         db.settle();
+        levels.extend(level(&db, b));
         match (db.to_image(), prefix_store(&opts, files, b)) {
             (Ok(image), Some(s)) => {
                 let pk = key(PREFIX_KIND, &opts, &files[..b]);
@@ -243,18 +374,28 @@ pub fn analyze_closure(
     if r.is_err() {
         return (db, r);
     }
+    levels.reverse();
+    if !ahead {
+        levels.clear();
+    }
     // The image of a closure is made on its second analysis: a design that runs once (one test of
     // a suite) must not pay a fifth of its run for an image nobody reads.
     if !store.noted(KIND, &k) {
         store.note(KIND, &k);
         debug(format!("note {}", k.hex()));
-        return (db, r);
+        return (
+            with_stages(db, store, &k, false, levels, &opts, &verified),
+            r,
+        );
     }
     match db.to_image() {
         Ok(image) => {
             debug(format!("store {} ({} bytes)", k.hex(), image.len()));
             store.put(KIND, &k, &image);
-            (with_stages(db, store, &k), r)
+            (
+                with_stages(db, store, &k, true, levels, &opts, &verified),
+                r,
+            )
         }
         Err(why) => {
             debug(format!("no image: {why}"));

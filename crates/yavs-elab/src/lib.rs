@@ -12,6 +12,7 @@ mod build;
 mod collapse;
 mod eval;
 mod hier;
+mod libstage;
 mod pkgcall;
 mod sim;
 mod value;

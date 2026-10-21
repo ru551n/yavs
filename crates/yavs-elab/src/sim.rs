@@ -71,6 +71,8 @@ pub struct Ir {
     pub(crate) learn: Option<Learn>,
     /// Where the packages' state after initialisation is cached (#407).
     pub(crate) init_key: Option<crate::pkgcall::InitKey>,
+    /// The library prefix the program was lowered on top of, if any (`libstage`).
+    pub(crate) lib: Option<crate::libstage::LibUse>,
 }
 
 /// What lowering a design gives besides the program (`Elaborated::lower_cold`); what `Ir` takes
@@ -318,50 +320,55 @@ impl Elaborated {
             .take()
             .filter(|s| !opts.coverage && s.pkgs == packages && !s.lowerer.externals_early());
         let key = self.lowering_key(db, &opts, &packages, &archs, session.as_ref());
-        let (program, rest, start, learn) = match key.as_ref().and_then(|k| k.get().map(|l| (k, l)))
-        {
-            Some((k, lw)) => {
-                let Lowering {
-                    program,
-                    rest,
-                    optimized,
-                } = lw;
-                let stored = optimized.len();
-                program.load_optimized(optimized);
-                let rest = rest.into_owned();
-                let learn = Learn {
-                    key: k.clone(),
-                    rest: rest.clone(),
-                    stored,
-                };
-                (
-                    program.into_owned(),
-                    rest,
-                    session.map(|s| s.state),
-                    Some(learn),
-                )
-            }
-            None => {
-                let (resumed, start) = match session {
-                    Some(s) => (Some(Lowerer::resume(db, s.lowerer)), Some(s.state)),
-                    None => (None, None),
-                };
-                let (mut program, rest) = self.lower_cold(db, opts, &packages, &archs, resumed)?;
-                let learn = match &key {
-                    Some(k) if LoweringKey::fits(&program) => {
-                        yavs_lower::verify_stored(&mut program)?;
-                        let stored = k.put(&program, &rest);
-                        Some(Learn {
-                            key: k.clone(),
-                            rest: rest.clone(),
-                            stored,
-                        })
+        let (program, rest, start, learn, lib) =
+            match key.as_ref().and_then(|k| k.get().map(|l| (k, l))) {
+                Some((k, lw)) => {
+                    let Lowering {
+                        program,
+                        rest,
+                        optimized,
+                    } = lw;
+                    let stored = optimized.len();
+                    program.load_optimized(optimized);
+                    let rest = rest.into_owned();
+                    let learn = Learn {
+                        key: k.clone(),
+                        rest: rest.clone(),
+                        stored,
+                    };
+                    (
+                        program.into_owned(),
+                        rest,
+                        session.map(|s| s.state),
+                        Some(learn),
+                        None,
+                    )
+                }
+                None => {
+                    let (resumed, start, lib) = match session {
+                        Some(s) => (Some(Lowerer::resume(db, s.lowerer)), Some(s.state), s.lib),
+                        None => (None, None, None),
+                    };
+                    let (mut program, rest, mut lib) =
+                        self.lower_cold(db, opts, &packages, &archs, resumed, lib)?;
+                    if let Some(l) = &mut lib {
+                        program.load_optimized(l.take_optimized());
                     }
-                    _ => None,
-                };
-                (program, rest, start, learn)
-            }
-        };
+                    let learn = match &key {
+                        Some(k) if LoweringKey::fits(&program) => {
+                            yavs_lower::verify_stored(&mut program)?;
+                            let stored = k.put(&program, &rest);
+                            Some(Learn {
+                                key: k.clone(),
+                                rest: rest.clone(),
+                                stored,
+                            })
+                        }
+                        _ => None,
+                    };
+                    (program, rest, start, learn, lib)
+                }
+            };
         let Rest {
             units: arch_units,
             packages: pkg_irs,
@@ -432,7 +439,8 @@ impl Elaborated {
             var_slots,
             start,
             learn,
-            init_key: crate::pkgcall::init_key(db, &packages, &opts),
+            init_key: crate::pkgcall::init_key(db, &packages, &opts, lib.as_ref()),
+            lib,
         });
         Ok(())
     }
@@ -447,14 +455,19 @@ impl Elaborated {
         packages: &[UnitId],
         archs: &[UnitId],
         resumed: Option<Lowerer>,
-    ) -> Result<(yavs_ir::Program, Rest), Vec<Diagnostic>> {
+        mut lib: Option<crate::libstage::LibUse>,
+    ) -> Result<(yavs_ir::Program, Rest, Option<crate::libstage::LibUse>), Vec<Diagnostic>> {
         let mut l = match resumed {
             Some(l) => l,
             // Package objects first (#183), in analysis order, which puts a package after
             // those its declaration uses (LRM 14.4.2).
             // ponytail: a body using a package analyzed after its declaration is
             // initialised too early; order by the dependency graph if a design needs it.
-            None => crate::pkgcall::package_lowerer(db, packages, opts)?,
+            None => {
+                let (l, u) = crate::pkgcall::package_lowerer(db, packages, opts)?;
+                lib = u;
+                l
+            }
         };
         l.externals_bound(self.ext_unbound.clone());
         for p in &self.procs {
@@ -508,7 +521,7 @@ impl Elaborated {
             resolvers,
             res_types,
         };
-        Ok((lowered.program, rest))
+        Ok((lowered.program, rest, lib))
     }
 
     /// Where the result of [`Elaborated::lower_cold`] is kept (#479): the stage cache of the
@@ -524,7 +537,10 @@ impl Elaborated {
         session: Option<&crate::pkgcall::Start>,
     ) -> Option<LoweringKey> {
         use yavs_sem::Id;
-        let cache = db.stages().filter(|_| !opts.coverage)?.clone();
+        let cache = db
+            .stages()
+            .filter(|c| !opts.coverage && c.closure())?
+            .clone();
         // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
         // on the same analysis give the same program, ids and all.
         let mut p = vec![opts.no_native_ieee as u8];
@@ -604,6 +620,10 @@ impl Elaborated {
     /// instead of optimising again (#479). Nothing when the design is not cached.
     pub fn learn(&mut self) {
         let Some(ir) = &mut self.ir else { return };
+        if let Some(lib) = &mut ir.lib {
+            let made = ir.program.export_made(|f| lib.wants(f));
+            lib.learn(made);
+        }
         let Some(l) = &mut ir.learn else { return };
         if ir.program.optimized_count() > l.stored {
             l.stored = l.key.put(&ir.program, &l.rest);
@@ -876,13 +896,8 @@ impl Elaborated {
             time_resolution(cfg.resolution),
             ir.revision,
             start.as_ref().map(|s| &s.data[..]),
-            // The descriptors `fix` writes are read by the initialisers that follow (a package
-            // array signal's bounds): only a design without any gets the cached state.
-            ir.init_key.as_ref().filter(|_| {
-                !ir.packages
-                    .iter()
-                    .any(|p| p.signals.iter().any(|s| s.dope.is_some()))
-            }),
+            ir.init_key.as_ref(),
+            true,
             |p, d| {
                 // Descriptors of the package's array signals (none for an unbound alias of an
                 // external signal: its subprogram fails when called).

@@ -1,0 +1,441 @@
+//! The stages shared by closures that start with the same library files (`docs/decisions.md`
+//! "Library stages", #407): the lowered packages and their subprograms, the state of the packages
+//! after initialisation and the optimised copies of library functions, kept next to the library
+//! of the last file of the prefix. Every run must print exactly what a run without the cache
+//! prints, in whatever order the testbenches come, at any number of threads.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn tempdir(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("yavs-prefix-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).expect("tmp");
+    d
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Out {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+/// The result without the cache's own debug notes.
+fn visible(o: &Out) -> Out {
+    Out {
+        code: o.code,
+        stdout: o.stdout.clone(),
+        stderr: o
+            .stderr
+            .lines()
+            .filter(|l| !l.starts_with("debug: cache:"))
+            .map(|l| format!("{l}\n"))
+            .collect(),
+    }
+}
+
+fn note(o: &Out, what: &str) -> bool {
+    o.stderr
+        .lines()
+        .any(|l| l.starts_with("debug: cache: ") && l.contains(what))
+}
+
+/// A library `liba` of ten packages (so that every closure starts with ten files of it), one of
+/// which keeps state (a signal, a protected counter) and one of which has a deferred constant,
+/// and a work library of testbenches.
+struct Libs {
+    tmp: PathBuf,
+}
+
+const COUNTER: &str = "package pa4 is\n  constant k4 : integer := 4;\n  function f4 (x : integer) return integer;\n  \
+impure function next_id return integer;\n  signal sg : integer := 3;\nend;\n\
+package body pa4 is\n  type counter_t is protected\n    impure function bump return integer;\n  end protected;\n  \
+type counter_t is protected body\n    variable n : integer := 10;\n    \
+impure function bump return integer is begin n := n + 1; return n; end;\n  end protected body;\n  \
+shared variable ctr : counter_t;\n  function f4 (x : integer) return integer is begin return x + k4; end;\n  \
+impure function next_id return integer is begin return ctr.bump; end;\nend;\n";
+
+impl Libs {
+    fn spec(&self, l: &str) -> String {
+        format!("{l}:{}", self.tmp.join(l).display())
+    }
+
+    fn yavs(&self, args: &[String]) -> Out {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&self.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_LOG", "debug")
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        Out {
+            code: o.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        }
+    }
+
+    fn analyze(&self, lib: &str, map: &[&str], file: &Path) {
+        let mut a = vec!["analyze".to_string(), format!("--work={}", self.spec(lib))];
+        a.extend(map.iter().map(|m| format!("--map={}", self.spec(m))));
+        a.push(file.display().to_string());
+        let o = self.yavs(&a);
+        assert_eq!(o.code, 0, "{a:?}: {o:?}");
+    }
+
+    fn write(&self, name: &str, text: &str) -> PathBuf {
+        let f = self.tmp.join(name);
+        std::fs::write(&f, text).expect("write");
+        f
+    }
+
+    /// `liba`: pa0 to pa9, a chain; pa4 holds state. With `late_body`, pa7 declares a deferred
+    /// constant `kb`, whose value the body gives, in a file of its own that needs a unit of
+    /// another library (so it cannot follow the declaration in the order of the closure).
+    fn new(name: &str, late_body: bool) -> Libs {
+        let l = Libs { tmp: tempdir(name) };
+        for i in 0..10 {
+            let uses = if i == 0 {
+                String::new()
+            } else {
+                format!("use work.pa{}.all;\n", i - 1)
+            };
+            let prev = if i == 0 {
+                "0".to_string()
+            } else {
+                format!("k{}", i - 1)
+            };
+            let late = i == 7 && late_body;
+            let decl = if i == 4 {
+                COUNTER
+                    .replace(
+                        "constant k4 : integer := 4;",
+                        &format!("constant k4 : integer := {prev} + 4;"),
+                    )
+                    .replace("package pa4 is", &format!("{uses}package pa4 is"))
+            } else {
+                let kb = if late {
+                    "  constant kb : integer;\n"
+                } else {
+                    ""
+                };
+                let body = if late {
+                    String::new()
+                } else {
+                    format!(
+                        "package body pa{i} is\n  function f{i} (x : integer) return integer is begin return x + k{i}; end;\nend;\n"
+                    )
+                };
+                format!(
+                    "{uses}package pa{i} is\n  constant k{i} : integer := {prev} + {i};\n  function f{i} (x : integer) return integer;\n{kb}end;\n{body}"
+                )
+            };
+            let f = l.write(&format!("pa{i}.vhd"), &decl);
+            if late {
+                let vals = l.write(
+                    "vals.vhd",
+                    "package vals is\n  constant lib_value : integer := 1;\nend;\n",
+                );
+                l.analyze("libb", &[], &vals);
+                l.analyze("liba", &["libb"], &f);
+                let bf = l.write(
+                    "pa7_body.vhd",
+                    "library libb; use libb.vals.all;\nuse work.pa6.all;\npackage body pa7 is\n  \
+                     function f7 (x : integer) return integer is begin return x + k7; end;\n  \
+                     constant kb : integer := 100 + lib_value;\nend;\n",
+                );
+                l.analyze("liba", &["libb"], &bf);
+            } else {
+                l.analyze("liba", &[], &f);
+            }
+        }
+        l
+    }
+
+    /// A testbench `tb<n>`; with `session` it calls `next_id` while it is elaborated.
+    fn tb(&self, n: u32, session: bool) -> String {
+        let name = format!("tb{n}");
+        let (decl, id) = if session {
+            ("constant id1 : integer := next_id;\n", "id1")
+        } else {
+            ("", "0")
+        };
+        let late = if self.tmp.join("pa7_body.vhd").exists() {
+            " & \" kb=\" & integer'image(kb)"
+        } else {
+            ""
+        };
+        let text = format!(
+            "library liba; use liba.pa9.all; use liba.pa4.all;\n{}entity {name} is end;\narchitecture a of {name} is\n  {decl}begin\n  process\n  begin\n    \
+             report \"k=\" & integer'image(k9 + {n}) & \" f=\" & integer'image(f9({n}) + f4({n})) & \" id=\" & integer'image({id}) & \" next=\" & integer'image(next_id) & \" sg=\" & integer'image(sg){late};\n    \
+             wait;\n  end process;\nend;\n",
+            if late.is_empty() {
+                ""
+            } else {
+                "use liba.pa7.all;\n"
+            }
+        );
+        let f = self.write(&format!("{name}.vhd"), &text);
+        let mut maps = vec!["liba"];
+        if self.tmp.join("vals.vhd").exists() {
+            maps.push("libb");
+        }
+        self.analyze("work", &maps, &f);
+        name
+    }
+
+    fn run(&self, top: &str, more: &[&str]) -> Out {
+        let mut a = vec![
+            "run".to_string(),
+            format!("--work={}", self.spec("work")),
+            format!("--map={}", self.spec("liba")),
+        ];
+        if self.tmp.join("vals.vhd").exists() {
+            a.push(format!("--map={}", self.spec("libb")));
+        }
+        a.extend(more.iter().map(|s| s.to_string()));
+        a.push(top.to_string());
+        self.yavs(&a)
+    }
+
+    fn entries(&self, kind: &str) -> Vec<PathBuf> {
+        let d = self.tmp.join("liba").join("yavs-cache");
+        std::fs::read_dir(d)
+            .map(|d| {
+                d.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        let n = p.file_name().unwrap_or_default().to_string_lossy();
+                        n.starts_with(&format!("{kind}-")) && n.ends_with(".img")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Testbenches of one library share what the library's files give: the second request for the
+/// prefix makes the lowered library (`lib`), the next runs read it, the state of its packages
+/// after initialisation (`libinit`) and the optimised copies of the library functions the runs
+/// called (`libopt`). Every run prints what a run without the cache prints, with an
+/// elaboration-time call of a package function (a session) and without, at one thread and four.
+/// Only the first run of a closure reads them: its second run makes the entries of its own.
+#[test]
+fn closures_share_the_lowered_library_and_its_state() {
+    let l = Libs::new("share", false);
+    let tops: Vec<String> = (1..=7).map(|n| l.tb(n, n % 2 == 1)).collect();
+    let plain: Vec<Out> = tops
+        .iter()
+        .map(|t| visible(&l.run(t, &["--no-cache"])))
+        .collect();
+    for (n, (p, t)) in plain.iter().zip(&tops).enumerate() {
+        assert!(p.stdout.contains(&format!("k={}", 46 + n)), "{t}: {p:?}");
+        assert_eq!(p.code, 0, "{p:?}");
+    }
+    // The first closure leaves the prefix image and a note; nothing of the library is lowered.
+    let r1 = l.run(&tops[0], &[]);
+    assert!(note(&r1, "store prefix of 10 files"), "{r1:?}");
+    assert!(!note(&r1, "store prefix lib"), "{r1:?}");
+    assert_eq!(visible(&r1), plain[0]);
+    // The second closure makes the lowered library.
+    let r2 = l.run(&tops[1], &[]);
+    assert!(note(&r2, "store prefix lib "), "{r2:?}");
+    assert_eq!(visible(&r2), plain[1]);
+    assert_eq!(l.entries("lib").len(), 1);
+    // The next ones read it, with the state of the packages and the optimised copies.
+    let mut seen = std::collections::HashSet::new();
+    for (i, t) in tops.iter().enumerate().skip(2) {
+        let more: &[&str] = if i % 2 == 0 { &[] } else { &["--threads=4"] };
+        let r = l.run(t, more);
+        assert!(note(&r, "hit prefix lib "), "{t}: {r:?}");
+        assert!(!note(&r, "store prefix lib "), "{t}: {r:?}");
+        assert_eq!(visible(&r), plain[i], "{t}");
+        for kind in ["libinit", "libopt"] {
+            if note(&r, &format!("hit prefix {kind}")) {
+                seen.insert(kind);
+            }
+        }
+    }
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(l.entries("libopt").len(), 1, "one entry names the lowering");
+    assert_eq!(l.entries("libinit").len(), 1);
+    // The same closure again makes and then reads its own image, not the library's.
+    for _ in 0..2 {
+        let again = l.run(&tops[5], &[]);
+        assert!(!note(&again, "hit prefix lib "), "{again:?}");
+        assert_eq!(visible(&again), plain[5]);
+    }
+}
+
+/// The lowered library depends on the files of the prefix: editing a package of it makes a new
+/// prefix, whose runs do not read the old entries.
+#[test]
+fn editing_a_package_of_the_prefix_replaces_the_library() {
+    let l = Libs::new("edit", false);
+    for n in 1..=3 {
+        let t = l.tb(n, true);
+        l.run(&t, &[]);
+    }
+    let t4 = l.tb(4, true);
+    assert!(note(&l.run(&t4, &[]), "hit prefix lib "));
+    let f = l.tmp.join("pa9.vhd");
+    let text = std::fs::read_to_string(&f).expect("read");
+    std::fs::write(&f, text.replace("+ 9", "+ 90")).expect("write");
+    l.analyze("liba", &[], &f);
+    let mut hits = 0;
+    for n in 5..=8 {
+        let t = l.tb(n, true);
+        let plain = visible(&l.run(&t, &["--no-cache"]));
+        assert!(
+            plain.stdout.contains(&format!("k={}", 126 + n)),
+            "{plain:?}"
+        );
+        let r = l.run(&t, &[]);
+        assert_eq!(visible(&r), plain, "{t}");
+        // Two closures see the new prefix before it is read.
+        hits += usize::from(note(&r, "hit prefix lib "));
+        assert!(n >= 7 || !note(&r, "hit prefix lib "), "{t}: {r:?}");
+    }
+    assert!(hits >= 1);
+    assert_eq!(
+        l.entries("lib").len(),
+        2,
+        "the old library stays until it ages out"
+    );
+}
+
+/// A package of the prefix whose body is in a file that cannot follow it (it needs a unit of
+/// another library that comes later) is completed after the prefix: what the prefix lowered
+/// could have used the body's constant, so it is not reused, and a changed body changes what
+/// every run prints.
+#[test]
+fn a_package_completed_after_the_prefix_is_not_reused() {
+    let l = Libs::new("late", true);
+    let tops: Vec<String> = (1..=4).map(|n| l.tb(n, true)).collect();
+    for t in &tops {
+        let plain = visible(&l.run(t, &["--no-cache"]));
+        assert!(plain.stdout.contains("kb=101"), "{t}: {plain:?}");
+        for round in 0..3 {
+            let r = l.run(t, &[]);
+            assert!(
+                !note(&r, "hit prefix lib ") && !note(&r, "store prefix lib "),
+                "{t}: {r:?}"
+            );
+            // Only the first run of a closure asks for the library.
+            assert_eq!(
+                note(&r, "a package body follows the prefix"),
+                round == 0,
+                "{t}: {r:?}"
+            );
+            assert_eq!(visible(&r), plain, "{t}");
+        }
+    }
+    // The body changes: the prefix does not, and every run prints the new value.
+    let body = l.tmp.join("pa7_body.vhd");
+    let text = std::fs::read_to_string(&body).expect("read");
+    std::fs::write(&body, text.replace("100 +", "200 +")).expect("write");
+    l.analyze("liba", &["libb"], &body);
+    for n in 5..=7 {
+        let t = l.tb(n, true);
+        let r = l.run(&t, &[]);
+        assert!(r.stdout.contains("kb=201"), "{t}: {r:?}");
+        assert_eq!(visible(&r), visible(&l.run(&t, &["--no-cache"])), "{t}");
+    }
+    for t in &tops {
+        let r = l.run(t, &[]);
+        assert!(r.stdout.contains("kb=201"), "{t}: {r:?}");
+    }
+    assert!(l.entries("lib").is_empty());
+}
+
+/// Testbenches that start together on a new prefix all print what a run without the cache prints,
+/// the library is made once (the others do not wait for it), and nothing is left half written.
+#[test]
+fn parallel_first_runs_into_one_library_agree() {
+    let l = Libs::new("parallel", false);
+    let tops: Vec<String> = (1..=8).map(|n| l.tb(n, n % 2 == 0)).collect();
+    let plain: Vec<Out> = tops
+        .iter()
+        .map(|t| visible(&l.run(t, &["--no-cache"])))
+        .collect();
+    // The prefix has been seen once by this run, so the runs below all want the library.
+    l.run(&tops[0], &[]);
+    std::thread::scope(|s| {
+        let hs: Vec<_> = tops
+            .iter()
+            .skip(1)
+            .map(|t| s.spawn(|| visible(&l.run(t, &[]))))
+            .collect();
+        for (h, p) in hs.into_iter().zip(plain.iter().skip(1)) {
+            assert_eq!(*p, h.join().expect("join"));
+        }
+    });
+    assert_eq!(l.entries("lib").len(), 1);
+    let leftovers = std::fs::read_dir(l.tmp.join("liba").join("yavs-cache"))
+        .expect("dir")
+        .flatten()
+        .filter(|f| {
+            let n = f.file_name().to_string_lossy().into_owned();
+            n.starts_with(".tmp-") || n.ends_with(".making")
+        })
+        .count();
+    assert_eq!(leftovers, 0);
+    // Four more at once read it.
+    let more: Vec<String> = (9..=12).map(|n| l.tb(n, n % 2 == 0)).collect();
+    let plain: Vec<Out> = more
+        .iter()
+        .map(|t| visible(&l.run(t, &["--no-cache"])))
+        .collect();
+    std::thread::scope(|s| {
+        let hs: Vec<_> = more
+            .iter()
+            .map(|t| s.spawn(|| l.run(t, &["--threads=4"])))
+            .collect();
+        for (h, p) in hs.into_iter().zip(&plain) {
+            let r = h.join().expect("join");
+            assert!(note(&r, "hit prefix lib "), "{r:?}");
+            assert_eq!(*p, visible(&r));
+        }
+    });
+}
+
+/// A damaged entry of the library stages is a miss: the run lowers what it needs itself, prints
+/// what it printed, and the entry is made again.
+#[test]
+fn damaged_library_entries_are_ignored() {
+    let l = Libs::new("damaged", false);
+    for n in 1..=3 {
+        let t = l.tb(n, true);
+        l.run(&t, &[]);
+    }
+    let mut n = 3;
+    for kind in ["lib", "libinit", "libopt"] {
+        let img = l
+            .entries(kind)
+            .pop()
+            .unwrap_or_else(|| panic!("no {kind} entry"));
+        let good = std::fs::read(&img).expect("read");
+        for bad in [
+            good[..good.len() / 2].to_vec(),
+            b"not an entry".to_vec(),
+            Vec::new(),
+        ] {
+            std::fs::write(&img, bad).expect("write");
+            n += 1;
+            let t = l.tb(n, true);
+            let r = l.run(&t, &[]);
+            assert_eq!(
+                visible(&r),
+                visible(&l.run(&t, &["--no-cache"])),
+                "{kind}: {r:?}"
+            );
+            std::fs::write(&img, &good).expect("restore");
+        }
+    }
+    let t = l.tb(n + 1, true);
+    let r = l.run(&t, &[]);
+    assert!(note(&r, "hit prefix lib "), "{r:?}");
+    assert_eq!(visible(&r), visible(&l.run(&t, &["--no-cache"])));
+}

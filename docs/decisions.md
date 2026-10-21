@@ -2726,6 +2726,78 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
   the third run on. Prefix images are made at once: they are shared. Supersedes "The first `elab` or `run`
   of a design stores the image".
 
+## Library stages: what a closure shares with others that start with the same files (#407, yavs decisions under the user's single-thread performance priority)
+
+A suite that runs one test per process gives every test a new closure, so the closure-keyed entries (`low`, `init`,
+`ir`) never serve a run that happens once; only the analysis prefix (`pre`) did. The library under such tests is the
+same files in the same order, so what is lowered from it can be shared too. Three more kinds are kept in the cache of
+the library of the prefix's last file, next to its `pre` image; the key of that image names the files, the options,
+the revision and the build. The stage is used by the first run of a closure only (a closure that runs again makes its
+own entries, as before, and keeps its `ir` compact).
+
+- **`lib`: the lowered library.** The packages' objects, then every subprogram the packages declare, lowered in a
+  fixed order from the prefix's own image (`StageCache::prefix_db`, never from the closure's `Db`, so that the result
+  depends on the prefix alone) and stored with the lowering state (`Lowerer::image`). The ids it hands out (functions,
+  types, constants, natives) are the same in every closure of the prefix, which is what lets the next two kinds name them.
+  Subprograms that cannot be lowered ahead of any design are left out, found by lowering everything once
+  (`Lowerer::context_dependent`): those that read a `'path_name` or `'instance_name` (the name is a cell of the instance
+  data of the architecture being lowered), those that use an external name (they fail on entry until it is bound), those
+  that fail to lower, and every subprogram that calls one of them. They are lowered by the closure that reaches
+  them, as before. Nothing is stored when external names are involved or the lowering is under 256 bytes; an empty
+  entry says "cannot be lowered ahead" so that no run tries again. The header names the package units, the function
+  count, the bytes of the shared variables area and a digest of the ids (`ProgramBuilder::fingerprint`: the identity of
+  every function in id order and the size of every table; the image's bytes are no digest because maps are written in the
+  order of the writing process). The next two kinds are keyed by that digest, and a run that reads an entry whose digest
+  is not the one in its header does not use it.
+- **Reused only when provably the same:** the prefix key equals; no package body follows the prefix whose package is
+  inside it (`libstage::closed`: such a body completes subprograms and deferred constants the prefix declared, and a
+  prefix lowered without it could differ); the closure's `Db` has not grown since its analysis (the same rule as `low`);
+  the packages of the closure that belong to the prefix are the packages the entry lowered, in the same order; the
+  digest matches; no coverage counters; not `--tier=llvm` (it compiles every function, and the library has thousands);
+  the lowering options are in the key. A closure that fails one of these lowers as before.
+- **When it is made:** the first run of the first closure that asks for the prefix after it was seen once leaves a note
+  (`Store::note`), the next such run makes the entry, at the longest prefix of the closure only; one run makes it at a time
+  (`Store::claim`, 20 s), the others go on without. Measured on the second library's `.pro` regression (314 tests,
+  11 prefixes, four jobs): creating on the first sighting costs 0.4 to 1.7 s of wall and 1 to 3 s of CPU more than
+  creating on the second (every prefix of a suite pays for the library once, also the ones one test uses), so the second
+  sighting it is. One creation is about 0.25 s (two lowerings, one to find what depends on the design) and the entry about
+  10 MB for a library of 3500 subprograms.
+- **Decoding it:** the entry is mapped and the bodies of its functions stay bytes until a function runs ("Zero-copy
+  cache entries"), so a library of thousands of functions costs its function headers and tables (about 5 ms of a
+  100 ms run) and a body only when its function is called, and not even then when it has a stored optimised copy.
+  Decoding the 10 MB of bodies eagerly cost 26 to 38 ms, more than lowering what a test reaches, so this is what makes
+  the entry pay. A debug build verifies the program when it is stored; release builds do not verify functions (#482).
+- **`libopt`: the optimised copies of library functions.** A function's optimised copy reads only the function, the
+  flags and kinds of the functions it calls and the type, constant and case tables, all of which are below the
+  library's counts, so a copy of a function with a library id is the same in every closure. A run that made copies the
+  entry lacks writes the entry again with them (read, merge, write; two runs that do it together may lose one's
+  additions, which the next run makes again). A closure that runs once pays the optimiser for the library functions it
+  calls: this is 40 of the 80 ms of the simulate phase of a small test.
+- **`libinit`: the state of the first packages after initialisation.** Those the library lowered, up to the first with
+  an array signal whose descriptor `fix` writes at the simulation start, restored like `init` (data, the first bytes of
+  the shared variables area, the shared heap) and the rest initialised after them; the state of a package depends on
+  the packages before it and on nothing after it, and a later package's initialiser cannot change what an earlier one
+  saw. Everything `init` refuses (`tainted`, sealed or reflected heap objects) is refused here; reports are replayed.
+  The session of elaboration-time calls uses it too (it initialises the packages first).
+- **A package body in a file of its own follows its package** in the order of the closure (`yavs-lib` `closure`): the
+  depth-first order put such a body (a settings package whose body is given separately) after everything else, which
+  made it a body that follows every prefix and kept the library from being shared at all. The body's file now follows
+  its package's file as soon as everything the body needs is placed (it is hoisted only when all its order edges are
+  done, so no cycle can arise). A body that needs a unit placed later stays where it was, and the stage is not used for
+  a prefix it completes. The order of files in a closure changes for designs with such bodies (the elaborated
+  design does not: package bodies are not the "last architecture"); difftest, the analysis corpora and the external
+  suites are unchanged.
+- **Entries per directory:** `lib` (about 10 MB for a big library), `libopt` (under 1 MB) and `libinit` (a few KB) per
+  prefix, with the prefix's `pre` image (5 MB): the 96-entry limit now has a byte limit beside it, 512 MiB per library
+  directory, the least recently used go first and the newest stays (`yavs-cache` `MAX_BYTES`). The `.pro` regression
+  (11 prefixes) leaves 199 MB of cache in all, 25 MB more than before (the library under eight suites holds 133 MB:
+  eight prefixes of 10 MB, 1 MB and 5 MB of state and copies, 5.6 MB of analysis each; 16 MB, 11 MB and 5 MB in the
+  others).
+- **Ceilings:** one `lib` per longest prefix (suites with several prefixes of one library lower the library once for
+  each; sharing between prefixes would need a program delta); a design that instantiates a generic during
+  elaboration (the `Db` grows) lowers as before; a library with a subprogram that cannot be lowered ahead of the design
+  keeps it for the closure (it is skipped, not the library).
+
 ## Kernel round 5: the cost of a wake-up, second pass (yavs-kernel, yavs-interp, #440, 2026-10-20)
 
 - **A zero-delay assignment of one `std_ulogic` element to a driver with nothing pending or skipped

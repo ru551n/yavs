@@ -3173,6 +3173,9 @@ impl Gen {
                     *l = true;
                 }
             }
+            // What the generator knows about registers holds until the next block: the
+            // interpreter enters after a call only having run the block up to it.
+            let block_start = leader.clone();
             for (i, inst) in f.code.iter().enumerate() {
                 if resumes(inst) {
                     leader[i + 1] = true;
@@ -3454,7 +3457,7 @@ impl Gen {
                 if let Some(d) = &c.defer {
                     d.pc.set(pc);
                 }
-                if leader[i] {
+                if block_start[i] {
                     c.known.borrow_mut().clone_from(&base_known);
                 }
                 // What is known about an address register (`Gen::host`).
@@ -4792,7 +4795,7 @@ impl Gen {
             let w = self.host(
                 c,
                 self.ld(c, wave),
-                None,
+                self.known_addr(c, wave),
                 self.c64(0),
                 self.c64(40),
                 false,

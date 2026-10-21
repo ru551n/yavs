@@ -2878,6 +2878,9 @@ own entries, as before, and keeps its `ir` compact).
   and the `Drive` and that nothing reads it afterwards (`pre::live_after`, a walk over the blocks
   after the `Drive`). A frame load of an element offset and the `SigRead1` it feeds became one op
   (`SigRead1Slot`). The clocked designs lose a tenth of their instructions.
+- A scalar logic assignment in compiled code (`Drive` right after the `LSet` of element 0 of a
+  one-element waveform, `TierHost::signal`) drives from the code in the `LSet`'s register as the
+  predecoder's `LSetDrive` does, instead of reading the waveform back from memory.
 - Smaller: a per-driver flag for "another source on some element" replaces the segment search in the
   unchanged-assignment test; the known edge of a trigger is looked up in a table; a batch of one
   process or entry is not ordered or sorted; a phase wanted only after a serial process is skipped

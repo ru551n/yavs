@@ -1049,8 +1049,13 @@ impl Signal {
                 let len = (w >> s).trailing_ones();
                 let e = off + c + s as usize;
                 let n = self.ty.len as usize;
-                self.stamps[e..e + len as usize].fill(cycle);
-                self.stamps[2 * n + e..2 * n + e + len as usize].fill(now.raw());
+                // Event cycle and event time of the run, one pass (runs are short).
+                let (cycles, rest) = self.stamps.split_at_mut(2 * n);
+                let times = &mut rest[e..e + len as usize];
+                for (c, t) in cycles[e..e + len as usize].iter_mut().zip(times) {
+                    *c = cycle;
+                    *t = now.raw();
+                }
                 note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
                 w &= !(nmask(len as usize) << s);
             }

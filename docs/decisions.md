@@ -2864,6 +2864,14 @@ own entries, as before, and keeps its `ir` compact).
 - **The runs of changed elements are listed only for signals something watches** (a waiting process
   or an observer that wants value changes); for the others they are only counted. `Stats::events`
   counts one per update of a run for those signals instead of one per merged run.
+- **Compiled code reads the element codes itself.** `TierFrame::sigtab` has one `TierSig` per
+  instance signal (the address and length of its codes, its kernel signal and first element,
+  built at the first entry of a machine from `Ctx::code_view`), and `known_*` the edge the
+  kernel resumed the process for (`Ctx::known_edge`). `SigReadScalar` and `rising_edge` /
+  `falling_edge` of one element become a table lookup and a byte load or compare in the compiled
+  function; a signal without codes, a null range, a part table or an edge that is not the known
+  one goes through `TierHost::signal` as before. The pointers are valid for the whole run and
+  the bytes change only in the update phase.
 - Smaller: a per-driver flag for "another source on some element" replaces the segment search in the
   unchanged-assignment test; the known edge of a trigger is looked up in a table; a batch of one
   process or entry is not ordered or sorted; a phase wanted only after a serial process is skipped

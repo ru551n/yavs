@@ -25,9 +25,12 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   addresses are found inline, and a constant the generator knows (`Known::Const`) is read from a
   private copy in the module, `Gen::const_global`). Through the `yavs_rt_signal` callback
   (`TierHost::signal`: the interpreter's own functions without its generic step):
-  `SigReadScalar`, `SigRead` (one range), `Drive`, `DriveSlot` (one range), `WaitOn` and
+  `SigRead` (one range), `Drive`, `DriveSlot` (one range), `WaitOn` and
   `WaitFor` (each with the `Suspend` after it), `Suspend` and the `rising_edge`/`falling_edge`
-  natives (#339). The same callback runs the instructions that only change the temporary area or one register without the generic step and without forgetting the cached objects: `TempRoot`, `Stmt` (when roots are recorded), `NewFrame`, `Deref`, `MemEq` (`Gen::step`); a `TempRoot` of a fat pair asks `yavs_rt_fast` (`FAST_FAT_ROOT`) first and records nothing when no word points into a heap (#432). Every other instruction runs in place through
+  natives (#339); `SigReadScalar` of a logic signal that keeps its codes, and `rising_edge` /
+  `falling_edge` of the edge the kernel resumed the process for, are read in place from
+  `TierFrame::sigtab` and `known_*` (`Gen::sig_read_scalar`, `Gen::edge`; the callback is their slow
+  path, #440). The same callback runs the instructions that only change the temporary area or one register without the generic step and without forgetting the cached objects: `TempRoot`, `Stmt` (when roots are recorded), `NewFrame`, `Deref`, `MemEq` (`Gen::step`); a `TempRoot` of a fat pair asks `yavs_rt_fast` (`FAST_FAT_ROOT`) first and records nothing when no word points into a heap (#432). Every other instruction runs in place through
   the `yavs_rt_step` callback (`TierHost::step`): calls, natives, foreign calls, reports, the
   other signal operations and waits; a frame a call pushed runs its compiled code directly from
   the callback and is popped by `TierHost::ret` (#336). Compiled code returns to the interpreter

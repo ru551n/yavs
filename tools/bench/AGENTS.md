@@ -136,4 +136,6 @@ python3 -I tools/bench/tiny.py target/release/yavs --ref sim1,sim2 --filter delt
 
 ## 6. Coordination
 
+- Real testbenches of real projects (about 30, diverse; baseline against the reference, A/B between binaries): `tools/realbench/AGENTS.md`. Use it besides these designs when tuning, so a choice is not fitted to them.
+
 - #387 (this harness). Slow spots it found are filed as `perf` issues; the baseline is in `STATUS.md` ("Performance").

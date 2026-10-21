@@ -28,6 +28,7 @@ calling and native conventions, and the Requests log are in `crates/yavs-ir/READ
 | `src/ieee.rs` | `ieee::parse`/`native_symbol`: which mangled `ieee` subprograms have a native (`yavs.ieee.<key>`); `yavs-lower` emits the call, `yavs-interp` `ieee.rs` implements it |
 | `src/opt.rs` | The optimiser, run per function by `Program::func` on first use (folding, sharing, forwarding, promotion of scalar frame slots to registers, dead definitions); `YAVS_NO_IROPT=1` turns it off; `opt::keep_variables` keeps variables in their slots for a debugger; `Program::export_optimized`/`load_optimized` carry the optimised copies between runs (stored with the lowered design, #479; `opt::copies_are_portable`) |
 | `src/opt/range.rs`, `src/opt/live.rs` | Interval analysis of integer registers (drops provable checks, decided compares and branches, threads branches to single-`CondBr` blocks) and liveness-based removal of dead definitions of multiply-defined registers, both for subprograms that cannot suspend |
+| `src/opt/memo.rs` | Instance-constant values of a process computed once per instance: flag test, slow copy that stores, fast copy that loads (`docs/decisions.md` "Instance-constant values of a process"); `YAVS_NO_MEMO=1` turns it off |
 | `src/opt/share.rs` | Register sharing (#478): liveness over the finished code, linear scan per register class; `renumber` calls it last |
 | `src/verify.rs` | One linear walk; `VerifyError` (an ICE of the producer) |
 | `src/dump.rs` | Text dump (`Program`'s `Display`, `dump_func`) |

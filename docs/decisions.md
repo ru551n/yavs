@@ -2930,3 +2930,24 @@ own entries, as before, and keeps its `ir` compact).
   (the interpreter's `fat_root` test); only then is the root recorded, so the precise roots (#422) are the same.
   Why a helper and not inline code: inline code for the test made compiling the testbench library 1.6 percent
   more expensive for no run time gain.
+## Instance-constant values of a process are computed once per instance (yavs-ir `opt/memo.rs`, #443)
+
+- A process function is shared by every instance of its design unit, so generics, generate
+  indices and constants are read from instance data at every activation. The optimiser's last
+  step for a `Process` (off for a debugger and with `YAVS_NO_MEMO`) splits a block of the process
+  loop at its first instance-constant instruction (pure, operands from constants, addresses,
+  loads from instance data and the constant pool, and what is computed from them, including
+  checks, checked arithmetic, positions) into a head testing a flag in the process frame, a slow
+  copy that is the original code and stores the values the rest needs and then sets the flag, and
+  a fast copy without those instructions that loads the values from frame slots. Reason: a
+  failing check must fail with the same message at the same time, which only the original code
+  (run until the first complete pass) guarantees; no speculative evaluation is needed, and no
+  elaboration-time specialisation, so the code stays shared (rule 4) and compile cost does not
+  grow with the instance count. Cost: 8 frame bytes per value plus one, an extra `Load` and
+  `CondBr` per activation of the block, roughly twice the code of the block from the first
+  instance-constant instruction on. Only blocks on a cycle, at most 12 values, and only when the
+  saving is at least the value count plus three instructions.
+- The slow copy renames the registers only it uses, so the fast copy keeps the register read and
+  definition counts the predecoder's fusions rely on.
+- `Program::single_suspend` (the kernel's process order, #252) reads the lowered function, not the
+  optimised copy, because the optimiser may copy a suspension point.

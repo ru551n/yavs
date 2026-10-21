@@ -207,7 +207,7 @@ impl Program {
     /// delta (#252, yavs-kernel DESIGN.md "Parallel evaluation").
     pub fn single_suspend(&self, f: FuncId) -> bool {
         // The lowered code: the optimiser may copy a suspension point (`opt/memo.rs`).
-        self.funcs.get(f).is_some_and(|f| {
+        self.funcs.get(f).map(Func::full).is_some_and(|f| {
             f.resume.len() == 1 && f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
         })
     }

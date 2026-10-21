@@ -26,6 +26,9 @@
 //! The flag and the slots are frame bytes behind the function's own frame, which start zero.
 //! Debuggers keep the old shape ([`super::keep_variables`]).
 
+// Loops index several parallel per-instruction vectors by position.
+#![allow(clippy::needless_range_loop)]
+
 use super::*;
 
 /// Slots (and loads in the fast copy) a block may use.
@@ -34,6 +37,9 @@ const MAX_ROOTS: usize = 12;
 const MIN_GAIN: usize = 3;
 /// Longest block the pass copies.
 const MAX_BLOCK: usize = 800;
+
+/// Instructions of a new block with their statements.
+type Part = Vec<(Inst, crate::StmtId)>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum K {
@@ -377,7 +383,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     }
     // New blocks are numbered from `nb`; every plan adds two (fast, slow).
     let mut next_block = nb as u32;
-    let mut new_blocks: Vec<(Vec<(Inst, crate::StmtId)>, Vec<(Inst, crate::StmtId)>)> = Vec::new();
+    let mut new_blocks: Vec<(Part, Part)> = Vec::new();
     let old_blocks: Vec<(u32, u32)> = f.blocks.values().iter().map(|b| (b.start, b.end)).collect();
     for (b, &(s, e)) in old_blocks.iter().enumerate() {
         let start = code.len() as u32;

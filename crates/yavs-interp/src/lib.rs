@@ -378,6 +378,30 @@ pub trait TierHost {
     /// The address of the object access value `h` designates, as `Inst::Deref` gives it;
     /// `None` where that instruction fails (null, deallocated). Frees and moves nothing.
     fn deref(&mut self, h: u64) -> Option<u64>;
+
+    /// `view` for a process in its root frame, with every field written but straight from the
+    /// machine's fields; `false` (nothing written) when it is not (use `view`).
+    fn view_again(&mut self, fr: &mut TierFrame) -> bool;
+
+    /// The `Drive` at `pc` as `signal` runs it, when it assigns one waveform element of at most
+    /// 64 logic elements to the single-range signal reference `target` (its two registers),
+    /// with the element's `delay` (femtoseconds) and `block` (the planes, element 0 in bit 0)
+    /// read from the waveform by the caller; any other case is `signal`'s.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_block(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        block: [u64; 4],
+        inertial: bool,
+    ) -> Stepped;
+
+    /// The `WaitOn` at `pc` of the single-range signal reference `sig` (its two registers)
+    /// and the `Suspend` after it, as `signal` runs them.
+    fn wait_suspend(&mut self, fr: &mut TierFrame, pc: u32, sig: [u64; 2]) -> Stepped;
 }
 
 /// A native frame of compiled code, recorded for [`TierHost::materialise`].

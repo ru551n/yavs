@@ -3190,3 +3190,29 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   slots and process records of the commit loop ahead; committing each process right after it ran
   (needs the shared view rebuilt per process); setting `timed_out` and the known edge when the process
   runs instead of when it is woken.
+
+## Compiled clocked RTL processes: direct kernel entry points (yavs-kernel, yavs-interp, yavs-llvm, #432, #339, #440, 2026-10-21)
+
+- **Vector drive:** compiled code reaches `Ctx::assign_blocks` (kernel round 8) through `TierHost::drive_block`
+  and `yavs_rt_drive`: the one-waveform-element `Drive` of a logic target of 1 to 64 elements, the time and the
+  first plane block read from the waveform by the caller; anything else is the generic `signal` step.
+- **`TierHost::wait_suspend`** runs a `WaitOn` and the `Suspend` after it from plain words (`yavs_rt_wait`); a
+  multi-part reference or a debugger goes the generic way. `TierHost::view_again` fills the frame view of a
+  one-frame process straight from the machine's fields. Both fall back to `signal`/`view`.
+- Compiled code now does inline: `Alloc`, `DopeLen`, loads and stores in the temporary area and the instance
+  data (a pointer in the view, bounds checked, no call), `SigRead` of 1 to 64 elements from the code bytes
+  (`Gen::sig_read_block`), and `Cat` of at most 64 logic elements whose piece lengths are known
+  (`Gen::cat_block`; same result as `Machine::cat_block`, a code beyond 'U' to '-' or unreachable memory steps
+  the whole instruction before any store). Registers defined once by a `Const` count as known constants
+  everywhere (`fixed_consts`, the interpreter's loop relies on the same), and the length word of a `SigVal`
+  is known with its `len`.
+- A process activation that ends in a suspension runs compiled code straight from `Machine::run_quick`
+  (`run_compiled`: no `exec_fast`/`run_ops` set-up, nothing returned by value) and then keeps its vectors
+  (`HOT_RESIDENT_REGS`, 256 registers) instead of swapping them with the thread's scratch.
+- Alias scope metadata (frame slots, temporary area, instance data, constants, code bytes are distinct
+  scopes) and `nounwind willreturn` on the runtime callbacks: no measurable change on the kernel designs
+  (every drive, wait and step stays a full clobber), kept because they are free.
+- `--tier=auto` compiles a process body (kind process, no loop, 64 to 600 IR instructions) at O0 as soon as
+  it was seen running for `Heat::threshold`, with the compute budget: its time goes to the callbacks, so O0
+  code runs as fast as O2 and compiles in about a tenth of the time. Decided by measurement (eager O0 and
+  O2 within 5% on the clocked designs); not a user ruling.

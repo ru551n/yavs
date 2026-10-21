@@ -1,0 +1,1 @@
+Compiled clocked processes on `--tier=auto` and `--tier=llvm` read, concatenate and drive logic vectors, wait and start without going through the interpreter's generic step, and `--tier=auto` compiles a hot process after a few milliseconds, so clocked vector designs run up to 1.5 times faster.

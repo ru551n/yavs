@@ -420,6 +420,8 @@ pub(crate) struct Machine {
 /// Registers of a process's root frame up to which it keeps its working vectors
 /// ([`Machine::resident`]): at most 384 bytes of registers per process.
 const RESIDENT_REGS: usize = 48;
+/// The same for a process whose compiled code suspends it (`run_compiled`).
+const HOT_RESIDENT_REGS: usize = 256;
 /// Capacity of the temporary area above which a resident process gives its vectors to the
 /// scratch.
 const RESIDENT_TEMP: usize = 1024;
@@ -1068,9 +1070,15 @@ impl Machine {
         let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
         let r = match rt.tier.get() {
             Some(tier) if rt.native.any.load(Ordering::Acquire) => {
+                let slot = crate::slot();
+                if let Some(q) = self.run_compiled(&rt, &**tier, slot, ctx) {
+                    // Nothing interpreted on this thread until the next run.
+                    slot.store(0, Ordering::Relaxed);
+                    self.rt_run = Some(rt);
+                    return q;
+                }
                 let r = self.exec_fast::<true>(&rt, Some(&**tier), ctx, 0);
-                // Nothing interpreted on this thread until the next run.
-                crate::slot().store(0, Ordering::Relaxed);
+                slot.store(0, Ordering::Relaxed);
                 r
             }
             tier => {
@@ -1088,6 +1096,66 @@ impl Machine {
             Err(e) => {
                 self.quick_fault = Some(e);
                 Quick::Fault
+            }
+        }
+    }
+
+    /// The activation of a process whose root function has compiled code, entered where it
+    /// suspended without `exec_fast`'s and `run_ops`' set-up (nothing returned by value
+    /// but the outcome: a copy of a result the callee stored in pieces stalls). `Some` when
+    /// the compiled code suspends the process or a fault ends the run; `None` when the
+    /// interpreter must go on (the compiled code left frames or an instruction to it:
+    /// `exec_fast` continues from the frames' pcs, as after `tier_go`).
+    #[inline]
+    fn run_compiled(
+        &mut self,
+        rt: &Runtime,
+        tier: &dyn crate::Tier,
+        slot: &std::sync::atomic::AtomicU64,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> Option<Quick> {
+        if self.frames.len() != 1 || self.pause.is_some() {
+            return None;
+        }
+        let func = self.frames[0].func;
+        // Compiled code ready (state 1); a function still to be compiled (2) is `run_ops`'.
+        if rt.native.func.get(func.0 as usize)?.load(Ordering::Acquire) != 1 {
+            return None;
+        }
+        let f = rt.prog.func(func)?;
+        slot.store(
+            u64::from(rt.id) << 32 | u64::from(func.0),
+            Ordering::Relaxed,
+        );
+        let pc = self.frames[0].pc;
+        let mut host = Host {
+            m: self,
+            rt,
+            prog: &rt.prog,
+            f,
+            up: Vec::new(),
+            ctx,
+            fault: None,
+        };
+        let ran = tier.run(func, pc, &mut host);
+        let fault = host.fault;
+        if let Some(e) = fault {
+            self.quick_fault = Some(e);
+            return Some(Quick::Fault);
+        }
+        match ran {
+            Some(crate::TIER_SUSPEND) => {
+                self.top().pc += 1;
+                // A process that suspends compiled over and over keeps its vectors.
+                if !self.resident && self.regs.v.len() <= HOT_RESIDENT_REGS {
+                    self.resident = true;
+                }
+                Some(Quick::Suspended)
+            }
+            Some(crate::TIER_UNWIND) | None => None,
+            Some(p) => {
+                self.top().pc = p;
+                None
             }
         }
     }
@@ -1880,8 +1948,13 @@ impl Machine {
     }
 
     pub(crate) fn sigref(&self, r: Reg) -> R<(SigRef, yavs_kernel::SignalType)> {
-        let v = self.r(r);
-        let len = self.r(Reg(r.0 + 1)) as u32;
+        self.sigref_words(self.r(r), self.r(Reg(r.0 + 1)))
+    }
+
+    /// `sigref` of a single-range reference given as its two words.
+    #[inline(always)]
+    pub(crate) fn sigref_words(&self, v: u64, len: u64) -> R<(SigRef, yavs_kernel::SignalType)> {
+        let len = len as u32;
         let (base, off) = ((v >> 32) as u32, v as u32);
         let s = self
             .inst
@@ -6496,6 +6569,45 @@ impl crate::TierHost for Host<'_, '_, '_> {
         }
     }
 
+    fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {
+        let m = &mut *self.m;
+        let Some(c) = self.ctx.as_deref() else {
+            return false;
+        };
+        if m.frames.len() != 1 || m.tier_sigs.len() != m.inst.sigs.len() {
+            return false;
+        }
+        let fr = &m.frames[0];
+        let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);
+        tf.slots = m.root.as_mut_ptr().wrapping_add(fr.sbase as usize);
+        tf.slots_len = u64::from(slen);
+        tf.frame = 0;
+        tf.frame_hi = u64::from(FRAME) << 29;
+        tf.up = [u64::MAX; 2];
+        tf.inst = m.inst.data.as_ptr();
+        tf.inst_len = m.inst.data.len() as u64;
+        tf.nsigs = m.inst.sigs.len() as u64;
+        tf.sigtab = m.tier_sigs.as_ptr();
+        tf.sigtab_len = m.tier_sigs.len() as u64;
+        tf.temp = m.temp.as_mut_ptr();
+        tf.temp_len = m.temp.len() as u64;
+        tf.temp_cap = m.temp.capacity() as u64;
+        tf.temp_base = u64::from(temp_base);
+        tf.temp_roots = m.troots.len() as u64;
+        tf.regs = m.regs.v.as_mut_ptr().wrapping_add(rbase);
+        tf.nregs = (m.regs.v.len() - rbase) as u64;
+        tf.stack = m.regs.v.as_ptr();
+        match c.known_edge() {
+            Some((s, e, up)) => {
+                tf.known_sig = u64::from(s.0);
+                tf.known_elem = u64::from(e);
+                tf.known_up = u64::from(up);
+            }
+            None => tf.known_sig = u64::MAX,
+        }
+        true
+    }
+
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
         use crate::Stepped;
         let (m, f) = (&mut *self.m, self.f);
@@ -6598,6 +6710,82 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn temp(&mut self) -> &mut Vec<u8> {
         &mut self.m.temp
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drive_block(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        at: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        block: [u64; 4],
+        inertial: bool,
+    ) -> crate::Stepped {
+        let m = &mut *self.m;
+        let r = (|| -> R<bool> {
+            if target[0] >> 32 == MULTI {
+                return Ok(false);
+            }
+            let d = m.driver(driver)?;
+            let (sr, ty) = m.sigref_words(target[0], target[1])?;
+            let n = sr.range.map_or(0, |r| r.len);
+            if ty.elem != Elem::Logic || n == 0 || n > 64 {
+                return Ok(false);
+            }
+            let t = to_time(delay)?;
+            let mode = if inertial {
+                DelayMode::INERTIAL
+            } else {
+                DelayMode::Transport
+            };
+            let Some(c) = self.ctx.as_deref_mut() else {
+                return rt_err("signal or wait operation during elaboration");
+            };
+            let mask = yavs_logic::wide::nmask(n as usize);
+            let mut bytes = [0u8; 32];
+            for (o, w) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(block) {
+                *o = (w & mask).to_le_bytes();
+            }
+            c.assign_blocks(d.id, sr.range, t, &bytes, mode)?;
+            Ok(true)
+        })();
+        match r {
+            Ok(true) => crate::Stepped::Next,
+            Ok(false) => self.signal(tf, at, 0),
+            Err(e) => {
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
+    }
+
+    fn wait_suspend(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        at: u32,
+        sig: [u64; 2],
+    ) -> crate::Stepped {
+        let m = &mut *self.m;
+        if sig[0] >> 32 == MULTI || m.dbg.is_some() {
+            return self.signal(tf, at, 0);
+        }
+        let r = (|| -> R<()> {
+            let (sr, _) = m.sigref_words(sig[0], sig[1])?;
+            Machine::wait_elem(sr, self.ctx)?;
+            m.suspend(self.prog, self.f, self.ctx)
+        })();
+        match r {
+            Ok(()) => {
+                m.top().pc = at + 1;
+                crate::Stepped::Suspend
+            }
+            Err(e) => {
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
     }
 
     fn signal(&mut self, tf: &mut crate::TierFrame, at: u32, edge: u32) -> crate::Stepped {

@@ -207,6 +207,24 @@ fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     stepped * 20 <= total
 }
 
+/// Whether `f` is the body of a process that runs once per activation (a clocked or
+/// combinational process: no loop of its own, at least `SHORT` IR instructions). Its time goes
+/// to the signal and kernel operations compiled code reaches directly, so its first-level
+/// code at O0 runs as fast as O2 and compiles in a tenth of the time: it is compiled as soon
+/// as it has run for a few milliseconds, within the budget of a compute loop.
+fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
+    f.kind == FuncKind::Process
+        && f.code.len() >= SHORT
+        && f.code.len() <= RTL_MAX
+        && !loops(prog, f)
+}
+
+/// The largest process `rtl` takes.
+const RTL_MAX: usize = 600;
+
+/// Microseconds of compile time per IR instruction at O0.
+const US_PER_INSTR_O0: f64 = 30.0;
+
 /// A compute loop gets this many times the budget: it runs several times faster compiled (the
 /// interpreter's time goes to dispatch), so a long-running one repays a compile of a size the
 /// plain budget would only allow after minutes, and the compile is on another thread (#432).
@@ -303,6 +321,8 @@ struct Worker {
     /// nothing.
     jit: Option<Jit>,
     jit2: Option<Jit>,
+    /// For `rtl` processes, made at O0.
+    jit0: Option<Jit>,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
     /// Microseconds each function was seen interpreted, and running compiled.
@@ -355,7 +375,12 @@ impl Worker {
 
     /// The microseconds of compile time to expect for `f`.
     fn cost(&self, f: &yavs_ir::Func) -> u64 {
-        (self.us_per_instr * f.code.len() as f64) as u64
+        let per = if rtl(&self.prog, f) {
+            US_PER_INSTR_O0
+        } else {
+            self.us_per_instr
+        };
+        (per * f.code.len() as f64) as u64
     }
 
     /// The time `id` must be seen at its level before it is compiled (again).
@@ -367,7 +392,7 @@ impl Worker {
             return self.heat.o2_threshold(f);
         }
         let at = self.heat.threshold(f);
-        if self.heat.budget == 0 {
+        if self.heat.budget == 0 || rtl(&self.prog, f) {
             at
         } else {
             at.max(PAYBACK * self.cost(f))
@@ -423,7 +448,10 @@ impl Worker {
             .filter_map(|&i| self.prog.func(i))
             .map(|f| self.cost(f))
             .sum();
-        let compute = self.prog.func(id).is_some_and(|f| compute(&self.prog, f));
+        let compute = self
+            .prog
+            .func(id)
+            .is_some_and(|f| compute(&self.prog, f) || rtl(&self.prog, f));
         if !within_budget(self.heat.budget, compute, self.spent, cost, self.total) {
             return None;
         }
@@ -445,8 +473,21 @@ impl Worker {
         else {
             return false;
         };
-        let level = if o2 { OptLevel::O2 } else { self.opt };
-        let j = if o2 { &mut self.jit2 } else { &mut self.jit };
+        let process = !o2 && rtl(&self.prog, f);
+        let level = if o2 {
+            OptLevel::O2
+        } else if process {
+            OptLevel::O0
+        } else {
+            self.opt
+        };
+        let j = if o2 {
+            &mut self.jit2
+        } else if process {
+            &mut self.jit0
+        } else {
+            &mut self.jit
+        };
         let t0 = std::time::Instant::now();
         let short = (sampled && !o2).then(|| too_short(&self.prog, f)).flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
@@ -527,6 +568,7 @@ impl AutoTier {
             max_size,
             jit: None,
             jit2: None,
+            jit0: None,
             total: 0,
             spent: 0,
             us_per_instr: US_PER_INSTR,
@@ -612,7 +654,7 @@ impl AutoTier {
                     }
                 }
                 *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
-                    w.jit.into_iter().chain(w.jit2).collect();
+                    w.jit.into_iter().chain(w.jit2).chain(w.jit0).collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;

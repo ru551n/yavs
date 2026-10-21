@@ -2182,6 +2182,30 @@ path, numeric_std add/sub/compare/shift/rotate/integer conversion with X propaga
 and property tests, criterion benchmarks. Default layout is bit-planes; see
 `crates/yavs-logic/LAYOUT.md`; the user confirmed bit-planes everywhere, signals included (docs/plan.md, 2026-10-18).
 
+## llvm: compiled clocked RTL, 2026-10-21 (#432, #339, #440)
+
+Compiled process bodies now read vectors from the code bytes, concatenate, allocate and look up descriptors inline,
+drive a vector through `Ctx::assign_block` and wait through one callback, and start straight from `run_quick`
+(decisions.md "Compiled clocked RTL processes"). `--tier=auto` compiles a hot process body at O0 after a few
+milliseconds. One performance core pinned (`taskset -c 2,3`), release build with the `llvm` feature, best of 3,
+instructions and cycles (G) of the simulation (start-up subtracted); "main" is the interpreter before the change.
+
+| Design | main interp instr / cyc | `--tier=auto` instr / cyc | `--tier=llvm` instr / cyc | reference simulator (jit) instr / cyc |
+|---|---:|---:|---:|---:|
+| ff | 21.4 / 4.46 | 19.9 / 4.27 | 17.0 / 4.06 | 7.45 / 1.86 |
+| lfsr | 14.8 / 3.16 | 10.4 / 2.15 | 8.2 / 1.77 | 2.73 / 0.55 |
+| chain | 6.25 / 1.13 | 6.40 / 1.21 | 5.96 / 1.16 | 1.90 / 0.53 |
+| fan | 19.5 / 5.22 | 20.9 / 5.31 | 18.4 / 5.81 | 16.4 / 3.60 |
+| bus | 5.60 / 1.14 | 5.43 / 1.12 | 4.82 / 0.95 | 8.24 / 2.44 |
+| ram | 1.05 / 0.25 | 1.19 / 0.31 | 0.91 / 0.22 | 0.64 / 0.23 |
+| rtl (2a) | 4.61 / 0.88 | 4.39 / 0.86 | 3.47 / 0.69 | 0.96 / 0.28 |
+| rtl2 (2b) | 8.29 / 1.75 | 6.53 / 1.36 | 5.51 / 1.18 | 1.71 / 0.39 |
+
+`lfsr` is 1.5x and `rtl2` 1.3x faster under `auto` (1.8x and 1.5x eager); `ff`, `rtl`, `bus` gain a few percent;
+`chain`, `fan` and `ram` are level. What is left on `fan`, `ff` and `chain` is the cost of entering compiled code
+for processes that touch a handful of cache lines each (4000 processes: the view, the signal table and the
+registers miss the cache) and the kernel (35 to 50% of the instructions).
+
 ## llvm (`crates/yavs-llvm`)
 
 LLVM tier (M6), behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`; `cargo build

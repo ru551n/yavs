@@ -626,11 +626,21 @@ to the copy; the optimiser reads pool bytes through `ConstData::read`. Tests: `c
 Compiled code (#505, `docs/decisions.md` "Compiled code in the compilation cache"): the object file of every
 module the LLVM tier compiles is kept in `<work dir>/yavs-cache/obj/`, keyed by the module's LLVM IR, the level,
 the target and the build, and linked again by later runs (`yavs-llvm` `objcache.rs`). Measured with a release build
-pinned to P-core 1 (MEASUREMENTS), output byte-identical in every row. Tests: `crates/yavs-llvm/tests/objcache.rs`
+pinned to P-core 1, wall seconds, base (the build before, no cache) / cold (compiled and stored) / warm (linked),
+output byte-identical in every row: `--tier=llvm` `uvvm_util_rand_tb` 296 / 272 / 3.5 (the 17 MB object of the whole
+program), `uvvm_sb_slv_tb` 231 / 203 / 1.9, `compute_h2h` 0.28 / 0.28 / 0.23. Writing the object costs nothing
+measurable; emitting it ourselves was even faster than handing ORC the IR. Test cases of one testbench share the
+object once the design's `ir` entry has converged (its optimised copies change the program the first runs see):
+`rand_tb` case 2 compiled, case 3 linked. `--tier=auto` compiles few functions, so warm and cold differ little except
+for compute loops, which are linked as soon as they are hot (`compute_h2h` warm 0.20 against 0.26 s without the
+probe); its per-function modules are shared between testbenches whose library comes from one `lib` entry (the second
+random testbench of the utility library linked the modules the first stored). Tests: `crates/yavs-llvm/tests/objcache.rs`
 (cold, warm, damaged entry, the `--tier=auto` probe, unwritable directory), `crates/yavs/tests/cache.rs`
 (`compiled_code_is_cached`, `parallel_runs_share_compiled_code`, `read_only_library_gets_no_compiled_code`),
-`yavs-cache` (`objects_have_limits_of_their_own_and_are_cleaned_with_the_library`); the difftest corpus
-(DIFFTEST).
+`yavs-cache` (`objects_have_limits_of_their_own_and_are_cleaned_with_the_library`); the difftest corpus at 1 and 4
+threads on the interpreter (422/422), `--tier=llvm` and `--tier=auto` cold (all pass) and warm (run twice in one work
+directory: all pass but `textio/file_append_2019`, which appends to its own file); the second verification
+library's `.pro` regression with `--tier=auto` cold and warm (314/314 each, `-j 2` into shared libraries).
 
 ### Per-run overhead (#426)
 

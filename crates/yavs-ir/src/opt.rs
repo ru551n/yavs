@@ -883,6 +883,11 @@ impl<'a> Opt<'a> {
     }
 
     fn run(&mut self) {
+        // Without markers a process variable stored in one statement is known in the next
+        // (a marker forgets memory facts for a debugger).
+        if self.f.kind == FuncKind::Process {
+            self.drop_statements();
+        }
         self.analyse();
         if self.frame_objects() {
             self.reanalyse();
@@ -1164,9 +1169,11 @@ impl<'a> Opt<'a> {
     /// markers).
     fn drop_statements(&mut self) {
         if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
-            || self.f.body.is_some()
-            || !self.nosusp
-            || !matches!(self.f.kind, FuncKind::Function | FuncKind::Procedure)
+            || !(self.nosusp && self.f.body.is_none() || self.f.kind == FuncKind::Process)
+            || !matches!(
+                self.f.kind,
+                FuncKind::Function | FuncKind::Procedure | FuncKind::Process
+            )
         {
             return;
         }

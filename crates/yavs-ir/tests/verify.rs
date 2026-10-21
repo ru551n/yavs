@@ -210,11 +210,10 @@ fn flags_and_dump() {
 b0:
      0 s1    Stmt
      1 s1    Call { func: f0, args: #0, dst: None } []
-     2 s2    Stmt
-     3 s2    AddrOf { dst: r0, space: Shared, off: 0 }
-     4 s2    Const { dst: r1, v: 1 }
-     5 s2    Store { addr: r0, src: r1, w: B8 }
-     6 s2    Br { to: b0 }
+     2 s2    AddrOf { dst: r0, space: Shared, off: 0 }
+     3 s2    Const { dst: r1, v: 1 }
+     4 s2    Store { addr: r0, src: r1, w: B8 }
+     5 s2    Br { to: b0 }
 "
     );
 }

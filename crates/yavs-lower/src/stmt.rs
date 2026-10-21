@@ -2446,14 +2446,21 @@ impl Fx<'_, '_> {
                 let name = db.decls[*param].name.to_string();
                 let off = self.fb.local(&name, tid, 8, 8);
                 let roff = self.fb.slot(8, 8);
-                let doff = self.fb.slot(8, 8);
                 let p = self.addr(Space::Frame(self.depth), off);
                 self.store(p, r.left, Width::B8);
                 let ra = self.addr(Space::Frame(self.depth), roff);
                 self.store(ra, r.right, Width::B8);
-                let dir = self.dir_reg(r.dir);
-                let da = self.addr(Space::Frame(self.depth), doff);
-                self.store(da, dir, Width::B8);
+                // The direction is kept in a slot only when it is known at run time; `1 to n`
+                // steps by a constant.
+                let doff = if matches!(r.dir, Dr::Dyn(_)) {
+                    let doff = self.fb.slot(8, 8);
+                    let dir = self.dir_reg(r.dir);
+                    let da = self.addr(Space::Frame(self.depth), doff);
+                    self.store(da, dir, Width::B8);
+                    Some(doff)
+                } else {
+                    None
+                };
                 self.cx.objs.insert(
                     *param,
                     Obj::Scalar {
@@ -2493,13 +2500,21 @@ impl Fx<'_, '_> {
                 let last = self.cmp(CmpOp::Eq, i, right);
                 self.branch(last, exit, inc);
                 self.at(inc);
-                let da = self.addr(Space::Frame(self.depth), doff);
-                let d = self.load(da, Width::B8, RegTy::I64);
-                let z = self.int(0);
-                let up = self.cmp(CmpOp::Eq, d, z);
-                let one = self.int(1);
-                let m1 = self.int(-1);
-                let step = self.select(up, one, m1, RegTy::I64);
+                let step = if let Some(doff) = doff {
+                    let da = self.addr(Space::Frame(self.depth), doff);
+                    let d = self.load(da, Width::B8, RegTy::I64);
+                    let z = self.int(0);
+                    let up = self.cmp(CmpOp::Eq, d, z);
+                    let one = self.int(1);
+                    let m1 = self.int(-1);
+                    self.select(up, one, m1, RegTy::I64)
+                } else {
+                    self.int(if matches!(r.dir, Dr::Static(Direction::To)) {
+                        1
+                    } else {
+                        -1
+                    })
+                };
                 let n = self.bin(IntOp::Add, i, step);
                 let p = self.addr(Space::Frame(self.depth), off);
                 self.store(p, n, Width::B8);

@@ -3893,3 +3893,10 @@ us per batch). Ideal-schedule ceilings at 4 threads: 2.1x to 2.7x for the large-
 rows. Verdict: not worth building on as a general speed-up; the cheap first step is a work-based inline/pooled
 decision, then a cheaper pooled batch. The host's core 0 runs single-thread code about 50 percent slower than cores
 1 to 7: do not pin a timed run to it.
+
+Follow-up analysis and design (2026-10-21): `docs/design/parallel-kernel.md`. The loss at N>1 is mostly the kernel
+thread walking every slot after a pooled batch (live-output scan, commit without the early commit); a prototype
+(branch `spike/mt-chunks`) with a work-based inline/pooled choice and a run phase split into pieces of the slot
+array, with the early commit in the worker, removes every regression and reaches 2.47x on rtl_fan and 1.67x on
+rtl_ff at 4 threads. Testbench-style designs cannot gain inside a delta even with perfect conflict handling (ceilings
+1.0x to 1.24x at 4 threads).

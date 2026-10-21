@@ -3168,6 +3168,46 @@ process right after it ran; setting `timed_out` and the known edge when the proc
 bound: per clock cycle 47 000 instructions, nearly all in the interpreter (`to_integer`, the 32-bit adder in `ieee::small`, slice
 reads); the kernel part is `update_effective` and `finish_signal` of a 32-element range of a 524 288-element signal.
 
+### Kernel round 9: fewer stages per activation and per delta (#440, 2026-10-21)
+
+`perf stat` (`cpu_core/`, min cycles of 5 runs pinned to performance core 2, host load average 7 to 8, so wall time is only
+indicative), interpreter, `main` at `7d17d344` against the same plus this round; sim1 is the reference simulator with its JIT on the
+same core (`-e --jit`, then `-r`). Peak RSS is unchanged in every row (within 1 MiB). Wall-time ratios from
+`tools/bench/run.py --ref sim1 --tiers interp,auto --instructions --cores 2,3 --runs 5` are in brackets (interp / auto, yavs over sim1).
+
+| Design | instr. G before / after | cycles G before / after | sim1 cycles G | cycles after / sim1 (was) |
+|---|---:|---:|---:|---:|
+| ff: 4096 registers x 2000 | 17.03 / 16.05 (-5.8%) | 3.88 / 3.69 (-4.7%) | 1.91 | 1.93x (2.02x) [wall 1.57 / 1.38, was 1.66 / 1.48] |
+| lfsr: 512 x 16-bit x 5000 | 8.76 / 8.54 (-2.5%) | 2.01 / 1.91 (-4.7%) | 0.54 | 3.5x (3.7x) [3.5 / 2.9, was 3.3 / 2.7] |
+| 2b lfsr64: 64 x 16-bit x 20000 | 4.66 / 4.64 (-0.4%) | 0.98 / 0.95 (-2.4%) | 0.34 | 2.8x (2.8x) [2.8 / 2.8, was 2.4 / 2.5] |
+| chain: 1000 stages x 2000 | 5.33 / 4.96 (-6.8%) | 0.99 / 0.92 (-6.9%) | 0.52 | 1.8x (1.9x) [1.7 / 1.7, was 1.7 / 1.7] |
+| fan: 4000 x 5000 | 18.27 / 17.21 (-5.8%) | 5.08 / 4.47 (-12%) | 3.64 | 1.23x (1.40x) [1.04 / 1.10, was 1.22 / 1.23] |
+
+What changed (`docs/decisions.md` "Kernel round 9"): drivers of one signal due in a delta are applied in place from the due list (no
+job list, sort or second pass); a resident process that waited again and only scheduled drivers is committed right after it ran, while
+its slot is still in the cache (the commit loop of `fan` read every slot a second time from the L3: -12% cycles at equal
+instructions); the resumption flags (`timed_out`, known edge) are set when the process runs, not in the wake; a falling clock edge
+whose waiters are all held back by their trigger touches no wake list; the processes with several suspension points wake into their
+own list and the rest need no order scan; the interrupt flag is a plain load per delta; a changed element with one resident waiter
+is woken without a list scan; the unchanged-assignment test of a scalar asks the signal's code array before the driver slot.
+Wall ratios on this loaded host move by +-10% from run to run; `lfsr` and `lfsr64` did not move in wall time. Determinism: the same
+output at 1 thread, 4 threads and 4 shuffled threads (difftest 420 of 420 on the interpreter, `--tier=llvm`, `--tier=auto` and
+`--tier=auto --tier-heat=1,0,0`, and 420 of 420 on a `gc-stress` build with the interpreter and `--tier=llvm`).
+
+Where the cycles are now: the kernel is still ~800 instructions per `ff` activation (wake and commit ~250, apply and update ~250, the
+rest in a dozen functions of 20 to 60 instructions) and ~1300 per `lfsr` activation (assign_planes_fast ~250, update_effective ~210 for
+16 elements, read_into ~180); `chain` is ~1250 per delta (apply_driver ~190, take_woken ~150, cycle ~160, run_batch ~130, next_time and
+live ~100). sim1 runs these designs in 33 to 49% of our instructions (all but `fan`, where it is level) at a similar IPC (4 to 5), so what is left is a
+constant factor spread over the stages, not one hot spot; the process side (compiled entry, drive and wait callbacks: about a third of an `ff` activation)
+is the larger remaining lever. Tried and dropped: lifting `FUSE_MAX` for unwatched signals (+9% instructions on `ff`), asking the
+signal first in the vector unchanged test (+1% on `lfsr`), `as_mut_slice` in `Buf::put_code` (0), `#[inline]` on `Waveform::idle` (0).
+
+Checks at the commit: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace` (790 passed) and
+`cargo test -p yavs-llvm --features llvm` (28); `external.py --oracle --check` on both lists (857 and 393) on the interpreter and
+`--tier=auto`; the external runner's own suites (check, com, data_types, dictionary, logging, path, random, run, string_ops,
+verification_components, and record_dict under 2019) all pass; the `.pro` regression 314 of 314 under 2008 and 2019 on both tiers; the
+verification library suite 102 pass, 9 fail, 26 skip as before on both tiers.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

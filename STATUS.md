@@ -4352,6 +4352,6 @@ yavs --features llvm` and the `gc-stress` unit tests of the crate; difftest 426/
 `--tier=auto` and `--tier=auto --tier-heat=1,0,0`, at 1 and 4 threads, cold and warm cache; `external.py --oracle
 --check` under `--tier=auto`: sim1 857/857, sim2 393/393; `tools/suites/pro.py` under `--tier=auto` 314/314 pass;
 `tools/suites/uvvm.py` 102 pass, 9 fail, 26 skip under both `--tier=auto` and the interpreter, the same runs; the h2h
-designs and five internal benchmarks print the same under interp, llvm, auto and auto with eager heat.
+designs and four internal benchmarks print the same under interp, llvm, auto and auto with eager heat.
 
 Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI; wall times on an idle host.

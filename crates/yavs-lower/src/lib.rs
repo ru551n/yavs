@@ -113,6 +113,10 @@ pub struct InstConst {
     /// thunk creates its object, so it must run once per instance (LRM 6.4.2.4); one of a
     /// block or generate runs once per declaring region (yavs-elab, #249).
     pub instance_level: bool,
+    /// The entity, architecture, block or generate whose elaboration creates the constant: its
+    /// thunk runs only for the elaborated regions inside it (a generate that was not
+    /// elaborated has none, #495); `None` runs it everywhere.
+    pub scope: Option<ScopeId>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -427,6 +431,21 @@ pub(crate) struct Cx {
     /// (`Lowerer::context_dependent`).
     #[serde(skip)]
     pub context_funcs: Vec<FuncId>,
+    /// Elaboration-time calls: constants and generics of the enclosing regions are read from
+    /// slots of instance data the elaborator fills ([`Lowerer::capture_free_objects`]).
+    #[serde(skip)]
+    pub capture_free: bool,
+    #[serde(skip)]
+    pub free_objs: Vec<FreeObj>,
+}
+
+/// A constant or generic of an enclosing region that a function called during elaboration
+/// reads: the elaborator writes its value to the instance data slot at `off`.
+#[derive(Clone, Debug)]
+pub struct FreeObj {
+    pub decl: DeclId,
+    pub ty: TyId,
+    pub off: u32,
 }
 
 /// One kernel signal of a record signal.
@@ -623,10 +642,24 @@ impl<'a> Lowerer<'a> {
                 ext_unbound: None,
                 ext_early: false,
                 context_funcs: Vec::new(),
+                capture_free: false,
+                free_objs: Vec::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),
         }
+    }
+
+    /// Let the functions lowered next read constants and generics declared in the regions of
+    /// an instance (the elaboration-time call of a function declared in a block, say): each
+    /// gets a slot of instance data, listed by [`Lowerer::free_objects`] for the caller to fill.
+    pub fn capture_free_objects(&mut self) {
+        self.cx.capture_free = true;
+    }
+
+    /// The captured objects and the bytes of instance data they need.
+    pub fn free_objects(&self) -> (Vec<FreeObj>, u32) {
+        (self.cx.free_objs.clone(), self.cx.inst_size)
     }
 
     /// Lower an architecture: its signals, instance constants and processes.

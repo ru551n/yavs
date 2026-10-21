@@ -81,6 +81,7 @@ pub(crate) fn run(
     s: &Sig,
     args: &[Val],
     shared: Option<&Arc<Mutex<SharedState>>>,
+    inst: Option<InstData>,
 ) -> Result<Val, Fail> {
     let prog = rt.prog.clone();
     let mut cvs = Vec::with_capacity(args.len());
@@ -104,7 +105,7 @@ pub(crate) fn run(
     let r = yavs_interp::call_values_shared(
         rt.clone(),
         s.func,
-        Arc::new(InstData::default()),
+        Arc::new(inst.unwrap_or_default()),
         &cvs,
         composite.then_some(ret),
         shared,
@@ -345,7 +346,7 @@ fn replay_calls(
         let s = sigs
             .get(&c.func)
             .ok_or_else(|| format!("internal error: `{name}` is not lowered for the replay"))?;
-        match run(rt, s, &c.args, Some(shared)) {
+        match run(rt, s, &c.args, Some(shared), None) {
             Ok(v) if v == c.result => {}
             Ok(_) => {
                 return Err(format!(
@@ -548,7 +549,7 @@ impl Session {
             .sigs
             .get(&d)
             .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
-        let r = run(&live.rt, s, args, Some(&live.shared));
+        let r = run(&live.rt, s, args, Some(&live.shared), None);
         self.dirty |= r.is_err();
         r
     }

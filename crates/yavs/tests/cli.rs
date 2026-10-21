@@ -968,6 +968,90 @@ fn run_exit_after_clear_vhdl_assert() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// An explicit `--exit-severity=failure` makes only failure reports count for the exit status
+/// (#498); without the option an `error` report still fails the run.
+#[test]
+fn run_explicit_exit_severity() {
+    let tmp = tempdir("exitsev");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity t is end;\n\
+         architecture a of t is begin process begin report \"bad\" severity error; wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let o = run(&["analyze", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for (args, code) in [
+        (&["run", &lib, "t"][..], 1),
+        (&["run", &lib, "--exit-severity=failure", "t"][..], 0),
+        (&["run", &lib, "--exit-severity=error", "t"][..], 1),
+    ] {
+        let o = run(args);
+        assert_eq!(o.status.code(), Some(code), "{args:?}");
+        assert!(String::from_utf8_lossy(&o.stdout).contains("** Error: 0fs+0: bad"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A function called during elaboration reads a generic that has a default and an override
+/// (#494, #499); an empty override is an error, not the default.
+#[test]
+fn run_function_reads_generic_override() {
+    let tmp = tempdir("genfn");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity t is generic (flag : boolean := false); end;\n\
+         architecture a of t is\n\
+           function pick return natural is begin if flag then return 7; end if; return 3; end;\n\
+           constant c : natural := pick;\n\
+           signal s : bit_vector(1 to c);\n\
+         begin process begin report \"len=\" & integer'image(s'length); wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let o = run(&["analyze", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for (g, len) in [
+        ("", "len=3"),
+        ("-gflag=true", "len=7"),
+        ("-gflag=false", "len=3"),
+    ] {
+        let args: Vec<&str> = ["run", &lib, "t"]
+            .into_iter()
+            .chain((!g.is_empty()).then_some(g))
+            .collect();
+        let o = run(&args);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(String::from_utf8_lossy(&o.stdout).contains(len), "{g}");
+    }
+    let o = run(&["run", &lib, "t", "-gflag="]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("error[E2104]"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// `--resolution` sets `std.env.resolution_limit`; the default is one femtosecond, an unknown
 /// unit is a usage error (#253).
 #[test]

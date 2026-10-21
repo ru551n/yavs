@@ -476,6 +476,24 @@ impl<'a> Fx<'a, '_> {
                     let c = self.deferred_completion(d).ok_or(Failed)?;
                     self.read_obj(c, span)
                 }
+                // A constant or generic of an enclosing region, read by a function called
+                // during elaboration: a slot of instance data the elaborator fills.
+                DeclKind::Object(o)
+                    if self.cx.capture_free
+                        && o.class == yavs_sem::decl::ObjClass::Constant
+                        && (o.role == yavs_sem::decl::ObjRole::Generic
+                            || o.default.is_none_or(|e| db.exprs[e].value.is_none()))
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Entity
+                                | yavs_sem::scope::ScopeKind::Architecture
+                                | yavs_sem::scope::ScopeKind::Block
+                                | yavs_sem::scope::ScopeKind::Generate
+                        ) =>
+                {
+                    self.capture_free(d, o.subtype, span)?;
+                    self.read_obj(d, span)
+                }
                 // A constant without run-time data (locally static) is evaluated from its
                 // folded initialiser.
                 DeclKind::Object(o)
@@ -507,6 +525,34 @@ impl<'a> Fx<'a, '_> {
                 )),
             },
         }
+    }
+
+    /// Give constant `d` of subtype `st` a slot of instance data (`Cx::capture_free`).
+    fn capture_free(&mut self, d: DeclId, st: SubtypeId, span: Span) -> R<()> {
+        let t = self.ty(self.db.base(st), span)?;
+        let w = match self.fb.program().types().get(t) {
+            Some(x) if x.scalar_size().is_some() => Some(ty::width(x)),
+            _ => None,
+        };
+        let off = self.cx.inst_alloc(if w.is_some() { 8 } else { 16 });
+        let obj = match w {
+            Some(w) => Obj::Scalar {
+                space: Space::Inst,
+                off,
+                w,
+            },
+            None => Obj::InstArray {
+                space: Space::Inst,
+                off,
+            },
+        };
+        self.cx.objs.insert(d, obj);
+        self.cx.free_objs.push(crate::FreeObj {
+            decl: d,
+            ty: t,
+            off,
+        });
+        Ok(())
     }
 
     /// The full declaration in the package body of deferred constant `d`.

@@ -1447,6 +1447,18 @@ impl Elaborated {
         }
     }
 
+    /// Whether the declarative region `r` is one of the regions of `i` or of a scope around it.
+    fn declared_around(&self, i: ScopeId, r: yavs_sem::ScopeId) -> bool {
+        let mut cur = Some(i);
+        while let Some(s) = cur {
+            if self.regions.get(&s).is_some_and(|v| v.contains(&r)) {
+                return true;
+            }
+            cur = self.hier.scope(s).parent;
+        }
+        false
+    }
+
     /// Instance data of region `i`: constants from their thunks, the signal table.
     #[allow(clippy::too_many_arguments)]
     fn inst_data(
@@ -1578,6 +1590,12 @@ impl Elaborated {
                 let Some(r) = cur else { continue };
                 Some((r, c.decl))
             } else {
+                // A constant of a generate or block that was not elaborated for this region
+                // (an `if` generate that was not chosen, a sibling) has no value here: its
+                // thunk may divide by a generic that is zero (#495).
+                if c.scope.is_some_and(|r| !self.declared_around(i, r)) {
+                    continue;
+                }
                 // Kept for the aliases of external constants naming it (#255).
                 Some((i, c.decl))
             };

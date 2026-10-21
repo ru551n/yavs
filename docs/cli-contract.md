@@ -277,11 +277,14 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   error (exit 2). Python testbench frameworks append their plusargs this way.
 - `--exit-severity=LEVEL` (`note|warning|error|failure`): an assertion or
   report at or above LEVEL stops the simulation at the end of the current delta
-  and gives exit 1. Default `failure` (user decision 2026-10-18, as the other major
-  simulators): an `error` report is printed and the simulation continues, and the run
-  still exits 1 at the end because an `error` (or higher) was reported, unless
-  `ClearVhdlAssert` (2019 `std.env`) cleared the assert counts since: the status
-  follows the error and failure counts at the end of the run, as the other major simulators. yavs's own
+  and gives exit 1. Without the option the level is `failure` (user decision 2026-10-18, as
+  the other major simulators): an `error` report is printed and the simulation continues, and
+  the run still exits 1 at the end because an `error` (or higher) was reported, unless
+  `ClearVhdlAssert` (2019 `std.env`) cleared the assert counts since: the status follows the
+  error and failure counts at the end of the run. With the option given, even as
+  `--exit-severity=failure`, the level is the whole threshold (user decision 2026-10-21, #498,
+  as the other major simulators): only reports at or above it affect the exit status, so a run
+  that prints `error` reports and ends normally exits 0. yavs's own
   runtime errors (bound check, overflow, null access, delta limit, internal) stop
   at once whatever the level. The test runner passes its `vhdl_assert_stop_level` sim option.
 - `--ieee-warnings=off`: suppress the warnings raised inside `ieee` packages
@@ -449,8 +452,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - Exit codes:
   - 0: simulation ended without failure: event starvation, `std.env.finish`
     or `std.env.stop` with no status or status 0, or `--stop-time` reached.
-  - 1: simulation failure: an assertion/report at or above `--exit-severity`,
-    or of severity `error` or `failure` at any point,
+  - 1: simulation failure: an assertion/report at or above `--exit-severity`
+    (without the option: of severity `error` or `failure` at any point),
     `std.env.stop(N)`/`finish(N)` with N /= 0 (the status itself may be
     returned if it fits in 1..125; the test runner only tests zero/non-zero), a runtime
     error (bound check, null access, delta-cycle limit).

@@ -1234,6 +1234,10 @@ severity ERROR is printed and the simulation continues; the run exits 1 at the e
 higher was reported and not cleared by `ClearVhdlAssert` (the std.env assert counts, #191). FAILURE stops the simulation at once. yavs's own runtime errors (bound,
 overflow, null access, delta limit, internal) still stop immediately, per the error motto.
 `--exit-severity=error|warning|note` lowers the threshold. The test runner passes its own setting.
+Refinement (user, 2026-10-21, #498): the end-of-run rule above holds only without the option. Given
+explicitly (also as `failure`), the level is the whole threshold and only reports at or above it
+affect the exit status, as the reference simulators do: a run that prints `error` reports and ends
+normally exits 0.
 Reports go to stdout in the reference simulator's format (`** Note: <fs>fs+<delta>: msg`, then `    Process <path>`),
 which tools/difftest parses.
 

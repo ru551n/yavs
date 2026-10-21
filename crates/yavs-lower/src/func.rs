@@ -1653,6 +1653,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                         w: Width::B8,
                         comp: Some(t),
                         init,
+                        scope: elab_region(db, decl.scope),
                         instance_level: cx.arch_scopes.contains(&decl.scope),
                     });
                 }
@@ -1685,6 +1686,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     w,
                     comp: None,
                     init,
+                    scope: elab_region(db, decl.scope),
                     instance_level: cx.arch_scopes.contains(&decl.scope),
                 });
             }
@@ -1713,6 +1715,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 w: Width::B8,
                 comp: None,
                 init,
+                scope: elab_region(db, decl.scope),
                 instance_level: true,
             });
             Ok(())
@@ -2587,4 +2590,21 @@ pub(crate) fn lsp_fields(l: &hir::Lsp) -> Vec<u32> {
             _ => None,
         })
         .collect()
+}
+
+/// The block or generate (or entity or architecture) whose elaboration creates a constant
+/// declared in `scope`: the nearest such region around it, `None` when there is none.
+pub(crate) fn elab_region(db: &Db, scope: yavs_sem::ScopeId) -> Option<yavs_sem::ScopeId> {
+    use yavs_sem::scope::ScopeKind as K;
+    let mut cur = Some(scope);
+    while let Some(s) = cur {
+        if matches!(
+            db.scopes[s].kind,
+            K::Entity | K::Architecture | K::Block | K::Generate
+        ) {
+            return Some(s);
+        }
+        cur = db.scopes[s].parent;
+    }
+    None
 }

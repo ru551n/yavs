@@ -72,10 +72,11 @@ enum ResolutionArg {
 pub struct RunArgs {
     #[command(flatten)]
     common: Common,
-    /// A report at or above this severity stops the simulation with exit 1; an `error`
-    /// report below it is printed, the run continues and exits 1 at the end.
-    #[arg(long, value_enum, default_value = "failure")]
-    exit_severity: SeverityArg,
+    /// A report at or above this severity stops the simulation with exit 1. Without the
+    /// option the default is `failure`, and an `error` report is printed, the run continues
+    /// and exits 1 at the end; given explicitly, a report below the level never fails the run.
+    #[arg(long, value_enum)]
+    exit_severity: Option<SeverityArg>,
     /// Suppress warnings raised inside `ieee` packages.
     #[arg(long, value_name = "on|off")]
     ieee_warnings: Option<String>,
@@ -769,7 +770,7 @@ pub fn run(
         threads: a.threads.max(1),
         shuffle: a.shuffle,
         resolution,
-        stop_severity: match a.exit_severity {
+        stop_severity: match a.exit_severity.unwrap_or(SeverityArg::Failure) {
             SeverityArg::Note => yavs_kernel::Severity::Note,
             SeverityArg::Warning => yavs_kernel::Severity::Warning,
             SeverityArg::Error => yavs_kernel::Severity::Error,
@@ -964,11 +965,17 @@ pub fn run(
     // std.env (as the reference simulator; test runners only look at zero or non-zero).
     // Reports made while elaborating (#349) count too.
     use yavs_kernel::Severity::{Error, Failure};
-    let failed = yavs_elab::elaboration_reports(Error) + yavs_elab::elaboration_reports(Failure)
-        > 0
-        || rt
-            .as_ref()
-            .is_some_and(|rt| rt.assert_count(Error) + rt.assert_count(Failure) > 0);
+    // Given explicitly, the level is the whole threshold: a run that ends normally after
+    // `error` reports below it exits 0 (the test runner passes `failure` and relies on it).
+    let counted = if a.exit_severity.is_some() {
+        &[Failure][..]
+    } else {
+        &[Error, Failure][..]
+    };
+    let failed = counted.iter().any(|&sv| {
+        yavs_elab::elaboration_reports(sv) > 0
+            || rt.as_ref().is_some_and(|rt| rt.assert_count(sv) > 0)
+    });
     let mut code = if code == 0 && failed { 1 } else { code };
     // The coverage of the run so far, whatever its outcome.
     if let Some(path) = &a.cov {

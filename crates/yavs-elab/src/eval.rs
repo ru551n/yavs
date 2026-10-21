@@ -488,7 +488,7 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
     }
     let func = match &db.decls[f].kind {
         DeclKind::Subprogram(_) => {
-            let l = lower_one(db, f).map_err(|e| match e {
+            let l = lower_one(db, f, false).map_err(|e| match e {
                 crate::pkgcall::Fail::Lower(why) => not_callable(db, f, at, &why),
                 crate::pkgcall::Fail::Unsupported(w) => err(codes::INTERNAL, at, w, "here"),
                 crate::pkgcall::Fail::Runtime(w) => err(codes::INTERNAL, at, w, "here"),
@@ -534,6 +534,10 @@ pub(crate) fn conv_fn(db: &Db, f: DeclId, from: &Shape, to: &Shape, at: Span) ->
 pub(crate) struct Lowered1 {
     rt: std::sync::Arc<yavs_interp::Runtime>,
     sig: crate::pkgcall::Sig,
+    /// The constants and generics of enclosing regions it reads, and the bytes of instance
+    /// data they sit in (`Lowerer::capture_free_objects`).
+    free: Vec<yavs_lower::FreeObj>,
+    inst_size: u32,
 }
 
 pub(crate) type R<T> = Result<T, Box<Diagnostic>>;
@@ -788,13 +792,67 @@ impl Model {
         match self
             .funcs
             .entry(callee)
-            .or_insert_with(|| lower_one(db, callee))
+            .or_insert_with(|| lower_one(db, callee, true))
         {
-            Ok(l) => crate::pkgcall::run(&l.rt, &l.sig, &vals, None).map_err(failed),
+            Ok(l) => {
+                let (rt, sig, free, size) =
+                    (l.rt.clone(), l.sig.clone(), l.free.clone(), l.inst_size);
+                let inst = self.free_data(db, &rt, &free, size, scope, ex.span)?;
+                crate::pkgcall::run(&rt, &sig, &vals, None, inst).map_err(failed)
+            }
             // A function that uses package objects (shared variables, say) runs against the
             // elaborated packages, in elaboration order (LRM 14.4).
             Err(_) => self.session.call(db, callee, vals).map_err(failed),
         }
+    }
+
+    /// The instance data a function called in `scope` reads its enclosing regions' constants
+    /// from: their values as they are in `scope` (`None` when it reads none).
+    fn free_data(
+        &mut self,
+        db: &Db,
+        rt: &std::sync::Arc<yavs_interp::Runtime>,
+        free: &[yavs_lower::FreeObj],
+        size: u32,
+        scope: Option<ScopeId>,
+        span: Span,
+    ) -> R<Option<yavs_interp::InstData>> {
+        if free.is_empty() {
+            return Ok(None);
+        }
+        let mut inst = yavs_interp::InstData {
+            data: vec![0; size as usize],
+            ..Default::default()
+        };
+        for f in free {
+            let v = self.value_of(db, f.decl, scope, span)?;
+            let name = &db.decls[f.decl].name;
+            let off = f.off as usize;
+            match crate::value::encode(&rt.prog, f.ty, &v) {
+                Some(yavs_interp::CallVal::Cell(c)) => {
+                    let n = rt
+                        .prog
+                        .types
+                        .get(f.ty)
+                        .and_then(|t| t.scalar_size())
+                        .unwrap_or(8) as usize;
+                    inst.data[off..off + n].copy_from_slice(&c.to_le_bytes()[..n]);
+                }
+                Some(yavs_interp::CallVal::Composite { data, desc }) => {
+                    yavs_lower::UnitIr::write_composite(f.off, &data, &desc, &mut inst.data);
+                }
+                None => {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            codes::NOT_EVALUATED,
+                            format!("`{name}` cannot be passed to a call during elaboration yet"),
+                        )
+                        .with_primary(span, "called during elaboration"),
+                    ));
+                }
+            }
+        }
+        Ok(Some(inst))
     }
 
     pub(crate) fn value_of(
@@ -1348,15 +1406,29 @@ fn not_callable(db: &Db, f: DeclId, at: Span, why: &str) -> Box<Diagnostic> {
 }
 
 /// Lower `f` (and what it calls) into its own program, for elaboration-time calls.
-fn lower_one(db: &Db, f: DeclId) -> Result<Lowered1, crate::pkgcall::Fail> {
+///
+/// With `capture`, the constants and generics of the regions around `f` that it reads are
+/// listed in the result, to be given their values in each call.
+fn lower_one(db: &Db, f: DeclId, capture: bool) -> Result<Lowered1, crate::pkgcall::Fail> {
     let mut l = yavs_lower::Lowerer::new(db, yavs_lower::LowerOptions::default());
-    let lowered = crate::pkgcall::sig(&mut l, db, f).and_then(|s| l.finish().map(|lw| (s, lw)));
-    let (sig, lw) = lowered.map_err(|ds| {
+    if capture {
+        l.capture_free_objects();
+    }
+    let lowered = crate::pkgcall::sig(&mut l, db, f).and_then(|s| {
+        let (free, size) = l.free_objects();
+        l.finish().map(|lw| (s, lw, free, size))
+    });
+    let (sig, lw, free, inst_size) = lowered.map_err(|ds| {
         crate::pkgcall::Fail::Lower(ds.into_iter().next().map(|d| d.message).unwrap_or_default())
     })?;
     let rt = yavs_interp::Runtime::new(std::sync::Arc::new(lw.program), Default::default())
         .map_err(|e| crate::pkgcall::Fail::Runtime(format!("internal error: {e}")))?;
-    Ok(Lowered1 { rt, sig })
+    Ok(Lowered1 {
+        rt,
+        sig,
+        free,
+        inst_size,
+    })
 }
 
 /// Apply an element resolution indication (LRM 6.3) to the element shape `s`:

@@ -1,0 +1,7 @@
+exit	0
+diag	note	0	0	:unelaborated_generate_constant:u0:_p0	k=abc width=0
+diag	note	0	0	:unelaborated_generate_constant:u1:g:_p0	bytes 2
+diag	note	0	0	:unelaborated_generate_constant:u1:_p0	k=abcx width=16
+diag	note	0	0	:unelaborated_generate_constant:g(0):u:_p0	k=abc width=0
+diag	note	0	0	:unelaborated_generate_constant:g(1):u:g:_p0	bytes 1
+diag	note	0	0	:unelaborated_generate_constant:g(1):u:_p0	k=abc width=8

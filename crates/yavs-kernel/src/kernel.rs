@@ -11,8 +11,8 @@ use rayon::prelude::*;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
-    check_ref, make_op,
+    Ctx, DriverInfo, Effect, LiveSink, OpMode, ProcId, ProcState, Process, Severity, Shared,
+    SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -269,6 +269,7 @@ impl Hook<'_> {
             signals: self.signals,
             drivers: self.drivers,
             names: self.names,
+            live: None,
         };
         // Observers run between phases: no process holds its slot.
         let mut slot = lock(&self.slots[owner.0 as usize]);
@@ -276,6 +277,7 @@ impl Hook<'_> {
             sh: &sh,
             pid: owner,
             st: &mut slot.st,
+            live: false,
         };
         ctx.assign(d, target, waveform, mode)?;
         for (t, d) in slot.st.scheduled.drain(..) {
@@ -345,6 +347,12 @@ pub trait Observer: Send {
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
     fn report(&mut self, _hook: &mut Hook<'_>, _report: &Report) {}
+    /// A sink for the reports and `OUTPUT` text of processes that run serially: they reach it
+    /// as they are made instead of when the process suspends, and this observer's `report`
+    /// and `output` are not called for them (#483).
+    fn live_sink(&self) -> Option<Arc<dyn LiveSink>> {
+        None
+    }
     /// textio `OUTPUT` text.
     fn output(&mut self, _hook: &mut Hook<'_>, _process: ProcId, _bytes: &[u8]) {}
     /// A wake-up this observer scheduled with `Hook::wake_at` is due: after `NextTimeStep`
@@ -529,6 +537,10 @@ pub struct SimControl {
     end_fired: bool,
     failed: Option<SimError>,
     observers: Vec<Box<dyn Observer>>,
+    /// The first sink an observer offered (`Observer::live_sink`), and the observers (bits)
+    /// that offered one.
+    live_sink: Option<Arc<dyn LiveSink>>,
+    live_mask: u64,
     /// The phases some observer wants (bit `Phase as u32`), and whether one wants value changes.
     phase_mask: u16,
     /// Per observer: the phases it wants, and those it wants only after a serial process ran.
@@ -699,6 +711,8 @@ impl SimControl {
             end_fired: false,
             failed: None,
             observers: Vec::new(),
+            live_sink: None,
+            live_mask: 0,
             phase_mask: 0,
             obs_phases: Vec::new(),
             serial_ran: true,
@@ -954,6 +968,13 @@ impl SimControl {
     // ---- control ------------------------------------------------------
 
     pub fn subscribe(&mut self, o: Box<dyn Observer>) {
+        if self.live_sink.is_none()
+            && self.observers.len() < 64
+            && let Some(l) = o.live_sink()
+        {
+            self.live_sink = Some(l);
+            self.live_mask = 1 << self.observers.len();
+        }
         self.observers.push(o);
         self.phase_mask = ALL_PHASES
             .iter()
@@ -1814,12 +1835,25 @@ impl SimControl {
                 signals: &self.signals,
                 drivers: &self.drivers,
                 names: &self.names,
+                live: self.live_sink.as_deref(),
             };
-            let run = |p: u32, slot: &mut Slot| {
+            // Reports go straight to the output when the commit order is the order they are
+            // made in: no shuffled run, and (below) nothing earlier in the batch to write.
+            let live_ok = self.rng.is_none() && self.live_sink.is_some();
+            // An error ends the commit at its process: later ones must not write.
+            let stops = |slot: &Slot| {
+                slot.result.is_err()
+                    || postponed
+                        && (slot.st.deadline == Some(sh.now)
+                            || !slot.st.phantoms.is_empty()
+                            || slot.st.scheduled.iter().any(|&(t, _)| t == sh.now))
+            };
+            let run = |p: u32, slot: &mut Slot, live: bool| {
                 let mut ctx = Ctx {
                     sh: &sh,
                     pid: ProcId(p),
                     st: &mut slot.st,
+                    live,
                 };
                 // A panic in process code is a broken invariant: report it as an internal
                 // error of that process, not a bare panic.
@@ -1842,16 +1876,32 @@ impl SimControl {
                     let slots = &self.slots;
                     pool.install(|| {
                         par.par_iter()
-                            .for_each(|&p| run(p, &mut lock(&slots[p as usize])))
+                            .for_each(|&p| run(p, &mut lock(&slots[p as usize]), false))
                     });
-                    serial
-                        .iter()
-                        .for_each(|&p| run(p, &mut lock(&slots[p as usize])));
+                    // The serial ones are live when no parallel one wrote or failed.
+                    let live = live_ok
+                        && par.iter().all(|&p| {
+                            let s = lock(&slots[p as usize]);
+                            !stops(&s)
+                                && !(s.st.effects.iter())
+                                    .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)))
+                        });
+                    for &p in &serial {
+                        let mut s = lock(&slots[p as usize]);
+                        run(p, &mut s, live);
+                        if stops(&s) {
+                            break;
+                        }
+                    }
                 }
                 // No other thread touches the slots: no lock.
                 _ => {
                     for &p in &pids {
-                        run(p, slot_mut(&mut self.slots[p as usize]));
+                        let s = slot_mut(&mut self.slots[p as usize]);
+                        run(p, s, live_ok);
+                        if stops(s) {
+                            break;
+                        }
                     }
                 }
             }
@@ -1980,19 +2030,23 @@ impl SimControl {
     fn commit(&mut self, process: ProcId, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::Report(severity, message) => {
+                Effect::Report(severity, message, live) => {
                     let report = Report {
                         process: Some(process),
                         context: None,
                         severity,
                         message,
                     };
-                    self.notify(|o, h| o.report(h, &report));
+                    let which = if live { !self.live_mask } else { !0 };
+                    self.notify_which(which, |o, h| o.report(h, &report));
                     if severity >= self.cfg.stop_severity {
                         self.end.get_or_insert(EndReason::Severity(severity));
                     }
                 }
-                Effect::Output(bytes) => self.notify(|o, h| o.output(h, process, &bytes)),
+                Effect::Output(bytes, live) => {
+                    let which = if live { !self.live_mask } else { !0 };
+                    self.notify_which(which, |o, h| o.output(h, process, &bytes));
+                }
                 Effect::Stop(code) => _ = self.end.get_or_insert(EndReason::Stop(code)),
                 Effect::Finish(code) => _ = self.end.get_or_insert(EndReason::Finish(code)),
                 Effect::Op(op) => self.ops.push(op),

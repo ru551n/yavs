@@ -456,7 +456,18 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   file, without a plugin (`--vhpi`), a `--load` library or a foreign subprogram, messages are
   collected and written in blocks: at the latest 100 ms after they were produced, before
   anything yavs writes to stderr, at the end of the run, and when Ctrl-C or SIGTERM ends it (exit status 130; SIGKILL cannot be caught and loses at most the last 100 ms or 64 KiB), so that the test runner's live
-  output and timeouts work and the order of the two streams is the order of the events. `--color=always` forces ANSI
+  output and timeouts work and the order of the two streams is the order of the events.
+  A process that runs serially (every process at `--threads 1`, a process built as serial, the
+  serial phase of a cycle at more threads) hands its messages to this stream as it makes them,
+  in the order they would have had otherwise, so one that reports for a long time without a
+  `wait` shows its output while it runs and keeps it when killed (#483); processes evaluated
+  in parallel hand theirs over when they suspend. The bytes written are the same at any
+  `--threads` value and with `--shuffle`.
+- A write error on standard output (the reader closed the pipe, a full disk) stops the run
+  between cycles (a run still writing a second later exits at once): a line on stderr says so,
+  the waveform and coverage files are finished as after Ctrl-C, and the exit status is 141 (128
+  plus SIGPIPE, as a shell shows a process killed by it) whatever the run would have returned
+  (#484). `--color=always` forces ANSI
   colour on a pipe (the test runner passes it when it wants colour); without it yavs
   follows the TTY/`NO_COLOR` rules of plan `yavs-diag`.
 - Runtime errors (bound check, overflow, null access, delta limit, internal) are diagnostics

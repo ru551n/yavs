@@ -68,10 +68,20 @@ impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {
     }
 }
 
-/// A buffered side effect, committed after the delta in elaboration order.
+/// Writes reports and textio `OUTPUT` text as a serially running process makes them, in the
+/// order they would be committed in (#483). An observer offers one with
+/// [`Observer::live_sink`](crate::Observer::live_sink) and then gets such reports only once,
+/// here, not through `report`/`output`.
+pub trait LiveSink: Send + Sync {
+    fn report(&self, now: Time, delta: u32, process: &str, severity: Severity, message: &str);
+    fn output(&self, bytes: &[u8]);
+}
+
+/// A buffered side effect, committed after the delta in elaboration order. The flag on a
+/// report or output: already written to the live sink.
 pub(crate) enum Effect {
-    Report(Severity, String),
-    Output(Vec<u8>),
+    Report(Severity, String, bool),
+    Output(Vec<u8>, bool),
     Stop(i32),
     Finish(i32),
     Op(SignalOp),
@@ -149,6 +159,8 @@ pub(crate) struct Shared<'a> {
     pub signals: &'a [Signal],
     pub drivers: &'a [DriverInfo],
     pub names: &'a [String],
+    /// Where a live process (`Ctx::live`) writes its reports.
+    pub live: Option<&'a dyn LiveSink>,
 }
 
 /// What a running process sees: current-cycle signal values, its own drivers and its own
@@ -157,6 +169,9 @@ pub struct Ctx<'a> {
     pub(crate) sh: &'a Shared<'a>,
     pub(crate) pid: ProcId,
     pub(crate) st: &'a mut ProcState,
+    /// The process runs where its reports may go straight to `Shared::live`: nothing that
+    /// commits before them is still unwritten.
+    pub(crate) live: bool,
 }
 
 impl Ctx<'_> {
@@ -693,13 +708,29 @@ impl Ctx<'_> {
 
     /// `report` / `assert`.
     pub fn report(&mut self, severity: Severity, msg: impl Into<String>) {
-        self.st.effects.push(Effect::Report(severity, msg.into()));
+        let msg = msg.into();
+        let live = match self.sh.live {
+            Some(l) if self.live => {
+                let name = &self.sh.names[self.pid.0 as usize];
+                l.report(self.sh.now, self.sh.delta, name, severity, &msg);
+                true
+            }
+            _ => false,
+        };
+        self.st.effects.push(Effect::Report(severity, msg, live));
     }
 
     /// Buffered textio `OUTPUT` text, delivered to observers at commit in elaboration order
     /// (ordered with `report`). Disk files are not kernel state: their users are serial.
     pub fn output(&mut self, bytes: &[u8]) {
-        self.st.effects.push(Effect::Output(bytes.to_vec()));
+        let live = match self.sh.live {
+            Some(l) if self.live => {
+                l.output(bytes);
+                true
+            }
+            _ => false,
+        };
+        self.st.effects.push(Effect::Output(bytes.to_vec(), live));
     }
 
     /// `std.env.stop`.

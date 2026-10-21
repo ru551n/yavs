@@ -378,6 +378,107 @@ fn signal_keeps_reports() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Runs `yavs run` on `long_report` with a piped stdout; `extra` are more arguments.
+#[cfg(unix)]
+fn spawn_long_report(tmp: &Path, extra: &[&str]) -> std::process::Child {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", &lib, "long_report.vhd"])
+        .current_dir(&dir)
+        .status()
+        .expect("run");
+    assert!(a.success());
+    Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["run", &lib])
+        .args(extra)
+        .arg("long_report")
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn")
+}
+
+/// A process that reports without ever waiting shows its reports as it makes them, also when
+/// it is killed (#483): the first lines reach a pipe within about a second, and SIGTERM keeps
+/// what was written.
+#[cfg(unix)]
+#[test]
+fn long_process_reports_live() {
+    use std::io::{BufRead, BufReader};
+    for threads in ["--threads=1", "--threads=4"] {
+        let tmp = tempdir("long_report_live");
+        let mut child = spawn_long_report(&tmp, &[threads]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let out = child.stdout.take().expect("stdout");
+        std::thread::spawn(move || {
+            for l in BufReader::new(out).lines() {
+                if tx.send(l.expect("line")).is_err() {
+                    break;
+                }
+            }
+        });
+        let t = std::time::Duration::from_secs(3);
+        let Ok(first) = rx.recv_timeout(t) else {
+            child.kill().expect("kill");
+            panic!("{threads}: no report in 3 s");
+        };
+        assert!(first.contains("line 1"), "{threads}: {first:?}");
+        let pid = child.id().to_string();
+        let k = Command::new("kill").args(["-TERM", &pid]).status();
+        assert!(k.expect("kill").success());
+        assert!(!child.wait().expect("wait").success());
+        let mut n = 1;
+        while rx.recv_timeout(t).is_ok() {
+            n += 1;
+        }
+        assert!(n >= 1);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}
+
+/// A closed stdout pipe ends the run with status 141 and a message on stderr, and the
+/// waveform file is still finished (#484).
+#[cfg(unix)]
+#[test]
+fn closed_stdout_stops_run() {
+    use std::io::{BufRead, BufReader, Read};
+    let tmp = tempdir("long_report_pipe");
+    let wave = tmp.join("w.fst");
+    let mut child = spawn_long_report(
+        &tmp,
+        &["-gwaiting=true", &format!("--wave={}", wave.display())],
+    );
+    let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+    let mut line = String::new();
+    out.read_line(&mut line).expect("line");
+    assert!(line.contains("line"), "{line:?}");
+    drop(out);
+    let t0 = std::time::Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("wait") {
+            break s;
+        }
+        if t0.elapsed().as_secs() > 20 {
+            child.kill().expect("kill");
+            panic!("the run did not stop after its stdout was closed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(141));
+    let mut err = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut err)
+        .expect("stderr");
+    assert!(err.contains("standard output"), "{err:?}");
+    assert!(std::fs::metadata(&wave).expect("wave").len() > 0);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// `to_string`, `'image` and `to_hstring` of vectors, strings, records and arrays of enumerations
 /// give the text the LRM says (#428); the expected lines are `tests/cli/image_text.stdout`.
 #[test]

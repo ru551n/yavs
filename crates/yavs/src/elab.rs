@@ -842,6 +842,8 @@ pub fn run(
         crate::stdout::buffer();
     }
     sim.subscribe(Box::new(Printer));
+    let on_pipe = sim.interrupt();
+    crate::stdout::on_broken(move || on_pipe.stop());
     let rt = built.as_ref().map(|b| b.rt.clone());
     // Toggle coverage watches the value-change bus; without it nothing is subscribed.
     let toggles = kind(CovKindArg::Toggle).then(|| {
@@ -982,6 +984,11 @@ pub fn run(
         }
     }
     let code = if out.errors > 0 { code.max(1) } else { code };
+    let code = if crate::stdout::is_broken() {
+        crate::stdout::BROKEN_STATUS
+    } else {
+        code
+    };
     let done = out.finish(code);
     // The optimised copies of this run's functions go into the stored lowering of the design.
     e.learn();
@@ -1102,28 +1109,55 @@ impl yavs_kernel::Observer for Printer {
     }
 
     fn report(&mut self, hook: &mut yavs_kernel::Hook<'_>, r: &yavs_kernel::Report) {
-        let sev = match r.severity {
-            yavs_kernel::Severity::Note => "Note",
-            yavs_kernel::Severity::Warning => "Warning",
-            yavs_kernel::Severity::Error => "Error",
-            yavs_kernel::Severity::Failure => "Failure",
-        };
         let at = match (r.process, &r.context) {
             (Some(p), _) => format!("Process {}", hook.process_name(p).unwrap_or("?")),
             (None, c) => format!("Function {}", c.as_deref().unwrap_or("?")),
         };
-        let text = format!(
-            "** {sev}: {}fs+{}: {}\n    {at}\n",
-            hook.now().as_fs(),
-            hook.delta(),
-            r.message
-        );
-        crate::stdout::write(text.as_bytes());
+        print_report(hook.now(), hook.delta(), r.severity, &r.message, &at);
     }
 
     fn output(&mut self, _: &mut yavs_kernel::Hook<'_>, _: yavs_kernel::ProcId, bytes: &[u8]) {
         crate::stdout::write(bytes);
     }
+
+    // Processes that run serially write their reports as they make them (#483).
+    fn live_sink(&self) -> Option<Arc<dyn yavs_kernel::LiveSink>> {
+        Some(Arc::new(Printer))
+    }
+}
+
+impl yavs_kernel::LiveSink for Printer {
+    fn report(
+        &self,
+        now: yavs_kernel::Time,
+        delta: u32,
+        process: &str,
+        severity: yavs_kernel::Severity,
+        message: &str,
+    ) {
+        print_report(now, delta, severity, message, &format!("Process {process}"));
+    }
+
+    fn output(&self, bytes: &[u8]) {
+        crate::stdout::write(bytes);
+    }
+}
+
+fn print_report(
+    now: yavs_kernel::Time,
+    delta: u32,
+    severity: yavs_kernel::Severity,
+    message: &str,
+    at: &str,
+) {
+    let sev = match severity {
+        yavs_kernel::Severity::Note => "Note",
+        yavs_kernel::Severity::Warning => "Warning",
+        yavs_kernel::Severity::Error => "Error",
+        yavs_kernel::Severity::Failure => "Failure",
+    };
+    let text = format!("** {sev}: {}fs+{delta}: {message}\n    {at}\n", now.as_fs());
+    crate::stdout::write(text.as_bytes());
 }
 
 /// The default `--cov-test`: the enabled test cases of a `runner_cfg` generic (its

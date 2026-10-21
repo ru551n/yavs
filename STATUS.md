@@ -3015,3 +3015,13 @@ IEEE packages from source (`tests/corpus/ieee`, #94): std_logic_1164, numeric_st
 math_real, math_complex, fixed_pkg and float_pkg bodies, 2008 and 2019, equal the reference simulator at 1, 4 and 4
 shuffled threads (17 of 17, with textio of std_logic_vector, fixed and float values);
 `ieee_warnings` (`ref=hand`) checks the numeric_std body's own warnings, which the reference simulator omits.
+
+### Live reports and broken stdout (#483, #484)
+
+- A process that runs serially (all of them at `--threads 1`, the serial phase at more threads) writes its
+  reports and `OUTPUT` text to the output as it makes them instead of at suspension: the commit order is
+  unchanged, a failing process stops the later ones of its batch from running, and parallel batches and
+  `--shuffle` keep commit-at-suspension. Test: `long_process_reports_live` (first line in a pipe within 3 s, kept
+  on SIGTERM).
+- A write error on stdout (closed pipe) stops the run between cycles with a line on stderr, finishes wave and
+  coverage files and exits 141 (a run still writing after 1 s exits at once). Test: `closed_stdout_stops_run`.

@@ -2958,6 +2958,42 @@ Checks: difftest corpus 414 of 414 at 1 and 4 threads and at 4 shuffled threads 
 regression 314 of 314 under 2008 and 2019; the verification library suite 102 pass, 9 fail, 26 skip as before; the
 discrepancy catalogue checks green; `cargo test --workspace` 782 passed.
 
+### Kernel round 8: vector assignments without lists or buffers (#440, 2026-10-21)
+
+Core cycles and instructions (`perf stat`, `cpu_core/`, min cycles of 5 runs pinned to performance core 6, host loaded by other
+agents, so wall time is not quoted) of the head-to-head designs, `main` at `d8271b29` against the same plus this round, and
+the reference simulators on the same designs and core (sim1 `-H 64m -e <top> --no-save --jit -r`, sim2 `-r <top>`). Ratios are
+cycles of yavs over cycles of sim1. Peak RSS is unchanged in every row (within 1 MiB; 12 to 47 MiB interp, 59 to 78 auto).
+
+| Design | tier | cycles G before / after | instr. G before / after | sim1 / sim2 cycles G | after / sim1 |
+|---|---|---:|---:|---:|---:|
+| lfsr: 512 x 16-bit x 5000 | interp | 3.15 / 2.54 | 14.87 / 12.26 | 0.54 / 2.36 | 4.7x (was 5.8x) |
+| | auto | 3.20 / 2.61 | 15.13 / 12.51 | | 4.8x |
+| 2b rtl2: 64 x 16-bit x 20000 | interp | 1.66 / 1.32 | 8.09 / 6.66 | 0.37 / 1.47 | 3.6x (was 4.5x) |
+| | auto | 1.62 / 1.34 | 8.09 / 6.80 | | 3.6x |
+| ff: 4096 registers x 2000 | interp | 4.56 / 4.53 | 21.52 / 21.08 | 1.89 / 1.98 | 2.4x |
+| chain: 1000 stages x 2000 | interp | 1.16 / 1.18 | 6.30 / 6.24 | 0.52 / 3.63 | 2.3x |
+| fan: 4000 x 5000 | interp | 5.31 / 5.29 | 19.59 / 19.41 | 3.63 / 1.37 | 1.5x |
+| bus: 32 drivers x 20000 | interp | 1.15 / 1.05 | 5.62 / 5.12 | 2.41 / 0.87 | 0.44x |
+| ram: 16384 x 32 x 20000 | interp | 0.40 / 0.37 | 1.29 / 1.20 | 0.18 / 1.33 | 2.1x |
+
+What changed (`docs/decisions.md` "Kernel round 8"): a zero-delay assignment of up to 64 logic elements to an idle driver is a
+`Waveform::vquick` (plane words, no `Txn`, no value buffer); on a sole source of a plain signal the driving value is written when
+the transaction is applied and the update phase only marks the activity of the joined runs and updates the effective value
+(no `compute_driving` per segment). New `Ctx::assign_blocks` takes the plane blocks as they sit in the interpreter's frame, which
+removes a heap vector and a `LogicVec` per vector assignment (malloc and free were a tenth of the cycles of 2b). The reference check
+of `Ctx::read_into` is inlined. The per-element time stamps hold the time plus one, so a new array is zeros (a memory of 500 000
+elements no longer writes 8 MB of markers at elaboration; 16% fewer page faults on a 2 million element memory).
+
+Where the cycles are now: ff, chain and fan are unchanged because their assignments are scalar and already on the quick path; the
+kernel is 25 to 30% of ff and fan (commit loop, wake, one-element finish) and about 60% of chain (a fixed ~1900 instructions per
+delta cycle spread over `update`, `cycle`, `run_batch`, `take_woken` and the plane writes of one element, none above 15%). IPC is 4.5 to 4.9 in
+all of them, so the instruction count is what matters. Tried and dropped in this round, no gain in cycles: hot-first `repr(C)` field order of
+`Waveform`, `ProcState` and `Slot`; loads ahead of the commit loop and the run loop (software prefetch by loads); committing each
+process right after it ran; setting `timed_out` and the known edge when the process runs. The memory-array path of `ram` is not kernel
+bound: per clock cycle 47 000 instructions, nearly all in the interpreter (`to_integer`, the 32-bit adder in `ieee::small`, slice
+reads); the kernel part is `update_effective` and `finish_signal` of a 32-element range of a 524 288-element signal.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

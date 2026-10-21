@@ -2187,7 +2187,7 @@ impl SimControl {
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Quick transactions finished when they were applied.
     let fused = sig.end_apply();
-    let changed = if sig.dirty.is_empty() {
+    let changed = if sig.dirty.is_empty() && sig.fast_dirty.is_empty() {
         fused
     } else {
         finish_dirty(sig, now, cycle)? | fused
@@ -2202,6 +2202,7 @@ fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorK
 fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     if let [r] = sig.dirty.as_slice()
         && r.len == 1
+        && sig.fast_dirty.is_empty()
         && let Some(changed) = sig.finish_one(r.offset, now, cycle)
     {
         sig.dirty.clear();
@@ -2216,6 +2217,12 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
         changed |= sig.update_effective(r, now, cycle);
     }
     sig.dirty = dirty;
+    // The driving values of these were written when their transactions were applied.
+    let mut fast = std::mem::take(&mut sig.fast_dirty);
+    for r in fast.drain(..) {
+        changed |= sig.update_effective(r, now, cycle);
+    }
+    sig.fast_dirty = fast;
     Ok(changed)
 }
 

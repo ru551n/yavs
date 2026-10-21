@@ -2,7 +2,8 @@
 
 use crate::error::{ErrorKind, SimError};
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Quick, Range, SigRef, Signal, SignalId, Txn, TxnList, Waveform,
+    DelayMode, DriverId, ForceMode, Quick, Range, SigRef, Signal, SignalId, Txn, TxnList, VQuick,
+    Waveform,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
@@ -429,6 +430,13 @@ impl Ctx<'_> {
         waveform: &[(Time, V)],
         mode: DelayMode,
     ) -> Result<(), SimError> {
+        if let [(delay, v)] = waveform
+            && let ValueRef::Logic(l) = (*v).into()
+            && let [p] = l.repr().blocks()
+            && self.assign_planes_fast(d, target, *delay, *p, l.len() as u32, mode)
+        {
+            return Ok(());
+        }
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
         let local = self.own(d)?.local as usize;
@@ -561,6 +569,106 @@ impl Ctx<'_> {
             time: now,
             elem: r.offset,
             code,
+        });
+        self.st.scheduled.push((now, d));
+        true
+    }
+
+    /// `assign` of a logic value of at most 64 elements given as the plane blocks `read_into`
+    /// produces for it: four little-endian `u64` planes (`blocks` is exactly 32 bytes for up to
+    /// 64 elements, 32 per 64 more), unused bits zero. No `LogicVec` or `Value` is needed.
+    pub fn assign_blocks(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        blocks: &[u8],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
+        let (_, r) = self.target(d, target)?;
+        let n = r.len as usize;
+        if blocks.len() != n.div_ceil(64) * 32 {
+            return Err(self.error(ErrorKind::InvalidAssign(format!(
+                "{} plane bytes for {n} elements",
+                blocks.len()
+            ))));
+        }
+        let word = |b: &[u8], k: usize| u64::from_le_bytes(b[k * 8..k * 8 + 8].try_into().unwrap());
+        if let [b] = blocks.as_chunks::<32>().0
+            && n <= 64
+            && self.assign_planes_fast(d, target, delay, std::array::from_fn(|k| word(b, k)), n as u32, mode)
+        {
+            return Ok(());
+        }
+        let blocks: Vec<[u64; 4]> = blocks
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|b| std::array::from_fn(|k| word(b, k)))
+            .collect();
+        let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(n, blocks));
+        self.assign(d, target, &[(delay, &v)], mode)
+    }
+
+    /// The common vector case of `assign` in one pass: a zero-delay assignment of at most 64
+    /// logic elements (`planes`, `len` elements) to a driver with nothing pending is kept as a
+    /// `VQuick`, no list entry and no value buffer. False when the general path must run (it
+    /// also produces every error).
+    #[inline]
+    fn assign_planes_fast(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        planes: [u64; 4],
+        len: u32,
+        mode: DelayMode,
+    ) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let r = target.unwrap_or(info.range);
+        let now_mode = delay == Time::ZERO
+            && match mode {
+                DelayMode::Transport => true,
+                DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
+            };
+        if !now_mode
+            || info.owner != self.pid
+            || r.len != len
+            || len == 0
+            || len > 64
+            || !info.range.contains(r)
+        {
+            return false;
+        }
+        let w = &mut self.st.waveforms[info.local as usize];
+        if !w.idle() || !w.phantom.is_empty() {
+            return false;
+        }
+        let s = &self.sh.signals[info.signal.0 as usize];
+        let ds = &s.drivers[info.slot as usize];
+        let (Buf::Planes { b: dv, .. }, Buf::Planes { b: cv, .. }) = (&ds.value, &s.cur) else {
+            return false;
+        };
+        let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
+        let rel = (r.offset - ds.range.offset) as usize;
+        let n = len as usize;
+        if s.skip_ok
+            && yavs_logic::wide::get_block(dv, rel, n) == planes
+            && yavs_logic::wide::get_block(cv, r.offset as usize, n) == planes
+            && (!ds.shared || s.sole(r))
+        {
+            w.phantom.push(r);
+            self.st.phantoms.push(info.local);
+            return true;
+        }
+        let now = self.sh.now;
+        w.vquick = Some(VQuick {
+            time: now,
+            elem: r.offset,
+            len,
+            planes,
         });
         self.st.scheduled.push((now, d));
         true

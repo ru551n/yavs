@@ -1759,9 +1759,18 @@ impl Machine {
         // One waveform element (nearly every assignment): no vectors.
         if self.r(n) == 1 {
             let t = to_time(self.load(w, Width::B8)? as i64)?;
-            let v = self.get_value(add_addr(w, 8)?, elem, len)?;
             let mode = self.delay_mode(mode, reject)?;
             let range = target.map(|_| sr.range).unwrap_or(None);
+            if elem == Elem::Logic {
+                // The plane blocks go to the kernel as they are in memory: no value is built.
+                let b = self.rd(add_addr(w, 8)?, u64::from(len).div_ceil(64) * 32)?;
+                let Some(c) = ctx.as_deref_mut() else {
+                    return rt_err("signal or wait operation during elaboration");
+                };
+                c.assign_blocks(d.id, range, t, b, mode)?;
+                return Ok(());
+            }
+            let v = self.get_value(add_addr(w, 8)?, elem, len)?;
             let Some(c) = ctx.as_deref_mut() else {
                 return rt_err("signal or wait operation during elaboration");
             };

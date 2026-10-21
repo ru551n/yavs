@@ -11,7 +11,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::error::ErrorKind;
 use crate::time::Time;
 use crate::value::{Buf, Elem, SignalType, bits, fill_bits};
-use yavs_logic::wide::nmask;
+use yavs_logic::wide::{nmask, put_block};
 
 /// Stable id of a signal: its index in creation (elaboration) order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -133,6 +133,20 @@ pub(crate) struct DriverSlot {
     pub off: Option<Vec<u64>>,
     /// Some element of `range` has another source too (`build_segments`).
     pub shared: bool,
+}
+
+impl DriverSlot {
+    /// Store the at most 64 logic elements of a vector quick transaction at `rel` (relative to
+    /// the driver) and connect them.
+    #[inline]
+    fn put_planes(&mut self, rel: usize, len: usize, planes: [u64; 4]) {
+        if let Buf::Planes { b, .. } = &mut self.value {
+            put_block(b, rel, len, planes, !0);
+        }
+        if let Some(off) = &mut self.off {
+            fill_bits(off, rel, len, false);
+        }
+    }
 }
 
 /// Elements with the same set of sources.
@@ -489,6 +503,9 @@ pub(crate) struct Signal {
     pub changed: SmallVec<[Range; 2]>,
     /// Ranges whose driving value must be recomputed this cycle.
     pub dirty: SmallVec<[Range; 2]>,
+    /// Ranges whose driving value was written when the transaction was applied (a vector quick
+    /// transaction on a sole source, `apply_driver`): only the effective value is left to update.
+    pub fast_dirty: SmallVec<[Range; 2]>,
     /// Ranges whose effective value must be recomputed this cycle.
     pub eff_dirty: SmallVec<[Range; 2]>,
     /// The simulation runs (not initialising): reports of its resolution function are
@@ -612,6 +629,7 @@ impl Signal {
             queued_down: 0,
             changed: SmallVec::new(),
             dirty: SmallVec::new(),
+            fast_dirty: SmallVec::new(),
             eff_dirty: SmallVec::new(),
             live: false,
             force_ev: SmallVec::new(),
@@ -866,19 +884,25 @@ impl Signal {
     }
 
     fn fuse_plain(&mut self) -> bool {
-        if !matches!(self.ty.elem, Elem::Logic)
-            || !self.groups.is_empty()
-            || self.guard.is_some()
-            || !self.force_ev.is_empty()
-            || self.force_drv.is_some()
-            || self.port_in.is_some()
-            || self.force_eff.is_some()
-            || !matches!(self.resolution, None | Some(Resolution::StdLogic))
-        {
+        if !self.plain() {
             return false;
         }
         self.fuse_n += 1;
         true
+    }
+
+    /// A logic signal with no layer, group, guard or resolution function to wait for: a sole
+    /// source's value is the signal's.
+    #[inline(always)]
+    fn plain(&self) -> bool {
+        matches!(self.ty.elem, Elem::Logic)
+            && self.groups.is_empty()
+            && self.guard.is_none()
+            && self.force_ev.is_empty()
+            && self.force_drv.is_none()
+            && self.port_in.is_none()
+            && self.force_eff.is_none()
+            && matches!(self.resolution, None | Some(Resolution::StdLogic))
     }
 
     /// The cycle's quick transactions are applied: the next cycle may finish some at once again.
@@ -1141,6 +1165,26 @@ impl Signal {
             }
             return;
         }
+        if let Some(q) = w.vquick
+            && q.time <= now
+        {
+            w.vquick = None;
+            let d = &mut self.drivers[slot as usize];
+            d.put_planes((q.elem - d.range.offset) as usize, q.len as usize, q.planes);
+            let (sole, r) = (!d.shared, Range::new(q.elem, q.len));
+            self.mark_active(r, now, cycle);
+            if sole && self.plain() {
+                // The elements' only source: the driving value follows now, the effective
+                // value in `finish_signal`.
+                if let Buf::Planes { b, .. } = &mut self.driving {
+                    put_block(b, q.elem as usize, q.len as usize, q.planes, !0);
+                }
+                push_range(&mut self.fast_dirty, r);
+            } else {
+                self.push_dirty(r);
+            }
+            return;
+        }
         // The usual case of a vector driver: one transaction, due now.
         if let [t] = w.pending.as_slice()
             && t.time <= now
@@ -1163,15 +1207,7 @@ impl Signal {
     /// Note that the driving value of `r` must be recomputed. A range that continues the last
     /// one extends it: one process per element of a vector gives one range, not one per element.
     pub fn push_dirty(&mut self, r: Range) {
-        match self.dirty.last_mut() {
-            Some(l) if l.end() == r.offset => l.len += r.len,
-            // Processes in descending element order (the drivers are numbered that way).
-            Some(l) if r.end() == l.offset => {
-                l.offset = r.offset;
-                l.len += r.len;
-            }
-            _ => self.dirty.push(r),
-        }
+        push_range(&mut self.dirty, r);
     }
 
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
@@ -1239,6 +1275,20 @@ impl Signal {
 
 /// The stamp of an element that never had an event or activity.
 const NEVER: u64 = u64::MAX;
+
+/// Add `r` to a list of ranges, extending the last one when `r` continues it (ascending, or
+/// descending: processes numbered the other way round).
+#[inline]
+fn push_range(list: &mut SmallVec<[Range; 2]>, r: Range) {
+    match list.last_mut() {
+        Some(l) if l.end() == r.offset => l.len += r.len,
+        Some(l) if r.end() == l.offset => {
+            l.offset = r.offset;
+            l.len += r.len;
+        }
+        _ => list.push(r),
+    }
+}
 
 fn set_event(stamps: &mut [u64], n: usize, e: usize, cycle: u64, now: Time) {
     stamps[e] = cycle;
@@ -1405,6 +1455,10 @@ pub(crate) struct Waveform {
     /// no list entry and no value buffer. It matures in the next update; anything that
     /// schedules or inspects `pending` goes through `spill` or `idle` first.
     pub quick: Option<Quick>,
+    /// The vector counterpart of `quick`: a zero-delay assignment of at most 64 logic elements
+    /// (`Ctx::assign`, `Ctx::assign_blocks`) as plane words, no list entry, no value buffer.
+    /// At most one of `quick`, `vquick` and `pending` is in use; `spill` and `idle` as for `quick`.
+    pub vquick: Option<VQuick>,
     /// Values of applied transactions, reused by the next assignments (no allocation per
     /// transaction in the steady state).
     pub spare: Vec<Buf>,
@@ -1420,6 +1474,17 @@ pub(crate) struct Quick {
     /// The element, of the signal (not of the driver).
     pub elem: u32,
     pub code: u8,
+}
+
+/// A pending zero-delay assignment of at most 64 logic elements.
+#[derive(Clone, Copy)]
+pub(crate) struct VQuick {
+    pub time: Time,
+    /// The first element, of the signal (not of the driver).
+    pub elem: u32,
+    pub len: u32,
+    /// The plane words, element `elem` in bit 0, bits from `len` up zero.
+    pub planes: [u64; 4],
 }
 
 /// Per element of `t` (relative), whether its value equals `first` (covering `r`).
@@ -1452,19 +1517,33 @@ fn same_value(t: &Txn, first: &Option<Buf>, r: Range) -> Vec<u64> {
 impl Waveform {
     /// Nothing is pending.
     pub fn idle(&self) -> bool {
-        self.pending.is_empty() && self.quick.is_none()
+        self.pending.is_empty() && self.quick.is_none() && self.vquick.is_none()
     }
 
     /// The time of the first pending transaction.
     pub fn first_time(&self) -> Option<Time> {
-        match &self.quick {
-            Some(q) => Some(q.time),
-            None => self.pending.first().map(|t| t.time),
+        match (&self.quick, &self.vquick) {
+            (Some(q), _) => Some(q.time),
+            (_, Some(q)) => Some(q.time),
+            _ => self.pending.first().map(|t| t.time),
         }
     }
 
     /// Turn the quick transaction into a list entry, for the paths that preempt and merge.
     pub fn spill(&mut self) {
+        if let Some(q) = self.vquick.take() {
+            self.pending.insert(
+                0,
+                Txn {
+                    time: q.time,
+                    range: Range::new(q.elem, q.len),
+                    value: Some(Buf::Planes {
+                        len: q.len as usize,
+                        b: smallvec![q.planes],
+                    }),
+                },
+            );
+        }
         if let Some(q) = self.quick.take() {
             self.pending.insert(
                 0,
@@ -1551,6 +1630,16 @@ impl Waveform {
                 fill_bits(off, (q.elem - d.range.offset) as usize, 1, false);
             }
             applied(Range::new(q.elem, 1));
+            return;
+        }
+        if let Some(q) = self.vquick {
+            if q.time > now {
+                return self.apply_pending(now, d, applied);
+            }
+            self.vquick = None;
+            let rel = (q.elem - d.range.offset) as usize;
+            d.put_planes(rel, q.len as usize, q.planes);
+            applied(Range::new(q.elem, q.len));
             return;
         }
         self.apply_pending(now, d, applied);

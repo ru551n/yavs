@@ -1082,3 +1082,103 @@ fn compiled_tier_has_entries_of_its_own() {
         "the interpreter's entry is kept"
     );
 }
+
+/// The object files of the compiled tier in the work library's cache (#505).
+#[cfg(feature = "llvm")]
+fn objects(e: &Env) -> Vec<PathBuf> {
+    std::fs::read_dir(e.cache_dir().join("obj"))
+        .map(|d| {
+            d.flatten()
+                .map(|f| f.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "img"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Compiled code is kept in the cache and linked by the next run, at one and four threads, with
+/// the output of a run that compiles everything; `--tier=auto` gives that output whatever it
+/// finds in the cache (whether its compile thread got to store anything before the run ended
+/// depends on timing; `yavs-llvm` `tests/objcache.rs` checks its hits); a damaged object is
+/// compiled again and `yavs cache clean` removes them (#505).
+#[cfg(feature = "llvm")]
+#[test]
+fn compiled_code_is_cached() {
+    let e = Env::new("objcache");
+    let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
+    let cold = e.run(&["--tier=llvm"]);
+    assert!(note(&cold, "obj stored"), "{cold:?}");
+    let warm = e.run(&["--tier=llvm"]);
+    assert!(
+        note(&warm, "obj hit") && !note(&warm, "obj stored"),
+        "{warm:?}"
+    );
+    let warm4 = e.run(&["--tier=llvm", "--threads", "4"]);
+    assert!(
+        note(&warm4, "obj hit") && !note(&warm4, "obj stored"),
+        "{warm4:?}"
+    );
+    for o in [&cold, &warm, &warm4] {
+        assert_eq!(plain, visible(o));
+    }
+    let auto = ["--tier=auto", "--tier-heat=1,0,0"];
+    let plain = visible(&e.run(&[&["--no-cache"][..], &auto].concat()));
+    for _ in 0..3 {
+        assert_eq!(plain, visible(&e.run(&auto)));
+    }
+    let objs = objects(&e);
+    assert!(!objs.is_empty());
+    for f in &objs {
+        std::fs::write(f, b"not an object").expect("write");
+    }
+    let r = e.run(&["--tier=llvm"]);
+    assert!(note(&r, "obj stored") && !note(&r, "obj hit"), "{r:?}");
+    assert!(r.stdout.contains("K=7"), "{r:?}");
+    let work = e.work();
+    let o = e.yavs(&["cache", "clean", "--work", &work]);
+    assert_eq!(o.code, 0, "{o:?}");
+    assert!(objects(&e).is_empty() && !e.cache_dir().exists());
+}
+
+/// Parallel runs that compile the same code into one library all get the right output and leave
+/// one intact entry per module (#505).
+#[cfg(feature = "llvm")]
+#[test]
+fn parallel_runs_share_compiled_code() {
+    let e = Env::new("objparallel");
+    let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| s.spawn(|| visible(&e.run(&["--tier=llvm"]))))
+            .collect();
+        for h in hs {
+            assert_eq!(plain, h.join().expect("join"));
+        }
+    });
+    assert_eq!(objects(&e).len(), 1);
+    let warm = e.run(&["--tier=llvm"]);
+    assert!(
+        note(&warm, "obj hit") && !note(&warm, "obj stored"),
+        "{warm:?}"
+    );
+    assert_eq!(plain, visible(&warm));
+}
+
+/// A read-only work library: the compiled tier runs, compiles and stores nothing (#505).
+#[cfg(all(unix, feature = "llvm"))]
+#[test]
+fn read_only_library_gets_no_compiled_code() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new("objreadonly");
+    let work = e.tmp.join("work");
+    let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let writable = std::fs::File::create(work.join("probe")).is_ok();
+    let r = e.run(&["--tier=llvm"]);
+    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    if writable {
+        return; // running as a user the mode does not bind
+    }
+    assert_eq!(plain, visible(&r));
+    assert!(!e.cache_dir().exists());
+}

@@ -103,6 +103,12 @@ are kept once next to the library (about 10 MB for a large verification library;
 directory keeps at most 512 MiB of entries), made when a few different test cases (four) have asked for them, so the
 first run of a new test case does not make them again.
 
+With ``--tier=llvm`` or ``--tier=auto`` the machine code of the compiled tier is kept there as
+well (``yavs-cache/obj/``). The next run of the design, and the other test cases of a testbench,
+link that code instead of compiling it again; ``--tier=auto`` uses the stored code of a hot
+computation loop as soon as the loop is hot, without waiting until compiling it would pay off. The
+code is the same that compiling makes, so the results are too.
+
 * ``--no-cache`` (``elab``, ``run``) neither reads nor writes the cache.
 * ``yavs cache clean --work=lib:out/lib [--map=NAME:PATH ...]`` removes the entries of those
   libraries. Deleting ``yavs-cache/`` by hand does the same.

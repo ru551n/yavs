@@ -395,6 +395,10 @@ struct Worker {
     /// for (`charge`); emptied when a function is first seen.
     leaf: std::collections::HashMap<FuncId, Option<FuncId>>,
     seen: usize,
+    /// Per function: looked up in the compilation cache already (`probe`).
+    probed: Vec<bool>,
+    /// A `probe` is running: a failure is no note and leaves the function to compile later.
+    probing: bool,
 }
 
 impl Worker {
@@ -586,6 +590,47 @@ impl Worker {
         Some(ids)
     }
 
+    /// Whether `id` (interpreted, seen for `seen` microseconds) should be looked up in the
+    /// compilation cache now: a compute loop (`compute`) once it is as hot as compiling it at all
+    /// needs (`Heat::threshold`) but the payback rule or the budget still keeps it waiting (#505).
+    /// Other functions wait for the payback rule as before: linked that early, the compiled code
+    /// of testbench functions made runs slower (`docs/decisions.md` "Compiled code in the
+    /// compilation cache").
+    fn wants_probe(&mut self, id: FuncId, seen: u64) -> bool {
+        let Some(f) = self.prog.func(id) else {
+            return false;
+        };
+        let k = id.0 as usize;
+        if self.probed[k] || self.done[k][0] || seen < self.heat.threshold(f) {
+            return false;
+        }
+        self.probed[k] = true;
+        crate::objcache::enabled() && seen < self.threshold(id, false) && self.is_compute(id)
+    }
+
+    /// Link `id` from the compilation cache if it is there, at once and outside the budget (a
+    /// hit costs no codegen), with what compiles with it (`tree`: callees that miss are compiled);
+    /// whether it was there. A miss leaves it to the payback rule; its generation counts as
+    /// compile time spent.
+    fn probe(&mut self, id: FuncId) -> bool {
+        let ids = self.tree(id);
+        let Some(&(root, part)) = ids.first() else {
+            return false;
+        };
+        let t0 = std::time::Instant::now();
+        self.probing = true;
+        let hit = crate::objcache::cached_only(|| self.compile(root, false, true, part));
+        self.probing = false;
+        if !hit {
+            self.spent += u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
+            return false;
+        }
+        for &(i, p) in &ids[1..] {
+            self.compile(i, false, false, p);
+        }
+        true
+    }
+
     /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled.
     fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
         // Each level once; elaboration code never runs again. Native-frame code of a callee is
@@ -657,6 +702,12 @@ impl Worker {
                 (self.note)(id, level, Ok(took));
                 true
             }
+            Err(_) if self.probing => {
+                if part != Part::Native {
+                    self.done[id.0 as usize][usize::from(o2)] = false;
+                }
+                false
+            }
             Err(why) => {
                 // A short function stays interpreted as long as nothing compiled calls it;
                 // it compiles with a caller (`tree`).
@@ -719,6 +770,8 @@ impl AutoTier {
             note,
             leaf: Default::default(),
             seen: 0,
+            probed: vec![false; nfuncs],
+            probing: false,
         };
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
@@ -730,6 +783,8 @@ impl AutoTier {
                 let mut asked: std::collections::VecDeque<FuncId> = Default::default();
                 let mut cands: Vec<FuncId> = Vec::new();
                 let mut later: Vec<FuncId> = Vec::new();
+                // Functions to look up in the compilation cache (`Worker::probe`).
+                let mut probes: Vec<FuncId> = Vec::new();
                 let upgrade = opt != OptLevel::O2;
                 loop {
                     match rx.recv_timeout(period) {
@@ -751,6 +806,9 @@ impl AutoTier {
                                 *t += dt;
                                 w.total += dt;
                                 let (now, at) = (*t, w.threshold(id, compiled));
+                                if !compiled && w.wants_probe(id, now) {
+                                    probes.push(id);
+                                }
                                 if was < at && now >= at {
                                     if !compiled {
                                         cands.push(id);
@@ -768,9 +826,14 @@ impl AutoTier {
                         while let Ok(id) = rx.try_recv() {
                             asked.push_back(id);
                         }
-                        let Some((ids, o2, sampled)) = asked
-                            .pop_front()
-                            .map(|id| (vec![(id, Part::Both)], false, false))
+                        let probe = if asked.is_empty() { probes.pop() } else { None };
+                        let Some((ids, o2, sampled)) = probe
+                            .map(|id| (vec![(id, Part::Both)], false, true))
+                            .or_else(|| {
+                                asked
+                                    .pop_front()
+                                    .map(|id| (vec![(id, Part::Both)], false, false))
+                            })
                             .or_else(|| later.pop().map(|id| (vec![(id, Part::Both)], true, false)))
                             .or_else(|| w.pick(&mut cands).map(|ids| (ids, false, true)))
                         else {
@@ -781,6 +844,13 @@ impl AutoTier {
                         sh.busy.store(true, Ordering::SeqCst);
                         if sh.halt.load(Ordering::SeqCst) {
                             break;
+                        }
+                        if let Some(id) = probe {
+                            if w.probe(id) {
+                                cands.retain(|&c| c != id);
+                            }
+                            sh.busy.store(false, Ordering::SeqCst);
+                            continue;
                         }
                         for (i, (id, part)) in ids.into_iter().enumerate() {
                             let done = w.compile(id, o2, sampled && i == 0, part);

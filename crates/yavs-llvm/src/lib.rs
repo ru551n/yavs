@@ -22,6 +22,8 @@ mod lazy;
 #[cfg(feature = "llvm")]
 mod lower;
 #[cfg(feature = "llvm")]
+mod objcache;
+#[cfg(feature = "llvm")]
 mod regs;
 #[cfg(feature = "llvm")]
 pub mod spike;
@@ -32,3 +34,5 @@ pub use auto::{AutoTier, Heat, Note, exit_now};
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
 #[cfg(feature = "llvm")]
 pub use lower::{LlvmTier, compile};
+#[cfg(feature = "llvm")]
+pub use objcache::{cache_stats, set_cache};

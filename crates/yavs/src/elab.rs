@@ -559,6 +559,11 @@ fn use_tier(
         )
     };
     let opt = yavs_llvm::OptLevel::O2;
+    // Compiled code is kept in the compilation cache of the work library (#505).
+    let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
+    if a.tier != TierArg::Interp && !a.common.no_cache && !work.is_empty() {
+        yavs_llvm::set_cache(Some(std::path::Path::new(work)));
+    }
     match a.tier {
         TierArg::Interp => Ok(None),
         TierArg::Llvm => {
@@ -632,6 +637,10 @@ fn use_llvm(rt: &yavs_interp::Runtime, tier: yavs_llvm::LlvmTier, verbose: bool)
             tier.inline,
             kinds.join(", "),
             tier.native_frames()
+        );
+        let (hits, stored) = yavs_llvm::cache_stats();
+        eprintln!(
+            "note: --tier=llvm: {hits} modules linked from the compilation cache, {stored} compiled and stored"
         );
     }
     rt.set_tier(std::sync::Arc::new(tier));

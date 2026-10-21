@@ -1235,7 +1235,7 @@ pub(crate) fn compile_one(
     }
     let times = std::env::var_os("YAVS_LLVM_TIMES").is_some();
     let t0 = std::time::Instant::now();
-    let mut m = loop {
+    let m = loop {
         let m = Module::new(&name);
         let g = Gen::new(&m);
         // SAFETY: generation of well-formed IR in our own module; a frame-mode function that
@@ -1255,13 +1255,18 @@ pub(crate) fn compile_one(
     };
     let t1 = std::time::Instant::now();
     let ninst = if times { m.instruction_count() } else { 0 };
-    m.verify().map_err(llvm)?;
-    let t2 = std::time::Instant::now();
     let full = crate::auto::compute(prog, f);
-    m.optimize_as(opt, full).map_err(llvm)?;
-    let t3 = std::time::Instant::now();
-    let nopt = if times { m.instruction_count() } else { 0 };
-    jit.add(m).map_err(llvm)?;
+    let (mut t2, mut t3, mut nopt) = (t1, t1, 0);
+    // Verified and optimised only when it is not linked from the compilation cache (#505).
+    crate::objcache::add(jit, m, opt, full, |m| {
+        m.verify()?;
+        t2 = std::time::Instant::now();
+        m.optimize_as(opt, full)?;
+        t3 = std::time::Instant::now();
+        nopt = if times { m.instruction_count() } else { 0 };
+        Ok(())
+    })
+    .map_err(llvm)?;
     let run = if part == Part::Native {
         None
     } else {
@@ -1350,7 +1355,7 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         Some((m, names, notes))
     };
     // A native function that does not verify: everything again without native frames.
-    let (mut m, names, more) = match gen_all(&nc) {
+    let (m, names, more) = match gen_all(&nc) {
         Some(r) => r,
         None => {
             nc.clear();
@@ -1358,10 +1363,11 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         }
     };
     notes.extend(more);
-    m.verify()?;
-    m.optimize_as(opt, false)?;
     let mut jit = new_jit(opt)?;
-    jit.add(m)?;
+    crate::objcache::add(&mut jit, m, opt, false, |m| {
+        m.verify()?;
+        m.optimize_as(opt, false)
+    })?;
     let mut funcs = vec![None; prog.funcs.len()];
     for (id, name, nregs) in names {
         let addr = jit.lookup(&name)?;

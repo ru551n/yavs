@@ -66,6 +66,44 @@ const CODEGEN_ARGS: &str = "-enable-misched=false -enable-post-misched=false \
     -disable-copyprop -disable-post-ra -disable-early-ifcvt -disable-postra-machine-licm \
     -disable-postra-machine-sink -disable-early-taildup";
 
+/// Copies and disposes an LLVM memory buffer.
+unsafe fn take_buffer(buf: LLVMMemoryBufferRef) -> Vec<u8> {
+    if buf.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the caller passes a live buffer, which is ours to dispose.
+    unsafe {
+        let v = std::slice::from_raw_parts(
+            LLVMGetBufferStart(buf) as *const u8,
+            LLVMGetBufferSize(buf),
+        )
+        .to_vec();
+        LLVMDisposeMemoryBuffer(buf);
+        v
+    }
+}
+
+/// What machine code depends on besides the module, the level and `optimize_as`'s `full`: the
+/// target triple, the CPU baseline, the LLVM version, the code generator switches and a custom
+/// pipeline (part of the key of the object cache).
+pub fn target_id() -> String {
+    init();
+    let (mut major, mut minor, mut patch) = (0, 0, 0);
+    // SAFETY: plain queries; the triple is an owned LLVM message.
+    unsafe {
+        LLVMGetVersion(&mut major, &mut minor, &mut patch);
+        let triple = take_message(LLVMGetDefaultTargetTriple());
+        format!(
+            "{triple} {} llvm-{major}.{minor}.{patch} args={} pipeline={}",
+            portable_cpu().to_string_lossy(),
+            std::env::var("YAVS_LLVM_ARGS")
+                .as_deref()
+                .unwrap_or(CODEGEN_ARGS),
+            std::env::var("YAVS_LLVM_PIPELINE").unwrap_or_default(),
+        )
+    }
+}
+
 fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -298,6 +336,39 @@ impl Module {
         }
     }
 
+    /// The module as bitcode: what its machine code is made from (the key of the object cache).
+    pub fn bitcode(&self) -> Vec<u8> {
+        // SAFETY: the module is live; the buffer is copied and disposed.
+        unsafe {
+            take_buffer(llvm_sys::bit_writer::LLVMWriteBitcodeToMemoryBuffer(
+                self.module,
+            ))
+        }
+    }
+
+    /// The machine code of the module, after `optimize(opt)`, as an object file: what ORC
+    /// makes of the module when it is added with `Jit::add` to a JIT made at `opt`.
+    pub fn emit(&self, opt: OptLevel) -> Result<Vec<u8>> {
+        let tm = target_machine(opt)?;
+        let mut msg = ptr::null_mut();
+        let mut buf = ptr::null_mut();
+        // SAFETY: tm and module are live; the message and the buffer are taken over.
+        unsafe {
+            let bad = LLVMTargetMachineEmitToMemoryBuffer(
+                tm,
+                self.module,
+                LLVMCodeGenFileType::LLVMObjectFile,
+                &mut msg,
+                &mut buf,
+            );
+            LLVMDisposeTargetMachine(tm);
+            if bad != 0 {
+                return Err(Error(take_message(msg)));
+            }
+            Ok(take_buffer(buf))
+        }
+    }
+
     /// Hands the module and its context to ORC.
     fn into_thread_safe(self) -> LLVMOrcThreadSafeModuleRef {
         let me = std::mem::ManuallyDrop::new(self);
@@ -412,6 +483,22 @@ impl Jit {
                 LLVMOrcDisposeThreadSafeModule(tsm);
             }
             check(err)
+        }
+    }
+
+    /// Adds an object file (`Module::emit`, or one the object cache kept) to the main dylib.
+    /// ORC links it when one of its symbols is looked up: its references to the runtime
+    /// callbacks are resolved by name to this JIT's absolute symbols.
+    pub fn add_object(&mut self, obj: &[u8]) -> Result<()> {
+        // SAFETY: the buffer is a copy that LLJIT takes over, also on failure.
+        unsafe {
+            let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
+                obj.as_ptr() as *const c_char,
+                obj.len(),
+                c"yavs-object".as_ptr(),
+            );
+            let jd = LLVMOrcLLJITGetMainJITDylib(self.raw);
+            check(LLVMOrcLLJITAddObjectFile(self.raw, jd, buf))
         }
     }
 

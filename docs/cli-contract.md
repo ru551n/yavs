@@ -196,6 +196,12 @@ identical to a run without it, at any `--threads`.
   prefix, nothing was instantiated at elaboration time and the run has no coverage counters and is not
   `--tier=llvm`; otherwise the run lowers as before. Results, messages and waveforms are identical with
   and without it. A library directory keeps at most 96 entries and 512 MiB of them.
+- With `--tier=llvm` or `--tier=auto`, the machine code of every module the compiled tier makes is
+  kept in `<dir>/yavs-cache/obj/obj-<key>.img` of the work library (#505); a later run that makes a
+  module with the same key (the same generated code, options, target and yavs build) links it instead
+  of compiling it. Same rules: identical results, damaged or foreign entries ignored and compiled
+  again, atomic writes, nothing stored into a directory that cannot be written, `--no-cache`, `yavs
+  cache clean`. The directory keeps at most 4096 objects and 256 MiB, apart from the 96 entries.
 - `yavs analyze` does not read or write the cache.
 
 ## 4. `yavs analyze`

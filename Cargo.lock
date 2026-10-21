@@ -1602,6 +1602,8 @@ version = "0.8.0"
 dependencies = [
  "libloading",
  "llvm-sys",
+ "tempfile",
+ "yavs-cache",
  "yavs-diag",
  "yavs-interp",
  "yavs-ir",

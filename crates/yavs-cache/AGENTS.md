@@ -7,7 +7,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 - The store of the compilation cache (`docs/decisions.md` "Compilation cache", #407): a [`Key`]
   (sha256 over everything an entry depends on, built with `KeyBuilder`) maps to a byte string in
   `<library dir>/yavs-cache/<kind>-<key>.img`. Atomic writes, validation of everything read,
-  pruning to the newest `MAX_ENTRIES`, `Store::clean`.
+  pruning to the newest `MAX_ENTRIES`, `Store::clean`. The compiled code of the LLVM tier has a
+  store of its own in the subdirectory `obj/` (`Store::objects_of_library`, #505).
 - Does not: know VHDL, `Db`, or when to cache (`crates/yavs/src/cache.rs` decides; `yavs-sem`
   `image.rs` makes the bytes), lock anything, or ever fail a run: a write error is silent (`YAVS_LOG=debug`
   notes it), a bad read is a miss.
@@ -17,7 +18,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | File | Responsibility |
 |---|---|
-| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `note`/`noted`: an empty `.seen` file that says a caller wanted an entry once, newest `MAX_NOTES` kept (trimmed once 64 past it), pruning on demand (`needs_sweep`: names are counted first, sizes and ages only over `MAX_ENTRIES`, after a big entry, or every 5 s via `.swept`), `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the payload of a validated entry, mapped from the file: it implements `AsRef<[u8]>`, so it becomes a `yavs_diag::Buffer` and readers keep ranges of it), tests |
+| `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`of_library`, `objects_of_library` with the `OBJ_*` limits, `get`, `put`, `note`/`noted`: an empty `.seen` file that says a caller wanted an entry once, newest `MAX_NOTES` kept (trimmed once 64 past it), pruning on demand (`needs_sweep`: names are counted first, sizes and ages only over `MAX_ENTRIES`, after a big entry, or every 5 s via `.swept`), `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the payload of a validated entry, mapped from the file: it implements `AsRef<[u8]>`, so it becomes a `yavs_diag::Buffer` and readers keep ranges of it), tests |
 | `src/map.rs` | Maps an entry file (reads it where mapping is not possible), `trim_heap` (`malloc_trim`); the only `unsafe` in the crate |
 
 ## 3. Design decisions that bind this module
@@ -29,6 +30,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Writes: temporary file in the same directory, then `rename`; no lock | Concurrent runs never see half an entry; readers need no lock | same |
 | `put` never returns an error to the caller | The cache can only make a run faster | same |
 | Pruning by modification time, which `get` refreshes | Keep what is in use | same |
+| Compiled code in `obj/` under limits of its own (`OBJ_MAX_ENTRIES` 4096, `OBJ_MAX_BYTES` 256 MiB); `clean` of the library's store removes it too | One small object per compiled module would otherwise push the stage entries out | `docs/decisions.md` "Compiled code in the compilation cache" (#505) |
 | An entry is mapped, validated before use, and never written in place | No read and no copy of a 7 MB image; a mapping stays valid when the name is replaced or removed (Unix) | `docs/decisions.md` "Zero-copy cache entries" |
 
 ## 4. Invariants and pitfalls
@@ -51,4 +53,4 @@ cargo test -p yavs --test cache      # the end-to-end gate
 
 ## 6. Coordination
 
-- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`), `pre` (the analysis of the first files of a closure, shared by closures that start alike) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`) and `ir` (the lowered design with the optimised copies of the functions earlier runs called, `yavs-elab` `sim.rs` `LoweringKey`, #479) and, in the cache of the library of a prefix's last file, `lib`, `libopt` and `libinit` (the lowered library, its optimised functions and the initial state of its packages, `yavs-elab` `libstage.rs`); `Store::claim` keeps parallel runs from all making one big entry; a directory keeps at most `MAX_BYTES` (512 MiB) of entries beside `MAX_ENTRIES`; stage 3 (compiled code) would add one.
+- #407 (all stages). Kinds in use: `sem` (analysis image, `crates/yavs/src/cache.rs`), `pre` (the analysis of the first files of a closure, shared by closures that start alike) and `low` (lowered run-time packages, `yavs-elab` `pkgcall::package_lowerer` through `yavs_sem::StageCache`) and `ir` (the lowered design with the optimised copies of the functions earlier runs called, `yavs-elab` `sim.rs` `LoweringKey`, #479) and, in the cache of the library of a prefix's last file, `lib`, `libopt` and `libinit` (the lowered library, its optimised functions and the initial state of its packages, `yavs-elab` `libstage.rs`); `Store::claim` keeps parallel runs from all making one big entry; a directory keeps at most `MAX_BYTES` (512 MiB) of entries beside `MAX_ENTRIES`. Stage 3, compiled code (#505): kind `obj` in `obj/` (`yavs-llvm` `objcache.rs`), one object file per compiled module.

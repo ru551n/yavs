@@ -3607,3 +3607,57 @@ Entries that hold generated code (`low`, `init`, `ir`, `lib`, `libopt`, `libinit
   hash is empty and the id falls back to the executable's modification time. `YAVS_CACHE_SALT` is mixed in as
   well (stands in for another build in tests).
 - **Cost.** A fingerprint is six booleans formatted per key (a few keys per run): no measurable startup change.
+
+## Compiled code in the compilation cache (yavs-llvm, yavs-cache, CLI, #505, #407; maintainer decision 2026-10-21: the cache pays off, build it)
+
+The compiled tier compiled every module again on every run: an eager `--tier=llvm` compile of a library testbench
+is one module of minutes, and every test case of a suite paid it again. Decisions:
+
+- **What is kept.** The object file of every module the tier compiles: `--tier=llvm`, the program in one module;
+  `--tier=auto`, one module per hot function (with the native-frame code of what it calls, `Worker::tree`), at
+  each level. It is stored as kind `obj` in `<work dir>/yavs-cache/obj/` (`yavs-cache`
+  `Store::objects_of_library`) and a later module with the same key is linked from it with ORC
+  (`LLVMOrcLLJITAddObjectFile`) instead of being optimised and compiled. The CLI names the work library
+  (`yavs_llvm::set_cache`) unless `--no-cache` is given.
+- **Key: the generated LLVM IR, not the yavs IR** (yavs decision). The key is the module's bitcode before the
+  pass pipeline, the level, the target (triple, the CPU baseline, the LLVM version), the build and switch
+  fingerprint of #491 (`yavs_ir::opt::fingerprint`) and the build id and cache format (`KeyBuilder`). The
+  generator reads more than the function it compiles (which callees run on native frames, constant bytes it
+  copies into the module, static layouts, the tier switches), so a key of the yavs IR would have to name all
+  of that; the LLVM IR is everything the machine code depends on, so a hit is by construction the code a
+  compile makes, and anything that changes the code is a miss. Ceiling: the generation itself still runs on
+  a hit (a small part of a compile).
+- **Nothing absolute in the code** (audit of `lower.rs`, 2026-10-21). The runtime callbacks (`yavs_rt_*`) are
+  external symbols that ORC resolves to this process's addresses when it links the object (`new_jit`);
+  constants and tables known at generation time are private data of the module (`const_global`, `table`,
+  `u32_table`); compiled callees in other modules are reached through `Mem::ntab` at run time; offsets in
+  `Mem` and `TierFrame` are constants of the build, which is in the key. No host pointer is an IR constant.
+  The tests check it: a warm run is a new process (another address layout) and links the stored object.
+  New code must keep it so (`crates/yavs-llvm/AGENTS.md` section 4).
+- **Cold and warm make the same code.** With a store, every module is compiled to an object by
+  `Module::emit` with the target machine the JIT uses (portable CPU, JIT code model, the level) and linked
+  through the object layer, on a miss as on a hit; without one (`--no-cache`) the module goes to ORC as IR as
+  before, which compiles it with the same target machine.
+- **The store.** A subdirectory with limits of its own (4096 entries, 256 MiB, least recently used first),
+  so that one small object per compiled function never pushes the stage entries out. Writes are a temporary
+  file and a rename, so parallel runs (a suite at `-p N` into one library) need no lock and at worst compile
+  one module twice and write the same bytes; a directory that cannot be written gets nothing and the run
+  compiles as before; an entry is validated (header, length, checksum) and one ORC does not take is a miss,
+  compiled again and replaced. `yavs cache clean` removes it with the library's entries.
+- **Tiered mode: a hit links instead of compiling.** Whatever `--tier=auto` decides to compile (the first level,
+  the O2 recompile, the eager `--tier-heat` mode) is linked from the cache when it is there, and the budget is
+  charged the time that took. A compute loop (`compute`), which runs several times faster compiled, does not
+  wait for the payback rule when it is stored: once it is as hot as compiling it needs at all
+  (`Heat::threshold`), the compile thread looks it up (`Worker::probe`: generation and lookup,
+  `objcache::cached_only`) and links a hit at once, outside the budget, with what compiles with it; a miss
+  waits for the payback rule and its generation counts as compile time spent. Other functions keep the payback
+  rule: linked that early, the compiled testbench functions of three library testbenches made their warm runs
+  10% to 22% slower (pinned A/B, 7 runs), while the compute benchmark ran 21% faster.
+- **What is shared.** A module is shared when its LLVM IR is identical. Within a work library: every later run
+  of a design and every test case of a testbench (top-level generics are not part of the code). Across
+  designs: the code names function, constant, type and table ids (symbol names, the call table, arguments of
+  the runtime calls), which depend on the lowering of the design, so the program of `--tier=llvm` is never
+  shared between testbenches, and a per-function module of `--tier=auto` is when the library's functions come
+  from one lowered library (`lib`, "Library stages"). Ceiling: one store per run, the work library's
+  (`ponytail` in `objcache.rs`); sharing library code between designs in different work libraries, or
+  between the programs of different testbenches, needs code that names no design-dependent ids.

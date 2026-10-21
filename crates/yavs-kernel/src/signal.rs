@@ -131,6 +131,8 @@ pub(crate) struct DriverSlot {
     pub value: Buf,
     /// Disconnected elements (null transaction), relative to `range`; guarded signals only.
     pub off: Option<Vec<u64>>,
+    /// Some element of `range` has another source too (`build_segments`).
+    pub shared: bool,
 }
 
 /// Elements with the same set of sources.
@@ -223,6 +225,12 @@ impl Waiters {
             trig: Trig::Empty,
             cache: None,
         }
+    }
+
+    /// No process has ever waited on the signal.
+    #[inline(always)]
+    pub fn is_unwatched(&self) -> bool {
+        self.lists.is_empty()
     }
 
     /// Forget the wake list (a waiter changed).
@@ -499,6 +507,10 @@ pub(crate) struct Signal {
     /// plane blocks), for logic signals of at most `CODES_MAX` elements; empty otherwise. Kept
     /// in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element is one load.
     codes: Vec<u8>,
+    /// Quick transactions of this cycle finished at once (`apply_driver`), and whether one of
+    /// them made an event not yet reported to the kernel.
+    fuse_n: u32,
+    pub fused_event: bool,
 }
 
 /// The longest logic signal that keeps `Signal::codes`.
@@ -575,6 +587,8 @@ impl Signal {
             skip_ok: false,
             seg_hint: 0,
             codes: Vec::new(),
+            fuse_n: 0,
+            fused_event: false,
         };
         sig.sync_codes();
         sig
@@ -664,6 +678,16 @@ impl Signal {
             }
             let drivers: SmallVec<[u32; 2]> = active.iter().copied().collect();
             self.segments.push(Segment { range, drivers });
+        }
+        for d in &mut self.drivers {
+            d.shared = false;
+        }
+        for seg in &self.segments {
+            if seg.drivers.len() > 1 {
+                for &i in &seg.drivers {
+                    self.drivers[i as usize].shared = true;
+                }
+            }
         }
     }
 
@@ -763,6 +787,59 @@ impl Signal {
             }
         }
         Ok(())
+    }
+
+    /// Whether a quick transaction of this cycle may be finished at once (`finish_quick`): the
+    /// signal has no layer, group, guard or resolution function to wait for, and not too many
+    /// elements of it change in one cycle (a block pass is cheaper for those).
+    #[inline(always)]
+    fn fuse_ok(&mut self) -> bool {
+        // ponytail: four per cycle and signal; more go through the dirty ranges.
+        const FUSE_MAX: u32 = 4;
+        self.fuse_n < FUSE_MAX && self.fuse_plain()
+    }
+
+    fn fuse_plain(&mut self) -> bool {
+        if !matches!(self.ty.elem, Elem::Logic)
+            || !self.groups.is_empty()
+            || self.guard.is_some()
+            || !self.force_ev.is_empty()
+            || self.force_drv.is_some()
+            || self.port_in.is_some()
+            || self.force_eff.is_some()
+            || !matches!(self.resolution, None | Some(Resolution::StdLogic))
+        {
+            return false;
+        }
+        self.fuse_n += 1;
+        true
+    }
+
+    /// The cycle's quick transactions are applied: the next cycle may finish some at once again.
+    #[inline(always)]
+    pub fn end_apply(&mut self) -> bool {
+        self.fuse_n = 0;
+        std::mem::take(&mut self.fused_event)
+    }
+
+    /// `finish_one` for element `e` of the sole source, given its new `code`.
+    #[inline]
+    fn finish_quick(&mut self, e: usize, code: u8, now: Time, cycle: u64) {
+        self.driving.put_code(e, code);
+        let old = self.cur.swap_code(e, code);
+        if old == code {
+            return;
+        }
+        if let Some(c) = self.codes.get_mut(e) {
+            *c = code;
+        }
+        set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
+        match self.changed.last_mut() {
+            Some(run) if run.end() as usize == e => run.len += 1,
+            _ => self.changed.push(Range::new(e as u32, 1)),
+        }
+        self.last_value.put_code(e, old);
+        self.fused_event = true;
     }
 
     /// `compute_driving` and `update_effective` of the one logic element `e`, when its only
@@ -984,7 +1061,12 @@ impl Signal {
             let st = self.stamps.as_mut_slice();
             st[n + e] = cycle;
             st[3 * n + e] = now.raw();
-            self.push_dirty(Range::new(q.elem, 1));
+            if !self.drivers[slot as usize].shared && self.fuse_ok() {
+                // The element's only source: its driving and effective values follow now.
+                self.finish_quick(e, q.code, now, cycle);
+            } else {
+                self.push_dirty(Range::new(q.elem, 1));
+            }
             return;
         }
         // The usual case of a vector driver: one transaction, due now.
@@ -1452,6 +1534,7 @@ mod tests {
         let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 10), None);
         for (o, l) in [(0, 10), (5, 3), (2, 1), (4, 0), (8, 2)] {
             sig.drivers.push(DriverSlot {
+                shared: false,
                 range: Range::new(o, l),
                 value: Buf::zeroed(ty.elem, l as usize),
                 off: None,

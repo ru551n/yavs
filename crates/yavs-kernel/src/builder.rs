@@ -716,6 +716,11 @@ fn add_source(s: &mut Signal, range: Range, taken: &mut BTreeMap<u32, u32>) -> R
     if s.drivers.is_empty() {
         s.drivers.reserve_exact(1);
     }
-    s.drivers.push(DriverSlot { range, value, off });
+    s.drivers.push(DriverSlot {
+        range,
+        value,
+        off,
+        shared: false,
+    });
     Ok(())
 }

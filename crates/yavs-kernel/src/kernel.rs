@@ -545,6 +545,8 @@ pub struct SimControl {
     live_mask: u64,
     /// The phases some observer wants (bit `Phase as u32`), and whether one wants value changes.
     phase_mask: u16,
+    /// The phases some observer wants whether or not a serial process ran.
+    phase_always: u16,
     /// Per observer: the phases it wants, and those it wants only after a serial process ran.
     obs_phases: Vec<(u16, u16)>,
     /// A serial process ran since the last `NextCycle` (true before the first one).
@@ -571,6 +573,9 @@ pub struct SimControl {
     indep_buf: Vec<(u32, u32)>,
     /// The distinct edge triggers of the processes (`ProcMeta::tid`).
     triggers: Vec<crate::EdgeTrigger>,
+    /// Per trigger: the edge a signal resumes its process for, when `Ctx::edge` may take it as
+    /// held (`ProcState::known_edge`).
+    known_edges: Vec<Option<(SignalId, u32, bool)>>,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -643,6 +648,7 @@ impl SimControl {
                 });
             }
         }
+        let cfg_edge_triggers = cfg.edge_triggers;
         let pool = match cfg.threads {
             0 => {
                 return Err(SimError::new(ErrorKind::Usage(
@@ -717,6 +723,7 @@ impl SimControl {
             live_sink: None,
             live_mask: 0,
             phase_mask: 0,
+            phase_always: 0,
             obs_phases: Vec::new(),
             serial_ran: true,
             watch_changes: false,
@@ -730,6 +737,13 @@ impl SimControl {
             perm_epoch: 0,
             woken_buf: Vec::new(),
             indep_buf: Vec::new(),
+            known_edges: triggers
+                .iter()
+                .map(|t| {
+                    (cfg_edge_triggers && t.reset.is_none() && !t.legacy)
+                        .then_some((t.signal, t.elem, t.rising))
+                })
+                .collect(),
             triggers,
         };
         sim.settle().map_err(SimError::new)?;
@@ -1000,6 +1014,7 @@ impl SimControl {
                 )
             })
             .collect();
+        self.phase_always = self.obs_phases.iter().fold(0, |m, &(w, s)| m | w & !s);
     }
 
     pub fn interrupt(&self) -> Interrupt {
@@ -1234,8 +1249,10 @@ impl SimControl {
         self.update().map_err(|k| self.err(k))?;
         self.commit_callouts();
         let mut changed = std::mem::take(&mut self.changed_sigs);
-        changed.sort_unstable();
-        changed.dedup();
+        if changed.len() > 1 {
+            changed.sort_unstable();
+            changed.dedup();
+        }
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
         if self.watch_changes {
@@ -1250,6 +1267,11 @@ impl SimControl {
         for &s in &changed {
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64;
+            // No process ever waited for it (a signal only read by value).
+            if self.waiters[s as usize].is_unwatched() {
+                sig.changed.clear();
+                continue;
+            }
             // Update order is element order, mostly: sort only when it is not.
             if !sig.changed.is_sorted_by_key(|r| r.offset) {
                 sig.changed.sort_unstable_by_key(|r| r.offset);
@@ -1755,10 +1777,8 @@ impl SimControl {
         meta.by_timeout = by_timeout;
         meta.generation += 1;
         // A signal resumed a process with an edge trigger: its edge holds (`Ctx::edge`).
-        let known = match self.triggers.get((meta.tid as usize).wrapping_sub(1)) {
-            Some(t) if !by_timeout && self.cfg.edge_triggers && t.reset.is_none() && !t.legacy => {
-                Some((t.signal, t.elem, t.rising))
-            }
+        let known = match self.known_edges.get((meta.tid as usize).wrapping_sub(1)) {
+            Some(&k) if !by_timeout => k,
             _ => None,
         };
         let st = &mut slot_mut(&mut self.slots[p as usize]).st;
@@ -2027,6 +2047,9 @@ impl SimControl {
                 (self.callouts).extend(s.callouts.drain(..).map(|(v, m)| (v, m, ctx.clone())));
             }
         }
+        if self.callouts.is_empty() {
+            return;
+        }
         for (severity, message, context) in std::mem::take(&mut self.callouts) {
             let report = Report {
                 process: None,
@@ -2097,6 +2120,9 @@ impl SimControl {
         } else {
             true
         };
+        if !serial && self.phase_always & bit == 0 && self.obs_phases.len() <= 64 {
+            return;
+        }
         // ponytail: a set of 64 observers; more are called on every phase they want.
         let which = (self.obs_phases.iter().take(64).enumerate()).fold(0u64, |m, (i, &(w, s))| {
             if w & bit != 0 && (serial || s & bit == 0) {
@@ -2150,6 +2176,15 @@ impl SimControl {
 
 /// The driving and effective values of what the matured transactions of a signal made dirty.
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
+    // Quick transactions finished when they were applied.
+    let fused = sig.end_apply();
+    if sig.dirty.is_empty() {
+        return Ok(fused);
+    }
+    Ok(finish_dirty(sig, now, cycle)? | fused)
+}
+
+fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     if let [r] = sig.dirty.as_slice()
         && r.len == 1
         && let Some(changed) = sig.finish_one(r.offset, now, cycle)

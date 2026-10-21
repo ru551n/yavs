@@ -534,7 +534,7 @@ impl Ctx<'_> {
         if s.skip_ok
             && ds.value.code(rel) == code
             && s.cur_code(r.offset as usize) == code
-            && s.sole(r)
+            && (!ds.shared || s.sole(r))
         {
             w.phantom.push(r);
             self.st.phantoms.push(info.local);
@@ -564,7 +564,9 @@ impl Ctx<'_> {
         let ds = &s.drivers[info.slot as usize];
         let (rel, n) = ((r.offset - ds.range.offset) as usize, r.len as usize);
         // The cheap tests first: most assignments of a running design change something.
-        ds.value.same_as(rel, n, v) && s.cur.same_as(r.offset as usize, n, v) && s.sole(r)
+        ds.value.same_as(rel, n, v)
+            && s.cur.same_as(r.offset as usize, n, v)
+            && (!ds.shared || s.sole(r))
     }
 
     /// The skipped assignments of driver `d` this run become real transactions again, before

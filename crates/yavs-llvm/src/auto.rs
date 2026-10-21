@@ -251,17 +251,19 @@ const US_PER_INSTR_O0: f64 = 30.0;
 /// long as `Heat::threshold` (the compile thread is another core).
 const RTL_O2_AFTER: u64 = 6;
 
-/// A compute loop gets this many times the budget: it runs several times faster compiled (the
-/// interpreter's time goes to dispatch), so a long-running one repays a compile of a size the
-/// plain budget would only allow after minutes, and the compile is on another thread (#432).
-const COMPUTE_BUDGET: u64 = 16;
+/// A compute loop gets this many times the budget: it runs five to ten times faster compiled
+/// (the interpreter's time goes to dispatch), so the payback rule alone limits it, and the
+/// compile is on another thread (#432).
+const COMPUTE_BUDGET: u64 = 50;
+
+/// An `rtl` process gets this many times the budget (its compiled code is a tenth faster).
+const RTL_BUDGET: u64 = 16;
 
 /// Whether compiling for `cost` more microseconds keeps the compile time spent within `budget`
-/// percent (`COMPUTE_BUDGET` times that for compute) of the `total` microseconds the sampler saw
-/// running; budget 0 is no limit.
-fn within_budget(budget: u32, compute: bool, spent: u64, cost: u64, total: u64) -> bool {
-    let percent = u64::from(budget) * if compute { COMPUTE_BUDGET } else { 1 };
-    budget == 0 || (spent + cost) * 100 <= total * percent
+/// percent (`factor` times that) of the `total` microseconds the sampler saw running; budget 0
+/// is no limit.
+fn within_budget(budget: u32, factor: u64, spent: u64, cost: u64, total: u64) -> bool {
+    budget == 0 || (spent + cost) * 100 <= total * u64::from(budget) * factor
 }
 
 /// See `Heat::o2_threshold`.
@@ -321,12 +323,16 @@ struct Shared {
 
 /// Microseconds of compile time per IR instruction to start with (O2, one function in a
 /// module of its own); the thread replaces it by what it measures.
-const US_PER_INSTR: f64 = 400.0;
+const US_PER_INSTR: f64 = 250.0;
 
 /// A function must have been seen interpreted this many times as long as compiling it takes:
 /// its remaining time is expected to be about its past time and compiled code saves about a
 /// quarter of it.
 const PAYBACK: u64 = 4;
+
+/// A compute loop runs five to ten times faster compiled, so seen for twice its compile time
+/// it has repaid it (`Worker::threshold`).
+const PAYBACK_COMPUTE: u64 = 2;
 
 /// Callees compiled with a hot function (`Worker::tree`): at most this many IR instructions
 /// each and in all.
@@ -358,6 +364,8 @@ struct Worker {
     total: u64,
     spent: u64,
     us_per_instr: f64,
+    /// `compute` per function, once asked.
+    compute: Vec<std::cell::OnceCell<bool>>,
     note: Note,
     /// Per short function that runs on native frames, the interpreted caller its time counts
     /// for (`charge`); emptied when a function is first seen.
@@ -409,6 +417,12 @@ impl Worker {
         (per * f.code.len() as f64) as u64
     }
 
+    /// Whether `id` is a compute loop (`compute`), worked out once.
+    fn is_compute(&self, id: FuncId) -> bool {
+        *self.compute[id.0 as usize]
+            .get_or_init(|| self.prog.func(id).is_some_and(|f| compute(&self.prog, f)))
+    }
+
     /// The time `id` must be seen at its level before it is compiled (again).
     fn threshold(&self, id: FuncId, compiled: bool) -> u64 {
         let Some(f) = self.prog.func(id) else {
@@ -425,6 +439,8 @@ impl Worker {
         let at = self.heat.threshold(f);
         if self.heat.budget == 0 || rtl(&self.prog, f) {
             at
+        } else if self.is_compute(id) {
+            at.max(PAYBACK_COMPUTE * self.cost(f))
         } else {
             at.max(PAYBACK * self.cost(f))
         }
@@ -479,11 +495,14 @@ impl Worker {
             .filter_map(|&i| self.prog.func(i))
             .map(|f| self.cost(f))
             .sum();
-        let compute = self
-            .prog
-            .func(id)
-            .is_some_and(|f| compute(&self.prog, f) || rtl(&self.prog, f));
-        if !within_budget(self.heat.budget, compute, self.spent, cost, self.total) {
+        let factor = if self.is_compute(id) {
+            COMPUTE_BUDGET
+        } else if self.prog.func(id).is_some_and(|f| rtl(&self.prog, f)) {
+            RTL_BUDGET
+        } else {
+            1
+        };
+        if !within_budget(self.heat.budget, factor, self.spent, cost, self.total) {
             return None;
         }
         cands.swap_remove(best);
@@ -587,6 +606,7 @@ impl AutoTier {
         } else {
             heat.period.into()
         });
+        let nfuncs = prog.funcs.len();
         let mut w = Worker {
             time: vec![[0; 2]; prog.funcs.len()],
             done: vec![[false; 2]; prog.funcs.len()],
@@ -603,6 +623,7 @@ impl AutoTier {
             total: 0,
             spent: 0,
             us_per_instr: US_PER_INSTR,
+            compute: vec![Default::default(); nfuncs],
             note,
             leaf: Default::default(),
             seen: 0,
@@ -819,7 +840,7 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
-    use super::{loops, within_budget};
+    use super::{COMPUTE_BUDGET, loops, within_budget};
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
 
@@ -853,15 +874,15 @@ mod tests {
 
     /// A process that interprets one loop for seconds without ever suspending: the sampler sees
     /// all of it, and a compute loop of a few hundred instructions (about 180 ms to compile)
-    /// is compiled once the payback rule allows (about half a second); other code still waits for the plain
-    /// 2 percent, and nothing is compiled before it could repay.
+    /// is compiled once it was seen for as long as the compile takes; other code still waits for
+    /// the plain 2 percent, and nothing is compiled before it could repay.
     #[test]
     fn long_compute_loop_fits_the_budget() {
         let cost = 177_000;
-        assert!(!within_budget(2, true, 0, cost, 500_000));
-        assert!(within_budget(2, true, 0, cost, 600_000));
-        assert!(!within_budget(2, false, 0, cost, 1_500_000));
-        assert!(within_budget(2, false, 0, cost, 9_000_000));
-        assert!(within_budget(0, false, 0, cost, 0));
+        assert!(!within_budget(2, COMPUTE_BUDGET, 0, cost, 150_000));
+        assert!(within_budget(2, COMPUTE_BUDGET, 0, cost, 180_000));
+        assert!(!within_budget(2, 1, 0, cost, 1_500_000));
+        assert!(within_budget(2, 1, 0, cost, 9_000_000));
+        assert!(within_budget(0, 1, 0, cost, 0));
     }
 }

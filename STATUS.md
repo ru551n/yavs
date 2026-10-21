@@ -3663,3 +3663,39 @@ user CPU 123 / 119 / 118 s. Output of the `.pro` suite (2008 and 2019, every tes
 byte-identical between the first, second, third run and `--no-cache`. Difftest (each `run` three times in one work directory,
 outputs compared): 413/414 at 1 and 4 threads on the interpreter, `--tier=llvm`, `--tier=auto` and the `gc-stress` build (the one
 exception appends to a file in the work directory, so repeating it changes its output by design).
+
+## performance: tight compute loops, 2026-10-21 (#432, #444)
+
+Design 1 of the head-to-head (`compute_h2h`, 20M iterations of integer and real arithmetic in one process), pinned to
+performance cores 1 to 3 (`tools/bench/run.py --ref sim1,sim2 --tiers interp,auto,llvm --instructions`, median of 3).
+Before this change (main at 894a74b8) and after, wall seconds and instructions per iteration (billions / 20M):
+
+| Tool | before wall | after wall | before instr/iter | after instr/iter |
+|---|---:|---:|---:|---:|
+| yavs interp | 1.89 | 1.71 | 2410 | 2160 |
+| yavs auto (2 cores) | 0.68 | 0.29 | 838 | 328 |
+| yavs llvm | 0.33 | 0.19 | 342 | 157 |
+| sim1 jit | 2.19 / 2.16 | | 2323 | |
+| sim2 | 0.20 | 0.19 | 115 | |
+
+Cycles per iteration under `--tier=llvm`: 74.5 before, 41.7 after (sim2: 50). The loop body per iteration, compiled,
+by step (instructions per iteration): 317 as found (12 `Stmt` markers at about 3 each, 40 register stores of
+constants, addresses and temporaries with the loads that follow, a load and store of the frame variable address per access,
+and the checks the language requires); 283 without the markers (`drop_statements` for processes); 214 with pure results
+kept as values and stored only where the interpreter can look (`Gen::std`, `Gen::flush`); 158 without stores of
+preloaded constants and addresses; 143 with frame-variable loads that need no slow path and addresses known in every
+block; 137 with a static `for` loop stepping by a constant. What is left: the overflow and range checks of each
+operation, the frame variables as memory, the registers carried between blocks through the frame (every block start is an
+entry point of the interpreter), and the slot base reloaded per block. `--tier=auto` now reaches compiled code
+after about 0.15 s (compile of the 238-instruction process 30 to 60 ms) instead of 0.4 s. `tools/bench` compare of
+before and after, total CPU ratio (after / before): interp compute_loop 0.91, calls 0.94, strings_heavy 0.94, rtl_ff 1.01,
+lfsr64 1.01, rtl_chain 0.99, rtl_fan 1.01; llvm 0.87, 0.94, 0.94, 0.97, 0.97, 0.96, 0.94; auto 0.98, 0.99, 0.97, 1.01,
+1.00, 1.01, 1.01.
+
+Verification on the pushed tree: difftest corpus (419) at 4 threads (1 against 4) and 4 shuffled on the interpreter,
+`--tier=llvm`, `--tier=auto` and `--tier=auto --tier-heat=1,0,0`: all 419; `--tier=llvm` and `auto` of a build with
+`gc-stress`: 419; the external runner lists (857 and 393) on the interpreter and `--tier=auto`; `.pro` regression 314/314
+and UVVM 102 pass, 9 fail, 26 skip under `--tier=auto`; `cargo test --workspace` and `-p yavs-llvm --features llvm`
+green. Not done: registers as phi values across blocks with entry stubs and frame variables kept as values with
+write-back at exits (would remove most of the remaining loads and stores); interval analysis for processes (loop
+variables of a process stay in memory, so the checks stay).

@@ -3322,3 +3322,38 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   weights on the compiled code's guards, hot-first field order of `Machine`, an unrolled `get_block`, a fused
   `update_effective` for one chunk (the runs the kernel passes are merged and longer than 64 elements),
   fat LTO with one codegen unit (0 to -3%).
+
+## Tight compute loops: deferred register stores, statement markers in processes (yavs-llvm, yavs-ir, #432, #444, 2026-10-21)
+
+- **Frame-mode compiled code stores a register only where the interpreter can look at the frame.** Compiled code
+  runs on the interpreter's register file, and every definition used to be a store (an `Const` of the loop's
+  bounds, each address, each temporary: 40 stores in a 14-statement loop body). The result of a pure instruction
+  (`Const`, `ConstF`, `Move`, `Select`, `Bin`, `BinRange`, `Un`, `FBin`, `FUn`, `IToF`, `Cmp`, `FCmp`, `Bool`,
+  an inline `AddrOf`, a `Load` of a frame variable at a known offset) is now an SSA value (`Gen::std`,
+  `Defer::pend`). `Gen::flush` stores the deferred registers that are live (`regs.rs`: backward liveness over the
+  instructions, `Live::row(pc)` = registers live before `pc`) where compiled code leaves the frame to the
+  interpreter: the exit block of a failing guard (`exit_if`, live at the instruction the interpreter re-executes),
+  every callback that gets the register pointer (`call_go`: steps, signals, drives, waits), the native call
+  (`native_call`, so a collection in the callee finds the live references) and its unwind path, `Ret`, and every
+  block edge (`Br`, `CondBr`, `Case`, a fall-through into an entry point: live at the successors). Dead
+  temporaries are never stored. A register the interpreter starts every frame with (defined once by a
+  constant or an address that is not `Up`: `regs::preloaded`, the same rule as `Pre::new`) is never stored by
+  compiled code, and an address register of that kind is a known frame, constant or instance address in every
+  block, not only in the block of its definition. The slow path of an instruction (`slow_path`) flushes without
+  forgetting; an instruction with a fast and a slow path stores its result at once (`Gen::st`), because a value
+  defined inside the diamond does not dominate the join. A function with more than 2^20 liveness words and
+  native-frame code keep the old stores. Errors are identical: the interpreter re-executes the failing
+  instruction from a frame that holds what it reads (tests: `arith/loop_overflow_last`, `arith/loop_range_last`).
+  Why: design 1 of the head-to-head (a 3-million-iteration compute loop) took 317 instructions per iteration
+  compiled against 113 for the reference code generator. Not done (the same machinery would allow it): registers
+  carried across blocks as phis with entry stubs, frame variables as SSA values with write-back at exits.
+- **`Stmt` markers are dropped in processes too** (`Opt::drop_statements`): a marker of a statement that allocates
+  no temporary memory frees nothing (kept with a debugger). It cost 6 compiled instructions and a dispatch per
+  statement, 12 per iteration of the loop above.
+- **`--tier=auto` compiles a compute loop after twice its estimated compile time** (`PAYBACK_COMPUTE`, budget
+  factor 50, so the payback rule alone limits it; it was four times with 32 percent) and the first estimate is
+  250 microseconds per IR instruction (was 400; the measured O2 cost of a process body is 120 to 250). A process
+  that interprets one loop for the whole run reaches compiled code after about 0.15 s instead of 0.4 s.
+  `rtl` processes keep their factor (16).
+- `YAVS_LLVM_DUMP=<dir>` writes, for each compiled module, `<n>-pre.ll` and `<n>-post.ll` (before and after the
+  pass pipeline) and `f<id>.ir` (the yavs IR of each function) for reading the generated code.

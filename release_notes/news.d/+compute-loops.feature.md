@@ -1,0 +1,1 @@
+Tight compute loops run faster under `--tier=llvm` and `--tier=auto`: compiled code no longer writes every temporary back to the interpreter's frame, statement markers that free nothing are dropped in processes, and `--tier=auto` switches to compiled code for a long loop after a fraction of a second.

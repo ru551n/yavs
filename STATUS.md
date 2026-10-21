@@ -4460,11 +4460,11 @@ of the release build with line tables):
 
 | test | wall x | instr x | where the time goes |
 |---|---:|---:|---|
-| `poc_stat_histogram` | 15.8 | 18.7 | interpreter ops 57%, then composite layout work at run time: `layout_words` 19%, `layout_word` 5%, `layout_of` 3%, `lcopy`, `lget` and `memcmp` 4%: whole arrays of words are copied and compared by walking their layout |
-| `fletcher_bufferwriter_512` | 12.3 | 10.2 | 512 bit buses and records: interpreter ops 26% and the kernel signal path about 40% (`Signal::update_effective` 13%, `Waiters::take_woken` 9%, `SimControl::cycle` 5%, `mark_active` 5%, `Waveform::schedule` 3%) |
-| `sc5_fifo_repack` | 6.8 | 8.6 | wide `std_logic_vector` slicing and compares: interpreter ops 44%, then vector assignment and scheduling (`assign_planes_fast`, `Waveform::schedule`, `update_effective`, `eq_range`) about 12% |
-| `poc_arith_addw` | 6.7 | 7.7 | exhaustive operand loops in a clocked testbench: interpreter ops 50%, the rest spread thin (kernel `cycle` and `run_batch` 6%, `read_into`/`assign_planes_fast` 4%, `cat` 2%, `layout_word` 2%) |
-| `vai_window_gen_interlock` | 4.2 | 8.7 | long pipelined run of array-heavy RTL: interpreter ops 78%, `memmove` 4%, `Pre::fill` 3% |
+| `poc_stat_histogram` (#518) | 15.8 | 18.7 | interpreter ops 57%, then composite layout work at run time: `layout_words` 19%, `layout_word` 5%, `layout_of` 3%, `lcopy`, `lget` and `memcmp` 4%: whole arrays of words are copied and compared by walking their layout |
+| `fletcher_bufferwriter_512` (#519) | 12.3 | 10.2 | 512 bit buses and records: interpreter ops 26% and the kernel signal path about 40% (`Signal::update_effective` 13%, `Waiters::take_woken` 9%, `SimControl::cycle` 5%, `mark_active` 5%, `Waveform::schedule` 3%) |
+| `sc5_fifo_repack` (#519) | 6.8 | 8.6 | wide `std_logic_vector` slicing and compares: interpreter ops 44%, then vector assignment and scheduling (`assign_planes_fast`, `Waveform::schedule`, `update_effective`, `eq_range`) about 12% |
+| `poc_arith_addw` (#520) | 6.7 | 7.7 | exhaustive operand loops in a clocked testbench: interpreter ops 50%, the rest spread thin (kernel `cycle` and `run_batch` 6%, `read_into`/`assign_planes_fast` 4%, `cat` 2%, `layout_word` 2%) |
+| `vai_window_gen_interlock` (#520) | 4.2 | 8.7 | long pipelined run of array-heavy RTL: interpreter ops 78%, `memmove` 4%, `Pre::fill` 3% |
 
 Followed by `sc5_timestamp` (3.0x) and `poc_cache_cpu` (2.9x, interpreter ops 48%). Left out of the means (kept in `tests.toml` as
 `excluded`; run one with `--tests NAME`):

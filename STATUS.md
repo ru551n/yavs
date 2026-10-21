@@ -2460,6 +2460,20 @@ threads, `gc-stress` 414/414 for `yavs-llvm` and eager `yavs-auto`; the external
 under `--tier=auto` (1344 tests); the `.pro` regression 314/314 under 2008 and 2019; the verification-library
 suite 102 pass, 9 fail, 26 skip (as before).
 
+Tiers on the final binary (f1787925, pinned): `tools/bench/run.py` with 2 performance cores (`taskset -c 2,3`),
+median total CPU of 5 runs (3 for `--tier=llvm`), interp / auto / llvm (llvm: compile in seconds plus simulate):
+`uvvm_util_rand_tb` 0.91 / 1.00 / 33.3 + 0.84, `uvvm_sb_slv_tb` 0.97 / 1.10 / 9.9 + 0.87, `osvvm_axistream`
+0.33 / 0.37 / 26.3 + 0.38, `protected_scoreboard` 0.04 / 0.05 / 0.13, `calls` 0.09 / 0.10 / 0.05 (simulate 0.08 /
+0.09 / 0.01), `access_heavy` 0.05 / 0.06 / 0.11, `strings_heavy` 0.09 / 0.10 / 0.19 (simulate 0.08 / 0.09 /
+0.05), `compute_loop` 0.10 / 0.11 / 0.05, `vunit_vc30` 1.55 / 1.82 / not run. The harness's auto/interp ratio
+is about 1.1 on this loaded host while `perf stat` of the same pair counts no difference (`generic_sb_slv_tb`:
+19.95 G against 19.29 G instructions, 5.23 G against 5.00 G cycles). Kernel designs, cycles (core 3, minimum of 3),
+interp / auto / llvm in G: `ff` 4.51 / 4.51 / 5.15, `lfsr` 2.32 / 2.33 / 2.70, `chain` 1.16 / 1.19 / 1.78, `fan`
+5.09 / 5.19 / 7.61, `bus` 1.04 / 1.08 / 1.41, `ram` 0.35 / 0.39 / 1.14, `compute_loop` 0.43 / 0.46 / 0.24; auto
+over interp before this work: `chain` 1.03, `fan` 1.02, `bus` 1.04, `ram` 1.07, the same. The external runner's
+suites also pass under `--tier=llvm` (1344 tests, the build before the `Deref` commit) and under `--tier=auto`
+on the final binary.
+
 The measurements before this work, for reference:
 
 Compile cost at O0 (release, per function, compile thread): about 2 ms plus 40 us per IR

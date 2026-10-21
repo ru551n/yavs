@@ -194,8 +194,9 @@ fn auto_tier_compiles_hot_functions() {
 }
 
 /// With a budget the compile thread waits until compiling costs at most a few percent of the
-/// time it saw the interpreter run, so a short run compiles nothing; a long one does, and the
-/// results never change.
+/// time it saw the interpreter run; a long run compiles, and the results never change. The
+/// decision itself is tested deterministically (`within_budget` in `auto.rs`): no wall-clock
+/// limit here, a loaded runner may be slow either way.
 #[test]
 fn auto_tier_compiles_within_its_budget() {
     let (prog, f) = sum();
@@ -205,10 +206,6 @@ fn auto_tier_compiles_within_its_budget() {
     let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_millis(20) {
-        assert_eq!(call().unwrap(), Some(5_000_050_000));
-    }
-    assert_eq!(tier.compiled(), 0, "compiled within 20 ms");
     while tier.compiled() == 0 {
         assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
         assert_eq!(call().unwrap(), Some(5_000_050_000));

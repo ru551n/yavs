@@ -412,7 +412,7 @@ fn wave_sigint() {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    std::thread::sleep(std::time::Duration::from_secs(2));
     let kill = Command::new("kill")
         .args(["-INT", &child.id().to_string()])
         .status()

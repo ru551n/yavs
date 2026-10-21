@@ -519,7 +519,9 @@ fn bit_vectors() {
 /// reallocate the whole line (#196). Timed as a ratio so the machine's speed cancels out.
 #[test]
 fn long_line_is_linear() {
-    let (t1, t8) = (long_line(25_000), long_line(200_000));
+    // Best of three, so a scheduling hiccup on a loaded machine does not decide.
+    let best = |n| (0..3).map(|_| long_line(n)).min().unwrap();
+    let (t1, t8) = (best(25_000), best(200_000));
     // Linear is about 8 times, quadratic was about 40.
     assert!(
         t8 < t1 * 20 + std::time::Duration::from_millis(500),

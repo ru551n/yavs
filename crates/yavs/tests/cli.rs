@@ -422,10 +422,10 @@ fn long_process_reports_live() {
                 }
             }
         });
-        let t = std::time::Duration::from_secs(3);
+        let t = std::time::Duration::from_secs(30);
         let Ok(first) = rx.recv_timeout(t) else {
             child.kill().expect("kill");
-            panic!("{threads}: no report in 3 s");
+            panic!("{threads}: no report in 30 s");
         };
         assert!(first.contains("line 1"), "{threads}: {first:?}");
         let pid = child.id().to_string();

@@ -473,7 +473,7 @@ pub(crate) struct Signal {
     pub driving: Buf,
     pub last_value: Buf,
     /// Four per-element arrays in one buffer (`len` entries each): the cycle number of the
-    /// last event, of the last activity, and the time (`Time::raw`, [`NEVER`] if never) of
+    /// last event, of the last activity, and the time (`stamp`, 0 if never) of
     /// the last event and of the last activity.
     stamps: SmallVec<[u64; 4]>,
     /// Sources: process drivers and out-ports, in creation order.
@@ -1082,7 +1082,7 @@ impl Signal {
                     let e = base + w.trailing_zeros() as usize;
                     w &= w - 1;
                     cycles[e] = cycle;
-                    rest[e] = now.raw();
+                    rest[e] = stamp(now);
                 }
                 self.nruns += u64::from((m & !(m << 1)).count_ones());
             }
@@ -1096,7 +1096,7 @@ impl Signal {
                 let times = &mut rest[e..e + len as usize];
                 for (c, t) in cycles[e..e + len as usize].iter_mut().zip(times) {
                     *c = cycle;
-                    *t = now.raw();
+                    *t = stamp(now);
                 }
                 note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
                 w &= !(nmask(len as usize) << s);
@@ -1156,7 +1156,7 @@ impl Signal {
             let (n, e) = (self.ty.len as usize, q.elem as usize);
             let st = self.stamps.as_mut_slice();
             st[n + e] = cycle;
-            st[3 * n + e] = now.raw();
+            st[3 * n + e] = stamp(now);
             if !self.drivers[slot as usize].shared && self.fuse_ok() {
                 // The element's only source: its driving and effective values follow now.
                 self.finish_quick(e, q.code, now, cycle);
@@ -1213,7 +1213,7 @@ impl Signal {
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
         let n = self.ty.len as usize;
         self.stamps[n..2 * n][r.elems()].fill(cycle);
-        self.stamps[3 * n..4 * n][r.elems()].fill(now.raw());
+        self.stamps[3 * n..4 * n][r.elems()].fill(stamp(now));
     }
 
     /// The elements of `r` that are not active in `cycle`, or `None` when all are (a port
@@ -1229,7 +1229,7 @@ impl Signal {
         let n = self.ty.len as usize;
         for (e, _) in r.elems().zip(idle).filter(|&(_, &i)| !i) {
             self.stamps[n + e] = cycle;
-            self.stamps[3 * n + e] = now.raw();
+            self.stamps[3 * n + e] = stamp(now);
         }
     }
 
@@ -1274,7 +1274,12 @@ impl Signal {
 }
 
 /// The stamp of an element that never had an event or activity.
-const NEVER: u64 = u64::MAX;
+/// A time as stored in the per-element stamps: its femtoseconds plus one, so that 0 is "never"
+/// and a fresh stamp array is all zeros (a large signal's untouched stamps cost no memory).
+#[inline(always)]
+fn stamp(t: Time) -> u64 {
+    t.raw() + 1
+}
 
 /// Add `r` to a list of ranges, extending the last one when `r` continues it (ascending, or
 /// descending: processes numbered the other way round).
@@ -1292,21 +1297,19 @@ fn push_range(list: &mut SmallVec<[Range; 2]>, r: Range) {
 
 fn set_event(stamps: &mut [u64], n: usize, e: usize, cycle: u64, now: Time) {
     stamps[e] = cycle;
-    stamps[2 * n + e] = now.raw();
+    stamps[2 * n + e] = stamp(now);
 }
 
 fn stamps(n: usize) -> SmallVec<[u64; 4]> {
-    let mut v: SmallVec<[u64; 4]> = smallvec![0; 4 * n];
-    v[2 * n..].fill(NEVER);
-    v
+    smallvec![0; 4 * n]
 }
 
 fn elapsed(now: Time, times: &[u64]) -> Time {
     times
         .iter()
-        .filter(|&&t| t != NEVER)
         .max()
-        .map_or(Time::MAX, |&t| now.since(Time::from_raw(t)))
+        .filter(|&&t| t != 0)
+        .map_or(Time::MAX, |&t| now.since(Time::from_raw(t - 1)))
 }
 
 /// What resolving a run writes, borrowed apart from the sources it reads.

@@ -10,6 +10,10 @@ Python 3 stdlib only.
     tools/difftest/difftest.py --candidate yavs     # the real thing (M2 onwards)
     tools/difftest/difftest.py --candidate yavs-llvm  # yavs with `--tier=llvm` (a yavs built with `--features llvm`)
     tools/difftest/difftest.py --candidate yavs-auto  # yavs with `--tier=auto` (the same build)
+    tools/difftest/difftest.py --candidate yavs-clift       # `--tier=clift` (a yavs built with `--features clift`)
+    tools/difftest/difftest.py --candidate yavs-clift-auto  # `--tier=clift-auto` (the same build)
+    tools/difftest/difftest.py --candidate yavs-auto3        # `--tier=auto3` (a yavs built with `--features llvm,clift`)
+    tools/difftest/difftest.py --candidate yavs-auto3-eager  # the same with `--tier-heat=0,0,0`
     tools/difftest/difftest.py --bless              # regenerate .expected from the reference simulator
     tools/difftest/difftest.py --filter 'report/|env/' --jobs 4 -v
 

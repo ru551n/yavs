@@ -23,6 +23,7 @@ mod lazy;
 mod lower;
 #[cfg(feature = "llvm")]
 mod regs;
+pub mod rt;
 #[cfg(feature = "llvm")]
 pub mod spike;
 

@@ -147,7 +147,8 @@ pub struct RunArgs {
     vhpi: Vec<String>,
     /// Execution tier: `interp`; `llvm` to compile every function with LLVM before time 0; or
     /// `auto` to compile the functions that become hot on a background thread while the
-    /// simulation runs (both need a yavs built with the `llvm` feature).
+    /// simulation runs (both need a yavs built with the `llvm` feature); `clift` and
+    /// `clift-auto` are the same with Cranelift (the `clift` feature).
     #[arg(long, value_enum, default_value = "interp")]
     tier: TierArg,
     /// With `--tier=llvm` or `auto`: functions of more than N IR instructions stay
@@ -224,6 +225,13 @@ pub enum TierArg {
     Interp,
     Llvm,
     Auto,
+    /// Cranelift: every function before time 0 (the `clift` feature).
+    Clift,
+    /// Cranelift: the functions that become hot, on a background thread.
+    CliftAuto,
+    /// Three tiers: the interpreter, Cranelift for warm functions, LLVM O2 for those that stay
+    /// hot (needs the `llvm` and `clift` features).
+    Auto3,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -510,40 +518,231 @@ pub fn elab(
 
 /// Ends tier-up when the run is over (`AutoTier::stop`): `end` at the normal end, without
 /// waiting for a function still compiling; on any other return the drop waits for it.
-#[cfg(feature = "llvm")]
-struct StopTierUp(std::sync::Arc<yavs_llvm::AutoTier>);
+enum StopTierUp {
+    #[cfg(feature = "llvm")]
+    Llvm(std::sync::Arc<yavs_llvm::AutoTier>),
+    #[cfg(feature = "clift")]
+    Clift(std::sync::Arc<yavs_clift::AutoTier>),
+}
 
-#[cfg(feature = "llvm")]
 impl StopTierUp {
     /// Exit with `code` at once if the compile thread is still busy, so the run never waits
     /// for compilation; with `keep_exit` (foreign libraries or VHPI plugins loaded, whose exit
     /// handlers must run) wait for it instead.
+    #[allow(unused_variables)]
     fn end(self, code: u8, keep_exit: bool) {
-        if !self.0.stop(keep_exit) {
-            yavs_llvm::exit_now(code);
+        match &self {
+            #[cfg(feature = "llvm")]
+            StopTierUp::Llvm(t) => {
+                if !t.stop(keep_exit) {
+                    yavs_llvm::exit_now(code);
+                }
+            }
+            #[cfg(feature = "clift")]
+            StopTierUp::Clift(t) => t.stop(),
+            #[cfg(not(any(feature = "llvm", feature = "clift")))]
+            _ => {}
         }
     }
 }
 
-#[cfg(feature = "llvm")]
 impl Drop for StopTierUp {
     fn drop(&mut self) {
-        self.0.stop(true);
+        match self {
+            #[cfg(feature = "llvm")]
+            StopTierUp::Llvm(t) => {
+                t.stop(true);
+            }
+            #[cfg(feature = "clift")]
+            StopTierUp::Clift(t) => t.stop(),
+            #[cfg(not(any(feature = "llvm", feature = "clift")))]
+            _ => {}
+        }
     }
 }
 
-#[cfg(not(feature = "llvm"))]
-struct StopTierUp;
-
-#[cfg(not(feature = "llvm"))]
-impl StopTierUp {
-    fn end(self, _: u8, _: bool) {}
+/// `--tier=clift` (compile the program now) or `--tier=clift-auto` (start tier-up).
+#[cfg(feature = "clift")]
+fn use_clift(
+    rt: &yavs_interp::Runtime,
+    a: &RunArgs,
+) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    let bug = |e: String| {
+        Box::new(
+            Diagnostic::error("E0121", "the Cranelift tier cannot compile the design")
+                .with_note(e)
+                .with_note("this is a bug in yavs"),
+        )
+    };
+    if a.tier == TierArg::Clift {
+        let tier = yavs_clift::compile(&rt.prog, a.tier_max_size).map_err(bug)?;
+        if a.verbose {
+            for (f, why) in &tier.notes {
+                let name = rt.prog.func(*f).map_or("?", |f| f.name.as_str());
+                eprintln!("note: `{name}` ({f}) stays interpreted under --tier=clift: {why}");
+            }
+            let n: usize = tier.interpreted.iter().map(|k| k.1).sum();
+            let kinds: Vec<String> = tier
+                .interpreted
+                .iter()
+                .map(|(k, c)| format!("{k} {c}"))
+                .collect();
+            eprintln!(
+                "note: --tier=clift: {} functions ({} IR instructions) compiled in {} ms, {} instructions compiled, {n} executed by the interpreter ({})",
+                tier.compiled(),
+                tier.instrs,
+                tier.compile_time.as_millis(),
+                tier.inline,
+                kinds.join(", ")
+            );
+            // Per function size class: count, mean and slowest translation time.
+            for (lo, hi) in [(0, 64), (64, 256), (256, 1024), (1024, usize::MAX)] {
+                let ts: Vec<_> = tier
+                    .times
+                    .iter()
+                    .filter(|t| (lo..hi).contains(&t.0))
+                    .collect();
+                if let Some(max) = ts.iter().map(|t| t.1).max() {
+                    let sum: std::time::Duration = ts.iter().map(|t| t.1).sum();
+                    let ir: usize = ts.iter().map(|t| t.0).sum();
+                    eprintln!(
+                        "note: --tier=clift: {lo}..{hi} IR instructions: {} functions, {} IR instructions, mean {} us, max {} us",
+                        ts.len(),
+                        ir,
+                        (sum / ts.len() as u32).as_micros(),
+                        max.as_micros()
+                    );
+                }
+            }
+        }
+        rt.set_tier(std::sync::Arc::new(tier));
+        return Ok(None);
+    }
+    let heat = a
+        .tier_heat
+        .map_or(yavs_clift::Heat::DEFAULT, |[base, per_instr, period]| {
+            yavs_clift::Heat {
+                base,
+                per_instr,
+                period,
+            }
+        });
+    let prog = rt.prog.clone();
+    let verbose = a.verbose;
+    let note: yavs_clift::Note = Box::new(move |f, why| {
+        if !verbose {
+            return;
+        }
+        let name = prog.func(f).map_or("?", |f| f.name.as_str());
+        let n = prog.func(f).map_or(0, |f| f.code.len());
+        match why {
+            Ok(t) => eprintln!(
+                "note: `{name}` ({f}, {n} IR instructions) is hot: compiled by --tier=clift-auto in {} us",
+                t.as_micros()
+            ),
+            Err(why) => eprintln!("note: `{name}` ({f}) is hot but stays interpreted: {why}"),
+        }
+    });
+    let t = yavs_clift::AutoTier::start(rt, a.tier_max_size, heat, note).map_err(bug)?;
+    Ok(Some(StopTierUp::Clift(t)))
 }
 
-/// Set up `--tier=llvm` (compile the program now) or `--tier=auto` (start tier-up, stopped
-/// when the returned guard drops).
-#[cfg(feature = "llvm")]
+/// `--tier=auto3`: `yavs_llvm::AutoTier` with Cranelift as its first level (functions are
+/// translated by Cranelift once warm, compiled again by LLVM at O2 once they stay hot).
+#[cfg(all(feature = "llvm", feature = "clift"))]
+fn use_auto3(
+    rt: &yavs_interp::Runtime,
+    a: &RunArgs,
+) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    let bug = |e: String| {
+        Box::new(
+            Diagnostic::error("E0121", "the compiled tiers cannot compile the design")
+                .with_note(e)
+                .with_note("this is a bug in yavs"),
+        )
+    };
+    let heat = a
+        .tier_heat
+        .map_or(yavs_llvm::Heat::DEFAULT, |[base, per_instr, period]| {
+            yavs_llvm::Heat {
+                base,
+                per_instr,
+                period,
+                budget: 0,
+            }
+        });
+    let prog = rt.prog.clone();
+    let verbose = a.verbose;
+    let note: yavs_llvm::Note = Box::new(move |f, level, why| {
+        if !verbose {
+            return;
+        }
+        let name = prog.func(f).map_or("?", |f| f.name.as_str());
+        let n = prog.func(f).map_or(0, |f| f.code.len());
+        let by = if level == yavs_llvm::OptLevel::O2 {
+            "LLVM O2"
+        } else {
+            "Cranelift"
+        };
+        match why {
+            Ok(t) => eprintln!(
+                "note: `{name}` ({f}, {n} IR instructions) is hot: compiled by --tier=auto3 with {by} in {} us",
+                t.as_micros()
+            ),
+            Err(why) => eprintln!("note: `{name}` ({f}) is hot but stays interpreted: {why}"),
+        }
+    });
+    let first = yavs_clift::First::new().map_err(bug)?;
+    let t = yavs_llvm::AutoTier::start(
+        rt,
+        yavs_llvm::OptLevel::O0,
+        a.tier_max_size,
+        heat,
+        note,
+        Some(Box::new(first)),
+    )
+    .map_err(|e| bug(e.to_string()))?;
+    Ok(Some(StopTierUp::Llvm(t)))
+}
+
+/// Set up the compiled tier (`--tier`): compile the program now or start tier-up, stopped when
+/// the returned guard drops.
 fn use_tier(
+    rt: Option<&yavs_interp::Runtime>,
+    a: &RunArgs,
+) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
+    if a.tier == TierArg::Auto3 {
+        #[cfg(all(feature = "llvm", feature = "clift"))]
+        return rt.map_or(Ok(None), |rt| use_auto3(rt, a));
+        #[cfg(not(all(feature = "llvm", feature = "clift")))]
+        return Err(Box::new(
+            Diagnostic::error(
+                "E0120",
+                "`--tier=auto3` needs a yavs built with the LLVM and Cranelift tiers",
+            )
+            .with_note("this yavs was built without the `llvm` and `clift` cargo features")
+            .with_help("use `--tier=interp`, or build yavs with `--features llvm,clift`"),
+        ));
+    }
+    if matches!(a.tier, TierArg::Clift | TierArg::CliftAuto) {
+        #[cfg(feature = "clift")]
+        return rt.map_or(Ok(None), |rt| use_clift(rt, a));
+        #[cfg(not(feature = "clift"))]
+        return Err(Box::new(
+            Diagnostic::error(
+                "E0120",
+                "`--tier=clift` needs a yavs built with the Cranelift tier",
+            )
+            .with_note("this yavs was built without the `clift` cargo feature")
+            .with_help("use `--tier=interp`, or build yavs with `--features clift`"),
+        ));
+    }
+    use_llvm_tier(rt, a)
+}
+
+/// Set up `--tier=llvm` (compile the program now) or `--tier=auto` (start tier-up).
+#[cfg(feature = "llvm")]
+fn use_llvm_tier(
     rt: Option<&yavs_interp::Runtime>,
     a: &RunArgs,
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
@@ -559,7 +758,7 @@ fn use_tier(
     };
     let opt = yavs_llvm::OptLevel::O2;
     match a.tier {
-        TierArg::Interp => Ok(None),
+        TierArg::Interp | TierArg::Clift | TierArg::CliftAuto | TierArg::Auto3 => Ok(None),
         TierArg::Llvm => {
             let tier = yavs_llvm::compile(&rt.prog, opt, a.tier_max_size).map_err(bug)?;
             use_llvm(rt, tier, a.verbose);
@@ -605,9 +804,10 @@ fn use_tier(
                 a.tier_max_size,
                 heat,
                 note,
+                None,
             )
             .map_err(bug)?;
-            Ok(Some(StopTierUp(t)))
+            Ok(Some(StopTierUp::Llvm(t)))
         }
     }
 }
@@ -637,14 +837,14 @@ fn use_llvm(rt: &yavs_interp::Runtime, tier: yavs_llvm::LlvmTier, verbose: bool)
 }
 
 #[cfg(not(feature = "llvm"))]
-fn use_tier(
+fn use_llvm_tier(
     _: Option<&yavs_interp::Runtime>,
     a: &RunArgs,
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
     let name = match a.tier {
-        TierArg::Interp => return Ok(None),
         TierArg::Llvm => "llvm",
         TierArg::Auto => "auto",
+        TierArg::Interp | TierArg::Clift | TierArg::CliftAuto | TierArg::Auto3 => return Ok(None),
     };
     Err(Box::new(
         Diagnostic::error(

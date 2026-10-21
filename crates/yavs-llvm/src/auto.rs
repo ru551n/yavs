@@ -24,7 +24,8 @@ use std::time::Duration;
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::lower::{RunFn, compile_one, enter, new_jit, too_big};
+use crate::lower::{compile_one, new_jit, too_big};
+use crate::rt::{FirstLevel, RunFn, back_edges, enter, loops, too_short};
 use crate::{Error, Jit, OptLevel};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
@@ -70,126 +71,6 @@ impl Heat {
     pub fn eager(self) -> bool {
         self.period == 0
     }
-}
-
-/// Below this many IR instructions a function without a loop stays interpreted (`too_short`).
-const SHORT: usize = 64;
-
-/// Why `f` stays interpreted although hot: shorter than `SHORT` IR instructions and without a
-/// jump back, so each entry into compiled code from the interpreter (the frame view, the
-/// entry switch, the way back) would cost about what interpreting its body costs: the small
-/// helpers a testbench calls millions of times ran slower compiled (#432).
-fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
-    (f.code.len() < SHORT && !loops(prog, f)).then(|| {
-        format!(
-            "{} IR instructions without a loop: entering compiled code would cost about as much",
-            f.code.len()
-        )
-    })
-}
-
-/// The backward jumps of `f` as ranges of instructions (a jump back to a block start and the jump).
-fn back_edges(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Vec<std::ops::Range<usize>> {
-    use yavs_ir::Inst;
-    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
-    let mut out = Vec::new();
-    for (pc, i) in f.code.iter().enumerate() {
-        let targets: Vec<usize> = match i {
-            Inst::Br { to } => vec![start(*to)],
-            Inst::CondBr { t, f: e, .. } => vec![start(*t), start(*e)],
-            Inst::Case { table, .. } => prog.cases.get(*table).map_or(Vec::new(), |t| {
-                std::iter::once(start(t.default))
-                    .chain(t.arms.iter().map(|a| start(a.2)))
-                    .collect()
-            }),
-            _ => Vec::new(),
-        };
-        out.extend(targets.into_iter().filter(|&t| t <= pc).map(|t| t..pc + 1));
-    }
-    out
-}
-
-/// Whether the blocks of `f` form a cycle, not counting a process's way through its
-/// suspension (each activation runs its body once).
-fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
-    use yavs_ir::Inst;
-    let blocks: Vec<&[Inst]> = f
-        .blocks
-        .iter()
-        .map(|(_, b)| f.code.get(b.start as usize..b.end as usize).unwrap_or(&[]))
-        .collect();
-    let waits: Vec<bool> = blocks
-        .iter()
-        .map(|c| f.kind == FuncKind::Process && c.iter().any(|i| matches!(i, Inst::Suspend { .. })))
-        .collect();
-    let succ = |b: usize| -> Vec<usize> {
-        let mut to = Vec::new();
-        for i in blocks[b] {
-            match i {
-                Inst::Br { to: t } => to.push(t.0 as usize),
-                Inst::CondBr { t, f: e, .. } => to.extend([t.0 as usize, e.0 as usize]),
-                Inst::Case { table, .. } => {
-                    if let Some(t) = prog.cases.get(*table) {
-                        to.push(t.default.0 as usize);
-                        to.extend(t.arms.iter().map(|a| a.2.0 as usize));
-                    }
-                }
-                _ => {}
-            }
-        }
-        to.retain(|&t| t < blocks.len() && !waits[b] && !waits[t]);
-        to
-    };
-    // Blocks the optimiser left unreachable (a self-jump) are no loop of the process.
-    let mut reach = vec![false; blocks.len()];
-    let mut work = vec![0usize];
-    while let Some(b) = work.pop() {
-        if b >= blocks.len() || std::mem::replace(&mut reach[b], true) {
-            continue;
-        }
-        for i in blocks[b] {
-            match i {
-                Inst::Br { to } => work.push(to.0 as usize),
-                Inst::CondBr { t, f: e, .. } => work.extend([t.0 as usize, e.0 as usize]),
-                Inst::Case { table, .. } => {
-                    if let Some(t) = prog.cases.get(*table) {
-                        work.push(t.default.0 as usize);
-                        work.extend(t.arms.iter().map(|a| a.2.0 as usize));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    // Depth-first search for an edge back to a block on the current path.
-    let mut state = vec![0u8; blocks.len()]; // 0 new, 1 on the path, 2 done
-    for root in 0..blocks.len() {
-        if state[root] != 0 || !reach[root] {
-            continue;
-        }
-        let mut stack = vec![(root, succ(root), 0)];
-        state[root] = 1;
-        while let Some((b, next, k)) = stack.last_mut() {
-            match next.get(*k).copied() {
-                Some(t) => {
-                    *k += 1;
-                    match state[t] {
-                        1 => return true,
-                        0 => {
-                            state[t] = 1;
-                            stack.push((t, succ(t), 0));
-                        }
-                        _ => {}
-                    }
-                }
-                None => {
-                    state[*b] = 2;
-                    stack.pop();
-                }
-            }
-        }
-    }
-    false
 }
 
 /// Whether the loops of `f` are compute: at most one instruction in twenty in them is one the
@@ -319,11 +200,17 @@ struct Shared {
     busy: AtomicBool,
     /// The JITs once the thread has ended: compiled code lives as long as the tier.
     jit: Mutex<Vec<Jit>>,
+    /// The first-level generator (`Worker::first`) once the thread has ended.
+    first: Mutex<Option<Box<dyn FirstLevel>>>,
 }
 
 /// Microseconds of compile time per IR instruction to start with (O2, one function in a
 /// module of its own); the thread replaces it by what it measures.
 const US_PER_INSTR: f64 = 250.0;
+
+/// Microseconds of translation time per IR instruction to start with for a `FirstLevel`
+/// generator (Cranelift: 40 to 45); the thread replaces it by what it measures.
+const FIRST_US_PER_INSTR: f64 = 45.0;
 
 /// A function must have been seen interpreted this many times as long as compiling it takes:
 /// its remaining time is expected to be about its past time and compiled code saves about a
@@ -355,6 +242,10 @@ struct Worker {
     jit2: Option<Jit>,
     /// For `rtl` processes, made at O0.
     jit0: Option<Jit>,
+    /// A code generator that replaces LLVM at the first level (`--tier=auto3`), with the
+    /// microseconds it takes per IR instruction (learned).
+    first: Option<Box<dyn FirstLevel>>,
+    first_us: f64,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
     /// Microseconds each function was seen interpreted, and running compiled.
@@ -409,7 +300,9 @@ impl Worker {
 
     /// The microseconds of compile time to expect for `f`.
     fn cost(&self, f: &yavs_ir::Func) -> u64 {
-        let per = if rtl(&self.prog, f) {
+        let per = if self.first.is_some() {
+            self.first_us
+        } else if rtl(&self.prog, f) {
             US_PER_INSTR_O0
         } else {
             self.us_per_instr
@@ -539,10 +432,17 @@ impl Worker {
             &mut self.jit
         };
         let t0 = std::time::Instant::now();
+        let via_first = !o2 && self.first.is_some();
         let short = (sampled && !o2).then(|| too_short(&self.prog, f)).flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let r = match (too_big(f, self.max_size).or(short), j) {
             (Some(why), _) => Err(why),
+            (None, _) if via_first => {
+                let first = self.first.as_mut().expect("checked above");
+                first
+                    .compile(&self.prog, id, f)
+                    .map(|(run, nregs)| (run, nregs, 0))
+            }
             (None, Some(j)) => compile_one(j, &self.prog, id, f, level),
             (None, j @ None) => match new_jit(level) {
                 Ok(n) => compile_one(j.insert(n), &self.prog, id, f, level),
@@ -553,7 +453,10 @@ impl Worker {
             Ok(entry) => {
                 let took = t0.elapsed();
                 self.spent += u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
-                if level == OptLevel::O2 {
+                if via_first {
+                    let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
+                    self.first_us = (self.first_us + per) / 2.0;
+                } else if level == OptLevel::O2 {
                     let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
                     self.us_per_instr = (self.us_per_instr + per) / 2.0;
                 }
@@ -591,6 +494,7 @@ impl AutoTier {
         max_size: usize,
         heat: Heat,
         note: Note,
+        first: Option<Box<dyn FirstLevel>>,
     ) -> Result<Arc<AutoTier>, Error> {
         crate::lazy::ensure()?;
         let prog = rt.prog.clone();
@@ -620,6 +524,8 @@ impl AutoTier {
             jit: None,
             jit2: None,
             jit0: None,
+            first,
+            first_us: FIRST_US_PER_INSTR,
             total: 0,
             spent: 0,
             us_per_instr: US_PER_INSTR,
@@ -707,6 +613,7 @@ impl AutoTier {
                         break;
                     }
                 }
+                *sh.first.lock().unwrap_or_else(PoisonError::into_inner) = w.first;
                 *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
                     w.jit.into_iter().chain(w.jit2).chain(w.jit0).collect();
                 sh.busy.store(false, Ordering::SeqCst);

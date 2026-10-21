@@ -178,7 +178,7 @@ fn auto_tier_compiles_hot_functions() {
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
     let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
-    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note, None).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     // The loop runs until the sampler has seen it and its code is compiled.
     let t0 = Instant::now();
@@ -203,7 +203,7 @@ fn auto_tier_compiles_within_its_budget() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let note: Note = Box::new(|_, _, _| {});
     let heat = Heat { budget: 2, ..HOT };
-    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note, None).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     let t0 = Instant::now();
     while tier.compiled() == 0 {
@@ -224,7 +224,7 @@ fn auto_tier_compiles_a_long_loop_of_one_call() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let note: Note = Box::new(|_, _, _| {});
     let heat = Heat { budget: 2, ..HOT };
-    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note, None).unwrap();
     let n = 3_000_000u64;
     let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
     assert_eq!(r.unwrap(), Some(n * (n + 1) / 2));
@@ -241,7 +241,7 @@ fn auto_tier_recompiles_hot_compiled_code_at_o2() {
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
     let note: Note = Box::new(move |f, level, why| seen.lock().unwrap().push((f, level, why)));
-    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note, None).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     let t0 = Instant::now();
     while notes.lock().unwrap().len() < 2 {
@@ -275,7 +275,7 @@ fn auto_tier_compiles_short_callees_of_compiled_code() {
     // First tier O2: the callee compiles with its caller, at O2, in one step. (At O0 it would
     // reach O2 only when a sample happens to find the interpreter inside it, which on a slow
     // host can take minutes.)
-    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note, None).unwrap();
     let call = || yavs_interp::call(rt.clone(), run, Arc::new(InstData::default()), &[10_000]);
     let t0 = Instant::now();
     let done = || {
@@ -301,7 +301,7 @@ fn auto_tier_skips_functions_over_the_size_cap() {
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
     let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
-    let tier = AutoTier::start(&rt, OptLevel::O2, 3, HOT, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O2, 3, HOT, note, None).unwrap();
     let t0 = Instant::now();
     while notes.lock().unwrap().is_empty() {
         assert!(t0.elapsed() < Duration::from_secs(60), "no note");

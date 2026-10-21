@@ -38,12 +38,21 @@ YAVS_LLVM = YAVS.replace("--threads=", "--tier=llvm --threads=")
 # yavs compiling hot functions in the background (`--tier=auto`): identical output whenever
 # compilation finishes.
 YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
-TEMPLATES = {"nvc": NVC, "ghdl": GHDL, "yavs": YAVS, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO}
+# yavs with the Cranelift tier (needs a yavs built with `--features clift`): every function
+# compiled before time 0, and hot functions compiled in the background.
+YAVS_CLIFT = YAVS.replace("--threads=", "--tier=clift --threads=")
+YAVS_CLIFT_AUTO = YAVS.replace("--threads=", "--tier=clift-auto --threads=")
+# yavs with Cranelift as the first level of tier-up and LLVM O2 for what stays hot (needs both
+# features); eager (`--tier-heat=0,0,0`) so every function is compiled at its first call and again at
+# O2 during the run.
+YAVS_AUTO3 = YAVS.replace("--threads=", "--tier=auto3 --threads=")
+YAVS_AUTO3_EAGER = YAVS.replace("--threads=", "--tier=auto3 --tier-heat=0,0,0 --threads=")
+TEMPLATES = {"yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER, "nvc": NVC, "ghdl": GHDL, "yavs": YAVS, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904"}
+RELAXED = {"nvc": "--relaxed", "ghdl": "-frelaxed", "yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904", "yavs-clift": "--relaxed -Wno-W1904", "yavs-clift-auto": "--relaxed -Wno-W1904", "yavs-auto3": "--relaxed -Wno-W1904", "yavs-auto3-eager": "--relaxed -Wno-W1904"}
 # Fields masked by default per builtin candidate (reference prints them all).
-DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": "", "yavs-llvm": "", "yavs-auto": ""}
+DEFAULT_IGNORE = {"nvc": "", "ghdl": "delta,path,fatalmsg,order,errexit", "yavs": "", "yavs-llvm": "", "yavs-auto": "", "yavs-clift": "", "yavs-clift-auto": "", "yavs-auto3": "", "yavs-auto3-eager": ""}
 
 UNITS = {"fs": 1, "ps": 10**3, "ns": 10**6, "us": 10**9, "ms": 10**12, "sec": 10**15, "s": 10**15}
 

@@ -244,6 +244,68 @@ pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     stepped * 20 <= total
 }
 
+/// The instructions an activation of process `f` runs once it has suspended (those reached from
+/// the instruction after each `Suspend`, up to the next one), and how many of them leave the
+/// compiled code for a callback into the interpreter's functions: every instruction it does not
+/// run inline (`is_inline`: steps, natives, signal operations), and each `Stmt` where
+/// temporaries are recorded as roots (it is stepped then).
+fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> (usize, usize) {
+    use yavs_ir::Inst;
+    let n = f.code.len();
+    let mut seen = vec![false; n];
+    let mut work: Vec<usize> = (0..n)
+        .filter(|&pc| matches!(f.code[pc], Inst::Suspend { .. }))
+        .map(|pc| pc + 1)
+        .collect();
+    while let Some(pc) = work.pop() {
+        if pc >= n || std::mem::replace(&mut seen[pc], true) {
+            continue;
+        }
+        let i = &f.code[pc];
+        if matches!(i, Inst::Suspend { .. }) {
+            continue;
+        }
+        if let Some(s) = crate::regs::succs(prog, f, pc, i) {
+            work.extend(s.into_iter().map(|t| t as usize));
+        }
+    }
+    let run = || {
+        f.code
+            .iter()
+            .zip(&seen)
+            .filter(|(_, b)| **b)
+            .map(|(i, _)| i)
+    };
+    let roots = run().any(|i| matches!(i, Inst::TempRoot { .. }));
+    let out = run()
+        .filter(|i| !crate::lower::is_inline(prog, f, i) || roots && matches!(i, Inst::Stmt))
+        .count();
+    (out, run().count())
+}
+
+/// Why hot process `f` stays interpreted: more than one in `CALLBACKS` of the instructions an
+/// activation runs leave the compiled code (`callbacks`), and each way out and back costs more
+/// than interpreting the instruction, so the compiled process ran slower than the interpreted
+/// one (#507). ponytail: a static count over every path of the body, not weighted by what runs;
+/// a measured comparison of both forms if a process near the line needs it.
+fn too_many_callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
+    if f.kind != FuncKind::Process {
+        return None;
+    }
+    let (out, total) = callbacks(prog, f);
+    (out * CALLBACKS > total).then(|| {
+        format!(
+            "{out} of the {total} IR instructions an activation runs leave the compiled code: \
+             it would run slower than interpreted"
+        )
+    })
+}
+
+/// A process stays interpreted when more than one in this many of its instructions per
+/// activation leave the compiled code (`too_many_callbacks`): the clocked processes that run
+/// faster compiled have one in eleven or fewer, the ones that ran slower one in nine or more.
+const CALLBACKS: usize = 10;
+
 /// Whether `f` is the body of a process that runs once per activation (a clocked or
 /// combinational process: no loop of its own, at least `SHORT` IR instructions). Its time goes
 /// to the signal and kernel operations compiled code reaches directly, so its first-level
@@ -686,7 +748,9 @@ impl Worker {
             &mut self.jit
         };
         let t0 = std::time::Instant::now();
-        let short = (sampled && !o2).then(|| too_short(&self.prog, f)).flatten();
+        let short = (sampled && !o2)
+            .then(|| too_short(&self.prog, f).or_else(|| too_many_callbacks(&self.prog, f)))
+            .flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let r = match (too_big(f, self.max_size).or(short), j) {
             (Some(why), _) => Err(why),
@@ -1025,7 +1089,7 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPUTE_BUDGET, loops, within_budget};
+    use super::{COMPUTE_BUDGET, loops, too_many_callbacks, within_budget};
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
 
@@ -1054,6 +1118,51 @@ mod tests {
         for (reached, is_loop) in [(true, true), (false, false)] {
             let (prog, f) = self_jump(reached);
             assert_eq!(loops(&prog, prog.func(f).unwrap()), is_loop, "{reached}");
+        }
+    }
+
+    /// A process whose activation (after its `Suspend`) runs `ops` inline additions, an address
+    /// and `outs` instructions the compiled code hands to the interpreter (`Free`, analysed only).
+    fn process(ops: usize, outs: usize) -> (yavs_ir::Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("p", yavs_ir::FuncKind::Process, None);
+        let mut fb = pb.define(f);
+        let body = fb.block();
+        fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+        fb.emit(Inst::Br { to: body });
+        fb.at(body);
+        fb.emit(Inst::Suspend { resume: 0 });
+        let x = fb.int(1);
+        for _ in 0..ops {
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: x,
+                a: x,
+                b: x,
+            });
+        }
+        let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+        fb.emit(Inst::AddrOf {
+            dst: ptr,
+            space: yavs_ir::AddrSpace::Frame,
+            off: 0,
+        });
+        for _ in 0..outs {
+            fb.emit(Inst::Free { ptr });
+        }
+        fb.emit(Inst::Br { to: body });
+        fb.finish();
+        (pb.finish().unwrap(), f)
+    }
+
+    /// A process whose activation leaves the compiled code for more than one instruction in ten
+    /// stays interpreted (#507); one with fewer is compiled.
+    #[test]
+    fn a_process_that_leaves_its_compiled_code_often_stays_interpreted() {
+        for (ops, outs, refused) in [(100, 5, false), (50, 9, true), (0, 1, true)] {
+            let (prog, f) = process(ops, outs);
+            let why = too_many_callbacks(&prog, prog.func(f).unwrap());
+            assert_eq!(why.is_some(), refused, "{ops} {outs}: {why:?}");
         }
     }
 

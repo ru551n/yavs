@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Run the reference simulators' own self-checking regression tests on yavs (run time, not
 analysis). The tests are read in place from the corpus cache (tools/fetch-corpus.sh), never
-copied into the repo. Suites: `nvc` (test/regress/testlist.txt) and `ghdl` (testsuite/gna/*/
-testsuite.sh, simple scripts only). See README.md "External regression tests".
+copied into the repo. A suite is named by the label of its simulator: sim1 (a test list,
+test/regress/testlist.txt) and sim2 (testsuite/gna/*/testsuite.sh, simple scripts only). See README.md "External regression tests". The reference
+commands come from tools/sims.local.conf (keys ext_analyse, ext_elab, ext_run, see tools/AGENTS.md);
+--oracle needs none.
 
-    external.py nvc                         # differential: reference simulator and yavs, classify
-    external.py ghdl --filter 'issue1'      # a subset
-    external.py nvc --oracle --check tools/difftest/external-nvc.pass   # CI: no reference needed
+    external.py <suite>                     # differential: reference simulator and yavs, classify
+    external.py <suite> --filter 'issue1'   # a subset
+    external.py <suite> --oracle --check tools/difftest/external-<suite>.pass   # CI: no reference needed
 """
 import argparse, concurrent.futures as cf, json, os, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import difftest as dt  # noqa: E402
+import simconf  # noqa: E402
 
 CORPUS = Path(os.environ.get("YAVS_CORPUS") or Path.home() / ".cache" / "rsim-corpus")
 CACHE = Path(os.environ.get("DIFFTEST_CACHE") or Path.home() / ".cache" / "yavs-difftest" / f"ext-{os.getpid()}")
@@ -25,7 +29,7 @@ class Skip(Exception):
 # A test: {name, dir (directory copied as the working directory, or None), std, relaxed, psl,
 # gold, env, steps}. Steps are ("a", [files], [script arguments]), ("clean",) and
 # ("run", top, [run options], expect_fail).
-def nvc_tests():
+def list_tests():
     base = CORPUS / "nvc" / "test" / "regress"
     for line in (base / "testlist.txt").read_text().splitlines():
         line = line.split("#")[0].split()
@@ -66,16 +70,16 @@ def nvc_tests():
         yield t
 
 
-GHDL_STD = {"--std=87": None, "--std=93": "1993", "--std=93c": "1993", "--std=00": "2000",
+STD_FLAGS = {"--std=87": None, "--std=93": "1993", "--std=93c": "1993", "--std=00": "2000",
             "--std=02": "2002", "--std=08": "2008", "--std=19": "2019"}
 
 
-def ghdl_flags(t, toks):
+def script_flags(t, toks):
     for f in toks:
-        if f in GHDL_STD:
-            if GHDL_STD[f] is None:
+        if f in STD_FLAGS:
+            if STD_FLAGS[f] is None:
                 raise Skip(f)
-            t["std"] = GHDL_STD[f]
+            t["std"] = STD_FLAGS[f]
         elif f in ("-frelaxed", "-frelaxed-rules"):
             t["relaxed"] = True
         elif f == "-fpsl":
@@ -84,7 +88,7 @@ def ghdl_flags(t, toks):
             raise Skip(f)
 
 
-def ghdl_test(d):
+def script_dir_test(d):
     t = {"name": d.name, "dir": d, "std": "1993", "relaxed": False, "psl": False, "gold": None, "env": {}, "steps": []}
     script = d / "testsuite.sh"
     if not script.exists():
@@ -109,10 +113,10 @@ def ghdl_test(d):
             pass  # negative analysis tests belong to the analysis corpora; a failed analysis changes no library
         elif w[0] == "analyze":
             files = [f for f in w[1:] if not f.startswith("-")]
-            ghdl_flags(t, std_flags + flags + [f for f in w[1:] if f.startswith("-")])
+            script_flags(t, std_flags + flags + [f for f in w[1:] if f.startswith("-")])
             t["steps"].append(("a", files, w[1:]))
         elif w[0] in ("elab_simulate", "elab_simulate_failure") and len(w) >= 2:
-            ghdl_flags(t, std_flags + flags)
+            script_flags(t, std_flags + flags)
             opts = w[2:]
             if any(not (o.startswith("--stop-time=") or (o.startswith("-g") and "=" in o)) for o in opts):
                 raise Skip(" ".join(opts))
@@ -121,23 +125,40 @@ def ghdl_test(d):
             raise Skip(w[0])
     if not any(s[0] == "run" for s in t["steps"]):
         raise Skip("no simulation")
-    t["ghdl_std"] = std_flags + flags
+    t["std_flags"] = std_flags + flags
     return t
 
 
-def ghdl_tests():
+def script_dir_tests():
     for d in sorted((CORPUS / "ghdl" / "testsuite" / "gna").iterdir()):
         if d.is_dir():
             try:
-                yield ghdl_test(d)
+                yield script_dir_test(d)
             except Skip as e:
                 yield {"name": d.name, "skip": str(e)}
 
 
-SUITES = {"nvc": nvc_tests, "ghdl": ghdl_tests}
+SUITES = {"sim1": list_tests, "sim2": script_dir_tests}  # a suite is named by the label of its simulator
 
 
 # ---------------------------------------------------------------- scripts
+def refcmd(sim, key, t, required=True, **sub):
+    """A reference command of tools/sims.local.conf for this test, placeholders filled."""
+    lab = sim
+    tpl = simconf.get(lab, key)
+    if tpl is None:
+        if not required:
+            return ""
+        sys.exit(f"{lab}: key {key} not configured (tools/sims.local.conf)")
+    rel = simconf.get(lab, "difftest_relaxed", "--relaxed")
+    sub = dict(sub, std=t["std"], relaxed=rel + " " if t["relaxed"] else "",
+               psl=simconf.get(lab, "ext_psl", "") + " " if t["psl"] else "",
+               std_flags=" ".join(shlex.quote(x) for x in t.get("std_flags", [])))
+    for k, v in sub.items():
+        tpl = tpl.replace("{" + k + "}", v)
+    return tpl
+
+
 def script(sim, t):
     """bash script running the test's steps: analysis failure exits 97, elaboration 98; run i
     writes r<i>.out, r<i>.err and r<i>.rc and the script goes on (expected failures)."""
@@ -153,24 +174,22 @@ def script(sim, t):
         if s[0] == "clean":
             lines.append("rm -rf lib && mkdir lib")
         elif s[0] == "a":
-            files = " ".join(q(f) if sim == "nvc" or not any(c in f for c in "*?[") else f for f in s[1])
-            if sim == "nvc":
-                cmd = f"nvc --std={std} --work=lib -a {'--relaxed ' if rel else ''}{'--psl ' if t['psl'] else ''}{files}"
-            elif sim == "ghdl":
-                cmd = f"ghdl -a --workdir=lib {' '.join(map(q, t['ghdl_std']))} {' '.join(map(q, s[2]))}"
+            files = " ".join(q(f) if not any(c in f for c in "*?[") else f for f in s[1])
+            if sim != "yavs":
+                cmd = refcmd(sim, "ext_analyse", t, files=files, args=" ".join(map(q, s[2])))
             else:
                 cmd = f"{yavs} analyze --std={std} --work=work:lib {'--relaxed ' if rel else ''}{'--psl ' if t['psl'] else ''}{files}"
             lines.append(f"o=$({cmd} 2>&1) || {{ printf '%s\\n' \"$o\" >&2; exit 97; }}")
         else:
             _, top, opts, _ = s
             o = " ".join(map(q, opts))
-            if sim == "nvc":
+            if sim != "yavs":
                 gens = " ".join(q(x) for x in opts if x.startswith("-g"))
                 rest = " ".join(q(x) for x in opts if not x.startswith("-g"))
-                lines.append(f"nvc --std={std} --work=lib -e {'--relaxed ' if rel else ''}{gens} {top} >/dev/null 2>e.txt || {{ cat e.txt >&2; exit 98; }}")
-                run = f"nvc --std={std} --work=lib -r {rest} {top}"
-            elif sim == "ghdl":
-                run = f"ghdl --elab-run --workdir=lib {' '.join(map(q, t['ghdl_std']))} {top} {o}"
+                elab = refcmd(sim, "ext_elab", t, gens=gens, top=top, required=False)
+                if elab:
+                    lines.append(f"{elab} >/dev/null 2>e.txt || {{ cat e.txt >&2; exit 98; }}")
+                run = refcmd(sim, "ext_run", t, gens=gens, rest=rest, opts=o, top=top)
             else:
                 flags = f"--std={std} --work=work:lib {'--relaxed ' if rel else ''}{'--psl ' if t['psl'] else ''}"
                 rest = " ".join(q(x) for x in opts if not x.startswith("-g"))
@@ -274,6 +293,7 @@ def one(t, args):
     if "skip" in t:
         return {"name": t["name"], "class": "skip", "msg": t["skip"]}
     res = {"name": t["name"]}
+    default_ignore = simconf.get(args.suite, "difftest_ignore", "")
     work = CACHE / args.suite / t["name"]
     if not args.oracle:
         rc, err, runs = execute(args.suite, t, work / "ref", not args.no_sandbox)
@@ -290,7 +310,7 @@ def one(t, args):
                 return {**res, "class": "pass" if args.oracle else "early", "oracle": True, "msg": err[:2000]}
             return {**res, "class": "analysis" if rc == 97 else "elab", "msg": err[:2000]}
         got = [dt.normalise(rc, o, drop_warnings(e), yavs=True) for rc, o, e in runs]
-        if args.suite == "ghdl":  # exit 1 after `error` reports vs 0 (README "Ignore set", errexit)
+        if "errexit" in default_ignore:  # exit 1 after `error` reports vs 0 (README "Ignore set", errexit)
             got = [["exit\t0"] + g[1:] if errexit_ok(g) else g for g in got]
         outs.append((runs, got))
     runs, got = outs[0]
@@ -301,7 +321,7 @@ def one(t, args):
     if [g[0] == "exit\t0" for g in got] != [r[0] == "exit\t0" for r in ref]:
         cls = "outcome"  # one passes a run that the other fails
     else:
-        cls = compare(ref, got, dt.DEFAULT_IGNORE[args.suite].split(","))
+        cls = compare(ref, got, default_ignore.split(","))
     res["oracle"] = meets(t, runs, True)  # the pass lists also need the suite's own verdict
     msg = "" if cls == "pass" else "\n".join(f"ref: {a}\nyavs: {b}" for r, g in zip(ref, got) for a, b in zip(r + [""] * 99, g) if a != b)[:3000]
     return {**res, "class": cls, "msg": msg}

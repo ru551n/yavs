@@ -6,9 +6,10 @@ Usage:
          [--no-sandbox] [-v] [--print-config]
 
 Simulator labels (sim1, sim2, ...) map to commands through the untracked file
-tools/discrepancies/sims.local.conf (`label = template-name-or-bash-template`, one per line)
-or the environment variables DISCREP_SIM1, DISCREP_SIM2, ... The label to tool mapping is never
-committed; TEMPLATES below are command templates keyed by command name (code identifiers).
+tools/sims.local.conf (key `discrep` in the label's section, see tools/simconf.py) or the
+environment variables DISCREP_SIM1, DISCREP_SIM2, ... The value is a bash pair
+`analyse|||elaborate-and-run` with an optional third part, a regex for the reference's internal
+error banner. The label to tool mapping is never committed.
 yavs is built in: binary from YAVS_BIN or `yavs` on PATH.
 
 Case layout: tests/discrepancies/<id>/{case.vhd, case.conf, expected-yavs, verdicts}.
@@ -24,7 +25,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CASES = os.path.normpath(os.path.join(HERE, "..", "..", "tests", "discrepancies"))
-LOCAL = os.path.join(HERE, "sims.local.conf")
+sys.path.insert(0, os.path.join(HERE, ".."))
+import simconf  # noqa: E402
+
 CACHE = os.path.expanduser(os.environ.get("DISCREP_CACHE", "~/.cache/yavs-discrep"))
 
 # (analyse, elab_and_run) bash snippets; placeholders {file} {top} {std} {work} {res} (the resolution limit of the case, default fs). Exit 97 is an
@@ -34,21 +37,6 @@ TEMPLATES = {
              '"${YAVS_BIN:-yavs}" elab --std={std} --work=work:{work} {top} || exit 98; '
              '"${YAVS_BIN:-yavs}" run --std={std} --work=work:{work} --resolution={res} {top}; '
              'rc=$?; [ $rc = 2 ] && exit 98; exit $rc'),
-    "nvc": ('nvc --std={std} --work={work} -a {file}',
-            'nvc --std={std} --work={work} -e {top} || exit 98; nvc --std={std} --work={work} -r {top}'),
-    "ghdl": ('mkdir -p {work} && ghdl -a --std={std2} --workdir={work} {file}',
-             'ghdl -e --std={std2} --workdir={work} {top} || exit 98; '
-             'ghdl -r --std={std2} --workdir={work} {top}'),
-    "vsim": ('vlib {work} >/dev/null && SALT_LICENSE_SERVER="$LM_LICENSE_FILE" vcom -{std} -work {work} {file}',
-             'o=$(SALT_LICENSE_SERVER="$LM_LICENSE_FILE" vsim -c -t {res} -lib {work} {top} -do "run -all; quit -f" 2>&1); '
-             'rc=$?; echo "$o"; echo "$o" | grep -q "Error loading design\\|vsim-.*Fatal" && exit 98; '
-             'echo "$o" | grep -q "^# Fatal error" && exit 3; exit $rc'),
-    "riviera": ('for d in ${PATH//:/ }; do [ -e $d/hdl.cfg ] && PATH=$d:$PATH && break; done; '
-                'mkdir -p {work} && vlib {work}/work >/dev/null && vcom -{std} -work {work}/work {file}',
-                'for d in ${PATH//:/ }; do [ -e $d/hdl.cfg ] && PATH=$d:$PATH && break; done; '
-                'o=$(vsim -c -t {res} -lib {work}/work {top} -do "run -all; quit" 2>&1); rc=$?; echo "$o"; '
-                'echo "$o" | grep -q "initialization failed\\|ELAB[0-9]*: .*ERROR" && exit 98; '
-                'echo "$o" | grep -q "EXECUTION:: FAILURE\\|RUNTIME: Fatal" && exit 3; exit $rc'),
 }
 MSG = [  # report/assert lines of the known output formats
     re.compile(r"^\*\* (Note|Warning|Error|Failure): (?:\d+\w*\+\d+: )?(?:\S+:\d+ )?(.*)$"),  # yavs-style
@@ -57,30 +45,25 @@ MSG = [  # report/assert lines of the known output formats
     re.compile(r"^# EXECUTION:: (NOTE|WARNING|ERROR|FAILURE)\s*: (.*)$"),
 ]
 CRASH = re.compile(r"internal error|Segmentation|Caught signal|stack dump|PANIC|Assertion failed|GNAT BUG|thread .* panicked", re.I)
-# Extra internal-error markers per command template: this reference reports its internal errors with
-# its own banner and exception name, and exits nonzero, so they would otherwise be read as ordinary failures.
-EXTRA_CRASH = {"ghdl": re.compile(r"TYPES\.INTERNAL_ERROR|Bug occurred")}
 
 
 def load_sims(names):
-    """Return the command pairs by label and the extra crash pattern (or None) by label."""
-    cfg = {}
-    if os.path.exists(LOCAL):
-        for line in open(LOCAL):
-            line = line.split("#", 1)[0].strip()
-            if "=" in line:
-                k, v = line.split("=", 1)
-                cfg[k.strip()] = v.strip()
+    """Return the command pairs by label and the extra crash pattern (or None) by label.
+    A reference that reports internal errors with its own banner and a nonzero exit gives the
+    banner regex as third part; otherwise they would be read as ordinary failures."""
     sims, extra = {"yavs": TEMPLATES["yavs"]}, {}
     for n in names:
         if n == "yavs":
             continue
-        v = os.environ.get("DISCREP_" + n.upper(), cfg.get(n))
+        v = os.environ.get("DISCREP_" + n.upper(), simconf.get(n, "discrep"))
         if v is None:
             print(f"{n}: not configured (see --print-config), skipped", file=sys.stderr)
             continue
-        sims[n] = TEMPLATES[v] if v in TEMPLATES else tuple(v.split("|||", 1))
-        extra[n] = EXTRA_CRASH.get(v)
+        parts = v.split("|||")
+        if len(parts) < 2:
+            sys.exit(f"{n}: the discrep value needs 'analyse|||elaborate-and-run'")
+        sims[n] = (parts[0], parts[1])
+        extra[n] = re.compile(parts[2]) if len(parts) > 2 and parts[2] else None
     return sims, extra
 
 
@@ -99,7 +82,7 @@ def messages(text):
     for line in text.splitlines():
         for rx in MSG:
             m = rx.search(line.rstrip())
-            if m and not re.search(r"\((?:vsim|vopt|vcom)-\d+\)", line):
+            if m and not re.search(r"\([a-z]{3,4}-\d+\)", line):
                 out.append(f"{m.group(1).lower()}: {m.group(2).strip()}")
                 break
     return out
@@ -179,9 +162,10 @@ def main():
     ap.add_argument("-v", action="store_true")
     a = ap.parse_args()
     if a.print_config:
-        print("# tools/discrepancies/sims.local.conf (untracked): label = command template name\n"
-              "# available template names: " + ", ".join(k for k in TEMPLATES if k != "yavs") +
-              "\n# or DISCREP_SIM1=<name> in the environment, or a literal `analyse|||elab-and-run` bash pair")
+        print("# tools/sims.local.conf (untracked), one section per label:\n[sim1]\n"
+              "discrep = <analyse bash>|||<elaborate-and-run bash>[|||<crash regex>]\n"
+              "# placeholders {file} {top} {std} {std2} {work} {res}; exit 97 = analysis error, 98 = elaboration error\n"
+              "# or DISCREP_SIM1=<same value> in the environment")
         return 0
     sims, extra = load_sims([s for s in a.sims.split(",") if s])
     sims.setdefault("yavs", TEMPLATES["yavs"])

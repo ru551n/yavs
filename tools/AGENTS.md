@@ -21,7 +21,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `derive_libs.py <packages-checkout> <outdir>` | Derive `lib/std` and `lib/ieee` from IEEE VASG Packages: byte-for-byte upstream plus the edits listed in `lib/SOURCES.md` |
 | `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
-| `check-nvc.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
+| `check-sim1.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
 | `rename-yavs.sh` | Idempotent rsim to yavs sweep for worktrees that still carry the old name |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
@@ -29,6 +29,21 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |
 | `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
 | `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |
+
+## 2a. Reference simulator configuration
+
+Tracked files know the reference simulators only by label (sim1 to sim4). Everything that names a
+product (executables, command templates, output markers, a few output-file prefixes) is in the untracked,
+git-ignored `tools/sims.local.conf`, an INI file with a section per label, read by `tools/simconf.py`
+(`YAVS_SIMS_CONF` overrides the path; `SIMCONF_<KEY>_<LABEL>` overrides a key). Keys by tool:
+`discrep`, `bench` (discrepancies, bench, tiny: `analyse|||run[|||crash regex]`); `difftest`,
+`difftest_relaxed`, `difftest_ignore`, `ext_analyse`, `ext_elab`, `ext_run`, `ext_psl` (difftest, external.py);
+`corpus_cmd`, `corpus_suffix`, `corpus_flags_key`, `corpus_fixup`, `gen_cmd`, `gen_setup`, `gen_licence`,
+`gen_version`, `osvvm_tool_name`, `osvvm_tool_vendor`, `uvvm_simulator_name` (tools/corpus, tools/suites);
+`check_cmd`, `check_bootstrap` (check-sim1.sh); `vhpi_analyse`, `vhpi_run` (vhpi-conformance);
+`negtest_cmd`, `negtest_err`, `negtest_warn` (tests/diag/sem/check_ref.py); `golden_cmd`, `golden_name`
+(crates/yavs-std/golden/gen.py). The `YAVS_SIM1_CMD` variable names the sim1 command of the ignored
+cross-check test in `yavs-sem`. Never commit the file or put a tool name, path or licence value in a tracked file.
 
 ## 3. Design decisions that bind this module
 
@@ -59,7 +74,7 @@ Decisions about the tooling go in this section (or the subdirectory guide) in th
 tools/fetch-corpus.sh                                  # ~/.cache/rsim-corpus
 YAVS_CORPUS=~/.cache/rsim-corpus cargo test -p yavs --features corpus
 tools/update-ieee-libs.sh                              # lib/ still equals upstream plus edits
-tools/check-nvc.sh 2019
+tools/check-sim1.sh 2019
 ```
 
 - No diagnostic codes.

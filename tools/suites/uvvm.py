@@ -19,6 +19,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "corpus"))
+sys.path.insert(0, str(HERE.parent))
+import simconf  # noqa: E402  (tools/simconf.py, put on the path by gen_manifests)
 import gen_manifests as gm  # noqa: E402  (order_files: the dependency scan shared with the corpus manifests)
 
 STD = "2008"
@@ -33,7 +35,7 @@ class Recorder:
 
     def __init__(self):
         self.files, self.generics = [], []
-        self.settings = types.SimpleNamespace(get_simulator_name=lambda: "NVC")
+        self.settings = types.SimpleNamespace(get_simulator_name=lambda: simconf.get("sim1", "uvvm_simulator_name", "sim1"))
 
     def add_files(self, pattern, lib, *a, **k):
         self.files.append((pattern, lib.lower()))

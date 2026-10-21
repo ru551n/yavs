@@ -148,7 +148,7 @@ jobs:
         run: |
           export PATH="$PWD/target/release:$PATH"
           failed=
-          for s in nvc ghdl; do
+          for s in sim1 sim2; do
             python3 tools/difftest/external.py "$s" --oracle --no-sandbox --jobs 4 \
               --check "tools/difftest/external-$s.pass" || failed="$failed $s"
           done

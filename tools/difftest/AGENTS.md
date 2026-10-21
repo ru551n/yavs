@@ -7,7 +7,7 @@ themselves are described in `tests/corpus/AGENTS.md`.
 
 ## 1. Purpose and boundaries
 
-- Runs every `tests/corpus/**/*.vhd` testbench on a candidate simulator (`nvc`, `ghdl`, `yavs` or
+- Runs every `tests/corpus/**/*.vhd` testbench on a candidate simulator (`sim1`, `sim2`, `yavs` or
   any bash template), normalises its output to the canonical event form and compares it with the
   checked-in reference-simulator `<name>.expected`. CI needs no reference simulator. The M2 check: every group equal to
   the reference simulator at 1 thread, 4 threads and 4 threads shuffled (#65).
@@ -21,9 +21,9 @@ themselves are described in `tests/corpus/AGENTS.md`.
 
 | File | What |
 |---|---|
-| `difftest.py` | Harness: templates `NVC`, `GHDL`, `YAVS`, `YAVS_LLVM` (`--tier=llvm`, compared with the same `.expected`: rule 5), `YAVS_AUTO` (`--tier=auto`, likewise), `normalise()`, `yavs_fatal()` (yavs runtime diagnostics to `fatal` events), ignore masks, `--bless`, `--json`, `--threads`, `--shuffle`, `--filter`, `--jobs` (max 8), `--list`, `--no-sandbox` |
+| `difftest.py` | Harness: templates `sim1`, `sim2`, `YAVS`, `YAVS_LLVM` (`--tier=llvm`, compared with the same `.expected`: rule 5), `YAVS_AUTO` (`--tier=auto`, likewise), `normalise()`, `yavs_fatal()` (yavs runtime diagnostics to `fatal` events), ignore masks, `--bless`, `--json`, `--threads`, `--shuffle`, `--filter`, `--jobs` (max 8), `--list`, `--no-sandbox` |
 | `external.py` | The reference simulators' own self-checking regression tests, run in place from the corpus cache on yavs and the reference simulator, each mismatch classified (README "External regression tests"); `--oracle --check` against `external-*.pass` without a reference simulator (CI) |
-| `external-nvc.pass`, `external-ghdl.pass` | Tests that pass both ways; CI gates them |
+| `external-sim1.pass`, `external-sim2.pass` | Tests that pass both ways; CI gates them |
 | `report.sh` | Build `yavs`, run at 1, 4 and 4 shuffled threads, write `tests/corpus/RESULTS.md` (scratch `~/.cache/rsim-difftest2.<pid>`, removed afterwards) |
 | `report.py` | `--json` results to `RESULTS.md`, failures grouped with an owner guess per code/message |
 | `README.md` | The contract |

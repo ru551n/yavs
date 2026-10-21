@@ -324,10 +324,13 @@ def load_sims(labels):
     spec = importlib.util.spec_from_file_location("discrep_run", REPO / "tools/discrepancies/run.py")
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
-    for l in labels:  # BENCH_SIM1 etc. win over DISCREP_SIM1 etc.
-        if os.environ.get("BENCH_" + l.upper()):
-            os.environ["DISCREP_" + l.upper()] = os.environ["BENCH_" + l.upper()]
-    sims = m.load_sims(labels)
+    sys.path.insert(0, str(REPO / "tools"))
+    import simconf
+    for l in labels:  # BENCH_SIM1 etc. win over key `bench` of tools/sims.local.conf, which wins over DISCREP_SIM1 / key `discrep`
+        v = os.environ.get("BENCH_" + l.upper()) or simconf.get(l, "bench")
+        if v:
+            os.environ["DISCREP_" + l.upper()] = v
+    sims, _ = m.load_sims(labels)
     sims.pop("yavs", None)
     return sims
 
@@ -446,7 +449,7 @@ def ref_templates(labels):
     sims = load_sims(labels)
     miss = [l for l in labels if l not in sims]
     if miss:
-        raise SystemExit(f"reference label(s) {miss} not configured (BENCH_<LABEL>, DISCREP_<LABEL> or tools/discrepancies/sims.local.conf)")
+        raise SystemExit(f"reference label(s) {miss} not configured (BENCH_<LABEL>, DISCREP_<LABEL> or tools/sims.local.conf)")
     return sims
 
 

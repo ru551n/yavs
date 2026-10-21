@@ -6,12 +6,15 @@
 Sources are read from the corpus cache (see tools/fetch-corpus.sh) and never copied.
   vunit : vunit/builtins.py rules (file-name standard tags, per-library globs) + a regex
           dependency scan for the order (VUnit also scans; it has no static order list)
-  osvvm : OsvvmLibraries.pro, interpreted by a small Tcl subset with NVC's tool settings
+  osvvm : OsvvmLibraries.pro, interpreted by a small Tcl subset with the tool settings of sim1 (keys osvvm_tool_name, osvvm_tool_vendor of tools/sims.local.conf)
   uvvm  : script/component_list.txt + each component's script/compile_order.txt
   yavs-lib : lib/ORDER.md
 """
 import argparse, glob, os, re, sys
+from pathlib import Path
 import gen_external
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import simconf
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -142,8 +145,8 @@ def gen_vunit(std):
         add_files(f"{d}/src/*.vhd")
     for f in sorted(glob.glob(str(vhdl / "random/src/*.vhd"))):  # add_source_files: no tag filter
         add("vunit_lib", "vunit", vr, Path(f))
-    # _add_osvvm, simulator without Aldec coverage API, with package generics
-    skip = {"AlertLogPkg_body_BVUL.vhd": "VUnit skips it", "VendorCovApiPkg_Aldec.vhd": "Aldec/Riviera-PRO only",
+    # _add_osvvm, simulator without the vendor coverage API, with package generics
+    skip = {"AlertLogPkg_body_BVUL.vhd": "VUnit skips it", "VendorCovApiPkg_Aldec.vhd": "vendor specific (sim4 only)",
             "ScoreboardPkg_int_c.vhd": "non-generic fallback, unused with generic packages",
             "ScoreboardPkg_slv_c.vhd": "non-generic fallback, unused with generic packages",
             "MemoryPkg_c.vhd": "non-generic fallback, unused with generic packages",
@@ -165,13 +168,13 @@ def gen_vunit(std):
 class Pro:
     def __init__(self, root, std):
         self.root, self.lib, self.cwd, self.files, self.ignored = root, "osvvm", root, [], {}
-        v = {"ToolName": "NVC", "ToolSupportsGenericPackages": True, "Supports2019Interface": True,
+        v = {"ToolName": simconf.get("sim1", "osvvm_tool_name", "sim1"), "ToolSupportsGenericPackages": True, "Supports2019Interface": True,
              "Supports2019ImpureFunctions": True, "Supports2019FilePath": True, "Supports2019AssertApi": True,
              "Supports2019Integer64Bits": True, "Supports2019Generics": True,
-             # NVC would pick CoverageVendorApiPkg_NVC; use the simulator independent one
+             # sim1 would pick its vendor variant of CoverageVendorApiPkg; use the simulator independent one
              "FunctionalCoverageIntegratedInSimulator": "default",
              "VhdlVersion": int(std), "UseMemoryPkg01": False, "ClockResetVersion": "2026.09",
-             "OsvvmDevDerivePackageHeaders": False, "ToolVendor": "Nvc"}
+             "OsvvmDevDerivePackageHeaders": False, "ToolVendor": simconf.get("sim1", "osvvm_tool_vendor", "sim1")}
         self.vars = v
 
     @staticmethod
@@ -298,7 +301,7 @@ def gen_osvvm(std):
     excl = [("osvvm-libraries", "*/testbench*, */TestCases, */RunAllTests.pro", "test benches and regression scripts, not libraries"),
             ("osvvm-libraries", "osvvm/CoverageVendorApiPkg_NVC.vhd", "simulator specific; the 'default' variant is used"),
             ("osvvm-libraries", "osvvm/deprecated/*", "variants .pro selects only for tools without 2019/generic support")]
-    return ["osvvm-libraries"], files, excl, f"order: OsvvmLibraries.pro interpreted with NVC settings, VHDL {std}"
+    return ["osvvm-libraries"], files, excl, f"order: OsvvmLibraries.pro interpreted with sim1 settings, VHDL {std}"
 
 
 # ---------------------------------------------------------------- UVVM
@@ -370,6 +373,7 @@ def write(name, std, srcs, files, excl, note, flags, extra=None):
         L.append(f"  {{ lib = {toml_str(l)}, source = {toml_str(s)}, path = {toml_str(p)}, std = {toml_str(st)} }},")
     L += ["]", "", "# Extra analyze flags per tool (UVVM has non-protected shared variables).", "[flags]"]
     for tool, fl in flags.items():
+        tool = simconf.get(tool, "corpus_flags_key", tool)  # the manifests key reference flags by this name
         L.append(f"{tool} = [{', '.join(toml_str(x) for x in fl)}]")
     for sid in srcs:
         url, commit, why, *lic = SOURCES.get(sid, ("(this repository)", "(see git)", "yavs's own lib/"))
@@ -388,7 +392,7 @@ def write(name, std, srcs, files, excl, note, flags, extra=None):
 
 
 GEN = {"hdl-modules": gen_hdl_modules, "vunit": gen_vunit, "osvvm": gen_osvvm, "uvvm": gen_uvvm, "yavs-lib": gen_yavs_lib}
-FLAGS = {"yavs-lib": {"nvc": [], "yavs": ["--bootstrap"]}, "uvvm": {"nvc": ["--relaxed"], "yavs": ["--relaxed"]}}
+FLAGS = {"yavs-lib": {"sim1": [], "yavs": ["--bootstrap"]}, "uvvm": {"sim1": ["--relaxed"], "yavs": ["--relaxed"]}}
 
 SPECS = gen_external.SPECS
 VALIDATING = False
@@ -410,9 +414,9 @@ if __name__ == "__main__":
         VALIDATING = a.validate
         r = GEN[c](s)
         srcs, files, excl, note = r[:4]
-        fl = FLAGS.get(c, {"nvc": [], "yavs": []})
+        fl = FLAGS.get(c, {"sim1": [], "yavs": []})
         if c in SPECS:
-            fl = dict({"nvc": [], "yavs": []}, **SPECS[c].get("flags", {}))
+            fl = dict({"sim1": [], "yavs": []}, **SPECS[c].get("flags", {}))
         if a.validate and c in SPECS:
             acc, rej, log = validate(n, s, [f for f in files], r[4]["base"], fl)
             save_rejects(n, rej, log)

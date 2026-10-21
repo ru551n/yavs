@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 """Install-free VHPI conformance run: each C plugin in plugins/ runs on each of its designs in
-designs/ under yavs and under the primary reference simulator (`nvc` on PATH); the canonical
+designs/ under yavs and under the primary reference simulator (sim1); the canonical
 traces (the plugin's "T " lines plus the exit status) are diffed.
 
-    tools/vhpi-conformance/run.py [--only PLUGIN[,..]] [--show] [--out DIR]
+    tools/vhpi-conformance/run.py [--only PLUGIN[,..]] [--refs sim4[,sim3]] [--show] [--out DIR]
 
-A second reference simulator (sim4, also implements VHPI) is used when SIM4_BIN names its bin
-directory (the one with vlib, vcom and vsim; the simulator's licence variable must be set). The
-output is then a three-way comparison per plugin and design: how many yavs trace lines match sim1,
-sim4, both or neither. A line that matches neither is a candidate yavs gap; a line where the two
-references differ from each other is a reference quirk.
+The reference commands are keys vhpi_analyse and vhpi_run of the label's section in the untracked
+tools/sims.local.conf (see run_ref). With --refs sim4 (a second reference that also implements VHPI) the
+output is a three-way comparison per plugin and design: how many yavs trace lines match sim1, sim4,
+both or neither. A line that matches neither is a candidate yavs gap; a line where the two references
+differ from each other is a reference quirk. --refs sim3 adds a run of the third reference (its
+trace is written next to the others and its match count with yavs is printed). Licences come from the
+caller's environment.
 
-SIM3_BIN (bin directory of the third reference, licence in LM_LICENSE_FILE) adds a run of it, which
-needs full design access (vopt) for puts; its trace is written next to the others and its match
-count with yavs is printed.
-
-Environment: YAVS_BIN (default `yavs` on PATH), SIM4_BIN and SIM3_BIN (optional). Exit status 1 if any yavs
-trace differs from sim1.
+Environment: YAVS_BIN (default `yavs` on PATH). Exit status 1 if any yavs trace differs from sim1.
 Python 3 stdlib only.
 """
 import argparse
@@ -28,6 +25,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+import simconf  # noqa: E402
 INCLUDE = HERE.parent.parent / "crates" / "yavs-vhpi" / "include"
 # plugin -> [(design file stem, top entity)]
 RUNS = {
@@ -80,50 +79,23 @@ def run_yavs(so, design, top, work):
     return trace(o, e, rc), e
 
 
-def run_ref(so, design, top, work):
-    f = str(HERE / "designs" / f"{design}.vhd")
-    base = ["nvc", "--std=2008", f"--work=work:{work}"]
-    rx = ["--relaxed"] if design in RELAXED else []
-    for step in (["-a"] + rx + [f], ["-e", top]):
-        rc, o, e = sh(base + step, work.parent)
-        if rc:
-            return None, f"{step[0]} failed: {e.strip().splitlines()[:1]}"
-    rc, o, e = sh(base + [f"--load={so}", "-r", top], work.parent)
-    return trace(o, e, rc), e
-
-
-def run_sim4(so, design, top, work):
-    bindir = os.environ["SIM4_BIN"]
-    f = str(HERE / "designs" / f"{design}.vhd")
-    work.mkdir(exist_ok=True)  # the run directory; the library is its `work`
-    # A foreign model's library word names a shared library this simulator loads from here.
-    # It loads it from there, running its startup routines, so it is not loaded a second time.
-    (work / Path(so).name).write_bytes(Path(so).read_bytes())
-    load = [] if Path(so).stem in FOREIGN else ["-loadvhpi", f"{so}:conf_boot"]
+def run_ref(label, so, design, top, work):
+    """Run the plugin on a design under the reference `label`. The commands are keys vhpi_analyse and
+    vhpi_run of the label's section in tools/sims.local.conf: bash snippets run in the work directory
+    with the environment variables SO (plugin), FILE (design), TOP, WORK (this directory), RELAXED and
+    FOREIGN (1 or empty). A snippet that exits nonzero, or analysis output with `N Errors`, is a failure."""
+    ana, run = simconf.get(label, "vhpi_analyse"), simconf.get(label, "vhpi_run")
+    if ana is None or run is None:
+        sys.exit(f"{label}: keys vhpi_analyse and vhpi_run not configured (tools/sims.local.conf)")
+    work.mkdir(parents=True, exist_ok=True)
     (work / "run.do").write_text("run -all\nquit\n")
-    for step in ([f"{bindir}/vlib", "work"], [f"{bindir}/vcom", "-2008", f]):
-        rc, o, e = sh(step, work)
-        if rc or re.search(r"[1-9]\d* Errors", o):
-            return None, f"{step[0].split('/')[-1]} failed: {o.strip().splitlines()[-1:]}"
-    rc, o, e = sh([f"{bindir}/vsim", "-c"] + load + [top, "-do", "run.do"], work)
-    return trace(o, e, rc), o + e
-
-
-def run_sim3(so, design, top, work):
-    """Third reference: needs full design access (vopt) and loads the plugin by its startup table."""
-    bindir = os.environ["SIM3_BIN"]
-    f = str(HERE / "designs" / f"{design}.vhd")
-    work.mkdir(exist_ok=True)
-    (work / "run.do").write_text("run -all\nquit\n")
-    env_lic = os.environ.get("LM_LICENSE_FILE", "")
-    pre = ["env", f"SALT_LICENSE_SERVER={env_lic}"]
-    for step in ([f"{bindir}/vlib", "work"], [f"{bindir}/vcom", "-2008", f],
-                 [f"{bindir}/vopt", "-access=rw+/.", top, "-o", "opt"]):
-        rc, o, e = sh(pre + step, work)
-        if rc or re.search(r"[1-9]\d* Errors", o):
-            return None, f"{step[0].split('/')[-1]} failed: {o.strip().splitlines()[-1:]}"
-    rc, o, e = sh(pre + [f"{bindir}/vsim", "-c", "-vhpi", str(so), "opt", "-do", "run.do"], work)
-    return trace(o, e, rc), o + e
+    env = {**os.environ, "SO": str(so), "FILE": str(HERE / "designs" / f"{design}.vhd"), "TOP": top, "WORK": str(work),
+           "RELAXED": "1" if design in RELAXED else "", "FOREIGN": "1" if Path(so).stem in FOREIGN else ""}
+    p = subprocess.run(SANDBOX + ["bash", "-c", ana], cwd=work, env=env, capture_output=True, text=True, errors="replace")
+    if p.returncode or re.search(r"[1-9]\d* Errors", p.stdout):
+        return None, f"analysis failed: {(p.stdout + p.stderr).strip().splitlines()[-1:]}"
+    p = subprocess.run(SANDBOX + ["bash", "-c", run], cwd=work, env=env, capture_output=True, text=True, errors="replace")
+    return trace(p.stdout, p.stderr, p.returncode), p.stdout + p.stderr
 
 
 def fold(l):
@@ -141,10 +113,12 @@ def matched(a, b):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("--refs", default="", help="further reference labels besides sim1, e.g. sim4 or sim3,sim4 (three-way tables)")
     ap.add_argument("--only", help="comma separated plugin names")
     ap.add_argument("--show", action="store_true", help="print every diff")
     ap.add_argument("--out", default=os.path.expanduser("~/.cache/yavs-vhpi-conformance"))
     a = ap.parse_args()
+    extra = [r for r in a.refs.split(",") if r]
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     names = a.only.split(",") if a.only else list(RUNS)
@@ -158,11 +132,10 @@ def main():
         for design, top in RUNS[name]:
             tag = f"{name}.{design}" if top == design else f"{name}.{top}"
             res = {}
-            sims = [("sim1", run_ref), ("yavs", run_yavs)] + ([("sim4", run_sim4)] if "SIM4_BIN" in os.environ else []) \
-                + ([("sim3", run_sim3)] if "SIM3_BIN" in os.environ else [])
+            sims = [("sim1", run_ref), ("yavs", run_yavs)] + [(r, run_ref) for r in extra]
             for sim, fn in sims:
                 work = out / f"{tag}.{sim}.{'08' if sim == 'sim1' else 'work'}"
-                tr, err = fn(so, design, top, work)
+                tr, err = fn(*(((sim,) if fn is run_ref else ()) + (so, design, top, work)))
                 (out / f"{tag}.{sim}.err").write_text(err if isinstance(err, str) else "")
                 if tr is None:
                     tr = [f"# {err}"]

@@ -9,8 +9,8 @@ The whole process runs once under `taskset` (every tool on the same cores) and a
 cannot analyse, elaborate or finish are left out for that tool; the summary also gives the set all tools ran.
 
 Reference labels map to commands exactly as for `run.py --ref` (BENCH_<LABEL>, DISCREP_<LABEL> or the untracked
-tools/discrepancies/sims.local.conf). For this corpus the label's value must be an explicit
-`analyse|||elaborate-and-run` template (the built-in names do not know the test headers). Placeholders:
+tools/sims.local.conf, key `bench` before `discrep`). For this corpus the template must use the test
+header's environment variables (below). Placeholders:
 {file} {top} {std} {std2} {work} {res}; environment variables of the test header: STOP_FLAG
 (`--stop-time=T` or empty), RELAXED and PSL (`1` or empty).
 Stdlib only. Run with `python3 -I`.

@@ -1369,6 +1369,195 @@ and counts the first frame under `crates/`); no hardware profiler on this host.
 Raw data: median tables above come from 3 interleaved runs per row (suites: 3 runs for the test-runner suites, 1
 run for the two verification-library suites and the difftest corpus numbers are medians of 3).
 
+## performance: head-to-head against the two reference simulators, 2026-10-21
+
+Measurement only (no code changed). yavs at `5ac6c1a6` (main), one release binary built with the `llvm` feature, so
+`--tier=interp` and `--tier=auto` come from the same file; `--threads 1`. sim1 is a 1.23 development build with LLVM 21,
+run the way the external test runner starts it (`-H 64m -e <top> --no-save --jit -r`, "jit") and as `-e` then `-r`
+("-e/-r", the two commands summed, no `-H`); sim2 is a 7.0 development build with the mcode code generator (static
+elaboration, no ahead-of-time or LLVM backend), run as `-r <top>` (analysis, elaboration and run in one command, as
+before). Ratios are yavs / simulator, so above 1 is slower. Method as in the sections of 2026-10-19 and 2026-10-20:
+analysis is excluded from the design rows (libraries analysed afresh with this binary, simulator libraries analysed
+once); every timed run of every tool is pinned to the same two performance cores (`taskset -c 2,3`; builds and
+analysis on 8 to 23), runs under `systemd-run -p MemoryMax=2G`, one timed run at a time, one untimed warm-up run
+per cell (compilation cache, page cache), median of 3 runs with the tools interleaved (order swapped every rep).
+CPU is user plus system of the whole process tree (sim1's is above its wall time because it compiles on other threads),
+peak RSS is the largest process (`time -f %M`), instructions are `perf stat -e cpu_core/instructions/` of one extra run.
+Host: 24 threads (8 performance cores), load average at the start of the design rows 0.55 to 1.27 (median 1.2), during
+the suite runs 1.0 to 7.3 (median 1.8, our own `-j4` runs included), 16 to 24 GB available throughout. Seconds are
+good to about 0.01 s, so cells below 0.1 s carry up to +-15%.
+
+### Designs and testbenches (wall seconds, total excluding analysis)
+
+| Row | yavs interp | yavs auto | sim1 jit | sim1 -e/-r | sim2 | interp / jit | auto / jit | interp / -e,-r | interp / sim2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ff (4096 registers x 2000) | 0.89 | 0.88 | 0.34 | 0.47 | 0.38 | 2.6x | 2.6x | 1.9x | 2.3x |
+| lfsr (512 x 16-bit x 5000) | 0.62 | 0.62 | 0.09 | 0.10 | 0.44 | 6.9x | 6.9x | 6.2x | 1.4x |
+| chain (1000 stages x 2000) | 0.23 | 0.24 | 0.09 | 0.11 | 0.67 | 2.6x | 2.7x | 2.1x | 0.3x |
+| fan (4000 processes x 5000) | 1.02 | 1.03 | 0.69 | 0.81 | 0.26 | 1.5x | 1.5x | 1.3x | 3.9x |
+| bus (32 drivers x 20000, top bus_tb) | 0.23 | 0.23 | 0.44 | 0.46 | 0.16 | 0.5x | 0.5x | 0.5x | 1.4x |
+| ram (16384 deep x 20000) | 0.08 | 0.08 | 0.02 | 0.04 | 0.25 | 4.0x | 4.0x | 2.0x | 0.3x |
+| 2a 64 LFSR x 5000, XOR reduce (rtl) | 0.18 | 0.18 | 0.03 | 0.05 | 0.12 | 6.0x | 6.0x | 3.6x | 1.5x |
+| 2b 64 LFSR x 20000 (rtl2) | 0.33 | 0.34 | 0.06 | 0.07 | 0.28 | 5.5x | 5.7x | 4.7x | 1.2x |
+| 1 compute loop, 20M iterations | 1.88 | 1.90 | 2.16 | 2.16 | 0.19 | 0.9x | 0.9x | 0.9x | 9.9x |
+| 3 queue/scoreboard testbench (`uvvm_sb_slv_tb`) | 1.22 | 1.25 | 0.40 | 0.44 | 0.41 | 3.0x | 3.1x | 2.8x | 3.0x |
+| 4 AXI-stream testbench (`TbStream_AxiSendGetRandomParamAsync2`) | 0.32 | 0.33 | 0.34 | 0.37 | 0.26 | 0.9x | 1.0x | 0.9x | 1.2x |
+| `osvvm_axistream` (`TbStream_AxiSendGetRandomParam2`) | 0.31 | 0.31 | 0.29 | 0.33 | 0.25 | 1.1x | 1.1x | 0.9x | 1.2x |
+| `uvvm_util_rand_tb` | 0.94 | 0.96 | 0.53 | 0.54 | 0.73 | 1.8x | 1.8x | 1.7x | 1.3x |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 0.21 | 0.21 | 0.31 | 0.35 | 0.38 | 0.7x | 0.7x | 0.6x | 0.6x |
+| `strings_heavy` | 0.09 | 0.09 | 0.07 | 0.08 | - | 1.3x | 1.3x | 1.1x | - |
+| `report_heavy` | 0.09 | 0.09 | 0.15 | 0.16 | 0.35 | 0.6x | 0.6x | 0.6x | 0.3x |
+| `textio_heavy` | 0.17 | 0.17 | 0.17 | 0.17 | 0.37 | 1.0x | 1.0x | 1.0x | 0.5x |
+| `protected_scoreboard` | 0.04 | 0.04 | 0.02 | 0.03 | 0.01 | 2.0x | 2.0x | 1.3x | 4.0x |
+| f `elab_heavy` (20000 instances) | 0.23 | 0.22 | 4.62 | 9.96 | 0.12 | 0.0x | 0.0x | 0.0x | 1.9x |
+
+CPU seconds, instructions (billions, one core type) and peak RSS:
+
+| Row | CPU yi | CPU ya | CPU jit | CPU -e/-r | CPU sim2 | instr. G yi | instr. G jit | instr. G sim2 | RSS MiB yi / ya | RSS jit / -e,-r / sim2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ff (4096 registers x 2000) | 0.89 | 0.89 | 0.35 | 0.48 | 0.37 | 21.56 | 7.46 | 6.74 | 69 / 69 | 113 / 120 / 28 |
+| lfsr (512 x 16-bit x 5000) | 0.61 | 0.61 | 0.09 | 0.11 | 0.43 | 14.91 | 2.74 | 6.59 | 61 / 61 | 76 / 76 / 16 |
+| chain (1000 stages x 2000) | 0.23 | 0.23 | 0.09 | 0.11 | 0.67 | 6.33 | 1.90 | 6.01 | 62 / 62 | 81 / 82 / 10 |
+| fan (4000 processes x 5000) | 1.01 | 1.04 | 0.70 | 0.82 | 0.25 | 19.62 | 16.43 | 6.28 | 68 / 68 | 111 / 118 / 11 |
+| bus (32 drivers x 20000, top bus_tb) | 0.22 | 0.22 | 0.45 | 0.47 | 0.16 | 5.65 | 8.26 | 3.91 | 60 / 60 | 71 / 71 / 9 |
+| ram (16384 deep x 20000) | 0.07 | 0.07 | 0.03 | 0.05 | 0.25 | 1.33 | 0.65 | 3.24 | 94 / 94 | 77 / 77 / 180 |
+| 2a 64 LFSR x 5000, XOR reduce (rtl) | 0.17 | 0.18 | 0.04 | 0.06 | 0.12 | 4.67 | 0.97 | 1.94 | 61 / 61 | 73 / 73 / 11 |
+| 2b 64 LFSR x 20000 (rtl2) | 0.33 | 0.34 | 0.07 | 0.08 | 0.28 | 8.35 | 1.71 | 3.37 | 61 / 61 | 73 / 73 / 11 |
+| 1 compute loop, 20M iterations | 1.88 | 1.93 | 2.15 | 2.15 | 0.19 | 47.28 | 46.42 | 2.28 | 59 / 59 | 57 / 57 / 7 |
+| 3 queue/scoreboard testbench (`uvvm_sb_slv_tb`) | 1.22 | 1.25 | 0.75 | 0.80 | 0.41 | 24.19 | 10.96 | 7.08 | 76 / 76 | 173 / 124 / 50 |
+| 4 AXI-stream testbench (`TbStream_AxiSendGetRandomParamAsync2`) | 0.32 | 0.32 | 0.64 | 0.68 | 0.25 | 5.60 | 8.00 | 4.25 | 86 / 86 | 122 / 122 / 47 |
+| `osvvm_axistream` (`TbStream_AxiSendGetRandomParam2`) | 0.30 | 0.31 | 0.54 | 0.59 | 0.25 | 5.27 | 7.01 | 4.21 | 86 / 86 | 122 / 122 / 47 |
+| `uvvm_util_rand_tb` | 0.94 | 0.95 | 0.98 | 0.95 | 0.73 | 20.64 | 13.79 | 12.56 | 78 / 79 | 181 / 132 / 99 |
+| `uvvm_axistream_vvc_tb` (to 10 us) | 0.21 | 0.22 | 0.54 | 0.58 | 0.37 | 3.23 | 7.22 | 6.49 | 128 / 129 | 220 / 220 / 139 |
+| `strings_heavy` | 0.08 | 0.08 | 0.12 | 0.13 | - | 1.94 | 2.15 | - | 59 / 59 | 82 / 82 / - |
+| `report_heavy` | 0.07 | 0.06 | 0.16 | 0.17 | 0.35 | 1.59 | 2.24 | 2.61 | 59 / 59 | 70 / 70 / 7 |
+| `textio_heavy` | 0.17 | 0.17 | 0.20 | 0.21 | 0.37 | 4.14 | 4.18 | 6.14 | 60 / 60 | 134 / 86 / 87 |
+| `protected_scoreboard` | 0.03 | 0.03 | 0.02 | 0.02 | 0.00 | 1.03 | 0.46 | 0.14 | 59 / 59 | 69 / 69 / 7 |
+| f `elab_heavy` (20000 instances) | 0.22 | 0.22 | 4.62 | 9.98 | 0.12 | 2.54 | 8.55 | 1.71 | 233 / 233 | 756 / 789 / 95 |
+
+`--tier=auto` equals `--tier=interp` within 3% on every row, including the compute loop, where `--tier=llvm`
+(everything compiled before time 0, extra rows below) is 5.7x faster than either. The earlier gap map measured `auto` at
+0.62 s against 1.82 s for this loop; here it no longer switches (the loop is one long-running process; `--verbose`
+prints no compile note), see gap 3. Eager `--tier=llvm` against `--tier=interp`:
+
+| Row | yavs `--tier=llvm` wall | CPU | RSS MiB | vs interp |
+|---|---:|---:|---:|---:|
+| 1 compute loop, 20M iterations | 0.33 | 0.32 | 77 | 0.2x |
+| ff (4096 registers x 2000) | 0.97 | 0.96 | 86 | 1.1x |
+| lfsr (512 x 16-bit x 5000) | 0.61 | 0.61 | 79 | 1.0x |
+| chain (1000 stages x 2000) | 0.34 | 0.34 | 79 | 1.5x |
+| fan (4000 processes x 5000) | 1.38 | 1.38 | 83 | 1.4x |
+| bus (32 drivers x 20000, top bus_tb) | 0.30 | 0.30 | 77 | 1.3x |
+| 2a 64 LFSR x 5000, XOR reduce (rtl) | 0.25 | 0.24 | 78 | 1.4x |
+| 2b 64 LFSR x 20000 (rtl2) | 0.37 | 0.36 | 78 | 1.1x |
+| 3 queue/scoreboard testbench (`uvvm_sb_slv_tb`) | 9.52 | 9.51 | 240 | 7.8x |
+| 4 AXI-stream testbench (`TbStream_AxiSendGetRandomParamAsync2`) | 19.27 | 19.26 | 432 | 60.2x |
+| `uvvm_util_rand_tb` | 25.34 | 25.33 | 592 | 27.0x |
+
+Not runnable: sim2 cannot analyse `strings_heavy` (an attribute of a function call result, `real'image(x)'length`), so
+its cells are empty. sim1 `-e` without `-H 64m` runs out of memory elaborating `uvvm_axistream_vvc_tb`; that one cell
+(`-e/-r`) uses `-H 64m` on both commands. Rows 6a and 6b of the earlier sections (testbenches of an external checkout)
+and `uvvm_util_queue_tb` were not repeated.
+
+### Suites (wall seconds)
+
+Cold is a fresh output directory (libraries analysed, compilation cache empty); second is the same command again on
+the same directory. Both are one driver call, analysis included; `-j1` and `-j4` are the driver's job counts, all
+tools pinned to the same two cores, so `-j4` shows scheduling, not four cores of speed-up. The runner suites start
+each simulator as the runner does (sim1 `-H 64m ... --jit`, sim2 as installed); the two library suites are driven by
+`tools/suites/pro.py` and `uvvm.py` through a one-line shell translator that gives sim1 and sim2 the same libraries,
+files, generics and stop times as the recorded `yavs` calls. "To first run" is the time until the first simulation
+starts (analysis of everything) for yavs and the library drivers. Peak RSS is the largest process of the suite.
+
+| Suite | Tool | -j1 cold | -j1 second | -j4 cold | -j4 second | CPU -j1 cold | peak RSS MiB | pass / fail / skip (-j1 cold) | to first run (s, -j1 cold) |
+|---|---|---:|---:|---:|---:|---:|---:|---|---:|
+| runner `check` (257 tests) | yavs interp | 11.0 | 7.6 | 6.5 | 4.2 | 9.6 | 92 | 257 / 0 / 0 | 1.6 |
+|  | yavs auto | 11.0 | 7.7 | 6.3 | 4.1 | 9.7 | 92 | 257 / 0 / 0 | 1.6 |
+|  | sim1 | 22.6 | 21.6 | 20.3 | 19.2 | 30.4 | 120 | 257 / 0 / 0 | - |
+|  | sim2 | 20.6 | 19.6 | 11.3 | 10.6 | 20.6 | 47 | 257 / 0 / 0 | - |
+| runner `com` (145) | yavs interp | 12.9 | 7.1 | 6.0 | 4.1 | 9.2 | 125 | 145 / 0 / 0 | 1.5 |
+|  | yavs auto | 12.9 | 7.2 | 6.0 | 4.1 | 9.2 | 125 | 145 / 0 / 0 | 1.5 |
+|  | sim1 | 11.8 | 10.9 | 12.6 | 11.7 | 17.4 | 169 | 145 / 0 / 0 | - |
+|  | sim2 | 24.7 | 23.6 | 13.6 | 12.5 | 24.8 | 52 | 145 / 0 / 0 | - |
+| runner `data_types` (210) | yavs interp | 17.7 | 10.3 | 8.6 | 6.0 | 13.6 | 96 | 210 / 0 / 0 | 1.4 |
+|  | yavs auto | 17.9 | 10.4 | 8.9 | 5.8 | 13.7 | 96 | 210 / 0 / 0 | 1.4 |
+|  | sim1 | 11.0 | 10.2 | 12.7 | 12.0 | 15.7 | 317 | 210 / 0 / 0 | - |
+|  | sim2 | 18.9 | 18.0 | 10.6 | 9.7 | 18.9 | 38 | 210 / 0 / 0 | - |
+| second library `.pro` 2008 (314 tests) | yavs interp | 55.8 | 74.2 | 29.3 | 38.5 | 51.8 | 267 | 314 / 0 / 0 | 1.9 |
+|  | yavs auto | 57.4 | 75.1 | 30.0 | 38.9 | 52.2 | 265 | 314 / 0 / 0 | 2.0 |
+|  | sim1 | 46.9 | 46.8 | 34.0 | 34.1 | 61.8 | 149 | 313 / 1 / 0 | 4.6 |
+|  | sim2 | 78.6 | 78.0 | 39.9 | 39.5 | 73.1 | 60 | 313 / 1 / 0 | 2.5 |
+| first library suite (137 runs) | yavs interp | 127.3 | 124.0 | 73.2 | 70.5 | 127.5 | 588 | 102 / 9 / 26 | 8.5 |
+|  | yavs auto | 126.9 | 124.1 | 73.8 | 71.5 | 129.0 | 604 | 102 / 9 / 26 | 8.4 |
+|  | sim1 | 61.4 | 60.6 | 62.2 | 44.3 | 88.0 | 259 | 80 / 31 / 26 | 9.5 |
+|  | sim2 | 119.7 | 118.9 | 70.0 | 69.7 | 120.2 | 1072 | 90 / 22 / 25 | 10.3 |
+
+The runner suites pass completely on all four tools. The failing sets of the first library's suite differ (sim1 31
+at -j1, 32/28/33 in later runs, sim2 22, yavs 9, the same 9 in all runs) and a failing sim1 run ends early, so its
+wall time is not a like-for-like number; the `.pro` suite: sim1 and sim2 fail one test each. A second run of yavs on
+the `.pro` driver is slower than the cold one (74 s against 56 s at -j1, 68 s on a third run, a fresh directory again
+56 s): the driver re-analyses unchanged libraries into the existing directory, and the runs that follow are slower.
+
+### Tiny-test corpus (`tests/corpus`, 414 files, the harness of the earlier tiny-test sections)
+
+One analysis plus one timed run per testbench and tool, 3 reps, median of the per-rep sums, nanosecond clock with the
+wrapper overhead (1.8 ms) subtracted, pinned to cores 2 and 3. Sums over the testbenches all four simulators can run
+("common"); the 314 are the testbenches of the first run of this series. Per-test median in brackets.
+
+| Set | n | yavs interp | yavs auto | sim1 -e/-r | sim1 jit | sim2 | interp / jit | interp / sim2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 314 subset, common | 217 | 1.60 (7.2 ms) | 1.49 (6.6 ms) | 3.61 (14.0 ms) | 1.23 (5.6 ms) | 1.19 (2.3 ms) | 1.30x | 1.34x |
+| all 414, common | 277 | 2.09 (7.2 ms) | 1.96 (6.6 ms) | 4.50 (13.9 ms) | 1.57 (5.6 ms) | 1.45 (2.4 ms) | 1.33x | 1.44x |
+| all 414, each tool's runnable set | 414 / 414 / 374 / 381 / 296 | 4.57 | 4.40 | 7.70 | 2.19 | 1.51 | | |
+
+Runnable means analysed and run without error, crash or timeout: sim1 cannot run 40 (33 with `--jit`), sim2 118 of the
+414. yavs interp is faster than sim1 `-e/-r` on 276 of 277 common testbenches and never faster than sim1 `--jit`; the
+per-test floor is 7 ms for yavs interp, 5.6 ms for sim1 jit and 2.3 ms for sim2. Slowest relative to sim2: the
+garbage-collection stress test `access/gc_random` (65 ms against 14 ms).
+
+### Where yavs is ahead
+
+`bus` (0.5x of sim1 jit), `uvvm_axistream_vvc_tb` (0.7x), `report_heavy` (0.6x), `elab_heavy` (0.23 s against 4.6 s and
+10 s, 20x to 43x faster; 233 MiB against 756 to 789 MiB), the AXI-stream testbench `TbStream_AxiSendGetRandomParamAsync2`
+(0.9x), the external runner's suites (`check` 7.6 s against 21.6 s at -j1 second, `com` 7.1 against 10.9 and `data_types`
+10.3 against 10.2 for sim1; sim2 19.6, 23.6 and 18.0), the `.pro` suite cold against sim2 (56 s against 79 s; sim1 is 47 s), peak RSS on
+every design row below sim1's except `ram` (94 against 77 MiB) and the compute loop (59 against 57 MiB).
+
+### Top 5 remaining gaps and where the time goes
+
+`perf record --call-graph dwarf` (2.5 kHz, pinned to cores 4 and 5, 186 to about 1250 samples per row) of the three worst
+rows and of the testbench row 3, self time, function names are those of the release binary.
+
+1. Clocked RTL on `std_logic_vector` signals (yavs / sim1 jit: `lfsr` 6.9x, 2a 6.0x, 2b 5.5x, `ram` 4.0x, `ff` 2.6x, `chain`
+   2.6x; instructions `lfsr` 14.9 G against 2.7 G). `lfsr` (58% in `yavs_interp`, 32% `yavs_kernel`): `Machine::run_ops`
+   43.6%, `Signal::update_effective` 4.7%, `Machine::cat` 3.9%, `Ctx::assign` 3.1%, `Signal::apply_driver` 2.3%,
+   `apply_txn` 2.3%, `Ctx::unchanged` 2.3%, `SimControl::run_batch` 2.1% and `cycle` 2.0%, `wide::eq_range` 2.0%. 2a (76%
+   interpreter): `run_ops` 35.1%, `Machine::obj` 4.4%, `put` 3.3%, `subtype_check` closure 3.3%, `copy_bits` 2.8%,
+   `ieee::small` 2.2%, `step_out` 2.2%, `drive` 2.2%. 2b (47% interpreter, 37% kernel, 11% allocator): `run_ops` 22.3%,
+   `memmove` 5.5%, `update_effective` 5.3%, `drive` 3.6%, `lcopy` 3.6%, `Ctx::assign` 3.6%, `Buf::select` 3.3%, `cat` 3.3%,
+   `apply_driver` 3.3%, `free` 3.0%, `mark_active` 3.0%. Neither `auto` nor eager `llvm` moves these rows (eager `llvm` is 1.0x to 1.5x slower than interp on them).
+2. Library testbench with strings and queues (`uvvm_sb_slv_tb` 3.0x of sim1 jit and of sim2, instructions 24.2 G against
+   11.0 G; `uvvm_util_rand_tb` 1.8x). `yavs_interp` is 91.6% of the profile: `run_ops` 64.6%, `Machine::load` 6.1%, `memmove`
+   2.7%, `obj` 2.3%, `cat` 2.2%, `Pre::fill` (frame template copy) 2.0%, `layout_word` 1.4%, `step_out` 1.2%, `new_frame` 1.2%;
+   allocator 5.5%. It is interpreter dispatch and frame set-up, the part sim1 compiles.
+3. The `auto` tier does not pay anywhere (equal to interp on all 19 rows) and eager `llvm` is far too expensive for
+   library code (9.5 s, 19.3 s and 25.3 s on three library testbenches, 8x to 60x interp) while it is 5.7x faster on the compute loop
+   (0.33 s against 1.88 s interp and 2.16 s sim1). `auto` on the compute loop was 3x faster than interp in the gap map of
+   2026-10-20 and is now equal: a regression or a missing switch for a single long-running process (no entry to the
+   compiled code after the loop has started); worth a bisect.
+4. sim2's mcode back end on small per-activation designs and on tight loops: the compute loop 9.9x (0.19 s against 1.88 s),
+   `fan` 3.9x (instructions 19.6 G against 6.3 G: about 3x the work per wake-up of 4000 processes on one clock), `ff` 2.3x
+   (21.6 G against 6.7 G) and `protected_scoreboard` 4x (0.04 against 0.01 s). yavs is faster than sim2 on `chain` (2.9x),
+   `ram` (3.1x), `report_heavy` (3.9x) and `textio_heavy` (2.2x).
+5. Floor of a run, cold and warm runs: 7 ms per tiny test against 5.6 ms (sim1 jit) and 2.3 ms (sim2); a cold runner suite
+   costs yavs 3.4 s (`check`), 5.8 s (`com`) and 7.4 s (`data_types`) more than the second run, of which analysis is only 1.4
+   to 1.6 s (cache fill of the first runs), so cold `com` (12.9 s) and `data_types` (17.7 s) are behind sim1 (11.8 s and
+   11.0 s) although the second runs are ahead or equal; the first library's suite
+   takes 127 s against 120 s for sim2 (sim1: 61 s with 31 failing tests, not comparable) at about 0.9 s per run,
+   where the profile is that of gap 2; the `.pro` driver's second run is 33% slower than its first (74 s against 56 s).
+
+Raw data: JSON per row set, the translator and the drivers are scratch and not committed.
+
 ## performance: floor of a run, 2026-10-20
 
 The per-test floor of the two verification-library suites (gap map rows 1 to 3): one `yavs run` per test, every

@@ -2183,10 +2183,16 @@ impl SimControl {
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Quick transactions finished when they were applied.
     let fused = sig.end_apply();
-    if sig.dirty.is_empty() {
-        return Ok(fused);
+    let changed = if sig.dirty.is_empty() {
+        fused
+    } else {
+        finish_dirty(sig, now, cycle)? | fused
+    };
+    if fused {
+        // The runs as the dirty ranges make them, whatever order the sources were applied in.
+        sig.canonical_changed();
     }
-    Ok(finish_dirty(sig, now, cycle)? | fused)
+    Ok(changed)
 }
 
 fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {

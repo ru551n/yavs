@@ -540,11 +540,19 @@ fn refresh_codes(codes: &mut [u8], cur: &Buf, lo: usize, hi: usize) {
     if codes.is_empty() || lo >= hi {
         return;
     }
-    for g in lo / 8..=(hi - 1) / 8 {
-        let (blk, sh) = (&b[g / 8], g % 8 * 8);
-        let at = |p: usize| SPREAD[(blk[p] >> sh & 0xff) as usize] << p;
-        let v = at(0) | at(1) | at(2) | at(3);
-        codes[g * 8..g * 8 + 8].copy_from_slice(&v.to_le_bytes());
+    let (g0, g1) = (lo / 8, (hi - 1) / 8);
+    // One plane block (64 elements, eight groups) at a time.
+    for blk in g0 / 8..=g1 / 8 {
+        let (Some(w), Some(out)) = (b.get(blk), codes.get_mut(blk * 64..blk * 64 + 64)) else {
+            return;
+        };
+        let (first, last) = (g0.max(blk * 8) % 8, g1.min(blk * 8 + 7) % 8);
+        for j in first..=last {
+            let sh = j * 8;
+            let at = |p: usize| SPREAD[(w[p] >> sh & 0xff) as usize] << p;
+            let v = at(0) | at(1) | at(2) | at(3);
+            out[sh..sh + 8].copy_from_slice(&v.to_le_bytes());
+        }
     }
 }
 
@@ -603,6 +611,27 @@ impl Signal {
             self.codes.resize(b.len() * 64, 0);
             refresh_codes(&mut self.codes, &self.cur, 0, *len);
         }
+    }
+
+    /// Put `changed` in ascending order and join the runs that touch.
+    pub fn canonical_changed(&mut self) {
+        let runs = &mut self.changed;
+        if runs.len() < 2 {
+            return;
+        }
+        if !runs.is_sorted_by_key(|r| r.offset) {
+            runs.sort_unstable_by_key(|r| r.offset);
+        }
+        let mut k = 0;
+        for i in 1..runs.len() {
+            if runs[k].end() == runs[i].offset {
+                runs[k].len += runs[i].len;
+            } else {
+                k += 1;
+                runs[k] = runs[i];
+            }
+        }
+        runs.truncate(k + 1);
     }
 
     /// The code of element `e` of `cur` from `codes`, if the signal keeps them and has the element.

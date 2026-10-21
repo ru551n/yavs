@@ -2849,6 +2849,31 @@ own entries, as before, and keeps its `ir` compact).
 - **`run_until` takes the next-event time from the end of the previous delta** (`known_next`), and the
   batch and update worklists are kept between cycles instead of being built and dropped per delta.
 
+## Kernel round 7: cheaper reads and one-element events (yavs-kernel, #440, 2026-10-21)
+
+- **A logic signal of at most 2^20 elements keeps the `std_ulogic` code of every element of its
+  current value as one byte** (`Signal::codes`), refreshed wherever `cur` is written. A read of one
+  element (`Ctx::elem_code`, the scalar read of the interpreter, the edge checks, the
+  unchanged-assignment test, edge triggers) is a load. Debug builds check each read against the
+  planes.
+- **A quick transaction on an element that has no other source is finished when it is applied**
+  (driving value, effective value, event), for at most four per signal and cycle; more of them in a
+  cycle go through the dirty ranges as before. The runs of such a cycle are sorted and joined, so
+  the value-change callbacks of a cycle that took this path see ascending, maximal runs (the order
+  of the runs of one signal and cycle was already unspecified).
+- **The runs of changed elements are listed only for signals something watches** (a waiting process
+  or an observer that wants value changes); for the others they are only counted. `Stats::events`
+  counts one per update of a run for those signals instead of one per merged run.
+- Smaller: a per-driver flag for "another source on some element" replaces the segment search in the
+  unchanged-assignment test; the known edge of a trigger is looked up in a table; a batch of one
+  process or entry is not ordered or sorted; a phase wanted only after a serial process is skipped
+  without scanning the observers; the event stamps of a run are written in one pass.
+- Tried and dropped (no gain beyond noise in instructions or cycles): counting repeated waits at the
+  wait instead of comparing the sensitivity at the commit, a one-byte "nothing happened" flag per
+  process, a cache-line layout of the process slot and its metadata, a global flag for batches
+  without a process of several waits (the testbench process has several), cheaper bit-plane
+  writes by a table.
+
 ## Heap collection threshold (yavs-interp, CLI, user request 2026-10-20)
 
 - `yavs run --gc-threshold SIZE` (plain bytes or a `k`, `m`, `g` suffix of powers of 1024, at least 1; zero and

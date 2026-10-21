@@ -24,7 +24,7 @@ use std::time::Duration;
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::lower::{Part, RunFn, compile_one, enter, native_set, new_jit, too_big};
+use crate::lower::{Part, RunFn, call, compile_one, enter, native_set, new_jit, too_big};
 use crate::{Error, Jit, OptLevel};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
@@ -382,6 +382,8 @@ impl Entry {
 pub struct AutoTier {
     funcs: Arc<[Entry]>,
     ntab: Arc<[AtomicUsize]>,
+    /// Per function, its `CallFn` once its native-frame code is published (`Tier::call`).
+    ctab: Arc<[AtomicUsize]>,
     /// Functions `hot` sent to the thread already.
     queued: Box<[AtomicBool]>,
     queue: Mutex<Option<Sender<FuncId>>>,
@@ -428,6 +430,8 @@ struct Worker {
     table: Arc<[Entry]>,
     /// Native-frame code per function (`Mem::ntab`), published before the entry.
     ntab: Arc<[AtomicUsize]>,
+    /// `CallFn` per function, published with its native-frame code.
+    ctab: Arc<[AtomicUsize]>,
     native: Arc<yavs_interp::NativeFlags>,
     heat: Heat,
     opt: OptLevel,
@@ -446,6 +450,8 @@ struct Worker {
     /// `ntab` names it. Published once everything it calls natively is compiled too: a missing
     /// callee would materialise the frames at every call.
     nat: Vec<(usize, bool)>,
+    /// Per function: the address of its `CallFn` (0: none), published with `nat`.
+    calls: Vec<usize>,
     /// Microseconds each function was seen interpreted, and running compiled.
     time: Vec<[u64; 2]>,
     /// Microseconds the simulation threads were seen running, and the compile thread spent
@@ -557,10 +563,16 @@ impl Worker {
                 .collect();
             let total = size(root) + todo.iter().map(|&i| size(i)).sum::<usize>();
             if total <= NATIVE_MAX {
-                // The root is entered from the interpreter: its native-frame code (the dearest
-                // part of a compile, several times the frame-mode code per instruction) waits
-                // for a compiled caller (`Part::Native` in the callers' trees).
-                let mut ids = vec![(root, Part::Frame)];
+                // The interpreter calls the root on a native frame (`Tier::call`) when it has
+                // no static link; a nested root is entered with its frame-mode code, and a root
+                // with a loop gets that too, for the interpreter to enter again where a native
+                // frame of it was left to the interpreter.
+                let part = match self.prog.func(root) {
+                    Some(f) if f.parent.is_none() && !loops(&self.prog, f) => Part::Native,
+                    Some(f) if f.parent.is_none() => Part::Both,
+                    _ => Part::Frame,
+                };
+                let mut ids = vec![(root, part)];
                 ids.extend(todo.into_iter().map(|i| (i, Part::Native)));
                 return ids;
             }
@@ -624,6 +636,10 @@ impl Worker {
             if ready {
                 self.ntab[k].store(addr, Ordering::Release);
                 self.nat[k].1 = true;
+                if self.calls[k] != 0 {
+                    self.ctab[k].store(self.calls[k], Ordering::Release);
+                    self.native.set_call(FuncId(k as u32));
+                }
             }
         }
     }
@@ -769,14 +785,14 @@ impl Worker {
                     let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
                     self.us_per_instr = (self.us_per_instr + per) / 2.0;
                 }
-                let (run, nregs, native) = entry;
-                if native != 0 {
+                if entry.native != 0 {
                     // Published when what it calls is compiled (`publish`).
-                    self.nat[id.0 as usize] = (native, false);
+                    self.nat[id.0 as usize] = (entry.native, false);
+                    self.calls[id.0 as usize] = entry.call;
                     self.publish();
                 }
-                if let Some(run) = run {
-                    self.table[id.0 as usize].set((run, nregs));
+                if let Some(run) = entry.run {
+                    self.table[id.0 as usize].set((run, entry.nregs));
                     self.native.set(id);
                 }
                 (self.note)(id, level, Ok(took));
@@ -821,6 +837,7 @@ impl AutoTier {
         let (tx, rx) = channel::<FuncId>();
         let shared = Arc::new(Shared::default());
         let ntab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
+        let ctab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let (table, sh) = (funcs.clone(), shared.clone());
         let sample = rt.sampler();
         let native = rt.native_flags();
@@ -834,9 +851,11 @@ impl AutoTier {
             time: vec![[0; 2]; prog.funcs.len()],
             done: vec![[false; 2]; prog.funcs.len()],
             nat: vec![(0, false); prog.funcs.len()],
+            calls: vec![0; prog.funcs.len()],
             prog,
             table,
             ntab: ntab.clone(),
+            ctab: ctab.clone(),
             native,
             heat,
             opt,
@@ -966,6 +985,7 @@ impl AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
             ntab,
+            ctab,
             queue: Mutex::new(Some(tx)),
             shared,
             worker: Mutex::new(Some(worker)),
@@ -1071,6 +1091,19 @@ impl Tier for AutoTier {
         self.funcs
             .get(func.0 as usize)
             .is_some_and(|f| f.run.load(Ordering::Relaxed) != 0)
+    }
+
+    fn call(
+        &self,
+        func: FuncId,
+        cells: &[u64],
+        obj: Option<u64>,
+        pc: u32,
+        host: &mut dyn TierHost,
+    ) -> Option<yavs_interp::Called> {
+        let c = self.ctab.get(func.0 as usize)?.load(Ordering::Acquire);
+        let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
+        call(c, cells, obj, pc, host, &lookup, self.ntab.as_ptr().cast())
     }
 
     fn hot(&self, func: FuncId) {

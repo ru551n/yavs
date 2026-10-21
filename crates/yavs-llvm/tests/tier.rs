@@ -1814,3 +1814,239 @@ fn nested_subprograms_on_native_frames() {
         assert!(entries <= 3, "n {n}: {entries} entries");
     }
 }
+
+/// A tier that leaves `interp` to the interpreter and counts the calls the interpreter makes
+/// through `Tier::call` (native frames called from interpreted code, #510).
+struct FromInterp {
+    tier: LlvmTier,
+    interp: Vec<FuncId>,
+    calls: AtomicUsize,
+}
+
+impl Tier for FromInterp {
+    fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
+        if self.interp.contains(&func) {
+            return None;
+        }
+        self.tier.run(func, pc, host)
+    }
+
+    fn ready(&self, func: FuncId) -> bool {
+        !self.interp.contains(&func) && self.tier.ready(func)
+    }
+
+    fn callable(&self, func: FuncId) -> bool {
+        self.tier.callable(func)
+    }
+
+    fn call(
+        &self,
+        func: FuncId,
+        cells: &[u64],
+        obj: Option<u64>,
+        pc: u32,
+        host: &mut dyn TierHost,
+    ) -> Option<yavs_interp::Called> {
+        let r = self.tier.call(func, cells, obj, pc, host);
+        if r.is_some() {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+        r
+    }
+}
+
+/// `f(args)` interpreted, then with `interp` interpreted and everything else compiled: both
+/// results (value or error text) and the calls through `Tier::call`.
+fn from_interp(
+    prog: &Arc<Program>,
+    interp: &[FuncId],
+    f: FuncId,
+    args: &[u64],
+) -> (Result<u64, String>, Result<u64, String>, usize) {
+    let tier = Arc::new(FromInterp {
+        tier: yavs_llvm::compile(prog, OptLevel::O2, usize::MAX).unwrap(),
+        interp: interp.to_vec(),
+        calls: AtomicUsize::new(0),
+    });
+    let go = |t: Option<Arc<FromInterp>>| {
+        let rt = Runtime::new(prog.clone(), Bindings::default()).unwrap();
+        if let Some(t) = t {
+            assert!(rt.set_tier(t));
+        }
+        yavs_interp::call(rt, f, Arc::new(InstData::default()), args)
+            .map(|v| v.expect("a value"))
+            .map_err(|e| e.to_string())
+    };
+    let (a, b) = (go(None), go(Some(tier.clone())));
+    (a, b, tier.calls.load(Ordering::Relaxed))
+}
+
+/// The interpreter calls compiled functions on native frames (`Tier::call`): the results, an
+/// error inside the callee (its native frame left to the interpreter, which reports it), a
+/// recursion past the native stack allowance and past the depth limit are the interpreter's.
+#[test]
+fn interpreted_callers_call_native_frames() {
+    let (prog, run, depth) = calls();
+    let prog = Arc::new(prog);
+    let (a, b, n) = from_interp(&prog, &[run, depth], run, &[100_000]);
+    assert_eq!((a, b), (Ok(100_000), Ok(100_000)));
+    assert_eq!(n, 100_000, "one native call per call of `inc`");
+    let (a, b, _) = from_interp(&prog, &[run, depth], run, &[2_000_000]);
+    assert!(a.as_ref().is_err_and(|e| e.contains("result")), "{a:?}");
+    assert_eq!(a, b);
+    for k in [5000, 20_000] {
+        let (a, b, n) = from_interp(&prog, &[run, depth], depth, &[k]);
+        assert_eq!(a, b, "depth {k}");
+        assert!(n >= 1, "depth {k}: no native call");
+    }
+}
+
+/// `heap(n)`: a new integer object incremented through its handle `n` times (a `Deref` each
+/// time, found again in the object table after the first), its value returned; for `n` over 100
+/// the object is deallocated first, so the last `Deref` is the interpreter's stale-handle error.
+/// `outer(n) = heap(n)`.
+fn heap_calls() -> (Program, FuncId, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let int = pb.ty(Ty::Int {
+        lo: i64::MIN,
+        hi: i64::MAX,
+    });
+    let what = pb.check_msg("p.all", Dir::To);
+    let heap = pb.declare("heap", FuncKind::Function, None);
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(heap);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        let var = fb.local("v", int, 8, 8);
+        stmt(&mut fb);
+        let pn = fb.addr(AddrSpace::Frame, s);
+        let n = load(&mut fb, pn, Width::B8);
+        let eight = fb.int(8);
+        let init = alloc(&mut fb, eight);
+        let zero = fb.int(0);
+        fb.emit(Inst::Store {
+            addr: init,
+            src: zero,
+            w: Width::B8,
+        });
+        let h = fb.reg(RegTy::Handle);
+        fb.emit(Inst::New {
+            dst: h,
+            ty: int,
+            init,
+            size: eight,
+            shared: false,
+        });
+        let (head, body, done, free, out) =
+            (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+        let (i, one) = (fb.int(0), fb.int(1));
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: i,
+            b: n,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        stmt(&mut fb);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        let v = load(&mut fb, p, Width::B8);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: v,
+            a: v,
+            b: one,
+        });
+        fb.emit(Inst::Store {
+            addr: p,
+            src: v,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: i,
+            a: i,
+            b: one,
+        });
+        fb.emit(Inst::Br { to: head });
+        fb.at(done);
+        let (hundred, big) = (fb.int(100), fb.reg(RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Gt,
+            dst: big,
+            a: n,
+            b: hundred,
+        });
+        fb.emit(Inst::CondBr {
+            c: big,
+            t: free,
+            f: out,
+        });
+        fb.at(free);
+        // `deallocate` of a variable holding a copy of the handle: `h` is stale then.
+        let a = fb.addr(AddrSpace::Frame, var);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: h,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Free { ptr: a });
+        fb.emit(Inst::Br { to: out });
+        fb.at(out);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        let v = load(&mut fb, p, Width::B8);
+        fb.emit(Inst::Ret { v: Some(v) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(outer);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pn = fb.addr(AddrSpace::Frame, s);
+        let n = load(&mut fb, pn, Width::B8);
+        let args = fb.regs(&[n]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: heap,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), heap, outer)
+}
+
+/// Heap objects a `Deref` found stay in the object table across instructions the interpreter
+/// executes (`Mem::forget_since`); a deallocation empties it, so a stale handle is the
+/// interpreter's error, in frame-mode code and on a native frame called from the interpreter.
+#[test]
+fn heap_objects_found_again_until_deallocated() {
+    let (prog, heap, outer) = heap_calls();
+    let prog = Arc::new(prog);
+    for n in [0u64, 1, 50, 200] {
+        let (a, b, k) = from_interp(&prog, &[outer], outer, &[n]);
+        assert_eq!(a, b, "native frame, n {n}");
+        assert_eq!(k, 1, "n {n}");
+        assert_eq!(a.is_ok(), n <= 100, "{a:?}");
+        let (a, b, _) = from_interp(&prog, &[], heap, &[n]);
+        assert_eq!(a, b, "frame mode, n {n}");
+    }
+}

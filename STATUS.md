@@ -4494,3 +4494,30 @@ Tried and dropped because they fail or run for ever on sim1 as well: the satcat5
 the JSON-for-VHDL and vhdl-extras testbenches that need files, the fletcher array reader (no end), and the Open Logic testbenches
 whose generics have no default. For a decision run `python3 -I tools/realbench/run.py BIN --ref sim1 --cores 6,7`
 and `--compare A B` (section 5 of its guide); on a loaded host wall time is noise, quote the instruction ratios.
+
+## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
+
+Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:
+
+- The object cache of compiled code is a direct-mapped table of 16 objects looked up inline by every access of unknown
+  space; it remembers the access value a `Deref` found each object for, so the next `Deref` of that value is inline, and it
+  keeps heap objects across a host call that deallocated nothing (`Mem::forget_since`). Before, the four-entry cache missed
+  half of the shared-heap accesses of a protected method and was emptied at every step.
+- The interpreter calls a compiled function that has native-frame code on a native frame (`Tier::call`), without pushing a
+  frame of its own: argument cells from its registers, the result in the call's register, frames left to the interpreter
+  pushed on the caller. `--tier=auto` compiles a hot native-callable function without a loop as native-frame code only.
+- `YAVS_LLVM_PERFMAP=1` names the compiled functions for `perf report`.
+
+`protected_queue` (`tools/bench/designs`), single thread pinned to performance core 4, median of 3 interleaved rounds after
+one warm-up, `perf stat` user-mode `cpu_core` counters of the whole run, warm compilation cache; "before" is main at
+2cddec62:
+
+| Tier | instructions before | after | cycles before | after | ratio to the interpreter (cycles) |
+|---|---:|---:|---:|---:|---:|
+| `--tier=interp` | 32.93 G | 32.93 G | 6.02 G | 6.02 G | 1.00 |
+| `--tier=llvm` | 30.52 G | 9.93 G | 5.91 G | 2.09 G | 0.35 |
+
+In the compiled code of the queue the shared-heap lookups were 70 percent of the cycles before (`yavs_rt_host`,
+`TierHost::object`, `Machine::obj`); after, 62 percent of the cycles are compiled code. `--tier=auto` gains as much once
+the queue's functions are compiled (2.76 G cycles warm), but its tier-up policy does not compile them reliably within a run
+of one second yet (next section).

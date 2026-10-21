@@ -321,9 +321,43 @@ pub trait Tier: Send + Sync {
         true
     }
 
+    /// Whether [`Tier::call`] takes `func` now (`Runtime::set_tier` marks it).
+    fn callable(&self, _func: FuncId) -> bool {
+        false
+    }
+
     /// Compile `func` (`Runtime::set_eager`: the fast loop entered it). Called from
     /// simulation threads, so it must not block.
     fn hot(&self, _func: FuncId) {}
+
+    /// Call `func` from the interpreter's top frame, which waits at its `Call` (or `CallProt`
+    /// on the protected object `obj`) at `pc`, on a frame of the compiled code's own (native
+    /// frame), with argument `cells` (one per parameter, two for a signal; the object first):
+    /// what it did, or `None` (nothing done) when the interpreter must make the call. Asked
+    /// only for functions [`NativeFlags::set_call`] marked.
+    fn call(
+        &self,
+        _func: FuncId,
+        _cells: &[u64],
+        _obj: Option<u64>,
+        _pc: u32,
+        _host: &mut dyn TierHost,
+    ) -> Option<Called> {
+        None
+    }
+}
+
+/// What [`Tier::call`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Called {
+    /// The call returned this value (for a function).
+    Done(u64),
+    /// It left frames for the interpreter on top of the caller (`TierHost::materialise`).
+    Pushed,
+    /// A native the call ran ended the process: the frames are pushed and it suspends.
+    Suspend,
+    /// A fault, recorded by the host.
+    Fault,
 }
 
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
@@ -634,8 +668,9 @@ pub struct TierFrame {
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
     /// native frames stay below it.
     pub max_depth: u64,
-    /// The process heap's `epoch`: the host addresses of heap objects compiled code found stay
-    /// valid while it is unchanged.
+    /// The sum of the process heap's and the shared heap's `epoch`: the host addresses of heap
+    /// objects compiled code found stay valid while it is unchanged (refreshed with the
+    /// temporary area after every host call).
     pub heap_epoch: u64,
     /// [`TIER_SHARED_ALLOC`] (the top frame allocates in the shared heap) and [`TIER_SERIAL`]
     /// (the process may use the shared state): what native frames inherit and a protected call
@@ -697,7 +732,7 @@ impl Default for TierFrame {
 
 /// Address spaces: the top 3 bits of an address `[space: 3 | index: 29 | offset: 32]`.
 pub mod space {
-    pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, TEMP};
+    pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, SHARED_HEAP, TEMP};
 }
 
 /// A program bound for execution, shared by all processes of a simulation.
@@ -743,9 +778,27 @@ pub struct NativeFlags {
     /// Per function: 1 when it has compiled code (`Tier::ready`), so the fast loop asks
     /// without a virtual call; 2 asks the tier to compile it on the next entry (`set_eager`).
     func: Box<[std::sync::atomic::AtomicU8]>,
+    /// Per function: 1 when the tier calls it on a native frame from the interpreter
+    /// (`Tier::call`).
+    call: Box<[std::sync::atomic::AtomicU8]>,
 }
 
 impl NativeFlags {
+    /// The tier calls `func` from the interpreter now (`Tier::call`).
+    pub fn set_call(&self, func: FuncId) {
+        if let Some(n) = self.call.get(func.0 as usize) {
+            n.store(1, Ordering::Release);
+        }
+    }
+
+    /// Whether `set_call` marked `func`.
+    #[inline(always)]
+    pub(crate) fn callable(&self, func: u32) -> bool {
+        self.call
+            .get(func as usize)
+            .is_some_and(|n| n.load(Ordering::Acquire) == 1)
+    }
+
     /// `func` has compiled code now.
     pub fn set(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
@@ -856,6 +909,7 @@ impl Runtime {
             native: Arc::new(NativeFlags {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                call: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
@@ -971,6 +1025,9 @@ impl Runtime {
                 self.native.set(FuncId(i as u32));
             } else {
                 n.store(0, Ordering::Relaxed);
+            }
+            if tier.callable(FuncId(i as u32)) {
+                self.native.set_call(FuncId(i as u32));
             }
         }
         self.tier.set(tier).is_ok()

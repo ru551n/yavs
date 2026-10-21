@@ -3792,3 +3792,36 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   4000 small processes; the same with only the temporary area taken from a per-thread buffer, so the
   register lines are the cost. Reading a drive's waveform one word at a time (a 16-byte load spans two
   8-byte stores): 1% fewer cycles on `rtl_ff`, 2% more on `rtl_lfsr`. `#[inline]` on `enter`: no change.
+
+## Native calls from the interpreter and the object table (yavs-llvm, yavs-interp, #510, 2026-10-22)
+
+- **Problem:** compiled code of a protected-call heavy testbench ran no faster than the interpreter (`--tier=llvm`
+  30.5 G instructions against 32.9 G on `protected_queue`): every access to a shared-heap object went through
+  `yavs_rt_host`, and the four-entry object cache, refilled round robin and emptied at every host call, missed for half
+  of them (each miss a `TierHost::object` call). Under `--tier=auto` a compiled function entered from interpreted code
+  paid a frame push, the frame view and its frame-mode code, which steps `NewFrame`, `Cat`, `Fill` and typed
+  `TempRoot`: string helpers called often on short strings ran slower compiled.
+- **Object table.** `Mem::objs` is a direct-mapped table of 16 entries (`obj_at`: the low bits of the object index,
+  which are also bits 32 and up of an access value), looked up inline by every access of unknown space in every
+  function (one load and compare; processes then try the temporary area). An entry also holds the access value a
+  `Deref` found it for: a `Deref` of that value is inline (`Gen` compares the entry's value; `UNREAD` marks an entry
+  whose bytes nobody asked for yet). Heap entries stay across a host call (step, native, `native_step`) when
+  `TierFrame::heap_epoch`, now the sum of the process heap's and the shared heap's epochs and refreshed with the
+  temporary area, did not change (`Mem::forget_since`): no object was deallocated or edited in place, so their bytes
+  and handles are where they were; other spaces are forgotten as before (frames and the temporary area may move).
+  ponytail: direct-mapped, two objects whose indices agree in the low four bits evict each other; ways if a profile
+  shows conflicts.
+- **Calls from the interpreter on native frames (`Tier::call`).** Every function with native-frame code and no static
+  link gets an adapter `f<id>_c(env, mem, depth, cells)`. The fast loop's `Op::Call` and `Op::CallProt` of a function
+  `NativeFlags::set_call` marks ask `Tier::call` first (after a protected call's shared-state check): the argument
+  cells come from the caller's registers, the callee runs at frame index top plus one with the checks of a frame-mode
+  caller's `Gen::native_call` (depth limit, `TIER_SERIAL`, `TIER_SHARED_ALLOC` for a shared object), and its value
+  goes to the call's register. A materialisation pushes the native frames on top of the caller, which waits at its
+  call (`TierHost::materialise`, as for a frame-mode caller), and the interpreter goes on with them (`Flow::Call`).
+  The tier declines (the interpreter makes the call) beyond 16 cells or the depth limit. Errors and traces stay the
+  interpreter's (replay), output is the same whatever is compiled (rule 5).
+- **`--tier=auto`:** a hot native-callable root without a static link and without a loop is compiled as native-frame
+  code only (it is reached through `Tier::call` and from compiled callers); one with a loop gets its frame-mode code as
+  well, for the interpreter to enter again after a materialisation inside the loop.
+- **Tuning aid:** `YAVS_LLVM_PERFMAP=1` writes `/tmp/perf-<pid>.map` with the compiled functions, so `perf report`
+  names them.

@@ -124,7 +124,7 @@ pub const CONST: u8 = 3;
 pub const HEAP: u8 = 4;
 pub const TEMP: u8 = 5;
 pub const SHARED: u8 = 6;
-pub(crate) const SHARED_HEAP: u8 = 7;
+pub const SHARED_HEAP: u8 = 7;
 
 const SPACE_NAMES: [&str; 8] = [
     "frame",
@@ -3341,6 +3341,17 @@ impl Machine {
         tf.temp_cap = self.temp.capacity() as u64;
         tf.temp_roots = self.troots.len() as u64;
         tf.temp_base = u64::from(self.frames[self.frames.len() - 1].temp_base);
+        tf.heap_epoch = self.heap_epochs();
+    }
+
+    /// `TierFrame::heap_epoch`: changes when an object of the process heap or the shared heap
+    /// is deallocated or edited in place.
+    #[inline(always)]
+    fn heap_epochs(&self) -> u64 {
+        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
+        self.heap
+            .epoch()
+            .wrapping_add(shared.map_or(0, Heap::epoch))
     }
 
     /// `Inst::CallNative`: `Flow::Next`, or the flow a native ends with (a VHDL body it hands
@@ -4765,6 +4776,18 @@ impl Machine {
                     let cpre = rt
                         .pre(cid, cf)
                         .ok_or_else(|| ice(format!("no function {cid}")))?;
+                    // A function the compiled tier calls on a native frame (`Tier::call`).
+                    if let Some(t) = tier
+                        && rt.native.callable(callee)
+                        && let Some(flow) =
+                            self.tier_call(t, rt, f, cid, cf, args, dst, None, ctx)?
+                    {
+                        if let Flow::Next = flow {
+                            k = entry!(self.frames[top].pc + 1)? as usize;
+                            continue;
+                        }
+                        return Ok(flow);
+                    }
                     self.call_pre(f, cf, cid, cpre, args, dst, None)?;
                     save_caller!();
                     // The callee's ops go on in this loop.
@@ -4802,6 +4825,18 @@ impl Machine {
                     let cpre = rt
                         .pre(cid, cf)
                         .ok_or_else(|| ice(format!("no function {cid}")))?;
+                    // A function the compiled tier calls on a native frame (`Tier::call`).
+                    if let Some(t) = tier
+                        && rt.native.callable(callee)
+                        && let Some(flow) =
+                            self.tier_call(t, rt, f, cid, cf, args, dst, Some(h), ctx)?
+                    {
+                        if let Flow::Next = flow {
+                            k = entry!(self.frames[top].pc + 1)? as usize;
+                            continue;
+                        }
+                        return Ok(flow);
+                    }
                     self.call_pre(f, cf, cid, cpre, args, dst, Some(h))?;
                     self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
                     save_caller!();
@@ -5736,6 +5771,70 @@ impl Machine {
         }
     }
 
+    /// `Call` (`CallProt` on `obj`) of `callee` from the top frame through `Tier::call`: the flow
+    /// it ends with (`Flow::Next` when the call returned, its result in `dst`), or `None` when the
+    /// interpreter makes the call.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn tier_call(
+        &mut self,
+        tier: &dyn crate::Tier,
+        rt: &Runtime,
+        f: &Func,
+        callee: FuncId,
+        cf: &Func,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        obj: Option<u64>,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Option<Flow>> {
+        // One cell per parameter, two for a signal (`call_with`).
+        let mut cells = [0u64; 16];
+        let mut n = usize::from(obj.is_some());
+        cells[0] = obj.unwrap_or(0);
+        let regs = f
+            .regs(args)
+            .ok_or_else(|| ice("operand list out of range"))?;
+        for (r, p) in regs.iter().zip(cf.params.iter().skip(n)) {
+            let w = 1 + usize::from(p.width == Width::Sig);
+            if n + w > cells.len() {
+                return Ok(None);
+            }
+            cells[n] = self.regs[r.0 as usize];
+            if w == 2 {
+                cells[n + 1] = self.regs[r.0 as usize + 1];
+            }
+            n += w;
+        }
+        let pc = self.top().pc;
+        let mut host = Host {
+            m: self,
+            rt,
+            prog: &rt.prog,
+            f,
+            up: Vec::new(),
+            ctx,
+            fault: None,
+            stop: false,
+        };
+        let r = tier.call(callee, &cells[..n], obj, pc, &mut host);
+        if let Some(e) = host.fault {
+            return Err(e);
+        }
+        Ok(match r {
+            None => None,
+            Some(crate::Called::Done(v)) => {
+                if let Some(d) = dst {
+                    self.regs[d.0 as usize] = v;
+                }
+                Some(Flow::Next)
+            }
+            Some(crate::Called::Pushed) => Some(Flow::Call),
+            Some(crate::Called::Suspend) => Some(Flow::Suspend),
+            Some(crate::Called::Fault) => return Err(ice("compiled call failed without a fault")),
+        })
+    }
+
     /// Run compiled code of the top frame from `pc` (ir.md 5): the index of the instruction
     /// the interpreter executes next (or `TIER_UNWIND`, `TIER_SUSPEND`, frames' pcs set), and
     /// whether the function has compiled code. Compiled code steps other instructions through
@@ -5818,7 +5917,7 @@ impl Machine {
         tf.nregs = (m.regs.v.len() - rbase) as u64;
         tf.stack = m.regs.v.as_ptr();
         tf.max_depth = u64::from(m.rt.limits.max_depth);
-        tf.heap_epoch = m.heap.epoch();
+        tf.heap_epoch = m.heap_epochs();
         tf.flags = m.tier_flags();
         match c.known_edge() {
             Some((s, e, up)) => {
@@ -5871,7 +5970,7 @@ impl Machine {
         tf.nregs = (self.regs.v.len() - rbase) as u64;
         tf.stack = self.regs.v.as_ptr();
         tf.max_depth = u64::from(self.rt.limits.max_depth);
-        tf.heap_epoch = self.heap.epoch();
+        tf.heap_epoch = self.heap_epochs();
         tf.flags = self.tier_flags();
         let mut link = self.frames[top].link;
         for u in &mut tf.up {

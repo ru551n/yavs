@@ -60,6 +60,13 @@ impure function bump return integer is begin n := n + 1; return n; end;\n  end p
 shared variable ctr : counter_t;\n  function f4 (x : integer) return integer is begin return x + k4; end;\n  \
 impure function next_id return integer is begin return ctr.bump; end;\nend;\n";
 
+impl Drop for Libs {
+    fn drop(&mut self) {
+        // The libraries are tens of megabytes of cache by the end of a test.
+        let _ = std::fs::remove_dir_all(&self.tmp);
+    }
+}
+
 impl Libs {
     fn spec(&self, l: &str) -> String {
         format!("{l}:{}", self.tmp.join(l).display())

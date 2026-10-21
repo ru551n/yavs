@@ -33,6 +33,7 @@
 //! pass off (differential testing).
 
 mod live;
+mod memo;
 mod range;
 mod share;
 
@@ -54,6 +55,17 @@ pub fn enabled() -> bool {
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     })
+}
+
+/// Is the memoisation of instance-constant values in processes on? Off for a debugger and
+/// with `YAVS_NO_MEMO` set to anything but `0` or the empty string (differential testing).
+fn memo_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_MEMO")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    }) && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 static KEEP_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -166,6 +178,9 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     f.loc = loc;
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
+    if memo_enabled() {
+        memo::run(prog, &mut f);
+    }
     renumber(prog, &mut f);
     crate::build::number_func(&mut f, |c| {
         prog.funcs

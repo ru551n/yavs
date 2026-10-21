@@ -761,16 +761,31 @@ impl NativeFlags {
 static SLOTS: Mutex<Vec<&'static std::sync::atomic::AtomicU64>> = Mutex::new(Vec::new());
 
 thread_local! {
-    static SLOT: &'static std::sync::atomic::AtomicU64 = {
-        let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
-        SLOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(s);
-        s
-    };
+    // Const-initialised: an access is one thread-local load and a predictable null test (a lazy
+    // `thread_local!` with an initialiser costs a call per access, on every activation, #480).
+    static SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// This thread's sampling slot.
+#[inline(always)]
 pub(crate) fn slot() -> &'static std::sync::atomic::AtomicU64 {
-    SLOT.with(|s| *s)
+    match SLOT.get() {
+        Some(s) => s,
+        None => new_slot(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
+    let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
+    SLOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(s);
+    SLOT.set(Some(s));
+    s
 }
 
 fn usage(m: String) -> SimError {

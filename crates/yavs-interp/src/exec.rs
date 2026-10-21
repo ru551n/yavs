@@ -1113,7 +1113,7 @@ impl Machine {
     pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Quick {
         let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
         let r = match rt.tier.get() {
-            Some(tier) if rt.native.any.load(Ordering::Acquire) => {
+            Some(tier) if self.tiered(&rt) => {
                 let slot = crate::slot();
                 if let Some(q) = self.run_compiled(&rt, &**tier, slot, ctx) {
                     // Nothing interpreted on this thread until the next run.
@@ -1142,6 +1142,21 @@ impl Machine {
                 Quick::Fault
             }
         }
+    }
+
+    /// Whether the full tier loop runs this activation: the function the top frame is in has
+    /// compiled code, or is to be compiled (state 1, 2). Code the tier has not touched runs in
+    /// the plain loop even once other functions are compiled, which hands over at a call of
+    /// one and every `WATCH` events (#480).
+    #[inline(always)]
+    fn tiered(&self, rt: &Runtime) -> bool {
+        rt.native.any.load(Ordering::Acquire)
+            && self.frames.last().is_some_and(|fr| {
+                rt.native
+                    .func
+                    .get(fr.func.0 as usize)
+                    .is_some_and(|n| n.load(Ordering::Acquire) != 0)
+            })
     }
 
     /// The activation of a process whose root function has compiled code, entered where it
@@ -3304,7 +3319,7 @@ impl Machine {
         let prog = &rt.prog;
         if !DEBUG {
             return match rt.tier.get() {
-                Some(tier) if rt.native.any.load(Ordering::Acquire) => {
+                Some(tier) if self.tiered(rt) => {
                     let r = self.exec_fast::<true>(rt, Some(&**tier), ctx, base);
                     // Nothing interpreted on this thread until the next run.
                     crate::slot().store(0, Ordering::Relaxed);
@@ -3721,6 +3736,20 @@ impl Machine {
                 enter!();
             };
         }
+        // `watch`: hand over to the loop with the tier when the function being run (the next op
+        // is `k` of frame `top`) has compiled code or is to be compiled.
+        macro_rules! look {
+            () => {
+                if watch
+                    && nat
+                        .get(func.0 as usize)
+                        .is_some_and(|n| n.load(Ordering::Acquire) != 0)
+                {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    return Ok(Flow::Retier);
+                }
+            };
+        }
         // `watch`: every `WATCH` jumps, calls and returns, name the function being run for the
         // sampler and look for compiled code to hand over to (the next op is `k` of frame `top`).
         macro_rules! tick {
@@ -3732,10 +3761,7 @@ impl Machine {
                         if let Some(s) = slot {
                             s.store(tag | u64::from(func.0), Ordering::Relaxed);
                         }
-                        if rt.native.any.load(Ordering::Acquire) {
-                            self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                            return Ok(Flow::Retier);
-                        }
+                        look!();
                     }
                 }
             };
@@ -4604,6 +4630,7 @@ impl Machine {
                         first => first as usize,
                     };
                     rebind!();
+                    look!();
                     tick!();
                 }
                 Op::CallProt {
@@ -4638,6 +4665,7 @@ impl Machine {
                         first => first as usize,
                     };
                     rebind!();
+                    look!();
                     tick!();
                 }
                 Op::Ret { v } => {

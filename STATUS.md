@@ -1984,6 +1984,12 @@ the simulate phase of 2b is 0.55 s against the interpreter's 0.67 s (O0 code: 0.
 the interpreter with a tier set (`run_ops::<true>`) costs 4 to 13% on `ff`, `chain` and `fan`
 even where nothing is compiled (#480, measured before 4d0c9ae9, which addresses it); that and the kernel (the update phase, `assign`, edge and wait
 bookkeeping: half or more of every row) are what keep `--tier=auto` near the interpreter here.
+Interpreted code under a tier is at the interpreter's speed (#480): functions the tier has not touched
+run the plain loop even after other functions are compiled (the full loop only for a function with
+compiled code, or one the tier is asked to compile), the sampling slot costs one thread-local load,
+and the user cycles of `--tier=auto` against `--tier=interp` (7 interleaved pairs, core 6) are 1.010
+(`fan`, was 1.06 to 1.12 once another function was compiled), 1.018 (`chain`), 1.025 (`bus`); the rest is a
+fixed 15 to 20 million user cycles and 30 million kernel cycles of tier start-up (#432).
 Shared benchmarks (`tools/bench/run.py --compare`, `--tier=auto` on both sides, CPU): internal
 group geometric mean 0.948 over 12 (`compute_loop` 0.69, `resolved_bus` 1.18: one O2 compile on
 a 0.3 s run, wall equal), external 1.014 over 5 (`vai_window_gen` 1.08); `--tier=interp`

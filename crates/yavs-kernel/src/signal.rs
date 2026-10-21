@@ -10,7 +10,8 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::error::ErrorKind;
 use crate::time::Time;
-use crate::value::{Buf, SignalType, bits, fill_bits};
+use crate::value::{Buf, Elem, SignalType, bits, fill_bits};
+use yavs_logic::wide::nmask;
 
 /// Stable id of a signal: its index in creation (elaboration) order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -182,6 +183,17 @@ pub(crate) struct Waiters {
     shift: u32,
     /// The edge trigger every waiter ever added shares (see `uniform_trigger`).
     trig: Trig,
+    /// The wake list of a signal whose waiters all are resident, alive and wait for the whole
+    /// signal (a clock and its processes): what a scan would produce, kept until a waiter is
+    /// added or a process stops waiting this way.
+    cache: Option<Cache>,
+}
+
+struct Cache {
+    /// `(registration, process, trigger id)` of every waiter, in list order.
+    list: Vec<(u64, u32, u32)>,
+    /// The distinct trigger ids in `list` (0: none), at most 4.
+    tids: SmallVec<[u32; 4]>,
 }
 
 /// What the waiters of a signal have in common: no waiter, all the same edge trigger, or not.
@@ -194,15 +206,28 @@ enum Trig {
 }
 
 impl Waiters {
-    fn new(len: u32) -> Waiters {
-        let shift = if len > 4096 { 6 } else { 3 };
+    pub(crate) fn new(len: u32) -> Waiters {
+        // One list for up to 8 elements, one per element up to 1024 (a process per element of a
+        // vector then scans one waiter per event), chunks of 8 and 64 beyond.
+        let shift = match len {
+            0..=8 => 3,
+            9..=1024 => 0,
+            1025..=4096 => 3,
+            _ => 6,
+        };
         Waiters {
             lists: SmallVec::new(),
             next: 0,
             len,
             shift,
             trig: Trig::Empty,
+            cache: None,
         }
+    }
+
+    /// Forget the wake list (a waiter changed).
+    pub fn drop_cache(&mut self) {
+        self.cache = None;
     }
 
     /// The edge trigger of every waiter, when the signal has one list of waiters and they all
@@ -212,6 +237,26 @@ impl Waiters {
         match self.trig {
             Trig::Same(t) if self.lists.len() == 1 => Some(t),
             _ => None,
+        }
+    }
+
+    /// The distinct trigger ids of the wake list, if it is valid.
+    pub fn cache_tids(&self) -> Option<SmallVec<[u32; 4]>> {
+        self.cache.as_ref().map(|c| c.tids.clone())
+    }
+
+    /// Take the wake list (after `cache_tids` said there is one); give it back with
+    /// `restore_cache`.
+    pub fn take_cache(&mut self) -> Vec<(u64, u32, u32)> {
+        self.cache
+            .as_mut()
+            .map(|c| std::mem::take(&mut c.list))
+            .unwrap_or_default()
+    }
+
+    pub fn restore_cache(&mut self, list: Vec<(u64, u32, u32)>) {
+        if let Some(c) = &mut self.cache {
+            c.list = list;
         }
     }
 
@@ -254,6 +299,21 @@ impl Waiters {
         };
         let seq = self.next;
         self.next += 1;
+        // A resident waiter for the whole signal, like the others, joins the wake list.
+        let joins = perm != 0 && self.len > 0 && range == Range::new(0, self.len);
+        match &mut self.cache {
+            Some(c)
+                if joins
+                    && self.lists.len() == 1
+                    && (c.tids.contains(&tid) || c.tids.len() < 4) =>
+            {
+                if !c.tids.contains(&tid) {
+                    c.tids.push(tid);
+                }
+                c.list.push((seq, proc, tid));
+            }
+            cache => *cache = None,
+        }
         for i in self.lists_of(range) {
             let (l, n) = &mut self.lists[i];
             if l.len() >= 2 * *n + 16 {
@@ -269,6 +329,28 @@ impl Waiters {
                 seq,
             });
         }
+    }
+
+    /// Make the wake list after a scan of the one list, if all its waiters are resident and wait
+    /// for the whole signal. The scan removed the stale ones that an event of the whole signal
+    /// hits, so the rest are alive.
+    fn build_cache(&mut self) {
+        let full = Range::new(0, self.len);
+        let l = &self.lists[0].0;
+        if full.len == 0 || l.len() < 16 || !l.iter().all(|w| w.perm != 0 && w.range == full) {
+            return;
+        }
+        let mut tids: SmallVec<[u32; 4]> = SmallVec::new();
+        for w in l.iter() {
+            if !tids.contains(&w.tid) {
+                if tids.len() == 4 {
+                    return;
+                }
+                tids.push(w.tid);
+            }
+        }
+        let list = l.iter().map(|w| (w.seq, w.proc, w.tid)).collect();
+        self.cache = Some(Cache { list, tids });
     }
 
     /// Remove the live waiters overlapping `runs` (sorted, disjoint) and put their
@@ -335,6 +417,9 @@ impl Waiters {
         if self.lists.len() == 1 && self.lists[0].0.is_empty() {
             self.trig = Trig::Empty;
         }
+        if self.cache.is_none() && self.lists.len() == 1 && scanned == 1 && !runs.is_empty() {
+            self.build_cache();
+        }
         if scanned > 1 && out.len() > 1 {
             out.sort_unstable();
             out.dedup_by_key(|w| w.0);
@@ -377,7 +462,6 @@ pub(crate) struct Signal {
     /// Cycle in which the signal was last put on the driving / effective worklist.
     pub queued_up: u64,
     pub queued_down: u64,
-    pub waiters: Waiters,
     /// Elements changed in the current cycle.
     pub changed: SmallVec<[Range; 2]>,
     /// Ranges whose driving value must be recomputed this cycle.
@@ -428,7 +512,6 @@ impl Signal {
             level: 0,
             queued_up: 0,
             queued_down: 0,
-            waiters: Waiters::new(ty.len),
             changed: SmallVec::new(),
             dirty: SmallVec::new(),
             eff_dirty: SmallVec::new(),
@@ -515,9 +598,18 @@ impl Signal {
             .find(|&i| found(i))
             .unwrap_or_else(|| self.segments.partition_point(|s| s.range.end() <= r.offset));
         self.seg_hint = first;
-        for seg in &self.segments[first..] {
+        let mut si = first;
+        while let Some(seg) = self.segments.get(si) {
+            si += 1;
             if seg.range.offset >= r.end() {
                 break;
+            }
+            // A run of one-element segments with one driver of one element each (a process
+            // per element of a vector): gathered into plane words, one write per 64 elements.
+            if self.one_driver_elem(si - 1, r) {
+                let ones = self.gather_ones(si - 1, r);
+                si += ones - 1;
+                continue;
             }
             let Some(part) = seg.range.intersect(r) else {
                 continue;
@@ -582,6 +674,92 @@ impl Signal {
         Ok(())
     }
 
+    /// `compute_driving` and `update_effective` of the one logic element `e`, when its only
+    /// source is a driver and nothing is layered on it (the case of a process per element of a
+    /// vector): a code compare and four plane bits instead of the general paths. `None`: take
+    /// the general ones.
+    pub fn finish_one(&mut self, e: u32, now: Time, cycle: u64) -> Option<bool> {
+        if !matches!(self.ty.elem, Elem::Logic)
+            || !self.groups.is_empty()
+            || self.guard.is_some()
+            || !self.force_ev.is_empty()
+            || self.force_drv.is_some()
+            || self.port_in.is_some()
+            || self.force_eff.is_some()
+            || !matches!(self.resolution, None | Some(Resolution::StdLogic))
+        {
+            return None;
+        }
+        let h = self.seg_hint;
+        let hit = |i: usize| {
+            self.segments
+                .get(i)
+                .is_some_and(|s| s.range.offset <= e && e < s.range.end())
+        };
+        let i = [h, h + 1, h.wrapping_sub(1)]
+            .into_iter()
+            .find(|&i| hit(i))
+            .unwrap_or_else(|| self.segments.partition_point(|s| s.range.end() <= e));
+        let seg = self.segments.get(i)?;
+        let ([d], true) = (seg.drivers.as_slice(), hit(i)) else {
+            return None;
+        };
+        let d = &self.drivers[*d as usize];
+        let code = d.value.code((e - d.range.offset) as usize);
+        self.seg_hint = i;
+        let e = e as usize;
+        self.driving.put_code(e, code);
+        let old = self.cur.swap_code(e, code);
+        if old == code {
+            return Some(false);
+        }
+        set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
+        match self.changed.last_mut() {
+            Some(run) if run.end() as usize == e => run.len += 1,
+            _ => self.changed.push(Range::new(e as u32, 1)),
+        }
+        self.last_value.put_code(e, old);
+        Some(true)
+    }
+
+    /// Segment `i` is one element of `r` with one driver of one logic element, copied as it is.
+    #[inline]
+    fn one_driver_elem(&self, i: usize, r: Range) -> bool {
+        let seg = &self.segments[i];
+        seg.range.len == 1
+            && r.contains(seg.range)
+            && matches!(self.ty.elem, Elem::Logic)
+            && self.guard.is_none()
+            && matches!(self.resolution, None | Some(Resolution::StdLogic))
+            && matches!(seg.drivers.as_slice(), [d] if self.drivers[*d as usize].range.len == 1)
+    }
+
+    /// Copy the driving values of the run of `one_driver_elem` segments from segment `i` that
+    /// stays in one 64-element block; returns how many segments it took.
+    fn gather_ones(&mut self, i: usize, r: Range) -> usize {
+        let first = self.segments[i].range.offset as usize;
+        let room = 64 - first % 64;
+        let (mut planes, mut k) = ([0u64; 4], 0);
+        while k < room && i + k < self.segments.len() {
+            let seg = &self.segments[i + k];
+            if seg.range.offset as usize != first + k || !self.one_driver_elem(i + k, r) {
+                break;
+            }
+            let [d] = seg.drivers.as_slice() else {
+                break;
+            };
+            let Some(p) = self.drivers[*d as usize].value.first_planes() else {
+                break;
+            };
+            for (x, b) in planes.iter_mut().zip(p) {
+                *x |= b << k;
+            }
+            k += 1;
+        }
+        self.driving.put_planes(first, k, planes);
+        k
+    }
+
     /// The effective value of `r`: driving value under `force out`, port input and
     /// `force in`, in increasing priority.
     pub fn effective_of(&self, r: Range) -> Buf {
@@ -638,15 +816,20 @@ impl Signal {
                 continue;
             }
             any = true;
+            // Runs of changed elements: stamps filled and the event list extended per run.
             let mut w = m;
             while w != 0 {
-                let e = off + c + w.trailing_zeros() as usize;
-                w &= w - 1;
-                set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
+                let s = w.trailing_zeros();
+                let len = (w >> s).trailing_ones();
+                let e = off + c + s as usize;
+                let n = self.ty.len as usize;
+                self.stamps[e..e + len as usize].fill(cycle);
+                self.stamps[2 * n + e..2 * n + e + len as usize].fill(now.raw());
                 match self.changed.last_mut() {
-                    Some(run) if run.end() as usize == e => run.len += 1,
-                    _ => self.changed.push(Range::new(e as u32, 1)),
+                    Some(run) if run.end() as usize == e => run.len += len,
+                    _ => self.changed.push(Range::new(e as u32, len)),
                 }
+                w &= !(nmask(len as usize) << s);
             }
             if k == 1 {
                 // m is 1: one element changed.
@@ -691,6 +874,34 @@ impl Signal {
     /// Apply the transactions of one driver (`w`, its waveform; `slot` its index in `drivers`)
     /// that are due, marking the elements active and dirty.
     pub fn apply_driver(&mut self, w: &mut Waveform, slot: u32, now: Time, cycle: u64) {
+        if let Some(q) = w.quick
+            && q.time <= now
+        {
+            w.quick = None;
+            let d = &mut self.drivers[slot as usize];
+            let rel = (q.elem - d.range.offset) as usize;
+            d.value.put_code(rel, q.code);
+            if let Some(off) = &mut d.off {
+                fill_bits(off, rel, 1, false);
+            }
+            let (n, e) = (self.ty.len as usize, q.elem as usize);
+            let st = self.stamps.as_mut_slice();
+            st[n + e] = cycle;
+            st[3 * n + e] = now.raw();
+            self.push_dirty(Range::new(q.elem, 1));
+            return;
+        }
+        // The usual case of a vector driver: one transaction, due now.
+        if let [t] = w.pending.as_slice()
+            && t.time <= now
+            && let Some(t) = w.pending.pop()
+        {
+            let r = t.range;
+            apply_txn(&mut self.drivers[slot as usize], t, &mut w.spare);
+            self.mark_active(r, now, cycle);
+            self.push_dirty(r);
+            return;
+        }
         let mut ranges: SmallVec<[Range; 4]> = SmallVec::new();
         w.apply_due(now, &mut self.drivers[slot as usize], |r| ranges.push(r));
         for r in ranges.drain(..) {
@@ -704,6 +915,11 @@ impl Signal {
     pub fn push_dirty(&mut self, r: Range) {
         match self.dirty.last_mut() {
             Some(l) if l.end() == r.offset => l.len += r.len,
+            // Processes in descending element order (the drivers are numbered that way).
+            Some(l) if r.end() == l.offset => {
+                l.offset = r.offset;
+                l.len += r.len;
+            }
             _ => self.dirty.push(r),
         }
     }
@@ -934,12 +1150,26 @@ const SPARE_BUFS: usize = 4;
 #[derive(Default)]
 pub(crate) struct Waveform {
     pub pending: TxnList,
+    /// The one pending transaction of a zero-delay one-element logic assignment
+    /// (`Ctx::assign_code`), kept apart from `pending` (which is empty then) because it costs
+    /// no list entry and no value buffer. It matures in the next update; anything that
+    /// schedules or inspects `pending` goes through `spill` or `idle` first.
+    pub quick: Option<Quick>,
     /// Values of applied transactions, reused by the next assignments (no allocation per
     /// transaction in the steady state).
     pub spare: Vec<Buf>,
     /// Zero-delay assignments of this run that changed nothing and were not queued
     /// (`Ctx::assign`, `Config::skip_unchanged`).
     pub phantom: Vec<Range>,
+}
+
+/// A pending zero-delay assignment of one `std_ulogic` code to one element.
+#[derive(Clone, Copy)]
+pub(crate) struct Quick {
+    pub time: Time,
+    /// The element, of the signal (not of the driver).
+    pub elem: u32,
+    pub code: u8,
 }
 
 /// Per element of `t` (relative), whether its value equals `first` (covering `r`).
@@ -970,10 +1200,38 @@ fn same_value(t: &Txn, first: &Option<Buf>, r: Range) -> Vec<u64> {
 }
 
 impl Waveform {
+    /// Nothing is pending.
+    pub fn idle(&self) -> bool {
+        self.pending.is_empty() && self.quick.is_none()
+    }
+
+    /// The time of the first pending transaction.
+    pub fn first_time(&self) -> Option<Time> {
+        match &self.quick {
+            Some(q) => Some(q.time),
+            None => self.pending.first().map(|t| t.time),
+        }
+    }
+
+    /// Turn the quick transaction into a list entry, for the paths that preempt and merge.
+    pub fn spill(&mut self) {
+        if let Some(q) = self.quick.take() {
+            self.pending.insert(
+                0,
+                Txn {
+                    time: q.time,
+                    range: Range::new(q.elem, 1),
+                    value: Some(Buf::one_code(q.code)),
+                },
+            );
+        }
+    }
+
     /// Apply LRM 10.5.2.2 to target elements `r` for a new waveform whose first transaction is
     /// at `t1`, then insert the new transactions. `reject_from` is `t1 - reject` for inertial
     /// delay, `None` for transport.
     pub fn schedule(&mut self, r: Range, reject_from: Option<Time>, new: &mut TxnList) {
+        self.spill();
         // Nothing pending on these elements (the usual zero-delay case): nothing to preempt.
         if !self.pending.iter().any(|t| t.range.overlaps(r)) {
             for t in new.drain(..) {
@@ -1033,6 +1291,22 @@ impl Waveform {
     /// Apply the transactions due at or before `now` to driver slot `d`, in order, calling
     /// `applied` with each one's elements.
     pub fn apply_due(&mut self, now: Time, d: &mut DriverSlot, mut applied: impl FnMut(Range)) {
+        if let Some(q) = self.quick {
+            if q.time > now {
+                return self.apply_pending(now, d, applied);
+            }
+            self.quick = None;
+            d.value.put_code((q.elem - d.range.offset) as usize, q.code);
+            if let Some(off) = &mut d.off {
+                fill_bits(off, (q.elem - d.range.offset) as usize, 1, false);
+            }
+            applied(Range::new(q.elem, 1));
+            return;
+        }
+        self.apply_pending(now, d, applied);
+    }
+
+    fn apply_pending(&mut self, now: Time, d: &mut DriverSlot, mut applied: impl FnMut(Range)) {
         let n = self.pending.partition_point(|t| t.time <= now);
         for t in self.pending.drain(..n) {
             applied(t.range);

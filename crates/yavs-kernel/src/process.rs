@@ -2,7 +2,7 @@
 
 use crate::error::{ErrorKind, SimError};
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Range, SigRef, Signal, SignalId, Txn, TxnList, Waveform,
+    DelayMode, DriverId, ForceMode, Quick, Range, SigRef, Signal, SignalId, Txn, TxnList, Waveform,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
@@ -274,9 +274,9 @@ impl Ctx<'_> {
             return Ok(None);
         }
         let b = if last { &s.last_value } else { &s.cur };
-        match b {
-            Buf::Planes { .. } => Ok(Some(b.code(r.offset as usize))),
-            Buf::Bytes { .. } => Err(self.error(ErrorKind::BadRef(format!(
+        match b.planes_code(r.offset as usize) {
+            Some(c) => Ok(Some(c)),
+            None => Err(self.error(ErrorKind::BadRef(format!(
                 "{} holds bytes, read it with value()",
                 s.name
             )))),
@@ -397,6 +397,33 @@ impl Ctx<'_> {
             w.phantom.push(r);
             return Ok(());
         }
+        // Zero delay, nothing pending or skipped on the driver: nothing to preempt, so the
+        // transaction is appended as it is.
+        if let [(delay, v)] = waveform
+            && *delay == Time::ZERO
+            && r.len > 0
+            && match mode {
+                DelayMode::Transport => true,
+                DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
+            }
+            && self.st.waveforms[local].idle()
+            && self.st.waveforms[local].phantom.is_empty()
+        {
+            let n = r.len as usize;
+            let buf = match self.st.waveforms[local].spare.pop() {
+                Some(mut b) => b.refill(elem, n, (*v).into()).map(|()| b),
+                None => Buf::from_ref(elem, n, (*v).into()),
+            }
+            .map_err(|m| self.error(ErrorKind::InvalidAssign(m)))?;
+            let now = self.sh.now;
+            self.st.waveforms[local].pending.push(Txn {
+                time: now,
+                range: r,
+                value: Some(buf),
+            });
+            self.st.scheduled.push((now, d));
+            return Ok(());
+        }
         let mut new = TxnList::new();
         for &(delay, v) in waveform {
             let (n, v) = (r.len as usize, v.into());
@@ -461,7 +488,7 @@ impl Ctx<'_> {
             return false;
         }
         let w = &mut self.st.waveforms[info.local as usize];
-        if !w.pending.is_empty() || !w.phantom.is_empty() {
+        if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
         let s = &self.sh.signals[info.signal.0 as usize];
@@ -480,10 +507,10 @@ impl Ctx<'_> {
             return true;
         }
         let now = self.sh.now;
-        w.pending.push(Txn {
+        w.quick = Some(Quick {
             time: now,
-            range: r,
-            value: Some(Buf::one_code(code)),
+            elem: r.offset,
+            code,
         });
         self.st.scheduled.push((now, d));
         true
@@ -497,7 +524,7 @@ impl Ctx<'_> {
         let Ok(info) = self.own(d) else {
             return false;
         };
-        if !s.skip_ok || !self.st.waveforms[info.local as usize].pending.is_empty() || r.len == 0 {
+        if !s.skip_ok || !self.st.waveforms[info.local as usize].idle() || r.len == 0 {
             return false;
         }
         let ds = &s.drivers[info.slot as usize];
@@ -634,7 +661,7 @@ impl Ctx<'_> {
     }
 
     /// Add `r` to the sensitivity of the coming wait.
-    #[inline]
+    #[inline(always)]
     pub fn wait_on(&mut self, r: impl Into<SigRef>) -> Result<(), SimError> {
         let r = r.into();
         let range = self.sig(r)?.1;

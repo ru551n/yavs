@@ -151,6 +151,14 @@ pub(crate) fn fill_bits(words: &mut [u64], off: usize, n: usize, on: bool) {
     }
 }
 
+/// The `std_ulogic` code of element `i` of plane blocks.
+#[inline(always)]
+fn plane_code(b: &[Block], i: usize) -> u8 {
+    let (blk, s) = (&b[i >> 6], i & 63);
+    ((blk[0] >> s & 1) | (blk[1] >> s & 1) << 1 | (blk[2] >> s & 1) << 2 | (blk[3] >> s & 1) << 3)
+        as u8
+}
+
 impl Buf {
     /// `n` elements, all bytes zero or all logic `U`.
     pub fn zeroed(elem: Elem, n: usize) -> Buf {
@@ -224,12 +232,76 @@ impl Buf {
     pub fn code(&self, i: usize) -> u8 {
         match self {
             Buf::Bytes { es, data } => data[i * es],
+            Buf::Planes { b, .. } => plane_code(b, i),
+        }
+    }
+
+    /// `code` of a logic buffer, for callers that know the storage (one dispatch less).
+    #[inline(always)]
+    pub fn planes_code(&self, i: usize) -> Option<u8> {
+        match self {
+            Buf::Planes { b, .. } => Some(plane_code(b, i)),
+            Buf::Bytes { .. } => None,
+        }
+    }
+
+    /// The planes of element 0 of a one-element logic buffer, as bits 0 of four words.
+    #[inline]
+    pub fn first_planes(&self) -> Option<[u64; 4]> {
+        match self {
+            Buf::Planes { b, .. } => b.first().map(|x| x.map(|p| p & 1)),
+            Buf::Bytes { .. } => None,
+        }
+    }
+
+    /// Write `k` (at most the rest of the 64-element block) logic elements from `first`, given
+    /// as plane words with element `first` in bit 0.
+    #[inline]
+    pub fn put_planes(&mut self, first: usize, k: usize, planes: [u64; 4]) {
+        if let Buf::Planes { b, .. } = self {
+            let (blk, s) = (&mut b[first / 64], first % 64);
+            let m = nmask(k) << s;
+            for (p, x) in blk.iter_mut().zip(planes) {
+                *p = *p & !m | x << s;
+            }
+        }
+    }
+
+    /// Set the code of element `i` (a one-element `set_codes`, for logic storage).
+    #[inline]
+    pub fn put_code(&mut self, i: usize, c: u8) {
+        match self {
+            Buf::Bytes { es, data } => data[i * *es] = c,
             Buf::Planes { b, .. } => {
-                let (blk, s) = (&b[i / 64], i % 64);
-                ((blk[0] >> s & 1)
+                let (blk, s) = (&mut b[i >> 6], i & 63);
+                let keep = !(1u64 << s);
+                let c = u64::from(c);
+                blk[0] = blk[0] & keep | (c & 1) << s;
+                blk[1] = blk[1] & keep | (c >> 1 & 1) << s;
+                blk[2] = blk[2] & keep | (c >> 2 & 1) << s;
+                blk[3] = blk[3] & keep | (c >> 3 & 1) << s;
+            }
+        }
+    }
+
+    /// `put_code`, returning the code the element had.
+    #[inline]
+    pub fn swap_code(&mut self, i: usize, c: u8) -> u8 {
+        match self {
+            Buf::Bytes { es, data } => std::mem::replace(&mut data[i * *es], c),
+            Buf::Planes { b, .. } => {
+                let (blk, s) = (&mut b[i >> 6], i & 63);
+                let keep = !(1u64 << s);
+                let c = u64::from(c);
+                let old = (blk[0] >> s & 1)
                     | (blk[1] >> s & 1) << 1
                     | (blk[2] >> s & 1) << 2
-                    | (blk[3] >> s & 1) << 3) as u8
+                    | (blk[3] >> s & 1) << 3;
+                blk[0] = blk[0] & keep | (c & 1) << s;
+                blk[1] = blk[1] & keep | (c >> 1 & 1) << s;
+                blk[2] = blk[2] & keep | (c >> 2 & 1) << s;
+                blk[3] = blk[3] & keep | (c >> 3 & 1) << s;
+                old as u8
             }
         }
     }

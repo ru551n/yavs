@@ -1,0 +1,1 @@
+Simulation is faster again for designs with one process per element of a vector, long chains of zero-delay stages and many processes on one clock: the clock keeps its list of waiting processes, scalar and vector assignments to an idle driver skip the transaction list, and a vector with a driver per element is updated in whole blocks.

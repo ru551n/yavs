@@ -14,7 +14,9 @@ use crate::process::{
     Ctx, DriverInfo, Effect, OpMode, ProcId, ProcState, Process, Severity, Shared, SignalOp,
     check_ref, make_op,
 };
-use crate::signal::{DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter};
+use crate::signal::{
+    DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
+};
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
@@ -475,10 +477,23 @@ enum Entry {
     Implicit(u32),
 }
 
+/// Worklists of one update phase: signals by port level, implicit signals due, and the
+/// forces and deposits by signal.
+#[derive(Default)]
+struct UpdateWork {
+    up: BinaryHeap<(u32, Reverse<u32>)>,
+    down: BinaryHeap<Reverse<(u32, u32)>>,
+    due: BTreeSet<u32>,
+    ops: BTreeMap<u32, Vec<SignalOp>>,
+}
+
 /// The simulation. See DESIGN.md for the cycle and the parallel commit protocol.
 pub struct SimControl {
     cfg: Config,
     signals: Vec<Signal>,
+    /// The processes waiting on each signal (kept apart from `signals` so the wake scan can read
+    /// other signals while it edits a list).
+    waiters: Vec<Waiters>,
     drivers: Vec<DriverInfo>,
     ports: Vec<PortEdge>,
     /// Per signal: edges where it is the formal of an `out`/`inout`/`buffer` port.
@@ -502,6 +517,8 @@ pub struct SimControl {
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
     ready: Vec<u32>,
+    /// `Tn` as the last delta computed it (only a cycle sets it, only `run_until` takes it).
+    known_next: Option<Option<Time>>,
     postponed: Vec<u32>,
     last_ran: Vec<u32>,
     now: Time,
@@ -533,6 +550,8 @@ pub struct SimControl {
     empty_delta: bool,
     /// Last epoch given to resident waiters (`ProcMeta::perm`).
     perm_epoch: u64,
+    /// The worklists of `update`, empty between cycles.
+    work: Option<Box<UpdateWork>>,
     /// Scratch lists of the cycle, kept to save their allocations.
     woken_buf: Vec<(u64, u32)>,
     indep_buf: Vec<(u32, u32)>,
@@ -652,6 +671,9 @@ impl SimControl {
             names,
             rng: cfg.shuffle,
             cfg,
+            waiters: signals.iter().map(|s| Waiters::new(s.ty.len)).collect(),
+            known_next: None,
+            work: None,
             signals,
             drivers,
             ports,
@@ -1001,11 +1023,12 @@ impl SimControl {
     /// Run all cycles at times `<= limit`, then leave `now` at `limit`.
     pub fn run_until(&mut self, limit: Time) -> Result<RunStatus, SimError> {
         self.guard(|sim| {
+            let mut known = None;
             loop {
                 if let Some(st) = sim.poll_end()? {
                     return Ok(st);
                 }
-                match sim.next_time() {
+                match known.take().unwrap_or_else(|| sim.next_time()) {
                     None => sim.end = Some(EndReason::Idle),
                     Some(t) if t > limit => {
                         if limit > sim.now {
@@ -1014,7 +1037,10 @@ impl SimControl {
                         }
                         return Ok(RunStatus::Paused);
                     }
-                    Some(t) => sim.cycle(t)?,
+                    Some(t) => {
+                        sim.cycle(t)?;
+                        known = sim.known_next.take();
+                    }
                 }
             }
         })
@@ -1143,10 +1169,7 @@ impl SimControl {
             Entry::Driver(d) => {
                 let info = &self.drivers[d as usize];
                 let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
-                slot.st.waveforms[info.local as usize]
-                    .pending
-                    .first()
-                    .is_some_and(|x| x.time == t)
+                slot.st.waveforms[info.local as usize].first_time() == Some(t)
             }
             Entry::Implicit(i) => {
                 let im = &self.implicits[i as usize];
@@ -1201,13 +1224,13 @@ impl SimControl {
         for &s in &changed {
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64;
-            let mut runs = std::mem::take(&mut sig.changed);
             // Update order is element order, mostly: sort only when it is not.
-            if !runs.is_sorted_by_key(|r| r.offset) {
-                runs.sort_unstable_by_key(|r| r.offset);
+            if !sig.changed.is_sorted_by_key(|r| r.offset) {
+                sig.changed.sort_unstable_by_key(|r| r.offset);
             }
-            let mut waiters = std::mem::take(&mut sig.waiters);
+            let waiters = &mut self.waiters[s as usize];
             let (procs, signals) = (&self.procs, &self.signals);
+            let runs = &signals[s as usize].changed;
             let live = |w: &Waiter| alive(procs, w);
             // All waiters share one edge trigger: it holds for all or for none of them.
             let uniform = if self.cfg.edge_triggers {
@@ -1231,15 +1254,36 @@ impl SimControl {
                         }
                     }
             };
-            match uniform {
-                Some(false) => woken.clear(),
-                Some(true) => waiters.take_woken(&runs, live, |_| false, &mut woken),
-                None => waiters.take_woken(&runs, live, hold, &mut woken),
+            if uniform == Some(false) {
+                self.signals[s as usize].changed.clear();
+                continue;
             }
-            let sig = &mut self.signals[s as usize];
-            sig.waiters = waiters;
-            runs.clear();
-            sig.changed = runs;
+            // Every waiter resident for the whole signal: the wake list is known.
+            if let Some(tids) = waiters.cache_tids() {
+                let held: smallvec::SmallVec<[(u32, bool); 4]> = tids
+                    .iter()
+                    .map(|&t| {
+                        let h = t != 0
+                            && self.cfg.edge_triggers
+                            && !fires(signals, self.triggers[t as usize - 1], self.cycle);
+                        (t, h)
+                    })
+                    .collect();
+                let list = waiters.take_cache();
+                self.signals[s as usize].changed.clear();
+                for &(_, p, tid) in &list {
+                    if tid == 0 || !held.iter().any(|&(t, h)| t == tid && h) {
+                        self.wake(p, false);
+                    }
+                }
+                self.waiters[s as usize].restore_cache(list);
+                continue;
+            }
+            match uniform {
+                Some(_) => waiters.take_woken(runs, live, |_| false, &mut woken),
+                None => waiters.take_woken(runs, live, hold, &mut woken),
+            }
+            self.signals[s as usize].changed.clear();
             for &(_, p) in &woken {
                 self.wake(p, false);
             }
@@ -1261,7 +1305,10 @@ impl SimControl {
     /// f/g: at the last delta of this time, postponed processes. Also after initialization
     /// when no delta follows at time 0, so read-write and read-only observers see time 0 (#347).
     fn last_delta(&mut self) -> Result<(), SimError> {
-        if self.next_time() != Some(self.now) {
+        let next = self.next_time();
+        // Another delta follows: nothing below runs, so `run_until` can use this answer.
+        self.known_next = (next == Some(self.now)).then_some(next);
+        if next != Some(self.now) {
             self.phase(Phase::LastKnownDelta);
             if self.next_time() != Some(self.now) {
                 let postponed = std::mem::take(&mut self.postponed);
@@ -1281,18 +1328,19 @@ impl SimControl {
         let (now, cycle) = (self.now, self.cycle);
         self.empty_delta = false;
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
-        let mut up: BinaryHeap<(u32, Reverse<u32>)> = BinaryHeap::new();
-        let mut down: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-        let mut due: BTreeSet<u32> = BTreeSet::new();
-        let mut ops: BTreeMap<u32, Vec<SignalOp>> = BTreeMap::new();
-        for op in std::mem::take(&mut self.ops) {
-            let s = op.signal.0;
-            let sig = &mut self.signals[s as usize];
-            if sig.queued_up != cycle {
-                sig.queued_up = cycle;
-                up.push((sig.level, Reverse(s)));
+        // Kept between cycles (empty here), so an empty one costs no construction and no drop.
+        let mut work = self.work.take().unwrap_or_default();
+        let UpdateWork { up, down, due, ops } = &mut *work;
+        if !self.ops.is_empty() {
+            for op in std::mem::take(&mut self.ops) {
+                let s = op.signal.0;
+                let sig = &mut self.signals[s as usize];
+                if sig.queued_up != cycle {
+                    sig.queued_up = cycle;
+                    up.push((sig.level, Reverse(s)));
+                }
+                ops.entry(s).or_default().push(op);
             }
-            ops.entry(s).or_default().push(op);
         }
         // Matured drivers of independent signals without forces or deposits, as
         // (signal, driver) in queue order.
@@ -1322,7 +1370,7 @@ impl SimControl {
                 Entry::Driver(d) => {
                     let info = &self.drivers[d as usize];
                     let s = info.signal.0;
-                    if self.independent[s as usize] && !ops.contains_key(&s) {
+                    if self.independent[s as usize] && (ops.is_empty() || !ops.contains_key(&s)) {
                         indep.push((s, d));
                         continue;
                     }
@@ -1353,10 +1401,12 @@ impl SimControl {
         r?;
 
         // Driving values bottom-up: formals before the actuals they feed.
-        while let Some((_, Reverse(s))) = up.pop() {
+        while !up.is_empty()
+            && let Some((_, Reverse(s))) = up.pop()
+        {
             for i in 0..self.signals[s as usize].groups.len() {
                 let g = self.signals[s as usize].groups[i] as usize;
-                self.update_group(g, cycle, &mut up)?;
+                self.update_group(g, cycle, up)?;
             }
             let sig = &mut self.signals[s as usize];
             let mut dirty = std::mem::take(&mut sig.dirty);
@@ -1381,7 +1431,9 @@ impl SimControl {
             }
         }
         // Effective values top-down: actuals before their in-port formals.
-        while let Some(Reverse((_, s))) = down.pop() {
+        while !down.is_empty()
+            && let Some(Reverse((_, s))) = down.pop()
+        {
             let sig = &mut self.signals[s as usize];
             let mut eff = std::mem::take(&mut sig.eff_dirty);
             let mut changed = false;
@@ -1400,7 +1452,15 @@ impl SimControl {
                 }
             }
         }
-        self.update_implicit(&due)
+        let r = if self.implicits.is_empty() {
+            Ok(())
+        } else {
+            let r = self.update_implicit(due);
+            due.clear();
+            r
+        };
+        self.work = Some(work);
+        r
     }
 
     /// Update phase of signals without ports or groups: each one only reads its own drivers'
@@ -1810,15 +1870,19 @@ impl SimControl {
             let generation = self.procs[p as usize].generation;
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
-            let effects = std::mem::take(&mut st.effects);
+            let effects = (!st.effects.is_empty()).then(|| std::mem::take(&mut st.effects));
             let bad = postponed
                 && (st.deadline == Some(self.now)
                     || !st.phantoms.is_empty()
                     || st.scheduled.iter().any(|&(t, _)| t == self.now));
-            for (t, d) in st.scheduled.drain(..) {
-                self.queue.push(self.now, t, Entry::Driver(d.0));
+            if !st.scheduled.is_empty() {
+                for (t, d) in st.scheduled.drain(..) {
+                    self.queue.push(self.now, t, Entry::Driver(d.0));
+                }
             }
-            self.empty_delta |= st.take_phantoms();
+            if !st.phantoms.is_empty() {
+                self.empty_delta |= st.take_phantoms();
+            }
             let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
                 self.queue.push(self.now, t, Entry::Timeout(p, generation));
@@ -1837,6 +1901,12 @@ impl SimControl {
                     st.sens.clear();
                 }
             } else {
+                if self.procs[p as usize].perm != 0 {
+                    // Its resident waiters are stale now: their signals' wake lists too.
+                    for (s, _) in &st.sens_prev {
+                        self.waiters[s.0 as usize].drop_cache();
+                    }
+                }
                 self.procs[p as usize].perm = 0;
                 st.sens_prev.clear();
                 if !timed {
@@ -1845,7 +1915,7 @@ impl SimControl {
             }
             for (s, range) in st.sens.drain(..) {
                 let procs = &self.procs;
-                self.signals[s.0 as usize].waiters.add(
+                self.waiters[s.0 as usize].add(
                     p,
                     range,
                     Reg {
@@ -1863,7 +1933,7 @@ impl SimControl {
                 e.process = Some((ProcId(p), self.names[p as usize].clone()));
                 first_err = Some(e);
             }
-            if !effects.is_empty() {
+            if let Some(effects) = effects {
                 self.commit(ProcId(p), effects);
             }
             if let Err(e) = result {
@@ -1873,7 +1943,12 @@ impl SimControl {
                 break;
             }
         }
-        self.last_ran = pids;
+        // The previous batch's buffer becomes the next cycle's ready list: no allocation per delta.
+        let mut old = std::mem::replace(&mut self.last_ran, pids);
+        if self.ready.capacity() == 0 {
+            old.clear();
+            self.ready = old;
+        }
         first_err.map_or(Ok(()), Err)
     }
 
@@ -2007,6 +2082,13 @@ impl SimControl {
 
 /// The driving and effective values of what the matured transactions of a signal made dirty.
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
+    if let [r] = sig.dirty.as_slice()
+        && r.len == 1
+        && let Some(changed) = sig.finish_one(r.offset, now, cycle)
+    {
+        sig.dirty.clear();
+        return Ok(changed);
+    }
     let mut dirty = std::mem::take(&mut sig.dirty);
     for &r in &dirty {
         sig.compute_driving(r)?;

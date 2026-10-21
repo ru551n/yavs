@@ -2744,6 +2744,28 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
 - **The wake scan asks interned trigger ids stored in the waiters**, not the process table, and a signal
   whose waiters all share one edge trigger that holds skips the per-waiter question.
 
+## Kernel round 6: the cost of a delta cycle (yavs-kernel, #440, 2026-10-21)
+
+- **A signal whose waiters are all resident and wait for the whole signal keeps its wake list**
+  (`Waiters::cache`): an event wakes it in registration order without a scan. A waiter added or a
+  process that leaves its resident wait drops it. Same wake order as the scan.
+- **A zero-delay assignment of one `std_ulogic` element to an idle driver is a `Waveform::quick`**,
+  not a transaction list entry; code that edits `Waveform::pending` goes through `spill`/`idle`.
+  A zero-delay vector assignment to an idle driver appends its one transaction directly.
+- **One dirty element with one source is finished by comparing codes; a run of one-element,
+  one-driver segments is gathered into plane words; runs of changed elements are stamped as
+  runs.** Results are the same as the generic paths.
+- **Dirty ranges of one signal also merge when the next range ends where the last starts**
+  (processes in descending element order): one range, one pass, and the value-change callbacks of a
+  cycle then see the runs in ascending element order where they came in driver order before. The
+  set of changes is the same; the order of the runs within one signal and one cycle is not
+  specified.
+- **Signals of 9 to 1024 elements have a waiter list per element** (8 or fewer: one list; to 4096:
+  chunks of 8; beyond: 64), so an event on one element of a vector scans the waiters of that
+  element only. Ceiling: 64 KiB of list headers per such signal that has waiters.
+- **`run_until` takes the next-event time from the end of the previous delta** (`known_next`), and the
+  batch and update worklists are kept between cycles instead of being built and dropped per delta.
+
 ## Heap collection threshold (yavs-interp, CLI, user request 2026-10-20)
 
 - `yavs run --gc-threshold SIZE` (plain bytes or a `k`, `m`, `g` suffix of powers of 1024, at least 1; zero and

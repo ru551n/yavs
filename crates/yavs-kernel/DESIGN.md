@@ -41,6 +41,12 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   with whole composite values (the parts concatenated in order) and writes every part's
   driving value; at initialisation the lowest leaf id does. A group without sources keeps
   its driving value without calling the resolver (LRM 14.7.3.2 a).
+- **Quick transaction**: the zero-delay assignment of one `std_ulogic` element to a driver with
+  nothing pending (`Ctx::assign_code`) is `Waveform::quick` (time, element, code), not a list
+  entry with a value buffer. It matures in the next update (`Signal::apply_driver` writes the
+  code into the driver); everything that schedules, preempts or inspects `Waveform::pending` goes
+  through `Waveform::spill` or `idle` first. A zero-delay assignment of a vector to an idle driver
+  appends its one transaction directly (`Ctx::assign`).
 - **Transactions** carry `(time, range, Option<value>)`, `None` being a null transaction. LRM
   10.5.2.2 preemption (transport, inertial with rejection limit, the "same value immediately
   before" chain) is decided per element using chunked diffs; a partly preempted old transaction
@@ -76,7 +82,13 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   clocked process is not removed and added again each cycle; a different wait, or one with a
   timeout, ends the epoch and the stale waiters go at the next scan of their list. Resident
   waiters keep their first registration number, so processes of one signal wake in the order
-  they first waited, not in the order they last ran.
+  they first waited, not in the order they last ran. A signal of 9 to 1024 elements has a list per
+  element (one process per element of a vector scans one waiter per event). When every waiter of a
+  one-list signal is resident and waits for the whole signal (a clock and its processes), the
+  signal keeps the wake list itself (`Waiters::cache`, with the few distinct trigger ids in it):
+  an event wakes the list in order without scanning it. A waiter added, or a process that leaves
+  its resident wait (`run_batch` drops the lists of its old signals), drops the list, and the
+  next scan builds it again.
 
 ## The cycle
 

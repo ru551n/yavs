@@ -74,7 +74,7 @@ unsafe fn take_buffer(buf: LLVMMemoryBufferRef) -> Vec<u8> {
     // SAFETY: the caller passes a live buffer, which is ours to dispose.
     unsafe {
         let v = std::slice::from_raw_parts(
-            LLVMGetBufferStart(buf) as *const u8,
+            LLVMGetBufferStart(buf).cast::<u8>(),
             LLVMGetBufferSize(buf),
         )
         .to_vec();
@@ -493,7 +493,7 @@ impl Jit {
         // SAFETY: the buffer is a copy that LLJIT takes over, also on failure.
         unsafe {
             let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
-                obj.as_ptr() as *const c_char,
+                obj.as_ptr().cast::<c_char>(),
                 obj.len(),
                 c"yavs-object".as_ptr(),
             );

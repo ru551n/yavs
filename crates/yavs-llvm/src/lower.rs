@@ -6146,7 +6146,20 @@ impl Gen {
             let temp = self.tag(self.mem_ld(c, MEM_TEMP, self.ptr), AA_TEMP);
             let at = self.gep(temp, len);
             let fill = LLVMBuildSub(self.b, end, len, c"".as_ptr());
-            LLVMBuildMemSet(self.b, at, LLVMConstInt(self.i8, 0, 0), fill, 1);
+            if LLVMIsAConstantInt(n).is_null() {
+                LLVMBuildMemSet(self.b, at, LLVMConstInt(self.i8, 0, 0), fill, 1);
+            } else {
+                // A known size at an aligned end is zeroed by stores, not a `memset` call.
+                let (even, odd, merge) = (self.block(c), self.block(c), self.block(c));
+                LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, off, len), even, odd);
+                LLVMPositionBuilderAtEnd(self.b, even);
+                LLVMBuildMemSet(self.b, at, LLVMConstInt(self.i8, 0, 0), n, 1);
+                LLVMBuildBr(self.b, merge);
+                LLVMPositionBuilderAtEnd(self.b, odd);
+                LLVMBuildMemSet(self.b, at, LLVMConstInt(self.i8, 0, 0), fill, 1);
+                LLVMBuildBr(self.b, merge);
+                LLVMPositionBuilderAtEnd(self.b, merge);
+            }
             self.mem_st(c, MEM_TEMP_LEN, end);
             let tag = self.c64((u64::from(space::TEMP) << 61) as i64);
             (

@@ -496,14 +496,35 @@ milestone users care about works.
   a release recomputes the driving value from the sources, so a force and release after a
   deposit return to the drivers' value, as both references with VHPI do (#310; a signal
   without sources keeps the deposit). Value-change callbacks repeat until
-  removed and run once per cycle; one registered while a cycle's value changes are dispatched
-  (a framework re-arming its callback from inside it) first sees the next cycle of the signal
-  it watches, as all three references with VHPI do (agent, 2026-10-19, #346,
-  `tools/vhpi-conformance` plugin `vecedge`), but still sees the change of a signal whose
-  change is not reported yet in that cycle. The references miss that one, so a framework
-  waiting repeatedly for the first of two triggers that fire together loses the second
-  trigger's edges; yavs delivers them (agent, 2026-10-21, #496: a deliberate difference from
-  all three, to be confirmed by the user).
+  removed and run once per cycle. One registered (or enabled) while a cycle's value changes
+  are dispatched, e.g. a framework re-arming its callback from inside it, is *fresh*. The
+  references with VHPI (all three, #346, `tools/vhpi-conformance` plugin `vecedge`) never show
+  a fresh callback any change of the cycle, so a framework waiting repeatedly for the first of
+  several triggers that fire together loses the later triggers' edges (cocotb gh-5112). yavs
+  does, and the result does not depend on the order the kernel reports the signals in (user,
+  2026-10-21, #496, confirmed: a deliberate difference from all three, catalogue rows
+  `vecedge` and `lateedge`). The rule: (1) the kernel reports a cycle's changed signals in
+  signal order and a vector's changed runs one by one; a callback runs at most once per cycle.
+  (2) A callback not fresh sees the change of the cycle when its signal is reported, as
+  before. (3) A fresh callback sees a change of the cycle once, however the report order
+  falls: a signal reported after its registration is delivered at the report, one reported
+  before it right after the callback batch that registered it (`Callbacks::late`, repeated
+  until no new one is due). (4) Not a fresh trigger but a re-arm, and not delivered: a fresh
+  callback watching exactly the same elements as a callback already delivered a change in the
+  cycle (`vc_served`; the identity of a trigger is its watch set). So a callback re-armed on
+  the signal or vector being reported sees neither its own triggering change (#346) nor the
+  later runs of the vector, and a repeated first-of-two re-arm cannot loop: each watch set is
+  served once per cycle. A fresh callback on other elements (another signal, a bit of the
+  vector) is a new trigger and sees the cycle's changes of those elements. (5) Callbacks of
+  one batch watching the same elements all get the change (the set is updated after the
+  batch). (6) Only registrations made while value changes are dispatched are fresh; one made
+  in a read-write, read-only, timed or any other callback sees nothing of the cycle's changes
+  and everything from the next cycle on, as in the references. (7) Determinism: dispatch runs
+  in the kernel's serial value-change bus, in signal order, so the order of delivery is the
+  same at any `--threads`. Known limit: two independent fresh callbacks watching the same
+  elements registered in different batches after those elements were reported are told apart
+  from a re-arm only by the batch, so in some report orders the later one is not delivered (a
+  trigger has no other identity at the C interface).
   A lookup that finds nothing (`vhpi_handle_by_name`) is only reported through
   `vhpi_check_error`, since Python testbench frameworks probes names routinely. Codes `E09xx`/`W09xx` are reserved
   for VHPI.

@@ -520,19 +520,52 @@ fn vhpi_value_change_rearmed_fires_once_per_cycle() {
     );
 }
 
+/// The lines of `out` that start with `prefix` and name one of `sigs`.
+fn vhpi_lines<'a>(out: &'a str, prefix: &str, sigs: &[&str]) -> Vec<&'a str> {
+    out.lines()
+        .filter(|l| {
+            l.strip_prefix(prefix)
+                .and_then(|r| r.split_whitespace().next())
+                .is_some_and(|s| sigs.contains(&s))
+        })
+        .collect()
+}
+
+/// The kernel reports the changed signals of a cycle in declaration order, whatever the order
+/// the callbacks were registered in (the report order the next tests depend on, #496).
+#[test]
+fn vhpi_reports_changed_signals_in_declaration_order() {
+    let (code, err, out) = put("order", &[]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, again) = put("order", &["--threads=4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out, "--threads=4");
+    let at10: Vec<_> = out
+        .lines()
+        .filter(|l| l.starts_with("vhpi: f") && l.contains("t=10 "))
+        .collect();
+    assert_eq!(
+        at10,
+        [
+            "vhpi: fa changed t=10 d=0",
+            "vhpi: fb changed t=10 d=0",
+            "vhpi: fc changed t=10 d=0",
+            "vhpi: fd changed t=10 d=0",
+        ],
+        "{out}"
+    );
+}
+
 /// The first of two triggers that fire in the same cycle, awaited again from inside the
 /// callback (removing both and registering both anew), sees the other one's change too, but a
-/// re-armed trigger on a signal already reported in the cycle waits for the next (#496).
+/// re-armed trigger on a signal already reported in the cycle waits for the next (#496). The
+/// pair fd, fc registers the trigger that is reported second first: same result either way.
 #[test]
 fn vhpi_repeated_first_of_coincident_triggers_misses_no_edge() {
     let (code, err, out) = put("first", &[]);
     assert_eq!(code, 0, "{err}");
-    let fires: Vec<_> = out
-        .lines()
-        .filter(|l| l.starts_with("vhpi: first "))
-        .collect();
     assert_eq!(
-        fires,
+        vhpi_lines(&out, "vhpi: first ", &["d", "e"]),
         [
             "vhpi: first d t=10 d=0",
             "vhpi: first e t=10 d=0",
@@ -543,6 +576,64 @@ fn vhpi_repeated_first_of_coincident_triggers_misses_no_edge() {
         ],
         "{out}"
     );
+    let each_time = |a: &str, b: &str| -> Vec<String> {
+        [10, 30, 50]
+            .iter()
+            .flat_map(|t| [a, b].map(|s| format!("vhpi: first {s} t={t} d=0")))
+            .collect()
+    };
+    assert_eq!(
+        vhpi_lines(&out, "vhpi: first ", &["fa", "fb"]),
+        each_time("fa", "fb"),
+        "{out}"
+    );
+    // fc is reported before fd although fd was registered first.
+    assert_eq!(
+        vhpi_lines(&out, "vhpi: first ", &["fc", "fd"]),
+        each_time("fc", "fd"),
+        "{out}"
+    );
+    let (code, err, again) = put("first", &["--threads=4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out, "--threads=4");
+}
+
+/// A callback registered from a value-change callback on a signal that changes in the same
+/// cycle sees that change once, also when the kernel reported the signal before the one whose
+/// callback registers it, and re-arming it from inside itself does not repeat the change
+/// (#496). The same at 4 threads.
+#[test]
+fn vhpi_late_registration_sees_a_change_reported_before_it() {
+    let (code, err, out) = put("seq", &[]);
+    assert_eq!(code, 0, "{err}");
+    let want = |a: &str, b: &str| -> Vec<String> {
+        [10, 30, 50]
+            .iter()
+            .flat_map(|t| [a, b].map(|s| format!("vhpi: seq {s} t={t} d=0")))
+            .collect()
+    };
+    // fa then fb: the second signal is reported after the first; fd then fc: before it.
+    assert_eq!(
+        vhpi_lines(&out, "vhpi: seq ", &["fa", "fb"]),
+        want("fa", "fb"),
+        "{out}"
+    );
+    // At 10 ns fc was reported before fd registered its callback; later it is there already.
+    assert_eq!(
+        vhpi_lines(&out, "vhpi: seq ", &["fc", "fd"]),
+        [
+            "vhpi: seq fd t=10 d=0",
+            "vhpi: seq fc t=10 d=0",
+            "vhpi: seq fc t=30 d=0",
+            "vhpi: seq fd t=30 d=0",
+            "vhpi: seq fc t=50 d=0",
+            "vhpi: seq fd t=50 d=0",
+        ],
+        "{out}"
+    );
+    let (code, err, again) = put("seq", &["--threads=4"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out, "--threads=4");
 }
 
 /// A write from the read-write phase registered at load time lands at time 0 even though the

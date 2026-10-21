@@ -44,6 +44,7 @@ architecture a of top is
   signal p : pair := (0, '0');
   signal str : string(1 to 8) := "abcdefgh";
   signal e : std_ulogic_vector(7 downto 0) := (others => '0');
+  signal fa, fb, fc, fd : std_ulogic := '0';
 begin
   u : entity work.counter port map (clk, rst, q);
   d <= 1 after 10 ns, 2 after 30 ns, 3 after 50 ns, 4 after 70 ns;
@@ -59,4 +60,8 @@ begin
     wait;
   end process;
   e <= "01011010" after 10 ns, "00000000" after 20 ns;
+  fa <= '1' after 10 ns, '0' after 30 ns, '1' after 50 ns;
+  fb <= '1' after 10 ns, '0' after 30 ns, '1' after 50 ns;
+  fc <= '1' after 10 ns, '0' after 30 ns, '1' after 50 ns;
+  fd <= '1' after 10 ns, '0' after 30 ns, '1' after 50 ns;
 end;

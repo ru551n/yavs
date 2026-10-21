@@ -278,32 +278,97 @@ PLUGIN_EXPORT void edges(void) {
 }
 
 /* ---- first: the first of two triggers that fire in the same cycle, awaited again from
- * inside the callback (#496) ------------------------------------------------------------ */
+ * inside the callback (#496). Three pairs: d and e; fa and fb; fd and fc, registered in the
+ * order fd, fc although fc is declared first, so the kernel reports the second trigger of
+ * the pair first. -------------------------------------------------------------------- */
+
+typedef struct first_pair first_pair;
+typedef struct {
+  first_pair *p;
+  int i;
+} first_trig;
+struct first_pair {
+  const char *sig[2];
+  vhpiHandleT cb[2];
+  first_trig trig[2];
+  vhpiValueT v;
+  char buf[16];
+};
+
+static first_pair first_pairs[3] = {{.sig = {"d", "e"}}, {.sig = {"fa", "fb"}}, {.sig = {"fd", "fc"}}};
 
 static void first_fired(const vhpiCbDataT *cb);
-static vhpiHandleT first_h[2];
-static vhpiValueT first_v;
 
-static void first_arm(void) {
-  first_h[0] = reg(vhpiCbValueChange, 0, first_fired, h("d"), &first_v, "d");
-  first_h[1] = reg(vhpiCbValueChange, 0, first_fired, h("e"), &first_v, "e");
+static void first_arm(first_pair *p) {
+  for (int i = 0; i < 2; i++) {
+    p->trig[i].p = p;
+    p->trig[i].i = i;
+    p->cb[i] = reg(vhpiCbValueChange, 0, first_fired, h(p->sig[i]), &p->v, (const char *)&p->trig[i]);
+  }
 }
 
 static void first_fired(const vhpiCbDataT *cb) {
   long c;
   unsigned t = now(&c);
-  vhpi_printf("vhpi: first %s t=%u d=%ld\n", (const char *)cb->user_data, t, c);
-  vhpi_remove_cb(first_h[0]);
-  vhpi_remove_cb(first_h[1]);
-  first_arm();
+  first_trig *tr = (first_trig *)cb->user_data;
+  first_pair *p = tr->p;
+  vhpi_printf("vhpi: first %s t=%u d=%ld\n", p->sig[tr->i], t, c);
+  vhpi_remove_cb(p->cb[0]);
+  vhpi_remove_cb(p->cb[1]);
+  first_arm(p);
 }
 
 PLUGIN_EXPORT void first(void) {
-  static char fbuf[16];
-  first_v.format = vhpiBinStrVal;
-  first_v.bufSize = sizeof fbuf;
-  first_v.value.str = (vhpiCharT *)fbuf;
-  first_arm();
+  for (int i = 0; i < 3; i++) {
+    first_pairs[i].v.format = vhpiBinStrVal;
+    first_pairs[i].v.bufSize = sizeof first_pairs[i].buf;
+    first_pairs[i].v.value.str = (vhpiCharT *)first_pairs[i].buf;
+    first_arm(&first_pairs[i]);
+  }
+}
+
+/* ---- order: the kernel reports changed signals in declaration order, whatever the order of
+ * the registrations (here reversed) --------------------------------------------------- */
+
+PLUGIN_EXPORT void order(void) {
+  static const char *const names[] = {"fd", "fc", "fb", "fa"};
+  for (int i = 0; i < 4; i++)
+    reg(vhpiCbValueChange, 0, changed, h(names[i]), NULL, names[i]);
+}
+
+/* ---- seq: a callback on a signal registers a value-change callback on another signal that
+ * changes in the same cycle, and that one re-arms itself (#496). Pairs fa then fb and fd then
+ * fc: the second signal is reported after the first in the first pair and before it in the
+ * second. ----------------------------------------------------------------------------- */
+
+typedef struct {
+  const char *sig[2];
+  vhpiHandleT second;
+} seq_pair;
+
+static seq_pair seq_pairs[2] = {{{"fa", "fb"}, NULL}, {{"fd", "fc"}, NULL}};
+
+static void seq_second(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  seq_pair *p = (seq_pair *)cb->user_data;
+  vhpi_printf("vhpi: seq %s t=%u d=%ld\n", p->sig[1], t, c);
+  vhpi_remove_cb(p->second);
+  p->second = reg(vhpiCbValueChange, 0, seq_second, h(p->sig[1]), NULL, (const char *)p);
+}
+
+static void seq_first(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  seq_pair *p = (seq_pair *)cb->user_data;
+  vhpi_printf("vhpi: seq %s t=%u d=%ld\n", p->sig[0], t, c);
+  if (!p->second)
+    p->second = reg(vhpiCbValueChange, 0, seq_second, h(p->sig[1]), NULL, (const char *)p);
+}
+
+PLUGIN_EXPORT void seq(void) {
+  for (int i = 0; i < 2; i++)
+    reg(vhpiCbValueChange, 0, seq_first, h(seq_pairs[i].sig[0]), NULL, (const char *)&seq_pairs[i]);
 }
 
 /* ---- transport: a write from the read-write phase at time 0 of a design with no delta at

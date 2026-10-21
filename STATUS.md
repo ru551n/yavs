@@ -3676,7 +3676,7 @@ logic vectors (#319) and `vhpiStrVal` text shorter or longer than a string (padd
 mode out/inout/buffer, `in` otherwise), `vhpiRelease` releases (back to the drivers' value, also after a deposit, #310); refused in the read-only phases;
 constants, generics, records as a whole, bad values and `vhpiSizeConstraint` are `W0903`.
 `vhpiCbValueChange` on signals, ports and sub-elements, keyed by kernel signal and dispatched
-from `Observer::value_change`, once per cycle (one registered during a cycle's dispatch from the next cycle of its signal, #346, but it still sees a signal not reported yet in that cycle, #496), with the value filled in the requested format;
+from `Observer::value_change`, once per cycle (one registered during a cycle's dispatch is not shown its own re-armed trigger's change again, #346, but sees the other changes of the cycle once, whichever the kernel reported first, #496), with the value filled in the requested format;
 with none enabled the observer does not take the state lock. `crates/yavs/tests/vhpi_run.rs`
 `vhpi_drives_a_clocked_design` (a counter clocked and reset only from VHPI, force, release and
 deposit on a driven signal, value changes on a signal, a port, a bit and a record; identical at

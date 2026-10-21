@@ -3123,3 +3123,33 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   would cost more than the push on testbench code, where most functions step something (natives, `new`,
   string temporaries); and why not keep native frames materialised in place: frame addresses would then
   have two homes. Decided by the compiled-calls agent (ccall), 2026-10-21.
+
+## Kernel round 8: vector assignments without lists or buffers (yavs-kernel, yavs-interp, #440, 2026-10-21)
+
+- **A zero-delay assignment of at most 64 logic elements to an idle driver is a `Waveform::vquick`**
+  (time, first element, length, the four plane words), the vector counterpart of `quick`: no `Txn`, no
+  value buffer, no spare-buffer bookkeeping. Everything that schedules, preempts or inspects
+  `Waveform::pending` goes through `spill`/`idle` first, which turn it into the transaction it stands for.
+  The unchanged-assignment test (`Config::skip_unchanged`) compares plane words instead of building a
+  value.
+- **A vector quick transaction on a driver that is the only source of its elements, on a signal with no
+  layer, group, guard or resolution function, writes the driving value when it is applied**
+  (`Signal::apply_driver`) and lists the run in `Signal::fast_dirty` (runs join as `dirty` ones do);
+  `finish_signal` then marks the activity of the joined runs and updates their effective values, without
+  `compute_driving`. Order and results are unchanged. What differs is how the runs of changed elements
+  are cut when a cycle mixes such vectors with others on the same signal (the joined `fast_dirty` ranges
+  and the `dirty` ranges are updated one list after the other): the value-change callbacks and
+  `Stats::events` can see different run boundaries in that mixed case, at any thread count.
+- **`Ctx::assign_blocks(driver, target, delay, blocks, mode)`**: `assign` of a logic value given as the
+  plane blocks in the layout `Ctx::read_into` writes (four little-endian `u64` planes per 64 elements).
+  Up to 64 elements it goes to the vquick path with no value built; longer values and every error go
+  through `assign`. The interpreter's one-waveform-element `Machine::drive` of a logic signal calls it
+  with the bytes of its frame, which removes a heap vector and a `LogicVec` per vector assignment.
+- **The per-element time stamps of a signal (last event, last activity) hold the time plus one**, 0 meaning
+  never, so a new array is all zeros and costs no fill: a 500 000 element memory no longer writes 8 MB of
+  "never" markers when it is elaborated.
+- **Tried and dropped, no gain in cycles** (instruction counts moved a few tenths of a percent, run times
+  did not): hot-first field order (`repr(C)`) of `Waveform`, `ProcState` and `Slot`; reading the next
+  slots and process records of the commit loop ahead; committing each process right after it ran
+  (needs the shared view rebuilt per process); setting `timed_out` and the known edge when the process
+  runs instead of when it is woken.

@@ -3874,3 +3874,17 @@ of 12 versus 9), so `--tier=llvm` asks for 6.
 
 Not done: relational facts (a loop variable bounded by another variable stays unbounded for the analysis, which keeps
 the `acc * 3 + i` check of compute_h2h), promotion of handle and address slots of processes.
+
+## Multi-threaded scaling, measurement (#481 item 3, 2026-10-21)
+
+Measurement only, nothing changed in the product (details and tables in the comment on #481). `--threads N` against 1,
+interpreter and `--tier=auto`, each run pinned to N performance cores, median of 3. Flat RTL with big batches gains a
+little (rtl_ff 1.33x, rtl_fan 1.20x, the soft-core testbench 1.75x at 4 threads, 2.3x at 6), designs with batches of
+32 to 64 processes lose (rtl_bus, lfsr64, lfsr64_xor 0.5x to 0.65x, 5x the CPU), and testbench-style code (vai_*,
+OSVVM, UVVM) does not move: no batch reaches 32 processes and 63 to 100 percent of the process time is in serial
+processes. Batches under 32 take the single-thread path unchanged (rtl_chain: +0.15% instructions at 4 threads);
+batches of 32 or more lose the round 9 early commit, lock each slot twice and pay a rayon install per delta (66 to 108
+us per batch). Ideal-schedule ceilings at 4 threads: 2.1x to 2.7x for the large-batch designs, 1.0x for the testbench
+rows. Verdict: not worth building on as a general speed-up; the cheap first step is a work-based inline/pooled
+decision, then a cheaper pooled batch. The host's core 0 runs single-thread code about 50 percent slower than cores
+1 to 7: do not pin a timed run to it.

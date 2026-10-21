@@ -625,6 +625,15 @@ pub(crate) enum Op {
         b: u32,
         n: u32,
     },
+    /// `AllocK` of 32 bytes and the `LCopy` into it of at most 64 elements from one block (else
+    /// the `AllocK` alone).
+    AllocLCopy {
+        dst: u32,
+        doff: u32,
+        src: u32,
+        soff: u32,
+        n: u32,
+    },
     /// `AllocK` of 32 bytes and the `SigReadVec` into it, in one step when the signal is a single
     /// range of at most 64 logic elements (else the `AllocK` alone).
     AllocReadVec {
@@ -1685,6 +1694,23 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             {
                 Some(Op::CatLCopy { tmp, size, dst, n })
             }
+            (
+                Op::Alloc { dst, size },
+                Some(&Op::LCopy {
+                    dst: d2,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                }),
+                _,
+            ) if int(size) == Some(32) && d2 == dst && src != dst => Some(Op::AllocLCopy {
+                dst,
+                doff,
+                src,
+                soff,
+                n,
+            }),
             (Op::Alloc { dst, size }, Some(&Op::SigReadVec { dst: d2, sig }), _)
                 if int(size) == Some(32) && d2 == dst =>
             {

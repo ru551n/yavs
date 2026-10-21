@@ -2463,6 +2463,13 @@ impl Machine {
     /// `Inst::LGet`: the std_ulogic code of element `i` of the logic vector at `base`.
     #[inline(always)]
     fn lget(&self, base: u64, i: u64) -> R<u64> {
+        let (sp, idx, off) = split(base);
+        if let Some(b) = self.mem_fast(sp, idx).and_then(|m| {
+            let o = (off + i / 64 * 32) as usize;
+            m.get(o..o + 32)
+        }) {
+            return Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p));
+        }
         let b = self.rd(add_addr(base, i / 64 * 32)?, 32)?;
         Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p))
     }
@@ -2572,6 +2579,24 @@ impl Machine {
             return Ok(false);
         };
         if mask == 0 {
+            return Ok(true);
+        }
+        // The block changed where it is, when it is in memory the machine holds in a field.
+        let (sp, idx, off) = split(d);
+        let mem = match sp {
+            FRAME => self.fslots_mut(idx as usize),
+            TEMP => Some(&mut self.temp[..]),
+            HEAP => self.heap.data_mut(idx),
+            _ => None,
+        };
+        if let Some(b) = mem.and_then(|m| m.get_mut(off as usize..off as usize + 32)) {
+            let mut cur = [0u64; 4];
+            if !(sp == TEMP && k == total) {
+                fill_blocks(b, std::slice::from_mut(&mut cur));
+            }
+            for ((o, c), w) in b.as_chunks_mut::<8>().0.iter_mut().zip(cur).zip(words) {
+                *o = (c & !mask | w).to_le_bytes();
+            }
             return Ok(true);
         }
         // A block just allocated (zeroed) and covered by the pieces needs no read.
@@ -5026,6 +5051,45 @@ impl Machine {
                         == t!(self.rd(self.regs[b as usize], n));
                     self.regs[dst as usize] = v.into();
                     k += 1;
+                }
+                Op::AllocLCopy {
+                    dst,
+                    doff,
+                    src,
+                    soff,
+                    n,
+                } => {
+                    // `AllocK` of one block and the copy of up to 64 elements from one block of
+                    // the source into it, built in registers.
+                    let (cnt, so, d0) = (
+                        self.regs[n as usize],
+                        self.regs[soff as usize],
+                        self.regs[doff as usize],
+                    );
+                    let mut done = false;
+                    if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 && d0 < 64 && d0 + cnt <= 64 {
+                        let sa = t!(add_addr(self.regs[src as usize], so / 64 * 32));
+                        if let Ok(b) = self.rd_hot(sa, 32) {
+                            let mut sw = [[0u64; 4]; 1];
+                            fill_blocks(b, &mut sw);
+                            let mut dw = [[0u64; 4]; 1];
+                            copy_bits(&sw, &mut dw, so % 64, d0, cnt);
+                            let mut out = [0u8; 32];
+                            for (c, w) in
+                                out.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened())
+                            {
+                                *c = w.to_le_bytes();
+                            }
+                            self.regs[dst as usize] = t!(self.temp_push32(&out));
+                            done = true;
+                        }
+                    }
+                    if done {
+                        k += 2;
+                    } else {
+                        self.regs[dst as usize] = t!(self.temp_alloc(32));
+                        k += 1;
+                    }
                 }
                 Op::AllocReadVec { dst, sig } => {
                     // `AllocK` of one block and the read of a logic signal into it.

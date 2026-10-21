@@ -57,9 +57,13 @@ MSG = [  # report/assert lines of the known output formats
     re.compile(r"^# EXECUTION:: (NOTE|WARNING|ERROR|FAILURE)\s*: (.*)$"),
 ]
 CRASH = re.compile(r"internal error|Segmentation|Caught signal|stack dump|PANIC|Assertion failed|GNAT BUG|thread .* panicked", re.I)
+# Extra internal-error markers per command template: this reference reports its internal errors with
+# its own banner and exception name, and exits nonzero, so they would otherwise be read as ordinary failures.
+EXTRA_CRASH = {"ghdl": re.compile(r"TYPES\.INTERNAL_ERROR|Bug occurred")}
 
 
 def load_sims(names):
+    """Return the command pairs by label and the extra crash pattern (or None) by label."""
     cfg = {}
     if os.path.exists(LOCAL):
         for line in open(LOCAL):
@@ -67,7 +71,7 @@ def load_sims(names):
             if "=" in line:
                 k, v = line.split("=", 1)
                 cfg[k.strip()] = v.strip()
-    sims = {"yavs": TEMPLATES["yavs"]}
+    sims, extra = {"yavs": TEMPLATES["yavs"]}, {}
     for n in names:
         if n == "yavs":
             continue
@@ -76,7 +80,8 @@ def load_sims(names):
             print(f"{n}: not configured (see --print-config), skipped", file=sys.stderr)
             continue
         sims[n] = TEMPLATES[v] if v in TEMPLATES else tuple(v.split("|||", 1))
-    return sims
+        extra[n] = EXTRA_CRASH.get(v)
+    return sims, extra
 
 
 def parse_conf(path):
@@ -100,7 +105,7 @@ def messages(text):
     return out
 
 
-def run_one(sim, tpl, case, conf, std, sandbox):
+def run_one(sim, tpl, case, conf, std, sandbox, extra_crash=None):
     work = os.path.join(CACHE, str(os.getpid()), sim, os.path.basename(case), std)
     os.makedirs(os.path.dirname(work), exist_ok=True)
     f = os.path.join(case, "case.vhd")
@@ -115,8 +120,11 @@ def run_one(sim, tpl, case, conf, std, sandbox):
         p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", cwd=os.path.dirname(work))
         return p.returncode, p.stdout + "\n" + p.stderr
 
+    def crashed(out):
+        return CRASH.search(out) or (extra_crash and extra_crash.search(out))
+
     rc, out = sh(tpl[0])
-    if CRASH.search(out) and rc:
+    if crashed(out) and rc:
         return "CRASH", []
     if rc:
         return ("TIMEOUT" if rc == 124 else "REJECT"), []
@@ -127,7 +135,7 @@ def run_one(sim, tpl, case, conf, std, sandbox):
         return "REJECT", []
     if rc == 124:
         return "TIMEOUT", []
-    if CRASH.search(out) or rc in (139, 134):
+    if crashed(out) or rc in (139, 134):
         return "CRASH", []
     if rc:
         return "FATAL", messages(out)
@@ -175,7 +183,7 @@ def main():
               "# available template names: " + ", ".join(k for k in TEMPLATES if k != "yavs") +
               "\n# or DISCREP_SIM1=<name> in the environment, or a literal `analyse|||elab-and-run` bash pair")
         return 0
-    sims = load_sims([s for s in a.sims.split(",") if s])
+    sims, extra = load_sims([s for s in a.sims.split(",") if s])
     sims.setdefault("yavs", TEMPLATES["yavs"])
     cases = sorted(d for d in os.listdir(CASES) if os.path.exists(os.path.join(CASES, d, "case.conf")) and a.filter in d)
     labels = ["yavs"] + [s for s in sims if s != "yavs"]
@@ -186,7 +194,8 @@ def main():
     def work(job, sim):
         c, std = job
         d = os.path.join(CASES, c)
-        return (c, std, sim), run_one(sim, sims[sim], d, parse_conf(os.path.join(d, "case.conf")), std, sandbox)
+        return (c, std, sim), run_one(sim, sims[sim], d, parse_conf(os.path.join(d, "case.conf")), std, sandbox,
+                                      extra.get(sim))
 
     with ThreadPoolExecutor(max(1, min(a.jobs, 2))) as ex:
         futs = [ex.submit(work, j, s) for j in jobs for s in labels]

@@ -1,5 +1,6 @@
-# sim1: rejects `report ... severity` on a PSL assertion at analysis; sim2: internal error on PSL_ROSE (the runner classes it FATAL); sim3 and sim4 reject native PSL (sim3 run with the directives as comments reports an edge only between known values, as yavs does). sim1 and sim2 re-recorded 2026-10-21: the earlier FATAL and CRASH could not be reproduced with this case file and tool versions (cause not established: the case file and the tool binaries are unchanged since, so the first recording probably came from an earlier variant of the case)
+# sim1: rejects `report ... severity` on a PSL assertion at analysis; sim2: internal error on PSL_ROSE (the runner classes it CRASH since 2026-10-21, when its banner was added to the crash pattern); sim3 and sim4 reject native PSL (sim3 run with the directives as comments reports an edge only between known values, as yavs does). sim1 and sim2 re-recorded 2026-10-21: the earlier FATAL and CRASH could not be reproduced with this case file and tool versions (cause not established: the case file and the tool binaries are unchanged since, so the first recording probably came from an earlier variant of the case)
 sim1 2008 REJECT
-sim2 2008 FATAL
+sim2 2008 CRASH
 sim3 2008 REJECT
 sim4 2008 REJECT
+# 2026-10-21: sim2 CRASH (was FATAL): an internal error of the reference (its banner and exception), not an ordinary report.

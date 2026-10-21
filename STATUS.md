@@ -1576,15 +1576,53 @@ Why a tiny test took 7.2 ms in the head-to-head against 5.6 ms (sim1 jit) and 2.
 the `llvm` feature, which linked libLLVM into the executable, and the dynamic loader relocated it (174 000 relative
 relocations, 1 650 page faults, 33 M instructions) in every process, whatever the tier: `yavs --version` took
 5.7 ms against 0.6 ms of a build without the feature. The executable now loads libLLVM on first use
-(`docs/decisions.md` "LLVM bindings", #426). Per-run time of the difftest corpus's 279 tests that all four tools run (warm
-cache, `yavs run --tier=interp`, one process per test, python `subprocess` timing, pinned to performance core 5, median of
-the per-test medians, 3 rounds; the first column includes about 0.6 ms of process creation that every tool pays):
+(`docs/decisions.md` "LLVM bindings", #426). Without the feature a tiny `yavs run` was already at about 0.85 ms
+above process creation; what was left, measured with `perf stat` (cycles and page faults of one warm run of a small
+test, pinned to a performance core) and an early-exit probe per phase: 2.15 M cycles to the end of option parsing
+(a Rust hello world is 1.03 M; `true` is 0.69 M), then analysis 1.0 M, elaboration 1.1 M, initialisation 0.9 M,
+simulation 0.5 M; 560 page faults, of which 200 were the global symbol table (pre-sized for a whole library, written at
+random), 43 the relocation of the executable (11 000 relative relocations in a position independent executable) and
+the rest heap and code. Three helper threads (output flush, signal wait, freeing the analysis) cost 35 us together;
+left as they are (changing when they start would change what a killed run prints).
+
+What changed (`docs/decisions.md` "Floor of a run: symbol table size, pruning on demand, executable layout"): the symbol
+table starts at 2048 names, not 16384 (-190 page faults, -0.13 ms); the executable is linked `-no-pie` on Linux
+(-45 page faults, -7% cycles); `Store::put` no longer asks the size and age of every entry on every put (0.25 ms for 90
+entries, once per put, so 0.5 to 1 ms of a first run in a library with 60 to 90 entries), nor `note`/`sightings` the age of
+up to 512 notes.
+
+Per-run time of the 279 corpus tests that all of yavs, sim1 and sim2 run (warm cache, `yavs run --tier=interp`, one
+process per test, python `subprocess` timing, so each figure holds about 0.6 ms of process creation that every tool pays;
+pinned to performance core 5; per-test median over rounds, then median over tests; the four yavs binaries interleaved per
+test, 4 rounds, host load average 9):
 
 | Binary | run 1 (empty cache) | run 2 | warm (run 3 on) |
 |---|---:|---:|---:|
-| built with `llvm`, before | 7.6 ms | 8.0 ms | 6.5 ms |
-| built with `llvm`, libLLVM loaded on first use | 2.3 ms | 2.5 ms | 1.4 ms |
-| built without `llvm` (unchanged) | 2.2 ms | 2.5 ms | 1.4 ms |
+| built with `llvm`, before (the head-to-head's) | 8.38 ms | 8.51 ms | 6.90 ms |
+| built with `llvm`, now | 2.32 ms | 2.50 ms | 1.29 ms |
+| built without `llvm`, before | 2.62 ms | 2.81 ms | 1.48 ms |
+| built without `llvm`, now | 2.34 ms | 2.49 ms | 1.26 ms |
+
+Against the other two in the same harness (warm yavs now, sim1 `-H 64m -e --no-save --jit -r`, sim2 `-r`, 5 rounds, interleaved):
+yavs 1.50 ms, sim1 jit 6.19 ms, sim2 2.31 ms per test (yavs is faster than sim1 on 274 and than sim2 on 272 of the 279; before,
+the llvm-linked binary was slower than sim1 jit on all of them).
+
+The cold extra cost of a runner suite is not the store: entries are written with one buffered write and a rename (no
+`fsync`, no compression; encoding and writing the four entries of a closure is about 15 ms), and the pruning was 0.5 to 1 ms.
+`check` suite (145 `yavs run`, one job, per-process time): the first run of a testbench (a closure) takes 88 ms against 39 ms
+warm and the second 103 ms, from the third on 43 ms: 113 ms of extra per closure, 0.7 s over the 19 closures of the suite,
+out of 2.1 s between the cold (`--clean`) and the second runner run; the rest is the runner itself (about 1.3 s: it rebuilds
+its project database and calls `yavs analyze` 82 times). The 113 ms are two analyses from source and lowering of the
+packages (the policy of the image on the second run, #426/#407: a test that runs once does not pay for an image) plus the
+writing; making the image on the first run would turn them into one analysis plus about 15 ms of writing for a closure
+that runs twice or more and cost a closure that runs once the 15 ms (decision for the cache owner, not taken here). CPU of
+the runner suites' yavs processes cold against second, before and after: unchanged within the 3% noise (`check` 5.47/4.78 s
+and 5.53/4.72 s, `com` 5.01/4.48 and 5.22/4.45, `data_types` 9.20/7.37 and 9.41/7.45): their libraries hold 66 entries and 19
+notes, where pruning costs 0.15 ms a put.
+
+Checks: difftest 414/414 at 1 and 4 threads on `--tier=interp`, `auto` and `llvm`; the runner suites `check`, `com`,
+`data_types`, `logging` and `verification_components` pass; the second library's regression 314/314 under 2008 and 2019; the first library's suite 102 pass,
+9 fail, 26 skip, as before; `cargo test --workspace`, clippy, fmt.
 
 ## performance: floor of a run, 2026-10-20
 

@@ -55,6 +55,16 @@ fn key(kind: &str, opts: &Options, files: &[ClosureFile]) -> Key {
     k.finish()
 }
 
+/// The key of a stage entry (`low`, `ir`, `init`, `lib`, `libopt`, `libinit`) of `base`: besides
+/// the build (which every key holds) it names the optimiser and tier switches
+/// (`yavs_interp::opt_fingerprint`), so a run with other switches never reads generated code
+/// another configuration made (#491).
+fn stage_key(kind: &str, base: &str) -> KeyBuilder {
+    let mut k = KeyBuilder::new(kind);
+    k.text(base).text(&yavs_interp::opt_fingerprint());
+    k
+}
+
 /// A library prefix of the closure (see [`bounds`]) whose analysis is stored by itself.
 #[derive(Debug)]
 struct Level {
@@ -86,16 +96,16 @@ struct Stages {
 impl Stages {
     fn key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Key> {
         (self.closure && extent == self.extent).then(|| {
-            let mut k = KeyBuilder::new(kind);
-            k.text(&self.base).part(part);
+            let mut k = stage_key(kind, &self.base);
+            k.part(part);
             k.finish()
         })
     }
 
     fn level_key(&self, level: usize, kind: &str, part: &[u8]) -> Option<(&Level, Key)> {
         let l = self.levels.get(level)?;
-        let mut k = KeyBuilder::new(kind);
-        k.text(&l.key.hex()).part(part);
+        let mut k = stage_key(kind, &l.key.hex());
+        k.part(part);
         Some((l, k.finish()))
     }
 }
@@ -105,9 +115,8 @@ impl Stages {
 fn library_made(levels: &[Level]) -> bool {
     levels.iter().any(|l| {
         [false, true].into_iter().any(|native| {
-            let mut k = KeyBuilder::new(yavs_elab::libstage::LIB);
-            k.text(&l.key.hex())
-                .part(&yavs_elab::libstage::key_part(native));
+            let mut k = stage_key(yavs_elab::libstage::LIB, &l.key.hex());
+            k.part(&yavs_elab::libstage::key_part(native));
             l.store
                 .payload_len(yavs_elab::libstage::LIB, &k.finish())
                 .is_some_and(|n| n > 0)

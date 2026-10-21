@@ -24,7 +24,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | Decision | Why | Source |
 |---|---|---|
-| Every key mixes in `FORMAT` and `build_id()` (version, size and mtime of the executable) | An entry never outlives the code that made it, with no build-time hash | `docs/decisions.md` "Compilation cache" |
+| Every key mixes in `FORMAT` and `build_id()` (version, hash of all sources made by `crates/yavs/build.rs`, executable size, `YAVS_CACHE_SALT`; mtime without the hash); stage keys also hold the optimiser switches (`crates/yavs/src/cache.rs` `stage_key`) | An entry never outlives the code or the switches that made it | `docs/decisions.md` "Build and switch fingerprint" (#491) |
 | Entry = header + payload, verified (magic, format, key echo, exact length, xxh3 checksum) before use | A truncated or damaged file is a miss, not a wrong result; xxh3 because sha256 of a 10 MB image cost as much as reading it (#426) | same |
 | Writes: temporary file in the same directory, then `rename`; no lock | Concurrent runs never see half an entry; readers need no lock | same |
 | `put` never returns an error to the caller | The cache can only make a run faster | same |

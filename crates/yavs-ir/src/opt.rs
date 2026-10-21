@@ -123,6 +123,47 @@ pub fn copies_are_portable() -> bool {
     enabled() && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed) && !compiled()
 }
 
+/// Every switch that changes the code the optimiser or the tiers generate, as text: part of the
+/// key of every cache entry that holds generated code, so a run with other switches never reads
+/// what another configuration made (#491). Read when a key is made, i.e. after the command line
+/// set [`keep_variables`], [`compiled_tier`] and [`external_variables`].
+pub fn fingerprint() -> String {
+    fingerprint_of([
+        enabled(),
+        memo_enabled(),
+        cfg_enabled(),
+        KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed),
+        compiled(),
+        external(),
+    ])
+}
+
+fn fingerprint_of(f: [bool; 6]) -> String {
+    let names = ["iropt", "memo", "cfg", "keep", "compiled", "external"];
+    let parts: Vec<String> = names
+        .iter()
+        .zip(f)
+        .map(|(n, v)| format!("{n}={v}"))
+        .collect();
+    parts.join(" ")
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::fingerprint_of;
+
+    /// Every switch is part of the fingerprint (#491).
+    #[test]
+    fn each_switch_changes_the_fingerprint() {
+        let base = fingerprint_of([false; 6]);
+        for i in 0..6 {
+            let mut f = [false; 6];
+            f[i] = true;
+            assert_ne!(fingerprint_of(f), base, "switch {i}");
+        }
+    }
+}
+
 /// Field offsets of the static record layouts met by the optimiser, kept in the program so
 /// that the functions optimised one by one share them. A copy of the program starts empty.
 #[derive(Default, Debug)]

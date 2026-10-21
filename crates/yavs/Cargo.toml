@@ -23,6 +23,9 @@ yavs-wave = { path = "../yavs-wave" }
 yavs-llvm = { path = "../yavs-llvm", optional = true }
 yavs-vhpi = { path = "../yavs-vhpi" }
 
+[build-dependencies]
+sha2 = "0.11"
+
 [lints]
 workspace = true
 

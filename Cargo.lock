@@ -1455,6 +1455,7 @@ dependencies = [
  "cc",
  "clap",
  "serde_json",
+ "sha2",
  "tempfile",
  "wellen",
  "yavs-cache",

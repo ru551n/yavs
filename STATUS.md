@@ -545,6 +545,9 @@ The next levers are the image restore (#426) and caching elaboration (#407).
 
 ### Compilation cache (#407)
 
+Cache keys name the build (a hash of all sources) and the optimiser and tier switches (#491, `docs/decisions.md`
+"Build and switch fingerprint"): another build or setting is a miss.
+
 `elab`/`run` keep the analyzed closure (and the package bodies elaboration loads) in
 `<work dir>/yavs-cache/` (`docs/decisions.md` "Compilation cache"). `vunit_vc30`, median CPU seconds of
 5 runs, main before the cache against main with it (warm; each of the 12 testbenches pays one cold run

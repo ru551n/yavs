@@ -57,24 +57,42 @@ const FEW_ENTRIES: usize = 16;
 const MAGIC: &[u8; 8] = b"YAVSIMG\0";
 const HEADER: usize = 8 + 4 + 32 + 8 + 8;
 
-/// Identifies the running build: the version, the executable's size and modification time. Any
-/// rebuild changes it, so an entry never outlives the analyzer that made it.
+static SOURCES: OnceLock<String> = OnceLock::new();
+
+/// Names the sources the running executable was built from (a hash made at build time, see
+/// `crates/yavs/build.rs`). Call it once, before the first key is made; without it the build is
+/// identified by the executable's modification time.
+pub fn set_sources(hash: &str) {
+    if !hash.is_empty() {
+        let _ = SOURCES.set(hash.to_string());
+    }
+}
+
+/// Identifies the running build: the version, the sources it was built from (or, without them,
+/// the executable's modification time), the executable's size, and `YAVS_CACHE_SALT` (a way to
+/// stand in for another build; tests). A copy of a build has the same id, another build never
+/// does, so an entry never outlives the code that made it.
 pub fn build_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         let exe = std::env::current_exe()
             .and_then(fs::metadata)
             .map(|m| {
-                let t = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_nanos());
+                let t = match SOURCES.get() {
+                    Some(h) => h.clone(),
+                    None => m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_nanos())
+                        .to_string(),
+                };
                 format!("{}:{t}", m.len())
             })
             // ponytail: an unreadable executable gives a per-process id (never matches)
             .unwrap_or_else(|_| format!("unknown:{}", std::process::id()));
-        format!("{}+{exe}", env!("CARGO_PKG_VERSION"))
+        let salt = std::env::var("YAVS_CACHE_SALT").unwrap_or_default();
+        format!("{}+{exe}+{salt}", env!("CARGO_PKG_VERSION"))
     })
 }
 

@@ -69,9 +69,14 @@ impl Libs {
     }
 
     fn yavs(&self, args: &[String]) -> Out {
+        self.yavs_env(args, &[])
+    }
+
+    fn yavs_env(&self, args: &[String], env: &[(&str, &str)]) -> Out {
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&self.tmp)
             .env_remove("YAVS_STDLIB")
+            .envs(env.iter().copied())
             .env("YAVS_LOG", "debug")
             .args(["--color", "never"])
             .args(args)
@@ -194,6 +199,10 @@ impl Libs {
     }
 
     fn run(&self, top: &str, more: &[&str]) -> Out {
+        self.run_env(top, more, &[])
+    }
+
+    fn run_env(&self, top: &str, more: &[&str], env: &[(&str, &str)]) -> Out {
         let mut a = vec![
             "run".to_string(),
             format!("--work={}", self.spec("work")),
@@ -204,7 +213,7 @@ impl Libs {
         }
         a.extend(more.iter().map(|s| s.to_string()));
         a.push(top.to_string());
-        self.yavs(&a)
+        self.yavs_env(&a, env)
     }
 
     fn entries(&self, kind: &str) -> Vec<PathBuf> {
@@ -479,4 +488,36 @@ fn damaged_library_entries_are_ignored() {
     let r = l.run(&t, &[]);
     assert!(note(&r, "hit prefix lib "), "{r:?}");
     assert_eq!(visible(&r), visible(&l.run(&t, &["--no-cache"])));
+}
+
+/// The library stages hold generated code: another optimiser switch or another build never reads
+/// them (#491), and the settings that made them still do.
+#[test]
+fn library_stages_depend_on_the_optimiser_and_the_build() {
+    let l = Libs::new("switch", false);
+    let tops: Vec<String> = (1..=10).map(|n| l.tb(n, n % 2 == 1)).collect();
+    let plain = |i: usize| visible(&l.run(&tops[i], &["--no-cache"]));
+    // The first closure leaves the prefix image, the fourth makes the library.
+    let _ = l.run(&tops[0], &[]);
+    for t in tops.iter().take(SIGHTINGS as usize) {
+        let _ = l.run(t, &[]);
+    }
+    // A closure's second run uses entries of its own: each probe is the first run of a closure.
+    let probes = [
+        (4, Some(("YAVS_NO_CFG", "1"))),
+        (5, Some(("YAVS_NO_MEMO", "1"))),
+        (6, Some(("YAVS_NO_IROPT", "1"))),
+        (7, Some(("YAVS_CACHE_SALT", "another build"))),
+        (8, None),
+    ];
+    for (i, env) in probes {
+        let envs: Vec<_> = env.into_iter().collect();
+        let r = l.run_env(&tops[i], &[], &envs);
+        assert_eq!(note(&r, "hit prefix lib "), env.is_none(), "{env:?}: {r:?}");
+        assert!(
+            env.is_none() || !note(&r, "hit prefix libopt"),
+            "{env:?}: {r:?}"
+        );
+        assert_eq!(visible(&r), plain(i), "{env:?}");
+    }
 }

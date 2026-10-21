@@ -134,6 +134,7 @@ fn guard(format: MessageFormat, color: bool, f: impl FnOnce() -> ExitCode) -> Ex
 const READ_ERROR: &str = "E0100";
 
 fn main() -> ExitCode {
+    yavs_cache::set_sources(env!("YAVS_SRC_HASH"));
     yavs_vhpi::keep_exports();
     let args = match analyze::expand_response_files(
         std::env::args_os().map(|a| a.to_string_lossy().into_owned()),

@@ -2323,7 +2323,7 @@ decodes on demand:
 - **Symbols are interned on first read** (`DecodeTable`): the table is one string plus end offsets and an
   `OnceLock<Symbol>` per entry. Symbol numbers now depend on the order of first use (they are never
   compared across runs; elaboration is single-threaded).
-- **Versioning.** The cache key holds the yavs build id (size and modification time of the executable), so an
+- **Versioning.** The cache key holds the yavs build id (see "Build and switch fingerprint"), so an
   entry written by a build with another image layout is a miss, as before; nothing else reads old images.
 
 ## Per-run overhead (#426)
@@ -3577,3 +3577,24 @@ each variable and every live register at every block edge, and reloaded the base
   call table only once all of that exists, since a missing callee would materialise at every call. Budget rules are
   unchanged: the code is large (an eager `--tier=llvm` compile of a library testbench takes minutes), so nothing is
   compiled in a run of a second; see STATUS.md "llvm" for the measured steady-state gain.
+
+## Build and switch fingerprint of cache entries (#491, #407)
+
+Entries that hold generated code (`low`, `init`, `ir`, `lib`, `libopt`, `libinit`) were keyed by the build
+(version, executable size and modification time) but not by the optimiser, so toggling `YAVS_NO_CFG` or
+`YAVS_NO_MEMO` against a library directory loaded optimised copies another configuration had made.
+
+- **Switches.** `yavs_ir::opt::fingerprint()` (`iropt`, `memo`, `cfg`, keep-variables for a debugger,
+  the compiled tier, external variables for VHPI and `--wave-variables`) is mixed into the key of every stage
+  entry (`stage_key` in `crates/yavs/src/cache.rs`), also of the `lib` existence check. Coverage is not a key
+  part: a run with coverage counters uses no stage entry at all. `sem` and `pre` do not depend on the
+  switches and stay shared. Another setting is a miss, never an error, and its entries are pruned by the normal
+  policy. Toggling `YAVS_NO_IROPT` therefore makes entries of its own (it used to read the `ir` entry and
+  ignore its copies).
+- **Build.** `crates/yavs/build.rs` hashes the sources of all crates (`src`, `Cargo.toml`, `build.rs`) and
+  `Cargo.lock` into `YAVS_SRC_HASH`; `yavs_cache::set_sources` makes it the build id's source part, with the
+  executable size (a toolchain or dependency change) and the version. Copies of one build, and rebuilds
+  of unchanged sources, share entries; any source change is a miss. Without the workspace (a packaged crate) the
+  hash is empty and the id falls back to the executable's modification time. `YAVS_CACHE_SALT` is mixed in as
+  well (stands in for another build in tests).
+- **Cost.** A fingerprint is six booleans formatted per key (a few keys per run): no measurable startup change.

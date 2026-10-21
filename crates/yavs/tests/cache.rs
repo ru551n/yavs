@@ -905,7 +905,7 @@ fn lowered_design_is_cached() {
         let w = e.run_top(top, &["--threads", "4"]);
         assert!(note(&w, "hit ir"), "{top}: {w:?}");
         assert_eq!(nc, visible(&w), "{top}");
-        // With the optimiser off the stored copies stay unused.
+        // With the optimiser off the stored copies are not even looked up (#491).
         let work = e.work();
         let off = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&e.tmp)
@@ -914,7 +914,7 @@ fn lowered_design_is_cached() {
             .args(["--color", "never", "run", "--work", &work, top])
             .output()
             .expect("run");
-        assert!(String::from_utf8_lossy(&off.stderr).contains("hit ir"));
+        assert!(!String::from_utf8_lossy(&off.stderr).contains("hit ir"));
         assert_eq!(visible(&plain).stdout, String::from_utf8_lossy(&off.stdout));
         for f in e.entry_files("ir") {
             std::fs::remove_file(f).expect("remove");
@@ -1011,4 +1011,74 @@ fn lowered_design_depends_on_what_elaboration_asked_for() {
     assert!(note(&run("true"), "hit ir"));
     assert!(note(&run("false"), "hit ir"));
     assert_eq!(e.entry_files("ir").len(), 2);
+}
+
+/// Entries that hold generated code are keyed by the optimiser and tier switches and by the
+/// build (#491): another setting or another build is a miss with the right output, the same one
+/// a hit.
+#[test]
+fn lowered_design_depends_on_the_optimiser_and_the_build() {
+    let e = Env::new("irswitch");
+    let plain = e.run(&["--no-cache"]);
+    assert!(plain.stdout.contains("f=21"), "{plain:?}");
+    let _ = e.cold("tb", &[]);
+    let with = |env: &[(&str, &str)]| {
+        let work = e.work();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.current_dir(&e.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_LOG", "debug")
+            .args(["--color", "never", "run", "--work", &work])
+            .arg("tb");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let o = c.output().expect("run");
+        Out {
+            code: o.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        }
+    };
+    assert!(note(&with(&[]), "hit ir"), "the same settings hit");
+    let cases = [
+        ("YAVS_NO_CFG", "1"),
+        ("YAVS_NO_MEMO", "1"),
+        ("YAVS_NO_IROPT", "1"),
+        ("YAVS_CACHE_SALT", "another build"),
+    ];
+    for env in cases {
+        let env = &[env];
+        let first = with(env);
+        assert!(!note(&first, "hit ir"), "{env:?}: {first:?}");
+        assert_eq!(visible(&plain).stdout, first.stdout, "{env:?}");
+        let second = with(env);
+        let third = with(env);
+        assert!(
+            note(&second, "store ir") || note(&third, "hit ir"),
+            "{env:?}: {second:?}"
+        );
+        assert!(note(&third, "hit ir"), "{env:?}: {third:?}");
+        assert_eq!(visible(&plain).stdout, third.stdout, "{env:?}");
+    }
+    // The settings made first still hit: nothing was replaced.
+    assert!(note(&with(&[]), "hit ir"));
+}
+
+/// The compiled tier makes other copies than the interpreter: its run never reads the entry the
+/// interpreter's runs made (#491).
+#[cfg(feature = "llvm")]
+#[test]
+fn compiled_tier_has_entries_of_its_own() {
+    let e = Env::new("irtier");
+    let plain = e.run(&["--no-cache"]);
+    let _ = e.cold("tb", &[]);
+    assert!(note(&e.run(&[]), "hit ir"));
+    let t = e.run(&["--tier=llvm"]);
+    assert!(!note(&t, "hit ir"), "{t:?}");
+    assert_eq!(visible(&plain).stdout, t.stdout);
+    assert!(
+        note(&e.run(&[]), "hit ir"),
+        "the interpreter's entry is kept"
+    );
 }

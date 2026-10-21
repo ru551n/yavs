@@ -4,13 +4,16 @@
 //! in place through the `yavs_rt_step` callback. Compiled code never reports an error itself: a
 //! failing inline instruction returns its pc and the interpreter re-executes it.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use cranelift_codegen::Context;
+use cranelift_codegen::inline::{Inline, InlineCommand};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
-    AbiParam, AliasRegionData, Block, BlockArg, FuncRef, GlobalValue, InstBuilder, MemFlagsData,
-    Signature, Type, UserFuncName, Value, types,
+    self, AbiParam, AliasRegionData, Block, BlockArg, FuncRef, GlobalValue, InstBuilder,
+    MemFlagsData, Signature, StackSlotData, StackSlotKind, Type, UserFuncName, Value, types,
 };
 
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch};
@@ -34,6 +37,25 @@ extern "C" fn clift_zero(p: *mut u8, n: u64) {
     unsafe { std::ptr::write_bytes(p, 0, n as usize) }
 }
 
+/// `yavs_rt_deopt`, printing the frame when `YAVS_CLIFT_TRACE` is set (a measurement knob: how
+/// often native frames are materialised).
+extern "C" fn clift_deopt(
+    env: *mut std::ffi::c_void,
+    mem: *mut Mem,
+    func: u32,
+    pc: u32,
+    temp_base: u64,
+    nregs: u64,
+    slen: u64,
+) -> *mut u64 {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *TRACE.get_or_init(|| std::env::var_os("YAVS_CLIFT_TRACE").is_some()) {
+        eprintln!("materialise f{func} at pc {pc}");
+    }
+    // SAFETY: compiled code passes the `Env` and `Mem` it was given.
+    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen) }
+}
+
 /// `memmove` (`Inst::Copy`; ranges may overlap).
 extern "C" fn clift_move(d: *mut u8, s: *const u8, n: u64) {
     // SAFETY: compiled code passes ranges `Mem::find` bounded.
@@ -46,17 +68,44 @@ pub type Error = String;
 /// A Cranelift JIT module with the runtime callbacks compiled code calls.
 pub struct Jit {
     module: JITModule,
-    ctx: Context,
-    fctx: FunctionBuilderContext,
     step: ClifId,
     host: ClifId,
     signal: ClifId,
     lcopy: ClifId,
     zero: ClifId,
     mov: ClifId,
+    deopt: ClifId,
+    deopt_slots: ClifId,
+    deopt_end: ClifId,
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
+    /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
+    /// whether Cranelift inlines them (`YAVS_CLIFT_NATIVE`, `YAVS_CLIFT_INLINE`).
+    native_on: bool,
+    /// Debugging: the most native variants to make (`YAVS_CLIFT_NATIVE_MAX`).
+    native_limit: usize,
+    inline_max: usize,
+    /// Per function: its native-frame variant, or `None` when it has none.
+    natives: HashMap<FuncId, Option<Rc<NatInfo>>>,
+    building: HashSet<FuncId>,
 }
+
+/// The native-frame variant `n<id>` of a function: its registers and slots live on the native
+/// stack, the interpreter has no frame for it, and anything the compiled code cannot finish
+/// materialises the frame (`yavs_rt_deopt`).
+struct NatInfo {
+    id: ClifId,
+    /// The Cranelift body, for the inliner.
+    body: ir::Function,
+    nparams: usize,
+    /// Whether it returns a value.
+    ret: bool,
+}
+
+/// Most IR instructions and frame bytes of a function with a native-frame variant.
+const NAT_MAX_IR: usize = 400;
+const NAT_MAX_FRAME: u32 = 1024;
+const NAT_MAX_REGS: usize = 128;
 
 // SAFETY: the module owns its code memory and is used by one thread at a time (the compile
 // thread, or the thread that built it); compiled code is called through plain pointers.
@@ -77,6 +126,11 @@ impl Jit {
             if cfg!(debug_assertions) { "1" } else { "0" },
         );
         let ra = flag("YAVS_CLIFT_RA", "backtracking");
+        let native_on = flag("YAVS_CLIFT_NATIVE", "1") != "0";
+        let native_limit = flag("YAVS_CLIFT_NATIVE_MAX", "")
+            .parse()
+            .unwrap_or(usize::MAX);
+        let inline_max = flag("YAVS_CLIFT_INLINE", "150").parse().unwrap_or(0);
         let flags = [
             ("opt_level", opt.as_str()),
             (
@@ -92,6 +146,9 @@ impl Jit {
             (HOST, yavs_rt_host as *const u8),
             (SIGNAL, yavs_rt_signal as *const u8),
             (LCOPY, yavs_rt_lcopy as *const u8),
+            (DEOPT, clift_deopt as *const u8),
+            (DEOPT_SLOTS, yavs_rt_deopt_slots as *const u8),
+            (DEOPT_END, yavs_rt_deopt_end as *const u8),
             ("clift_zero", clift_zero as *const u8),
             ("clift_move", clift_move as *const u8),
         ] {
@@ -112,22 +169,31 @@ impl Jit {
         let lcopy = imp(LCOPY, &[I64; 7], None)?;
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
+        let deopt = imp(DEOPT, &[I64, I64, I32, I32, I64, I64, I64], Some(I64))?;
+        let deopt_slots = imp(DEOPT_SLOTS, &[I64], Some(I64))?;
+        let deopt_end = imp(DEOPT_END, &[I64, I64, I32], Some(I32))?;
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
         sig.params.push(AbiParam::new(I32));
         sig.returns.push(AbiParam::new(I32));
         Ok(Jit {
-            ctx: module.make_context(),
             module,
-            fctx: FunctionBuilderContext::new(),
             step,
             host,
             signal,
             lcopy,
             zero,
             mov,
+            deopt,
+            deopt_slots,
+            deopt_end,
             tables: HashMap::new(),
             sig,
+            native_on,
+            native_limit,
+            inline_max,
+            natives: HashMap::new(),
+            building: HashSet::new(),
         })
     }
 
@@ -141,10 +207,107 @@ impl Jit {
         if let Some(r) = bad_reg(f) {
             return Err(format!("register r{} beyond the frame", r.0));
         }
-        let fid = self
-            .module
-            .declare_function(&format!("f{}", id.0), Linkage::Export, &self.sig)
-            .map_err(|e| e.to_string())?;
+        if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
+            eprintln!("{}", prog.dump_func(id));
+        }
+        self.build(prog, id, f, false).map(|(c, s, _)| (c, s))
+    }
+
+    /// The native-frame variant of `id`, made on first use.
+    fn native_of(&mut self, prog: &Program, id: FuncId) -> Option<Rc<NatInfo>> {
+        if !self.native_on {
+            return None;
+        }
+        if let Some(r) = self.natives.get(&id) {
+            return r.clone();
+        }
+        // A function calling itself, directly or not, has no native variant.
+        if !self.building.insert(id) {
+            return None;
+        }
+        let r = self.try_native(prog, id);
+        self.building.remove(&id);
+        self.natives.insert(id, r.clone());
+        r
+    }
+
+    fn try_native(&mut self, prog: &Program, id: FuncId) -> Option<Rc<NatInfo>> {
+        let f = prog.func(id)?;
+        if !matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+            || f.parent.is_some()
+            || f.code.is_empty()
+            || f.code.len() > NAT_MAX_IR
+            || f.frame > NAT_MAX_FRAME
+            || f.reg_ty.len() > NAT_MAX_REGS
+            || bad_reg(f).is_some()
+        {
+            return None;
+        }
+        // Value parameters of one word only; every return agrees on a value.
+        if !f.params.iter().all(|p| {
+            p.class == yavs_ir::ParamClass::Value
+                && p.width != Width::Sig
+                && u64::from(p.slot) + u64::from(p.width.bytes()) <= u64::from(f.frame)
+        }) {
+            return None;
+        }
+        let mut rets = f.code.iter().filter_map(|i| match i {
+            Inst::Ret { v } => Some(v.is_some()),
+            _ => None,
+        });
+        let ret = rets.next()?;
+        if rets.any(|r| r != ret) {
+            return None;
+        }
+        if self.natives.values().flatten().count() >= self.native_limit {
+            return None;
+        }
+        let (cid, _, body) = match self.build(prog, id, f, true) {
+            Ok(r) => r,
+            Err(why) => {
+                if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
+                    eprintln!("no native variant of {id} {}: {why}", f.name);
+                }
+                return None;
+            }
+        };
+        if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
+            eprintln!(
+                "native variant #{} of {} {}",
+                self.natives.values().flatten().count() + 1,
+                id,
+                f.name
+            );
+        }
+        Some(Rc::new(NatInfo {
+            id: cid,
+            body: body?,
+            nparams: f.params.len(),
+            ret,
+        }))
+    }
+
+    /// Translate `f` into a function defined in the module: the frame-mode `f<id>`, or (`native`)
+    /// the native-frame variant `n<id>`, whose Cranelift body is returned too.
+    fn build(
+        &mut self,
+        prog: &Program,
+        id: FuncId,
+        f: &Func,
+        native: bool,
+    ) -> Result<(ClifId, Vec<String>, Option<ir::Function>), Error> {
+        // The callees that have a native variant.
+        let mut nats: HashMap<FuncId, Rc<NatInfo>> = HashMap::new();
+        for i in &f.code {
+            if let Inst::Call { func, .. } = *i
+                && !nats.contains_key(&func)
+                && let Some(n) = self.native_of(prog, func)
+            {
+                nats.insert(func, n);
+            }
+        }
+        let mut ctx = self.module.make_context();
+        let mut fctx = FunctionBuilderContext::new();
         // Data for the table natives this function uses.
         let mut tabs = HashMap::new();
         for i in &f.code {
@@ -167,43 +330,80 @@ impl Jit {
                         d
                     }
                 };
-                let gv = self.module.declare_data_in_func(did, &mut self.ctx.func);
+                let gv = self.module.declare_data_in_func(did, &mut ctx.func);
                 tabs.insert(t, gv);
             }
         }
-        self.ctx.func.signature = self.sig.clone();
-        self.ctx.func.name = UserFuncName::user(0, fid.as_u32());
+        ctx.func.signature = if native {
+            native_sig(&self.module, f.params.len())
+        } else {
+            self.sig.clone()
+        };
+        ctx.func.name = UserFuncName::user(u32::from(native), id.0);
+        let mut natives = HashMap::new();
+        let mut bodies: HashMap<FuncRef, Rc<NatInfo>> = HashMap::new();
+        for (&g, n) in &nats {
+            let fr = self.module.declare_func_in_func(n.id, &mut ctx.func);
+            natives.insert(
+                g,
+                NatRef {
+                    fr,
+                    nparams: n.nparams,
+                    ret: n.ret,
+                },
+            );
+            bodies.insert(fr, n.clone());
+        }
         let imports = Imports {
-            step: self
+            step: self.module.declare_func_in_func(self.step, &mut ctx.func),
+            host: self.module.declare_func_in_func(self.host, &mut ctx.func),
+            signal: self.module.declare_func_in_func(self.signal, &mut ctx.func),
+            lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
+            zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
+            mov: self.module.declare_func_in_func(self.mov, &mut ctx.func),
+            deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
+            deopt_slots: self
                 .module
-                .declare_func_in_func(self.step, &mut self.ctx.func),
-            host: self
+                .declare_func_in_func(self.deopt_slots, &mut ctx.func),
+            deopt_end: self
                 .module
-                .declare_func_in_func(self.host, &mut self.ctx.func),
-            signal: self
-                .module
-                .declare_func_in_func(self.signal, &mut self.ctx.func),
-            lcopy: self
-                .module
-                .declare_func_in_func(self.lcopy, &mut self.ctx.func),
-            zero: self
-                .module
-                .declare_func_in_func(self.zero, &mut self.ctx.func),
-            mov: self
-                .module
-                .declare_func_in_func(self.mov, &mut self.ctx.func),
+                .declare_func_in_func(self.deopt_end, &mut ctx.func),
             tables: tabs,
+            natives,
         };
         let cfg = self.module.target_config();
-        let built = gen_func(&mut self.ctx, &mut self.fctx, cfg, prog, f, imports);
-        let r = built.and_then(|stepped| {
-            self.module
-                .define_function(fid, &mut self.ctx)
-                .map_err(|e| format!("Cranelift: {e:?} (a bug in yavs)"))?;
-            Ok(stepped)
-        });
-        self.module.clear_context(&mut self.ctx);
-        r.map(|stepped| (fid, stepped))
+        let stepped = gen_func(
+            &mut ctx,
+            &mut fctx,
+            cfg,
+            prog,
+            f,
+            imports,
+            native.then_some(id.0),
+        )?;
+        if self.inline_max > 0 && !bodies.is_empty() {
+            let inl = Inl {
+                bodies: &bodies,
+                max: self.inline_max,
+                budget: 4 * self.inline_max.max(500),
+            };
+            ctx.inline(inl)
+                .map_err(|e| format!("Cranelift inline: {e:?}"))?;
+        }
+        let fid = self
+            .module
+            .declare_function(
+                &format!("{}{}", if native { "n" } else { "f" }, id.0),
+                Linkage::Export,
+                &ctx.func.signature,
+            )
+            .map_err(|e| e.to_string())?;
+        let body = native.then(|| ctx.func.clone());
+        self.module
+            .define_function(fid, &mut ctx)
+            .map_err(|e| format!("Cranelift: {e:?} (a bug in yavs)"))?;
+        self.module.clear_context(&mut ctx);
+        Ok((fid, stepped, body))
     }
 
     pub fn finalize(&mut self) -> Result<(), Error> {
@@ -227,7 +427,65 @@ struct Imports {
     lcopy: FuncRef,
     zero: FuncRef,
     mov: FuncRef,
+    deopt: FuncRef,
+    deopt_slots: FuncRef,
+    deopt_end: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
+    natives: HashMap<FuncId, NatRef>,
+}
+
+/// A call to a native-frame variant from a function being built.
+#[derive(Clone, Copy)]
+struct NatRef {
+    fr: FuncRef,
+    nparams: usize,
+    ret: bool,
+}
+
+/// The signature of a native-frame variant: `(env, mem, depth, args...) -> (status, value)`;
+/// status 0 is a return (with the value), anything else a recorded frame (`yavs_rt_deopt`).
+fn native_sig(module: &JITModule, nparams: usize) -> Signature {
+    let mut s = module.make_signature();
+    s.params.extend([AbiParam::new(I64); 3]);
+    s.params.extend((0..nparams).map(|_| AbiParam::new(I64)));
+    s.returns.push(AbiParam::new(I32));
+    s.returns.push(AbiParam::new(I64));
+    s
+}
+
+/// Inlines the native-frame variants that are small, up to a budget of Cranelift instructions
+/// per caller (`YAVS_CLIFT_INLINE`: the largest callee, 0 for none).
+struct Inl<'a> {
+    bodies: &'a HashMap<FuncRef, Rc<NatInfo>>,
+    max: usize,
+    budget: usize,
+}
+
+impl Inline for Inl<'_> {
+    fn inline(
+        &mut self,
+        _caller: &ir::Function,
+        _call: ir::Inst,
+        _opcode: ir::Opcode,
+        callee: FuncRef,
+        _args: &[Value],
+    ) -> InlineCommand<'_> {
+        match self.bodies.get(&callee) {
+            Some(n) => {
+                let size = n.body.dfg.num_insts();
+                if size <= self.max && size <= self.budget {
+                    self.budget -= size;
+                    InlineCommand::Inline {
+                        callee: Cow::Borrowed(&n.body),
+                        visit_callee: false,
+                    }
+                } else {
+                    InlineCommand::KeepCall
+                }
+            }
+            None => InlineCommand::KeepCall,
+        }
+    }
 }
 
 /// A slow path left to emit after the function body: step `inst` at `pc` and go on at `join`.
@@ -262,6 +520,60 @@ struct Gen<'a> {
     rf: MemFlagsData,
     gf: MemFlagsData,
     mf: MemFlagsData,
+    /// Set for a native-frame variant.
+    nat: Option<Nat>,
+    /// Why a native-frame variant cannot be made.
+    bad: Option<String>,
+}
+
+/// What a native-frame variant has instead of the interpreter's frame.
+struct Nat {
+    func: u32,
+    nregs: u64,
+    /// The frame index of this activation.
+    depth: Value,
+    /// The frame's slots on the native stack.
+    slots: Value,
+    /// The temporary area's length at entry: where `Stmt` trims to.
+    temp_base: Value,
+    /// Registers that may hold an address in this frame's slots: a callee on a native frame
+    /// cannot reach them, so a call passing one is left to the interpreter (`frame_addrs`).
+    frame_addr: Vec<bool>,
+}
+
+/// The registers that may hold an address of the function's own frame: defined by `AddrOf` of
+/// the frame, or derived from such a register by `Move`, `Select`, `Index` or `Field`.
+fn frame_addrs(f: &Func) -> Vec<bool> {
+    let mut t = vec![false; f.reg_ty.len()];
+    loop {
+        let mut changed = false;
+        for i in &f.code {
+            let (dst, from): (Reg, Vec<Reg>) = match *i {
+                Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Frame,
+                    ..
+                } => {
+                    if !t[dst.0 as usize] {
+                        t[dst.0 as usize] = true;
+                        changed = true;
+                    }
+                    continue;
+                }
+                Inst::Move { dst, src } => (dst, vec![src]),
+                Inst::Select { dst, a, b, .. } => (dst, vec![a, b]),
+                Inst::Index { dst, base, .. } | Inst::Field { dst, base, .. } => (dst, vec![base]),
+                _ => continue,
+            };
+            if !t[dst.0 as usize] && from.iter().any(|r| t[r.0 as usize]) {
+                t[dst.0 as usize] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return t;
+        }
+    }
 }
 
 /// A size or offset operand of `host`: known at compile time or in a value.
@@ -282,6 +594,7 @@ fn gen_func(
     prog: &Program,
     f: &Func,
     imp: Imports,
+    nat_id: Option<u32>,
 ) -> Result<Vec<String>, String> {
     let mut b = FunctionBuilder::new(&mut ctx.func, fctx);
     let entry = b.create_block();
@@ -290,7 +603,40 @@ fn gen_func(
     let exit_pc = b.append_block_param(exit, I32);
     b.switch_to_block(entry);
     let p = b.block_params(entry).to_vec();
-    let (env, regs, mem, pc_in) = (p[0], p[1], p[2], p[3]);
+    let native = nat_id.is_some();
+    let (env, mem) = (p[0], if native { p[1] } else { p[2] });
+    let pc_in = if native { p[2] } else { p[3] };
+    let nregs = f.reg_ty.len() as u64;
+    // A native-frame variant keeps its registers and slots on the native stack.
+    let mut nat = None;
+    let regs = if native {
+        let rs = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            (nregs * 8) as u32,
+            3,
+        ));
+        let ss = b.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            f.frame.max(1),
+            3,
+        ));
+        let regs = b.ins().stack_addr(I64, rs, 0);
+        let slots = b.ins().stack_addr(I64, ss, 0);
+        let temp_base = b
+            .ins()
+            .load(I64, MemFlagsData::trusted(), mem, MEM_TEMP_LEN as i32);
+        nat = Some(Nat {
+            func: nat_id.unwrap_or(0),
+            nregs,
+            depth: pc_in,
+            slots,
+            temp_base,
+            frame_addr: frame_addrs(f),
+        });
+        regs
+    } else {
+        p[1]
+    };
     let n = f.code.len();
     let mut leader = vec![false; n + 1];
     leader[0] = true;
@@ -307,6 +653,9 @@ fn gen_func(
     // The interpreter enters a function after the constants and addresses it preloads into the
     // frame's registers (`Pre::next`): the pcs after such definitions at an entry are entries too.
     for i in 1..n {
+        if native {
+            break;
+        }
         let preload = match f.code[i - 1] {
             Inst::Const { .. } | Inst::ConstF { .. } => true,
             Inst::AddrOf { space, .. } => !matches!(space, yavs_ir::AddrSpace::Up(_)),
@@ -317,16 +666,18 @@ fn gen_func(
     let bbs: Vec<Option<Block>> = (0..n)
         .map(|i| leader[i].then(|| b.create_block()))
         .collect();
-    let other = b.create_block();
-    let mut sw = Switch::new();
-    for (i, bb) in bbs.iter().enumerate() {
-        if let Some(bb) = bb {
-            sw.set_entry(i as u128, *bb);
+    if !native {
+        let other = b.create_block();
+        let mut sw = Switch::new();
+        for (i, bb) in bbs.iter().enumerate() {
+            if let Some(bb) = bb {
+                sw.set_entry(i as u128, *bb);
+            }
         }
+        sw.emit(&mut b, pc_in, other);
+        b.switch_to_block(other);
+        b.ins().jump(exit, &[BlockArg::Value(pc_in)]);
     }
-    sw.emit(&mut b, pc_in, other);
-    b.switch_to_block(other);
-    b.ins().jump(exit, &[BlockArg::Value(pc_in)]);
     let region = |b: &mut FunctionBuilder<'_>, id: u32, name: &'static str| {
         b.func.dfg.alias_regions.insert(AliasRegionData {
             user_id: id,
@@ -334,7 +685,7 @@ fn gen_func(
         })
     };
     let (rr, gr, mr) = (
-        region(&mut b, 1, "regs"),
+        region(&mut b, if native { 4 } else { 1 }, "regs"),
         region(&mut b, 2, "guest"),
         region(&mut b, 3, "mem"),
     );
@@ -356,7 +707,18 @@ fn gen_func(
         cache: vec![None; f.reg_ty.len()],
         slows: Vec::new(),
         stepped: Vec::new(),
+        nat,
+        bad: None,
     };
+    if g.nat.is_some() {
+        g.native_entry(f, &p[3..])?;
+        match bbs.first().copied().flatten() {
+            Some(first) => {
+                g.b.ins().jump(first, &[]);
+            }
+            None => return Err("no code".into()),
+        }
+    }
     let block_bb = |bl: yavs_ir::BlockId| -> Result<Block, String> {
         f.blocks
             .get(bl)
@@ -387,7 +749,23 @@ fn gen_func(
             g.clear();
             open = true;
         }
-        if let Inst::Ret { .. } = inst {
+        if let Inst::Ret { v } = inst {
+            if g.nat.is_some() {
+                let val = match v {
+                    Some(r) => g.ld(r),
+                    None => g.c64(0),
+                };
+                let ok = g.c32(0);
+                g.b.ins().return_(&[ok, val]);
+            } else {
+                let v = g.c32(pc);
+                g.leave(v);
+            }
+            open = false;
+            continue;
+        }
+        if g.nat.is_some() && matches!(inst, Inst::Unreachable { .. }) {
+            // The interpreter reports it, with the frame materialised.
             let v = g.c32(pc);
             g.leave(v);
             open = false;
@@ -431,6 +809,12 @@ fn gen_func(
                     }
                     None => g.step(pc, &inst),
                 }
+            }
+            Inst::Select { dst, c, a, b } => {
+                let (cv, x, y) = (g.ld(c), g.ld(a), g.ld(b));
+                let nz = g.b.ins().icmp_imm_s(IntCC::NotEqual, cv, 0);
+                let v = g.b.ins().select(nz, x, y);
+                g.st(dst, v);
             }
             Inst::Un { op, dst, a } => {
                 let x = g.ld(a);
@@ -585,7 +969,13 @@ fn gen_func(
             }
             Inst::AddrOf { dst, space, off } => match addr_const(space, off) {
                 Some(a) if space == AddrSpace::Frame => {
-                    let hi = g.mem_ld(MEM_FRAME);
+                    let hi = match &g.nat {
+                        Some(n) => {
+                            let d = n.depth;
+                            g.b.ins().bor_imm_s(d, i64::from(space::FRAME) << 29)
+                        }
+                        None => g.mem_ld(MEM_FRAME),
+                    };
                     let hi = g.b.ins().ishl_imm_s(hi, 32);
                     let v = g.b.ins().bor_imm_s(hi, a as i64);
                     g.st(dst, v);
@@ -595,7 +985,7 @@ fn gen_func(
                     g.st(dst, v)
                 }
                 None => match space {
-                    AddrSpace::Up(d @ 1..=2) => {
+                    AddrSpace::Up(d @ 1..=2) if g.nat.is_none() => {
                         let (slow, join) = g.slow_path(pc, &inst);
                         let hi = g.mem_ld(MEM_UP + 8 * u64::from(d - 1));
                         let okc = g.b.ins().icmp_imm_s(IntCC::NotEqual, hi, -1);
@@ -614,7 +1004,10 @@ fn gen_func(
                 let z = g.b.ins().icmp_imm_s(IntCC::Equal, roots, 0);
                 g.guard(z, slow);
                 let len = g.mem_ld(MEM_TEMP_LEN);
-                let base = g.mem_ld(MEM_TEMP_BASE);
+                let base = match &g.nat {
+                    Some(n) => n.temp_base,
+                    None => g.mem_ld(MEM_TEMP_BASE),
+                };
                 let v = g.b.ins().umin(base, len);
                 g.mem_st(MEM_TEMP_LEN, v);
                 g.join(join);
@@ -940,6 +1333,16 @@ fn gen_func(
                 g.b.ins().call(g.imp.lcopy, &[pd, nd, d0, ps, ns, s0, k]);
                 g.join(join);
             }
+            Inst::Call { func, args, dst } => {
+                let nr = g.imp.natives.get(&func).copied();
+                let rs = f.regs(args);
+                match (nr, rs) {
+                    (Some(nr), Some(rs)) if nr.nparams == rs.len() && nr.ret == dst.is_some() => {
+                        g.native_call(pc, &inst, nr, rs, dst)
+                    }
+                    _ => g.step(pc, &inst),
+                }
+            }
             Inst::CondBr { c: r, t, f: e } => {
                 let x = g.ld(r);
                 let (tb, eb) = (block_bb(t)?, block_bb(e)?);
@@ -1006,6 +1409,9 @@ fn gen_func(
             _ => g.step(pc, &inst),
         }
     }
+    if let Some(why) = g.bad.take() {
+        return Err(format!("no native frame: {why}"));
+    }
     if open {
         // Falling off the end: the interpreter reports it.
         let v = g.c32(n as u32);
@@ -1017,6 +1423,12 @@ fn gen_func(
         g.b.set_cold_block(s.block);
         g.b.switch_to_block(s.block);
         g.clear();
+        if g.nat.is_some() {
+            // The interpreter executes the instruction in the materialised frame.
+            let v = g.c32(s.pc);
+            g.leave(v);
+            continue;
+        }
         let at = if s.keep { s.pc | KEEP } else { s.pc };
         let pcv = g.c32(at);
         g.call_go(g.imp.step, &[pcv], false);
@@ -1024,7 +1436,13 @@ fn gen_func(
     }
     // The exit block.
     g.b.switch_to_block(g.exit);
-    g.b.ins().return_(&[exit_pc]);
+    if g.nat.is_some() {
+        g.record_frame(f, exit_pc);
+        let (one, zero) = (g.c32(1), g.c64(0));
+        g.b.ins().return_(&[one, zero]);
+    } else {
+        g.b.ins().return_(&[exit_pc]);
+    }
     g.b.seal_all_blocks();
     g.b.finalize(cfg);
     Ok(g.stepped)
@@ -1053,6 +1471,9 @@ impl Gen<'_> {
 
     /// The pointer to the frame's slots.
     fn slots(&mut self) -> Value {
+        if let Some(n) = &self.nat {
+            return n.slots;
+        }
         if let Some(v) = self.slots {
             return v;
         }
@@ -1104,6 +1525,168 @@ impl Gen<'_> {
 
     fn mem_st(&mut self, field: u64, v: Value) {
         self.b.ins().store(self.mf, v, self.mem, field as i32);
+    }
+
+    /// The prologue of a native-frame variant: zeroed registers and slots (as a frame the
+    /// interpreter pushes), the arguments stored into their parameter slots.
+    fn native_entry(&mut self, f: &Func, args: &[Value]) -> Result<(), String> {
+        let (regs, slots) = match &self.nat {
+            Some(n) => (n.nregs * 8, n.slots),
+            None => return Ok(()),
+        };
+        let regs_ptr = self.regs;
+        for (ptr, bytes, fl) in [
+            (regs_ptr, regs, self.rf),
+            (slots, u64::from(f.frame), self.gf),
+        ] {
+            if bytes <= 128 {
+                let z = self.c64(0);
+                for k in 0..bytes.div_ceil(8) {
+                    self.b.ins().store(fl, z, ptr, (k * 8) as i32);
+                }
+            } else {
+                let n = self.c64(bytes as i64);
+                self.b.ins().call(self.imp.zero, &[ptr, n]);
+            }
+        }
+        // The interpreter preloads the registers a constant or an address defines once.
+        let mut defs = vec![0u8; f.reg_ty.len()];
+        for inst in &f.code {
+            inst.visit(&mut |r, role, _| {
+                if role == yavs_ir::Role::Def
+                    && let Some(d) = defs.get_mut(r.0 as usize)
+                {
+                    *d = d.saturating_add(1);
+                }
+            });
+        }
+        for inst in &f.code {
+            match *inst {
+                Inst::Const { dst, v } if defs[dst.0 as usize] == 1 => {
+                    let x = self.c64(v);
+                    self.st(dst, x);
+                }
+                Inst::ConstF { dst, v } if defs[dst.0 as usize] == 1 => {
+                    let x = self.c64(v.to_bits() as i64);
+                    self.st(dst, x);
+                }
+                Inst::AddrOf { dst, space, off } if defs[dst.0 as usize] == 1 => {
+                    if let Some(a) = addr_const(space, off) {
+                        let v = if space == AddrSpace::Frame {
+                            let d = self.nat.as_ref().map_or(self.regs, |n| n.depth);
+                            let hi = self.b.ins().bor_imm_s(d, i64::from(space::FRAME) << 29);
+                            let hi = self.b.ins().ishl_imm_s(hi, 32);
+                            self.b.ins().bor_imm_s(hi, a as i64)
+                        } else {
+                            self.c64(a as i64)
+                        };
+                        self.st(dst, v);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (p, &v) in f.params.iter().zip(args) {
+            let off = p.slot as i32;
+            match p.width {
+                Width::B1 => {
+                    self.b.ins().istore8(self.gf, v, slots, off);
+                }
+                Width::B4 => {
+                    self.b.ins().istore32(self.gf, v, slots, off);
+                }
+                Width::B8 => {
+                    self.b.ins().store(self.gf, v, slots, off);
+                }
+                Width::Sig => return Err("signal parameter".into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Record the native frame at `pc` for the interpreter (`yavs_rt_deopt`): its registers and
+    /// slots are copied to the buffers the callback hands out.
+    fn record_frame(&mut self, f: &Func, pc: Value) {
+        let Some(n) = &self.nat else { return };
+        let (func, nregs, slots, tb) = (n.func, n.nregs, n.slots, n.temp_base);
+        let fu = self.c32(func);
+        let nr = self.c64(nregs as i64);
+        let sl = self.c64(i64::from(f.frame));
+        let c = self
+            .b
+            .ins()
+            .call(self.imp.deopt, &[self.env, self.mem, fu, pc, tb, nr, sl]);
+        let buf = self.b.inst_results(c)[0];
+        let bytes = self.c64(nregs as i64 * 8);
+        let regs = self.regs;
+        self.b.ins().call(self.imp.mov, &[buf, regs, bytes]);
+        if f.frame > 0 {
+            let c = self.b.ins().call(self.imp.deopt_slots, &[self.env]);
+            let sb = self.b.inst_results(c)[0];
+            let fb = self.c64(i64::from(f.frame));
+            self.b.ins().call(self.imp.mov, &[sb, slots, fb]);
+        }
+    }
+
+    /// `Inst::Call` of a function that has a native-frame variant: a direct call one frame
+    /// deeper, with no frame in the interpreter; the interpreter makes the call when the depth
+    /// limit is near, and the frames are materialised when the callee cannot finish.
+    fn native_call(&mut self, pc: u32, inst: &Inst, nr: NatRef, args: &[Reg], dst: Option<Reg>) {
+        if let Some(n) = &self.nat
+            && args.iter().any(|r| n.frame_addr[r.0 as usize])
+        {
+            self.bad = Some("a call passes an address in the frame".into());
+            return;
+        }
+        let (slow, join) = self.slow_path(pc, inst);
+        let depth = match &self.nat {
+            Some(n) => n.depth,
+            None => self.mem_ld(MEM_FRAME_IDX),
+        };
+        let d1 = self.b.ins().iadd_imm_s(depth, 1);
+        let max = self.mem_ld(MEM_MAX_DEPTH);
+        let a = self.b.ins().icmp(IntCC::UnsignedLessThan, d1, max);
+        let b2 = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, d1, 1 << 29);
+        let okc = self.b.ins().band(a, b2);
+        // Native stack is left (`NEST_STACK`).
+        let sp = self.b.ins().get_stack_pointer(I64);
+        let lo = self.mem_ld(MEM_STACK_LO);
+        let room = self.b.ins().icmp(IntCC::UnsignedGreaterThan, sp, lo);
+        let okc = self.b.ins().band(okc, room);
+        self.guard(okc, slow);
+        let mut cargs = vec![self.env, self.mem, d1];
+        for &r in args {
+            cargs.push(self.ld(r));
+        }
+        let call = self.b.ins().call(nr.fr, &cargs);
+        let (status, val) = {
+            let rs = self.b.inst_results(call);
+            (rs[0], rs[1])
+        };
+        let (out, cont) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(out);
+        self.b.ins().brif(status, out, &[], cont, &[]);
+        self.b.switch_to_block(out);
+        let pcv = self.c32(pc);
+        if self.nat.is_some() {
+            // This frame is recorded too, at its call.
+            self.leave(pcv);
+        } else {
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.deopt_end, &[self.env, self.mem, pcv]);
+            let r = self.b.inst_results(c)[0];
+            self.leave(r);
+        }
+        self.b.switch_to_block(cont);
+        if let (Some(d), true) = (dst, nr.ret) {
+            self.st(d, val);
+        }
+        self.join(join);
     }
 
     /// Return `v` (an i32): a jump to the function's exit block.
@@ -1201,6 +1784,10 @@ impl Gen<'_> {
 
     /// Execute the instruction `i` at `pc` in the interpreter.
     fn step(&mut self, pc: u32, i: &Inst) {
+        if self.nat.is_some() {
+            self.bad = Some(format!("{i:?}"));
+            return;
+        }
         let d = format!("{i:?}");
         self.stepped
             .push(d.split([' ', '{', '(']).next().unwrap_or("").to_string());
@@ -1211,6 +1798,10 @@ impl Gen<'_> {
 
     /// The signal instruction at `pc` through `yavs_rt_signal`.
     fn signal(&mut self, pc: u32, edge: u32) {
+        if self.nat.is_some() {
+            self.bad = Some("signal operation".into());
+            return;
+        }
         let (p, e) = (self.c32(pc), self.c32(edge));
         self.call_go(self.imp.signal, &[p, e], true);
     }
@@ -1267,7 +1858,11 @@ impl Gen<'_> {
             let (ev, nv) = (self.op(extra), self.op(n));
             // `extra` is below 2^63, the sum cannot wrap.
             let off = self.b.ins().iadd_imm_s(ev, o as i64);
-            let len = self.mem_ld(MEM_SLOTS_LEN);
+            let len = if self.nat.is_some() {
+                self.c64(self.frame_len as i64)
+            } else {
+                self.mem_ld(MEM_SLOTS_LEN)
+            };
             let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
             let rest = self.b.ins().isub(len, nv);
             let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);

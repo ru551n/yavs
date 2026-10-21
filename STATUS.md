@@ -3354,3 +3354,24 @@ shuffled threads (17 of 17, with textio of std_logic_vector, fixed and float val
   on SIGTERM).
 - A write error on stdout (closed pipe) stops the run between cycles with a line on stderr, finishes wave and
   coverage files and exits 141 (a run still writing after 1 s exits at once). Test: `closed_stdout_stops_run`.
+
+## second and third runs of a suite (#407, 2026-10-21)
+
+Cause of the `.pro` driver's second run being a third slower (and its third run too): the second run of every closure
+made entries of its own (analysis image 5.6 MB, lowered packages, state, IR: about 15 MB) and stopped using the shared library
+stages, which only a first run of a closure read. The 68 closures of one library directory write four entries each into
+its 96, so they pushed each other out and the third run wrote them again; read back they were no faster than the shared
+entries (user CPU of 314 runs: first 43 s, second 59 s, third 54 s; per phase: analysis 2.0, 9.1, 7.0 s and simulation
+28.4, 34.4, 33.0 s). A closure under a prefix whose lowered library exists now keeps using the shared stages at every run and
+writes nothing (`docs/decisions.md` "Library stages"); `crates/yavs/tests/cache_prefix.rs` pins that three more runs of a closure
+store nothing and print the same.
+Peak resident size: ordinary library runs are 60 MB, those that call a lot of the library 155 MB (the same with `--no-cache`);
+the one run that makes the lowered library peaked at 224 MB because the two lowerings (60 MB of IR) stayed resident through its
+simulation, now 184 MB (the heap is given back after the entry is made). The 567 MB process of the first library's suite
+(`rand_tb` `rand_cyclic_performance`) is the same with `--no-cache`: the simulation itself, not the cache.
+Pinned to one performance core, `-j1`, release build, `.pro` suite (2008, 314 tests): user CPU of the runs first / second / third
+42.9 / 39.8 / 39.6 s, wall 56.2 / 52.3 / 52.2 s (the head-to-head: 56 / 74 / 68 s). The first library's suite at `-j1`:
+user CPU 123 / 119 / 118 s. Output of the `.pro` suite (2008 and 2019, every test log) and of the first library's suite
+byte-identical between the first, second, third run and `--no-cache`. Difftest (each `run` three times in one work directory,
+outputs compared): 413/414 at 1 and 4 threads on the interpreter, `--tier=llvm`, `--tier=auto` and the `gc-stress` build (the one
+exception appends to a file in the work directory, so repeating it changes its output by design).

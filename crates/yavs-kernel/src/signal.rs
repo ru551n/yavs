@@ -1049,6 +1049,19 @@ impl Signal {
             any = true;
             // Runs of changed elements: stamps filled and the event list extended per run.
             let mut w = m;
+            if !self.watched {
+                // Nothing lists the runs: the stamps of each changed element, the runs counted.
+                let n = self.ty.len as usize;
+                let (cycles, rest) = self.stamps.split_at_mut(2 * n);
+                let base = off + c;
+                while w != 0 {
+                    let e = base + w.trailing_zeros() as usize;
+                    w &= w - 1;
+                    cycles[e] = cycle;
+                    rest[e] = now.raw();
+                }
+                self.nruns += u64::from((m & !(m << 1)).count_ones());
+            }
             while w != 0 {
                 let s = w.trailing_zeros();
                 let len = (w >> s).trailing_ones();

@@ -2884,7 +2884,7 @@ own entries, as before, and keeps its `ir` compact).
 - Smaller: a per-driver flag for "another source on some element" replaces the segment search in the
   unchanged-assignment test; the known edge of a trigger is looked up in a table; a batch of one
   process or entry is not ordered or sorted; a phase wanted only after a serial process is skipped
-  without scanning the observers; the event stamps of a run are written in one pass.
+  without scanning the observers; the event stamps of a run are written in one pass (of an unwatched signal, per changed element).
 - Tried and dropped (no gain beyond noise in instructions or cycles): counting repeated waits at the
   wait instead of comparing the sensitivity at the commit, a one-byte "nothing happened" flag per
   process, a cache-line layout of the process slot and its metadata, a global flag for batches

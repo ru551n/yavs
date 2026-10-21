@@ -2686,6 +2686,40 @@ user's performance priority:
   not stored). `--tier=auto` keeps the interpreter's value: the functions it compiles run
   interpreted first, and the measured difference there is below the noise.
 
+
+## Clean-up of finished subprograms: threading through short-circuit tests, slice emptiness tests, coalesced moves (yavs-ir `opt/cfg.rs`, #444)
+
+- **What:** after the optimiser's walks and before registers are numbered, a linear pass over the finished code of a
+  `function` or `procedure` that cannot suspend (`YAVS_NO_CFG=1` turns it off for differential testing):
+  (1) a block that ends in a jump to a small block (up to three effect-free instructions, `Move`, `Const`, `Cmp`,
+  `Bool`, `Select`, then a `Br`, `CondBr` or `Ret`) takes that block's code over, with constants and copies tracked
+  through the straight-line code: `t := a; if t then t := b end if; if t then ...` becomes a branch on `a` and a branch
+  on `b`, a `CondBr` on a known constant becomes a `Br`, and an edge into a block that only tests the same register again
+  goes to the arm it picks; registers defined once and read only in the copied block get fresh names in the copy
+  (the predecoder fuses a compare with its branch only when the compare is defined once and read once);
+  (2) the emptiness test of a slice, `Cmp Eq|Ne|Gt|Le (DopeLen d) 0` with `d` a fresh `MakeDope` of a constant direction
+  whose bounds were not overwritten, becomes a comparison of the bounds; (3) pure definitions no path reads are removed,
+  including the length, the descriptor write and the allocation of a slice nobody reads any more (only when no copy of
+  the block's address can exist before the last reader: the readers between the allocation and the next one are
+  exactly `MakeDope` and `DopeLen`); (4) `t = a op b; p = t` with nothing else reading `t` and nothing touching `p` in
+  between writes `p` directly (the move is what remains after promotion when a range check between them was dropped
+  later). Blocks that no branch reaches any more are reduced to a jump to the next block, as `kill_unreachable` does.
+- **Why:** per-character library loops (`and`/`or` chains over the character class, `s(i to i+1)` tests) spent a third of
+  their operations on flags kept in registers only to be tested by the next block, and on building a descriptor to
+  compare its length with zero. Executed interpreter operations of the scoreboard testbench fell by 9 percent.
+- **Invariants it keeps:** a register defined once by a `Const`, `ConstF` or `AddrOf` is a value the frame starts with
+  (other blocks read it without having run the definition): such a definition is never copied (the copy would make
+  the register defined twice and the frame would no longer start with it) and is kept, at the entry, when its block
+  becomes unreachable. A block followed by its step block (`Cmp`/`CondBr`, then `Bin add|sub`, `Br`) is not copied: the
+  predecoder makes one operation of the loop latch only in that order. Nothing is done to processes, functions
+  that may suspend, or with a debugger attached beyond what the walk did (no `Stmt`, `Cover`, store or check is
+  removed or moved; the copies keep their instructions' statements).
+- **Cost:** threading and the slice test run only in functions with a loop (a branch to a block at or before its own);
+  the rest of a library runs a few times and the optimiser's time counts at every subprogram's first call. A small
+  verification-component test case executes 0.6 percent more instructions with the pass (7 million of 1.26 billion).
+- **Not changed:** loop-invariant code motion, a layout that lets more jumps fall through, passing arguments in
+  registers (the compiled tier reads the frame slots).
+
 ## Registers share cells by live range (yavs-ir `opt/share.rs`, #478)
 
 - **What:** the last step of the optimiser (`renumber`) computes the liveness of every register over

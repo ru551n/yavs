@@ -90,7 +90,7 @@ fn list_mut(i: &mut Inst) -> Option<&mut crate::Regs> {
     }
 }
 
-fn successors(prog: &Program, f: &crate::Func) -> Vec<Vec<usize>> {
+pub(super) fn successors(prog: &Program, f: &crate::Func) -> Vec<Vec<usize>> {
     f.blocks
         .values()
         .iter()

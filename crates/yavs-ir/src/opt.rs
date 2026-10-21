@@ -32,6 +32,7 @@
 //! `Elab` and `Thunk` run once per instance and are left alone. `YAVS_NO_IROPT=1` turns the
 //! pass off (differential testing).
 
+mod cfg;
 mod live;
 mod memo;
 mod range;
@@ -66,6 +67,17 @@ fn memo_enabled() -> bool {
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     }) && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Is the clean-up of finished subprograms (`cfg.rs`) on? Off with `YAVS_NO_CFG` set to anything
+/// but `0` or the empty string (differential testing).
+fn cfg_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_CFG")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    })
 }
 
 static KEEP_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -205,6 +217,14 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     f.loc = loc;
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
+    if cfg_enabled()
+        && matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+        && f.body.is_none()
+        && !f.flags.contains(FuncFlags::MAY_SUSPEND)
+        && !f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
+    {
+        cfg::run(prog, &mut f);
+    }
     if memo_enabled() {
         memo::run(prog, &mut f);
     }

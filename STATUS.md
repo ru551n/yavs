@@ -1467,6 +1467,43 @@ pass (all eleven, `record_dict` under 2019); the `.pro` regression 314/314 under
 scalar assignment forms the fusions handle and the `numeric_std` logical operators with metavalues and null ranges; the
 native/body comparison test (`ieee_native`) now also runs those operators on `signed` and the length-mismatch failure.
 
+## Optimiser round 10: clean-up of finished subprograms (#444, 2026-10-21)
+
+A late pass over the finished code of a subprogram that cannot suspend (`crates/yavs-ir/src/opt/cfg.rs`, `docs/decisions.md`
+"Clean-up of finished subprograms"; `YAVS_NO_CFG=1` turns it off): a block that ends in a jump to a small block takes that
+block's code over, so `and`/`or` chains and loop tests branch where their inputs are known; the emptiness test of a fresh slice
+descriptor compares the bounds and the descriptor, its block and its length go; dead pure definitions are removed by
+liveness; `op; move` writes the variable directly. Threading and the slice test run only in functions with a loop.
+
+Executed interpreter operations of the scoreboard testbench (`uvvm_sb_slv_tb`, first of its three runs, `--no-cache`): 161.3 M
+to 146.7 M (-9.1 percent; threading -5.4, slice tests -4.1). Pinned `perf stat` (core 3, performance cores, user-mode
+`cpu_core/instructions` and `cpu_core/cycles`, `tools/bench` designs, `--tier=interp`, one run after one warm-up), main
+`45a44b62` to this change:
+
+| Row | instructions before (G) | after (G) | cycles before (G) | after (G) |
+|---|---:|---:|---:|---:|
+| `uvvm_sb_slv_tb` | 18.99 | 18.78 | 4.82 | 4.73 |
+| `uvvm_util_rand_tb` | 19.48 | 19.25 | 4.68 | 4.64 |
+| `osvvm_axistream` | 6.15 | 6.16 | 1.95 | 1.94 |
+| `strings_heavy` | 1.57 | 1.55 | 0.38 | 0.38 |
+| `protected_scoreboard` | 1.03 | 1.03 | 0.18 | 0.18 |
+| `vunit_vc30` (30 short runs) | 18.78 | 18.93 | 7.34 | 7.49 |
+| `rtl_ff`, `rtl_lfsr`, `rtl_chain`, `rtl_fan`, `rtl_bus`, `rtl_ram` | unchanged to 0.1 percent | | unchanged to 1 percent | |
+
+The gain is small because the removed operations are the cheap ones: an operation of the scoreboard run costs 32 cycles on
+average, most of it in calls (frame setup, argument slots, the parameter loads of every callee), string concatenation, layout
+words and allocation. The optimiser's own time grows: a small verification-component test case executes 0.6 percent more
+instructions (7 M of 1.26 G; `vunit_vc30` shows +0.8 percent). `--tier=auto` rows are not quoted: the instruction count of the
+background compile thread moves them by more than the change. Left: loop-invariant code motion of the direction select of a
+`for ... in s'range` loop and of descriptor lengths, sinking of frame loads used on one arm, and cheaper calls (parameters
+passed in registers needs the compiled tier's frame contract changed).
+
+Verification at this change: `cargo test --workspace` (795), clippy and fmt, `cargo test -p yavs-llvm --features llvm`;
+differential corpus 420/420 at 1 and 4 threads and 4 shuffled threads on the interpreter, `--tier=llvm` and `--tier=auto`, and
+at 4 shuffled threads with `gc-stress` (interpreter and LLVM tier); `external.py --oracle --check` 857 and 393; the second
+verification library's `.pro` regression 314/314 under 2008 and 2019; verification library suite 102 pass, 9 fail, 26 skip (as
+before); the external runner's own suites all pass (`record_dict` under 2019).
+
 ## performance: head-to-head against the two reference simulators, 2026-10-21
 
 Reproduce with `tools/bench` (`run.py BIN --ref sim1,sim2 --tiers interp,auto --instructions --tiny`): the designs of the tables

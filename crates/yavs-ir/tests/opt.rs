@@ -1239,3 +1239,175 @@ fn a_select_nobody_reads_goes() {
         "{code:?}"
     );
 }
+
+fn unknown(fb: &mut FuncBuilder<'_>, off: u32) -> Reg {
+    let a = fb.addr(AddrSpace::Inst, off);
+    let d = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: d,
+        addr: a,
+        w: Width::B8,
+    });
+    d
+}
+
+#[test]
+fn a_slice_emptiness_test_compares_the_bounds() {
+    if !on() {
+        return;
+    }
+    for (dir, want_a, want_b) in [(0, 1, 0), (1, 0, 1)] {
+        let code = build(FuncKind::Function, |fb| {
+            fb.slot(16, 8);
+            fb.stmt(StmtKind::Return, sp());
+            // (Only code in a loop is cleaned up: the test goes round once more.)
+            let head = fb.block();
+            fb.emit(Inst::Br { to: head });
+            fb.at(head);
+            let (l, r) = (unknown(fb, 0), unknown(fb, 8));
+            let at = fb.reg(RegTy::Ptr);
+            let n24 = fb.int(24);
+            fb.emit(Inst::Alloc { dst: at, size: n24 });
+            let d = fb.int(dir);
+            let parts = fb.regs(&[l, r, d]);
+            fb.emit(Inst::MakeDope { at, parts });
+            let len = fb.reg(RegTy::I64);
+            fb.emit(Inst::DopeLen {
+                dst: len,
+                dope: at,
+                dim: 0,
+            });
+            let z = fb.int(0);
+            let c = fb.reg(RegTy::I64);
+            fb.emit(Inst::Cmp {
+                op: CmpOp::Eq,
+                dst: c,
+                a: len,
+                b: z,
+            });
+            let (t, e) = (fb.block(), fb.block());
+            fb.emit(Inst::CondBr { c, t, f: e });
+            fb.at(t);
+            fb.emit(Inst::Ret { v: Some(l) });
+            fb.at(e);
+            let done = fb.block();
+            fb.emit(Inst::CondBr {
+                c: r,
+                t: head,
+                f: done,
+            });
+            fb.at(done);
+            fb.emit(Inst::Ret { v: Some(r) });
+        });
+        for gone in [
+            count(&code, |i| matches!(i, Inst::DopeLen { .. })),
+            count(&code, |i| matches!(i, Inst::MakeDope { .. })),
+            count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        ] {
+            assert_eq!(gone, 0, "{code:?}");
+        }
+        // Empty when the bounds are the wrong way round: loads come in order l, r.
+        let loads: Vec<Reg> = code
+            .iter()
+            .filter_map(|i| match i {
+                Inst::Load { dst, .. } => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        let cmp = code
+            .iter()
+            .find_map(|i| match i {
+                Inst::Cmp { op, a, b, .. } => Some((*op, *a, *b)),
+                _ => None,
+            })
+            .expect("one comparison");
+        assert_eq!(
+            cmp,
+            (CmpOp::Lt, loads[want_a], loads[want_b]),
+            "direction {dir}: {code:?}"
+        );
+    }
+}
+
+#[test]
+fn a_flag_set_on_each_path_is_branched_on_there() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        // (Only code in a loop is cleaned up: the test goes round once more.)
+        let head = fb.block();
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let (x, y, z) = (unknown(fb, 0), unknown(fb, 8), unknown(fb, 16));
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: x,
+            b: y,
+        });
+        let (bt, bf, join, yes, no) = (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t: bt, f: bf });
+        // `flag := x = z` on one path, `flag := false` on the other.
+        let flag = fb.reg(RegTy::I64);
+        fb.at(bt);
+        let c2 = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c2,
+            a: x,
+            b: z,
+        });
+        fb.emit(Inst::Move { dst: flag, src: c2 });
+        fb.emit(Inst::Br { to: join });
+        fb.at(bf);
+        fb.emit(Inst::Const { dst: flag, v: 0 });
+        fb.emit(Inst::Br { to: join });
+        fb.at(join);
+        fb.emit(Inst::CondBr {
+            c: flag,
+            t: yes,
+            f: no,
+        });
+        fb.at(yes);
+        fb.emit(Inst::Ret { v: Some(x) });
+        fb.at(no);
+        let done = fb.block();
+        fb.emit(Inst::CondBr {
+            c: y,
+            t: head,
+            f: done,
+        });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(y) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Move { .. })),
+        0,
+        "{code:?}"
+    );
+    // The two tests are branches, and the loop's exit test follows each path that reaches it
+    // (the flag is gone, and the false path goes straight to that test).
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        4,
+        "{code:?}"
+    );
+    let cmp_eq = code
+        .iter()
+        .find_map(|i| match i {
+            Inst::Cmp {
+                op: CmpOp::Eq, dst, ..
+            } => Some(*dst),
+            _ => None,
+        })
+        .expect("the equality");
+    assert!(
+        code.iter()
+            .any(|i| matches!(i, Inst::CondBr { c, .. } if *c == cmp_eq)),
+        "{code:?}"
+    );
+}

@@ -1,0 +1,45 @@
+# Dependabot for the Rust dependencies. The root workspace covers crates/*; gui/ and fuzz/ are
+# separate Cargo workspaces with their own lockfiles, so they get their own entries.
+# CI (ci.yml) runs on every pull_request, Dependabot PRs included.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # llvm-sys is pinned with "=211.1.1" on purpose: LLVM 21 is the only supported LLVM
+      # (docs/decisions.md, "LLVM bindings: llvm-sys 211"). Major bumps need a decision first.
+      - dependency-name: "llvm-sys"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: cargo
+    directory: "/gui"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]

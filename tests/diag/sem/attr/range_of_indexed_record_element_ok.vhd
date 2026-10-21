@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 16.2.3 (hdl-modules axi_lite_simple_read_crossbar; NVC and GHDL accept)
+-- LRM 16.2.3 (hdl-modules axi_lite_simple_read_crossbar; sim1 and sim2 accept)
 package p is
   type rr is record data : bit_vector(7 downto 0); end record;
   type port_t is record r : rr; end record;

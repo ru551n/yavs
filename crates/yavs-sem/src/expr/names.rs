@@ -1443,7 +1443,7 @@ impl Db {
                             },
                         )
                     }
-                    // Loop parameters are not static; generate parameters are globally static (8.1, NVC #856).
+                    // Loop parameters are not static; generate parameters are globally static (8.1, sim1 #856).
                     (_, crate::decl::ObjRole::LoopParam, _) => (Staticness::None, None),
                     (crate::decl::ObjClass::Constant, _, _) => (Staticness::Globally, None),
                     _ => (Staticness::None, None),
@@ -2191,7 +2191,7 @@ impl Db {
                 let p = self.resolve_prefix(scope, prefix, t);
                 // 4.2.2.2: of a formal signal parameter these attributes are not allowed;
                 // of another signal they are, and the implicit signal lives outside the
-                // subprogram (GHDL, Questa).
+                // subprogram (sim2, sim3).
                 if matches!(
                     a,
                     PredefAttr::Delayed
@@ -2232,8 +2232,8 @@ impl Db {
                         } else if self.constrainedness(st) == crate::types::Constrainedness::Full
                             || self.is_port_or_generic(p)
                         {
-                            // A port or generic gets its bounds once, at elaboration: like NVC,
-                            // GHDL and Questa, its array attributes are globally static (9.4.3).
+                            // A port or generic gets its bounds once, at elaboration: like sim1,
+                            // sim2 and sim3, its array attributes are globally static (9.4.3).
                             Staticness::Globally
                         } else {
                             Staticness::None

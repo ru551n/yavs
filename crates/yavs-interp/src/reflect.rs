@@ -493,7 +493,7 @@ fn image_of(prog: &Program, r: &Refl, v: u64) -> R<Vec<u8>> {
                 .iter()
                 .map(|(n, s)| (n.as_str(), *s))
                 .collect();
-            // NVC's unit case (docs/decisions.md): `5000000 FS`.
+            // sim1's unit case (docs/decisions.md): `5000000 FS`.
             image::physical_image(v as i64, &PhysicalType::new(&u)).to_ascii_uppercase()
         }
         ReflKind::Enum { ty, .. } => {

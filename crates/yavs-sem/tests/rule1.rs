@@ -481,9 +481,9 @@ end architecture;
 
 // -- case 5: the tracker reproducers (written fresh) ----------------------------
 
-/// GHDL #641: `'subtype` and `'range` of an element of a record port (the alias of the
-/// element is finding F6, `GHDL_641_ALIAS`).
-const GHDL_641: &str = "
+/// sim2 #641: `'subtype` and `'range` of an element of a record port (the alias of the
+/// element is finding F6, `SIM2_641_ALIAS`).
+const SIM2_641: &str = "
 library ieee; use ieee.std_logic_1164.all;
 package bus641_pkg is
   type bus_rec_t is record
@@ -503,8 +503,8 @@ begin
 end architecture;
 ";
 
-/// GHDL #1224: array of unconstrained vectors, element bounds from the initial value.
-const GHDL_1224: &str = "
+/// sim2 #1224: array of unconstrained vectors, element bounds from the initial value.
+const SIM2_1224: &str = "
 library ieee; use ieee.std_logic_1164.all;
 entity e1224 is
 end entity;
@@ -525,8 +525,8 @@ begin
 end architecture;
 ";
 
-/// GHDL #2422: a type conversion on an unconstrained `out` formal.
-const GHDL_2422: &str = "
+/// sim2 #2422: a type conversion on an unconstrained `out` formal.
+const SIM2_2422: &str = "
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 entity comp2422 is
   port (o : out unsigned);
@@ -545,9 +545,9 @@ begin
 end architecture;
 ";
 
-/// GHDL #2179: `others` in an aggregate for an element of a record port whose element
+/// sim2 #2179: `others` in an aggregate for an element of a record port whose element
 /// is unconstrained, and for a record signal declared with `'subtype`.
-const GHDL_2179: &str = "
+const SIM2_2179: &str = "
 package p2179 is
   type rec is record
     elem : bit_vector;
@@ -573,9 +573,9 @@ begin
 end architecture;
 ";
 
-/// NVC #1589: `others` in a record aggregate covering vectors of different widths, after
+/// sim1 #1589: `others` in a record aggregate covering vectors of different widths, after
 /// a named nested record element.
-const NVC_1589: &str = "
+const SIM1_1589: &str = "
 library ieee; use ieee.std_logic_1164.all;
 entity e1589 is
 end entity;
@@ -598,8 +598,8 @@ begin
 end architecture;
 ";
 
-/// NVC #1543: an external name alias with an unconstrained subtype; `'element'length`.
-const NVC_1543: &str = "
+/// sim1 #1543: an external name alias with an unconstrained subtype; `'element'length`.
+const SIM1_1543: &str = "
 library ieee; use ieee.std_logic_1164.all;
 package p1543 is
   type ram_t is array (natural range <>) of std_logic_vector;
@@ -631,8 +631,8 @@ begin
 end architecture;
 ";
 
-/// NVC #1576: an allocator of a record whose element is an array of unconstrained arrays.
-const NVC_1576: &str = "
+/// sim1 #1576: an allocator of a record whose element is an array of unconstrained arrays.
+const SIM1_1576: &str = "
 library ieee; use ieee.std_logic_1164.all;
 entity e1576 is
 end entity;
@@ -655,8 +655,8 @@ begin
 end architecture;
 ";
 
-/// NVC #1463: an array of records whose element is constrained in the port.
-const NVC_1463: &str = "
+/// sim1 #1463: an array of records whose element is constrained in the port.
+const SIM1_1463: &str = "
 package p1463 is
   type int_arr_t is array (integer range <>) of integer;
   type my_rec_t is record
@@ -766,8 +766,8 @@ begin
 end architecture;
 ";
 
-/// F6: an alias of a record element (the GHDL #641 alias).
-const GHDL_641_ALIAS: &str = "
+/// F6: an alias of a record element (the sim2 #641 alias).
+const SIM2_641_ALIAS: &str = "
 library ieee; use ieee.std_logic_1164.all;
 use work.bus641_pkg.all;
 entity e641b is
@@ -1082,11 +1082,11 @@ fn subtype_attributes_and_generic_types() {
     );
 }
 
-/// GHDL #641: `'subtype` of an element of an unconstrained record port is `FromObject`;
+/// sim2 #641: `'subtype` of an element of an unconstrained record port is `FromObject`;
 /// `'range` of it is an attribute range. Both are fully constrained at run time.
 #[test]
-fn ghdl_641_subtype_of_record_port_element() {
-    let db = analyze("g641", &[("work", GHDL_641)]);
+fn sim2_641_subtype_of_record_port_element() {
+    let db = analyze("g641", &[("work", SIM2_641)]);
     check(
         &db,
         &[
@@ -1106,11 +1106,11 @@ fn ghdl_641_subtype_of_record_port_element() {
     );
 }
 
-/// GHDL #1224: a constant of an array of unconstrained vectors with only the outer range
+/// sim2 #1224: a constant of an array of unconstrained vectors with only the outer range
 /// given: element bounds come from the initial value; loops range over attributes.
 #[test]
-fn ghdl_1224_element_bounds_from_initial_value() {
-    let db = analyze("g1224", &[("work", GHDL_1224)]);
+fn sim2_1224_element_bounds_from_initial_value() {
+    let db = analyze("g1224", &[("work", SIM2_1224)]);
     check(
         &db,
         &[
@@ -1126,25 +1126,25 @@ fn ghdl_1224_element_bounds_from_initial_value() {
     );
 }
 
-/// GHDL #2422: a type conversion on an unconstrained `out` formal is `E1312`
+/// sim2 #2422: a type conversion on an unconstrained `out` formal is `E1312`
 /// (finding F8, #111).
 #[test]
-fn ghdl_2422_formal_conversion_on_unconstrained_port() {
-    // F8 (#111), decided: rejected like GHDL and Questa; no bounds flow back through
+fn sim2_2422_formal_conversion_on_unconstrained_port() {
+    // F8 (#111), decided: rejected like sim2 and sim3; no bounds flow back through
     // a conversion on the formal side.
-    let errs = errors("g2422", &[("work", GHDL_2422)]);
+    let errs = errors("g2422", &[("work", SIM2_2422)]);
     assert_eq!(errs, [("E1312".into(), 16)], "{errs:?}");
 }
 
-/// GHDL #2179: `others` for an element of an unconstrained record port is an error (all
+/// sim2 #2179: `others` for an element of an unconstrained record port is an error (all
 /// three reference simulators agree); `s2 : s1'subtype` of a static subtype is that subtype.
 #[test]
-fn ghdl_2179_others_for_record_port_element() {
+fn sim2_2179_others_for_record_port_element() {
     assert_eq!(
-        errors("g2179", &[("work", GHDL_2179)]),
+        errors("g2179", &[("work", SIM2_2179)]),
         [("E1325".into(), 16)]
     );
-    let decls_only = GHDL_2179
+    let decls_only = SIM2_2179
         .replace("  s1.elem <= (others => '0');\n", "")
         .replace("  s2.elem <= (others => '0');\n", "")
         .replace("  p.elem <= (others => '0');\n", "");
@@ -1165,12 +1165,12 @@ fn ghdl_2179_others_for_record_port_element() {
     );
 }
 
-/// NVC #1543: aliases of external names take the external name's subtype (6.6.2: no subtype
+/// sim1 #1543: aliases of external names take the external name's subtype (6.6.2: no subtype
 /// indication of their own); an unconstrained one gets its bounds from the target at
 /// elaboration, never guessed at analysis.
 #[test]
-fn nvc_1543_external_name_alias_subtypes() {
-    let db = analyze("n1543", &[("work", NVC_1543)]);
+fn sim1_1543_external_name_alias_subtypes() {
+    let db = analyze("n1543", &[("work", SIM1_1543)]);
     check(
         &db,
         &[
@@ -1190,12 +1190,12 @@ fn nvc_1543_external_name_alias_subtypes() {
     );
 }
 
-/// NVC #1576: `new` of a record subtype whose element is an array of unconstrained arrays,
+/// sim1 #1576: `new` of a record subtype whose element is an array of unconstrained arrays,
 /// constrained in a local subtype with a dynamic bound folded from a constant.
 #[test]
-fn nvc_1576_allocator_of_constrained_record() {
+fn sim1_1576_allocator_of_constrained_record() {
     use yavs_sem::hir::{ExprKind, NewInit};
-    let db = analyze("n1576", &[("work", NVC_1576)]);
+    let db = analyze("n1576", &[("work", SIM1_1576)]);
     check(
         &db,
         &[(
@@ -1216,12 +1216,12 @@ fn nvc_1576_allocator_of_constrained_record() {
     assert_eq!(news, ["container_t(data(0 to 3)(7 downto 0)) [Full]"]);
 }
 
-/// NVC #1463: an array of records constrained in the port, `(0 to 1)(data(0 to 1))`: the
+/// sim1 #1463: an array of records constrained in the port, `(0 to 1)(data(0 to 1))`: the
 /// element constraint is a record constraint, and indexing keeps it.
 #[test]
-fn nvc_1463_array_of_records_constrained_in_port() {
+fn sim1_1463_array_of_records_constrained_in_port() {
     use yavs_sem::hir::ExprKind;
-    let db = analyze("n1463", &[("work", NVC_1463)]);
+    let db = analyze("n1463", &[("work", SIM1_1463)]);
     check(
         &db,
         &[(
@@ -1238,7 +1238,7 @@ fn nvc_1463_array_of_records_constrained_in_port() {
     assert_eq!(idx, ["my_rec_t(data(0 to 1)) [Full]"]);
 }
 
-/// The unconstrained `out` parameter with `others` is an error, as in NVC, GHDL, Questa.
+/// The unconstrained `out` parameter with `others` is an error, as in sim1, sim2, sim3.
 #[test]
 fn out_parameter_others_is_an_error() {
     assert_eq!(
@@ -1249,11 +1249,11 @@ fn out_parameter_others_is_an_error() {
 
 // -- findings: the correct shape, ignored until fixed (docs/design/rule1-review.md) -----
 
-/// F1 (NVC #1589): one `others` value shared by elements of different widths is resolved
+/// F1 (sim1 #1589): one `others` value shared by elements of different widths is resolved
 /// and folded once, for the first element: `b` and `c` get 6 bits.
 #[test]
 fn f1_record_others_resolved_per_element() {
-    let db = analyze("n1589", &[("work", NVC_1589)]);
+    let db = analyze("n1589", &[("work", SIM1_1589)]);
     let DeclKind::Object(o) = &db.decls[decls(&db, "c_r")[0]].kind else {
         panic!("c_r is an object")
     };
@@ -1288,7 +1288,7 @@ fn f3_selected_element_keeps_record_constraint() {
         "static length"
     );
     assert_eq!(
-        errors("g2179f", &[("work", GHDL_2179)]),
+        errors("g2179f", &[("work", SIM2_2179)]),
         [("E1325".into(), 16)]
     );
 }
@@ -1317,11 +1317,11 @@ fn f5_constrained_generic_type_actual() {
     assert_eq!(map, ["STD_ULOGIC_VECTOR(7 downto 0) [Full]"]);
 }
 
-/// F6 (fixed by 260729c): an alias of a record element (GHDL #641's `alias AxiData is
+/// F6 (fixed by 260729c): an alias of a record element (sim2 #641's `alias AxiData is
 /// Axi.Data`); `'subtype` of it reads the bounds from the alias at run time.
 #[test]
 fn f6_alias_of_record_element() {
-    let db = analyze("f6", &[("work", GHDL_641), ("work", GHDL_641_ALIAS)]);
+    let db = analyze("f6", &[("work", SIM2_641), ("work", SIM2_641_ALIAS)]);
     check(
         &db,
         &[(

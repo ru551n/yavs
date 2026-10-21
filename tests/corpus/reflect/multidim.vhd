@@ -1,5 +1,5 @@
 -- difftest: top=multidim std=2019 ref=hand
--- array_value_mirror.get on a two-dimensional array (LRM 2019 16.11). ref=hand: NVC 1.23
+-- array_value_mirror.get on a two-dimensional array (LRM 2019 16.11). ref=hand: sim1 1.23
 -- normalises the second index from 1, so get(2, 1) returns g(2, 0) there.
 use std.reflection.all;
 entity multidim is end entity;

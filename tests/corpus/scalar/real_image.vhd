@@ -1,5 +1,5 @@
 -- difftest: top=real_image std=2008
--- real'image text is implementation-defined; NVC's shortest-round-trip form is the reference.
+-- real'image text is implementation-defined; sim1's shortest-round-trip form is the reference.
 entity real_image is end;
 architecture t of real_image is
 begin

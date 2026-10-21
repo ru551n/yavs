@@ -872,7 +872,7 @@ fn elab_and_run() {
     // A design without processes runs to event starvation.
     let (code, err, _) = yavs(&["run", &lib, "--exit-severity=error", "top"]);
     assert_eq!(code, 0, "{err}");
-    // Reports in NVC's format on stdout. By default an error report does not stop the run,
+    // Reports in sim1's format on stdout. By default an error report does not stop the run,
     // which still exits 1 (user decision, cli-contract section 5).
     let (code, err, out) = yavs(&["run", &lib, "busy"]);
     assert_eq!(code, 1, "{err}");

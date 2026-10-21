@@ -2,7 +2,7 @@
 """Generate the differential testbenches tb/*.vhd.
 
 Operand shapes come from the public package declarations (the signature
-tables below were derived from `nvc --dump`, which prints interfaces only).
+tables below were derived from sim1's `--dump`, which prints interfaces only).
 Usage: gen.py OUTDIR  (then replace `syna` by `ieee` and add the `-- difftest: top=NAME` header line,
 as the checked-in files do)
 """

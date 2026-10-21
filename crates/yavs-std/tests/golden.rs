@@ -1,8 +1,8 @@
-//! Differential tests against NVC goldens (golden/nvc-{2008,2019}.txt,
+//! Differential tests against sim1 goldens (golden/nvc-{2008,2019}.txt,
 //! produced by golden/gen.py). Each golden line is a function, its
-//! arguments and NVC's output (or ERROR when the case aborted NVC).
+//! arguments and sim1's output (or ERROR when the case aborted sim1).
 //!
-//! Known, intended deviations from NVC are listed in
+//! Known, intended deviations from sim1 are listed in
 //! golden/nvc-deviations.txt with the reason; one rule is applied in code:
 //! a failed READ leaves the line unchanged in yavs, so for a `g=false`
 //! golden the expected rest of line is the whole input.
@@ -301,7 +301,7 @@ fn eval(rev: Revision, func: &str, a: &[&str]) -> Out {
             &t,
         ),
         "vhdl_version" => env::vhdl_version(rev).as_bytes().to_vec(),
-        // The golden values come from NVC on Linux; on Windows the separator is `\`.
+        // The golden values come from sim1 on Linux; on Windows the separator is `\`.
         "dir_separator" if cfg!(windows) => {
             assert_eq!(env::DIR_SEPARATOR, "\\");
             b"/".to_vec()
@@ -342,7 +342,7 @@ fn eval(rev: Revision, func: &str, a: &[&str]) -> Out {
         ))?),
         "time_to_seconds" => real_image(env::time_to_seconds(int(a[0]))),
         "seconds_to_time" => physical_image(e(env::seconds_to_time(real(a[0])))?, &t),
-        // Tool identity differs from NVC by design.
+        // Tool identity differs from sim1 by design.
         f if f.starts_with("tool_") => return Err("tool".into()),
         f => panic!("no evaluator for golden function {f}"),
     })
@@ -503,11 +503,11 @@ fn run(rev: Revision, file: &str) -> usize {
 }
 
 #[test]
-fn nvc_2008() {
+fn sim1_2008() {
     assert!(run(Revision::Vhdl2008, "nvc-2008.txt") > 2500);
 }
 
 #[test]
-fn nvc_2019() {
+fn sim1_2019() {
     assert!(run(Revision::Vhdl2019, "nvc-2019.txt") > 2500);
 }

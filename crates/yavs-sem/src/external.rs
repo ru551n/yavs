@@ -1,6 +1,6 @@
 //! External names (sem.md 6.1, LRM 8.7). Sem resolves the subtype and the
 //! class; the path is kept as data ([`crate::hir::External`]) and bound by
-//! elab (rule 4, GHDL #548), in elaboration order. Nothing here looks the path
+//! elab (rule 4, sim2 #548), in elaboration order. Nothing here looks the path
 //! up, not even a package path: one code path for every kind.
 //!
 //! The `External` record is the elaboration-time binding record: class, path

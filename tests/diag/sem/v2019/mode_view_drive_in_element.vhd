@@ -1,6 +1,6 @@
 -- yavs-test: std=2019
 -- expect: E1903 25:3 port `b` has mode `in` and cannot be driven
--- LRM 2019 6.5.2 (NVC agrees)
+-- LRM 2019 6.5.2 (sim1 agrees)
 library ieee; use ieee.std_logic_1164.all;
 package bus_pkg is
   type bus_t is record

@@ -1,8 +1,8 @@
 //! VHDL to C type mapping for VHPIDIRECT subprograms.
 //!
-//! Follows NVC's convention so C code written for NVC works unchanged
-//! (reference: the NVC user manual, `nvc(1)`, section "VHPIDIRECT" under
-//! foreign subprograms, as shipped with NVC 1.x):
+//! Follows sim1's convention so C code written for sim1 works unchanged
+//! (reference: the sim1 user manual, `sim1(1)`, section "VHPIDIRECT" under
+//! foreign subprograms, as shipped with sim1 1.x):
 //!
 //! - integers: the smallest signed C integer type holding the VHDL range
 //!   (`integer` is `int32_t`, `integer range 1 to 5` is `int8_t`);
@@ -15,7 +15,7 @@
 //!   passed; the VHDL side passes them explicitly if needed);
 //! - scalar `out`/`inout` parameters: a pointer to the C-typed value.
 //!
-//! yavs additions beyond NVC: records and access values are passed as a
+//! yavs additions beyond sim1: records and access values are passed as a
 //! pointer (records to a C struct with natural alignment).
 
 use crate::{CType, FfiError, Signature};
@@ -145,7 +145,7 @@ mod tests {
     const STD_LOGIC: VhdlType = Enum { literals: 9 };
 
     #[test]
-    fn nvc_manual_examples() {
+    fn sim1_manual_examples() {
         // int32_t my_func(int32_t x, const uint8_t *y, int64_t y_len, uint8_t z);
         let s = lower(
             &[

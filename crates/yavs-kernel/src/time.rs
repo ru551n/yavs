@@ -139,7 +139,7 @@ impl Time {
 }
 
 impl fmt::Display for Time {
-    /// The largest unit that represents the value exactly, as NVC and GHDL
+    /// The largest unit that represents the value exactly, as sim1 and sim2
     /// print `now`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let units = [

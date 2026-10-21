@@ -84,7 +84,7 @@ impl Bounds {
         low: i64::MIN,
         high: i64::MAX,
     };
-    /// INTEGER in VHDL-2008 (NVC and GHDL use 32 bits).
+    /// INTEGER in VHDL-2008 (sim1 and sim2 use 32 bits).
     pub const I32: Bounds = Bounds {
         low: i32::MIN as i64,
         high: i32::MAX as i64,

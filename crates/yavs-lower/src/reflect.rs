@@ -264,7 +264,7 @@ impl Fx<'_, '_> {
     }
 }
 
-/// The subtype's simple name in upper case (as NVC reports it): its own name, else the type
+/// The subtype's simple name in upper case (as sim1 reports it): its own name, else the type
 /// mark it was derived from, else its base type's.
 fn simple_name(fx: &Fx<'_, '_>, st: SubtypeId) -> String {
     let db = fx.db;

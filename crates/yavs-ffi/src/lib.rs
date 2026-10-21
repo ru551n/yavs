@@ -9,8 +9,8 @@
 //! (SysV), x86_64 Windows (Win64) and aarch64 Linux (AAPCS64). Any other
 //! target is a compile-time error.
 //!
-//! [`vhdl`] maps VHDL parameter and result types to C types the way NVC
-//! does, so C code written for NVC's VHPIDIRECT works unchanged.
+//! [`vhdl`] maps VHDL parameter and result types to C types the way sim1
+//! does, so C code written for sim1's VHPIDIRECT works unchanged.
 //!
 //! Unsafe code is denied crate-wide and allowed only in `sys`.
 

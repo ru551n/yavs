@@ -625,12 +625,12 @@ fn op_symbol(op: IntOp) -> &'static str {
     }
 }
 
-/// A real as check messages show it: `real'image` (`%.15g`, NVC's form: `30000000000`).
+/// A real as check messages show it: `real'image` (`%.15g`, sim1's form: `30000000000`).
 fn real_text(x: f64) -> String {
     String::from_utf8_lossy(&yavs_std::image::real_image(x)).into_owned()
 }
 
-/// `<kind> <v> outside of [<subtype> ]range <bounds>[ for <what>]` (NVC's wording).
+/// `<kind> <v> outside of [<subtype> ]range <bounds>[ for <what>]` (sim1's wording).
 fn outside(kind: &str, v: &str, b: &str, m: &yavs_ir::CheckMsg) -> String {
     let mut s = format!("{kind} {v} outside of ");
     if !m.subtype.is_empty() {
@@ -2881,7 +2881,7 @@ impl Machine {
     #[inline(always)]
     fn deref(&mut self, h: u64, what: yavs_ir::CheckMsgId) -> R<u64> {
         if h == 0 {
-            // NVC's wording; the statement span names the place.
+            // sim1's wording; the statement span names the place.
             return rt_err("null access dereference");
         }
         let (hp, space) = self.heap_of(h)?;
@@ -6876,7 +6876,7 @@ impl Machine {
                 match ctx.as_deref_mut() {
                     Some(c) => {
                         // A severity disabled by SetVhdlAssertEnable is neither shown nor
-                        // counted (as NVC).
+                        // counted (as sim1).
                         if !self.rt.asserts.report(c, s) {
                             return Ok(Flow::Next);
                         }

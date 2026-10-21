@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 9.4.3, 6.6.2 (OSVVM WishboneRegisterSubordinate: a pure call with globally static actuals is globally static; NVC, GHDL and Questa accept)
+-- LRM 9.4.3, 6.6.2 (OSVVM WishboneRegisterSubordinate: a pure call with globally static actuals is globally static; sim1, sim2 and sim3 accept)
 library ieee; use ieee.std_logic_1164.all; use ieee.math_real.all;
 entity e is
   generic (DATA_NUM_BYTES : positive := 4);

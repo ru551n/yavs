@@ -299,7 +299,7 @@ fn hexfloat(a: f64, precision: Option<usize>, alt: bool, upper: bool) -> String 
     if upper { s.to_uppercase() } else { s }
 }
 
-/// `%.{p}g`, the form NVC uses for `real'image` (p = 15) and
+/// `%.{p}g`, the form sim1 uses for `real'image` (p = 15) and
 /// `to_string(real, 0)` (p = 17).
 pub fn g(x: f64, p: usize) -> Vec<u8> {
     format_spec(&Spec::new(b'g', Some(p)), x)

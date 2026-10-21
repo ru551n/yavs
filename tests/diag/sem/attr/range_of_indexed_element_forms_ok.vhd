@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: none
--- LRM 16.2.3, 9.3.3.3 (hdl-modules math_pkg, addr_pkg, axi_lite_register_file, saturate_signed; NVC accepts)
+-- LRM 16.2.3, 9.3.3.3 (hdl-modules math_pkg, addr_pkg, axi_lite_register_file, saturate_signed; sim1 accepts)
 package p is
   type slv_vec is array (natural range <>) of bit_vector;
   type rr is record data : bit_vector(31 downto 0); end record;

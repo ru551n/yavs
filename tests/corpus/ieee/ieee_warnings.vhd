@@ -1,6 +1,6 @@
 -- difftest: top=ieee_warnings std=2008 ref=hand
--- Warnings the numeric_std body reports itself (LRM source, NO_WARNING = false). ref=hand: NVC
--- runs numeric_std natively and prints none of them, even with --ieee-warnings=on; GHDL prints
+-- Warnings the numeric_std body reports itself (LRM source, NO_WARNING = false). ref=hand: sim1
+-- runs numeric_std natively and prints none of them, even with --ieee-warnings=on; sim2 prints
 -- the same three warnings from the IEEE source. Expected output hand-written from the source.
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 entity ieee_warnings is end;

@@ -3,7 +3,7 @@
 //! [`Elaborated::build_with`] turns into a kernel model.
 //!
 //! [`elaborate`] is a pure function of (design, top, generics, configuration): it keeps no
-//! global state, so it can run again in the same process (rule 4, GHDL #1184), and building
+//! global state, so it can run again in the same process (rule 4, sim2 #1184), and building
 //! the kernel model from one [`Elaborated`] can be repeated for an in-process restart.
 //!
 //! Fail early: any error-severity diagnostic means there is no [`Elaborated`].

@@ -183,7 +183,7 @@ pub(crate) fn array_of(db: &Db, t: TypeId) -> Option<(SubtypeId, u8)> {
     }
 }
 
-/// Name of a subtype in runtime check messages. Upper case, as NVC prints it, so the
+/// Name of a subtype in runtime check messages. Upper case, as sim1 prints it, so the
 /// differential corpus compares exactly (difftest is strict for yavs).
 pub(crate) fn subtype_name(db: &Db, st: SubtypeId) -> String {
     let s = &db.subtypes[st];

@@ -1,6 +1,6 @@
 -- difftest: top=port_individual_unconstrained std=2008
 -- Unconstrained array ports associated element by element (#74): the bounds run from the
--- lowest to the highest index named, in the index subtype's direction (as NVC does).
+-- lowest to the highest index named, in the index subtype's direction (as sim1 does).
 library ieee; use ieee.std_logic_1164.all;
 entity port_individual_unconstrained_sub is port (p : in bit_vector; q : out std_logic_vector); end;
 architecture a of port_individual_unconstrained_sub is begin

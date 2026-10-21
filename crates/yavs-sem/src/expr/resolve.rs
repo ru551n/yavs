@@ -1086,7 +1086,7 @@ impl Db {
     /// Calls that are ambiguous only between implicit operations and explicit
     /// subprograms (a 2019 composite `TO_STRING` and a user `to_string(A; sep := " ")`,
     /// in the same package or made visible by a use clause): the explicit ones win, as
-    /// in NVC, GHDL and Questa (decisions.md).
+    /// in sim1, sim2 and sim3 (decisions.md).
     fn prefer_explicit(&self, best: &mut smallvec::SmallVec<[(Interp, u32); 4]>) {
         let calls: Option<Vec<DeclId>> = best
             .iter()

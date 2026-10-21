@@ -1,6 +1,6 @@
 -- yavs-test: std=2008
 -- expect: E1312 17:37 a conversion of formal `o` needs a fully constrained formal or conversion
--- LRM 6.5.7.1 (GHDL #2422; GHDL and Questa reject; rule 1 review F8)
+-- LRM 6.5.7.1 (sim2 #2422; sim2 and sim3 reject; rule 1 review F8)
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 entity comp is
   port (o : out unsigned);

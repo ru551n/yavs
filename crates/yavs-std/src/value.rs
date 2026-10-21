@@ -434,7 +434,7 @@ pub fn integer_value(s: &[u8], bounds: Bounds) -> R<i64> {
     Ok(v as i64)
 }
 
-/// `real'value`. An integer literal is accepted as a real, as NVC and GHDL do.
+/// `real'value`. An integer literal is accepted as a real, as sim1 and sim2 do.
 pub fn real_value(s: &[u8], bounds: RealBounds) -> R<f64> {
     let what = What::Real;
     let b = start(s, what)?;

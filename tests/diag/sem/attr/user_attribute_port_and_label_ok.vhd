@@ -1,7 +1,7 @@
 -- yavs-test: std=2008
 -- expect: none
 -- LRM 7.2: a label is decorated in the declarative part of the construct whose statement part holds it;
--- a port of the entity in its architecture (12.1: one declarative region), as NVC, GHDL and Questa accept
+-- a port of the entity in its architecture (12.1: one declarative region), as sim1, sim2 and sim3 accept
 entity e is
   port (port_data : in bit);
 end entity;

@@ -1,5 +1,5 @@
 -- difftest: top=bus_guarded std=2008 ref=hand
--- ref=hand: NVC gets this wrong (see README); .expected is hand-corrected to the LRM result.
+-- ref=hand: sim1 gets this wrong (see README); .expected is hand-corrected to the LRM result.
 library ieee; use ieee.std_logic_1164.all;
 entity bus_guarded is end;
 architecture t of bus_guarded is

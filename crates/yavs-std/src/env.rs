@@ -316,7 +316,7 @@ pub fn time_to_seconds(fs: i64) -> f64 {
     fs as f64 / 1e15
 }
 
-/// `seconds_to_time(r)`: truncated toward zero to femtoseconds (NVC's
+/// `seconds_to_time(r)`: truncated toward zero to femtoseconds (sim1's
 /// rounding); a value outside TIME is an error.
 pub fn seconds_to_time(r: f64) -> Result<i64, crate::arith::ArithError> {
     let v = (r * 1e15).trunc();

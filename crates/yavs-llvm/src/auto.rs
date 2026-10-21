@@ -92,8 +92,24 @@ fn too_short(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
 fn back_edges(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Vec<std::ops::Range<usize>> {
     use yavs_ir::Inst;
     let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
+    // A process's way back through its suspension is no loop (as in `loops`).
+    let mut waits = vec![false; f.code.len()];
+    if f.kind == FuncKind::Process {
+        for (_, b) in f.blocks.iter() {
+            let r = b.start as usize..(b.end as usize).min(f.code.len());
+            if f.code[r.clone()]
+                .iter()
+                .any(|i| matches!(i, Inst::Suspend { .. }))
+            {
+                waits[r].fill(true);
+            }
+        }
+    }
     let mut out = Vec::new();
     for (pc, i) in f.code.iter().enumerate() {
+        if waits[pc] {
+            continue;
+        }
         let targets: Vec<usize> = match i {
             Inst::Br { to } => vec![start(*to)],
             Inst::CondBr { t, f: e, .. } => vec![start(*t), start(*e)],

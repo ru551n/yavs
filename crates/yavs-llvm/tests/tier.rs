@@ -928,6 +928,19 @@ fn calls() -> (Program, FuncId, FuncId) {
         let mut fb = pb.define(inc);
         let a = arg(&mut fb);
         let (one, lo, hi) = (fb.int(1), fb.int(0), fb.int(1_000_000));
+        // A branch keeps it a call: the IR optimiser inlines straight-line callees.
+        let (neg, pos) = (fb.block(), fb.block());
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a,
+            b: lo,
+        });
+        fb.emit(Inst::CondBr { c, t: neg, f: pos });
+        fb.at(neg);
+        fb.emit(Inst::Ret { v: Some(a) });
+        fb.at(pos);
         let dst = fb.reg(RegTy::I64);
         fb.emit(Inst::BinRange {
             op: IntOp::Add,

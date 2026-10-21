@@ -3942,6 +3942,15 @@ impl Machine {
                 }
             }};
         }
+        // The message of the `Deref` at op `$j` (a fused op, on its failing path).
+        macro_rules! deref_what {
+            ($j:expr) => {
+                match code.at.get($j).and_then(|&p| f.code.get(p as usize)) {
+                    Some(&Inst::Deref { what, .. }) => what,
+                    _ => yavs_ir::CheckMsgId(0),
+                }
+            };
+        }
         // The message of the `Pos` the current op starts with.
         macro_rules! pos_what {
             () => {
@@ -3980,6 +3989,18 @@ impl Machine {
                             return Ok(flow);
                         }
                     }
+                }
+                Op::Case { v, tab } => {
+                    let x = self.regs[v as usize] as i64;
+                    let c = code
+                        .cases
+                        .get(tab as usize)
+                        .ok_or_else(|| ice(format!("no case table {tab}")))?;
+                    let i = c.arms.partition_point(|a| a.1 < x);
+                    go!(match c.arms.get(i) {
+                        Some(&(lo, _, b)) if lo <= x => b,
+                        _ => c.default,
+                    });
                 }
                 Op::Stmt => {
                     self.end_stmt();
@@ -4719,6 +4740,8 @@ impl Machine {
                     ops = &code.ops;
                     k = match code.first {
                         pre::NONE => entry!(0)? as usize,
+                        // The parameters are in their registers (`call_pre`): not loaded again.
+                        _ if !TIER && code.skip != pre::NONE => code.skip as usize,
                         first => first as usize,
                     };
                     rebind!();
@@ -4754,6 +4777,8 @@ impl Machine {
                     ops = &code.ops;
                     k = match code.first {
                         pre::NONE => entry!(0)? as usize,
+                        // The parameters are in their registers (`call_pre`): not loaded again.
+                        _ if !TIER && code.skip != pre::NONE => code.skip as usize,
                         first => first as usize,
                     };
                     rebind!();
@@ -5098,6 +5123,61 @@ impl Machine {
                         }
                     }
                     k += 2;
+                }
+                Op::DerefImm {
+                    d1,
+                    handle,
+                    d2,
+                    off,
+                } => {
+                    let hv = self.regs[handle as usize];
+                    let a = match self.deref(hv, yavs_ir::CheckMsgId(0)) {
+                        Ok(a) => a,
+                        Err(_) => {
+                            let what = deref_what!(k);
+                            t!(self.deref(hv, what))
+                        }
+                    };
+                    self.regs[d1 as usize] = a;
+                    match add_addr(a, off.into()) {
+                        Ok(b) => self.regs[d2 as usize] = b,
+                        Err(e) => {
+                            self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                            return Err(e);
+                        }
+                    }
+                    k += 2;
+                }
+                Op::LoadDerefImm {
+                    base,
+                    h,
+                    d1,
+                    d2,
+                    o1,
+                    o2,
+                } => {
+                    let a = t!(add_addr(self.regs[base as usize], o1.into()));
+                    let hv = t!(self.load(a, Width::B8));
+                    self.regs[h as usize] = hv;
+                    let a = match self.deref(hv, yavs_ir::CheckMsgId(0)) {
+                        Ok(a) => a,
+                        Err(_) => {
+                            self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);
+                            let what = deref_what!(k + 1);
+                            return Err(self.deref(hv, what).err().unwrap_or_else(|| {
+                                ice("dereference failed once and then succeeded")
+                            }));
+                        }
+                    };
+                    self.regs[d1 as usize] = a;
+                    match add_addr(a, o2.into()) {
+                        Ok(b) => self.regs[d2 as usize] = b,
+                        Err(e) => {
+                            self.frames[top].pc = code.at.get(k + 2).copied().unwrap_or(0);
+                            return Err(e);
+                        }
+                    }
+                    k += 3;
                 }
                 Op::MoveCondBr { dst, src, t, f: e } => {
                     let v = self.regs[src as usize];
@@ -6016,6 +6096,9 @@ impl Machine {
             .get_mut(sbase..sbase + slen)
             .ok_or_else(|| ice("frame outside the slot stack"))?;
         let mut params = pre.params.iter();
+        // The registers the callee's first ops would load the parameters into (`Code::skip`).
+        let mut pro = pre.pro.iter();
+        let base = self.regs.base;
         // The protected object of a method call is its first parameter.
         if let Some(h) = first
             && let Some(&(slot, w)) = params.next()
@@ -6025,6 +6108,11 @@ impl Machine {
                 .get_mut(slot as usize..slot as usize + n)
                 .ok_or_else(|| ice(format!("parameter slot {slot} outside the frame")))?;
             put_le(dst, h);
+            if let Some(&r) = pro.next()
+                && r != pre::NONE
+            {
+                self.regs.v[base + r as usize] = h;
+            }
         }
         for &r in regs {
             let Some(&(slot, w)) = params.next() else {
@@ -6038,8 +6126,14 @@ impl Machine {
             if w == Width::Sig {
                 dst[..8].copy_from_slice(&v.to_le_bytes());
                 dst[8..].copy_from_slice(&self.regs.v[caller + r.0 as usize + 1].to_le_bytes());
+                pro.next();
             } else {
                 put_le(dst, v);
+                if let Some(&r) = pro.next()
+                    && r != pre::NONE
+                {
+                    self.regs.v[base + r as usize] = v;
+                }
             }
         }
         if params.next().is_some() {

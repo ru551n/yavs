@@ -30,6 +30,9 @@ pub(crate) struct Pre {
     /// whether it is nested: what a call needs, without touching the function itself.
     pub slots: u32,
     pub params: Box<[(u32, Width)]>,
+    /// For each parameter, the register the function's first ops load it into (`NONE`: none).
+    /// A call writes these registers itself and goes on at `Code::skip`.
+    pub pro: Box<[u32]>,
     pub nested: bool,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
@@ -150,11 +153,14 @@ impl Pre {
                 *n = *t;
             }
         }
-        let code = Code::new(f, prog, &skip, &known, &next);
+        let mut code = Code::new(f, prog, &skip, &known, &next);
+        let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
+        let pro = prologue(&mut code, &params);
         Pre {
             init,
             slots: f.frame,
-            params: f.params.iter().map(|p| (p.slot, p.width)).collect(),
+            params,
+            pro,
             nested: f.parent.is_some(),
             frame,
             next,
@@ -183,6 +189,11 @@ pub(crate) const SCAN: u8 = 0x80;
 pub(crate) enum Op {
     /// The IR instruction at this pc, through `Machine::step`.
     Step(u32),
+    /// `Inst::Case`: the arms of `Code::cases[tab]` as op indices.
+    Case {
+        v: u32,
+        tab: u32,
+    },
     Stmt,
     Move {
         dst: u32,
@@ -568,6 +579,23 @@ pub(crate) enum Op {
         d2: u32,
         off: u32,
     },
+    /// `Deref`, and the `IndexImm` of its result (which is also written): the address `off` bytes
+    /// into the object (the elements of an array behind an access value).
+    DerefImm {
+        d1: u32,
+        handle: u32,
+        d2: u32,
+        off: u32,
+    },
+    /// `LoadOff` of an access value (also written), its `Deref` and the `IndexImm` of that.
+    LoadDerefImm {
+        base: u32,
+        h: u32,
+        d1: u32,
+        d2: u32,
+        o1: u16,
+        o2: u16,
+    },
     /// `MoveBr` to a `CondBr` on the moved register: the move, then the branch on it.
     MoveCondBr {
         dst: u32,
@@ -873,6 +901,61 @@ pub(crate) struct Code {
     /// For each `Aff` op (sorted by op index): the IR pcs of the `Bin` run it stands for, from
     /// its first instruction to the one defining the op's result.
     pub aff: Vec<(u32, u32, u32)>,
+    /// The `Case` tables of the `Op::Case`s, with op indices as targets.
+    pub cases: Vec<CaseOps>,
+    /// The op a call goes on at when it has written `Pre::pro` itself: after the ops that
+    /// only load parameters (`NONE`: there are none).
+    pub skip: u32,
+}
+
+/// The leading ops that load a parameter from its slot into a register, each a whole 8-byte
+/// parameter, and the statement markers after them: for each parameter the register (`NONE`),
+/// and `code.skip` set past the ops.
+fn prologue(code: &mut Code, params: &[(u32, Width)]) -> Box<[u32]> {
+    let mut pro = vec![NONE; params.len()];
+    let param = |off: u32| params.iter().position(|&p| p == (off, Width::B8));
+    let mut k = code.first as usize;
+    let mut any = false;
+    while let Some(&op) = code.ops.get(k) {
+        let loads: &[(u32, u32)] = match op {
+            Op::LoadSlot8 { dst, off }
+            | Op::LoadSlot {
+                dst,
+                off,
+                w: Width::B8,
+            } => &[(dst, off)],
+            Op::LoadSlot8x2 { d1, o1, d2, o2 } => &[(d1, o1), (d2, o2)],
+            _ => break,
+        };
+        if !loads.iter().all(|&(_, off)| param(off).is_some()) {
+            break;
+        }
+        for &(dst, off) in loads {
+            if let Some(p) = param(off) {
+                pro[p] = dst;
+            }
+        }
+        any = true;
+        k += 1;
+    }
+    // A statement marker at the start frees nothing: the frame has no temporaries yet.
+    while matches!(code.ops.get(k), Some(Op::Stmt)) {
+        any = true;
+        k += 1;
+    }
+    code.skip = if any { k as u32 } else { NONE };
+    if pro.iter().any(|&r| r != NONE) {
+        pro.into()
+    } else {
+        Box::default()
+    }
+}
+
+/// A `Case` table with its targets as op indices.
+pub(crate) struct CaseOps {
+    /// Sorted, non-overlapping inclusive ranges and their targets.
+    pub arms: Vec<(i64, i64, u32)>,
+    pub default: u32,
 }
 
 pub(crate) const NONE: u32 = u32::MAX;
@@ -1602,6 +1685,46 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             {
                 Some(Op::CmpSelect { m, dst, a, b, x, y })
             }
+            (
+                Op::LoadOff {
+                    dst: h,
+                    base,
+                    off: o1,
+                    w: Width::B8,
+                },
+                Some(&Op::Deref {
+                    dst: d1, handle, ..
+                }),
+                Some(&Op::IndexImm {
+                    dst: d2,
+                    base: b2,
+                    off: o2,
+                }),
+            ) if handle == h
+                && b2 == d1
+                && let (Ok(o1), Ok(o2)) = (u16::try_from(o1), u16::try_from(o2)) =>
+            {
+                Some(Op::LoadDerefImm {
+                    base,
+                    h,
+                    d1,
+                    d2,
+                    o1,
+                    o2,
+                })
+            }
+            (
+                Op::Deref {
+                    dst: d1, handle, ..
+                },
+                Some(&Op::IndexImm { dst: d2, base, off }),
+                _,
+            ) if base == d1 => Some(Op::DerefImm {
+                d1,
+                handle,
+                d2,
+                off,
+            }),
             (
                 Op::Deref {
                     dst: d1,
@@ -2685,6 +2808,10 @@ impl Code {
                     (Some(t), Some(e)) => Op::CondBr { c: c.0, t, f: e },
                     _ => Op::Step(pc as u32),
                 },
+                Inst::Case { v, table } => Op::Case {
+                    v: v.0,
+                    tab: table.0,
+                },
                 _ => Op::Step(pc as u32),
             };
             ops.push(op);
@@ -2712,9 +2839,30 @@ impl Code {
         // block, never inside a fused op; should one be, a jump is left to the step path and
         // a fused compare is an internal error (`Step(NONE)` runs off the code).
         let to = |p: u32| entry.get(p as usize).copied().filter(|&k| k != NONE);
+        let mut cases = Vec::new();
         for (k, op) in ops.iter_mut().enumerate() {
             let ir = at[k];
             *op = match *op {
+                Op::Case { v, tab } => {
+                    let go = |b| target(b).and_then(to);
+                    let t = prog.cases.get(yavs_ir::CaseTableId(tab));
+                    let arms: Option<Vec<_>> = t.and_then(|t| {
+                        t.arms
+                            .iter()
+                            .map(|&(lo, hi, b)| Some((lo, hi, go(b)?)))
+                            .collect()
+                    });
+                    match (arms, t.and_then(|t| go(t.default))) {
+                        (Some(arms), Some(default)) => {
+                            cases.push(CaseOps { arms, default });
+                            Op::Case {
+                                v,
+                                tab: cases.len() as u32 - 1,
+                            }
+                        }
+                        _ => Op::Step(ir),
+                    }
+                }
                 Op::Br { to: t } => to(t).map_or(Op::Step(ir), |t| Op::Br { to: t }),
                 Op::StoreSlotBr { src, off, to: t, w } => {
                     to(t).map_or(Op::Step(NONE), |t| Op::StoreSlotBr { src, off, to: t, w })
@@ -2778,6 +2926,8 @@ impl Code {
             entry,
             first,
             aff,
+            cases,
+            skip: NONE,
         }
     }
 }

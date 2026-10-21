@@ -1469,6 +1469,9 @@ native/body comparison test (`ieee_native`) now also runs those operators on `si
 
 ## performance: head-to-head against the two reference simulators, 2026-10-21
 
+Reproduce with `tools/bench` (`run.py BIN --ref sim1,sim2 --tiers interp,auto --instructions --tiny`): the designs of the tables
+below are checked in under `tools/bench/designs` (old names to new: `tools/bench/AGENTS.md` section 2), the method is section 7.
+
 Measurement only (no code changed). yavs at `5ac6c1a6` (main), one release binary built with the `llvm` feature, so
 `--tier=interp` and `--tier=auto` come from the same file; `--threads 1`. sim1 is a 1.23 development build with LLVM 21,
 run the way the external test runner starts it (`-H 64m -e <top> --no-save --jit -r`, "jit") and as `-e` then `-r`

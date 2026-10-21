@@ -15,8 +15,9 @@ performance change. Everyone measures with this one harness, so numbers are comp
 
 | Path | What |
 |---|---|
-| `run.py` | The harness: `--list`, `BIN` (one binary), `--compare A B`, `--bench a,b`, `--group internal\|external\|all`, `--runs N` (default 3), `--sims sim1,sim2`, `--threshold`, `--fail-on-regression`, `--label`, `--out` |
-| `designs/*.vhd` | Checked-in designs written for this harness; top level `bench_<name>`, default generics |
+| `run.py` | The harness: `--list`, `BIN` (one binary), `--compare A B`, `--bench a,b`, `--group internal\|h2h\|external\|all`, `--runs N` (default 3), `--sims sim1,sim2`, `--threshold`, `--fail-on-regression`, `--label`, `--out`; head-to-head mode `--ref sim1,sim2 [--cores L] [--tiers interp,auto] [--instructions] [--tiny]` (section 7) |
+| `tiny.py` | Head-to-head on the tiny-test corpus `tests/corpus`: per-test wall time of one run, yavs against the references (section 7) |
+| `designs/*.vhd` | Checked-in designs written for this harness; top level `bench_<name>`, default generics (the head-to-head designs carry the parameters their results are quoted at) |
 | `vc_tests.tsv` | The fixed 30 test cases (`testbench<TAB>test case`) of benchmark `vunit_vc30` |
 
 Benchmarks (`run.py --list`):
@@ -35,6 +36,28 @@ Benchmarks (`run.py --list`):
 | `osvvm_axistream` | external | One AXI-stream testbench (`TbStream_AxiSendGetRandomParam2`) of the other verification library's `.pro` scripts |
 | `vai_pe_array`, `vai_window_gen` | external | Two long testbenches of a local, read-only testbench repository; needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset |
 
+Head-to-head designs (group `h2h`, run by `--ref`; written for yavs, each has a header comment). The old names are the
+ones used in `STATUS.md` (performance sections of 2026-10-20 and 2026-10-21) and in issues:
+
+| Name | Old name, parameters | What it stresses |
+|---|---|---|
+| `rtl_ff` | `ff`, 4096 registers x 2000 cycles | Many one-bit clocked processes, scalar signal updates |
+| `rtl_lfsr` | `lfsr`, 512 x 16-bit x 5000 | Vector slice and concatenation, element-wise assignment to an array signal |
+| `rtl_chain` | `chain`, 1000 stages x 2000 | A long chain of concurrent assignments: delta cycles, one event per stage |
+| `rtl_fan` | `fan`, 4000 processes x 5000 | Wake-up and suspend of many near-idle processes on one clock |
+| `rtl_bus` | `bus` (top `bus_tb`), 32 drivers x 20000 | Resolved vector bus, driver bookkeeping |
+| `rtl_ram` | `ram`, 16384 deep x 20000 | Indexed signal assignment into a large array signal |
+| `lfsr64_xor` | row 2a, `rtl`, `-gNREG=64 -gCYCLES=5000` | 64 LFSR processes plus a 64-way XOR reduction each cycle |
+| `lfsr64` | row 2b, `rtl2`, `-gNREG=64 -gCYCLES=20000` | The same without the reduction: process wake-up cost |
+| `compute_h2h` | row 1, `compute`, `-gN=20000000` | One sequential integer/real loop, no signals |
+| `xor_sig` | `xr`; generics now N=10000000 (was 100000), SIG | One operator on unsigned against a signal or a variable (micro-benchmark) |
+| `xor_types` | `xr2`; generics now N=10000000 (was 100000), K | One operator on unsigned, std_logic_vector, bit_vector or `+` (micro-benchmark, K 0 to 3) |
+
+Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row 3 `uvvm_sb_slv_tb`, `osvvm_axistream`,
+`uvvm_util_rand_tb`, `uvvm_axistream_vvc_tb`, `strings_heavy`, `report_heavy`, `textio_heavy`, `protected_scoreboard`,
+`elab_heavy` (row f). Row 4 (`TbStream_AxiSendGetRandomParamAsync2`) is not registered. The external rows run on yavs only
+(`--ref` times the internal and h2h designs).
+
 ## 3. Design decisions that bind this module
 
 | Decision | Why | Source |
@@ -48,6 +71,9 @@ Benchmarks (`run.py --list`):
 | Reference simulators (`--sims`) time the internal designs only, as one number (elaborate + run, analysis excluded), and are shown by label only. Labels map to commands through `BENCH_SIM1` etc. (else `DISCREP_SIM1` etc., else the untracked `tools/discrepancies/sims.local.conf`); never write a tool name, path or licence value into the repository or the JSON beyond the label | Root rule 3 and 11; reuses `tools/discrepancies/run.py` templates | #387 |
 | Every command runs under `timeout 300`; reference simulators also under `systemd-run --user --scope -p MemoryMax=2G`. One process at a time | Root rules 15 and 16 | root `AGENTS.md` |
 | Peak RSS (`rss`, MiB, shown as `peak MiB`) is the child's own, measured with `time -f %M` inside the `timeout` wrapper. Without a `time` binary it is 0 | A wait4 rusage of our own child would be floored by the harness RSS at fork | #409 |
+| `--ref` (head-to-head) times one yavs binary and the references on the same designs: analysis once per tool and not timed, one untimed warm-up run per cell, then `--runs` rounds with the tools interleaved (order alternating every round), median wall, CPU (user plus system of the process tree) and peak RSS (largest process, `time -f %M`), ratios yavs/reference per design. Every timed run is `taskset`-pinned to `--cores` (default: the performance cores of the host, the same set for every tool), under `systemd-run -p MemoryMax=2G`, `timeout 300` and a 6 GB free-memory guard; references also get an unlimited stack. `--instructions` adds one extra `perf stat` run per cell, with the counter of the core type the cores belong to | Same method as the `STATUS.md` head-to-head sections; root rules 15 to 19 | #387 |
+| Reference templates in `--ref` and `tiny.py` are the `--sims` ones (`load_sims` of `tools/discrepancies/run.py`): a label maps to a built-in template name or to an explicit `analyse\|\|\|elaborate-and-run` template through `BENCH_<LABEL>`, `DISCREP_<LABEL>` or the untracked `tools/discrepancies/sims.local.conf`. Several labels may name the same tool run in different ways (an extra label with its own template). No tool name, path or licence value in the repository | Root rules 3 and 11 | #387 |
+| `tiny.py` runs the whole process once under `taskset` and a 2 GiB cap (it re-executes itself under `systemd-run`), times each run as wall clock of `bash -c` minus the median cost of `true` under the same wrapper, and drops a tool from a test when its analysis fails or its warm-up run crashes, times out or fails to elaborate. Its reference templates must be explicit (the built-in names know nothing about the test headers) and may use the environment variables `STOP_FLAG` (`--stop-time=T` or empty), `RELAXED` and `PSL` (`1` or empty) | Tests take milliseconds: per-run wrappers would dominate | #387 |
 | The JSON file holds raw samples (`wall`, `cpu`, `rss`, `phases`, `rc`, `error`) and medians per benchmark and binary, plus the binary hash and host CPU count | Tracking over time | #387 |
 
 ## 4. Invariants and pitfalls
@@ -78,6 +104,34 @@ BENCH_SIM1=<template-name> python3 -I tools/bench/run.py --compare A B --group i
 - Extra `yavs run` flags for every benchmark: `YAVS_BENCH_RUN_FLAGS="--wave={out} --wave-variables"` (`{out}` is a scratch
   file the harness deletes after each run; the report then shows its size as `FST MiB`).
 - No diagnostic codes.
+
+## 7. Head-to-head against reference simulators
+
+Method (the same for every number quoted in `STATUS.md`):
+
+- Pin every timed run, of every tool, to the performance cores of the host (`--cores`, default read from the CPU topology;
+  on a hybrid host pass a subset when other agents use some of them). Run builds, analysis and test suites elsewhere
+  (`taskset -c <efficiency cores> cargo ...`) so they do not disturb the timings. Say which cores were used.
+- Analysis is excluded: libraries are analysed once per tool before timing; the timed part is elaborate + initialise + run
+  (references that need a separate elaboration command are summed).
+- Interleave the tools inside each round and swap the order every round; take the median of `--runs` (use 5 for a decision).
+- Report wall, CPU and peak RSS. When the host is loaded, wall time is noise: also pass `--instructions` and quote cycles
+  or instructions (`perf stat` counters are per core type: a run pinned to efficiency cores counts the other event).
+- Cells below 0.1 s carry up to +-15%.
+
+Set up the references once (untracked, never committed): `tools/discrepancies/sims.local.conf` lines
+`label = template-name` or `label = analyse-snippet|||run-snippet` (placeholders `{file} {top} {std} {std2} {work} {res}`),
+or the same through `BENCH_<LABEL>` environment variables. Two labels may use one tool in two ways.
+
+```sh
+# designs (group h2h) with both yavs tiers, the instruction counts, then the tiny-test corpus: one command
+python3 -I tools/bench/run.py target/release/yavs --ref sim1,sim2 --tiers interp,auto --instructions --runs 5 --tiny
+python3 -I tools/bench/run.py target/release/yavs --ref sim1 --bench rtl_ff,lfsr64 --cores 2,3   # a few designs
+python3 -I tools/bench/tiny.py target/release/yavs --ref sim1,sim2 --filter delta/                  # a part of the corpus
+```
+
+`--tiers auto` and `llvm` need a yavs built with `--features llvm`; a tier that fails is shown as FAILED in its row. Results
+(raw samples and medians) go to `<cache>/results/<time>-ref*.json` and `-tiny*.json`.
 
 ## 6. Coordination
 

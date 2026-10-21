@@ -445,6 +445,7 @@ impl AutoTier {
         heat: Heat,
         note: Note,
     ) -> Result<Arc<AutoTier>, Error> {
+        crate::lazy::ensure()?;
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();

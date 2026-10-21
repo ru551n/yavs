@@ -203,6 +203,15 @@ milestone users care about works.
   not register unwind info for them, see `crates/yavs-llvm/WINDOWS.md`).
 - **Linking:** shared `libLLVM-21.so` on Linux (low link memory). On Windows llvm-sys refuses
   dynamic linking and uses the static libs of the official release tarball; see WINDOWS.md.
+- **Loaded on first use (Linux x86_64 and aarch64, glibc):** the executable does not depend on
+  libLLVM. `crates/yavs-llvm/build.rs` lists the `LLVM*` functions the shared library exports and
+  writes one stub per function (a jump through a table); the stubs satisfy `llvm-sys`'s
+  references, so the linker leaves the library out of the dependencies, and `lazy::ensure`
+  (called by `Module::new`, `Jit::new`, `compile`, `AutoTier::start`) opens it and fills the table
+  once. Why: the dynamic loader relocated the whole library (174 000 relative relocations, 1 650
+  page faults) in every process, 5 ms of CPU for any command, 4 times the rest of a short
+  `yavs run`, although only `--tier=llvm|auto` uses it (#426). A library that cannot be opened
+  is an LLVM `Error` at the first use instead of a failure to start. Other targets link as before.
 - **Size threshold (rule 5):** codegen time grows faster than linearly with function size (about
   0.15 s at 10k IR instructions, 3.8 s at 100k, 28 s at 300k at O2; numbers in STATUS.md).
   Decided (user, 2026-10-19, #126): compile only functions that become hot (`--tier=auto`), and

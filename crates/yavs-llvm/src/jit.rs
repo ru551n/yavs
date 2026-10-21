@@ -148,6 +148,7 @@ unsafe impl Send for Module {}
 
 impl Module {
     pub fn new(name: &str) -> Module {
+        crate::lazy::ensure().expect("LLVM library");
         let name = CString::new(name).expect("module name has NUL");
         // SAFETY: fresh context and module owned by the returned value.
         unsafe {
@@ -275,6 +276,7 @@ impl Jit {
     /// Creates a JIT whose main dylib defines `symbols` as absolute addresses
     /// (the host runtime callbacks). Nothing is resolved from the process.
     pub fn new(opt: OptLevel, symbols: &[(&str, usize)]) -> Result<Jit> {
+        crate::lazy::ensure()?;
         let tm = target_machine(opt)?;
         // SAFETY: the builder takes the JTMB, CreateLLJIT takes the builder,
         // AbsoluteSymbols takes the interned names, Define takes the MU on success.

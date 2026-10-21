@@ -1599,6 +1599,7 @@ dependencies = [
 name = "yavs-llvm"
 version = "0.8.0"
 dependencies = [
+ "libloading",
  "llvm-sys",
  "yavs-diag",
  "yavs-interp",

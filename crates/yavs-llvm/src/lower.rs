@@ -671,6 +671,7 @@ pub(crate) fn compile_one(
 /// Compile every function of `prog` that the tier can take; the others (among them those over
 /// `max_size` IR instructions) stay interpreted and are listed in [`LlvmTier::notes`].
 pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTier, Error> {
+    crate::lazy::ensure()?;
     let mut m = Module::new("yavs");
     let mut notes = Vec::new();
     let mut names = Vec::new();

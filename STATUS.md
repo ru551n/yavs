@@ -162,7 +162,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (about 30, against sim1 and between binaries): `tools/realbench`, baseline in the last section of this file.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -4355,3 +4355,131 @@ yavs --features llvm` and the `gc-stress` unit tests of the crate; difftest 426/
 designs and four internal benchmarks print the same under interp, llvm, auto and auto with eager heat.
 
 Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI; wall times on an idle host.
+
+## Real-world performance suite, baseline 2026-10-21 (`tools/realbench`)
+
+The designs of `tools/bench` were written for the harness and the tuning so far was done on them and on a few library
+testbenches; this suite times testbenches of real projects, chosen for diversity (`tools/realbench/AGENTS.md`, list and
+reasons in `tools/realbench/tests.toml`). 30 tests pass on yavs and sim1: hdl-modules (5), Open Logic (4), the test runner's
+examples (2), en_cl_fix (1), PoC (5), fletcher (1), satcat5 (2), the two verification libraries (7: OSVVM and UVVM testbenches)
+and the maintainer's own project (3). Categories: clocked RTL datapaths, FSMs, resolved bus (I2C), records, wide vectors,
+`numeric_std` and fixed point, memories, protected types and scoreboards, string and textio code. Run lengths on sim1 are 0.06 s to 6 s;
+23 of the 30 take under 1 s (start-up, elaboration and a few thousand clock cycles). There is no CPU-core test and no many-instance
+test until #513 is fixed (the neorv32 testbench diverges from sim1).
+
+Method (as `tools/bench/AGENTS.md` section 7): release build with the `llvm` feature of main at `55772743` (only STATUS and
+documentation commits since), `--threads 1`, every timed run pinned to performance core 6 or 7 (two tests at a time, all cells of
+one test on the same core, builds elsewhere), host load about 2 to 3, median of 5, 3 or 2 runs by test length with the cells
+interleaved and the order swapped every round, analysis excluded (sim1: elaboration plus run). Cells: `interp` and `auto` are warm (an
+untimed run first fills the compilation cache of the test's own copy of the libraries); `auto-cold` copies the pristine libraries
+before every timed run (empty compilation cache). Ratios are yavs / sim1, below 1 is faster. Wall and CPU time come in steps of 10 ms:
+for the tests under 0.1 s read the instruction ratios. Raw results (not committed): `~/.cache/yavs-realbench/results/20261021-234609-baseline.json`.
+
+Geometric mean of the wall time ratio per category:
+
+| category | n | interp | auto | auto-cold |
+|---|---:|---:|---:|---:|
+| **overall** | 30 | 0.42 | 0.44 | 1.15 |
+| bus-tristate | 1 | 0.15 | 0.19 | 0.78 |
+| fsm | 3 | 1.92 | 1.95 | 2.27 |
+| memory | 4 | 0.35 | 0.35 | 1.23 |
+| numeric | 6 | 0.26 | 0.27 | 0.87 |
+| protected | 7 | 0.36 | 0.39 | 0.82 |
+| records | 3 | 0.18 | 0.18 | 0.78 |
+| rtl-datapath | 2 | 0.61 | 0.74 | 1.72 |
+| strings-textio | 2 | 0.08 | 0.08 | 0.47 |
+| wide-vectors | 2 | 9.12 | 10.12 | 10.15 |
+
+Geometric mean of the instruction ratio (`perf stat`, `cpu_core/instructions/`):
+
+| category | n | interp | auto | auto-cold |
+|---|---:|---:|---:|---:|
+| **overall** | 30 | 0.63 | 0.64 | 1.59 |
+| bus-tristate | 1 | 0.20 | 0.21 | 0.93 |
+| fsm | 3 | 3.07 | 3.06 | 3.40 |
+| memory | 4 | 0.50 | 0.47 | 1.54 |
+| numeric | 6 | 0.39 | 0.40 | 1.14 |
+| protected | 7 | 0.67 | 0.72 | 1.38 |
+| records | 3 | 0.20 | 0.20 | 0.97 |
+| rtl-datapath | 2 | 1.04 | 1.06 | 2.59 |
+| strings-textio | 2 | 0.13 | 0.13 | 0.68 |
+| wide-vectors | 2 | 9.34 | 9.08 | 9.82 |
+
+Run-length view (the geometric mean weighs a 0.06 s test like a 6 s one):
+
+| cell | sum ratio | n | geomean, basis >= 1 s | n |
+|---|---:|---:|---:|---:|
+| interp | 3.02 | 30 | 1.71 | 7 |
+| auto | 3.10 | 30 | 1.81 | 7 |
+| auto-cold | 3.30 | 30 | 2.08 | 7 |
+
+Reading: a warm `yavs run` of a small testbench costs 0.02 s against 0.2 s for sim1's elaboration and run, and that decides the short
+tests and the overall geometric mean of 0.42. The 7 tests that take a second or more on sim1 are all slower on yavs (summed time over
+all 30: 3.0x; geometric mean over those 7: 1.7x), and the worst categories are wide vectors (9.1x) and FSMs (1.9x). `auto` is at best equal to
+`interp` here: within 20% on every test of 0.5 s or more except `poc_stat_histogram` (2.2 s against 3.8 s). The cold cache costs 0.1 to 0.2 s on the short tests
+(loading and compiling what the test uses; 3x to 7x their warm time) and up to 20% on the long ones, except `uvvm_axistream_vvc`, which pays 2.4 s
+(53%).
+
+Per test (wall seconds, ratio to sim1 in brackets; CPU seconds and instruction counts are in the JSON):
+
+| test | category | sim1 | interp | auto | auto-cold |
+|---|---|---:|---:|---:|---:|
+| hdlm_fifo_sync | rtl-datapath | 0.23 | 0.02 (0.09) | 0.03 (0.13) | 0.15 (0.65) |
+| hdlm_unsigned_divider | numeric | 0.22 | 0.02 (0.09) | 0.02 (0.09) | 0.13 (0.59) |
+| hdlm_sine_generator | numeric | 0.29 | 0.04 (0.14) | 0.04 (0.14) | 0.14 (0.48) |
+| hdlm_ring_buffer | memory | 0.23 | 0.02 (0.09) | 0.02 (0.09) | 0.13 (0.57) |
+| hdlm_axi_fifo | records | 0.31 | 0.05 (0.16) | 0.05 (0.16) | 0.23 (0.74) |
+| olo_fix_cordic_rot | numeric | 0.65 | 0.21 (0.32) | 0.25 (0.38) | 0.44 (0.68) |
+| olo_intf_i2c_master | bus-tristate | 0.27 | 0.04 (0.15) | 0.05 (0.19) | 0.21 (0.78) |
+| olo_axi_master_full | records | 0.58 | 0.14 (0.24) | 0.15 (0.26) | 0.44 (0.76) |
+| olo_base_cam | memory | 0.51 | 0.07 (0.14) | 0.11 (0.22) | 0.32 (0.63) |
+| vunit_axi_dma | records | 0.28 | 0.04 (0.14) | 0.04 (0.14) | 0.24 (0.86) |
+| vunit_logging | strings-textio | 0.24 | 0.02 (0.08) | 0.02 (0.08) | 0.08 (0.33) |
+| en_cl_fix_pkg | numeric | 0.24 | 0.03 (0.12) | 0.03 (0.12) | 0.18 (0.75) |
+| poc_arith_addw | numeric | 4.51 | 30.11 (6.68) | 31.01 (6.88) | 29.52 (6.55) |
+| poc_stat_histogram | memory | 0.24 | 3.79 (15.79) | 2.21 (9.21) | 2.64 (11.00) |
+| poc_cache_cpu | fsm | 0.70 | 2.02 (2.89) | 2.08 (2.97) | 2.30 (3.29) |
+| poc_strings | strings-textio | 0.06 | 0.00 (0.00) | 0.00 (0.00) | 0.04 (0.67) |
+| poc_uart_rx | fsm | 0.12 | 0.10 (0.83) | 0.10 (0.83) | 0.14 (1.17) |
+| fletcher_bufferwriter_512 | wide-vectors | 1.82 | 22.29 (12.25) | 24.00 (13.19) | 23.84 (13.10) |
+| osvvm_axis_random | protected | 0.79 | 0.27 (0.34) | 0.28 (0.35) | 0.47 (0.59) |
+| uvvm_sb_slv | protected | 1.26 | 0.82 (0.65) | 0.99 (0.79) | 1.04 (0.83) |
+| uvvm_util_rand | protected | 2.20 | 0.89 (0.40) | 0.96 (0.44) | 1.14 (0.52) |
+| uvvm_axistream_vvc | protected | 6.14 | 4.50 (0.73) | 4.50 (0.73) | 6.89 (1.12) |
+| sc5_fifo_repack | wide-vectors | 0.79 | 5.36 (6.78) | 6.14 (7.77) | 6.21 (7.86) |
+| sc5_timestamp | fsm | 0.23 | 0.68 (2.96) | 0.69 (3.00) | 0.70 (3.04) |
+| uvvm_methods_log | protected | 0.06 | 0.00 (0.00) | 0.00 (0.00) | 0.11 (1.83) |
+| uvvm_func_cov | protected | 0.70 | 0.16 (0.23) | 0.18 (0.26) | 0.36 (0.51) |
+| osvvm_axi4_random | protected | 1.08 | 0.70 (0.65) | 0.72 (0.67) | 0.97 (0.90) |
+| vai_window_gen_interlock | rtl-datapath | 3.65 | 15.48 (4.24) | 15.39 (4.22) | 16.47 (4.51) |
+| vai_pe_array | numeric | 0.43 | 0.04 (0.09) | 0.04 (0.09) | 0.20 (0.47) |
+| vai_weight_buffer | memory | 0.24 | 0.02 (0.08) | 0.02 (0.08) | 0.14 (0.58) |
+
+The five worst against sim1 (interpreter tier; `perf record --call-graph dwarf` of one warm run pinned to an efficiency core, symbols
+of the release build with line tables):
+
+| test | wall x | instr x | where the time goes |
+|---|---:|---:|---|
+| `poc_stat_histogram` | 15.8 | 18.7 | interpreter ops 57%, then composite layout work at run time: `layout_words` 19%, `layout_word` 5%, `layout_of` 3%, `lcopy`, `lget` and `memcmp` 4%: whole arrays of words are copied and compared by walking their layout |
+| `fletcher_bufferwriter_512` | 12.3 | 10.2 | 512 bit buses and records: interpreter ops 26% and the kernel signal path about 40% (`Signal::update_effective` 13%, `Waiters::take_woken` 9%, `SimControl::cycle` 5%, `mark_active` 5%, `Waveform::schedule` 3%) |
+| `sc5_fifo_repack` | 6.8 | 8.6 | wide `std_logic_vector` slicing and compares: interpreter ops 44%, then vector assignment and scheduling (`assign_planes_fast`, `Waveform::schedule`, `update_effective`, `eq_range`) about 12% |
+| `poc_arith_addw` | 6.7 | 7.7 | exhaustive operand loops in a clocked testbench: interpreter ops 50%, the rest spread thin (kernel `cycle` and `run_batch` 6%, `read_into`/`assign_planes_fast` 4%, `cat` 2%, `layout_word` 2%) |
+| `vai_window_gen_interlock` | 4.2 | 8.7 | long pipelined run of array-heavy RTL: interpreter ops 78%, `memmove` 4%, `Pre::fill` 3% |
+
+Followed by `sc5_timestamp` (3.0x) and `poc_cache_cpu` (2.9x, interpreter ops 48%). Left out of the means (kept in `tests.toml` as
+`excluded`; run one with `--tests NAME`):
+
+| test | reason |
+|---|---|
+| `neorv32_dual_full`, `neorv32_single_min`, `neorv32_single_cache` | the processor testbench: yavs and sim1 both exit 0, but the yavs core traps at its first GPIO store and sleeps, so the program diverges (#513) |
+| `hdlm_lfsr`, `hdlm_axi_crossbar`, `hdlm_register_file`, `hdlm_axis_bfm` | hdl-modules testbenches: E2106 at elaboration (#512) |
+| `poc_fifo_ic_assembly` | E2106 at elaboration (#515) |
+| `fletcher_bufferreader`, `fletcher_bufferwriter_prim32` | E2001 "call whose body is not analyzed" (#516) |
+| `olo_fix_madd` | E2001 shared variable of the transcript package (#517) |
+| `uvvm_rand_perf` | sim1 runs out of memory at a 1 GiB heap; yavs runs it (2.8 s) |
+| hVHDL floating point (not listed) | yavs rejects `float_typedefs_generic_pkg.vhd` (#514) |
+
+Tried and dropped because they fail or run for ever on sim1 as well: the satcat5 switch and MAC lookup testbenches (data mismatches),
+the JSON-for-VHDL and vhdl-extras testbenches that need files, the fletcher array reader (no end), and the Open Logic testbenches
+whose generics have no default. For a decision run `python3 -I tools/realbench/run.py BIN --ref sim1 --cores 6,7`
+and `--compare A B` (section 5 of its guide); on a loaded host wall time is noise, quote the instruction ratios.

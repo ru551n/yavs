@@ -603,19 +603,25 @@ pub(crate) enum Op {
         t: u32,
         f: u32,
     },
-    /// `EdgeSig` and the `CondBr` on its result (which is also written).
+    /// `EdgeSig` and the `CondBr` on its result (which is also written). With `stmt`, the
+    /// `Stmt` before it too (the op stands in its place and goes on as the next one).
     EdgeBr {
         dst: u32,
         rising: bool,
+        stmt: bool,
         sig: u32,
         offset: u32,
         t: u32,
         f: u32,
     },
-    /// `WaitSig` and the `Suspend` after it.
+    /// `WaitSig` and the `Suspend` after it, as op `at`: the op itself, or the op a `Br` to it
+    /// was replaced by a copy of (the copy runs as op `at`). With `stmt`, op `at` is the `Stmt`
+    /// before them (and the op after it the `WaitSig`).
     WaitSuspend {
         sig: u32,
         offset: u32,
+        at: u32,
+        stmt: bool,
     },
     /// `StmtLoadSlot8` and the `CondBr` on the register it loaded (which is also written).
     FlagBr {
@@ -1764,14 +1770,18 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             ) if c == dst => Some(Op::EdgeBr {
                 dst,
                 rising,
+                stmt: false,
                 sig,
                 offset,
                 t,
                 f,
             }),
-            (Op::WaitSig { sig, offset }, Some(&Op::Suspend), _) => {
-                Some(Op::WaitSuspend { sig, offset })
-            }
+            (Op::WaitSig { sig, offset }, Some(&Op::Suspend), _) => Some(Op::WaitSuspend {
+                sig,
+                offset,
+                at: k as u32,
+                stmt: false,
+            }),
             (Op::StmtLoadSlot8 { dst, off }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
                 Some(Op::FlagBr { dst, off, t, f })
             }
@@ -1946,6 +1956,57 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
         };
         if let Some(op) = fused {
             ops[k] = op;
+        }
+    }
+    // A `Stmt` before the edge test or the wait of a clocked process is part of that op, and a
+    // jump to such a wait is a copy of it (the end of every activation).
+    for k in 0..ops.len() {
+        let fused = match (ops[k], ops.get(k + 1)) {
+            (
+                Op::Stmt,
+                Some(&Op::EdgeBr {
+                    dst,
+                    rising,
+                    stmt: false,
+                    sig,
+                    offset,
+                    t,
+                    f,
+                }),
+            ) => Some(Op::EdgeBr {
+                dst,
+                rising,
+                stmt: true,
+                sig,
+                offset,
+                t,
+                f,
+            }),
+            (
+                Op::Stmt,
+                Some(&Op::WaitSuspend {
+                    sig,
+                    offset,
+                    stmt: false,
+                    ..
+                }),
+            ) => Some(Op::WaitSuspend {
+                sig,
+                offset,
+                at: k as u32,
+                stmt: true,
+            }),
+            _ => None,
+        };
+        if let Some(op) = fused {
+            ops[k] = op;
+        }
+    }
+    for k in 0..ops.len() {
+        if let Op::Br { to } = ops[k]
+            && let Some(&w @ Op::WaitSuspend { .. }) = ops.get(to as usize)
+        {
+            ops[k] = w;
         }
     }
     // The search loop: a load and compare of a position, then a step of the index that jumps

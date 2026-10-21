@@ -3726,3 +3726,28 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   from one lowered library (`lib`, "Library stages"). Ceiling: one store per run, the work library's
   (`ponytail` in `objcache.rs`); sharing library code between designs in different work libraries, or
   between the programs of different testbenches, needs code that names no design-dependent ids.
+
+## Interpreter round 10: the statement marker inside the edge test and the wait, the jump back skipped (yavs-interp, #443, 2026-10-21)
+
+- **A `Stmt` before the edge test or the wait of a clocked process is part of that op.** `EdgeBr` and
+  `WaitSuspend` carry `stmt`: the op ends the statement's temporaries as the `Stmt` did and goes on as the
+  op after it, so faults and the suspension pc stay those of the unfused instructions. The `Stmt` op stays
+  in place behind it for any other way in (`pre::superops`, second pass).
+- **A `Br` to a `WaitSuspend` is a copy of it.** The copy carries `at`, the op it stands for, and runs as
+  that op (`k = at`): the end of every activation of a clocked process (the jump from the end of the `if`
+  to the wait) is one op instead of two or three. Nothing else changes: a jump has no effect of its own,
+  and compiled code is entered again at the next activation.
+- **A resumed process does not run its jump back.** `run_ops` starts past the `Br`, or the `BrBody` when
+  no pause is set (`prestart` sets one and runs the step path), that a process stands at after `Suspend`.
+- **Register accesses stay bounds-checked; the interpreter keeps no `unsafe`.** Measured (pinned core 5,
+  `perf stat`, 3abd2fd7): register reads and writes through `get_unchecked` change rtl_ff by -0.3 percent
+  and rtl_lfsr by -1 percent of instructions; an unchecked op fetch on top made rtl_ff 13 percent worse
+  (the compiler laid out the loop differently). The check is two instructions of the seven a register
+  access costs (the frame base, the vector pointer and its length are reloaded from the machine after
+  every call); only a register pointer held in a local would remove the rest, which needs `unsafe` whose
+  soundness depends on every op that can grow the register stack. Not worth it for a few percent.
+- Rationale: the predecoded loop is instruction-bound (IPC near 4, branch misses under 0.1 percent); a
+  clocked activation is about 12 ops, and each removed op saves its dispatch and its bookkeeping, 7 to 25
+  instructions. Small code changes in `run_ops` move rtl_ff by up to 4 percent either way through the
+  compiler's register allocation of the one large function (#508), so every change here is measured on
+  several designs.

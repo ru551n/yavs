@@ -3960,6 +3960,12 @@ impl Machine {
                 }
             };
         }
+        // A process resumes at the jump back to its first statement: go there at once.
+        if let Some(&(Op::Br { to } | Op::BrBody { to, .. })) = ops.get(k)
+            && self.pause.is_none()
+        {
+            k = to as usize;
+        }
         enter!();
         loop {
             match ops[k] {
@@ -4946,16 +4952,11 @@ impl Machine {
                     };
                     let bit = self.regs[v as usize];
                     let tg = Reg(target.into());
-                    let done = bit <= 8
-                        && !self.is_multi(tg)
-                        && t!(self.driver(driver.into()).and_then(|d| self.drive_bit_at(
-                            ctx,
-                            d,
-                            tg,
-                            self.regs[time as usize],
-                            bit as u8,
-                            mode
-                        )));
+                    let done = bit <= 8 && !self.is_multi(tg) && {
+                        let d = t!(self.driver(driver.into()));
+                        let at = self.regs[time as usize];
+                        t!(self.drive_bit_at(ctx, d, tg, at, bit as u8, mode))
+                    };
                     if !done {
                         // Not a scalar logic signal (or a bad code): the instructions as the IR has them.
                         let a = t!(self.temp_alloc(self.regs[size as usize]));
@@ -5187,17 +5188,32 @@ impl Machine {
                 Op::EdgeBr {
                     dst,
                     rising,
+                    stmt,
                     sig,
                     offset,
                     t,
                     f: e,
                 } => {
+                    if stmt {
+                        self.end_stmt();
+                        k += 1;
+                    }
                     let (sr, _) = t!(self.sig_elem(sig, self.regs[offset as usize]));
                     let v = t!(Self::edge_elem(sr, rising, ctx));
                     self.regs[dst as usize] = v;
                     go!(if v != 0 { t } else { e });
                 }
-                Op::WaitSuspend { sig, offset } => {
+                Op::WaitSuspend {
+                    sig,
+                    offset,
+                    at,
+                    stmt,
+                } => {
+                    k = at as usize;
+                    if stmt {
+                        self.end_stmt();
+                        k += 1;
+                    }
                     let (sr, _) = t!(self.sig_elem(sig, self.regs[offset as usize]));
                     t!(Self::wait_elem(sr, ctx));
                     self.frames[top].pc = code.at.get(k + 1).copied().unwrap_or(0);

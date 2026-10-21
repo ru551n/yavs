@@ -248,6 +248,16 @@ impl Mem {
         }
     }
 
+    /// No object found yet (a `Mem` used before keeps its other words).
+    fn no_objs(&mut self) {
+        for o in &mut self.objs {
+            o.hi = u64::MAX;
+        }
+        self.obj_next = 0;
+        self.dirty = false;
+        self.transient = false;
+    }
+
     fn load_objs(&mut self, w: &[u64; 17]) {
         const { assert!(size_of::<[Obj; OBJS]>() == size_of::<[u64; 16]>()) };
         // SAFETY: `Obj` is four words (`hi`, the address as a word, `len`, `w`); the record
@@ -1125,11 +1135,50 @@ pub(crate) fn enter(
     ntab: *const usize,
     state: Option<&mut Option<Box<yavs_interp::TierState>>>,
 ) -> Option<u32> {
-    let mut mem = Mem::of(TierFrame::default());
+    // This thread's `Mem`, or a new one inside an activation that holds it.
+    let p = MEM.replace(std::ptr::null_mut());
+    let mut mem = if p.is_null() {
+        Box::new(Mem::of(TierFrame::default()))
+    } else {
+        // SAFETY: `MEM` holds a `Box` of this thread's that nothing else uses (taken above).
+        unsafe { Box::from_raw(p) }
+    };
+    let r = enter_on(&mut mem, f, nregs, pc, host, lookup, ntab, state);
+    if MEM.get().is_null() {
+        MEM.set(Box::into_raw(mem));
+    }
+    match r {
+        Ok(next) => next,
+        Err(p) => resume_unwind(p),
+    }
+}
+
+thread_local! {
+    /// The `Mem` of the activations on this thread, kept between them so that none builds one
+    /// (`enter`). ponytail: one `Mem` per thread is never freed, a thread-exit hook if threads
+    /// come and go by the thousand.
+    static MEM: std::cell::Cell<*mut Mem> = const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// `enter` on `mem` (a fresh or reused `Mem`): what the compiled code returns, or the panic it
+/// carried out of a callback.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn enter_on(
+    mem: &mut Mem,
+    f: RunFn,
+    nregs: usize,
+    pc: u32,
+    host: &mut dyn TierHost,
+    lookup: Lookup<'_>,
+    ntab: *const usize,
+    state: Option<&mut Option<Box<yavs_interp::TierState>>>,
+) -> Result<Option<u32>, Box<dyn Any + Send>> {
     if !host.view_again(&mut mem.fr) {
         host.view(&mut mem.fr);
     }
     mem.temp_seen = mem.fr.temp_len;
+    mem.ndeopt = 0;
     // The objects found at an earlier activation are good while the heap did not change.
     if let Some(Some(st)) = state.as_deref()
         && st.used
@@ -1142,10 +1191,12 @@ pub(crate) fn enter(
                 host.wrote(o.hi << 32);
             }
         }
+    } else {
+        mem.no_objs();
     }
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
-        return None;
+        return Ok(None);
     }
     let mut env = Env {
         host,
@@ -1167,7 +1218,7 @@ pub(crate) fn enter(
         f(
             &mut env as *mut Env<'_> as *mut c_void,
             mem.fr.regs,
-            &mut mem,
+            mem,
             pc,
         )
     };
@@ -1176,10 +1227,10 @@ pub(crate) fn enter(
     if let Some(slot) = state {
         mem.save_objs(slot);
     }
-    if let Some(p) = env.panic {
-        resume_unwind(p);
+    match env.panic {
+        Some(p) => Err(p),
+        None => Ok(Some(next)),
     }
-    Some(next)
 }
 
 /// A JIT with the runtime callbacks compiled code calls.

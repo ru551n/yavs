@@ -121,7 +121,7 @@ pub const FRAME: u8 = 0;
 pub const INST: u8 = 1;
 pub const PKG: u8 = 2;
 pub const CONST: u8 = 3;
-pub(crate) const HEAP: u8 = 4;
+pub const HEAP: u8 = 4;
 pub const TEMP: u8 = 5;
 pub const SHARED: u8 = 6;
 pub(crate) const SHARED_HEAP: u8 = 7;
@@ -408,6 +408,8 @@ pub(crate) struct Machine {
     /// The instance signals as compiled code reads them (`TierFrame::sigtab`), made at the first
     /// entry of compiled code from the kernel's signals (this machine belongs to one kernel).
     tier_sigs: Vec<crate::TierSig>,
+    /// What the compiled tier keeps for this process between activations.
+    pub(crate) tier_state: Option<Box<crate::TierState>>,
     /// A small process keeps its registers and temporaries between activations instead of
     /// handing them to the thread's scratch (set when it starts, [`RESIDENT_REGS`]): no
     /// swap per activation. A process whose temporaries grow past [`RESIDENT_TEMP`] stops
@@ -427,8 +429,6 @@ pub(crate) struct Machine {
 /// Registers of a process's root frame up to which it keeps its working vectors
 /// ([`Machine::resident`]): at most 384 bytes of registers per process.
 const RESIDENT_REGS: usize = 256;
-/// The same for a process whose compiled code suspends it (`run_compiled`), without the budget.
-const HOT_RESIDENT_REGS: usize = 256;
 /// Bytes of registers all resident processes together may keep (a design of very many processes
 /// swaps the rest through the thread's scratch as before).
 const RESIDENT_BUDGET: usize = 96 << 20;
@@ -813,6 +813,7 @@ impl Machine {
             bytes: Vec::new(),
             released: false,
             tier_sigs: Vec::new(),
+            tier_state: None,
             resident: false,
             enum_text: Vec::new(),
             resident_bytes: 0,
@@ -822,6 +823,7 @@ impl Machine {
     }
 
     /// The `Scratch::key` of the root frame's function.
+    #[inline(always)]
     fn scratch_key(&self) -> u64 {
         self.frames.first().map_or(0, |fr| {
             u64::from(self.rt.id) << 32 | (u64::from(fr.func.0) + 1)
@@ -834,13 +836,7 @@ impl Machine {
         if !self.released {
             return Ok(());
         }
-        self.borrow_scratch_slow()
-    }
-
-    #[inline(never)]
-    fn borrow_scratch_slow(&mut self) -> R<()> {
         self.released = false;
-        let root = self.frames.first().map(|fr| fr.func);
         let key = self.scratch_key();
         let pristine = SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
@@ -852,9 +848,18 @@ impl Machine {
         self.regs.base = 0;
         if pristine {
             self.temp.clear();
-            self.troots.clear();
+            if !self.troots.is_empty() {
+                self.troots.clear();
+            }
             return Ok(());
         }
+        self.borrow_fill()
+    }
+
+    /// The registers a frame starts with, after `borrow_scratch` found another function's.
+    #[inline(never)]
+    fn borrow_fill(&mut self) -> R<()> {
+        let root = self.frames.first().map(|fr| fr.func);
         // Registers are written before they are read: stale values are harmless, except
         // those a frame starts with (`pre.rs`).
         let rt = &self.rt;
@@ -878,25 +883,25 @@ impl Machine {
     /// procedure that waits resumes as before).
     #[inline(always)]
     pub(crate) fn release_scratch(&mut self) {
+        if self.frames.len() != 1 || self.dbg.is_some() {
+            return;
+        }
         // A resident process has no debugger (`set_resident`) and keeps its vectors.
-        if self.resident && self.frames.len() == 1 && self.temp.capacity() <= RESIDENT_TEMP {
+        if self.resident && self.temp.capacity() <= RESIDENT_TEMP {
             self.temp.clear();
             if !self.troots.is_empty() {
                 self.troots.clear();
             }
             return;
         }
-        self.release_scratch_slow();
-    }
-
-    #[inline(never)]
-    fn release_scratch_slow(&mut self) {
-        if self.frames.len() != 1 || self.released || self.dbg.is_some() {
+        if self.released {
             return;
         }
         self.resident = false;
         self.released = true;
-        self.troots.clear();
+        if !self.troots.is_empty() {
+            self.troots.clear();
+        }
         let key = self.scratch_key();
         SCRATCH.with(|s| {
             let mut s = s.borrow_mut();
@@ -1159,6 +1164,7 @@ impl Machine {
             Ordering::Relaxed,
         );
         let pc = self.frames[0].pc;
+        let mut state = self.tier_state.take();
         let mut host = Host {
             m: self,
             rt,
@@ -1168,8 +1174,9 @@ impl Machine {
             ctx,
             fault: None,
         };
-        let ran = tier.run(func, pc, &mut host);
+        let ran = tier.run_cached(func, pc, &mut host, &mut state);
         let fault = host.fault;
+        self.tier_state = state;
         if let Some(e) = fault {
             self.quick_fault = Some(e);
             return Some(Quick::Fault);
@@ -1177,9 +1184,14 @@ impl Machine {
         match ran {
             Some(crate::TIER_SUSPEND) => {
                 self.top().pc += 1;
-                // A process that suspends compiled over and over keeps its vectors.
-                if !self.resident && self.regs.v.len() <= HOT_RESIDENT_REGS {
-                    self.resident = true;
+                // A process that suspends compiled hands its registers to the thread's scratch
+                // from now on, resident or not: the register files of thousands of processes
+                // do not stay in the cache (an activation touches a few lines of them), the
+                // one scratch does, and the swap costs less than the misses.
+                if self.resident_bytes != 0 {
+                    RESIDENT_USED.fetch_sub(self.resident_bytes, Ordering::Relaxed);
+                    self.resident_bytes = 0;
+                    self.resident = false;
                 }
                 Some(Quick::Suspended)
             }
@@ -3023,6 +3035,10 @@ impl Machine {
         let Some(c) = ctx.as_deref_mut() else {
             return rt_err("signal or wait operation during elaboration");
         };
+        // A clocked process waits on what it waited on: nothing to register again.
+        if sr.range.is_some_and(|r| c.wait_on_again(sr.signal, r)) {
+            return Ok(());
+        }
         c.wait_on(sr)?;
         Ok(())
     }
@@ -3054,7 +3070,9 @@ impl Machine {
             }
         } else {
             let sr = self.sigref(sig)?.0;
-            c.wait_on(sr)?;
+            if !sr.range.is_some_and(|r| c.wait_on_again(sr.signal, r)) {
+                c.wait_on(sr)?;
+            }
             if self.dbg.is_some() {
                 self.waits.sens.push(sr);
             }
@@ -5509,6 +5527,46 @@ impl Machine {
         slots.as_mut_ptr().wrapping_add(sbase)
     }
 
+    /// The view of a process in its root frame, every field written straight from the machine's
+    /// fields (`TierHost::view_again`); `false` (nothing written) when it is not one.
+    fn view_root(&mut self, tf: &mut crate::TierFrame, c: &Ctx<'_>) -> bool {
+        let m = self;
+        if m.frames.len() != 1 || m.tier_sigs.len() != m.inst.sigs.len() {
+            return false;
+        }
+        let fr = &m.frames[0];
+        let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);
+        tf.slots = m.root.as_mut_ptr().wrapping_add(fr.sbase as usize);
+        tf.slots_len = u64::from(slen);
+        tf.frame = 0;
+        tf.frame_hi = u64::from(FRAME) << 29;
+        tf.up = [u64::MAX; 2];
+        tf.inst = m.inst.data.as_ptr();
+        tf.inst_len = m.inst.data.len() as u64;
+        tf.nsigs = m.inst.sigs.len() as u64;
+        tf.sigtab = m.tier_sigs.as_ptr();
+        tf.sigtab_len = m.tier_sigs.len() as u64;
+        tf.temp = m.temp.as_mut_ptr();
+        tf.temp_len = m.temp.len() as u64;
+        tf.temp_cap = m.temp.capacity() as u64;
+        tf.temp_base = u64::from(temp_base);
+        tf.temp_roots = m.troots.len() as u64;
+        tf.regs = m.regs.v.as_mut_ptr().wrapping_add(rbase);
+        tf.nregs = (m.regs.v.len() - rbase) as u64;
+        tf.stack = m.regs.v.as_ptr();
+        tf.max_depth = u64::from(m.rt.limits.max_depth);
+        tf.heap_epoch = m.heap.epoch();
+        match c.known_edge() {
+            Some((s, e, up)) => {
+                tf.known_sig = u64::from(s.0);
+                tf.known_elem = u64::from(e);
+                tf.known_up = u64::from(up);
+            }
+            None => tf.known_sig = u64::MAX,
+        }
+        true
+    }
+
     /// Make `tf` the top frame's view (`TierFrame`).
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
         let top = self.frames.len() - 1;
@@ -5530,6 +5588,7 @@ impl Machine {
         tf.nregs = (self.regs.v.len() - rbase) as u64;
         tf.stack = self.regs.v.as_ptr();
         tf.max_depth = u64::from(self.rt.limits.max_depth);
+        tf.heap_epoch = self.heap.epoch();
         let mut link = self.frames[top].link;
         for u in &mut tf.up {
             *u = match link {
@@ -7012,42 +7071,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
     }
 
     fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {
-        let m = &mut *self.m;
         let Some(c) = self.ctx.as_deref() else {
             return false;
         };
-        if m.frames.len() != 1 || m.tier_sigs.len() != m.inst.sigs.len() {
-            return false;
-        }
-        let fr = &m.frames[0];
-        let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);
-        tf.slots = m.root.as_mut_ptr().wrapping_add(fr.sbase as usize);
-        tf.slots_len = u64::from(slen);
-        tf.frame = 0;
-        tf.frame_hi = u64::from(FRAME) << 29;
-        tf.up = [u64::MAX; 2];
-        tf.inst = m.inst.data.as_ptr();
-        tf.inst_len = m.inst.data.len() as u64;
-        tf.nsigs = m.inst.sigs.len() as u64;
-        tf.sigtab = m.tier_sigs.as_ptr();
-        tf.sigtab_len = m.tier_sigs.len() as u64;
-        tf.temp = m.temp.as_mut_ptr();
-        tf.temp_len = m.temp.len() as u64;
-        tf.temp_cap = m.temp.capacity() as u64;
-        tf.temp_base = u64::from(temp_base);
-        tf.temp_roots = m.troots.len() as u64;
-        tf.regs = m.regs.v.as_mut_ptr().wrapping_add(rbase);
-        tf.nregs = (m.regs.v.len() - rbase) as u64;
-        tf.stack = m.regs.v.as_ptr();
-        match c.known_edge() {
-            Some((s, e, up)) => {
-                tf.known_sig = u64::from(s.0);
-                tf.known_elem = u64::from(e);
-                tf.known_up = u64::from(up);
-            }
-            None => tf.known_sig = u64::MAX,
-        }
-        true
+        self.m.view_root(tf, c)
     }
 
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
@@ -7185,6 +7212,15 @@ impl crate::TierHost for Host<'_, '_, '_> {
             let Some(c) = self.ctx.as_deref_mut() else {
                 return rt_err("signal or wait operation during elaboration");
             };
+            if n == 1 {
+                // One element: the scalar path (the code is the bit of each plane).
+                let code = (block[0] & 1)
+                    | (block[1] & 1) << 1
+                    | (block[2] & 1) << 2
+                    | (block[3] & 1) << 3;
+                c.assign_code(d.id, sr.range, t, code as u8, mode)?;
+                return Ok(true);
+            }
             let mask = yavs_logic::wide::nmask(n as usize);
             let mut bytes = [0u8; 32];
             for (o, w) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(block) {
@@ -7201,6 +7237,52 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 crate::Stepped::Fault
             }
         }
+    }
+
+    fn wrote(&mut self, addr: u64) {
+        let (sp, idx, _) = split(addr);
+        if sp == HEAP {
+            let _ = self.m.heap.data_mut(idx);
+        }
+    }
+
+    fn drive_now(&mut self, driver: u32, target: [u64; 2], delay: i64, block: [u64; 4]) -> bool {
+        let m = &*self.m;
+        if delay != 0 || target[1] != 1 || target[0] >> 32 == MULTI {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            m.drivers.get(driver as usize),
+            m.inst.sigs.get((target[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        if s.ty.elem != Elem::Logic {
+            return false;
+        }
+        let code = (block[0] & 1) | (block[1] & 1) << 1 | (block[2] & 1) << 2 | (block[3] & 1) << 3;
+        let r = yavs_kernel::Range::new(s.off + target[0] as u32, 1);
+        c.assign_code_now(d.id, r, code as u8)
+    }
+
+    fn wait_again(&mut self, pc: u32, sig: [u64; 2]) -> bool {
+        let m = &mut *self.m;
+        if sig[0] >> 32 == MULTI || m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {
+            return false;
+        }
+        let (Some(s), Some(c)) = (
+            m.inst.sigs.get((sig[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        let r = yavs_kernel::Range::new(s.off + sig[0] as u32, sig[1] as u32);
+        if !c.wait_on_again(s.signal, r) {
+            return false;
+        }
+        m.frames[0].pc = pc + 1;
+        true
     }
 
     fn wait_suspend(

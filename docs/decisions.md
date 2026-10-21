@@ -3270,3 +3270,55 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   interpreter's fused ops (`chain`, `fan`, `ff` ran 5 to 30% slower compiled), so they stay interpreted. `loops`
   ignores blocks the optimiser left unreachable (a dead self-jump made every process look like a loop and kept
   it out of tier-up). Decided by measurement; not a user ruling.
+
+## Compiled clocked RTL processes, round 2: a wait that registers nothing, kept object addresses (yavs-kernel, yavs-interp, yavs-llvm, #432, #440, 2026-10-21)
+
+- **A wait on exactly the range the last wait registered registers nothing.** `Ctx::wait_on_again(signal, range)`
+  succeeds when `sens` is empty, no timeout was set and `sens_prev` is that one range; it leaves `sens` empty
+  and sets `ProcState::again`. The commit (`run_batch`) treats `again` as the same wait it already registered
+  (`ProcMeta::perm`, the resident waiter), and a process that adds anything else to the wait after it (another
+  signal, a timeout) gets `sens` rebuilt as `sens_prev` followed by what it added, before the usual logic. For
+  the usual clocked process the commit loop then only moves the scheduled drivers into the queue. The
+  interpreter's `WaitOn`/`wait_elem` and the compiled tier (`TierHost::wait_again`, taken first by
+  `yavs_rt_wait`) use it; kernel tests `a_wait_on_the_last_range_is_the_same_wait` and
+  `a_wait_that_adds_to_the_last_one_keeps_everything`. No signature changed.
+- **A zero-delay drive of one element of a logic signal from compiled code** is `TierHost::drive_now` (no frame
+  view, no result) into the new `Ctx::assign_code_now` (the scalar fast path); `drive_block` sends a one-element
+  drive of any delay through `Ctx::assign_code` instead of building plane bytes (the apply side of a scalar
+  quick transaction was 4% cheaper than the vector one on `ff`).
+- **`Tier::run_cached` and `TierState`.** A process keeps, between activations, the host addresses of the heap
+  objects compiled code found (up to four entries: `Mem::objs`, constants and `space::HEAP` only), valid while
+  `Heap::epoch` is unchanged (it counts deallocations and edits in place; `TierFrame::heap_epoch` carries it).
+  Without it a process with an array variable (a heap object) looked its object up twice per activation
+  through the interpreter. The entries a read found are replaced, not repeated, by the same object found for
+  a write; the objects it may write count as written in each activation (`TierHost::wrote`, the write count
+  the waveform recorder compares). The frame view itself is not kept: a persistent copy needed fewer
+  instructions but touched cold lines (`fan` +3% cycles, +14M L2 misses), the stack copy is rebuilt from the
+  machine's fields (`Machine::view_root`, shared with `view_again`, which now also sets `max_depth`).
+- **A process that suspends compiled hands its registers to the thread's scratch**, resident or not
+  (`run_compiled` gives its `RESIDENT_USED` share back): compiled code writes a register per IR result, a dozen
+  lines of the process's own register file per activation, and thousands of those files do not stay in the L1
+  cache. Measured pinned, `--tier=llvm`: `ff` -11% cycles (+6% instructions for the swap), `lfsr` -7%, `rtl2`,
+  `chain` and `fan` level (the register files of the 64 to 1000 processes of those fit the cache). `borrow_scratch`/`release_scratch` are inline, the cold part (`borrow_fill`)
+  out of line.
+- **Compiled `LCopy` of up to 64 elements** is inline (the planes of at most two blocks each side shifted as
+  128-bit words, the source read before the destination is written); longer copies still go through
+  `yavs_rt_lcopy`.
+- **`--tier=auto`:** `RTL_MIN` is 140 IR instructions (was 200): a 150 instruction process (`ff`) compiles and
+  wins about 7%, the 100 to 135 instruction processes of `rtl` and `rtl2` do not (the interpreter's fused vector
+  ops of round 9 are as fast as the compiled code there). The O2 recompile stays at six times the first
+  threshold; a later one (ten times the O2 compile time seen) lost 9% on `ff` and won 10% on `lfsr`, so no rule
+  by compile time alone is better on this set. A run shorter than about 0.2 s pays its compile (the library
+  use of the library alone costs 9 ms) and ends up a few percent behind the interpreter in total cycles, ahead in wall time
+  (the compile thread is another core).
+- **Not built, with the measurement:** one compiled entry per body that runs a batch of ready instances. What an
+  activation of a compiled `ff` process costs (1900 instructions at 4096 processes): the process body 20%, the
+  kernel's wake, commit and update 45%, the drive and wait callbacks 20%, the entry 15% (frame view, scratch
+  swap, `Mem` set-up, the call). All of the entry is per-instance state (view of this process's slots, registers,
+  signal table, instance data), so a batch loop saves the dynamic call and the `Ctx` set-up, 25 of 1900
+  instructions; it would need the kernel to hand compiled code the instances' `Ctx`s, and a callback per drive
+  and wait remains. What was tried and dropped, all within 1% or worse: a persistent frame view per process
+  (above), fusing every quick transaction of a cycle (`FUSE_MAX`, +6% instructions), an alias scope for the `Mem` fields, branch
+  weights on the compiled code's guards, hot-first field order of `Machine`, an unrolled `get_block`, a fused
+  `update_effective` for one chunk (the runs the kernel passes are merged and longer than 64 elements),
+  fat LTO with one codegen unit (0 to -3%).

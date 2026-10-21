@@ -95,6 +95,8 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 
 - Clocked RTL (#432, #339): `Drive` of one waveform element runs `yavs_rt_drive` (`TierHost::drive_block`, kernel `Ctx::assign_blocks`), `WaitOn`+`Suspend` runs `yavs_rt_wait`, `SigRead` of a known count up to 64 and `Cat` of known piece lengths are inline (`Gen::sig_read_block`, `Gen::cat_block`), `Alloc`/`DopeLen` and temporary and instance memory need no call; registers defined once by a `Const` are known everywhere (`fixed_consts`). `--tier=auto` compiles `rtl` process bodies at O0 (`auto.rs`). Alias scopes separate slots, temporaries, instance data, constants and code bytes. Rules: decisions.md "Compiled clocked RTL processes".
 
+- Clocked RTL, round 2 (#432): `Tier::run_cached` keeps the heap objects `Mem::objs` found between activations (`TierState`, `Mem::load_objs`/`save_objs`/`forget_end`; valid while `TierFrame::heap_epoch` is unchanged; only constants and `space::HEAP`), `yavs_rt_drive` asks `TierHost::drive_now` first and `yavs_rt_wait` `TierHost::wait_again` (no view, no result), `LCopy` of up to 64 elements is inline (`Gen::lcopy_inline`). `--tier=auto` compiles process bodies of 140 to 600 IR instructions (`RTL_MIN`). Rules: decisions.md "Compiled clocked RTL processes, round 2".
+
 ## 4. Invariants and pitfalls
 
 - `cargo test --workspace` does **not** build this crate's code (feature off): run the feature

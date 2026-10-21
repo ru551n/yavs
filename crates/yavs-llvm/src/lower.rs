@@ -81,6 +81,10 @@ pub(crate) struct Mem {
     fr: TierFrame,
     objs: [Obj; OBJS],
     obj_next: u64,
+    /// `objs` changed since it was loaded from the process's record (`save_objs`).
+    dirty: bool,
+    /// Some entry of `objs` is not one `forget_end` keeps.
+    transient: bool,
     /// The temporary area's length the interpreter last gave: no hand-back while unchanged.
     temp_seen: u64,
     /// Nonzero while native frames unwind to be materialised (`yavs_rt_deopt`).
@@ -146,6 +150,8 @@ impl Mem {
             fr,
             objs: [NO_OBJ; OBJS],
             obj_next: 0,
+            dirty: false,
+            transient: false,
             temp_seen: fr.temp_len,
             ndeopt: 0,
             ntab: std::ptr::null(),
@@ -162,6 +168,65 @@ impl Mem {
         }
     }
 
+    fn load_objs(&mut self, w: &[u64; 17]) {
+        const { assert!(size_of::<[Obj; OBJS]>() == size_of::<[u64; 16]>()) };
+        // SAFETY: `Obj` is four words (`hi`, the address as a word, `len`, `w`); the record
+        // was written by `save_objs` from such entries.
+        unsafe {
+            std::ptr::copy_nonoverlapping(w.as_ptr(), self.objs.as_mut_ptr().cast::<u64>(), 16);
+        }
+        self.obj_next = self.objs.iter().take_while(|o| o.hi != u64::MAX).count() as u64;
+        self.dirty = false;
+        self.transient = false;
+    }
+
+    /// Keep the objects `forget_end` left for the next activation.
+    fn save_objs(&self, slot: &mut Option<Box<yavs_interp::TierState>>) {
+        if self.obj_next == 0 {
+            if let Some(st) = slot {
+                st.used = false;
+            }
+            return;
+        }
+        let st = slot.get_or_insert_with(Default::default);
+        if !self.dirty && st.used {
+            return;
+        }
+        // SAFETY: as in `load_objs`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.objs.as_ptr().cast::<u64>(),
+                st.words.as_mut_ptr(),
+                16,
+            );
+        }
+        st.words[16] = self.fr.heap_epoch;
+        st.used = true;
+    }
+
+    /// The end of an activation: forget the objects found, except constants and the process
+    /// heap's objects, which stay valid while the heap's epoch does not change.
+    #[inline]
+    fn forget_end(&mut self) {
+        if !self.transient {
+            return;
+        }
+        let keep = |hi: u64| {
+            let sp = (hi >> 29) as u8;
+            sp == space::CONST || sp == space::HEAP
+        };
+        let objs = std::mem::replace(&mut self.objs, [NO_OBJ; OBJS]);
+        self.obj_next = 0;
+        for o in objs {
+            if o.hi != u64::MAX && keep(o.hi) {
+                self.objs[self.obj_next as usize] = o;
+                self.obj_next += 1;
+            }
+        }
+        self.dirty = true;
+        self.transient = false;
+    }
+
     /// Forget the objects found before a step, except constants (they never move or change).
     fn forget(&mut self) {
         if self.obj_next == 0 {
@@ -175,6 +240,8 @@ impl Mem {
                 self.obj_next += 1;
             }
         }
+        self.dirty = true;
+        self.transient = false;
     }
 }
 
@@ -347,9 +414,13 @@ extern "C" fn yavs_rt_drive(
 ) -> u32 {
     // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`.
     let envp = env as *mut Env<'_>;
-    unsafe { (*mem).sync(&mut *(*envp).host) };
     let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
     let (delay, block) = (word(0) as i64, [word(1), word(2), word(3), word(4)]);
+    // The usual case, taken by the host without a frame view or a result.
+    if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
+        return GO;
+    }
+    unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.drive_block(
             &mut (*mem).fr,
@@ -375,6 +446,9 @@ extern "C" fn yavs_rt_wait(
 ) -> u32 {
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
+    if unsafe { (*envp).host.wait_again(pc, [lo, len]) } {
+        return TIER_SUSPEND;
+    }
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.wait_suspend(&mut (*mem).fr, pc, [lo, len])
@@ -707,13 +781,24 @@ fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32) -> u32 {
     let mem = unsafe { &mut *mem };
     match catch_unwind(AssertUnwindSafe(|| env.host.object(addr, write != 0))) {
         Ok(Some((p, len))) => {
-            mem.objs[mem.obj_next as usize % OBJS] = Obj {
-                hi: addr >> 32,
+            let hi = addr >> 32;
+            // The same object found for the other direction takes the same entry.
+            let at = match mem.objs.iter().position(|o| o.hi == hi) {
+                Some(k) => k,
+                None => {
+                    mem.obj_next = mem.obj_next.wrapping_add(1);
+                    (mem.obj_next as usize - 1) % OBJS
+                }
+            };
+            mem.objs[at] = Obj {
+                hi,
                 ptr: p,
                 len: len as u64,
                 w: u64::from(write),
             };
-            mem.obj_next = mem.obj_next.wrapping_add(1);
+            let sp = (hi >> 29) as u8;
+            mem.transient |= sp != space::CONST && sp != space::HEAP;
+            mem.dirty = true;
             1
         }
         Ok(None) => 0,
@@ -751,7 +836,27 @@ impl Tier for LlvmTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr())
+        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), None)
+    }
+
+    fn run_cached(
+        &self,
+        func: FuncId,
+        pc: u32,
+        host: &mut dyn TierHost,
+        state: &mut Option<Box<yavs_interp::TierState>>,
+    ) -> Option<u32> {
+        let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
+        let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
+        enter(
+            f,
+            nregs,
+            pc,
+            host,
+            &lookup,
+            self.natives.as_ptr(),
+            Some(state),
+        )
     }
 
     fn ready(&self, func: FuncId) -> bool {
@@ -768,12 +873,26 @@ pub(crate) fn enter(
     host: &mut dyn TierHost,
     lookup: Lookup<'_>,
     ntab: *const usize,
+    state: Option<&mut Option<Box<yavs_interp::TierState>>>,
 ) -> Option<u32> {
     let mut mem = Mem::of(TierFrame::default());
     if !host.view_again(&mut mem.fr) {
         host.view(&mut mem.fr);
     }
     mem.temp_seen = mem.fr.temp_len;
+    // The objects found at an earlier activation are good while the heap did not change.
+    if let Some(Some(st)) = state.as_deref()
+        && st.used
+        && st.words[16] == mem.fr.heap_epoch
+    {
+        mem.load_objs(&st.words);
+        // The heap objects it may write count as written in this activation.
+        for o in mem.objs {
+            if o.hi != u64::MAX && o.w != 0 && (o.hi >> 29) as u8 == space::HEAP {
+                host.wrote(o.hi << 32);
+            }
+        }
+    }
     // A frame index beyond the address format is the interpreter's error.
     if mem.fr.nregs != nregs as u64 || mem.fr.frame >= 1 << 29 {
         return None;
@@ -799,6 +918,10 @@ pub(crate) fn enter(
         )
     };
     mem.sync(env.host);
+    mem.forget_end();
+    if let Some(slot) = state {
+        mem.save_objs(slot);
+    }
     if let Some(p) = env.panic {
         resume_unwind(p);
     }
@@ -2780,6 +2903,14 @@ impl Gen {
                         );
                         let pd =
                             self.host(&c, self.ld(&c, dst), fk(dst), b32(db0), b32(nd), true, slow);
+                        // Up to 64 elements: at most two blocks each side, shifted in registers.
+                        let few = self.icmp(IP::LLVMIntULE, k, self.c64(64));
+                        let (inl, call) = (self.block(&c), self.block(&c));
+                        LLVMBuildCondBr(self.b, few, inl, call);
+                        LLVMPositionBuilderAtEnd(self.b, inl);
+                        self.lcopy_inline(&c, pd, nd, d0, ps, ns, s0, k);
+                        LLVMBuildBr(self.b, join);
+                        LLVMPositionBuilderAtEnd(self.b, call);
                         let mut args = [pd, nd, d0, ps, ns, s0, k];
                         LLVMBuildCall2(
                             self.b,
@@ -3102,6 +3233,96 @@ impl Gen {
                 self.step,
                 &mut [c.env, c.regs, c.mem, self.c32(at)],
             )
+        }
+    }
+
+    /// `Inst::LCopy` of `k` (1 to 64) elements from bit `s0` of the one or two plane blocks at
+    /// `ps` (`ns` of them) to bit `d0` of those at `pd` (`nd`), as `copy_bits` does: the
+    /// source planes are read first (the ranges may overlap), the destination bits outside
+    /// the copied range stay.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn lcopy_inline(
+        &self,
+        c: &Cur,
+        pd: LLVMValueRef,
+        nd: LLVMValueRef,
+        d0: LLVMValueRef,
+        ps: LLVMValueRef,
+        ns: LLVMValueRef,
+        s0: LLVMValueRef,
+        k: LLVMValueRef,
+    ) {
+        // SAFETY: the pointers cover `ns` and `nd` blocks (`host`, checked by the caller).
+        unsafe {
+            let i128t = LLVMIntTypeInContext(self.ctx, 128);
+            let b = self.b;
+            let z128 = |v| LLVMBuildZExt(b, v, i128t, c"".as_ptr());
+            let c128 = |v: u64| LLVMConstInt(i128t, v, 0);
+            // Low `k` bits.
+            let mask = {
+                let full = self.icmp(IP::LLVMIntUGE, k, self.c64(64));
+                let sh = LLVMBuildShl(b, self.c64(1), k, c"".as_ptr());
+                let low = LLVMBuildSub(b, sh, self.c64(1), c"".as_ptr());
+                LLVMBuildSelect(b, full, self.c64(-1), low, c"".as_ptr())
+            };
+            let two_s = self.icmp(IP::LLVMIntEQ, ns, self.c64(2));
+            let two_d = self.icmp(IP::LLVMIntEQ, nd, self.c64(2));
+            // Block 1 is only read (written) when there is one.
+            let word = |p: LLVMValueRef, plane: i64, blk1: LLVMValueRef| {
+                let lo = self.gep(p, self.c64(plane * 8));
+                let hi_at = LLVMBuildSelect(
+                    b,
+                    blk1,
+                    self.gep(p, self.c64(32 + plane * 8)),
+                    lo,
+                    c"".as_ptr(),
+                );
+                (lo, hi_at)
+            };
+            let mut vals = [self.c64(0); 4];
+            for (plane, v) in vals.iter_mut().enumerate() {
+                let (lo, hi_at) = word(ps, plane as i64, two_s);
+                let (l, h) = (self.load(self.i64, lo), self.load(self.i64, hi_at));
+                let h = LLVMBuildSelect(b, two_s, h, self.c64(0), c"".as_ptr());
+                let wide = LLVMBuildOr(
+                    b,
+                    z128(l),
+                    LLVMBuildShl(b, z128(h), c128(64), c"".as_ptr()),
+                    c"".as_ptr(),
+                );
+                let sh = LLVMBuildLShr(b, wide, z128(s0), c"".as_ptr());
+                let low = LLVMBuildTrunc(b, sh, self.i64, c"".as_ptr());
+                *v = LLVMBuildAnd(b, low, mask, c"".as_ptr());
+            }
+            let hole = LLVMBuildShl(b, z128(mask), z128(d0), c"".as_ptr());
+            let keep = LLVMBuildNot(b, hole, c"".as_ptr());
+            for (plane, v) in vals.iter().enumerate() {
+                let (lo, hi_at) = word(pd, plane as i64, two_d);
+                let (l, h) = (self.load(self.i64, lo), self.load(self.i64, hi_at));
+                let h = LLVMBuildSelect(b, two_d, h, self.c64(0), c"".as_ptr());
+                let wide = LLVMBuildOr(
+                    b,
+                    z128(l),
+                    LLVMBuildShl(b, z128(h), c128(64), c"".as_ptr()),
+                    c"".as_ptr(),
+                );
+                let put = LLVMBuildShl(b, z128(*v), z128(d0), c"".as_ptr());
+                let out = LLVMBuildOr(
+                    b,
+                    LLVMBuildAnd(b, wide, keep, c"".as_ptr()),
+                    put,
+                    c"".as_ptr(),
+                );
+                self.store(LLVMBuildTrunc(b, out, self.i64, c"".as_ptr()), lo);
+                // The second block: the high half, when the destination has one.
+                let (hi_bb, done) = (self.block(c), self.block(c));
+                LLVMBuildCondBr(b, two_d, hi_bb, done);
+                LLVMPositionBuilderAtEnd(b, hi_bb);
+                let top = LLVMBuildLShr(b, out, c128(64), c"".as_ptr());
+                self.store(LLVMBuildTrunc(b, top, self.i64, c"".as_ptr()), hi_at);
+                LLVMBuildBr(b, done);
+                LLVMPositionBuilderAtEnd(b, done);
+            }
         }
     }
 

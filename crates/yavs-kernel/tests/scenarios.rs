@@ -1624,3 +1624,110 @@ fn legacy_and_reset_triggers_skip_other_events() {
     // The initial run, then only the activations that could do something.
     assert_eq!(held, needed + 1);
 }
+
+/// A wait on exactly the range the last wait registered (`Ctx::wait_on_again`) is the same wait:
+/// three counters on the clock, one with `wait_on`, one asking `wait_on_again` first, one that
+/// now and then waits on a second signal too, count the same edges.
+#[test]
+fn a_wait_on_the_last_range_is_the_same_wait() {
+    let mut b = Builder::new();
+    let clk = clock(&mut b);
+    let other = b.signal("other", BYTE, &[0]);
+    let counts: Vec<SignalId> = (0..3)
+        .map(|i| b.signal(&format!("n{i}"), SignalType::bytes(4, 1), &[0; 4]))
+        .collect();
+    for (i, &n) in counts.iter().enumerate() {
+        let d = b.driver(n);
+        let mut k = 0u32;
+        b.process(
+            &format!("counter{i}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                if c.event(clk)? && c.value(clk)? == [1] {
+                    c.drive(d, &(u32_of(c.value(n)?) + 1).to_le_bytes())?;
+                }
+                k += 1;
+                match i {
+                    0 => c.wait_on(clk),
+                    1 => {
+                        if !c.wait_on_again(clk, Range::new(0, 1)) {
+                            c.wait_on(clk)?;
+                        }
+                        Ok(())
+                    }
+                    _ => {
+                        // Every fifth wait also names `other` (never changes), so the waits
+                        // differ from the last one now and then.
+                        if k.is_multiple_of(5) {
+                            c.wait_on(other)?;
+                            c.wait_on(clk)
+                        } else if !c.wait_on_again(clk, Range::new(0, 1)) {
+                            c.wait_on(clk)
+                        } else {
+                            Ok(())
+                        }
+                    }
+                }
+            }),
+        );
+    }
+    let (mut sim, _) = build(b, Config::default());
+    assert_eq!(sim.run_until(ns(1000)).unwrap(), RunStatus::Paused);
+    for &n in &counts {
+        assert_eq!(u32_of(&v(&sim, n)), 100);
+    }
+}
+
+/// A wait that starts with `wait_on_again` and names more (another signal, a timeout) is the
+/// wait of everything it names: the processes count how often they wake.
+#[test]
+fn a_wait_that_adds_to_the_last_one_keeps_everything() {
+    let mut b = Builder::new();
+    let clk = clock(&mut b);
+    let other = b.signal("other", BYTE, &[0]);
+    let od = b.driver(other);
+    b.process(
+        "toggler",
+        NONE,
+        &[od],
+        p(move |c| {
+            let v = c.value(other)?[0] ^ 1;
+            c.assign(od, None, &[(ns(7), &[v])], DelayMode::INERTIAL)?;
+            c.wait_for(ns(7))
+        }),
+    );
+    // Waiters 0 and 1 name clk and other, 2 also a timeout that never fires first, 3 and 4 name
+    // clk and a timeout that does; the even ones make the clk part with `wait_on_again`.
+    let counts: Vec<SignalId> = (0..5)
+        .map(|i| b.signal(&format!("n{i}"), SignalType::bytes(4, 1), &[0; 4]))
+        .collect();
+    for (i, &n) in counts.iter().enumerate() {
+        let d = b.driver(n);
+        b.process(
+            &format!("waiter{i}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                c.drive(d, &(u32_of(c.value(n)?) + 1).to_le_bytes())?;
+                if i % 2 == 1 || !c.wait_on_again(clk, Range::new(0, 1)) {
+                    c.wait_on(clk)?;
+                }
+                match i {
+                    0 | 1 => c.wait_on(other),
+                    2 => {
+                        c.wait_on(other)?;
+                        c.wait_for(ns(33))
+                    }
+                    _ => c.wait_for(ns(3)),
+                }
+            }),
+        );
+    }
+    let (mut sim, _) = build(b, Config::default());
+    assert_eq!(sim.run_until(ns(1000)).unwrap(), RunStatus::Paused);
+    let n: Vec<u32> = counts.iter().map(|&s| u32_of(&v(&sim, s))).collect();
+    assert_eq!(n[0], n[1], "{n:?}");
+    assert_eq!(n[3], n[4], "{n:?}");
+    assert!(n[3] > n[0] && n[2] == n[0], "{n:?}");
+}

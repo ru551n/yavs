@@ -239,7 +239,7 @@ fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 
 /// The smallest process `rtl` takes: below this the way into and out of compiled code costs
 /// more than interpreting the body (measured on 100 to 150 instruction processes).
-const RTL_MIN: usize = 200;
+const RTL_MIN: usize = 140;
 
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
@@ -773,7 +773,27 @@ impl Tier for AutoTier {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
         // `AtomicUsize` has the layout of `usize`: compiled code loads the entries atomically.
-        enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast())
+        enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast(), None)
+    }
+
+    fn run_cached(
+        &self,
+        func: FuncId,
+        pc: u32,
+        host: &mut dyn TierHost,
+        state: &mut Option<Box<yavs_interp::TierState>>,
+    ) -> Option<u32> {
+        let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
+        let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
+        enter(
+            f,
+            nregs,
+            pc,
+            host,
+            &lookup,
+            self.ntab.as_ptr().cast(),
+            Some(state),
+        )
     }
 
     fn ready(&self, func: FuncId) -> bool {
@@ -799,7 +819,37 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
-    use super::within_budget;
+    use super::{loops, within_budget};
+    use yavs_diag::{FileId, Span};
+    use yavs_ir::{Inst, ProgramBuilder, StmtKind};
+
+    /// A function whose second block jumps to itself: reached from the first, that is a loop;
+    /// left unreachable by the optimiser, it is none (a process full of dead self-jumps was
+    /// kept out of tier-up).
+    fn self_jump(reached: bool) -> (yavs_ir::Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        let dead = fb.block();
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        if reached {
+            fb.emit(Inst::Br { to: dead });
+        } else {
+            fb.emit(Inst::Ret { v: None });
+        }
+        fb.at(dead);
+        fb.emit(Inst::Br { to: dead });
+        fb.finish();
+        (pb.finish().unwrap(), f)
+    }
+
+    #[test]
+    fn an_unreachable_self_jump_is_no_loop() {
+        for (reached, is_loop) in [(true, true), (false, false)] {
+            let (prog, f) = self_jump(reached);
+            assert_eq!(loops(&prog, prog.func(f).unwrap()), is_loop, "{reached}");
+        }
+    }
 
     /// A process that interprets one loop for seconds without ever suspending: the sampler sees
     /// all of it, and a compute loop of a few hundred instructions (about 180 ms to compile)

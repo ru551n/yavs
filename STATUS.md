@@ -2264,6 +2264,42 @@ table, registers: cold for 1000 to 4000 processes) costs more than the interpret
 under `auto` (`RTL_MIN`). What is left on the designs it helps is the kernel (35 to 50% of the instructions) and the
 entry into compiled code (about 250 instructions per activation).
 
+## llvm: compiled clocked RTL, round 2, 2026-10-21 (#432, #440)
+
+Cheaper activation of compiled processes (decisions.md "Compiled clocked RTL processes, round 2"): a wait on the range
+the last wait registered registers nothing (kernel, interpreter and compiled code), compiled one-element drives and
+waits take the host's fast forms, a process keeps the heap object addresses it found between activations, compiled
+processes use the thread scratch for registers, `LCopy` of up to 64 elements is inline, `--tier=auto` compiles
+processes from 140 IR instructions. `tools/bench/run.py --ref sim1 --tiers interp,auto,llvm --instructions --runs 5
+--cores 2,3` (performance cores 2 and 3, the host loaded by other builds, median of 5, analysis excluded, the compile
+thread on the same two cores; `--tier=llvm` compiles everything before time 0): CPU seconds, ratio to the reference
+simulator's JIT in brackets.
+
+| Design | interp | `--tier=auto` | `--tier=llvm` | reference simulator |
+|---|---:|---:|---:|---:|
+| rtl_ff | 0.99 (1.52) | 0.98 (1.51) | 1.00 (1.54) | 0.65 |
+| rtl_lfsr | 0.43 (3.3) | 0.44 (3.4) | 0.45 (3.5) | 0.13 |
+| rtl_chain | 0.21 (1.5) | 0.22 (1.6) | 0.35 (2.5) | 0.14 |
+| rtl_fan | 1.10 (1.2) | 1.11 (1.2) | 1.26 (1.4) | 0.92 |
+| rtl_bus | 0.21 (0.4) | 0.23 (0.4) | 0.31 (0.5) | 0.59 |
+| rtl_ram | 0.07 (0.6) | 0.07 (0.6) | 0.44 (3.7) | 0.12 |
+| lfsr64_xor | 0.10 (1.1) | 0.10 (1.1) | 0.31 (3.4) | 0.09 |
+| lfsr64 | 0.32 (2.5) | 0.32 (2.5) | 0.47 (3.6) | 0.13 |
+
+Interpreter round 9 landed between the two rounds and made the interpreter as fast as the compiled code on most of
+these (instructions per activation of `lfsr64`: interpreter 3600, compiled 3650). What this round bought against
+main at its start (cycles, `perf stat`, cores 2 and 3, start-up included, `--tier=llvm`): `ff` -14%, `chain` -18%,
+`lfsr64` -8%, `lfsr` -6%; the interpreter's `ff`, `lfsr`, `chain`, `fan` run 2 to 4% fewer instructions (the wait).
+`--tier=auto` is level with the interpreter within noise on runs of 0.1 to 1 s (the compile and the 9 ms the first
+use of the library costs are paid in CPU on the same cores; the wall time on a free second core is better), and
+`compute_h2h` is 3.0 times faster under auto. The entry into compiled code is now about 15% of an `ff`
+activation; the rest is the kernel (45%), the body (20%) and the drive and wait callbacks (20%), which a batch of
+instances per call does not remove (decisions.md). Verified: difftest corpus (418) at 1 and 4 threads and 4 shuffled
+threads on the interpreter, `--tier=llvm`, `--tier=auto` and `--tier=auto --tier-heat=1,0,0`; the same three tiers
+on a `gc-stress` build; the external runner's pass lists (857 and 393) with `--oracle --check` on the interpreter and
+`--tier=auto`; the verification library's `.pro` regression 2008 and 2019 and its suite (102 pass, 9 fail, 26 skip)
+on both; `cargo test --workspace` (790) and `cargo test -p yavs-llvm --features llvm`.
+
 ## llvm (`crates/yavs-llvm`)
 
 LLVM tier (M6), behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`; `cargo build

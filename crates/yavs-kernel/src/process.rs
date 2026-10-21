@@ -112,6 +112,9 @@ pub(crate) struct ProcState {
     pub sens: SmallVec<[(SignalId, Range); 2]>,
     /// The sensitivity the last commit registered, when that wait had no timeout.
     pub sens_prev: SmallVec<[(SignalId, Range); 2]>,
+    /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
+    /// stays empty and the commit takes it from `sens_prev`.
+    pub again: bool,
     pub deadline: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
@@ -574,6 +577,14 @@ impl Ctx<'_> {
         true
     }
 
+    /// `assign_code` of `code` to the one element `r` of driver `d` with zero delay (transport
+    /// or inertial without rejection): true when the usual fast case took it, false (nothing
+    /// done) where `assign_code` must run, which also produces every error.
+    #[inline]
+    pub fn assign_code_now(&mut self, d: DriverId, r: Range, code: u8) -> bool {
+        self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
+    }
+
     /// `assign` of a logic value of at most 64 elements given as the plane blocks `read_into`
     /// produces for it: four little-endian `u64` planes (`blocks` is exactly 32 bytes for up to
     /// 64 elements, 32 per 64 more), unused bits zero. No `LogicVec` or `Value` is needed.
@@ -823,6 +834,23 @@ impl Ctx<'_> {
         let range = self.sig(r)?.1;
         self.st.sens.push((r.signal, range));
         Ok(())
+    }
+
+    /// `wait_on` of one range, when the last wait was on exactly that range, with no timeout,
+    /// and nothing was added to this one: the commit keeps the registered waiter and `sens`
+    /// stays empty. `false` (nothing done) otherwise; the caller then uses `wait_on`.
+    #[inline]
+    pub fn wait_on_again(&mut self, signal: SignalId, range: Range) -> bool {
+        let st = &mut *self.st;
+        if st.sens.is_empty()
+            && st.deadline.is_none()
+            && let [prev] = &st.sens_prev[..]
+            && *prev == (signal, range)
+        {
+            st.again = true;
+            return true;
+        }
+        false
     }
 
     /// Timeout of the coming wait, relative to now.

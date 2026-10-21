@@ -93,6 +93,11 @@ pub struct Heap {
     pub live_bytes: u64,
     /// Handles that are roots for good ([`Heap::seal`]).
     sealed: Vec<u64>,
+    /// Changes whenever an object's bytes may have moved or gone (a deallocation, an edit in
+    /// place): the host address of an object found at an earlier value is stale (compiled code
+    /// keeps the addresses it found between activations).
+    #[serde(skip)]
+    epoch: u64,
 }
 
 /// An object's bytes as one block in a serialised heap (package state, #407).
@@ -129,7 +134,14 @@ impl Heap {
             since_gc: 0,
             live_bytes: 0,
             sealed: Vec::new(),
+            epoch: 0,
         }
+    }
+
+    /// See the field `epoch`.
+    #[inline]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     pub fn tag(&self) -> u8 {
@@ -195,6 +207,7 @@ impl Heap {
     /// handle of the edited object (textio READ and WRITE, #428).
     pub fn edit(&mut self, h: u64) -> Result<(u32, &mut Vec<u8>, &mut usize), HeapError> {
         let i = self.resolve(h)?;
+        self.epoch += 1;
         let s = &mut self.slots[i as usize];
         s.writes = s.writes.wrapping_add(1);
         match s.data.as_mut() {
@@ -246,6 +259,7 @@ impl Heap {
     }
 
     fn release(&mut self, i: u32) {
+        self.epoch += 1;
         let s = &mut self.slots[i as usize];
         s.data = None;
         s.generation = s.generation.wrapping_add(1).max(1);

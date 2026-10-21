@@ -53,6 +53,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   value at once and lists the run in `Signal::fast_dirty`; `finish_signal` then only updates the
   effective value of those runs. Any other vector assignment of a cycle appends its one
   transaction directly (`Ctx::assign`).
+- **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
+  (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
+  the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the
+  previous wait's ranges followed by the new ones and registers it as any wait.
 - **Transactions** carry `(time, range, Option<value>)`, `None` being a null transaction. LRM
   10.5.2.2 preemption (transport, inertial with rejection limit, the "same value immediately
   before" chain) is decided per element using chunked diffs; a partly preempted old transaction

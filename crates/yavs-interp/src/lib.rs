@@ -301,6 +301,19 @@ pub trait Tier: Send + Sync {
     /// [`TIER_UNWIND`] or [`TIER_SUSPEND`]; `None` when `func` is not compiled.
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32>;
 
+    /// [`Tier::run`] for a process that suspends compiled over and over: `state` is the tier's
+    /// own record of this process (its frame view and bookkeeping), kept by the machine between
+    /// activations so that none of it is built again.
+    fn run_cached(
+        &self,
+        func: FuncId,
+        pc: u32,
+        host: &mut dyn TierHost,
+        _state: &mut Option<Box<TierState>>,
+    ) -> Option<u32> {
+        self.run(func, pc, host)
+    }
+
     /// Whether `func` has compiled code now: the interpreter calls `run` only then.
     fn ready(&self, _func: FuncId) -> bool {
         true
@@ -309,6 +322,14 @@ pub trait Tier: Send + Sync {
     /// Compile `func` (`Runtime::set_eager`: the fast loop entered it). Called from
     /// simulation threads, so it must not block.
     fn hot(&self, _func: FuncId) {}
+}
+
+/// What a tier keeps for one process between activations ([`Tier::run_cached`]).
+#[derive(Default)]
+pub struct TierState {
+    /// Room for the tier's record, valid once `used`.
+    pub words: [u64; 17],
+    pub used: bool,
 }
 
 /// [`Tier::run`] returns it when frames were pushed (calls `step` made that compiled code
@@ -382,6 +403,29 @@ pub trait TierHost {
     /// `view` for a process in its root frame, with every field written but straight from the
     /// machine's fields; `false` (nothing written) when it is not (use `view`).
     fn view_again(&mut self, fr: &mut TierFrame) -> bool;
+
+    /// Compiled code keeps writing the heap object at `addr` that it found writable at an
+    /// earlier activation (`TierState`): count this activation's writes as the object's
+    /// (`Heap::data_mut`), which tells the waveform recorder the object may have changed.
+    fn wrote(&mut self, addr: u64) {
+        let _ = addr;
+    }
+
+    /// `drive_block` for a zero delay and one element of a logic signal, when the kernel takes
+    /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
+    /// caller uses `drive_block`.
+    fn drive_now(&mut self, driver: u32, target: [u64; 2], delay: i64, block: [u64; 4]) -> bool {
+        let _ = (driver, target, delay, block);
+        false
+    }
+
+    /// `wait_suspend` when the process waits again on exactly what it waited on, from its root
+    /// frame at `pc`: `true` when done (it is [`Stepped::Suspend`]); `false` (nothing done)
+    /// otherwise, and the caller uses `wait_suspend`.
+    fn wait_again(&mut self, pc: u32, sig: [u64; 2]) -> bool {
+        let _ = (pc, sig);
+        false
+    }
 
     /// The `Drive` at `pc` as `signal` runs it, when it assigns one waveform element of at most
     /// 64 logic elements to the single-range signal reference `target` (its two registers),
@@ -470,6 +514,9 @@ pub struct TierFrame {
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
     /// native frames stay below it.
     pub max_depth: u64,
+    /// The process heap's `epoch`: the host addresses of heap objects compiled code found stay
+    /// valid while it is unchanged.
+    pub heap_epoch: u64,
 }
 
 /// An instance signal as compiled code reads it (one `TierFrame::sigtab` entry): the element
@@ -511,13 +558,14 @@ impl Default for TierFrame {
             known_elem: 0,
             known_up: 0,
             max_depth: 0,
+            heap_epoch: 0,
         }
     }
 }
 
 /// Address spaces: the top 3 bits of an address `[space: 3 | index: 29 | offset: 32]`.
 pub mod space {
-    pub use crate::exec::{CONST, FRAME, INST, PKG, SHARED, TEMP};
+    pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, TEMP};
 }
 
 /// A program bound for execution, shared by all processes of a simulation.
@@ -1194,7 +1242,13 @@ impl InterpProcess {
     /// The outcome of `Machine::run_quick`.
     #[inline(always)]
     fn run_quick(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        match self.m.run_quick(&mut Some(&mut *ctx)) {
+        let q = self.m.run_quick(&mut Some(&mut *ctx));
+        self.finish_quick(q, ctx)
+    }
+
+    #[inline(always)]
+    fn finish_quick(&mut self, q: exec::Quick, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        match q {
             exec::Quick::Suspended => {
                 self.m.after_suspend();
                 self.m.release_scratch();

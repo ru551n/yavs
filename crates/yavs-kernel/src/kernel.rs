@@ -1956,6 +1956,23 @@ impl SimControl {
             let (generation, trigger, tid) = (meta.generation, meta.trigger, meta.tid);
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
+            // The usual clocked process: it waited again on the range its resident waiter
+            // already covers (`Ctx::wait_on_again`) and did nothing but schedule drivers.
+            if st.again
+                && !postponed
+                && meta.perm != 0
+                && st.sens.is_empty()
+                && st.deadline.is_none()
+                && st.effects.is_empty()
+                && st.phantoms.is_empty()
+                && slot.result.is_ok()
+            {
+                st.again = false;
+                for (t, d) in st.scheduled.drain(..) {
+                    self.queue.push(self.now, t, Entry::Driver(d.0));
+                }
+                continue;
+            }
             let effects = (!st.effects.is_empty()).then(|| std::mem::take(&mut st.effects));
             let bad = postponed
                 && (st.deadline == Some(self.now)
@@ -1975,7 +1992,16 @@ impl SimControl {
             }
             // The same wait as the last run, without a timeout: the waiters of the last run
             // stay (resident, `ProcMeta::perm`), or become so now.
-            let same = !timed && !st.sens.is_empty() && st.sens[..] == st.sens_prev[..];
+            let mut again = std::mem::take(&mut st.again);
+            if again && (timed || !st.sens.is_empty()) {
+                // More was added to the wait (`Ctx::wait_on_again`): the last wait's ranges
+                // come first, as they were first named.
+                let mut all = st.sens_prev.clone();
+                all.extend(st.sens.drain(..));
+                st.sens = all;
+                again = false;
+            }
+            let same = !timed && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
             let mut perm = 0;
             if same {
                 perm = self.procs[p as usize].perm;
@@ -1983,6 +2009,9 @@ impl SimControl {
                     self.perm_epoch += 1;
                     perm = self.perm_epoch;
                     self.procs[p as usize].perm = perm;
+                    if again {
+                        st.sens.extend_from_slice(&st.sens_prev);
+                    }
                 } else {
                     st.sens.clear();
                 }

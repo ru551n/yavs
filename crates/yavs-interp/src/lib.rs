@@ -374,6 +374,10 @@ pub trait TierHost {
     /// with their registers (preloaded ones keep their preload), slots, pcs and temporary bases.
     /// `fr` is then the top frame's view. [`Stepped::Fault`] when a push fails.
     fn materialise(&mut self, fr: &mut TierFrame, pc: u32, frames: &[NativeFrame]) -> Stepped;
+
+    /// The address of the object access value `h` designates, as `Inst::Deref` gives it;
+    /// `None` where that instruction fails (null, deallocated). Frees and moves nothing.
+    fn deref(&mut self, h: u64) -> Option<u64>;
 }
 
 /// A native frame of compiled code, recorded for [`TierHost::materialise`].

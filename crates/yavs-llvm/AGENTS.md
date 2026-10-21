@@ -19,7 +19,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   through the view), `Load`, `Store`, `Copy`, `Alloc`, `Stmt`, `MakeDope`, `DopeLen`, `Pos`,
   `SubtypeCheck`, `Field`, `LayoutOf` (types whose element layout is static), `LGet`, `LSet`,
   `LCopy` (up to eight plane blocks each side, through `yavs_rt_lcopy`, which runs the
-  interpreter's `yavs_interp::copy_bits`), `SigVal`, and the scalar `std_ulogic` natives as
+  interpreter's `yavs_interp::copy_bits`), `Deref` (through `yavs_rt_fast`, `TierHost::deref`), `MemEq` (`yavs_rt_memeq` on the bytes `Mem` found), `SigVal`, and the scalar `std_ulogic` natives as
   tables (`yavs_interp::code_table`). Memory is reached through `Mem` (the view plus a small
   cache of objects `yavs_rt_host` asked `TierHost::object` for; frame, temporary and instance
   addresses are found inline, and a constant the generator knows (`Known::Const`) is read from a
@@ -30,7 +30,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   natives (#339); `SigReadScalar` of a logic signal that keeps its codes, and `rising_edge` /
   `falling_edge` of the edge the kernel resumed the process for, are read in place from
   `TierFrame::sigtab` and `known_*` (`Gen::sig_read_scalar`, `Gen::edge`; the callback is their slow
-  path, #440). The same callback runs the instructions that only change the temporary area or one register without the generic step and without forgetting the cached objects: `TempRoot`, `Stmt` (when roots are recorded), `NewFrame`, `Deref`, `MemEq` (`Gen::step`); a `TempRoot` of a fat pair asks `yavs_rt_fast` (`FAST_FAT_ROOT`) first and records nothing when no word points into a heap (#432). Every other instruction runs in place through
+  path, #440). The same callback runs the instructions that only change the temporary area or one register without the generic step and without forgetting the cached objects: `TempRoot`, `Stmt` (when roots are recorded), `NewFrame`, and the slow paths of `Deref` and `MemEq` (`Gen::step`); a `TempRoot` of a fat pair asks `yavs_rt_fast` (`FAST_FAT_ROOT`) first and records nothing when no word points into a heap (#432). Every other instruction runs in place through
   the `yavs_rt_step` callback (`TierHost::step`): calls, natives, foreign calls, reports, the
   other signal operations and waits; a frame a call pushed runs its compiled code directly from
   the callback and is popped by `TierHost::ret` (#336). Compiled code returns to the interpreter
@@ -135,5 +135,5 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
   do, by IR construct: #337 natives, foreign calls and reports (run in place through the
   callback, no exit; inline lowering open), #338 logic arrays (`LGet`, `LSet`, `LCopy` done; `LEq`, `LFill`, the logic
   operators and the numeric vector natives stepped), #339 signals and waits (direct calls for
-  single-range reads, drives and waits; multi-part references, forces and `WaitAt` stepped), #340 heap (`Deref` stepped), #341 real
+  single-range reads, drives and waits; multi-part references, forces and `WaitAt` stepped), #340 heap (`Deref` through a helper, `New` and `Free` stepped), #341 real
   conversions and powers; #432 compile and step cost. Epic: #144 (M6).

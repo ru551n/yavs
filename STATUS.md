@@ -2423,7 +2423,13 @@ designs under `--tier=llvm` (within 1% in instructions and cycles) nor on `rand_
 in both builds, interpreter 1.00 s; its O2 compile 31 s before the native-frame copies, 33 to 35 s after).
 What keeps the library testbenches from native frames, over the 260 functions of `generic_sb_slv_tb`: 199 have
 several kinds of stepped instruction, the most common `Deref` (164), `CallProt` (150), `CallNative` (107), `Cat`
-(97), `NewFrame` (89); 31 have none, of which 7 call only such functions.
+(97), `NewFrame` (89); 31 have none, of which 7 call only such functions. With `Deref` and `MemEq` lowered through frame-free helpers
+(next commit) 21 are native-callable, and its simulation under `--tier=llvm` takes 1.00 to 1.01 s against 1.03 to
+1.12 s before and 1.30 s interpreted (pinned core 3, two runs each). Verification of these commits: difftest 414/414
+for `yavs` (4 threads, shuffled), `yavs-llvm` and `yavs-auto` (default, `--tier-heat=1,0,0` shuffled) at 1 and 4
+threads, `gc-stress` 414/414 for `yavs-llvm` and eager `yavs-auto`; the external runner's own eleven suites pass
+under `--tier=auto` (1344 tests); the `.pro` regression 314/314 under 2008 and 2019; the verification-library
+suite 102 pass, 9 fail, 26 skip (as before).
 
 The measurements before this work, for reference:
 

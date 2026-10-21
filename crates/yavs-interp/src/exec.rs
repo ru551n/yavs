@@ -6766,6 +6766,15 @@ impl crate::TierHost for Host<'_, '_, '_> {
         }
     }
 
+    fn deref(&mut self, h: u64) -> Option<u64> {
+        if h == 0 {
+            return None;
+        }
+        let (hp, space) = self.m.heap_of(h).ok()?;
+        let i = hp.resolve(h).ok()?;
+        mk_addr(space, i, 0).ok()
+    }
+
     fn object(&mut self, addr: u64, write: bool) -> Option<(*mut u8, usize)> {
         let (sp, idx, _) = split(addr);
         // The top frame's slots and the temporary area are in the `TierFrame`.

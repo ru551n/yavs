@@ -45,6 +45,8 @@ const FAST_ALLOC: u32 = 0;
 const FAST_DOPE_LEN: u32 = 1;
 const FAST_SUBTYPE: u32 = 2;
 const FAST_FAT_ROOT: u32 = 3;
+const FAST_DEREF: u32 = 4;
+const MEMEQ: &str = "yavs_rt_memeq";
 
 /// The most plane blocks an inline `LCopy` reads or writes (`yavs_rt_lcopy`'s stack copy).
 const LCOPY_BLOCKS: u64 = 8;
@@ -354,6 +356,16 @@ extern "C" fn yavs_rt_lcopy(
     }
 }
 
+/// `Inst::MemEq` on the `n` bytes compiled code found at `a` and `b` (`Gen::host`): 1 when equal.
+extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u64 {
+    // SAFETY: compiled code checked `n` readable bytes at each.
+    unsafe {
+        u64::from(
+            std::slice::from_raw_parts(a, n as usize) == std::slice::from_raw_parts(b, n as usize),
+        )
+    }
+}
+
 /// The body of `yavs_rt_step`.
 ///
 /// # Safety
@@ -592,6 +604,22 @@ extern "C" fn yavs_rt_fast(
             };
             u32::from(!heap(0) && !heap(1))
         }
+        FAST_DEREF => {
+            // SAFETY: as in `yavs_rt_step`.
+            let env = unsafe { &mut *(env as *mut Env<'_>) };
+            match catch_unwind(AssertUnwindSafe(|| env.host.deref(a))) {
+                Ok(Some(addr)) => {
+                    // SAFETY: `regs` holds register `dst`.
+                    unsafe { *regs.add(dst as usize) = addr };
+                    1
+                }
+                Ok(None) => 0,
+                Err(p) => {
+                    env.panic = Some(p);
+                    0
+                }
+            }
+        }
         FAST_SUBTYPE => {
             for k in 0..u64::from(dst) {
                 match (dim_at(env, mem, a, k), dim_at(env, mem, b, k)) {
@@ -723,6 +751,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DEOPT, yavs_rt_deopt as *const () as usize),
             (DEOPT_SLOTS, yavs_rt_deopt_slots as *const () as usize),
             (DEOPT_END, yavs_rt_deopt_end as *const () as usize),
+            (MEMEQ, yavs_rt_memeq as *const () as usize),
         ],
     )
 }
@@ -922,6 +951,8 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             dst, base, layout, ..
         } => vec![dst, base, layout],
         Inst::DopeLen { dst, dope, .. } => vec![dst, dope],
+        Inst::Deref { dst, handle, .. } => vec![dst, handle],
+        Inst::MemEq { dst, a, b, n } => vec![dst, a, b, n],
         Inst::LGet { dst, base, idx } => vec![dst, base, idx],
         Inst::LCopy {
             dst,
@@ -1367,6 +1398,9 @@ struct Gen {
     /// `yavs_rt_deopt_end(env, mem, pc) -> u32`.
     deopt_end_ty: LLVMTypeRef,
     deopt_end: LLVMValueRef,
+    /// `yavs_rt_memeq(a, b, n) -> i64`.
+    memeq_ty: LLVMTypeRef,
+    memeq: LLVMValueRef,
     /// `llvm.frameaddress.p0(i32) -> ptr`.
     frame_addr: (LLVMTypeRef, LLVMValueRef),
     /// Native callees are called by symbol (one module, `compile`), else through `Mem::ntab`.
@@ -1451,6 +1485,8 @@ impl Gen {
             let deopt_slots_ty = LLVMFunctionType(ptr, dsparams.as_mut_ptr(), 1, 0);
             let mut deparams = [ptr, ptr, i32];
             let deopt_end_ty = LLVMFunctionType(i32, deparams.as_mut_ptr(), 3, 0);
+            let mut mparams = [ptr, ptr, i64];
+            let memeq_ty = LLVMFunctionType(i64, mparams.as_mut_ptr(), 3, 0);
             let add = |name: &str, ty| {
                 let n = CString::new(name).expect("no NUL");
                 LLVMAddFunction(module, n.as_ptr(), ty)
@@ -1491,6 +1527,8 @@ impl Gen {
                 deopt_slots: add(DEOPT_SLOTS, deopt_slots_ty),
                 deopt_end_ty,
                 deopt_end: add(DEOPT_END, deopt_end_ty),
+                memeq_ty,
+                memeq: add(MEMEQ, memeq_ty),
                 frame_addr,
                 direct: false,
                 sadd: intrinsic(c"llvm.sadd.with.overflow"),
@@ -1544,9 +1582,13 @@ impl Gen {
             ] {
                 self.attr(f, false, "nounwind", 0);
             }
-            for f in [self.host, self.lcopy, self.deopt_slots] {
+            self.attr(self.memeq, false, "nounwind", 0);
+            for f in [self.host, self.lcopy, self.deopt_slots, self.memeq] {
                 self.attr(f, false, "willreturn", 0);
             }
+            self.attr(self.memeq, false, "memory", mem_effects(REF, 0, 0));
+            self.attr(self.memeq, false, "nofree", 0);
+            self.attr(self.memeq, false, "nosync", 0);
             self.attr(self.host, false, "memory", mem_effects(RW, RW, 0));
             self.attr(self.lcopy, false, "memory", mem_effects(RW, 0, 0));
             self.attr(self.lcopy, false, "nofree", 0);
@@ -2408,6 +2450,30 @@ impl Gen {
                         }
                         self.join(join);
                     }
+                    // The heap's own lookup through a helper; a failure is the interpreter's.
+                    Inst::Deref { dst, handle, .. } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let h = self.ld(&c, handle);
+                        self.fast_reg(&c, FAST_DEREF, dst, h, self.c64(0), slow);
+                        self.join(join);
+                    }
+                    Inst::MemEq { dst, a, b, n } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let k = self.ld(&c, n);
+                        let pa = self.host(&c, self.ld(&c, a), fk(a), self.c64(0), k, false, slow);
+                        let pb = self.host(&c, self.ld(&c, b), fk(b), self.c64(0), k, false, slow);
+                        let mut args = [pa, pb, k];
+                        let v = LLVMBuildCall2(
+                            self.b,
+                            self.memeq_ty,
+                            self.memeq,
+                            args.as_mut_ptr(),
+                            3,
+                            c"".as_ptr(),
+                        );
+                        self.st(&c, dst, v);
+                        self.join(join);
+                    }
                     Inst::SigVal {
                         dst,
                         sig,
@@ -2948,7 +3014,11 @@ impl Gen {
             );
             // Alloc writes the temporary area, the others only read memory besides the
             // register and the object cache.
-            let other = if op == FAST_ALLOC { MODS } else { REF };
+            let other = match op {
+                FAST_ALLOC => MODS,
+                FAST_DEREF => 0,
+                _ => REF,
+            };
             self.attr(ok, true, "memory", mem_effects(RW, RW, other));
             self.attr(ok, true, "willreturn", 0);
             self.guard(c, self.icmp(IP::LLVMIntNE, ok, self.c32(0)), slow);

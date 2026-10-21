@@ -3119,6 +3119,11 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   (rule 5).
 - **Helpers without the generic step:** `Free`, `Fill` and `CallProt` run through direct arms of
   `TierHost::step` (the interpreter's own `deallocate`, fill and `call_with` bodies).
+- **`Deref` and `MemEq` without a frame (2026-10-21):** compiled code dereferences an access value through
+  `yavs_rt_fast` (`FAST_DEREF`: `TierHost::deref`, the heap's own lookup, no fault recorded; null or
+  deallocated takes the slow path, where the interpreter reports it) and compares memory it found itself
+  (`yavs_rt_memeq`, argument memory only), so neither needs an interpreter frame and functions using them
+  can run on native frames (7 to 21 of the functions of a verification-library scoreboard testbench).
 - **Entry after preloaded definitions:** the interpreter enters a function after the constants and
   addresses it preloads into the frame's registers (`Pre::next`), so frame-mode code also has an entry at
   each pc that follows such definitions at a block start; before, it was entered only at its first jump,

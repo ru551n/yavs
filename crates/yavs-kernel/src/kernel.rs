@@ -11,8 +11,8 @@ use rayon::prelude::*;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, ProcId, ProcState, Process, Severity, Shared,
-    SignalOp, check_ref, make_op,
+    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutV, ProcId, ProcState, Process, Severity,
+    Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -528,6 +528,7 @@ pub struct SimControl {
     /// Direct transactions of processes committed in the batch loop (`run_batch`), for the
     /// signals once the batch is over.
     direct: Vec<Out>,
+    directv: Vec<OutV>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
     ops: Vec<SignalOp>,
@@ -745,6 +746,7 @@ impl SimControl {
             procs,
             queue: Queue::default(),
             direct: Vec::new(),
+            directv: Vec::new(),
             direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
@@ -1716,8 +1718,9 @@ impl SimControl {
 
     /// The direct transactions of the processes committed in the batch loop, to their signals.
     fn commit_direct(&mut self) {
-        if !self.direct.is_empty() {
-            commit_out(&mut self.signals, &mut self.direct_sigs, &mut self.direct);
+        if !self.direct.is_empty() || !self.directv.is_empty() {
+            let sigs = &mut self.direct_sigs;
+            commit_out(&mut self.signals, sigs, &mut self.direct, &mut self.directv);
         }
     }
 
@@ -2113,6 +2116,7 @@ impl SimControl {
                         && (slot.st.deadline == Some(sh.now)
                             || !slot.st.phantoms.is_empty()
                             || !slot.st.out.is_empty()
+                            || !slot.st.outv.is_empty()
                             || slot.st.scheduled.iter().any(|&(t, _)| t == sh.now))
             };
             let run = |p: u32, slot: &mut Slot, live: bool| {
@@ -2220,6 +2224,10 @@ impl SimControl {
                                     }
                                     st.out.clear();
                                 }
+                                if !st.outv.is_empty() {
+                                    self.directv.extend_from_slice(&st.outv);
+                                    st.outv.clear();
+                                }
                                 if !st.phantoms.is_empty() {
                                     self.empty_delta |= st.take_phantoms();
                                 }
@@ -2278,7 +2286,12 @@ impl SimControl {
                     self.queue.push(self.now, t, Entry::Driver(d.0));
                 }
                 st.scheduled.clear();
-                commit_out(&mut self.signals, &mut self.direct_sigs, &mut st.out);
+                commit_out(
+                    &mut self.signals,
+                    &mut self.direct_sigs,
+                    &mut st.out,
+                    &mut st.outv,
+                );
                 continue;
             }
             let effects = (!st.effects.is_empty()).then(|| std::mem::take(&mut st.effects));
@@ -2286,6 +2299,7 @@ impl SimControl {
                 && (st.deadline == Some(self.now)
                     || !st.phantoms.is_empty()
                     || !st.out.is_empty()
+                    || !st.outv.is_empty()
                     || st.scheduled.iter().any(|&(t, _)| t == self.now));
             if !st.scheduled.is_empty() {
                 for &(t, d) in st.scheduled.iter() {
@@ -2296,7 +2310,12 @@ impl SimControl {
             if !st.phantoms.is_empty() {
                 self.empty_delta |= st.take_phantoms();
             }
-            commit_out(&mut self.signals, &mut self.direct_sigs, &mut st.out);
+            commit_out(
+                &mut self.signals,
+                &mut self.direct_sigs,
+                &mut st.out,
+                &mut st.outv,
+            );
             let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
                 self.queue.push(self.now, t, Entry::Timeout(p, generation));
@@ -2572,25 +2591,31 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
     Ok(changed)
 }
 
-/// Commit the direct transactions `out` of a process (`Ctx::assign_code`, `Out`) to their
-/// signals (`Signal::commit_code`, `commit_planes`), listing each signal once in `direct_sigs`
-/// for the next update.
+/// Commit the direct transactions `out` and `outv` of a process (`Ctx::assign_code`, `Out`) to
+/// their signals (`Signal::commit_code`, `commit_planes`), listing each signal once in
+/// `direct_sigs` for the next update. The entries of one driver are all in one of the lists.
 #[inline]
-fn commit_out(signals: &mut [Signal], direct_sigs: &mut Vec<u32>, out: &mut Vec<Out>) {
+fn commit_out(
+    signals: &mut [Signal],
+    direct_sigs: &mut Vec<u32>,
+    out: &mut Vec<Out>,
+    outv: &mut Vec<OutV>,
+) {
     for &o in out.iter() {
-        let sig = &mut signals[o.sig as usize];
-        let first = if o.len == 1 {
-            let p = o.planes;
-            let code = (p[0] | p[1] << 1 | p[2] << 2 | p[3] << 3) as u8;
-            sig.commit_code(o.slot, o.elem, code)
-        } else {
-            sig.commit_planes(o.slot, o.elem, o.len, o.planes)
-        };
-        if first {
+        if signals[o.sig as usize].commit_code(o.slot, o.elem, o.code as u8) {
             direct_sigs.push(o.sig);
         }
     }
     out.clear();
+    if outv.is_empty() {
+        return;
+    }
+    for &o in outv.iter() {
+        if signals[o.sig as usize].commit_planes(o.slot, o.elem, o.len, o.planes) {
+            direct_sigs.push(o.sig);
+        }
+    }
+    outv.clear();
 }
 
 /// Whether the process of trigger `t` must run in this cycle: its edge, or its reset level.

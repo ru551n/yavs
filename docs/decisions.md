@@ -3611,6 +3611,14 @@ of the generic queue, waveform and dirty-range stages. Output is unchanged at an
   `late`), not the whole batch; a process that skipped an unchanged assignment is committed there too (its
   phantoms only set `empty_delta`); the edge a signal resumes a process for is stored once in its state and a flag
   per activation says whether it holds (`ProcState::known_edge`, `edge_ok`), instead of a table lookup per run.
+- **Smaller direct entries and register reads** (second commit): a one-element direct entry is 16 bytes (signal,
+  slot, element, code; `ProcState::out`), vectors have their own list (`outv`), one driver's entries always in one
+  list so their order holds; `Ctx::read_into` of at most 64 logic elements copies the plane words itself, inlined
+  into the caller. `rtl_ff` -1.7%, `rtl_chain` -2.1%, `rtl_lfsr` -1.6%, `lfsr64` -3.6% instructions, neorv32
+  (single core, 30 us) -2.4%.
+- Tried and dropped: writing a plane code with four shifts instead of the mask table (+1.3% on `rtl_ff`);
+  `wait_on_again` for every range of a multi-signal sensitivity in order (neorv32 -0.6%, the clocked designs +0.4 to
+  0.7%: the extra state moved the interpreter's code).
 - Measured (instructions per unit, interpreter, slope of 1x and 10x runs pinned to core 6, before to after):
   `rtl_ff` activation 1848 to 1710, `rtl_lfsr` activation 3161 to 2929, `lfsr64` activation 3440 to 3125,
   `rtl_fan` activation 838 to 800, `rtl_chain` delta 2129 to 2147 (one transaction per delta: the new stages cost

@@ -104,13 +104,23 @@ pub(crate) enum OpMode {
     Deposit,
 }
 
-/// A zero-delay assignment of at most 64 elements to a direct driver (`DriverInfo::direct`)
-/// made in this run, as plane words: the commit writes it to the signal (`commit_out`)
-/// instead of queueing a transaction. A later assignment to the same driver in the run is
-/// another entry (the last one wins, as zero-delay preemption gives); one that needs the
-/// waveform moves the driver's entries there first (`Ctx::spill_out`).
+/// A zero-delay assignment of one element to a direct driver (`DriverInfo::direct`) made in
+/// this run, its `std_ulogic` code: the commit writes it to the signal (`commit_out`) instead
+/// of queueing a transaction. A later assignment to the same driver in the run is another
+/// entry (the last one wins, as zero-delay preemption gives); one that needs the waveform
+/// moves the driver's entries there first (`Ctx::spill_out`). The entries of one driver are
+/// all in `ProcState::out` or all in `outv`, so their order is kept.
 #[derive(Clone, Copy)]
 pub(crate) struct Out {
+    pub sig: u32,
+    pub slot: u32,
+    pub elem: u32,
+    pub code: u32,
+}
+
+/// `Out` of at most 64 elements, as plane words.
+#[derive(Clone, Copy)]
+pub(crate) struct OutV {
     pub sig: u32,
     pub slot: u32,
     pub elem: u32,
@@ -144,8 +154,9 @@ pub(crate) struct ProcState {
     pub edge_ok: bool,
     /// A one-element logic value kept for `Ctx::assign_code`.
     pub one: Option<LogicVec>,
-    /// Direct transactions of this run.
+    /// Direct transactions of this run: one element, and up to 64.
     pub out: Vec<Out>,
+    pub outv: Vec<OutV>,
 }
 
 impl ProcState {
@@ -265,6 +276,21 @@ impl Ctx<'_> {
     #[inline]
     pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
         let (s, r) = self.sig(r)?;
+        // A logic value of one word (a register read): copied here, no call.
+        if let (Buf::Planes { b, .. }, Ok(dst)) = (&s.cur, <&mut [u8; 32]>::try_from(&mut *out))
+            && (1..=64).contains(&r.len)
+        {
+            let w = yavs_logic::wide::get_block(b, r.offset as usize, r.len as usize);
+            for (d, x) in dst.as_chunks_mut::<8>().0.iter_mut().zip(w) {
+                *d = x.to_le_bytes();
+            }
+            return Ok(());
+        }
+        self.read_slow(s, r, out)
+    }
+
+    #[inline(never)]
+    fn read_slow(&self, s: &Signal, r: Range, out: &mut [u8]) -> Result<(), SimError> {
         if s.cur.write_to(r.offset as usize, r.len as usize, out) {
             return Ok(());
         }
@@ -415,24 +441,35 @@ impl Ctx<'_> {
     /// Move this run's direct transactions of driver `d` (`Out`) into its waveform, in order,
     /// for an assignment that preempts or inspects pending transactions.
     pub(crate) fn spill_out(&mut self, d: DriverId) {
-        if self.st.out.is_empty() {
+        if self.st.out.is_empty() && self.st.outv.is_empty() {
             return;
         }
         let Some(info) = self.sh.drivers.get(d.0 as usize) else {
             return;
         };
-        let (sig, slot, local, now) = (info.signal.0, info.slot, info.local, self.sh.now);
-        let mut i = 0;
-        while let Some(&o) = self.st.out.get(i) {
-            if (o.sig, o.slot) != (sig, slot) {
-                i += 1;
-                continue;
+        let key = (info.signal.0, info.slot);
+        let mut moved: SmallVec<[(Range, [u64; 4]); 2]> = SmallVec::new();
+        self.st.out.retain(|o| {
+            let c = u64::from(o.code);
+            let hit = (o.sig, o.slot) == key;
+            if hit {
+                let planes = [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1];
+                moved.push((Range::new(o.elem, 1), planes));
             }
-            self.st.out.remove(i);
-            let r = Range::new(o.elem, o.len);
+            !hit
+        });
+        self.st.outv.retain(|o| {
+            let hit = (o.sig, o.slot) == key;
+            if hit {
+                moved.push((Range::new(o.elem, o.len), o.planes));
+            }
+            !hit
+        });
+        let (local, now) = (info.local as usize, self.sh.now);
+        for (r, planes) in moved {
             let value = Buf::Planes {
-                len: o.len as usize,
-                b: smallvec::smallvec![o.planes],
+                len: r.len as usize,
+                b: smallvec::smallvec![planes],
             };
             let mut t = TxnList::new();
             t.push(Txn {
@@ -441,7 +478,7 @@ impl Ctx<'_> {
                 value: Some(value),
             });
             // Transport: a transaction at `now` replaces the earlier ones at `now`.
-            self.st.waveforms[local as usize].schedule(r, None, &mut t);
+            self.st.waveforms[local].schedule(r, None, &mut t);
             self.st.scheduled.push((now, d));
         }
     }
@@ -611,13 +648,16 @@ impl Ctx<'_> {
             return false;
         }
         if info.direct {
-            let c = u64::from(code);
+            let (sig, slot) = (info.signal.0, info.slot);
+            // The driver's vector entries keep the order: the general path moves them.
+            if self.st.outv.iter().any(|o| (o.sig, o.slot) == (sig, slot)) {
+                return false;
+            }
             self.st.out.push(Out {
-                sig: info.signal.0,
-                slot: info.slot,
+                sig,
+                slot,
                 elem: r.offset,
-                len: 1,
-                planes: [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1],
+                code: u32::from(code),
             });
             return true;
         }
@@ -723,9 +763,14 @@ impl Ctx<'_> {
             return false;
         }
         if info.direct {
-            self.st.out.push(Out {
-                sig: info.signal.0,
-                slot: info.slot,
+            let (sig, slot) = (info.signal.0, info.slot);
+            // The driver's one-element entries keep the order: the general path moves them.
+            if self.st.out.iter().any(|o| (o.sig, o.slot) == (sig, slot)) {
+                return false;
+            }
+            self.st.outv.push(OutV {
+                sig,
+                slot,
                 elem: r.offset,
                 len,
                 planes: planes.map(|p| p & yavs_logic::wide::nmask(len as usize)),

@@ -57,8 +57,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   with no port, composite group, guard or resolution function (std_logic resolution of one
   source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).
   A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
-  an entry in the process's `ProcState::out` (signal, source slot, elements, plane words), not a
-  waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in
+  an entry in the process's `ProcState::out` (signal, source slot, element, code) or, for more
+  elements, `outv` (first element, length, plane words; the entries of one driver are in one of
+  the two, so their order is kept), not a waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in
   the run is another entry (the last wins, as zero-delay preemption would give), and any
   assignment that needs the waveform first moves the driver's entries there (`Ctx::spill_out`).
   The commit (`commit_out`; for processes committed in the batch loop, after the batch, since

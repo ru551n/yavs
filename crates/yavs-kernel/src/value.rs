@@ -384,8 +384,8 @@ impl Buf {
             // One word of at most 64 elements (a register read): no chunk loop.
             Buf::Planes { b, .. } if (1..=64).contains(&n) && out.len() == 32 => {
                 let w = get_block(b, off, n);
-                for (p, x) in w.iter().enumerate() {
-                    out[p * 8..p * 8 + 8].copy_from_slice(&x.to_le_bytes());
+                for (dst, x) in out.as_chunks_mut::<8>().0.iter_mut().zip(w) {
+                    *dst = x.to_le_bytes();
                 }
             }
             Buf::Planes { b, .. } => {

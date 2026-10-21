@@ -1,0 +1,1 @@
+A use clause that names a type no longer makes the other functions declared next to the type visible (only its literals, implicit operations and operators are), so a call that has one candidate in other simulators is no longer ambiguous.

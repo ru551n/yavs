@@ -172,6 +172,7 @@ const PASS: &[&str] = &[
     "hierarchy/config_generate_index",
     "hierarchy/config_port_expr",
     "hierarchy/use_type_operations",
+    "hierarchy/use_type_functions",
     "hierarchy/external_alias",
     "hierarchy/external_direct",
     "hierarchy/external_port_inertial",

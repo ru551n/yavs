@@ -1873,17 +1873,20 @@ fn quiet(i: &Inst) -> bool {
 
 /// Instructions after which the interpreter may enter the compiled code: a call it finished
 /// (`TIER_UNWIND`), a suspension, the return of a native that handed its call to a VHDL body
-/// (`TierHost::step`).
-fn resumes(i: &Inst) -> bool {
-    matches!(
-        i,
-        Inst::Call { .. }
-            | Inst::CallIndirect { .. }
-            | Inst::CallProt { .. }
-            | Inst::CallNative { .. }
-            | Inst::Report { .. }
-            | Inst::Suspend { .. }
-    )
+/// (`TierHost::step`). Not a native the compiled code runs itself (`native_kind`): it leaves
+/// there only with an error, and an entry would store and reload every register live across it.
+fn resumes(prog: &Program, f: &Func, i: &Inst) -> bool {
+    match *i {
+        Inst::CallNative { native, args, dst } => native_kind(prog, f, native, args, dst).is_none(),
+        _ => matches!(
+            i,
+            Inst::Call { .. }
+                | Inst::CallIndirect { .. }
+                | Inst::CallProt { .. }
+                | Inst::Report { .. }
+                | Inst::Suspend { .. }
+        ),
+    }
 }
 
 /// A `LayoutOf` result the generator can build: fixed words, or an array whose element
@@ -3117,7 +3120,7 @@ impl Gen {
             let mut e0 = vec![false; n + 1];
             e0[0] = true;
             for (i, inst) in f.code.iter().enumerate() {
-                if resumes(inst) {
+                if resumes(prog, f, inst) {
                     e0[i + 1] = true;
                 }
             }
@@ -3177,7 +3180,7 @@ impl Gen {
             // interpreter enters after a call only having run the block up to it.
             let block_start = leader.clone();
             for (i, inst) in f.code.iter().enumerate() {
-                if resumes(inst) {
+                if resumes(prog, f, inst) {
                     leader[i + 1] = true;
                 }
             }

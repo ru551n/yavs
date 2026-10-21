@@ -2316,6 +2316,50 @@ Verified: difftest corpus (420) on `--tier=llvm` at 1 and 4 threads and 4 shuffl
 tests that write any; the external suites' pass lists (857 and 393) with `--oracle --check` on `--tier=auto` and
 `--tier=llvm`; `cargo test -p yavs-llvm --features llvm` (19, with the new `frame_variables_match_the_interpreter`).
 
+## llvm: native frames, round two (#432, #337, #340, 2026-10-21)
+
+Library functions on native frames (`docs/decisions.md` "Native frames, round two"): `CallNative` (pure natives, `writeline`,
+file open and close; `stop`/`finish` materialise), `NewFrame`, `Fill`, `Cat` of non-logic elements, typed `TempRoot` and
+`Stmt` with recorded roots, `CallProt`, nested subprograms (static links passed as parameters), `SubtypeCheck` and dynamic
+`LayoutOf` from the descriptors, and through `TierHost::native_step` (the interpreter's own code on a transient frame) `New`,
+`Free`, `LFill`, `LEq`, `Report`, `FToI`, `FToIRange`, `Phys`, `LNum`, `LogicOp`, `**`, logic `Cat`. Collections never run
+while native frames exist (an instruction that can collect asks `Machine::reclaim_pending` first and materialises); the machine
+reaches a native frame's slots by address through a per-thread table (`NativeSlots`), no copy.
+
+Native-callable functions (`--tier=llvm --verbose`): `uvvm_sb_slv_tb` 21 of 288 before, 256 now; `uvvm_util_rand_tb` 43 of 440
+before, 413 now (what is left: elaboration thunks, processes, `wait` in procedures, package allocation). Materialisations in
+one eager run of `uvvm_sb_slv_tb`: 378 (before the table and the zero-copy windows 148 000 and 27 000).
+
+Simulate phase of an eager `--tier=llvm` run (`--time-report`, one performance core, same host and core for all rows, compile
+excluded), seconds:
+
+| Testbench | interp | llvm before (main 45a44b62) | llvm now | sim1 (`-H 64m -e --no-save --jit -r`, startup included) |
+|---|---:|---:|---:|---:|
+| `uvvm_sb_slv_tb` | 0.88 | 0.61 | 0.41 | 0.74 |
+| `uvvm_util_rand_tb` | 0.82 | 0.61 | 0.49 | 0.98 |
+
+The eager compile of these two testbenches takes 150 s and 230 s (about 0.7 ms per IR instruction at O2, 23 LLVM instructions
+per IR instruction before optimisation, 40 to 60 for a load or a descriptor read): not usable as a mode, and the reason
+`--tier=auto` compiles nothing within its 2% budget in a run of a second. `--tier=auto` on the benchmarks, median of 5, two
+cores, CPU seconds interp / auto before and after: `uvvm_sb_slv_tb` 0.85 / 0.89 and 0.88 / 0.91, `uvvm_util_rand_tb` 0.80 / 0.96
+and 0.82 / 0.95, `osvvm_axistream` 0.29 / 0.31 both, `calls`, `strings_heavy`, `protected_scoreboard` within noise: no loss and no
+gain (the extra 0.1 s of auto is the LLVM library and the compile thread's start, as before). A longer library testbench
+(`rand_cyclic_performance`, 3.7 s) runs 2.7 s under auto both before and after: its hot function is a single small one the
+earlier code already compiled. The auto tier now compiles a function that runs on native frames together with every function
+it calls natively (native-frame code only for those) and publishes its native-frame code once all of it exists.
+
+`tools/bench` head-to-head (`--ref sim1 --tiers interp,auto --instructions`, cores 5 and 6): `strings_heavy` yavs 0.88x wall of
+sim1, `access_heavy` 0.50x, `calls` 1.5x, `protected_scoreboard` 1.0x.
+
+Verification at the final commit: difftest 420/420 for `yavs-llvm` at 1 and 4 threads, shuffled at 4 threads, for `yavs-auto`
+at 1 and 4 threads and with `--tier-heat=1,0,0` at both, `yavs` shuffled; stdout and stderr of all 420 identical between
+`--tier=interp` and `--tier=llvm` (4 threads, shuffled); the `gc-stress` build gives 420/420 for llvm, auto and eager auto; the
+external runner's suites `check`, `com`, `data_types`, `dictionary`, `logging`, `path`, `random`, `run`, `string_ops`,
+`verification_components` pass under `--tier=auto`; the other verification library's `.pro` regression passes 314/314 under 2008
+and 2019 under `--tier=auto` and its component suites give 102 / 9 / 26 as before. The `gc-stress` unit tests
+`heap::tests::handles_and_collection`, `precise_roots_inside_an_activation` and `freed_slots_recycled_within_an_activation`
+fail on main too (not looked at); `precise_roots_under_compiled_code` fails under `gc-stress` as well.
+
 ## llvm (`crates/yavs-llvm`)
 
 LLVM tier (M6), behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`; `cargo build

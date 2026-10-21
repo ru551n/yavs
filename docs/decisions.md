@@ -3486,3 +3486,60 @@ each variable and every live register at every block edge, and reloaded the base
   code generator: 115 in total). Other rows are unchanged (`compute_loop` and the RTL rows are bound by heap
   element access and the kernel). Cost: eager compilation of library-heavy designs takes 5 to 20% longer (IR +10 to
   25% in loops); `--tier=auto` totals are within 5% (`compute_h2h` +5% from the longer compile).
+## Native frames, round two: library functions run on native frames (yavs-llvm, yavs-interp, #432, #337, #340, 2026-10-21)
+
+- **Problem:** in a verification-library scoreboard testbench 21 of 260 functions could run on native frames; 199
+  stepped one of `Deref`, `CallProt`, `CallNative`, `Cat`, `NewFrame`, typed `TempRoot` (and `Free`, `LayoutOf`,
+  `LFill`, nested subprograms, `FToIRange`, `**`) on their fast path, so every call of them used the interpreter's
+  frames. Now 256 of 288 (and 413 of 440 in the random-number testbench) are native-callable; what is left is
+  elaboration thunks, processes, `wait` inside procedures and package allocation.
+- **Inline in a native frame** (frame-mode code keeps stepping these): `NewFrame` (the frame-pinned temporary, its
+  `temp_base` a cell of the native frame), `Fill` (a loop or `memset`), `Cat` of non-logic elements (every address is
+  found before anything is written, so a failing guard changes nothing), `SubtypeCheck` of up to four dimensions and
+  `LayoutOf` from the descriptors read in place (own slots included), `CallProt` and `Call` of nested subprograms as
+  direct native calls. A register the interpreter preloads (defined once by `Const`, `ConstF`, `AddrOf`) is stored at
+  entry of a native frame: its definition may not have run on the way to a use (this alone removed most
+  materialisations).
+- **Collections never run while native frames exist** (decision, replaces the stack-map design the issue suggested):
+  every instruction that can collect (`New`, `NewFill`, `Free`, a native call) first asks `Machine::reclaim_pending`
+  (the heaps' own `gc_due`/`reclaim_due` test, so it holds in the `gc-stress` build too, where it makes native frames
+  materialise more often) and leaves to the interpreter when a collection is due; it runs there with every frame's
+  registers in the machine, so precise roots (#422) hold by construction and no spill map is needed. Cost: a
+  collection materialises the native frames once. Revisit with spilled root maps if materialisations at collection
+  show in a profile.
+- **`CallNative` from a native frame** (`TierHost::native_direct`): the argument cells come from the registers (cell k
+  an address when the register is `Ptr`), no interpreter frame. Allowed natives are `yavs_interp::direct_native`
+  (`pure`, `now`, `writeline`, file open/close); `stop`/`finish` are a materialisation (`cold_native`); any other
+  native keeps the function frame-mode. A native that fails, hands its call to the VHDL body (`ieee_fallback`) or finds
+  a collection due changed nothing the interpreter's second execution does not see: compiled code materialises and the
+  interpreter executes the call (replay, so errors and traces are the interpreter's). A native that ends the process
+  (`ieee_stop`) returns `NativeCall::Stop`: the frames materialise after the call and the process suspends.
+- **Addresses into native frames.** A native frame's slots are an `alloca`; the machine cannot reach them by itself.
+  Each native frame registers its slots in a per-thread table by frame index (`Mem::nslots`, two stores at entry). A
+  native callee finds the slots of its native callers inline (`Gen::host`, by-reference parameters), and while a host
+  call from a native frame runs the machine reaches them too: `Machine::obj`/`obj_mut` take the slots of a frame index
+  between the machine's top frame and the calling native frame from `NativeSlots` (the table), by address, no copy
+  (pointers in the arguments or stored in memory the native reads, strings of a caller's frame, resolve the same way).
+  Registers of frame-mode callers are pointed to by compiled code: the register stack may not move during such a call
+  (`native_step` leaves when its capacity would grow). A first design copied all native frames' slots into machine
+  frames for the call and retried after a failure; it cost a fifth of a library testbench.
+- **`TierHost::native_step`**: instructions with no inline form in a native frame (`New`, `NewFill`, `Free`, `LFill`,
+  `LEq`, `Report`, `FToI`, `FToIRange`, `Phys`, `LNum`, `LogicOp`, `**`, logic `Cat` of unknown lengths) run the
+  interpreter's own `Machine::step` on a transient frame holding the registers they name (passed by index); the
+  registers they write come back. A `Report` needs the call stack and is made only when no native frame lies between
+  it and the machine's top. A failure is a replay as above.
+- **Typed `TempRoot` and `Stmt` with recorded roots** go through `TierHost::temp_root` and `end_stmt` (the machine's
+  `troots`), not a materialisation; the roots are the machine's, so they are as precise as the interpreter's.
+- **Protected calls.** `TierFrame::flags` carries `shared_alloc` of the top frame and whether the process may use the
+  shared state. `CallProt` from compiled code checks the second (else the interpreter's error), sets the first for the
+  callee when the object's handle is in the shared heap, and restores it after; materialisation recomputes it from the
+  `CallProt` the parent waits in. Natives called from a native frame allocate with the frame's flag.
+- **Nested subprograms** take their static link as two extra parameters (the frames one and two links up, as
+  `TierFrame::up`); a call passes the caller's own frame when it encloses the callee, else the caller's links (the callee
+  must be enclosed by the caller or by the caller's own enclosing subprogram, else the caller is frame-mode).
+  `NativeFrame::link` restores `Frame::link` on materialisation.
+- **`--tier=auto`:** a function that runs on native frames compiles with every function it calls natively (those as
+  native-frame code only, `Part::Native`, no entry from the interpreter); its native-frame code is published to the
+  call table only once all of that exists, since a missing callee would materialise at every call. Budget rules are
+  unchanged: the code is large (an eager `--tier=llvm` compile of a library testbench takes minutes), so nothing is
+  compiled in a run of a second; see STATUS.md "llvm" for the measured steady-state gain.

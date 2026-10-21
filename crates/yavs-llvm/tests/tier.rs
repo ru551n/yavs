@@ -1364,3 +1364,439 @@ fn frame_variables_match_the_interpreter() {
     let (x, y, _) = p.both(f, &[3, 5]);
     assert!(x.is_ok() && x == y, "{x:?}");
 }
+
+/// `outer(n, c)` calls `inner(n, c)`, which builds on its native frame a string of `n` copies of
+/// `c` (`NewFrame` with a fill), concatenates it with one more scalar element (`Cat`), fills a
+/// word array (`Fill`) and returns the elements it can tell apart. Both functions run on native
+/// frames and give the interpreter's results.
+fn string_ops() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let inner = pb.declare("inner", FuncKind::Function, None);
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(inner);
+        let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
+        let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
+        // The fill element: one byte.
+        let eight = fb.int(8);
+        let cell = alloc(&mut fb, eight);
+        fb.emit(Inst::Store {
+            addr: cell,
+            src: c,
+            w: Width::B1,
+        });
+        // s := n copies of c, kept by the frame.
+        let s = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::NewFrame {
+            dst: s,
+            desc: cell,
+            dsize: 0,
+            data: cell,
+            size: n,
+            fill: 1,
+        });
+        stmt(&mut fb);
+        // t := s & c (n + 1 bytes).
+        let one = fb.int(1);
+        let total = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: total,
+            a: n,
+            b: one,
+        });
+        let t = alloc(&mut fb, total);
+        let parts = fb.regs(&[s, n, c, one]);
+        fb.emit(Inst::Cat {
+            dst: t,
+            n: total,
+            m: one,
+            parts,
+            scalars: 0b10,
+            bias: 0,
+            logic: false,
+            w: Width::B1,
+        });
+        // w := three words of 0x01020304.
+        let (twelve, k3, word) = (fb.int(12), fb.int(3), fb.int(0x0102_0304));
+        let w = alloc(&mut fb, twelve);
+        let e = alloc(&mut fb, eight);
+        fb.emit(Inst::Store {
+            addr: e,
+            src: word,
+            w: Width::B4,
+        });
+        fb.emit(Inst::Fill {
+            dst: w,
+            elem: e,
+            n: k3,
+            size: 4,
+        });
+        // The first element of s, the scalar piece of t, the last word of w.
+        let (zero, eight_k, k8) = (fb.int(0), fb.int(8), fb.int(256));
+        let first = index(&mut fb, s, zero);
+        let a = load(&mut fb, first, Width::B1);
+        let last = index(&mut fb, t, n);
+        let b = load(&mut fb, last, Width::B1);
+        let wl = index(&mut fb, w, eight_k);
+        let d = load(&mut fb, wl, Width::B4);
+        let (x, y) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        fb.emit(Inst::Bin {
+            op: IntOp::Mul,
+            dst: x,
+            a: b,
+            b: k8,
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: y,
+            a,
+            b: x,
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: r,
+            a: y,
+            b: d,
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(outer);
+        let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
+        let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
+        let args = fb.regs(&[n, c]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: inner,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), outer)
+}
+
+/// `NewFrame`, `Cat` of non-logic elements and `Fill` run on native frames without a step
+/// (docs/decisions.md "Compiled frames"): nothing is materialised, the results are the
+/// interpreter's, and `outer` and `inner` both run on native frames.
+#[test]
+fn strings_on_native_frames() {
+    let (prog, outer) = string_ops();
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 2);
+    for (n, c) in [
+        (0u64, 65u64),
+        (1, 66),
+        (7, 90),
+        (64, 33),
+        (300, 255),
+        (5000, 1),
+    ] {
+        let (a, b, entries) = p.both(outer, &[n, c]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "n {n} c {c}");
+        // The entry into `outer`, and at most the one materialisation when the temporary area
+        // first has to grow.
+        assert!(entries <= 3, "n {n} c {c}: {entries} entries");
+    }
+}
+
+/// `inner(c)` keeps a four-element `std_ulogic_vector` of the code `c` and its descriptor in its
+/// own slots, makes the fat pair in temporary memory and calls the native `is_x` on it: the
+/// native reads the native frame's slots through the pair (indirect addresses, which only the
+/// frame windows resolve). `outer(c)` calls `inner(c)`. `half(a)` is `ceil(a / 4)` through a
+/// real native and `FToI`.
+fn native_calls() -> (Program, FuncId, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let is_x = pb.native(
+        "yavs.ieee.std_logic_1164.is_x(std_ulogic_vector)boolean",
+        None,
+    );
+    let ceil = pb.native("yavs.ieee.math_real.ceil(real)real", None);
+    let inner = pb.declare("inner", FuncKind::Function, None);
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    let half = pb.declare("half", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(inner);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        let planes = fb.slot(32, 8);
+        let dope_s = fb.slot(24, 8);
+        stmt(&mut fb);
+        let pc = fb.addr(AddrSpace::Frame, sc);
+        let c = load(&mut fb, pc, Width::B8);
+        // plane p holds bit p of the code in each of the four elements (1111b or 0).
+        let (two, fifteen) = (fb.int(2), fb.int(15));
+        let pl = fb.addr(AddrSpace::Frame, planes);
+        let mut q = c;
+        for p in 0..4 {
+            let bit = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Rem,
+                dst: bit,
+                a: q,
+                b: two,
+            });
+            let m = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Mul,
+                dst: m,
+                a: bit,
+                b: fifteen,
+            });
+            let at_p = fb.int(8 * p);
+            let to = index(&mut fb, pl, at_p);
+            fb.emit(Inst::Store {
+                addr: to,
+                src: m,
+                w: Width::B8,
+            });
+            let next = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Div,
+                dst: next,
+                a: q,
+                b: two,
+            });
+            q = next;
+        }
+        // The descriptor 0 to 3 and the fat pair [data, dope].
+        let dp = fb.addr(AddrSpace::Frame, dope_s);
+        let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
+        let parts = fb.regs(&[l, r, d]);
+        fb.emit(Inst::MakeDope { at: dp, parts });
+        let sixteen = fb.int(16);
+        let fat = alloc(&mut fb, sixteen);
+        fb.emit(Inst::Store {
+            addr: fat,
+            src: pl,
+            w: Width::B8,
+        });
+        let eight = fb.int(8);
+        let f8 = index(&mut fb, fat, eight);
+        fb.emit(Inst::Store {
+            addr: f8,
+            src: dp,
+            w: Width::B8,
+        });
+        let args = fb.regs(&[fat]);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::CallNative {
+            native: is_x,
+            args,
+            dst: Some(x),
+        });
+        fb.emit(Inst::Ret { v: Some(x) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(outer);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pc = fb.addr(AddrSpace::Frame, sc);
+        let c = load(&mut fb, pc, Width::B8);
+        let args = fb.regs(&[c]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: inner,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(half);
+        let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pa = fb.addr(AddrSpace::Frame, sa);
+        let a = load(&mut fb, pa, Width::B8);
+        let x = fb.reg(RegTy::F64);
+        fb.emit(Inst::IToF { dst: x, src: a });
+        let q = fb.reg(RegTy::F64);
+        fb.emit(Inst::ConstF { dst: q, v: 0.25 });
+        let y = fb.reg(RegTy::F64);
+        fb.emit(Inst::FBin {
+            op: FOp::Mul,
+            dst: y,
+            a: x,
+            b: q,
+        });
+        let args = fb.regs(&[y]);
+        let z = fb.reg(RegTy::F64);
+        fb.emit(Inst::CallNative {
+            native: ceil,
+            args,
+            dst: Some(z),
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::FToI { dst: r, src: z });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), outer, half)
+}
+
+/// A native call from a native frame runs without materialising it (the real arithmetic one),
+/// also when it reads the frame's own slots through memory (the vector one).
+#[test]
+fn natives_called_from_native_frames() {
+    let (prog, outer, half) = native_calls();
+    let p = Both::new(prog);
+    for c in 0..9u64 {
+        let (a, b, entries) = p.both(outer, &[c]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "code {c}");
+        assert!(entries <= 3, "code {c}: {entries} entries");
+    }
+    for a in [0u64, 1, 3, 4, 5, 100, 1 << 40, u64::MAX] {
+        let (x, y, entries) = p.both(half, &[a]);
+        assert_eq!(x, y, "half {a}");
+        assert!(entries <= 3, "half {a}: {entries} entries");
+    }
+}
+
+/// `top(n)` keeps `v := n`, calls its nested `bump(k)` (adds `k` to the parent's `v` through
+/// `Up(1)` and calls `deeper`, nested in it, which reads both `v` through `Up(2)` and `bump`'s
+/// own local through `Up(1)`), and returns `v`.
+fn nested() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let top = pb.declare("top", FuncKind::Function, None);
+    let bump = pb.declare("bump", FuncKind::Procedure, Some(top));
+    let deeper = pb.declare("deeper", FuncKind::Function, Some(bump));
+    // Slot offsets are decided as the functions are defined: top's `v` at 8 (after n).
+    let (v_slot, b_local);
+    {
+        let mut fb = pb.define(top);
+        let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        v_slot = fb.slot(8, 8);
+        stmt(&mut fb);
+        let pn = fb.addr(AddrSpace::Frame, sn);
+        let n = load(&mut fb, pn, Width::B8);
+        let pv = fb.addr(AddrSpace::Frame, v_slot);
+        fb.emit(Inst::Store {
+            addr: pv,
+            src: n,
+            w: Width::B8,
+        });
+        let three = fb.int(3);
+        let args = fb.regs(&[three]);
+        fb.emit(Inst::Call {
+            func: bump,
+            args,
+            dst: None,
+        });
+        let args = fb.regs(&[n]);
+        fb.emit(Inst::Call {
+            func: bump,
+            args,
+            dst: None,
+        });
+        let r = load(&mut fb, pv, Width::B8);
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(bump);
+        let sk = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
+        b_local = fb.slot(8, 8);
+        stmt(&mut fb);
+        let pk = fb.addr(AddrSpace::Frame, sk);
+        let k = load(&mut fb, pk, Width::B8);
+        let pl = fb.addr(AddrSpace::Frame, b_local);
+        fb.emit(Inst::Store {
+            addr: pl,
+            src: k,
+            w: Width::B8,
+        });
+        let up = fb.addr(AddrSpace::Up(1), v_slot);
+        let v = load(&mut fb, up, Width::B8);
+        let sum = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: sum,
+            a: v,
+            b: k,
+        });
+        fb.emit(Inst::Store {
+            addr: up,
+            src: sum,
+            w: Width::B8,
+        });
+        let args = fb.regs(&[k]);
+        let d = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: deeper,
+            args,
+            dst: Some(d),
+        });
+        // v := v + deeper(k)
+        let v = load(&mut fb, up, Width::B8);
+        let sum = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: sum,
+            a: v,
+            b: d,
+        });
+        fb.emit(Inst::Store {
+            addr: up,
+            src: sum,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(deeper);
+        let sk = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pk = fb.addr(AddrSpace::Frame, sk);
+        let k = load(&mut fb, pk, Width::B8);
+        let up1 = fb.addr(AddrSpace::Up(1), b_local);
+        let l = load(&mut fb, up1, Width::B8);
+        let up2 = fb.addr(AddrSpace::Up(2), v_slot);
+        let v = load(&mut fb, up2, Width::B8);
+        let t = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: t,
+            a: l,
+            b: v,
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: r,
+            a: t,
+            b: k,
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), top)
+}
+
+/// Nested subprograms run on native frames: their static links are passed to them and name
+/// the frames of the enclosing subprograms (also when those are native frames themselves).
+#[test]
+fn nested_subprograms_on_native_frames() {
+    let (prog, top) = nested();
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 3);
+    for n in [0u64, 1, 7, 1000, 1 << 40] {
+        let (a, b, entries) = p.both(top, &[n]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "n {n}");
+        assert!(entries <= 3, "n {n}: {entries} entries");
+    }
+}

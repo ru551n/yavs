@@ -357,6 +357,11 @@ impl std::ops::IndexMut<usize> for Regs {
 
 pub(crate) struct Machine {
     pub rt: Arc<Runtime>,
+    /// The slots of the native frames of compiled code, for the frame indices `nwin_from` to
+    /// `nwin_to`, while a call from a native frame runs (`TierHost::native_direct`).
+    nwin: Option<Box<dyn crate::NativeSlots>>,
+    nwin_from: usize,
+    nwin_to: usize,
     /// A second handle on `rt` that `exec` takes while it runs, so an activation does not
     /// touch the shared reference count (every process of a batch has the same runtime).
     rt_run: Option<Arc<Runtime>>,
@@ -787,6 +792,9 @@ impl Machine {
         entry: FuncId,
     ) -> Machine {
         Machine {
+            nwin: None,
+            nwin_from: 0,
+            nwin_to: 0,
             rt_run: Some(rt.clone()),
             rt,
             inst,
@@ -1173,6 +1181,7 @@ impl Machine {
             up: Vec::new(),
             ctx,
             fault: None,
+            stop: false,
         };
         let ran = tier.run_cached(func, pc, &mut host, &mut state);
         let fault = host.fault;
@@ -1538,9 +1547,13 @@ impl Machine {
     /// The memory object of space `sp` and index `idx`, for reading.
     fn obj(&self, sp: u8, idx: u32) -> R<&[u8]> {
         Ok(match sp {
-            FRAME => self
-                .fslots(idx as usize)
-                .ok_or_else(|| ice(format!("address of dead frame {idx}")))?,
+            FRAME => match &self.nwin {
+                Some(w) if (self.nwin_from..=self.nwin_to).contains(&(idx as usize)) => {
+                    w.slots(idx as usize)
+                }
+                _ => self.fslots(idx as usize),
+            }
+            .ok_or_else(|| ice(format!("address of dead frame {idx}")))?,
             INST => &self.inst.data,
             PKG => match &self.pkg_init {
                 Some((p, data)) if *p == idx => data,
@@ -1585,9 +1598,13 @@ impl Machine {
     /// The memory object of space `sp` and index `idx`, for writing.
     fn obj_mut(&mut self, sp: u8, idx: u32) -> R<&mut [u8]> {
         Ok(match sp {
-            FRAME => self
-                .fslots_mut(idx as usize)
-                .ok_or_else(|| ice(format!("address of dead frame {idx}")))?,
+            FRAME => match &mut self.nwin {
+                Some(w) if (self.nwin_from..=self.nwin_to).contains(&(idx as usize)) => {
+                    w.slots_mut(idx as usize)
+                }
+                _ => slots_of_mut(&self.frames, &mut self.root, &mut self.sstack, idx as usize),
+            }
+            .ok_or_else(|| ice(format!("address of dead frame {idx}")))?,
             HEAP => self
                 .heap
                 .data_mut(idx)
@@ -5495,6 +5512,7 @@ impl Machine {
             up: Vec::new(),
             ctx,
             fault: None,
+            stop: false,
         };
         let ran = tier.run(func, pc as u32, &mut host);
         let fault = host.fault;
@@ -5556,6 +5574,7 @@ impl Machine {
         tf.stack = m.regs.v.as_ptr();
         tf.max_depth = u64::from(m.rt.limits.max_depth);
         tf.heap_epoch = m.heap.epoch();
+        tf.flags = m.tier_flags();
         match c.known_edge() {
             Some((s, e, up)) => {
                 tf.known_sig = u64::from(s.0);
@@ -5565,6 +5584,25 @@ impl Machine {
             None => tf.known_sig = u64::MAX,
         }
         true
+    }
+
+    /// `TierFrame::flags` of the top frame.
+    fn tier_flags(&self) -> u64 {
+        let shared = self.frames.last().is_some_and(|f| f.shared_alloc);
+        u64::from(shared) * crate::TIER_SHARED_ALLOC
+            + u64::from(self.sh.is_some()) * crate::TIER_SERIAL
+    }
+
+    /// Whether a native call or an allocation would collect or recycle now (`reclaim`): native
+    /// frames hold their registers outside the machine, so compiled code leaves them to the
+    /// interpreter first.
+    fn reclaim_pending(&self) -> bool {
+        let t = self.rt.limits.gc_threshold;
+        let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
+        let started = self.sh.as_ref().is_none_or(|sh| sh.started);
+        started && (self.heap.gc_due(t) || shared.is_some_and(|h| h.gc_due(t)))
+            || self.heap.reclaim_due()
+            || shared.is_some_and(Heap::reclaim_due)
     }
 
     /// Make `tf` the top frame's view (`TierFrame`).
@@ -5589,6 +5627,7 @@ impl Machine {
         tf.stack = self.regs.v.as_ptr();
         tf.max_depth = u64::from(self.rt.limits.max_depth);
         tf.heap_epoch = self.heap.epoch();
+        tf.flags = self.tier_flags();
         let mut link = self.frames[top].link;
         for u in &mut tf.up {
             *u = match link {
@@ -6946,6 +6985,9 @@ struct Host<'a, 'c, 'x> {
     up: Vec<&'a Func>,
     ctx: &'a mut Option<&'c mut Ctx<'x>>,
     fault: Option<Fault>,
+    /// A native a native frame ran ended the process (`NativeCall::Stop`): the materialisation
+    /// that follows suspends it.
+    stop: bool,
 }
 
 impl Host<'_, '_, '_> {
@@ -6956,8 +6998,9 @@ impl Host<'_, '_, '_> {
         for nf in frames {
             let top = m.frames.len() - 1;
             let (cf, at) = (m.frames[top].func, m.frames[top].pc);
-            let dst = match prog.func(cf).and_then(|c| c.code.get(at as usize)) {
-                Some(&Inst::Call { dst, .. }) => dst,
+            let (dst, prot) = match prog.func(cf).and_then(|c| c.code.get(at as usize)) {
+                Some(&Inst::Call { dst, .. }) => (dst, None),
+                Some(&Inst::CallProt { dst, obj, .. }) => (dst, Some(obj)),
                 _ => {
                     return Err(ice(format!(
                         "native frame of {} not called from a call",
@@ -6972,8 +7015,21 @@ impl Host<'_, '_, '_> {
                 .rt
                 .pre(nf.func, g)
                 .ok_or_else(|| ice(format!("no function {}", nf.func)))?;
-            m.push_frame_pre(g, nf.func, pre, None, dst)?;
+            let parent_rbase = m.frames[top].rbase as usize;
+            // The enclosing frame of a nested subprogram: `link` holds its address's high half.
+            let link = (nf.link != u64::MAX).then_some((nf.link & 0x1fff_ffff) as u32);
+            m.push_frame_pre(g, nf.func, pre, link, dst)?;
             let idx = m.frames.len() - 1;
+            // As `call_prot` marks the frame of a method of a shared protected object.
+            if let Some(obj) = prot {
+                let h = m
+                    .regs
+                    .v
+                    .get(parent_rbase + obj.0 as usize)
+                    .copied()
+                    .unwrap_or(0);
+                m.frames[idx].shared_alloc |= heap::tag_of(h) == heap::SHARED;
+            }
             let rbase = m.frames[idx].rbase as usize;
             let regs = &mut m.regs.v[rbase..];
             if regs.len() != nf.regs.len() {
@@ -7470,12 +7526,192 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let r = self.push_native(pc, frames);
         self.m.tier_view(tf);
         match r {
+            Ok(()) if std::mem::take(&mut self.stop) => crate::Stepped::Suspend,
             Ok(()) => crate::Stepped::Next,
             Err(e) => {
                 self.fault = Some(e);
                 crate::Stepped::Fault
             }
         }
+    }
+
+    fn native_direct(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        native: u32,
+        cells: &[u64],
+        depth: u64,
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+    ) -> crate::NativeCall {
+        use crate::NativeCall::{Done, Slow, Stop};
+        let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        let Some(n) = prog.natives.get(yavs_ir::NativeId(native)) else {
+            return Slow;
+        };
+        let Some(fun) = rt.natives.get(native as usize).copied().flatten() else {
+            return Slow;
+        };
+        // Package initialisation notes the natives it calls; a collection needs every
+        // frame's registers in the machine.
+        if m.pkg_init.is_some() || self.ctx.is_some() && m.reclaim_pending() {
+            return Slow;
+        }
+        let top = m.frames.len();
+        if (depth as usize) < top {
+            return Slow;
+        }
+        // The native frames' slots are reached by address while the native runs.
+        m.nwin = slots.take();
+        (m.nwin_from, m.nwin_to) = (top, depth as usize);
+        let last = top - 1;
+        let saved = std::mem::replace(
+            &mut m.frames[last].shared_alloc,
+            tf.flags & crate::TIER_SHARED_ALLOC != 0,
+        );
+        let r = fun(m, self.ctx, n.ty, cells);
+        m.frames[last].shared_alloc = saved;
+        *slots = m.nwin.take();
+        let fallback = std::mem::take(&mut m.ieee_fallback);
+        let stop = std::mem::take(&mut m.ieee_stop);
+        // The stacks may have moved (the temporary area).
+        if m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots {
+            m.tier_temp(tf);
+        } else {
+            m.tier_view(tf);
+        }
+        match r {
+            Ok(v) if !fallback => {
+                if stop {
+                    self.stop = true;
+                    Stop(v)
+                } else {
+                    Done(v)
+                }
+            }
+            _ => Slow,
+        }
+    }
+
+    fn native_step(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: (&[u32], &[u32]),
+        ins: &[u64],
+        outs: &mut [u64],
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+        temp_base: u64,
+    ) -> crate::NativeCall {
+        use crate::NativeCall::{Done, Slow, Stop};
+        let (m, prog) = (&mut *self.m, self.prog);
+        let Some(f) = prog.func(FuncId(func)) else {
+            return Slow;
+        };
+        let Some(&inst) = f.code.get(pc as usize) else {
+            return Slow;
+        };
+        let top = m.frames.len();
+        let (uses, defs) = regs;
+        let gc = matches!(
+            inst,
+            Inst::New { .. } | Inst::NewFill { .. } | Inst::Free { .. }
+        );
+        // Registers up to the highest one named, in a frame of their own at the machine's top.
+        let nregs = uses
+            .iter()
+            .chain(defs)
+            .map(|&r| r as usize + 1)
+            .max()
+            .unwrap_or(0);
+        // The registers of the frame-mode callers are pointed to by compiled code: the register
+        // stack may not move.
+        if (depth as usize) < top
+            || m.regs.v.capacity() - m.regs.v.len() < nregs
+            || uses.len() != ins.len()
+            || defs.len() != outs.len()
+            // The stack a report shows is the machine's frames.
+            || matches!(inst, Inst::Report { .. }) && depth as usize != top
+            || gc && self.ctx.is_some() && m.reclaim_pending()
+        {
+            return Slow;
+        }
+        let rbase = m.regs.v.len();
+        m.regs.v.resize(rbase + nregs, 0);
+        let caller = m.regs.base;
+        m.regs.base = rbase;
+        m.frames.push(Frame {
+            func: FuncId(func),
+            pc,
+            rbase: rbase as u32,
+            sbase: m.sstack.len() as u32,
+            slen: 0,
+            link: None,
+            ret: None,
+            temp_base: temp_base as u32,
+            shared_alloc: tf.flags & crate::TIER_SHARED_ALLOC != 0,
+        });
+        for (&r, &v) in uses.iter().zip(ins) {
+            m.regs.v[rbase + r as usize] = v;
+        }
+        m.nwin = slots.take();
+        (m.nwin_from, m.nwin_to) = (top, depth as usize);
+        let r = m.step(prog, f, inst, self.ctx);
+        *slots = m.nwin.take();
+        for (o, &r) in outs.iter_mut().zip(defs) {
+            *o = m.regs.v[rbase + r as usize];
+        }
+        m.frames.pop();
+        m.regs.v.truncate(rbase);
+        m.regs.base = caller;
+        if m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots {
+            m.tier_temp(tf);
+        } else {
+            m.tier_view(tf);
+        }
+        match r {
+            Ok(Flow::Next) => Done(None),
+            Ok(Flow::Suspend) => {
+                self.stop = true;
+                Stop(None)
+            }
+            _ => Slow,
+        }
+    }
+
+    fn temp_root(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        addr: u64,
+        ty: Option<u32>,
+        desc: &[u8],
+    ) -> bool {
+        let (m, prog) = (&mut *self.m, self.prog);
+        let ok = match ty {
+            None => m.fat_root(addr).is_ok(),
+            Some(t) => {
+                let t = yavs_ir::TyId(t);
+                let n = Ty::desc_size(&prog.types, t);
+                let ok = split(addr).0 == TEMP && n.is_some_and(|n| n as usize == desc.len());
+                if ok {
+                    m.temp_root(addr, Some(t), desc.into());
+                }
+                ok
+            }
+        };
+        m.tier_temp(tf);
+        ok
+    }
+
+    fn end_stmt(&mut self, tf: &mut crate::TierFrame, base: u64) {
+        let m = &mut *self.m;
+        let base = base as usize;
+        m.temp.truncate(base);
+        if !m.troots.is_empty() {
+            m.troots.retain(|t| (t.off as usize) < base);
+        }
+        m.tier_temp(tf);
     }
 
     fn deref(&mut self, h: u64) -> Option<u64> {

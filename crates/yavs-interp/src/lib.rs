@@ -355,6 +355,71 @@ pub enum Stepped {
     Suspend,
 }
 
+/// The slots of the native frames of compiled code, which the machine reaches by address while
+/// a call from a native frame runs (`TierHost::native_direct`, `native_step`): the frame index
+/// is the one in the addresses.
+pub trait NativeSlots: Send {
+    fn slots(&self, idx: usize) -> Option<&[u8]>;
+    fn slots_mut(&mut self, idx: usize) -> Option<&mut [u8]>;
+}
+
+/// What [`TierHost::native_direct`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeCall {
+    /// The native ran: its result, if it returns one.
+    Done(Option<u64>),
+    /// Nothing happened (or nothing that cannot be done again): compiled code leaves the
+    /// instruction to the interpreter.
+    Slow,
+    /// The native ran and the process ends after it (a report at the stop severity): the
+    /// result, then compiled code leaves at the next instruction and the process suspends.
+    Stop(Option<u64>),
+}
+
+/// Whether compiled code may run the native `symbol` itself on a native frame
+/// ([`TierHost::native_direct`]): it computes from its arguments and the heap, so the
+/// interpreter can run the same call again where compiled code leaves it, or reads the
+/// simulation time.
+pub fn direct_native(symbol: &str) -> bool {
+    native::pure(symbol)
+        || symbol.starts_with("yavs.standard.now.")
+        || symbol.starts_with("yavs.textio.writeline.")
+        || symbol.starts_with("yavs.implicit.file_open.")
+        || symbol.starts_with("yavs.implicit.file_close.")
+}
+
+/// Whether the native `symbol` is one that runs once (ending the simulation): a native frame leaves to the interpreter for it
+/// (materialisation) instead of making every function that calls it use the interpreter's frames.
+pub fn cold_native(symbol: &str) -> bool {
+    symbol.starts_with("yavs.env.stop.") || symbol.starts_with("yavs.env.finish.")
+}
+
+/// The registers instruction `i` of `f` reads and writes, in operand order: a signal reference
+/// is two registers, and the operand list of a call or concatenation is read.
+pub fn inst_regs(f: &yavs_ir::Func, i: &yavs_ir::Inst) -> (Vec<yavs_ir::Reg>, Vec<yavs_ir::Reg>) {
+    let (mut uses, mut defs) = (Vec::new(), Vec::new());
+    i.visit(&mut |r, role, ty| {
+        let to = if role == yavs_ir::Role::Def {
+            &mut defs
+        } else {
+            &mut uses
+        };
+        to.push(r);
+        if ty == Some(yavs_ir::RegTy::Sig) {
+            to.push(yavs_ir::Reg(r.0 + 1));
+        }
+    });
+    if let Some(rs) = i.list().and_then(|l| f.regs(l)) {
+        for &r in rs {
+            uses.push(r);
+            if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) {
+                uses.push(yavs_ir::Reg(r.0 + 1));
+            }
+        }
+    }
+    (uses, defs)
+}
+
 /// The interpreter's side of [`Tier::run`].
 pub trait TierHost {
     /// Fill `fr` with the top frame's view: compiled code's own copy, filled in place (a copy
@@ -446,6 +511,56 @@ pub trait TierHost {
     /// The `WaitOn` at `pc` of the single-range signal reference `sig` (its two registers)
     /// and the `Suspend` after it, as `signal` runs them.
     fn wait_suspend(&mut self, fr: &mut TierFrame, pc: u32, sig: [u64; 2]) -> Stepped;
+
+    /// A `CallNative` of a native frame (`docs/decisions.md` "Compiled frames"): native
+    /// `native` ([`direct_native`]) with the argument `cells`, without an interpreter frame.
+    /// `slots` gives the slots of the native frames (frame indices from the machine's top frame
+    /// plus one up to `depth`), which addresses in the cells or in the memory the native reads
+    /// may name. [`NativeCall::Slow`] when a collection is due, the native fails or hands its
+    /// call to the VHDL body: compiled code then materialises the frames and the interpreter
+    /// executes the instruction (a native that fails has changed nothing the second run does
+    /// not see). `fr` is brought up to date.
+    fn native_direct(
+        &mut self,
+        fr: &mut TierFrame,
+        native: u32,
+        cells: &[u64],
+        depth: u64,
+        slots: &mut Option<Box<dyn NativeSlots>>,
+    ) -> NativeCall;
+
+    /// Instruction `pc` of function `func`, executed for a native frame by the interpreter's own
+    /// code on a frame it makes for the purpose (`docs/decisions.md` "Compiled frames"):
+    /// `ins` are the values of the registers `use_regs` (the registers [`inst_regs`] says it
+    /// reads), `outs` receive those it writes (`def_regs`), `slots` as for
+    /// [`TierHost::native_direct`] (frame index `depth`) and `temp_base` its temporary base.
+    /// For `New`, `NewFill`, `Free`, `LFill`, `LEq`, `LayoutOf` and `Report` and instructions
+    /// without an inline form. [`NativeCall::Slow`] when a collection is due (the machine does
+    /// not hold the native frames' registers), a report would show the call stack of frames the
+    /// machine does not have, or the instruction fails (compiled code then materialises the
+    /// frames and the interpreter executes it, with its error).
+    #[allow(clippy::too_many_arguments)]
+    fn native_step(
+        &mut self,
+        fr: &mut TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: (&[u32], &[u32]),
+        ins: &[u64],
+        outs: &mut [u64],
+        slots: &mut Option<Box<dyn NativeSlots>>,
+        temp_base: u64,
+    ) -> NativeCall;
+
+    /// `Inst::TempRoot` from a native frame: record the temporary at `addr` for the GC until
+    /// its statement ends (`ty` its type and `desc` the descriptor bytes, or the fat pair at
+    /// `addr` when `ty` is `None`). `false`: the interpreter must execute the instruction.
+    fn temp_root(&mut self, fr: &mut TierFrame, addr: u64, ty: Option<u32>, desc: &[u8]) -> bool;
+
+    /// `Inst::Stmt` of a native frame whose temporaries start at `base`, while temporaries are
+    /// recorded: drop what the statement made.
+    fn end_stmt(&mut self, fr: &mut TierFrame, base: u64);
 }
 
 /// A native frame of compiled code, recorded for [`TierHost::materialise`].
@@ -457,6 +572,9 @@ pub struct NativeFrame {
     pub regs: Vec<u64>,
     pub slots: Vec<u8>,
     pub temp_base: u64,
+    /// The frame's static link, as compiled code passes it: the high half of the address of
+    /// the lexically enclosing frame (`space::FRAME << 29 | index`), `u64::MAX` for none.
+    pub link: u64,
 }
 
 /// What compiled code reads and writes itself (ir.md 5): a view of the top frame's
@@ -517,7 +635,18 @@ pub struct TierFrame {
     /// The process heap's `epoch`: the host addresses of heap objects compiled code found stay
     /// valid while it is unchanged.
     pub heap_epoch: u64,
+    /// [`TIER_SHARED_ALLOC`] (the top frame allocates in the shared heap) and [`TIER_SERIAL`]
+    /// (the process may use the shared state): what native frames inherit and a protected call
+    /// needs.
+    pub flags: u64,
 }
+
+/// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
+pub const TIER_SHARED_ALLOC: u64 = 1;
+/// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
+pub const TIER_SERIAL: u64 = 2;
+/// The tag in the top byte of a handle into the shared heap.
+pub const SHARED_TAG: u8 = heap::SHARED;
 
 /// An instance signal as compiled code reads it (one `TierFrame::sigtab` entry): the element
 /// codes of the kernel signal's current value, starting at the instance signal's own first
@@ -559,6 +688,7 @@ impl Default for TierFrame {
             known_up: 0,
             max_depth: 0,
             heap_epoch: 0,
+            flags: 0,
         }
     }
 }

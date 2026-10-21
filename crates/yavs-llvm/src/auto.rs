@@ -24,7 +24,7 @@ use std::time::Duration;
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::lower::{RunFn, compile_one, enter, new_jit, too_big};
+use crate::lower::{Part, RunFn, compile_one, enter, native_set, new_jit, too_big};
 use crate::{Error, Jit, OptLevel};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
@@ -355,6 +355,10 @@ const PAYBACK_COMPUTE: u64 = 2;
 const CALLEE_MAX: usize = 200;
 const TREE_MAX: usize = 1500;
 
+/// The most IR instructions of a function and the functions it calls on native frames that
+/// compile together (`Worker::tree`).
+const NATIVE_MAX: usize = 3000;
+
 /// The compile thread's state.
 struct Worker {
     prog: Arc<yavs_ir::Program>,
@@ -373,6 +377,10 @@ struct Worker {
     jit0: Option<Jit>,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
+    /// Per function: the address of its native-frame code once compiled (0: none), and whether
+    /// `ntab` names it. Published once everything it calls natively is compiled too: a missing
+    /// callee would materialise the frames at every call.
+    nat: Vec<(usize, bool)>,
     /// Microseconds each function was seen interpreted, and running compiled.
     time: Vec<[u64; 2]>,
     /// Microseconds the simulation threads were seen running, and the compile thread spent
@@ -463,10 +471,29 @@ impl Worker {
     }
 
     /// `root` and the functions it calls that compile with it: a call from compiled code to
-    /// one that is not leaves the compiled code (`TIER_UNWIND`).
-    fn tree(&self, root: FuncId) -> Vec<FuncId> {
+    /// one that is not leaves the compiled code (`TIER_UNWIND`). A function that runs on native
+    /// frames brings every function it calls on native frames, compiled for those frames only,
+    /// so its native-frame code can be published; a closure over `NATIVE_MAX` instructions is
+    /// left (the root gets frame-mode code only).
+    fn tree(&self, root: FuncId) -> Vec<(FuncId, Part)> {
+        let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
+        let nc = native_set(&self.prog, [root]);
+        if nc.contains(&root) {
+            let todo: Vec<FuncId> = nc
+                .iter()
+                .copied()
+                .filter(|&i| i != root && self.nat[i.0 as usize].0 == 0)
+                .collect();
+            let total = size(root) + todo.iter().map(|&i| size(i)).sum::<usize>();
+            if total <= NATIVE_MAX {
+                let mut ids = vec![(root, Part::Both)];
+                ids.extend(todo.into_iter().map(|i| (i, Part::Native)));
+                return ids;
+            }
+            return vec![(root, Part::Frame)];
+        }
         let mut ids = vec![root];
-        let mut size = self.prog.func(root).map_or(0, |f| f.code.len());
+        let mut total = size(root);
         let mut i = 0;
         while i < ids.len() && ids.len() < 16 {
             let Some(f) = self.prog.func(ids[i]) else {
@@ -486,18 +513,35 @@ impl Worker {
                     && !self.done[func.0 as usize][0]
                     && g.kind != FuncKind::Elab
                     && g.code.len() <= CALLEE_MAX
-                    && size + g.code.len() <= TREE_MAX
+                    && total + g.code.len() <= TREE_MAX
                 {
-                    size += g.code.len();
+                    total += g.code.len();
                     ids.push(*func);
                 }
             }
         }
-        ids
+        ids.into_iter().map(|i| (i, Part::Both)).collect()
+    }
+
+    /// Publish the native-frame code whose callees are all compiled.
+    fn publish(&mut self) {
+        for k in 0..self.nat.len() {
+            let (addr, done) = self.nat[k];
+            if addr == 0 || done {
+                continue;
+            }
+            let ready = native_set(&self.prog, [FuncId(k as u32)])
+                .iter()
+                .all(|c| self.nat[c.0 as usize].0 != 0);
+            if ready {
+                self.ntab[k].store(addr, Ordering::Release);
+                self.nat[k].1 = true;
+            }
+        }
     }
 
     /// The function to compile next and what goes with it, if the budget has room for it.
-    fn pick(&mut self, cands: &mut Vec<FuncId>) -> Option<Vec<FuncId>> {
+    fn pick(&mut self, cands: &mut Vec<FuncId>) -> Option<Vec<(FuncId, Part)>> {
         // The hottest relative to its cost first.
         let best = (0..cands.len()).max_by_key(|&i| {
             let id = cands[i];
@@ -508,7 +552,7 @@ impl Worker {
         let ids = self.tree(id);
         let cost: u64 = ids
             .iter()
-            .filter_map(|&i| self.prog.func(i))
+            .filter_map(|&(i, _)| self.prog.func(i))
             .map(|f| self.cost(f))
             .sum();
         let factor = if self.is_compute(id) {
@@ -526,12 +570,22 @@ impl Worker {
     }
 
     /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled.
-    fn compile(&mut self, id: FuncId, o2: bool, sampled: bool) -> bool {
-        // Each level once; elaboration code never runs again.
-        let first = self
-            .done
-            .get_mut(id.0 as usize)
-            .is_some_and(|d| !std::mem::replace(&mut d[usize::from(o2)], true));
+    fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
+        // Each level once; elaboration code never runs again. Native-frame code of a callee is
+        // made once, and a function that has it gets frame-mode code alone.
+        let native_done = self.nat.get(id.0 as usize).is_some_and(|n| n.0 != 0);
+        let part = if part == Part::Both && native_done && !o2 {
+            Part::Frame
+        } else {
+            part
+        };
+        let first = if part == Part::Native {
+            !native_done
+        } else {
+            self.done
+                .get_mut(id.0 as usize)
+                .is_some_and(|d| !std::mem::replace(&mut d[usize::from(o2)], true))
+        };
         let Some(f) = self
             .prog
             .func(id)
@@ -559,9 +613,9 @@ impl Worker {
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let r = match (too_big(f, self.max_size).or(short), j) {
             (Some(why), _) => Err(why),
-            (None, Some(j)) => compile_one(j, &self.prog, id, f, level),
+            (None, Some(j)) => compile_one(j, &self.prog, id, f, level, part),
             (None, j @ None) => match new_jit(level) {
-                Ok(n) => compile_one(j.insert(n), &self.prog, id, f, level),
+                Ok(n) => compile_one(j.insert(n), &self.prog, id, f, level, part),
                 Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
             },
         };
@@ -575,17 +629,21 @@ impl Worker {
                 }
                 let (run, nregs, native) = entry;
                 if native != 0 {
-                    self.ntab[id.0 as usize].store(native, Ordering::Release);
+                    // Published when what it calls is compiled (`publish`).
+                    self.nat[id.0 as usize] = (native, false);
+                    self.publish();
                 }
-                self.table[id.0 as usize].set((run, nregs));
-                self.native.set(id);
+                if let Some(run) = run {
+                    self.table[id.0 as usize].set((run, nregs));
+                    self.native.set(id);
+                }
                 (self.note)(id, level, Ok(took));
                 true
             }
             Err(why) => {
                 // A short function stays interpreted as long as nothing compiled calls it;
                 // it compiles with a caller (`tree`).
-                if short_only {
+                if short_only && part != Part::Native {
                     self.done[id.0 as usize][0] = false;
                 }
                 (self.note)(id, level, Err(why));
@@ -626,6 +684,7 @@ impl AutoTier {
         let mut w = Worker {
             time: vec![[0; 2]; prog.funcs.len()],
             done: vec![[false; 2]; prog.funcs.len()],
+            nat: vec![(0, false); prog.funcs.len()],
             prog,
             table,
             ntab: ntab.clone(),
@@ -694,8 +753,8 @@ impl AutoTier {
                         }
                         let Some((ids, o2, sampled)) = asked
                             .pop_front()
-                            .map(|id| (vec![id], false, false))
-                            .or_else(|| later.pop().map(|id| (vec![id], true, false)))
+                            .map(|id| (vec![(id, Part::Both)], false, false))
+                            .or_else(|| later.pop().map(|id| (vec![(id, Part::Both)], true, false)))
                             .or_else(|| w.pick(&mut cands).map(|ids| (ids, false, true)))
                         else {
                             break;
@@ -706,8 +765,8 @@ impl AutoTier {
                         if sh.halt.load(Ordering::SeqCst) {
                             break;
                         }
-                        for (i, id) in ids.into_iter().enumerate() {
-                            let done = w.compile(id, o2, sampled && i == 0);
+                        for (i, (id, part)) in ids.into_iter().enumerate() {
+                            let done = w.compile(id, o2, sampled && i == 0, part);
                             // Its callees compile for its sake only.
                             if !done && i == 0 {
                                 break;

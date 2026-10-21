@@ -396,6 +396,30 @@ impl Waiters {
         let Some(wide) = self.lists.len().checked_sub(1) else {
             return;
         };
+        // One element changed and its list holds one resident waiter, nothing in the wide list (a
+        // process per element, waiting for its element): no scan, no rewrite.
+        if let [r] = runs
+            && r.len == 1
+            && wide > 0
+            && self.lists[wide].0.is_empty()
+        {
+            let c = (r.offset >> self.shift) as usize;
+            if c < wide
+                && let (l, n) = &mut self.lists[c]
+                && let [w] = l.as_slice()
+                && w.perm != 0
+            {
+                if w.range.overlaps(*r) {
+                    if !live(w) {
+                        l.clear();
+                        *n = 0;
+                    } else if !hold(w) {
+                        out.push((w.seq, w.proc));
+                    }
+                }
+                return;
+            }
+        }
         let shift = self.shift;
         let mut scanned = 0;
         // One list: the waiters hit are taken in list order.
@@ -1519,11 +1543,13 @@ fn same_value(t: &Txn, first: &Option<Buf>, r: Range) -> Vec<u64> {
 
 impl Waveform {
     /// Nothing is pending.
+    #[inline]
     pub fn idle(&self) -> bool {
         self.pending.is_empty() && self.quick.is_none() && self.vquick.is_none()
     }
 
     /// The time of the first pending transaction.
+    #[inline]
     pub fn first_time(&self) -> Option<Time> {
         match (&self.quick, &self.vquick) {
             (Some(q), _) => Some(q.time),

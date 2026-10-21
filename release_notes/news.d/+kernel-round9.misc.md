@@ -1,0 +1,1 @@
+Simulation of clocked designs with thousands of processes is faster: a resting clocked process is committed while its state is still in the cache, the drivers of one signal are applied in a single pass, and the interrupt check and the batch ordering cost less per delta cycle.

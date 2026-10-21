@@ -3357,3 +3357,39 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   `rtl` processes keep their factor (16).
 - `YAVS_LLVM_DUMP=<dir>` writes, for each compiled module, `<n>-pre.ll` and `<n>-post.ll` (before and after the
   pass pipeline) and `f<id>.ir` (the yavs IR of each function) for reading the generated code.
+
+## Kernel round 9: fewer stages per activation and per delta (yavs-kernel, #440, 2026-10-21)
+
+- **Every driver entry of a delta on one independent signal, in driver order, is applied in place** (`update`):
+  with no force or deposit queued and nothing from the later-time heap, the entries are checked in one pass
+  (ascending driver ids, one signal) and `apply_driver` runs straight from the entry list, then `finish_signal`.
+  No `indep` list, no sort of it, no second pass in `update_independent`; anything else takes the general path
+  unchanged. Same application order, so same events.
+- **A resident process that waited again and only scheduled drivers is committed right after it ran** (the inline
+  batch loop: always at `--threads 1`, small batches otherwise; `ProcMeta::ready` is cleared and the commit loop skips
+  it): its slot is still in the cache, the commit loop of 4000 processes read each slot a second time from the L3.
+  The queue pushes of such processes come before those of the processes that need the full commit; the queue
+  sorts its due entries (`update`), so nothing observable changes. Initial runs and postponed batches always
+  take the full commit.
+- **`ProcState::timed_out` and `known_edge` are set when the process runs** (`resumption`), from `ProcMeta::by_timeout` and
+  `tid`, instead of in `wake`: a wake touches only the process record. (Round 8 found no gain from this alone; with
+  the commit above it is 2 to 4% of the cycles of `fan` and `ff`.)
+- **A falling edge of a clock whose waiters are all held back by their edge trigger returns before the wake list is
+  touched**; when none is held back the list is walked with no per-waiter question.
+- **Batch order without a scan:** the processes with one suspension point wake into `ready`, the others into
+  `ready_several`; `ready_mono` (ascending process numbers) says `order` has nothing to do for the first, and the
+  few others are ordered alone and appended (their keys all sort after the plain ones). Same order as `order`.
+- **`poll_end` reads the interrupt flag with a plain load** and exchanges it only when set (a locked exchange per delta
+  was a few percent of the cycles of `chain`); `next_time` skips the wake-up map when it is empty.
+- **The unchanged-assignment test of a scalar asks the signal's code array first** (dense, in cache) and the driver
+  slot (one per process) only when the value would not change. The vector test is left as it was: asking the
+  signal first made `lfsr` 1% worse in instructions.
+- **Tried and dropped:** FUSE_MAX removed for signals nobody waits on (+9% instructions on `ff`: the block pass of the
+  dirty ranges is cheaper than a fused finish per element); `#[inline]` on `Waveform::idle`/`first_time` is kept but
+  moved nothing.
+- Measured (`perf stat`, cores 2 and 3, interpreter, instructions / cycles before to after): `ff` 17.03 G to 16.05 G / 4.0 G to 3.7 G,
+  `fan` 18.27 G to 17.21 G / 5.2 G to 4.5 G, `chain` 5.33 G to 5.15 G / 1.05 G to 0.95 G, `lfsr` 8.77 G to 8.55 G, `lfsr64` unchanged
+  instructions, -8% cycles. What is left of the kernel per activation of `ff` is ~800 instructions: wake and
+  commit ~250, apply and update ~250, the rest scattered over a dozen functions of 20 to 60 instructions each; the
+  lever that remains is the process side (entry, drive and wait callbacks) and the per-element stamps, not the cycle.
+

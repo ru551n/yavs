@@ -556,13 +556,13 @@ impl Ctx<'_> {
         if !matches!(s.ty.elem, crate::value::Elem::Logic) {
             return false;
         }
-        let ds = &s.drivers[info.slot as usize];
-        let rel = (r.offset - ds.range.offset) as usize;
-        if s.skip_ok
-            && ds.value.code(rel) == code
-            && s.cur_code(r.offset as usize) == code
-            && (!ds.shared || s.sole(r))
-        {
+        // The signal's own code array is dense and hot: ask it first, the driver slot (one per
+        // process, scattered in memory) only when the value would not change.
+        if s.skip_ok && s.cur_code(r.offset as usize) == code && {
+            let ds = &s.drivers[info.slot as usize];
+            ds.value.code((r.offset - ds.range.offset) as usize) == code
+                && (!ds.shared || s.sole(r))
+        } {
             w.phantom.push(r);
             self.st.phantoms.push(info.local);
             return true;

@@ -3459,6 +3459,24 @@ impl Gen {
         }
     }
 
+    /// `fast_op` of an operation that writes register `dst`.
+    unsafe fn fast_reg(
+        &self,
+        c: &Cur,
+        op: u32,
+        dst: Reg,
+        a: LLVMValueRef,
+        b: LLVMValueRef,
+        slow: LLVMBasicBlockRef,
+    ) {
+        // SAFETY: as `fast_op`.
+        unsafe {
+            let (_, d) = self.reg_out(c, dst);
+            self.fast_op(c, op, d, a, b, slow);
+            self.reg_in(c, dst);
+        }
+    }
+
     /// `yavs_rt_fast` operation `op` on `a` and `b` (result register or count `dst`), taking
     /// `slow` when it returns 0: the interpreter then executes the instruction.
     unsafe fn fast_op(

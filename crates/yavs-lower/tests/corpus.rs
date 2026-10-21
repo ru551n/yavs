@@ -278,6 +278,7 @@ const PASS: &[&str] = &[
     "protected/method_in_init",
     "protected/method_alias_objects",
     "protected/method_nested",
+    "protected/pointer_queue",
     "protected/private_variables",
     "protected/shared_var_regions",
     "protected/stack",

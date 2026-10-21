@@ -27,7 +27,7 @@ RUN_FLAGS = os.environ.get("YAVS_BENCH_RUN_FLAGS", "").split()  # extra `yavs ru
 OUT = CACHE / "bench-out.fst"
 PHASES = ["analyze", "elaborate", "init", "simulate"]
 STD = "2008"
-INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "ieee_heavy", "elab_heavy"]
+INTERNAL = ["compute_loop", "ff_rtl", "resolved_bus", "delta_chain", "textio_heavy", "protected_scoreboard", "protected_queue", "calls", "strings_heavy", "access_heavy", "report_heavy", "file_io", "ieee_heavy", "elab_heavy"]
 # head-to-head designs (group h2h; AGENTS.md maps them to the old names)
 H2H = ["rtl_ff", "rtl_lfsr", "rtl_chain", "rtl_fan", "rtl_bus", "rtl_ram", "lfsr64_xor", "lfsr64", "compute_h2h", "xor_sig", "xor_types"]
 SHIM = """#!/usr/bin/env python3

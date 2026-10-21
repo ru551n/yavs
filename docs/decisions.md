@@ -3514,6 +3514,10 @@ unchanged at any thread count.
   chunk (`diff_chunk`, two `select`s). Off a block boundary, byte storage and layered signals (forces, port input)
   take the old path. `Buf::write_to` of at most 64 logic elements (a register read, `Ctx::read_into`) reads one
   block without the chunk loop. `rtl_lfsr` -2.8% instructions, `lfsr64` -1.7%.
+- **A quick transaction finished at once writes three planes and the code byte directly** (`finish_quick`): the old
+  code comes from `Signal::codes` instead of the planes, and a plane write is one masked blend with the plane masks
+  of the code from a 16-entry table (`put_plane_code`, two SSE2 operations instead of four shift-and-merge
+  sequences, about 31 to 15 instructions); `Buf::put_code` uses it too. `rtl_chain` -3.6% instructions.
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

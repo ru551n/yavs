@@ -151,9 +151,34 @@ pub(crate) fn fill_bits(words: &mut [u64], off: usize, n: usize, on: bool) {
     }
 }
 
+/// Per code (low four bits), each plane's bit spread over a whole word.
+const SPLAT: [Block; 16] = {
+    let mut t = [[0u64; 4]; 16];
+    let mut c = 0;
+    while c < 16 {
+        let mut p = 0;
+        while p < 4 {
+            t[c][p] = if c >> p & 1 != 0 { !0 } else { 0 };
+            p += 1;
+        }
+        c += 1;
+    }
+    t
+};
+
+/// Set the code of element `i` of plane blocks `b` (one masked blend of the four planes).
+#[inline(always)]
+pub(crate) fn put_plane_code(b: &mut [Block], i: usize, c: u8) {
+    let (blk, m) = (&mut b[i >> 6], 1u64 << (i & 63));
+    let v = &SPLAT[usize::from(c & 15)];
+    for (w, x) in blk.iter_mut().zip(v) {
+        *w = *w & !m | x & m;
+    }
+}
+
 /// The `std_ulogic` code of element `i` of plane blocks.
 #[inline(always)]
-fn plane_code(b: &[Block], i: usize) -> u8 {
+pub(crate) fn plane_code(b: &[Block], i: usize) -> u8 {
     let (blk, s) = (&b[i >> 6], i & 63);
     ((blk[0] >> s & 1) | (blk[1] >> s & 1) << 1 | (blk[2] >> s & 1) << 2 | (blk[3] >> s & 1) << 3)
         as u8
@@ -272,15 +297,16 @@ impl Buf {
     pub fn put_code(&mut self, i: usize, c: u8) {
         match self {
             Buf::Bytes { es, data } => data[i * *es] = c,
-            Buf::Planes { b, .. } => {
-                let (blk, s) = (&mut b[i >> 6], i & 63);
-                let keep = !(1u64 << s);
-                let c = u64::from(c);
-                blk[0] = blk[0] & keep | (c & 1) << s;
-                blk[1] = blk[1] & keep | (c >> 1 & 1) << s;
-                blk[2] = blk[2] & keep | (c >> 2 & 1) << s;
-                blk[3] = blk[3] & keep | (c >> 3 & 1) << s;
-            }
+            Buf::Planes { b, .. } => put_plane_code(b, i, c),
+        }
+    }
+
+    /// The plane blocks of logic storage.
+    #[inline(always)]
+    pub fn planes_mut(&mut self) -> Option<&mut [Block]> {
+        match self {
+            Buf::Planes { b, .. } => Some(b),
+            Buf::Bytes { .. } => None,
         }
     }
 

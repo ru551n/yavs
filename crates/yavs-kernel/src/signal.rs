@@ -10,7 +10,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::error::ErrorKind;
 use crate::time::Time;
-use crate::value::{Buf, Elem, SignalType, bits, fill_bits};
+use crate::value::{Buf, Elem, SignalType, bits, fill_bits, plane_code, put_plane_code};
 use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
@@ -945,17 +945,26 @@ impl Signal {
     /// `finish_one` for element `e` of the sole source, given its new `code`.
     #[inline]
     fn finish_quick(&mut self, e: usize, code: u8, now: Time, cycle: u64) {
-        self.driving.put_code(e, code);
-        let old = self.cur.swap_code(e, code);
+        // A plain signal is logic: three plane writes and the code byte, no storage dispatch.
+        let (Some(drv), Some(cur), Some(last)) = (
+            self.driving.planes_mut(),
+            self.cur.planes_mut(),
+            self.last_value.planes_mut(),
+        ) else {
+            unreachable!("finish_quick of byte storage")
+        };
+        put_plane_code(drv, e, code);
+        let old = match self.codes.get_mut(e) {
+            Some(c) => std::mem::replace(c, code),
+            None => plane_code(cur, e),
+        };
         if old == code {
             return;
         }
-        if let Some(c) = self.codes.get_mut(e) {
-            *c = code;
-        }
+        put_plane_code(cur, e, code);
+        put_plane_code(last, e, old);
         set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
         self.note_run(e, 1);
-        self.last_value.put_code(e, old);
         self.fused_event = true;
     }
 

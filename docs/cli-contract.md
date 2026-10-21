@@ -167,7 +167,8 @@ identical to a run without it, at any `--threads`.
   of its own; the second run makes the analysis image and the lowered packages. A closure that starts
   with the files of a closure analyzed before (same options, same files with the same contents)
   continues from a prefix entry (`pre-<key>.img`) kept in the cache of the library of the prefix's last
-  file; the output is the same as from source.
+  file; the output is the same as from source. A closure under a prefix whose library is lowered and kept
+  (kinds `lib`, `libopt`, `libinit` beside the prefix entry) makes no entries of its own at any run.
 - The lowered form of the packages with run-time objects (signals, shared variables, constants
   that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
   elaborated without instantiating anything at elaboration time and the lowering is neither tiny

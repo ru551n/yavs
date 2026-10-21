@@ -100,6 +100,21 @@ impl Stages {
     }
 }
 
+/// Whether the lowered library (`lib`, see `yavs_elab::libstage`) of one of `levels` is made and
+/// not empty: a closure that starts with such a prefix gets everything its runs share from it.
+fn library_made(levels: &[Level]) -> bool {
+    levels.iter().any(|l| {
+        [false, true].into_iter().any(|native| {
+            let mut k = KeyBuilder::new(yavs_elab::libstage::LIB);
+            k.text(&l.key.hex())
+                .part(&yavs_elab::libstage::key_part(native));
+            l.store
+                .payload_len(yavs_elab::libstage::LIB, &k.finish())
+                .is_some_and(|n| n > 0)
+        })
+    })
+}
+
 impl StageCache for Stages {
     fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<yavs_diag::Buffer> {
         let k = self.key(extent, kind, part)?;
@@ -152,6 +167,9 @@ impl StageCache for Stages {
     fn prefix_release(&self, level: usize, kind: &str, part: &[u8]) {
         if let Some((l, k)) = self.level_key(level, kind, part) {
             l.store.release(kind, &k);
+            // The claim ends when the entry is made, which lowered the whole library (60 MB of
+            // IR) on this heap: give it back, or the run carries it through its simulation.
+            yavs_cache::trim_heap();
         }
     }
 
@@ -376,6 +394,18 @@ pub fn analyze_closure(
     levels.reverse();
     if !ahead {
         levels.clear();
+    }
+    // A closure under a library whose lowered form is made has no entries of its own, whatever
+    // its run count: the prefix image, the library stages and the analysis of its own files give
+    // what a run needs, and a copy of the library per closure (5 MB of analysis, the same again
+    // lowered) is slower to read than the shared ones, is written by every closure of a suite
+    // that runs twice, and evicts its neighbours from the 96 entries of a library directory.
+    if library_made(&levels) {
+        debug(format!("{} uses the library stages", k.hex()));
+        return (
+            with_stages(db, store, &k, false, levels, &opts, &verified),
+            r,
+        );
     }
     // The image of a closure is made on its second analysis: a design that runs once (one test of
     // a suite) must not pay a fifth of its run for an image nobody reads.

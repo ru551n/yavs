@@ -21,7 +21,7 @@ use yavs_sem::hir::UnitHir;
 use yavs_sem::{Db, StageCache, UnitId};
 
 /// The stage entry kinds, in the cache of the library of the prefix's last file.
-const LIB: &str = "lib";
+pub const LIB: &str = "lib";
 const OPT: &str = "libopt";
 pub(crate) const INIT: &str = "libinit";
 
@@ -37,7 +37,12 @@ const MIN_IMAGE: usize = 256;
 /// The part of a key every library stage entry shares: what lowering depends on besides the
 /// prefix's files (which the key of the prefix names).
 fn part(opts: &LowerOptions) -> Vec<u8> {
-    vec![u8::from(opts.no_native_ieee)]
+    key_part(opts.no_native_ieee)
+}
+
+/// [`part`] for the one option it holds, for a caller that asks whether an entry exists.
+pub fn key_part(no_native_ieee: bool) -> Vec<u8> {
+    vec![u8::from(no_native_ieee)]
 }
 
 /// What a library prefix was lowered to: the packages' units, the size of the program and of
@@ -83,7 +88,7 @@ fn closed(db: &Db, units: usize) -> bool {
 }
 
 /// A lowerer with the library prefix's packages and subprograms lowered, then the rest of
-/// `packages`, for a closure with no entries of its own (its first run); `None` when no prefix
+/// `packages`, for a closure with no entries of its own (`StageCache::closure`); `None` when no prefix
 /// serves: the closure is cached itself, coverage counters are on, the `Db` has grown since
 /// its analysis, or fewer than [`SIGHTINGS`] closures have asked for the prefix's library yet.
 pub(crate) fn lowerer<'a>(
@@ -284,6 +289,8 @@ fn lowered(cache: &dyn StageCache, db: &Db, opts: LowerOptions) -> Option<Vec<u8
         return None; // nothing worth reading back
     }
     let (funcs, id) = (l.funcs(), l.fingerprint());
+    // The lowering is not needed any more: free it before the entry is copied together.
+    drop(l);
     let mut out = postcard::to_stdvec(&Header {
         packages: packages
             .iter()

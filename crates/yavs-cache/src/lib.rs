@@ -93,6 +93,13 @@ fn checksum(payload: &[u8]) -> [u8; 8] {
     twox_hash::XxHash3_64::oneshot(payload).to_le_bytes()
 }
 
+/// Return memory the allocator keeps after a big, short-lived computation (the lowering of a
+/// whole library) to the system, so that it does not stay in the process's resident size
+/// through the rest of the run.
+pub fn trim_heap() {
+    map::trim_heap();
+}
+
 /// A hash of everything an entry depends on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Key([u8; 32]);
@@ -177,6 +184,13 @@ impl Store {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
         Some(Entry { data: bytes })
+    }
+
+    /// The payload size of the entry, from the file's size alone (nothing is read or checked):
+    /// for a caller that only asks whether a usable, non-empty entry is there.
+    pub fn payload_len(&self, kind: &str, key: &Key) -> Option<u64> {
+        let len = fs::metadata(self.file(kind, key)).ok()?.len();
+        len.checked_sub(HEADER as u64)
     }
 
     /// Store `payload` atomically. Failures are only noted with `YAVS_LOG=debug`.
@@ -415,6 +429,17 @@ mod tests {
         assert_eq!(s.get("t", &key("a")).as_deref(), Some(&b"hello"[..]));
         assert_eq!(s.get("t", &key("b")), None);
         assert_eq!(s.get("u", &key("a")), None);
+    }
+
+    #[test]
+    fn payload_length_is_read_from_the_file_size() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        assert_eq!(s.payload_len("t", &key("a")), None);
+        s.put("t", &key("a"), b"hello");
+        s.put("t", &key("e"), b"");
+        assert_eq!(s.payload_len("t", &key("a")), Some(5));
+        assert_eq!(s.payload_len("t", &key("e")), Some(0));
     }
 
     #[test]

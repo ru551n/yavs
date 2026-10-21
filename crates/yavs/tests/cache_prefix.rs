@@ -228,7 +228,7 @@ impl Libs {
 /// after initialisation (`libinit`) and the optimised copies of the library functions the runs
 /// called (`libopt`). Every run prints what a run without the cache prints, with an
 /// elaboration-time call of a package function (a session) and without, at one thread and four.
-/// Only the first run of a closure reads them: its second run makes the entries of its own.
+/// Once the library is made every run of a closure reads them, and no run makes entries of its own.
 #[test]
 fn closures_share_the_lowered_library_and_its_state() {
     let l = Libs::new("share", false);
@@ -277,12 +277,26 @@ fn closures_share_the_lowered_library_and_its_state() {
     assert_eq!(seen.len(), 2, "{seen:?}");
     assert_eq!(l.entries("libopt").len(), 1, "one entry names the lowering");
     assert_eq!(l.entries("libinit").len(), 1);
-    // The same closure again makes and then reads its own image, not the library's.
-    for _ in 0..2 {
+    // The same closure again keeps reading the library's stages and makes no entry of its own
+    // (a closure's copy of the library is slower to read and fills the directory). The entries
+    // there are those of tops[0], which ran twice before the library was made.
+    let own = || {
+        std::fs::read_dir(l.tmp.join("work").join("yavs-cache"))
+            .map(|d| {
+                d.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".img"))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    let before = own();
+    for _ in 0..3 {
         let again = l.run(&tops[9], &[]);
-        assert!(!note(&again, "hit prefix lib "), "{again:?}");
+        assert!(note(&again, "hit prefix lib "), "{again:?}");
+        assert!(!note(&again, "store "), "{again:?}");
         assert_eq!(visible(&again), plain[9]);
     }
+    assert_eq!(own(), before, "no entries of the closure's own");
 }
 
 /// The lowered library depends on the files of the prefix: editing a package of it makes a new

@@ -2749,8 +2749,17 @@ A suite that runs one test per process gives every test a new closure, so the cl
 `ir`) never serve a run that happens once; only the analysis prefix (`pre`) did. The library under such tests is the
 same files in the same order, so what is lowered from it can be shared too. Three more kinds are kept in the cache of
 the library of the prefix's last file, next to its `pre` image; the key of that image names the files, the options,
-the revision and the build. The stage is used by the first run of a closure only (a closure that runs again makes its
-own entries, as before, and keeps its `ir` compact).
+the revision and the build. A closure uses it on every run while the library is made
+(#407, run twice and three times in a row, 2026-10-21): the closure's own `sem`, `low`, `init` and `ir` entries repeat
+the library (5 MB of analysis and 10 MB of IR each), were slower to read than the shared ones, and 68 closures of a
+library directory writing four of them each pushed one another out of the 96 entries, so a suite's second run paid
+for writing them and its third run for writing them again (a quarter more CPU than the first run). A closure under
+a prefix whose `lib` entry exists (and is not the empty "cannot be lowered ahead" note) gets no entries of its own;
+a closure under a library that is not made yet (fewer than four closures have asked) makes its own on the second
+run, as before, and keeps its `ir` compact. Ceiling: a closure the made library does not serve (a package body
+follows the prefix) lowers its packages every run. The run that makes the entry gives the heap back afterwards
+(`yavs_cache::trim_heap`, `malloc_trim` on glibc): the two lowerings of the library hold 60 MB that the
+allocator would keep resident through the rest of the run (peak 224 MB of a cold `.pro` suite process to 181 MB).
 
 - **`lib`: the lowered library.** The packages' objects, then every subprogram the packages declare, lowered in a
   fixed order from the prefix's own image (`StageCache::prefix_db`, never from the closure's `Db`, so that the result

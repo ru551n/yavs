@@ -1,7 +1,7 @@
 //! Reading an entry file: mapped into memory when the system allows it, else read into a buffer.
 //!
 //! The only `unsafe` in the crate (the workspace forbids it; this crate denies it and allows it
-//! here), for the one call that maps a file.
+//! here), for the call that maps a file and the one that returns free heap to the system.
 
 use std::fs;
 use std::io::Read as _;
@@ -48,3 +48,18 @@ pub(crate) fn open(path: &Path) -> Option<Data> {
     f.read_to_end(&mut v).ok()?;
     Some(Data::Read(v))
 }
+
+/// Give the memory the allocator holds but the program no longer uses back to the system.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn trim_heap() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: `malloc_trim` takes no pointers and only returns free pages to the system.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub(crate) fn trim_heap() {}

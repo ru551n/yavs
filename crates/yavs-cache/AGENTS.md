@@ -18,7 +18,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | `build_id`, `Key`, `KeyBuilder`, `Store` (`get`, `put`, `note`/`noted`: an empty `.seen` file that says a caller wanted an entry once, newest `MAX_NOTES` kept, `clean`), entry header (magic, format, key, length, payload xxh3 checksum), `Entry` (the payload of a validated entry, mapped from the file: it implements `AsRef<[u8]>`, so it becomes a `yavs_diag::Buffer` and readers keep ranges of it), tests |
-| `src/map.rs` | Maps an entry file (reads it where mapping is not possible); the only `unsafe` in the crate |
+| `src/map.rs` | Maps an entry file (reads it where mapping is not possible), `trim_heap` (`malloc_trim`); the only `unsafe` in the crate |
 
 ## 3. Design decisions that bind this module
 

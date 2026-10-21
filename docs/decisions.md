@@ -3754,3 +3754,41 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   instructions. Small code changes in `run_ops` move rtl_ff by up to 4 percent either way through the
   compiler's register allocation of the one large function (#508), so every change here is measured on
   several designs.
+
+## Compiled clocked RTL processes, round 3: a leaner activation and fewer callbacks (yavs-llvm, #440, #507, 2026-10-21)
+
+- **One `Mem` per simulation thread** (`lower::MEM`, a thread-local pointer): an activation takes it, resets
+  the four object entries and the deoptimisation flag, and puts it back; one inside another activation (a
+  native running VHDL code) finds none and builds its own. Building the 384-byte `Mem` on the stack was
+  about 45 instructions per activation. The per-thread `NSLOTS` table is found through a `Cell` with its
+  address and length (no `RefCell` borrow, about 40 instructions, also for processes without a native
+  callee).
+- **What the generator knows about a register holds until the next block start** (`block_start`), not
+  until the next resume point: the interpreter reaches the pc after a call only by running the block up to
+  it, so the address facts (frame, constant, instance, temporary) are still true there. A table or edge
+  native that compiled code runs itself is no resume point at all (`resumes`): it leaves only with an
+  error. Both took per-activation `yavs_rt_host` calls and frame stores and reloads out of clocked bodies.
+- **In frame-mode code of a process an address of unknown space is looked up inline**, first in the
+  objects `Mem` keeps between activations (`Mem::objs`, a select over the four entries with the write
+  flag and the bounds), then in the temporary area, and `yavs_rt_host` is called only when neither holds
+  it (`Cur::objs_inline`). Only processes: the inline code costs about 20 LLVM instructions per access,
+  which a function with many accesses of unknown space would pay in compile time; processes are where an
+  access repeats every activation (`lfsr64` -157 instructions per activation).
+- **`--tier=auto` leaves a process interpreted when it leaves its compiled code too often**
+  (`too_many_callbacks`): more than one in ten (`CALLBACKS`) of the instructions an activation runs (those
+  reached from after each `Suspend`) not inline, each `Stmt` counted where `TempRoot`s record temporaries
+  (it is stepped then). The testbench process of `rtl_ram` (33 of 258) ran 10% slower compiled (#507); the
+  clocked processes that gain have one in eleven or fewer. A static count, not weighted by which path runs
+  (`ponytail:` in `auto.rs`).
+- **`RTL_MIN` is 120 IR instructions (was 140):** with the cheaper entry the 134-instruction processes of
+  `lfsr64` gain 13% of instructions and 18% of cycles under `auto` at ten times its default length (5% at
+  the default length); the 90-instruction process of `rtl_chain` still loses compiled (+8%), so the limit
+  stays above it. A run of under 0.1 s pays the compile or the link (`lfsr64_xor` at its default length, 3%
+  more instructions).
+- **Measured and not built:** compiled processes keeping their own registers (`resident`) instead of the
+  thread's scratch: 133 fewer instructions per activation on `rtl_ff`, but 18% more cycles (the register
+  files of 4096 processes do not stay in the cache; the compiled code stores a few registers per
+  activation before its callbacks), 14% more on `rtl_lfsr`, level or 2 to 5% fewer on the designs of 64 to
+  4000 small processes; the same with only the temporary area taken from a per-thread buffer, so the
+  register lines are the cost. Reading a drive's waveform one word at a time (a 16-byte load spans two
+  8-byte stores): 1% fewer cycles on `rtl_ff`, 2% more on `rtl_lfsr`. `#[inline]` on `enter`: no change.

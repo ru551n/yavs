@@ -316,8 +316,9 @@ fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 }
 
 /// The smallest process `rtl` takes: below this the way into and out of compiled code costs
-/// more than interpreting the body (measured on 100 to 150 instruction processes).
-const RTL_MIN: usize = 140;
+/// more than interpreting the body (the 134-instruction processes of `lfsr64` gain, the
+/// 90-instruction one of `rtl_chain` loses; decisions.md "round 3").
+const RTL_MIN: usize = 120;
 
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;

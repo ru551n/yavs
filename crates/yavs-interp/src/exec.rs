@@ -4641,6 +4641,7 @@ impl Machine {
         tf.regs = self.regs.v.as_mut_ptr().wrapping_add(rbase);
         tf.nregs = (self.regs.v.len() - rbase) as u64;
         tf.stack = self.regs.v.as_ptr();
+        tf.max_depth = u64::from(self.rt.limits.max_depth);
         let mut link = self.frames[top].link;
         for u in &mut tf.up {
             *u = match link {
@@ -4815,6 +4816,46 @@ impl Machine {
             k += n;
         }
         Ok(Flow::Call)
+    }
+
+    /// `Inst::CallProt`: a method of the protected object `obj` designates.
+    fn call_prot(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        obj: Reg,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+    ) -> R<Flow> {
+        self.shared()?;
+        let h = self.r(obj);
+        let flow = self.call_with(prog, f, func, Some(h), args, dst)?;
+        if let Flow::Call = flow {
+            self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
+        }
+        Ok(flow)
+    }
+
+    /// `Inst::Fill`: `n` copies of the `size` bytes at `elem` from `dst` on.
+    fn fill(&mut self, dst: Reg, elem: Reg, n: Reg, size: u32) -> R<()> {
+        let mut e = self.take_bytes();
+        let r = self
+            .rd(self.r(elem), u64::from(size))
+            .map(|s| e.extend_from_slice(s))
+            .and_then(|()| {
+                let total = self
+                    .r(n)
+                    .checked_mul(u64::from(size))
+                    .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
+                let out = self.wr(self.r(dst), total)?;
+                for c in out.chunks_exact_mut(size.max(1) as usize) {
+                    c.copy_from_slice(&e);
+                }
+                Ok(())
+            });
+        self.give_bytes(e);
+        r
     }
 
     /// `Inst::Call` of a function by its IR id (compiled code's calls, `TierHost::step`).
@@ -5247,25 +5288,7 @@ impl Machine {
             Inst::Copy { dst, src, bytes } => {
                 self.copy_mem(self.r(dst), self.r(src), self.r(bytes))?;
             }
-            Inst::Fill { dst, elem, n, size } => {
-                let mut e = self.take_bytes();
-                let r = self
-                    .rd(self.r(elem), u64::from(size))
-                    .map(|s| e.extend_from_slice(s))
-                    .and_then(|()| {
-                        let total = self
-                            .r(n)
-                            .checked_mul(u64::from(size))
-                            .ok_or_else(|| Fault::Runtime("object larger than 4 GiB".into()))?;
-                        let out = self.wr(self.r(dst), total)?;
-                        for c in out.chunks_exact_mut(size.max(1) as usize) {
-                            c.copy_from_slice(&e);
-                        }
-                        Ok(())
-                    });
-                self.give_bytes(e);
-                r?;
-            }
+            Inst::Fill { dst, elem, n, size } => self.fill(dst, elem, n, size)?,
             Inst::Pos {
                 dst,
                 dope,
@@ -5568,13 +5591,7 @@ impl Machine {
                 args,
                 dst,
             } => {
-                self.shared()?;
-                let h = self.r(obj);
-                let flow = self.call_with(prog, f, func, Some(h), args, dst)?;
-                if let Flow::Call = flow {
-                    self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
-                }
-                return Ok(flow);
+                return self.call_prot(prog, f, func, obj, args, dst);
             }
             Inst::CallNative { native, args, dst } => {
                 return self.call_native(prog, f, native, args, dst, ctx);
@@ -5984,6 +6001,82 @@ struct Host<'a, 'c, 'x> {
     fault: Option<Fault>,
 }
 
+impl Host<'_, '_, '_> {
+    /// `TierHost::materialise`: push `frames` on the top frame, which waits at its call at `pc`.
+    fn push_native(&mut self, pc: u32, frames: &[crate::NativeFrame]) -> R<()> {
+        let (m, prog) = (&mut *self.m, self.prog);
+        m.top().pc = pc;
+        for nf in frames {
+            let top = m.frames.len() - 1;
+            let (cf, at) = (m.frames[top].func, m.frames[top].pc);
+            let dst = match prog.func(cf).and_then(|c| c.code.get(at as usize)) {
+                Some(&Inst::Call { dst, .. }) => dst,
+                _ => {
+                    return Err(ice(format!(
+                        "native frame of {} not called from a call",
+                        nf.func
+                    )));
+                }
+            };
+            let g = prog
+                .func(nf.func)
+                .ok_or_else(|| ice(format!("no function {}", nf.func)))?;
+            let pre = self
+                .rt
+                .pre(nf.func, g)
+                .ok_or_else(|| ice(format!("no function {}", nf.func)))?;
+            m.push_frame_pre(g, nf.func, pre, None, dst)?;
+            let idx = m.frames.len() - 1;
+            let rbase = m.frames[idx].rbase as usize;
+            let regs = &mut m.regs.v[rbase..];
+            if regs.len() != nf.regs.len() {
+                return Err(ice(format!(
+                    "native frame of {} with {} registers",
+                    g.name,
+                    nf.regs.len()
+                )));
+            }
+            // A register defined once by a constant or an address is preloaded (`Pre`): the
+            // interpreter never executes its definition, compiled code may not have yet.
+            let mut defs = vec![0u8; regs.len()];
+            let mut fixed = vec![false; regs.len()];
+            for inst in &g.code {
+                let preload = matches!(inst, Inst::Const { .. } | Inst::ConstF { .. })
+                    || matches!(inst, Inst::AddrOf { space, .. } if !matches!(space, yavs_ir::AddrSpace::Up(_)));
+                inst.visit(&mut |r, role, _| {
+                    if role == yavs_ir::Role::Def
+                        && let Some(d) = defs.get_mut(r.0 as usize)
+                    {
+                        *d = d.saturating_add(1);
+                        fixed[r.0 as usize] = preload;
+                    }
+                });
+            }
+            for (k, (d, &v)) in regs.iter_mut().zip(&nf.regs).enumerate() {
+                if !(defs[k] == 1 && fixed[k]) {
+                    *d = v;
+                }
+            }
+            match m.fslots_mut(idx) {
+                Some(s) if s.len() == nf.slots.len() => s.copy_from_slice(&nf.slots),
+                _ => {
+                    return Err(ice(format!(
+                        "native frame of {} with {} slot bytes",
+                        g.name,
+                        nf.slots.len()
+                    )));
+                }
+            }
+            let fr = &mut m.frames[idx];
+            fr.pc = nf.pc;
+            fr.temp_base =
+                u32::try_from(nf.temp_base).map_err(|_| ice("temporary base beyond 4 GiB"))?;
+            self.up.push(std::mem::replace(&mut self.f, g));
+        }
+        Ok(())
+    }
+}
+
 impl crate::TierHost for Host<'_, '_, '_> {
     fn view(&mut self, tf: &mut crate::TierFrame) {
         self.m.tier_view(tf);
@@ -6043,6 +6136,20 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Some(&Inst::CallNative { native, args, dst }) => {
                 m.call_native(self.prog, f, native, args, dst, self.ctx)
             }
+            // Direct helpers for the heap and protected calls (`step`'s own bodies).
+            Some(&Inst::Free { ptr }) => {
+                m.reclaim(self.ctx.is_some());
+                m.deallocate(m.r(ptr)).map(|()| Flow::Next)
+            }
+            Some(&Inst::Fill { dst, elem, n, size }) => {
+                m.fill(dst, elem, n, size).map(|()| Flow::Next)
+            }
+            Some(&Inst::CallProt {
+                func,
+                obj,
+                args,
+                dst,
+            }) => m.call_prot(self.prog, f, func, obj, args, dst),
             Some(&inst) => m.step(self.prog, f, inst, self.ctx),
             None => Err(ice(format!(
                 "compiled code stepped pc {at} beyond `{}`",
@@ -6263,6 +6370,23 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Ok(()) => crate::Stepped::Next,
             Err(e) => {
                 m.top().pc = at;
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
+    }
+
+    fn materialise(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        pc: u32,
+        frames: &[crate::NativeFrame],
+    ) -> crate::Stepped {
+        let r = self.push_native(pc, frames);
+        self.m.tier_view(tf);
+        match r {
+            Ok(()) => crate::Stepped::Next,
+            Err(e) => {
                 self.fault = Some(e);
                 crate::Stepped::Fault
             }

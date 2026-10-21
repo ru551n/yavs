@@ -172,7 +172,8 @@ fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 }
 
 /// Whether the loops of `f` are compute: at most one instruction in twenty in them is one the
-/// compiled code leaves to the interpreter (a call, a native, a report). Such a function runs
+/// compiled code leaves to the interpreter (a call other than a native-frame one, a native, a
+/// report). Such a function runs
 /// about 1.3 times faster compiled (the interpreter spends its time dispatching them), so it
 /// is worth compiling earlier than testbench code, whose time goes to what the interpreter's
 /// own functions do (#432).
@@ -186,11 +187,22 @@ fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
         return false;
     }
     let total = inside.iter().filter(|&&b| b).count();
+    // A call of a function that runs on native frames is a direct call.
+    let nc = crate::lower::native_set(
+        prog,
+        f.code.iter().filter_map(|i| match i {
+            yavs_ir::Inst::Call { func, .. } => Some(*func),
+            _ => None,
+        }),
+    );
     let stepped = f
         .code
         .iter()
         .zip(&inside)
-        .filter(|(i, b)| **b && !crate::lower::is_inline(prog, f, i))
+        .filter(|(i, b)| {
+            **b && !crate::lower::is_inline(prog, f, i)
+                && !matches!(i, yavs_ir::Inst::Call { func, .. } if nc.contains(func))
+        })
         .count();
     stepped * 20 <= total
 }
@@ -244,6 +256,7 @@ impl Entry {
 /// Hot functions compiled on a background thread; see the module docs.
 pub struct AutoTier {
     funcs: Arc<[Entry]>,
+    ntab: Arc<[AtomicUsize]>,
     /// Functions `hot` sent to the thread already.
     queued: Box<[AtomicBool]>,
     queue: Mutex<Option<Sender<FuncId>>>,
@@ -280,6 +293,8 @@ const TREE_MAX: usize = 1500;
 struct Worker {
     prog: Arc<yavs_ir::Program>,
     table: Arc<[Entry]>,
+    /// Native-frame code per function (`Mem::ntab`), published before the entry.
+    ntab: Arc<[AtomicUsize]>,
     native: Arc<yavs_interp::NativeFlags>,
     heat: Heat,
     opt: OptLevel,
@@ -298,9 +313,46 @@ struct Worker {
     spent: u64,
     us_per_instr: f64,
     note: Note,
+    /// Per short function that runs on native frames, the interpreted caller its time counts
+    /// for (`charge`); emptied when a function is first seen.
+    leaf: std::collections::HashMap<FuncId, Option<FuncId>>,
+    seen: usize,
 }
 
 impl Worker {
+    /// The function the sampled interpreted time of `id` counts for: a short function that
+    /// runs on native frames counts for the interpreted caller seen longest that calls it
+    /// (compiled, that caller calls it directly, so compiling the callee alone gains nothing:
+    /// docs/decisions.md "Compiled frames"); any other function for itself.
+    fn charge(&mut self, id: FuncId) -> FuncId {
+        let seen = self.time.iter().filter(|t| t[0] > 0).count();
+        if seen != self.seen {
+            self.seen = seen;
+            self.leaf.clear();
+        }
+        let (prog, time, table) = (&self.prog, &self.time, &self.table);
+        let to = *self.leaf.entry(id).or_insert_with(|| {
+            let f = prog.func(id)?;
+            if too_short(prog, f).is_none() || !crate::lower::native_set(prog, [id]).contains(&id) {
+                return None;
+            }
+            (0..time.len())
+                .filter(|&k| k != id.0 as usize && time[k][0] > 0)
+                .filter(|&k| table[k].run.load(Ordering::Relaxed) == 0)
+                .filter(|&k| {
+                    prog.func(FuncId(k as u32)).is_some_and(|g| {
+                        g.code
+                            .iter()
+                            .any(|i| matches!(i, yavs_ir::Inst::Call { func, .. } if *func == id))
+                    })
+                })
+                .max_by_key(|&k| time[k][0])
+                .map(|k| FuncId(k as u32))
+        });
+        to.filter(|c| self.table[c.0 as usize].run.load(Ordering::Relaxed) == 0)
+            .unwrap_or(id)
+    }
+
     /// The microseconds of compile time to expect for `f`.
     fn cost(&self, f: &yavs_ir::Func) -> u64 {
         (self.us_per_instr * f.code.len() as f64) as u64
@@ -414,7 +466,11 @@ impl Worker {
                     let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
                     self.us_per_instr = (self.us_per_instr + per) / 2.0;
                 }
-                self.table[id.0 as usize].set(entry);
+                let (run, nregs, native) = entry;
+                if native != 0 {
+                    self.ntab[id.0 as usize].store(native, Ordering::Release);
+                }
+                self.table[id.0 as usize].set((run, nregs));
                 self.native.set(id);
                 (self.note)(id, level, Ok(took));
                 true
@@ -450,6 +506,7 @@ impl AutoTier {
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();
         let shared = Arc::new(Shared::default());
+        let ntab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let (table, sh) = (funcs.clone(), shared.clone());
         let sample = rt.sampler();
         let native = rt.native_flags();
@@ -463,6 +520,7 @@ impl AutoTier {
             done: vec![[false; 2]; prog.funcs.len()],
             prog,
             table,
+            ntab: ntab.clone(),
             native,
             heat,
             opt,
@@ -473,6 +531,8 @@ impl AutoTier {
             spent: 0,
             us_per_instr: US_PER_INSTR,
             note,
+            leaf: Default::default(),
+            seen: 0,
         };
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
@@ -496,6 +556,7 @@ impl AutoTier {
                             running.clear();
                             sample(&mut running);
                             for &(id, compiled) in &running {
+                                let id = if compiled { id } else { w.charge(id) };
                                 let Some(t) = w.time.get_mut(id.0 as usize) else {
                                     continue;
                                 };
@@ -558,6 +619,7 @@ impl AutoTier {
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
+            ntab,
             queue: Mutex::new(Some(tx)),
             shared,
             worker: Mutex::new(Some(worker)),
@@ -635,7 +697,8 @@ impl Tier for AutoTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
-        enter(f, nregs, pc, host, &lookup)
+        // `AtomicUsize` has the layout of `usize`: compiled code loads the entries atomically.
+        enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast())
     }
 
     fn ready(&self, func: FuncId) -> bool {

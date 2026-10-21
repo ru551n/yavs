@@ -367,6 +367,24 @@ pub trait TierHost {
     /// These run no VHDL code, move no stack and free no memory: the [`TierFrame`] stays
     /// valid.
     fn signal(&mut self, fr: &mut TierFrame, pc: u32, edge: u32) -> Stepped;
+
+    /// Turn native frames of compiled code into interpreter frames (`docs/decisions.md`
+    /// "Compiled frames"): the top frame waits at its call at `pc`, and `frames` (outermost
+    /// first) are pushed on it as that call and the calls they wait in would have pushed them,
+    /// with their registers (preloaded ones keep their preload), slots, pcs and temporary bases.
+    /// `fr` is then the top frame's view. [`Stepped::Fault`] when a push fails.
+    fn materialise(&mut self, fr: &mut TierFrame, pc: u32, frames: &[NativeFrame]) -> Stepped;
+}
+
+/// A native frame of compiled code, recorded for [`TierHost::materialise`].
+#[derive(Clone, Debug)]
+pub struct NativeFrame {
+    pub func: FuncId,
+    /// The instruction the frame is at: the one to execute next, or the call it waits in.
+    pub pc: u32,
+    pub regs: Vec<u64>,
+    pub slots: Vec<u8>,
+    pub temp_base: u64,
 }
 
 /// What compiled code reads and writes itself (ir.md 5): a view of the top frame's
@@ -421,6 +439,9 @@ pub struct TierFrame {
     pub known_sig: u64,
     pub known_elem: u64,
     pub known_up: u64,
+    /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
+    /// native frames stay below it.
+    pub max_depth: u64,
 }
 
 /// An instance signal as compiled code reads it (one `TierFrame::sigtab` entry): the element
@@ -461,6 +482,7 @@ impl Default for TierFrame {
             known_sig: u64::MAX,
             known_elem: 0,
             known_up: 0,
+            max_depth: 0,
         }
     }
 }

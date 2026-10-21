@@ -627,9 +627,10 @@ fn use_llvm(rt: &yavs_interp::Runtime, tier: yavs_llvm::LlvmTier, verbose: bool)
             .map(|(k, c)| format!("{k} {c}"))
             .collect();
         eprintln!(
-            "note: --tier=llvm: {} instructions compiled, {n} executed by the interpreter ({})",
+            "note: --tier=llvm: {} instructions compiled, {n} executed by the interpreter ({}); {} functions callable on native frames",
             tier.inline,
-            kinds.join(", ")
+            kinds.join(", "),
+            tier.native_frames()
         );
     }
     rt.set_tier(std::sync::Arc::new(tier));

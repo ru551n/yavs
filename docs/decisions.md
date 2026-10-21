@@ -3047,3 +3047,61 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   that gain is given up: `crates/yavs/build.rs` links no `-no-pie`, and the executable's code keeps
   address space layout randomisation.
 
+
+## Compiled frames and calls between compiled functions (yavs-llvm, yavs-interp, #432, #337, #340, 2026-10-21)
+
+- **Problem:** a call from compiled code to a compiled callee went through `yavs_rt_step`: the generic
+  step, the interpreter's frame push (`Pre::fill`, zeroed slots, argument cells), two full frame views and
+  `TierHost::ret`. Profile of `calls` under `--tier=llvm`: 95% of the time in that protocol, 5% in compiled
+  code; a compiled call cost what an interpreted one does.
+- **Two frame kinds.** A *frame-mode* function (every process, and any function that steps an instruction
+  on its fast path) runs as before on an interpreter frame (`TierFrame` view, registers in the machine's
+  register stack). A *native-callable* function (`lower::native_callable`: a function or procedure, not
+  nested, at most 256 registers and 4 KiB of slots, whose every instruction is lowered without a step on
+  its fast path, and whose calls are all to native-callable functions) also gets a second LLVM function,
+  `f<id>_n(env, mem, depth, args...) -> i64`, with a *native frame*: registers in an `alloca` (promoted to
+  machine registers and SSA values at O2), slots in an `alloca` of the frame size, arguments as LLVM
+  parameters stored into the parameter slots, the result as the return value. Its frame index is the
+  caller's plus one (`depth`), so every frame address it makes is the one its interpreter frame would have.
+  Temporaries stay in the machine's temporary area (the view's length), with the frame's temporary base in an
+  SSA value. Compiled callers call it with an LLVM `call`: directly in one module (`--tier=llvm`, where LLVM
+  may inline it), through the per-function entry table `Mem::ntab` across the modules of `--tier=auto`
+  (an empty entry steps the call as before).
+- **Materialisation (deoptimisation).** A native frame becomes an interpreter frame only when something
+  needs one: an instruction that must be stepped (a slow path, an address `Mem` does not reach), a failing
+  inline instruction (the interpreter re-executes it for the identical error and trace), a call deeper than
+  the depth limit or the native-stack allowance. Then the function records its registers, slots, pc and
+  temporary base (`yavs_rt_deopt`, into a list in `Env`) and returns with `Mem::ndeopt` set; each native
+  caller records itself at its call; the first frame-mode caller hands the list to
+  `TierHost::materialise`, which sets its own pc to the call, pushes the recorded frames bottom-up with the
+  interpreter's `push_frame` (depth check, static link, `Pre::fill`, result register from the caller's
+  `Call`) and copies the recorded registers (except preloaded ones, which only ever hold their preload)
+  and slots; compiled code then returns `TIER_UNWIND` and the interpreter goes on with the top frame. The
+  frame-mode version of each function resumes a materialised frame at the instruction after a call.
+- **Invariants kept by construction.** A native frame never reaches a safepoint (new, deallocate, natives,
+  calls into frame-mode code, suspension, `TempRoot` recording): those are steps, so the frame is
+  materialised before them and the precise roots (#422) see interpreter frames only, at the pcs they wait
+  in. Error messages and VHDL stack traces come from the interpreter on materialised frames. A debugger,
+  coverage and VHPI see only interpreter frames: debugged processes are never compiled, `Cover` is stepped
+  (so a function with coverage counters is frame-mode). Output is independent of which frames were native
+  (rule 5).
+- **Helpers without the generic step:** `Free`, `Fill` and `CallProt` run through direct arms of
+  `TierHost::step` (the interpreter's own `deallocate`, fill and `call_with` bodies).
+- **Entry after preloaded definitions:** the interpreter enters a function after the constants and
+  addresses it preloads into the frame's registers (`Pre::next`), so frame-mode code also has an entry at
+  each pc that follows such definitions at a block start; before, it was entered only at its first jump,
+  and a short loop-free function called from the interpreter never ran compiled.
+- **Tier-up (`--tier=auto`):** a loop counts as compute when its native-frame calls are left out (they are
+  direct calls), and the sampled interpreted time of a short native-callable function counts for the
+  interpreted caller seen longest that calls it (`Worker::charge`), which then compiles with it (its callees
+  compile with a caller), since compiling the short function alone gains nothing.
+- **RTL processes** stay frame-mode: a process is entered by the kernel per activation on its own
+  interpreter frame and suspends there; the per-activation fast paths are the RTL agent's (#432, rtljit).
+  A process calling a native-callable function gets the native call.
+- **Second code generator:** the ABI is the generator's contract with the runtime: the helpers
+  (`yavs_rt_deopt`, `TierHost::materialise`) are plain C-ABI Rust functions and the native frame is a
+  generator-local choice, so a Cranelift backend can produce the same `f<id>_n` with `call` and stack
+  slots. Why not lazy frames for every function: spilling a frame-mode function's registers at every step
+  would cost more than the push on testbench code, where most functions step something (natives, `new`,
+  string temporaries); and why not keep native frames materialised in place: frame addresses would then
+  have two homes. Decided by the compiled-calls agent (ccall), 2026-10-21.

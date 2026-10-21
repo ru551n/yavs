@@ -2363,6 +2363,26 @@ per-function feedback that takes compiled code back (the budget and static rules
 direct call from the interpreter's `Call` to a compiled callee, side exits of `TempRoot`, `NewFrame`,
 `CallNative` (they are 2.5, 2.0 and 1.8 million of the 9 million steps of `uvvm_util_rand_tb`).
 
+Compiled frames and direct calls (#432, 2026-10-21; `docs/decisions.md` "Compiled frames and calls between
+compiled functions"): a function that runs without a step on its fast path and calls only such functions
+(`native_set`) also gets native-frame code, which compiled callers call directly (registers and slots on the
+native stack, one module: by symbol, so LLVM may inline it; `--tier=auto`: through a table); the frame becomes an
+interpreter frame only where the interpreter needs one (a step, a failing instruction, the depth limit, the native
+stack allowance), and the interpreter goes on there. Frame-mode code is also entered after the preloaded
+definitions the interpreter skips (before, a compiled function called from the interpreter ran interpreted up to
+its first jump). `Free`, `Fill` and `CallProt` have direct arms in `TierHost::step`. Pinned (`taskset -c 3`),
+`calls` at 30 million calls (`-gN=7500000`): `--tier=llvm` 22.37 G to 1.63 G instructions, 0.94 s to 0.09 s
+(interpreter 23.5 G, 0.95 s); `--tier=auto` 23.86 G to 15.73 G instructions, 0.94 s to 0.51 s (the process is
+compiled once its native-frame callees' time counts for it). On the library testbenches the effect is nil so far:
+`generic_sb_slv_tb` under `--tier=llvm` has 7 native-callable functions (its calls go to functions with
+`Cat`, `CallProt`, `CallNative`, `Deref`, typed `TempRoot`, dynamic `LayoutOf` or `NewFrame` on the fast path),
+simulation 0.91 s to 0.95 s, compile 9.1 s to 9.8 s (the native-frame copies); `--tier=auto` and
+`--tier=interp` within noise on the shared benchmarks (geometric means 1.05 and 1.006 at 3 to 5 runs on a loaded
+host; instruction counts of `generic_sb_slv_tb` under `--tier=auto` equal, 24.6 G both). Output identical:
+difftest 414/414 for `yavs-llvm` and `yavs-auto` (default, `--tier-heat=1,0,0`, shuffled seed 7) at 1 and 4
+threads, the stderr of every corpus test byte-identical between `--tier=interp` and `--tier=llvm` (26 with
+runtime errors), and a `gc-stress` build 414/414 for `yavs-llvm` and eager `yavs-auto`.
+
 The measurements before this work, for reference:
 
 Compile cost at O0 (release, per function, compile thread): about 2 ms plus 40 us per IR

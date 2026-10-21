@@ -1138,4 +1138,25 @@ fn calls_between_compiled_functions() {
     assert_eq!(a, Ok(5000));
     assert_eq!(a, b);
     assert!(n > 1, "{n} entries: no recursion left to the interpreter");
+    // Past the call depth limit: the native frames are materialised and the interpreter
+    // reports the limit with the same text and trace.
+    let (a, b, _) = p.both(depth, &[20_000]);
+    assert!(a.as_ref().is_err_and(|e| e.contains("depth")), "{a:?}");
+    assert_eq!(a, b);
+}
+
+/// All three functions can run on native frames (docs/decisions.md "Compiled frames"): `run`
+/// calls `inc` and `depth` calls itself without leaving compiled code.
+#[test]
+fn native_frames() {
+    let (prog, run, depth) = calls();
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 3);
+    for (f, k) in [(run, 1000), (run, 10_000), (depth, 300)] {
+        let (a, b, n) = p.both(f, &[k]);
+        assert_eq!((a, b), (Ok(k), Ok(k)));
+        // One entry into compiled code, at the first instruction after the preloaded
+        // definitions, whatever the number of calls.
+        assert_eq!(n, 1, "entries for {f} {k}");
+    }
 }

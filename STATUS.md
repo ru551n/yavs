@@ -1458,7 +1458,14 @@ register coalescing in the optimiser; a single-element signal read is 65 instruc
 `CopyDrive` 390 of which the kernel's `assign_blocks` is about 250; ram is mostly start-up (0.21 of its 0.32 G cycles
 are elaboration and initialisation of the 16384 x 32 array).
 
-Verification at this change (release build with the `llvm` feature unless noted): see the commit message of the push.
+Verification at this change (release build with the `llvm` feature): differential corpus 417/417 at 1 thread, 4 threads and
+4 shuffled threads on the interpreter, `--tier=llvm` and `--tier=auto`; 417/417 with the `gc-stress` feature on the
+interpreter (plain and shuffled) and the LLVM tier (shuffled); `cargo fmt --check`, `cargo clippy -D warnings` and
+`cargo test --workspace` green; the pass lists check green with `--oracle --check` (857 and 393); the runner's own suites
+pass (all eleven, `record_dict` under 2019); the `.pro` regression 314/314 under 2008 and 2019; UVVM suite 102 pass, 9 fail,
+26 skip (as before); discrepancy catalogue green. A new corpus test (`sigassign/vector_forms`) covers the vector and
+scalar assignment forms the fusions handle and the `numeric_std` logical operators with metavalues and null ranges; the
+native/body comparison test (`ieee_native`) now also runs those operators on `signed` and the length-mismatch failure.
 
 ## performance: head-to-head against the two reference simulators, 2026-10-21
 

@@ -216,6 +216,11 @@ const MEM_NTAB: u64 = std::mem::offset_of!(Mem, ntab) as u64;
 const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;
 const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
+const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
+const OBJ_SIZE: u64 = std::mem::size_of::<Obj>() as u64;
+const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
+const OBJ_LEN: u64 = std::mem::offset_of!(Obj, len) as u64;
+const OBJ_W: u64 = std::mem::offset_of!(Obj, w) as u64;
 /// Bytes of a `TierSig` and the offsets of its fields.
 const SIG_ENT: i64 = std::mem::size_of::<yavs_interp::TierSig>() as i64;
 const SIG_CODES: i64 = std::mem::offset_of!(yavs_interp::TierSig, codes) as i64;
@@ -2287,6 +2292,9 @@ struct Cur<'p> {
     /// The frame's base before each slow path being generated (`slow_path`), and whether its
     /// step may push a frame; `join` takes them back.
     joins: std::cell::RefCell<Vec<(Option<LLVMValueRef>, bool)>>,
+    /// Look an address of unknown space up in `Mem::objs` inline before calling `yavs_rt_host`
+    /// (frame-mode code of a process).
+    objs_inline: bool,
 }
 
 /// Deferred register stores (`regs.rs`): a definition of a pure instruction is kept as a value
@@ -3147,6 +3155,7 @@ impl Gen {
                 defer: None,
                 scal: None,
                 joins: Default::default(),
+                objs_inline: !native && f.kind == FuncKind::Process,
             };
             // Registers the interpreter starts the frame with hold the same address everywhere.
             let mut base_known: Vec<Option<Known>> = vec![None; nregs];
@@ -6149,6 +6158,48 @@ impl Gen {
             // spaces and its select chain cost 30 LLVM instructions per access of unknown space and
             // codegen time with them; the heap, which most such accesses are, needed the call
             // anyway, and the compiled code is no slower (#432).
+            // In a process, first the objects found before (`Mem::objs`, kept between
+            // activations): the heap variables of a clocked process are found there without
+            // a call.
+            let mut found = None;
+            if c.objs_inline {
+                let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
+                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                let mut base = LLVMConstPointerNull(self.ptr);
+                let mut len = self.c64(0);
+                let mut hit = LLVMConstInt(LLVMInt1TypeInContext(self.ctx), 0, 0);
+                for k in 0..OBJS as u64 {
+                    let at = MEM_OBJS + k * OBJ_SIZE;
+                    let mut m = self.icmp(IP::LLVMIntEQ, self.mem_ld(c, at, self.i64), hi);
+                    if write {
+                        let w = self.mem_ld(c, at + OBJ_W, self.i64);
+                        let w = self.icmp(IP::LLVMIntNE, w, self.c64(0));
+                        m = LLVMBuildAnd(self.b, m, w, c"".as_ptr());
+                    }
+                    let p = self.mem_ld(c, at + OBJ_PTR, self.ptr);
+                    base = LLVMBuildSelect(self.b, m, p, base, c"".as_ptr());
+                    let l = self.mem_ld(c, at + OBJ_LEN, self.i64);
+                    len = LLVMBuildSelect(self.b, m, l, len, c"".as_ptr());
+                    hit = self.or(hit, m);
+                }
+                let fits = self.icmp(IP::LLVMIntULE, n, len);
+                let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+                let inside = self.icmp(IP::LLVMIntULE, o, rest);
+                let ok = LLVMBuildAnd(
+                    self.b,
+                    hit,
+                    LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
+                    c"".as_ptr(),
+                );
+                let (fast, call, merge) = (self.block(c), self.block(c), self.block(c));
+                LLVMBuildCondBr(self.b, ok, fast, call);
+                LLVMPositionBuilderAtEnd(self.b, fast);
+                let pf = self.gep(base, o);
+                LLVMBuildBr(self.b, merge);
+                LLVMPositionBuilderAtEnd(self.b, call);
+                found = Some((pf, fast, merge));
+            }
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
             let phi = LLVMBuildCall2(
                 self.b,
@@ -6160,6 +6211,16 @@ impl Gen {
             );
             self.guard(c, LLVMBuildIsNotNull(self.b, phi, c"".as_ptr()), slow);
             let mut p = phi;
+            if let Some((pf, fast, merge)) = found {
+                let here = LLVMGetInsertBlock(self.b);
+                LLVMBuildBr(self.b, merge);
+                LLVMPositionBuilderAtEnd(self.b, merge);
+                let m = LLVMBuildPhi(self.b, self.ptr, c"".as_ptr());
+                let mut vals = [pf, p];
+                let mut bbs = [fast, here];
+                LLVMAddIncoming(m, vals.as_mut_ptr(), bbs.as_mut_ptr(), 2);
+                p = m;
+            }
             if !own.is_empty() {
                 let here = LLVMGetInsertBlock(self.b);
                 LLVMBuildBr(self.b, merge);

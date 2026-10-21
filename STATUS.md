@@ -1598,8 +1598,10 @@ the rest heap and code. Three helper threads (output flush, signal wait, freeing
 left as they are (changing when they start would change what a killed run prints).
 
 What changed (`docs/decisions.md` "Floor of a run: symbol table size, pruning on demand, executable layout"): the symbol
-table starts at 2048 names, not 16384 (-190 page faults, -0.13 ms); the executable is linked `-no-pie` on Linux
-(-45 page faults, -7% cycles); `Store::put` no longer asks the size and age of every entry on every put (0.25 ms for 90
+table starts at 2048 names, not 16384 (-190 page faults, -0.13 ms); a `-no-pie` link of the executable on Linux was
+tried (-45 page faults, -7% cycles) and reverted: the user chose PIE for hardening and packaging, so the executable
+stays a position independent executable everywhere (the rows below marked "no-pie" were measured with that link);
+`Store::put` no longer asks the size and age of every entry on every put (0.25 ms for 90
 entries, once per put, so 0.5 to 1 ms of a first run in a library with 60 to 90 entries), nor `note`/`sightings` the age of
 up to 512 notes.
 
@@ -1611,9 +1613,9 @@ test, 4 rounds, host load average 9):
 | Binary | run 1 (empty cache) | run 2 | warm (run 3 on) |
 |---|---:|---:|---:|
 | built with `llvm`, before (the head-to-head's) | 8.38 ms | 8.51 ms | 6.90 ms |
-| built with `llvm`, now | 2.32 ms | 2.50 ms | 1.29 ms |
+| built with `llvm`, now (no-pie, reverted) | 2.32 ms | 2.50 ms | 1.29 ms |
 | built without `llvm`, before | 2.62 ms | 2.81 ms | 1.48 ms |
-| built without `llvm`, now | 2.34 ms | 2.49 ms | 1.26 ms |
+| built without `llvm`, now (no-pie, reverted) | 2.34 ms | 2.49 ms | 1.26 ms |
 
 Against the other two in the same harness (warm yavs now, sim1 `-H 64m -e --no-save --jit -r`, sim2 `-r`, 5 rounds, interleaved):
 yavs 1.50 ms, sim1 jit 6.19 ms, sim2 2.31 ms per test (yavs is faster than sim1 on 274 and than sim2 on 272 of the 279; before,

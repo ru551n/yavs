@@ -3041,9 +3041,9 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   and is soft by what is stored within 5 seconds elsewhere. Notes (`.seen` files, `note`,
   `sightings`) are trimmed to `MAX_NOTES` once the directory is 64 past it, by names for counting
   and ages only for the trim; `sightings` counts by name without asking for any age.
-- **The executable is not position independent on Linux (glibc).** `crates/yavs/build.rs` links with
-  `-no-pie`: the loader no longer applies the 11 000 relative relocations (each of the 43 pages of
-  `.data.rel.ro` was copied on write), 7% fewer cycles and 45 fewer page faults in a short run. The
-  cost is that the executable's own code is at a fixed address (no address space layout randomisation
-  for it; libraries and the heap are still randomised). Reverting is one line in the build script.
+- **The executable stays position independent (PIE) on every platform (user decision, 2026-10-21).**
+  A `-no-pie` link on Linux (glibc) had saved the loader's 11 000 relative relocations and 45 page
+  faults, about 7% of the cycles of a short run. The user chose PIE for hardening and packaging, so
+  that gain is given up: `crates/yavs/build.rs` links no `-no-pie`, and the executable's code keeps
+  address space layout randomisation.
 

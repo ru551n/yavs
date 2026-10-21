@@ -17,11 +17,6 @@ fn main() {
         // -rdynamic makes lld (and so cargo-zigbuild) export from an executable;
         // the version script limits the export to the vhpi_* list.
         _ => {
-            // No relocations to apply at start: 7% of the cycles of a short run (decisions.md,
-            // "Floor of a run: symbol table size, pruning on demand, executable layout").
-            if var("CARGO_CFG_TARGET_OS") == "linux" && var("CARGO_CFG_TARGET_ENV") == "gnu" {
-                println!("cargo:rustc-link-arg-bins=-no-pie");
-            }
             println!("cargo:rustc-link-arg-bins=-rdynamic");
             println!(
                 "cargo:rustc-link-arg-bins=-Wl,--version-script={}",

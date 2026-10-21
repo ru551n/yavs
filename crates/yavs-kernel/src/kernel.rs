@@ -1000,6 +1000,9 @@ impl SimControl {
             .filter(|&&p| self.observers.iter().any(|o| o.wants_phase(p)))
             .fold(0, |m, &p| m | 1 << p as u32);
         self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
+        if self.watch_changes {
+            self.signals.iter_mut().for_each(|s| s.watched = true);
+        }
         let bits = |o: &dyn Observer, f: &dyn Fn(&dyn Observer, Phase) -> bool| {
             ALL_PHASES
                 .iter()
@@ -1266,7 +1269,7 @@ impl SimControl {
         let memo = std::cell::Cell::new((0u32, false));
         for &s in &changed {
             let sig = &mut self.signals[s as usize];
-            self.stats.events += sig.changed.len() as u64;
+            self.stats.events += sig.changed.len() as u64 + std::mem::take(&mut sig.nruns);
             // No process ever waited for it (a signal only read by value).
             if self.waiters[s as usize].is_unwatched() {
                 sig.changed.clear();
@@ -1998,6 +2001,7 @@ impl SimControl {
             }
             if !st.sens.is_empty() {
                 for (s, range) in st.sens.drain(..) {
+                    self.signals[s.0 as usize].watched = true;
                     let procs = &self.procs;
                     self.waiters[s.0 as usize].add(
                         p,

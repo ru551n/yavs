@@ -511,6 +511,30 @@ pub(crate) struct Signal {
     /// them made an event not yet reported to the kernel.
     fuse_n: u32,
     pub fused_event: bool,
+    /// A process waits on the signal, or an observer wants its value changes: `changed` lists
+    /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
+    pub watched: bool,
+    pub nruns: u64,
+}
+
+/// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
+/// (`Signal::watched`), else only counted.
+#[inline(always)]
+fn note_run(
+    changed: &mut SmallVec<[Range; 2]>,
+    nruns: &mut u64,
+    watched: bool,
+    e: usize,
+    len: u32,
+) {
+    if !watched {
+        *nruns += 1;
+        return;
+    }
+    match changed.last_mut() {
+        Some(run) if run.end() as usize == e => run.len += len,
+        _ => changed.push(Range::new(e as u32, len)),
+    }
 }
 
 /// The longest logic signal that keeps `Signal::codes`.
@@ -597,6 +621,8 @@ impl Signal {
             codes: Vec::new(),
             fuse_n: 0,
             fused_event: false,
+            watched: false,
+            nruns: 0,
         };
         sig.sync_codes();
         sig
@@ -611,6 +637,12 @@ impl Signal {
             self.codes.resize(b.len() * 64, 0);
             refresh_codes(&mut self.codes, &self.cur, 0, *len);
         }
+    }
+
+    /// Element run `e .. e + len` changed (`note_run`).
+    #[inline(always)]
+    fn note_run(&mut self, e: usize, len: u32) {
+        note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
     }
 
     /// Put `changed` in ascending order and join the runs that touch.
@@ -863,10 +895,7 @@ impl Signal {
             *c = code;
         }
         set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
-        match self.changed.last_mut() {
-            Some(run) if run.end() as usize == e => run.len += 1,
-            _ => self.changed.push(Range::new(e as u32, 1)),
-        }
+        self.note_run(e, 1);
         self.last_value.put_code(e, old);
         self.fused_event = true;
     }
@@ -914,10 +943,7 @@ impl Signal {
             *c = code;
         }
         set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
-        match self.changed.last_mut() {
-            Some(run) if run.end() as usize == e => run.len += 1,
-            _ => self.changed.push(Range::new(e as u32, 1)),
-        }
+        self.note_run(e, 1);
         self.last_value.put_code(e, old);
         Some(true)
     }
@@ -1025,10 +1051,7 @@ impl Signal {
                 let n = self.ty.len as usize;
                 self.stamps[e..e + len as usize].fill(cycle);
                 self.stamps[2 * n + e..2 * n + e + len as usize].fill(now.raw());
-                match self.changed.last_mut() {
-                    Some(run) if run.end() as usize == e => run.len += len,
-                    _ => self.changed.push(Range::new(e as u32, len)),
-                }
+                note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
                 w &= !(nmask(len as usize) << s);
             }
             let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
@@ -1064,10 +1087,7 @@ impl Signal {
                 }
                 any = true;
                 set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
-                match self.changed.last_mut() {
-                    Some(run) if run.end() as usize == e => run.len += 1,
-                    _ => self.changed.push(Range::new(e as u32, 1)),
-                }
+                self.note_run(e, 1);
             }
         }
         any

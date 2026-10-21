@@ -39,6 +39,7 @@ const FAST: &str = "yavs_rt_fast";
 const FAST_ALLOC: u32 = 0;
 const FAST_DOPE_LEN: u32 = 1;
 const FAST_SUBTYPE: u32 = 2;
+const FAST_FAT_ROOT: u32 = 3;
 
 /// The most plane blocks an inline `LCopy` reads or writes (`yavs_rt_lcopy`'s stack copy).
 const LCOPY_BLOCKS: u64 = 8;
@@ -446,7 +447,8 @@ fn dim_at(env: *mut c_void, mem: *mut Mem, dope: u64, k: u64) -> Option<u64> {
 
 /// Instructions whose inline form was large and no faster than this call: `FAST_ALLOC`
 /// (`dst` = `Alloc`'s result register, `a` the size), `FAST_DOPE_LEN` (`dope` `a`, dimension
-/// `b`, result register `dst`), `FAST_SUBTYPE` (`dst` dimensions of `a` against `b`). 1 when
+/// `b`, result register `dst`), `FAST_SUBTYPE` (`dst` dimensions of `a` against `b`),
+/// `FAST_FAT_ROOT` (the fat pair at `a` points into no heap). 1 when
 /// done, 0 where the interpreter must execute the instruction (its error, its memory).
 extern "C" fn yavs_rt_fast(
     env: *mut c_void,
@@ -486,6 +488,20 @@ extern "C" fn yavs_rt_fast(
             }
             _ => 0,
         },
+        FAST_FAT_ROOT => {
+            // SAFETY: as in `yavs_rt_step`.
+            let m = unsafe { &*mem };
+            let Some(p) = m.find(a, 0, 16, false) else {
+                return 0;
+            };
+            // 1 when neither word points into a heap (HEAP 4, SHARED_HEAP 7): nothing to record.
+            let heap = |k: usize| {
+                // SAFETY: `find` checked 16 readable bytes at `p`.
+                let w = unsafe { std::ptr::read_unaligned(p.add(k * 8).cast::<u64>()) };
+                matches!(w >> 61, 4 | 7)
+            };
+            u32::from(!heap(0) && !heap(1))
+        }
         FAST_SUBTYPE => {
             for k in 0..u64::from(dst) {
                 match (dim_at(env, mem, a, k), dim_at(env, mem, b, k)) {
@@ -1645,6 +1661,13 @@ impl Gen {
                             _ => self.step(&c, pc, &inst),
                         },
                     },
+                    // A fat pair is recorded only when a word points into a heap
+                    // (`Machine::fat_root`); the helper says when none does.
+                    Inst::TempRoot { addr, ty: None, .. } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        self.fast_op(&c, FAST_FAT_ROOT, 0, self.ld(&c, addr), self.c64(0), slow);
+                        self.join(join);
+                    }
                     Inst::Stmt => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
                         let roots = self.mem_ld(&c, MEM_TEMP_ROOTS, self.i64);
@@ -2046,6 +2069,20 @@ impl Gen {
     /// Execute the instruction `i` at `pc` in the interpreter; return what `yavs_rt_step`
     /// returns unless it is `GO`.
     unsafe fn step(&self, c: &Cur, pc: u32, i: &Inst) {
+        // Instructions that only change the temporary area or a register go to the interpreter's own
+        // function for them (`TierHost::signal`), without its generic dispatch.
+        if matches!(
+            i,
+            Inst::TempRoot { .. }
+                | Inst::NewFrame { .. }
+                | Inst::Stmt
+                | Inst::Deref { .. }
+                | Inst::MemEq { .. }
+                | Inst::Cat { .. }
+        ) {
+            // SAFETY: as `signal`.
+            return unsafe { self.signal(c, pc, 0) };
+        }
         let at = if keeps_objects(i) { pc | KEEP } else { pc };
         // SAFETY: `step` has the run-function signature.
         unsafe {

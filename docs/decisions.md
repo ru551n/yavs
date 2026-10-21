@@ -2910,3 +2910,23 @@ own entries, as before, and keeps its `ir` compact).
   tier compiles it to an LLVM `select`.
 - The concatenation lowering tests `n /= 0` directly (one `Cmp` instead of `Cmp` and `Not`) and selects the
   result of two null operands (LRM 9.2.5) with that.
+
+## Process entry and exit, direct side exits (yavs-interp, yavs-llvm, #443, #432, #446, 2026-10-21)
+
+- **A small process keeps its register and temporary vectors between activations** (`Machine::resident`: no
+  debugger, at most 48 registers in its root frame, so at most 384 bytes). The swap with the thread's scratch
+  (two thread-local accesses, two vector swaps and a key check per activation) is for the processes above that
+  size, and for a resident one whose temporary area outgrows 1 KiB (it becomes a scratch process for good).
+  Ceiling: a design of tens of thousands of small processes holds up to 384 bytes of registers each instead of
+  nothing between activations; the scratch stays for the large frames of testbench processes.
+- **`InterpProcess::run` is a flag test and a call of `Machine::run_quick`** once a process is started, not
+  ended, without shared state and without a debugger (`hot`); the checks of `borrow_scratch`, `release_scratch`,
+  `after_suspend` and of the root frame's `suspend` are inline, their cold parts out of line.
+- **`copy_const` takes the program of the running runtime** instead of cloning the runtime handle per call (#446).
+- **Compiled code runs `TempRoot`, `Stmt` with recorded roots, `NewFrame`, `Deref`, `MemEq` and `Cat` through
+  `TierHost::signal`**, the interpreter's own bodies without the generic step, and `CallNative` through
+  `call_native` directly. None of them frees or moves a memory object, so compiled code keeps the objects it
+  found. A `TempRoot` of a fat pair first asks a helper (`FAST_FAT_ROOT`) whether any word points into a heap
+  (the interpreter's `fat_root` test); only then is the root recorded, so the precise roots (#422) are the same.
+  Why a helper and not inline code: inline code for the test made compiling the testbench library 1.6 percent
+  more expensive for no run time gain.

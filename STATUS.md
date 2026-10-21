@@ -961,6 +961,21 @@ Instruction counts of one process activation (deterministic, stepping the proces
 
 What the instruction profile shows next (ff, about 5000 instructions per activation): the kernel assignment behind `Drive` is 1250, op fetch and register indexing about 20 per op, a vector element read about 500 (index arithmetic), the process exit path 330 and entry 250. These belong to the kernel work (scalar assignment, element read and edge entry points) and to fusing the index arithmetic of a signal element read.
 
+### Interpreter, process entry and exit; direct side exits (#443, #432, #446)
+
+Fixed cost per activation: the scratch swap, `run_quick`, `after_suspend` and the root frame's `suspend` took about 330 instructions of 1460 per activation of `fan`. A small process now keeps its vectors (`Machine::resident`), `run` goes straight to `run_quick` (`hot`), and the checks are inline with the cold parts out of line. `copy_const` no longer clones the runtime handle. Instructions and core cycles of a whole run (`perf stat`, `--threads 1`, pinned to performance core 2, both binaries built from main at 56744da3 and from main plus this change, `llvm` feature):
+
+| Design | instructions before (G) | now | cycles before (G) | now |
+|---|---|---|---|---|
+| fan | 25.13 | 20.11 | 6.00 | 5.47 (5.33 in a second run) |
+| ff | 30.95 | 30.25 | 6.04 to 6.12 | 6.08 to 6.28 (resident off: the same, so noise and code layout) |
+| chain | 7.98 | 7.47 | 1.48 | 1.43 |
+| lfsr | 16.96 | 16.72 | 3.37 | 3.36 |
+
+`fan`: 250 instructions fewer per activation. The remaining entry and exit is about 90 (`run_ops` set-up with its spilled locals, the outcome travelling through memory). Shared benchmarks, `--compare` pinned, 3 runs, total CPU after / before: `--tier=interp` uvvm_util_rand_tb 0.99, osvvm_axistream 1.01, protected_scoreboard 1.02, calls 1.02, vunit_vc30 1.00; `--tier=auto` 1.00, 1.04, 0.99, 1.02, 0.96 (testbench code: activation cost is not what these run on).
+
+Testbench side exits of the LLVM tier (`uvvm_util_rand_tb` under `--tier=llvm`, counted by instruction kind: fat `TempRoot` 4.2M, `NewFrame` 2.8M, `CallNative` 3.2M, `Call` 2.5M, `Deref` 1.1M, `Free` 0.8M, `MemEq` 0.5M, `Fill` 0.35M, `CallProt` 0.2M). `TempRoot`, `Stmt` with roots, `NewFrame`, `Deref`, `MemEq` and `Cat` run through `TierHost::signal` (no generic step, no loss of the cached objects), a fat `TempRoot` whose words point into no heap is a helper call and no step at all, `CallNative` is called directly. Instructions run after the last LLVM compile sample of the run (perf, one sample per million instructions): 19.8 G before, 18.2 G after (-8%). Left as generic steps: `Call` (a compiled call costs about what an interpreted one does, dominated by the frame push and the view refresh), `Free`, `Fill`, `CallProt`. Inline code for the fat-pair test was measured and dropped: +1.6 percent compile instructions for no run gain.
+
 ### Interpreter, index arithmetic and vector ops (#443)
 
 Round 6 of the clocked-process work, driven by exact instruction counts of one process activation (stepping `InterpProcess::run` under a debugger, attributing every instruction to the op of the loop that ran it, callees included; scratch tooling, not in the repository). Changes, all in `pre.rs` and `exec.rs`:

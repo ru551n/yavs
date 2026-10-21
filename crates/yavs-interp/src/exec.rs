@@ -378,9 +378,24 @@ pub(crate) struct Machine {
     /// `regs` and `temp` went to the thread's scratch at the last suspension
     /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
     released: bool,
+    /// A small process keeps its registers and temporaries between activations instead of
+    /// handing them to the thread's scratch (set when it starts, [`RESIDENT_REGS`]): no
+    /// swap per activation. A process whose temporaries grow past [`RESIDENT_TEMP`] stops
+    /// being resident at its next suspension.
+    resident: bool,
+    /// The entry function is a process (set when the process starts): its root frame needs
+    /// no check of the frames it waits in ([`Machine::suspend`]).
+    root_process: bool,
     /// The fault of the last `run_quick`.
     quick_fault: Option<Fault>,
 }
+
+/// Registers of a process's root frame up to which it keeps its working vectors
+/// ([`Machine::resident`]): at most 384 bytes of registers per process.
+const RESIDENT_REGS: usize = 48;
+/// Capacity of the temporary area above which a resident process gives its vectors to the
+/// scratch.
+const RESIDENT_TEMP: usize = 1024;
 
 /// The working vectors of the process running on this thread: registers and temporaries. A suspended process owns none of them (no register or temporary is
 /// live across a suspension, ir.md 1.2), so a design of thousands of processes keeps one set
@@ -749,6 +764,8 @@ impl Machine {
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
+            resident: false,
+            root_process: false,
             quick_fault: None,
         }
     }
@@ -761,10 +778,16 @@ impl Machine {
     }
 
     /// Before a process runs again: take this thread's scratch vectors back.
+    #[inline(always)]
     pub(crate) fn borrow_scratch(&mut self) -> R<()> {
         if !self.released {
             return Ok(());
         }
+        self.borrow_scratch_slow()
+    }
+
+    #[inline(never)]
+    fn borrow_scratch_slow(&mut self) -> R<()> {
         self.released = false;
         let root = self.frames.first().map(|fr| fr.func);
         let key = self.scratch_key();
@@ -802,10 +825,25 @@ impl Machine {
     /// At a suspension in the root frame: hand the working vectors to this thread's scratch.
     /// Deeper frames keep theirs (their registers and temporaries are not touched, so a
     /// procedure that waits resumes as before).
+    #[inline(always)]
     pub(crate) fn release_scratch(&mut self) {
+        // A resident process has no debugger (`set_resident`) and keeps its vectors.
+        if self.resident && self.frames.len() == 1 && self.temp.capacity() <= RESIDENT_TEMP {
+            self.temp.clear();
+            if !self.troots.is_empty() {
+                self.troots.clear();
+            }
+            return;
+        }
+        self.release_scratch_slow();
+    }
+
+    #[inline(never)]
+    fn release_scratch_slow(&mut self) {
         if self.frames.len() != 1 || self.released || self.dbg.is_some() {
             return;
         }
+        self.resident = false;
         self.released = true;
         self.troots.clear();
         let key = self.scratch_key();
@@ -985,6 +1023,13 @@ impl Machine {
         }
     }
 
+    /// After the root frame is entered: a small process keeps its working vectors
+    /// ([`Machine::resident`]).
+    pub(crate) fn set_resident(&mut self) {
+        self.resident = self.dbg.is_none() && self.regs.v.len() <= RESIDENT_REGS;
+        self.root_process = true;
+    }
+
     /// Whether `run_quick` applies (no debugger).
     pub(crate) fn can_run_quick(&self) -> bool {
         self.dbg.is_none()
@@ -1026,7 +1071,17 @@ impl Machine {
     }
 
     /// GC of the private heap and the debug process table, after a suspension.
+    #[inline(always)]
     pub(crate) fn after_suspend(&mut self) {
+        // Nothing allocated since the last collection, nothing deallocated: nothing to do.
+        if self.heap.since_gc == 0 && !self.heap.has_quarantine() && self.dbg.is_none() {
+            return;
+        }
+        self.after_suspend_slow();
+    }
+
+    #[inline(never)]
+    fn after_suspend_slow(&mut self) {
         if self.heap.since_gc > self.rt.limits.gc_threshold
             || heap::STRESS && self.heap.since_gc > 0
         {
@@ -2438,18 +2493,13 @@ impl Machine {
 
     /// `Inst::CopyConst`: constant `c` to the memory at `a`.
     #[inline(always)]
-    fn copy_const(&mut self, a: u64, c: yavs_ir::ConstId) -> R<()> {
+    fn copy_const(&mut self, prog: &Program, a: u64, c: yavs_ir::ConstId) -> R<()> {
         // A compact constant is written straight to its copy, never expanded and kept in the
-        // runtime (#446).
-        if matches!(
-            self.rt.prog.consts.get(c),
-            Some(ConstData::Repeat { .. } | ConstData::Runs(_))
-        ) {
-            let rt = self.rt.clone();
-            if let Some(d) = rt.prog.consts.get(c) {
-                let n = compact_len(d)?;
-                fill_compact(d, self.wr(a, n)?);
-            }
+        // runtime (#446); `prog` is the running runtime's program, borrowed apart from the
+        // machine, so no handle is cloned per call.
+        if let Some(d @ (ConstData::Repeat { .. } | ConstData::Runs(_))) = prog.consts.get(c) {
+            let n = compact_len(d)?;
+            fill_compact(d, self.wr(a, n)?);
             return Ok(());
         }
         let n = const_bytes(&self.rt, c)?.len() as u64;
@@ -2689,7 +2739,17 @@ impl Machine {
     }
 
     /// The checks of `Inst::Suspend`; the caller then suspends.
+    #[inline(always)]
     fn suspend(&mut self, prog: &Program, f: &Func, ctx: &Option<&mut Ctx<'_>>) -> R<()> {
+        // The root frame of a process waits: no other frame to check.
+        if self.root_process && self.frames.len() == 1 && ctx.is_some() && self.dbg.is_none() {
+            return Ok(());
+        }
+        self.suspend_checks(prog, f, ctx)
+    }
+
+    #[inline(never)]
+    fn suspend_checks(&mut self, prog: &Program, f: &Func, ctx: &Option<&mut Ctx<'_>>) -> R<()> {
         if let Some(fr) = self.frames.iter().find(|fr| {
             prog.func(fr.func)
                 .is_some_and(|g| g.kind != FuncKind::Process && g.kind != FuncKind::Procedure)
@@ -2717,6 +2777,92 @@ impl Machine {
             self.waits.stmt = f.loc.get(fr.pc as usize).copied();
         }
         Ok(())
+    }
+
+    /// `Inst::TempRoot`.
+    fn temp_root_inst(
+        &mut self,
+        prog: &Program,
+        addr: Reg,
+        desc: Option<Reg>,
+        ty: Option<yavs_ir::TyId>,
+    ) -> R<()> {
+        let Some(t) = ty else {
+            return self.fat_root(self.r(addr));
+        };
+        let a = self.r(addr);
+        if split(a).0 != TEMP {
+            return Err(ice("a recorded temporary outside the temporary area"));
+        }
+        let n = Ty::desc_size(&prog.types, t)
+            .ok_or_else(|| ice(format!("no descriptor size of {t}")))?;
+        let desc = match desc {
+            Some(d) if n > 0 => self.rd(self.r(d), n)?.into(),
+            None if n > 0 => {
+                return Err(ice(format!(
+                    "recorded temporary of {t} without its descriptor"
+                )));
+            }
+            _ => Box::default(),
+        };
+        self.temp_root(a, Some(t), desc);
+        Ok(())
+    }
+
+    /// `Inst::NewFrame`.
+    fn new_frame(
+        &mut self,
+        dst: Reg,
+        desc: Reg,
+        dsize: u32,
+        data: Reg,
+        size: Reg,
+        fill: u32,
+    ) -> R<()> {
+        let size = self.r(size);
+        if size > 1 << 32 {
+            return Err(Fault::Runtime("object larger than 4 GiB".into()));
+        }
+        if fill != 0 && !size.is_multiple_of(u64::from(fill)) {
+            return Err(ice("NewFrame size is not a multiple of its element"));
+        }
+        let ds = u64::from(dsize);
+        let at = self.temp_alloc(ds + size)?;
+        if ds != 0 {
+            self.copy_mem(at, self.r(desc), ds)?;
+        }
+        let val = add_addr(at, ds)?;
+        if fill == 0 {
+            self.copy_mem(val, self.r(data), size)?;
+        } else if size != 0 {
+            // A pattern of `fill` bytes: the first copy, then doubling; all zero
+            // needs nothing (the allocation is zeroed).
+            let src = self.rd(self.r(data), u64::from(fill))?;
+            if src.iter().any(|&b| b != 0) {
+                let src = src.to_vec();
+                let out = self.wr(val, size)?;
+                for c in out.chunks_exact_mut(fill as usize) {
+                    c.copy_from_slice(&src);
+                }
+            }
+        }
+        // The frame's own statements must not free the object.
+        let end = u32::try_from(self.temp.len())
+            .map_err(|_| Fault::Runtime("temporary memory exceeds 4 GiB".into()))?;
+        self.top().temp_base = end;
+        self.set(dst, at);
+        Ok(())
+    }
+
+    /// Give `tf` the temporary area's current pointer, length, capacity, recorded roots and
+    /// base (what an instruction that only touches the temporary area changes).
+    #[inline(always)]
+    fn tier_temp(&mut self, tf: &mut crate::TierFrame) {
+        tf.temp = self.temp.as_mut_ptr();
+        tf.temp_len = self.temp.len() as u64;
+        tf.temp_cap = self.temp.capacity() as u64;
+        tf.temp_roots = self.troots.len() as u64;
+        tf.temp_base = u64::from(self.frames[self.frames.len() - 1].temp_base);
     }
 
     /// `Inst::CallNative`: `Flow::Next`, or the flow a native ends with (a VHDL body it hands
@@ -4212,7 +4358,7 @@ impl Machine {
                     k += 1;
                 }
                 Op::CopyConst { dst, c } => {
-                    t!(self.copy_const(self.regs[dst as usize], yavs_ir::ConstId(c)));
+                    t!(self.copy_const(prog, self.regs[dst as usize], yavs_ir::ConstId(c)));
                     k += 1;
                 }
                 Op::MakeDope { at, start, len } => {
@@ -5068,34 +5214,12 @@ impl Machine {
                 };
                 self.set(dst, a);
             }
-            Inst::CopyConst { dst, c } => self.copy_const(self.r(dst), c)?,
+            Inst::CopyConst { dst, c } => self.copy_const(prog, self.r(dst), c)?,
             Inst::Alloc { dst, size } => {
                 let a = self.temp_alloc(self.r(size))?;
                 self.set(dst, a);
             }
-            Inst::TempRoot { addr, ty: None, .. } => self.fat_root(self.r(addr))?,
-            Inst::TempRoot {
-                addr,
-                desc,
-                ty: Some(t),
-            } => {
-                let a = self.r(addr);
-                if split(a).0 != TEMP {
-                    return Err(ice("a recorded temporary outside the temporary area"));
-                }
-                let n = Ty::desc_size(&prog.types, t)
-                    .ok_or_else(|| ice(format!("no descriptor size of {t}")))?;
-                let desc = match desc {
-                    Some(d) if n > 0 => self.rd(self.r(d), n)?.into(),
-                    None if n > 0 => {
-                        return Err(ice(format!(
-                            "recorded temporary of {t} without its descriptor"
-                        )));
-                    }
-                    _ => Box::default(),
-                };
-                self.temp_root(a, Some(t), desc);
-            }
+            Inst::TempRoot { addr, desc, ty } => self.temp_root_inst(prog, addr, desc, ty)?,
             Inst::PkgAlloc { dst, size } => {
                 let n = self.r(size);
                 let Some((p, data)) = self.pkg_init.as_mut() else {
@@ -5475,40 +5599,7 @@ impl Machine {
                 data,
                 size,
                 fill,
-            } => {
-                let size = self.r(size);
-                if size > 1 << 32 {
-                    return Err(Fault::Runtime("object larger than 4 GiB".into()));
-                }
-                if fill != 0 && !size.is_multiple_of(u64::from(fill)) {
-                    return Err(ice("NewFrame size is not a multiple of its element"));
-                }
-                let ds = u64::from(dsize);
-                let at = self.temp_alloc(ds + size)?;
-                if ds != 0 {
-                    self.copy_mem(at, self.r(desc), ds)?;
-                }
-                let val = add_addr(at, ds)?;
-                if fill == 0 {
-                    self.copy_mem(val, self.r(data), size)?;
-                } else if size != 0 {
-                    // A pattern of `fill` bytes: the first copy, then doubling; all zero
-                    // needs nothing (the allocation is zeroed).
-                    let src = self.rd(self.r(data), u64::from(fill))?;
-                    if src.iter().any(|&b| b != 0) {
-                        let src = src.to_vec();
-                        let out = self.wr(val, size)?;
-                        for c in out.chunks_exact_mut(fill as usize) {
-                            c.copy_from_slice(&src);
-                        }
-                    }
-                }
-                // The frame's own statements must not free the object.
-                let end = u32::try_from(self.temp.len())
-                    .map_err(|_| Fault::Runtime("temporary memory exceeds 4 GiB".into()))?;
-                self.top().temp_base = end;
-                self.set(dst, at);
-            }
+            } => self.new_frame(dst, desc, dsize, data, size, fill)?,
             Inst::NewFill {
                 dst,
                 ty,
@@ -5891,6 +5982,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
             Some(&Inst::Call { func, args, dst }) => {
                 m.call_regs(self.prog, f, func, args, dst, self.rt)
             }
+            // Without the generic dispatch of `step`.
+            Some(&Inst::CallNative { native, args, dst }) => {
+                m.call_native(self.prog, f, native, args, dst, self.ctx)
+            }
             Some(&inst) => m.step(self.prog, f, inst, self.ctx),
             None => Err(ice(format!(
                 "compiled code stepped pc {at} beyond `{}`",
@@ -5901,11 +5996,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         // VHDL code (a native calling back) and moved the stacks.
         match r {
             Ok(Flow::Next) if m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots => {
-                tf.temp = m.temp.as_mut_ptr();
-                tf.temp_len = m.temp.len() as u64;
-                tf.temp_cap = m.temp.capacity() as u64;
-                tf.temp_roots = m.troots.len() as u64;
-                tf.temp_base = u64::from(m.frames[m.frames.len() - 1].temp_base);
+                m.tier_temp(tf)
             }
             _ => m.tier_view(tf),
         }
@@ -6023,6 +6114,64 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 }
                 Err(e) => Err(e),
             },
+            // Instructions that change only the temporary area: the roots a statement
+            // recorded (`TempRoot`) and dropped at its end (`Stmt` with roots), and a frame's
+            // own object (`NewFrame`).
+            Some(&Inst::TempRoot { addr, desc, ty }) => {
+                let r = m.temp_root_inst(self.prog, addr, desc, ty);
+                m.tier_temp(tf);
+                r
+            }
+            Some(&Inst::Stmt) => {
+                m.end_stmt();
+                m.tier_temp(tf);
+                Ok(())
+            }
+            Some(&Inst::NewFrame {
+                dst,
+                desc,
+                dsize,
+                data,
+                size,
+                fill,
+            }) => {
+                let r = m.new_frame(dst, desc, dsize, data, size, fill);
+                m.tier_temp(tf);
+                r
+            }
+            // A concatenation writes memory only (it frees nothing).
+            Some(&Inst::Cat {
+                dst,
+                n,
+                m: mm,
+                parts,
+                scalars,
+                bias,
+                logic,
+                w,
+            }) => match f.regs(parts) {
+                Some(ps) => {
+                    let (d, n, mm) = (m.r(dst), m.r(n), m.r(mm));
+                    m.cat(d, n, mm, ps, scalars, bias, logic, w)
+                }
+                None => Err(ice("operand list")),
+            },
+            // Reads of heap objects and memory that change no register but the result.
+            Some(&Inst::Deref { dst, handle, what }) => {
+                let h = m.r(handle);
+                m.deref(h, what).map(|a| m.set(dst, a))
+            }
+            Some(&Inst::MemEq { dst, a, b, n }) => {
+                let n = m.r(n);
+                match (m.rd(m.r(a), n), m.rd(m.r(b), n)) {
+                    (Ok(x), Ok(y)) => {
+                        let eq = x == y;
+                        m.set(dst, eq.into());
+                        Ok(())
+                    }
+                    (Err(e), _) | (_, Err(e)) => Err(e),
+                }
+            }
             // `call_native` of the edge native, without the collection point (it allocates
             // nothing).
             Some(&Inst::CallNative {

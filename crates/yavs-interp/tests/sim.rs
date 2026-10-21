@@ -98,6 +98,112 @@ fn clock_and_counter() {
     assert!(!has(&lines, "40 ns"), "{lines:#?}");
 }
 
+/// Counters of rising edges, one small (its registers stay with the process between
+/// activations) and one whose temporaries outgrow what a process keeps (it hands its vectors
+/// to the thread's scratch), both run for many activations with identical results.
+#[test]
+fn processes_with_resident_and_scratch_vectors() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let clkgen = pb.declare("clkgen", FuncKind::Process, None);
+    let small = pb.declare("small", FuncKind::Process, None);
+    let small2 = pb.declare("small2", FuncKind::Process, None);
+    let big = pb.declare("big", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(clkgen);
+        stmt(&mut fb, StmtKind::SigAssign);
+        let v = read_scalar(&mut fb, 0);
+        let one = fb.int(1);
+        let nv = bin(&mut fb, IntOp::Sub, one, v);
+        drive(&mut fb, 0, 5 * NS, nv, Width::B1);
+        wait_on_loop(&mut fb, 0, BlockId(0));
+        fb.finish();
+    }
+    for (f, temp) in [(small, 0), (big, 4096), (small2, 0)] {
+        let mut fb = pb.define(f);
+        let count = fb.local("count", int, 8, 8);
+        let (b1, b2) = (fb.block(), fb.block());
+        stmt(&mut fb, StmtKind::If);
+        let c = read_scalar(&mut fb, 0);
+        let one = fb.int(1);
+        let e = cmp(&mut fb, CmpOp::Eq, c, one);
+        fb.emit(Inst::CondBr { c: e, t: b1, f: b2 });
+        fb.at(b1);
+        stmt(&mut fb, StmtKind::VarAssign);
+        if temp > 0 {
+            // A temporary bigger than a process keeps, written and read back.
+            let size = fb.int(temp);
+            let t = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Alloc { dst: t, size });
+            let last = fb.int(temp - 8);
+            let at = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Index {
+                dst: at,
+                base: t,
+                pos: last,
+                stride: 1,
+            });
+            let v = load(&mut fb, AddrSpace::Frame, count, Width::B8);
+            fb.emit(Inst::Store {
+                addr: at,
+                src: v,
+                w: Width::B8,
+            });
+        }
+        let v = load(&mut fb, AddrSpace::Frame, count, Width::B8);
+        let one = fb.int(1);
+        let v1 = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Frame, count, v1, Width::B8);
+        stmt(&mut fb, StmtKind::SigAssign);
+        let v = load(&mut fb, AddrSpace::Frame, count, Width::B8);
+        drive(&mut fb, 0, 0, v, Width::B8);
+        fb.emit(Inst::Br { to: b2 });
+        fb.at(b2);
+        wait_on_loop(&mut fb, 0, BlockId(0));
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.signals = vec![
+        byte_sig("clk", 1, 1),
+        byte_sig("small", 1, 8),
+        byte_sig("big", 1, 8),
+        byte_sig("small2", 1, 8),
+    ];
+    d.procs = vec![
+        ProcSpec {
+            name: "clkgen",
+            func: clkgen,
+            drives: vec![(0, 1)],
+        },
+        ProcSpec {
+            name: "small",
+            func: small,
+            drives: vec![(1, 1)],
+        },
+        ProcSpec {
+            name: "small2",
+            func: small2,
+            drives: vec![(3, 1)],
+        },
+        ProcSpec {
+            name: "big",
+            func: big,
+            drives: vec![(2, 1)],
+        },
+    ];
+    let (lines, r) = d.run(Time::ns(1000));
+    assert!(r.is_ok(), "{r:?}");
+    // 1000 ns of a 10 ns clock: 100 rising edges (the last at 995 ns).
+    assert!(
+        has(&lines, "995 ns +1 big=[100, 0, 0, 0, 0, 0, 0, 0]"),
+        "{lines:#?}"
+    );
+    for name in ["small", "small2"] {
+        let want = format!("995 ns +1 {name}=[100, 0, 0, 0, 0, 0, 0, 0]");
+        assert!(has(&lines, &want), "{lines:#?}");
+    }
+}
+
 /// a -> b -> c, one delta each; processes see the delta number.
 #[test]
 fn delta_ordering() {

@@ -1,0 +1,1 @@
+Clocked designs with many small processes simulate faster: a process activation no longer swaps its working vectors with the thread's scratch and takes fewer checks on the way in and out, and testbench code on the compiled tier leaves it less often for temporary roots, frame objects, dereferences and concatenations.

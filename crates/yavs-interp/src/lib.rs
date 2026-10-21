@@ -360,7 +360,10 @@ pub trait TierHost {
     /// Execute the signal instruction at `pc` of the top frame as `step` does, through the
     /// same interpreter functions without its generic dispatch: `SigReadScalar`, `SigRead`,
     /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, and (`edge` 1 rising, 2 falling) a `CallNative`
-    /// of `rising_edge` / `falling_edge` ([`edge_native`]); any other instruction is stepped.
+    /// of `rising_edge` / `falling_edge` ([`edge_native`]), and the instructions that only
+    /// change the temporary area (`TempRoot`, `Stmt` and `NewFrame`: the view's temporary
+    /// fields are brought up to date) or only memory and a register (`Deref`, `MemEq`, `Cat`);
+    /// any other instruction is stepped.
     /// These run no VHDL code, move no stack and free no memory: the [`TierFrame`] stays
     /// valid.
     fn signal(&mut self, fr: &mut TierFrame, pc: u32, edge: u32) -> Stepped;
@@ -763,6 +766,9 @@ pub struct InterpProcess {
     m: Machine,
     started: bool,
     done: bool,
+    /// Started, not ended, no shared state and no debugger: `run` goes straight to
+    /// `Machine::run_quick`.
+    hot: bool,
     shared: Option<Arc<Mutex<SharedState>>>,
     /// This process's entry in `SharedState::procs`.
     roots_slot: Option<usize>,
@@ -806,6 +812,7 @@ impl InterpProcess {
             m: Machine::new(rt, inst, drivers, func),
             started: false,
             done: false,
+            hot: false,
             shared,
             roots_slot: None,
             execs: 0,
@@ -1090,7 +1097,47 @@ impl Process for InterpProcess {
         Some(self)
     }
 
+    #[inline]
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        if self.hot {
+            // Started, running, no shared state, no debugger: the activation of a process.
+            self.execs += 1;
+            if let Err(e) = self.m.borrow_scratch() {
+                return Err(self.m.error(e, Some(ctx)));
+            }
+            return self.run_quick(ctx);
+        }
+        self.run_cold(ctx)
+    }
+}
+
+impl InterpProcess {
+    /// The outcome of `Machine::run_quick`.
+    #[inline(always)]
+    fn run_quick(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        match self.m.run_quick(&mut Some(&mut *ctx)) {
+            exec::Quick::Suspended => {
+                self.m.after_suspend();
+                self.m.release_scratch();
+                Ok(())
+            }
+            exec::Quick::Returned => {
+                self.done = true;
+                self.hot = false;
+                self.m.terminated();
+                Ok(())
+            }
+            exec::Quick::Fault => {
+                self.hot = false;
+                let e = self.m.take_quick_fault();
+                Err(self.m.error(e, Some(ctx)))
+            }
+        }
+    }
+
+    /// The first activation, a debugged or serial process, and any run after an end.
+    #[inline(never)]
+    fn run_cold(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         if self.done {
             let e = Fault::Internal("a terminated process was resumed".into());
             return Err(self.m.error(e, Some(ctx)));
@@ -1100,28 +1147,15 @@ impl Process for InterpProcess {
             if let Err(e) = self.m.enter(self.m.entry, &[]) {
                 return Err(self.m.error(e, Some(ctx)));
             }
+            self.m.set_resident();
         }
         if let Err(e) = self.m.borrow_scratch() {
             return Err(self.m.error(e, Some(ctx)));
         }
         if self.shared.is_none() && self.m.can_run_quick() {
             self.execs += 1;
-            return match self.m.run_quick(&mut Some(&mut *ctx)) {
-                exec::Quick::Suspended => {
-                    self.m.after_suspend();
-                    self.m.release_scratch();
-                    Ok(())
-                }
-                exec::Quick::Returned => {
-                    self.done = true;
-                    self.m.terminated();
-                    Ok(())
-                }
-                exec::Quick::Fault => {
-                    let e = self.m.take_quick_fault();
-                    Err(self.m.error(e, Some(ctx)))
-                }
-            };
+            self.hot = true;
+            return self.run_quick(ctx);
         }
         let r = self.exec(Some(&mut *ctx));
         match r {

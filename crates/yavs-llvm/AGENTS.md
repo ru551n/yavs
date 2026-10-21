@@ -27,7 +27,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   (`TierHost::signal`: the interpreter's own functions without its generic step):
   `SigReadScalar`, `SigRead` (one range), `Drive`, `DriveSlot` (one range), `WaitOn` and
   `WaitFor` (each with the `Suspend` after it), `Suspend` and the `rising_edge`/`falling_edge`
-  natives (#339). Every other instruction runs in place through
+  natives (#339). The same callback runs the instructions that only change the temporary area or one register without the generic step and without forgetting the cached objects: `TempRoot`, `Stmt` (when roots are recorded), `NewFrame`, `Deref`, `MemEq` (`Gen::step`); a `TempRoot` of a fat pair asks `yavs_rt_fast` (`FAST_FAT_ROOT`) first and records nothing when no word points into a heap (#432). Every other instruction runs in place through
   the `yavs_rt_step` callback (`TierHost::step`): calls, natives, foreign calls, reports, the
   other signal operations and waits; a frame a call pushed runs its compiled code directly from
   the callback and is popped by `TierHost::ret` (#336). Compiled code returns to the interpreter

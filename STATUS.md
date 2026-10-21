@@ -2623,16 +2623,16 @@ same five designs, before (`9e1ecffc`) and after, `-H 64m -e <top> --no-save --j
 
 | Design | tier | instr. before / after (G) | wall before / after (s) | sim1 (s) | before / sim1 | after / sim1 |
 |---|---|---:|---:|---:|---:|---:|
-| ff: 4096 registers x 2000 cycles | interp | 25.62 / 24.83 | 1.016 / 1.001 | 0.358 | 2.84x | 2.80x |
-| | llvm | 31.20 / 24.29 | 1.191 / 0.983 | | 3.33x | 2.75x |
-| lfsr: 512 x 16-bit x 5000 | interp | 16.40 / 15.71 | 0.645 / 0.641 | 0.108 | 5.80x | 5.94x |
-| | llvm | 18.87 / 15.89 | 0.698 / 0.633 | | 6.28x | 5.86x |
-| chain: 1000 stages x 2000 | interp | 7.61 / 6.98 | 0.278 / 0.258 | 0.103 | 2.60x | 2.50x |
-| | llvm | 9.23 / 8.38 | 0.375 / 0.349 | | 3.52x | 3.38x |
-| fan: 4000 x 5000 | interp | 20.17 / 19.61 | 1.046 / 1.021 | 0.697 | 1.51x | 1.46x |
-| | llvm | 31.65 / 25.56 | 1.436 / 1.361 | | 2.08x | 1.95x |
-| bus: 32 drivers x 20000 | interp | 5.67 / 5.68 | 0.235 / 0.233 | 0.458 | 0.51x | 0.51x |
-| | llvm | 6.90 / 6.89 | 0.305 / 0.303 | | 0.66x | 0.66x |
+| ff: 4096 registers x 2000 cycles | interp | 25.62 / 21.48 | 1.016 / 0.871 | 0.36 | 2.84x | 2.38x |
+| | llvm | 31.20 / 24.29 | 1.191 / 0.996 | | 3.33x | 2.72x |
+| lfsr: 512 x 16-bit x 5000 | interp | 16.40 / 15.46 | 0.645 / 0.620 | 0.11 | 5.80x | 5.73x |
+| | llvm | 18.87 / 15.89 | 0.698 / 0.619 | | 6.28x | 5.72x |
+| chain: 1000 stages x 2000 | interp | 7.61 / 6.35 | 0.278 / 0.234 | 0.10 | 2.60x | 2.26x |
+| | llvm | 9.23 / 8.38 | 0.375 / 0.350 | | 3.52x | 3.38x |
+| fan: 4000 x 5000 | interp | 20.17 / 19.61 | 1.046 / 1.019 | 0.69 | 1.51x | 1.48x |
+| | llvm | 31.65 / 25.56 | 1.436 / 1.367 | | 2.08x | 1.99x |
+| bus: 32 drivers x 20000 | interp | 5.67 / 5.67 | 0.235 / 0.233 | 0.46 | 0.51x | 0.51x |
+| | llvm | 6.90 / 6.89 | 0.305 / 0.305 | | 0.66x | 0.66x |
 
 (The reference simulator ran 30% faster on this idle host than in the round 6 table, taken on a loaded one, so ratios are
 not comparable with it; the "before" column is `9e1ecffc` on the same host.)
@@ -2641,16 +2641,22 @@ What changed (`docs/decisions.md` "Kernel round 7"): a byte per element for the 
 read is a load; `Buf::code` was 30 instructions), sole-source one-element transactions finished when applied (chain), runs of
 changed elements listed only for watched signals (lfsr), event stamps of a run in one pass, and smaller per-delta and
 per-process savings. Compiled code reads the byte itself (`TierFrame::sigtab`) and answers `rising_edge` from the edge the
-kernel resumed the process for, so `SigReadScalar` and the edge are no callbacks any more: ff under `--tier=llvm` goes from 31.2G
-to 24.3G instructions, level with the interpreter.
+kernel resumed the process for, so `SigReadScalar` and the edge are no callbacks any more (ff under `--tier=llvm`: 31.2G to
+24.3G instructions). The predecoder had lost the `LSetDrive` fusion of a scalar assignment (the generic `Machine::drive`
+was 8% of ff) when the optimiser began to share registers and to memoise instance constants: the check "register used
+once" counted whole-function uses; it now looks at the waveform buffer's uses between its `Alloc` and the `Drive` and at what
+is live after (`pre::live_after`), and a frame load that feeds an element read is one op (`SigRead1Slot`). ff and chain lose
+a tenth of their instructions to it.
 
 What the profiles show now. Interp: the interpreter is 47 to 57% of the instructions of ff, 40% of lfsr and 30 to 41% of
 fan and chain (dispatch, index arithmetic, instance constants); the rest is spread thinly (no kernel function above 6%).
-The cycle counts, unlike the instruction counts, are partly memory bound: fan has 4 L1 misses and 0.5 L2 misses per
-activation, mostly in the commit loop (process slot, 400 bytes) and the interpreter's per-process state. Tried and dropped, no gain: a
-reordered and aligned process slot, a vector pending list, a batch order check without the process table, counting repeated waits,
-prefetch. `--tier=llvm` for clocked RTL still pays the fixed cost of an entry and two callbacks (`Drive`, `WaitOn`+`Suspend`):
-fan 25.6G against 19.6G interpreted, chain 8.4G against 7.0G.
+lfsr still computes about eight instance-constant values per activation (`LoadInst`, `Pos`, `DopeLen`, `Bin` for
+`r(i)(k)`) that the memoisation does not take (its block is not hoisted, cause not found). The cycle counts, unlike the
+instruction counts, are partly memory bound: fan has 4 L1 misses and 0.5 L2 misses per activation, mostly in the commit loop (process slot,
+400 bytes) and the interpreter's per-process state. Tried and dropped, no gain: a reordered and aligned process slot, a vector
+pending list, a batch order check without the process table, counting repeated waits, prefetch, a byte table for plane writes.
+`--tier=llvm` for clocked RTL still pays the fixed cost of an entry and two callbacks (`Drive`, `WaitOn`+`Suspend`):
+fan 25.6G against 19.6G interpreted, chain 8.4G against 6.4G.
 
 ## lib (`crates/yavs-lib`)
 

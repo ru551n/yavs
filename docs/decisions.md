@@ -3501,6 +3501,19 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   commit ~250, apply and update ~250, the rest scattered over a dozen functions of 20 to 60 instructions each; the
   lever that remains is the process side (entry, drive and wait callbacks) and the per-element stamps, not the cycle.
 
+## Kernel round 10: fewer instructions per element, per delta and per batch (yavs-kernel, #440, 2026-10-21)
+
+Exact per-function instruction counts of one activation or delta (Intel PT traces of the h2h designs) placed the
+kernel and its calls at about 900 of 1960 instructions per `rtl_ff` activation, 1400 of 3400 per `rtl_lfsr`
+activation and 1650 of 2450 per `rtl_chain` delta. The changes below take the general costs found there; output is
+unchanged at any thread count.
+
+- **The effective value of a range on a block boundary of a plain logic signal is updated in whole plane words**
+  (`Signal::update_planes`): one XOR per plane gives the changed elements of 64, `last_value` and `cur` are blended
+  with that mask, then the stamps and runs of the changed elements and the codes as before. No `Buf` helper per
+  chunk (`diff_chunk`, two `select`s). Off a block boundary, byte storage and layered signals (forces, port input)
+  take the old path. `Buf::write_to` of at most 64 logic elements (a register read, `Ctx::read_into`) reads one
+  block without the chunk loop. `rtl_lfsr` -2.8% instructions, `lfsr64` -1.7%.
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

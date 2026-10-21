@@ -11,6 +11,7 @@ use smallvec::{SmallVec, smallvec};
 use crate::error::ErrorKind;
 use crate::time::Time;
 use crate::value::{Buf, Elem, SignalType, bits, fill_bits};
+use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
 /// Stable id of a signal: its index in creation (elaboration) order.
@@ -599,9 +600,14 @@ const SPREAD: [u64; 256] = {
 /// Recompute `codes` for elements `lo .. hi` of `cur`, in groups of eight.
 #[inline]
 fn refresh_codes(codes: &mut [u8], cur: &Buf, lo: usize, hi: usize) {
-    let Buf::Planes { b, .. } = cur else {
-        return;
-    };
+    if let Buf::Planes { b, .. } = cur {
+        refresh_block_codes(codes, b, lo, hi);
+    }
+}
+
+/// `refresh_codes` of the plane blocks `b`.
+#[inline]
+fn refresh_block_codes(codes: &mut [u8], b: &[Block], lo: usize, hi: usize) {
     if codes.is_empty() || lo >= hi {
         return;
     }
@@ -1080,6 +1086,13 @@ impl Signal {
         let (off, n) = (r.offset as usize, r.len as usize);
         let layered =
             self.force_drv.is_some() || self.port_in.is_some() || self.force_eff.is_some();
+        if !layered
+            && off.is_multiple_of(64)
+            && self.force_ev.is_empty()
+            && let Some(any) = self.update_planes(off, n, now, cycle)
+        {
+            return any;
+        }
         let owned;
         let (src, soff) = if layered {
             owned = self.effective_of(r);
@@ -1141,6 +1154,64 @@ impl Signal {
             any |= self.force_events(r, now, cycle);
         }
         any
+    }
+
+    /// `update_effective` of `off .. off + n` (`off` on a block boundary) of a logic signal
+    /// whose effective value is its driving value: whole plane words instead of the element
+    /// helpers. `None` for byte storage.
+    fn update_planes(&mut self, off: usize, n: usize, now: Time, cycle: u64) -> Option<bool> {
+        let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
+            (&mut self.cur, &self.driving, &mut self.last_value)
+        else {
+            return None;
+        };
+        let len = self.ty.len as usize;
+        let (cycles, rest) = self.stamps.split_at_mut(2 * len);
+        let t = stamp(now);
+        let mut any = false;
+        for c in (0..n).step_by(64) {
+            let (w, k) = ((off + c) / 64, (n - c).min(64));
+            let (x, y) = (cur[w], drv[w]);
+            let m = ((x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])) & nmask(k);
+            if m == 0 {
+                continue;
+            }
+            any = true;
+            for p in 0..4 {
+                last[w][p] = last[w][p] & !m | x[p] & m;
+                cur[w][p] = x[p] & !m | y[p] & m;
+            }
+            let base = off + c;
+            // Event cycle and time of each changed element, then the runs.
+            let (cyc, tim) = (&mut cycles[base..base + k], &mut rest[base..base + k]);
+            let mut v = m;
+            while v != 0 {
+                let i = v.trailing_zeros() as usize;
+                v &= v - 1;
+                cyc[i] = cycle;
+                tim[i] = t;
+            }
+            if self.watched {
+                let mut v = m;
+                while v != 0 {
+                    let s = v.trailing_zeros();
+                    let run = (v >> s).trailing_ones();
+                    note_run(
+                        &mut self.changed,
+                        &mut self.nruns,
+                        true,
+                        base + s as usize,
+                        run,
+                    );
+                    v &= !(nmask(run as usize) << s);
+                }
+            } else {
+                self.nruns += u64::from((m & !(m << 1)).count_ones());
+            }
+            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
+            refresh_block_codes(&mut self.codes, cur, base + lo, base + hi);
+        }
+        Some(any)
     }
 
     /// Events for the elements of `r` an earlier force of this cycle changed, if the cycle's

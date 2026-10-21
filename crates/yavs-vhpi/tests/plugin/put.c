@@ -277,6 +277,35 @@ PLUGIN_EXPORT void edges(void) {
   edge_h = reg(vhpiCbValueChange, 0, edge, h("e"), &ev, "e");
 }
 
+/* ---- first: the first of two triggers that fire in the same cycle, awaited again from
+ * inside the callback (#496) ------------------------------------------------------------ */
+
+static void first_fired(const vhpiCbDataT *cb);
+static vhpiHandleT first_h[2];
+static vhpiValueT first_v;
+
+static void first_arm(void) {
+  first_h[0] = reg(vhpiCbValueChange, 0, first_fired, h("d"), &first_v, "d");
+  first_h[1] = reg(vhpiCbValueChange, 0, first_fired, h("e"), &first_v, "e");
+}
+
+static void first_fired(const vhpiCbDataT *cb) {
+  long c;
+  unsigned t = now(&c);
+  vhpi_printf("vhpi: first %s t=%u d=%ld\n", (const char *)cb->user_data, t, c);
+  vhpi_remove_cb(first_h[0]);
+  vhpi_remove_cb(first_h[1]);
+  first_arm();
+}
+
+PLUGIN_EXPORT void first(void) {
+  static char fbuf[16];
+  first_v.format = vhpiBinStrVal;
+  first_v.bufSize = sizeof fbuf;
+  first_v.value.str = (vhpiCharT *)fbuf;
+  first_arm();
+}
+
 /* ---- transport: a write from the read-write phase at time 0 of a design with no delta at
  * time 0, seen through a transport delay (#347) ---------------------------------------- */
 

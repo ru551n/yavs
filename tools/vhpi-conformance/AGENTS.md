@@ -24,7 +24,7 @@ extend the VHPI conformance run (#273).
 | `plugins/nonprop.c`, `designs/nonprop.vhd` | The non-propagating put modes: accepted or not, the value, value-change callbacks and process events |
 | `plugins/intvec.c`, `designs/intvec.vhd` | An integer put into vectors: which bits each simulator takes, negative values, values that do not fit |
 | `plugins/strput.c`, `designs/strput.vhd` | `vhpiStrVal` puts shorter and longer than a string of either direction: accepted or not, which elements change to what |
-| `plugins/vecedge.c`, `designs/vecedge.vhd` | Value-change callbacks on a vector with several changed runs per cycle: a repeating one, one re-armed from inside itself, one registered mid-cycle on another signal |
+| `plugins/vecedge.c`, `designs/vecedge.vhd` | Value-change callbacks on a vector with several changed runs per cycle: a repeating one, one re-armed from inside itself, one registered mid-cycle on another signal (yavs deliberately also fires that one for the same cycle, one extra `w` line against the references, #496) |
 | `plugins/tport.c`, `designs/tport.vhd` | Read-write and read-only callbacks at time 0 of a design with no delta there, a put from the read-write one, value changes through a transport delay on an integer port |
 | `plugins/put.c` | `vhpi_put_value` deposit, force, release, bad arguments, read back at several phases |
 | `plugins/fresult.c`, `designs/fresult.vhd` | Foreign functions with array results (#330), one entity per case: sized with `vhpiSizeConstraint` or not, a string, a constrained result; the size before and after, the bounds |

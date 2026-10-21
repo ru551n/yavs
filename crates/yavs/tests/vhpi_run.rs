@@ -520,6 +520,31 @@ fn vhpi_value_change_rearmed_fires_once_per_cycle() {
     );
 }
 
+/// The first of two triggers that fire in the same cycle, awaited again from inside the
+/// callback (removing both and registering both anew), sees the other one's change too, but a
+/// re-armed trigger on a signal already reported in the cycle waits for the next (#496).
+#[test]
+fn vhpi_repeated_first_of_coincident_triggers_misses_no_edge() {
+    let (code, err, out) = put("first", &[]);
+    assert_eq!(code, 0, "{err}");
+    let fires: Vec<_> = out
+        .lines()
+        .filter(|l| l.starts_with("vhpi: first "))
+        .collect();
+    assert_eq!(
+        fires,
+        [
+            "vhpi: first d t=10 d=0",
+            "vhpi: first e t=10 d=0",
+            "vhpi: first e t=20 d=0",
+            "vhpi: first d t=30 d=0",
+            "vhpi: first d t=50 d=0",
+            "vhpi: first d t=70 d=0",
+        ],
+        "{out}"
+    );
+}
+
 /// A write from the read-write phase registered at load time lands at time 0 even though the
 /// design has no delta at time 0, and reaches an output port through a transport delay 10 ns
 /// later (#347).

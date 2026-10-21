@@ -90,9 +90,13 @@ pub(crate) struct Callbacks {
     /// Enabled value-change callbacks per kernel signal: the elements each watches, in
     /// registration order.
     watched: HashMap<SignalId, Vec<(Range, u64)>>,
-    /// The cycle whose value changes are being dispatched and the first callback id
-    /// registered after its first change: those wait for the next cycle (#346).
-    vc_cycle: Option<((Time, u32), u64)>,
+    /// The cycle whose value changes are being dispatched, and per kernel signal the first
+    /// callback id registered after that signal's first change in it: those wait for the
+    /// next cycle (#346). A callback registered before a signal's change is reported (a
+    /// framework re-arming a trigger on a signal that changes in the same cycle, #496) still
+    /// sees it.
+    vc_cycle: Option<(Time, u32)>,
+    vc_seen: HashMap<SignalId, u64>,
     /// Pending after-delay wake-ups.
     wakes: HashMap<WakeId, u64>,
     /// Kernel requests not made yet: after-delay callbacks to schedule, wake-ups to cancel.
@@ -288,16 +292,15 @@ impl Callbacks {
     /// The enabled value-change callbacks watching elements `r` of `sig` that have not run
     /// in this cycle (`now`, `delta`), in registration order; each is marked as run. One
     /// registered while this cycle's changes are dispatched (from a value-change callback,
-    /// as Python testbench frameworks re-arm theirs) first sees the next cycle, as all three
-    /// references with VHPI do (#346); the kernel reports a vector's changed runs one by one.
+    /// as Python testbench frameworks re-arm theirs) first sees the next cycle of the signal
+    /// it watches (#346; the kernel reports a vector's changed runs one by one), but still
+    /// sees the change of a signal not reported yet in this cycle (#496).
     pub(crate) fn changed(&mut self, sig: SignalId, r: Range, now: Time, delta: u32) -> Vec<u64> {
-        let first_new = match self.vc_cycle {
-            Some((c, n)) if c == (now, delta) => n,
-            _ => {
-                self.vc_cycle = Some(((now, delta), self.next));
-                self.next
-            }
-        };
+        if self.vc_cycle != Some((now, delta)) {
+            self.vc_cycle = Some((now, delta));
+            self.vc_seen.clear();
+        }
+        let first_new = *self.vc_seen.entry(sig).or_insert(self.next);
         let Some(list) = self.watched.get(&sig) else {
             return Vec::new();
         };
@@ -462,22 +465,28 @@ mod tests {
         assert_eq!(cbs.changed(a, Range::new(0, 8), t, 3), [bit, rec]);
         cbs.set_enabled(whole, true);
         assert_eq!(cbs.changed(a, Range::new(0, 8), t, 4), [whole, bit, rec]);
-        // One registered while a cycle's changes are dispatched waits for the next (#346).
-        let late = cbs
-            .register(
+        // One registered while a cycle's changes are dispatched waits for the next (#346)
+        // on a signal already reported in it, but sees a signal not reported yet (#496).
+        let later = |cbs: &mut Callbacks| {
+            let ok = cbs.register(
                 data(vhpiCbValueChange),
                 vhpiReturnCb,
                 None,
                 Some((Object::Tool, [(b, Range::new(0, 1))][..].into())),
                 &clock,
-            )
-            .unwrap_or_else(|_| panic!("register"));
+            );
+            ok.unwrap_or_else(|_| panic!("register"))
+        };
+        let late = later(&mut cbs);
+        assert!(cbs.changed(b, Range::new(0, 1), t, 4).contains(&late));
+        let late2 = later(&mut cbs);
         assert!(
             cbs.changed(b, Range::new(0, 1), t, 4)
                 .iter()
-                .all(|&i| i != late)
+                .all(|&i| i != late2)
         );
-        assert!(cbs.changed(b, Range::new(0, 1), t, 5).contains(&late));
+        assert!(cbs.changed(b, Range::new(0, 1), t, 5).contains(&late2));
+        cbs.remove(late2);
         cbs.remove(late);
         assert!(cbs.fire(whole, t).is_some(), "value change repeats");
         for id in [whole, bit, rec] {

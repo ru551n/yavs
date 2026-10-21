@@ -177,7 +177,7 @@ impl Db {
     /// subtype leaves them open (or takes them from an object that does) and the object is
     /// a parameter or declared in a process or subprogram, so elaboration has no value for it.
     fn bounds_known_at_run_time_only(&self, e: ExprId) -> bool {
-        use crate::types::{Constraint, Constrainedness};
+        use crate::types::{Constrainedness, Constraint};
         let st = self.exprs[e].subtype;
         if let Constraint::FromObject { expr, .. } = self.subtypes[st].constraint {
             return self.bounds_known_at_run_time_only(expr);

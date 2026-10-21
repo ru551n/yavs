@@ -459,10 +459,8 @@ impl Elaborated {
     ) -> Result<(yavs_ir::Program, Rest, Option<crate::libstage::LibUse>), Vec<Diagnostic>> {
         let mut l = match resumed {
             Some(l) => l,
-            // Package objects first (#183), in analysis order, which puts a package after
-            // those its declaration uses (LRM 14.4.2).
-            // ponytail: a body using a package analyzed after its declaration is
-            // initialised too early; order by the dependency graph if a design needs it.
+            // Package objects first (#183), in dependency order: a package after those its
+            // declaration and body use (LRM 14.4.2, `run_time_packages`).
             None => {
                 let (l, u) = crate::pkgcall::package_lowerer(db, packages, opts)?;
                 lib = u;

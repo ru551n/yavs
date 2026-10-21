@@ -1438,7 +1438,17 @@ CPU seconds, instructions (billions, one core type) and peak RSS:
 `--tier=auto` equals `--tier=interp` within 3% on every row, including the compute loop, where `--tier=llvm`
 (everything compiled before time 0, extra rows below) is 5.7x faster than either. The earlier gap map measured `auto` at
 0.62 s against 1.82 s for this loop; here it no longer switches (the loop is one long-running process; `--verbose`
-prints no compile note), see gap 3. Eager `--tier=llvm` against `--tier=interp`:
+prints no compile note), see gap 3. **Fixed 2026-10-21 (#432):** the compute loop (design 1) was no longer compiled by `--tier=auto` since `f4330993`
+(tier-up within a budget; found by bisecting release builds with the `llvm` feature: `4d0c9ae9` and `e69dfe92` switch, `f4330993` does not).
+It was not the sampler: the loop is sampled and the hand-over works, but the compile of the 338-instruction process
+(about 100 ms at O2, estimated 135 ms) had to stay within 4% of the interpreter time seen, which a 1.9 s run only reaches at
+3.4 s. A compute loop now gets 16 times the budget (`COMPUTE_BUDGET`), still after being seen for four times its compile
+time. Design 1 (20M iterations, one performance core): interpreter 1.89 s, `--tier=auto` 0.83 s (it was 1.90 s), `--tier=llvm` 0.33 s;
+`bench_compute_loop` at 20M iterations 3.30 s to 1.89 s. `--tier=auto` against `--tier=interp` elsewhere (median of 3,
+ratio auto / interp): ff 1.02, lfsr 1.02, chain 1.01, fan 1.02, bus 1.01, ram 1.01, the internal benchmark designs 0.96 to 1.07
+(1.06 `ieee_heavy` and 1.07 `elab_heavy` at 0.26 and 0.44 s, within the noise of cells that size).
+
+Eager `--tier=llvm` against `--tier=interp`:
 
 | Row | yavs `--tier=llvm` wall | CPU | RSS MiB | vs interp |
 |---|---:|---:|---:|---:|

@@ -195,6 +195,19 @@ fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     stepped * 20 <= total
 }
 
+/// A compute loop gets this many times the budget: it runs several times faster compiled (the
+/// interpreter's time goes to dispatch), so a long-running one repays a compile of a size the
+/// plain budget would only allow after minutes, and the compile is on another thread (#432).
+const COMPUTE_BUDGET: u64 = 16;
+
+/// Whether compiling for `cost` more microseconds keeps the compile time spent within `budget`
+/// percent (`COMPUTE_BUDGET` times that for compute) of the `total` microseconds the sampler saw
+/// running; budget 0 is no limit.
+fn within_budget(budget: u32, compute: bool, spent: u64, cost: u64, total: u64) -> bool {
+    let percent = u64::from(budget) * if compute { COMPUTE_BUDGET } else { 1 };
+    budget == 0 || (spent + cost) * 100 <= total * percent
+}
+
 /// See `Heat::o2_threshold`.
 const O2_AFTER: u64 = 30;
 
@@ -358,15 +371,8 @@ impl Worker {
             .filter_map(|&i| self.prog.func(i))
             .map(|f| self.cost(f))
             .sum();
-        // At most `budget` percent of the time the sampler saw interpreted code goes to
-        // compiling, twice that for compute (`compute`).
-        let budget = u64::from(self.heat.budget)
-            * if self.prog.func(id).is_some_and(|f| compute(&self.prog, f)) {
-                2
-            } else {
-                1
-            };
-        if self.heat.budget != 0 && (self.spent + cost) * 100 > self.total * budget {
+        let compute = self.prog.func(id).is_some_and(|f| compute(&self.prog, f));
+        if !within_budget(self.heat.budget, compute, self.spent, cost, self.total) {
             return None;
         }
         cands.swap_remove(best);
@@ -649,5 +655,24 @@ impl Tier for AutoTier {
             // The worker is gone only after `stop`: nothing to compile any more.
             let _ = q.send(func);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::within_budget;
+
+    /// A process that interprets one loop for seconds without ever suspending: the sampler sees
+    /// all of it, and a compute loop of a few hundred instructions (about 180 ms to compile)
+    /// is compiled once the payback rule allows (about half a second); other code still waits for the plain
+    /// 2 percent, and nothing is compiled before it could repay.
+    #[test]
+    fn long_compute_loop_fits_the_budget() {
+        let cost = 177_000;
+        assert!(!within_budget(2, true, 0, cost, 500_000));
+        assert!(within_budget(2, true, 0, cost, 600_000));
+        assert!(!within_budget(2, false, 0, cost, 1_500_000));
+        assert!(within_budget(2, false, 0, cost, 9_000_000));
+        assert!(within_budget(0, false, 0, cost, 0));
     }
 }

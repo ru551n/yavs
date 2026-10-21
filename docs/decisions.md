@@ -262,8 +262,10 @@ milestone users care about works.
   the generated instructions and made compile time twice as long, and the code ran no faster.
 - **Tier-up budget (llvmtb, 2026-10-21, #432):** `--tier=auto` compiles at O2 only (O0 code
   ran no faster than the interpreter on testbench code), and only while its own compile time
-  stays within `Heat::budget` (2) percent of the interpreter time the sampler saw, twice that
-  for compute loops; a function must also have been seen for four times its estimated compile
+  stays within `Heat::budget` (2) percent of the interpreter time the sampler saw, sixteen times
+  that for compute loops (a long loop in one process that never suspends is seen only by the
+  sampler, and at twice the budget a 440-instruction loop was not compiled before the run
+  was over: 1.9 s interpreted against 0.33 s compiled); a function must also have been seen for four times its estimated compile
   time (learned per IR instruction), and its small callees compile with it. Why: a compile
   costs CPU, a hot set of testbench functions gains under 10%, and the requirement is that
   `--tier=auto` never runs more than 2% longer than `--tier=interp`. With the hidden

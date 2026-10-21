@@ -217,6 +217,24 @@ fn auto_tier_compiles_within_its_budget() {
     tier.stop(true);
 }
 
+/// One call that never returns to the kernel (a process that runs its loop to the end without
+/// suspending) is seen by the sampler only, and the big loop is still compiled within the
+/// default budget and swapped in while it runs (#432). The budget decision itself is tested
+/// deterministically in `auto.rs`; this checks the whole path.
+#[test]
+fn auto_tier_compiles_a_long_loop_of_one_call() {
+    let (prog, f) = sum_padded(800);
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let note: Note = Box::new(|_, _, _| {});
+    let heat = Heat { budget: 2, ..HOT };
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+    let n = 3_000_000u64;
+    let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
+    assert_eq!(r.unwrap(), Some(n * (n + 1) / 2));
+    assert_eq!(tier.compiled(), 1, "the loop was never compiled");
+    tier.stop(true);
+}
+
 /// A function compiled at O0 that stays hot in its compiled code is compiled again at O2 and
 /// swapped in; the results never change.
 #[test]
@@ -306,6 +324,11 @@ fn auto_tier_skips_functions_over_the_size_cap() {
 
 /// sum := 0; for i in 0 to n loop sum := sum + i; end loop; return sum;
 fn sum() -> (Program, FuncId) {
+    sum_padded(0)
+}
+
+/// `sum` with `pad` additions of zero in the loop body: a big function for the budget.
+fn sum_padded(pad: usize) -> (Program, FuncId) {
     let mut pb = ProgramBuilder::new();
     let f = pb.declare("sum", FuncKind::Function, None);
     let mut fb = pb.define(f);
@@ -335,6 +358,15 @@ fn sum() -> (Program, FuncId) {
         f: done,
     });
     fb.at(body);
+    let zero = fb.int(0);
+    for _ in 0..pad {
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: acc,
+            a: acc,
+            b: zero,
+        });
+    }
     fb.emit(Inst::Bin {
         op: IntOp::Add,
         dst: acc,

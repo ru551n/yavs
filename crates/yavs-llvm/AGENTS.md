@@ -40,7 +40,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
 - `AutoTier::start` (`yavs run --tier=auto`) compiles at O2, on one background thread, the
   functions where the sampled interpreter time reaches `PAYBACK` times their estimated compile
   time, with their small callees (`Worker::tree`), and only while the compile time spent is at
-  most `Heat::budget` percent (2; twice that for a compute loop, `compute`) of the interpreter
+  most `Heat::budget` percent (2; sixteen times that for a compute loop, `compute`) of the interpreter
   time the sampler saw (`Worker::pick`, #432). With the hidden `--tier-heat` there is no budget
   and the first level is O0, those still hot in their compiled code compile again at O2
   (`Heat::o2_threshold`);

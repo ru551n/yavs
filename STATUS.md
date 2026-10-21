@@ -253,6 +253,18 @@ instances needed about 17 KB per instance (kernel signals about 1.2 KB each with
 elaborated model about 9 KB per instance; see "Memory of designs with many instances (#421)" for what is left); the shared heap of a long verification testbench is genuinely
 live data (about 20 MB). A global allocator that keeps freed memory mapped (one was tried) doubled the peak.
 
+### Zeroed large arrays (#486)
+
+A random-cyclic testbench of a verification library peaked at 567 MB (`rand_cyclic_performance`, also with
+`--no-cache`). Breakdown with a counting run: 54 MB is the floor of the library (`rand_report`), 33 MB the
+queue and the 100000-value list of the later steps, and 480 MB one `std_logic` array of 2^29+1 elements
+(one byte each) that the testbench allocates and marks sparsely. `Inst::NewFill` built every fill with
+`Vec::resize`, touching all pages; an all-zero fill (`U` is code 0) is now `vec![0; n]`, a zeroed
+allocation whose pages the OS maps on first touch. Peak RSS 567 to 87 MB, same output, same run time
+(3.2 s pinned). The reference simulators allocate the same array: sim1 reaches the 2 GB cap, sim2 1.1 GB.
+`bit` and `boolean` arrays have code bias 2 (default `0`/`false` is byte 2), so they are still filled
+eagerly. Test: `crates/yavs/tests/rss.rs` (Linux).
+
 ### Memory of designs with many instances (#421)
 
 `elab_heavy` (20000 instances: 40002 kernel signals, 40001 processes) peaked at 271 MiB, with 1.82 million live

@@ -5627,8 +5627,7 @@ impl Machine {
                     return Err(ice("NewFill size is not a multiple of its element"));
                 }
                 let (ds, size) = (dsize as usize, size as usize);
-                let mut v = Vec::with_capacity(ds + size);
-                v.extend_from_slice(self.rd(self.r(desc), u64::from(dsize))?);
+                let dbytes = self.rd(self.r(desc), u64::from(dsize))?.to_vec();
                 let src = self.rd(
                     self.r(data),
                     if fill == 0 {
@@ -5637,17 +5636,26 @@ impl Machine {
                         u64::from(fill)
                     },
                 )?;
-                if fill == 0 {
-                    v.extend_from_slice(src);
-                } else if src.iter().all(|&b| b == 0) {
-                    v.resize(ds + size, 0);
-                } else if fill == 1 {
-                    v.resize(ds + size, src[0]);
+                // An all-zero fill is a zeroed allocation: the OS maps its pages on first
+                // touch, so a large array that is only sparsely used stays small (#486).
+                let v = if fill != 0 && src.iter().all(|&b| b == 0) {
+                    let mut v = vec![0u8; ds + size];
+                    v[..ds].copy_from_slice(&dbytes);
+                    v
                 } else {
-                    for _ in 0..size / fill as usize {
+                    let mut v = Vec::with_capacity(ds + size);
+                    v.extend_from_slice(&dbytes);
+                    if fill == 0 {
                         v.extend_from_slice(src);
+                    } else if fill == 1 {
+                        v.resize(ds + size, src[0]);
+                    } else {
+                        for _ in 0..size / fill as usize {
+                            v.extend_from_slice(src);
+                        }
                     }
-                }
+                    v
+                };
                 let r = self.alloc_heap(shared)?.alloc(heap::Obj::Typed(ty), v);
                 let h = r.map_err(|_| {
                     Fault::Runtime("heap object limit (16M objects per heap) exceeded".into())

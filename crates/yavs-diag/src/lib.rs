@@ -809,7 +809,6 @@ mod tests {
             "{human}"
         );
         assert_eq!(back.get(u).try_text(), Err(Unavailable::Unreadable));
-        std::fs::remove_dir_all(&dir).expect("cleanup");
     }
 
     #[test]

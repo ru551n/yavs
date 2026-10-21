@@ -130,7 +130,7 @@ python3 -I tools/bench/run.py target/release/yavs --ref sim1 --bench rtl_ff,lfsr
 python3 -I tools/bench/tiny.py target/release/yavs --ref sim1,sim2 --filter delta/                  # a part of the corpus
 ```
 
-`--tiers auto` and `llvm` need a yavs built with `--features llvm`; a tier that fails is shown as FAILED in its row. Results
+`--tiers` entries may carry environment variables, `clift+YAVS_CLIFT_NATIVE=0` (the tier with `env VAR=VALUE` in front, for measurement knobs; the column is named with the suffix). `--tiers auto` and `llvm` need a yavs built with `--features llvm`; a tier that fails is shown as FAILED in its row. Results
 (raw samples and medians) go to `<cache>/results/<time>-ref*.json` and `-tiny*.json`.
 
 ## 6. Coordination

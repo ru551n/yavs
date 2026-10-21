@@ -498,7 +498,10 @@ def ref_mode(a, reg):
         wd = Path(wd)
         scripts = {}
         for t in tiers:
-            scripts["yavs-" + t] = (" ".join(shlex.quote(Y if x == "{Y}" else x) for x in argv[:2] + [f"--tier={t}"] + argv[2:]), False)
+            # `tier+VAR=VALUE`: the tier with environment variables set (measurement knobs).
+            name, *envs = t.split("+")
+            pre = "env " + " ".join(shlex.quote(e) for e in envs) + " " if envs else ""
+            scripts["yavs-" + t] = (pre + " ".join(shlex.quote(Y if x == "{Y}" else x) for x in argv[:2] + [f"--tier={name}"] + argv[2:]), False)
         sub = dict(file=str(HERE / "designs" / f"{n}.vhd"), top=f"bench_{n}", std=STD, std2=STD[2:], res="fs")
         for lab, tpl in refs.items():
             w = mkdir(CACHE / "work" / "ref" / lab / n)

@@ -382,8 +382,9 @@ milestone users care about works.
   frame view, the callbacks, `enter` and the per-instruction facts both generators need live in
   `yavs-llvm/src/rt.rs`, which builds without LLVM; `yavs-clift` depends on that and on nothing of LLVM's. Same side
   exits, same GC-root discipline, same rule: a failing inline instruction returns its pc and the interpreter reports
-  the error. Frame mode only: no native frames and no deferred register stores (registers stay in the frame, so the
-  interpreter's frames, roots and traces are unchanged); entry points include the pcs after preloaded constants.
+  the error. Registers stay in the frame (no deferred register stores, so the interpreter's frames, roots and traces are
+  unchanged); entry points include the pcs after preloaded constants. Small functions that need no step also get a
+  native-frame body (below).
 - **Tiers:** `--tier=clift` translates every function before time 0; `--tier=clift-auto` translates hot functions
   (with the small functions they call) on one background thread; `--tier=auto3` is the LLVM `AutoTier` with Cranelift
   as its first level (`FirstLevel`): the budget, payback, sampling and `Tier::hot` rules of `auto.rs` apply to the
@@ -394,6 +395,18 @@ milestone users care about works.
   Translating costs about 42 us per IR instruction (LLVM O2 about 1 ms), `speed` costs about the same as `none` and
   helps loops; single-pass register allocation translates 3x faster and runs the code slower (no gain measured in
   `auto3`). `YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA` and `YAVS_CLIFT_VERIFY` are measurement knobs, not an interface.
+- **Native frames and inlining (2026-10-21):** a function of at most 400 IR instructions, 128 registers and 1 KiB of
+  slots, without a static link, that needs no step (no heap, report, signal operation or call to a function without
+  this body, and passes no address of its own frame to a call) gets a second body `n<id>` with registers and slots on
+  the native stack, called directly (`(status, value)`). Failing checks and slow paths record the frame
+  (`yavs_rt_deopt`) and the frame-mode root has the interpreter materialise every recorded frame, so the output is the
+  interpreter's; Cranelift's own `Inline` then inlines bodies of up to 150 Cranelift instructions (2000 per caller). The
+  yavs IR is not inlined: a failing instruction in an inlined body would have to run in the interpreter in a callee
+  frame (error text, call chain, `Stmt` temporaries, static links, frame-indexed addresses), which is exactly the
+  materialisation the native bodies provide; with it, inlining the finished Cranelift body is the smaller step.
+  Measured effect: call-heavy code 8x faster, everything else unchanged (STATUS.md "clift: native frames and inlining").
+  `YAVS_CLIFT_NATIVE`, `YAVS_CLIFT_INLINE`, `YAVS_CLIFT_NATIVE_MAX`, `YAVS_CLIFT_DUMP`, `YAVS_CLIFT_TRACE` are
+  measurement knobs.
 - **Result (STATUS.md "clift", issue #481 comment):** correct (corpus identical at 1 and 4 threads, collection
   stress). Performance: interpreter-relative geometric mean on the library testbenches 1.14 for `auto`, 1.07 for
   `auto3`, 1.15 to 1.16 for Cranelift alone; on the kernel designs no configuration moves and Cranelift code runs

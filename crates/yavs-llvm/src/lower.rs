@@ -3783,7 +3783,7 @@ impl Gen {
             );
             let byte = self.load(self.i8, self.gep(codes, off));
             self.st(c, dst, self.zext8(byte));
-            self.join(&c, join);
+            self.join(c, join);
         }
     }
 
@@ -3839,7 +3839,7 @@ impl Gen {
                 let w = LLVMBuildAnd(self.b, *plane, self.c64(mask as i64), c"".as_ptr());
                 self.store(w, self.gep(pd, self.c64(8 * p as i64)));
             }
-            self.join(&c, join);
+            self.join(c, join);
         }
         true
     }
@@ -3871,7 +3871,7 @@ impl Gen {
             );
             self.guard(c, ok, slow);
             self.st(c, dst, self.c64(1));
-            self.join(&c, join);
+            self.join(c, join);
         }
     }
 
@@ -4044,7 +4044,7 @@ impl Gen {
                 self.c32(inertial),
             ];
             self.call_go(c, self.drive_ty, self.drive, &mut args, false);
-            self.join(&c, join);
+            self.join(c, join);
         }
     }
 
@@ -4156,7 +4156,7 @@ impl Gen {
                 at_k += units;
             }
             if mask == 0 {
-                self.join(&c, join);
+                self.join(c, join);
                 return true;
             }
             let d = self.ld(c, dst);
@@ -4174,7 +4174,7 @@ impl Gen {
                 };
                 self.store(v, pp);
             }
-            self.join(&c, join);
+            self.join(c, join);
         }
         true
     }
@@ -4305,7 +4305,7 @@ impl Gen {
             if let Some(d) = dst {
                 self.st(c, d, v);
             }
-            self.join(&c, join);
+            self.join(c, join);
         }
     }
 

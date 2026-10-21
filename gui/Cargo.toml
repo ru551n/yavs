@@ -13,7 +13,7 @@ repository = "https://github.com/ru551n/yavs"
 publish = false
 
 [dependencies]
-eframe = { version = "0.36.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_dock = "0.21.1"
 # Not on crates.io: pinned to a revision of its main branch (user, 2026-10-19). Used from G4 on
 # (waves); pinned now so every slice builds against the same egui and wellen.

@@ -1172,15 +1172,15 @@ impl Signal {
             let d = &mut self.drivers[slot as usize];
             d.put_planes((q.elem - d.range.offset) as usize, q.len as usize, q.planes);
             let (sole, r) = (!d.shared, Range::new(q.elem, q.len));
-            self.mark_active(r, now, cycle);
             if sole && self.plain() {
-                // The elements' only source: the driving value follows now, the effective
-                // value in `finish_signal`.
+                // The elements' only source: the driving value follows now, the activity and
+                // the effective value in `finish_signal` (one pass over the joined runs).
                 if let Buf::Planes { b, .. } = &mut self.driving {
                     put_block(b, q.elem as usize, q.len as usize, q.planes, !0);
                 }
                 push_range(&mut self.fast_dirty, r);
             } else {
+                self.mark_active(r, now, cycle);
                 self.push_dirty(r);
             }
             return;

@@ -355,3 +355,143 @@ fn element_codes_follow_every_kind_of_update() {
         assert!(checks.load(Ordering::SeqCst) > 30, "{n} elements");
     }
 }
+
+/// The value process `k` drives onto its `len` elements at its `edge`th rising clock edge.
+fn pattern(k: u32, edge: u32, len: u32) -> LogicVec {
+    LogicVec::from_fn(len as usize, |i| {
+        StdULogic::from_code_pub(((i as u32 + k * 3 + edge * (k + 1)) % 9) as u8)
+    })
+}
+
+/// The plane blocks of `v` as `Ctx::assign_blocks` takes them.
+fn blocks_of(v: &LogicVec) -> Vec<u8> {
+    v.repr()
+        .blocks()
+        .iter()
+        .flat_map(|b| b.iter().flat_map(|w| w.to_le_bytes()))
+        .collect()
+}
+
+/// A vector driven by several processes with one slice each, each assigning a whole slice (at
+/// most 64 elements, some across a plane word boundary, some through `assign_blocks`) at every
+/// rising edge. The slices are zero-delay assignments to idle drivers, kept as plane words.
+fn slices(order: impl Iterator<Item = usize>, cfg: Config) -> (Vec<String>, String) {
+    const SLICES: [(u32, u32); 5] = [(0, 16), (16, 1), (17, 47), (64, 8), (72, 28)];
+    let mut b = Builder::new();
+    let clk = logic_clock(&mut b);
+    let s = b.signal(
+        "s",
+        SignalType::logic(100),
+        &LogicVec::new(100, StdULogic::U),
+    );
+    for k in order {
+        let (off, len) = SLICES[k];
+        let target = s.slice(off, len);
+        let d = b.driver(target);
+        let mut edges = 0u32;
+        b.process(
+            &format!("e{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                if c.event(clk)? && c.first_code(clk, false)? == Some(StdULogic::One as u8) {
+                    edges += 1;
+                    // Repeat a value now and then: an unchanged assignment is skipped.
+                    let v = pattern(k as u32, edges / 2, len);
+                    if k % 2 == 0 {
+                        c.assign(d, None, &[(Time::ZERO, &v)], DelayMode::INERTIAL)?;
+                    } else {
+                        c.assign_blocks(d, None, Time::ZERO, &blocks_of(&v), DelayMode::INERTIAL)?;
+                    }
+                }
+                c.wait_on(clk)?;
+                Ok(())
+            }),
+        );
+    }
+    let (mut sim, trace) = build(b, cfg);
+    sim.run_until(ns(100)).unwrap();
+    let mut lines = trace.take();
+    lines.sort();
+    (lines, sim.value(s).unwrap().to_string())
+}
+
+#[test]
+fn vector_slices_are_assigned_whole_in_any_order_and_thread_count() {
+    let (lines, last) = slices(0..5, Config::default());
+    // 10 rising edges, the last value of each slice at the end.
+    let mut want = LogicVec::new(100, StdULogic::U);
+    for (k, (off, len)) in [(0u32, 16u32), (16, 1), (17, 47), (64, 8), (72, 28)]
+        .into_iter()
+        .enumerate()
+    {
+        let v = pattern(k as u32, 5, len);
+        for i in 0..len {
+            want.set((off + i) as usize, v.get(i as usize));
+        }
+    }
+    assert_eq!(last, Value::Logic(want).to_string());
+    assert!(lines.len() > 20);
+    assert_eq!(
+        slices((0..5).rev(), Config::default()),
+        (lines.clone(), last.clone())
+    );
+    let four = Config {
+        threads: 4,
+        ..Config::default()
+    };
+    assert_eq!(slices(0..5, four), (lines, last));
+}
+
+#[test]
+fn vector_assignment_then_a_later_one_keeps_both() {
+    let mut b = Builder::new();
+    let s = b.signal("s", SignalType::logic(4), &lv("UUUU"));
+    let d = b.driver(s);
+    b.process(
+        "p",
+        NONE,
+        &[d],
+        p(move |c| {
+            // The first stays a plain zero-delay assignment until the second one schedules.
+            c.assign(d, None, &[(Time::ZERO, &lv("0101"))], DelayMode::Transport)?;
+            c.assign(d, None, &[(ns(2), &lv("1111"))], DelayMode::Transport)?;
+            c.wait_for(ns(100))
+        }),
+    );
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(5)).unwrap();
+    assert_eq!(
+        trace.take(),
+        [
+            "0 fs +1 s[0..4]=\"0101\"",
+            "2 ns +0 s[1..2]=\"1\"",
+            "2 ns +0 s[3..4]=\"1\""
+        ]
+    );
+}
+
+#[test]
+fn assign_blocks_longer_than_a_word_and_wrong_sizes() {
+    let mut b = Builder::new();
+    let s = b.signal("s", SignalType::logic(70), &LogicVec::new(70, StdULogic::U));
+    let d = b.driver(s);
+    let v = LogicVec::from_fn(70, |i| StdULogic::from_code_pub((i % 9) as u8));
+    let bytes = blocks_of(&v);
+    b.process(
+        "p",
+        NONE,
+        &[d],
+        p(move |c| {
+            assert!(
+                c.assign_blocks(d, None, Time::ZERO, &bytes[..32], DelayMode::INERTIAL)
+                    .is_err()
+            );
+            c.assign_blocks(d, None, Time::ZERO, &bytes, DelayMode::INERTIAL)?;
+            c.wait_for(ns(100))
+        }),
+    );
+    let (mut sim, _) = build(b, Config::default());
+    sim.run_until(ns(5)).unwrap();
+    assert_eq!(sim.value(s).unwrap(), Value::Logic(v));
+}

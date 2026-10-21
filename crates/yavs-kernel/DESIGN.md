@@ -45,8 +45,14 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   nothing pending (`Ctx::assign_code`) is `Waveform::quick` (time, element, code), not a list
   entry with a value buffer. It matures in the next update (`Signal::apply_driver` writes the
   code into the driver); everything that schedules, preempts or inspects `Waveform::pending` goes
-  through `Waveform::spill` or `idle` first. A zero-delay assignment of a vector to an idle driver
-  appends its one transaction directly (`Ctx::assign`).
+  through `Waveform::spill` or `idle` first. A zero-delay assignment of at most 64 logic elements
+  to an idle driver (`Ctx::assign`, `Ctx::assign_blocks`) is `Waveform::vquick` (time, first
+  element, length, the four plane words), likewise spilled on demand. On an element run whose
+  driver is its only source, of a signal with no layer, group, guard or resolution function,
+  `Signal::apply_driver` writes the plane words into the driver and into the signal's driving
+  value at once and lists the run in `Signal::fast_dirty`; `finish_signal` then only updates the
+  effective value of those runs. Any other vector assignment of a cycle appends its one
+  transaction directly (`Ctx::assign`).
 - **Transactions** carry `(time, range, Option<value>)`, `None` being a null transaction. LRM
   10.5.2.2 preemption (transport, inertial with rejection limit, the "same value immediately
   before" chain) is decided per element using chunked diffs; a partly preempted old transaction

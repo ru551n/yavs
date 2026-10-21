@@ -2220,6 +2220,7 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
     // The driving values of these were written when their transactions were applied.
     let mut fast = std::mem::take(&mut sig.fast_dirty);
     for r in fast.drain(..) {
+        sig.mark_active(r, now, cycle);
         changed |= sig.update_effective(r, now, cycle);
     }
     sig.fast_dirty = fast;

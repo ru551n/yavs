@@ -433,7 +433,7 @@ impl Ctx<'_> {
         if let [(delay, v)] = waveform
             && let ValueRef::Logic(l) = (*v).into()
             && let [p] = l.repr().blocks()
-            && self.assign_planes_fast(d, target, *delay, *p, l.len() as u32, mode)
+            && self.assign_planes_fast(d, target, *delay, *p, Some(l.len() as u32), mode)
         {
             return Ok(());
         }
@@ -585,6 +585,13 @@ impl Ctx<'_> {
         blocks: &[u8],
         mode: DelayMode,
     ) -> Result<(), SimError> {
+        // One word of 64 elements or less: the usual vector.
+        if let [b] = blocks.as_chunks::<32>().0
+            && blocks.len() == 32
+            && self.assign_planes_fast(d, target, delay, words(b), None, mode)
+        {
+            return Ok(());
+        }
         let (_, r) = self.target(d, target)?;
         let n = r.len as usize;
         if blocks.len() != n.div_ceil(64) * 32 {
@@ -593,19 +600,7 @@ impl Ctx<'_> {
                 blocks.len()
             ))));
         }
-        let word = |b: &[u8], k: usize| u64::from_le_bytes(b[k * 8..k * 8 + 8].try_into().unwrap());
-        if let [b] = blocks.as_chunks::<32>().0
-            && n <= 64
-            && self.assign_planes_fast(d, target, delay, std::array::from_fn(|k| word(b, k)), n as u32, mode)
-        {
-            return Ok(());
-        }
-        let blocks: Vec<[u64; 4]> = blocks
-            .as_chunks::<32>()
-            .0
-            .iter()
-            .map(|b| std::array::from_fn(|k| word(b, k)))
-            .collect();
+        let blocks: Vec<[u64; 4]> = blocks.as_chunks::<32>().0.iter().map(words).collect();
         let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(n, blocks));
         self.assign(d, target, &[(delay, &v)], mode)
     }
@@ -621,7 +616,7 @@ impl Ctx<'_> {
         target: Option<Range>,
         delay: Time,
         planes: [u64; 4],
-        len: u32,
+        want: Option<u32>,
         mode: DelayMode,
     ) -> bool {
         let Some(info) = self.sh.drivers.get(d.0 as usize) else {
@@ -633,9 +628,10 @@ impl Ctx<'_> {
                 DelayMode::Transport => true,
                 DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
             };
+        let len = r.len;
         if !now_mode
             || info.owner != self.pid
-            || r.len != len
+            || want.is_some_and(|w| w != len)
             || len == 0
             || len > 64
             || !info.range.contains(r)
@@ -936,19 +932,34 @@ impl Ctx<'_> {
 /// Resolve a reference against the model: the signal must exist and the range must lie
 /// within it (null ranges allowed).
 #[inline(always)]
+/// The four little-endian plane words of a 32-byte block.
+fn words(b: &[u8; 32]) -> [u64; 4] {
+    let (w, _) = b.as_chunks::<8>();
+    std::array::from_fn(|k| u64::from_le_bytes(w[k]))
+}
+
+#[inline(always)]
 pub(crate) fn check_ref(signals: &[Signal], r: SigRef) -> Result<(&Signal, Range), ErrorKind> {
-    let s = signals
-        .get(r.signal.0 as usize)
-        .ok_or_else(|| ErrorKind::BadRef(format!("no signal {}", r.signal.0)))?;
-    let range = s.resolve(r.range);
-    if range.offset.checked_add(range.len).is_none() || !s.full().contains(range) {
-        let msg = format!(
-            "elements {}+{} out of range for {} (length {})",
-            range.offset, range.len, s.name, s.ty.len
-        );
-        return Err(ErrorKind::BadRef(msg));
+    if let Some(s) = signals.get(r.signal.0 as usize) {
+        let range = s.resolve(r.range);
+        if range.offset.checked_add(range.len).is_some() && s.full().contains(range) {
+            return Ok((s, range));
+        }
     }
-    Ok((s, range))
+    Err(bad_ref(signals, r))
+}
+
+/// The error of a reference `check_ref` refused.
+#[cold]
+fn bad_ref(signals: &[Signal], r: SigRef) -> ErrorKind {
+    let Some(s) = signals.get(r.signal.0 as usize) else {
+        return ErrorKind::BadRef(format!("no signal {}", r.signal.0));
+    };
+    let range = s.resolve(r.range);
+    ErrorKind::BadRef(format!(
+        "elements {}+{} out of range for {} (length {})",
+        range.offset, range.len, s.name, s.ty.len
+    ))
 }
 
 /// Validate a force/release/deposit request.

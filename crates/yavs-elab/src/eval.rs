@@ -1120,6 +1120,18 @@ impl Model {
             return Ok(Some(sh));
         }
         let span = db.exprs[e].span;
+        // An object of a constrained subtype has its bounds, whether or not it has a value now:
+        // `d'range` of a parameter `d : word` in `s(d'range) <= d` (#522).
+        let st = db.exprs[e].subtype;
+        if db.constrainedness(st) == yavs_sem::types::Constrainedness::Full
+            && !matches!(
+                db.subtypes[st].constraint,
+                yavs_sem::types::Constraint::FromObject { .. }
+            )
+            && let Ok(Some(sh @ Shape::Array { .. })) = self.shape(db, st, scope, span)
+        {
+            return Ok(Some(sh));
+        }
         match self.eval(db, e, scope)? {
             Val::Array(ArrayConst { bounds, .. }) => Ok(Some(Shape::Array {
                 ty: db.base(db.exprs[e].subtype),

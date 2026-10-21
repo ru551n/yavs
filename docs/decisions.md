@@ -3727,7 +3727,7 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   (`ponytail` in `objcache.rs`); sharing library code between designs in different work libraries, or
   between the programs of different testbenches, needs code that names no design-dependent ids.
 
-## Interpreter round 10: the statement marker inside the edge test and the wait, the jump back skipped (yavs-interp, #443, 2026-10-21)
+## Interpreter round 10: the statement marker inside the edge test and the wait, the jump back skipped, frame 0's slots direct (yavs-interp, #443, 2026-10-21)
 
 - **A `Stmt` before the edge test or the wait of a clocked process is part of that op.** `EdgeBr` and
   `WaitSuspend` carry `stmt`: the op ends the statement's temporaries as the `Stmt` did and goes on as the
@@ -3739,6 +3739,9 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   and compiled code is entered again at the next activation.
 - **A resumed process does not run its jump back.** `run_ops` starts past the `Br`, or the `BrBody` when
   no pause is set (`prestart` sets one and runs the step path), that a process stands at after `Suspend`.
+- **The fast loop reads frame 0's slots from `root` without looking up the frame** (`fslots!` in
+  `run_ops`; other frames go through `slots_of`): a process variable, a memoised value or the flag of
+  `FlagBr` is one bounds check and a load.
 - **Register accesses stay bounds-checked; the interpreter keeps no `unsafe`.** Measured (pinned core 5,
   `perf stat`, 3abd2fd7): register reads and writes through `get_unchecked` change rtl_ff by -0.3 percent
   and rtl_lfsr by -1 percent of instructions; an unchecked op fetch on top made rtl_ff 13 percent worse

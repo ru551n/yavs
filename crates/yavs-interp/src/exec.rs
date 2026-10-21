@@ -3904,12 +3904,30 @@ impl Machine {
                 depth += 1;
             };
         }
+        // The frame's slots (frame 0's are `root`, `slots_of`).
+        macro_rules! fslots {
+            () => {
+                if top == 0 {
+                    Some(&self.root[..])
+                } else {
+                    self.fslots(top)
+                }
+            };
+        }
+        macro_rules! fslots_mut {
+            () => {
+                if top == 0 {
+                    Some(&mut self.root[..])
+                } else {
+                    self.fslots_mut(top)
+                }
+            };
+        }
         // The eight bytes at `off` of the frame's slots.
         macro_rules! slot8 {
             ($off:expr) => {{
                 let off: u32 = $off;
-                match self
-                    .fslots(top)
+                match fslots!()
                     .and_then(|s| s.get(off as usize..))
                     .and_then(|s| s.first_chunk::<8>())
                 {
@@ -3926,15 +3944,14 @@ impl Machine {
                 let v = self.regs[$src as usize];
                 let o = off as usize;
                 if w == Width::B8
-                    && let Some(b) = self
-                        .fslots_mut(top)
+                    && let Some(b) = fslots_mut!()
                         .and_then(|s| s.get_mut(o..))
                         .and_then(|s| s.first_chunk_mut::<8>())
                 {
                     *b = v.to_le_bytes();
                 } else {
                     let n = w.bytes() as usize;
-                    match self.fslots_mut(top).and_then(|s| s.get_mut(o..o + n)) {
+                    match fslots_mut!().and_then(|s| s.get_mut(o..o + n)) {
                         Some(b) => put_le(b, v),
                         None => t!(mk_addr(FRAME, top as u32, off.into())
                             .and_then(|a| self.store(a, w, v))),
@@ -4032,7 +4049,7 @@ impl Machine {
                 Op::LoadSlot { dst, off, w } => {
                     let n = w.bytes() as usize;
                     let o = off as usize;
-                    self.regs[dst as usize] = match self.fslots(top).and_then(|s| s.get(o..o + n)) {
+                    self.regs[dst as usize] = match fslots!().and_then(|s| s.get(o..o + n)) {
                         Some(b) => le_bytes(b),
                         None => t!(
                             mk_addr(FRAME, top as u32, off.into()).and_then(|a| self.load(a, w))

@@ -1497,6 +1497,44 @@ pass (all eleven, `record_dict` under 2019); the `.pro` regression 314/314 under
 scalar assignment forms the fusions handle and the `numeric_std` logical operators with metavalues and null ranges; the
 native/body comparison test (`ieee_native`) now also runs those operators on `signed` and the length-mismatch failure.
 
+## Interpreter round 10: statement markers inside the edge test and the wait, frame 0's slots direct (#443, 2026-10-21)
+
+The `Stmt` before the edge test and before the wait of a clocked process is part of those ops, a jump to the wait is a
+copy of it, a resumed process starts past its jump back, and the fast loop reads frame 0's slots without the frame lookup
+(`docs/decisions.md` "Interpreter round 10"). Head-to-head (`tools/bench/run.py --ref sim1 --instructions --runs 5`,
+pinned core 5, `--tier=interp`), main `a5db170d` to this change, instructions in G and the ratio to sim1:
+
+| Design | before | after | ratio before | after | wall ratio before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| rtl_ff | 16.17 | 15.48 | 2.06x | 1.97x | 1.62x | 1.39x |
+| rtl_lfsr | 8.37 | 8.21 | 3.00x | 2.94x | 3.00x | 2.92x |
+| rtl_chain | 4.40 | 4.35 | 2.18x | 2.15x | 1.33x | 1.33x |
+| rtl_fan | 17.25 | 17.01 | 1.03x | 1.02x | 1.09x | 1.06x |
+| rtl_bus | 4.54 | 4.53 | 0.55x | 0.55x | 0.38x | 0.36x |
+| rtl_ram | 0.96 | 0.96 | 1.83x | 1.82x | 1.50x | 1.50x |
+| lfsr64_xor | 1.84 | 1.83 | 2.46x | 2.45x | 1.40x | 1.40x |
+| lfsr64 | 4.56 | 4.53 | 2.90x | 2.87x | 2.25x | 2.25x |
+
+`tools/bench --compare` (pinned core 5, internal group, 3 runs): geometric mean of total CPU 0.995. Wall cells under
+0.2 s carry about 10 percent noise.
+
+Where an activation goes now (Intel PT, every tenth instruction, per rising activation): rtl_ff about 1840 instructions,
+of which the ops about 890 (12 ops: the dispatch 12 per op with `k` and the op slice on the stack, register accesses about
+7 each, a single-element signal read about 40, a scalar gate about 30), the activation wrapper (`InterpProcess::run`,
+`run_quick`, the `run_ops` prologue) about 265, the kernel the rest; rtl_lfsr about 3300, of which the ops and `cat_words`
+about 1680 (registers 250, dispatch 215). Tried and dropped: unchecked register access (-0.3 and -1 percent of instructions
+on rtl_ff and rtl_lfsr, so the checks stay and the crate keeps no `unsafe`), an unchecked op fetch (+13 percent: the
+compiler laid the loop out differently), a fused read-and-gate op (-0.3 percent, less than the noise of the codegen), a
+direct single-element read helper (no gain), cold out-of-line error constructors (+4 percent). Small changes anywhere in
+`run_ops` move the RTL ops by up to 4 percent (#508: main `3abd2fd7` to `a5db170d`, which changed no RTL op, cost
+rtl_ff 3.6 percent), so the next lever is the shape of that function, not more fusions.
+
+Verification at this change (release build with the `llvm` feature): differential corpus 425/425 at 1 and 4 threads on
+the interpreter, `--tier=llvm` and `--tier=auto`, and 4 shuffled threads on the interpreter; 425/425 with `gc-stress` on the
+interpreter and the LLVM tier (4 shuffled threads); `cargo fmt --check`, `cargo clippy -D warnings` (with and without
+`llvm`), `cargo test --workspace`, the `llvm` and `gc-stress` unit tests green; pass lists 857 and 393 (`--oracle
+--check`); `.pro` 314/314 under 2008 and 2019; UVVM 102 pass, 9 fail, 26 skip (as before).
+
 ## Optimiser round 10: clean-up of finished subprograms (#444, 2026-10-21)
 
 A late pass over the finished code of a subprogram that cannot suspend (`crates/yavs-ir/src/opt/cfg.rs`, `docs/decisions.md`

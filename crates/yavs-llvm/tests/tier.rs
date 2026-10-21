@@ -910,7 +910,7 @@ fn precise_roots_under_compiled_code() {
     gc_roots::assert_churn_collected(slots, live);
 }
 
-/// `inc(a) = a + 1` (range checked up to 1_000_000), `run(n)` calling it `n` times in a loop,
+/// `inc(a) = a + 1` (range checked up to 1_000_000, two paths to its return), `run(n)` calling it `n` times in a loop,
 /// and `depth(n) = if n = 0 then 0 else depth(n - 1) + 1`.
 fn calls() -> (Program, FuncId, FuncId) {
     let mut pb = ProgramBuilder::new();
@@ -938,6 +938,20 @@ fn calls() -> (Program, FuncId, FuncId) {
             hi,
             what: msg,
         });
+        // Two ways to the same return: a call that is a call (a function with one path is
+        // inlined into its caller by the optimiser).
+        let (zero, c) = (fb.int(0), fb.reg(RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        fb.emit(Inst::Ret { v: Some(dst) });
+        fb.at(e);
         fb.emit(Inst::Ret { v: Some(dst) });
         fb.finish();
     }

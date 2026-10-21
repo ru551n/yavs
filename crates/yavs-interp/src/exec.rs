@@ -2666,8 +2666,13 @@ impl Machine {
 
     /// A block of 32 bytes in the temporary area holding `b` (an `Alloc` of 32 and the stores
     /// of all of it, without clearing it first).
-    #[inline]
+    #[inline(always)]
     fn temp_push32(&mut self, b: &[u8; 32]) -> R<u64> {
+        let len = self.temp.len();
+        if len & 7 == 0 && len < (u32::MAX - 32) as usize {
+            self.temp.extend_from_slice(b);
+            return Ok(u64::from(TEMP) << 61 | len as u64);
+        }
         let off = (self.temp.len() as u64).next_multiple_of(8);
         if off + 32 > u64::from(u32::MAX) {
             return rt_err("temporary memory of one statement exceeds 4 GiB");

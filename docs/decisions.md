@@ -3620,8 +3620,9 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   (`LLVMOrcLLJITAddObjectFile`) instead of being optimised and compiled. The CLI names the work library
   (`yavs_llvm::set_cache`) unless `--no-cache` is given.
 - **Key: the generated LLVM IR, not the yavs IR** (yavs decision). The key is the module's bitcode before the
-  pass pipeline, the level, the target (triple, the CPU baseline, the LLVM version), the build and switch
-  fingerprint of #491 (`yavs_ir::opt::fingerprint`) and the build id and cache format (`KeyBuilder`). The
+  pass pipeline, the level and the pipeline chosen (`optimize_as`'s `full`, a custom `YAVS_LLVM_PIPELINE`), the
+  target (triple, the CPU baseline, the LLVM version, the code generator switches `CODEGEN_ARGS` or
+  `YAVS_LLVM_ARGS`), the build and switch fingerprint of #491 (`yavs_ir::opt::fingerprint`) and the build id and cache format (`KeyBuilder`). The
   generator reads more than the function it compiles (which callees run on native frames, constant bytes it
   copies into the module, static layouts, the tier switches), so a key of the yavs IR would have to name all
   of that; the LLVM IR is everything the machine code depends on, so a hit is by construction the code a

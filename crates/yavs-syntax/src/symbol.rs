@@ -19,11 +19,12 @@ struct Interner {
 }
 
 impl Default for Interner {
-    /// Sized for a few libraries' worth of names, so the table does not rehash on the way.
+    /// Sized for a short run's names: the table is touched at random, so every name of a bigger
+    /// table costs a page fault (0.15 ms of a short run); a longer one grows by rehashing.
     fn default() -> Self {
         Interner {
-            map: FxHashMap::with_capacity_and_hasher(1 << 14, Default::default()),
-            strings: Vec::with_capacity(1 << 14),
+            map: FxHashMap::with_capacity_and_hasher(1 << 11, Default::default()),
+            strings: Vec::with_capacity(1 << 11),
         }
     }
 }

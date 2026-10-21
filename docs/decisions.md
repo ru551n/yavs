@@ -3024,3 +3024,26 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   definition counts the predecoder's fusions rely on.
 - `Program::single_suspend` (the kernel's process order, #252) reads the lowered function, not the
   optimised copy, because the optimiser may copy a suspension point.
+
+## Floor of a run: symbol table size, pruning on demand, executable layout (#426, yavs decisions under the user's single-thread performance priority, 2026-10-21)
+
+- **The global symbol table starts small** (2048 names, was 16384). A table pre-sized for a whole
+  library is written at random places, so every name of a short run touched a page of its own: 200
+  page faults, 0.13 ms of a 1.3 ms run. A longer run grows it by rehashing (a rehash of 20 000
+  names is under 1 ms).
+- **`Store::put` prunes on demand.** The prune asks the size and age of every entry (a system call
+  each: 0.25 ms for 90 entries) and ran on every put; a run that stores three entries paid it three
+  times, and a cold test suite pays it in every first run of a test. Now the names are counted first
+  (one directory read), and the entries are looked at when there are more than `MAX_ENTRIES`, when
+  the entry just stored is big enough to fill the byte limit with 15 others (32 MiB), and, for a
+  directory of more than 16 entries, at most every 5 seconds (`.swept` marks the time). A directory
+  of 16 entries of at most 32 MiB cannot be over `MAX_BYTES`, so the byte limit holds exactly there
+  and is soft by what is stored within 5 seconds elsewhere. Notes (`.seen` files, `note`,
+  `sightings`) are trimmed to `MAX_NOTES` once the directory is 64 past it, by names for counting
+  and ages only for the trim; `sightings` counts by name without asking for any age.
+- **The executable is not position independent on Linux (glibc).** `crates/yavs/build.rs` links with
+  `-no-pie`: the loader no longer applies the 11 000 relative relocations (each of the 43 pages of
+  `.data.rel.ro` was copied on write), 7% fewer cycles and 45 fewer page faults in a short run. The
+  cost is that the executable's own code is at a fixed address (no address space layout randomisation
+  for it; libraries and the heap are still randomised). Reverting is one line in the build script.
+

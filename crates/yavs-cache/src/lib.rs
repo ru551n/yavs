@@ -33,8 +33,26 @@ pub const MAX_ENTRIES: usize = 96;
 /// about 10 MB): the least recently used entries go first, but the newest is always kept.
 pub const MAX_BYTES: u64 = 512 << 20;
 
-/// Notes ([`Store::note`]) kept per directory.
+/// Notes ([`Store::note`]) kept per directory: the newest ones. Trimming asks the age of every
+/// note (a system call each), so it waits until the directory is [`NOTES_SLACK`] past this.
 pub const MAX_NOTES: usize = 512;
+const NOTES_SLACK: usize = 64;
+
+/// Whether a put of `added` bytes into a directory of `n` entries must look at them all (their
+/// size and age: 0.25 ms for 90 entries); `due` is that the last time was `SWEEP_EVERY` ago.
+fn needs_sweep(n: usize, added: u64, due: bool) -> bool {
+    n > MAX_ENTRIES || added > MAX_BYTES / FEW_ENTRIES as u64 || (n > FEW_ENTRIES && due)
+}
+
+/// The file whose modification time says when a directory was last pruned by size, and how
+/// often that is done for a directory that is not over the entry limit: the byte limit is soft
+/// by what is stored in between.
+const SWEPT: &str = ".swept";
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A directory of at most this many entries, each at most `MAX_BYTES / FEW_ENTRIES`, cannot be
+/// over [`MAX_BYTES`]: a put into it needs no pruning.
+const FEW_ENTRIES: usize = 16;
 
 const MAGIC: &[u8; 8] = b"YAVSIMG\0";
 const HEADER: usize = 8 + 4 + 32 + 8 + 8;
@@ -228,7 +246,7 @@ impl Store {
             let _ = fs::remove_file(&tmp);
             return Err(e);
         }
-        self.prune();
+        self.prune(payload.len() as u64);
         Ok(())
     }
 
@@ -251,13 +269,7 @@ impl Store {
         {
             return;
         }
-        let mut all = self.files_ending(".seen");
-        if all.len() > MAX_NOTES {
-            all.sort_by_key(|e| std::cmp::Reverse(e.1));
-            for (p, _, _) in all.split_off(MAX_NOTES) {
-                let _ = fs::remove_file(p);
-            }
-        }
+        self.trim_notes();
     }
 
     /// Record that `member` wanted an entry of `group` (empty `.seen` files, each named by both, the
@@ -271,19 +283,12 @@ impl Store {
             if fs::create_dir_all(&self.dir).is_err() || fs::File::create(&mine).is_err() {
                 return 1;
             }
-            let all = self.files_ending(".seen");
-            if all.len() > MAX_NOTES {
-                let mut all = all;
-                all.sort_by_key(|e| std::cmp::Reverse(e.1));
-                for (p, _, _) in all.split_off(MAX_NOTES) {
-                    let _ = fs::remove_file(p);
-                }
-            }
+            self.trim_notes();
         }
         let prefix = format!("{kind}-{}.", group.hex());
-        self.files_ending(".seen")
+        self.names_ending(".seen")
             .iter()
-            .filter(|(p, _, _)| {
+            .filter(|p| {
                 p.file_name()
                     .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
             })
@@ -325,9 +330,35 @@ impl Store {
         let _ = fs::remove_file(self.claim_file(kind, key));
     }
 
-    /// Keep the [`MAX_ENTRIES`] most recently used entries, and at most [`MAX_BYTES`] of them.
-    fn prune(&self) {
-        self.prune_to(MAX_ENTRIES, MAX_BYTES);
+    /// Keep the [`MAX_ENTRIES`] most recently used entries, and at most [`MAX_BYTES`] of them,
+    /// after a put of `added` bytes. The names are counted first (one directory read); the sizes
+    /// and ages are asked for a directory over the entry limit, after a big entry, and at most
+    /// every [`SWEEP_EVERY`] otherwise, not for every put of every process.
+    fn prune(&self, added: u64) {
+        let n = self.names_ending(".img").len();
+        let marker = self.dir.join(SWEPT);
+        let due = n > FEW_ENTRIES
+            && fs::metadata(&marker)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_none_or(|age| age >= SWEEP_EVERY);
+        if needs_sweep(n, added, due) {
+            let _ = fs::File::create(&marker);
+            self.prune_to(MAX_ENTRIES, MAX_BYTES);
+        }
+    }
+
+    /// Drop the oldest notes (`.seen` files) beyond [`MAX_NOTES`], once there are
+    /// [`NOTES_SLACK`] more than that.
+    fn trim_notes(&self) {
+        if self.names_ending(".seen").len() > MAX_NOTES + NOTES_SLACK {
+            let mut all = self.files_ending(".seen");
+            all.sort_by_key(|e| std::cmp::Reverse(e.1));
+            for (p, _, _) in all.split_off(MAX_NOTES) {
+                let _ = fs::remove_file(p);
+            }
+        }
     }
 
     fn prune_to(&self, max_entries: usize, max_bytes: u64) {
@@ -349,6 +380,18 @@ impl Store {
 
     fn entries(&self) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
         self.files_ending(".img")
+    }
+
+    /// The files whose names end in `ext`, without asking for their metadata.
+    fn names_ending(&self, ext: &str) -> Vec<PathBuf> {
+        let Ok(rd) = fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        rd.filter_map(|e| {
+            let e = e.ok()?;
+            e.file_name().to_str()?.ends_with(ext).then(|| e.path())
+        })
+        .collect()
     }
 
     fn files_ending(&self, ext: &str) -> Vec<(PathBuf, std::time::SystemTime, u64)> {
@@ -380,7 +423,11 @@ impl Store {
             for e in rd.flatten() {
                 let n = e.file_name();
                 let n = n.to_string_lossy();
-                if n.starts_with(".tmp-") || n.ends_with(".seen") || n.ends_with(".making") {
+                if n.starts_with(".tmp-")
+                    || n.ends_with(".seen")
+                    || n.ends_with(".making")
+                    || n == SWEPT
+                {
                     let _ = fs::remove_file(e.path());
                 }
             }
@@ -509,13 +556,44 @@ mod tests {
         assert!(s.noted("t", &key("a")));
         assert!(!s.noted("t", &key("b")));
         assert!(!s.noted("u", &key("a")));
-        for i in 0..MAX_NOTES + 5 {
+        // Trimmed down to the limit once NOTES_SLACK past it, so at least the newest MAX_NOTES stay.
+        for i in 0..MAX_NOTES + NOTES_SLACK + 5 {
             s.note("t", &key(&i.to_string()));
         }
-        assert_eq!(s.files_ending(".seen").len(), MAX_NOTES);
+        let kept = s.files_ending(".seen").len();
+        assert!(
+            (MAX_NOTES..=MAX_NOTES + NOTES_SLACK).contains(&kept),
+            "{kept}"
+        );
+        assert!(s.noted("t", &key(&(MAX_NOTES + NOTES_SLACK + 4).to_string())));
         assert_eq!(s.entries().len(), 0);
         s.clean().unwrap();
         assert!(!s.dir().exists());
+    }
+
+    /// Pruning asks the size and age of every entry: it waits for a reason.
+    #[test]
+    fn pruning_waits_for_a_reason() {
+        assert!(
+            !needs_sweep(FEW_ENTRIES, 100, true),
+            "few entries cannot be over the limit"
+        );
+        assert!(
+            needs_sweep(FEW_ENTRIES + 1, 100, true),
+            "the first put of a process"
+        );
+        assert!(
+            !needs_sweep(FEW_ENTRIES + 1, 100, false),
+            "later puts of the process"
+        );
+        assert!(
+            needs_sweep(MAX_ENTRIES + 1, 100, false),
+            "over the entry limit"
+        );
+        assert!(
+            needs_sweep(1, MAX_BYTES / 2, false),
+            "an entry that can fill the byte limit"
+        );
     }
 
     #[test]

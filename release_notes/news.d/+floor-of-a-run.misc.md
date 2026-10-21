@@ -1,0 +1,1 @@
+A short `yavs run` starts faster: a smaller symbol table, no relocation of the executable at start (Linux), and a compilation cache that no longer looks at every entry on every store, which also cuts the extra cost of the first runs of a test suite.

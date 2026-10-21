@@ -232,6 +232,9 @@ fn stack_fail(f: &Func) -> R<()> {
     rt_err(format!("call stack exceeds 4 GiB calling `{}`", f.name))
 }
 
+/// The texts of the literals of one enumeration type: (type, `'image` or `to_string`, text of each).
+pub(crate) type EnumText = (TyId, bool, Vec<Option<Box<[u8]>>>);
+
 pub(crate) struct Frame {
     pub func: FuncId,
     pub pc: u32,
@@ -411,7 +414,7 @@ pub(crate) struct Machine {
     /// being resident at its next suspension.
     resident: bool,
     /// `to_string` / `'image` texts of enumeration literals made so far: (type, image, text of each literal).
-    pub(crate) enum_text: Vec<(TyId, bool, Vec<Option<Box<[u8]>>>)>,
+    pub(crate) enum_text: Vec<EnumText>,
     /// What this process added to [`RESIDENT_USED`], given back when it is dropped.
     resident_bytes: usize,
     /// The entry function is a process (set when the process starts): its root frame needs

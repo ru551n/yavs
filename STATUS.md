@@ -1419,6 +1419,47 @@ and 4 shuffled threads on the interpreter, `--tier=llvm` and `--tier=auto`; 415/
 2019); the `.pro` regression 314/314 under 2008 and 2019; UVVM suite 102 pass, 9 fail, 26 skip (as before). A new corpus
 test (`composite/concat_chain`) covers chains of `&`.
 
+## Interpreter round 9: waveform-free vector assignments, `numeric_std` logical natives (#443, 2026-10-21)
+
+The waveform buffer of a one-element assignment is not built when only the copy or element set after it and the drive read
+it; a signal read and a concatenation of up to 64 logic elements fill their block once; `numeric_std` `and`, `or`, `nand`,
+`nor`, `xor`, `xnor` and `not` of `unsigned` and `signed` are natives; `ieee` natives run through a lighter call op;
+`rd`, the fat pair and descriptor reads of the natives, element loads and stores, the one-block `lcopy` and the scalar gate
+tables are cheaper; processes of up to 256 registers stay resident under a 96 MiB budget (`docs/decisions.md`
+"Interpreter round 9"). Pinned `perf stat` (core 2, performance cores, `--tier=interp`, minimum of 5, `-gNREG=64
+-gCYCLES=5000` for 2a, `-gNREG=64 -gCYCLES=20000` for 2b), main `5125c987` to this change, and the sim1 figure on the same
+host and core (`-H 64m -e <top> --no-save --jit -r`):
+
+| Row | cycles before (G) | after (G) | instructions before (G) | after (G) | ratio to sim1 before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| lfsr (512 x 16-bit x 5000) | 2.28 | 2.07 | 11.16 | 9.01 | 4.3x | 3.9x |
+| 2a (64 LFSR x 5000, `rtl`) | 0.72 | 0.42 | 3.79 | 2.04 | 3.3x | 1.9x |
+| 2b (64 LFSR x 20000, `rtl2`) | 1.18 | 1.02 | 5.99 | 4.76 | 3.4x | 3.0x |
+| ram (16384 x 32 x 20000) | 0.35 | 0.32 | 1.16 | 0.99 | 2.0x | 1.8x |
+| ff (4096 registers x 2000) | 4.37 | 3.99 | 20.92 | 17.44 | 2.4x | 2.2x |
+| chain (1000 x 2000) | 1.15 | 1.05 | 6.20 | 5.43 | 2.3x | 2.1x |
+| fan (4000 processes x 5000) | 5.10 | 5.14 | 18.69 | 18.85 | 1.44x | 1.46x |
+| bus (resolved, 32 x 20000) | 1.05 | 0.98 | 5.10 | 4.72 | 0.44x | 0.41x |
+| scoreboard testbench (`uvvm_sb_slv_tb`) | 4.44 | 4.44 | 17.93 | 17.93 | about 2.1x | about 2.1x |
+| `uvvm_util_rand_tb` (`rand_basic`) | 4.09 | 4.07 | 18.05 | 17.92 | about 1.8x | about 1.8x |
+
+`tools/bench --compare` (pinned, 3 runs, internal group, total CPU after / before, geometric mean over 13): 0.95
+(`ieee_heavy` 0.67, `ff_rtl` 0.94, `resolved_bus` 0.92, `delta_chain` 0.91, the rest 0.97 to 1.04).
+
+What is where: 2a spent its time in the `numeric_std` `xor` body (a conversion, a native call and a copy back, about
+12000 instructions per call, 320000 calls); the clocked vector rows lose the waveform set-up, two zero-filled temporaries
+and some checks (about 600 of 3600 instructions per activation of lfsr). Findings for later rounds: the library testbenches
+are flat (the scoreboard testbench has no op over 12 percent of its instructions; the string helpers `to_string`,
+`replace_backslash_n_with_lf`, `prefix_lines`, `match_identifier` (a linked-list walk) are 14, 8, 6 and 14 percent of its
+ops, 12 to 26 ops per character or element, and a `Call` with a UVVM-sized frame costs about 550 instructions); an op
+averages 65 instructions of which 15 to 17 are the dispatch (`k` and the op slice are spilled), so only fewer ops help;
+`bin_range`+`Move` (`i := i + 1`) is the most common adjacent pair (5 percent of the scoreboard ops) and belongs to
+register coalescing in the optimiser; a single-element signal read is 65 instructions, an `AllocCat` of two pieces 360,
+`CopyDrive` 390 of which the kernel's `assign_blocks` is about 250; ram is mostly start-up (0.21 of its 0.32 G cycles
+are elaboration and initialisation of the 16384 x 32 array).
+
+Verification at this change (release build with the `llvm` feature unless noted): see the commit message of the push.
+
 ## performance: head-to-head against the two reference simulators, 2026-10-21
 
 Measurement only (no code changed). yavs at `5ac6c1a6` (main), one release binary built with the `llvm` feature, so

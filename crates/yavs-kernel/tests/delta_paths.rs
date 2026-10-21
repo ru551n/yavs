@@ -273,3 +273,85 @@ fn second_assignment_of_an_activation_replaces_the_first() {
         }
     }
 }
+
+/// The byte codes of a logic signal (`Ctx::elem_code`, `Ctx::code_view`) agree with the planes
+/// after every kind of update: one-element finishes of drivers that are an element's only
+/// source, a vector driver, a block pass of many elements and a deposit.
+#[test]
+fn element_codes_follow_every_kind_of_update() {
+    for n in [3u32, 64, 70, 200] {
+        let mut b = Builder::new();
+        let clk = logic_clock(&mut b);
+        let s = b.signal(
+            "s",
+            SignalType::logic(n),
+            &LogicVec::new(n as usize, StdULogic::Zero),
+        );
+        // Elements 0 and 1: one driver each (changes finished at once); the rest: a vector driver.
+        for k in 0..2.min(n) {
+            let target = s.slice(k, 1);
+            let d = b.driver(target);
+            let mut edges = 0u32;
+            b.process(
+                &format!("e{k}"),
+                NONE,
+                &[d],
+                p(move |c| {
+                    if c.event(clk)? && c.first_code(clk, false)? == Some(StdULogic::One as u8) {
+                        edges += 1;
+                        let code = [StdULogic::One, StdULogic::X, StdULogic::Zero, StdULogic::H]
+                            [(edges + k) as usize % 4];
+                        c.assign_code(d, None, Time::ZERO, code as u8, DelayMode::INERTIAL)?;
+                    }
+                    c.wait_on(clk)
+                }),
+            );
+        }
+        if n > 2 {
+            let rest = s.slice(2, n - 2);
+            let d = b.driver(rest);
+            let mut edges = 0usize;
+            b.process(
+                "vector",
+                NONE,
+                &[d],
+                p(move |c| {
+                    if c.event(clk)? && c.first_code(clk, false)? == Some(StdULogic::One as u8) {
+                        edges += 1;
+                        let all = [StdULogic::L, StdULogic::W, StdULogic::Z, StdULogic::One];
+                        let mut v = LogicVec::new((n - 2) as usize, StdULogic::Zero);
+                        for i in 0..(n - 2) as usize {
+                            v.set(i, all[(i * 7 + edges) % 4]);
+                        }
+                        c.assign(d, None, &[(Time::ZERO, &v)], DelayMode::INERTIAL)?;
+                    }
+                    c.wait_on(clk)
+                }),
+            );
+        }
+        let checks = Arc::new(AtomicU32::new(0));
+        let seen = checks.clone();
+        b.process(
+            "check",
+            NONE,
+            &[],
+            p(move |c| {
+                let view = c.code_view(s);
+                assert_eq!(view.map(|v| v.1), Some(n as usize), "{n} elements");
+                assert!(c.code_view(clk).is_some_and(|v| v.1 == 1));
+                let whole = c.logic(s)?;
+                for e in 0..n {
+                    let want = whole.get(e as usize) as u8;
+                    assert_eq!(c.elem_code(s, e).unwrap(), want, "{n} elements, {e}");
+                    assert_eq!(c.first_code(s.slice(e, 1), false).unwrap(), Some(want));
+                }
+                assert!(c.elem_code(s, n).is_err());
+                seen.fetch_add(1, Ordering::SeqCst);
+                c.wait_on(clk)
+            }),
+        );
+        let (mut sim, _) = build(b, Config::default());
+        sim.run_until(ns(300)).unwrap();
+        assert!(checks.load(Ordering::SeqCst) > 30, "{n} elements");
+    }
+}

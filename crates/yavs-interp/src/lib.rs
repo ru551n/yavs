@@ -411,6 +411,30 @@ pub struct TierFrame {
     /// The high halves of the addresses of the frames one and two static links up
     /// (`AddrOf` of `Up(1)`, `Up(2)`); `u64::MAX` where there is none.
     pub up: [u64; 2],
+    /// Per instance signal (`Inst::SigVal`), where compiled code reads the `std_ulogic` codes
+    /// of the current value itself: [`TierSig`]. `sigtab_len` entries; none when the machine
+    /// runs without a kernel (elaboration). Filled once per entry, by [`TierHost::view`].
+    pub sigtab: *const TierSig,
+    pub sigtab_len: u64,
+    /// The edge the kernel resumed the process for in this activation: the kernel signal
+    /// (`u64::MAX`: none), the element, and 1 for rising, 0 for falling.
+    pub known_sig: u64,
+    pub known_elem: u64,
+    pub known_up: u64,
+}
+
+/// An instance signal as compiled code reads it (one `TierFrame::sigtab` entry): the element
+/// codes of the kernel signal's current value, starting at the instance signal's own first
+/// element, `len` of them (0: read through [`TierHost::signal`]); the kernel signal and the
+/// first element's offset in it. The bytes change only while no process runs.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TierSig {
+    /// The address of the first code (an integer so a machine stays `Send`).
+    pub codes: u64,
+    pub len: u64,
+    pub signal: u64,
+    pub off: u64,
 }
 
 impl Default for TierFrame {
@@ -432,6 +456,11 @@ impl Default for TierFrame {
             frame: 0,
             stack: std::ptr::null(),
             up: [u64::MAX; 2],
+            sigtab: std::ptr::null(),
+            sigtab_len: 0,
+            known_sig: u64::MAX,
+            known_elem: 0,
+            known_up: 0,
         }
     }
 }

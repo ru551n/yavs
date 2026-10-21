@@ -666,6 +666,11 @@ impl Signal {
         runs.truncate(k + 1);
     }
 
+    /// `codes` as a pointer and the number of elements, if the signal keeps them.
+    pub fn codes_view(&self) -> Option<(*const u8, usize)> {
+        (!self.codes.is_empty()).then(|| (self.codes.as_ptr(), self.ty.len as usize))
+    }
+
     /// The code of element `e` of `cur` from `codes`, if the signal keeps them and has the element.
     #[inline(always)]
     pub fn mirrored_code(&self, e: usize) -> Option<u8> {

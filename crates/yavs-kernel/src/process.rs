@@ -317,6 +317,22 @@ impl Ctx<'_> {
         }
     }
 
+    /// The bytes of the `std_ulogic` codes of the current value of logic signal `s`, one per
+    /// element, as a pointer and the number of elements, for compiled code that reads them
+    /// itself. `None` for a signal that keeps no codes (bytes, or over `CODES_MAX` elements).
+    /// The pointer stays valid for the whole simulation; the bytes change only in the update
+    /// phase, while no process runs.
+    pub fn code_view(&self, s: SignalId) -> Option<(*const u8, usize)> {
+        let sig = self.sh.signals.get(s.0 as usize)?;
+        sig.codes_view()
+    }
+
+    /// The edge the kernel resumed this process for in this activation (signal, element,
+    /// rising), if `Ctx::edge` takes it as held.
+    pub fn known_edge(&self) -> Option<(SignalId, u32, bool)> {
+        self.st.known_edge
+    }
+
     /// `rising_edge` / `falling_edge` of the first element of a logic signal range: an event
     /// in this cycle, `To_X01` of the current value the new level and `To_X01` of the
     /// `'last_value` the old one; `None` for a null range. One reference check instead of

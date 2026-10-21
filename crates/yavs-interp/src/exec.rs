@@ -378,6 +378,9 @@ pub(crate) struct Machine {
     /// `regs` and `temp` went to the thread's scratch at the last suspension
     /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
     released: bool,
+    /// The instance signals as compiled code reads them (`TierFrame::sigtab`), made at the first
+    /// entry of compiled code from the kernel's signals (this machine belongs to one kernel).
+    tier_sigs: Vec<crate::TierSig>,
     /// A small process keeps its registers and temporaries between activations instead of
     /// handing them to the thread's scratch (set when it starts, [`RESIDENT_REGS`]): no
     /// swap per activation. A process whose temporaries grow past [`RESIDENT_TEMP`] stops
@@ -764,6 +767,7 @@ impl Machine {
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
+            tier_sigs: Vec::new(),
             resident: false,
             root_process: false,
             quick_fault: None,
@@ -5968,6 +5972,47 @@ struct Host<'a, 'c, 'x> {
 impl crate::TierHost for Host<'_, '_, '_> {
     fn view(&mut self, tf: &mut crate::TierFrame) {
         self.m.tier_view(tf);
+        // What compiled code reads of the kernel itself: the codes of logic signals and the
+        // edge this activation was resumed for.
+        let m = &mut *self.m;
+        let Some(c) = self.ctx.as_deref() else {
+            tf.sigtab_len = 0;
+            tf.known_sig = u64::MAX;
+            return;
+        };
+        if m.tier_sigs.len() != m.inst.sigs.len() {
+            m.tier_sigs = m
+                .inst
+                .sigs
+                .iter()
+                .map(|s| {
+                    let view = c.code_view(s.signal).filter(|_| s.ty.elem == Elem::Logic);
+                    let (codes, len) = match view {
+                        // The instance signal's own elements start at `s.off`.
+                        Some((p, n)) if (s.off as usize) < n => {
+                            (p as u64 + u64::from(s.off), (n - s.off as usize) as u64)
+                        }
+                        _ => (0, 0),
+                    };
+                    crate::TierSig {
+                        codes,
+                        len,
+                        signal: u64::from(s.signal.0),
+                        off: u64::from(s.off),
+                    }
+                })
+                .collect();
+        }
+        tf.sigtab = m.tier_sigs.as_ptr();
+        tf.sigtab_len = m.tier_sigs.len() as u64;
+        match c.known_edge() {
+            Some((s, e, up)) => {
+                tf.known_sig = u64::from(s.0);
+                tf.known_elem = u64::from(e);
+                tf.known_up = u64::from(up);
+            }
+            None => tf.known_sig = u64::MAX,
+        }
     }
 
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {

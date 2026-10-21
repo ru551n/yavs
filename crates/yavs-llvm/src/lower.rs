@@ -106,6 +106,17 @@ const MEM_TEMP_BASE: u64 = std::mem::offset_of!(Mem, fr.temp_base) as u64;
 const MEM_UP: u64 = std::mem::offset_of!(Mem, fr.up) as u64;
 const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
+const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
+const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
+const MEM_KNOWN_SIG: u64 = std::mem::offset_of!(Mem, fr.known_sig) as u64;
+const MEM_KNOWN_ELEM: u64 = std::mem::offset_of!(Mem, fr.known_elem) as u64;
+const MEM_KNOWN_UP: u64 = std::mem::offset_of!(Mem, fr.known_up) as u64;
+/// Bytes of a `TierSig` and the offsets of its fields.
+const SIG_ENT: i64 = std::mem::size_of::<yavs_interp::TierSig>() as i64;
+const SIG_CODES: i64 = std::mem::offset_of!(yavs_interp::TierSig, codes) as i64;
+const SIG_LEN: i64 = std::mem::offset_of!(yavs_interp::TierSig, len) as i64;
+const SIG_SIGNAL: i64 = std::mem::offset_of!(yavs_interp::TierSig, signal) as i64;
+const SIG_OFF: i64 = std::mem::offset_of!(yavs_interp::TierSig, off) as i64;
 
 impl Mem {
     fn of(fr: TierFrame) -> Mem {
@@ -2022,8 +2033,8 @@ impl Gen {
                         );
                         self.join(join);
                     }
-                    Inst::SigReadScalar { .. }
-                    | Inst::SigRead { .. }
+                    Inst::SigReadScalar { dst, sig } => self.sig_read_scalar(&c, pc, dst, sig),
+                    Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
                     | Inst::WaitFor { .. }
                     | Inst::DriveSlot { .. }
@@ -2045,9 +2056,10 @@ impl Gen {
                                 self.st(&c, d, self.zext8(self.load(self.i8, p)));
                                 self.join(join);
                             }
-                            Some(NativeKind::Edge(rising)) => {
-                                self.signal(&c, pc, if rising { 1 } else { 2 })
-                            }
+                            Some(NativeKind::Edge(rising)) => match (f.regs(args), dst) {
+                                (Some(&[s]), Some(d)) => self.edge(&c, pc, rising, s, d),
+                                _ => self.signal(&c, pc, if rising { 1 } else { 2 }),
+                            },
                             None => self.step(&c, pc, &inst),
                         }
                     }
@@ -2063,6 +2075,101 @@ impl Gen {
                 return Err("the generated LLVM function does not verify (a bug in yavs)".into());
             }
             Ok(())
+        }
+    }
+
+    /// Like `slow_path`, but the interpreter runs the signal instruction at `pc` through
+    /// `TierHost::signal` (`edge` as in `signal`).
+    unsafe fn slow_signal(
+        &self,
+        c: &Cur,
+        pc: u32,
+        edge: u32,
+    ) -> (LLVMBasicBlockRef, LLVMBasicBlockRef) {
+        // SAFETY: well-formed blocks of c.f.
+        unsafe {
+            let here = LLVMGetInsertBlock(self.b);
+            let (slow, join) = (self.block(c), self.block(c));
+            LLVMPositionBuilderAtEnd(self.b, slow);
+            self.signal(c, pc, edge);
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, here);
+            (slow, join)
+        }
+    }
+
+    /// The `TierSig` entry of the instance signal that reference registers `sig`, `sig + 1`
+    /// name, and the element offset in it; taking `slow` unless the reference is a plain one
+    /// of `len` elements to an instance signal the table has.
+    unsafe fn sig_entry(
+        &self,
+        c: &Cur,
+        sig: Reg,
+        len: Option<i64>,
+        slow: LLVMBasicBlockRef,
+    ) -> (LLVMValueRef, LLVMValueRef) {
+        // SAFETY: loads of `Mem` fields and of a `TierSig` the guard checked is in the table.
+        unsafe {
+            let (v, l) = (self.ld(c, sig), self.ld(c, Reg(sig.0 + 1)));
+            let base = LLVMBuildLShr(self.b, v, self.c64(32), c"".as_ptr());
+            let off = LLVMBuildAnd(self.b, v, self.c64(0xffff_ffff), c"".as_ptr());
+            let n = self.mem_ld(c, MEM_SIGTAB_LEN, self.i64);
+            let has = self.icmp(IP::LLVMIntULT, base, n);
+            let want = match len {
+                Some(k) => self.icmp(IP::LLVMIntEQ, l, self.c64(k)),
+                None => self.icmp(IP::LLVMIntNE, l, self.c64(0)),
+            };
+            self.guard(c, LLVMBuildAnd(self.b, has, want, c"".as_ptr()), slow);
+            let tab = self.mem_ld(c, MEM_SIGTAB, self.ptr);
+            let at = LLVMBuildMul(self.b, base, self.c64(SIG_ENT), c"".as_ptr());
+            (self.gep(tab, at), off)
+        }
+    }
+
+    /// `Inst::SigReadScalar` of a logic signal that keeps its codes: the byte, in place;
+    /// anything else through `TierHost::signal`.
+    unsafe fn sig_read_scalar(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) {
+        // SAFETY: see `sig_entry`; the guard checks the element is within the codes.
+        unsafe {
+            let (slow, join) = self.slow_signal(c, pc, 0);
+            let (ent, off) = self.sig_entry(c, sig, None, slow);
+            let len = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            self.guard(c, self.icmp(IP::LLVMIntULT, off, len), slow);
+            let codes = self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES)));
+            let byte = self.load(self.i8, self.gep(codes, off));
+            self.st(c, dst, self.zext8(byte));
+            self.join(join);
+        }
+    }
+
+    /// `rising_edge` / `falling_edge` of one element: true in place when the kernel resumed the
+    /// process for that edge (`TierFrame::known_sig`), else through `TierHost::signal`.
+    unsafe fn edge(&self, c: &Cur, pc: u32, rising: bool, sig: Reg, dst: Reg) {
+        // SAFETY: see `sig_entry`.
+        unsafe {
+            let (slow, join) = self.slow_signal(c, pc, if rising { 1 } else { 2 });
+            let (ent, off) = self.sig_entry(c, sig, Some(1), slow);
+            let signal = self.load(self.i64, self.gep(ent, self.c64(SIG_SIGNAL)));
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let elem = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            let held = |a: LLVMValueRef, b: LLVMValueRef| self.icmp(IP::LLVMIntEQ, a, b);
+            let ks = self.mem_ld(c, MEM_KNOWN_SIG, self.i64);
+            let ke = self.mem_ld(c, MEM_KNOWN_ELEM, self.i64);
+            let ku = self.mem_ld(c, MEM_KNOWN_UP, self.i64);
+            let ok = LLVMBuildAnd(
+                self.b,
+                held(signal, ks),
+                LLVMBuildAnd(
+                    self.b,
+                    held(elem, ke),
+                    held(ku, self.c64(i64::from(rising))),
+                    c"".as_ptr(),
+                ),
+                c"".as_ptr(),
+            );
+            self.guard(c, ok, slow);
+            self.st(c, dst, self.c64(1));
+            self.join(join);
         }
     }
 

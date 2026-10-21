@@ -212,6 +212,25 @@ impl SharedState {
     /// called foreign code), the simulation has begun, or the heap holds an object that is not
     /// plain data.
     pub fn state_image(&self, data: &[Arc<InstData>]) -> Result<Vec<u8>, String> {
+        self.image(data, self.vars.len())
+    }
+
+    /// [`SharedState::state_image`] of the first packages only (`data`), written when the
+    /// initialisers of the later ones have not run: of the shared variables area, the first
+    /// `vars` bytes, which the later packages' objects follow (the lowering allocates them in
+    /// package order). [`restore_state_prefix`] reads it.
+    pub fn state_image_prefix(
+        &self,
+        data: &[Arc<InstData>],
+        vars: usize,
+    ) -> Result<Vec<u8>, String> {
+        if vars > self.vars.len() || self.vars[vars..].iter().any(|&b| b != 0) {
+            return Err("the later shared variables are not zero".into());
+        }
+        self.image(data, vars)
+    }
+
+    fn image(&self, data: &[Arc<InstData>], vars: usize) -> Result<Vec<u8>, String> {
         if let Some(why) = &self.tainted {
             return Err(why.clone());
         }
@@ -224,7 +243,7 @@ impl SharedState {
         };
         postcard::to_stdvec(&Out {
             data: data.iter().map(|d| BlockRef(&d.data)).collect(),
-            vars: BlockRef(&self.vars),
+            vars: BlockRef(&self.vars[..vars]),
             heap,
             reports: &self.init_reports,
         })
@@ -240,8 +259,24 @@ pub fn restore_state(
     packages: usize,
     vars: usize,
 ) -> Option<(Vec<InstData>, SharedState)> {
+    restore_state_prefix(bytes, packages, vars, vars)
+}
+
+/// [`SharedState::state_image_prefix`]'s bytes back: the data of the first `packages` packages
+/// and a shared state whose variables area has `total` bytes, the first `vars` of them as the
+/// initialisers left them and the rest zero.
+pub fn restore_state_prefix(
+    bytes: &[u8],
+    packages: usize,
+    vars: usize,
+    total: usize,
+) -> Option<(Vec<InstData>, SharedState)> {
     let i: In = postcard::from_bytes(bytes).ok()?;
-    if i.data.len() != packages || i.vars.0.len() != vars || !i.heap.is_plain(heap::SHARED) {
+    if i.data.len() != packages
+        || i.vars.0.len() != vars
+        || total < vars
+        || !i.heap.is_plain(heap::SHARED)
+    {
         return None;
     }
     let data = i
@@ -252,7 +287,9 @@ pub fn restore_state(
             ..Default::default()
         })
         .collect();
-    let mut st = SharedState::new(i.vars.0);
+    let mut area = i.vars.0;
+    area.resize(total, 0);
+    let mut st = SharedState::new(area);
     st.heap = Some(Box::new(i.heap));
     st.init_reports = i.reports;
     Some((data, st))
@@ -269,6 +306,34 @@ mod tests {
             "{} bytes",
             v.len()
         );
+    }
+
+    #[test]
+    fn state_of_the_first_packages_round_trips() {
+        let data: Vec<Arc<InstData>> = (0..2u8)
+            .map(|i| {
+                Arc::new(InstData {
+                    data: vec![i + 1; 100],
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let mut st = SharedState::new(vec![0; 64]);
+        st.vars[..16].copy_from_slice(&[9; 16]);
+        let image = st.state_image_prefix(&data, 16).expect("image");
+        let (d, back) = restore_state_prefix(&image, 2, 16, 64).expect("restore");
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[1].data, vec![2u8; 100]);
+        assert_eq!(&back.vars[..16], &[9u8; 16]);
+        assert_eq!(back.vars.len(), 64);
+        assert!(back.vars[16..].iter().all(|&b| b == 0));
+        // Another number of packages, or an area that is too small: a miss.
+        assert!(restore_state_prefix(&image, 3, 16, 64).is_none());
+        assert!(restore_state_prefix(&image, 2, 8, 64).is_none());
+        assert!(restore_state_prefix(&image, 2, 16, 8).is_none());
+        // Bytes beyond the prefix that are not zero: the later packages have run.
+        st.vars[20] = 1;
+        assert!(st.state_image_prefix(&data, 16).is_err());
     }
 
     #[test]

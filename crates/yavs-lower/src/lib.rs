@@ -421,6 +421,12 @@ pub(crate) struct Cx {
     /// A subprogram using external names was lowered before `ext_unbound` was known: it fails
     /// on entry ([`Lowerer::externals_early`]).
     pub ext_early: bool,
+    /// The functions whose code depends on the design being elaborated: they allocated instance
+    /// data of the architecture being lowered for a `'path_name` or `'instance_name`, or fail
+    /// on entry for an external name that is not bound yet, or failed to lower
+    /// (`Lowerer::context_dependent`).
+    #[serde(skip)]
+    pub context_funcs: Vec<FuncId>,
 }
 
 /// One kernel signal of a record signal.
@@ -616,6 +622,7 @@ impl<'a> Lowerer<'a> {
                 ext_sigs: HashMap::new(),
                 ext_unbound: None,
                 ext_early: false,
+                context_funcs: Vec::new(),
             },
             packages: Vec::new(),
             units: Vec::new(),
@@ -640,6 +647,55 @@ impl<'a> Lowerer<'a> {
     /// before lowering any subprogram that uses external names.
     pub fn externals_bound(&mut self, unbound: HashMap<DeclId, String>) {
         self.cx.ext_unbound = Some(unbound);
+    }
+
+    /// The subprograms lowered so far that cannot be lowered ahead of the design: one that reads
+    /// a `'path_name` or `'instance_name` (the name is a cell of the instance data of the
+    /// architecture being lowered), one that uses an external name (it fails on entry until the
+    /// name is bound), one that failed to lower, and every subprogram that calls such a one.
+    pub fn context_dependent(&self) -> Vec<DeclId> {
+        let mut seeds = self.cx.context_funcs.clone();
+        seeds.extend(self.pb.undefined_funcs());
+        if seeds.is_empty() {
+            return Vec::new();
+        }
+        let mut tainted: std::collections::HashSet<FuncId> =
+            self.pb.callers_of(&seeds).into_iter().collect();
+        tainted.extend(seeds);
+        let mut out: Vec<DeclId> = self
+            .cx
+            .funcs
+            .iter()
+            .filter(|(_, f)| tainted.contains(f))
+            .map(|(d, _)| *d)
+            .collect();
+        out.sort_by_key(|d| yavs_sem::Id::index(*d));
+        out
+    }
+
+    /// A digest of the ids lowering has handed out (`ProgramBuilder::fingerprint`).
+    pub fn fingerprint(&self) -> u64 {
+        self.pb.fingerprint()
+    }
+
+    /// How many functions depend on the design so far ([`Lowerer::context_dependent`]).
+    pub fn context_users(&self) -> usize {
+        self.cx.context_funcs.len()
+    }
+
+    /// Bytes of the shared variables area allocated so far.
+    pub fn shared_size(&self) -> u32 {
+        self.cx.shared_size
+    }
+
+    /// The number of functions in the program so far.
+    pub fn funcs(&self) -> usize {
+        self.pb.func_count()
+    }
+
+    /// The packages lowered so far ([`Lowerer::package`]).
+    pub fn package_irs(&self) -> &[PackageIr] {
+        &self.packages
     }
 
     /// Whether a subprogram using external names was lowered before
@@ -791,7 +847,11 @@ impl<'a> Lowerer<'a> {
     fn drain(&mut self) {
         while let Some((d, depth)) = self.cx.queue.pop() {
             // Errors are collected in `cx.diags`.
-            let _ = func::subprogram(self.db, &mut self.pb, &mut self.cx, d, depth);
+            if func::subprogram(self.db, &mut self.pb, &mut self.cx, d, depth).is_err()
+                && let Some(&f) = self.cx.funcs.get(&d)
+            {
+                self.cx.context_funcs.push(f);
+            }
         }
     }
 
@@ -893,11 +953,22 @@ impl<'a> Lowerer<'a> {
     /// options) the image was made with. `None` when the bytes do not decode or were made with
     /// other options.
     pub fn from_image(db: &'a Db, opts: LowerOptions, bytes: &yavs_diag::Buffer) -> Option<Self> {
-        // The function bodies stay in `bytes` until a function runs: the builder goes on from
+        Self::from_image_in(db, opts, bytes, bytes)
+    }
+
+    /// [`Lowerer::from_image`] for the image `image`, a part of `buffer` (an entry that holds
+    /// something else before it): the function bodies stay in `buffer` until a function runs.
+    pub fn from_image_in(
+        db: &'a Db,
+        opts: LowerOptions,
+        buffer: &yavs_diag::Buffer,
+        image: &[u8],
+    ) -> Option<Self> {
+        // The function bodies stay in `buffer` until a function runs: the builder goes on from
         // the functions it has (it reads their headers only) and `Program::func` decodes one
         // when it is first called.
-        let i: Image = yavs_diag::sharing(bytes, || {
-            yavs_ir::lazy_bodies(|| postcard::from_bytes(bytes).ok())
+        let i: Image = yavs_diag::sharing(buffer, || {
+            yavs_ir::lazy_bodies(|| postcard::from_bytes(image).ok())
         })?;
         if i.opts != opts {
             return None;

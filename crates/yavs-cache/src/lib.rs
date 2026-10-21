@@ -29,6 +29,10 @@ pub const DIR: &str = "yavs-cache";
 /// Entries kept per directory; the least recently used ones are removed when it grows past this.
 pub const MAX_ENTRIES: usize = 96;
 
+/// Bytes of entries kept per directory (the lowered library of a big verification library is
+/// about 10 MB): the least recently used entries go first, but the newest is always kept.
+pub const MAX_BYTES: u64 = 512 << 20;
+
 /// Notes ([`Store::note`]) kept per directory.
 pub const MAX_NOTES: usize = 512;
 
@@ -242,14 +246,58 @@ impl Store {
         }
     }
 
-    /// Keep the [`MAX_ENTRIES`] most recently used entries.
-    fn prune(&self) {
-        let mut all = self.entries();
-        if all.len() <= MAX_ENTRIES {
-            return;
+    fn claim_file(&self, kind: &str, key: &Key) -> PathBuf {
+        self.dir.join(format!("{kind}-{}.making", key.hex()))
+    }
+
+    /// Say that this run is making the entry, so that runs that start meanwhile do not make it
+    /// as well (an entry that costs a fifth of a second to make would otherwise be made by every
+    /// test of a parallel suite that starts together). `false` when another run claimed it less
+    /// than `ttl` ago; a claim that old is taken over (its run may have died). Call
+    /// [`Store::release`] when the entry is stored.
+    pub fn claim(&self, kind: &str, key: &Key, ttl: std::time::Duration) -> bool {
+        let p = self.claim_file(kind, key);
+        if fs::create_dir_all(&self.dir).is_err() {
+            return false;
         }
+        match fs::File::options().write(true).create_new(true).open(&p) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let fresh = fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age < ttl);
+                // Taking over: the claim is renewed for this run.
+                !fresh && fs::File::create(&p).is_ok()
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// End a [`Store::claim`].
+    pub fn release(&self, kind: &str, key: &Key) {
+        let _ = fs::remove_file(self.claim_file(kind, key));
+    }
+
+    /// Keep the [`MAX_ENTRIES`] most recently used entries, and at most [`MAX_BYTES`] of them.
+    fn prune(&self) {
+        self.prune_to(MAX_ENTRIES, MAX_BYTES);
+    }
+
+    fn prune_to(&self, max_entries: usize, max_bytes: u64) {
+        let mut all = self.entries();
         all.sort_by_key(|e| std::cmp::Reverse(e.1));
-        for (p, _, _) in all.split_off(MAX_ENTRIES) {
+        let mut bytes = 0u64;
+        let mut keep = 0;
+        for (i, e) in all.iter().enumerate() {
+            bytes += e.2;
+            if i >= max_entries || (i > 0 && bytes > max_bytes) {
+                break;
+            }
+            keep = i + 1;
+        }
+        for (p, _, _) in all.split_off(keep) {
             let _ = fs::remove_file(p);
         }
     }
@@ -287,7 +335,7 @@ impl Store {
             for e in rd.flatten() {
                 let n = e.file_name();
                 let n = n.to_string_lossy();
-                if n.starts_with(".tmp-") || n.ends_with(".seen") {
+                if n.starts_with(".tmp-") || n.ends_with(".seen") || n.ends_with(".making") {
                     let _ = fs::remove_file(e.path());
                 }
             }
@@ -424,6 +472,48 @@ mod tests {
         assert_eq!(s.entries().len(), MAX_ENTRIES);
         let c = s.clean().unwrap();
         assert_eq!(c.entries, MAX_ENTRIES);
+        assert!(!s.dir().exists());
+    }
+
+    #[test]
+    fn pruning_keeps_to_the_byte_limit_but_the_newest() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        let t0 = std::time::SystemTime::now() - std::time::Duration::from_secs(100);
+        for i in 0..4u64 {
+            s.put("t", &key(&i.to_string()), &[7u8; 1000]);
+            let f = fs::File::options()
+                .write(true)
+                .open(s.file("t", &key(&i.to_string())))
+                .unwrap();
+            f.set_modified(t0 + std::time::Duration::from_secs(i))
+                .unwrap();
+        }
+        // Room for two of them.
+        s.prune_to(96, 2 * (1000 + HEADER as u64) + 10);
+        assert_eq!(s.entries().len(), 2);
+        assert!(s.get("t", &key("3")).is_some() && s.get("t", &key("2")).is_some());
+        assert!(s.get("t", &key("1")).is_none());
+        // The newest stays even when it alone is over the limit.
+        s.prune_to(96, 5);
+        assert_eq!(s.entries().len(), 1);
+    }
+
+    #[test]
+    fn a_claim_is_exclusive_until_released_or_old() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        let ttl = std::time::Duration::from_secs(60);
+        assert!(s.claim("t", &key("a"), ttl));
+        assert!(!s.claim("t", &key("a"), ttl), "someone is making it");
+        assert!(s.claim("t", &key("b"), ttl), "another entry");
+        s.release("t", &key("a"));
+        assert!(s.claim("t", &key("a"), ttl));
+        // A claim older than the limit is taken over.
+        assert!(s.claim("t", &key("a"), std::time::Duration::ZERO));
+        // Claims are not entries, and cleaning removes them.
+        assert_eq!(s.entries().len(), 0);
+        s.clean().unwrap();
         assert!(!s.dir().exists());
     }
 }

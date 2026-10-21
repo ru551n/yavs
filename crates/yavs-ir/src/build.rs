@@ -110,6 +110,85 @@ impl ProgramBuilder {
             .sum()
     }
 
+    /// The functions that call one of `seed`, directly or through other functions, found by
+    /// reading the code lowered so far.
+    pub fn callers_of(&self, seed: &[FuncId]) -> Vec<FuncId> {
+        let n = self.prog.funcs.len();
+        let mut callers: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for (id, f) in self.prog.funcs.iter() {
+            for inst in &f.code {
+                if let Some(c) = callee(inst)
+                    && let Some(v) = callers.get_mut(c.0 as usize)
+                {
+                    v.push(id.0);
+                }
+            }
+        }
+        let mut seen = vec![false; n];
+        let mut work: Vec<u32> = seed.iter().map(|f| f.0).collect();
+        let mut out = Vec::new();
+        while let Some(f) = work.pop() {
+            for &c in callers.get(f as usize).into_iter().flatten() {
+                if !seen[c as usize] {
+                    seen[c as usize] = true;
+                    out.push(FuncId(c));
+                    work.push(c);
+                }
+            }
+        }
+        out
+    }
+
+    /// A digest of the id space built so far: every function's identity in id order and the size
+    /// of every table. Two lowerings that hand out the same ids have the same digest whatever
+    /// order their maps were written in (`DefaultHasher::new` has fixed keys, so it agrees
+    /// between processes of one build).
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let p = &self.prog;
+        let mut h = std::hash::DefaultHasher::new();
+        for f in p.funcs.values() {
+            (
+                &f.name,
+                &f.mangled,
+                f.kind,
+                f.parent,
+                f.params.len(),
+                f.nested,
+                f.defined,
+            )
+                .hash(&mut h);
+        }
+        (
+            p.funcs.len(),
+            p.types.len(),
+            p.consts.len(),
+            p.natives.len(),
+            p.foreign.len(),
+            p.checks.len(),
+            p.cases.len(),
+            p.stmts.len(),
+            p.reflect.len(),
+        )
+            .hash(&mut h);
+        h.finish()
+    }
+
+    /// The functions declared and not defined (their lowering failed or has not run).
+    pub fn undefined_funcs(&self) -> Vec<FuncId> {
+        self.prog
+            .funcs
+            .iter()
+            .filter(|(_, f)| !f.defined)
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// The number of functions declared so far.
+    pub fn func_count(&self) -> usize {
+        self.prog.funcs.len()
+    }
+
     pub fn types(&self) -> &IdVec<TyId, Ty> {
         &self.prog.types
     }

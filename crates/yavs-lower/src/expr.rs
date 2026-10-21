@@ -4099,6 +4099,7 @@ impl<'a> Fx<'a, '_> {
                     Some(n) => n.off,
                     None => {
                         let off = self.cx.inst_alloc(16);
+                        self.cx.context_funcs.push(self.fb.id());
                         self.cx.names.push(crate::InstName {
                             decl: d,
                             instance,

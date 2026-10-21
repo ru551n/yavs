@@ -74,3 +74,48 @@ fn constants_evaluated_once() {
     // A composite constant in package data, returned as a fat pair.
     assert_ne!(call(fs[2]), 0);
 }
+
+/// A subprogram that reads the name of an object, and every subprogram that calls it, cannot be
+/// lowered ahead of the design: the name is a cell of the architecture's instance data. A
+/// subprogram that does not is not named (`Lowerer::context_dependent`).
+#[test]
+fn subprograms_that_read_a_name_depend_on_the_design() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg/ctx.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let dir = std::env::temp_dir().join("yavs-lower-ctx-work");
+    opts.libraries
+        .add_spec(&format!("work:{}", dir.display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let func = |name: &str| {
+        db.decls
+            .iter()
+            .find(|(_, d)| {
+                d.name.to_string().eq_ignore_ascii_case(name)
+                    && d.kind
+                        .subprogram()
+                        .is_some_and(|s| matches!(s.body, yavs_sem::decl::Body::Hir { .. }))
+            })
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    let (who, wrap, plain) = (func("who"), func("wrap"), func("plain"));
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    for d in [plain, wrap, who] {
+        l.subprogram(d).unwrap();
+    }
+    let mut want = vec![who, wrap];
+    want.sort_by_key(|d| yavs_sem::Id::index(*d));
+    assert_eq!(l.context_dependent(), want);
+    assert_eq!(l.context_users(), 1);
+    // Without them nothing is.
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    l.subprogram(plain).unwrap();
+    assert!(l.context_dependent().is_empty());
+}

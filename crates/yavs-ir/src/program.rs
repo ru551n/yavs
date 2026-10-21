@@ -136,6 +136,24 @@ impl Program {
         made + self.stored_opt.map().len()
     }
 
+    /// The optimised copies made so far of the functions `want` says yes to, serialised (not the
+    /// loaded ones not used yet), by function id.
+    pub fn export_made(&self, mut want: impl FnMut(FuncId) -> bool) -> Vec<OptCopy> {
+        if !crate::opt::copies_are_portable() {
+            return Vec::new();
+        }
+        self.funcs
+            .iter()
+            .filter_map(|(id, f)| match f.opt.get() {
+                Some(Some(o)) if want(id) => postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
+                    func: id,
+                    bytes: bytes.into(),
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The optimised copies made so far and the loaded ones not used yet, serialised, by function
     /// id. Empty when copies are not portable (the pass is off, a debugger keeps variables).
     pub fn export_optimized(&self) -> Vec<OptCopy> {

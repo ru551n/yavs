@@ -1165,6 +1165,9 @@ pub(crate) fn subprogram(
         });
     if let Some(m) = unbound {
         fx.cx.ext_early |= fx.cx.ext_unbound.is_none();
+        if fx.cx.ext_unbound.is_none() {
+            fx.cx.context_funcs.push(fx.fb.id());
+        }
         let what = fx.msg(&m, yavs_ir::Dir::To);
         fx.term(Inst::Unreachable { what });
         let b = fx.block();

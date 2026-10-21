@@ -1442,3 +1442,83 @@ fn run_gui() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Runs `yavs` with colours off.
+fn yavs_cmd(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["--color", "never"])
+        .args(args)
+        .output()
+        .expect("run")
+}
+
+/// Analyzes `files` (relative to `dir`) into library `lib` mapped at `dir/lib`, others by `maps`.
+fn analyze_into(dir: &std::path::Path, lib: &str, maps: &[&str], files: &[(&str, &str)]) {
+    let mut args = vec![
+        "analyze".to_string(),
+        "--std=2008".to_string(),
+        format!("--work={lib}:{}/{lib}", dir.display()),
+    ];
+    args.extend(
+        maps.iter()
+            .map(|m| format!("--map={m}:{}/{m}", dir.display())),
+    );
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text).expect("write");
+        args.push(dir.join(name).display().to_string());
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = yavs_cmd(&args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// An elaboration-time call of a package function from an entity that is loaded while the design
+/// is elaborated (a default-bound component analyzed after its user): the package comes with
+/// the entity and its body must be loaded too (#515, #516).
+#[test]
+fn run_package_body_of_a_late_loaded_entity() {
+    let tmp = tempdir("latebody");
+    let dir: &std::path::Path = &tmp;
+    analyze_into(
+        dir,
+        "lib2",
+        &[],
+        &[
+            (
+                "pk.vhd",
+                "package pk is function twice(x : natural) return natural; end package;\n\
+                 package body pk is\n\
+                   function twice(x : natural) return natural is begin return 2 * x; end function;\n\
+                 end package body;\n",
+            ),
+            (
+                "comps.vhd",
+                "package comps is component leaf generic (n : natural := 3); end component; end package;\n",
+            ),
+            (
+                "top.vhd",
+                "use work.comps.all;\n\
+                 entity top is end entity;\n\
+                 architecture a of top is begin u : leaf generic map (n => 5); end architecture;\n",
+            ),
+        ],
+    );
+    analyze_into(
+        dir,
+        "lib2",
+        &[],
+        &[(
+            "leaf.vhd",
+            "use work.pk.all;\n\
+             entity leaf is generic (n : natural := 3); end entity;\n\
+             architecture a of leaf is\n\
+               impure function init_value return natural is begin return twice(n); end function;\n\
+               signal s : natural := init_value;\n\
+             begin process begin report \"s = \" & natural'image(s); wait; end process; end architecture;\n",
+        )],
+    );
+    let lib = format!("--work=lib2:{}/lib2", dir.display());
+    let o = yavs_cmd(&["run", "--std=2008", &lib, "top"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("s = 10"));
+}

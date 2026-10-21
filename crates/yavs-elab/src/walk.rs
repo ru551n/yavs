@@ -147,6 +147,8 @@ pub(crate) struct Elab<'d> {
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
     /// Aliases of the external names used in package subprograms, by package (#255).
     pkg_uses: Vec<(UnitId, DeclId)>,
+    /// How many units were loaded when the package bodies were last loaded (`load_new_bodies`).
+    units_seen: usize,
 }
 
 pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<Diagnostic>> {
@@ -497,7 +499,9 @@ pub(crate) fn elaborate(
         pending: Vec::new(),
         deferred: Vec::new(),
         pkg_uses,
+        units_seen: 0,
     };
+    e.units_seen = e.db.units.len();
     let name = e.db.units[top.entity].name;
     let cfgp = top.config.map(|u| CfgPath {
         root: CfgRoot::Unit(u),
@@ -642,6 +646,21 @@ impl Elab<'_> {
         d
     }
 
+    /// The architectures and entities loaded on demand bring packages with them, and an
+    /// elaboration-time call of one of their subprograms needs the package body (#515, #516).
+    fn load_new_bodies(&mut self, at: Span) -> R<()> {
+        if self.db.units.len() == self.units_seen {
+            return Ok(());
+        }
+        let r = load_bodies(self.db);
+        self.units_seen = self.db.units.len();
+        r.map_err(|mut ds| {
+            let last = ds.pop();
+            self.errors.extend(ds);
+            Box::new(last.unwrap_or_else(|| ice(at, "body load failed without a diagnostic")))
+        })
+    }
+
     /// Load the units Db needs on demand; their diagnostics become ours.
     fn load_arch(&mut self, entity: UnitId, arch: Option<Symbol>, at: Span) -> R<UnitId> {
         let a = match arch.or_else(|| self.db.last_architecture(entity)) {
@@ -691,6 +710,7 @@ impl Elab<'_> {
         depth: u32,
         at: Span,
     ) -> R<ScopeId> {
+        self.load_new_bodies(at)?;
         // Generic types, subprograms and packages: elaborate the entity's clone for these
         // actuals, whose generics are the generic constants only.
         let (entity, arch, gens) = if self.db.has_non_constant_generics(entity) {

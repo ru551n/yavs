@@ -1570,6 +1570,22 @@ rows and of the testbench row 3, self time, function names are those of the rele
 
 Raw data: JSON per row set, the translator and the drivers are scratch and not committed.
 
+## performance: floor of a run, 2026-10-21
+
+Why a tiny test took 7.2 ms in the head-to-head against 5.6 ms (sim1 jit) and 2.3 ms (sim2): that binary was built with
+the `llvm` feature, which linked libLLVM into the executable, and the dynamic loader relocated it (174 000 relative
+relocations, 1 650 page faults, 33 M instructions) in every process, whatever the tier: `yavs --version` took
+5.7 ms against 0.6 ms of a build without the feature. The executable now loads libLLVM on first use
+(`docs/decisions.md` "LLVM bindings", #426). Per-run time of the difftest corpus's 279 tests that all four tools run (warm
+cache, `yavs run --tier=interp`, one process per test, python `subprocess` timing, pinned to performance core 5, median of
+the per-test medians, 3 rounds; the first column includes about 0.6 ms of process creation that every tool pays):
+
+| Binary | run 1 (empty cache) | run 2 | warm (run 3 on) |
+|---|---:|---:|---:|
+| built with `llvm`, before | 7.6 ms | 8.0 ms | 6.5 ms |
+| built with `llvm`, libLLVM loaded on first use | 2.3 ms | 2.5 ms | 1.4 ms |
+| built without `llvm` (unchanged) | 2.2 ms | 2.5 ms | 1.4 ms |
+
 ## performance: floor of a run, 2026-10-20
 
 The per-test floor of the two verification-library suites (gap map rows 1 to 3): one `yavs run` per test, every

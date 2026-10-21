@@ -1521,7 +1521,26 @@ impl Machine {
                 Some(ConstData::Bytes(b)) => Some(b),
                 _ => None,
             },
+            // The state of protected objects and shared variables, and package data.
+            SHARED_HEAP => self.sh.as_ref()?.heap.as_ref()?.data(idx),
+            SHARED => Some(&self.sh.as_ref()?.vars),
+            PKG => match &self.pkg_init {
+                Some((p, data)) if *p == idx => Some(data),
+                _ => Some(&self.rt.pkgs.get(idx as usize)?.data),
+            },
             _ => None,
+        }
+    }
+
+    /// The shared heap object `idx` (`SHARED_HEAP`) or the shared variables (`SHARED`) for
+    /// writing, without the error paths of `obj_mut`.
+    #[inline(always)]
+    fn shared_mem_mut(&mut self, sp: u8, idx: u32) -> Option<&mut [u8]> {
+        let sh = self.sh.as_mut()?;
+        if sp == SHARED {
+            Some(&mut sh.vars)
+        } else {
+            sh.heap.as_mut()?.data_mut(idx)
         }
     }
 
@@ -1672,6 +1691,7 @@ impl Machine {
             FRAME => self.fslots_mut(idx as usize),
             TEMP => Some(&mut self.temp[..]),
             HEAP => self.heap.data_mut(idx),
+            SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
             _ => None,
         };
         if let Some(b) = mem.and_then(|m| m.get_mut(off as usize..off as usize + n)) {
@@ -1682,11 +1702,33 @@ impl Machine {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn load(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
-        // Fast path: a frame (registers spill to frame slots all the time), temporary or
-        // instance memory.
+        // Fast path: a frame (registers spill to frame slots all the time), temporary memory,
+        // an object of either heap (the state of protected objects is in the shared one).
+        let (sp, idx, off) = split(a);
+        let mem = match sp {
+            FRAME => self.fslots(idx as usize),
+            TEMP => Some(&self.temp[..]),
+            HEAP => self.heap.data(idx),
+            SHARED_HEAP => self.sh.as_ref().and_then(|s| s.heap.as_ref()?.data(idx)),
+            PKG => match &self.pkg_init {
+                Some((p, data)) if *p == idx => Some(&data[..]),
+                _ => self.rt.pkgs.get(idx as usize).map(|p| &p.data[..]),
+            },
+            _ => None,
+        };
+        if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
+            return Ok(cell_w(b, w));
+        }
+        self.load_slow(a, w)
+    }
+
+    /// `load` from the other spaces, and every error.
+    #[inline(never)]
+    fn load_slow(&self, a: u64, w: Width) -> R<u64> {
+        let n = w.bytes().min(8) as u64;
         let (sp, idx, off) = split(a);
         let mem = self.mem_fast(sp, idx);
         if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
@@ -1735,6 +1777,7 @@ impl Machine {
                 FRAME => self.fslots_mut(idx as usize),
                 HEAP => self.heap.data_mut(idx),
                 TEMP => Some(&mut self.temp[..]),
+                SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
                 _ => None,
             };
             if let Some(b) = mem.and_then(|s| s.get_mut(o as usize..o as usize + n)) {
@@ -1779,6 +1822,7 @@ impl Machine {
         let mem = match sp {
             FRAME => self.fslots_mut(idx as usize),
             HEAP => self.heap.data_mut(idx),
+            SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
             _ => None,
         };
         if let Some(b) = mem.and_then(|s| s.get_mut(off as usize..off as usize + n)) {
@@ -2768,6 +2812,7 @@ impl Machine {
             heap,
             inst,
             rt,
+            sh,
             ..
         } = self;
         if dsp == ssp && didx == sidx {
@@ -2775,6 +2820,7 @@ impl Machine {
                 FRAME => slots_of_mut(frames, root, sstack, didx as usize),
                 TEMP => Some(&mut temp[..]),
                 HEAP => heap.data_mut(didx),
+                SHARED_HEAP => sh.as_mut().and_then(|s| s.heap.as_mut()?.data_mut(didx)),
                 _ => None,
             };
             let Some(b) = b else { return false };
@@ -2791,6 +2837,8 @@ impl Machine {
                     INST => Some(&inst.data[..]),
                     CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
                     HEAP => heap.data(sidx),
+                    SHARED_HEAP => sh.as_ref().and_then(|s| s.heap.as_ref()?.data(sidx)),
+                    SHARED => sh.as_ref().map(|s| &s.vars[..]),
                     _ => None,
                 };
                 (src, temp.get_mut(doff..doff + n))
@@ -2801,6 +2849,8 @@ impl Machine {
                     INST => Some(&inst.data[..]),
                     CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
                     HEAP => heap.data(sidx),
+                    SHARED_HEAP => sh.as_ref().and_then(|s| s.heap.as_ref()?.data(sidx)),
+                    SHARED => sh.as_ref().map(|s| &s.vars[..]),
                     _ => None,
                 };
                 (
@@ -2815,11 +2865,29 @@ impl Machine {
                     TEMP => Some(&temp[..]),
                     INST => Some(&inst.data[..]),
                     CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
+                    SHARED_HEAP => sh.as_ref().and_then(|s| s.heap.as_ref()?.data(sidx)),
+                    SHARED => sh.as_ref().map(|s| &s.vars[..]),
                     _ => None,
                 };
                 (
                     src,
                     heap.data_mut(didx).and_then(|b| b.get_mut(doff..doff + n)),
+                )
+            }
+            SHARED_HEAP => {
+                let src = match ssp {
+                    FRAME => slots_of(frames, root, sstack, sidx as usize),
+                    TEMP => Some(&temp[..]),
+                    INST => Some(&inst.data[..]),
+                    CONST => const_bytes(rt, yavs_ir::ConstId(sidx)).ok(),
+                    HEAP => heap.data(sidx),
+                    _ => None,
+                };
+                (
+                    src,
+                    sh.as_mut()
+                        .and_then(|s| s.heap.as_mut()?.data_mut(didx))
+                        .and_then(|b| b.get_mut(doff..doff + n)),
                 )
             }
             _ => return false,
@@ -2916,6 +2984,30 @@ impl Machine {
             // sim1's wording; the statement span names the place.
             return rt_err("null access dereference");
         }
+        // The heaps as they are, without `heap_of`'s creation of an absent shared heap.
+        let hp = match heap::tag_of(h) {
+            heap::PRIVATE => Some((&self.heap, HEAP)),
+            heap::SHARED => self
+                .sh
+                .as_ref()
+                .and_then(|s| s.heap.as_deref())
+                .map(|hp| (hp, SHARED_HEAP)),
+            _ => None,
+        };
+        let Some((hp, space)) = hp else {
+            return self.deref_other(h, what);
+        };
+        match hp.resolve(h) {
+            // A slot index is below `heap::MAX_INDEX`, far below the limit of an address.
+            Ok(i) => Ok(u64::from(space) << 61 | u64::from(i) << 32),
+            Err(e) => self.deref_fail(e, what),
+        }
+    }
+
+    /// `deref` of a handle of a heap that is not there yet, or of no heap.
+    #[cold]
+    #[inline(never)]
+    fn deref_other(&mut self, h: u64, what: yavs_ir::CheckMsgId) -> R<u64> {
         let (hp, space) = self.heap_of(h)?;
         match hp.resolve(h) {
             Ok(i) => mk_addr(space, i, 0),

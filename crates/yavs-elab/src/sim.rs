@@ -1709,7 +1709,8 @@ pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
                 .is_empty()
         }),
     };
-    db.units
+    let wanted: Vec<UnitId> = db
+        .units
         .iter()
         .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
         .filter(|&(id, _)| {
@@ -1719,7 +1720,55 @@ pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
             })
         })
         .map(|(id, _)| id)
-        .collect()
+        .collect();
+    dependency_order(db, wanted)
+}
+
+/// `packages` (in unit order) with every package after those its declaration or body names
+/// (LRM 14.4.2: a package is elaborated before the units that use it). Units are numbered in
+/// the order they were first loaded, and a package's body can load a package that its users
+/// named earlier, so unit order alone is not enough (#517). Packages in a cycle of body
+/// dependencies (legal) keep their unit order.
+fn dependency_order(db: &Db, packages: Vec<UnitId>) -> Vec<UnitId> {
+    use std::collections::{HashMap, HashSet};
+    use yavs_sem::hir::UnitHir;
+    fn visit(
+        db: &Db,
+        bodies: &HashMap<UnitId, UnitId>,
+        wanted: &HashSet<UnitId>,
+        seen: &mut HashSet<UnitId>,
+        out: &mut Vec<UnitId>,
+        u: UnitId,
+    ) {
+        if !seen.insert(u) {
+            return;
+        }
+        let body_deps = bodies
+            .get(&u)
+            .map(|&b| &db.units[b].deps[..])
+            .unwrap_or(&[]);
+        for &d in db.units[u].deps.iter().chain(body_deps) {
+            visit(db, bodies, wanted, seen, out, d);
+        }
+        if wanted.contains(&u) {
+            out.push(u);
+        }
+    }
+    let bodies: HashMap<UnitId, UnitId> = db
+        .units
+        .iter()
+        .filter_map(|(b, u)| match u.hir {
+            UnitHir::PackageBody { package } => Some((package, b)),
+            _ => None,
+        })
+        .collect();
+    let wanted: HashSet<UnitId> = packages.iter().copied().collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(packages.len());
+    for &u in &packages {
+        visit(db, &bodies, &wanted, &mut seen, &mut out, u);
+    }
+    out
 }
 
 /// `name[type, type return type]` (LRM 16.2.5, lower case): a subprogram's path element.

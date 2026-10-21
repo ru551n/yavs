@@ -1256,6 +1256,14 @@ a note and a help suggesting an access type, as the reference simulators reject 
   with E2106 "whose body is not analyzed" for designs whose component is bound by default to an
   entity that no unit of the analysed closure names.
 
+- **Run-time packages are lowered and initialised in dependency order** (#517;
+  LRM 14.4.2): `run_time_packages` lists the packages in unit order and then puts every package
+  after the packages its declaration or body names (`dependency_order`, a depth-first walk of
+  `Unit::deps`; packages in a cycle of body dependencies keep their unit order). Units are
+  numbered in the order they were first loaded, and the body of a package loads packages that
+  its users did not name before, so a package could come before one it calls into and its
+  lowering stopped with E2001 for the other package's shared variable.
+
 ## Runtime: default exit severity (user, 2026-10-18)
 
 `yavs run` defaults to `--exit-severity=failure`, like the reference simulators. A report or assert of

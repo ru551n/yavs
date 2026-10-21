@@ -1522,3 +1522,83 @@ fn run_package_body_of_a_late_loaded_entity() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stdout).contains("s = 10"));
 }
+
+/// Packages are initialised in dependency order, not in the order their units happened to be
+/// loaded: the body of `ap` names `tp` (another library) and its initialisation calls into it
+/// (#517).
+#[test]
+fn run_package_initialisation_follows_dependencies() {
+    let tmp = tempdir("pkgorder");
+    let dir: &std::path::Path = &tmp;
+    analyze_into(
+        dir,
+        "libt",
+        &[],
+        &[(
+            "t.vhd",
+            "package tp is procedure say(msg : string); end package;\n\
+             package body tp is\n\
+               type flag_t is protected\n\
+                 procedure set(v : boolean);\n\
+                 impure function get return boolean;\n\
+               end protected;\n\
+               type flag_t is protected body\n\
+                 variable f : boolean := false;\n\
+                 procedure set(v : boolean) is begin f := v; end procedure;\n\
+                 impure function get return boolean is begin return f; end function;\n\
+               end protected body;\n\
+               shared variable enabled : flag_t;\n\
+               procedure say(msg : string) is begin if not enabled.get then report msg; end if; end procedure;\n\
+             end package body;\n",
+        )],
+    );
+    analyze_into(
+        dir,
+        "liba",
+        &["libt"],
+        &[
+            (
+                "a.vhd",
+                "package ap is impure function loud(x : natural) return natural; end package;\n",
+            ),
+            (
+                "b.vhd",
+                "library libt;\n\
+                 use libt.tp.all;\n\
+                 package body ap is\n\
+                   type cnt_t is protected impure function next_id return natural; end protected;\n\
+                   type cnt_t is protected body\n\
+                     variable n : natural := 0;\n\
+                     impure function next_id return natural is begin say(\"next_id\"); n := n + 1; return n; end function;\n\
+                   end protected body;\n\
+                   shared variable ids : cnt_t;\n\
+                   impure function loud(x : natural) return natural is\n\
+                   begin say(\"loud\"); return x + ids.next_id; end function;\n\
+                   constant first_id : natural := loud(1);\n\
+                 end package body;\n",
+            ),
+        ],
+    );
+    analyze_into(
+        dir,
+        "work",
+        &["liba", "libt"],
+        &[(
+            "top.vhd",
+            "library liba;\n\
+             use liba.ap.all;\n\
+             entity top is generic (g : natural := loud(2)); end entity;\n\
+             architecture a of top is begin\n\
+               process begin report \"g=\" & natural'image(g); wait; end process;\n\
+             end architecture;\n",
+        )],
+    );
+    let w = format!("--work=work:{}/work", dir.display());
+    let (a, t) = (
+        format!("--map=liba:{}/liba", dir.display()),
+        format!("--map=libt:{}/libt", dir.display()),
+    );
+    let o = yavs_cmd(&["run", "--std=2008", &w, &a, &t, "top"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("g=4"));
+}

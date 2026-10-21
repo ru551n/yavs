@@ -246,7 +246,7 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false"]
 stop = "200us"
-excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (ISSUE_B)"
+excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (#513)"
 
 [[test]]
 name = "neorv32_single_min"
@@ -259,7 +259,7 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false", "SMC_PSRAM_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false", "ICACHE_EN=false", "DCACHE_EN=false", "RISCV_ISA_Zknd=false", "RISCV_ISA_Zkne=false", "RISCV_ISA_Zknh=false", "RISCV_ISA_Zksed=false", "RISCV_ISA_Zksh=false", "RISCV_ISA_Zfinx=false", "RISCV_ISA_Xcfu=false"]
 stop = "300us"
-excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (ISSUE_B)"
+excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (#513)"
 
 [[test]]
 name = "neorv32_single_cache"
@@ -272,7 +272,7 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false"]
 stop = "300us"
-excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (ISSUE_B)"
+excluded = "yavs: the core traps at the first GPIO store, the program diverges from the reference (#513)"
 
 [[test]]
 name = "osvvm_axis_random"
@@ -396,7 +396,7 @@ files = [
   { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
   { lib = "@module", source = "hdl-modules", path = "modules/lfsr/test/tb_lfsr.vhd" },
 ]
-excluded = "yavs: E2106 elaboration-time call reads a generic of the enclosing entity (ISSUE_A)"
+excluded = "yavs: E2106 elaboration-time call reads a generic of the enclosing entity (#512)"
 
 [[test]]
 name = "hdlm_axi_crossbar"
@@ -415,7 +415,7 @@ files = [
   { lib = "@module", source = "hdl-modules", glob = "modules/axi/sim/*.vhd" },
   { lib = "@module", source = "hdl-modules", path = "modules/axi/test/tb_axi_simple_crossbar.vhd" },
 ]
-excluded = "yavs: E2106 elaboration-time call, protected shared variable (ISSUE_A)"
+excluded = "yavs: E2106 elaboration-time call, protected shared variable (#512)"
 
 [[test]]
 name = "hdlm_register_file"
@@ -433,7 +433,7 @@ files = [
   { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
   { lib = "@module", source = "hdl-modules", path = "modules/register_file/test/tb_axi_lite_register_file.vhd" },
 ]
-excluded = "yavs: E2106 elaboration-time call, protected shared variable (ISSUE_A)"
+excluded = "yavs: E2106 elaboration-time call, protected shared variable (#512)"
 
 [[test]]
 name = "hdlm_axis_bfm"
@@ -451,7 +451,7 @@ files = [
   { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
   { lib = "@module", source = "hdl-modules", path = "modules/bfm/test/tb_axi_stream_bfm.vhd" },
 ]
-excluded = "yavs: E2106 elaboration-time call, protected shared variable (ISSUE_A)"
+excluded = "yavs: E2106 elaboration-time call, protected shared variable (#512)"
 
 [[test]]
 name = "poc_fifo_ic_assembly"
@@ -462,7 +462,7 @@ path = "tb/fifo/fifo_ic_assembly_tb.vhdl"
 top = "fifo_ic_assembly_tb"
 toplib = "test"
 corpus = ["poc-2008"]
-excluded = "yavs: E2106 elaboration-time call of an architecture function (ISSUE_C)"
+excluded = "yavs: E2106 elaboration-time call of an architecture function (#515)"
 
 [[test]]
 name = "fletcher_bufferreader"
@@ -473,7 +473,7 @@ path = "hardware/buffers/test/bufferreader/BufferReader_tc.vhd"
 top = "BufferReader_tc"
 toplib = "work"
 corpus = ["fletcher-2008"]
-excluded = "yavs: E2001 call whose body is not analyzed (ISSUE_D)"
+excluded = "yavs: E2001 call whose body is not analyzed (#516)"
 
 [[test]]
 name = "fletcher_bufferwriter_prim32"
@@ -484,7 +484,7 @@ path = "hardware/arrays/test/arraywriter/prim32_tc.vhd"
 top = "prim32_tc"
 toplib = "work"
 corpus = ["fletcher-2008"]
-excluded = "yavs: E2001 call whose body is not analyzed (ISSUE_D)"
+excluded = "yavs: E2001 call whose body is not analyzed (#516)"
 
 [[test]]
 name = "olo_fix_madd"
@@ -497,7 +497,7 @@ toplib = "olo_tb"
 corpus = ["open-logic-2008"]
 relaxed = true
 vunit = true
-excluded = "yavs: E2001 shared package object not lowered (ISSUE_E)"
+excluded = "yavs: E2001 shared package object not lowered (#517)"
 
 [[test]]
 name = "vai_window_gen_interlock"

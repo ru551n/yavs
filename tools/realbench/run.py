@@ -445,6 +445,11 @@ def basis(cells_names, refs, compare):
     return out
 
 
+def floor(v, metric):
+    """`time` reports wall and CPU in steps of 10 ms: a zero is below the resolution, not zero (use the instruction ratio there)."""
+    return max(v, 0.005) if v is not None and metric in ("wall", "cpu") else v
+
+
 def summarize(tests, meta):
     """Per cell and metric: geometric mean of the ratio to its basis, overall and per category."""
     names = meta["cells"]
@@ -460,7 +465,7 @@ def summarize(tests, meta):
                         continue
                     c, d = r["cells"].get(n), r["cells"].get(b)
                     if c and d:
-                        x = ratio(c.get(metric), d.get(metric))
+                        x = ratio(floor(c.get(metric), metric), floor(d.get(metric), metric))
                         if x:
                             xs.append(x)
                 table[(n, metric, cat)] = (geomean(xs), len(xs))
@@ -484,6 +489,16 @@ def markdown(res):
             row = [f"{g:.2f}" if (g := table.get((n, metric, cat), (None, 0))[0]) else "-" for n in ycells]
             L.append(f"| {'**overall**' if cat == 'ALL' else cat} | {n_} | " + " | ".join(row) + " |")
         L.append("")
+    tot = []  # run-length view: the geometric means weigh a 0.1 s test like a 60 s one
+    for n in ycells:
+        b = bas[n]
+        both = [r["cells"] for r in tests.values() if (r["cells"].get(n) or {}).get("wall") is not None and (r["cells"].get(b) or {}).get("wall")]
+        long_ = [c for c in both if c[b]["wall"] >= 1.0]
+        tot.append((n, ratio(sum(c[n]["wall"] for c in both), sum(c[b]["wall"] for c in both)), len(both),
+                    geomean([ratio(floor(c[n]["wall"], "wall"), floor(c[b]["wall"], "wall")) for c in long_]), len(long_)))
+    L += ["Run-length view (wall): ratio of the summed times, and geometric mean over the tests whose basis cell takes 1 s or more:", "",
+          "| cell | sum ratio | n | geomean, basis >= 1 s | n |", "|---|---:|---:|---:|---:|"]
+    L += [f"| {n} | {a:.2f} | {k} | {g:.2f} | {m} |" if a and g else f"| {n} | - | {k} | - | {m} |" for n, a, k, g, m in tot] + [""]
     L += ["Per test (wall seconds, median; ratio to the basis in brackets; `ins` = instruction ratio):", ""]
     L += ["| test | category | " + " | ".join(names) + " |", "|---|---|" + "---:|" * len(names)]
     for tn, r in tests.items():
@@ -507,6 +522,15 @@ def markdown(res):
         cells = [r["cells"].get(n) or {} for n in names]
         L.append(f"| {tn} | " + " | ".join(f"{c['cpu']:.2f} | {c['ins'] / 1e9:.2f}" if c.get("cpu") is not None and c.get("ins") else (f"{c['cpu']:.2f} | -" if c.get("cpu") is not None else "- | -") for c in cells) + " |")
     L.append("")
+    if meta["compare"]:  # slowdowns of B: instructions up by more than 5 percent, or wall up by more than 10 percent and 0.05 s
+        worse = []
+        for tn, r in tests.items():
+            for n, b in bas.items():
+                c, d = r["cells"].get(n) or {}, r["cells"].get(b) or {}
+                wi, ii = ratio(c.get("wall"), d.get("wall")), ratio(c.get("ins"), d.get("ins"))
+                if (ii and ii > 1.05) or (wi and wi > 1.10 and c["wall"] - d["wall"] > 0.05):
+                    worse.append(f"- {tn} / {n[2:]}: wall x{wi:.2f}" + (f", instructions x{ii:.2f}" if ii else ""))
+        L += ["Slowdowns of B (instructions above 1.05, or wall above 1.10 and 0.05 s): " + ("none" if not worse else ""), ""] + worse + ([""] if worse else [])
     fails = [(tn, n, c) for tn, r in tests.items() for n, c in r["cells"].items() if c.get("wall") is None]
     if fails:
         L += ["Cells that failed:", ""] + [f"- {tn} / {n}: rc {c['rcs']}, {c.get('tail', '').strip()[-150:]!r}" for tn, n, c in fails] + [""]
@@ -548,6 +572,8 @@ def self_test():
     assert "FAILED" in md and "**overall**" in md and "boom" in md
     meta2 = dict(meta, compare=True, refs=[], cells=["A/interp", "B/interp"])
     assert basis(meta2["cells"], [], True) == {"B/interp": "A/interp"}
+    cmp_res = {"meta": meta2, "tests": {"a": {"category": "c1", "cells": {"A/interp": cell(1, 10), "B/interp": cell(1.5, 12)}}}}
+    assert "a / interp: wall x1.50, instructions x1.20" in markdown(cmp_res)
     print(f"self-test ok ({len(tests)} tests listed)")
 
 

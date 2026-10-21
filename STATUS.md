@@ -2185,26 +2185,31 @@ and property tests, criterion benchmarks. Default layout is bit-planes; see
 ## llvm: compiled clocked RTL, 2026-10-21 (#432, #339, #440)
 
 Compiled process bodies now read vectors from the code bytes, concatenate, allocate and look up descriptors inline,
-drive a vector through `Ctx::assign_block` and wait through one callback, and start straight from `run_quick`
-(decisions.md "Compiled clocked RTL processes"). `--tier=auto` compiles a hot process body at O0 after a few
-milliseconds. One performance core pinned (`taskset -c 2,3`), release build with the `llvm` feature, best of 3,
-instructions and cycles (G) of the simulation (start-up subtracted); "main" is the interpreter before the change.
+drive a vector through `Ctx::assign_blocks` and wait through one callback, and start straight from `run_quick`
+(decisions.md "Compiled clocked RTL processes"). `--tier=auto` compiles a hot process body of 200 to 600 IR
+instructions and no loop at O0 after a few milliseconds and again at O2 after a few more (it never compiled such
+processes before: its budget needed minutes of run time). One performance core pinned (`taskset -c 2,3`), release
+build with the `llvm` feature, best of 3, simulation phase (start-up subtracted): wall seconds / cycles (G).
+"interp" is `--tier=interp` of the same main (kernel round 8 and interpreter round 8 included); the compile thread
+runs on the same two cores here, so the cycles of `auto` include it.
 
-| Design | main interp instr / cyc | `--tier=auto` instr / cyc | `--tier=llvm` instr / cyc | reference simulator (jit) instr / cyc |
+| Design | interp | `--tier=auto` | `--tier=llvm` (compiled before time 0) | reference simulator (jit) |
 |---|---:|---:|---:|---:|
-| ff | 21.4 / 4.46 | 19.9 / 4.27 | 17.0 / 4.06 | 7.45 / 1.86 |
-| lfsr | 14.8 / 3.16 | 10.4 / 2.15 | 8.2 / 1.77 | 2.73 / 0.55 |
-| chain | 6.25 / 1.13 | 6.40 / 1.21 | 5.96 / 1.16 | 1.90 / 0.53 |
-| fan | 19.5 / 5.22 | 20.9 / 5.31 | 18.4 / 5.81 | 16.4 / 3.60 |
-| bus | 5.60 / 1.14 | 5.43 / 1.12 | 4.82 / 0.95 | 8.24 / 2.44 |
-| ram | 1.05 / 0.25 | 1.19 / 0.31 | 0.91 / 0.22 | 0.64 / 0.23 |
-| rtl (2a) | 4.61 / 0.88 | 4.39 / 0.86 | 3.47 / 0.69 | 0.96 / 0.28 |
-| rtl2 (2b) | 8.29 / 1.75 | 6.53 / 1.36 | 5.51 / 1.18 | 1.71 / 0.39 |
+| ff | 1.00 / 4.42 | 1.05 / 4.40 | 0.97 / 4.12 | 0.45 / 1.86 |
+| lfsr | 0.54 / 2.29 | 0.48 / 2.12 | 0.37 / 1.57 | 0.13 / 0.55 |
+| chain | 0.27 / 1.14 | 0.28 / 1.17 | 0.35 / 1.46 | 0.13 / 0.53 |
+| fan | 1.22 / 5.10 | 1.22 / 5.14 | 1.28 / 6.11 | 0.88 / 3.60 |
+| bus | 0.25 / 1.06 | 0.22 / 1.04 | 0.20 / 0.94 | 0.59 / 2.44 |
+| ram | 0.052 / 0.22 | 0.047 / 0.22 | 0.045 / 0.20 | 0.05 / 0.23 |
+| rtl (2a) | 0.17 / 0.72 | 0.15 / 0.72 | 0.14 / 0.66 | 0.06 / 0.28 |
+| rtl2 (2b) | 0.28 / 1.19 | 0.25 / 1.20 | 0.23 / 1.09 | 0.09 / 0.39 |
 
-`lfsr` is 1.5x and `rtl2` 1.3x faster under `auto` (1.8x and 1.5x eager); `ff`, `rtl`, `bus` gain a few percent;
-`chain`, `fan` and `ram` are level. What is left on `fan`, `ff` and `chain` is the cost of entering compiled code
-for processes that touch a handful of cache lines each (4000 processes: the view, the signal table and the
-registers miss the cache) and the kernel (35 to 50% of the instructions).
+`auto` is 10 to 12% faster than the interpreter on `lfsr`, `bus`, `rtl` and `rtl2`, level elsewhere, and never
+slower; eager `llvm` is 1.2 to 1.5x faster on the vector designs and slower on `chain` and `fan`, whose processes
+(40 to 150 instructions) touch so few cache lines per activation that entering compiled code (frame view, signal
+table, registers: cold for 1000 to 4000 processes) costs more than the interpreter's fused ops. Both stay interpreted
+under `auto` (`RTL_MIN`). What is left on the designs it helps is the kernel (35 to 50% of the instructions) and the
+entry into compiled code (about 250 instructions per activation).
 
 ## llvm (`crates/yavs-llvm`)
 

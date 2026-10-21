@@ -140,10 +140,31 @@ fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
         to.retain(|&t| t < blocks.len() && !waits[b] && !waits[t]);
         to
     };
+    // Blocks the optimiser left unreachable (a self-jump) are no loop of the process.
+    let mut reach = vec![false; blocks.len()];
+    let mut work = vec![0usize];
+    while let Some(b) = work.pop() {
+        if b >= blocks.len() || std::mem::replace(&mut reach[b], true) {
+            continue;
+        }
+        for i in blocks[b] {
+            match i {
+                Inst::Br { to } => work.push(to.0 as usize),
+                Inst::CondBr { t, f: e, .. } => work.extend([t.0 as usize, e.0 as usize]),
+                Inst::Case { table, .. } => {
+                    if let Some(t) = prog.cases.get(*table) {
+                        work.push(t.default.0 as usize);
+                        work.extend(t.arms.iter().map(|a| a.2.0 as usize));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     // Depth-first search for an edge back to a block on the current path.
     let mut state = vec![0u8; blocks.len()]; // 0 new, 1 on the path, 2 done
     for root in 0..blocks.len() {
-        if state[root] != 0 {
+        if state[root] != 0 || !reach[root] {
             continue;
         }
         let mut stack = vec![(root, succ(root), 0)];
@@ -213,17 +234,22 @@ fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 /// code at O0 runs as fast as O2 and compiles in a tenth of the time: it is compiled as soon
 /// as it has run for a few milliseconds, within the budget of a compute loop.
 fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
-    f.kind == FuncKind::Process
-        && f.code.len() >= SHORT
-        && f.code.len() <= RTL_MAX
-        && !loops(prog, f)
+    f.kind == FuncKind::Process && (RTL_MIN..=RTL_MAX).contains(&f.code.len()) && !loops(prog, f)
 }
+
+/// The smallest process `rtl` takes: below this the way into and out of compiled code costs
+/// more than interpreting the body (measured on 100 to 150 instruction processes).
+const RTL_MIN: usize = 200;
 
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
 
 /// Microseconds of compile time per IR instruction at O0.
 const US_PER_INSTR_O0: f64 = 30.0;
+
+/// An `rtl` process is compiled again at O2 once seen running its first code this many times as
+/// long as `Heat::threshold` (the compile thread is another core).
+const RTL_O2_AFTER: u64 = 6;
 
 /// A compute loop gets this many times the budget: it runs several times faster compiled (the
 /// interpreter's time goes to dispatch), so a long-running one repays a compile of a size the
@@ -389,7 +415,12 @@ impl Worker {
             return u64::MAX;
         };
         if compiled {
-            return self.heat.o2_threshold(f);
+            // An `rtl` process runs its O0 code about a tenth slower than O2: compile again soon.
+            return if rtl(&self.prog, f) {
+                self.heat.threshold(f).saturating_mul(RTL_O2_AFTER)
+            } else {
+                self.heat.o2_threshold(f)
+            };
         }
         let at = self.heat.threshold(f);
         if self.heat.budget == 0 || rtl(&self.prog, f) {
@@ -610,7 +641,9 @@ impl AutoTier {
                                 if was < at && now >= at {
                                     if !compiled {
                                         cands.push(id);
-                                    } else if upgrade {
+                                    } else if upgrade
+                                        || w.prog.func(id).is_some_and(|f| rtl(&w.prog, f))
+                                    {
                                         later.push(id);
                                     }
                                 }

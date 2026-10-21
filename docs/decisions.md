@@ -3212,7 +3212,10 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
 - Alias scope metadata (frame slots, temporary area, instance data, constants, code bytes are distinct
   scopes) and `nounwind willreturn` on the runtime callbacks: no measurable change on the kernel designs
   (every drive, wait and step stays a full clobber), kept because they are free.
-- `--tier=auto` compiles a process body (kind process, no loop, 64 to 600 IR instructions) at O0 as soon as
-  it was seen running for `Heat::threshold`, with the compute budget: its time goes to the callbacks, so O0
-  code runs as fast as O2 and compiles in about a tenth of the time. Decided by measurement (eager O0 and
-  O2 within 5% on the clocked designs); not a user ruling.
+- `--tier=auto` compiles a process body (kind process, no loop, 200 to 600 IR instructions: `auto.rs`
+  `rtl`) at O0 as soon as it was seen running for `Heat::threshold`, with the compute budget, and again at O2
+  after six times that (the compile thread is another core). O0 code is a tenth slower than O2 on these bodies
+  and compiles in a tenth of the time. Below 200 instructions entering compiled code costs more than the
+  interpreter's fused ops (`chain`, `fan`, `ff` ran 5 to 30% slower compiled), so they stay interpreted. `loops`
+  ignores blocks the optimiser left unreachable (a dead self-jump made every process look like a loop and kept
+  it out of tier-up). Decided by measurement; not a user ruling.

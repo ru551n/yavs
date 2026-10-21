@@ -116,7 +116,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   signal keeps the wake list itself (`Waiters::cache`, with the few distinct trigger ids in it):
   an event wakes the list in order without scanning it. A waiter added, or a process that leaves
   its resident wait (`run_batch` drops the lists of its old signals), drops the list, and the
-  next scan builds it again.
+  next scan builds it again. The list is split once into the processes that can run as one batch
+  in its order (one suspension point, not postponed, ascending) and the others: when the signal is
+  the only one that changed and nothing else woke a process, the first are the batch without a
+  wake each, the others wake as usual.
 
 ## The cycle
 

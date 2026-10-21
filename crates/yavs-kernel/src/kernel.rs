@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rayon::prelude::*;
+use smallvec::SmallVec;
 
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
@@ -541,6 +542,8 @@ pub struct SimControl {
     /// Resumed processes with several suspension points: they run after the others, in an order
     /// of their own (`order`), so they wait here apart from `ready`.
     ready_several: Vec<u32>,
+    /// The processes of a clock that run as one batch in this cycle (`batch_ok`).
+    clock_batch: Option<Vec<u32>>,
     /// The batch `run_batch` is about to run is known to be in order.
     batch_mono: bool,
     /// `Tn` as the last delta computed it (only a cycle sets it, only `run_until` takes it).
@@ -753,6 +756,7 @@ impl SimControl {
             ready: Vec::new(),
             ready_mono: true,
             ready_several: Vec::new(),
+            clock_batch: None,
             batch_mono: false,
             postponed: Vec::new(),
             last_ran: Vec::new(),
@@ -1394,17 +1398,56 @@ impl SimControl {
                     continue;
                 }
                 let list = waiters.take_cache();
-                if held.iter().any(|&(_, h)| h) {
-                    for &(_, p, tid) in &list {
-                        if tid == 0 || !held.iter().any(|&(t, h)| t == tid && h) {
-                            self.wake(p, false);
+                let is_held = |t: u32| held.iter().any(|&(u, h)| u == t && h);
+                let batch = self.batch_of(s as usize, &list);
+                let waiters = std::mem::take(&mut self.waiters[s as usize]);
+                match waiters.cache_batch() {
+                    // The clock's plain processes, all resident, run as one batch in list
+                    // order, those of the triggers that hold: no wake per process (a resident
+                    // waiter needs no new generation, and nothing else wakes a process in this
+                    // cycle). The others wake as usual and run after them.
+                    Some(Some(b))
+                        if batch
+                            && self.changed_sigs.len() == 1
+                            && self.ready.is_empty()
+                            && self.ready_several.is_empty()
+                            && self.rng.is_none() =>
+                    {
+                        let mut pids = std::mem::take(&mut self.ready);
+                        if b.by_tid.iter().all(|&(t, _)| !is_held(t)) {
+                            pids.extend_from_slice(&b.plain);
+                        } else {
+                            let mut runs = 0;
+                            for (t, l) in &b.by_tid {
+                                if !is_held(*t) && !l.is_empty() {
+                                    pids.extend_from_slice(l);
+                                    runs += 1;
+                                }
+                            }
+                            if runs > 1 {
+                                pids.sort();
+                            }
+                        }
+                        for &(p, tid) in &b.others {
+                            if tid == 0 || !is_held(tid) {
+                                self.wake(p, false);
+                            }
+                        }
+                        if !pids.is_empty() {
+                            self.clock_batch = Some(pids);
+                        } else {
+                            self.ready = pids;
                         }
                     }
-                } else {
-                    for &(_, p, _) in &list {
-                        self.wake(p, false);
+                    _ => {
+                        for &(_, p, tid) in &list {
+                            if tid == 0 || !is_held(tid) {
+                                self.wake(p, false);
+                            }
+                        }
                     }
                 }
+                self.waiters[s as usize] = waiters;
                 self.waiters[s as usize].restore_cache(list);
                 continue;
             }
@@ -1424,6 +1467,10 @@ impl SimControl {
         // e: run the resumed non-postponed processes.
         let mut ready = std::mem::take(&mut self.ready);
         self.batch_mono = std::mem::replace(&mut self.ready_mono, true);
+        if let Some(pids) = self.clock_batch.take() {
+            ready = pids;
+            self.batch_mono = true;
+        }
         if !self.ready_several.is_empty() {
             // The others come first in process order; these after them in their own order.
             let mut several = std::mem::take(&mut self.ready_several);
@@ -1738,7 +1785,9 @@ impl SimControl {
             }
             if changed {
                 // After runs that driver entries of the signal made.
-                sig.canonical_changed();
+                if sig.changed.len() > 1 {
+                    sig.canonical_changed();
+                }
                 self.changed_sigs.push(s);
             }
         }
@@ -2003,6 +2052,39 @@ impl SimControl {
             }
         }
         Ok(())
+    }
+
+    /// Whether the cached wake list of signal `s` can run as one batch (`Waiters::cache_batch`,
+    /// worked out once per list): its processes with one suspension point that are not
+    /// postponed, in ascending order, run in the batch as listed; the others wake one by one.
+    fn batch_of(&mut self, s: usize, list: &[(u64, u32, u32)]) -> bool {
+        if let Some(b) = self.waiters[s].cache_batch() {
+            return b.is_some();
+        }
+        let procs = &self.procs;
+        let plain = |p: u32| {
+            let m = &procs[p as usize];
+            !m.flags.postponed && !m.flags.several_waits && m.perm != 0
+        };
+        let mut b = crate::signal::Batch {
+            plain: Vec::new(),
+            by_tid: SmallVec::new(),
+            others: Vec::new(),
+        };
+        for &(_, p, tid) in list {
+            if plain(p) {
+                b.plain.push(p);
+                match b.by_tid.iter_mut().find(|(t, _)| *t == tid) {
+                    Some((_, l)) => l.push(p),
+                    None => b.by_tid.push((tid, vec![p])),
+                }
+            } else {
+                b.others.push((p, tid));
+            }
+        }
+        let ok = b.plain.is_sorted() && !b.plain.is_empty();
+        self.waiters[s].set_cache_batch(ok.then_some(b));
+        ok
     }
 
     #[inline(always)]

@@ -206,11 +206,24 @@ pub(crate) struct Waiters {
     cache: Option<Cache>,
 }
 
+/// `Cache::batch`: the plain processes (one suspension point, not postponed) in list order,
+/// the same by trigger id, and the others with their trigger ids.
+pub(crate) struct Batch {
+    pub plain: Vec<u32>,
+    /// `plain` by trigger id, each in list order.
+    pub by_tid: SmallVec<[(u32, Vec<u32>); 4]>,
+    pub others: Vec<(u32, u32)>,
+}
+
 struct Cache {
     /// `(registration, process, trigger id)` of every waiter, in list order.
     list: Vec<(u64, u32, u32)>,
     /// The distinct trigger ids in `list` (0: none), at most 4.
     tids: SmallVec<[u32; 4]>,
+    /// The processes of `list` that run as one batch in list order when they all wake, and
+    /// the others, which wake one by one (`SimControl::batch_of`); `None` inside when the list
+    /// is not in process order. Set by the kernel at first use.
+    batch: Option<Option<Batch>>,
 }
 
 /// What the waiters of a signal have in common: no waiter, all the same edge trigger, or not.
@@ -291,6 +304,19 @@ impl Waiters {
             .as_mut()
             .map(|c| std::mem::take(&mut c.list))
             .unwrap_or_default()
+    }
+
+    /// The batches of the wake list (`Cache::batch`), if known.
+    pub fn cache_batch(&self) -> Option<Option<&Batch>> {
+        self.cache
+            .as_ref()
+            .and_then(|c| c.batch.as_ref().map(Option::as_ref))
+    }
+
+    pub fn set_cache_batch(&mut self, b: Option<Batch>) {
+        if let Some(c) = &mut self.cache {
+            c.batch = Some(b);
+        }
     }
 
     pub fn restore_cache(&mut self, list: Vec<(u64, u32, u32)>) {
@@ -389,7 +415,11 @@ impl Waiters {
             }
         }
         let list = l.iter().map(|w| (w.seq, w.proc, w.tid)).collect();
-        self.cache = Some(Cache { list, tids });
+        self.cache = Some(Cache {
+            list,
+            tids,
+            batch: None,
+        });
     }
 
     /// Remove the live waiters overlapping `runs` (sorted, disjoint) and put their
@@ -581,6 +611,8 @@ pub(crate) struct Signal {
     /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
     /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
     pub inactive: bool,
+    /// The element and code of the last `commit_code`.
+    last_commit: (u32, u8),
 }
 
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
@@ -698,6 +730,7 @@ impl Signal {
             pend: Vec::new(),
             pend_words: SmallVec::new(),
             inactive: false,
+            last_commit: (u32::MAX, 0),
         };
         sig.sync_codes();
         sig
@@ -1293,6 +1326,7 @@ impl Signal {
         if let Buf::Planes { b, .. } = &mut self.driving {
             put_plane_code(b, elem as usize, code);
         }
+        self.last_commit = (elem, code);
         self.mark_pend(elem, 1)
     }
 
@@ -1310,6 +1344,7 @@ impl Signal {
         if let Buf::Planes { b, .. } = &mut self.driving {
             put_block(b, elem as usize, len as usize, planes, !0);
         }
+        self.last_commit.0 = u32::MAX;
         self.mark_pend(elem, len)
     }
 
@@ -1380,7 +1415,11 @@ impl Signal {
                     st[n + e] = cycle;
                     st[3 * n + e] = stamp(now);
                 }
-                let code = plane_code(drv, e);
+                // The code the last one-element commit wrote, if it was this element.
+                let code = match self.last_commit {
+                    (le, c) if le as usize == e => c,
+                    _ => plane_code(drv, e),
+                };
                 if code == old {
                     return false;
                 }

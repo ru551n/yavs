@@ -3616,6 +3616,16 @@ of the generic queue, waveform and dirty-range stages. Output is unchanged at an
   list so their order holds; `Ctx::read_into` of at most 64 logic elements copies the plane words itself, inlined
   into the caller. `rtl_ff` -1.7%, `rtl_chain` -2.1%, `rtl_lfsr` -1.6%, `lfsr64` -3.6% instructions, neorv32
   (single core, 30 us) -2.4%.
+- **The clock's processes run as one batch** (third commit): the cached wake list of a signal (all waiters resident,
+  for the whole signal) is split once into its plain processes (one suspension point, not postponed, ascending, also
+  grouped by trigger) and the others (`Waiters::cache_batch`, `SimControl::batch_of`). When that signal is the only
+  one that changed and nothing else woke a process, the plain processes whose trigger holds become the batch as they
+  are, without a `wake` per process (a resident waiter needs no new generation: no plain waiter or timeout of such a
+  process exists); the others wake one by one and run after them as before. A falling edge that holds back every
+  plain process touches only the others. The batch order is the one `wake` and `order` gave. `rtl_fan` -6.6%,
+  `rtl_ff` -3.2% instructions.
+- **A one-element commit keeps its code** for the finish (`Signal::last_commit`), and the runs of a direct signal
+  are joined only when there are several. `rtl_chain` -1.6%.
 - Tried and dropped: writing a plane code with four shifts instead of the mask table (+1.3% on `rtl_ff`);
   `wait_on_again` for every range of a multi-signal sensitivity in order (neorv32 -0.6%, the clocked designs +0.4 to
   0.7%: the extra state moved the interpreter's code).

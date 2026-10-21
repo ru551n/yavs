@@ -410,6 +410,10 @@ pub(crate) struct Machine {
     /// swap per activation. A process whose temporaries grow past [`RESIDENT_TEMP`] stops
     /// being resident at its next suspension.
     resident: bool,
+    /// `to_string` / `'image` texts of enumeration literals made so far: (type, image, text of each literal).
+    pub(crate) enum_text: Vec<(TyId, bool, Vec<Option<Box<[u8]>>>)>,
+    /// What this process added to [`RESIDENT_USED`], given back when it is dropped.
+    resident_bytes: usize,
     /// The entry function is a process (set when the process starts): its root frame needs
     /// no check of the frames it waits in ([`Machine::suspend`]).
     root_process: bool,
@@ -419,9 +423,13 @@ pub(crate) struct Machine {
 
 /// Registers of a process's root frame up to which it keeps its working vectors
 /// ([`Machine::resident`]): at most 384 bytes of registers per process.
-const RESIDENT_REGS: usize = 48;
-/// The same for a process whose compiled code suspends it (`run_compiled`).
+const RESIDENT_REGS: usize = 256;
+/// The same for a process whose compiled code suspends it (`run_compiled`), without the budget.
 const HOT_RESIDENT_REGS: usize = 256;
+/// Bytes of registers all resident processes together may keep (a design of very many processes
+/// swaps the rest through the thread's scratch as before).
+const RESIDENT_BUDGET: usize = 96 << 20;
+static RESIDENT_USED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// Capacity of the temporary area above which a resident process gives its vectors to the
 /// scratch.
 const RESIDENT_TEMP: usize = 1024;
@@ -760,6 +768,14 @@ fn bounds(lo: i64, hi: i64, dir: Dir) -> String {
     }
 }
 
+impl Drop for Machine {
+    fn drop(&mut self) {
+        if self.resident_bytes != 0 {
+            RESIDENT_USED.fetch_sub(self.resident_bytes, Ordering::Relaxed);
+        }
+    }
+}
+
 impl Machine {
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -795,6 +811,8 @@ impl Machine {
             released: false,
             tier_sigs: Vec::new(),
             resident: false,
+            enum_text: Vec::new(),
+            resident_bytes: 0,
             root_process: false,
             quick_fault: None,
         }
@@ -1056,7 +1074,17 @@ impl Machine {
     /// After the root frame is entered: a small process keeps its working vectors
     /// ([`Machine::resident`]).
     pub(crate) fn set_resident(&mut self) {
-        self.resident = self.dbg.is_none() && self.regs.v.len() <= RESIDENT_REGS;
+        let bytes = self.regs.v.len() * 8 + RESIDENT_TEMP;
+        self.resident = self.dbg.is_none()
+            && self.regs.v.len() <= RESIDENT_REGS
+            && RESIDENT_USED
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                    (u + bytes <= RESIDENT_BUDGET).then_some(u + bytes)
+                })
+                .is_ok();
+        if self.resident {
+            self.resident_bytes = bytes;
+        }
         self.root_process = true;
     }
 
@@ -1460,18 +1488,26 @@ impl Machine {
 
     /// `rd` with the common spaces inline.
     #[inline(always)]
-    fn rd_hot(&self, a: u64, n: u64) -> R<&[u8]> {
+    pub(crate) fn rd_hot(&self, a: u64, n: u64) -> R<&[u8]> {
         let (sp, idx, off) = split(a);
         match self
             .mem_fast(sp, idx)
-            .and_then(|m| m.get(off as usize..(off + n) as usize))
+            .and_then(|m| m.get(off as usize..off.saturating_add(n) as usize))
         {
             Some(b) => Ok(b),
-            None => self.rd(a, n),
+            None => self.rd_slow(a, n),
         }
     }
 
+    /// The `n` bytes at `a`: the common spaces inline, everything else (and every error)
+    /// through `rd_slow`.
+    #[inline]
     pub(crate) fn rd(&self, a: u64, n: u64) -> R<&[u8]> {
+        self.rd_hot(a, n)
+    }
+
+    #[inline(never)]
+    fn rd_slow(&self, a: u64, n: u64) -> R<&[u8]> {
         let (sp, idx, off) = split(a);
         let mem = self.obj(sp, idx)?;
         let end = off.saturating_add(n);
@@ -1612,9 +1648,59 @@ impl Machine {
         Ok(cell_w(self.rd(a, n)?, w))
     }
 
+    /// `load` of the element `pos` of `stride` bytes from `base` (`index_addr` and `load`), the
+    /// common spaces without making the address.
+    #[inline(always)]
+    pub(crate) fn load_idx(&self, base: u64, pos: u64, stride: u32, w: Width) -> R<u64> {
+        let (sp, idx, off) = split(base);
+        let n = u64::from(w.bytes().min(8));
+        if let Some(o) = pos
+            .checked_mul(u64::from(stride))
+            .and_then(|d| d.checked_add(off))
+            .filter(|&o| o <= u64::from(u32::MAX))
+            && let Some(b) = self
+                .mem_fast(sp, idx)
+                .and_then(|m| m.get(o as usize..(o + n) as usize))
+        {
+            return Ok(cell_w(b, w));
+        }
+        self.load(index_addr(base, pos, stride)?, w)
+    }
+
+    /// `store` to the element `pos` of `stride` bytes from `base`.
+    #[inline(always)]
+    pub(crate) fn store_idx(
+        &mut self,
+        base: u64,
+        pos: u64,
+        stride: u32,
+        w: Width,
+        v: u64,
+    ) -> R<()> {
+        let (sp, idx, off) = split(base);
+        let n = w.bytes().min(8) as usize;
+        if let Some(o) = pos
+            .checked_mul(u64::from(stride))
+            .and_then(|d| d.checked_add(off))
+            .filter(|&o| o <= u64::from(u32::MAX))
+        {
+            let mem = match sp {
+                FRAME => self.fslots_mut(idx as usize),
+                HEAP => self.heap.data_mut(idx),
+                TEMP => Some(&mut self.temp[..]),
+                _ => None,
+            };
+            if let Some(b) = mem.and_then(|s| s.get_mut(o as usize..o as usize + n)) {
+                put_le(b, v);
+                return Ok(());
+            }
+        }
+        self.store(index_addr(base, pos, stride)?, w, v)
+    }
+
     /// Bounds and direction word of dimension `dim` of the descriptor at `base`.
     #[inline(always)]
-    fn dim_of(&self, base: u64, dim: u64) -> R<(i64, i64, u64)> {
+    pub(crate) fn dim_of(&self, base: u64, dim: u64) -> R<(i64, i64, u64)> {
         let (sp, idx, off) = split(base);
         if let Some([w0, w1, w2]) = self
             .mem_fast(sp, idx)
@@ -1764,6 +1850,31 @@ impl Machine {
         let (sn, dn) = ((sb1 - sb0 + 1) as usize, (db1 - db0 + 1) as usize);
         let da = add_addr(dst, db0 * 32)?;
         let (s0, d0) = (soff - sb0 * 64, doff - db0 * 64);
+        // One block on each side, the destination in frame, temporary or heap memory: the source
+        // read first, the destination changed where it is.
+        if sn == 1 && dn == 1 {
+            let sa = add_addr(src, sb0 * 32)?;
+            let mut sw = [[0u64; 4]; 1];
+            if let Ok(b) = self.rd_hot(sa, 32) {
+                fill_blocks(b, &mut sw);
+                let (sp, idx, off) = split(da);
+                let mem = match sp {
+                    FRAME => self.fslots_mut(idx as usize),
+                    TEMP => Some(&mut self.temp[..]),
+                    HEAP => self.heap.data_mut(idx),
+                    _ => None,
+                };
+                if let Some(b) = mem.and_then(|m| m.get_mut(off as usize..off as usize + 32)) {
+                    let mut dw = [[0u64; 4]; 1];
+                    fill_blocks(b, &mut dw);
+                    copy_bits(&sw, &mut dw, s0, d0, n);
+                    for (c, w) in b.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened()) {
+                        *c = w.to_le_bytes();
+                    }
+                    return Ok(());
+                }
+            }
+        }
         // Up to 128 elements on either side: the blocks on the stack.
         if sn <= 2 && dn <= 2 {
             let sa = add_addr(src, sb0 * 32)?;
@@ -1837,6 +1948,22 @@ impl Machine {
         mode: DriveMode,
         reject: Option<Reg>,
     ) -> R<()> {
+        let (w, n) = (self.r(wave), self.r(n));
+        self.drive_at(ctx, d, target, w, n, mode, reject)
+    }
+
+    /// `drive` with the waveform's address and element count.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_at(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        d: ProcDriver,
+        target: Option<Reg>,
+        w: u64,
+        n: u64,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    ) -> R<()> {
         let (sr, elem) = match target {
             Some(t) => {
                 let (sr, ty) = self.sigref(t)?;
@@ -1847,9 +1974,8 @@ impl Machine {
         let len = sr.range.map_or(0, |r| r.len);
         let vsize = value_size(elem, len);
         let stride = 8 + vsize.next_multiple_of(8);
-        let w = self.r(wave);
         // One scalar logic element: no value, no lists (a scalar assignment per activation).
-        if elem == Elem::Logic && len == 1 && self.r(n) == 1 {
+        if elem == Elem::Logic && len == 1 && n == 1 {
             let t = to_time(self.load(w, Width::B8)? as i64)?;
             let b = self.rd(add_addr(w, 8)?, 32)?;
             let code = (0..4).fold(0u8, |c, p| c | (b[p * 8] & 1) << p);
@@ -1862,7 +1988,7 @@ impl Machine {
             return Ok(());
         }
         // One waveform element (nearly every assignment): no vectors.
-        if self.r(n) == 1 {
+        if n == 1 {
             let t = to_time(self.load(w, Width::B8)? as i64)?;
             let mode = self.delay_mode(mode, reject)?;
             let range = target.map(|_| sr.range).unwrap_or(None);
@@ -1883,7 +2009,7 @@ impl Machine {
             return Ok(());
         }
         let mut items = Vec::new();
-        for k in 0..self.r(n) {
+        for k in 0..n {
             let at = add_addr(w, k * stride)?;
             let t = to_time(self.load(at, Width::B8)? as i64)?;
             items.push((t, self.get_value(add_addr(at, 8)?, elem, len)?));
@@ -1910,11 +2036,25 @@ impl Machine {
         code: u8,
         mode: DriveMode,
     ) -> R<bool> {
+        let time = self.load(self.r(wave), Width::B8)?;
+        self.drive_bit_at(ctx, d, target, time, code, mode)
+    }
+
+    /// `drive_bit` with the delay itself instead of the waveform.
+    fn drive_bit_at(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        d: ProcDriver,
+        target: Reg,
+        time: u64,
+        code: u8,
+        mode: DriveMode,
+    ) -> R<bool> {
         let (sr, ty) = self.sigref(target)?;
         if ty.elem != Elem::Logic || sr.range.map_or(0, |r| r.len) != 1 {
             return Ok(false);
         }
-        let t = to_time(self.load(self.r(wave), Width::B8)? as i64)?;
+        let t = to_time(time as i64)?;
         let mode = self.delay_mode(mode, None)?;
         let Some(c) = ctx.as_deref_mut() else {
             return rt_err("signal or wait operation during elaboration");
@@ -2428,40 +2568,9 @@ impl Machine {
         scalars: u16,
         bias: u8,
     ) -> R<bool> {
-        let mut words = [0u64; 4];
-        let mut mask = 0u64;
-        let mut k = 0u64;
-        for (j, pr) in ps.as_chunks::<2>().0.iter().enumerate() {
-            let v = self.r(pr[0]);
-            let (units, bits) = if scalars >> j & 1 == 1 {
-                let code = v.wrapping_add(u64::from(bias));
-                if code > 8 {
-                    return Ok(false);
-                }
-                (1, [code & 1, code >> 1 & 1, code >> 2 & 1, code >> 3 & 1])
-            } else {
-                let units = self.r(pr[1]).wrapping_mul(m);
-                if units == 0 {
-                    continue;
-                }
-                if units > 64 {
-                    return Ok(false);
-                }
-                let mut b = [0u64; 4];
-                fill_blocks(self.rd_hot(v, 32)?, std::slice::from_mut(&mut b));
-                (units, b)
-            };
-            if k.wrapping_add(units) > total {
-                return Ok(false);
-            }
-            let off = total - k - units;
-            let pm = if units == 64 { !0 } else { (1u64 << units) - 1 };
-            for (w, b) in words.iter_mut().zip(bits) {
-                *w |= (b & pm) << off;
-            }
-            mask |= pm << off;
-            k += units;
-        }
+        let Some((words, mask, k)) = self.cat_words(total, m, ps, scalars, bias)? else {
+            return Ok(false);
+        };
         if mask == 0 {
             return Ok(true);
         }
@@ -2476,6 +2585,68 @@ impl Machine {
         }
         self.put(d, &out)?;
         Ok(true)
+    }
+
+    /// The planes of the pieces of a `Cat` of a logic array of at most 64 elements, combined:
+    /// the words, the mask of the elements they cover and how many elements the pieces
+    /// have. `None` when a piece does not fit the pattern.
+    #[inline]
+    fn cat_words(
+        &self,
+        total: u64,
+        m: u64,
+        ps: &[Reg],
+        scalars: u16,
+        bias: u8,
+    ) -> R<Option<([u64; 4], u64, u64)>> {
+        let mut words = [0u64; 4];
+        let mut mask = 0u64;
+        let mut k = 0u64;
+        for (j, pr) in ps.as_chunks::<2>().0.iter().enumerate() {
+            let v = self.r(pr[0]);
+            let (units, bits) = if scalars >> j & 1 == 1 {
+                let code = v.wrapping_add(u64::from(bias));
+                if code > 8 {
+                    return Ok(None);
+                }
+                (1, [code & 1, code >> 1 & 1, code >> 2 & 1, code >> 3 & 1])
+            } else {
+                let units = self.r(pr[1]).wrapping_mul(m);
+                if units == 0 {
+                    continue;
+                }
+                if units > 64 {
+                    return Ok(None);
+                }
+                let mut b = [0u64; 4];
+                fill_blocks(self.rd_hot(v, 32)?, std::slice::from_mut(&mut b));
+                (units, b)
+            };
+            if k.wrapping_add(units) > total {
+                return Ok(None);
+            }
+            let off = total - k - units;
+            let pm = if units == 64 { !0 } else { (1u64 << units) - 1 };
+            for (w, b) in words.iter_mut().zip(bits) {
+                *w |= (b & pm) << off;
+            }
+            mask |= pm << off;
+            k += units;
+        }
+        Ok(Some((words, mask, k)))
+    }
+
+    /// A block of 32 bytes in the temporary area holding `b` (an `Alloc` of 32 and the stores
+    /// of all of it, without clearing it first).
+    #[inline]
+    fn temp_push32(&mut self, b: &[u8; 32]) -> R<u64> {
+        let off = (self.temp.len() as u64).next_multiple_of(8);
+        if off + 32 > u64::from(u32::MAX) {
+            return rt_err("temporary memory of one statement exceeds 4 GiB");
+        }
+        self.temp.resize(off as usize, 0);
+        self.temp.extend_from_slice(b);
+        mk_addr(TEMP, 0, off)
     }
 
     /// `Inst::Copy`: `n` bytes from `s` to `d`.
@@ -3746,8 +3917,8 @@ impl Machine {
                         self.regs[idx as usize] as i64,
                         || pos_what!()
                     ));
-                    let a = t!(index_addr(self.regs[base as usize], p, stride));
-                    self.regs[dst as usize] = t!(self.load(a, w));
+                    self.regs[dst as usize] =
+                        t!(self.load_idx(self.regs[base as usize], p, stride, w));
                     k += 1;
                 }
                 Op::PosIndexStore {
@@ -3765,8 +3936,13 @@ impl Machine {
                         self.regs[idx as usize] as i64,
                         || pos_what!()
                     ));
-                    let a = t!(index_addr(self.regs[base as usize], p, stride));
-                    t!(self.store(a, w, self.regs[src as usize]));
+                    t!(self.store_idx(
+                        self.regs[base as usize],
+                        p,
+                        stride,
+                        w,
+                        self.regs[src as usize]
+                    ));
                     k += 1;
                 }
                 Op::IndexLoad {
@@ -3776,12 +3952,12 @@ impl Machine {
                     stride,
                     w,
                 } => {
-                    let a = t!(index_addr(
+                    self.regs[dst as usize] = t!(self.load_idx(
                         self.regs[base as usize],
                         self.regs[pos as usize],
-                        stride
+                        stride,
+                        w
                     ));
-                    self.regs[dst as usize] = t!(self.load(a, w));
                     k += 1;
                 }
                 Op::IndexStore {
@@ -3791,12 +3967,13 @@ impl Machine {
                     stride,
                     w,
                 } => {
-                    let a = t!(index_addr(
+                    t!(self.store_idx(
                         self.regs[base as usize],
                         self.regs[pos as usize],
-                        stride
+                        stride,
+                        w,
+                        self.regs[src as usize]
                     ));
-                    t!(self.store(a, w, self.regs[src as usize]));
                     k += 1;
                 }
                 Op::StoreSlot { src, off, w } => {
@@ -4469,11 +4646,84 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::CopyDrive {
+                    driver,
+                    target,
+                    src,
+                    bytes,
+                    time,
+                    size,
+                    w,
+                    n,
+                    inertial,
+                } => {
+                    let mode = if inertial {
+                        DriveMode::Inertial
+                    } else {
+                        DriveMode::Transport
+                    };
+                    let tg = Reg(target.into());
+                    let multi = self.is_multi(tg);
+                    let nbytes = self.regs[bytes as usize];
+                    let mut done = false;
+                    if !multi {
+                        let d = t!(self.driver(driver.into()));
+                        let (sr, ty) = t!(self.sigref(tg));
+                        let len = sr.range.map_or(0, |r| r.len);
+                        // The value as the waveform's planes would hold it: one block per 64
+                        // elements, whole.
+                        if ty.elem == Elem::Logic && nbytes == u64::from(len).div_ceil(64) * 32 {
+                            let t0 = t!(to_time(self.regs[time as usize] as i64));
+                            let b = t!(self.rd(self.regs[src as usize], nbytes));
+                            let Some(c) = ctx.as_deref_mut() else {
+                                t!(rt_err("signal or wait operation during elaboration"))
+                            };
+                            if len == 1 {
+                                let code = (0..4).fold(0u8, |c, p| c | (b[p * 8] & 1) << p);
+                                let dm = t!(self.delay_mode(mode, None));
+                                t!(c.assign_code(d.id, sr.range, t0, code, dm)
+                                    .map_err(Fault::from));
+                            } else {
+                                let dm = t!(self.delay_mode(mode, None));
+                                t!(c.assign_blocks(d.id, sr.range, t0, b, dm)
+                                    .map_err(Fault::from));
+                            }
+                            done = true;
+                        }
+                    }
+                    if !done {
+                        // The waveform as the three dropped instructions made it.
+                        let a = t!(self.temp_alloc(self.regs[size as usize]));
+                        self.regs[w as usize] = a;
+                        t!(self.store(a, Width::B8, self.regs[time as usize]));
+                        let at = t!(add_addr(a, 8));
+                        t!(self.copy_mem(at, self.regs[src as usize], nbytes));
+                        if multi {
+                            t!(self.drive_parts(ctx, tg, Reg(w.into()), Reg(n.into()), mode, None));
+                        } else {
+                            let d = t!(self.driver(driver.into()));
+                            t!(self.drive(
+                                ctx,
+                                d,
+                                Some(tg),
+                                Reg(w.into()),
+                                Reg(n.into()),
+                                mode,
+                                None
+                            ));
+                        }
+                    }
+                    k += 1;
+                    enter!();
+                }
                 Op::LSetDrive {
                     v,
                     driver,
                     target,
-                    wave,
+                    time,
+                    size,
+                    w,
+                    e,
                     inertial,
                 } => {
                     let mode = if inertial {
@@ -4482,14 +4732,23 @@ impl Machine {
                         DriveMode::Transport
                     };
                     let bit = self.regs[v as usize];
-                    let (tg, wv) = (Reg(target), Reg(wave));
+                    let tg = Reg(target.into());
                     let done = bit <= 8
                         && !self.is_multi(tg)
-                        && t!(self
-                            .driver(driver)
-                            .and_then(|d| self.drive_bit(ctx, d, tg, wv, bit as u8, mode)));
+                        && t!(self.driver(driver.into()).and_then(|d| self.drive_bit_at(
+                            ctx,
+                            d,
+                            tg,
+                            self.regs[time as usize],
+                            bit as u8,
+                            mode
+                        )));
                     if !done {
-                        // Not a scalar logic signal (or a bad code): the two instructions.
+                        // Not a scalar logic signal (or a bad code): the instructions as the IR has them.
+                        let a = t!(self.temp_alloc(self.regs[size as usize]));
+                        self.regs[w as usize] = a;
+                        t!(self.store(a, Width::B8, self.regs[time as usize]));
+                        self.regs[e as usize] = t!(add_addr(a, 8));
                         self.replay_lset_drive(
                             prog,
                             f,
@@ -4572,6 +4831,56 @@ impl Machine {
                         flow => {
                             return Ok(flow);
                         }
+                    }
+                }
+                Op::CallIeee {
+                    native,
+                    start,
+                    len,
+                    dst,
+                } => {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    let nid = yavs_ir::NativeId(native);
+                    let n = prog
+                        .natives
+                        .get(nid)
+                        .ok_or_else(|| ice(format!("no native {native}")))?;
+                    let Some(fun) = self.rt.natives.get(native as usize).copied().flatten() else {
+                        return rt_err(format!(
+                            "native subprogram `{}` is not implemented in yavs yet",
+                            n.symbol
+                        ));
+                    };
+                    let regs = f
+                        .regs(yavs_ir::Regs { start, len })
+                        .ok_or_else(|| ice("operand list out of range"))?;
+                    let mut cells = [0u64; 4];
+                    for (c, &r) in cells.iter_mut().zip(regs) {
+                        *c = self.regs[r.0 as usize];
+                    }
+                    let cells = &cells[..regs.len().min(4)];
+                    let v = fun(self, ctx, n.ty, cells)?;
+                    let dst = (dst != pre::NONE).then_some(Reg(dst));
+                    if std::mem::take(&mut self.ieee_fallback) {
+                        match self.ieee_body(prog, &n.symbol, cells, dst)? {
+                            Flow::Next => {
+                                k += 1;
+                                enter!();
+                            }
+                            flow => return Ok(flow),
+                        }
+                    } else {
+                        if let Some(d) = dst {
+                            let v = v.ok_or_else(|| {
+                                ice(format!("native `{}` returned no value", n.symbol))
+                            })?;
+                            self.set(d, v);
+                        }
+                        if std::mem::take(&mut self.ieee_stop) {
+                            return Ok(Flow::Suspend);
+                        }
+                        k += 1;
+                        enter!();
                     }
                 }
                 Op::CmpSelect { m, dst, a, b, x, y } => {
@@ -4717,6 +5026,67 @@ impl Machine {
                         == t!(self.rd(self.regs[b as usize], n));
                     self.regs[dst as usize] = v.into();
                     k += 1;
+                }
+                Op::AllocReadVec { dst, sig } => {
+                    // `AllocK` of one block and the read of a logic signal into it.
+                    let mut done = false;
+                    if !self.is_multi(Reg(sig)) {
+                        let (sr, ty) = t!(self.sigref(Reg(sig)));
+                        if ty.elem == Elem::Logic
+                            && sr.range.is_some_and(|r| (1..=64).contains(&r.len))
+                            && let Some(c) = ctx.as_deref_mut()
+                        {
+                            let mut buf = [0u8; 32];
+                            t!(c.read_into(sr, &mut buf).map_err(Fault::from));
+                            self.regs[dst as usize] = t!(self.temp_push32(&buf));
+                            done = true;
+                        }
+                    }
+                    if done {
+                        k += 2;
+                    } else {
+                        self.regs[dst as usize] = t!(self.temp_alloc(32));
+                        k += 1;
+                    }
+                }
+                Op::AllocCat { dst } => {
+                    // `AllocK` of one block and the `Cat` into it of at most 64 elements.
+                    let pc = code.at.get(k + 1).copied().unwrap_or(0);
+                    let Some(&Inst::Cat {
+                        n,
+                        m,
+                        parts,
+                        scalars,
+                        bias,
+                        ..
+                    }) = f.code.get(pc as usize)
+                    else {
+                        return Err(ice(format!("pc {pc} is not a concatenation")));
+                    };
+                    let ps = t!(f.regs(parts).ok_or_else(|| ice("operand list")));
+                    let (mv, total) = (
+                        self.regs[m.0 as usize],
+                        self.regs[n.0 as usize].wrapping_mul(self.regs[m.0 as usize]),
+                    );
+                    let words = if total <= 64 {
+                        t!(self.cat_words(total, mv, ps, scalars, bias))
+                    } else {
+                        None
+                    };
+                    match words {
+                        Some((words, mask, _)) => {
+                            let mut out = [0u8; 32];
+                            for (o, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(words) {
+                                *o = (w & mask).to_le_bytes();
+                            }
+                            self.regs[dst as usize] = t!(self.temp_push32(&out));
+                            k += 2;
+                        }
+                        None => {
+                            self.regs[dst as usize] = t!(self.temp_alloc(32));
+                            k += 1;
+                        }
+                    }
                 }
                 Op::AllocK { dst, n } => {
                     self.regs[dst as usize] = t!(self.temp_alloc(n.into()));

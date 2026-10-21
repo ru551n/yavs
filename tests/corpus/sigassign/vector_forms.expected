@@ -1,0 +1,15 @@
+exit	0
+diag	note	116000000	0	:tb_vector_forms:_p7	sr=01010101 fb=0001111001000101 cp=00011111
+diag	note	116000000	0	:tb_vector_forms:_p7	bv=000001 un=11110000 sg=11111111
+diag	note	116000000	0	:tb_vector_forms:_p7	ia=19,17,15,25
+diag	note	116000000	0	:tb_vector_forms:_p7	rc=0001,17
+diag	note	116000000	0	:tb_vector_forms:_p7	tr=1010 dl=1010 hi=1010 lo=1011
+diag	note	116000000	0	:tb_vector_forms:_p7	bit1=0 bit2=1
+diag	note	116000000	0	:tb_vector_forms:_p7	and=10001000 or=11101110 xor=01100110
+diag	note	116000000	0	:tb_vector_forms:_p7	nand=01110111 nor=00010001 xnor=10011001
+diag	note	116000000	0	:tb_vector_forms:_p7	not=01010101
+diag	note	116000000	0	:tb_vector_forms:_p7	meta and=0XX0 xor=1XXX not=0XX1
+diag	note	116000000	0	:tb_vector_forms:_p7	meta or=1U111 xnor=0UX00
+diag	note	116000000	0	:tb_vector_forms:_p7	null and=0 not=0
+diag	note	116000000	0	:tb_vector_forms:_p7	null not=0 0 1
+diag	note	116000000	0	:tb_vector_forms:_p7	bounds=7 0

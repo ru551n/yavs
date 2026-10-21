@@ -117,6 +117,11 @@ pub enum Op {
     VecGate(Gate),
     Not,
     VecNot,
+    /// `numeric_std` gate on two `unsigned` or two `signed`; unequal lengths are handed back to
+    /// the body (its failure report).
+    NumGate(Gate),
+    /// `numeric_std` `not` of an `unsigned` or a `signed`.
+    NumNot,
     /// `to_x01`, `to_x01z`, `to_ux01` (0, 1, 2) on a scalar or a vector.
     Conv(u8, bool),
     /// `to_01 (std_ulogic_vector, std_ulogic)`.
@@ -219,6 +224,18 @@ pub fn parse(key: &str) -> Option<Op> {
         }
         ("std_logic_1164", n @ ("rising_edge" | "falling_edge"), ["std_ulogic"], "boolean") => {
             Some(Op::Edge(n == "rising_edge"))
+        }
+        ("numeric_std", n, [a, b], r)
+            if !bit
+                && a == b
+                && a == &r
+                && (r == "unsigned" || r == "signed")
+                && gate(n).is_some() =>
+        {
+            gate(n).map(Op::NumGate)
+        }
+        ("numeric_std", "not", [a], r) if !bit && a == &r && (r == "unsigned" || r == "signed") => {
+            Some(Op::NumNot)
         }
         ("numeric_std", n @ ("+" | "-"), ps, r) => {
             let (signed, form, t) = num_form(ps)?;
@@ -449,7 +466,10 @@ pub fn array_param(key: &str, i: usize) -> bool {
 
 /// Whether the native of `op` may hand the call back to the VHDL body.
 pub fn has_fallback(op: Op) -> bool {
-    matches!(op, Op::Syn(_) | Op::Str(_) | Op::Div { .. })
+    matches!(
+        op,
+        Op::Syn(_) | Op::Str(_) | Op::Div { .. } | Op::NumGate(_)
+    )
 }
 
 /// The native symbol (`yavs.ieee.<key>`) that replaces the body of the subprogram with this

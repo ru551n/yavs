@@ -336,8 +336,37 @@ fn image_attr(
 /// [`text`] as a string result (the fat pair in temporary memory); an integer is written from
 /// a stack buffer.
 pub(crate) fn text_result(m: &mut Machine, ty: Option<TyId>, v: u64, image: bool) -> R<u64> {
-    if let Some(Ty::Int { .. }) = ty.and_then(|t| m.rt.prog.types.get(t)) {
-        return m.ret_string(image::integer_digits(v as i64, &mut [0; 20]));
+    match ty.and_then(|t| m.rt.prog.types.get(t)) {
+        Some(Ty::Int { .. }) => {
+            return m.ret_string(image::integer_digits(v as i64, &mut [0; 20]));
+        }
+        // An enumeration literal: its text is made once per machine.
+        Some(Ty::Enum { lits, .. }) if (v as usize) < lits.len() => {
+            if let Some(id) = ty {
+                let n = lits.len();
+                let at = match m.enum_text.iter().position(|e| e.0 == id && e.1 == image) {
+                    Some(at) => at,
+                    None => {
+                        m.enum_text.push((id, image, vec![None; n]));
+                        m.enum_text.len() - 1
+                    }
+                };
+                if m.enum_text[at].2[v as usize].is_none() {
+                    let s = scalar_text(m, ty, v, image)?;
+                    m.enum_text[at].2[v as usize] = Some(s.into_boxed_slice());
+                }
+                let mut buf = [0u8; 64];
+                let t = m.enum_text[at].2[v as usize].as_deref().unwrap_or(&[]);
+                if t.len() <= buf.len() {
+                    let n = t.len();
+                    buf[..n].copy_from_slice(t);
+                    return m.ret_string(&buf[..n]);
+                }
+                let t = t.to_vec();
+                return m.ret_string(&t);
+            }
+        }
+        _ => {}
     }
     let s = text(m, ty, v, image)?;
     m.ret_string(&s)

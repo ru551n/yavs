@@ -74,13 +74,23 @@ fn int(a: &[u64], i: usize) -> R<i64> {
     Ok(arg(a, i)? as i64)
 }
 
-fn vh(m: &Machine, a: &[u64], i: usize) -> R<Vh> {
+/// The data address, bounds and direction of the array operand `i` (the address of its fat pair).
+#[inline]
+fn fat_dim(m: &Machine, a: &[u64], i: usize) -> R<(u64, i64, i64, bool)> {
     let fat = arg(a, i)?;
-    let data = m.load(fat, Width::B8)?;
-    let dope = m.load(add_addr(fat, 8)?, Width::B8)?;
-    let left = m.load(dope, Width::B8)? as i64;
-    let right = m.load(add_addr(dope, 8)?, Width::B8)? as i64;
-    let down = m.load(add_addr(dope, 16)?, Width::B8)? == 1;
+    let w = m.rd_hot(fat, 16)?;
+    let (data, dope) = (le8(&w[0..8]), le8(&w[8..16]));
+    let (left, right, d) = m.dim_of(dope, 0)?;
+    Ok((data, left, right, d == 1))
+}
+
+#[inline(always)]
+fn le8(b: &[u8]) -> u64 {
+    u64::from_le_bytes(b.try_into().unwrap_or([0; 8]))
+}
+
+fn vh(m: &Machine, a: &[u64], i: usize) -> R<Vh> {
+    let (data, left, right, down) = fat_dim(m, a, i)?;
     let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
     Ok(Vh {
         v: m.planes(data, n)?,
@@ -131,19 +141,18 @@ fn low(n: usize) -> u64 {
 /// [`Small`] of the array operand `i`, or `None` for anything else (empty, longer, a
 /// metavalue), which the general path handles.
 pub(crate) fn small(m: &Machine, a: &[u64], i: usize) -> R<Option<Small>> {
-    let fat = arg(a, i)?;
-    let data = m.load(fat, Width::B8)?;
-    let dope = m.load(add_addr(fat, 8)?, Width::B8)?;
-    let left = m.load(dope, Width::B8)? as i64;
-    let right = m.load(add_addr(dope, 8)?, Width::B8)? as i64;
-    let down = m.load(add_addr(dope, 16)?, Width::B8)? == 1;
+    let (data, left, right, down) = fat_dim(m, a, i)?;
     let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
     if !(1..=64).contains(&n) {
         return Ok(None);
     }
-    let b = m.rd(data, 32)?;
-    let p = |k: usize| u64::from_le_bytes(std::array::from_fn(|j| b[k * 8 + j]));
-    let (p0, p1, p2, p3) = (p(0), p(1), p(2), p(3));
+    let b = m.rd_hot(data, 32)?;
+    let (p0, p1, p2, p3) = (
+        le8(&b[0..8]),
+        le8(&b[8..16]),
+        le8(&b[16..24]),
+        le8(&b[24..32]),
+    );
     // `0` or `L`: plane 1 only (plane 2 is the weak bit); `1` or `H`: planes 0 and 1.
     let (zero, one) = (!p3 & p1 & !p0, !p3 & p1 & p0);
     let n = n as usize;
@@ -287,13 +296,37 @@ pub(crate) fn gate_index(g: Gate) -> Option<u8> {
 /// A scalar gate on two `std_ulogic` codes, as the native `gate::<g>` computes it.
 #[inline(always)]
 pub(crate) fn scalar_gate(g: u8, x: u64, y: u64) -> R<u64> {
+    static TABLES: std::sync::OnceLock<[[u8; 81]; 6]> = std::sync::OnceLock::new();
+    let t = TABLES.get_or_init(|| {
+        let mut t = [[0u8; 81]; 6];
+        for (gi, gate) in GATES.iter().enumerate() {
+            for a in 0..9u8 {
+                for b in 0..9u8 {
+                    let (x, y) = (StdULogic::from_code_pub(a), StdULogic::from_code_pub(b));
+                    t[gi][usize::from(a) * 9 + usize::from(b)] = gate_of(*gate, x, y) as u8;
+                }
+            }
+        }
+        t
+    });
+    if x < 9
+        && y < 9
+        && let Some(row) = t.get(g as usize)
+    {
+        return Ok(u64::from(row[(x * 9 + y) as usize]));
+    }
     Ok(gate_of(GATES[g as usize], code(x)?, code(y)?) as u64)
 }
 
 /// `not` of a `std_ulogic` code.
 #[inline(always)]
 pub(crate) fn scalar_not(x: u64) -> R<u64> {
-    Ok(code(x)?.not() as u64)
+    // `to_x01` of the complement: U X 0 1 Z W L H - become U X 1 0 X X 1 0 X.
+    const NOT: [u8; 9] = [0, 1, 3, 2, 1, 1, 3, 2, 1];
+    match NOT.get(x as usize) {
+        Some(&c) => Ok(u64::from(c)),
+        None => Ok(code(x)?.not() as u64),
+    }
 }
 
 #[inline(always)]
@@ -350,6 +383,47 @@ fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, 
         Gate::Xnor => l.v.xnor(&r.v),
     };
     put(m, &Vh::up1(v))
+}
+
+/// `numeric_std` gate of two `unsigned` or `signed`: the std_logic_1164 gate of the same elements
+/// with the bounds `(n-1 downto 0)`. Unequal lengths go back to the body.
+fn num_gate<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let g = GATES[G as usize];
+    if let (Some(l), Some(r)) = (small(m, a, 0)?, small(m, a, 1)?)
+        && l.n == r.n
+    {
+        let bits = match g {
+            Gate::And => l.bits & r.bits,
+            Gate::Nand => !(l.bits & r.bits),
+            Gate::Or => l.bits | r.bits,
+            Gate::Nor => !(l.bits | r.bits),
+            Gate::Xor => l.bits ^ r.bits,
+            Gate::Xnor => !(l.bits ^ r.bits),
+        };
+        return put_down(m, l.n, bits).map(Some);
+    }
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    if l.v.len() != r.v.len() {
+        return fallback(m);
+    }
+    let v = match g {
+        Gate::And => l.v.and(&r.v),
+        Gate::Nand => l.v.nand(&r.v),
+        Gate::Or => l.v.or(&r.v),
+        Gate::Nor => l.v.nor(&r.v),
+        Gate::Xor => l.v.xor(&r.v),
+        Gate::Xnor => l.v.xnor(&r.v),
+    };
+    put(m, &Vh::down(v))
+}
+
+/// `numeric_std` `not` of an `unsigned` or `signed`.
+fn num_not(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    if let Some(l) = small(m, a, 0)? {
+        return put_down(m, l.n, !l.bits).map(Some);
+    }
+    let l = vh(m, a, 0)?;
+    put(m, &Vh::down(l.v.not()))
 }
 
 fn not(_: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
@@ -1518,6 +1592,15 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
             vec_gate::<4>,
             vec_gate::<5>,
         ][GATES.iter().position(|x| *x == g)?],
+        Op::NumGate(g) => [
+            num_gate::<0> as NativeFn,
+            num_gate::<1>,
+            num_gate::<2>,
+            num_gate::<3>,
+            num_gate::<4>,
+            num_gate::<5>,
+        ][GATES.iter().position(|x| *x == g)?],
+        Op::NumNot => num_not,
         Op::Not => not,
         Op::VecNot => vec_not,
         Op::Conv(0, false) => conv::<0, false>,

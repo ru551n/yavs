@@ -113,6 +113,8 @@ impl Pre {
                     }
                     a.is_some()
                 }
+                // A move of a register onto itself does nothing.
+                Inst::Move { dst, src } if dst == src => true,
                 // A jump forward to where execution goes on anyway (the blocks between are
                 // dead or empty after the optimiser) is no operation.
                 Inst::Br { to } if f.body != Some(to) => f.blocks.get(to).is_some_and(|b| {
@@ -408,13 +410,33 @@ pub(crate) enum Op {
         time: u32,
         e: u32,
     },
-    /// `LSet` of element 0 of a waveform `WaveBuf` made (nothing else reads it) and the one-element
-    /// `Drive` of it, without delay limit: a scalar logic assignment straight to the kernel.
+    /// A `WaveBuf` that is not run (its `Alloc`, `Store` and `Index` are dropped), the `Copy` of the
+    /// value into it and the one-element `Drive` of it, which nothing else reads, without delay
+    /// limit: the value goes from `src` to the kernel as it is. `w`, `size`, `time` and `n` are
+    /// the registers of the waveform, for the cases the fast path does not take.
+    CopyDrive {
+        driver: u16,
+        target: u16,
+        src: u16,
+        bytes: u16,
+        time: u16,
+        size: u16,
+        w: u16,
+        n: u16,
+        inertial: bool,
+    },
+    /// A `WaveBuf` that is not run, the `LSet` of element 0 of that waveform and the one-element
+    /// `Drive` of it, which nothing else reads, without delay limit: a scalar logic assignment
+    /// straight to the kernel. `size`, `time`, `w` and `e` are the registers of the waveform, for
+    /// the cases the fast path does not take.
     LSetDrive {
         v: u32,
-        driver: u32,
-        target: u32,
-        wave: u32,
+        driver: u16,
+        target: u16,
+        time: u16,
+        size: u16,
+        w: u16,
+        e: u16,
         inertial: bool,
     },
     /// `AffPL` / `AffPR` (the second with the register's coefficient 1) and the `SigRead1` of
@@ -603,6 +625,17 @@ pub(crate) enum Op {
         b: u32,
         n: u32,
     },
+    /// `AllocK` of 32 bytes and the `SigReadVec` into it, in one step when the signal is a single
+    /// range of at most 64 logic elements (else the `AllocK` alone).
+    AllocReadVec {
+        dst: u32,
+        sig: u32,
+    },
+    /// `AllocK` of 32 bytes and the logic `Cat` into it, in one step when the pieces fit one
+    /// block (else the `AllocK` alone).
+    AllocCat {
+        dst: u32,
+    },
     /// `Alloc` of a size known at decode time.
     AllocK {
         dst: u32,
@@ -710,6 +743,15 @@ pub(crate) enum Op {
     },
     /// `Inst::CallNative`; `dst` is `NONE` without a result.
     CallNative {
+        native: u32,
+        start: u32,
+        len: u32,
+        dst: u32,
+    },
+    /// `Inst::CallNative` of a native `ieee` subprogram with at most four arguments, none a signal:
+    /// the call without the bookkeeping other natives need (they may reach the heap, files and
+    /// the like; these work on temporary memory only).
+    CallIeee {
         native: u32,
         start: u32,
         len: u32,
@@ -841,6 +883,28 @@ enum NativeOp {
         rising: bool,
         sig: yavs_ir::Reg,
     },
+}
+
+/// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most four arguments, none a
+/// signal, not the procedure `uniform` (which writes through its arguments).
+fn light_ieee(prog: &Program, f: &Func, native: yavs_ir::NativeId, args: yavs_ir::Regs) -> bool {
+    let Some(sym) = prog.natives.get(native).map(|n| &n.symbol) else {
+        return false;
+    };
+    let Some(key) = sym.strip_prefix("yavs.ieee.") else {
+        return false;
+    };
+    let Some(regs) = f.regs(args) else {
+        return false;
+    };
+    regs.len() <= 4
+        && regs
+            .iter()
+            .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig))
+        && !matches!(
+            yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0)),
+            None | Some(yavs_ir::ieee::Op::Uniform)
+        )
 }
 
 /// The scalar `std_logic_1164` natives, by their symbol (`ieee::lookup` has the bodies).
@@ -1278,7 +1342,8 @@ fn peephole(
     let (old, old_at) = (std::mem::take(ops), std::mem::take(at));
     // The waveform starts `WaveBuf` made so far: wave register, the register 8 bytes in and
     // the IR pc of the `Alloc`.
-    let mut waves: Vec<(u32, u32, u32)> = Vec::new();
+    // The `Copy` positions where a `CopyDrive` goes, and the op.
+    let mut dropped: Vec<(usize, Op)> = Vec::new();
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
         _ => None,
@@ -1309,38 +1374,97 @@ fn peephole(
                     off: 8,
                 }),
             ) if addr == w && base == w && free(i + 1) && free(i + 2) => {
-                waves.push((w, e, old_at.get(i).copied().unwrap_or(0)));
-                (Some(Op::WaveBuf { w, size, time, e }), 3)
-            }
-            (
-                Op::LSet { base, idx, v },
-                Some(&Op::Drive {
-                    driver,
-                    target,
-                    wave,
-                    n,
-                    reject: NONE,
-                    inertial,
-                }),
-                _,
-            ) if free(i + 1)
-                && int(idx) == Some(0)
-                && int(n) == Some(1)
-                && let Some(&(_, _, from)) =
-                    waves.iter().rev().find(|w| (w.0, w.1) == (wave, base))
-                && let Some(&to) = old_at.get(i + 1)
-                && waveform_is_private(f, block_start, from as usize, to as usize, wave, base) =>
-            {
-                (
-                    Some(Op::LSetDrive {
-                        v,
+                // The `Copy` into the waveform and the `Drive` of it, later in the block, with
+                // nothing else using it: both become one op there and these three are not run.
+                let pair = (i + 3..old.len()).take_while(|&j| free(j)).find_map(|j| {
+                    let Some(&Op::Drive {
                         driver,
                         target,
                         wave,
+                        n,
+                        reject: NONE,
                         inertial,
-                    }),
-                    2,
-                )
+                    }) = old.get(j + 1)
+                    else {
+                        return None;
+                    };
+                    let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
+                    let value = match old[j] {
+                        Op::Copy { dst, src, bytes } if dst == e => Some((src, bytes, true)),
+                        Op::LSet { base, idx, v } if base == e && int(idx) == Some(0) => {
+                            Some((v, 0, false))
+                        }
+                        _ => None,
+                    }?;
+                    let clean = wave == w
+                        && int(n) == Some(1)
+                        && free(j + 1)
+                        && waveform_is_private(f, block_start, from, to, w, e)
+                        && !(from + 3..to).any(|p| {
+                            let mut def = false;
+                            f.code[p]
+                                .visit(&mut |r, role, _| def |= role == Role::Def && r.0 == time);
+                            def
+                        });
+                    let r = |x: u32| u16::try_from(x).ok();
+                    match (r(driver), r(target), r(time), r(size), r(w), r(e), r(n)) {
+                        (
+                            Some(driver),
+                            Some(target),
+                            Some(time),
+                            Some(size),
+                            Some(w16),
+                            Some(e16),
+                            Some(n),
+                        ) if clean => {
+                            let (a, b, copy) = value;
+                            if copy {
+                                Some((
+                                    j,
+                                    Op::CopyDrive {
+                                        driver,
+                                        target,
+                                        src: r(a)?,
+                                        bytes: r(b)?,
+                                        time,
+                                        size,
+                                        w: w16,
+                                        n,
+                                        inertial,
+                                    },
+                                ))
+                            } else {
+                                Some((
+                                    j,
+                                    Op::LSetDrive {
+                                        v: a,
+                                        driver,
+                                        target,
+                                        time,
+                                        size,
+                                        w: w16,
+                                        e: e16,
+                                        inertial,
+                                    },
+                                ))
+                            }
+                        }
+                        _ => None,
+                    }
+                });
+                match pair {
+                    Some((j, op)) => {
+                        dropped.push((j, op));
+                        remap[i] = ops.len() as u32;
+                        i += 3;
+                        continue;
+                    }
+                    None => (Some(Op::WaveBuf { w, size, time, e }), 3),
+                }
+            }
+            _ if let Some(p) = dropped.iter().position(|d| d.0 == i) => {
+                let (_, op) = dropped.swap_remove(p);
+                (Some(op), 2)
             }
             (
                 Op::AffPL {
@@ -1560,6 +1684,23 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 && !live_after(f, lp as usize, yavs_ir::Reg(tmp)) =>
             {
                 Some(Op::CatLCopy { tmp, size, dst, n })
+            }
+            (Op::Alloc { dst, size }, Some(&Op::SigReadVec { dst: d2, sig }), _)
+                if int(size) == Some(32) && d2 == dst =>
+            {
+                Some(Op::AllocReadVec { dst, sig })
+            }
+            (Op::Alloc { dst, size }, Some(&Op::Cat), _)
+                if int(size) == Some(32)
+                    && let Some(&cp) = at.get(k + 1)
+                    && let Some(&Inst::Cat {
+                        dst: cd,
+                        logic: true,
+                        ..
+                    }) = f.code.get(cp as usize)
+                    && cd.0 == dst =>
+            {
+                Some(Op::AllocCat { dst })
             }
             (Op::Alloc { dst, size }, _, _)
                 if let Some(n) = int(size).and_then(|n| u32::try_from(n).ok()) =>
@@ -2411,6 +2552,12 @@ impl Code {
                             b: b.0,
                         },
                         (Some(NativeOp::Not { a }), Some(d)) => Op::NotL { dst: d.0, a: a.0 },
+                        _ if light_ieee(prog, f, native, args) => Op::CallIeee {
+                            native: native.0,
+                            start: args.start,
+                            len: args.len,
+                            dst: dst.map_or(NONE, |d| d.0),
+                        },
                         _ => Op::CallNative {
                             native: native.0,
                             start: args.start,

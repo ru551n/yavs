@@ -222,9 +222,15 @@ fn testbench(seed: u64, per_op: usize) -> String {
             // unsigned and signed go through the same operators.
             let (u, v) = g.two("uv", n);
             g.case(&format!("{u} {op} {v}"), "img");
+            let (u, v) = g.two("gv", n);
+            g.case(&format!("{u} {op} {v}"), "img");
         }
         let x = g.operand("sv");
         g.case(&format!("not {x}"), "img");
+        for ty in ["uv", "gv"] {
+            let x = g.operand(ty);
+            g.case(&format!("not {x}"), "img");
+        }
         for f in ["to_x01", "to_x01z", "to_ux01"] {
             g.case(&format!("{f}({x})"), "img");
         }
@@ -371,6 +377,8 @@ begin
       when 9 => r := x"00"; r := r / r;
       when 10 => r := x"07"; r := r mod (r - r);
       when 11 => r := x"07"; r := r rem (r - r);
+      when 12 => r := r xor unsigned'("010");
+      when 13 => r := r nand unsigned'("010");
       when others => null;
     end case;
     report "end";
@@ -392,7 +400,7 @@ fn native_errors_match_bodies() {
         true,
     );
     assert!(a.status.success());
-    for k in 0..12 {
+    for k in 0..14 {
         let g = format!("-gk={k}");
         let go = |native| {
             run(

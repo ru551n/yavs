@@ -2901,6 +2901,57 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   instructions of the scoreboard testbench, so even removing all of it is below what the fused ops
   gave, and error traces would need a record of the inlined frames. Not done.
 
+## Interpreter round 9: whole-statement ops for clocked RTL, logical operators of `numeric_std` (yavs-interp, yavs-ir, #443, 2026-10-21)
+
+- **The waveform buffer of a one-element assignment is not built when only the assignment reads
+  it.** The predecoder drops the `Alloc`, `Store` and `Index` of a waveform (`WaveBuf`) when later in
+  the same block the value is copied into it (`Copy`) or set in element 0 (`LSet`) and the
+  one-element `Drive` of it follows, nothing else reads the buffer and the delay register is not
+  written in between (`pre::waveform_is_private` and a definition scan). The `Copy` and the `Drive`
+  are one op (`CopyDrive`), the `LSet` and the `Drive` another (`LSetDrive`). The fast path hands
+  the value (the planes at `src`, or the code in `v`) and the delay to the kernel
+  (`assign_blocks`/`assign_code`) without the copy. Every other target (a signal of several parts,
+  elements that are not `std_ulogic`, a size that is not the planes of the target, a bad code) makes
+  the waveform the dropped instructions would have made in temporary memory and runs the
+  instructions as before (`Machine::drive`, `drive_parts`, `replay_lset_drive`), so values, errors
+  and their texts are those of the unfused code; a fault is reported at the pc of the first
+  fused instruction.
+- **The temporary of a signal read and of a concatenation of at most 64 logic elements is made
+  once, not zeroed and read back** (`AllocReadVec`: `AllocK` of one block and the `SigReadVec` into
+  it; `AllocCat`: `AllocK` of one block and the `Cat` into it, `Machine::cat_words` is the piece of
+  `cat_block` that only computes the planes). Anything that does not fit (several parts, more than
+  64 elements, a piece that is not a plane block) allocates and goes on with the generic op.
+- **`numeric_std` `and`, `or`, `nand`, `nor`, `xor`, `xnor` of two `unsigned` or two `signed`, and
+  `not`, are native** (`yavs_ir::ieee::Op::NumGate`, `NumNot`; not for `numeric_bit`). Each is the
+  `std_logic_1164` operator on the same elements with the result range `(n-1 downto 0)`; operands of
+  different lengths hand the call back to the body, whose assertion reports the length error as
+  before (`has_fallback`). The body was a conversion, a native call and a copy back, about 12000
+  instructions for 16 elements.
+- **A call of a native `ieee` subprogram is `Op::CallIeee`** when it has at most four arguments,
+  none a signal, and is not the procedure `uniform`: it skips what other natives need (the heap
+  recycling check, the taint check of package initialisation, the symbol tests for `std.env`, the
+  argument vector) and keeps the hand-back to the body and the stop of the process. These natives
+  work on temporary memory only.
+- **`Machine::rd` takes the common spaces inline** (`rd_slow` for the rest and every error);
+  `ieee::small` and `vh` read a fat pair and its descriptor with it and `dim_of` instead of five
+  loads. `load_idx`/`store_idx` add the element offset to the address words without making the
+  address; `lcopy` of one block to one block changes the destination in place; `scalar_gate` and
+  `scalar_not` are table lookups; the text of an enumeration literal (`to_string`, `'image`) is made
+  once per process; a move of a register onto itself is not an op.
+- **A process with up to 256 registers keeps its register and temporary vectors between
+  activations** (was 48), as long as all such processes together hold at most 96 MiB
+  (`RESIDENT_BUDGET`, given back when the process is dropped); the others swap through the thread's
+  scratch as before. A clocked process with an `ieee` vector expression has well over 48 registers.
+- Tried and dropped (no gain or worse in instructions or cycles): a thin `Fault` (one pointer, so a
+  `Result<u64, Fault>` fits two registers; +2 percent instructions), reading a single signal
+  element without building the reference, a block of zeros through `extend_from_slice` in
+  `temp_alloc`, `call_pre` out of line.
+- What is left in the clocked rows (instructions per activation, lfsr: about 3500): the dispatch
+  (15 to 17 instructions per op, `k` and the op slice are spilled by the compiler), the kernel side
+  (wake, assignment, update: about 40 percent), the five single-element reads, the two signal
+  references (memoised in frame slots) and the three `Gate`s of a feedback; the library testbenches
+  are flat (no op over 12 percent, string loops of 20 to 25 ops per character).
+
 ## Kernel round 7: cheaper reads and one-element events (yavs-kernel, #440, 2026-10-21)
 
 - **A logic signal of at most 2^20 elements keeps the `std_ulogic` code of every element of its

@@ -496,7 +496,11 @@ impl AutoTier {
         note: Note,
         first: Option<Box<dyn FirstLevel>>,
     ) -> Result<Arc<AutoTier>, Error> {
-        crate::lazy::ensure()?;
+        // With a first-level generator LLVM is opened by the first O2 compile (`Jit::new`), not at
+        // the start: a run that never gets hot pays nothing for it.
+        if first.is_none() {
+            crate::lazy::ensure()?;
+        }
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();

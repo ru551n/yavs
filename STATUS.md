@@ -13,7 +13,7 @@
 | M8: DAP server | first slice (#130): `yavs run --dap=PORT\|stdio` serves the Debug Adapter Protocol over the interpreter's debug session (`crates/yavs-dap`): threads per process, line breakpoints with hit counts, continue, pause (in a process or between cycles), run for or until a time, next delta and next time step (custom requests and VS Code commands, #324), signal breakpoints on a change or a value (DAP data breakpoints and `yavs/setSignalBreakpoints`, #322), force, deposit and release of signals and their fields, elements and slices (#364) and `setVariable` on signals and locals with values parsed as VHDL literals of the target type (`yavs_std::value::literal`, #323), conditions on line and data breakpoints (VHDL expressions evaluated by the server), composite variables expanded by field and index (paged), a Hierarchy scope and `yavs/hierarchy` (#326), step over/in/out, stack frames with source positions, locals, region signals and generics, evaluate for locals and signals by name or path, output events, exit status; one thread under `--dap`, so sessions are deterministic. Scripted sessions in `crates/yavs/tests/dap.rs`. VS Code extension `editors/vscode` (debugger type `yavs`, analyzes and launches over stdio): verified with the DAP test client (`test/client.js`) and in a real headless VS Code (`test/vscode`, breakpoint hit, frame, `setVariable`, force and release commands, a conditional breakpoint, scopes and an expanded array, continue to the end); not in CI. Live waves (#325): `yavs/waveSubscribe` records the client's selection (globs, array cap, variables) with the `--wave` recorder into a second sink and streams `yavs/waves` batches of completed time steps (values base64 of the recorder's bytes with `encoding` in the hierarchy, bounded queue, never blocks the simulation); `--wave` and `--vhpi` work under `--dap` (the FST equals a plain run's). Attach (#423): `--dap=PORT` prints `yavs: waiting for a debugger on port PORT` and holds the run until a client attaches (also from a response file); the extension has an "Attach to yavs" snippet and `docs/usage.rst` a recipe for debugging one test of an external test runner. A VHPI plugin's prints under `--dap=stdio` go to stderr (#389) |
 | M9: coverage | statement and branch coverage (#131): `yavs run --cov[=FILE]` writes a per-run database keyed by instance path and statement text hash, `yavs cov merge`, `yavs cov report` (text summary, Cobertura XML); no counters without `--cov`; counts identical at any `--threads`; pinned in `crates/yavs/tests/coverage.rs`. Exclusions (#351): `-- coverage off/on` pragmas, `cov report --uncovered` rows and `--exclude FILE`. Toggle coverage (#343): 0->1 and 1->0 per `bit`/`std_logic` scalar of signals and ports from the value-change bus, `--cov-kind`, `--cov-toggle-max` (W0115), `toggle` exclusion rows. Per-test attribution (#353): `--cov-test`, tests per item kept through `cov merge`, `yavs cov rank` (greedy minimal set, unique items per test), `cov report --tests`; database version 4. HTML report (#344): `cov report --html DIR`, static pages with line counts, a missed-only page per file, missed items as exclusion rows, tests per item (E0113 for an unreadable source). |
 | M6: JIT tier | in progress: `yavs run --tier=llvm` (feature `llvm`) compiles every function with LLVM 21 and passes the whole difftest corpus (348/348 at 1 and 4 threads, identical to the interpreter, rule 5); 96% of the compiled programs' instructions run as native code (memory, descriptors and layouts since #334/#335; simulation 2x to 5x faster than interpreted, compile time aside), the rest through the interpreter (side exits, `docs/decisions.md`); `--tier=auto` compiles only hot functions on a background thread with identical output (#125; opt-in: since the predecoded interpreter, #431, compiled code with its side exits is slower than interpreting on most benchmarks), functions over `--tier-max-size` stay interpreted (#126); open: native lowering of the rest (#336 to #341); CI builds and tests the feature on Linux x86_64, aarch64 and Windows; llvm section |
-| Cranelift tier (spike, #481 item 1) | `yavs run --tier=clift` and `--tier=clift-auto` (feature `clift`, off by default, no LLVM needed, crate `yavs-clift`) run the optimised IR through Cranelift on the LLVM tier's frame view, callbacks and side exits; the difftest corpus is identical to the interpreter at 1 and 4 threads and under the collection stress build; translating is 2x to 5x faster than LLVM O0 and 28x to 70x faster than O2, steady-state code is about LLVM O0 quality, and its tier-up performs like the LLVM tier-up (both within noise of the interpreter); measurements in the clift section |
+| Cranelift tier (#481 item 1) | `yavs run --tier=clift`, `--tier=clift-auto` (feature `clift`, off by default, no LLVM needed, crate `yavs-clift`) and `--tier=auto3` (both features: Cranelift for warm functions, LLVM O2 for those that stay hot) run the optimised IR on the LLVM tier's frame view, callbacks and side exits; the difftest corpus is identical to the interpreter at 1 and 4 threads and under the collection stress build; Cranelift translates at 42 us per IR instruction against about 1 ms for LLVM O2; no compiled configuration beats the interpreter on testbench code or kernel designs, only on loops without calls; measurements in the clift section |
 | M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; slice G2 (#399): source view with breakpoint gutter (conditions, hit counts), call stack per process, locals and watch with lazy and paged expansion and edit, hover, step buttons, time and delta in the status bar, tested against a scripted DAP server and, ignored, the real `yavs`; G3 to G6 and the server slices S1 (#396), S2 (#397), S4 (#398) not started) |
 
 ### External test runner: its own VHDL suites (#112)
@@ -2666,83 +2666,58 @@ costs 25x to 30x the time); O0 stays close to linear. Proposed threshold: O2 up 
 instructions per function, larger units stay interpreted (docs/decisions.md).
 ## clift (`crates/yavs-clift`)
 
-Cranelift tier (#481 item 1, spike), behind the `clift` feature (`cargo test -p yavs-clift --features clift`;
-`cargo build --release -p yavs --features clift` for `yavs run --tier=clift` and `--tier=clift-auto`). It needs no
-LLVM install. It generates code for the contract the LLVM tier defined and now shares through
-`yavs_llvm::rt` (the frame view `Mem`, the callbacks `yavs_rt_step`, `yavs_rt_signal`, `yavs_rt_host`, `enter`, the
-per-instruction facts): inline are the integer and real operations with their checks, compares, branches, `Case`,
-loads, stores, `Copy`, `Alloc`, `AddrOf`, `Index`, `Stmt`, descriptor reads and writes, `LayoutOf` of static layouts,
-logic elements and logic copies (`LCopy`), `SigVal`, the `std_ulogic` table natives and the signal operations that use `yavs_rt_signal`; everything
-else (calls, natives, reports, `**`, heap) runs in place through `yavs_rt_step`, and a failing inline instruction
-returns its pc to the interpreter, so the output is the interpreter's. Registers stay in the frame's register array;
-Cranelift's alias analysis (regions for registers, guest memory and the `Mem` view) forwards and drops accesses
-inside a block run and across blocks.
+Cranelift tier (#481 item 1), behind the `clift` feature (`cargo test -p yavs-clift --features clift`;
+`cargo build --release -p yavs --features clift` for `yavs run --tier=clift` and `--tier=clift-auto`; both
+features for `--tier=auto3`). It needs no LLVM install. It generates code for the contract the LLVM tier defined and
+shares through `yavs_llvm::rt` (the frame view `Mem`, the callbacks `yavs_rt_step`, `yavs_rt_signal`, `yavs_rt_host`,
+`enter`, the per-instruction facts): inline are the integer and real operations with their checks, compares, branches,
+`Case`, loads, stores, `Copy`, `Alloc`, `AddrOf`, `Index`, `Stmt`, descriptor reads and writes, `LayoutOf` of static
+layouts, logic elements and logic copies (`LCopy`), `SigVal`, the `std_ulogic` table natives and the signal operations
+that use `yavs_rt_signal`; everything else (calls, natives, reports, `**`, heap) runs in place through `yavs_rt_step`,
+and a failing inline instruction returns its pc to the interpreter, so the output is the interpreter's. It uses frame
+mode only: registers stay in the frame's register array (no native frames, no deferred register stores), so it works
+with the interpreter's frames unchanged; it has entry points at the pcs after preloaded constants and addresses like
+the LLVM tier (without them a tier-up could not enter a running loop). `--tier=clift-auto` translates a hot function
+with the small functions it calls (as `Worker::tree`). Cranelift runs with `opt_level=speed` and backtracking
+register allocation (`YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA`, `YAVS_CLIFT_VERIFY` are measurement knobs).
 
-Correctness: `difftest.py --candidate yavs-clift` and `--candidate yavs-clift-auto` (the latter also with
-`YAVS_RUN_FLAGS=--tier-heat=0,0,0`, every function translated at its first call) pass 410/410 at 1 and 4 threads;
-the collection stress build (`--features gc-stress,clift`) passes the corpus at 1 thread; the 12 tier tests of
-`yavs-llvm` (every integer operation on edge values, loads and stores of every width, temporaries, descriptors,
-logic elements, native tables, calls, precise roots) pass unchanged against this tier.
+`--tier=auto3` is the LLVM `AutoTier` with Cranelift as its first level (`FirstLevel` in `yavs_llvm::rt`): the budget,
+payback and sampling rules are the LLVM tier's, the first-level cost is learned from the Cranelift translations
+(about 45 us per IR instruction to start with), a function that stays hot (30 times its threshold running translated
+code) is compiled again by LLVM at O2, and LLVM is opened only then.
 
-Measurements (2026-10-21, release build with `llvm,clift` of main at 6dabc9fc plus this work, one performance core,
-`tools/bench/run.py`, 3 runs, median total CPU seconds including the background compile thread; the host ran at
-load average 20 to 35 from other agents, so differences under 20% are noise; `clift-auto` was measured four times and
-the LLVM tier-up twice, the table shows the first two sets of `clift-auto`; the geometric means of all sets are 1.08, 1.16,
-1.21 and 1.42 for `clift-auto` and 1.12 and 1.23 for the LLVM tier-up):
+Correctness (merged head, release build with `llvm,clift`): `difftest.py --candidate yavs-clift`, `yavs-clift-auto`,
+`yavs-auto3` and `yavs-auto3-eager` (`--tier-heat=0,0,0`) pass 420/420 at 1 and 4 threads; the collection stress build
+(`--features gc-stress,llvm,clift`) passes 420/420 at 1 thread for `yavs-clift`, `yavs-clift-auto` and
+`yavs-auto3-eager`; the 13 tier tests of `yavs-llvm` pass unchanged against this tier.
 
-| Benchmark | interp | `--tier=auto` (LLVM) | `--tier=clift` | `--tier=clift-auto` (two runs) |
-|---|---|---|---|---|
-| compute_loop | 0.15 | 0.13 | 0.13 | 0.17 / 0.17 |
-| calls | 0.13 | 0.18 | 0.17 | 0.17 / 0.17 |
-| access_heavy | 0.08 | 0.10 | 0.10 | 0.09 / 0.09 |
-| strings_heavy | 0.15 | 0.18 | 0.14 | 0.17 / 0.16 |
-| uvvm_util_rand_tb | 1.62 | 1.88 | 8.64 | 1.84 / 1.64 |
-| protected_scoreboard | 0.07 | 0.08 | 0.10 | 0.08 / 0.08 |
-| osvvm_axistream | 0.62 | 0.66 | 4.96 | 0.74 / 0.59 |
-| vunit_vc30 (30 runs) | 2.92 | 2.61 | 51.3 | 3.00 / 2.69 |
-| geometric mean of the ratio to interp | 1.00 | 1.12 | 2.49 | 1.16 / 1.08 |
+Measurements (2026-10-21, release build of the merged head, every timed run pinned to performance core 5, median of
+5, CPU seconds including the background compile thread, host load 8 to 35 from other agents; the harness is
+`tools/bench/run.py --ref ... --instructions`). Kernel-bound designs (interpreter / `auto` / `auto3` /
+`clift-auto` / sim1 / sim2): rtl_ff 0.76 / 0.74 / 0.76 / 1.06 / 0.56 / 0.43, rtl_lfsr 0.41 / 0.41 / 0.46 / 0.51 / 0.13 /
+0.48, rtl_chain 0.21 / 0.21 / 0.21 / 0.26 / 0.14 / 0.81, rtl_fan 1.12 / 1.13 / 1.13 / 1.09 / 0.94 / 0.30, rtl_bus 0.20 /
+0.21 / 0.20 / 0.23 / 0.52 / 0.18, lfsr64 0.21 / 0.22 / 0.20 / 0.26 / 0.09 / 0.32, xor_types 0.90 / 0.98 / 1.16 / 1.22 /
+0.84 / 1.55; the compute loop `compute_h2h` 1.96 / 0.37 / 0.63 / 0.57 / 2.42 / 0.22. Library testbenches (interpreter /
+`auto` / `auto3` / `clift-auto`): uvvm_util_rand_tb 0.94 / 1.18 / 1.02 / 1.15, uvvm_sb_slv_tb 1.01 / 1.12 / 1.15 /
+1.37, osvvm_axistream 0.37 / 0.37 / 0.38 / 0.39, vunit_vc30 1.69 / 2.01 / 1.70 / 1.73; geometric mean of the ratio
+to the interpreter 1.14 (`auto`), 1.07 (`auto3`), 1.16 (`clift-auto`), 1.15 (a build without the `llvm` feature).
+Single-pass register allocation: 1.16 (`auto3`) on the testbenches and no gain on the kernel designs.
 
-`--tier=llvm` (O2, every function before time 0; measured on the base before the tier-up work above): compute_loop
-0.20, calls 0.24, access_heavy 0.30, strings_heavy 0.56, protected_scoreboard 0.30, uvvm_util_rand_tb 258 (256 of it
-compile), osvvm_axistream over the 300 s limit, vunit_vc30 not run. Simulation phase alone (compile excluded),
-interp / LLVM tier-up / `clift` / `clift-auto` (two runs): compute_loop 0.13 / 0.11 / 0.11 / 0.15, 0.15; calls 0.12 /
-0.17 / 0.16 / 0.15, 0.15; uvvm_util_rand_tb 1.47 / 1.83 / 1.39 / 1.66, 1.59; osvvm_axistream 0.48 / 0.59 / 0.58 / 0.56,
-0.51; vunit_vc30 0.55 / 0.53 / 0.52 / 0.59, 0.54. Kernel designs (bus, chain, fan, ff, lfsr, ram; total CPU, interp /
-`clift` / `clift-auto` / LLVM tier-up): 0.36 / 0.44 / 0.35 / 0.41, 0.69 / 0.80 / 0.66 / 0.71, 2.10 / 2.70 / 1.99 / 2.02,
-2.20 / 2.41 / 2.36 / 2.25, 1.65 / 1.82 / 1.80 / 1.79, 0.14 / 0.17 / 0.15 / 0.12.
+Translation cost: Cranelift (`speed`, backtracking) translates 92958 IR instructions of the utility library's random
+testbench in 3.9 s (42 us per IR instruction; mean 1.0 ms for functions under 64 instructions, 3.8 ms for 64 to
+256, 13.9 ms for 256 to 1024, 546 ms for the four over 1024); LLVM O2 needs about 1 ms per IR instruction on the same
+code (95 s for the verification library's `func_cov_tb`, 300 to 400 us per instruction on a 225-instruction loop).
+Release build (`-p yavs`, clean target, cores 8 to 23, 2 jobs): default features 110 s wall, 209 s user, 0.85 GB peak
+compiler memory, stripped binary 15.2 MB; `clift` 167 s, 319 s, 1.96 GB, 20.5 MB (+57 s, +5.2 MB); `llvm` 109 s,
+15.8 MB; `llvm,clift` 160 s, 20.98 MB. Start-up of a tiny test (`arith/div_zero`, median of 40, one core): 2.2 ms
+interpreter, 2.4 ms `clift-auto` and `auto3`, 10 ms `auto` (opening the LLVM library at start).
 
-Translation cost and code quality on one program (the verification library's `func_cov_tb`: 377 functions, 91269 IR
-instructions, all translated before time 0), CPU seconds; the last column is its simulation phase (interpreter 1.01):
-
-| Code generator | Translate | per IR instruction | Simulate |
-|---|---|---|---|
-| LLVM O2 (`--tier=llvm`) | 95.2 | 1043 us | 0.51 |
-| LLVM O0 (measured with a temporary knob) | 6.2 | 68 us | 0.66 |
-| Cranelift, no optimisation, backtracking RA (default) | 3.5 to 4.0 | 38 to 44 us | 0.54 |
-| Cranelift, no optimisation, single-pass RA (`YAVS_CLIFT_RA=single_pass`) | 1.2 to 1.5 | 13 to 16 us | 0.72 |
-| Cranelift, `opt_level=speed`, backtracking RA | 4.0 | 44 us | 0.57 |
-| Cranelift verifier on (`YAVS_CLIFT_VERIFY=1`, the default in the spike) | +0.5 to +1.0 | | |
-
-Per function (backtracking RA): under 64 IR instructions 187 functions, mean 0.8 ms; 64 to 256: 106, mean 5.2 ms;
-256 to 1024: 60, mean 18.6 ms; over 1024: 24, mean 79 ms (largest 326 ms). About 0.5 ms of each is fixed cost.
-A pure compute loop (5 million iterations over an array, no calls), total CPU: interpreter 0.45, `clift` 0.31
-(0.22 with `opt_level=speed`), `clift-auto` 0.28, LLVM tier-up 0.32, `--tier=llvm` 0.15.
-
-Release build with `-p yavs` (cores 8 to 23, 2 jobs, clean target directory): default features 136 s wall, 259 s user,
-0.85 GB peak compiler memory, binary 75.5 MB (14.4 MB stripped); with `--features clift` 205 s wall, 392 s user,
-1.96 GB, binary 103.1 MB (19.6 MB stripped): +69 s (+51%) and +5.2 MB stripped.
-
-What the numbers say: Cranelift removes the compile cost problem (the closure of a verification-library testbench
-translates in 1.2 to 4 s instead of 95 s) and its steady-state code is about as good as LLVM O0, so eager
-translation is not the problem any more, but as a tier-up (`clift-auto`) it lands where the LLVM tier-up does: within
-noise of the LLVM tier-up and 10% to 30% above the interpreter in total CPU on these short runs, worst on `calls`
-(1.3x to 1.5x) and `access_heavy` (1.2x to 1.4x), where entering compiled code and the callbacks for calls, natives and reports (shared by both
-tiers) cost about what the interpreter's dispatch costs. Compiled code wins where the time is in loops without calls
-(the loop above 0.6x, compute_loop at 0.85x eager), and the kernel designs do not move. A tier-up has to tell the
-interpreter when code is ready (`NativeFlags::set`, the protocol of `Runtime::native_flags`): without it the code is
-never entered and `clift-auto` measures as the interpreter. Not done: a tier-up that follows `clift-auto` with LLVM O2
-recompilation, the LLVM tier-up's follow-ups (compiling the short callees of compiled code, RTL processes at O2),
-inline calls, aarch64 and Windows measurements (CI runs the tests there), the collection stress build at 4 threads.
+What the numbers say: in every compiled configuration the testbench sets and the kernel designs are within noise of
+the interpreter or up to 20% to 35% slower; compiled code wins only where a function holds a loop without calls (the
+compute loop: 5x with `auto`, 3.5x with Cranelift). Cranelift alone matches LLVM on that loop only after its code
+runs (`clift` eager 0.5 s, LLVM O2 0.37 s). On clocked RTL it executes more instructions than the interpreter
+(rtl_ff 26.5 G against 16 G): the entry and exit of compiled code and the callbacks cost more than the interpreter's
+predecoded dispatch.
 
 ## performance (tiers against two reference simulators, 2026-10-19)
 

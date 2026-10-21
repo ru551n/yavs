@@ -375,31 +375,31 @@ milestone users care about works.
 - Decided by the M6 agent, 2026-10-19; **accepted by the user (user, 2026-10-19)**: compiled
   code runs native operations and hands slow or erroring instructions back to the interpreter.
 
-## Cranelift tier (yavs-clift, spike for #481)
+## Cranelift tier (yavs-clift, #481)
 
 - **Shape:** a second code generator for the LLVM tier's compiled-code contract, in its own crate behind the
   `clift` feature (off by default; `yavs --features clift`; Cranelift 0.137 pinned with `=`; no LLVM install). The
-  frame view, the callbacks, `enter` and the per-instruction facts both generators need moved from
-  `yavs-llvm/src/lower.rs` to `yavs-llvm/src/rt.rs`, which builds without LLVM; `yavs-clift` depends on that
-  and on nothing of LLVM's. Same side exits, same GC-root discipline, same rule: a failing inline
-  instruction returns its pc and the interpreter reports the error. Spike, 2026-10-21.
-- **Tiers:** `--tier=clift` translates every function before time 0, `--tier=clift-auto` translates hot functions on
-  one background thread (the scheme of `--tier=auto`, one level; default heat 2 ms plus 90 us per IR
-  instruction, about twice the measured translation cost; short loop-free functions stay interpreted as in
-  #432). Without the feature both are error `E0120`. A tier-up that continues with LLVM O2 after Cranelift was not
-  built.
-- **Cranelift settings:** no optimisation, backtracking register allocation, verifier on. Why: translating costs
-  38 to 44 us per IR instruction (LLVM O0 68 us, O2 1043 us) and the code is as fast as LLVM O0's;
-  `opt_level=speed` helps pure loops by about a third (0.35 s to 0.23 s) and costs about as much to translate;
-  single-pass register allocation translates 3x faster and runs the code 1.3x slower. The spike reads
-  `YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA` and `YAVS_CLIFT_VERIFY` to measure these; they are not a supported interface.
-- **Result (STATUS.md "clift"):** the tier is correct (corpus identical at 1 and 4 threads, collection stress) and translates the
-  closure of a verification-library testbench in about 4 s instead of 95 s with LLVM O2, at steady-state
-  quality close to LLVM O0. As a tier-up it performs like the LLVM tier-up (geometric mean of total CPU against the
-  interpreter 1.08 to 1.42 over four sets, LLVM 1.12 and 1.23; eager `clift` 2.5x): the cost left is entering compiled code and the
-  callbacks for calls, natives and reports, which both tiers share. A tier that publishes code must set
-  `NativeFlags` (`Runtime::native_flags`) or the interpreter never enters it. Whether to adopt, and as what, is
-  the user's decision (issue #481).
+  frame view, the callbacks, `enter` and the per-instruction facts both generators need live in
+  `yavs-llvm/src/rt.rs`, which builds without LLVM; `yavs-clift` depends on that and on nothing of LLVM's. Same side
+  exits, same GC-root discipline, same rule: a failing inline instruction returns its pc and the interpreter reports
+  the error. Frame mode only: no native frames and no deferred register stores (registers stay in the frame, so the
+  interpreter's frames, roots and traces are unchanged); entry points include the pcs after preloaded constants.
+- **Tiers:** `--tier=clift` translates every function before time 0; `--tier=clift-auto` translates hot functions
+  (with the small functions they call) on one background thread; `--tier=auto3` is the LLVM `AutoTier` with Cranelift
+  as its first level (`FirstLevel`): the budget, payback, sampling and `Tier::hot` rules of `auto.rs` apply to the
+  Cranelift translation (cost learned per IR instruction), a function seen running translated code for 30 times its
+  threshold is compiled again by LLVM at O2, and the LLVM library is opened only for that compile. `clift` and
+  `clift-auto` need only the `clift` feature, `auto3` both; otherwise error `E0120`.
+- **Cranelift settings:** `opt_level=speed`, backtracking register allocation, verifier on in debug builds only.
+  Translating costs about 42 us per IR instruction (LLVM O2 about 1 ms), `speed` costs about the same as `none` and
+  helps loops; single-pass register allocation translates 3x faster and runs the code slower (no gain measured in
+  `auto3`). `YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA` and `YAVS_CLIFT_VERIFY` are measurement knobs, not an interface.
+- **Result (STATUS.md "clift", issue #481 comment):** correct (corpus identical at 1 and 4 threads, collection
+  stress). Performance: interpreter-relative geometric mean on the library testbenches 1.14 for `auto`, 1.07 for
+  `auto3`, 1.15 to 1.16 for Cranelift alone; on the kernel designs no configuration moves and Cranelift code runs
+  more instructions than the interpreter; compiled code wins on loops without calls only. The cost left is entering
+  compiled code and the callbacks for calls, natives and reports, shared by both tiers. A tier that publishes code
+  must set `NativeFlags` and provide the entry points the interpreter uses, or the code is never entered.
 
 ## Kernel crate and process interface (yavs-kernel)
 

@@ -61,6 +61,7 @@ otherwise.
   prints what the LLVM tier compiles and what it leaves to the interpreter.
   ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs built
   with the ``clift`` feature; that needs no LLVM install.
+  ``--tier=auto3`` combines them (Cranelift for warm functions, LLVM O2 for those that stay hot) in a yavs built with both features.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or
   ``sec``; default ``fs``). It is what ``std.env.resolution_limit`` returns and the unit of TIME
   values in ``std.reflection`` mirrors. A TIME literal with a unit below the limit anywhere in

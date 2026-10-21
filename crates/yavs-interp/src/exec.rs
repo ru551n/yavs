@@ -1245,8 +1245,11 @@ impl Machine {
     /// GC of the private heap and the debug process table, after a suspension.
     #[inline(always)]
     pub(crate) fn after_suspend(&mut self) {
-        // Nothing allocated since the last collection, nothing deallocated: nothing to do.
-        if self.heap.since_gc == 0 && !self.heap.has_quarantine() && self.dbg.is_none() {
+        // Not enough allocated since the last collection (a process that made its variables at
+        // the start stays above zero for good), nothing deallocated: nothing to do.
+        let quiet = self.heap.since_gc == 0
+            || !heap::STRESS && self.heap.since_gc <= self.rt.limits.gc_threshold;
+        if quiet && !self.heap.has_quarantine() && self.dbg.is_none() {
             return;
         }
         self.after_suspend_slow();

@@ -248,6 +248,22 @@ impl Waiters {
         self.lists.is_empty()
     }
 
+    /// The one waiter of element `e`, when its list holds exactly one resident waiter that
+    /// covers it and no waiter is in the wide list (a process per element, waiting for its
+    /// element): what `take_woken` of an event on `e` alone would look at.
+    #[inline]
+    pub fn sole_resident(&self, e: u32) -> Option<&Waiter> {
+        let wide = self.lists.len().checked_sub(1).filter(|&w| w > 0)?;
+        let c = (e >> self.shift) as usize;
+        if c >= wide || !self.lists[wide].0.is_empty() {
+            return None;
+        }
+        match self.lists[c].0.as_slice() {
+            [w] if w.perm != 0 && w.range.overlaps(Range::new(e, 1)) => Some(w),
+            _ => None,
+        }
+    }
+
     /// Forget the wake list (a waiter changed).
     pub fn drop_cache(&mut self) {
         self.cache = None;
@@ -1251,24 +1267,37 @@ impl Signal {
             && q.time <= now
         {
             w.quick = None;
-            let d = &mut self.drivers[slot as usize];
-            let rel = (q.elem - d.range.offset) as usize;
-            d.value.put_code(rel, q.code);
-            if let Some(off) = &mut d.off {
-                fill_bits(off, rel, 1, false);
-            }
-            let (n, e) = (self.ty.len as usize, q.elem as usize);
-            let st = self.stamps.as_mut_slice();
-            st[n + e] = cycle;
-            st[3 * n + e] = stamp(now);
-            if !self.drivers[slot as usize].shared && self.fuse_ok() {
-                // The element's only source: its driving and effective values follow now.
-                self.finish_quick(e, q.code, now, cycle);
-            } else {
-                self.push_dirty(Range::new(q.elem, 1));
-            }
+            self.apply_quick(q, slot, now, cycle);
             return;
         }
+        self.apply_rest(w, slot, now, cycle);
+    }
+
+    /// The due quick transaction `q` of driver `slot` (taken from its waveform): the driver
+    /// value, the activity, and the driving and effective values or a dirty range.
+    #[inline(always)]
+    pub(crate) fn apply_quick(&mut self, q: Quick, slot: u32, now: Time, cycle: u64) {
+        let d = &mut self.drivers[slot as usize];
+        let rel = (q.elem - d.range.offset) as usize;
+        d.value.put_code(rel, q.code);
+        if let Some(off) = &mut d.off {
+            fill_bits(off, rel, 1, false);
+        }
+        let shared = d.shared;
+        let (n, e) = (self.ty.len as usize, q.elem as usize);
+        let st = self.stamps.as_mut_slice();
+        st[n + e] = cycle;
+        st[3 * n + e] = stamp(now);
+        if !shared && self.fuse_ok() {
+            // The element's only source: its driving and effective values follow now.
+            self.finish_quick(e, q.code, now, cycle);
+        } else {
+            self.push_dirty(Range::new(q.elem, 1));
+        }
+    }
+
+    /// `apply_driver` without a quick transaction.
+    fn apply_rest(&mut self, w: &mut Waveform, slot: u32, now: Time, cycle: u64) {
         if let Some(q) = w.vquick
             && q.time <= now
         {

@@ -3518,6 +3518,13 @@ unchanged at any thread count.
   code comes from `Signal::codes` instead of the planes, and a plane write is one masked blend with the plane masks
   of the code from a 16-entry table (`put_plane_code`, two SSE2 operations instead of four shift-and-merge
   sequences, about 31 to 15 instructions); `Buf::put_code` uses it too. `rtl_chain` -3.6% instructions.
+- **A delta whose due entries are all drivers of one independent signal, all from this time's list, with no force,
+  deposit, implicit signal or later-time entry due, takes a short update** (`update`): no work lists taken and given
+  back, no independent list, no `update_independent` call; a driver's quick transaction is applied without the
+  general `apply_driver` entry (`Signal::apply_quick`). The changed signals are walked in place. One element that
+  changed with one resident waiter in its list and none in the wide list wakes that process directly
+  (`Waiters::sole_resident`, the case `take_woken` already special-cased, without its call and closures).
+  `rtl_chain` -8%, `rtl_ff` -0.7%.
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

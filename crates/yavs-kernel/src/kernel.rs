@@ -1269,15 +1269,15 @@ impl SimControl {
         }
         self.update().map_err(|k| self.err(k))?;
         self.commit_callouts();
-        let mut changed = std::mem::take(&mut self.changed_sigs);
-        if changed.len() > 1 {
-            changed.sort_unstable();
-            changed.dedup();
+        if self.changed_sigs.len() > 1 {
+            self.changed_sigs.sort_unstable();
+            self.changed_sigs.dedup();
         }
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
         if self.watch_changes {
-            for &s in &changed {
+            for i in 0..self.changed_sigs.len() {
+                let s = self.changed_sigs[i];
                 for r in self.signals[s as usize].changed.clone() {
                     self.notify(|o, h| o.value_change(h, SignalId(s), r));
                 }
@@ -1285,7 +1285,9 @@ impl SimControl {
         }
         let mut woken = std::mem::take(&mut self.woken_buf);
         let memo = std::cell::Cell::new((0u32, false));
-        for &s in &changed {
+        // Nothing below adds to `changed_sigs`: walked in place, cleared after.
+        for i in 0..self.changed_sigs.len() {
+            let s = self.changed_sigs[i];
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64 + std::mem::take(&mut sig.nruns);
             // No process ever waited for it (a signal only read by value).
@@ -1325,6 +1327,20 @@ impl SimControl {
             };
             if uniform == Some(false) {
                 self.signals[s as usize].changed.clear();
+                continue;
+            }
+            // One element changed and one resident process waits for it (a stage of a chain):
+            // no list scan.
+            if let [r] = runs[..]
+                && r.len == 1
+                && let Some(w) = waiters.sole_resident(r.offset)
+                && live(w)
+            {
+                let (p, held) = (w.proc, uniform.is_none() && hold(w));
+                self.signals[s as usize].changed.clear();
+                if !held {
+                    self.wake(p, false);
+                }
                 continue;
             }
             // Every waiter resident for the whole signal: the wake list is known.
@@ -1368,8 +1384,7 @@ impl SimControl {
             }
         }
 
-        changed.clear();
-        self.changed_sigs = changed;
+        self.changed_sigs.clear();
         self.woken_buf = woken;
 
         // e: run the resumed non-postponed processes.
@@ -1417,6 +1432,36 @@ impl SimControl {
     fn update(&mut self) -> Result<(), ErrorKind> {
         let (now, cycle) = (self.now, self.cycle);
         self.empty_delta = false;
+        // The usual delta: only drivers of one independent signal due, from this time's list,
+        // in driver order; no force, deposit or implicit signal. Applied in place.
+        if self.ops.is_empty()
+            && self.implicits.is_empty()
+            && (self.queue.later.peek()).is_none_or(|Reverse((t, _))| *t > now)
+            && let Some(s0) = self.one_independent()
+        {
+            let sig = &mut self.signals[s0 as usize];
+            for e in &self.queue.next_delta {
+                if let Entry::Driver(d) = *e {
+                    let info = &self.drivers[d as usize];
+                    let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+                    let w = &mut slot.st.waveforms[info.local as usize];
+                    // A scalar register's transaction: applied here, not through the general
+                    // entry.
+                    match w.quick {
+                        Some(q) if q.time <= now => {
+                            w.quick = None;
+                            sig.apply_quick(q, info.slot, now, cycle);
+                        }
+                        _ => sig.apply_driver(w, info.slot, now, cycle),
+                    }
+                }
+            }
+            self.queue.next_delta.clear();
+            if finish_signal(sig, now, cycle)? {
+                self.changed_sigs.push(s0);
+            }
+            return Ok(());
+        }
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
         // Kept between cycles (empty here), so an empty one costs no construction and no drop.
         let mut work = self.work.take().unwrap_or_default();
@@ -1590,6 +1635,28 @@ impl SimControl {
         };
         self.work = Some(work);
         r
+    }
+
+    /// The signal of `queue.next_delta` when every entry is a driver of that one independent
+    /// signal, in driver order.
+    fn one_independent(&self) -> Option<u32> {
+        let Some(&Entry::Driver(d0)) = self.queue.next_delta.first() else {
+            return None;
+        };
+        let s0 = self.drivers[d0 as usize].signal.0;
+        if !self.independent[s0 as usize] {
+            return None;
+        }
+        let mut prev = d0;
+        for e in &self.queue.next_delta[1..] {
+            match *e {
+                Entry::Driver(d) if d >= prev && self.drivers[d as usize].signal.0 == s0 => {
+                    prev = d
+                }
+                _ => return None,
+            }
+        }
+        Some(s0)
     }
 
     /// Update phase of signals without ports or groups: each one only reads its own drivers'

@@ -2004,6 +2004,8 @@ impl SimControl {
         } else if !std::mem::take(&mut self.batch_mono) {
             self.order(&mut pids, init);
         }
+        // Processes committed right after they ran (all of them: no commit loop).
+        let mut early = 0;
         {
             let sh = Shared {
                 now: self.now,
@@ -2037,14 +2039,9 @@ impl SimControl {
                 // A panic in process code is a broken invariant: report it as an internal
                 // error of that process, not a bare panic.
                 slot.result = catch_unwind(AssertUnwindSafe(|| slot.process.run(&mut ctx)))
-                    .unwrap_or_else(|panic| {
-                        let msg = panic_message(&*panic);
-                        let kind = ErrorKind::Internal(format!("process panicked: {msg}"));
-                        let mut e = SimError::at(kind, sh.now, sh.delta);
-                        e.process = Some((ProcId(p), sh.names[p as usize].clone()));
-                        Err(e)
-                    });
+                    .unwrap_or_else(|panic| Err(process_panic(&sh, p, &*panic)));
             };
+
             match &self.pool {
                 // ponytail: fixed cut-off; below it the pool hand-off costs more than the
                 // processes. Inline or pooled, the commit order is the batch order.
@@ -2082,48 +2079,75 @@ impl SimControl {
                         }
                     }
                 }
-                // No other thread touches the slots: no lock.
+                // No other thread touches the slots: no lock. One unwind guard for the batch
+                // (`i` is the process that panicked): a panic ends the batch at that process,
+                // as a failed run does.
                 _ => {
                     let now = self.now;
-                    for &p in &pids {
-                        let s = slot_mut(&mut self.slots[p as usize]);
-                        if !init {
-                            resumption(&self.procs, &self.known_edges, p, &mut s.st);
-                        }
-                        run(p, s, live_ok);
-                        if stops(s) {
-                            break;
-                        }
-                        // The usual clocked process, committed while its slot is hot: it waited
-                        // again (`Ctx::wait_on_again`) and only scheduled drivers. The commit
-                        // loop skips it (`ProcMeta::ready` is false). The order of the queue
-                        // pushes across processes does not matter: the entries are sorted.
-                        let st = &mut s.st;
-                        let meta = &mut self.procs[p as usize];
-                        if !init
-                            && !postponed
-                            && st.again
-                            && meta.perm != 0
-                            && st.sens.is_empty()
-                            && st.deadline.is_none()
-                            && st.effects.is_empty()
-                            && st.phantoms.is_empty()
-                            && s.result.is_ok()
-                        {
-                            st.again = false;
-                            meta.ready = false;
-                            meta.resumed = true;
-                            self.serial_ran |= meta.flags.serial;
-                            for &(t, d) in st.scheduled.iter() {
-                                self.queue.push(now, t, Entry::Driver(d.0));
+                    let mut i = 0;
+                    let caught = catch_unwind(AssertUnwindSafe(|| {
+                        while let Some(&p) = pids.get(i) {
+                            let s = slot_mut(&mut self.slots[p as usize]);
+                            if !init {
+                                resumption(&self.procs, &self.known_edges, p, &mut s.st);
                             }
-                            st.scheduled.clear();
+                            let mut ctx = Ctx {
+                                sh: &sh,
+                                pid: ProcId(p),
+                                st: &mut s.st,
+                                live: live_ok,
+                            };
+                            s.result = s.process.run(&mut ctx);
+                            if stops(s) {
+                                break;
+                            }
+                            i += 1;
+                            // The usual clocked process, committed while its slot is hot: it waited
+                            // again (`Ctx::wait_on_again`) and only scheduled drivers. The commit
+                            // loop skips it (`ProcMeta::ready` is false). The order of the queue
+                            // pushes across processes does not matter: the entries are sorted.
+                            let st = &mut s.st;
+                            let meta = &mut self.procs[p as usize];
+                            if !init
+                                && !postponed
+                                && st.again
+                                && meta.perm != 0
+                                && st.sens.is_empty()
+                                && st.deadline.is_none()
+                                && st.effects.is_empty()
+                                && st.phantoms.is_empty()
+                                && s.result.is_ok()
+                            {
+                                st.again = false;
+                                meta.ready = false;
+                                meta.resumed = true;
+                                self.serial_ran |= meta.flags.serial;
+                                for &(t, d) in st.scheduled.iter() {
+                                    self.queue.push(now, t, Entry::Driver(d.0));
+                                }
+                                st.scheduled.clear();
+                                early += 1;
+                            }
                         }
+                    }));
+                    if let Err(panic) = caught {
+                        let p = pids[i];
+                        slot_mut(&mut self.slots[p as usize]).result =
+                            Err(process_panic(&sh, p, &*panic));
                     }
                 }
             }
         }
         self.stats.process_runs += pids.len() as u64;
+        if early == pids.len() && !init {
+            // Every process was committed after it ran: nothing left for the commit loop.
+            let mut old = std::mem::replace(&mut self.last_ran, pids);
+            if self.ready.capacity() == 0 {
+                old.clear();
+                self.ready = old;
+            }
+            return Ok(());
+        }
         // The batch is in commit order already unless it was shuffled to run.
         if self.rng.is_some() {
             self.order(&mut pids, init);
@@ -2494,6 +2518,17 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 /// Lock a process slot. Process panics are caught inside the lock, so a poisoned slot cannot
 /// occur; its state would be intact anyway.
 /// A slot nothing else can reach (the kernel thread, outside a parallel batch): no lock.
+/// The error of a panic in the code of process `p`: a broken invariant, reported as an
+/// internal error of that process, not a bare panic.
+#[cold]
+fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> SimError {
+    let msg = panic_message(panic);
+    let kind = ErrorKind::Internal(format!("process panicked: {msg}"));
+    let mut e = SimError::at(kind, sh.now, sh.delta);
+    e.process = Some((ProcId(p), sh.names[p as usize].clone()));
+    e
+}
+
 /// What the resumption of process `p` tells it, set when it runs (not when it is woken, so
 /// the wake touches no slot): whether a timeout resumed it, and, for a signal that resumed a
 /// process with an edge trigger, the edge that holds (`Ctx::edge`). Not for the first run.

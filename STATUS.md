@@ -3343,6 +3343,43 @@ Checks at the commit: `cargo fmt`, `cargo clippy --workspace --all-targets -D wa
 verification_components, and record_dict under 2019) all pass; the `.pro` regression 314 of 314 under 2008 and 2019 on both tiers; the
 verification library suite 102 pass, 9 fail, 26 skip as before on both tiers.
 
+### Kernel round 10: fewer instructions per element, per delta and per batch (#440, 2026-10-21)
+
+`tools/bench/run.py BIN --ref sim1 --instructions --cores 4 --runs 5` (interpreter, performance core 4, median of 5,
+host loaded by other agents, so wall time is indicative and the instruction ratio is the stable one), `main` at
+`634452a2` against the same plus this round; ratios yavs over sim1.
+
+| Design | instr. G before / after | wall ratio before / after | instr. ratio before / after |
+|---|---:|---:|---:|
+| rtl_ff | 16.05 / 15.72 (-2.1%) | 1.51 / 1.48 | 2.04 / 2.00 |
+| rtl_lfsr | 8.55 / 8.25 (-3.5%) | 3.15 / 3.08 | 3.07 / 2.96 |
+| rtl_chain | 4.97 / 4.30 (-13.5%) | 1.54 / 1.29 | 2.46 / 2.13 |
+| lfsr64 | 4.65 / 4.54 (-2.4%) | 2.22 / 2.22 | 2.95 / 2.89 |
+| rtl_fan | 17.21 / 16.87 (-2.0%) | 1.07 / 1.02 | 1.03 / 1.01 |
+| lfsr64_xor | 1.91 / 1.88 (-1.6%) | 1.14 / 1.33 (cells under 0.1 s) | 2.56 / 2.51 |
+| rtl_bus | 4.56 / 4.54 | 0.39 / 0.37 | 0.55 / 0.55 |
+| rtl_ram | 0.99 / 0.96 | 1.17 / 1.20 (cells under 0.1 s) | 1.89 / 1.84 |
+
+What changed (`docs/decisions.md` "Kernel round 10"): the effective value of a plain logic range on a block boundary
+is updated in whole plane words and a register read of at most 64 elements reads one block; a one-element plane write
+is a masked blend from a table of plane masks and a finished quick transaction takes the old code from the code
+array; a delta of driver entries of one independent signal takes a short update with the quick transaction applied
+in place, and one changed element with one resident waiter wakes it without a list scan; the inline batch has one
+unwind guard and skips the commit loop when every process was committed after it ran.
+
+Where the instructions are now (Intel PT, per unit): `rtl_ff` activation ~1910 (interpreter `run_ops` ~1040 and its
+activation wrapper ~390, kernel ~500); `rtl_chain` delta ~2120 (interpreter ~790, kernel ~1300); `rtl_lfsr` activation
+~3300 (interpreter ~1900, kernel ~1250). sim1 runs them in about 960, 1000 and 1090 instructions. On `rtl_ff` the
+kernel is about half of that and the interpreter (55 to 80 instructions per op, dispatch and register bounds checks
+included, plus its per-activation wrapper) is the larger lever; on `rtl_chain` and `rtl_lfsr` the kernel alone still
+exceeds the reference's total, spread over a dozen stages of 20 to 150 instructions each.
+
+Checks at the commit: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace` (798
+passed) and `cargo test -p yavs-llvm --features llvm` (32); difftest 420 of 420 at 1 and 4 threads and 4 shuffled
+threads on the interpreter, and at 1 and 4 threads under `--tier=auto` and `--tier=llvm`; `external.py --oracle --check`
+on both lists (857 and 393) on the interpreter and `--tier=auto`; the `.pro` regression 314 of 314 under 2008 and 2019;
+the verification library suite 102 pass, 9 fail, 26 skip as before.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

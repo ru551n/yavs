@@ -833,6 +833,16 @@ fn process_panic_and_resolution_failure_become_errors() {
     );
     assert_eq!(err.exit_status(), 101);
 
+    // The batch has one unwind guard: the error names the process that panicked, not the
+    // first of the batch.
+    let mut b = Builder::new();
+    b.process("fine", NONE, &[], p(|_| Ok(())));
+    b.process("boom", NONE, &[], p(|_| panic!("kaboom")));
+    let (mut sim, _) = build(b, Config::default());
+    let err = sim.run_until(ns(1)).unwrap_err();
+    let who = err.process.as_ref().map(|(p, n)| (p.0, n.as_str()));
+    assert_eq!(who, Some((1, "boom")));
+
     let fails = Resolution::Func(Arc::new(|_: &[&[u8]], _: &mut [u8]| Err("conflict".into())));
     let mut b = Builder::new();
     let r = b.resolved_signal("r", BYTE, &[0], fails);

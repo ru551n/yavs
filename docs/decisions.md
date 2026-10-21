@@ -3525,6 +3525,25 @@ unchanged at any thread count.
   changed with one resident waiter in its list and none in the wide list wakes that process directly
   (`Waiters::sole_resident`, the case `take_woken` already special-cased, without its call and closures).
   `rtl_chain` -8%, `rtl_ff` -0.7%.
+- **The inline batch has one unwind guard** instead of one per process: a panic in process code still becomes an
+  internal error of the process that panicked (`process_panic`, the index of the running process is kept), and the
+  batch ends there as before. When every process of the batch was committed right after it ran, the commit loop is
+  skipped. `rtl_ff` -1.1%, `rtl_fan` -2.1%, `rtl_chain` -2.5%.
+- **Tried and dropped:** writing the driving value of a sole-source quick transaction when it is applied past the
+  fused four (no `compute_driving`): level or worse, the gather of the drivers into plane words is as cheap as a
+  write per element; a flag that the next delta's list holds a live entry (no `live` lookup): -1.3% on `rtl_chain`
+  but +1.2% on `rtl_ff`; `#[inline]` on `Ctx::assign_code` with the general path split off, a zero-delay shortcut
+  from the interpreter's `drive_bit_at` to `assign_code_now`, fixed-size stamp arrays in `update_planes`: no change.
+- **What is left** (instructions per unit after this round): `rtl_ff` activation ~1910, of which the interpreter's
+  `run_ops` ~1040 (19 ops at 55 each, dispatch ~10 and register bounds checks ~11 of them) and its activation wrapper
+  (`InterpProcess::run`, `run_quick`, the wait, edge and statement ops) ~390; the kernel ~500 (run loop ~150,
+  scalar assignment ~130, apply and update of the element ~220). `rtl_chain` delta ~2120: interpreter ~790, kernel
+  ~1300 spread over the update (~560 including the quick apply), the run loop (~250), assignment (~130),
+  `next_time`/`live`/`last_delta`/`run_until` (~140). `rtl_lfsr` activation ~3300: interpreter ~1900 (`run_ops`
+  ~1600, `cat_words` ~230), kernel ~1250 (vector assignment ~205, apply ~190, effective value ~240, read ~120, run
+  loop ~150). The reference simulator runs these in 960, 1000 and 1090 instructions: on `rtl_ff` the kernel is
+  about half of that and the interpreter's per-op and per-activation costs are the larger lever; on `rtl_chain` and
+  `rtl_lfsr` the kernel alone still exceeds it, spread over a dozen stages of 20 to 150 instructions each.
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

@@ -139,6 +139,37 @@ impl yavs_interp::NativeSlots for TabSlots {
 thread_local! {
     /// The table behind `Mem::nslots` of this simulation thread, grown to the call depth limit.
     static NSLOTS: std::cell::RefCell<Vec<NSlot>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `NSLOTS`' address and length, read without a borrow at every entry (`nslots`).
+    static NSLOTS_AT: std::cell::Cell<(*mut NSlot, usize)> =
+        const { std::cell::Cell::new((std::ptr::null_mut(), 0)) };
+}
+
+/// This thread's `NSLOTS` table with at least `depth` entries.
+#[inline(always)]
+fn nslots(depth: usize) -> *mut NSlot {
+    match NSLOTS_AT.get() {
+        (p, n) if n >= depth => p,
+        _ => nslots_grow(depth),
+    }
+}
+
+#[inline(never)]
+fn nslots_grow(depth: usize) -> *mut NSlot {
+    let at = NSLOTS.with(|t| {
+        let mut t = t.borrow_mut();
+        if t.len() < depth {
+            t.resize(
+                depth,
+                NSlot {
+                    ptr: std::ptr::null_mut(),
+                    len: 0,
+                },
+            );
+        }
+        (t.as_mut_ptr(), t.len())
+    });
+    NSLOTS_AT.set(at);
+    at.0
 }
 
 /// An object in `Mem::objs`: the high half of its addresses (`u64::MAX`: none), start,
@@ -1128,19 +1159,7 @@ pub(crate) fn enter(
     mem.stack_lo = env.stack_lo as u64;
     // The frames of native calls are at most `max_depth` deep: their slots are registered here.
     let depth = mem.fr.max_depth.min(1 << 20) as usize;
-    mem.nslots = NSLOTS.with(|t| {
-        let mut t = t.borrow_mut();
-        if t.len() < depth {
-            t.resize(
-                depth,
-                NSlot {
-                    ptr: std::ptr::null_mut(),
-                    len: 0,
-                },
-            );
-        }
-        t.as_mut_ptr()
-    });
+    mem.nslots = nslots(depth);
     // SAFETY: `f` was generated for this function with `nregs` registers and only
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.

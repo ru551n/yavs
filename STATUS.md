@@ -2300,6 +2300,22 @@ on a `gc-stress` build; the external runner's pass lists (857 and 393) with `--o
 `--tier=auto`; the verification library's `.pro` regression 2008 and 2019 and its suite (102 pass, 9 fail, 26 skip)
 on both; `cargo test --workspace` (790) and `cargo test -p yavs-llvm --features llvm`.
 
+## llvm: registers and frame variables across blocks, 2026-10-21 (#432)
+
+decisions.md "Registers and frame variables across blocks". Instructions (`perf stat`, cpu_core, one performance
+core, release build with the `llvm` feature; before and after):
+
+| Design | `--tier=llvm` | `--tier=auto` | reference |
+|---|---:|---:|---:|
+| compute_h2h (20M iterations) | 3.14 G to 2.74 G (marginal 137 to 108 per iteration) | 6.1 G to 6.4 G (compile on the thread) | 2.29 G |
+| compute_loop, calls, strings_heavy, ieee_heavy, access_heavy | run time equal, eager compile 3 to 17% more instructions | within 2% | |
+| RTL group (rtl_ff ... lfsr64) | within 5% | equal | |
+
+Verified: difftest corpus (420) on `--tier=llvm` at 1 and 4 threads and 4 shuffled, `--tier=auto` at 1 and 4 threads,
+4 shuffled and with `--tier-heat=1,0,0`; stderr byte-identical between the interpreter and `--tier=llvm` on all 419
+tests that write any; the external suites' pass lists (857 and 393) with `--oracle --check` on `--tier=auto` and
+`--tier=llvm`; `cargo test -p yavs-llvm --features llvm` (19, with the new `frame_variables_match_the_interpreter`).
+
 ## llvm (`crates/yavs-llvm`)
 
 LLVM tier (M6), behind the `llvm` feature (`cargo test -p yavs-llvm --features llvm`; `cargo build

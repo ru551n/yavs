@@ -3811,3 +3811,41 @@ and UVVM 102 pass, 9 fail, 26 skip under `--tier=auto`; `cargo test --workspace`
 green. Not done: registers as phi values across blocks with entry stubs and frame variables kept as values with
 write-back at exits (would remove most of the remaining loads and stores); interval analysis for processes (loop
 variables of a process stay in memory, so the checks stay).
+
+### Intervals and register promotion in processes (#444)
+
+The interval analysis and the promotion of frame slots to registers now run on processes (`docs/decisions.md`
+"Intervals and register promotion in processes"). Facts hold within one activation; at a suspension the registers
+are unknown and each variable slot is reset to the interval all its stores keep it in (found by iterating), so a
+variable that only holds 0 to 5 stays in 0 to 5 across a `wait`. A slot no suspension leaves live (a loop variable,
+the variables of a loop between two waits) becomes a register; handles and addresses stay in memory. A process that
+only has `wait;` is never woken, which the verifier knows too. Plugins (`--vhpi`) and `--wave-variables` read or
+write the variables of a process from outside: `opt::external_variables` keeps named variables in memory and unknown
+after a suspension and stops the store of optimised process copies. The memoisation of instance-constant values
+needs a gain of 6 instead of 3 per copy under `--tier=llvm` (`opt::compiled_tier`).
+
+`tools/bench` on the pinned performance core 2, total CPU seconds before / after (interleaved, 7 runs; ratio after / before):
+
+| design | interp | auto | llvm |
+|---|---|---|---|
+| compute_h2h | 1.93 / 1.41 (0.73) | 0.33 / 0.28 (0.83) | 0.20 / 0.18 (0.90) |
+| xor_sig | 0.94 / 0.85 (0.90) | 0.89 / 0.80 (0.89) | 0.94 / 0.94 (1.01) |
+| xor_types | 0.86 / 0.73 (0.85) | 0.81 / 0.71 (0.88) | 0.85 / 0.84 (0.99) |
+| lfsr64, lfsr64_xor | 1.00, 0.97 | 0.98, 0.95 | 0.97, 0.96 |
+| rtl_* (7 designs) | 0.97 to 1.01 | 0.99 to 1.01 | 0.98 to 1.01 |
+
+Geometric mean of the total over the h2h group: 0.943 interp, 0.955 auto, 0.984 llvm; internal group (13): 0.943
+(compute_loop 0.77, calls 0.89). Executed instructions of compute_h2h: 43.2 G to 29.4 G interpreted (0.68), 3.14 G to 2.63 G
+compiled. Against the reference simulators, compute_h2h (CPU, same run): sim1 2.25 s, sim2 0.20 s; yavs interp 1.37 s,
+auto 0.25 s, llvm 0.18 s. A small stream testbench of one verification library (0.38 s), the queue testbench of another (0.05 s) and a
+verification-component test case (1.72 s) did not change: the optimiser floor is the same (ratios 1.00).
+`--tier=auto` had stopped compiling compute_h2h (the tighter loop made the compute test of `auto.rs` count the
+process's way back through its suspension as part of the loop): that test now counts only real loops.
+
+Memoisation gate (item 2): with the interpreter a copy won at every size tried (cycles and instructions down 2 to 5
+percent even for a block that saves two instructions net), so the interpreter's gate stays at 3; compiled it loses
+about 2 percent for blocks that save five net (lfsr64_xor +1.7 percent instructions, rtl_chain 4 percent at a gate
+of 12 versus 9), so `--tier=llvm` asks for 6.
+
+Not done: relational facts (a loop variable bounded by another variable stays unbounded for the analysis, which keeps
+the `acc * 3 + i` check of compute_h2h), promotion of handle and address slots of processes.

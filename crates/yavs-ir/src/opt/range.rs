@@ -154,6 +154,10 @@ type State = Vec<Iv>;
 struct Tr {
     idx: Vec<u32>,
     k: usize,
+    /// Frame offsets of the tracked process variable slots (state entries `k..`).
+    slots: Vec<u32>,
+    /// The state after a suspension: constants, and each slot at its invariant.
+    reset: State,
 }
 
 impl Tr {
@@ -170,7 +174,16 @@ impl Tr {
                 }
             })
             .collect();
-        Tr { idx, k }
+        Tr {
+            idx,
+            k,
+            slots: Vec::new(),
+            reset: Vec::new(),
+        }
+    }
+
+    fn slot(&self, off: u32) -> Option<usize> {
+        self.slots.binary_search(&off).ok().map(|i| self.k + i)
     }
 
     fn at(&self, r: Reg) -> Option<usize> {
@@ -187,47 +200,231 @@ impl Tr {
 
 impl Opt<'_> {
     /// Run the analysis and apply what it proves; whether the code changed.
+    ///
+    /// A process is analysed per activation: after a suspension the registers are unknown
+    /// (constants apart), and so is every variable slot except for the interval all its
+    /// stores, and its zero start, keep it in (found by iterating the solution until the
+    /// stored intervals stay inside the assumed ones, widening to everything after a few
+    /// rounds).
     pub(super) fn ranges(&mut self) -> bool {
         let nb = self.blocks.len();
         let n = self.defs.len();
-        if !self.nosusp
-            || self.f.body.is_some()
-            || self.f.flags.contains(FuncFlags::MAY_SUSPEND)
+        let process = self.f.kind == FuncKind::Process;
+        if !(self.nosusp && self.f.body.is_none() && !self.f.flags.contains(FuncFlags::MAY_SUSPEND)
+            || process)
             || n.saturating_mul(nb) > BUDGET
         {
             return false;
         }
-        let tracked = Tr::new(&self.relevant());
+        let slots = if process {
+            self.frame_slots()
+        } else {
+            Vec::new()
+        };
+        let mut tracked = Tr::new(&self.relevant(&slots));
         if tracked.k == 0 {
             return false;
         }
+        tracked.slots = slots;
         // A register defined once by a `Const` holds its value everywhere (a frame starts
-        // with it).
-        let mut entry: State = vec![FULL; tracked.k];
+        // with it); the frame's memory starts zeroed.
+        let mut base: State = vec![FULL; tracked.k];
         for (r, k) in self.kc.iter().enumerate() {
             if let Some(v) = k
                 && let Some(i) = tracked.at(Reg(r as u32))
             {
-                entry[i] = (*v, *v);
+                base[i] = (*v, *v);
             }
         }
-        // Reverse post-order of the blocks reachable from the entry.
+        base.extend(tracked.slots.iter().map(|_| (0, 0)));
+        let mut inv: State = base[tracked.k..].to_vec();
+        if super::external() {
+            // A plugin may deposit into any variable of a process between activations.
+            inv.fill(FULL);
+        }
+        for round in 0.. {
+            tracked.reset = base.clone();
+            tracked.reset[tracked.k..].copy_from_slice(&inv);
+            let Some(inn) = self.solve(&base, &tracked) else {
+                return false;
+            };
+            if tracked.slots.is_empty() {
+                return self.apply(&inn, &tracked);
+            }
+            let mut next = inv.clone();
+            self.store_hull(&inn, &tracked, &mut next);
+            if next == inv || super::external() {
+                return self.apply(&inn, &tracked);
+            }
+            if round >= 12 {
+                return false;
+            }
+            for (o, n) in inv.iter_mut().zip(next) {
+                *o = if round >= 2 { FULL } else { n };
+            }
+        }
+        false
+    }
+
+    /// Does the process register no wait condition anywhere? Then each `Suspend` is `wait;`
+    /// (a signal, a timeout or a deadline wakes a process only if it was registered).
+    pub(super) fn waits_forever(&self) -> bool {
+        !self.code.iter().any(|i| {
+            !is_dead(i)
+                && matches!(
+                    i,
+                    Inst::WaitOn { .. } | Inst::WaitFor { .. } | Inst::WaitAt { .. }
+                )
+        })
+    }
+
+    /// The hull of the intervals stored into each slot, added to `hull`.
+    fn store_hull(&self, inn: &[Option<State>], tracked: &Tr, hull: &mut State) {
+        for (b, st) in inn.iter().enumerate() {
+            let Some(mut st) = st.clone() else {
+                continue;
+            };
+            for pc in self.range(b) {
+                let i = &self.code[pc];
+                if is_dead(i) {
+                    continue;
+                }
+                if let Inst::Store { addr, src, .. } = *i
+                    && let Some(si) = self.slot_at(tracked, addr)
+                {
+                    let v = tracked.get(&st, src);
+                    let h = &mut hull[si - tracked.k];
+                    *h = (h.0.min(v.0), h.1.max(v.1));
+                }
+                self.step(i, &mut st, tracked);
+            }
+        }
+    }
+
+    /// The state entry of the frame slot a load or store at `addr` accesses, when tracked.
+    fn slot_at(&self, tracked: &Tr, addr: Reg) -> Option<usize> {
+        match self.ka.get(self.resolve(addr).0 as usize) {
+            Some(Some((AddrSpace::Frame, off))) => tracked.slot(*off),
+            _ => None,
+        }
+    }
+
+    /// The frame slots of a process whose every access is a direct 8-byte integer load or
+    /// store: no escaping address, no collector root, no debugger.
+    fn frame_slots(&mut self) -> Vec<u32> {
+        let none = Vec::new();
+        if KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed) || self.nested {
+            return none;
+        }
+        let mut acc: std::collections::BTreeMap<u32, bool> = std::collections::BTreeMap::new();
+        for i in &self.code {
+            if is_dead(i) {
+                continue;
+            }
+            // An address of the frame in a register defined more than once is not followed.
+            if let Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                ..
+            } = *i
+                && self.defs.get(dst.0 as usize) != Some(&1)
+            {
+                return none;
+            }
+            let (addr, w, r) = match *i {
+                Inst::Load { dst, addr, w } => (addr, w, dst),
+                Inst::Store { addr, src, w } => (addr, w, src),
+                _ => continue,
+            };
+            let Some(Some((AddrSpace::Frame, off))) = self.ka.get(self.resolve(addr).0 as usize)
+            else {
+                continue;
+            };
+            let ok = w == Width::B8 && self.rty(r) == Some(RegTy::I64);
+            let e = acc.entry(*off).or_insert(true);
+            *e &= ok;
+        }
+        self.ensure_esc();
+        let esc = self.esc.clone().unwrap_or_default();
+        let roots: Vec<(i64, i64)> = self
+            .f
+            .roots
+            .iter()
+            .map(|&(s, k)| {
+                let z = match k {
+                    crate::RootKind::Handle | crate::RootKind::Addr => 8,
+                    crate::RootKind::Composite(_) => i64::MAX / 4,
+                };
+                (i64::from(s), z)
+            })
+            .collect();
+        let mut out = Vec::new();
+        let mut prev_end = i64::MIN;
+        let offs: Vec<(u32, bool)> = acc.into_iter().collect();
+        for (k, &(off, ok)) in offs.iter().enumerate() {
+            let o = i64::from(off);
+            let next = offs.get(k + 1).map_or(i64::MAX, |x| i64::from(x.0));
+            let overlap = o < prev_end || o + 8 > next;
+            prev_end = prev_end.max(o + 8);
+            if ok
+                && !overlap
+                && clear_of(&esc, o, 8)
+                && !roots.iter().any(|&(s, z)| o < s + z && s < o + 8)
+            {
+                out.push(off);
+            }
+        }
+        out
+    }
+
+    /// The solution of the dataflow: the state at the start of each block (`None` for the
+    /// blocks nothing reaches). Starts at the entry and, in a process, at the code behind each
+    /// suspension that ends a block.
+    fn solve(&self, base: &State, tracked: &Tr) -> Option<Vec<Option<State>>> {
+        let nb = self.blocks.len();
+        let entry = base;
+        // Blocks entered by the interpreter after a suspension that ends the block before.
+        let mut roots = vec![0usize];
+        let perm = self.f.kind == FuncKind::Process && self.waits_forever();
+        // (A process paused at the start of its statements can be given values there.)
+        if let Some(b) = self.f.body
+            && super::external()
+        {
+            roots.push(b.0 as usize);
+        }
+        if self.f.kind == FuncKind::Process && !perm {
+            for b in 0..nb {
+                let (s, e) = self.blocks[b];
+                if e > s
+                    && self.is_susp(&self.code[e as usize - 1])
+                    && let Some(n) = self.blocks.iter().position(|x| x.0 == e && x.1 > e)
+                {
+                    roots.push(n);
+                }
+            }
+        }
+        // Reverse post-order of the blocks reachable from the roots.
         let mut order = Vec::new();
         let mut seen = vec![false; nb];
-        let mut stack = vec![(0usize, 0usize)];
-        seen[0] = true;
-        while let Some(&(b, k)) = stack.last() {
-            if let Some(s) = self.succ(b, k) {
-                if let Some(top) = stack.last_mut() {
-                    top.1 += 1;
+        for &r in &roots {
+            if seen[r] {
+                continue;
+            }
+            let mut stack = vec![(r, 0usize)];
+            seen[r] = true;
+            while let Some(&(b, k)) = stack.last() {
+                if let Some(s) = self.succ(b, k) {
+                    if let Some(top) = stack.last_mut() {
+                        top.1 += 1;
+                    }
+                    if !seen[s] {
+                        seen[s] = true;
+                        stack.push((s, 0));
+                    }
+                } else {
+                    order.push(b);
+                    stack.pop();
                 }
-                if !seen[s] {
-                    seen[s] = true;
-                    stack.push((s, 0));
-                }
-            } else {
-                order.push(b);
-                stack.pop();
             }
         }
         order.reverse();
@@ -237,29 +434,43 @@ impl Opt<'_> {
         }
         let mut inn: Vec<Option<State>> = vec![None; nb];
         let mut visits = vec![0u32; nb];
-        inn[0] = Some(entry);
         // The blocks to (re)visit, as a set ordered by position in the reverse post-order.
         let mut work: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-        work.insert(0);
+        for &r in &roots {
+            inn[r] = Some(if r == 0 {
+                entry.clone()
+            } else {
+                tracked.reset.clone()
+            });
+            work.insert(pos[r]);
+        }
         let mut guard = 0usize;
         while let Some(i) = work.pop_first() {
             guard += 1;
             if guard > 64 * nb + 64 {
                 // Cannot happen (widening ends every chain); give up rather than loop.
-                return false;
+                return None;
             }
             let b = order[i];
             let Some(mut st) = inn[b].clone() else {
                 continue;
             };
-            let cond = self.transfer(b, &mut st, &tracked);
+            let cond = self.transfer(b, &mut st, tracked);
+            // Nothing wakes the process behind a suspension when it waits on nothing.
+            if perm
+                && self
+                    .range(b)
+                    .any(|pc| matches!(self.code[pc], Inst::Suspend { .. }))
+            {
+                continue;
+            }
             let mut k = 0;
             while let Some(s) = self.succ(b, k) {
                 let refined;
                 let out: &State = match cond {
                     Some(c) if self.is_cond_edge(b, k) => {
                         let mut e = st.clone();
-                        let live = self.refine_edge(&mut e, c, k == 0, &tracked);
+                        let live = self.refine_edge(&mut e, c, k == 0, tracked);
                         k += 1;
                         if !live {
                             continue;
@@ -305,13 +516,13 @@ impl Opt<'_> {
                 }
             }
         }
-        self.apply(&inn, &tracked)
+        Some(inn)
     }
 
     /// The integer registers the analysis can use: those a check, a compare, a boolean
     /// operation or a branch reads, and what they are computed from. The others stay the full
     /// range, which keeps the states small.
-    fn relevant(&self) -> Vec<bool> {
+    fn relevant(&self, slots: &[u32]) -> Vec<bool> {
         let n = self.defs.len();
         let mut rel = vec![false; n];
         let ok = |r: Reg, rel: &mut Vec<bool>| {
@@ -351,6 +562,11 @@ impl Opt<'_> {
                 Inst::CondBr { c, .. } => {
                     ok(c, &mut rel);
                 }
+                Inst::Load { dst: r, addr, .. } | Inst::Store { src: r, addr, .. }
+                    if !slots.is_empty() && self.is_slot(slots, addr) =>
+                {
+                    ok(r, &mut rel);
+                }
                 _ => {}
             }
         }
@@ -382,6 +598,13 @@ impl Opt<'_> {
             }
         }
         rel
+    }
+
+    fn is_slot(&self, slots: &[u32], addr: Reg) -> bool {
+        matches!(
+            self.ka.get(self.resolve(addr).0 as usize),
+            Some(Some((AddrSpace::Frame, off))) if slots.binary_search(off).is_ok()
+        )
     }
 
     /// Does block `b` end in a `CondBr` (whose two edges carry different facts)?
@@ -466,6 +689,9 @@ impl Opt<'_> {
                 continue;
             }
             self.step(i, st, tracked);
+            if self.is_susp(i) {
+                conds.clear();
+            }
             // Forget the conditions this instruction invalidates, then note its own.
             let mut defs = [Reg(u32::MAX); 4];
             let mut nd = 0;
@@ -513,6 +739,9 @@ impl Opt<'_> {
                 st[i] = v;
             }
         };
+        if self.is_susp(i) {
+            st.clone_from(&tracked.reset);
+        }
         match *i {
             Inst::Const { dst, v } => set(st, dst, (v, v)),
             Inst::Move { dst, src } => {
@@ -587,6 +816,15 @@ impl Opt<'_> {
                 set(st, dst, v);
             }
             Inst::DopeLen { dst, .. } => set(st, dst, (0, i64::MAX)),
+            Inst::Load { dst, addr, .. } if self.slot_at(tracked, addr).is_some() => {
+                let si = self.slot_at(tracked, addr).unwrap_or(0);
+                let v = st[si];
+                set(st, dst, v);
+            }
+            Inst::Store { addr, src, .. } if self.slot_at(tracked, addr).is_some() => {
+                let si = self.slot_at(tracked, addr).unwrap_or(0);
+                st[si] = get(st, src);
+            }
             Inst::Load { dst, w, .. } => {
                 let v = match w {
                     Width::B1 => (0, 255),

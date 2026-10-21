@@ -77,11 +77,38 @@ pub fn keep_variables() {
     KEEP_VARS.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+static COMPILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every function will be compiled to native code (`--tier=llvm`): the memoisation of
+/// instance-constant values asks for a larger gain per copy. Call it before the first function
+/// is asked for.
+pub fn compiled_tier() {
+    COMPILED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn compiled() -> bool {
+    COMPILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static EXTERNAL_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Process variables may be read or written from outside (a plugin deposits a value through
+/// VHPI between two activations, the waveform recorder samples them): the named ones stay in
+/// their slots, the optimiser knows nothing about a variable across a suspension, and copies of
+/// processes are neither stored nor loaded. Call it before the first function is asked for.
+pub fn external_variables() {
+    EXTERNAL_VARS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn external() -> bool {
+    EXTERNAL_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Whether an optimised copy made now is the one every run makes: the pass is on and no debugger
-/// keeps variables in their slots ([`keep_variables`]). Only such copies are stored and used again
+/// keeps variables in their slots ([`keep_variables`]) and the program is not compiled ([`compiled_tier`]). Only such copies are stored and used again
 /// (`Program::export_optimized`).
 pub fn copies_are_portable() -> bool {
-    enabled() && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+    enabled() && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed) && !compiled()
 }
 
 /// Field offsets of the static record layouts met by the optimiser, kept in the program so
@@ -921,12 +948,16 @@ impl<'a> Opt<'a> {
         // The loops of subprograms are where the passes below pay: they cost optimiser time at
         // the first call of every subprogram, most of which run a few times (decisions.md
         // "Interval analysis, jump threading and dead register definitions").
+        let process = self.f.kind == FuncKind::Process;
         let loops = self.code.len() >= range::MIN_CODE
             && self.nosusp
             && self.f.body.is_none()
             && !self.f.flags.contains(FuncFlags::MAY_SUSPEND)
-            && self.has_loop();
-        if loops {
+            && self.has_loop(false);
+        // A process loops forever: only a cycle that does not pass a suspension is work done
+        // within one activation, which is what the analysis of a process can say something about.
+        let ploops = process && self.code.len() >= range::MIN_CODE && self.has_loop(true);
+        if loops || ploops {
             // The analysis wants the renames applied and the tables rebuilt.
             self.dce();
             self.reanalyse();
@@ -1111,14 +1142,18 @@ impl<'a> Opt<'a> {
     /// Does the control flow graph have a cycle (a loop)? Code that runs once is not worth
     /// the passes whose cost grows with its size: every subprogram is optimised at its first
     /// call, and most of a library runs a few times.
-    fn has_loop(&self) -> bool {
+    ///
+    /// With `work`, the blocks that suspend end their paths (a process's outer loop is not
+    /// counted).
+    fn has_loop(&self, work: bool) -> bool {
         let nb = self.blocks.len();
         // 0 unseen, 1 on the DFS stack, 2 done.
         let mut color = vec![0u8; nb];
         let mut stack = vec![(0usize, 0usize)];
         color[0] = 1;
         while let Some(&(b, k)) = stack.last() {
-            if let Some(s) = self.succ(b, k) {
+            let ends = work && self.range(b).any(|pc| self.is_susp(&self.code[pc]));
+            if let Some(s) = self.succ(b, k).filter(|_| !ends) {
                 if let Some(top) = stack.last_mut() {
                     top.1 += 1;
                 }
@@ -2244,11 +2279,13 @@ impl<'a> Opt<'a> {
     /// named variables only while no debugger runs ([`keep_variables`]).
     fn promote(&mut self) -> Option<Vec<Reg>> {
         let f = self.f;
-        if !matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
-            || f.flags.contains(FuncFlags::MAY_SUSPEND)
-            || f.body.is_some()
-            || !self.nosusp
-            || self.nested
+        let process = f.kind == FuncKind::Process;
+        if self.nested
+            || !(process
+                || matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+                    && !f.flags.contains(FuncFlags::MAY_SUSPEND)
+                    && f.body.is_none()
+                    && self.nosusp)
         {
             return None;
         }
@@ -2364,10 +2401,17 @@ impl<'a> Opt<'a> {
             let Some(ty) = a.ty else {
                 continue;
             };
+            // (Handles and addresses of a process stay in their slots, where the collector
+            // finds them: only numbers qualify.)
             if overlap
                 || !a.ok
                 || a.w != Width::B8
                 || ty == RegTy::Sig
+                || (process
+                    && !a
+                        .kinds
+                        .iter()
+                        .all(|k| matches!(k, Some(RegTy::I64 | RegTy::F64))))
                 || !clear_of(&esc, o, 8)
                 || !clear_of(&wide, o, 8)
             {
@@ -2395,12 +2439,27 @@ impl<'a> Opt<'a> {
                     .types
                     .get(l.ty)
                     .is_some_and(|t| t.scalar_size().is_some());
-                if keep_vars || (scalar && (i64::from(l.slot) != o || l.size != 8)) {
+                // (A plugin may deposit into the variables of a process.)
+                if keep_vars
+                    || (process && external())
+                    || (scalar && (i64::from(l.slot) != o || l.size != 8))
+                {
                     continue;
                 }
             }
             let is_param = f.params.iter().any(|p| p.slot == off);
             cands.push((off, Reg(0), ty, is_param));
+        }
+        if process && !cands.is_empty() {
+            // A register is not live across a suspension: only slots no suspension leaves
+            // live (read before written on the way on) qualify.
+            let offs: Vec<u32> = cands.iter().map(|c| c.0).collect();
+            let dead = self.dead_at_suspends(&offs, &faddr);
+            let mut k = 0;
+            cands.retain(|_| {
+                k += 1;
+                dead[k - 1]
+            });
         }
         if cands.is_empty() {
             return None;
@@ -2505,6 +2564,99 @@ impl<'a> Opt<'a> {
         self.def_blk.push(0);
         self.def_pc.push(0);
         r
+    }
+
+    /// For each frame slot of `slots` (sorted offsets of direct 8-byte loads and stores, reached
+    /// through the address registers of `faddr`) of a process: does no suspension leave it live?
+    /// A slot is live where some path reads it before writing it; the code behind a `wait;`
+    /// with nothing to wake it does not run.
+    fn dead_at_suspends(&self, slots: &[u32], faddr: &FxMap<u32, u32>) -> Vec<bool> {
+        let m = slots.len();
+        let w = m.div_ceil(64).max(1);
+        let nb = self.blocks.len();
+        let perm = self.waits_forever();
+        let slot = |i: &Inst| -> Option<(usize, bool)> {
+            let (a, st) = match *i {
+                Inst::Load { addr, .. } => (addr, false),
+                Inst::Store { addr, .. } => (addr, true),
+                _ => return None,
+            };
+            let off = faddr.get(&a.0)?;
+            slots.binary_search(off).ok().map(|k| (k, st))
+        };
+        // The live slots before instruction `i`, given those after it.
+        let back = |live: &mut Vec<u64>, i: &Inst| {
+            if perm && matches!(i, Inst::Suspend { .. }) {
+                live.fill(0);
+            }
+            match slot(i) {
+                Some((k, true)) => live[k / 64] &= !(1 << (k % 64)),
+                Some((k, false)) => live[k / 64] |= 1 << (k % 64),
+                None => {}
+            }
+        };
+        // Where a block that ends in a suspension goes on: the block after it.
+        let after = |b: usize| -> Option<usize> {
+            let (s, e) = self.blocks[b];
+            (!perm
+                && e > s
+                && self.is_susp(&self.code[e as usize - 1])
+                && !matches!(self.code[e as usize - 1], Inst::Br { .. }))
+            .then(|| self.blocks.iter().position(|x| x.0 == e && x.1 > e))
+            .flatten()
+        };
+        let mut live_in: Vec<Vec<u64>> = vec![vec![0; w]; nb];
+        let live_out = |live_in: &Vec<Vec<u64>>, b: usize| {
+            let mut out = vec![0u64; w];
+            let mut k = 0;
+            while let Some(s) = self.succ(b, k) {
+                k += 1;
+                for (o, x) in out.iter_mut().zip(&live_in[s]) {
+                    *o |= x;
+                }
+            }
+            if let Some(n) = after(b) {
+                for (o, x) in out.iter_mut().zip(&live_in[n]) {
+                    *o |= x;
+                }
+            }
+            out
+        };
+        loop {
+            let mut changed = false;
+            for b in (0..nb).rev() {
+                let mut live = live_out(&live_in, b);
+                for pc in self.range(b).rev() {
+                    if !is_dead(&self.code[pc]) {
+                        back(&mut live, &self.code[pc]);
+                    }
+                }
+                if live != live_in[b] {
+                    live_in[b] = live;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut bad = vec![0u64; w];
+        for b in 0..nb {
+            let mut live = live_out(&live_in, b);
+            for pc in self.range(b).rev() {
+                let i = &self.code[pc];
+                if is_dead(i) {
+                    continue;
+                }
+                if self.is_susp(i) && !(perm && matches!(i, Inst::Suspend { .. })) {
+                    for (o, x) in bad.iter_mut().zip(&live) {
+                        *o |= x;
+                    }
+                }
+                back(&mut live, i);
+            }
+        }
+        (0..m).map(|k| bad[k / 64] >> (k % 64) & 1 == 0).collect()
     }
 
     /// Per promoted register: is it read on some path before it is written (parameters

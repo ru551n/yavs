@@ -874,6 +874,14 @@ pub fn run(
     if a.dap.is_some() {
         yavs_interp::keep_variables();
     }
+    if a.tier == TierArg::Llvm {
+        yavs_interp::compiled_tier();
+    }
+    // A plugin may deposit into process variables between activations, and the waveform
+    // recorder reads them from their slots.
+    if !a.vhpi.is_empty() || a.wave_variables {
+        yavs_interp::external_variables();
+    }
     // Before any plugin or foreign library loads: their prints must not reach the protocol.
     if a.dap == Some(yavs_dap::Transport::Stdio) {
         match yavs_vhpi::divert_stdout() {

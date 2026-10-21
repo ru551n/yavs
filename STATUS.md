@@ -4274,3 +4274,84 @@ with `9d5a2438` (the only commit after `3abd2fd7`) are within 1% of the table; t
 five designs were not repeated on it. Not verified: the number of `yavs_rt_host` calls per activation (inferred from
 about 40 instructions per call), why `lfsr64` is not compiled under `auto` with the default heat, the cost split inside
 `enter` (symbol level only), and `--threads` above 1.
+
+## llvm: a leaner compiled activation, round 3 (#440, #507, 2026-10-21)
+
+Commits 986f5960 (per-thread native slot table without a borrow), 904edb03 (address facts kept after calls, the drive's
+waveform known), 41665859 (`Alloc` zeroed by stores), 049c0e3b (no interpreter entry after an inline native), 8855f019
+(one `Mem` per simulation thread), 868e9fac (a process finds its heap objects inline), c27b27b2 (no out-of-line call
+after the suspension of a process holding heap memory, both tiers), 58833d90 (a process finds temporaries inline),
+120714ac (`--tier=auto` leaves a process that leaves its compiled code too often interpreted, closes #507), 55772743
+(`RTL_MIN` 140 to 120). Decisions: docs/decisions.md "Compiled clocked RTL processes, round 3".
+
+Method as in the section above: release build with `--features llvm`, single thread, every timed run pinned to
+performance core 4, median of 3; "before" is main at a5db170d (the start of this round), "after" main at 55772743
+(which also has the interpreter's round 10 and the IR inliner of #493, so the interpreter columns move too); sim1
+re-measured the same way (elaboration and run). Instructions are `perf stat -e cpu_core/instructions/u` of the whole
+`yavs run` (elaboration included). Wall time carries more noise than usual (a suite run on the efficiency cores at the
+same time): compare the instructions. Cells are instructions in G with the ratio to sim1 in brackets.
+
+| Design (normal length) | interp before / after | auto warm before / after | llvm warm before / after | auto cold after | llvm cold after | sim1 |
+|---|---:|---:|---:|---:|---:|---:|
+| rtl_ff | 16.14 (2.09) / 15.28 (1.98) | 15.75 (2.04) / 14.42 (1.87) | 15.54 (2.02) / 14.23 (1.85) | 14.71 (1.91) | 14.65 (1.90) | 7.71 |
+| rtl_lfsr | 8.36 (3.06) / 8.13 (2.98) | 7.60 (2.79) / 7.01 (2.57) | 7.16 (2.62) / 6.53 (2.39) | 7.58 (2.78) | 7.20 (2.64) | 2.73 |
+| rtl_chain | 4.39 (2.25) / 4.31 (2.21) | 4.46 (2.29) / 4.37 (2.25) | 4.99 (2.56) / 4.68 (2.40) | 4.41 (2.27) | 5.19 (2.66) | 1.95 |
+| rtl_fan | 17.22 (1.04) / 16.88 (1.02) | 18.09 (1.09) / 17.64 (1.06) | 20.83 (1.26) / 19.54 (1.18) | 17.68 (1.07) | 19.70 (1.19) | 16.57 |
+| rtl_bus | 4.53 (0.55) / 4.51 (0.55) | 4.57 (0.56) / 4.55 (0.55) | 4.60 (0.56) / 4.50 (0.55) | 4.59 (0.56) | 4.96 (0.61) | 8.20 |
+| rtl_ram | 0.88 (1.86) / 0.87 (1.85) | 0.88 (1.87) / 0.88 (1.86) | 1.11 (2.35) / 1.10 (2.32) | 1.01 (2.14) | 8.45 (17.90) | 0.47 |
+| lfsr64 | 4.55 (2.99) / 4.46 (2.93) | 4.62 (3.03) / 4.16 (2.73) | 4.58 (3.01) / 4.09 (2.68) | 4.67 (3.07) | 4.81 (3.16) | 1.52 |
+| lfsr64_xor | 1.83 (2.63) / 1.81 (2.60) | 1.85 (2.66) / 1.88 (2.71) | 1.96 (2.82) / 1.83 (2.63) | 2.29 (3.29) | 2.94 (4.24) | 0.69 |
+
+| Design (10x length) | interp before / after | auto warm before / after | llvm warm before / after | auto cold after | llvm cold after | sim1 |
+|---|---:|---:|---:|---:|---:|---:|
+| rtl_ff | 160.14 (2.31) / 151.62 (2.19) | 154.20 (2.23) / 141.04 (2.04) | 153.76 (2.22) / 140.65 (2.03) | 141.29 (2.04) | 141.07 (2.04) | 69.27 |
+| rtl_lfsr | 83.29 (3.34) / 80.98 (3.24) | 69.73 (2.79) / 63.52 (2.54) | 70.76 (2.83) / 64.42 (2.58) | 64.15 (2.57) | 65.09 (2.61) | 24.96 |
+| rtl_chain | 43.55 (2.57) / 42.73 (2.53) | 44.20 (2.61) / 43.38 (2.56) | 49.07 (2.90) / 45.98 (2.72) | 43.42 (2.57) | 46.49 (2.75) | 16.92 |
+| rtl_fan | 171.24 (1.08) / 167.84 (1.06) | 179.69 (1.13) / 175.29 (1.10) | 207.00 (1.30) / 194.18 (1.22) | 175.33 (1.10) | 194.33 (1.22) | 158.91 |
+| rtl_bus | 45.20 (0.56) / 45.01 (0.56) | 45.64 (0.57) / 45.39 (0.57) | 45.52 (0.57) / 44.52 (0.56) | 45.44 (0.57) | 44.94 (0.56) | 80.13 |
+| rtl_ram | 7.18 (3.56) / 7.13 (3.53) | 7.80 (3.87) / 7.21 (3.57) | 8.37 (4.15) / 8.13 (4.03) | 7.30 (3.62) | 15.47 (7.66) | 2.02 |
+| lfsr64 | 45.38 (3.49) / 44.49 (3.42) | 46.03 (3.54) / 39.10 (3.00) | 45.22 (3.47) / 40.22 (3.09) | 39.58 (3.04) | 40.95 (3.15) | 13.01 |
+| lfsr64_xor | 18.15 (4.13) / 17.90 (4.07) | 18.33 (4.17) / 16.87 (3.84) | 18.84 (4.29) / 17.48 (3.98) | 17.39 (3.96) | 18.59 (4.23) | 4.39 |
+
+Per activation, `--tier=llvm` warm at 10x length, sampling profile as before (`cpu_core/instructions/upp`, symbols
+grouped the same way: "native entry/exit" is `enter`, `view_again`, `run_cached` and the scratch release, "activation
+wrapper" `Machine::run_quick` and `InterpProcess::run`, "callbacks" the drive, wait, host-pointer, signal and step
+callbacks with the host functions they call), before (the section above) / after:
+
+| Design | llvm total | compiled body | native entry/exit | activation wrapper | callbacks | kernel | interp total after |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| rtl_ff | 1879 / 1717 | 329 / 350 | 393 / 319 | 275 / 262 | 355 / 269 | 527 / 515 | 1851 |
+| rtl_lfsr | 2768 / 2518 | 612 / 547 | 485 / 365 | 272 / 296 | 381 / 280 | 1017 / 1018 | 3163 |
+| rtl_chain | 2458 / 2301 | 220 / 217 | 370 / 285 | 291 / 301 | 339 / 249 | 1231 / 1243 | 2136 |
+| rtl_fan | 1036 / 971 | 138 / 76 | 345 / 301 | 357 / 329 | 40 / 82 | 155 / 182 | 839 |
+| lfsr64 | 3548 / 3154 | 653 / 887 | 526 / 373 | 253 / 310 | 832 / 310 | 1251 / 1235 | 3476 |
+
+(`lfsr64`'s body grew because the heap-object lookups that were `yavs_rt_host` calls, 502 per activation, are now inline
+in it; `rtl_fan`'s compiled-body and callback columns move between each other with the edge test.) Entry and exit went
+from 345-526 to 285-373 instructions per activation; the wrapper did not move (262-329): together 580-680, not the
+250 aimed at. What the remaining entry costs: the thread scratch swap of the registers (about 130 per activation; a
+compiled process that keeps its own registers saves those instructions but ran 18% more cycles on `rtl_ff` and 14% on
+`rtl_lfsr`, see decisions.md), the frame view (`view_root`, 75: 25 fields from the machine), `enter` (about 90:
+`Mem`, `Env`, the object record) and the interpreter's `run_quick`/`run_compiled` checks and `Host` (about 150). The
+callbacks are the drive (`yavs_rt_drive` 42 plus `drive_now` with the kernel's assignment, 135) and the wait
+(`yavs_rt_wait` 40, `wait_again` 38, `wait_on_again` 20): layering, not work.
+
+#507: `--tier=auto` no longer compiles the testbench process of `rtl_ram` (a note says 33 of its 258 instructions per
+activation leave the compiled code): 10x 7.80 G before, 7.21 G after against 7.13 G interpreted. Its compiled form also
+got cheaper (`--tier=llvm` 8.37 to 8.13 G, the temporaries a native leaves found inline), but stays slower than the
+interpreter (stepped natives, layouts, signal reads, temporary roots). `--tier=llvm` cold costs more on `rtl_ram` (8.45 G
+against 7.95 G at normal length: the inline lookups are more code to compile).
+
+Library testbenches under `--tier=auto` (instructions, core 4, warm, median of 3 to 9, before / after): UVVM
+`rand_tb` 16.10 / 15.98 G (interp 15.99), `generic_sb_slv_tb` 19.23 / 18.70 G (interp 15.59: auto 18% behind the
+interpreter before and after, string helpers entered from interpreted code; #510), `generic_queue_tb` 0.68 / 0.67 G,
+`axistream_vvc_tb` 63.2 / 62.4 G (interp 65.2). No regression.
+
+Checks at 55772743: fmt, clippy with and without `--features llvm`, `cargo test --workspace`, `cargo test -p yavs-llvm -p
+yavs --features llvm` and the `gc-stress` unit tests of the crate; difftest 426/426 for the interpreter, `--tier=llvm`,
+`--tier=auto` and `--tier=auto --tier-heat=1,0,0`, at 1 and 4 threads, cold and warm cache; `external.py --oracle
+--check` under `--tier=auto`: sim1 857/857, sim2 393/393; `tools/suites/pro.py` under `--tier=auto` 314/314 pass;
+`tools/suites/uvvm.py` 102 pass, 9 fail, 26 skip under both `--tier=auto` and the interpreter, the same runs; the h2h
+designs and five internal benchmarks print the same under interp, llvm, auto and auto with eager heat.
+
+Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI; wall times on an idle host.

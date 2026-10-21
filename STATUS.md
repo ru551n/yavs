@@ -1534,6 +1534,75 @@ at 4 shuffled threads with `gc-stress` (interpreter and LLVM tier); `external.py
 verification library's `.pro` regression 314/314 under 2008 and 2019; verification library suite 102 pass, 9 fail, 26 skip (as
 before); the external runner's own suites all pass (`record_dict` under 2019).
 
+## Protected-method calls: pointer tables, record copies, shared memory (#493, 2026-10-21)
+
+A verification library's queue pushes and pops one character at a time through thin package subprograms that call
+methods of protected types (a pointer table: a table of `(id, mode, length)` records, access values to the data, a case on
+the mode). One character of `push`/`pop` is five such pairs (two reads and a length of the queue's bookkeeping, two
+writes), each a call of a package function that calls a protected method: ten calls and about 260 interpreter operations,
+about 34 000 host instructions per character. A window-generator testbench of a local project that pushes and pops 576-bit
+expected windows through such a queue ran 15 times slower than the reference simulator (sim1) and spent 76 percent of its
+instructions in the queue.
+
+Where the time went (`perf` sampling of a queue microbenchmark, 500 push/pop pairs of a 576-bit vector, about 600
+characters each; shares rounded, taken at the start):
+
+| Cost | Share before |
+|---|---|
+| Call and return machinery (`Call`, `CallProt`, `Ret`, frame fill, pop, slot zeroing) | about 31 percent |
+| Dispatch of the operations (one indirect jump) | about 20 percent |
+| Memory access to shared-heap objects through the slow object lookup (`rd_slow`, `obj`) and the copy of the record out of the table through a staging buffer (`copy_staged`) | about 20 percent |
+| Layout words: the element stride and the size of a record of known layout read through `LayoutOf` for every table access (`layout_words`, `layout_word`, and the statement marker that kept the layout's temporary) | about 10 percent |
+| `Case` through the generic step, `Deref` through `heap_of` (which may create a shared heap), the parameter loads of every callee | the rest |
+
+What changed (each measured on its own; the commit messages have the details):
+
+- The state of protected objects is in the shared heap and the shared variables: `mem_fast`, `load`, `store`, `put`,
+  `store_idx` and `copy_fast` now handle `SHARED_HEAP` and `SHARED` (loads also `PKG`) without the error paths, `load` is
+  inlined with the hot spaces and a cold `load_slow`, and `deref` builds the address straight from the heap it finds
+  (-13 percent instructions of the queue).
+- The optimiser folds the layout words that do not depend on the descriptor: size, alignment and field offsets of a record
+  without descriptor and the stride of an array of such elements (`lstride`), so the element address of a table access is a
+  multiplication by a constant and the statements that held a layout temporary lose their markers (-24 percent cycles).
+- A `NewFrame` copy of constant size that only constant-offset loads read (`variable s : storage_t := idxs(ref)`) is not made
+  when nothing between the copy and the load can change the source (`forward_frame_copies`): -6 percent cycles, and the
+  methods no longer allocate temporary memory.
+- `Op::Case`, the fused `DerefImm` / `LoadDerefImm`, and calls that write the registers the callee would load its parameters
+  into and start after those loads and the entry's statement markers (-4 percent instructions for the parameters, -7 for
+  the dereference, the rest small). Together with the optimiser changes the operations executed per push/pop pair go from
+  157 000 to 96 000.
+
+Measurements (pinned to core 2 of the performance cores, `perf stat` user-mode `cpu_core` counters, release build with the
+`llvm` feature, `--tier=interp`, host load average 12 to 18, so wall times are noisy and counts are quoted; main at
+`9d5a2438` before, this change after):
+
+| Row | instructions before | after | cycles before | after |
+|---|---:|---:|---:|---:|
+| queue microbenchmark, per push/pop pair of a 576-bit vector | 20.4 M | 11.4 M | 3.86 M | 2.02 M |
+| window-generator testbench, one test case (whole run) | 716 G | 472 G | 145 G | 98.8 G |
+| `protected_queue` (new benchmark, 4000 rounds) | 72.6 G | 42.4 G | | |
+| `uvvm_sb_slv_tb`, `osvvm_axistream`, `vunit_vc30`, `uvvm_util_rand_tb` | | | | CPU 0.92 to 0.96 of before |
+
+Against sim1 (`tools/bench/run.py --ref sim1`, core 2, 3 runs): `protected_queue` 9.9 times slower (instructions 11.5
+times) before, 5.3 times (6.7 times) after. The window-generator testbench: sim1 9.7 G cycles, yavs 15 times before and
+10 times after. The gap of that testbench is not closed. The other 12 benchmarks of the internal group move between 0.88
+and 1.04 (geometric mean of total CPU over the 14 of them 0.91; most run 0.1 s or less, so the small ones are noise).
+
+Left, largest first (all measured on the queue):
+
+1. Calls: ten per character, about 700 to 1000 host instructions each (plain call 624, protected call 945 with the callee's
+   body). Inlining the thin package subprograms would remove half of them and the wrapper's own operations (a wrapper
+   adds 41 percent to a direct protected call in `var` microbenchmarks). It changes what a trace shows: the "called from
+   here" label of the caller of an inlined forwarder needs a side table that every pass renumbering instructions keeps
+   (opt.rs `compact`, `opt/cfg.rs`, `opt/memo.rs`), and `std.env` call paths; not done.
+2. Dispatch: 20 percent of the cycles are the indirect jump of the loop (misprediction), 48 M operations instead of 78 M
+   for the 500-pair run; further fusions gain a few percent each (`Stmt` before a call, `Ret` followed by `Ret`, block-local
+   constants of multiply-defined registers in the `assert` of `unsafe_push`).
+3. `--tier=auto` compiles the hot functions of this testbench (`unsafe_push`, `get`, `set`, ...) and gains nothing: a
+   compiled caller reaches the shared-heap objects through the object cache of `yavs_rt_host` and the callee through a
+   side exit; `--tier=llvm` (everything compiled before time 0) runs the queue 1.3 times faster than the interpreter at
+   this change (cycles per pair 1.77 M against 2.27 M in the same noisy session).
+
 ## performance: head-to-head against the two reference simulators, 2026-10-21
 
 Reproduce with `tools/bench` (`run.py BIN --ref sim1,sim2 --tiers interp,auto --instructions --tiny`): the designs of the tables

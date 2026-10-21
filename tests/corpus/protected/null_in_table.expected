@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:null_in_table:_p0	sum 32
+diag	fatal	0	0	:null_in_table:_p0	null access dereference

@@ -1,0 +1,1 @@
+Simulations with computing loops inside processes run faster: the variables a loop works on are kept in registers, and the overflow and range checks that the value ranges of the loop prove cannot fail are no longer executed; a check that can fail still fails with the same message at the same time.

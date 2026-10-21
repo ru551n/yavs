@@ -2642,6 +2642,50 @@ user's performance priority:
   the registers a check, compare or branch depends on, and the liveness pass only registers
   defined on several paths.
 
+## Intervals and register promotion in processes (yavs-ir `opt/range.rs`, `opt.rs`, `verify.rs`, #444)
+
+- **What:** the interval analysis and the promotion of scalar frame slots to registers also run
+  on processes, per activation. After a suspension (`Suspend`, a call that may suspend) the
+  registers are unknown except the constants a frame starts with, and so is every tracked
+  variable slot except for the interval that all its stores, and its zero start, keep it in:
+  the analysis iterates the solution until the stored intervals stay inside the assumed ones
+  (widening to the full range after two rounds), so a variable that only ever holds 0 to 5
+  stays in 0 to 5 across a `wait`. Branch edges narrow registers as before; a slot is tracked
+  when every access is a direct 8-byte integer load or store and its address never escapes.
+  A slot is promoted to a register when no suspension leaves it live (some path from the
+  suspension reads it before writing it): loop variables and variables a loop works on between
+  two waits. Handles and addresses stay in their slots (the collector finds them there).
+  Only processes with 40 or more instructions and a loop that does not pass a suspension are
+  analysed (the outer loop of a process is not a loop of work).
+- **`wait;`:** a process that registers no wait condition anywhere (no `WaitOn`, `WaitFor`,
+  `WaitAt`) is never woken: the code behind its `Suspend` does not run, which makes its variables
+  dead at the suspension and lets the analysis start the statements from the declarations. The
+  verifier knows the same (`undefined_uses` stops at such a `Suspend`), because the back jump
+  behind it reads registers that only the declarations define.
+- **External readers and writers:** a plugin can deposit into process variables between two
+  activations (and before the first, at the start of the statements), and the waveform recorder
+  with `--wave-variables` reads them from their slots. `opt::external_variables` (the CLI calls it
+  for `--vhpi` and `--wave-variables`) keeps named variables in their slots, makes them unknown
+  after every suspension and at the start of the statements, and neither stores nor loads
+  optimised copies of processes (they are made under that assumption). A debugger
+  (`opt::keep_variables`) keeps named variables in their slots as before.
+- **Why:** a loop in a process (`for i in 1 to N loop x := (x * 75 + 74) mod 65537; ...`) loaded and
+  stored its variables on every pass and checked every operation: with the facts above the
+  range-checked operations become plain ones, and the loop touches no memory. Check failures keep
+  their message, statement and time (a check goes only when the interval proves it).
+- **Not changed:** a variable that is live across a wait stays in memory (its value must
+  survive, and the interval is the invariant over all stores); loop variables bounded only by
+  another variable are unbounded for the analysis (no relational facts); the liveness pass for
+  dead definitions (`opt/live.rs`) stays on subprograms.
+- **Memoisation of instance-constant values:** measured with the interpreter a copy wins at every
+  size tried (a block that saves two instructions net of the flag test still gave 2 to 5 percent
+  fewer cycles), but compiled with `--tier=llvm` a block that saves five net loses about 2
+  percent (more code to compile, loads of the slots for work that costs a few cycles native). The
+  gain needed per copy is therefore 3 net of the flag test and the slot loads, and 6 when the
+  whole design is compiled (`opt::compiled_tier`, called for `--tier=llvm`; copies made then are
+  not stored). `--tier=auto` keeps the interpreter's value: the functions it compiles run
+  interpreted first, and the measured difference there is below the noise.
+
 ## Registers share cells by live range (yavs-ir `opt/share.rs`, #478)
 
 - **What:** the last step of the optimiser (`renumber`) computes the liveness of every register over

@@ -649,6 +649,9 @@ struct Opt<'a> {
     /// Result registers of `LayoutOf` whose words are known (a descriptor of known lengths):
     /// the words, and the registers `Index`ing into them: (layout register, byte offset).
     lwords: FxMap<Reg, Vec<u64>>,
+    /// Result registers of `LayoutOf` of a one-dimensional array whose stride word (offset 16)
+    /// is the same under every descriptor: that stride.
+    lstride: FxMap<Reg, u64>,
     lat: FxMap<Reg, (Reg, i64)>,
     /// Field offsets of the static record layouts met so far (shared by the functions of one
     /// batch).
@@ -711,6 +714,7 @@ impl<'a> Opt<'a> {
             new_regs: Vec::new(),
             inserts: Vec::new(),
             slay: FxMap::default(),
+            lstride: FxMap::default(),
             lwords: FxMap::default(),
             lat: FxMap::default(),
             layouts,
@@ -857,12 +861,18 @@ impl<'a> Opt<'a> {
                     {
                         self.set_cls(dst, Cls::Temp);
                         self.slay.insert(dst, ty);
+                        if let Some(w) = self.static_words(ty) {
+                            self.lwords.insert(dst, w);
+                        }
                     }
                     Inst::Alloc { dst, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Block(dst.0));
                     }
-                    Inst::LayoutOf { dst, .. } if self.single(dst) => {
+                    Inst::LayoutOf { dst, ty, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Temp);
+                        if let Some(s) = self.static_stride(ty) {
+                            self.lstride.insert(dst, s);
+                        }
                     }
                     Inst::Index { dst, base, pos, .. } if self.single(dst) => {
                         if self.fold_index(pc) {
@@ -1039,9 +1049,243 @@ impl<'a> Opt<'a> {
         if loops {
             self.dead_defs();
         }
+        if self.code.iter().any(|i| matches!(i, Inst::NewFrame { .. })) {
+            // The copy a local record variable is made of is read straight from its source
+            // when nothing can change the source meanwhile.
+            self.dce();
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
+            self.forward_frame_copies();
+        }
         self.drop_statements();
         self.merge_consts();
         self.dce();
+    }
+
+    /// A `NewFrame` copy of constant size that only constant-offset loads read (the local
+    /// record variable `variable s : rec_t := st.items(i)`, never written) is dropped: the loads
+    /// read the source, which nothing writes between the copy and the load (every instruction on
+    /// the way is a read, a computation or a branch: no store, call, statement marker or
+    /// allocation, which may change or free the source).
+    fn forward_frame_copies(&mut self) {
+        let nb = self.blocks.len();
+        // Constants the optimiser made and has not inserted yet.
+        let pending: FxMap<u32, i64> = self
+            .inserts
+            .iter()
+            .filter_map(|(_, i)| match *i {
+                Inst::Const { dst, v } => Some((dst.0, v)),
+                _ => None,
+            })
+            .collect();
+        let konst = |s: &Self, r: Reg| match s.opn(r) {
+            Opn::K(v) => Some(v),
+            Opn::R(r) => pending.get(&r.0).copied(),
+            Opn::A(..) => None,
+        };
+        let mut block_of = vec![0usize; self.code.len()];
+        for b in 0..nb {
+            for pc in self.range(b) {
+                block_of[pc] = b;
+            }
+        }
+        for pc0 in 0..self.code.len() {
+            let Inst::NewFrame {
+                dst: q,
+                dsize: 0,
+                data,
+                size,
+                fill: 0,
+                ..
+            } = self.code[pc0]
+            else {
+                continue;
+            };
+            let Some(total) = konst(self, size) else {
+                continue;
+            };
+            let b0 = block_of[pc0];
+            if self.defs.get(q.0 as usize) != Some(&1)
+                || self.defs.get(data.0 as usize) != Some(&1)
+                || !self.reach[b0]
+                || self.in_cycle(b0)
+                || total < 0
+            {
+                continue;
+            }
+            // The registers that hold an address inside the copy: q and what is indexed from
+            // it by constants (offset from q), each defined once.
+            let mut at: FxMap<u32, i64> = FxMap::default();
+            at.insert(q.0, 0);
+            let mut grew = true;
+            while grew {
+                grew = false;
+                for pc in 0..self.code.len() {
+                    if let Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } = self.code[pc]
+                        && !at.contains_key(&dst.0)
+                        && let Some(&o) = at.get(&base.0)
+                        && let Some(c) = konst(self, pos)
+                        && let Some(d) = c
+                            .checked_mul(i64::from(stride))
+                            .and_then(|d| o.checked_add(d))
+                        && self.defs.get(dst.0 as usize) == Some(&1)
+                    {
+                        at.insert(dst.0, d);
+                        grew = true;
+                    }
+                }
+            }
+            // Every reader is an `Index` that is one of those or a load inside the copy.
+            let mut loads: Vec<usize> = Vec::new();
+            let mut ok = true;
+            for pc in 0..self.code.len() {
+                let i = self.code[pc];
+                if is_dead(&i) || pc == pc0 {
+                    continue;
+                }
+                let mut reads = false;
+                i.visit(&mut |r, role, _| {
+                    reads |= role == Role::Use && at.contains_key(&r.0);
+                });
+                if let Some(l) = i.list() {
+                    reads |= self
+                        .operands
+                        .get(l.start as usize..(l.start + l.len) as usize)
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|r| at.contains_key(&r.0));
+                }
+                if !reads {
+                    continue;
+                }
+                match i {
+                    Inst::Index { dst, .. } if at.contains_key(&dst.0) => {}
+                    Inst::Load { addr, w, .. }
+                        if w != Width::Sig
+                            && at
+                                .get(&addr.0)
+                                .is_some_and(|&o| o >= 0 && o + i64::from(w.bytes()) <= total) =>
+                    {
+                        loads.push(pc);
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok || loads.is_empty() {
+                continue;
+            }
+            // Dirty: some path from the copy to the start of the block passes an instruction
+            // that may change or free the source.
+            // A statement marker frees temporaries, not heap objects or constants.
+            let stmt_ok = matches!(
+                self.cls_of(self.opn(data)),
+                Some(Cls::Heap | Cls::Space(AddrSpace::Const(_)))
+            );
+            let harmless = |i: &Inst| {
+                (stmt_ok && matches!(i, Inst::Stmt))
+                    || matches!(
+                        i,
+                        Inst::Const { .. }
+                            | Inst::ConstF { .. }
+                            | Inst::Move { .. }
+                            | Inst::Select { .. }
+                            | Inst::AddrOf { .. }
+                            | Inst::Load { .. }
+                            | Inst::Index { .. }
+                            | Inst::Field { .. }
+                            | Inst::LayoutOf { .. }
+                            | Inst::Bin { .. }
+                            | Inst::BinRange { .. }
+                            | Inst::Un { .. }
+                            | Inst::Cmp { .. }
+                            | Inst::Bool { .. }
+                            | Inst::Check { .. }
+                            | Inst::Pos { .. }
+                            | Inst::DopeLen { .. }
+                            | Inst::Deref { .. }
+                            | Inst::Br { .. }
+                            | Inst::CondBr { .. }
+                            | Inst::Case { .. }
+                            | Inst::Ret { .. }
+                            | Inst::Unreachable { .. }
+                    )
+            };
+            let bad = |code: &[Inst]| code.iter().any(|i| !harmless(i));
+            let mut dirty_in = vec![false; nb];
+            let mut seen = vec![false; nb];
+            let mut work: Vec<usize> = Vec::new();
+            let d0 = bad(&self.code[pc0 + 1..self.blocks[b0].1 as usize]);
+            let mut k = 0;
+            while let Some(s) = self.succ(b0, k) {
+                k += 1;
+                if !seen[s] || (d0 && !dirty_in[s]) {
+                    seen[s] = true;
+                    dirty_in[s] |= d0;
+                    work.push(s);
+                }
+            }
+            while let Some(b) = work.pop() {
+                let d = dirty_in[b] || bad(&self.code[self.range(b)]);
+                let mut k = 0;
+                while let Some(s) = self.succ(b, k) {
+                    k += 1;
+                    if !seen[s] || (d && !dirty_in[s]) {
+                        seen[s] = true;
+                        dirty_in[s] |= d;
+                        work.push(s);
+                    }
+                }
+            }
+            for &pc in &loads {
+                let b = block_of[pc];
+                let dirty = if b == b0 {
+                    bad(&self.code[pc0 + 1..pc])
+                } else {
+                    !seen[b] || dirty_in[b] || bad(&self.code[self.blocks[b].0 as usize..pc])
+                };
+                if dirty {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            // Read the source instead.
+            for pc in 0..self.code.len() {
+                match self.code[pc] {
+                    Inst::Load { dst, addr, w } if addr == q => {
+                        self.code[pc] = Inst::Load { dst, addr: data, w };
+                    }
+                    Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } if base == q => {
+                        self.code[pc] = Inst::Index {
+                            dst,
+                            base: data,
+                            pos,
+                            stride,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            self.code[pc0] = dead();
+            self.changed = true;
+        }
     }
 
     /// The storage of a local composite variable (`[data, dope, handle, ...]` slot, object
@@ -1968,6 +2212,36 @@ impl<'a> Opt<'a> {
         }
     }
 
+    /// The layout words (`[size, align, offsets...]`) of the record type `ty`, which has the
+    /// same layout under every descriptor.
+    fn static_words(&self, ty: TyId) -> Option<Vec<u64>> {
+        let (l, _) = Ty::layout(&self.prog.types, &self.prog.consts, ty, &[]).ok()?;
+        if l.offsets.is_empty() {
+            return None;
+        }
+        let mut w = vec![l.size, l.align];
+        w.extend(l.offsets);
+        Some(w)
+    }
+
+    /// The stride (word 2 of the layout) of the one-dimensional array type `ty` when it does
+    /// not depend on the bounds: arrays of elements of one size. Checked on three lengths.
+    fn static_stride(&self, ty: TyId) -> Option<u64> {
+        let types = &self.prog.types;
+        if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. }))
+        {
+            return None;
+        }
+        let stride = |n: u64| {
+            let mut d = [0u8; 24];
+            d[8..16].copy_from_slice(&(n as i64).wrapping_sub(1).to_le_bytes());
+            let (l, _) = Ty::layout(types, &self.prog.consts, ty, &d).ok()?;
+            l.offsets.is_empty().then_some(l.stride)
+        };
+        let s = stride(1)?;
+        (stride(3)? == s && stride(70)? == s).then_some(s)
+    }
+
     /// Offset of field `n` in record type `ty`, which has the same layout under every
     /// descriptor.
     fn static_offset(&mut self, ty: TyId, n: u32) -> Option<u64> {
@@ -2154,7 +2428,7 @@ impl<'a> Opt<'a> {
                     && self.single(dst)
                 {
                     let (l, off) = self.lat.get(&x).copied().unwrap_or((x, 0));
-                    if self.lwords.contains_key(&l)
+                    if (self.lwords.contains_key(&l) || self.lstride.contains_key(&l))
                         && let Some(o) = c
                             .checked_mul(i64::from(stride))
                             .and_then(|d| off.checked_add(d))
@@ -2224,6 +2498,11 @@ impl<'a> Opt<'a> {
                     if let Some(words) = self.lwords.get(&l)
                         && off % 8 == 0
                         && let Some(&v) = words.get((off / 8) as usize)
+                    {
+                        return self.make_const(pc, dst, v as i64);
+                    }
+                    if off == 16
+                        && let Some(&v) = self.lstride.get(&l)
                     {
                         return self.make_const(pc, dst, v as i64);
                     }
@@ -2608,6 +2887,7 @@ impl<'a> Opt<'a> {
         self.nrep = 0;
         self.slay.clear();
         self.lwords.clear();
+        self.lstride.clear();
         self.lat.clear();
         self.esc = None;
         self.analyse();
@@ -3100,7 +3380,9 @@ impl<'a> Opt<'a> {
             }
             let dst = match i {
                 Inst::LayoutOf { dst, .. }
-                    if self.slay.contains_key(&dst) || self.lwords.contains_key(&dst) =>
+                    if self.slay.contains_key(&dst)
+                        || self.lwords.contains_key(&dst)
+                        || self.lstride.contains_key(&dst) =>
                 {
                     Some(dst)
                 }

@@ -1130,6 +1130,190 @@ fn the_size_of_a_layout_of_known_length_is_a_constant() {
     );
 }
 
+/// A record of two integers and an array of them.
+fn pair_types(pb: &mut ProgramBuilder) -> (TyId, TyId) {
+    let int = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let field = |name: &str| Field {
+        name: name.into(),
+        ty: int,
+        desc: None,
+    };
+    let rec = pb.ty(Ty::Record {
+        fields: vec![field("a"), field("b")],
+    });
+    let arr = pb.ty(Ty::Array {
+        elem: rec,
+        elem_desc: None,
+        dims: 1,
+    });
+    (rec, arr)
+}
+
+#[test]
+fn the_words_of_a_record_layout_and_the_stride_of_an_array_of_them_are_constants() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let (rec, arr) = pair_types(&mut pb);
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Return, sp());
+    // Neither descriptor is known: the layout words that do not depend on it are.
+    let ptr = |fb: &mut FuncBuilder<'_>, off: u32| {
+        let a = fb.addr(AddrSpace::Inst, off);
+        let d = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: d,
+            addr: a,
+            w: Width::B8,
+        });
+        d
+    };
+    let (d_rec, d_arr) = (ptr(&mut fb, 0), ptr(&mut fb, 8));
+    let word = |fb: &mut FuncBuilder<'_>, ty: TyId, desc: Reg, off: i64| {
+        let l = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::LayoutOf { dst: l, ty, desc });
+        let at = fb.reg(RegTy::Ptr);
+        let o = fb.int(off);
+        fb.emit(Inst::Index {
+            dst: at,
+            base: l,
+            pos: o,
+            stride: 1,
+        });
+        let w = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: w,
+            addr: at,
+            w: Width::B8,
+        });
+        w
+    };
+    let size = word(&mut fb, rec, d_rec, 0);
+    let second = word(&mut fb, rec, d_rec, 24);
+    let stride = word(&mut fb, arr, d_arr, 16);
+    let sum = bin(&mut fb, IntOp::Add, size, second);
+    let sum = bin(&mut fb, IntOp::Add, sum, stride);
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let code = &p.func(f).expect("f").code;
+    let (l, _) = Ty::layout(&p.types, &p.consts, rec, &[]).expect("layout");
+    assert_eq!((l.size, l.offsets.get(1).copied()), (16, Some(8)));
+    // The size and the second field offset of the record, and the element size of the array:
+    // 16 + 8 + 16 added up at compile time, the descriptors never read.
+    assert_eq!(
+        count(code, |i| matches!(
+            i,
+            Inst::LayoutOf { .. } | Inst::Load { .. }
+        )),
+        0,
+        "{code:?}"
+    );
+    assert!(
+        code.iter().any(|i| matches!(i, Inst::Const { v: 40, .. })),
+        "{code:?}"
+    );
+}
+
+/// A record variable copied from an `Alloc`ed block (made into frame memory by the
+/// optimiser), then `between` and a load of its second field. Returns the code.
+fn copied_record(between: impl FnOnce(&mut FuncBuilder<'_>, Reg, FuncId)) -> Vec<Inst> {
+    let mut pb = ProgramBuilder::new();
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    let mut gb = pb.define(g);
+    gb.stmt(StmtKind::Return, sp());
+    gb.emit(Inst::Ret { v: None });
+    gb.finish();
+    let (rec, _) = pair_types(&mut pb);
+    let what = pb.check_msg("object", Dir::To);
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let off = fb.local("v", rec, 56, 8);
+    fb.root(off + 16, RootKind::Handle);
+    fb.stmt(StmtKind::Decl, sp());
+    let n = fb.int(16);
+    let src = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: src, size: n });
+    let h = fb.reg(RegTy::Handle);
+    fb.emit(Inst::New {
+        dst: h,
+        ty: rec,
+        init: src,
+        size: n,
+        shared: false,
+    });
+    let hs = fb.addr(AddrSpace::Frame, off + 16);
+    fb.emit(Inst::Store {
+        addr: hs,
+        src: h,
+        w: Width::B8,
+    });
+    let p = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Deref {
+        dst: p,
+        handle: h,
+        what,
+    });
+    between(&mut fb, src, g);
+    let o = fb.int(8);
+    let at = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Index {
+        dst: at,
+        base: p,
+        pos: o,
+        stride: 1,
+    });
+    let b = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: b,
+        addr: at,
+        w: Width::B8,
+    });
+    fb.stmt(StmtKind::Return, sp());
+    fb.emit(Inst::Ret { v: Some(b) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    p.func(f).expect("f").code.clone()
+}
+
+#[test]
+fn a_copied_record_nothing_changes_is_read_from_its_source() {
+    if !on() {
+        return;
+    }
+    let frame = |i: &Inst| matches!(i, Inst::NewFrame { .. });
+    // Nothing between the copy and the read: no copy.
+    let code = copied_record(|_, _, _| {});
+    assert_eq!(count(&code, frame), 0, "{code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Load { .. })),
+        1,
+        "{code:?}"
+    );
+    // A store into the source, or a call, may change what the copy holds.
+    let code = copied_record(|fb, src, _| {
+        let v = fb.int(7);
+        fb.emit(Inst::Store {
+            addr: src,
+            src: v,
+            w: Width::B8,
+        });
+    });
+    assert_eq!(count(&code, frame), 1, "{code:?}");
+    let code = copied_record(|fb, _, g| {
+        let args = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+    });
+    assert_eq!(count(&code, frame), 1, "{code:?}");
+}
+
 #[test]
 fn a_concatenation_keeps_its_block_and_what_it_read() {
     if !on() {

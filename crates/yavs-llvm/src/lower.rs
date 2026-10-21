@@ -284,12 +284,14 @@ impl Mem {
         }
         let same = self.objs_owner == self.fr.owner;
         let epoch = same && self.objs_epoch == self.fr.heap_epoch;
-        self.retain(|hi| match life(hi) {
-            Life::Machine => same,
-            Life::Heap => epoch,
-            Life::Volatile => false,
-        });
-        if epoch {
+        if !epoch || self.transient {
+            self.retain(|hi| match life(hi) {
+                Life::Machine => same,
+                Life::Heap => epoch,
+                Life::Volatile => false,
+            });
+        }
+        if epoch && self.fr.flags & yavs_interp::TIER_STAMPS != 0 {
             for o in &self.objs {
                 if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
                     host.wrote(o.hi << 32);
@@ -1314,9 +1316,11 @@ fn enter_on(
     {
         mem.load_objs(&st.words);
         // The heap objects it may write count as written in this activation.
-        for o in mem.objs {
-            if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
-                host.wrote(o.hi << 32);
+        if mem.fr.flags & yavs_interp::TIER_STAMPS != 0 {
+            for o in mem.objs {
+                if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
+                    host.wrote(o.hi << 32);
+                }
             }
         }
     }

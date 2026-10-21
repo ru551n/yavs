@@ -4565,3 +4565,32 @@ or `Tier::call` of the same machine; constants, instance and package data while 
 its object at once, and reads of the instance data are inline. On the window-generator testbench of the real-world suite
 (`vai_window_gen_interlock`, `--tier=auto` with a warm compilation cache after five runs) `yavs_rt_host` and
 `TierHost::object` went from 11.4 to 6.0 percent of the cycles.
+
+### `--tier=auto`, round 2: the policy for testbench code (#510)
+
+Decisions: docs/decisions.md "Native calls from the interpreter and the object table" (`--tier=auto`, round 2). In short:
+a function the interpreter calls on a native frame is compiled when hot however short, with eight times the budget; compile
+cost is estimated at 800 microseconds per IR instruction (learned from real compiles only) plus the opening of LLVM; every
+hot function the compilation cache lists as compiled before is linked from it at once (a look-up refused by the budget was
+lost for the whole run before, so warm runs varied between 0.5 and 1.0 times the interpreter); frame-mode functions that
+leave their compiled code often stay interpreted.
+
+Instructions and cycles (G, `perf stat` user-mode `cpu_core` counters of the whole run, all threads), pinned to performance
+core 4 (the compile thread shares it), median of 3 interleaved rounds after one warm-up; "warm" reuses the compilation cache
+of the earlier rounds, "cold" empties it before every run; "before" is `--tier=auto` of main at 2cddec62:
+
+| Testbench | interp | auto warm | auto cold | auto before (warm) |
+|---|---:|---:|---:|---:|
+| window generator (`vai_window_gen_interlock`) | 378.2 / 78.4 | 180.5 / 41.2 (0.53) | 240.5 / 55.2 (0.70) | 383.3 / 81.7 (1.04) |
+| `protected_queue` | 32.9 / 6.00 | 28.0 / 5.30 (0.88) | 30.0 / 5.70 (0.95) | 33.4 / 6.11 (1.02) |
+| `protected_queue`, 10x | 330.2 / 59.9 | 193.4 / 37.5 (0.63) | 213.7 / 42.3 (0.71) | 333.2 / 62.1 (1.03) |
+| `uvvm_sb_slv` | 15.6 / 3.83 | 15.9 / 3.99 (1.04) | 15.9 / 4.11 (1.07) | 19.8 / 4.55 (1.20) |
+| `uvvm_util_rand` | 16.0 / 3.64 | 16.2 / 3.68 (1.01) | 16.2 / 3.73 (1.03) | 16.4 / 3.75 (1.03) |
+| `osvvm_axis_random` | 4.10 / 1.27 | 4.19 / 1.30 (1.02) | 4.22 / 1.32 (1.04) | 4.24 / 1.33 (1.05) |
+| `osvvm_axi4_random` | 10.2 / 3.39 | 10.4 / 3.40 (1.00) | 10.4 / 3.48 (1.03) | 10.4 / 3.47 (1.03) |
+| `uvvm_func_cov` | 3.23 / 0.77 | 3.28 / 0.79 (1.02) | 3.34 / 0.80 (1.05) | 3.41 / 0.83 (1.10) |
+
+(ratio: cycles against the interpreter.) The window-generator testbench was 9 times sim1 in cycles before; at 41 G cycles it
+is about 4.2 times. The short library testbenches (0.15 to 0.9 s) compile next to nothing within the budget; what `--tier=auto`
+still costs there (1 to 4 percent) is mostly the interpreter's own bookkeeping with a tier set (1 to 3 percent with nothing
+compiled, measured with an infinite heat), not compilation.

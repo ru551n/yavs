@@ -3918,3 +3918,24 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   well, for the interpreter to enter again after a materialisation inside the loop.
 - **Tuning aid:** `YAVS_LLVM_PERFMAP=1` writes `/tmp/perf-<pid>.map` with the compiled functions, so `perf report`
   names them.
+- **`--tier=auto`, round 2 (#510).** With native calls from the interpreter a compiled testbench function gains two to
+  three times instead of a few percent, and the policy follows:
+  - A function the interpreter calls on a native frame (`called_natively`: runs on native frames, no static link) is
+    never `too_short` and its sampled time counts for itself (`charge` moves only nested functions' time to a caller);
+    a frame-mode function whose instructions leave the compiled code more than one in ten times stays interpreted, as a
+    process does (`too_many_callbacks`).
+  - Its tree compiles callees that are called natively (no loop) as native-frame code only, others as both; the
+    native-frame and the frame-mode code of a function are modules of their own, so what the cache holds for a function
+    does not depend on what it was compiled with.
+  - Budget: compile cost starts at 800 microseconds per IR instruction (measured, was 250) and learns only from real
+    compiles (a cache hit is no measurement); opening the LLVM library counts 10 ms; a function called natively gets
+    eight times the budget (`NATIVE_BUDGET`), as `rtl` processes get 16 and compute loops 50; `pick` waits for the
+    sampled time its last refused candidate needs instead of recomputing every millisecond.
+  - Cache first: every function seen for `Heat::threshold` that the store names as compiled before
+    (`objcache::compiled_list`, a list of names and sizes per library directory, written at every compile) is looked up
+    in the cache at once, within the budget for its code generation, and linked when there (`probe`); a function the
+    budget refused is asked again (it was asked once only, and a refusal lost the look-up for the whole run, which
+    made warm runs vary from 0.5 to 1.0 times the interpreter). A run whose functions were never compiled does not
+    open the LLVM library.
+  - Write counts: compiled code reports the writes of heap objects it keeps into a new activation or call only once
+    someone compares write counts (`TIER_STAMPS`, set by `Machine::stamp`, the waveform recorder).

@@ -255,9 +255,9 @@ fn auto_tier_recompiles_hot_compiled_code_at_o2() {
     assert_eq!(levels, [(f, OptLevel::O0, true), (f, OptLevel::O2, true)]);
 }
 
-/// A short function without a loop stays interpreted while only interpreted code calls it,
-/// and is compiled (at O2) once a compiled loop calls it: each call would otherwise leave the
-/// compiled caller and enter it again.
+/// A short function without a loop that runs on native frames is compiled (at O2) when hot,
+/// for interpreted callers (`Tier::call`) and with a compiled loop that calls it, which would
+/// otherwise leave its compiled code at every call.
 #[test]
 fn auto_tier_compiles_short_callees_of_compiled_code() {
     let (prog, run, _) = calls();

@@ -112,3 +112,55 @@ pub(crate) fn add(
     debug("stored", &k);
     jit.add_object(&obj)
 }
+
+/// The kind of the list of compiled functions (`compiled_list`).
+const LIST: &str = "list";
+
+/// The most functions the list names (the most recent ones).
+const LIST_MAX: usize = 1024;
+
+/// The key of the list of the store: one per library directory.
+fn list_key() -> Key {
+    let mut k = KeyBuilder::new(LIST);
+    k.text("functions");
+    k.finish()
+}
+
+/// The functions `--tier=auto` stored compiled code of in this store, as name and number of IR
+/// instructions, most recent first: a look-up in the cache (`Worker::probe`) generates the
+/// function's code first, so a function not named here is not looked up (a run whose functions
+/// were never compiled does not even open the LLVM library). Another design's function of the
+/// same name and size is a look-up that misses.
+pub(crate) fn compiled_list() -> std::collections::HashSet<(String, u32)> {
+    let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let Some(e) = store.and_then(|s| s.get(LIST, &list_key())) else {
+        return Default::default();
+    };
+    String::from_utf8_lossy(&e)
+        .lines()
+        .filter_map(|l| {
+            let (len, name) = l.split_once('\t')?;
+            Some((name.to_string(), len.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Put `name` (of `len` IR instructions) in front of the list of `compiled_list`.
+pub(crate) fn add_compiled(name: &str, len: u32) {
+    let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let Some(store) = store else {
+        return;
+    };
+    let old = store.get(LIST, &list_key());
+    let mut text = format!("{len}\t{name}\n");
+    let line = text.clone();
+    if let Some(old) = old {
+        let old = String::from_utf8_lossy(&old);
+        for l in old.split_inclusive('\n').take(LIST_MAX - 1) {
+            if l != line {
+                text += l;
+            }
+        }
+    }
+    store.put(LIST, &list_key(), text.as_bytes());
+}

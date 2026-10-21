@@ -786,6 +786,10 @@ impl Drop for Machine {
     }
 }
 
+/// A write count was asked for (`Machine::stamp`): from then on compiled code reports the
+/// writes of the heap objects it keeps (`TIER_STAMPS`).
+static STAMPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Machine {
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -1686,6 +1690,7 @@ impl Machine {
 
     /// The [`crate::Stamp`] of the heap object at address `a`; `None` for other memory.
     pub(crate) fn stamp(&self, a: u64) -> Option<crate::Stamp> {
+        STAMPS.store(true, Ordering::Relaxed);
         let (sp, idx, _) = split(a);
         let (generation, writes) = match sp {
             HEAP => self.heap.stamp(idx)?,
@@ -5940,6 +5945,7 @@ impl Machine {
         let shared = self.frames.last().is_some_and(|f| f.shared_alloc);
         u64::from(shared) * crate::TIER_SHARED_ALLOC
             + u64::from(self.sh.is_some()) * crate::TIER_SERIAL
+            + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS
     }
 
     /// Whether a native call or an allocation would collect or recycle now (`reclaim`): native

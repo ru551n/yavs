@@ -685,6 +685,10 @@ pub struct TierFrame {
 pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
 pub const TIER_SERIAL: u64 = 2;
+/// `TierFrame::flags`: someone compares heap objects by their write counts (`Stamp`, the
+/// waveform recorder): compiled code that keeps writing an object it found earlier must say so
+/// (`TierHost::wrote`).
+pub const TIER_STAMPS: u64 = 4;
 /// The tag in the top byte of a handle into the shared heap.
 pub const SHARED_TAG: u8 = heap::SHARED;
 

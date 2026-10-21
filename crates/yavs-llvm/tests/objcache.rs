@@ -121,12 +121,13 @@ fn compiled_code_is_kept_and_linked_again() {
     assert_eq!(run_eager(&prog, f), want);
     assert_eq!(cache_stats(), (2, 2));
 
-    // The tiered mode: a function module of its own, linked by the probe on the warm run.
+    // The tiered mode: modules of its own for the function's native-frame and frame-mode code,
+    // linked by the probe on the warm run.
     run_auto(&prog, f);
     let (hits, stored) = cache_stats();
-    assert_eq!(stored, 3, "cold: compiled and stored");
+    assert_eq!(stored, 4, "cold: compiled and stored");
     run_auto(&prog, f);
-    assert_eq!(cache_stats(), (hits + 1, stored), "warm: linked");
+    assert_eq!(cache_stats(), (hits + 2, stored), "warm: linked");
 
     // A directory that cannot be written: compiled, nothing kept, no error.
     let file = dir.path().join("plain-file");

@@ -2651,10 +2651,7 @@ impl Machine {
                 let Some(r) = sr.range.filter(|r| r.len > 0) else {
                     return Err(ice("scalar read of a null signal range"));
                 };
-                match c.first_code(sr.signal.slice(r.offset, 1), false)? {
-                    Some(code) => u64::from(code),
-                    None => return Err(ice("scalar read of a null signal range")),
-                }
+                u64::from(c.elem_code(sr.signal, r.offset)?)
             }
             Elem::Bytes(es) => {
                 return Err(ice(format!("scalar read of a {es}-byte element")));

@@ -376,21 +376,10 @@ impl Waiters {
         };
         let shift = self.shift;
         let mut scanned = 0;
-        let mut last = usize::MAX;
-        let chunks = runs.iter().flat_map(|r| {
-            (r.len > 0)
-                .then(|| r.offset >> shift..=(r.end() - 1) >> shift)
-                .into_iter()
-                .flatten()
-        });
-        for i in chunks.map(|c| c as usize).chain([wide]) {
-            if i == last {
-                continue;
-            }
-            last = i;
-            let (l, n) = &mut self.lists[i];
+        // One list: the waiters hit are taken in list order.
+        let mut scan = |(l, n): &mut (SmallVec<[Waiter; 1]>, usize)| {
             if l.is_empty() {
-                continue;
+                return;
             }
             scanned += 1;
             // Read the list first: resident waiters that wake stay, so most scans change nothing
@@ -413,6 +402,32 @@ impl Waiters {
                 l.retain(|w| !hit(w.range) || (live(w) && (hold(w) || w.perm != 0)));
             }
             *n = l.len();
+        };
+        if let [r] = runs
+            && r.len == 1
+        {
+            // One element changed (the usual event of a process per element): its list, then the
+            // wide one.
+            let c = (r.offset >> shift) as usize;
+            if c != wide {
+                scan(&mut self.lists[c]);
+            }
+            scan(&mut self.lists[wide]);
+        } else {
+            let mut last = usize::MAX;
+            let chunks = runs.iter().flat_map(|r| {
+                (r.len > 0)
+                    .then(|| r.offset >> shift..=(r.end() - 1) >> shift)
+                    .into_iter()
+                    .flatten()
+            });
+            for i in chunks.map(|c| c as usize).chain([wide]) {
+                if i == last {
+                    continue;
+                }
+                last = i;
+                scan(&mut self.lists[i]);
+            }
         }
         if self.lists.len() == 1 && self.lists[0].0.is_empty() {
             self.trig = Trig::Empty;
@@ -480,6 +495,45 @@ pub(crate) struct Signal {
     /// The segment the last `compute_driving` started in: the next dirty range is usually there
     /// or in the next one.
     seg_hint: usize,
+    /// The `std_ulogic` code of every element of `cur`, one byte each (rounded up to whole
+    /// plane blocks), for logic signals of at most `CODES_MAX` elements; empty otherwise. Kept
+    /// in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element is one load.
+    codes: Vec<u8>,
+}
+
+/// The longest logic signal that keeps `Signal::codes`.
+const CODES_MAX: usize = 1 << 20;
+
+/// Byte `i` of `SPREAD[x]` is bit `i` of `x`.
+const SPREAD: [u64; 256] = {
+    let mut t = [0u64; 256];
+    let mut x = 0;
+    while x < 256 {
+        let mut i = 0;
+        while i < 8 {
+            t[x] |= (((x >> i) & 1) as u64) << (8 * i);
+            i += 1;
+        }
+        x += 1;
+    }
+    t
+};
+
+/// Recompute `codes` for elements `lo .. hi` of `cur`, in groups of eight.
+#[inline]
+fn refresh_codes(codes: &mut [u8], cur: &Buf, lo: usize, hi: usize) {
+    let Buf::Planes { b, .. } = cur else {
+        return;
+    };
+    if codes.is_empty() || lo >= hi {
+        return;
+    }
+    for g in lo / 8..=(hi - 1) / 8 {
+        let (blk, sh) = (&b[g / 8], g % 8 * 8);
+        let at = |p: usize| SPREAD[(blk[p] >> sh & 0xff) as usize] << p;
+        let v = at(0) | at(1) | at(2) | at(3);
+        codes[g * 8..g * 8 + 8].copy_from_slice(&v.to_le_bytes());
+    }
 }
 
 impl Signal {
@@ -491,7 +545,7 @@ impl Signal {
 
     pub fn new(name: String, ty: SignalType, init: Buf, resolution: Option<Resolution>) -> Signal {
         let n = ty.len as usize;
-        Signal {
+        let mut sig = Signal {
             name,
             ty,
             cur: init.clone(),
@@ -520,6 +574,43 @@ impl Signal {
             callouts: Vec::new(),
             skip_ok: false,
             seg_hint: 0,
+            codes: Vec::new(),
+        };
+        sig.sync_codes();
+        sig
+    }
+
+    /// Rebuild `codes` from `cur` (after `cur` was replaced as a whole).
+    pub fn sync_codes(&mut self) {
+        self.codes.clear();
+        if let Buf::Planes { len, b } = &self.cur
+            && *len <= CODES_MAX
+        {
+            self.codes.resize(b.len() * 64, 0);
+            refresh_codes(&mut self.codes, &self.cur, 0, *len);
+        }
+    }
+
+    /// The code of element `e` of `cur` from `codes`, if the signal keeps them and has the element.
+    #[inline(always)]
+    pub fn mirrored_code(&self, e: usize) -> Option<u8> {
+        let c = *self.codes.get(e)?;
+        // Past the last element the byte is padding.
+        (e < self.ty.len as usize).then(|| {
+            debug_assert_eq!(c, self.cur.code(e), "codes of {} out of step", self.name);
+            c
+        })
+    }
+
+    /// The `std_ulogic` code of element `e` of the current value of a logic signal.
+    #[inline(always)]
+    pub fn cur_code(&self, e: usize) -> u8 {
+        match self.codes.get(e) {
+            Some(&c) => {
+                debug_assert_eq!(c, self.cur.code(e), "codes of {} out of step", self.name);
+                c
+            }
+            None => self.cur.code(e),
         }
     }
 
@@ -713,6 +804,9 @@ impl Signal {
         if old == code {
             return Some(false);
         }
+        if let Some(c) = self.codes.get_mut(e) {
+            *c = code;
+        }
         set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
         match self.changed.last_mut() {
             Some(run) if run.end() as usize == e => run.len += 1,
@@ -831,15 +925,17 @@ impl Signal {
                 }
                 w &= !(nmask(len as usize) << s);
             }
+            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
             if k == 1 {
                 // m is 1: one element changed.
                 self.last_value.copy(off + c, &self.cur, off + c, 1);
                 self.cur.copy(off + c, src, soff + c, 1);
-                continue;
+            } else {
+                self.last_value
+                    .select(off + c, &self.cur, off + c, k, &[m], Some(0));
+                self.cur.select(off + c, src, soff + c, k, &[m], Some(0));
             }
-            self.last_value
-                .select(off + c, &self.cur, off + c, k, &[m], Some(0));
-            self.cur.select(off + c, src, soff + c, k, &[m], Some(0));
+            refresh_codes(&mut self.codes, &self.cur, off + c + lo, off + c + hi);
         }
         if !self.force_ev.is_empty() {
             any |= self.force_events(r, now, cycle);

@@ -519,6 +519,8 @@ pub struct SimControl {
     group_cycle: Vec<u64>,
     slots: Vec<Mutex<Slot>>,
     procs: Vec<ProcMeta>,
+    /// No process has several wait statements: a batch runs in process order.
+    single_waits: bool,
     names: Vec<String>,
     queue: Queue,
     ops: Vec<SignalOp>,
@@ -696,6 +698,7 @@ impl SimControl {
             group_cycle: vec![0; groups.len()],
             groups,
             slots,
+            single_waits: procs.iter().all(|m| !m.flags.several_waits),
             procs,
             queue: Queue::default(),
             ops: Vec::new(),
@@ -756,6 +759,7 @@ impl SimControl {
         for &s in &order {
             let sig = &mut self.signals[s as usize];
             sig.cur = sig.effective_of(sig.full());
+            sig.sync_codes();
             sig.last_value = sig.cur.clone();
             self.push_down(s, false)?;
         }
@@ -772,6 +776,7 @@ impl SimControl {
             let sig = &mut self.signals[s];
             sig.driving.copy(0, &v, 0, r.len as usize);
             sig.cur = sig.effective_of(sig.full());
+            sig.sync_codes();
             sig.last_value = sig.cur.clone();
             self.push_down(s as u32, false)?;
         }
@@ -1771,8 +1776,11 @@ impl SimControl {
     /// suspension point in elaboration order, then the others in reverse elaboration order,
     /// those resumed by a signal before those resumed by a timeout.
     fn order(&self, pids: &mut [u32], init: bool) {
-        if init {
-            pids.sort_unstable();
+        if init || self.single_waits {
+            // Every key is the process number: a wake list is in this order mostly.
+            if !pids.is_sorted() {
+                pids.sort_unstable();
+            }
             return;
         }
         // One packed word per process, looked up once (not per comparison): the flags in the
@@ -1917,7 +1925,7 @@ impl SimControl {
             meta.ready = false;
             meta.resumed |= !init;
             self.serial_ran |= meta.flags.serial;
-            let generation = self.procs[p as usize].generation;
+            let (generation, trigger, tid) = (meta.generation, meta.trigger, meta.tid);
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
             let effects = (!st.effects.is_empty()).then(|| std::mem::take(&mut st.effects));
@@ -1939,7 +1947,7 @@ impl SimControl {
             }
             // The same wait as the last run, without a timeout: the waiters of the last run
             // stay (resident, `ProcMeta::perm`), or become so now.
-            let same = !timed && !st.sens.is_empty() && st.sens == st.sens_prev;
+            let same = !timed && !st.sens.is_empty() && st.sens[..] == st.sens_prev[..];
             let mut perm = 0;
             if same {
                 perm = self.procs[p as usize].perm;
@@ -1963,21 +1971,27 @@ impl SimControl {
                     st.sens_prev.extend_from_slice(&st.sens);
                 }
             }
-            for (s, range) in st.sens.drain(..) {
-                let procs = &self.procs;
-                self.waiters[s.0 as usize].add(
-                    p,
-                    range,
-                    Reg {
-                        generation,
-                        perm,
-                        trigger: procs[p as usize].trigger,
-                        tid: procs[p as usize].tid,
-                    },
-                    |w| alive(procs, w),
-                );
+            if !st.sens.is_empty() {
+                for (s, range) in st.sens.drain(..) {
+                    let procs = &self.procs;
+                    self.waiters[s.0 as usize].add(
+                        p,
+                        range,
+                        Reg {
+                            generation,
+                            perm,
+                            trigger,
+                            tid,
+                        },
+                        |w| alive(procs, w),
+                    );
+                }
             }
-            let result = std::mem::replace(&mut slot.result, Ok(()));
+            let result = if slot.result.is_ok() {
+                Ok(())
+            } else {
+                std::mem::replace(&mut slot.result, Ok(()))
+            };
             if bad {
                 let mut e = self.err(ErrorKind::PostponedDelta);
                 e.process = Some((ProcId(p), self.names[p as usize].clone()));
@@ -2159,7 +2173,7 @@ fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorK
 fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
     edge(signals, t, cycle)
         || t.reset
-            .is_some_and(|(r, e, c)| signals[r.0 as usize].cur.code(e as usize) == c)
+            .is_some_and(|(r, e, c)| signals[r.0 as usize].cur_code(e as usize) == c)
 }
 
 /// Whether the edge of trigger `t` holds in this cycle: an event on the element, with its
@@ -2174,14 +2188,14 @@ fn edge(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
         } else {
             StdULogic::Zero
         };
-        return s.event_in(Range::new(t.elem, 1), cycle) && s.cur.code(i) == end as u8;
+        return s.event_in(Range::new(t.elem, 1), cycle) && s.cur_code(i) == end as u8;
     }
     let to_x01 = |c: u8| match c {
         c if c == StdULogic::One as u8 || c == StdULogic::H as u8 => Some(true),
         c if c == StdULogic::Zero as u8 || c == StdULogic::L as u8 => Some(false),
         _ => None,
     };
-    let (now, before) = (to_x01(s.cur.code(i)), to_x01(s.last_value.code(i)));
+    let (now, before) = (to_x01(s.cur_code(i)), to_x01(s.last_value.code(i)));
     s.event_in(Range::new(t.elem, 1), cycle) && now == Some(t.rising) && before == Some(!t.rising)
 }
 

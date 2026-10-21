@@ -288,6 +288,9 @@ impl Ctx<'_> {
         if r.len == 0 {
             return Ok(None);
         }
+        if !last && let Some(c) = s.mirrored_code(r.offset as usize) {
+            return Ok(Some(c));
+        }
         let b = if last { &s.last_value } else { &s.cur };
         match b.planes_code(r.offset as usize) {
             Some(c) => Ok(Some(c)),
@@ -295,6 +298,22 @@ impl Ctx<'_> {
                 "{} holds bytes, read it with value()",
                 s.name
             )))),
+        }
+    }
+
+    /// The current `std_ulogic` code of element `e` of logic signal `s`: `first_code` of a
+    /// one-element reference with the checks of a lone element.
+    #[inline(always)]
+    pub fn elem_code(&self, s: SignalId, e: u32) -> Result<u8, SimError> {
+        if let Some(sig) = self.sh.signals.get(s.0 as usize)
+            && let Some(c) = sig.mirrored_code(e as usize)
+        {
+            return Ok(c);
+        }
+        // The error cases (a bad reference, a byte signal) are the general path's.
+        match self.first_code(s.slice(e, 1), false)? {
+            Some(c) => Ok(c),
+            None => Err(self.error(ErrorKind::BadRef("null range".into()))),
         }
     }
 
@@ -333,7 +352,7 @@ impl Ctx<'_> {
             _ => None,
         };
         Ok(Some(
-            x01(s.cur.code(i)) == Some(rising) && x01(s.last_value.code(i)) == Some(!rising),
+            x01(s.cur_code(i)) == Some(rising) && x01(s.last_value.code(i)) == Some(!rising),
         ))
     }
 
@@ -514,7 +533,7 @@ impl Ctx<'_> {
         let rel = (r.offset - ds.range.offset) as usize;
         if s.skip_ok
             && ds.value.code(rel) == code
-            && s.cur.code(r.offset as usize) == code
+            && s.cur_code(r.offset as usize) == code
             && s.sole(r)
         {
             w.phantom.push(r);

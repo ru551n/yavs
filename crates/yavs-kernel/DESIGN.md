@@ -53,6 +53,23 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   value at once and lists the run in `Signal::fast_dirty`; `finish_signal` then only updates the
   effective value of those runs. Any other vector assignment of a cycle appends its one
   transaction directly (`Ctx::assign`).
+- **Direct transactions**: a driver that is the only source of its elements of a logic signal
+  with no port, composite group, guard or resolution function (std_logic resolution of one
+  source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).
+  A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
+  an entry in the process's `ProcState::out` (signal, source slot, elements, plane words), not a
+  waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in
+  the run is another entry (the last wins, as zero-delay preemption would give), and any
+  assignment that needs the waveform first moves the driver's entries there (`Ctx::spill_out`).
+  The commit (`commit_out`; for processes committed in the batch loop, after the batch, since
+  the signals are shared until then) writes the driver value and the signal's driving value at
+  once: the update phase is over and no process reads either before the next one. The elements
+  wait in a per-signal bit mask (`Signal::pend`); the next update finishes them a plane word at a
+  time (`finish_pend`: activity, then the XOR of `cur` and the driving value gives the events),
+  one element through its code byte. A signal with a force layer, or a force or deposit in that
+  cycle, takes the elements to its dirty ranges and the general path instead. Activity stamps
+  are not written for a signal whose activity nothing reads (`Signal::inactive`:
+  `Config::skip_unchanged`, and no implicit signal has it as its prefix).
 - **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
   (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
   the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the

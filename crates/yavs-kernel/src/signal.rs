@@ -573,6 +573,14 @@ pub(crate) struct Signal {
     /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
     pub watched: bool,
     pub nruns: u64,
+    /// Elements whose driving value a direct transaction wrote for the next update
+    /// (`commit_code`, `commit_planes`),
+    /// one bit each (made at the first one), and the words with a bit set.
+    pend: Vec<u64>,
+    pend_words: SmallVec<[u32; 2]>,
+    /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
+    /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
+    pub inactive: bool,
 }
 
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
@@ -687,6 +695,9 @@ impl Signal {
             fused_event: false,
             watched: false,
             nruns: 0,
+            pend: Vec::new(),
+            pend_words: SmallVec::new(),
+            inactive: false,
         };
         sig.sync_codes();
         sig
@@ -951,6 +962,12 @@ impl Signal {
             && matches!(self.resolution, None | Some(Resolution::StdLogic))
     }
 
+    /// Something besides direct transactions is left to finish (`finish_signal`).
+    #[inline(always)]
+    pub fn unfinished(&self) -> bool {
+        !self.dirty.is_empty() || !self.fast_dirty.is_empty() || self.fuse_n != 0
+    }
+
     /// The cycle's quick transactions are applied: the next cycle may finish some at once again.
     #[inline(always)]
     pub fn end_apply(&mut self) -> bool {
@@ -1185,58 +1202,226 @@ impl Signal {
     /// whose effective value is its driving value: whole plane words instead of the element
     /// helpers. `None` for byte storage.
     fn update_planes(&mut self, off: usize, n: usize, now: Time, cycle: u64) -> Option<bool> {
+        if !matches!(
+            (&self.cur, &self.driving, &self.last_value),
+            (Buf::Planes { .. }, Buf::Planes { .. }, Buf::Planes { .. })
+        ) {
+            return None;
+        }
+        let mut any = false;
+        for c in (0..n).step_by(64) {
+            any |= self.update_word((off + c) / 64, nmask((n - c).min(64)), now, cycle);
+        }
+        Some(any)
+    }
+
+    /// `update_effective` of the elements `m` of plane word `w` of a plain logic signal: the
+    /// changed ones by XOR, `last_value` and `cur` blended, then the stamps, runs and codes.
+    #[inline(always)]
+    fn update_word(&mut self, w: usize, m: u64, now: Time, cycle: u64) -> bool {
         let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
             (&mut self.cur, &self.driving, &mut self.last_value)
         else {
-            return None;
+            return false;
         };
+        let (Some(cw), Some(&y), Some(lw)) = (cur.get_mut(w), drv.get(w), last.get_mut(w)) else {
+            return false;
+        };
+        let x = *cw;
+        let m = ((x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])) & m;
+        if m == 0 {
+            return false;
+        }
+        let l = *lw;
+        *lw = std::array::from_fn(|p| l[p] & !m | x[p] & m);
+        let c: Block = std::array::from_fn(|p| x[p] & !m | y[p] & m);
+        *cw = c;
         let len = self.ty.len as usize;
-        let (cycles, rest) = self.stamps.split_at_mut(2 * len);
+        let base = w * 64;
+        let st = self.stamps.as_mut_slice();
         let t = stamp(now);
-        let mut any = false;
-        for c in (0..n).step_by(64) {
-            let (w, k) = ((off + c) / 64, (n - c).min(64));
-            let (x, y) = (cur[w], drv[w]);
-            let m = ((x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])) & nmask(k);
-            if m == 0 {
-                continue;
-            }
-            any = true;
-            for p in 0..4 {
-                last[w][p] = last[w][p] & !m | x[p] & m;
-                cur[w][p] = x[p] & !m | y[p] & m;
-            }
-            let base = off + c;
-            // Event cycle and time of each changed element, then the runs.
-            let (cyc, tim) = (&mut cycles[base..base + k], &mut rest[base..base + k]);
+        // Event cycle and time of each changed element, then the runs.
+        let mut v = m;
+        while v != 0 {
+            let e = base + v.trailing_zeros() as usize;
+            v &= v - 1;
+            st[e] = cycle;
+            st[2 * len + e] = t;
+        }
+        if self.watched {
             let mut v = m;
             while v != 0 {
-                let i = v.trailing_zeros() as usize;
-                v &= v - 1;
-                cyc[i] = cycle;
-                tim[i] = t;
+                let s = v.trailing_zeros();
+                let run = (v >> s).trailing_ones();
+                note_run(
+                    &mut self.changed,
+                    &mut self.nruns,
+                    true,
+                    base + s as usize,
+                    run,
+                );
+                v &= !(nmask(run as usize) << s);
             }
-            if self.watched {
-                let mut v = m;
-                while v != 0 {
-                    let s = v.trailing_zeros();
-                    let run = (v >> s).trailing_ones();
-                    note_run(
-                        &mut self.changed,
-                        &mut self.nruns,
-                        true,
-                        base + s as usize,
-                        run,
-                    );
-                    v &= !(nmask(run as usize) << s);
-                }
-            } else {
-                self.nruns += u64::from((m & !(m << 1)).count_ones());
+        } else {
+            self.nruns += u64::from((m & !(m << 1)).count_ones());
+        }
+        if m.is_power_of_two() {
+            let i = m.trailing_zeros() as usize;
+            if let Some(code) = self.codes.get_mut(base + i) {
+                *code = ((c[0] >> i & 1)
+                    | (c[1] >> i & 1) << 1
+                    | (c[2] >> i & 1) << 2
+                    | (c[3] >> i & 1) << 3) as u8;
             }
+        } else {
             let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
             refresh_block_codes(&mut self.codes, cur, base + lo, base + hi);
         }
+        true
+    }
+
+    /// A zero-delay transaction of one element of a direct driver (`DriverInfo::direct`),
+    /// committed: the driver value and the driving value now (the update phase is over, and
+    /// nothing reads them before the next one), the element waiting in `pend` for the next
+    /// update (`finish_pend`). True for the signal's first one.
+    #[inline]
+    pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> bool {
+        let d = &mut self.drivers[slot as usize];
+        if let Buf::Planes { b, .. } = &mut d.value {
+            put_plane_code(b, (elem - d.range.offset) as usize, code);
+        }
+        if let Buf::Planes { b, .. } = &mut self.driving {
+            put_plane_code(b, elem as usize, code);
+        }
+        self.mark_pend(elem, 1)
+    }
+
+    /// `commit_code` of at most 64 elements given as plane words.
+    #[inline]
+    pub(crate) fn commit_planes(
+        &mut self,
+        slot: u32,
+        elem: u32,
+        len: u32,
+        planes: [u64; 4],
+    ) -> bool {
+        let d = &mut self.drivers[slot as usize];
+        d.put_planes((elem - d.range.offset) as usize, len as usize, planes);
+        if let Buf::Planes { b, .. } = &mut self.driving {
+            put_block(b, elem as usize, len as usize, planes, !0);
+        }
+        self.mark_pend(elem, len)
+    }
+
+    #[inline(always)]
+    fn mark_pend(&mut self, elem: u32, len: u32) -> bool {
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        let first = self.pend_words.is_empty();
+        let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
+        if self.pend[w] == 0 {
+            self.pend_words.push(w as u32);
+        }
+        self.pend[w] |= m << s;
+        if s + len > 64 {
+            if self.pend[w + 1] == 0 {
+                self.pend_words.push(w as u32 + 1);
+            }
+            self.pend[w + 1] |= m >> (64 - s);
+        }
+        first
+    }
+
+    /// The elements committed directly (`commit_code`, `commit_planes`) matured: active, and
+    /// their effective values a word at a time in element order, on a signal with no layer;
+    /// otherwise (`slow`, or a force layer) they become dirty ranges for the general paths.
+    /// Whether any changed, `None` with nothing pending.
+    #[inline(always)]
+    pub(crate) fn finish_pend(&mut self, now: Time, cycle: u64, slow: bool) -> Option<bool> {
+        let plain = !slow
+            && self.force_eff.is_none()
+            && self.force_drv.is_none()
+            && self.force_ev.is_empty();
+        // One word (a register, or one stage of a chain): no list to sort or walk.
+        if let [w] = self.pend_words[..] {
+            self.pend_words.clear();
+            let m = std::mem::take(&mut self.pend[w as usize]);
+            return Some(self.finish_word(w as usize, m, now, cycle, plain));
+        }
+        if self.pend_words.is_empty() {
+            return None;
+        }
+        let mut words = std::mem::take(&mut self.pend_words);
+        if !words.is_sorted() {
+            words.sort_unstable();
+        }
+        let mut any = false;
+        for &w in &words {
+            let m = std::mem::take(&mut self.pend[w as usize]);
+            any |= self.finish_word(w as usize, m, now, cycle, plain);
+        }
+        words.clear();
+        self.pend_words = words;
         Some(any)
+    }
+
+    /// `finish_pend` of the elements `m` of word `w`.
+    #[inline(always)]
+    fn finish_word(&mut self, w: usize, m: u64, now: Time, cycle: u64, plain: bool) -> bool {
+        let base = w * 64;
+        // One element: its codes, as a quick transaction finished at once.
+        if plain && m.is_power_of_two() {
+            let e = base + m.trailing_zeros() as usize;
+            if let (Some(&old), Buf::Planes { b: drv, .. }) = (self.codes.get(e), &self.driving) {
+                let n = self.ty.len as usize;
+                if !self.inactive {
+                    let st = self.stamps.as_mut_slice();
+                    st[n + e] = cycle;
+                    st[3 * n + e] = stamp(now);
+                }
+                let code = plane_code(drv, e);
+                if code == old {
+                    return false;
+                }
+                self.codes[e] = code;
+                if let (Some(cur), Some(last)) =
+                    (self.cur.planes_mut(), self.last_value.planes_mut())
+                {
+                    put_plane_code(cur, e, code);
+                    put_plane_code(last, e, old);
+                }
+                set_event(&mut self.stamps, n, e, cycle, now);
+                self.note_run(e, 1);
+                return true;
+            }
+        }
+        if plain {
+            if !self.inactive {
+                let (n, t) = (self.ty.len as usize, stamp(now));
+                let st = self.stamps.as_mut_slice();
+                let mut v = m;
+                while v != 0 {
+                    let s = v.trailing_zeros() as usize;
+                    let run = (v >> s).trailing_ones() as usize;
+                    let e = base + s;
+                    st[n + e..n + e + run].fill(cycle);
+                    st[3 * n + e..3 * n + e + run].fill(t);
+                    v &= !(nmask(run) << s);
+                }
+            }
+            return self.update_word(w, m, now, cycle);
+        }
+        let mut v = m;
+        while v != 0 {
+            let s = v.trailing_zeros();
+            let run = (v >> s).trailing_ones();
+            let r = Range::new((base + s as usize) as u32, run);
+            self.mark_active(r, now, cycle);
+            self.push_dirty(r);
+            v &= !(nmask(run as usize) << s);
+        }
+        false
     }
 
     /// Events for the elements of `r` an earlier force of this cycle changed, if the cycle's

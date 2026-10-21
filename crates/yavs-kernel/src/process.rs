@@ -104,6 +104,20 @@ pub(crate) enum OpMode {
     Deposit,
 }
 
+/// A zero-delay assignment of at most 64 elements to a direct driver (`DriverInfo::direct`)
+/// made in this run, as plane words: the commit writes it to the signal (`commit_out`)
+/// instead of queueing a transaction. A later assignment to the same driver in the run is
+/// another entry (the last one wins, as zero-delay preemption gives); one that needs the
+/// waveform moves the driver's entries there first (`Ctx::spill_out`).
+#[derive(Clone, Copy)]
+pub(crate) struct Out {
+    pub sig: u32,
+    pub slot: u32,
+    pub elem: u32,
+    pub len: u32,
+    pub planes: [u64; 4],
+}
+
 /// Per-process state the process mutates while it runs.
 #[derive(Default)]
 pub(crate) struct ProcState {
@@ -122,11 +136,16 @@ pub(crate) struct ProcState {
     /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
     /// this run.
     pub phantoms: Vec<u32>,
-    /// The edge the kernel resumed the process for (`Builder::edge_trigger`: signal, element,
-    /// rising): true for the whole activation, so `Ctx::edge` of it need not look.
+    /// The edge of the process's trigger the kernel resumes it for (`Builder::edge_trigger`:
+    /// signal, element, rising; set once by `SimControl::new`), and whether this activation
+    /// was such a resumption (`edge_ok`: a signal resumed it, not a timeout or the initial
+    /// run): the edge then holds for the whole activation, so `Ctx::edge` of it need not look.
     pub known_edge: Option<(SignalId, u32, bool)>,
+    pub edge_ok: bool,
     /// A one-element logic value kept for `Ctx::assign_code`.
     pub one: Option<LogicVec>,
+    /// Direct transactions of this run.
+    pub out: Vec<Out>,
 }
 
 impl ProcState {
@@ -151,6 +170,10 @@ pub(crate) struct DriverInfo {
     pub range: Range,
     /// Index into the signal's source list.
     pub slot: u32,
+    /// The driver is the only source of its elements of a logic signal with no port, group,
+    /// guard or resolution function (`SimControl::new`): its zero-delay quick transactions go
+    /// straight to the signal at commit (`SimControl::direct`), not through the queue.
+    pub direct: bool,
 }
 
 /// Read-only kernel state shared by all processes running in a delta.
@@ -334,7 +357,7 @@ impl Ctx<'_> {
     /// The edge the kernel resumed this process for in this activation (signal, element,
     /// rising), if `Ctx::edge` takes it as held.
     pub fn known_edge(&self) -> Option<(SignalId, u32, bool)> {
-        self.st.known_edge
+        self.st.known_edge.filter(|_| self.st.edge_ok)
     }
 
     /// `rising_edge` / `falling_edge` of the first element of a logic signal range: an event
@@ -344,7 +367,7 @@ impl Ctx<'_> {
     #[inline(always)]
     pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
         let r = r.into();
-        if let (Some((sig, el, up)), Some(x)) = (self.st.known_edge, r.range)
+        if let (true, Some((sig, el, up)), Some(x)) = (self.st.edge_ok, self.st.known_edge, r.range)
             && r.signal == sig
             && x.offset == el
             && x.len == 1
@@ -387,6 +410,40 @@ impl Ctx<'_> {
             return Err(fail("driver belongs to another process"));
         }
         Ok(info)
+    }
+
+    /// Move this run's direct transactions of driver `d` (`Out`) into its waveform, in order,
+    /// for an assignment that preempts or inspects pending transactions.
+    pub(crate) fn spill_out(&mut self, d: DriverId) {
+        if self.st.out.is_empty() {
+            return;
+        }
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return;
+        };
+        let (sig, slot, local, now) = (info.signal.0, info.slot, info.local, self.sh.now);
+        let mut i = 0;
+        while let Some(&o) = self.st.out.get(i) {
+            if (o.sig, o.slot) != (sig, slot) {
+                i += 1;
+                continue;
+            }
+            self.st.out.remove(i);
+            let r = Range::new(o.elem, o.len);
+            let value = Buf::Planes {
+                len: o.len as usize,
+                b: smallvec::smallvec![o.planes],
+            };
+            let mut t = TxnList::new();
+            t.push(Txn {
+                time: now,
+                range: r,
+                value: Some(value),
+            });
+            // Transport: a transaction at `now` replaces the earlier ones at `now`.
+            self.st.waveforms[local as usize].schedule(r, None, &mut t);
+            self.st.scheduled.push((now, d));
+        }
     }
 
     /// `'driving`: false if any element of this process's driver is disconnected.
@@ -440,6 +497,7 @@ impl Ctx<'_> {
         {
             return Ok(());
         }
+        self.spill_out(d);
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
         let local = self.own(d)?.local as usize;
@@ -552,6 +610,17 @@ impl Ctx<'_> {
         if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
+        if info.direct {
+            let c = u64::from(code);
+            self.st.out.push(Out {
+                sig: info.signal.0,
+                slot: info.slot,
+                elem: r.offset,
+                len: 1,
+                planes: [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1],
+            });
+            return true;
+        }
         let s = &self.sh.signals[info.signal.0 as usize];
         if !matches!(s.ty.elem, crate::value::Elem::Logic) {
             return false;
@@ -653,6 +722,16 @@ impl Ctx<'_> {
         if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
+        if info.direct {
+            self.st.out.push(Out {
+                sig: info.signal.0,
+                slot: info.slot,
+                elem: r.offset,
+                len,
+                planes: planes.map(|p| p & yavs_logic::wide::nmask(len as usize)),
+            });
+            return true;
+        }
         let s = &self.sh.signals[info.signal.0 as usize];
         let ds = &s.drivers[info.slot as usize];
         let (Buf::Planes { b: dv, .. }, Buf::Planes { b: cv, .. }) = (&ds.value, &s.cur) else {
@@ -746,6 +825,7 @@ impl Ctx<'_> {
         after: Option<Time>,
         mode: DelayMode,
     ) -> Result<(), SimError> {
+        self.spill_out(d);
         let (sig, r) = self.target(d, target)?;
         let s = &self.sh.signals[sig];
         if s.guard.is_none() {

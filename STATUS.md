@@ -3527,6 +3527,38 @@ threads on the interpreter, and at 1 and 4 threads under `--tier=auto` and `--ti
 on both lists (857 and 393) on the interpreter and `--tier=auto`; the `.pro` regression 314 of 314 under 2008 and 2019;
 the verification library suite 102 pass, 9 fail, 26 skip as before.
 
+### Kernel round 11: direct paths for sole-driver registers (#440, 2026-10-22)
+
+`tools/bench/run.py BIN --ref sim1 --tiers interp,auto --instructions --cores 5 --runs 5`, `main` at `6e91a1e8`
+against the same plus slice 1 (direct drivers, the commit loop over late processes, the stored edge). Ratios yavs
+over sim1 (wall / instructions), interpreter and `--tier=auto`; per-unit instructions from the slope of 1x and 10x
+runs (pinned to core 6).
+
+| Design | interp before | interp after | auto before | auto after | instr. per unit before / after |
+|---|---:|---:|---:|---:|---:|
+| rtl_ff | 1.33 / 1.95 | 1.17 / 1.79 | 1.27 / 1.90 | 1.19 / 1.74 | 1848 / 1710 |
+| rtl_lfsr | 2.83 / 2.92 | 2.76 / 2.71 | 2.33 / 2.62 | 2.12 / 2.39 | 3161 / 2929 |
+| lfsr64 | 2.25 / 2.86 | 2.00 / 2.59 | 2.25 / 2.89 | 2.00 / 2.63 | 3440 / 3125 |
+| rtl_chain | 1.33 / 2.14 | 1.35 / 2.15 | 1.33 / 2.17 | 1.35 / 2.19 | 2129 / 2147 (per delta) |
+| rtl_fan | 1.04 / 1.01 | 0.94 / 0.97 | 1.05 / 1.06 | 1.00 / 1.01 | 838 / 800 |
+| rtl_ram | 1.20 / 1.82 | 1.25 / 1.61 | 1.20 / 1.83 | 1.25 / 1.62 | |
+| lfsr64_xor | 1.40 / 2.44 | 1.20 / 2.30 | 1.40 / 2.46 | 1.20 / 2.32 | |
+
+What changed (`docs/decisions.md` "Kernel round 11"): a zero-delay assignment to a driver that is the only source
+of its elements of a plain logic signal is kept by the process as a direct entry, written to the driver and driving
+values at commit and finished a plane word at a time in the next update, with no queue entry, waveform lookup or
+dirty range; activity nobody reads is not stamped there; the commit loop walks only the processes not committed in
+the batch loop; the resumption edge is stored once per process. Kernel per `rtl_ff` activation (Intel PT, per
+function): ~670 to ~530 instructions, of which the register update (apply, driving, effective value) went from ~240 to
+~190 and the batch loop from ~180 to ~150.
+
+Checks: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with and without `--features llvm`,
+`cargo test --workspace` (812 passed), `cargo test -p yavs-llvm --features llvm` and `llvm,gc-stress`; difftest 426 of
+426 at 1 and 4 threads, 4 threads shuffled, `--tier=auto` and `--tier=llvm`; `external.py --oracle --check` on both
+lists (857 and 393) on the interpreter and `--tier=auto`; the `.pro` regression 314 of 314 under 2008 and 2019 on
+both tiers; the verification library suite 102 pass, 9 fail, 26 skip as before on both tiers; VHPI conformance
+traces identical to `main` (23 of 23).
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

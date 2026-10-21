@@ -3545,6 +3545,43 @@ unchanged at any thread count.
   about half of that and the interpreter's per-op and per-activation costs are the larger lever; on `rtl_chain` and
   `rtl_lfsr` the kernel alone still exceeds it, spread over a dozen stages of 20 to 150 instructions each.
 
+## Kernel round 11: direct paths for sole-driver registers (yavs-kernel, #440, 2026-10-22)
+
+Round 10 found no single hot spot left: per activation the kernel was a dozen stages of 20 to 150 instructions
+each, the same for every net. This round gives the common net shape its own path, chosen at elaboration, instead
+of the generic queue, waveform and dirty-range stages. Output is unchanged at any thread count and with
+`--shuffle`.
+
+- **Direct drivers** (`DriverInfo::direct`, set by `SimControl::new`): the driver is the only source of its
+  elements of a logic signal with no port, composite group, guard or user resolution function (std_logic
+  resolution of one source is the identity). A zero-delay assignment of at most 64 elements to it, with an idle
+  waveform, is a `ProcState::out` entry (signal, source slot, elements, plane words). The commit writes the
+  driver value and the driving value at once and sets the elements in a per-signal bit mask (`Signal::pend`); no
+  queue entry, no `live` lookup of the waveform, no apply stage. The next update finishes them a plane word at a
+  time (`Signal::finish_pend`: activity, the changed elements by XOR of `cur` and the driving value, blend of
+  `cur` and `last_value`, event stamps, runs, codes), one element through its code byte. Why writing early is
+  safe: the update phase of the cycle is over at the commit, processes read neither a driver value other than
+  their own (`'driving_value`, and the owner has run) nor the driving value, and observers between the phases
+  only reach drivers through `Hook::assign` (which takes the general path, below).
+- **Preemption stays exact**: a second zero-delay assignment to the same driver in a run is another entry and the
+  last one wins, which is what zero-delay preemption gives; any assignment that needs the waveform (a delay, a
+  waveform list, `null`, a phantom to flush) first moves the driver's entries into it in order
+  (`Ctx::spill_out`), so the general rules apply to them.
+- **Forces and deposits**: a signal with a force layer, or with a force or deposit in that cycle, takes the
+  elements to its dirty ranges and the general update instead (the driving value then comes from the driver
+  values again, which the commit wrote).
+- **Activity nobody reads is not stamped**: with `Config::skip_unchanged` (nothing reads `'active` or
+  `'last_active`, no observer) a signal that is no implicit signal's prefix (`Signal::inactive`) keeps no activity
+  stamps on this path.
+- **Batch loop**: the commit loop walks only the processes not committed right after they ran (`run_batch`
+  `late`), not the whole batch; a process that skipped an unchanged assignment is committed there too (its
+  phantoms only set `empty_delta`); the edge a signal resumes a process for is stored once in its state and a flag
+  per activation says whether it holds (`ProcState::known_edge`, `edge_ok`), instead of a table lookup per run.
+- Measured (instructions per unit, interpreter, slope of 1x and 10x runs pinned to core 6, before to after):
+  `rtl_ff` activation 1848 to 1710, `rtl_lfsr` activation 3161 to 2929, `lfsr64` activation 3440 to 3125,
+  `rtl_fan` activation 838 to 800, `rtl_chain` delta 2129 to 2147 (one transaction per delta: the new stages cost
+  what the old fused finish did).
+
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 
 Follow-up of "Tight compute loops": in compiled loops the registers and the frame's variables no longer go through

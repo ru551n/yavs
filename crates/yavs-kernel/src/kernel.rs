@@ -1404,7 +1404,7 @@ impl SimControl {
             self.queue.later.pop();
             entries.push(e);
         }
-        if from_delta > 0 {
+        if from_delta > 0 && entries.len() > 1 {
             entries.sort_unstable();
         }
         for &e in &entries {
@@ -1520,7 +1520,9 @@ impl SimControl {
             return Ok(());
         }
         let (now, cycle) = (self.now, self.cycle);
-        due.sort_by_key(|&(s, _)| s);
+        if due.len() > 1 {
+            due.sort_by_key(|&(s, _)| s);
+        }
         // The usual clocked case, every driver on one signal: no job list, no pool.
         if due.first().map(|d| d.0) == due.last().map(|d| d.0) {
             let s = due[0].0 as usize;
@@ -1796,6 +1798,9 @@ impl SimControl {
     /// suspension point in elaboration order, then the others in reverse elaboration order,
     /// those resumed by a signal before those resumed by a timeout.
     fn order(&self, pids: &mut [u32], init: bool) {
+        if pids.len() < 2 {
+            return;
+        }
         if init || self.single_waits {
             // Every key is the process number: a wake list is in this order mostly.
             if !pids.is_sorted() {

@@ -2517,6 +2517,40 @@ interpreter, `--tier=llvm` and `--tier=auto`; `external.py --oracle --check` on 
 tests); the external runner's 11 suites all pass (1344 tests, `-p 2`); the `.pro` regression 314 of 314 under 2008 and
 2019; the verification library suite 102 pass, 9 fail, 26 skip, as before.
 
+### Third pass on the delta cost (#440), 2026-10-21
+
+Same designs and method (core 4, min of 9 runs of user + system CPU seconds, `--threads 1`, release build with the
+`llvm` feature, host load about 12, so only the ratios mean something) against sim1 (`-H 64m -e --no-save --jit -r`,
+min of 7). "Before" is main at `7e1307cf`, which already has the interpreter's concatenation work.
+
+| Design | tier | before | after | sim1 | before / sim1 | after / sim1 | instructions before / after |
+|---|---|---:|---:|---:|---:|---:|---:|
+| ff: 4096 registers x 2000 cycles | interp | 2.02 | 1.28 | 0.55 | 3.7x | 2.3x | 36.0G / 30.8G |
+| | llvm | 2.43 | 1.95 | | 4.4x | 3.5x | |
+| lfsr: 512 x 16-bit x 5000 | interp | 1.28 | 0.80 | 0.16 | 8.0x | 5.0x | 21.5G / 16.9G |
+| | llvm | 1.24 | 1.01 | | 7.8x | 6.3x | |
+| chain: 1000 stages x 2000 | interp | 0.58 | 0.34 | 0.15 | 3.9x | 2.3x | 10.5G / 8.0G |
+| | llvm | 0.80 | 0.57 | | 5.3x | 3.8x | |
+| fan: 4000 x 5000 | interp | 1.84 | 1.26 | 1.03 | 1.8x | 1.2x | 29.2G / 25.0G |
+| | llvm | 2.60 | 2.08 | | 2.5x | 2.0x | |
+| bus: 32 drivers x 20000 | interp | 0.38 | 0.28 | 0.67 | 0.6x | 0.4x | 6.3G / 5.8G |
+| | llvm | 0.50 | 0.41 | | 0.7x | 0.6x | |
+
+What changed (`docs/decisions.md` "Kernel round 6"): the clock keeps its wake list (no scan of thousands of resident
+waiters), a one-element logic assignment is a quick pending transaction and a vector assignment to an idle driver skips
+the schedule layers, the vector driver update is done in blocks (one-element finish by code compare, gathered driving
+values, runs of events), dirty ranges merge in descending order too (this removed the per-cycle sort of 2560 ranges in
+lfsr), one waiter list per element up to 1024 elements, and the delta loop reuses its next-event time and its buffers.
+Tried and dropped (no gain): a prefetch of the process table, a known-edge table, a sorted-batch shortcut.
+
+Left: the interpreter is 50 to 55% of `ff`, `fan` and `chain`; `Buf::code` (about 30 instructions per element read) is
+7% of `ff`; `update_effective` stamps per changed element (6% of lfsr).
+
+Checks: difftest corpus 413 of 413 at 1 and 4 threads, at 4 shuffled threads, for the interpreter, `--tier=llvm` and
+`--tier=auto`; `external.py --oracle --check` on both lists (857 and 393); the external runner's 11 suites pass; the
+`.pro` regression 314 of 314 under 2008 and 2019; the verification library suite 102 pass, 9 fail, 26 skip as before;
+`cargo test --workspace` 759 passed.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

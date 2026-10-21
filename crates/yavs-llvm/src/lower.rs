@@ -1008,6 +1008,17 @@ pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     }
 }
 
+/// `ModRef` of an LLVM `memory(...)` attribute: reads, writes, both.
+const REF: u64 = 1;
+const MODS: u64 = 2;
+const RW: u64 = 3;
+
+/// The value of a `memory(...)` attribute (LLVM 21 `MemoryEffects`: two bits per location,
+/// argument memory, inaccessible memory, errno, other memory).
+fn mem_effects(arg: u64, inaccessible: u64, other: u64) -> u64 {
+    arg | inaccessible << 2 | other << 6
+}
+
 /// The most registers, slot bytes and IR instructions of a native-callable function: its
 /// registers and slots are `alloca`s, and a materialisation stores every one of them.
 const NC_REGS: usize = 128;
@@ -1453,7 +1464,7 @@ impl Gen {
                     LLVMGetIntrinsicDeclaration(module, id, tys.as_mut_ptr(), 1),
                 )
             };
-            Gen {
+            let g = Gen {
                 ctx,
                 module,
                 b: LLVMCreateBuilderInContext(ctx),
@@ -1487,7 +1498,60 @@ impl Gen {
                 smul: intrinsic(c"llvm.smul.with.overflow"),
                 umul: intrinsic(c"llvm.umul.with.overflow"),
                 uadd: intrinsic(c"llvm.uadd.with.overflow"),
+            };
+            g.effects();
+            g
+        }
+    }
+
+    /// Attribute `name` (with `val` for an integer attribute) on function `f` or call `f` at
+    /// `idx` (`LLVMAttributeFunctionIndex` for the function).
+    unsafe fn attr(&self, f: LLVMValueRef, call: bool, name: &str, val: u64) {
+        // SAFETY: a function or call of our context; the attribute exists in LLVM 21.
+        unsafe {
+            let kind = LLVMGetEnumAttributeKindForName(name.as_ptr().cast(), name.len());
+            assert_ne!(kind, 0, "unknown attribute {name}");
+            let a = LLVMCreateEnumAttribute(self.ctx, kind, val);
+            let idx = llvm_sys::LLVMAttributeFunctionIndex;
+            if call {
+                LLVMAddCallSiteAttribute(f, idx, a);
+            } else {
+                LLVMAddAttributeAtIndex(f, idx, a);
             }
+        }
+    }
+
+    /// What the runtime helpers do, so LLVM keeps values in registers across them and moves
+    /// loads past them (`docs/decisions.md` "Compiled frames", effects): none unwinds (they
+    /// catch panics); `yavs_rt_host` touches only `Mem`, `Env` and the interpreter's own
+    /// bookkeeping, never object bytes, registers or slots; `yavs_rt_lcopy` only the blocks it
+    /// is given. `yavs_rt_step` and `yavs_rt_signal` run interpreter code that may collect or
+    /// change any memory: no memory attribute, so registers holding handles are reloaded after
+    /// them and the precise roots (#422) see what compiled code stored.
+    unsafe fn effects(&self) {
+        // SAFETY: functions of our module.
+        unsafe {
+            for f in [
+                self.step,
+                self.host,
+                self.signal,
+                self.lcopy,
+                self.layout,
+                self.fast,
+                self.deopt,
+                self.deopt_slots,
+                self.deopt_end,
+            ] {
+                self.attr(f, false, "nounwind", 0);
+            }
+            for f in [self.host, self.lcopy, self.deopt_slots] {
+                self.attr(f, false, "willreturn", 0);
+            }
+            self.attr(self.host, false, "memory", mem_effects(RW, RW, 0));
+            self.attr(self.lcopy, false, "memory", mem_effects(RW, 0, 0));
+            self.attr(self.lcopy, false, "nofree", 0);
+            self.attr(self.lcopy, false, "nosync", 0);
+            self.attr(self.deopt_slots, false, "memory", mem_effects(REF, 0, 0));
         }
     }
 
@@ -2882,6 +2946,11 @@ impl Gen {
                 7,
                 c"".as_ptr(),
             );
+            // Alloc writes the temporary area, the others only read memory besides the
+            // register and the object cache.
+            let other = if op == FAST_ALLOC { MODS } else { REF };
+            self.attr(ok, true, "memory", mem_effects(RW, RW, other));
+            self.attr(ok, true, "willreturn", 0);
             self.guard(c, self.icmp(IP::LLVMIntNE, ok, self.c32(0)), slow);
         }
     }
@@ -3338,5 +3407,58 @@ impl Drop for Gen {
     fn drop(&mut self) {
         // SAFETY: we own the builder.
         unsafe { LLVMDisposeBuilder(self.b) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The helper declarations carry the effects `Gen::effects` means (the encoding of
+    /// `memory(...)` is LLVM's own, checked here against its printer).
+    #[test]
+    fn helper_effects() {
+        crate::lazy::ensure().unwrap();
+        let m = Module::new("effects");
+        let g = Gen::new(&m);
+        // SAFETY: our module; the string is disposed after the copy.
+        let ir = unsafe {
+            let p = LLVMPrintModuleToString(m.raw());
+            let s = std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned();
+            LLVMDisposeMessage(p);
+            s
+        };
+        drop(g);
+        let decl = |name: &str| {
+            ir.lines()
+                .find(|l| l.starts_with("declare") && l.contains(name))
+                .unwrap_or_else(|| panic!("no {name} in {ir}"))
+                .to_string()
+        };
+        let group = |name: &str| {
+            let d = decl(name);
+            let id = d.rsplit('#').next().unwrap_or("").trim().to_string();
+            ir.lines()
+                .find(|l| l.starts_with(&format!("attributes #{id} ")))
+                .unwrap_or_else(|| panic!("no attributes for {d}"))
+                .to_string()
+        };
+        let host = group(HOST);
+        assert!(
+            host.contains("memory(argmem: readwrite, inaccessiblemem: readwrite)"),
+            "{host}"
+        );
+        assert!(
+            host.contains("nounwind") && host.contains("willreturn"),
+            "{host}"
+        );
+        let lcopy = group(LCOPY);
+        assert!(lcopy.contains("memory(argmem: readwrite)"), "{lcopy}");
+        assert!(group(DEOPT_SLOTS).contains("memory(argmem: read)"));
+        let step = group(STEP);
+        assert!(
+            step.contains("nounwind") && !step.contains("memory"),
+            "{step}"
+        );
     }
 }

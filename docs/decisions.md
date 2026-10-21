@@ -3095,6 +3095,24 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   direct calls), and the sampled interpreted time of a short native-callable function counts for the
   interpreted caller seen longest that calls it (`Worker::charge`), which then compiles with it (its callees
   compile with a caller), since compiling the short function alone gains nothing.
+- **Effects of the runtime helpers (2026-10-21, coordinator request):** the helper declarations say what
+  they touch, so LLVM keeps registers and loaded values across them: none unwinds (they catch panics);
+  `yavs_rt_host` is `memory(argmem: readwrite, inaccessiblemem: readwrite)` and `willreturn` (it reads
+  only `Mem`, `Env` and the interpreter's bookkeeping, never object bytes, slots or registers);
+  `yavs_rt_lcopy` touches only its argument blocks (`nofree`, `nosync`); the `yavs_rt_fast` call sites
+  read (dope length, subtype, fat root) or write (alloc) other memory only; `yavs_rt_step`,
+  `yavs_rt_signal`, `yavs_rt_layout` and the materialisation helpers keep no memory attribute: they run
+  interpreter code that may collect, so a handle compiled code holds is reloaded after them and the
+  precise roots (#422) do not depend on any attribute. Measured pinned (core 3, minimum of 3,
+  `--tier=llvm`): `compute_loop`, `ff`, `lfsr`, `chain`, `fan`, `bus`, `ram` within 1% in instructions and
+  cycles; `rand_tb` simulation within run-to-run noise (0.85 to 0.98 s either way). The time of
+  compiled testbench and RTL code is in the callbacks that must clobber memory. Not done: an alias scope
+  for the own frame's slots against other memory (frame-mode `host()` would need the inline own-frame
+  check native frames have, so a host pointer never points into the own slots) and for signal value
+  storage (the RTL agent's arms); worth it once the clobbering callbacks are rarer. For a Cranelift
+  generator the same facts are its memory flags: frame, temporary and object accesses as separate alias
+  regions (`heap`, `table`, `vmctx`-style regions), constant reads `readonly` and `notrap` where the generator
+  checked the bounds; Cranelift has no per-call effects, so helper calls stay full clobbers there.
 - **RTL processes** stay frame-mode: a process is entered by the kernel per activation on its own
   interpreter frame and suspends there; the per-activation fast paths are the RTL agent's (#432, rtljit).
   A process calling a native-callable function gets the native call.

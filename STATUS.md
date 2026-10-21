@@ -2381,7 +2381,13 @@ simulation 0.91 s to 0.95 s, compile 9.1 s to 9.8 s (the native-frame copies); `
 host; instruction counts of `generic_sb_slv_tb` under `--tier=auto` equal, 24.6 G both). Output identical:
 difftest 414/414 for `yavs-llvm` and `yavs-auto` (default, `--tier-heat=1,0,0`, shuffled seed 7) at 1 and 4
 threads, the stderr of every corpus test byte-identical between `--tier=interp` and `--tier=llvm` (26 with
-runtime errors), and a `gc-stress` build 414/414 for `yavs-llvm` and eager `yavs-auto`.
+runtime errors), and a `gc-stress` build 414/414 for `yavs-llvm` and eager `yavs-auto`. Effect attributes on the runtime helpers
+(`docs/decisions.md` "Compiled frames", effects): no measurable change pinned on `compute_loop` and the kernel
+designs under `--tier=llvm` (within 1% in instructions and cycles) nor on `rand_tb` (simulation 0.85 to 0.98 s
+in both builds, interpreter 1.00 s; its O2 compile 31 s before the native-frame copies, 33 to 35 s after).
+What keeps the library testbenches from native frames, over the 260 functions of `generic_sb_slv_tb`: 199 have
+several kinds of stepped instruction, the most common `Deref` (164), `CallProt` (150), `CallNative` (107), `Cat`
+(97), `NewFrame` (89); 31 have none, of which 7 call only such functions.
 
 The measurements before this work, for reference:
 

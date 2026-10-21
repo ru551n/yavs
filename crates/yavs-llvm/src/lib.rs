@@ -22,6 +22,8 @@ mod lazy;
 #[cfg(feature = "llvm")]
 mod lower;
 #[cfg(feature = "llvm")]
+mod regs;
+#[cfg(feature = "llvm")]
 pub mod spike;
 
 #[cfg(feature = "llvm")]

@@ -146,6 +146,31 @@ pub struct Module {
 // by value; an LLVMContext may move between threads when used by one at a time.
 unsafe impl Send for Module {}
 
+/// Debug aid: with `YAVS_LLVM_DUMP=<dir>` every optimised module is written there as
+/// `<n>-pre.ll` / `<n>-post.ll` (before and after the pass pipeline).
+unsafe fn dump(m: LLVMModuleRef, tag: &str) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let Some(dir) = std::env::var_os("YAVS_LLVM_DUMP") else {
+        return;
+    };
+    let n = if tag == "pre" {
+        N.fetch_add(1, Ordering::Relaxed)
+    } else {
+        N.load(Ordering::Relaxed) - 1
+    };
+    let path = std::path::Path::new(&dir).join(format!("{n}-{tag}.ll"));
+    if let Ok(c) = std::ffi::CString::new(path.to_string_lossy().as_bytes()) {
+        let mut err: *mut c_char = std::ptr::null_mut();
+        // SAFETY: the module is live; a message, if any, is freed.
+        unsafe {
+            if LLVMPrintModuleToFile(m, c.as_ptr(), &mut err) != 0 {
+                LLVMDisposeMessage(err);
+            }
+        }
+    }
+}
+
 impl Module {
     pub fn new(name: &str) -> Module {
         crate::lazy::ensure().expect("LLVM library");
@@ -216,8 +241,10 @@ impl Module {
             let dl = LLVMCreateTargetDataLayout(tm);
             LLVMSetModuleDataLayout(self.module, dl);
             LLVMDisposeTargetData(dl);
+            dump(self.module, "pre");
             let opts = LLVMCreatePassBuilderOptions();
             let err = LLVMRunPasses(self.module, opt.pipeline().as_ptr(), tm, opts);
+            dump(self.module, "post");
             LLVMDisposePassBuilderOptions(opts);
             LLVMDisposeTargetMachine(tm);
             check(err)

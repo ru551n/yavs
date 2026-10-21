@@ -575,6 +575,10 @@ Cost: about 30 decls per array type and 20 per scalar type; fine. Instances (5.2
   static subtype indication; otherwise `Constraint::FromObject{expr: x, elem_depth: 0}`.
 - `x'element` / `A'element`: element subtype; `FromObject{elem_depth: 1}` when it must come from
   the object.
+- An element of a record subtype `FromObject{x}` whose declared subtype has open bounds
+  (`Db::field_subtype`) is `FromObject` of the field name `x.elem` (an `ExprKind::Field`
+  expression), so an aggregate for `x'subtype` gives its `others` the bounds of that element
+  (L114, #514).
 - `T'base`: only as prefix of another attribute (16.2).
 - 2019 `'reflect` (16.2.?): `obj'reflect` has type `std.reflection.VALUE_MIRROR`,
   `T'reflect` has `SUBTYPE_MIRROR`. Sem loads `std.reflection` on demand, needs no use clause.

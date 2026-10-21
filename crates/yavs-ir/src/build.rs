@@ -219,6 +219,7 @@ impl ProgramBuilder {
             code: Vec::new(),
             loc: Vec::new(),
             operands: Vec::new(),
+            via: Vec::new(),
             resume: Vec::new(),
             flags: FuncFlags::default(),
             body: None,

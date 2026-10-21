@@ -102,32 +102,43 @@ impl Machine {
             let f = prog
                 .func(fr.func)
                 .ok_or_else(|| ice(format!("no function {}", fr.func)))?;
-            let Some(&s) = f.loc.get(fr.pc as usize) else {
+            let Some(&loc) = f.loc.get(fr.pc as usize) else {
                 continue;
             };
-            let st = prog
-                .stmts
-                .get(s)
-                .ok_or_else(|| ice(format!("no statement {s:?}")))?;
-            let Some((path, line)) = self.rt.sources.locate(st.span) else {
-                return rt_err(
-                    "the call path needs the design's source files, which this simulation \
-                     was not given (yavs_interp::Bindings::sources)",
-                );
-            };
-            let p = std::path::absolute(path).unwrap_or_else(|_| path.into());
-            v.push(Element {
-                name: f.name.to_ascii_uppercase(),
-                file_name: p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                file_path: p
-                    .parent()
-                    .map(|d| d.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                line,
-            });
+            // A function inlined at this instruction is an element of its own, its caller the
+            // next one.
+            let mut at = vec![(f.name.as_str(), loc)];
+            if let Some((site, callee)) = f.inlined_at(fr.pc as usize) {
+                let g = prog
+                    .func(callee)
+                    .ok_or_else(|| ice(format!("no function {callee}")))?;
+                at = vec![(g.name.as_str(), loc), (f.name.as_str(), site)];
+            }
+            for (name, s) in at {
+                let st = prog
+                    .stmts
+                    .get(s)
+                    .ok_or_else(|| ice(format!("no statement {s:?}")))?;
+                let Some((path, line)) = self.rt.sources.locate(st.span) else {
+                    return rt_err(
+                        "the call path needs the design's source files, which this simulation \
+                         was not given (yavs_interp::Bindings::sources)",
+                    );
+                };
+                let p = std::path::absolute(path).unwrap_or_else(|_| path.into());
+                v.push(Element {
+                    name: name.to_ascii_uppercase(),
+                    file_name: p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    file_path: p
+                        .parent()
+                        .map(|d| d.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    line,
+                });
+            }
         }
         Ok(v)
     }

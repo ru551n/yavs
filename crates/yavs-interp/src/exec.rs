@@ -1051,10 +1051,19 @@ impl Machine {
         self.frames
             .iter()
             .rev()
-            .filter_map(|fr| {
+            .flat_map(|fr| {
                 let f = self.rt.prog.func(fr.func)?;
-                f.loc.get(fr.pc as usize).copied()
+                let pc = fr.pc as usize;
+                // A function inlined at this instruction is a frame of its own.
+                Some(
+                    f.loc
+                        .get(pc)
+                        .copied()
+                        .into_iter()
+                        .chain(f.inlined_at(pc).map(|(site, _)| site)),
+                )
             })
+            .flatten()
             .collect()
     }
 

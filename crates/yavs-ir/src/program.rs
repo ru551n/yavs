@@ -30,6 +30,10 @@ pub struct Program {
     /// Cache of the optimiser (`opt.rs`); leave it to `Default`.
     #[serde(skip)]
     pub layouts: crate::opt::LayoutCache,
+    /// Inlinable bodies of the functions asked about (`opt/inline.rs`); leave it to `Default`.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub fwd: crate::opt::FwdCache,
     /// Functions from this id on were not verified when the program was built: [`Program::func`]
     /// verifies each when it hands it out first (`None`: all were, or a stored program).
     #[serde(skip)]
@@ -346,6 +350,11 @@ pub struct Func {
     pub loc: Vec<StmtId>,
     /// Operand lists (`Regs`).
     pub operands: Vec<Reg>,
+    /// Only in an optimised copy that inlined a call (`opt/inline.rs`): for each instruction,
+    /// the statement of the call it was inlined at and the function that was called (`None`
+    /// for the function's own instructions). Empty when nothing was inlined. A trace shows an
+    /// inlined function as a frame of its own: [`Func::inlined_at`].
+    pub via: Vec<Option<(StmtId, FuncId)>>,
     /// Resume points: the instruction after each `Suspend` and each call of a `MAY_SUSPEND`
     /// procedure, in code order. `Suspend::resume` indexes this.
     pub resume: Vec<u32>,
@@ -486,6 +495,7 @@ impl Func {
             code: Vec::new(),
             loc: Vec::new(),
             operands: Vec::new(),
+            via: Vec::new(),
             resume: Vec::new(),
             flags: self.flags,
             body: self.body,
@@ -512,6 +522,13 @@ impl Func {
             (f.code, f.loc, f.operands, f.resume) = (b.code, b.loc, b.operands, b.resume);
             Box::new(f)
         })
+    }
+
+    /// The call at instruction `pc` was inlined from: the statement of the call and the
+    /// function called, when the instruction belongs to an inlined function.
+    #[inline]
+    pub fn inlined_at(&self, pc: usize) -> Option<(StmtId, FuncId)> {
+        self.via.get(pc).copied().flatten()
     }
 
     pub fn nregs(&self) -> u32 {

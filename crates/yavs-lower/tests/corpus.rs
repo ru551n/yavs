@@ -105,6 +105,7 @@ const PASS: &[&str] = &[
     "env/assert_count_cycles",
     "env/assert_count",
     "env/call_path",
+    "env/call_path_thin",
     "env/finish_in_function_call_order",
     "env/finish_noarg",
     "env/finish_status",

@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:call_path_thin:main	outer 0: WALK at line 9
+diag	note	0	0	:call_path_thin:main	outer 1: THIN1 at line 21
+diag	note	0	0	:call_path_thin:main	outer 2: THIN2 at line 26
+diag	note	0	0	:call_path_thin:main	outer 3: OUTER at line 31
+diag	note	0	0	:call_path_thin:main	outer 4: MAIN at line 36
+diag	note	0	0	:call_path_thin:main	outer sees 5
+diag	note	0	0	:call_path_thin:main	main 0: WALK at line 9
+diag	note	0	0	:call_path_thin:main	main 1: THIN1 at line 21
+diag	note	0	0	:call_path_thin:main	main 2: THIN2 at line 26
+diag	note	0	0	:call_path_thin:main	main 3: MAIN at line 37
+diag	note	0	0	:call_path_thin:main	main sees 4

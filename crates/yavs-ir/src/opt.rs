@@ -33,10 +33,13 @@
 //! pass off (differential testing).
 
 mod cfg;
+mod inline;
 mod live;
 mod memo;
 mod range;
 mod share;
+
+pub use inline::FwdCache;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -132,14 +135,17 @@ pub fn fingerprint() -> String {
         enabled(),
         memo_enabled(),
         cfg_enabled(),
+        inline::enabled(),
         KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed),
         compiled(),
         external(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 6]) -> String {
-    let names = ["iropt", "memo", "cfg", "keep", "compiled", "external"];
+fn fingerprint_of(f: [bool; 7]) -> String {
+    let names = [
+        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external",
+    ];
     let parts: Vec<String> = names
         .iter()
         .zip(f)
@@ -155,9 +161,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 6]);
-        for i in 0..6 {
-            let mut f = [false; 6];
+        let base = fingerprint_of([false; 7]);
+        for i in 0..7 {
+            let mut f = [false; 7];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -222,6 +228,30 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 /// Reads only what lowering produced of other functions (flags, kinds, types), so the result
 /// does not depend on which function was optimised first.
 pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
+    let mut f = optimize_body(prog, id)?;
+    if inline::run(prog, id, &mut f) {
+        crate::build::number_func(&mut f, |c| {
+            prog.funcs
+                .get(c)
+                .is_some_and(|c| c.flags.contains(FuncFlags::MAY_SUSPEND))
+        });
+        #[cfg(debug_assertions)]
+        {
+            let mut errs = Vec::new();
+            crate::verify::verify_func(prog, id, &f, &mut errs);
+            assert!(errs.is_empty(), "inlining broke {}: {errs:?}", f.name);
+        }
+    }
+    Some(f)
+}
+
+/// Is a debugger keeping the variables of subprograms in their slots?
+fn keep_variables_on() -> bool {
+    KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The function optimised, without inlining: the copy [`optimize_func`] starts from.
+pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
     if !enabled() {
         return None;
     }

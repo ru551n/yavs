@@ -1608,7 +1608,16 @@ What changed (each measured on its own; the commit messages have the details):
 - `Op::Case`, the fused `DerefImm` / `LoadDerefImm`, and calls that write the registers the callee would load its parameters
   into and start after those loads and the entry's statement markers (-4 percent instructions for the parameters, -7 for
   the dereference, the rest small). Together with the optimiser changes the operations executed per push/pop pair go from
-  157 000 to 96 000.
+  157 000 to 96 000 (91 000 with inlining).
+- Thin subprograms are inlined (`opt/inline.rs`, `YAVS_NO_INLINE=1` turns it off): a call of a function whose optimised
+  body is straight-line code that reads its parameters, computes, checks and calls (the package function in front of a
+  protected method) becomes that code. The body is optimised apart from the callee's published copy, so the result does
+  not depend on the order functions are first used. Call stacks are unchanged: an inlined instruction keeps the callee's
+  statement and `Func::via` the call it came from (`Machine::trace`, `std.env` call paths, the verifier; pinned by
+  `tests/cli/runtime_error_thin` and `tests/corpus/env/call_path_thin`, both equal with and without inlining and the
+  second equal to sim1). Parameters stay in the argument registers where the body never writes them and the result is
+  made in the call's result register, so a call costs no move: the queue executes 10 percent fewer instructions and
+  about 8 percent fewer cycles.
 
 Measurements (pinned to core 2 of the performance cores, `perf stat` user-mode `cpu_core` counters, release build with the
 `llvm` feature, `--tier=interp`, host load average 12 to 18, so wall times are noisy and counts are quoted; main at
@@ -1616,26 +1625,25 @@ Measurements (pinned to core 2 of the performance cores, `perf stat` user-mode `
 
 | Row | instructions before | after | cycles before | after |
 |---|---:|---:|---:|---:|
-| queue microbenchmark, per push/pop pair of a 576-bit vector | 20.4 M | 11.4 M | 3.86 M | 2.02 M |
-| window-generator testbench, one test case (whole run) | 716 G | 472 G | 145 G | 98.8 G |
-| `protected_queue` (new benchmark, 4000 rounds) | 72.6 G | 42.4 G | | |
+| queue microbenchmark, per push/pop pair of a 576-bit vector | 20.4 M | 9.5 M | 3.86 M | 1.68 M |
+| window-generator testbench, one test case (whole run) | 716 G | 416 G | 145 G | 88.3 G |
+| `protected_queue` (new benchmark, 4000 rounds) | 72.6 G | 33.6 G | | |
 | `uvvm_sb_slv_tb`, `osvvm_axistream`, `vunit_vc30`, `uvvm_util_rand_tb` | | | | CPU 0.92 to 0.96 of before |
 
 Against sim1 (`tools/bench/run.py --ref sim1`, core 2, 3 runs): `protected_queue` 9.9 times slower (instructions 11.5
-times) before, 5.3 times (6.7 times) after. The window-generator testbench: sim1 9.7 G cycles, yavs 15 times before and
-10 times after. The gap of that testbench is not closed. The other 12 benchmarks of the internal group move between 0.88
+times) before, 4.6 times (5.3 times) after. The window-generator testbench: sim1 9.7 G cycles, yavs 15 times before and
+9 times after. The gap of that testbench is not closed. The other 12 benchmarks of the internal group move between 0.88
 and 1.04 (geometric mean of total CPU over the 14 of them 0.91; most run 0.1 s or less, so the small ones are noise).
 
 Left, largest first (all measured on the queue):
 
-1. Calls: ten per character, about 700 to 1000 host instructions each (plain call 624, protected call 945 with the callee's
-   body). Inlining the thin package subprograms would remove half of them and the wrapper's own operations (a wrapper
-   adds 41 percent to a direct protected call in `var` microbenchmarks). It changes what a trace shows: the "called from
-   here" label of the caller of an inlined forwarder needs a side table that every pass renumbering instructions keeps
-   (opt.rs `compact`, `opt/cfg.rs`, `opt/memo.rs`), and `std.env` call paths; not done.
-2. Dispatch: 20 percent of the cycles are the indirect jump of the loop (misprediction), 48 M operations instead of 78 M
-   for the 500-pair run; further fusions gain a few percent each (`Stmt` before a call, `Ret` followed by `Ret`, block-local
-   constants of multiply-defined registers in the `assert` of `unsafe_push`).
+1. The five protected-method calls per character remain, about 900 host instructions each with the callee's body. The
+   method bodies have two or three paths (a case on the mode), so `opt/inline.rs` leaves them: inlining them needs blocks
+   appended to the caller and the case turned into compares (case tables are shared by the program); the calls need no
+   change to `shared_alloc` since every frame of a process that reaches a protected object has it.
+2. Dispatch: 20 percent of the cycles are the indirect jump of the loop (misprediction), 45 M operations instead of 78 M
+   for the 500-pair run; further fusions gain a few percent each (`Stmt` before a call, `Ret` followed by `Ret`,
+   block-local constants of multiply-defined registers in the `assert` of `unsafe_push`).
 3. `--tier=auto` compiles the hot functions of this testbench (`unsafe_push`, `get`, `set`, ...) and gains nothing: a
    compiled caller reaches the shared-heap objects through the object cache of `yavs_rt_host` and the callee through a
    side exit; `--tier=llvm` (everything compiled before time 0) runs the queue 1.3 times faster than the interpreter at

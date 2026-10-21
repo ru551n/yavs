@@ -1044,6 +1044,7 @@ fn lowered_design_depends_on_the_optimiser_and_the_build() {
     let cases = [
         ("YAVS_NO_CFG", "1"),
         ("YAVS_NO_MEMO", "1"),
+        ("YAVS_NO_INLINE", "1"),
         ("YAVS_NO_IROPT", "1"),
         ("YAVS_CACHE_SALT", "another build"),
     ];

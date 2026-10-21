@@ -304,6 +304,13 @@ fn runtime_error() {
     run_snapshot("runtime_error", 1);
 }
 
+/// The same labels when thin subprograms are inlined into their callers (`opt/inline.rs`): the
+/// frames of the inlined functions are listed as before.
+#[test]
+fn runtime_error_in_thin_subprograms() {
+    run_snapshot("runtime_error_thin", 1);
+}
+
 /// Reports are written in blocks on a pipe, but a diagnostic on the same pipe still comes after
 /// every report that preceded it (#428).
 #[test]

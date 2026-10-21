@@ -1314,6 +1314,93 @@ fn a_copied_record_nothing_changes_is_read_from_its_source() {
     assert_eq!(count(&code, frame), 1, "{code:?}");
 }
 
+type Via = Option<(StmtId, FuncId)>;
+
+/// `f(a, b) = a + b` and a caller that passes two values it reads from the instance, or a
+/// callee that lets the address of a parameter slot escape or branches: the caller's code and
+/// its inlining record.
+fn thin_call(variant: &str) -> (Vec<Inst>, Vec<Via>, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    if variant == "escape" {
+        // The address of a parameter's slot is stored: the slot is more than a way in.
+        pin(&mut fb, sa);
+    }
+    let (x, y) = (load(&mut fb, sa), load(&mut fb, sb));
+    let sum = bin(&mut fb, IntOp::Add, x, y);
+    if variant == "branch" {
+        let c = fb.reg(RegTy::I64);
+        let zero = fb.int(0);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: sum,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        fb.emit(Inst::Ret { v: Some(zero) });
+        fb.at(e);
+    }
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    gb.slot(16, 8);
+    gb.stmt(StmtKind::Return, sp());
+    let (u, v) = (unknown(&mut gb, 0), unknown(&mut gb, 8));
+    let r = gb.reg(RegTy::I64);
+    let args = gb.regs(&[u, v]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let g = p.func(g).expect("g");
+    (g.code.clone(), g.via.clone(), f)
+}
+
+#[test]
+fn a_call_of_a_thin_function_becomes_its_code() {
+    if !on() {
+        return;
+    }
+    let is_call = |i: &Inst| matches!(i, Inst::Call { .. });
+    let (code, via, f) = thin_call("plain");
+    assert_eq!(count(&code, is_call), 0, "{code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Bin { op: IntOp::Add, .. })),
+        1,
+        "{code:?}"
+    );
+    // The addition came from `f`: a trace lists `f` as a frame of its own.
+    assert_eq!(via.len(), code.len());
+    let at = code
+        .iter()
+        .position(|i| matches!(i, Inst::Bin { .. }))
+        .expect("the addition");
+    assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
+    assert!(
+        via[..at]
+            .iter()
+            .all(|v| v.is_none() || v.is_some_and(|(_, c)| c == f))
+    );
+    // A parameter slot whose address escapes, a branch: the call stays, nothing is recorded.
+    for variant in ["escape", "branch"] {
+        let (code, via, _) = thin_call(variant);
+        assert_eq!(count(&code, is_call), 1, "{variant}: {code:?}");
+        assert!(via.is_empty(), "{variant}: {via:?}");
+    }
+}
+
 #[test]
 fn a_concatenation_keeps_its_block_and_what_it_read() {
     if !on() {

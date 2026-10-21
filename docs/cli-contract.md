@@ -492,7 +492,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - Runtime errors (bound check, overflow, null access, delta limit, internal) are diagnostics
   on stderr like every other error: code `E3001`-`E3010` per kernel `ErrorKind` (`E9999`
   internal), the failing statement, one `called from here` label per calling subprogram,
-  and a note `at TIME, delta N, in process PATH`.
+  and a note `at TIME, delta N, in process PATH`. A subprogram the optimiser inlined into its
+  caller still has its label (and its element in a `get_call_path`).
 - `--message-format=json` (section 0) is accepted by `run` and `elab` too, and
   covers runtime errors with their VHDL stacktrace; the test runner does not pass it today.
 - `--cov[=FILE]` (`run` only) writes the run's coverage database to `FILE` (default

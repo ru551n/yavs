@@ -585,6 +585,8 @@ impl Db {
             _ => prefix,
         };
         match self.classify(scope, inner) {
+            // A poison declaration was reported where it failed: stay silent (8.2).
+            NameRes::One(d) if self.is_poison(self.entity(d)) => Err(NameRes::Error),
             NameRes::One(d) => {
                 let e = self.entity(d);
                 if let Some(t) = self.object_type(d) {
@@ -1434,8 +1436,27 @@ impl Db {
                 let (stat, value) = match (o.class, &o.role, o.default) {
                     (crate::decl::ObjClass::Constant, crate::decl::ObjRole::Plain, Some(init)) => {
                         let e = &self.exprs[init];
+                        // 9.4.3: every constant is a globally static primary, whatever
+                        // its initial value; only a locally static one is also locally static.
+                        // ponytail: not inside a process or subprogram, where elaboration
+                        // cannot know the value (a driver's index, say): keeps the initial
+                        // value's staticness there (#492).
+                        let mut sequential = false;
+                        let mut cur = Some(self.decls[d].scope);
+                        while let Some(sc) = cur {
+                            sequential |= matches!(
+                                self.scopes[sc].kind,
+                                crate::scope::ScopeKind::Process
+                                    | crate::scope::ScopeKind::Subprogram
+                            );
+                            cur = self.scopes[sc].parent;
+                        }
                         (
-                            e.stat,
+                            if sequential {
+                                e.stat
+                            } else {
+                                e.stat.max(Staticness::Globally)
+                            },
                             if e.stat == Staticness::Locally {
                                 e.value
                             } else {

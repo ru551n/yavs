@@ -32,6 +32,7 @@ const PASS: &[&str] = &[
     "arith/real_arith",
     "arith/real_to_int_range",
     "arith/time_arith",
+    "composite/alias_slice_call_constant",
     "composite/sig_array_part",
     "composite/record_conversion_2019",
     "composite/static_slice_choice",

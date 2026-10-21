@@ -383,6 +383,85 @@ pub(crate) struct Slot {
     pub process: Box<dyn Process>,
     pub st: ProcState,
     pub result: Result<(), SimError>,
+    /// spike(mt): duration of the last run, when `YAVS_MT_STATS` asks for per-process times.
+    pub ns: u64,
+}
+
+/// spike(mt): batch and cycle statistics written to the file `YAVS_MT_STATS` names
+/// (`YAVS_MT_PROC=1`: per-process times too).
+pub(crate) struct MtStats {
+    out: std::io::BufWriter<std::fs::File>,
+    pub per_proc: bool,
+    names: Vec<String>,
+    serial: Vec<bool>,
+    pub proc_ns: Vec<u64>,
+    pub proc_runs: Vec<u64>,
+    pub t_cycle: Option<std::time::Instant>,
+    pub t_upd: u64,
+    pub t_wake: u64,
+}
+
+impl MtStats {
+    fn new(path: std::ffi::OsString, names: &[String], procs: &[ProcMeta]) -> MtStats {
+        MtStats {
+            out: std::io::BufWriter::new(std::fs::File::create(path).expect("YAVS_MT_STATS file")),
+            per_proc: std::env::var_os("YAVS_MT_PROC").is_some(),
+            names: names.to_vec(),
+            serial: procs.iter().map(|m| m.flags.serial).collect(),
+            proc_ns: vec![0; procs.len()],
+            proc_runs: vec![0; procs.len()],
+            t_cycle: None,
+            t_upd: 0,
+            t_wake: 0,
+        }
+    }
+
+    fn line(&mut self, l: std::fmt::Arguments<'_>) {
+        use std::io::Write;
+        let _ = self.out.write_fmt(l);
+    }
+}
+
+impl MtStats {
+    fn dump(&mut self) {
+        use std::io::Write;
+        for p in 0..self.names.len() {
+            if self.proc_runs[p] > 0 {
+                let _ = writeln!(
+                    self.out,
+                    "P {p} {} {} {} {}",
+                    u8::from(self.serial[p]),
+                    self.proc_runs[p],
+                    self.proc_ns[p],
+                    self.names[p]
+                );
+            }
+        }
+        let _ = self.out.flush();
+    }
+}
+
+/// spike(mt): greedy list-schedule makespan of `jobs` on `n` workers, worker 0 starting at `init`.
+fn greedy(jobs: &[u64], n: usize, init: u64) -> u64 {
+    let mut l = vec![0u64; n];
+    l[0] = init;
+    for &j in jobs {
+        let i = (0..n).min_by_key(|&i| l[i]).unwrap_or(0);
+        l[i] += j;
+    }
+    l.into_iter().max().unwrap_or(0)
+}
+
+/// spike(mt): makespan of `jobs` in `n` contiguous chunks of equal count.
+fn chunks(jobs: &[u64], n: usize) -> u64 {
+    if jobs.is_empty() {
+        return 0;
+    }
+    let c = jobs.len().div_ceil(n);
+    jobs.chunks(c)
+        .map(|c| c.iter().sum::<u64>())
+        .max()
+        .unwrap_or(0)
 }
 
 pub(crate) struct ProcMeta {
@@ -584,6 +663,18 @@ pub struct SimControl {
     /// Per trigger: the edge a signal resumes its process for, when `Ctx::edge` may take it as
     /// held (`ProcState::known_edge`).
     known_edges: Vec<Option<(SignalId, u32, bool)>>,
+    mt: Option<Box<MtStats>>,
+    /// spike(mt): `YAVS_MT_MODE` 0 as main, 1 no live scan without serial processes, 2 also
+    /// the run phase in pieces of the slot array (`YAVS_MT_SPLIT` per thread, claimed from a
+    /// counter, the kernel thread working too) with the early commit in the worker, 3 also the
+    /// work-based inline/pool choice.
+    mt_mode: u8,
+    /// spike(mt): estimated work threshold (ns, `YAVS_MT_THR`) for mode 3, the per-process
+    /// costs learnt from inline runs, pieces per thread, the probe counter.
+    mt_thr: f64,
+    mt_cost: Vec<f32>,
+    mt_split: usize,
+    mt_probe: u64,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -756,7 +847,25 @@ impl SimControl {
                 })
                 .collect(),
             triggers,
+            mt: None,
+            mt_mode: std::env::var("YAVS_MT_MODE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            mt_thr: std::env::var("YAVS_MT_THR")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(15000.0),
+            mt_cost: Vec::new(),
+            mt_probe: 0,
+            mt_split: std::env::var("YAVS_MT_SPLIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(4),
         };
+        sim.mt_cost = vec![200.0; sim.procs.len()];
+        sim.mt = std::env::var_os("YAVS_MT_STATS")
+            .map(|p| Box::new(MtStats::new(p, &sim.names, &sim.procs)));
         sim.settle().map_err(SimError::new)?;
         sim.live = true;
         sim.signals.iter_mut().for_each(|s| s.live = true);
@@ -1077,6 +1186,14 @@ impl SimControl {
 
     /// Run all cycles at times `<= limit`, then leave `now` at `limit`.
     pub fn run_until(&mut self, limit: Time) -> Result<RunStatus, SimError> {
+        let r = self.run_until_in(limit);
+        if let Some(m) = &mut self.mt {
+            m.dump();
+        }
+        r
+    }
+
+    fn run_until_in(&mut self, limit: Time) -> Result<RunStatus, SimError> {
         self.guard(|sim| {
             let mut known = None;
             loop {
@@ -1263,11 +1380,19 @@ impl SimControl {
         }
         self.cycle += 1;
         self.stats.cycles += 1;
+        if let Some(m) = &mut self.mt {
+            m.t_cycle = Some(std::time::Instant::now());
+        }
         self.phase(Phase::NextCycle);
         if !self.wakes.pending.is_empty() {
             self.fire_wakes();
         }
         self.update().map_err(|k| self.err(k))?;
+        if let Some(m) = &mut self.mt
+            && let Some(t) = m.t_cycle
+        {
+            m.t_upd = t.elapsed().as_nanos() as u64;
+        }
         self.commit_callouts();
         let mut changed = std::mem::take(&mut self.changed_sigs);
         if changed.len() > 1 {
@@ -1385,8 +1510,22 @@ impl SimControl {
             several.clear();
             self.ready_several = several;
         }
+        if let Some(m) = &mut self.mt
+            && let Some(t) = m.t_cycle
+        {
+            m.t_wake = t.elapsed().as_nanos() as u64 - m.t_upd;
+        }
         self.phase(Phase::StartOfProcesses);
         self.run_batch(ready, false, false)?;
+        if let Some(m) = &mut self.mt
+            && let Some(t) = m.t_cycle.take()
+        {
+            let (u, w) = (m.t_upd, m.t_wake);
+            m.line(format_args!(
+                "C {u} {w} {}\n",
+                t.elapsed().as_nanos() as u64 - u - w
+            ));
+        }
         self.phase(Phase::EndOfProcesses);
 
         self.last_delta()
@@ -1937,6 +2076,11 @@ impl SimControl {
         } else if !std::mem::take(&mut self.batch_mono) {
             self.order(&mut pids, init);
         }
+        let t_run = self.mt.as_ref().map(|_| std::time::Instant::now());
+        let per_proc = self.mt.as_ref().is_some_and(|m| m.per_proc);
+        let mut pooled = false;
+        let mut sub = [0u64; 3];
+        let learn = self.mt_mode >= 3 && self.pool.is_some();
         {
             let sh = Shared {
                 now: self.now,
@@ -1967,6 +2111,7 @@ impl SimControl {
                     st: &mut slot.st,
                     live,
                 };
+                let t = per_proc.then(std::time::Instant::now);
                 // A panic in process code is a broken invariant: report it as an internal
                 // error of that process, not a bare panic.
                 slot.result = catch_unwind(AssertUnwindSafe(|| slot.process.run(&mut ctx)))
@@ -1977,14 +2122,137 @@ impl SimControl {
                         e.process = Some((ProcId(p), sh.names[p as usize].clone()));
                         Err(e)
                     });
+                if let Some(t) = t {
+                    slot.ns = t.elapsed().as_nanos() as u64;
+                }
             };
+            let mt_mode = self.mt_mode;
+            let est: f64 = if mt_mode >= 3 {
+                {
+                    // The work that can be split: the parallel processes minus the largest one.
+                    let (sum, max) = pids
+                        .iter()
+                        .filter(|&&p| !self.procs[p as usize].flags.serial)
+                        .map(|&p| f64::from(self.mt_cost[p as usize]))
+                        .fold((0.0, 0.0f64), |(s, m), c| (s + c, m.max(c)));
+                    sum - max
+                }
+            } else {
+                0.0
+            };
+            let big = if mt_mode >= 3 {
+                // Costs are learnt from inline runs only (a pooled run measures cold caches);
+                // one batch in 64 that would pool runs inline to refresh them.
+                {
+                    self.mt_probe += 1;
+                    est > self.mt_thr && self.mt_probe % 64 != 0
+                }
+            } else {
+                pids.len() >= PAR_BATCH
+            };
+            let chunked = mt_mode >= 2
+                && self.pool.is_some()
+                && !init
+                && !postponed
+                && self.rng.is_none()
+                && pids.len() >= 2
+                && big
+                && pids.iter().all(|&p| !self.procs[p as usize].flags.serial);
             match &self.pool {
+                Some(pool) if chunked => {
+                    pooled = true;
+                    let mut sorted = pids.clone();
+                    sorted.sort_unstable();
+                    let k = pool.current_num_threads().min(sorted.len());
+                    let pieces = (k * self.mt_split).min(sorted.len());
+                    let per = sorted.len().div_ceil(pieces);
+                    let mut rest_s: &mut [Mutex<Slot>] = &mut self.slots[..];
+                    let mut rest_p: &mut [ProcMeta] = &mut self.procs[..];
+                    let mut base = 0usize;
+                    let mut parts = Vec::with_capacity(pieces);
+                    for c in sorted.chunks(per) {
+                        let (lo, hi) = (c[0] as usize, c[c.len() - 1] as usize + 1);
+                        let (_, s) = std::mem::take(&mut rest_s).split_at_mut(lo - base);
+                        let (s, r) = s.split_at_mut(hi - lo);
+                        rest_s = r;
+                        let (_, m) = std::mem::take(&mut rest_p).split_at_mut(lo - base);
+                        let (m, r) = m.split_at_mut(hi - lo);
+                        rest_p = r;
+                        base = hi;
+                        parts.push(Mutex::new((c, lo, s, m, Vec::<(Time, u32)>::new(), 0u64)));
+                    }
+                    let known_edges = &self.known_edges;
+                    let next = std::sync::atomic::AtomicUsize::new(0);
+                    let work = || {
+                        loop {
+                            let i = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(part) = parts.get(i) else { break };
+                            let mut part = part.lock().unwrap_or_else(PoisonError::into_inner);
+                            let t = std::time::Instant::now();
+                            let (c, lo, s, m, out, ns) = &mut *part;
+                            for &p in c.iter() {
+                                let i = p as usize - *lo;
+                                let slot = slot_mut(&mut s[i]);
+                                let meta = &mut m[i];
+                                slot.st.timed_out = meta.by_timeout;
+                                slot.st.known_edge =
+                                    match known_edges.get((meta.tid as usize).wrapping_sub(1)) {
+                                        Some(&k) if !meta.by_timeout => k,
+                                        _ => None,
+                                    };
+                                run(p, slot, false);
+                                let st = &mut slot.st;
+                                if st.again
+                                    && meta.perm != 0
+                                    && st.sens.is_empty()
+                                    && st.deadline.is_none()
+                                    && st.effects.is_empty()
+                                    && st.phantoms.is_empty()
+                                    && slot.result.is_ok()
+                                {
+                                    st.again = false;
+                                    meta.ready = false;
+                                    meta.resumed = true;
+                                    for &(t, d) in st.scheduled.iter() {
+                                        out.push((t, d.0));
+                                    }
+                                    st.scheduled.clear();
+                                }
+                            }
+                            *ns = t.elapsed().as_nanos() as u64;
+                        }
+                    };
+                    pool.in_place_scope(|sc| {
+                        for _ in 1..k {
+                            let work = &work;
+                            sc.spawn(move |_| work());
+                        }
+                        work();
+                    });
+                    let done: Vec<(Vec<u32>, Vec<(Time, u32)>, u64)> = parts
+                        .into_iter()
+                        .map(|p| {
+                            let p = p.into_inner().unwrap_or_else(PoisonError::into_inner);
+                            (p.0.to_vec(), p.4, p.5)
+                        })
+                        .collect();
+                    let now = self.now;
+                    for (_, out, _) in done {
+                        for (t, d) in out {
+                            self.queue.push(now, t, Entry::Driver(d));
+                        }
+                    }
+                }
                 // ponytail: fixed cut-off; below it the pool hand-off costs more than the
                 // processes. Inline or pooled, the commit order is the batch order.
-                Some(pool) if pids.len() >= PAR_BATCH => {
+                Some(pool) if (mt_mode < 3 && pids.len() >= PAR_BATCH) || (mt_mode >= 3 && big) => {
+                    pooled = true;
+                    let ts = std::time::Instant::now();
                     let (serial, par): (Vec<u32>, Vec<u32>) = pids
                         .iter()
                         .partition(|&&p| self.procs[p as usize].flags.serial);
+                    sub[0] = ts.elapsed().as_nanos() as u64;
+                    let ts = std::time::Instant::now();
                     let slots = &self.slots;
                     let (procs, known_edges) = (&self.procs, &self.known_edges);
                     pool.install(|| {
@@ -1996,14 +2264,18 @@ impl SimControl {
                             run(p, &mut s, false)
                         })
                     });
+                    sub[1] = ts.elapsed().as_nanos() as u64;
+                    let ts = std::time::Instant::now();
                     // The serial ones are live when no parallel one wrote or failed.
                     let live = live_ok
+                        && !(mt_mode >= 1 && serial.is_empty())
                         && par.iter().all(|&p| {
                             let s = lock(&slots[p as usize]);
                             !stops(&s)
                                 && !(s.st.effects.iter())
                                     .any(|e| matches!(e, Effect::Report(..) | Effect::Output(..)))
                         });
+                    sub[2] = ts.elapsed().as_nanos() as u64;
                     for &p in &serial {
                         let mut s = lock(&slots[p as usize]);
                         if !init {
@@ -2018,12 +2290,19 @@ impl SimControl {
                 // No other thread touches the slots: no lock.
                 _ => {
                     let now = self.now;
-                    for &p in &pids {
+                    for (i, &p) in pids.iter().enumerate() {
                         let s = slot_mut(&mut self.slots[p as usize]);
                         if !init {
                             resumption(&self.procs, &self.known_edges, p, &mut s.st);
                         }
+                        // spike(mt): one activation in 16 of each process is timed (rotating).
+                        let t = (learn && (i as u64 + self.mt_probe) % 16 == 0)
+                            .then(std::time::Instant::now);
                         run(p, s, live_ok);
+                        if let Some(t) = t {
+                            let e = &mut self.mt_cost[p as usize];
+                            *e = 0.5 * *e + 0.5 * t.elapsed().as_nanos() as f32;
+                        }
                         if stops(s) {
                             break;
                         }
@@ -2057,6 +2336,8 @@ impl SimControl {
             }
         }
         self.stats.process_runs += pids.len() as u64;
+        let run_ns = t_run.map(|t| t.elapsed().as_nanos() as u64);
+        let t_commit = t_run.map(|_| std::time::Instant::now());
         // The batch is in commit order already unless it was shuffled to run.
         if self.rng.is_some() {
             self.order(&mut pids, init);
@@ -2183,6 +2464,47 @@ impl SimControl {
             if first_err.is_some() {
                 break;
             }
+        }
+        if let (Some(run_ns), Some(tc)) = (run_ns, t_commit) {
+            let commit_ns = tc.elapsed().as_nanos() as u64;
+            let (mut par, mut ser, mut all) = (Vec::new(), 0u64, Vec::new());
+            let nser = pids
+                .iter()
+                .filter(|&&p| self.procs[p as usize].flags.serial)
+                .count();
+            if per_proc {
+                for &p in &pids {
+                    let s = slot_mut(&mut self.slots[p as usize]);
+                    let ns = std::mem::take(&mut s.ns);
+                    let m = self.mt.as_mut().expect("mt");
+                    m.proc_ns[p as usize] += ns;
+                    m.proc_runs[p as usize] += 1;
+                    all.push(ns);
+                    if self.procs[p as usize].flags.serial {
+                        ser += ns;
+                    } else {
+                        par.push(ns);
+                    }
+                }
+            }
+            let sp: u64 = par.iter().sum();
+            let mx = par.iter().copied().max().unwrap_or(0);
+            let g = [2, 4, 8].map(|n| greedy(&par, n, 0));
+            let c = [2, 4, 8].map(|n| chunks(&par, n));
+            let o = [2, 4, 8].map(|n| greedy(&par, n, ser));
+            let a4 = greedy(&all, 4, 0);
+            let m = self.mt.as_mut().expect("mt");
+            m.line(format_args!(
+                "B {} {} {} {ser} {sp} {mx} {} {} {} {} {} {} {} {} {} {run_ns} {commit_ns} {} {} {} {} {a4}\n",
+                u8::from(postponed) + 2 * u8::from(init),
+                pids.len(),
+                nser,
+                g[0], g[1], g[2], c[0], c[1], c[2], o[0], o[1], o[2],
+                u8::from(pooled),
+                sub[0],
+                sub[1],
+                sub[2]
+            ));
         }
         // The previous batch's buffer becomes the next cycle's ready list: no allocation per delta.
         let mut old = std::mem::replace(&mut self.last_ran, pids);

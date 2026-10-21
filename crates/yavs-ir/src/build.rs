@@ -686,3 +686,78 @@ impl FuncBuilder<'_> {
         f.defined = true;
     }
 }
+
+/// spike(mt): why `f` is serial: the call path to the first direct cause, `None` when it is not.
+pub fn serial_cause(prog: &Program, f: FuncId) -> Option<String> {
+    let flagged = |g: FuncId| {
+        prog.funcs
+            .get(g)
+            .is_some_and(|x| x.flags.contains(FuncFlags::TOUCHES_SHARED))
+    };
+    if !flagged(f) {
+        return None;
+    }
+    let mut parent: std::collections::HashMap<u32, u32> = Default::default();
+    let mut queue = std::collections::VecDeque::from([f]);
+    parent.insert(f.0, f.0);
+    let path = |mut g: u32, parent: &std::collections::HashMap<u32, u32>| {
+        let mut v = Vec::new();
+        loop {
+            v.push(
+                prog.funcs
+                    .get(FuncId(g))
+                    .map_or("?".into(), |x| x.name.clone()),
+            );
+            let p = parent[&g];
+            if p == g {
+                break;
+            }
+            g = p;
+        }
+        v.reverse();
+        v.join(" > ")
+    };
+    while let Some(g) = queue.pop_front() {
+        let Some(func) = prog.funcs.get(g) else {
+            continue;
+        };
+        let func = func.full();
+        for inst in &func.code {
+            let cause = match *inst {
+                Inst::AddrOf {
+                    space: AddrSpace::Shared,
+                    ..
+                } => Some("shared variable".to_string()),
+                Inst::CallProt { func: c, .. } => Some(format!(
+                    "protected call {}",
+                    prog.funcs.get(c).map_or("?", |x| x.name.as_str())
+                )),
+                Inst::New { shared: true, .. } | Inst::NewFill { shared: true, .. } => {
+                    Some("shared allocation".to_string())
+                }
+                Inst::CallNative { native, .. } => prog
+                    .natives
+                    .get(native)
+                    .filter(|n| touches_files(&n.symbol))
+                    .map(|n| format!("file native {}", n.symbol)),
+                _ => None,
+            };
+            if let Some(c) = cause {
+                return Some(format!("{} : {c}", path(g.0, &parent)));
+            }
+        }
+        for inst in &func.code {
+            if let Some(c) = callee(inst)
+                && flagged(c)
+                && !parent.contains_key(&c.0)
+            {
+                parent.insert(c.0, g.0);
+                queue.push_back(c);
+            }
+        }
+    }
+    Some(format!(
+        "{} : flag without a direct cause (region)",
+        path(f.0, &parent)
+    ))
+}

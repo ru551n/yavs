@@ -562,6 +562,7 @@ impl Builder {
                 process: p.process,
                 st,
                 result: Ok(()),
+                ns: 0,
             }));
             let depth = p.name.trim_matches(':').matches(':').count() as u32;
             names.push(p.name);

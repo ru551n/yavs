@@ -17,7 +17,7 @@ mod program;
 mod ty;
 mod verify;
 
-pub use build::{FuncBuilder, ProgramBuilder};
+pub use build::{FuncBuilder, ProgramBuilder, serial_cause};
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, ElabOp, FOp, FUnOp, ForceKind, Inst,
     IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES, Width,

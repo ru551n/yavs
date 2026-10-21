@@ -1057,6 +1057,11 @@ impl InterpProcess {
                 f.name
             )));
         }
+        if std::env::var_os("YAVS_MT_CAUSE").is_some()
+            && let Some(c) = yavs_ir::serial_cause(&rt.prog, func)
+        {
+            eprintln!("mt-serial {} : {c}", f.name);
+        }
         for d in &drivers {
             if inst.sigs.get(d.sig as usize).is_none() {
                 return Err(usage(format!(

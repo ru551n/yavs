@@ -6128,9 +6128,23 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 n,
                 mode,
                 reject,
-            }) if !target.is_some_and(|t| m.is_multi(t)) => m
-                .driver(driver)
-                .and_then(|d| m.drive(self.ctx, d, target, wave, n, mode, reject)),
+            }) if !target.is_some_and(|t| m.is_multi(t)) => m.driver(driver).and_then(|d| {
+                // The `LSet` of element 0 of a one-element waveform just before: the scalar
+                // logic assignment of the predecoder's `LSetDrive`, from the code itself.
+                if let (Some(t), None, Some(&Inst::LSet { base, idx, v })) = (
+                    target,
+                    reject,
+                    (at as usize).checked_sub(1).and_then(|p| f.code.get(p)),
+                ) && m.r(idx) == 0
+                    && m.r(n) == 1
+                    && m.r(base) == m.r(wave).wrapping_add(8)
+                    && m.r(v) <= 8
+                    && m.drive_bit(self.ctx, d, t, wave, m.r(v) as u8, mode)?
+                {
+                    return Ok(());
+                }
+                m.drive(self.ctx, d, target, wave, n, mode, reject)
+            }),
             // A `wait on` and the suspension after it (a process with a sensitivity list) in
             // one call.
             Some(&Inst::WaitOn { sig }) => match m.wait_on(sig, self.ctx) {

@@ -1139,6 +1139,7 @@ fn waveform_is_private(
 
 /// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
 /// first op's pc stays an entry, the others' pcs are not).
+#[allow(clippy::too_many_arguments)]
 fn peephole(
     f: &Func,
     ops: &mut Vec<Op>,

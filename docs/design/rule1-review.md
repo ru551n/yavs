@@ -35,7 +35,7 @@ The tests print subtypes in a compact form, built only from public HIR data:
 
 "M2 gets the bounds from" says where lowering and elaboration must read them at run time. The
 simulator columns are analysis (and elaboration plus run where a top exists) with reference simulators 1, 2 and 3 (versions 1.23-devel,
-7.0.0-dev and 2025.3 (`vcom -2008`)), each under
+7.0.0-dev and 2025.3 (2008 mode)), each under
 `timeout 60 systemd-run --user --scope -p MemoryMax=1G`. The VHDL in the test file is the input
 of those runs.
 
@@ -177,15 +177,15 @@ the cloned objects keep the generic's `BoundsFrom` (F7).
 
 | Case | Situation | yavs | Reference simulator 1 | Reference simulator 2 | Reference simulator 3 |
 |---|---|---|---|---|---|
-| Subtype of a record port element | `axi : inout bus_rec_t` (unconstrained elements); `signal address : std_logic_vector(axi.address'range)`; `signal data2 : axi.data'subtype` | `{axi.address'range(1)}` and `from-object(axi.data)`, both `[Full]` (`ghdl_641_subtype_of_record_port_element`) | ok | ok | ok |
+| Subtype of a record port element | `axi : inout bus_rec_t` (unconstrained elements); `signal address : std_logic_vector(axi.address'range)`; `signal data2 : axi.data'subtype` | `{axi.address'range(1)}` and `from-object(axi.data)`, both `[Full]` (`sim2_641_subtype_of_record_port_element`) | ok | ok | ok |
 | Subtype of an alias of a record element | `alias axi_data is axi.data; signal data1 : axi_data'subtype;` | `from-object(axi_data)` `[Full]` (F6: an internal error until 260729c landed during this review; `f6_alias_of_record_element`) | ok | ok | ok |
-| Element bounds from the initial value | `constant m : mat_t(0 to 1) := ("UX01Z", "WLH-0")`, loops over `m'range` and `m(i)'range` | `mat_t(0 to 1) [Partial]` from Initializer; loop `j` ranges over `{m(i)'range(1)}` (`ghdl_1224_element_bounds_from_initial_value`) | ok, runs | ok, runs | ok, runs |
-| Formal conversion on an unconstrained port | `port map (std_logic_vector(o) => sig)`, `o : out unsigned` | accepted: `Actual::Converted` with the conversion to `STD_LOGIC_VECTOR`, `o` bounds from Actual (`ghdl_2422_formal_conversion_on_unconstrained_port`); F8 | analysis ok, elaboration fails | rejects | rejects (vcom-1189) |
-| `others` for a record port element | `p.elem <= (others => '0')` for `p : out rec` (unconstrained element); `s1.elem`, `s2 : s1'subtype` | `p.elem`: E1325 (right, all three agree); `s2` is `rec(elem(3 downto 0)) [Full]`; `s1.elem`, `s2.elem` accepted since F3 was fixed (`ghdl_2179_others_for_record_port_element`) | rejects line 16 only | rejects line 16 only | rejects line 16 only |
+| Element bounds from the initial value | `constant m : mat_t(0 to 1) := ("UX01Z", "WLH-0")`, loops over `m'range` and `m(i)'range` | `mat_t(0 to 1) [Partial]` from Initializer; loop `j` ranges over `{m(i)'range(1)}` (`sim2_1224_element_bounds_from_initial_value`) | ok, runs | ok, runs | ok, runs |
+| Formal conversion on an unconstrained port | `port map (std_logic_vector(o) => sig)`, `o : out unsigned` | accepted: `Actual::Converted` with the conversion to `STD_LOGIC_VECTOR`, `o` bounds from Actual (`sim2_2422_formal_conversion_on_unconstrained_port`); F8 | analysis ok, elaboration fails | rejects | rejects (sim3 message 1189) |
+| `others` for a record port element | `p.elem <= (others => '0')` for `p : out rec` (unconstrained element); `s1.elem`, `s2 : s1'subtype` | `p.elem`: E1325 (right, all three agree); `s2` is `rec(elem(3 downto 0)) [Full]`; `s1.elem`, `s2.elem` accepted since F3 was fixed (`sim2_2179_others_for_record_port_element`) | rejects line 16 only | rejects line 16 only | rejects line 16 only |
 | Record aggregate with `others` over several element subtypes | `(x => '0', inner => c_inner, others => (others => '1'))` over `slv(5 downto 0)`, `slv(9 downto 0)`, `slv(31 downto 0)` | accepted, **folded wrong**: `b` and `c` get 6 bits (F1) | elaboration fails: "value length 6 does not match field B length 10" | run fails: bound check failure | ok |
-| Alias of an external name | `alias ram_un is << signal .outer1543.u.ram : ram_t >>`, `ram_un'element'length` | E9999 "aliases of external names is not implemented yet" (S6, #19): explicit, no guessed bounds (`nvc_1543_external_name_alias_is_reported_not_implemented`) | ok, runs | ok, runs | ok, runs |
-| Allocator of a constrained record | `subtype container_c_t is container_t(data(0 to cap - 1)(7 downto 0)); container := new container_c_t;` | `container_t(data(0 to 3)(7 downto 0)) [Full]` (`cap - 1` folded from a locally static constant), `NewInit::Subtype` of it (`nvc_1576_allocator_of_constrained_record`) | ok, runs | ok, runs | ok, runs |
-| Array of records constrained in a port | `sig : in rec_arr_t(0 to 1)(data(0 to 1))` | `rec_arr_t(0 to 1)(data(0 to 1)) [Full]`; `sig(0)` is `my_rec_t(data(0 to 1)) [Full]`, `sig(0).data` keeps `(0 to 1)` since F3 was fixed (`nvc_1463_array_of_records_constrained_in_port`) | ok | ok | ok |
+| Alias of an external name | `alias ram_un is << signal .outer1543.u.ram : ram_t >>`, `ram_un'element'length` | E9999 "aliases of external names is not implemented yet" (S6, #19): explicit, no guessed bounds (`sim1_1543_external_name_alias_is_reported_not_implemented`) | ok, runs | ok, runs | ok, runs |
+| Allocator of a constrained record | `subtype container_c_t is container_t(data(0 to cap - 1)(7 downto 0)); container := new container_c_t;` | `container_t(data(0 to 3)(7 downto 0)) [Full]` (`cap - 1` folded from a locally static constant), `NewInit::Subtype` of it (`sim1_1576_allocator_of_constrained_record`) | ok, runs | ok, runs | ok, runs |
+| Array of records constrained in a port | `sig : in rec_arr_t(0 to 1)(data(0 to 1))` | `rec_arr_t(0 to 1)(data(0 to 1)) [Full]`; `sig(0)` is `my_rec_t(data(0 to 1)) [Full]`, `sig(0).data` keeps `(0 to 1)` since F3 was fixed (`sim1_1463_array_of_records_constrained_in_port`) | ok | ok | ok |
 
 M2: for #1576 the allocator's designated object gets the full subtype's descriptor and the
 access value's `.all` is `container_t` unconstrained, so lowering must take the bounds from the
@@ -212,7 +212,7 @@ not analyze in yavs yet for unrelated reasons (missing units, #60 and a cascade 
 |---|---|---|---|
 | F1 | A record aggregate association covering several elements (`others`) is resolved and folded once, in the first element's subtype: silent wrong value, a bug that some reference simulators still have (the third one is right). | `expr/aggregate.rs` `record_agg` | #98 |
 | F2 | Record aggregate element values are resolved in the element's declared subtype, not the context's record constraint: `payload => (others => '0')` in an `outer_full_t` context is E1325 (all three accept). | `expr/aggregate.rs` `record_agg` | #100 |
-| F3 | A selected element (`s.data`, `sig(0).data`) had the element's declared subtype, dropping the prefix's record constraint: false E1325 on `s.data <= (others => '0')` (lines 14 and 15 of the `ghdl_2179_others_for_record_port_element` reproducer). **Fixed on main by f1582e5 (#150) during the review**; `f3_selected_element_keeps_record_constraint` now passes. | `expr/names.rs` `Db::field_subtype` | #102 (closed) |
+| F3 | A selected element (`s.data`, `sig(0).data`) had the element's declared subtype, dropping the prefix's record constraint: false E1325 on `s.data <= (others => '0')` (lines 14 and 15 of the `sim2_2179_others_for_record_port_element` reproducer). **Fixed on main by f1582e5 (#150) during the review**; `f3_selected_element_keeps_record_constraint` now passes. | `expr/names.rs` `Db::field_subtype` | #102 (closed) |
 | F4 | Attributes of attribute prefixes: `'element'range` (E1361), `'element'length`, `T'base'high` (E9999). | `attr.rs`, `types.rs` range attributes | #104 |
 | F5 | A constrained generic type actual `t => std_ulogic_vector(7 downto 0)` is E1104. | `generic.rs` type actuals | #106 |
 | F6 | `alias d is axi.data` ended in an internal error. **Fixed on main by 260729c during the review**; `f6_alias_of_record_element` now passes. | `decl.rs` `alias_decl` | #108 (closed) |

@@ -9,7 +9,7 @@ fourth simulator can be tested the same way when it is available).
 ## Labels, verdicts, kinds
 
 - Simulators are named by label: `sim1`, `sim2`, `sim3`, `sim4`. The label to tool mapping is not in the repository (it lives in the
-  untracked `tools/discrepancies/sims.local.conf` or in `DISCREP_SIM<N>` variables), as for the
+  untracked `tools/sims.local.conf` or in `DISCREP_SIM<N>` variables), as for the
   analysis corpora.
 - Verdicts: `REJECT` (analysis or elaboration error), `OK` (accepted, and for a runnable case the
   same messages as yavs's expected output), `OK*` (accepted, different messages), `CRASH`

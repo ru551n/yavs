@@ -90,9 +90,9 @@ and after #365 to #368 (2026-10-19):
 
 | Suite | Runnable | Reference bad here | pass | wording only (`fatalmsg`) | order | other output | outcome | elab | analysis |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| first (`external.py nvc`), before | 1070 | 20 | 791 | 52 | 3 | 37 | 64 | 52 | 51 |
+| first (`external.py sim1`), before | 1070 | 20 | 791 | 52 | 3 | 37 | 64 | 52 | 51 |
 | first, after | 1070 | 20 | 798 | 52 | 3 | 39 | 55 | 52 | 51 |
-| second (`external.py ghdl`), before | 504 | 30 | 377 | 0 | 0 | 21 | 16 | 19 | 41 |
+| second (`external.py sim2`), before | 504 | 30 | 377 | 0 | 0 | 21 | 16 | 19 | 41 |
 | second, after | 504 | 30 | 381 | 0 | 0 | 21 | 12 | 19 | 41 |
 | second, after #447 to #461 (2026-10-20) | 504 | 30 | 392 | 0 | 0 | 22 | 9 | 15 | 36 |
 | first, after #450 to #476 (2026-10-20) | 1070 | 20 | 839 (+11 `early`) | 57 | 3 | 38 | 48 | 26 | 28 |
@@ -118,7 +118,7 @@ the rest one by one.
 
 Skipped by the harness: 403 and 647 (other languages, VHPI, coverage, Tcl and shell scripts,
 second-suite scripts with control flow or tool options, negative analysis tests). The passing
-tests are listed in `tools/difftest/external-{nvc,ghdl}.pass`; the CI `corpus` job checks them
+tests are listed in `tools/difftest/external-{sim1,sim2}.pass`; the CI `corpus` job checks them
 against the suites' own verdicts (exit status) without a reference simulator. Every listed test gives
 identical output at `--threads 1` and `--threads 4`.
 
@@ -3641,7 +3641,7 @@ whole (`W0904`); the element subtype of a resolved array subtype (`std_logic_vec
 elements report `STD_ULOGIC`).
 
 Done (#273): `tools/vhpi-conformance/run.py` runs 5 C plugins (walk, props, values, cbs, put) on 2 small designs under yavs and the primary reference simulator and diffs the canonical traces, no install needed. Baseline at `ba53e23d` (reference lines matched): walk 28/172, props 158/328, values 159/230, cbs 78/114, put 108/149; put_value (#271) was still open.
-Three-way run (#273, second reference simulator with VHPI, `SIM4_BIN`), on main with #269 to #272 (yavs lines matching: both references / only the first / only the second / neither): walk 9/64/19/61, props 152/24/92/60, values 102/57/56/15, cbs 64/15/5/3, put 60/41/22/26 (case-folded, LCS-aligned; many `neither` lines are yavs reporting a property both references give as -1). Real gaps where yavs differs from both: `vhpi_iterator` for block and instance statements (#316), end-of-processes callbacks (#317), `vhpiEnumVal` on integers (#318), integer put into a vector and the delta cycle after a propagating put (#319); release after deposit is #310. Reference quirks (the references differ from each other): upper-case names in one, a dummy root above the design in the other, `vhpi_put_value` on undriven signals, time resolution, string formats of enumerations. After #310, #316 to #319 (and the non-propagating put modes refused): walk 20/93/32/92 (yavs now lists block, instance and statement iterators the references answer differently, more lines), props 152/24/92/60, values 104/57/56/13, cbs 81/18/16/14 (the remaining `neither` lines are start-of-processes callbacks the second reference orders around after-delay callbacks and omits in a time step's last delta), put 66/59/9/15, nonprop (new) 56/50/6/5.
+Three-way run (#273, second reference simulator with VHPI, `--refs sim4`), on main with #269 to #272 (yavs lines matching: both references / only the first / only the second / neither): walk 9/64/19/61, props 152/24/92/60, values 102/57/56/15, cbs 64/15/5/3, put 60/41/22/26 (case-folded, LCS-aligned; many `neither` lines are yavs reporting a property both references give as -1). Real gaps where yavs differs from both: `vhpi_iterator` for block and instance statements (#316), end-of-processes callbacks (#317), `vhpiEnumVal` on integers (#318), integer put into a vector and the delta cycle after a propagating put (#319); release after deposit is #310. Reference quirks (the references differ from each other): upper-case names in one, a dummy root above the design in the other, `vhpi_put_value` on undriven signals, time resolution, string formats of enumerations. After #310, #316 to #319 (and the non-propagating put modes refused): walk 20/93/32/92 (yavs now lists block, instance and statement iterators the references answer differently, more lines), props 152/24/92/60, values 104/57/56/13, cbs 81/18/16/14 (the remaining `neither` lines are start-of-processes callbacks the second reference orders around after-delay callbacks and omits in a time step's last delta), put 66/59/9/15, nonprop (new) 56/50/6/5.
 
 ## discrepancies (simulator catalogue)
 

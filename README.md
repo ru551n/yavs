@@ -43,7 +43,7 @@ yavs is licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-M
 option. The IEEE `std` and `ieee` sources in `lib/` are Apache-2.0 (`lib/LICENSE`,
 `lib/SOURCES.md`). The built-in IEEE 1076.4 VITAL packages (`ieee.vital_timing`,
 `ieee.vital_primitives`, `ieee.vital_memory`) are IEEE-copyrighted and carry no explicit licence
-grant; they are redistributed unmodified, as GHDL and NVC do (`lib/LICENSE-IEEE-VITAL`). The
+grant; they are redistributed unmodified, as sim2 and sim1 do (`lib/LICENSE-IEEE-VITAL`). The
 built-in Synopsys packages (`ieee.std_logic_arith`, `std_logic_unsigned`, `std_logic_signed`,
 `std_logic_misc`) are Synopsys copyright, redistributable without restriction when the notice is
 kept, and are also shipped unmodified (`lib/LICENSE-SYNOPSYS`).

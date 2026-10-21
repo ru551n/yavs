@@ -120,7 +120,7 @@ M5 plan:
 
 1. A test (or `scripts/vhpi-conformance.sh`) that builds the crate's
    plugins from a pinned checkout, runs each with its testbench on the primary reference simulator
-   (`nvc -a ... -e tb -r --load lib.so`) and on yavs (`yavs run tb --vhpi=lib.so`),
+   (`sim1 -a ... -e tb -r --load lib.so`) and on yavs (`yavs run tb --vhpi=lib.so`),
    and diffs stdout after normalising the tool name and version. The
    assertion plugins must report all checkpoints passed on both.
 2. The `scripts/run_*.sh` marker lists are the pass criteria to copy.

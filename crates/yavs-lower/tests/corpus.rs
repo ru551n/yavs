@@ -36,6 +36,7 @@ const PASS: &[&str] = &[
     "composite/sig_array_part",
     "composite/record_conversion_2019",
     "composite/record_subtype_others",
+    "sigassign/slice_param_range",
     "composite/static_slice_choice",
     "composite/narrow_int_storage",
     "composite/layout_memo_lengths",

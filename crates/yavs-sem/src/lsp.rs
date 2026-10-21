@@ -159,10 +159,54 @@ impl Db {
             RangeC::Explicit { left, right, .. } => {
                 self.exprs[*left].stat.min(self.exprs[*right].stat)
             }
-            // ponytail (#42): `x'range` counts as static; exact only once types say
+            // `x'range` is static unless the prefix is an object that exists only while a
+            // process or subprogram runs and whose subtype leaves the bounds open: a
+            // parameter `d : bit_vector` (the longest static prefix of `s(d'range)` is
+            // `s`, #518).
+            // ponytail (#42): other prefixes count as static; exact only once types say
             // whether the prefix's subtype is static (S3).
+            RangeC::Attr {
+                prefix: AttrPrefix::Expr(p),
+                ..
+            } if self.bounds_known_at_run_time_only(*p) => Staticness::None,
             RangeC::Attr { .. } => Staticness::Globally,
         }
+    }
+
+    /// Whether the bounds of object `e` are only known while a process or subprogram runs: its
+    /// subtype leaves them open (or takes them from an object that does) and the object is
+    /// a parameter or declared in a process or subprogram, so elaboration has no value for it.
+    fn bounds_known_at_run_time_only(&self, e: ExprId) -> bool {
+        use crate::types::{Constraint, Constrainedness};
+        let st = self.exprs[e].subtype;
+        if let Constraint::FromObject { expr, .. } = self.subtypes[st].constraint {
+            return self.bounds_known_at_run_time_only(expr);
+        }
+        if self.constrainedness(st) == Constrainedness::Full {
+            return false;
+        }
+        let Some(ObjRoot::Decl(d)) = self.lsp(e).map(|l| l.root) else {
+            return false;
+        };
+        let DeclKind::Object(o) = &self.decls[d].kind else {
+            return false;
+        };
+        if o.role == ObjRole::Param {
+            return true;
+        }
+        let mut sc = Some(self.decls[d].scope);
+        while let Some(s) = sc {
+            match self.scopes[s].kind {
+                crate::scope::ScopeKind::Process | crate::scope::ScopeKind::Subprogram => {
+                    return true;
+                }
+                crate::scope::ScopeKind::Loop | crate::scope::ScopeKind::SeqBlock => {
+                    sc = self.scopes[s].parent;
+                }
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// The root of a name, following object aliases; `None` when `e` is not a name.

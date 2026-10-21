@@ -54,7 +54,7 @@ goes into `docs/cli-contract.md` section 3 (root `AGENTS.md` rule 24).
   Keep it in sync if you add another lock path.
 - Every error names what was missing and where yavs looked (paths in notes/help). Never return a
   default manifest for an unreadable one.
-- The closure is ordered and deterministic (dependencies first); `tests/cli.rs` and the difftest
+- The closure is ordered and deterministic (dependencies first; a package body in a file of its own follows its package's file as soon as everything it needs is placed, so that closures that share the package's files share the body's place, #407); `tests/cli.rs` and the difftest
   depend on it.
 - Tests use `tempfile` directories; the concurrency test spawns the test binary itself. Do not add
   fixed scratch paths.

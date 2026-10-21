@@ -254,15 +254,39 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
     // reachable file is a DFS root (top unit's file first). Only dependencies-first
     // order matters, so a body may follow the units that use its package.
     let roots = files.clone();
+    // The files of the package bodies a package's file is followed by: a body that is not in
+    // its package's file (a settings package whose body the user supplies) is pull-only, so
+    // the DFS below would put it after everything else. Directly after its package, where its
+    // own dependencies allow, it is in the same place for every design that shares the
+    // package's files, which is what lets the analysis of those files be cached once (#407).
+    let mut bodies_of: HashMap<FileKey, Vec<FileKey>> = HashMap::new();
+    for (n, u) in &units {
+        if let (UnitKind::PackageBody, Some(p)) = (u.kind, &u.primary) {
+            let decl: Node = (n.0.clone(), UnitKind::Package, p.clone());
+            if units.contains_key(&decl) && fkey(&decl) != fkey(n) {
+                bodies_of.entry(fkey(&decl)).or_default().push(fkey(n));
+            }
+        }
+    }
+    for v in bodies_of.values_mut() {
+        v.sort();
+        v.dedup();
+    }
+    /// The order edges of each file and the body files that follow a file.
+    type Graph<'a> = (
+        &'a HashMap<FileKey, Vec<(Node, Node)>>,
+        &'a HashMap<FileKey, Vec<FileKey>>,
+    );
     fn visit(
         f: FileKey,
         via: Option<(Node, Node)>,
-        edges: &HashMap<FileKey, Vec<(Node, Node)>>,
+        graph: Graph,
         done: &mut Vec<FileKey>,
         visiting: &mut Vec<(FileKey, Option<(Node, Node)>)>,
         fkey: &dyn Fn(&Node) -> FileKey,
         label: &dyn Fn(&Node) -> String,
     ) -> Result<()> {
+        let (edges, bodies_of) = graph;
         if done.contains(&f) {
             return Ok(());
         }
@@ -283,7 +307,7 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             visit(
                 fkey(b),
                 Some((a.clone(), b.clone())),
-                edges,
+                graph,
                 done,
                 visiting,
                 fkey,
@@ -291,11 +315,30 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             )?;
         }
         visiting.pop();
-        done.push(f);
+        done.push(f.clone());
+        for b in bodies_of.get(&f).into_iter().flatten() {
+            if !done.contains(b)
+                && edges
+                    .get(b)
+                    .into_iter()
+                    .flatten()
+                    .all(|(_, t)| done.contains(&fkey(t)))
+            {
+                done.push(b.clone());
+            }
+        }
         Ok(())
     }
     for r in roots {
-        visit(r, None, &edges, &mut done, &mut visiting, &fkey, &label)?;
+        visit(
+            r,
+            None,
+            (&edges, &bodies_of),
+            &mut done,
+            &mut visiting,
+            &fkey,
+            &label,
+        )?;
     }
 
     // 4. Verify content hashes.

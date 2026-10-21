@@ -82,8 +82,59 @@ fn closure_orders_across_libraries() {
     analyze(&work, t.path(), "unused.vhd", "unused", vec![pkg("Unused")]);
     let c = closure(&libs, &UnitRef::new("WORK", UnitKind::Entity, "top")).unwrap();
     let paths: Vec<_> = c.iter().map(|f| f.path.clone()).collect();
-    assert_eq!(paths, [base, ent, body]);
+    // The body follows its package directly (it needs nothing else), before the entity that
+    // uses the package.
+    assert_eq!(paths, [base, body, ent]);
     assert_eq!(c[0].library, "util");
+}
+
+/// A package body in a file of its own follows its package's file when everything the body needs
+/// is placed already, so that every design that shares the package's files shares the body's
+/// place too; a body that needs a unit placed later is pulled in after it, as before.
+#[test]
+fn package_body_follows_its_package_when_it_can() {
+    let (t, libs, work, util) = setup();
+    let base = analyze(&util, t.path(), "base.vhd", "base", vec![pkg("Base")]);
+    let helper = analyze(&work, t.path(), "helper.vhd", "helper", vec![pkg("Helper")]);
+    let body = analyze(
+        &util,
+        t.path(),
+        "base_body.vhd",
+        "body",
+        vec![UnitRecord::package_body("Base", STD).depends("work", UnitKind::Package, "helper")],
+    );
+    let other = analyze(&util, t.path(), "other.vhd", "other", vec![pkg("Other")]);
+    let mid = analyze(
+        &util,
+        t.path(),
+        "other_body.vhd",
+        "obody",
+        vec![UnitRecord::package_body("Other", STD)],
+    );
+    let top = analyze(
+        &work,
+        t.path(),
+        "top.vhd",
+        "top",
+        vec![
+            UnitRecord::new(UnitKind::Entity, "Top", STD)
+                .depends("util", UnitKind::Package, "BASE")
+                .depends("util", UnitKind::Package, "OTHER")
+                .depends("work", UnitKind::Package, "HELPER"),
+            UnitRecord::architecture("Top", "rtl", STD),
+        ],
+    );
+    let c = closure(&libs, &UnitRef::new("work", UnitKind::Entity, "top")).unwrap();
+    let paths: Vec<_> = c.iter().map(|f| f.path.clone()).collect();
+    // `base`'s body needs `helper`, which the entity names after `base` and `other`: the body of
+    // `other` follows `other`, the body of `base` waits for `helper`.
+    let at = |p: &PathBuf| paths.iter().position(|q| q == p).unwrap();
+    assert_eq!(at(&mid), at(&other) + 1, "{paths:?}");
+    assert!(
+        at(&body) > at(&helper) && at(&body) > at(&base),
+        "{paths:?}"
+    );
+    assert!(at(&top) > at(&base) && at(&top) > at(&other), "{paths:?}");
 }
 
 #[test]

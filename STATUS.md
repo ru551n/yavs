@@ -1438,7 +1438,9 @@ CPU seconds, instructions (billions, one core type) and peak RSS:
 `--tier=auto` equals `--tier=interp` within 3% on every row, including the compute loop, where `--tier=llvm`
 (everything compiled before time 0, extra rows below) is 5.7x faster than either. The earlier gap map measured `auto` at
 0.62 s against 1.82 s for this loop; here it no longer switches (the loop is one long-running process; `--verbose`
-prints no compile note), see gap 3. **Fixed 2026-10-21 (#432):** the compute loop (design 1) was no longer compiled by `--tier=auto` since `f4330993`
+prints no compile note), see gap 3.
+
+**Fixed 2026-10-21 (#432):** the compute loop (design 1) was no longer compiled by `--tier=auto` since `f4330993`
 (tier-up within a budget; found by bisecting release builds with the `llvm` feature: `4d0c9ae9` and `e69dfe92` switch, `f4330993` does not).
 It was not the sampler: the loop is sampled and the hand-over works, but the compile of the 338-instruction process
 (about 100 ms at O2, estimated 135 ms) had to stay within 4% of the interpreter time seen, which a 1.9 s run only reaches at

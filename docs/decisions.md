@@ -1280,7 +1280,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   out. Functions lowered this way read instance data laid out for the call: they are given up
   (`forget_free_objects`) before the design is lowered, which lowers them again for the
   architecture. Such a lowering is never read from or stored in the stage cache. Not covered:
-  a non-protected (`--relaxed`) shared variable of a region, which stays `E2106`.
+  a non-protected (`--relaxed`) shared variable of a region, which stays `E2106` (#524).
 
 ## Runtime: default exit severity (user, 2026-10-18)
 

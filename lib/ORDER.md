@@ -2,7 +2,7 @@
 
 Dependency order for analyzing the vendored sources, one file per line as
 `<library> <path relative to lib/>`. The reference simulator accepts exactly this order
-(`tools/check-nvc.sh`, results in `lib/README.md`). yavs's on-demand analysis
+(`tools/check-sim1.sh`, results in `lib/README.md`). yavs's on-demand analysis
 tests read the fenced blocks below, so keep the `order-<std>` info strings.
 A package declaration always precedes its body. Files on the same indentation
 level do not depend on each other.

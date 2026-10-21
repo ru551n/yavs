@@ -54,7 +54,7 @@ Decisions about these sources go in `SOURCES.md` (edits) or this section, in the
   archives ship it as `lib/` next to the binary.
 - `cargo test --workspace` parses every file here (`crates/yavs/tests/lib_parse.rs`) and analyzes
   std/ieee in both revisions (`crates/yavs-sem/tests/stdlib.rs`).
-- Reference simulator runs (`tools/check-nvc.sh`) follow root `AGENTS.md` rule 15.
+- Reference simulator runs (`tools/check-sim1.sh`) follow root `AGENTS.md` rule 15.
 
 ## 5. How to work here
 
@@ -62,7 +62,7 @@ Decisions about these sources go in `SOURCES.md` (edits) or this section, in the
 tools/update-ieee-libs.sh            # check: vendored tree equals the derivation of the pinned commit
 tools/update-ieee-libs.sh --write    # rewrite lib/std and lib/ieee after changing derive_libs.py
 python3 -I tools/gen_native_md.py > lib/NATIVE.md
-tools/check-nvc.sh 2008              # reference simulator analysis of the tree (scratch under ~/.cache/rsim-libs)
+tools/check-sim1.sh 2008              # reference simulator analysis of the tree (scratch under ~/.cache/rsim-libs)
 cargo test -p yavs --test lib_parse && cargo test -p yavs-sem --test stdlib --test native_symbols
 ```
 

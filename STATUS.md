@@ -1457,11 +1457,17 @@ peaks at 139 MB and takes 0.36 s once (two lowerings, one to find what depends o
 10 MB, under 1 MB of optimised copies each, fewer prefix images since bodies moved into the prefixes); a library
 directory keeps at most 96 entries and 512 MiB.
 
-Outputs: the logs of all 314 tests under 2008 (three pairs) are byte-identical to main's (path-normalised); the
-differential corpus passes 413/413 at 1 and 4 threads, three passes (cold, stored, warm); `cargo test --workspace`
-(775), fmt, clippy. New tests: `crates/yavs/tests/cache_prefix.rs` (five: sharing, editing a package of the prefix, a
-body that follows the prefix, parallel first runs, damaged entries), the closure order, the prefix state,
-`context_dependent`, `Store::claim` and the byte limit.
+Outputs: the logs of all 314 tests under 2008 (three pairs; also against a run with `--no-cache`) and under 2019 (two
+pairs) and of the 111 runs of the first library's suite that run are byte-identical to main's (path-normalised); the
+external runner's 11 suites pass (1344 tests); the differential corpus passes 413/413 at 1 and 4 threads, each time
+three passes (cold, stored, warm) on the interpreter and with `--tier=auto`, two with `--tier=llvm`, two under
+`gc-stress`, one with four shuffled threads, and 68 tests of the second library's regression pass under `gc-stress`
+with the library stage in use; `cargo test --workspace` (781), fmt, clippy. New tests:
+`crates/yavs/tests/cache_prefix.rs` (five: sharing, editing a package of the prefix, a body that follows the prefix,
+parallel first runs, damaged entries), the closure order, the prefix state, `context_dependent`, `Store::claim`,
+`Store::sightings` and the byte limit. The Windows `llvm` job failed three times of five since these commits
+(`auto_tier_compiles_short_callees_of_compiled_code`, "never compiled" after 60 s, #485): a timing test of the tier that
+uses no cache.
 
 The library of a prefix is made by the fourth closure that asks for it (`libstage::SIGHTINGS`; making it costs 0.35 s of
 CPU, a first run saves 40 ms): on the first library's suite, whose components have one to sixteen closures per

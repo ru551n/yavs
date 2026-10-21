@@ -2,6 +2,9 @@
 //! by a process (`yavs-ir` `opt/memo.rs`): the run is the same as without it, and a failing
 //! check fails at the same time with the same text.
 
+mod common;
+use common::tempdir as tmp;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -71,13 +74,6 @@ fn run(dir: &Path, top: &str, src: &str, no_memo: bool) -> (i32, String, String)
         String::from_utf8_lossy(&o.stdout).into_owned(),
         String::from_utf8_lossy(&o.stderr).into_owned(),
     )
-}
-
-fn tmp(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-memo-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("mkdir");
-    d
 }
 
 #[test]

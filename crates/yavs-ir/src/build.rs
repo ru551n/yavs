@@ -331,14 +331,14 @@ impl ProgramBuilder {
         }
         propagate(prog, processed);
         number_resumes(prog, processed);
-        let errors = verify(
-            prog,
-            if eager_verify() {
-                verified
-            } else {
-                prog.funcs.len()
-            },
-        );
+        let errors = if eager_verify() {
+            verify(prog, verified)
+        } else {
+            // Verified when `Program::func` first hands each out (#482).
+            let v = verified as u32;
+            prog.lazy_verify = Some(prog.lazy_verify.map_or(v, |l| l.min(v)));
+            Vec::new()
+        };
         if errors.is_empty() {
             Ok(self.prog)
         } else {

@@ -18,7 +18,8 @@ fn constants_evaluated_once() {
     ));
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(LangRev::Vhdl2008, lib);
-    let dir = std::env::temp_dir().join("yavs-lower-pkg-work");
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();
@@ -86,7 +87,8 @@ fn subprograms_that_read_a_name_depend_on_the_design() {
     ));
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(LangRev::Vhdl2008, lib);
-    let dir = std::env::temp_dir().join("yavs-lower-ctx-work");
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();

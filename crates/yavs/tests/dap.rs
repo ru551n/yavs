@@ -6,6 +6,9 @@
 //! `tb.vhd`. The transcript has `> ` for what was sent and `< ` for what was read, without
 //! `seq`, with the scratch directory as `$TMP`. `YAVS_BLESS=1` rewrites the expected files.
 
+mod common;
+use common::tempdir;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -21,10 +24,8 @@ fn cases() -> PathBuf {
 }
 
 /// A scratch directory with `tb.vhd` analyzed into `lib`.
-fn setup(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-dap-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
+fn setup(name: &str) -> common::Tmp {
+    let d = tempdir(&format!("dap-{name}"));
     std::fs::copy(cases().join("tb.vhd"), d.join("tb.vhd")).expect("copy");
     let ok = yavs()
         .current_dir(&d)

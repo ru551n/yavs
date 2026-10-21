@@ -80,8 +80,9 @@ into `docs/cli-contract.md` (root `AGENTS.md` rule 24).
 - `--ieee-warnings` is accepted and ignored on purpose (`ponytail:` comment in `elab.rs`).
 - std/ieee come from `yavs_sem::default_stdlib()`: `$YAVS_STDLIB`, else the copy built into the
   binary (test `standalone_binary` in `tests/cli.rs` runs a lone copy of the executable).
-- Tests run the built binary (`env!("CARGO_BIN_EXE_yavs")`); scratch dirs carry the pid
-  (`yavs-cli-<pid>-<name>`). Keep that pattern, never a fixed name in `/tmp`.
+- Tests run the built binary (`env!("CARGO_BIN_EXE_yavs")`); scratch dirs come from
+  `tests/common` `tempdir` (system temp dir, removed on drop, panics included). Never a fixed or pid-named
+  directory that a failing test would leave behind.
 
 ## 5. How to work here
 

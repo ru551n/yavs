@@ -1,7 +1,10 @@
 //! `yavs run --load`: VHPIDIRECT foreign subprograms calling a C library compiled at test
 //! time with the compiler `cc` picks for the build target (#95).
 
-use std::path::{Path, PathBuf};
+mod common;
+use common::tempdir;
+
+use std::path::Path;
 use std::process::Command;
 
 const C: &str = r#"
@@ -106,13 +109,6 @@ architecture a of miss is begin
   process begin report integer'image(missing); wait; end process;
 end;
 "#;
-
-fn tempdir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-cli-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
-    d
-}
 
 /// Builds `src` into a shared library at `out`.
 fn shared_lib(src: &Path, out: &Path) {

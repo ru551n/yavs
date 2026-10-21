@@ -13,6 +13,7 @@ twox-hash = { version = "2.1", default-features = false, features = ["xxhash3_64
 
 [dev-dependencies]
 postcard.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

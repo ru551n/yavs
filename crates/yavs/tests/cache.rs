@@ -2,15 +2,11 @@
 //! byte-identical to a cold one, editing a dependency invalidates, read-only libraries and
 //! damaged entries still work, `--no-cache` and `yavs cache clean`.
 
+mod common;
+use common::tempdir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn tempdir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-cache-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
-    d
-}
 
 const PKG: &str = "package p is\n  constant K : integer := 7;\n  function f (x : integer) return integer;\nend;\n\
 package body p is\n  function f (x : integer) return integer is begin return x * K; end;\nend;\n";
@@ -38,7 +34,7 @@ const TB2: &str = "use work.reg.all;\nentity tb2 is end;\narchitecture a of tb2 
     sg <= 4;\n    wait for 1 ns;\n    report \"sg \" & integer'image(sg);\n    wait;\n  end process;\nend;\n";
 
 struct Env {
-    tmp: PathBuf,
+    tmp: common::Tmp,
 }
 
 #[derive(Debug, PartialEq, Eq)]

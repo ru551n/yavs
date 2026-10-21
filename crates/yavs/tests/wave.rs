@@ -1,5 +1,8 @@
 //! `yavs run --wave` (docs/cli-contract.md 5 and 6): every FST is read back with wellen.
 
+mod common;
+use common::tempdir as scratch;
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -13,13 +16,6 @@ fn yavs() -> Command {
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-wave-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
-    d
 }
 
 fn analyze(dir: &Path, file: &Path, std: &str) -> bool {
@@ -88,7 +84,7 @@ fn changes<'a>(dump: &'a str, name: &str) -> &'a str {
         .trim()
 }
 
-fn design(name: &str) -> PathBuf {
+fn design(name: &str) -> common::Tmp {
     let d = scratch(name);
     assert!(analyze(&d, &repo().join("tests/cli/wave.vhd"), "2008"));
     d

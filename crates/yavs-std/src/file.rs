@@ -487,8 +487,8 @@ mod tests {
 
     #[test]
     fn lines_and_seek() {
-        let dir = std::env::temp_dir().join(format!("yavs-std-file-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
         let p = dir.join("t.txt");
         let name = p.to_str().unwrap().as_bytes();
         let mut f = TextFile::open(name, FileOpenKind::Write).unwrap();
@@ -528,6 +528,5 @@ mod tests {
             TextFile::open(STD_INPUT, FileOpenKind::Write).unwrap_err(),
             FileOpenStatus::ModeError
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

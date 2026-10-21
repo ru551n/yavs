@@ -747,8 +747,8 @@ mod tests {
     /// render exactly as before.
     #[test]
     fn restored_files_load_on_demand() {
-        let dir = std::env::temp_dir().join(format!("yavs-diag-lazy-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
+        let tmp = tempfile::tempdir().expect("dir");
+        let dir = tmp.path();
         let utf8 = dir.join("u.vhd");
         let latin1 = dir.join("l.vhd");
         std::fs::write(&utf8, "a\u{e9}b\nentity e is\n").expect("write");

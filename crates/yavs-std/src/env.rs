@@ -532,7 +532,8 @@ mod tests {
 
     #[test]
     fn directories() {
-        let d = std::env::temp_dir().join(format!("yavs-std-dir-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path().to_path_buf();
         let n = bytes_of(&d);
         let sub = bytes_of(&d.join("a/b"));
         assert_eq!(dir_createdir(&sub, false), DirCreateStatus::Error);

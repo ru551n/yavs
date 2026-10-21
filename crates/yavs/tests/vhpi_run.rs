@@ -1,6 +1,9 @@
 //! `yavs run --vhpi`: the test plugin of `yavs-vhpi` loaded by the CLI (#267). On Windows the
 //! test builds a throwaway import library for `yavs.exe` from the generated `.def` (yavs ships none).
 
+mod common;
+use common::tempdir;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -100,13 +103,26 @@ fn compiler() -> cc::Tool {
 }
 
 /// Compiles the `yavs-vhpi` test plugin and analyses the design; returns (lib arg, plugin path).
-fn setup() -> (String, PathBuf) {
+fn setup() -> (String, Plugin) {
     setup_plugin("plugin")
 }
 
 /// Compiles `yavs-vhpi/tests/plugin/<name>.c` and analyses the design.
-fn setup_plugin(name: &str) -> (String, PathBuf) {
+fn setup_plugin(name: &str) -> (String, Plugin) {
     setup_with(name, VHDL)
+}
+
+/// The compiled plugin; its scratch directory goes when it does.
+struct Plugin {
+    so: PathBuf,
+    _tmp: common::Tmp,
+}
+
+impl std::ops::Deref for Plugin {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.so
+    }
 }
 
 fn vhpi_dir() -> PathBuf {
@@ -114,18 +130,13 @@ fn vhpi_dir() -> PathBuf {
 }
 
 /// Compiles `yavs-vhpi/tests/plugin/<name>.c` and analyses `vhdl`.
-fn setup_with(name: &str, vhdl: &str) -> (String, PathBuf) {
+fn setup_with(name: &str, vhdl: &str) -> (String, Plugin) {
     setup_args(name, vhdl, &[])
 }
 
 /// [`setup_with`], analysing with `args`.
-fn setup_args(name: &str, vhdl: &str, args: &[&str]) -> (String, PathBuf) {
-    // One directory per call: the tests run in parallel.
-    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = std::env::temp_dir().join(format!("yavs-cli-{}-vhpi-{n}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("tmp");
+fn setup_args(name: &str, vhdl: &str, args: &[&str]) -> (String, Plugin) {
+    let tmp = tempdir("vhpi");
     let vhpi = vhpi_dir();
     let so = tmp.join(if cfg!(windows) {
         format!("{name}.dll")
@@ -142,7 +153,7 @@ fn setup_args(name: &str, vhdl: &str, args: &[&str]) -> (String, PathBuf) {
     a.push(&src);
     let (code, err, _) = yavs(&a);
     assert_eq!(code, 0, "{err}");
-    (lib, so)
+    (lib, Plugin { so, _tmp: tmp })
 }
 
 #[test]

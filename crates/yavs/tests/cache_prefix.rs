@@ -4,15 +4,11 @@
 //! of the last file of the prefix. Every run must print exactly what a run without the cache
 //! prints, in whatever order the testbenches come, at any number of threads.
 
+mod common;
+use common::tempdir;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn tempdir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-prefix-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
-    d
-}
 
 #[derive(Debug, PartialEq, Eq)]
 struct Out {
@@ -49,7 +45,7 @@ const SIGHTINGS: u32 = 4;
 /// which keeps state (a signal, a protected counter) and one of which has a deferred constant,
 /// and a work library of testbenches.
 struct Libs {
-    tmp: PathBuf,
+    tmp: common::Tmp,
 }
 
 const COUNTER: &str = "package pa4 is\n  constant k4 : integer := 4;\n  function f4 (x : integer) return integer;\n  \

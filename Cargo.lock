@@ -1455,6 +1455,7 @@ dependencies = [
  "cc",
  "clap",
  "serde_json",
+ "tempfile",
  "wellen",
  "yavs-cache",
  "yavs-cov",
@@ -1517,6 +1518,7 @@ dependencies = [
  "annotate-snippets",
  "postcard",
  "serde",
+ "tempfile",
  "twox-hash",
 ]
 
@@ -1650,6 +1652,7 @@ version = "0.8.0"
 dependencies = [
  "jiff",
  "proptest",
+ "tempfile",
 ]
 
 [[package]]

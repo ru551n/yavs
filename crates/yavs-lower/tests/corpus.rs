@@ -465,7 +465,8 @@ fn simulate(file: &Path) -> Result<String, String> {
         .lines()
         .take(15)
         .any(|l| l.contains("difftest:") && l.split_whitespace().any(|kv| kv == "psl"));
-    let dir = std::env::temp_dir().join(format!("yavs-lower-work-{}", std::process::id()));
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();
@@ -664,7 +665,8 @@ fn package_subprograms() {
     ));
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(LangRev::Vhdl2008, lib);
-    let dir = std::env::temp_dir().join(format!("yavs-lower-work-{}", std::process::id()));
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();
@@ -714,7 +716,8 @@ fn static_array_bounds_are_constant() {
     ));
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(LangRev::Vhdl2008, lib);
-    let dir = std::env::temp_dir().join(format!("yavs-lower-static-{}", std::process::id()));
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();
@@ -768,7 +771,8 @@ fn periodic_constant_is_compact() {
     ));
     let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
     let mut opts = Options::new(LangRev::Vhdl2008, lib);
-    let dir = std::env::temp_dir().join(format!("yavs-lower-periodic-{}", std::process::id()));
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
     opts.libraries
         .add_spec(&format!("work:{}", dir.display()))
         .unwrap();

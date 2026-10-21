@@ -11,6 +11,7 @@ jiff = "0.2.38"
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"
 
 [lints]
 workspace = true

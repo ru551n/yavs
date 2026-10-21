@@ -257,7 +257,10 @@ fn auto_tier_compiles_short_callees_of_compiled_code() {
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
     let note: Note = Box::new(move |f, level, why| seen.lock().unwrap().push((f, level, why)));
-    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
+    // First tier O2: the callee compiles with its caller, at O2, in one step. (At O0 it would
+    // reach O2 only when a sample happens to find the interpreter inside it, which on a slow
+    // host can take minutes.)
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
     let call = || yavs_interp::call(rt.clone(), run, Arc::new(InstData::default()), &[10_000]);
     let t0 = Instant::now();
     let done = || {

@@ -825,7 +825,9 @@ mod lazy_verify_tests {
         fb.emit(Inst::Ret { v: None });
         fb.finish();
         let mut prog = pb.finish().expect("well formed");
-        assert!(prog.lazy_verify.is_none() == cfg!(debug_assertions));
+        // `finish` leaves everything pending unless it verified eagerly (#482); where it did
+        // not, the flag is the builder's own, elsewhere the test forces it.
+        assert!(prog.lazy_verify.is_none() == crate::build::eager_verify());
         prog.lazy_verify = Some(0);
         assert!(prog.verify_pending().is_ok());
         assert!(prog.lazy_verify.is_none());

@@ -5,6 +5,9 @@
 //! twice, natives on and off (`YAVS_NO_NATIVE_IEEE`); stdout, stderr and the exit code must be
 //! identical. `YAVS_IEEE_KEEP=dir` keeps the generated sources.
 
+mod common;
+use common::tempdir;
+
 use std::fmt::Write;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -296,8 +299,7 @@ fn run(dir: &Path, args: &[&str], native: bool) -> Output {
 }
 
 fn compare(seed: u64, std: &str) {
-    let dir = std::env::temp_dir().join(format!("yavs-ieee-{}-{seed}-{std}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = tempdir("ieee");
     let src = testbench(seed, iters(25));
     std::fs::write(dir.join("t.vhd"), &src).expect("write");
     if let Some(keep) = std::env::var_os("YAVS_IEEE_KEEP") {
@@ -327,7 +329,6 @@ fn compare(seed: u64, std: &str) {
     assert_eq!(ns.lines().count(), vs.lines().count());
     assert_eq!(n.stderr, v.stderr);
     assert_eq!(n.status.code(), v.status.code());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -383,8 +384,7 @@ end architecture;
 /// is compared.
 #[test]
 fn native_errors_match_bodies() {
-    let dir = std::env::temp_dir().join(format!("yavs-ieee-err-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = tempdir("ieee");
     std::fs::write(dir.join("e.vhd"), ERRORS).expect("write");
     let a = run(
         &dir,
@@ -412,7 +412,6 @@ fn native_errors_match_bodies() {
         };
         assert_eq!(first(&n), first(&v), "k={k}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn edges() -> String {
@@ -444,8 +443,7 @@ end architecture;
 /// `rising_edge` and `falling_edge` of a signal that takes every `std_ulogic` value.
 #[test]
 fn native_edges_match_bodies() {
-    let dir = std::env::temp_dir().join(format!("yavs-ieee-edge-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = tempdir("ieee");
     std::fs::write(dir.join("ed.vhd"), edges()).expect("write");
     let a = run(
         &dir,
@@ -464,7 +462,6 @@ fn native_edges_match_bodies() {
     assert_eq!(n.stdout, v.stdout);
     assert!(String::from_utf8_lossy(&n.stdout).contains("rise"));
     assert_eq!(n.status.code(), v.status.code());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `math_real`: the exact functions and every error report agree with the bodies; the
@@ -553,8 +550,7 @@ fn native_math_matches_bodies() {
     let src = format!(
         "library ieee;\nuse ieee.math_real.all;\nentity m is end entity;\narchitecture a of m is\nbegin\n  process begin\n{body}    wait;\n  end process;\nend architecture;\n"
     );
-    let dir = std::env::temp_dir().join(format!("yavs-ieee-math-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = tempdir("ieee");
     std::fs::write(dir.join("m.vhd"), src).expect("write");
     let a = run(
         &dir,
@@ -575,7 +571,6 @@ fn native_math_matches_bodies() {
     assert!(ns.contains("rel true"));
     assert_eq!(n.stderr, v.stderr);
     assert_eq!(n.status.code(), v.status.code());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 const ARITH_HEAD: &str = r#"library ieee;
@@ -690,8 +685,7 @@ fn native_synopsys_arith_matches_bodies() {
         "{ARITH_HEAD}{}    wait;\n  end process;\nend architecture;\n",
         g.out
     );
-    let dir = std::env::temp_dir().join(format!("yavs-ieee-arith-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = tempdir("ieee");
     std::fs::write(dir.join("ta.vhd"), src).expect("write");
     let a = run(
         &dir,
@@ -722,14 +716,12 @@ fn native_synopsys_arith_matches_bodies() {
     assert_eq!(ns.lines().count(), vs.lines().count());
     assert_eq!(n.stderr, v.stderr);
     assert_eq!(n.status.code(), v.status.code());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Analyze `src` (entity `ent`) and run it with natives on and off: same stdout, stderr and
 /// exit status, and at least `min` lines of output.
 fn diff_run(tag: &str, src: &str, ent: &str, std: &str, min: usize) {
-    let dir = std::env::temp_dir().join(format!("yavs-ieee-{tag}-{}-{std}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = tempdir("ieee");
     std::fs::write(dir.join("t.vhd"), src).expect("write");
     if let Some(keep) = std::env::var_os("YAVS_IEEE_KEEP") {
         let _ = std::fs::write(Path::new(&keep).join(format!("{tag}.vhd")), src);
@@ -758,7 +750,6 @@ fn diff_run(tag: &str, src: &str, ent: &str, std: &str, min: usize) {
     assert_eq!(ns.lines().count(), vs.lines().count(), "{tag}");
     assert_eq!(n.stderr, v.stderr, "{tag}");
     assert_eq!(n.status.code(), v.status.code(), "{tag}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Wrap generated statements into the shared header (entity `t`).

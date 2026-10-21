@@ -2,17 +2,13 @@
 //! statement and branch counts are known (M9, #131), and `tests/cli/cov_toggle.vhd`, whose
 //! toggle counts are (#343).
 
-use std::path::{Path, PathBuf};
+mod common;
+use common::tempdir;
+
+use std::path::Path;
 use std::process::{Command, Output};
 
 use yavs_cov::{Database, Kind};
-
-fn tempdir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-cov-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("mkdir");
-    d
-}
 
 fn yavs(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_yavs"))

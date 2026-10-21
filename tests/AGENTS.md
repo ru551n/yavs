@@ -20,7 +20,7 @@ by several crates; the test code lives in the crates. Each subdirectory has its 
 - Written fresh: never copy the reference simulators or rust_hdl tests (root rule 6). External corpora are never
   committed (rule 7); only result lists are.
 - No testbench longer than 5 minutes (rule 16); reference runs per rule 15.
-- Test scratch files go to pid-suffixed or `tempfile` directories, never fixed names under `/tmp`
+- Test scratch files go to `tempfile` directories that remove themselves when dropped (also on a panic; `crates/yavs/tests/common` has `tempdir`), never fixed or pid-named directories under `/tmp`
   (see #160 for the one offender).
 - Before pushing, `git diff --stat origin/main..HEAD`: a blessed snapshot you did not mean to
   change is a regression or a bad rebase (root rule 17).

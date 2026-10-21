@@ -2262,6 +2262,12 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
     everything when the program is finished (tests keep their internal errors for broken IR).
     A function that fails the check at first use panics with the verifier message (the kernel turns
     it into an internal error).
+    `ProgramBuilder::finish` sets `Program::lazy_verify` for this (it never did until #482, so release
+    builds verified nothing). Measured at that fix, release build, pinned to one performance core,
+    interleaved A/B, 3 runs: total CPU of the 30-case `vunit_vc30` benchmark 1.47 s before and after,
+    `osvvm_axistream` 0.40 s to 0.41 s, `elab_heavy` 0.24 s both; the cost is inside the noise, so
+    verification at first use stays on (user rule: broken IR is an internal error, never undefined
+    behaviour).
   - *Optimised copies:* a hit that read the program but not the optimised copies would optimise the
     functions again (the optimiser was 20 to 25 ms of a small test, and the elaboration session had
     already done it for some). The entry therefore holds the optimised copy of every function an

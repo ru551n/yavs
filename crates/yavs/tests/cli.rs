@@ -4,6 +4,9 @@
 //! `tests/cli/NAME.stderr` with the scratch directory shown as `$TMP`.
 //! `YAVS_BLESS=1` rewrites the expected files.
 
+mod common;
+use common::tempdir;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -573,13 +576,6 @@ fn run_snapshot(name: &str, code: i32) {
     } else {
         assert_eq!(err, std::fs::read_to_string(&path).unwrap_or_default());
     }
-}
-
-fn tempdir(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("yavs-cli-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("tmp");
-    d
 }
 
 /// A second analyze into the same library keeps both files; a read-only library fails cleanly.
@@ -1317,7 +1313,7 @@ fn run_gui() {
     let dir = tempdir("gui");
     let yavs = || {
         let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
-        c.env("PATH", &dir).env("NO_COLOR", "1");
+        c.env("PATH", &*dir).env("NO_COLOR", "1");
         c.args(["run", "--gui", "--work=work:w", "tb", "--stop-time=1ns"]);
         c
     };

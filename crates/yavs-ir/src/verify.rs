@@ -352,7 +352,8 @@ fn check_inst(
 }
 
 /// Registers read where some path from the entry (or, in a process, from the last `Suspend`)
-/// does not define them first: `(pc, register)`. Registers defined once by a constant or an
+/// does not define them first. A process that registers no wait condition anywhere (it only
+/// has `wait;`) is never woken: no path goes on behind its `Suspend`: `(pc, register)`. Registers defined once by a constant or an
 /// address start every frame with their value and are exempt.
 pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
     let n = f.reg_ty.len();
@@ -389,8 +390,15 @@ pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
     let mut work = vec![0usize];
     let mut bad = Vec::new();
     let is_proc = f.kind == FuncKind::Process;
+    let forever = is_proc
+        && !f.code.iter().any(|i| {
+            matches!(
+                i,
+                Inst::WaitOn { .. } | Inst::WaitFor { .. } | Inst::WaitAt { .. }
+            )
+        });
     let blocks: Vec<_> = f.blocks.iter().map(|(_, b)| *b).collect();
-    while let Some(b) = work.pop() {
+    'work: while let Some(b) = work.pop() {
         let mut cur = input[b].clone().unwrap_or_else(|| vec![!0; w]);
         let blk = blocks[b];
         for pc in blk.start as usize..blk.end as usize {
@@ -417,6 +425,9 @@ pub fn undefined_uses(prog: &Program, f: &crate::Func) -> Vec<(u32, u32)> {
             }
             if is_proc && matches!(inst, Inst::Suspend { .. }) {
                 cur.clone_from(&pre);
+                if forever {
+                    continue 'work;
+                }
             }
         }
         let succ: Vec<crate::BlockId> = match f.code[blk.end as usize - 1] {

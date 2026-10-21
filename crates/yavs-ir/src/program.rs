@@ -103,9 +103,22 @@ impl Program {
             .unwrap_or_else(|| raw.full())
     }
 
+    /// Is the optimised copy of `f` valid only while nothing outside writes process variables
+    /// ([`crate::opt::external_variables`])? Such a copy is neither stored nor loaded.
+    fn private_copy(&self, f: FuncId) -> bool {
+        crate::opt::external()
+            && self
+                .funcs
+                .get(f)
+                .is_some_and(|x| x.kind == FuncKind::Process)
+    }
+
     /// The optimised copy of `f` an earlier run stored, if it is still the one this run would make.
     fn stored_copy(&self, f: FuncId) -> Option<Box<Func>> {
         if !crate::opt::copies_are_portable() {
+            return None;
+        }
+        if self.private_copy(f) {
             return None;
         }
         let bytes = self.stored_opt.map().remove(&f.0)?;
@@ -145,10 +158,12 @@ impl Program {
         self.funcs
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
-                Some(Some(o)) if want(id) => postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
-                    func: id,
-                    bytes: bytes.into(),
-                }),
+                Some(Some(o)) if want(id) && !self.private_copy(id) => {
+                    postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
+                        func: id,
+                        bytes: bytes.into(),
+                    })
+                }
                 _ => None,
             })
             .collect()
@@ -164,10 +179,12 @@ impl Program {
             .funcs
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
-                Some(Some(o)) => postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
-                    func: id,
-                    bytes: bytes.into(),
-                }),
+                Some(Some(o)) if !self.private_copy(id) => {
+                    postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
+                        func: id,
+                        bytes: bytes.into(),
+                    })
+                }
                 _ => None,
             })
             .collect();

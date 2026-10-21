@@ -33,8 +33,12 @@ use super::*;
 
 /// Slots (and loads in the fast copy) a block may use.
 const MAX_ROOTS: usize = 12;
-/// Instructions the fast copy has to save, net of the flag test, to be worth a copy.
+/// Instructions the fast copy has to save, net of the flag test, to be worth a copy. Native
+/// code does the saved arithmetic in a few cycles and pays for the extra code it compiles and
+/// the loads of the slots, so with the LLVM tier a copy has to save more (measured on the
+/// shift-register designs: a block saving 5 net loses a little compiled and wins interpreted).
 const MIN_GAIN: usize = 3;
+const MIN_GAIN_COMPILED: usize = 6;
 /// Longest block the pass copies.
 const MAX_BLOCK: usize = 800;
 
@@ -293,7 +297,15 @@ fn plan_block(f: &crate::Func, b: usize, live_out: &[u64]) -> Option<Plan> {
         }
     }
     let roots = root.iter().filter(|&&r| r).count();
-    if roots > MAX_ROOTS || gain < roots + MIN_GAIN {
+    if roots > MAX_ROOTS
+        || gain
+            < roots
+                + if super::compiled() {
+                    MIN_GAIN_COMPILED
+                } else {
+                    MIN_GAIN
+                }
+    {
         return None;
     }
     let last_memo = kind.iter().rposition(|&k| k == K::Memo)?;

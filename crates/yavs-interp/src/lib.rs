@@ -50,7 +50,7 @@ pub use ieee::{code_table, edge_native};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
-pub use yavs_ir::opt::keep_variables;
+pub use yavs_ir::opt::{compiled_tier, external_variables, keep_variables};
 
 use exec::{Fault, Machine, Outcome};
 

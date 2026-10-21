@@ -146,6 +146,7 @@ const PASS: &[&str] = &[
     "generics/package_generics",
     "generics/formal_package_subprograms",
     "generics/formal_packages",
+    "generics/named_aggregate_direction",
     "generics/nested_generic_packages",
     "generics/nested_packages",
     "generics/pkg_generic_kinds",

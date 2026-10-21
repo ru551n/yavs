@@ -3795,6 +3795,11 @@ Processes: `Elaborated::lower` lowers every architecture owning a process (yavs-
 `Elaborated::build` creates one yavs-interp process per process instance with per-instance data
 (restart test with the interpreter).
 
+A named array aggregate whose elements are not static (`(0 => g0, 1 => g1)` with generics) evaluated during elaboration
+takes the direction of sem's result subtype (that of a constrained context, LRM 9.3.3.3), as the lowered code does;
+it used the index subtype's direction before, so a `(3 downto 0)` constant came out mirrored in generate conditions
+(#513: every peripheral of the neorv32 I/O switch sat at the mirrored index). Test: `generics/named_aggregate_direction`.
+
 In-port collapsing (R4, #413; `collapse.rs`, on by default, `--no-collapse-ports` turns it off): done for `in` ports and component pass-through ports whose actual is whole leaves or part of one leaf (element, slice). Verified identical with and without it: difftest corpus (353) at 1 and 4 threads and 4 threads shuffled on both tiers, UVVM suite (76 pass / 33 fail / 28 skip either way), OSVVM `.pro` 2008 and 2019 (314/314), external runner pass lists. Measured (release, median CPU of 5, collapsed vs not): elab_heavy total 0.66 s -> 0.56 s (0.85), peak RSS 254 -> 211 MiB (0.83); ff_rtl, resolved_bus, vai_pe_array, vai_window_gen, uvvm_axistream_vvc_tb within noise (0.97 to 1.03), peak RSS unchanged. Still apart: forced or released ports, ports with conversions or drivers, guarded, user-resolved or whole-resolved composites, every port under `--dap`/`--vhpi`; widening these was not measured as worthwhile (the designs above have none of them in a hot path).
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
@@ -4117,6 +4122,12 @@ thread walking every slot after a pooled batch (live-output scan, commit without
 array, with the early commit in the worker, removes every regression and reaches 2.47x on rtl_fan and 1.67x on
 rtl_ff at 4 threads. Testbench-style designs cannot gain inside a delta even with perfect conflict handling (ceilings
 1.0x to 1.24x at 4 threads).
+
+Caveat (#513, found 2026-10-22): every yavs that elaborated the soft-core testbench before the #513 fix ran a diverging
+program (checked at `634452a2`, the commit of `docs/design/parallel-kernel.md`; the bug dates from `7e31f69e`, before
+which the design did not elaborate). Its core trapped at the first peripheral store after about 70 instructions and slept
+in `wfi` for the rest of the run, so the neorv32 rows above and in `docs/design/parallel-kernel.md` time a mostly idle
+CPU and do not stand for the real program. Re-measure them on a fixed build before relying on them.
 
 ## llvm: native clocked RTL against the interpreter and sim1, cold and warm (#440, #432, #505, 2026-10-21)
 

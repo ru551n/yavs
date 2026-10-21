@@ -375,6 +375,8 @@ struct Worker {
     jit2: Option<Jit>,
     /// For `rtl` processes, made at O0.
     jit0: Option<Jit>,
+    /// For functions at `OptLevel::Fast`.
+    jitf: Option<Jit>,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
     /// Per function: the address of its native-frame code once compiled (0: none), and whether
@@ -399,6 +401,8 @@ struct Worker {
     probed: Vec<bool>,
     /// A `probe` is running: a failure is no note and leaves the function to compile later.
     probing: bool,
+    /// The warning that the LLVM library cannot be loaded was printed.
+    warned: bool,
 }
 
 impl Worker {
@@ -663,7 +667,18 @@ impl Worker {
         } else {
             self.opt
         };
-        let j = if o2 {
+        let level = crate::lower::level_for(&self.prog, f, level);
+        if let Err(e) = crate::lazy::ensure() {
+            // Said once, not for every hot function; they all stay interpreted.
+            if !std::mem::replace(&mut self.warned, true) {
+                eprintln!("warning: --tier=auto: {e}; hot functions stay interpreted");
+            }
+            (self.note)(id, level, Err(e.to_string()));
+            return false;
+        }
+        let j = if level == OptLevel::Fast {
+            &mut self.jitf
+        } else if o2 {
             &mut self.jit2
         } else if process {
             &mut self.jit0
@@ -734,7 +749,8 @@ impl AutoTier {
         heat: Heat,
         note: Note,
     ) -> Result<Arc<AutoTier>, Error> {
-        crate::lazy::ensure()?;
+        // The LLVM library is opened by the compile thread at the first compile (`Worker::compile`): a
+        // run in which nothing gets hot never pays for loading it (about 40 million cycles).
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();
@@ -763,6 +779,7 @@ impl AutoTier {
             jit: None,
             jit2: None,
             jit0: None,
+            jitf: None,
             total: 0,
             spent: 0,
             us_per_instr: US_PER_INSTR,
@@ -772,6 +789,7 @@ impl AutoTier {
             seen: 0,
             probed: vec![false; nfuncs],
             probing: false,
+            warned: false,
         };
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
@@ -869,8 +887,13 @@ impl AutoTier {
                         break;
                     }
                 }
-                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
-                    w.jit.into_iter().chain(w.jit2).chain(w.jit0).collect();
+                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
+                    .jit
+                    .into_iter()
+                    .chain(w.jit2)
+                    .chain(w.jit0)
+                    .chain(w.jitf)
+                    .collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;

@@ -2389,6 +2389,38 @@ Verified: difftest corpus (420) on `--tier=llvm` at 1 and 4 threads and 4 shuffl
 tests that write any; the external suites' pass lists (857 and 393) with `--oracle --check` on `--tier=auto` and
 `--tier=llvm`; `cargo test -p yavs-llvm --features llvm` (19, with the new `frame_variables_match_the_interpreter`).
 
+## llvm: compile cost (#432, #501, 2026-10-21)
+
+Changes (`crates/yavs-llvm/AGENTS.md` "Compile cost"): `LEAN` pass pipeline except for compute loops, instruction scheduling and
+machine-level motion passes off, unknown-space memory accesses through `yavs_rt_host`, `LCopy` inline only in processes,
+exit blocks of at most 64 predecessors (a native frame's single exit phi had up to 800 incoming values: quadratic in the
+simplifier), `OptLevel::Fast` (`LEAN` plus the unoptimised code generator) for functions of 300 IR instructions or more and
+for `--tier=llvm` modules over 150000 LLVM instructions, native-frame code of an `auto` root only on demand, LLVM opened at
+the first compile of `--tier=auto` instead of at its start.
+
+Compile cost, `osvvm_axistream` library functions (every 8th function, one module each as `auto` compiles, 67 functions,
+7208 IR instructions; user instructions of the whole process under `perf stat`, so independent of host load): 62.4 G before,
+22.4 G after; LLVM instructions per IR instruction 26.8 to 19.4 (before the exit change), microseconds per IR instruction
+(wall, loaded host) about 770 to 210. Where it went before: IR passes 43% and code generation 56%, the code generator 20 to 30
+microseconds per optimised LLVM instruction up to 250 IR instructions per function, 41 at 300 to 500, 79 at 500 to 800, 155
+above (superlinear: live-variable analysis over thousands of blocks); native-frame code cost 771 microseconds per IR
+instruction, frame-mode code 230.
+
+Eager `--tier=llvm` (one performance core, init phase = compile): `osvvm_axistream` 141 s to 6.8 s; `ieee/float_pkg_ops`
+(#501) 80 to 92 s to 3.7 s; the difftest corpus (423 tests, 4 threads) 4 min 23 s to 42 s; the seven small designs of the
+sum below 1.07 s to 0.41 s. Simulate phase of those seven designs (compute_h2h, calls x10, ieee_heavy x10, strings_heavy
+x10, protected_scoreboard x10, rtl_lfsr, access_heavy x10), core 7, min of 3, two interleaved rounds: before 2.20 and 2.25 s,
+after 2.24 and 2.23 s (interpreter 4.39 s); `compute_h2h` 0.13/0.15 to 0.16 s and `calls` 0.03 to 0.05 s are the two rows
+that lost (eager mode has no inlining and no full pipeline in its one big module; `--tier=auto` keeps the full pipeline for
+a compute loop).
+
+`--tier=auto`, cores 6 and 7, median of 3 to 5: `uvvm_util_rand_tb` `rand_cyclic_performance` (the library testbench that
+compiles something) 2.56 to 2.41 s (interpreter 2.92 s); the hot `match_element_data` (82 IR instructions, native-callable)
+compiled in 259 ms before and 33 ms after; `uvvm_sb_slv_tb`, `osvvm_axistream`, `compute_h2h`, `calls`, `rtl_lfsr`,
+`protected_scoreboard`, `strings_heavy` within noise (nothing to compile, or a compute loop that compiled in both). Fixed cost
+of `--tier=auto` on a run that gets nothing hot (one-activation `rtl_fan`, core 7, user plus kernel cycles over
+`--tier=interp`): 20 M plus 13 M before (ld.so relocations of the LLVM library), 2.5 M plus 1.6 M after.
+
 ## llvm: native frames, round two (#432, #337, #340, 2026-10-21)
 
 Library functions on native frames (`docs/decisions.md` "Native frames, round two"): `CallNative` (pure natives, `writeline`,

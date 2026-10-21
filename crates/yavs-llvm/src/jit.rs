@@ -153,6 +153,10 @@ pub enum OptLevel {
     O0,
     O1,
     O2,
+    /// `LEAN` passes and the unoptimised code generator (instruction selection of one
+    /// instruction at a time, no live-variable analysis): for functions so large that
+    /// optimised code generation takes longer than linear time (`lower::level_for`).
+    Fast,
 }
 
 impl OptLevel {
@@ -161,6 +165,7 @@ impl OptLevel {
             OptLevel::O0 => c"default<O0>",
             OptLevel::O1 => c"default<O1>",
             OptLevel::O2 => c"default<O2>",
+            OptLevel::Fast => LEAN,
         }
     }
 
@@ -169,6 +174,7 @@ impl OptLevel {
             OptLevel::O0 => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
             OptLevel::O1 => LLVMCodeGenOptLevel::LLVMCodeGenLevelLess,
             OptLevel::O2 => LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault,
+            OptLevel::Fast => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
         }
     }
 }

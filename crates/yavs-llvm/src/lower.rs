@@ -1210,6 +1210,29 @@ pub(crate) enum Part {
     Frame,
 }
 
+/// A `--tier=llvm` module of more LLVM instructions than this is compiled at `OptLevel::Fast`.
+const EAGER_FAST_MIN: usize = 150_000;
+
+/// Predecessors of one exit block of a frame-mode function (`Gen::exit_for`).
+const EXIT_PHI: usize = 64;
+
+/// Functions of at least this many IR instructions get `OptLevel::Fast` instead of `O2` in
+/// `level_for`: optimised code generation of such a function takes more than linear time (the
+/// register allocator's live-variable analysis over thousands of blocks), 100 to 500 us per LLVM
+/// instruction where small functions take 30; the unoptimised code generator takes 5 to 10 us
+/// (#432, #501).
+const FAST_MIN: usize = 300;
+
+/// The level `f` is compiled at when `level` is asked for (see `FAST_MIN`); compute loops
+/// keep theirs.
+pub(crate) fn level_for(prog: &Program, f: &Func, level: OptLevel) -> OptLevel {
+    if level == OptLevel::O2 && f.code.len() >= FAST_MIN && !crate::auto::compute(prog, f) {
+        OptLevel::Fast
+    } else {
+        level
+    }
+}
+
 /// Compile `f` alone into `jit`: its entry (none for `Part::Native`) and register count, and the
 /// address of its native-frame code (0 for none), or why it stays interpreted.
 pub(crate) fn compile_one(
@@ -1363,6 +1386,12 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         }
     };
     notes.extend(more);
+    // Optimised code generation of a module this big takes minutes (#501).
+    let opt = if opt == OptLevel::O2 && m.instruction_count() > EAGER_FAST_MIN {
+        OptLevel::Fast
+    } else {
+        opt
+    };
     let mut jit = new_jit(opt)?;
     crate::objcache::add(&mut jit, m, opt, false, |m| {
         m.verify()?;
@@ -2170,9 +2199,10 @@ struct Cur<'p> {
     /// Registers the function defines once, by a `Const`: that value wherever they are read
     /// (the interpreter's loop skips such a definition and relies on the same).
     fixed: Vec<Option<i64>>,
-    /// The one block that returns: `ret` of its phi (`leave`).
-    exit: LLVMBasicBlockRef,
-    exit_pc: LLVMValueRef,
+    /// The blocks that return the function's result (`exit_for`): block, phi, predecessors.
+    exits: std::cell::RefCell<Vec<(LLVMBasicBlockRef, LLVMValueRef, usize)>>,
+    /// The native frame's exit block (`exit_for`) and its phi.
+    exit: (LLVMBasicBlockRef, LLVMValueRef),
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
     frame_len: u64,
     /// The native frame, when this is a function's native-frame code (`f<id>_n`).
@@ -2200,6 +2230,11 @@ struct Defer {
     pc: std::cell::Cell<u32>,
     /// Registers carried across blocks as phis, when the function is small enough.
     plan: Option<Plan>,
+    /// The instructions inside a loop. Outside loops a result is stored at once: a deferred
+    /// one is stored at every block edge and guard exit it is live at (code, and codegen time
+    /// beyond linear, for a function of hundreds of registers), and saves nothing that runs
+    /// more than once.
+    loopy: Vec<bool>,
 }
 
 /// The registers live into each block that are phis there (`regs`, ascending, and the phi of
@@ -2475,10 +2510,39 @@ impl Gen {
     unsafe fn leave(&self, c: &Cur, v: LLVMValueRef) {
         // SAFETY: the builder is in a block of c.f; the phi is the exit block's.
         unsafe {
-            let mut vals = [v];
-            let mut from = [LLVMGetInsertBlock(self.b)];
-            LLVMAddIncoming(c.exit_pc, vals.as_mut_ptr(), from.as_mut_ptr(), 1);
-            LLVMBuildBr(self.b, c.exit);
+            let exit = self.exit_for(c, v);
+            LLVMBuildBr(self.b, exit);
+        }
+    }
+
+    /// The exit block to branch to from the current block with `v` (an i32) to return: `v` is
+    /// added to its phi. A frame-mode function has several (`EXIT_PHI` predecessors each): one
+    /// phi of thousands of incoming values makes the simplifier and the phi elimination
+    /// quadratic.
+    unsafe fn exit_for(&self, c: &Cur, v: LLVMValueRef) -> LLVMBasicBlockRef {
+        // SAFETY: well-formed blocks of c.f.
+        unsafe {
+            let from = LLVMGetInsertBlock(self.b);
+            let mut xs = c.exits.borrow_mut();
+            if xs.last().is_none_or(|x| x.2 >= EXIT_PHI) {
+                let blk = self.block(c);
+                LLVMPositionBuilderAtEnd(self.b, blk);
+                let phi = LLVMBuildPhi(self.b, self.i32, c"".as_ptr());
+                if c.nat.is_none() {
+                    LLVMBuildRet(self.b, phi);
+                } else {
+                    // The native frame's one exit (materialisation) takes the chunks' values.
+                    let (exit, exit_pc) = c.exit;
+                    LLVMBuildBr(self.b, exit);
+                    LLVMAddIncoming(exit_pc, &mut { phi }, &mut { blk }, 1);
+                }
+                LLVMPositionBuilderAtEnd(self.b, from);
+                xs.push((blk, phi, 0));
+            }
+            let x = xs.last_mut().expect("exit block");
+            LLVMAddIncoming(x.1, &mut { v }, &mut { from }, 1);
+            x.2 += 1;
+            x.0
         }
     }
 
@@ -2504,6 +2568,7 @@ impl Gen {
     /// at. Only in straight-line code (not between the fast and slow path of an instruction).
     unsafe fn std(&self, c: &Cur, r: Reg, v: LLVMValueRef) {
         if let Some(d) = &c.defer
+            && d.loopy[d.pc.get() as usize]
             && let Some(p) = d.pend.borrow_mut().get_mut(r.0 as usize)
         {
             // The interpreter starts every frame with a register defined once by a constant
@@ -2998,8 +3063,12 @@ impl Gen {
                 mem,
                 known: std::cell::RefCell::new(vec![None; f.reg_ty.len()]),
                 fixed: fixed_consts(f),
-                exit,
-                exit_pc,
+                exits: std::cell::RefCell::new(if native {
+                    Vec::new()
+                } else {
+                    vec![(exit, exit_pc, 0)]
+                }),
+                exit: (exit, exit_pc),
                 frame_len: u64::from(f.frame),
                 nat,
                 defer: None,
@@ -3066,6 +3135,13 @@ impl Gen {
                     fresh: Default::default(),
                     pc: Default::default(),
                     plan: None,
+                    loopy: {
+                        let mut l = vec![false; n + 1];
+                        for &x in rc.iter().flat_map(|r| r.loops.iter().flatten()) {
+                            l[x] = true;
+                        }
+                        l
+                    },
                 });
                 c.scal = scal;
             }
@@ -4135,14 +4211,18 @@ impl Gen {
                         );
                         let pd =
                             self.host(&c, self.ld(&c, dst), fk(dst), b32(db0), b32(nd), true, slow);
-                        // Up to 64 elements: at most two blocks each side, shifted in registers.
-                        let few = self.icmp(IP::LLVMIntULE, k, self.c64(64));
-                        let (inl, call) = (self.block(&c), self.block(&c));
-                        LLVMBuildCondBr(self.b, few, inl, call);
-                        LLVMPositionBuilderAtEnd(self.b, inl);
-                        self.lcopy_inline(&c, pd, nd, d0, ps, ns, s0, k);
-                        LLVMBuildBr(self.b, join);
-                        LLVMPositionBuilderAtEnd(self.b, call);
+                        // Up to 64 elements: at most two blocks each side, shifted in registers. A
+                        // process does it per activation; in a subprogram the 225 LLVM
+                        // instructions are not worth the call they save.
+                        if f.kind == FuncKind::Process {
+                            let few = self.icmp(IP::LLVMIntULE, k, self.c64(64));
+                            let (inl, call) = (self.block(&c), self.block(&c));
+                            LLVMBuildCondBr(self.b, few, inl, call);
+                            LLVMPositionBuilderAtEnd(self.b, inl);
+                            self.lcopy_inline(&c, pd, nd, d0, ps, ns, s0, k);
+                            LLVMBuildBr(self.b, join);
+                            LLVMPositionBuilderAtEnd(self.b, call);
+                        }
                         let mut args = [pd, nd, d0, ps, ns, s0, k];
                         LLVMBuildCall2(
                             self.b,
@@ -5618,10 +5698,8 @@ impl Gen {
             let cont = self.block(c);
             let ok = self.icmp(IP::LLVMIntEQ, r, self.c32(GO));
             if key.is_empty() {
-                let mut vals = [r];
-                let mut from = [LLVMGetInsertBlock(self.b)];
-                LLVMAddIncoming(c.exit_pc, vals.as_mut_ptr(), from.as_mut_ptr(), 1);
-                LLVMBuildCondBr(self.b, ok, cont, c.exit);
+                let exit = self.exit_for(c, r);
+                LLVMBuildCondBr(self.b, ok, cont, exit);
             } else {
                 let fail = self.block(c);
                 LLVMBuildCondBr(self.b, ok, cont, fail);

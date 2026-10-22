@@ -502,8 +502,11 @@ vunit = "test_row_bank_interlock_full_rate"
 generics = ["g_assembly_buffers=3"]
 files = [
   { lib = "@module", source = "vhdl-ai-test", glob = "hdl-modules/modules/*/src/*.vhd" },
+  { lib = "register_file", source = "vhdl-ai-test", glob = "hdl-modules/modules/register_file/sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_src/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/src/*.vhd" },
+  { lib = "sim_common", source = "vhdl-ai-test", glob = "modules/sim_common/sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_tb_util_pkg.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_window_gen.vhd" },
 ]
@@ -522,9 +525,13 @@ relaxed = true
 vunit = "test_varying_kernels"
 files = [
   { lib = "@module", source = "vhdl-ai-test", glob = "hdl-modules/modules/*/src/*.vhd" },
+  { lib = "register_file", source = "vhdl-ai-test", glob = "hdl-modules/modules/register_file/sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_src/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/src/*.vhd" },
+  { lib = "sim_common", source = "vhdl-ai-test", glob = "modules/sim_common/sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_tb_util_pkg.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_weight_mem_model.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_pe_array.vhd" },
 ]
 allow_skipped = true
@@ -542,8 +549,11 @@ relaxed = true
 vunit = "test_fill_then_read_weight_and_bias"
 files = [
   { lib = "@module", source = "vhdl-ai-test", glob = "hdl-modules/modules/*/src/*.vhd" },
+  { lib = "register_file", source = "vhdl-ai-test", glob = "hdl-modules/modules/register_file/sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_src/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/src/*.vhd" },
+  { lib = "sim_common", source = "vhdl-ai-test", glob = "modules/sim_common/sim/*.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_tb_util_pkg.vhd" },
   { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_weight_buffer.vhd" },
 ]

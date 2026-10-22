@@ -2170,3 +2170,24 @@ fn precise_roots_inside_an_activation() {
         gc_roots::assert_churn_collected(slots, live);
     }
 }
+
+/// The runtime counts the processes made of each process function (`NativeFlags::instances`):
+/// the compiled tier compiles a clocked process only when many share its code (#510).
+#[test]
+fn process_instances_are_counted() {
+    let mut pb = ProgramBuilder::new();
+    let p = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(p);
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    assert_eq!(rt.native_flags().instances(p), 0);
+    for _ in 0..3 {
+        let inst = std::sync::Arc::new(yavs_interp::InstData::default());
+        yavs_interp::InterpProcess::new(rt.clone(), p, inst, vec![], None).unwrap();
+    }
+    assert_eq!(rt.native_flags().instances(p), 3);
+}

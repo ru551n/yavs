@@ -355,6 +355,13 @@ fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 /// 90-instruction one of `rtl_chain` loses; decisions.md "round 3").
 const RTL_MIN: usize = 120;
 
+/// A clocked process (`rtl`) of fewer instances than this stays interpreted: compiled, the
+/// processes of a CPU design (most made once) ran 6 to 8 percent slower in cycles at the same
+/// instructions, those of designs with many instances of one process 7 to 34 percent faster
+/// (#510). ponytail: the instance count stands for how much an activation's code is reused;
+/// a measured comparison per process if a design sits near the line.
+const RTL_INSTANCES: u32 = 16;
+
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
 
@@ -914,8 +921,19 @@ impl Worker {
             &mut self.jit
         };
         let t0 = std::time::Instant::now();
+        let few = (rtl(&self.prog, f) && self.native.instances(id) < RTL_INSTANCES).then(|| {
+            format!(
+                "a clocked process made {} times: compiled code of few instances ran slower \
+                 (its code does not stay in the caches)",
+                self.native.instances(id)
+            )
+        });
         let short = (sampled && !o2)
-            .then(|| too_short(&self.prog, f, id).or_else(|| too_many_callbacks(&self.prog, f, id)))
+            .then(|| {
+                too_short(&self.prog, f, id)
+                    .or_else(|| too_many_callbacks(&self.prog, f, id))
+                    .or(few)
+            })
             .flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let hits = crate::objcache::cache_stats().0;

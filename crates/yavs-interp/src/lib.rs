@@ -789,9 +789,18 @@ pub struct NativeFlags {
     /// Per function: 1 when the tier calls it on a native frame from the interpreter
     /// (`Tier::call`).
     call: Box<[std::sync::atomic::AtomicU8]>,
+    /// Per process function: the processes made of it (`InterpProcess::new`).
+    instances: Box<[std::sync::atomic::AtomicU32]>,
 }
 
 impl NativeFlags {
+    /// The processes made of process function `func` so far.
+    pub fn instances(&self, func: FuncId) -> u32 {
+        self.instances
+            .get(func.0 as usize)
+            .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
     /// The tier calls `func` from the interpreter now (`Tier::call`).
     pub fn set_call(&self, func: FuncId) {
         if let Some(n) = self.call.get(func.0 as usize) {
@@ -918,6 +927,7 @@ impl Runtime {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 call: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                instances: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
@@ -1146,6 +1156,9 @@ impl InterpProcess {
                     f.name, d.sig
                 )));
             }
+        }
+        if let Some(n) = rt.native.instances.get(func.0 as usize) {
+            n.fetch_add(1, Ordering::Relaxed);
         }
         Ok(InterpProcess {
             m: Machine::new(rt, inst, drivers, func),

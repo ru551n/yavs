@@ -4626,3 +4626,10 @@ median of 3, cycles G and ratio to the interpreter):
 | `uvvm_sb_slv`, `uvvm_util_rand`, `osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_func_cov` | | 1.01 to 1.04 | 1.01 to 1.04 |
 
 `--tier=llvm` runs `protected_queue` at 2.09 G cycles: warm `--tier=auto` now reaches the eager tier.
+
+Fourth step (#510): a clocked process is compiled only when at least 16 processes are made of it. In the real-world suite
+(`tools/realbench`, all 41 tests, core 4, before this step) `--tier=auto` ran the three CPU-design tests 5 to 8 percent and
+the wide-vector writer 5 percent slower than the interpreter at the same instruction count: their processes, most made
+once, were compiled; with the processes not compiled, both are level with the interpreter (CPU design 130.0 against 130.6 G
+cycles; wide-vector writer 1.01 of the interpreter), while `rtl_ff` (0.93), `rtl_lfsr` (0.75) and `lfsr64` (0.90) keep their
+gain (core 4, warm, host load 10 to 15 during these runs, so cycle ratios carry several percent of noise).

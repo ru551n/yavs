@@ -3943,3 +3943,18 @@ is one module of minutes, and every test case of a suite paid it again. Decision
     open the LLVM library.
   - Write counts: compiled code reports the writes of heap objects it keeps into a new activation or call only once
     someone compares write counts (`TIER_STAMPS`, set by `Machine::stamp`, the waveform recorder).
+  - A frame-mode function's own callees are roots of `native_set` in `compile_one`, so its code calls those that run on
+    native frames directly (a testbench process or a procedure with a wait stepped every call before).
+  - A clocked process (`rtl`) is compiled only when at least `RTL_INSTANCES` (16) processes are made of it
+    (`NativeFlags::instances`, counted by `InterpProcess::new`): the processes of a CPU design (most made once) ran 6 to 8
+    percent slower compiled at the same instruction count, and a wide-vector design 7 percent, while designs with many
+    instances of one clocked process ran 7 to 34 percent faster. A per-process comparison of sampled time before and
+    after compiling was tried and dropped: at a few percent of the run per process, the sample counts are too small to
+    see a 5 percent difference.
+  - Ideas taken from the reference simulator (sim1; read for its design, no code taken): it has one way into compiled
+    code from everywhere (a function's entry, arguments in an array of 64-bit cells), which `Tier::call` and the
+    `f<id>_c` adapters follow, while yavs keeps its two frame kinds and materialisation; its compiled code holds raw
+    pointers to heap objects with no lookup per access, which the object table approximates under yavs's generational
+    handles (design rule); its protected objects need no lock because processes that touch shared state run serially,
+    as yavs's do (`TIER_SERIAL` is the only check); it swaps one entry pointer to tier up, as `Entry` and `ctab` do.
+    Unlike it, yavs samples instead of counting calls and keeps compiled code across runs.

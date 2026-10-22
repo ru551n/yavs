@@ -1626,6 +1626,24 @@ impl Signal {
         Some(any)
     }
 
+    /// `finish_pend` when only the element `pend_one` holds is pending, on a plain signal with
+    /// nothing else to finish: whether it changed. `None` (nothing done) otherwise.
+    #[inline(always)]
+    pub(crate) fn finish_pend_one(&mut self, now: Time, cycle: u64) -> Option<bool> {
+        let (e, code) = self.last_commit;
+        if !self.pend_one
+            || self.force_eff.is_some()
+            || self.force_drv.is_some()
+            || !self.force_ev.is_empty()
+            || self.unfinished()
+        {
+            return None;
+        }
+        let &old = self.codes.get(e as usize)?;
+        self.pend_one = false;
+        Some(self.finish_code(e as usize, code, old, now, cycle))
+    }
+
     /// `finish_pend` of one element `e` whose driving value is `code` and current value `old`
     /// (a plain logic signal that keeps `codes`).
     #[inline(always)]

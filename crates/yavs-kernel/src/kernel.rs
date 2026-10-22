@@ -1788,6 +1788,16 @@ impl SimControl {
     /// finished already has nothing left).
     fn finish_direct(&mut self) -> Result<(), ErrorKind> {
         let (now, cycle) = (self.now, self.cycle);
+        // One element of one signal (a stage of a chain): no loop over the general cases.
+        if let [s] = self.direct_sigs[..]
+            && let Some(changed) = self.signals[s as usize].finish_pend_one(now, cycle)
+        {
+            self.direct_sigs.clear();
+            if changed && !(!self.watch_changes && self.wake_sole(s)) {
+                self.changed_sigs.push(s);
+            }
+            return Ok(());
+        }
         for i in 0..self.direct_sigs.len() {
             let s = self.direct_sigs[i];
             let sig = &mut self.signals[s as usize];

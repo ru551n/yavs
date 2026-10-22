@@ -518,6 +518,9 @@ impl Jit {
             .session_errors
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        if res.is_ok() {
+            perf_map(&name, addr as usize);
+        }
         match res {
             Ok(()) if errors.is_empty() => Ok(addr as usize),
             Ok(()) => Err(Error(errors.drain(..).collect::<Vec<_>>().join("; "))),
@@ -551,4 +554,25 @@ impl Drop for Jit {
             eprintln!("error: tearing down the LLVM JIT failed: {e}");
         }
     }
+}
+
+/// Profiling aid: with `YAVS_PERFMAP` set, every looked-up symbol is listed in `/tmp/perf-<pid>.map`
+/// (the file `perf report` reads for code it does not know), so compiled functions show under
+/// their symbol (`f<id>`, `f<id>_n`) instead of as anonymous JIT addresses. A symbol's size is the
+/// distance to the next one.
+fn perf_map(name: &CStr, addr: usize) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static MAP: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    if !*ON.get_or_init(|| std::env::var_os("YAVS_PERFMAP").is_some()) {
+        return;
+    }
+    let mut m = MAP.lock().unwrap_or_else(|p| p.into_inner());
+    m.push((addr, name.to_string_lossy().into_owned()));
+    m.sort_unstable();
+    let mut out = String::new();
+    for (i, (a, n)) in m.iter().enumerate() {
+        let end = m.get(i + 1).map_or(a + 0x4000, |x| x.0);
+        out += &format!("{a:x} {:x} {n}\n", (end - a).min(0x10_0000));
+    }
+    let _ = std::fs::write(format!("/tmp/perf-{}.map", std::process::id()), out);
 }

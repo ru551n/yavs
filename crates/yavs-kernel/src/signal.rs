@@ -871,6 +871,13 @@ impl Signal {
         (!self.codes.is_empty()).then_some((self.codes.as_ptr(), self.ty.len as usize))
     }
 
+    /// The bytes `codes_view` can be read from its start: whole plane blocks, so the group of
+    /// eight codes around the last element is there (the bytes past the last element are 0),
+    /// 0 for a signal that keeps no codes.
+    pub fn codes_cap(&self) -> usize {
+        self.codes.len()
+    }
+
     /// The code of element `e` of `cur` from `codes`, if the signal keeps them and has the element.
     #[inline(always)]
     pub fn mirrored_code(&self, e: usize) -> Option<u8> {

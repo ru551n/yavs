@@ -515,6 +515,14 @@ impl Ctx<'_> {
         sig.codes_view()
     }
 
+    /// The bytes of `code_view(s)` that may be read (`Signal::codes_cap`), 0 without codes.
+    pub fn code_cap(&self, s: SignalId) -> usize {
+        self.sh
+            .signals
+            .get(s.0 as usize)
+            .map_or(0, |sig| sig.codes_cap())
+    }
+
     /// The edge the kernel resumed this process for in this activation (signal, element,
     /// rising), if `Ctx::edge` takes it as held.
     pub fn known_edge(&self) -> Option<(SignalId, u32, bool)> {

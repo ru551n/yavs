@@ -344,6 +344,16 @@ fn element_codes_follow_every_kind_of_update() {
                     "{n} elements"
                 );
                 assert!(c.code_view(clk).is_some_and(|v| v.1 == 1));
+                // Whole plane blocks of codes can be read: compiled code reads groups of eight.
+                assert_eq!(
+                    c.code_cap(s),
+                    if n <= 64 {
+                        (n as usize).next_multiple_of(64)
+                    } else {
+                        0
+                    },
+                    "{n} elements"
+                );
                 let whole = c.logic(s)?;
                 for e in 0..n {
                     let want = whole.get(e as usize) as u8;

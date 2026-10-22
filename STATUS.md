@@ -5127,6 +5127,12 @@ Instructions, interpreter, core 6 (`perf stat cpu_core/instructions/u`, warm), b
 3.37 G to 3.29 G, `rtl_lfsr` 7.32 G to 7.19 G, `lfsr64` 3.51 G to 3.45 G, `report_heavy` 1.16 G to 1.11 G; the other `tools/bench`
 designs level. `hdlm_lfsr` under `--tier=auto`, warm: 4.3 s to 2.1 s wall.
 
+Real testbenches (`tools/realbench/run.py --compare`, core 6, one run, `main` at 2ca775bc against the round on top of it, all 41
+tests, B/A): instructions geometric mean 1.00 interpreter, 0.97 `--tier=auto`; `hdlm_lfsr` 0.81 / 0.47, `poc_arith_addw` 0.92 / 0.91,
+`poc_stat_histogram` 0.99 / 0.83; summed wall 0.99 / 1.00 (one run each, host loaded). `en_cl_fix_pkg` (0.04 s) runs 1.15 times the
+instructions on both tiers, left unexplained. Against sim1 with `--tier=auto` (total wall including compile, sim1 elaboration plus
+run, core 6): `hdlm_lfsr` 2.25 warm, 2.49 cold; `poc_arith_addw` 4.26 / 4.66; `fletcher_bufferreader` 4.45 / 4.62.
+
 Ideas of the reference simulator used (read for the design, no code): a separate entry for a scalar assignment at zero delay
 that skips the delay and rejection checks (ours keeps one kernel fast case and shortens the way to it); its lowering hoists only
 the bounds and step of a `for` loop, ours moves any invariant computation and read-only load out of a loop without a wait.

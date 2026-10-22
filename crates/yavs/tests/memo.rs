@@ -247,3 +247,63 @@ fn memoised_array_copies_drive_their_own_sizes() {
     assert_eq!(with, without);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// References to parts of instance signals (`SigVal`) whose bounds are instance-constant are
+/// remembered by the process like the numbers they come from; a reference to one element is
+/// not, as the interpreter fuses it with the read or wait that uses it. The run is the same as
+/// without the memoisation.
+const REFS: &str = "
+entity refs is generic (W : natural := 4; OFF : natural := 2); end;
+architecture a of refs is
+  signal clk : bit := '0';
+  signal v : bit_vector(0 to 7) := \"10110010\";
+  signal o : bit_vector(0 to 7) := (others => '0');
+  signal q : bit_vector(0 to 3) := \"0110\";
+  signal done : boolean := false;
+begin
+  clk <= not clk after 5 ns when not done;
+  process (clk) begin
+    if clk = '1' then
+      v <= not v;
+      o(OFF to OFF + W - 1) <= v(0 to W - 1) xor v(OFF to OFF + W - 1);
+    end if;
+  end process;
+  g: for i in 0 to 2 generate
+    process (clk) begin
+      if clk = '1' then q(i + 1) <= not q(i); end if;
+    end process;
+  end generate;
+  process (v(OFF to OFF + W - 1)) begin report \"change \" & to_string(v(OFF to OFF + W - 1)); end process;
+  process begin
+    wait for 60 ns;
+    report \"o=\" & to_string(o) & \" q=\" & to_string(q);
+    done <= true; wait;
+  end process;
+end;
+";
+
+#[test]
+fn signal_references_of_instance_constant_bounds_do_not_change_a_run() {
+    let d = tmp("refs");
+    let with = run(&d, "refs", REFS, false);
+    let without = run(&d, "refs", REFS, true);
+    assert_eq!(with.0, 0, "{with:?}");
+    assert!(with.1.contains("o=") || with.2.contains("o="), "{with:?}");
+    assert_eq!(with, without);
+    // The clocked processes of single elements keep the fused read and wait; the references
+    // of the vector slices are loaded from the frame.
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let work = format!("work:{}", d.join("lib").display());
+    let o = Command::new(yavs)
+        .current_dir(&d)
+        .env("YAVS_DUMPIR", "1")
+        .args(["--color", "never", "run", "--no-cache", "--work", &work])
+        .args(["--tier=interp", "--stop-time=60ns", "refs"])
+        .output()
+        .expect("run");
+    let err = String::from_utf8_lossy(&o.stderr);
+    for want in ["SigRead1Slot", "WaitSuspend", "LoadSlot8x2"] {
+        assert!(err.contains(want), "no {want}:\n{err}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -2531,6 +2531,17 @@ impl Code {
                         src: src.0,
                     },
                 },
+                // A signal reference in the frame (a memoised `SigVal`): its two words.
+                Inst::Load {
+                    dst,
+                    addr,
+                    w: Width::Sig,
+                } if let Some(&Known::Frame(off)) = known.get(addr.0 as usize) => Op::LoadSlot8x2 {
+                    d1: dst.0,
+                    o1: off,
+                    d2: dst.0 + 1,
+                    o2: off + 8,
+                },
                 Inst::Load { dst, addr, w } if w != Width::Sig => {
                     match known.get(addr.0 as usize) {
                         Some(&Known::Frame(off)) if w == Width::B8 => {

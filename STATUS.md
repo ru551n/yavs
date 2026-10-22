@@ -5645,5 +5645,10 @@ more than 64 elements.
 
 (Written during the round; the numbers are the final ones at the end of the section.)
 
+- The memoisation of instance constants (`opt/memo.rs`) covers `SlicePos` and `SigVal` of instance-constant bounds
+  (a signal reference is a root of two words, loaded by `LoadSlot8x2`); references of constant length and references
+  read as scalars stay as they are (fusions of the interpreter, inline code of the compiled tier). Instructions of
+  `poc_arith_addw` -3.5 percent (`--tier=llvm` -2.3 percent), `neorv32_single_min` -1.4 percent.
+
 - Package data and the rare slot paths are out of the inline memory paths of `run_ops` (`docs/decisions.md` "Interpreter
   round 14"): 17 to 11 address pairs spilled on every entry of the loop.

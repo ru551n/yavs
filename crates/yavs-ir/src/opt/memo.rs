@@ -31,6 +31,13 @@
 //! `if` on an instance-constant condition is what holds on both arms (the arm taken is the same
 //! at every activation), so a statement with a null-slice test is planned as a whole.
 //!
+//! A reference to part of an instance signal (`SigVal`) with an instance-constant offset and
+//! length is such a value too, a root of two words (loaded and stored with `Width::Sig`), and so is
+//! the start of a slice (`SlicePos`) of a descriptor in frozen memory. A reference of constant
+//! length or one read as a scalar is not: the interpreter fuses a single element with the read, wait
+//! or edge test that uses it, and compiled code knows the length word of a constant length (it
+//! drives and reads such a reference inline), which a remembered pair would lose.
+//!
 //! The flag and the slots are frame bytes behind the function's own frame, which start zero.
 //! Debuggers keep the old shape ([`super::keep_variables`]).
 
@@ -199,7 +206,7 @@ fn bit(s: &[u64], r: u32) -> bool {
 /// Classify one instruction given which registers hold instance-constant values (`inv`) and
 /// which of them point into frozen memory (`ro`). Returns the kind and, for the registers
 /// it defines, whether they end up instance-constant and read-only addresses.
-fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool]) -> (K, bool) {
+fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool], fused: &[bool]) -> (K, bool) {
     let ok = |r: Reg| inv.get(r.0 as usize).copied().unwrap_or(false);
     let rof = |r: Reg| ro.get(r.0 as usize).copied().unwrap_or(false);
     let plain = |r: Reg| matches!(f.reg_ty.get(r.0 as usize), Some(RegTy::I64 | RegTy::Ptr));
@@ -224,8 +231,26 @@ fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool]) -> (K, bool) {
             (K::Memo, false)
         }
         Inst::Select { dst, c, a, b } if ok(c) && ok(a) && ok(b) && plain(dst) => (K::Memo, false),
+        // The reference to a part of an instance signal: two words in a root of two slots.
+        Inst::SigVal {
+            dst, offset, len, ..
+        } if ok(offset)
+            && ok(len)
+            && f.reg_ty.get(dst.0 as usize) == Some(&RegTy::Sig)
+            && !fused.get(dst.0 as usize).copied().unwrap_or(false) =>
+        {
+            (K::Memo, false)
+        }
         Inst::Pos { dst, dope, idx, .. } if rof(dope) && ok(idx) && plain(dst) => (K::Memo, false),
         Inst::DopeLen { dst, dope, .. } if rof(dope) && plain(dst) => (K::Memo, false),
+        Inst::SlicePos {
+            dst,
+            dope,
+            left,
+            right,
+            dir,
+            ..
+        } if rof(dope) && ok(left) && ok(right) && ok(dir) && plain(dst) => (K::Memo, false),
         Inst::LayoutOf { dst, desc, .. } if rof(desc) && plain(dst) => (K::Memo, true),
         Inst::Index { dst, base, pos, .. } if ok(base) && ok(pos) && plain(dst) => {
             (K::Memo, rof(base))
@@ -251,6 +276,7 @@ fn classify_block(
     b: usize,
     inv: &mut [bool],
     ro: &mut [bool],
+    fused: &[bool],
     dopes: Option<&[u32]>,
 ) -> Vec<K> {
     let blk = f.blocks.values()[b];
@@ -271,7 +297,7 @@ fn classify_block(
             pending.remove(&at.0);
             continue;
         }
-        let (k, is_ro) = classify(f, ins, inv, ro);
+        let (k, is_ro) = classify(f, ins, inv, ro, fused);
         kind[i] = k;
         operands(f, ins, |r, role| {
             if role == Role::Def
@@ -431,6 +457,8 @@ type Join = (usize, usize, usize);
 /// What the planner knows about the control flow of the process.
 struct Flow {
     succ: Vec<Vec<usize>>,
+    /// `SigVal` results that are not remembered: of constant length, or read as a scalar.
+    fused: Vec<bool>,
     /// The one predecessor of a block that nothing else enters.
     only: Vec<Option<usize>>,
     /// A block entered from the two arms of an `if` (or the head and its one arm) whose
@@ -484,7 +512,14 @@ impl Flow {
             return x.clone();
         }
         let (mut inv, mut ro) = self.entry(f, b, depth);
-        classify_block(f, b, &mut inv, &mut ro, Some(&self.sizes(f, b)));
+        classify_block(
+            f,
+            b,
+            &mut inv,
+            &mut ro,
+            &self.fused,
+            Some(&self.sizes(f, b)),
+        );
         self.exits.borrow_mut().insert(b, (inv.clone(), ro.clone()));
         (inv, ro)
     }
@@ -577,7 +612,7 @@ fn plan_block(f: &crate::Func, flow: &Flow, b: usize, live_out: &[u64]) -> Optio
     }
     let nregs = f.reg_ty.len();
     let sizes = flow.sizes(f, b);
-    let kind = classify_block(f, b, &mut inv, &mut ro, Some(&sizes));
+    let kind = classify_block(f, b, &mut inv, &mut ro, &flow.fused, Some(&sizes));
     let first = kind.iter().position(|&k| matches!(k, K::Memo | K::Dope))?;
     let dope: Vec<u32> = (0..n)
         .map(|i| if kind[i] == K::Dope { sizes[i] } else { 0 })
@@ -606,7 +641,7 @@ fn plan_block(f: &crate::Func, flow: &Flow, b: usize, live_out: &[u64]) -> Optio
                     keep[i] = true;
                 } else if needed {
                     let d = defs[0];
-                    if f.reg_ty[d] != RegTy::I64 {
+                    if !matches!(f.reg_ty[d], RegTy::I64 | RegTy::Sig) {
                         return None;
                     }
                     root[i] = true;
@@ -842,7 +877,37 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     let succ = successors(prog, f);
     let nb = f.blocks.len();
     let (only, join) = only_preds(f, &succ);
+    // A reference of constant length or read as a scalar stays a `SigVal` (see the module
+    // documentation).
+    let mut consts = vec![0u8; f.reg_ty.len()];
+    let mut fused = vec![false; f.reg_ty.len()];
+    for i in &f.code {
+        match *i {
+            Inst::Const { dst, .. } => {
+                consts[dst.0 as usize] = consts[dst.0 as usize].saturating_add(1)
+            }
+            Inst::SigReadScalar { sig, .. } => fused[sig.0 as usize] = true,
+            _ => {}
+        }
+    }
+    let mut defs = vec![0u8; f.reg_ty.len()];
+    for i in &f.code {
+        operands(f, i, |r, role| {
+            if role == Role::Def {
+                defs[r.0 as usize] = defs[r.0 as usize].saturating_add(1);
+            }
+        });
+    }
+    for i in &f.code {
+        if let Inst::SigVal { dst, len, .. } = *i
+            && consts[len.0 as usize] == 1
+            && defs[len.0 as usize] == 1
+        {
+            fused[dst.0 as usize] = true;
+        }
+    }
     let flow = Flow {
+        fused,
         succ,
         only,
         join,
@@ -947,10 +1012,22 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
         ranges.push((start, code.len() as u32));
         // Slots of the roots, in order.
         let mut root_off = vec![0u32; e - s];
+        // A root is one word, or two for a signal reference.
+        let widths: Vec<Width> = (0..e - s)
+            .map(|i| {
+                let mut w = Width::B8;
+                f.code[s + i].visit(&mut |r, role, _| {
+                    if role == Role::Def && f.reg_ty[r.0 as usize] == RegTy::Sig {
+                        w = Width::Sig;
+                    }
+                });
+                w
+            })
+            .collect();
         for i in p.first..e - s {
             if p.root[i] {
                 root_off[i] = base + 8 * slots;
-                slots += 1;
+                slots += if widths[i] == Width::Sig { 2 } else { 1 };
             }
         }
         // Frame bytes of the descriptors.
@@ -986,7 +1063,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                     Inst::Load {
                         dst: d,
                         addr: ra,
-                        w: Width::B8,
+                        w: widths[i],
                     },
                     l,
                 ));
@@ -1070,7 +1147,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                     Inst::Store {
                         addr: scratch,
                         src: d,
-                        w: Width::B8,
+                        w: widths[i],
                     },
                     l,
                 ));

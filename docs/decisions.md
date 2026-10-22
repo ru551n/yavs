@@ -4787,6 +4787,16 @@ window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
 - **The rare paths of the slot accesses are out of line** (`slot8!`, `store_slot!`, `Op::LoadSlot`: `load_slow` and the new
   `store_slow`; the waveform head of `Op::LSetDrive`: `waveform_head`). Each was an inline copy of the memory access
   (`load`, `store`, `temp_alloc`) in a branch that is taken only for an error or an unusual frame.
+- **The start of a slice (`SlicePos`) of a descriptor in frozen memory is instance-constant** (`opt/memo.rs`), like `Pos`:
+  the checks fail the same way at every execution, and the `Aff` chains that follow it become instance-constant too.
+- **A signal reference (`SigVal`) with an instance-constant offset and length is a root of two words** (loaded and stored
+  with `Width::Sig`, two slots; the interpreter loads it with one `LoadSlot8x2`, `pre.rs`). Not remembered: a reference
+  of constant length, and one that a `SigReadScalar` reads. The interpreter fuses a single element with the read, the
+  wait or the edge test that uses it (`SigRead1`, `WaitSuspend`, `EdgeBr`), and the compiled code knows the length word
+  of a constant length and drives and reads such a reference inline; remembering them cost 4 percent of instructions on
+  the chain of 1000 one-line processes (the wait loses its fusion) and 6 to 11 percent of cycles with `--tier=auto` and
+  `--tier=llvm` on the shift-register designs. The gain thresholds of the plan are unchanged: lowering them
+  (`gain >= roots / 4 + 1`) costs 4 percent of instructions on `poc_arith_addw` (more roots than computations dropped).
 - Tried and not done, each measured on the realistic set (see `STATUS.md` "Interpreter round 14"): a copy of the loop
   for functions of simple ops (`LITE`, 63 arms excluded by const guards; the entry of an activation 105 to 70 instructions)
   gains 5 percent on a design of 4000 near-idle processes and nothing on any realistic design, because their processes use

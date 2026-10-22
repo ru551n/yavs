@@ -4560,13 +4560,15 @@ every elaboration, and again for every instance. Decisions:
 Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians; STATUS.md "performance: floor of a run,
 2026-10-22"). Decisions:
 
-- **The `--tier=auto` compile thread starts when the run has lasted 5 ms, not with the tier** (`AutoTier::tick`, called
-  from `watch_tick` every `WATCH` jumps and calls of the interpreter that has no compiled code). The thread alone cost a
-  tenth of a tiny run (clone, a CPU move, a read of the compilation cache's list, a wake-up every millisecond): 1.1 million
-  cycles of 11. A run that ends before the first tick, or before 5 ms, never starts it; a run with no interpreted
-  activity does not need it. `Tier` gets a default no-op `tick`; eager (test) tiers start the thread at once.
-  Why 5 ms: nothing a sampler sees in less pays for a compile (`Heat::DEFAULT` is 2 ms plus 40 us per IR instruction).
-  A failure to start the thread then is an internal error (the interpreter cannot carry an `Err` from there).
+- **The `--tier=auto` compile thread waits 5 ms before it does anything** (`START_AFTER`): it neither moves itself off the
+  CPUs, nor reads the cache's list, nor samples earlier, and `stop` ends the wait. Those, and the first wake-ups, cost
+  1.1 million cycles of 11 in a tiny run; the sleeping thread alone costs about 0.4 (5%). Why 5 ms: nothing a sampler sees
+  in less pays for a compile (`Heat::DEFAULT` is 2 ms plus 40 us per IR instruction). Tried and reverted (0fdb10ee): not
+  creating the thread until a tick of the interpreter's watching loop (`watch_tick`, every 128 jumps and calls) after 5 ms.
+  A clocked RTL process makes a handful of jumps per activation, so the tick never came and `rtl_ff`, `lfsr64` compiled
+  nothing: check `--verbose` notes of the `tools/bench` designs for any change to when tier-up starts. A late start of
+  the thread itself needs a tick that does not depend on the shape of an activation (a counter in the per-activation slot
+  store of the interpreter, or an observer of the kernel's time steps, which costs the kernel about 50 ns a step).
 - **`native::lookup` finds the implementation first and reads `lib/NATIVE.md` only when there is none** (to tell "defined,
   not implemented" from "not a native symbol"). The old order parsed the 38 KB table in every run (4% of a tiny run). Debug
   builds assert that an implemented symbol is documented, so the check the old order made for every run still happens in
@@ -4584,6 +4586,4 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   stack overflow report and needs the exit status as a number. The two helper threads that start with every piped run
   (the output flusher and the Ctrl-C handler) cost 6% together; starting them late needs a time source that does not
   depend on interpreted activity.
-- Idea from the reference simulator (read, nothing copied): it creates no helper threads for a run that is short, and
-  starts its worker for generated code on first use; ours now does the same for the compile thread.
 

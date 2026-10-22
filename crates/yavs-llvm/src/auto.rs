@@ -551,6 +551,9 @@ const PROBE_PART: u64 = 50;
 /// quarter of it.
 const PAYBACK: u64 = 4;
 
+/// How long the compile thread waits before it samples (not for eager tiers).
+const START_AFTER: Duration = Duration::from_millis(5);
+
 /// A compute loop runs five to ten times faster compiled, so seen for twice its compile time
 /// it has repaid it (`Worker::threshold`).
 const PAYBACK_COMPUTE: u64 = 2;
@@ -1166,13 +1169,25 @@ impl AutoTier {
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
             .spawn(move || {
+                // Nothing a run of a few milliseconds samples pays for a compile, and moving the
+                // thread, reading the cache's list and waking every millisecond cost a tenth of
+                // such a run: do none of it before `START_AFTER` (#426). `stop` ends the wait.
+                let mut asked: std::collections::VecDeque<FuncId> = Default::default();
+                match rx.recv_timeout(if heat.eager() {
+                    Duration::ZERO
+                } else {
+                    START_AFTER
+                }) {
+                    Err(RecvTimeoutError::Disconnected) => return,
+                    Ok(id) => asked.push_back(id),
+                    Err(RecvTimeoutError::Timeout) => {}
+                }
                 off_simulation_cpus();
                 let mut running = Vec::new();
                 w.listed = crate::objcache::compiled_list();
                 let mut last = std::time::Instant::now();
                 // Functions `Tier::hot` asked for (eager), those the sampler found hot, those to
                 // compile again at O2.
-                let mut asked: std::collections::VecDeque<FuncId> = Default::default();
                 let mut cands: Vec<FuncId> = Vec::new();
                 let mut later: Vec<FuncId> = Vec::new();
                 // Functions to look up in the compilation cache (`Worker::probe`).

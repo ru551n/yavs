@@ -2263,7 +2263,6 @@ fn signal_copies_run_in_the_kernel() {
 /// (`walk.rs` `builtin_lib`, #426): none of their packages may declare one.
 #[test]
 fn builtin_packages_declare_no_signals_or_shared_variables() {
-    use yavs_sem::decl::{DeclKind, ObjClass};
     let uses: String = [
         "std.textio",
         "std.env",
@@ -2289,7 +2288,13 @@ fn builtin_packages_declare_no_signals_or_shared_variables() {
     .map(|p| format!("use {p}.all;\n"))
     .collect();
     let src = format!("library ieee;\n{uses}entity t is end; architecture a of t is begin end;");
-    let db = analyze("builtin", &src);
+    for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {
+        builtin_packages_without_signals(analyze_rev("builtin", &src, rev));
+    }
+}
+
+fn builtin_packages_without_signals(db: Db) {
+    use yavs_sem::decl::{DeclKind, ObjClass};
     let mut packages = 0;
     for (u, unit) in db.units.iter() {
         if !matches!(

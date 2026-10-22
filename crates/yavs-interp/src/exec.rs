@@ -8037,6 +8037,23 @@ impl crate::TierHost for Host<'_, '_, '_> {
         c.assign_code_now(d.id, r, code as u8)
     }
 
+    fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {
+        let m = &mut *self.m;
+        if sig[0] >> 32 == MULTI || m.dbg.is_some() {
+            return false;
+        }
+        let (Some(s), Some(c)) = (
+            m.inst.sigs.get((sig[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        c.wait_on_again(
+            s.signal,
+            yavs_kernel::Range::new(s.off + sig[0] as u32, sig[1] as u32),
+        )
+    }
+
     fn wait_again(&mut self, pc: u32, sig: [u64; 2]) -> bool {
         let m = &mut *self.m;
         if sig[0] >> 32 == MULTI || m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {

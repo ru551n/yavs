@@ -4855,3 +4855,13 @@ Array descriptors and plane blocks a caller makes as temporaries reached compile
 80 million host-address calls of a run was a temporary. Every function now tests the temporary area inline after the object
 table. Core 4, warm `--tier=auto`, cycles against the interpreter: `poc_stat_histogram` 0.42 (before about 1.0 in the same
 session), window generator 0.50 (0.54), `uvvm_sb_slv` 1.02 (1.05).
+
+### Compiled waits on several signals (#532, first step)
+
+A process sensitive to several signals runs one `WaitOn` per signal before its `Suspend`; compiled code ran each through the
+generic signal callback (`TierHost::signal`): 55 million callbacks in a run of `neorv32_single_min`. It now asks the kernel
+first to keep the waiter of the last wait (`yavs_rt_wait_on`, `TierHost::wait_on_again`). `--tier=llvm` on
+`neorv32_single_min` (core 4, warm): simulate 29.8 to 24.0 s, 116 to 105 G cycles; the interpreter takes 60 G. The rest of the
+gap is the code footprint of the compiled processes: 5 times the instruction-cache misses (5.4 G against 1.1 G) and 4.5
+times the instruction-TLB misses of the interpreter, from a 27 MB object for the design's processes compiled once each
+(`--tier=auto` leaves single-instance clocked processes interpreted for that reason, round 2). h2h designs unchanged.

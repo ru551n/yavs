@@ -38,6 +38,7 @@ const HOST: &str = "yavs_rt_host";
 const SIGNAL: &str = "yavs_rt_signal";
 const DRIVE: &str = "yavs_rt_drive";
 const WAIT: &str = "yavs_rt_wait";
+const WAIT_ON: &str = "yavs_rt_wait_on";
 const LCOPY: &str = "yavs_rt_lcopy";
 const LAYOUT: &str = "yavs_rt_layout";
 const FAST: &str = "yavs_rt_fast";
@@ -645,6 +646,25 @@ extern "C" fn yavs_rt_wait(
         (*envp).host.wait_suspend(&mut (*mem).fr, pc, [lo, len])
     }));
     stepped(envp, mem, pc, r)
+}
+
+/// A `WaitOn` that is not the last of its wait (a sensitivity list of several signals, #532):
+/// the kernel's registration of a waiter it had at the last wait (`TierHost::wait_on_again`),
+/// else the instruction through `TierHost::signal`. Returns `GO` or what `yavs_rt_signal` does.
+extern "C" fn yavs_rt_wait_on(
+    env: *mut c_void,
+    regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    lo: u64,
+    len: u64,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    if unsafe { (*envp).host.wait_on_again([lo, len]) } {
+        return GO;
+    }
+    yavs_rt_signal(env, regs, mem, pc, 0)
 }
 
 /// `TierHost::native_direct` for a `CallNative` of a native frame: `cells` (`n`) are the
@@ -1486,6 +1506,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (DRIVE, yavs_rt_drive as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
+            (WAIT_ON, yavs_rt_wait_on as *const () as usize),
             (LCOPY, yavs_rt_lcopy as *const () as usize),
             (LAYOUT, yavs_rt_layout as *const () as usize),
             (FAST, yavs_rt_fast as *const () as usize),
@@ -2518,9 +2539,10 @@ struct Gen {
     /// `yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, inertial) -> u32`.
     drive_ty: LLVMTypeRef,
     drive: LLVMValueRef,
-    /// `yavs_rt_wait(env, regs, mem, pc, lo, len) -> u32`.
+    /// `yavs_rt_wait(env, regs, mem, pc, lo, len) -> u32`, and `yavs_rt_wait_on` of that type.
     wait_ty: LLVMTypeRef,
     wait: LLVMValueRef,
+    wait_on: LLVMValueRef,
     /// `yavs_rt_lcopy(dst, nd, d0, src, ns, s0, n)`.
     lcopy_ty: LLVMTypeRef,
     lcopy: LLVMValueRef,
@@ -2697,6 +2719,7 @@ impl Gen {
             let mut dparams = [ptr, ptr, ptr, i32, i32, i64, i64, ptr, i32];
             let drive_ty = LLVMFunctionType(i32, dparams.as_mut_ptr(), 9, 0);
             let wait_name = CString::new(WAIT).expect("no NUL");
+            let wait_on_name = CString::new(WAIT_ON).expect("no NUL");
             let mut wparams = [ptr, ptr, ptr, i32, i64, i64];
             let wait_ty = LLVMFunctionType(i32, wparams.as_mut_ptr(), 6, 0);
             let lcopy_name = CString::new(LCOPY).expect("no NUL");
@@ -2757,6 +2780,7 @@ impl Gen {
                 drive: LLVMAddFunction(module, drive_name.as_ptr(), drive_ty),
                 wait_ty,
                 wait: LLVMAddFunction(module, wait_name.as_ptr(), wait_ty),
+                wait_on: LLVMAddFunction(module, wait_on_name.as_ptr(), wait_ty),
                 lcopy_ty,
                 lcopy: LLVMAddFunction(module, lcopy_name.as_ptr(), lcopy_ty),
                 layout_ty,
@@ -2827,6 +2851,7 @@ impl Gen {
                 self.signal,
                 self.drive,
                 self.wait,
+                self.wait_on,
                 self.lcopy,
                 self.layout,
                 self.fast,
@@ -4728,6 +4753,18 @@ impl Gen {
                             && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
                     {
                         self.wait_suspend(&c, pc, sig)
+                    }
+                    Inst::WaitOn { sig } if c.nat.is_none() => {
+                        // SAFETY: the arguments match `wait_ty`.
+                        let mut args = [
+                            c.env,
+                            c.regs,
+                            c.mem,
+                            self.c32(pc),
+                            self.ld(&c, sig),
+                            self.ld(&c, Reg(sig.0 + 1)),
+                        ];
+                        self.call_go(&c, self.wait_ty, self.wait_on, &mut args, true);
                     }
                     Inst::SigRead { dst, sig }
                         if c.nat.is_none() && self.sig_read_block(&c, pc, dst, sig) => {}

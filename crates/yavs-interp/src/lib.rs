@@ -520,6 +520,14 @@ pub trait TierHost {
         false
     }
 
+    /// `WaitOn` of the signal reference `sig` (its two words) for compiled code that waits on
+    /// more signals after it: `true` when the kernel took it as the same registration as at the
+    /// last wait (`Ctx::wait_on_again`); `false` (nothing done) otherwise.
+    fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {
+        let _ = sig;
+        false
+    }
+
     /// `wait_suspend` when the process waits again on exactly what it waited on, from its root
     /// frame at `pc`: `true` when done (it is [`Stepped::Suspend`]); `false` (nothing done)
     /// otherwise, and the caller uses `wait_suspend`.

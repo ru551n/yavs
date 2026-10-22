@@ -4659,6 +4659,41 @@ groups `internal` and `h2h`: geometric mean of total CPU 0.998 and 0.994. What i
 (no loop-invariant code motion: #526) and, in `auto`, the host address call of the compiled code (#527). #518 stays open for
 that.
 
+## Wide vectors: kernel signal path and reductions (#519, 2026-10-22)
+
+`fletcher_bufferwriter_512` (512-bit stream buses through stream slices, FIFOs and reshapers) updated 4.1 G signal elements in
+11.5 M updates over 0.8 M delta cycles, and 54% of the updates were `out` port formals passing a bus one level up. What a wide
+signal cost per update and per hop, and what changed (commits deea791d, db08ae4f, bf400376, e4c8d983):
+
+- Activity: every port hop marked every element active, two 8-byte stamps each (66 GB of stores per run). A signal of more than
+  64 elements keeps a stamp per block of 64 (`Signal::blk_active`); readers take the later of element and block.
+- Events: the plane-word update wrote two stamps per changed element, touching most cache lines of the stamp arrays. Such a
+  signal keeps per block the records (cycle, time, elements) of the events whose elements have not changed since
+  (`Signal::blk_event`, disjoint masks, at most 64 per block).
+- Wake scan: an event with many changed runs mapped each run to its per-element waiter list though every process waited for the
+  whole signal; those lists are scanned only once a waiter was added to one (`Waiters::chunked`).
+- Preemption: an assignment to a vector driver with something pending ran LRM 10.5.2.2 element by element and split the old
+  transactions bit by bit; it is now 64 elements at a time with a chain bit per target element.
+- Reductions: unary `and`/`or`/`xor` (and the negated forms) of `std_ulogic_vector`, `unsigned`, `signed` and the
+  `std_logic_misc` `*_reduce` functions are one native on the plane words (a 512-bit `or_reduce` cost about 50 us in the body).
+
+Idea taken from the reference simulator: it keeps event and activity stamps per run of elements updated together (its unit of
+update), not per element, and refines on demand. Ours keeps the element granularity the LRM asks for through the per-block masks,
+and keeps the per-element stamps for the other paths.
+
+Pinned core 3, `cpu_core` user counters, interpreter, against main without these commits: `fletcher_bufferwriter_512` 256.4 G
+to 193.2 G instructions, 97.8 G to 75.9 G cycles; `sc5_fifo_repack` 77.4 G to 76.4 G. Against sim1 (run phase, core 3, host
+load about 12): `fletcher_bufferwriter_512` 8.6x wall, 7.2x instructions (baseline 12.3x and 10.2x); `sc5_fifo_repack` 5.0x
+wall, 6.0x instructions (6.8x and 8.6x, mostly from the interpreter work of #520). Whole suite `--compare` before / after (41
+tests, interp and auto): geometric mean of run wall 0.99 and 0.98, of instructions 0.99 and 0.99, wide-vectors 0.86
+instructions; no test slower in instructions beyond 1% (`olo_axi_master_full` under `auto` read 1.12 once and 1.00 on a rerun of 5). `tools/bench` group `h2h`: geometric mean of total CPU 0.98.
+
+What is left: `sc5_fifo_repack` is interpreter dispatch on byte-lane loops (the sort network process `p_col` is 39% of the
+executed operations, `uniform` and `rand_next` 16%), not wide-vector work; in `fletcher_bufferwriter_512` the interpreter is
+about 45% (records with array elements: `layout_words`, #518) and half of the kernel work is the `out` port hops, which
+collapsing `out` ports would remove (#528, a decision for the maintainer: `--no-collapse-ports` doubles the instructions of this
+test, so `in` port collapsing already halved them).
+
 ## Loop-invariant code motion (#526, 2026-10-22)
 
 `crates/yavs-ir/src/opt/licm.rs` (`docs/decisions.md` "Loop-invariant code motion"): in a function or procedure that cannot

@@ -21,7 +21,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   Element-addressed operations (copy a range, masked select, diff, resolve) work on chunks of 64
   elements with shifts and masks, so a sub-range at any offset is never transposed element by
   element. Per-element metadata (event cycle, active cycle, last event time, last active time)
-  are flat arrays over the whole signal (rule 2), the four in one buffer. Small collections
+  are flat arrays over the whole signal (rule 2), the four in one buffer; a signal of more than
+  64 elements also keeps the active cycle and time per block of 64 (`blk_active`), written when
+  a marked range covers the whole block, and the activity of an element is the later of the two
+  (#519). Small collections
   (a `Buf` of up to 16 bytes or one logic block, one waiter, one segment, one pending
   transaction, a signal's scratch range lists) are stored inline (`SmallVec`): a scalar signal
   and its driver cost no allocation of their own (#421).

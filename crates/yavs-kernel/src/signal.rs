@@ -204,6 +204,10 @@ pub(crate) struct Waiters {
     /// signal (a clock and its processes): what a scan would produce, kept until a waiter is
     /// added or a process stops waiting this way.
     cache: Option<Cache>,
+    /// A waiter was ever added to a list other than the wide one: an event must look at the
+    /// lists of the elements it hit. Without, only the wide list is scanned, whatever the
+    /// number of runs (a wide bus whose processes all wait for all of it, #519).
+    chunked: bool,
 }
 
 /// `Cache::batch`: the plain processes (one suspension point, not postponed) in list order,
@@ -252,6 +256,7 @@ impl Waiters {
             shift,
             trig: Trig::Empty,
             cache: None,
+            chunked: false,
         }
     }
 
@@ -379,7 +384,9 @@ impl Waiters {
             }
             cache => *cache = None,
         }
+        let wide = self.lists.len() - 1;
         for i in self.lists_of(range) {
+            self.chunked |= i != wide;
             let (l, n) = &mut self.lists[i];
             if l.len() >= 2 * *n + 16 {
                 l.retain(|w| live(w));
@@ -506,6 +513,8 @@ impl Waiters {
                 scan(&mut self.lists[c]);
             }
             scan(&mut self.lists[wide]);
+        } else if !self.chunked {
+            scan(&mut self.lists[wide]);
         } else {
             let mut last = usize::MAX;
             let chunks = runs.iter().flat_map(|r| {
@@ -547,6 +556,11 @@ pub(crate) struct Signal {
     /// last event, of the last activity, and the time (`stamp`, 0 if never) of
     /// the last event and of the last activity.
     stamps: SmallVec<[u64; 4]>,
+    /// A signal of more than 64 elements: per block of 64 elements, the cycle and time stamp of
+    /// the last `mark_active` that covered the whole block. The activity of an element is the
+    /// later of its own stamps and its block's, so marking a wide range costs a word per block
+    /// (#519).
+    blk_active: Vec<[u64; 2]>,
     /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
     pub segments: SmallVec<[Segment; 1]>,
@@ -699,6 +713,11 @@ impl Signal {
             driving: init.clone(),
             last_value: init,
             stamps: stamps(n),
+            blk_active: if n > 64 {
+                vec![[0; 2]; n.div_ceil(64)]
+            } else {
+                Vec::new()
+            },
             drivers: Vec::new(),
             segments: SmallVec::new(),
             resolution,
@@ -1568,17 +1587,43 @@ impl Signal {
     }
 
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
-        let n = self.ty.len as usize;
-        self.stamps[n..2 * n][r.elems()].fill(cycle);
-        self.stamps[3 * n..4 * n][r.elems()].fill(stamp(now));
+        let (n, t) = (self.ty.len as usize, stamp(now));
+        let (lo, hi) = (r.offset as usize, r.end() as usize);
+        // Whole blocks of a wide signal: their block stamps; the elements of the ends.
+        let (b0, b1) = (lo.div_ceil(64), hi / 64);
+        let mut fill = |a: usize, b: usize| {
+            self.stamps[n + a..n + b].fill(cycle);
+            self.stamps[3 * n + a..3 * n + b].fill(t);
+        };
+        if !self.blk_active.is_empty() && b0 < b1 {
+            fill(lo, b0 * 64);
+            fill(b1 * 64, hi);
+            self.blk_active[b0..b1].fill([cycle, t]);
+        } else {
+            fill(lo, hi);
+        }
+    }
+
+    /// The cycle of the last activity of element `e`.
+    #[inline]
+    fn active_cycle(&self, e: usize) -> u64 {
+        let own = self.stamps[self.ty.len as usize + e];
+        self.blk_active.get(e / 64).map_or(own, |b| own.max(b[0]))
     }
 
     /// The elements of `r` that are not active in `cycle`, or `None` when all are (a port
     /// passes activity on element by element, LRM 14.7.3.1).
     pub fn idle_elems(&self, r: Range, cycle: u64) -> Option<Vec<bool>> {
-        let n = self.ty.len as usize;
-        let from = &self.stamps[n..2 * n][r.elems()];
-        (!from.iter().all(|&c| c == cycle)).then(|| from.iter().map(|&c| c != cycle).collect())
+        let (n, lo, hi) = (self.ty.len as usize, r.offset as usize, r.end() as usize);
+        let own_idle = |a: usize, b: usize| self.stamps[n + a..n + b].iter().any(|&c| c != cycle);
+        let any_idle = if self.blk_active.is_empty() {
+            own_idle(lo, hi)
+        } else {
+            block_span(r).any(|k| {
+                self.blk_active[k][0] != cycle && own_idle(lo.max(k * 64), hi.min(k * 64 + 64))
+            })
+        };
+        any_idle.then(|| r.elems().map(|e| self.active_cycle(e) != cycle).collect())
     }
 
     /// `mark_active` of the elements of `r` that `idle` (from `idle_elems`) does not exclude.
@@ -1609,7 +1654,9 @@ impl Signal {
 
     pub fn active_in(&self, r: Range, cycle: u64) -> bool {
         let n = self.ty.len as usize;
-        self.stamps[n..2 * n][r.elems()].contains(&cycle)
+        (!self.blk_active.is_empty()
+            && self.blk_active[block_span(r)].iter().any(|b| b[0] == cycle))
+            || self.stamps[n..2 * n][r.elems()].contains(&cycle)
     }
 
     #[inline]
@@ -1626,7 +1673,15 @@ impl Signal {
     /// `'last_active` of `r`.
     pub fn last_active(&self, r: Range, now: Time) -> Time {
         let n = self.ty.len as usize;
-        elapsed(now, &self.stamps[3 * n..][r.elems()])
+        let own = elapsed(now, &self.stamps[3 * n..][r.elems()]);
+        if self.blk_active.is_empty() {
+            return own;
+        }
+        let blk: SmallVec<[u64; 8]> = self.blk_active[block_span(r)]
+            .iter()
+            .map(|b| b[1])
+            .collect();
+        own.min(elapsed(now, &blk))
     }
 }
 
@@ -1650,6 +1705,14 @@ fn push_range(list: &mut SmallVec<[Range; 2]>, r: Range) {
         }
         _ => list.push(r),
     }
+}
+
+/// The blocks of 64 elements that `r` touches.
+fn block_span(r: Range) -> std::ops::Range<usize> {
+    if r.len == 0 {
+        return 0..0;
+    }
+    r.offset as usize / 64..(r.end() as usize - 1) / 64 + 1
 }
 
 fn set_event(stamps: &mut [u64], n: usize, e: usize, cycle: u64, now: Time) {
@@ -2151,6 +2214,102 @@ mod tests {
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);
         w.take_woken(&[Range::new(6, 1)], all, |_| false, &mut out);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn wide_list_waiters_wake_on_many_runs() {
+        let all = |_: &Waiter| true;
+        let none = |_: &Waiter| false;
+        let mut w = Waiters::new(300);
+        w.add(1, Range::new(0, 300), Reg::default(), all);
+        let runs: Vec<Range> = (0..100).map(|i| Range::new(3 * i, 1)).collect();
+        let mut out = Vec::new();
+        w.take_woken(&runs, all, none, &mut out);
+        assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+        // A waiter for one element: the lists of the runs are scanned again.
+        w.add(2, Range::new(1, 299), Reg::default(), all);
+        w.add(3, Range::new(150, 1), Reg::default(), all);
+        w.take_woken(&runs, all, none, &mut out);
+        assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2, 3]);
+        w.take_woken(&[Range::new(0, 1), Range::new(2, 1)], all, none, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn activity_of_a_wide_signal_by_blocks() {
+        let ty = SignalType::logic(200);
+        let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+        let r = |o, l| Range::new(o, l);
+        // Elements 10 to 159: block 1 by its block stamp, the ends by their own.
+        sig.mark_active(r(10, 150), Time::ns(1), 3);
+        assert!(sig.active_in(r(70, 1), 3) && sig.active_in(r(10, 1), 3));
+        assert!(sig.active_in(r(159, 1), 3) && sig.active_in(r(0, 11), 3));
+        assert!(!sig.active_in(r(0, 10), 3) && !sig.active_in(r(160, 40), 3));
+        assert_eq!(sig.idle_elems(r(10, 150), 3), None);
+        let idle = sig.idle_elems(r(8, 160), 3).unwrap();
+        let want: Vec<bool> = (8..168).map(|e| !(10..160).contains(&e)).collect();
+        assert_eq!(idle, want);
+        assert_eq!(sig.last_active(r(64, 64), Time::ns(4)), Time::ns(3));
+        assert_eq!(sig.last_active(r(0, 10), Time::ns(4)), Time::MAX);
+        // A later activity of one element in the block wins over the block stamp.
+        sig.mark_active(r(100, 1), Time::ns(2), 5);
+        assert_eq!(sig.last_active(r(64, 64), Time::ns(4)), Time::ns(2));
+        assert_eq!(sig.last_active(r(64, 30), Time::ns(4)), Time::ns(3));
+        assert_eq!(sig.idle_elems(r(99, 3), 5), Some(vec![true, false, true]));
+        assert!(!sig.active_in(r(64, 30), 5));
+        // A whole block again: its block stamp wins over the older element stamp.
+        sig.mark_active(r(64, 64), Time::ns(3), 7);
+        assert_eq!(sig.idle_elems(r(64, 64), 7), None);
+        assert_eq!(sig.last_active(r(100, 1), Time::ns(4)), Time::ns(1));
+    }
+
+    #[test]
+    fn events_of_a_wide_signal_by_blocks() {
+        // Random changes of a 200-element signal, cycle c at c ns, against a per-element model
+        // of the last event; the update takes whole plane words (`update_word`).
+        let ty = SignalType::logic(200);
+        let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+        let mut last = [0u64; 200];
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for c in 1..60u64 {
+            for (e, l) in last.iter_mut().enumerate() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                // Busy and quiet stretches: some cycles change nothing in a block.
+                if x % 7 < (c % 4) {
+                    let v = if sig.driving.code(e) == 2 { 3 } else { 2 };
+                    sig.driving.put_code(e, v);
+                    *l = c;
+                }
+            }
+            let now = Time::ns(c);
+            let any = sig.update_effective(Range::new(0, 200), now, c);
+            assert_eq!(any, last.contains(&c));
+            for e in 0..200u32 {
+                let r = Range::new(e, 1);
+                assert_eq!(
+                    sig.event_in(r, c),
+                    last[e as usize] == c,
+                    "cycle {c} element {e}"
+                );
+                let want = match last[e as usize] {
+                    0 => Time::MAX,
+                    l => Time::ns(c - l),
+                };
+                assert_eq!(sig.last_event(r, now), want, "cycle {c} element {e}");
+            }
+            for (o, l) in [(0, 200), (60, 10), (63, 2), (100, 100), (130, 1)] {
+                let r = Range::new(o, l);
+                let span = &last[o as usize..(o + l) as usize];
+                assert_eq!(sig.event_in(r, c), span.contains(&c));
+                let want = match span.iter().max() {
+                    Some(&l) if l > 0 => Time::ns(c - l),
+                    _ => Time::MAX,
+                };
+                assert_eq!(sig.last_event(r, now), want);
+            }
+        }
     }
 
     #[test]

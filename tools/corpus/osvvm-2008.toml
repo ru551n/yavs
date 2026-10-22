@@ -190,7 +190,7 @@ file = [
 
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
-nvc = []
+sim1 = []
 yavs = []
 
 [[source]]

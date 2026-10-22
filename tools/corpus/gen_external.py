@@ -297,7 +297,7 @@ SPECS = {
         src=[("neorv32", "rtl/core/*.vhd", "neorv32"), ("neorv32", "rtl/system_integration/*.vhd", "neorv32"),
              ("neorv32", "rtl/test_setups/*.vhd", "neorv32")],
         tb=[("neorv32", "sim/*.vhd", "neorv32")],
-        tbinfo=dict(runner="sim/ghdl.sh: ghdl -m neorv32_tb; ghdl -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)",
+        tbinfo=dict(runner="sim/ghdl.sh: sim2 -m neorv32_tb; sim2 -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)",
                     passes="no assertion of severity error or worse within 10 ms of simulated time; the bench prints the UART output of the running program, the default image is the bootloader")),
     "neotrng": dict(
         stds=("2008",),
@@ -305,7 +305,7 @@ SPECS = {
         sources={"neotrng": ("https://github.com/stnolting/neoTRNG", "c688149f70fbd582eac1029cbfec4fcf97b719b2", "BSD-3-Clause",
                              "true random number generator, single entity + bench")},
         src=[("neotrng", "rtl/*.vhd", "neotrng")], tb=[("neotrng", "sim/*.vhd", "neotrng")],
-        tbinfo=dict(runner="sim/ (GHDL, ghdl -r neotrng_tb --stop-time=...)", passes="runs without assertion failure; the bench prints random words (no golden output)")),
+        tbinfo=dict(runner="sim/ (sim2, sim2 -r neotrng_tb --stop-time=...)", passes="runs without assertion failure; the bench prints random words (no golden output)")),
 }
 
 
@@ -321,7 +321,7 @@ SPECS.update({
               ("poc", "*.v93.vhdl", "VHDL-93 variant of a unit that also has a 2008 file"),
               ("poc", "tb/common/my_config_[!G]*", "board configuration other than GENERIC"),
               ("poc", "tb/common/config_tb.vhdl", "needs a board configuration package selected at run time")],
-        tbinfo=dict(runner="poc.sh ghdl|vsim <tb entity> (PoC's own tool chain; *.files list each bench's dependencies); equivalently ghdl -r <tb>",
+        tbinfo=dict(runner="poc.sh sim2|sim3 <tb entity> (PoC's own tool chain; *.files list each bench's dependencies); equivalently sim2 -r <tb>",
                     passes="PoC.simulation: the bench calls simAssert/simFinish and prints 'SIMULATION RESULT = PASSED'; severity failure on a failed assertion")),
     "satcat5": dict(
         stds=("2008",),
@@ -330,16 +330,16 @@ SPECS.update({
                              "Aerospace Corporation SatCat5 Ethernet switch/FPGA library")},
         src=[("satcat5", "src/vhdl/common/*.vhd", "work")],
         tb=[("satcat5", "sim/vhdl/*.vhd", "work")],
-        tbinfo=dict(runner="plain VHDL benches (*_tb), one entity each, run by the project's sim/ scripts for ModelSim/Vivado (xsim); any simulator with --stop-time works",
+        tbinfo=dict(runner="plain VHDL benches (*_tb), one entity each, run by the project's sim/ scripts for ModelSim/Vivado (another simulator); any simulator with --stop-time works",
                     passes="no 'assert ... severity error' fires (benches use assert with severity error and finish by running out of stimulus)")),
     "vhdl-extras": dict(
         stds=("2008",),
-        note="order: regex dependency scan; libraries extras / extras_2008 / test per directory as in the makefile (vcom -work basename dir); VHDL STD",
+        note="order: regex dependency scan; libraries extras / extras_2008 / test per directory as in the makefile (sim3 -work basename dir); VHDL STD",
         sources={"vhdl-extras": ("https://github.com/kevinpt/vhdl-extras", "b8916c4942e99d02fac04e25799cb2c996eb5870", "MIT",
                                  "license stated in README.rst and the file headers (no LICENSE file)")},
         src=[("vhdl-extras", "rtl/extras/*.vhdl", "extras"), ("vhdl-extras", "rtl/extras_2008/*.vhdl", "extras_2008")],
         tb=[("vhdl-extras", "rtl/test/*.vhdl", "test"), ("vhdl-extras", "rtl/test_2008/*.vhdl", "test_2008")],
-        tbinfo=dict(runner="makefile + scripts/ (ModelSim, vsim -c <entity> -do 'run -all; quit'); each test_* entity stands alone",
+        tbinfo=dict(runner="makefile + scripts/ (sim3, sim3 -c <entity> -do 'run -all; quit'); each test_* entity stands alone",
                     passes="the bench ends by itself; failures are 'assert ... severity error/failure' (the project scripts grep the log for '** Error' / '** Failure')")),
     "vhlib": dict(
         stds=("2008",),
@@ -348,7 +348,7 @@ SPECS.update({
                            "vendor agnostic VHDL-2008 stream/util library with its own test case framework (sim/TestCase_pkg)")},
         src=[("vhlib", "util/*.vhd", "work"), ("vhlib", "stream/*.vhd", "work"), ("vhlib", "stream/model/*.vhd", "work")],
         tb=[("vhlib", "sim/*.vhd", "work"), ("vhlib", "stream/test/**/*.vhd", "work")],
-        tbinfo=dict(runner="vhdeps ghdl|vsim <top> (files *.sim.08.vhd are simulation-only VHDL-2008; tops are the *_tb entities, test cases *_tc are compiled into them)",
+        tbinfo=dict(runner="vhdeps sim2|sim3 <top> (files *.sim.08.vhd are simulation-only VHDL-2008; tops are the *_tb entities, test cases *_tc are compiled into them)",
                     passes="TestCase_pkg: every subtest ends with tc_pass; the bench reports the summary and stops, 'Test case failed' (severity failure) otherwise")),
     "fletcher": dict(
         stds=("2008",),

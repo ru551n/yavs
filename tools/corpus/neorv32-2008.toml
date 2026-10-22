@@ -80,7 +80,7 @@ file = [
 
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
-nvc = []
+sim1 = []
 yavs = []
 
 [[source]]
@@ -92,7 +92,7 @@ license = "BSD-3-Clause"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "sim/ghdl.sh: ghdl -m neorv32_tb; ghdl -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)"
+runner = "sim/ghdl.sh: sim2 -m neorv32_tb; sim2 -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)"
 passes = "no assertion of severity error or worse within 10 ms of simulated time; the bench prints the UART output of the running program, the default image is the bootloader"
 
 [[testbenches.bench]]

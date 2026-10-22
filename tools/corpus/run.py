@@ -13,8 +13,8 @@ Command template words: {std} {lib} {dir} {file}; {map} (one --map=LIB:DIR/LIB p
 {flags} (the manifest's [flags] for --tool) expand to several arguments when they are a word of their own.
 Default templates:
   yavs: yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
-A reference label (sim1, ...) takes its template, expected-file suffix, manifest [flags] key and optional
-standard.vhdl fixup from tools/sims.local.conf (keys corpus_cmd, corpus_suffix, corpus_flags_key, corpus_fixup).
+A reference label (sim1, ...) takes its template, expected-file suffix and optional
+standard.vhdl fixup from tools/sims.local.conf (keys corpus_cmd, corpus_suffix, corpus_fixup).
 Every call runs under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G` (--no-wrap to disable).
 A source with `env = "VAR"` (vendor primitive libraries, unisim-2008) is read in place from $VAR and the
 whole manifest is skipped (exit 0) when VAR is unset. --extra-map maps a library built by an earlier run.
@@ -74,7 +74,7 @@ def main():
     if ref and not (a.cmd or simconf.get(a.tool, "corpus_cmd")):
         die(f"{a.tool}: key corpus_cmd not configured (tools/sims.local.conf)")
     suffix = simconf.get(a.tool, "corpus_suffix", a.tool) if ref else ""
-    fkey = simconf.get(a.tool, "corpus_flags_key", a.tool) if ref else "yavs"
+    fkey = a.tool  # the manifest [flags] key is the label (sim1, ...) or "yavs"
     fixup = ref and simconf.get(a.tool, "corpus_fixup")
 
     mp = Path(a.manifest)

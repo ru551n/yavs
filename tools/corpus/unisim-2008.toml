@@ -1081,7 +1081,7 @@ file = [
 ]
 
 [flags]
-nvc = []
+sim1 = []
 yavs = []
 
 [[source]]

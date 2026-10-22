@@ -302,7 +302,7 @@ file = [
 
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
-nvc = []
+sim1 = []
 yavs = []
 
 [[source]]
@@ -314,7 +314,7 @@ license = "Apache-2.0"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "poc.sh ghdl|vsim <tb entity> (PoC's own tool chain; *.files list each bench's dependencies); equivalently ghdl -r <tb>"
+runner = "poc.sh sim2|sim3 <tb entity> (PoC's own tool chain; *.files list each bench's dependencies); equivalently sim2 -r <tb>"
 passes = "PoC.simulation: the bench calls simAssert/simFinish and prints 'SIMULATION RESULT = PASSED'; severity failure on a failed assertion"
 
 [[testbenches.bench]]

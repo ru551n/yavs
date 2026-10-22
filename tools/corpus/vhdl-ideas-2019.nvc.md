@@ -4,7 +4,7 @@ Reference simulator sim1 1.23-devel (1.22.0.r66.gef5084a94)
 
 sim1 is the primary reference simulator, sim2 the second and sim3 the third; the roles are fixed by the corpus tooling.
 
-Every manifest entry analyzed in order into `~/.cache/rsim-corpora/nvc-vhdl-ideas-2019` with `tools/corpus/run.py vhdl-ideas-2019 --tool nvc --bless` (one file per call, `--std=2019`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).
+Every manifest entry analyzed in order into `~/.cache/rsim-corpora/nvc-vhdl-ideas-2019` with `tools/corpus/run.py vhdl-ideas-2019 --tool sim1 --bless` (one file per call, `--std=2019`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).
 
 - Files: 19; accepted by sim1: 18; rejected by sim1: 1. The manifest lists only files the reference tools accept (sim1, sim3 as second witness); the rest are under Excluded.
 - Flags needed: none.

@@ -414,7 +414,7 @@ def item_cmd(tool, Y, t, w, item, libs):
     if fl is None:
         fl = relaxed_flag(tool) if t["relaxed"] else []
     elif isinstance(fl, dict):  # a manifest's [flags]: by tool key
-        fl = fl.get("yavs" if tool == "yavs" else simconf.get(tool, "corpus_flags_key", tool), [])
+        fl = fl.get(tool, [])  # [flags] keys are the labels
     return analyse_cmd(tool, Y, t, w, item["lib"], str(item["file"]), flags=fl, libs=libs, std=item["std"])
 
 

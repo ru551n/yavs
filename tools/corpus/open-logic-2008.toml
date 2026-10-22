@@ -400,9 +400,9 @@ file = [
 
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
-nvc = ["--relaxed"]
+sim1 = ["--relaxed"]
 yavs = ["--relaxed"]
-ghdl = ["-frelaxed-rules"]
+sim2 = ["-frelaxed-rules"]
 
 [[source]]
 id = "vunit"

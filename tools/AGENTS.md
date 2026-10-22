@@ -39,7 +39,7 @@ git-ignored `tools/sims.local.conf`, an INI file with a section per label, read 
 (`YAVS_SIMS_CONF` overrides the path; `SIMCONF_<KEY>_<LABEL>` overrides a key). Keys by tool:
 `discrep`, `bench` (discrepancies, bench, tiny: `analyse|||run[|||crash regex]`); `difftest`,
 `difftest_relaxed`, `difftest_ignore`, `ext_analyse`, `ext_elab`, `ext_run`, `ext_psl` (difftest, external.py);
-`corpus_cmd`, `corpus_suffix`, `corpus_flags_key`, `corpus_fixup`, `gen_cmd`, `gen_setup`, `gen_licence`,
+`corpus_cmd`, `corpus_suffix`, `corpus_fixup`, `gen_cmd`, `gen_setup`, `gen_licence`,
 `gen_version`, `osvvm_tool_name`, `osvvm_tool_vendor`, `uvvm_simulator_name` (tools/corpus, tools/suites);
 `real_elab`, `real_run` (realbench: elaboration and run templates with `{std} {lib} {dir} {gens} {top} {rest}`; analysis uses `corpus_cmd`); `check_cmd`, `check_bootstrap` (check-sim1.sh); `vhpi_analyse`, `vhpi_run` (vhpi-conformance);
 `negtest_cmd`, `negtest_err`, `negtest_warn` (tests/diag/sem/check_ref.py); `golden_cmd`, `golden_name`

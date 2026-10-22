@@ -269,6 +269,7 @@ const PASS: &[&str] = &[
     "process/named_return_scalar_2019",
     "process/return_when_2019",
     "process/sensitivity",
+    "process/static_waits",
     "process/subprograms",
     "process/wait_past_time_high",
     "process/unaffected_2019",

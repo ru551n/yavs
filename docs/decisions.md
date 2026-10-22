@@ -4039,7 +4039,6 @@ Decisions:
   methods are plain calls with the object as the first argument, and its optimiser numbers the values of registers, not the
   registers (the versions of `Opt::vsn` follow that idea).
 
-
 ## `--tier=auto` as the default: not yet (yavs-llvm, #510, 2026-10-22; recommendation, the maintainer decides)
 
 - **Recommendation:** keep `--tier=interp` the default for now. Evidence in STATUS.md "`--tier=auto` as the default: the
@@ -4049,3 +4048,23 @@ Decisions:
 - **When to switch:** once a run in which nothing is compiled costs no more than noise (#525) and compiled clocked code of
   single-instance designs no longer loses (#532, #527). The policy is ready for it: cold runs compile within a budget of
   their own time, warm runs link what earlier runs compiled at once.
+
+## Static waits and checked copies (yavs-interp, yavs-elab, #530, #529, 2026-10-22)
+
+Decisions:
+
+- **A wait that names the same signals every time registers nothing** (`Op::WaitStatic`, using `Ctx::wait_same` of
+  kernel round 12): the one wait of a process with a single suspension point (and a sensitivity list, or no call of
+  anything that may suspend) names static signal names only (LRM 10.2, 11.3, and the equivalent processes of
+  concurrent statements), so when the kernel still holds the last wait, the interpreter skips its signal references and
+  goes to the suspension; the commit keeps the resident waiters and takes the fast path of a process that only
+  scheduled drivers. Only address, length, position and arithmetic instructions, signal references and `WaitOn`s may
+  lie between the wait's `Stmt` and its `Suspend` (no timeout); skipping them writes no memory, and no register is live
+  across a suspension. Why: a process sensitive to a 41-leaf record ran 45 `SigVal`/`WaitOn` pairs per activation.
+- **A kernel copy (`ProcInst::copy`) needs the same subtypes on both sides**: target and source must be static signal
+  names whose elaborated shapes have the same types, array lengths and scalar subtypes or bounds (`same_values`), so no
+  check of the assignment can fail. The first version took `nn <= n1` (`natural` from `integer`) as a copy and lost the
+  range check. Static explicit slices qualify too.
+- Idea taken from the reference simulator (sim1; read for its design, no code taken): it registers the triggers of a
+  static wait once, when the process is reset, and the wait only suspends; yavs registers at the first activation and
+  keeps the waiters resident (`ProcMeta::perm`), so only the interpreter's re-execution of the wait had to go.

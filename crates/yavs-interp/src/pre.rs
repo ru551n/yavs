@@ -18,7 +18,8 @@
 //! (`Frame::pc`), so traces, messages, coverage, root maps and the debug loop see the IR.
 
 use yavs_ir::{
-    AddrSpace, BoolOp, CheckKind, CheckMsgId, CmpOp, Func, Inst, IntOp, Program, Role, Width,
+    AddrSpace, BoolOp, CheckKind, CheckMsgId, CmpOp, Func, FuncFlags, Inst, IntOp, Program, Role,
+    Width,
 };
 
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
@@ -641,6 +642,12 @@ pub(crate) enum Op {
         offset: u32,
         at: u32,
         stmt: bool,
+    },
+    /// The `Stmt` of a wait statement whose sensitivity is the same at every activation
+    /// (`static_waits`): when the kernel can keep the last wait (`Ctx::wait_same`), the
+    /// op goes on at the `Suspend` (op `to`) without naming the signals again.
+    WaitStatic {
+        to: u32,
     },
     /// `StmtLoadSlot8` and the `CondBr` on the register it loaded (which is also written).
     FlagBr {
@@ -1744,6 +1751,74 @@ fn peephole(
 /// Superinstructions over resolved ops: an op that starts a known sequence is replaced by one
 /// that does all of it; the ops after it stay as they are (a jump or a frame resumed there
 /// runs them one by one), so no index changes.
+/// The wait statement of a process that has no other (`Program::single_suspend`, and a
+/// sensitivity list or no call of anything that may suspend), from the `Stmt` that starts it
+/// to its `Suspend` in one block, when it only names signals: constants, addresses, loads,
+/// lengths, positions, indices, fields and arithmetic, signal references and at least two
+/// `WaitOn`s (no timeout). Its `Stmt` op becomes `WaitStatic` (#530). The signals of a wait are
+/// static names (LRM 10.2, 11.3 and the equivalent processes of concurrent statements), so
+/// every activation names the same ones; with one suspension point, the last wait the kernel
+/// holds is this one unless the process just started. Skipping the instructions changes
+/// nothing else: they write registers only, and no register is live across a suspension.
+fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u32]) {
+    let Some(k) = ops.iter().position(|o| matches!(o, Op::Suspend)) else {
+        return;
+    };
+    let calls = |i: &Inst| match *i {
+        Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
+            .func(func)
+            .is_none_or(|c| c.flags.contains(FuncFlags::MAY_SUSPEND)),
+        Inst::CallIndirect { .. } => true,
+        _ => false,
+    };
+    let one = f.resume.len() == 1
+        && f.code
+            .iter()
+            .filter(|i| matches!(i, Inst::Suspend { .. }))
+            .count()
+            == 1
+        && (f.flags.contains(FuncFlags::SENS_LIST) || !f.code.iter().any(calls));
+    let Some(&s) = at.get(k).filter(|_| one) else {
+        return;
+    };
+    let s = s as usize;
+    let Some(st) = (0..s).rev().find(|&p| {
+        !matches!(
+            f.code[p],
+            Inst::Const { .. }
+                | Inst::ConstF { .. }
+                | Inst::AddrOf { .. }
+                | Inst::DopeLen { .. }
+                | Inst::Pos { .. }
+                | Inst::Index { .. }
+                | Inst::Field { .. }
+                | Inst::Bin { .. }
+                | Inst::BinRange { .. }
+                | Inst::Load { .. }
+                | Inst::SigVal { .. }
+                | Inst::SigSlice { .. }
+                | Inst::WaitOn { .. }
+        )
+    }) else {
+        return;
+    };
+    let waits = f.code[st + 1..s]
+        .iter()
+        .filter(|i| matches!(i, Inst::WaitOn { .. }))
+        .count();
+    if !matches!(f.code[st], Inst::Stmt)
+        || waits < 2
+        || (st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p))
+    {
+        return;
+    }
+    if let Some(&k0) = entry.get(st)
+        && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
+    {
+        *o = Op::WaitStatic { to: k as u32 };
+    }
+}
+
 fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
@@ -3068,6 +3143,7 @@ impl Code {
             };
         }
         superops(&mut ops, &at, f, known, &uses);
+        static_waits(prog, f, &mut ops, &at, &entry);
         let first = entry.first().copied().unwrap_or(NONE);
         Code {
             ops,

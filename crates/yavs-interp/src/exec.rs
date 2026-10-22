@@ -5221,6 +5221,15 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::WaitStatic { to } => {
+                    self.end_stmt();
+                    k = if ctx.as_deref_mut().is_some_and(|c| c.wait_same()) {
+                        to as usize
+                    } else {
+                        k + 1
+                    };
+                    enter!();
+                }
                 Op::Suspend => {
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     self.suspend(prog, f, ctx)?;

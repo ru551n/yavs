@@ -670,6 +670,22 @@ fn note_run(changed: &mut Vec<Range>, nruns: &mut u64, watched: bool, e: usize, 
 /// The longest logic signal that keeps `Signal::codes`.
 const CODES_MAX: usize = 1 << 20;
 
+/// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
+#[inline(always)]
+fn mark_bits(pend: &mut [u64], words: &mut SmallVec<[u32; 2]>, elem: u32, len: u32) {
+    let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
+    if pend[w] == 0 {
+        words.push(w as u32);
+    }
+    pend[w] |= m << s;
+    if s + len > 64 {
+        if pend[w + 1] == 0 {
+            words.push(w as u32 + 1);
+        }
+        pend[w + 1] |= m >> (64 - s);
+    }
+}
+
 /// Byte `i` of `SPREAD[x]` is bit `i` of `x`.
 const SPREAD: [u64; 256] = {
     let mut t = [0u64; 256];
@@ -1526,16 +1542,40 @@ impl Signal {
             self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
         }
         let first = self.pend_words.is_empty();
-        let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
-        if self.pend[w] == 0 {
-            self.pend_words.push(w as u32);
+        mark_bits(&mut self.pend, &mut self.pend_words, elem, len);
+        first
+    }
+
+    /// `commit_planes` of entries of this signal in order (processes of the elements of an
+    /// array of vectors, in one batch), its storage looked up once. True when the signal had
+    /// nothing pending.
+    pub(crate) fn commit_planes_run(&mut self, outs: &[crate::process::OutV]) -> bool {
+        let first = !self.pend_one && self.pend_words.is_empty();
+        self.spill_pend_one();
+        self.last_commit.0 = u32::MAX;
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
         }
-        self.pend[w] |= m << s;
-        if s + len > 64 {
-            if self.pend[w + 1] == 0 {
-                self.pend_words.push(w as u32 + 1);
+        let exact = self.exact;
+        self.lag |= !exact;
+        let Signal {
+            drivers,
+            driving,
+            pend,
+            pend_words,
+            ..
+        } = self;
+        let Buf::Planes { b: drv, .. } = driving else {
+            return false;
+        };
+        let drv: &mut [Block] = drv;
+        for o in outs {
+            if exact {
+                let d = &mut drivers[o.slot as usize];
+                d.put_planes((o.elem - d.range.offset) as usize, o.len as usize, o.planes);
             }
-            self.pend[w + 1] |= m >> (64 - s);
+            put_block(drv, o.elem as usize, o.len as usize, o.planes, !0);
+            mark_bits(pend, pend_words, o.elem, o.len);
         }
         first
     }

@@ -2849,10 +2849,23 @@ fn commit_out(
     if outv.is_empty() {
         return;
     }
-    for &o in outv.iter() {
-        if signals[o.sig as usize].commit_planes(o.slot, o.elem, o.len, o.planes) {
+    let mut i = 0;
+    while let Some(&o) = outv.get(i) {
+        let n = if outv.get(i + 1).is_some_and(|x| x.sig == o.sig) {
+            outv[i..].iter().take_while(|x| x.sig == o.sig).count()
+        } else {
+            1
+        };
+        let sig = &mut signals[o.sig as usize];
+        let first = if n == 1 {
+            sig.commit_planes(o.slot, o.elem, o.len, o.planes)
+        } else {
+            sig.commit_planes_run(&outv[i..i + n])
+        };
+        if first {
             direct_sigs.push(o.sig);
         }
+        i += n;
     }
     outv.clear();
 }

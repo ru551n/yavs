@@ -266,27 +266,30 @@ fn unchanged_direct_assignments_keep_the_deltas() {
     assert_eq!(off, on);
 }
 
-/// Four direct drivers, one per element, assigning at every ns, with forces of the driving
-/// value, a release and a deposit in between; each process reports its `'driving_value`. The
-/// direct commits write only the driving value (`Signal::lag`), so the same run on a signal
-/// with an identity resolution function (no direct driver) must give the same trace.
+/// Four direct drivers of one element and four of two elements (vector entries), assigning at
+/// every ns, with forces of the driving value, releases and deposits in between; each process
+/// reports its `'driving_value`. The direct commits write only the driving value
+/// (`Signal::lag`), so the same run on signals with an identity resolution function (no direct
+/// driver) must give the same trace.
 fn forced_drivers(direct: bool) -> Vec<String> {
     let mut b = Builder::new();
     let lv = |s: &str| s.parse::<LogicVec>().unwrap();
-    let v = if direct {
-        b.signal("v", SignalType::logic(4), &lv("UUUU"))
-    } else {
-        let same: Resolver = std::sync::Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
-            out.copy_from_slice(srcs[0]);
-            Ok(())
-        });
-        b.resolved_signal(
-            "v",
-            SignalType::logic(4),
-            &lv("UUUU"),
-            Resolution::Func(same),
-        )
+    let same: Resolver = std::sync::Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out.copy_from_slice(srcs[0]);
+        Ok(())
+    });
+    let mut sig = |name: &str, n: u32| {
+        let (ty, init) = (
+            SignalType::logic(n),
+            LogicVec::new(n as usize, StdULogic::U),
+        );
+        if direct {
+            b.signal(name, ty, &init)
+        } else {
+            b.resolved_signal(name, ty, &init, Resolution::Func(same.clone()))
+        }
     };
+    let (v, w) = (sig("v", 4), sig("w", 8));
     for i in 0..4u32 {
         let d = b.driver(v.slice(i, 1));
         let mut t = 0u32;
@@ -301,13 +304,25 @@ fn forced_drivers(direct: bool) -> Vec<String> {
                     c.report(Severity::Note, format!("{got:?}"));
                 }
                 let code = [ONE, ZERO, StdULogic::X as u8][((t + i) % 3) as usize];
-                c.assign_code(
-                    d,
-                    Some(Range::new(i, 1)),
-                    Time::ZERO,
-                    code,
-                    DelayMode::INERTIAL,
-                )?;
+                let r = Some(Range::new(i, 1));
+                c.assign_code(d, r, Time::ZERO, code, DelayMode::INERTIAL)?;
+                c.wait_for(ns(1))
+            }),
+        );
+        let dw = b.driver(w.slice(2 * i, 2));
+        let mut t = 0u32;
+        b.process(
+            &format!("q{i}"),
+            NONE,
+            &[dw],
+            p(move |c| {
+                t += 1;
+                if t > 1 {
+                    let got = c.driving_value(dw)?;
+                    c.report(Severity::Note, format!("{got:?}"));
+                }
+                let val = lv(["01", "1X", "00", "Z1"][((t + i) % 4) as usize]);
+                c.assign(dw, None, &[(Time::ZERO, &val)], DelayMode::INERTIAL)?;
                 c.wait_for(ns(1))
             }),
         );
@@ -320,10 +335,22 @@ fn forced_drivers(direct: bool) -> Vec<String> {
         p(move |c| {
             t += 1;
             match t - 1 {
-                2 => c.force(v.slice(1, 2), ForceMode::Driving, &lv("01"))?,
-                4 => c.release(v.slice(1, 1), ForceMode::Driving)?,
-                5 => c.release(v.slice(2, 1), ForceMode::Driving)?,
-                6 => c.deposit(v.slice(0, 2), &lv("ZZ"))?,
+                2 => {
+                    c.force(v.slice(1, 2), ForceMode::Driving, &lv("01"))?;
+                    c.force(w.slice(1, 4), ForceMode::Driving, &lv("0101"))?;
+                }
+                4 => {
+                    c.release(v.slice(1, 1), ForceMode::Driving)?;
+                    c.release(w.slice(1, 2), ForceMode::Driving)?;
+                }
+                5 => {
+                    c.release(v.slice(2, 1), ForceMode::Driving)?;
+                    c.release(w.slice(3, 2), ForceMode::Driving)?;
+                }
+                6 => {
+                    c.deposit(v.slice(0, 2), &lv("ZZ"))?;
+                    c.deposit(w.slice(5, 3), &lv("LLL"))?;
+                }
                 7 => c.force(v.slice(3, 1), ForceMode::Effective, &lv("H"))?,
                 _ => {}
             }
@@ -333,13 +360,14 @@ fn forced_drivers(direct: bool) -> Vec<String> {
     let (mut sim, trace) = build(b, Config::default());
     sim.run_until(ns(10)).unwrap();
     let mut lines = trace.take();
-    lines.push(format!("final {}", sim.value(v).unwrap()));
+    let (fv, fw) = (sim.value(v).unwrap(), sim.value(w).unwrap());
+    lines.push(format!("final {fv} {fw}"));
     lines
 }
 
 #[test]
 fn direct_drivers_keep_their_values_through_forces_and_deposits() {
     let direct = forced_drivers(true);
-    assert!(direct.len() > 40, "{direct:?}");
+    assert!(direct.len() > 80, "{direct:?}");
     assert_eq!(direct, forced_drivers(false));
 }

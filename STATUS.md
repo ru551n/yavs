@@ -3882,6 +3882,11 @@ stat`, one run each, core 6): `ff_rtl` 0.212 G to 0.117 G, `rtl_ram` 0.783 G to 
 clock, 1000 cycles: 245 M to 225 M instructions, per activation 3830 to ~3500 of which the interpreter has ~2650 (the kernel
 part ~1150 to ~850).
 
+Whole real-world suite (`realbench --compare`, `main` before this round b5ab7b91 against the pushed f932bbbb, 33 tests that pass on
+both, `--phases run`, cores 4 and 5): geometric mean of the instructions 0.98 (interpreter) and 0.98 (`--tier=auto`); `fsm` 0.91
+(`sc5_timestamp` 0.74), `hdlm_lfsr` 0.96 / 0.92, `poc_cache_cpu` 0.99, `neorv32_*` 0.99, every other test 0.98 to 1.00; no test above
+1.00 in instructions (wall times of two tests ran 1.11 and 1.41 slower under a loaded host at 0.96 and 0.98 of the instructions).
+
 Measured and not taken: the per-element event stamps are half of `update_word` of a 32-bit register (~150 of 600 kernel
 instructions per activation), but records for signals of 8 to 64 elements cost more when the data is random (see the decision);
 signal fields in hot-first order (with and without cache-line alignment) did nothing for neorv32. What the cycle costs per

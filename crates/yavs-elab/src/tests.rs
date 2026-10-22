@@ -2189,8 +2189,7 @@ fn signal_copies_run_in_the_kernel() {
         let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         sim.subscribe(Box::new(Collect(got.clone())));
         sim.run_until(yavs_kernel::Time::MAX).expect("run");
-        let got = got.lock().expect("lock").clone();
-        got
+        got.lock().expect("lock").clone()
     };
     let kernel = run(&e, yavs_kernel::Config::default());
     let interp = run(

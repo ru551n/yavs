@@ -2213,6 +2213,14 @@ impl SimControl {
         postponed: bool,
         init: bool,
     ) -> Result<(), SimError> {
+        if let [p] = pids[..]
+            && !init
+            && !postponed
+            && self.rng.is_none()
+        {
+            self.batch_mono = false;
+            return self.run_one(p, pids);
+        }
         if let Some(state) = &mut self.rng {
             shuffle(&mut pids, state);
         } else if !std::mem::take(&mut self.batch_mono) {
@@ -2372,6 +2380,84 @@ impl SimControl {
                 }
             }
         }
+        self.commit_rest(late, pids, postponed, init)
+    }
+
+    /// `run_batch` of one process after initialisation (a stage of a chain of processes): no
+    /// order, no batch loop, and the usual clocked commit straight from its own lists.
+    fn run_one(&mut self, p: u32, pids: Vec<u32>) -> Result<(), SimError> {
+        let sh = Shared {
+            now: self.now,
+            delta: self.delta,
+            cycle: self.cycle,
+            resolution: self.cfg.resolution,
+            stop_severity: self.cfg.stop_severity,
+            signals: &self.signals,
+            drivers: &self.drivers,
+            names: &self.names,
+            live: self.live_sink.as_deref(),
+        };
+        let s = slot_mut(&mut self.slots[p as usize]);
+        resumption(&self.procs, p, &mut s.st);
+        let mut ctx = Ctx {
+            sh: &sh,
+            pid: ProcId(p),
+            st: &mut s.st,
+            live: sh.live.is_some(),
+        };
+        // A panic in process code is a broken invariant: an internal error of the process.
+        s.result = catch_unwind(AssertUnwindSafe(|| s.process.run(&mut ctx)))
+            .unwrap_or_else(|panic| Err(process_panic(&sh, p, &*panic)));
+        let st = &mut s.st;
+        let meta = &mut self.procs[p as usize];
+        // The usual clocked process (see `run_batch`): committed here.
+        if !(st.again
+            && meta.perm != 0
+            && st.sens.is_empty()
+            && st.deadline.is_none()
+            && st.effects.is_empty()
+            && s.result.is_ok())
+        {
+            let mut late = std::mem::take(&mut self.late);
+            late.push(p);
+            return self.commit_rest(late, pids, false, false);
+        }
+        st.again = false;
+        meta.ready = false;
+        meta.resumed = true;
+        self.serial_ran |= meta.flags.serial;
+        for &(t, d) in st.scheduled.iter() {
+            self.queue.push(self.now, t, Entry::Driver(d.0));
+        }
+        st.scheduled.clear();
+        if !st.phantoms.is_empty() {
+            self.empty_delta |= st.take_phantoms();
+        }
+        commit_out(
+            &mut self.signals,
+            &mut self.direct_sigs,
+            &mut self.empty_delta,
+            &mut st.out,
+            &mut st.outv,
+        );
+        self.stats.process_runs += 1;
+        let mut old = std::mem::replace(&mut self.last_ran, pids);
+        if self.ready.capacity() == 0 {
+            old.clear();
+            self.ready = old;
+        }
+        Ok(())
+    }
+
+    /// The end of `run_batch` after the run phase: the direct entries of the processes
+    /// committed in the batch loop, then the commit of the others (`late`) in batch order.
+    fn commit_rest(
+        &mut self,
+        mut late: Vec<u32>,
+        pids: Vec<u32>,
+        postponed: bool,
+        init: bool,
+    ) -> Result<(), SimError> {
         self.commit_direct();
         self.stats.process_runs += pids.len() as u64;
         if late.is_empty() {

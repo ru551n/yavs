@@ -4679,6 +4679,25 @@ single_min 6.46 s, 7.40, 5.52, 5.61 (1.0x, 0.87x, 1.17x, 1.15x). The earlier 1.7
 (`docs/design/parallel-kernel.md`) timed a core asleep in `wfi` (#513) and do not stand. With the real program the gain is 1.2x to 1.3x at 4 to 8 threads for twice the CPU time; batch sizes were not
 measured again here.
 
+## Static waits and checked kernel copies (#530, #536, #529, 2026-10-22)
+
+Decisions: docs/decisions.md "Static waits and checked copies". The one wait of a single-suspension process skips its signal
+references once the kernel holds it (`Op::WaitStatic` with `Ctx::wait_same`); a kernel copy (`ProcInst::copy`) now needs the same
+subtypes on both sides (#536: `natural <= integer` lost its range check) and takes static slices. Tests: corpus
+`process/static_waits`, `sigassign/plain_copies`, elab `signal_copies_run_in_the_kernel`.
+
+`tools/realbench --compare`, core 7, `main` at `6f2b527d` (kernel copies already in) against this change, median, load average 10 to 12:
+
+| test | interp wall | interp instructions | auto wall | auto instructions |
+|---|---:|---:|---:|---:|
+| neorv32_dual_full | 13.25 to 12.24 s (0.92) | 113.3 G to 104.8 G (0.92) | 12.84 to 12.14 s (0.95) | 0.93 |
+| neorv32_single_min | 14.41 to 14.09 s (0.98) | 142.0 G to 130.5 G (0.92) | 15.66 to 14.07 s (0.90) | 0.92 |
+| neorv32_single_cache | 17.32 to 14.28 s (0.82) | 135.0 G to 123.4 G (0.91) | 17.25 to 16.53 s (0.96) | 0.92 |
+
+Against sim1 (39 to 44 G instructions per run), interpreter instruction ratios went from 2.60 / 3.81 / 3.30 (dual, single_min,
+single_cache, `main` at `e4c8d983` this morning) to 2.37 / 3.37 / 2.96 with the kernel copies and this change. Not done: compiled
+code (`--tier=llvm`, `auto`) still names every signal of such a wait (LLVM tier).
+
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:

@@ -46,6 +46,7 @@ const PASS: &[&str] = &[
     "composite/loop_invariant_effect",
     "composite/loop_invariant_fault_order",
     "composite/loop_invariant_replay",
+    "composite/process_loop_invariant",
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/case_slice_choice",

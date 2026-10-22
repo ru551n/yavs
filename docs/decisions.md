@@ -4146,6 +4146,10 @@ Decisions:
   `opt::tidy` runs again over the result. Why: the element loops of conversion functions are where the time goes (#518,
   #526), a process loop would need registers live across a suspension, and a debugger expects every instruction at its
   statement.
+- **Also in processes, for loops without a suspension** (#541, 2026-10-22): a loop of a process whose blocks hold no
+  `Suspend` and no call of a subprogram that may suspend gets the same treatment (no clean-up and no `tidy` walk
+  before or after), so no moved register lives across a suspension. The tap loop of a clocked process over an instance
+  constant was four operations per pass, two of them the constant's address.
 - **Loops are natural loops with a single entry, found from the back edges of one depth-first walk**, taken inner first; a
   header that several back edges share (the outer loop's body starts with the inner loop, which the clean-up's threading
   produces) is split: the latch with the smallest loop keeps it, the entry and the other back edges go through a new block
@@ -4160,7 +4164,9 @@ Decisions:
   instructions most outweigh the copies (a loop of one pass pays the copies). An instruction that can neither fail nor read
   memory (constant, move, compare, select, address) moves from anywhere in the loop.
 - **Memory**: descriptor reads (`Pos`, `DopeLen`) move only when no instruction of the loop writes memory a descriptor can
-  be in (stores, copies, calls and the like; writes of logic elements cannot reach a descriptor); loads stay in the loop.
+  be in (stores, copies, calls and the like; writes of logic elements cannot reach a descriptor). Loads stay in the loop,
+  except a load from read-only memory (instance data or the constant pool, which nothing writes while code runs) at a
+  constant address (`AddrOf` of a register defined once), which cannot fail and moves from anywhere in the loop (#541).
   Why: no alias analysis yet; the loops in question write logic elements only.
 - **A register is invariant when the loop does not define it; a moved instruction's result register is defined once** (so
   every use is still dominated by its definition, the verifier's must-defined rule).

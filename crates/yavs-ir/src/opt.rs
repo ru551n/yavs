@@ -311,6 +311,9 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
         if licm::run(prog, &mut f) | threaded {
             tidy(prog, &mut f, &mut layouts);
         }
+    } else if cfg_enabled() && f.kind == FuncKind::Process {
+        // Loops of a process that do not suspend (#541).
+        licm::run(prog, &mut f);
     }
     if memo_enabled() {
         memo::run(prog, &mut f);

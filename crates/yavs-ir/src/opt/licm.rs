@@ -1,4 +1,5 @@
-//! Loop-invariant code motion in a subprogram that cannot suspend (#526).
+//! Loop-invariant code motion in a subprogram that cannot suspend (#526) and in the loops of a
+//! process that hold no suspension (#541).
 //!
 //! Index and descriptor arithmetic of nested array loops (`r(i, j) := m(i)(j)`) is mostly the
 //! same on every pass of the inner loop: the position of `i`, the element descriptor, the
@@ -14,7 +15,8 @@
 //! instructions that stay in the loop and can fail (with fresh results). Whatever fails first
 //! on the first pass fails first in the preheader, the copies cost one run per entry. An
 //! instruction that cannot fail and reads no memory (a compare, a select, a constant) moves
-//! from anywhere in the loop.
+//! from anywhere in the loop, and so does a load from read-only memory (instance data, the
+//! constant pool) at a constant address.
 //!
 //! Loops are the natural loops of the back edges a depth-first walk finds, with a single entry
 //! (the header); inner loops go first, so what moved into an inner preheader can leave the
@@ -118,9 +120,34 @@ struct Licm<'a> {
     member: Vec<u32>,
     /// The last tag handed out (blocks and registers of the loop being looked at carry it).
     tags: u32,
+    /// Per register: defined once, by the address of read-only memory (the constant pool, the
+    /// instance data) at a constant offset.
+    ro: Vec<bool>,
 }
 
 impl Licm<'_> {
+    /// A load from read-only memory at a constant address: it cannot fail and its value is the
+    /// same wherever it runs.
+    fn ro_load(&self, i: &Inst) -> bool {
+        matches!(*i, Inst::Load { addr, w, .. }
+            if w != Width::Sig && self.ro.get(addr.0 as usize).copied().unwrap_or(false))
+    }
+
+    /// Does the loop of these blocks suspend (a register may not live across a suspension)?
+    fn suspends(&self, body: &[u32]) -> bool {
+        body.iter().any(|&b| {
+            self.code[b as usize].iter().any(|i| match *i {
+                Inst::Suspend { .. } => true,
+                Inst::Call { func, .. } => self
+                    .prog
+                    .funcs
+                    .get(func)
+                    .is_none_or(|c| c.flags.contains(FuncFlags::MAY_SUSPEND)),
+                _ => false,
+            })
+        })
+    }
+
     fn succs(&self, b: usize) -> Vec<u32> {
         match self.code[b].last() {
             Some(&Inst::Case { table, .. }) => match self.prog.cases.get(table) {
@@ -321,7 +348,7 @@ impl Licm<'_> {
     /// Hoist what the loop of `h` allows; returns whether anything moved.
     fn hoist(&mut self, f: &crate::Func, h: u32, latches: &[u32]) -> bool {
         let (tag, body) = self.walk(h, latches);
-        if !self.single_entry(h, &body, tag) {
+        if !self.single_entry(h, &body, tag) || self.suspends(&body) {
             return false;
         }
         let outside: Vec<u32> = self.preds[h as usize]
@@ -361,7 +388,7 @@ impl Licm<'_> {
                 let i = &hc[prefix];
                 let d = def_of(i);
                 let fails = may_fail(i);
-                if movable(i)
+                if (movable(i) || self.ro_load(i))
                     && (!fails || prefix < cap)
                     && (clean || !reads_dope(i))
                     && d.is_none_or(|d| self.defs[d.0 as usize] == 1)
@@ -459,7 +486,7 @@ impl Licm<'_> {
             let len = self.code[b as usize].len();
             for k in from..len {
                 let i = &self.code[b as usize][k];
-                if speculable(i)
+                if (speculable(i) || self.ro_load(i))
                     && self.one_cell(i)
                     && def_of(i).is_some_and(|d| self.defs[d.0 as usize] == 1)
                     && self.uses_invariant(i, tag, &[])
@@ -518,12 +545,24 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
         })
         .unzip();
     let mut defs = vec![0u8; f.reg_ty.len()];
+    let mut ro = vec![false; f.reg_ty.len()];
     for i in &f.code {
         i.visit(&mut |r, role, _| {
             if role == Role::Def {
                 defs[r.0 as usize] = defs[r.0 as usize].saturating_add(1);
             }
         });
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Inst | AddrSpace::Const(_),
+            ..
+        } = *i
+        {
+            ro[dst.0 as usize] = true;
+        }
+    }
+    for (r, d) in ro.iter_mut().zip(&defs) {
+        *r &= *d == 1;
     }
     let mut l = Licm {
         prog,
@@ -535,6 +574,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
         defs,
         member: vec![0; nb],
         tags: 0,
+        ro,
     };
     for b in 0..nb {
         for s in l.succs(b) {

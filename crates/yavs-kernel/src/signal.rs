@@ -561,6 +561,12 @@ pub(crate) struct Signal {
     /// later of its own stamps and its block's, so marking a wide range costs a word per block
     /// (#519).
     blk_active: Vec<[u64; 2]>,
+    /// A signal of more than 64 elements: per block of 64 elements, the events of
+    /// `update_word` whose elements have not changed since, each with those elements (the
+    /// masks of a block are disjoint, so a block has at most 64). The last event of an element
+    /// is the later of its own stamps and the record that lists it: a wide bus that changes in
+    /// most cycles writes no element stamps (#519).
+    blk_event: Vec<SmallVec<[EvRec; 4]>>,
     /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
     pub segments: SmallVec<[Segment; 1]>,
@@ -636,6 +642,15 @@ pub(crate) struct Signal {
     pub inactive: bool,
     /// The element and code of the last `commit_code`.
     last_commit: (u32, u8),
+}
+
+/// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
+/// time stamp (`Signal::blk_event`).
+#[derive(Clone, Copy)]
+struct EvRec {
+    cycle: u64,
+    time: u64,
+    mask: u64,
 }
 
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
@@ -718,6 +733,11 @@ impl Signal {
             stamps: stamps(n),
             blk_active: if n > 64 {
                 vec![[0; 2]; n.div_ceil(64)]
+            } else {
+                Vec::new()
+            },
+            blk_event: if n > 64 {
+                vec![SmallVec::new(); n.div_ceil(64)]
             } else {
                 Vec::new()
             },
@@ -1298,13 +1318,30 @@ impl Signal {
         let base = w * 64;
         let st = self.stamps.as_mut_slice();
         let t = stamp(now);
-        // Event cycle and time of each changed element, then the runs.
-        let mut v = m;
-        while v != 0 {
-            let e = base + v.trailing_zeros() as usize;
-            v &= v - 1;
-            st[e] = cycle;
-            st[2 * len + e] = t;
+        // Event cycle and time of the changed elements, then the runs.
+        if let Some(b) = self.blk_event.get_mut(w) {
+            // The changed elements leave the older records, which go once empty; records
+            // stay in cycle order, so this cycle's, if any, is the last.
+            b.retain(|r| {
+                r.mask &= !m;
+                r.mask != 0
+            });
+            match b.last_mut() {
+                Some(x) if x.cycle == cycle => x.mask |= m,
+                _ => b.push(EvRec {
+                    cycle,
+                    time: t,
+                    mask: m,
+                }),
+            }
+        } else {
+            let mut v = m;
+            while v != 0 {
+                let e = base + v.trailing_zeros() as usize;
+                v &= v - 1;
+                st[e] = cycle;
+                st[2 * len + e] = t;
+            }
         }
         if self.watched {
             let mut v = m;
@@ -1626,7 +1663,7 @@ impl Signal {
                 continue;
             };
             for e in part.elems() {
-                if self.event_cycles()[e] == cycle {
+                if self.event_cycle(e) == cycle {
                     continue;
                 }
                 any = true;
@@ -1773,7 +1810,7 @@ impl Signal {
     /// so an element that did not change in that cycle keeps its current value.
     pub fn last_value_of(&self, r: Range) -> Buf {
         let mut b = self.last_value.extract(r.offset as usize, r.len as usize);
-        let ev = &self.event_cycles()[r.elems()];
+        let ev: Vec<u64> = r.elems().map(|e| self.event_cycle(e)).collect();
         if let Some(&latest) = ev.iter().max() {
             for (i, _) in ev.iter().enumerate().filter(|&(_, &c)| c != latest) {
                 b.copy(i, &self.cur, r.offset as usize + i, 1);
@@ -1782,8 +1819,30 @@ impl Signal {
         b
     }
 
-    fn event_cycles(&self) -> &[u64] {
-        &self.stamps[..self.ty.len as usize]
+    /// The cycle of the last event of element `e`.
+    fn event_cycle(&self, e: usize) -> u64 {
+        let own = self.stamps[e];
+        let bit = 1 << (e % 64);
+        self.blk_event.get(e / 64).map_or(own, |b| {
+            b.iter()
+                .find(|x| x.mask & bit != 0)
+                .map_or(own, |x| own.max(x.cycle))
+        })
+    }
+
+    /// The event records of the blocks of `r` that list an element of `r`.
+    fn block_events(&self, r: Range) -> impl Iterator<Item = &EvRec> {
+        let (lo, hi) = (r.offset as usize, r.end() as usize);
+        let span = if self.blk_event.is_empty() {
+            0..0
+        } else {
+            block_span(r)
+        };
+        span.flat_map(move |k| {
+            let (a, b) = (lo.max(k * 64) - k * 64, hi.min(k * 64 + 64) - k * 64);
+            let m = nmask(b - a) << a;
+            self.blk_event[k].iter().filter(move |x| x.mask & m != 0)
+        })
     }
 
     pub fn active_in(&self, r: Range, cycle: u64) -> bool {
@@ -1795,13 +1854,16 @@ impl Signal {
 
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
-        self.event_cycles()[r.elems()].contains(&cycle)
+        self.stamps[r.elems()].contains(&cycle)
+            || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
     }
 
     /// `'last_event` of `r`: time since the most recent event, `TIME'HIGH` if none.
     pub fn last_event(&self, r: Range, now: Time) -> Time {
         let n = self.ty.len as usize;
-        elapsed(now, &self.stamps[2 * n..3 * n][r.elems()])
+        let own = elapsed(now, &self.stamps[2 * n..3 * n][r.elems()]);
+        let blk: SmallVec<[u64; 8]> = self.block_events(r).map(|x| x.time).collect();
+        own.min(elapsed(now, &blk))
     }
 
     /// `'last_active` of `r`.
@@ -2435,6 +2497,16 @@ mod tests {
             let now = Time::ns(c);
             let any = sig.update_effective(Range::new(0, 200), now, c);
             assert_eq!(any, last.contains(&c));
+            // A second update in the same cycle (another part of the signal settles later).
+            if c % 5 == 0 {
+                for e in (c as usize % 7..200).step_by(9) {
+                    let v = if sig.driving.code(e) == 2 { 3 } else { 2 };
+                    sig.driving.put_code(e, v);
+                    last[e] = c;
+                }
+                assert!(sig.update_effective(Range::new(64, 136), now, c));
+                assert!(sig.update_effective(Range::new(0, 64), now, c));
+            }
             for e in 0..200u32 {
                 let r = Range::new(e, 1);
                 assert_eq!(
@@ -2457,6 +2529,22 @@ mod tests {
                     _ => Time::MAX,
                 };
                 assert_eq!(sig.last_event(r, now), want);
+            }
+            // 'last_value: the elements whose last event is the latest of the range keep the
+            // value before it, the others their current value.
+            if c % 3 == 0 {
+                let r = Range::new(30, 120);
+                let lv = sig.last_value_of(r);
+                let latest = last[30..150].iter().copied().max().unwrap_or(0);
+                for i in 0..120 {
+                    let e = 30 + i;
+                    let want = if last[e] == latest && latest > 0 {
+                        sig.last_value.code(e)
+                    } else {
+                        sig.cur.code(e)
+                    };
+                    assert_eq!(lv.code(i), want, "cycle {c} element {e}");
+                }
             }
         }
     }

@@ -502,11 +502,16 @@ impl Ctx<'_> {
             )));
         }
         let info = self.own(d)?;
-        Ok(
-            self.sh.signals[info.signal.0 as usize].drivers[info.slot as usize]
-                .value
-                .to_value(),
-        )
+        let s = &self.sh.signals[info.signal.0 as usize];
+        // A direct driver whose commits wrote only the driving value (`Signal::lag`).
+        if s.lag && info.direct {
+            let r = info.range;
+            return Ok(s
+                .driving
+                .extract(r.offset as usize, r.len as usize)
+                .to_value());
+        }
+        Ok(s.drivers[info.slot as usize].value.to_value())
     }
 
     /// `now + delay` after truncating `delay` to the resolution limit.
@@ -817,6 +822,10 @@ impl Ctx<'_> {
             return false;
         }
         let ds = &s.drivers[info.slot as usize];
+        // The value of a lagging driver is in the driving value (`Signal::lag`).
+        if s.lag && !ds.shared {
+            return false;
+        }
         let (rel, n) = ((r.offset - ds.range.offset) as usize, r.len as usize);
         // The cheap tests first: most assignments of a running design change something.
         ds.value.same_as(rel, n, v)

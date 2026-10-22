@@ -624,6 +624,13 @@ pub(crate) struct Signal {
     pend_words: SmallVec<[u32; 2]>,
     /// One element is pending and it is not in `pend`: the one `last_commit` holds.
     pend_one: bool,
+    /// Direct commits wrote the driving value only: the values of the sole-source drivers
+    /// (`DriverSlot::shared` false) may be older than `driving`, which holds them
+    /// (`sync_drivers` copies them back). Never with `exact`.
+    pub lag: bool,
+    /// A deposit made the driving value differ from the drivers: direct commits write the driver
+    /// value too, as before.
+    pub exact: bool,
     /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
     /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
     pub inactive: bool,
@@ -745,6 +752,8 @@ impl Signal {
             pend: Vec::new(),
             pend_words: SmallVec::new(),
             pend_one: false,
+            lag: false,
+            exact: false,
             inactive: false,
             last_commit: (u32::MAX, 0),
         };
@@ -1337,20 +1346,31 @@ impl Signal {
     /// write or finish, only the delta it causes.
     #[inline]
     pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> Option<bool> {
-        let d = &mut self.drivers[slot as usize];
-        if let Buf::Planes { b, .. } = &mut d.value {
-            let rel = (elem - d.range.offset) as usize;
-            if self.codes.get(elem as usize) == Some(&code)
+        if self.exact {
+            let d = &mut self.drivers[slot as usize];
+            if let Buf::Planes { b, .. } = &mut d.value {
+                let rel = (elem - d.range.offset) as usize;
+                if self.codes.get(elem as usize) == Some(&code)
+                    && self.skip_ok
+                    && plane_code(b, rel) == code
+                {
+                    return None;
+                }
+                put_plane_code(b, rel, code);
+            }
+        }
+        // The driver is the element's only source: the driving value is its value (`lag`).
+        if let Buf::Planes { b, .. } = &mut self.driving {
+            if !self.exact
+                && self.codes.get(elem as usize) == Some(&code)
                 && self.skip_ok
-                && plane_code(b, rel) == code
+                && plane_code(b, elem as usize) == code
             {
                 return None;
             }
-            put_plane_code(b, rel, code);
-        }
-        if let Buf::Planes { b, .. } = &mut self.driving {
             put_plane_code(b, elem as usize, code);
         }
+        self.lag |= !self.exact;
         // The signal's first element of the cycle stays in `last_commit` alone (`pend_one`);
         // a second one moves it to the bit mask.
         if !self.pend_one && self.pend_words.is_empty() {
@@ -1361,6 +1381,75 @@ impl Signal {
         self.spill_pend_one();
         self.last_commit = (elem, code);
         Some(self.mark_pend(elem, 1))
+    }
+
+    /// `commit_code` of entries of this signal in order (a vector with a process per element that
+    /// ran in one batch), its storage looked up once. True when the signal had nothing pending
+    /// and has now.
+    pub(crate) fn commit_codes(&mut self, outs: &[crate::process::Out], empty: &mut bool) -> bool {
+        let first = !self.pend_one && self.pend_words.is_empty();
+        self.spill_pend_one();
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        let exact = self.exact;
+        self.lag |= !exact;
+        let Signal {
+            drivers,
+            driving,
+            codes,
+            pend,
+            pend_words,
+            last_commit,
+            skip_ok,
+            ..
+        } = self;
+        let Buf::Planes { b: drv, .. } = driving else {
+            return false;
+        };
+        let (drv, pend): (&mut [Block], &mut [u64]) = (drv, pend);
+        for o in outs {
+            let (e, code) = (o.elem as usize, o.code as u8);
+            if exact {
+                let d = &mut drivers[o.slot as usize];
+                let Buf::Planes { b: dv, .. } = &mut d.value else {
+                    continue;
+                };
+                let rel = e - d.range.offset as usize;
+                if codes.get(e) == Some(&code) && *skip_ok && plane_code(dv, rel) == code {
+                    *empty = true;
+                    continue;
+                }
+                put_plane_code(dv, rel, code);
+            } else if codes.get(e) == Some(&code) && *skip_ok && plane_code(drv, e) == code {
+                *empty = true;
+                continue;
+            }
+            put_plane_code(drv, e, code);
+            let w = e / 64;
+            if pend[w] == 0 {
+                pend_words.push(w as u32);
+            }
+            pend[w] |= 1 << (e % 64);
+            *last_commit = (o.elem, code);
+        }
+        first && !pend_words.is_empty()
+    }
+
+    /// The driving values the direct commits wrote back into the drivers they came from (all
+    /// sole sources, `lag`), before something reads the drivers or makes the driving value
+    /// differ from them.
+    pub(crate) fn sync_drivers(&mut self) {
+        if !std::mem::take(&mut self.lag) {
+            return;
+        }
+        let Signal {
+            drivers, driving, ..
+        } = self;
+        for d in drivers.iter_mut().filter(|d| !d.shared) {
+            d.value
+                .copy(0, driving, d.range.offset as usize, d.range.len as usize);
+        }
     }
 
     /// The element `pend_one` holds, into the bit mask.
@@ -1380,8 +1469,11 @@ impl Signal {
         len: u32,
         planes: [u64; 4],
     ) -> bool {
-        let d = &mut self.drivers[slot as usize];
-        d.put_planes((elem - d.range.offset) as usize, len as usize, planes);
+        if self.exact {
+            let d = &mut self.drivers[slot as usize];
+            d.put_planes((elem - d.range.offset) as usize, len as usize, planes);
+        }
+        self.lag |= !self.exact;
         if let Buf::Planes { b, .. } = &mut self.driving {
             put_block(b, elem as usize, len as usize, planes, !0);
         }
@@ -1421,6 +1513,10 @@ impl Signal {
             && self.force_eff.is_none()
             && self.force_drv.is_none()
             && self.force_ev.is_empty();
+        if !plain {
+            // The general paths compute the driving value from the drivers.
+            self.sync_drivers();
+        }
         // One element (one stage of a chain): no bit mask.
         if self.pend_one {
             let (e, code) = self.last_commit;

@@ -1693,7 +1693,13 @@ impl SimControl {
                 sig.eff_dirty.push(r);
             }
             sig.dirty = dirty;
-            for op in ops.remove(&s).unwrap_or_default() {
+            let sig_ops = ops.remove(&s).unwrap_or_default();
+            if !sig_ops.is_empty() {
+                // A release reads the drivers, a deposit makes the driving value differ.
+                sig.sync_drivers();
+                sig.exact |= sig_ops.iter().any(|op| op.mode == OpMode::Deposit);
+            }
+            for op in sig_ops {
                 apply_op(sig, &op, now, cycle)?;
             }
             if sig.queued_down != cycle {
@@ -1795,11 +1801,43 @@ impl SimControl {
                 if sig.changed.len() > 1 {
                     sig.canonical_changed();
                 }
+                if !self.watch_changes && self.wake_sole(s) {
+                    continue;
+                }
                 self.changed_sigs.push(s);
             }
         }
         self.direct_sigs.clear();
         Ok(())
+    }
+
+    /// The resumption of `cycle` for signal `s` done at once when one element of it changed and
+    /// one resident process without an edge trigger waits for that element (a stage of a
+    /// chain), as the reference simulator wakes the waiters of a value when it changes. False
+    /// (nothing done) otherwise: `cycle` looks at the signal. Only with no observer of value
+    /// changes, which must see the change before any process is resumed.
+    #[inline]
+    fn wake_sole(&mut self, s: u32) -> bool {
+        let sig = &self.signals[s as usize];
+        let [r] = sig.changed[..] else {
+            return false;
+        };
+        let Some(w) = (r.len == 1)
+            .then(|| self.waiters[s as usize].sole_resident(r.offset))
+            .flatten()
+        else {
+            return false;
+        };
+        // An edge trigger reads signals this update may not have finished yet.
+        if self.cfg.edge_triggers && w.tid != 0 || !alive(&self.procs, w) {
+            return false;
+        }
+        let p = w.proc;
+        let sig = &mut self.signals[s as usize];
+        self.stats.events += 1 + std::mem::take(&mut sig.nruns);
+        sig.changed.clear();
+        self.wake(p, false);
+        true
     }
 
     /// Update phase of signals without ports or groups: each one only reads its own drivers'
@@ -2696,12 +2734,30 @@ fn commit_out(
     out: &mut Vec<Out>,
     outv: &mut Vec<OutV>,
 ) {
-    for &o in out.iter() {
-        match signals[o.sig as usize].commit_code(o.slot, o.elem, o.code as u8) {
-            Some(true) => direct_sigs.push(o.sig),
-            Some(false) => {}
-            None => *empty = true,
+    // Runs of entries of one signal (processes of one vector, in order) at once.
+    let mut i = 0;
+    while let Some(&o) = out.get(i) {
+        let n = if out.get(i + 1).is_some_and(|x| x.sig == o.sig) {
+            out[i..].iter().take_while(|x| x.sig == o.sig).count()
+        } else {
+            1
+        };
+        let sig = &mut signals[o.sig as usize];
+        let first = if n == 1 {
+            match sig.commit_code(o.slot, o.elem, o.code as u8) {
+                Some(first) => first,
+                None => {
+                    *empty = true;
+                    false
+                }
+            }
+        } else {
+            sig.commit_codes(&out[i..i + n], empty)
+        };
+        if first {
+            direct_sigs.push(o.sig);
         }
+        i += n;
     }
     out.clear();
     if outv.is_empty() {

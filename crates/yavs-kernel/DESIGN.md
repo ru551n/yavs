@@ -76,7 +76,12 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   `Config::skip_unchanged`, and no implicit signal has it as its prefix). A one-element entry
   whose code the driver and the signal already have writes nothing on such a signal, only the
   delta happens (`empty_delta`); the first one-element entry of a signal in a cycle waits in
-  `Signal::last_commit` (`pend_one`), not in the bit mask.
+  `Signal::last_commit` (`pend_one`), not in the bit mask. The commit writes only the driving
+  value, which is the value of the driver as its only source (`Signal::lag`); the driver values
+  are brought up to date (`sync_drivers`) before a force, release or deposit of the signal is
+  applied or the general path computes the driving value from them, and a deposit makes the
+  signal `exact` (its commits then write the driver value too). When one element changes and
+  one resident process without an edge trigger waits for it, `finish_direct` wakes it at once.
 - **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
   (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
   the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the

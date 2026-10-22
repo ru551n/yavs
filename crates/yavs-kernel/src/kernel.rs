@@ -1321,7 +1321,6 @@ impl SimControl {
                 }
             }
         }
-        let mut woken = std::mem::take(&mut self.woken_buf);
         let memo = std::cell::Cell::new((0u32, false));
         // Nothing below adds to `changed_sigs`: walked in place, cleared after.
         for i in 0..self.changed_sigs.len() {
@@ -1451,6 +1450,7 @@ impl SimControl {
                 self.waiters[s as usize].restore_cache(list);
                 continue;
             }
+            let mut woken = std::mem::take(&mut self.woken_buf);
             match uniform {
                 Some(_) => waiters.take_woken(runs, live, |_| false, &mut woken),
                 None => waiters.take_woken(runs, live, hold, &mut woken),
@@ -1459,10 +1459,10 @@ impl SimControl {
             for &(_, p) in &woken {
                 self.wake(p, false);
             }
+            self.woken_buf = woken;
         }
 
         self.changed_sigs.clear();
-        self.woken_buf = woken;
 
         // e: run the resumed non-postponed processes.
         let mut ready = std::mem::take(&mut self.ready);

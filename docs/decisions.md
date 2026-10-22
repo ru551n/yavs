@@ -3626,13 +3626,17 @@ of the generic queue, waveform and dirty-range stages. Output is unchanged at an
   `rtl_ff` -3.2% instructions.
 - **A one-element commit keeps its code** for the finish (`Signal::last_commit`), and the runs of a direct signal
   are joined only when there are several. `rtl_chain` -1.6%.
+- **The wake scan's buffer** is taken only on the path that scans (`rtl_chain` -1.0%).
 - Tried and dropped: writing a plane code with four shifts instead of the mask table (+1.3% on `rtl_ff`);
   `wait_on_again` for every range of a multi-signal sensitivity in order (neorv32 -0.6%, the clocked designs +0.4 to
   0.7%: the extra state moved the interpreter's code).
-- Measured (instructions per unit, interpreter, slope of 1x and 10x runs pinned to core 6, before to after):
-  `rtl_ff` activation 1848 to 1710, `rtl_lfsr` activation 3161 to 2929, `lfsr64` activation 3440 to 3125,
-  `rtl_fan` activation 838 to 800, `rtl_chain` delta 2129 to 2147 (one transaction per delta: the new stages cost
-  what the old fused finish did).
+- Measured over the round (instructions per unit, interpreter, slope of 1x and 10x runs, before to after): `rtl_ff`
+  activation 1852 to 1633, `rtl_lfsr` 3164 to 2871, `lfsr64` 3423 to 3072, `rtl_fan` 842 to 750, `rtl_chain` delta 2132
+  to 2078; under `--tier=auto` 1721 to 1551, 2463 to 2244, 2949 to 2675, 883 to 791, 2166 to 2115. Kernel per `rtl_ff`
+  activation ~670 to ~510 instructions (signal reads included). Tables in STATUS.md "Kernel round 11".
+- What is left: the kernel per activation is the same dozen stages of 15 to 120 instructions, now each the cost of the
+  generic storage (`Buf` enum, `SmallVec`, bounds checks per access); reaching ~350 per `rtl_ff` activation needs a plain
+  plane-word layout for direct signals or one kernel call per activation from the process side (#507).
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

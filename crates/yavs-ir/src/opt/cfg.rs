@@ -499,6 +499,26 @@ fn note(
                 copy.push((dst.0, src));
             }
         }
+        // A condition of known operands (`Not` of a flag set a few instructions before).
+        Inst::Bool { op, dst, a, b } => {
+            let val = |r: Reg| {
+                known
+                    .iter()
+                    .find(|x| x.0 == r.0)
+                    .map(|x| x.1)
+                    .or(kc.get(r.0 as usize).copied().flatten())
+            };
+            let v = match (op, val(a), val(b)) {
+                (BoolOp::Not, Some(x), _) => Some(x == 0),
+                (BoolOp::And, Some(x), Some(y)) => Some(x != 0 && y != 0),
+                (BoolOp::Or, Some(x), Some(y)) => Some(x != 0 || y != 0),
+                (BoolOp::Xor, Some(x), Some(y)) => Some((x != 0) != (y != 0)),
+                _ => None,
+            };
+            if let Some(v) = v {
+                known.push((dst.0, i64::from(v)));
+            }
+        }
         _ => {}
     }
 }
@@ -509,7 +529,9 @@ fn note(
 fn droppable(i: &Inst) -> Option<Reg> {
     match *i {
         Inst::DopeLen { dst, .. } | Inst::Alloc { dst, .. } => Some(dst),
-        Inst::Const { .. } | Inst::ConstF { .. } | Inst::AddrOf { .. } => None,
+        // (Only a register defined on several paths is dropped from: the frame starts with
+        // the value of one defined once.)
+        Inst::Const { dst, .. } | Inst::ConstF { dst, .. } | Inst::AddrOf { dst, .. } => Some(dst),
         _ => removable_dst(i),
     }
 }
@@ -570,8 +592,12 @@ fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
     }
     // Registers defined on several paths (the flags `thread` leaves behind), and the
     // lengths and blocks of descriptors.
-    let (defs, _) = counts(f);
+    let (defs, uses) = counts(f);
     for i in &f.code {
+        // (What nothing reads, such as the flag a decided branch leaves, goes by itself.)
+        if droppable(i).is_some_and(|d| uses[d.0 as usize] == 0) {
+            any = true;
+        }
         let d = match i {
             Inst::MakeDope { at, .. } => Some(*at),
             _ => droppable(i).filter(|d| {
@@ -650,6 +676,13 @@ fn dead_defs(prog: &Program, f: &mut crate::Func) -> bool {
                 _ => droppable(&i),
             };
             if let Some(d) = target {
+                if uses[d.0 as usize] == 0
+                    && !matches!(i, Inst::MakeDope { .. } | Inst::Alloc { .. })
+                {
+                    f.code[pc] = dead();
+                    removed = true;
+                    continue;
+                }
                 let k = idx[d.0 as usize];
                 // (`MakeDope` reads its block's address: dead means no later reader.)
                 let block = matches!(i, Inst::MakeDope { .. } | Inst::Alloc { .. });
@@ -815,9 +848,11 @@ fn has_back_edge(f: &crate::Func) -> bool {
     })
 }
 
-pub(super) fn run(prog: &Program, f: &mut crate::Func) {
+/// Returns whether code was copied into other blocks (the caller walks the result again: what
+/// is known on entry to a block decides the branches of its copy).
+pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     if f.code.len() < 6 {
-        return;
+        return false;
     }
     let mut moved = false;
     // Copying and rewriting pay in loops; most of a library runs a few times, and the
@@ -841,4 +876,5 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
         let c = counts(f);
         coalesce(f, &c.0, &c.1);
     }
+    moved
 }

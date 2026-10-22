@@ -3965,3 +3965,27 @@ is one module of minutes, and every test case of a suite paid it again. Decision
     handles (design rule); its protected objects need no lock because processes that touch shared state run serially,
     as yavs's do (`TIER_SERIAL` is the only check); it swaps one entry pointer to tier up, as `Entry` and `ctab` do.
     Unlike it, yavs samples instead of counting calls and keeps compiled code across runs.
+
+
+## Optimiser round 11: read-only instance data, value numbering of multiply defined registers (yavs-ir, #511, #520, #523, 2026-10-22)
+
+Decisions:
+
+- **Instance data and the constant pool are read-only for the whole function** (`opt.rs` `read_only`): memory facts about
+  them (loads, descriptor lengths, positions through a descriptor in instance data) survive statement markers, stores
+  through pointers and calls. The interpreter refuses writes to them (`obj_mut`: "write to read-only memory"), so no
+  instruction of a subprogram or process can change them; the elaboration bodies that fill them are left alone by the
+  optimiser. Why: the loop of a testbench that indexes a constant array of the instance reloaded the array's address and
+  descriptor at every statement, and a repeated `a(i, j, k)` of an instance signal recomputed its position twice.
+- **A register defined more than once gets a version at every definition on the walk's path** (`Opt::vsn`, undone when
+  the walk leaves a block, `Opt::vlog`). Keys use `Opn::V(reg, version)`, so `Pos`, `Index`, `Load`, `Bin`, ... on a
+  loop counter or a promoted variable are shared between statements until the register is written again, and a result held
+  in such a register (`Val::V`) is reused through a `Move` while its version is current. Why: promoted variables and loop
+  counters are exactly the registers of loops, and none of this applied to them.
+- **A constant or address a multiply defined register holds since its last definition on the path is a known operand**
+  (`Opt::mval`, only where the register has the type of the value, and not past a suspension), which is #511: the assert
+  chains of a library's queue (`Const r = 0; Not; CondBr`) fold.
+- **The clean-up of a subprogram that copied blocks (`cfg::thread`) is followed by one more walk** (`opt::tidy`): what is
+  known when a block is entered decides the branches of its copy. The clean-up also drops what nothing reads, a decided
+  condition's flag and the constants that fed it, and knows the result of `Bool` of known operands.
+

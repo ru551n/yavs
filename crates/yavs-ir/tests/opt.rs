@@ -1682,3 +1682,132 @@ fn a_flag_set_on_each_path_is_branched_on_there() {
         "{code:?}"
     );
 }
+
+#[test]
+fn a_constant_of_a_multiply_defined_register_is_known_until_it_is_written_again() {
+    if !on() {
+        return;
+    }
+    // r is written in three blocks, so it is no single-definition constant; in b2 it holds 0
+    // from its `Const` to the branch, and the branch on its negation is decided.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let zero = fb.int(0);
+        let r = fb.reg(RegTy::I64);
+        let (c, n) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        fb.emit(Inst::Const { dst: r, v: 1 });
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: x,
+            b: zero,
+        });
+        let (b2, b3, yes, no) = (fb.block(), fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t: b2, f: b3 });
+        fb.at(b2);
+        fb.emit(Inst::Const { dst: r, v: 0 });
+        fb.emit(Inst::Bool {
+            op: BoolOp::Not,
+            dst: n,
+            a: r,
+            b: r,
+        });
+        fb.emit(Inst::CondBr {
+            c: n,
+            t: yes,
+            f: no,
+        });
+        fb.at(b3);
+        fb.emit(Inst::Const { dst: r, v: 7 });
+        fb.emit(Inst::Br { to: no });
+        fb.at(yes);
+        let one = fb.int(11);
+        fb.emit(Inst::Ret { v: Some(one) });
+        fb.at(no);
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        1,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn loads_of_instance_data_survive_statements_and_stores_through_pointers() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let fa = fb.addr(AddrSpace::Frame, 0);
+        let ptr = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: ptr,
+            addr: fa,
+            w: Width::B8,
+        });
+        let ia = fb.addr(AddrSpace::Inst, 8);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: ia,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Stmt);
+        fb.emit(Inst::Store {
+            addr: ptr,
+            src: x,
+            w: Width::B8,
+        });
+        let ib = fb.addr(AddrSpace::Inst, 8);
+        let y = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: y,
+            addr: ib,
+            w: Width::B8,
+        });
+        let s = bin(fb, IntOp::Add, x, y);
+        fb.emit(Inst::Ret { v: Some(s) });
+    });
+    let inst_loads = count(
+        &code,
+        |i| matches!(i, Inst::Load { addr, .. } if code.iter().any(|j| matches!(j, Inst::AddrOf { dst, space: AddrSpace::Inst, .. } if dst == addr))),
+    );
+    assert_eq!(inst_loads, 1, "{code:?}");
+}
+
+#[test]
+fn a_multiply_defined_register_is_shared_until_it_is_written_again() {
+    if !on() {
+        return;
+    }
+    // i is written twice: the two sums with the first value are one, the one after the second
+    // write is another.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let i = fb.reg(RegTy::I64);
+        fb.emit(Inst::Move { dst: i, src: x });
+        let k = fb.int(5);
+        let a = bin(fb, IntOp::Add, i, k);
+        let b = bin(fb, IntOp::Add, i, k);
+        let y = load(fb, 8);
+        fb.emit(Inst::Move { dst: i, src: y });
+        let c = bin(fb, IntOp::Add, i, k);
+        let ab = bin(fb, IntOp::Mul, a, b);
+        let r = bin(fb, IntOp::Mul, ab, c);
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Bin { op: IntOp::Add, .. })),
+        2,
+        "{code:?}"
+    );
+}

@@ -5011,3 +5011,8 @@ The wait of a process that names the same signals every time (the interpreter's 
 cut in compiled code: at its first statement `yavs_rt_wait_same` asks the kernel whether it still holds the last wait
 (`Ctx::wait_same`) and the process suspends without naming the signals. `--tier=llvm` on `neorv32_single_min` (core 4,
 warm): 166 to 149 G instructions, 105 to 101 G cycles (interpreter 131.5 G / 55.9 G).
+
+`rtl_lfsr` (`tools/bench/designs`, interpreter, core 5) is back to 2890 instructions per cycle and process from 3750 after
+optimiser round 11 (#534): memoisation across a block and its sole successor, a cell of its own for shared linear-run
+temporaries, and fusions across block starts nothing jumps to (`docs/decisions.md` "Shared offsets must stay memoisable and
+fusable"). `YAVS_DUMPIR=1` dumps the finished IR and the predecoded ops of every function that runs.

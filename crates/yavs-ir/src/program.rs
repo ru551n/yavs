@@ -88,7 +88,8 @@ impl Program {
     #[cold]
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
-        raw.opt
+        let o = raw
+            .opt
             .get_or_init(|| {
                 if self.lazy_verify.is_some_and(|from| f.0 >= from) {
                     let mut errs = Vec::new();
@@ -104,7 +105,12 @@ impl Program {
                     .or_else(|| crate::opt::optimize_func(self, f))
             })
             .as_deref()
-            .unwrap_or_else(|| raw.full())
+            .unwrap_or_else(|| raw.full());
+        // Debug aid: the finished code of each function, as it first runs.
+        if std::env::var_os("YAVS_DUMPIR").is_some() {
+            eprintln!("{}", self.dump_func(f));
+        }
+        o
     }
 
     /// Is the optimised copy of `f` valid only while nothing outside writes process variables

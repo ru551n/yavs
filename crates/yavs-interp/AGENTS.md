@@ -92,6 +92,8 @@ Module-local decisions go in this section and ir.md section 9 in the same commit
 
 ## 4. Invariants and pitfalls
 
+- **Fusions stop at block starts that something jumps to** (`Code::new`, `block_start`), not at every block start: a block only a skipped `Br` reaches is run through. Code that must stop a fusion at a pc other than a branch target (a resume point is one) has to add it there. `YAVS_DUMPIR=1` prints the ops of each function (#534).
+
 - **Determinism:** nothing may depend on thread scheduling; shared heap and shared variables are
   only touched by serial processes (kernel `ProcFlags::serial`, `proc_flags`, and
   `InterpProcess`'s `Process::serial`, which the kernel ORs in so no builder can drop it).

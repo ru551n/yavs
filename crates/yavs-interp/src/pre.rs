@@ -2234,9 +2234,44 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
 impl Code {
     fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
         let n = f.code.len();
+        // A block start stops a fusion only where something can jump to it: a block that
+        // only a skipped jump (to where execution goes on anyway) or nothing reaches is run
+        // through, and what the optimiser left split by it fuses as one block (#534).
+        let mut refd = vec![false; f.blocks.len()];
+        let mut mark = |b: yavs_ir::BlockId| {
+            if let Some(r) = refd.get_mut(b.0 as usize) {
+                *r = true;
+            }
+        };
+        let mut all = false;
+        mark(yavs_ir::BlockId(0));
+        f.body.map(&mut mark);
+        for (pc, i) in f.code.iter().enumerate() {
+            match *i {
+                _ if skip[pc] => {}
+                Inst::Br { to } => mark(to),
+                Inst::CondBr { t, f, .. } => {
+                    mark(t);
+                    mark(f);
+                }
+                Inst::Case { table, .. } => match prog.cases.get(table) {
+                    Some(t) => {
+                        mark(t.default);
+                        t.arms.iter().for_each(|a| mark(a.2));
+                    }
+                    None => all = true,
+                },
+                _ => {}
+            }
+        }
         let mut block_start = vec![false; n + 1];
-        for (_, b) in f.blocks.iter() {
-            if let Some(s) = block_start.get_mut(b.start as usize) {
+        for (b, blk) in f.blocks.iter() {
+            if let Some(s) = block_start.get_mut(blk.start as usize) {
+                *s |= all || refd[b.0 as usize];
+            }
+        }
+        for &pc in &f.resume {
+            if let Some(s) = block_start.get_mut(pc as usize) {
                 *s = true;
             }
         }
@@ -3155,6 +3190,13 @@ impl Code {
         superops(&mut ops, &at, f, known, &uses);
         static_waits(prog, f, &mut ops, &at, &entry);
         let first = entry.first().copied().unwrap_or(NONE);
+        // Debug aid next to the IR dump of `YAVS_DUMPIR`.
+        if std::env::var_os("YAVS_DUMPIR").is_some() {
+            eprintln!("ops of `{}`", f.name);
+            for (i, o) in ops.iter().enumerate() {
+                eprintln!("{i:6} pc{} {o:?}", at[i]);
+            }
+        }
         Code {
             ops,
             at,

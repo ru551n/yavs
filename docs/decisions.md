@@ -4161,3 +4161,24 @@ Decisions:
   native runs the same in the caller's frame and the record of the inlined call keeps its call path (#531, user function calls
   in a loop).
 
+
+## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
+
+- Optimiser round 11 shares the position and length of an array element across the arms of an `if`, so the offsets of
+  `r(i)(14 downto 0) & (r(i)(15) xor ...)` were computed in the block that tests `r(i)(0)` and read in the blocks after it. Three
+  consumers had assumed one block: the memoisation of instance constants (`memo.rs`) looked at a block alone and found too
+  little to save, so every activation recomputed the offsets; the register sharing gave a shared product a cell that other values
+  also use, which stopped the predecoder's linear-run fusion (it needs a register defined once); and every block start stopped a
+  fusion in `pre.rs`, so `Alloc`, `Copy` and `Drive` of one assignment, split by a jump that only fell through, stayed three ops.
+  `rtl_lfsr` went from about 2870 to about 3750 instructions per cycle and process.
+- `memo.rs`: a block whose only predecessor is one reachable block (not the entry, the body or a resume point) starts from the
+  instance-constant state at the end of that predecessor (chains of up to 8 blocks), so offsets computed once in the head of an
+  `if` are known in its arms.
+- `share.rs`: the temporaries of a linear run (`Bin` add/sub/mul, `Pos`, `DopeLen`) defined once keep a cell of their own wherever
+  they are read, not only within their block.
+- `pre.rs`: a block start stops a fusion only where a jump that is not skipped (or the entry, the body or a resume point) can
+  enter; a block reached only by a skipped jump (to where execution goes on anyway) is run through.
+- `YAVS_DUMPIR=1` prints the finished code of each function when it first runs, and the predecoded ops of it: the way to see why
+  an operation count changed. `crates/yavs/tests/memo.rs` keeps the shape of this assignment (slot-reading ops, `CopyDrive`, no
+  `WaveBuf`). Instructions per cycle and process, `rtl_lfsr` (`--tier=interp`): 3550 before, 2890 after; whole design 9.20 G to
+  7.46 G; the other `tools/bench` designs and the real testbenches of round 11 are within 0.3 percent.

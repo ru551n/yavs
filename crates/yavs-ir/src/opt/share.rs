@@ -11,7 +11,8 @@
 //! it may be read where its definition has not run), and a compare, index, position, layout
 //! or signal-value temporary defined once and read once by a following instruction (the
 //! predecoder fuses such pairs by counting a register's reads, so a cell read by several
-//! values would stop the fusion). Classes (`I64`, `F64`, `Ptr`, `Handle`) never mix, so the
+//! values would stop the fusion), and the temporaries of a linear run (`Bin` add, subtract
+//! and multiply, `Pos`, `DopeLen`) defined once, wherever they are read. Classes (`I64`, `F64`, `Ptr`, `Handle`) never mix, so the
 //! register types the collector reads stay exact. Hulls are closed, except that a value
 //! defined by a simple single-result instruction (`simple`) may take the cell of one whose
 //! last read that instruction is.
@@ -311,13 +312,11 @@ pub(super) fn plan(
             && l.uses == 1
             && l.hi > l.lo
             && (loose[l.hi as usize] - loose[l.lo as usize + 1]) == l.hi - l.lo - 1;
-        // The temporaries of a linear run (`Bin`, `Pos`, `DopeLen`) read within their block:
+        // The temporaries of a linear run (`Bin`, `Pos`, `DopeLen`), wherever they are read:
         // the predecoder folds the run into one op per result something else reads, which it
-        // can do only for registers defined once.
+        // can do only for registers defined once (#534).
         let linear = l.defs == 1
             && l.uses >= 1
-            && l.ext_lo == NONE
-            && l.ext_hi < 0
             && matches!(
                 f.code[l.lo as usize],
                 Inst::Bin {

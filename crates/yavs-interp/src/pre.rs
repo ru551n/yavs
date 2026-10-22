@@ -817,6 +817,25 @@ pub(crate) enum Op {
         len: u32,
         dst: u32,
     },
+    /// `Inst::CallNative` of `'image` of an integer or enumeration value in register `a` (type
+    /// `ty`): the string made at once, without the argument cells and checks of other natives
+    /// (it reads nothing but its argument and writes only temporary memory).
+    Image {
+        dst: u32,
+        a: u32,
+        ty: u32,
+    },
+    /// `Image` (result `x`) and the three ops after it that read its string: the data address
+    /// into `p`, the descriptor into `q`, the length into `l` (`Load`, `LoadOff` by 8,
+    /// `DopeLen`); steps over them.
+    ImageStr {
+        a: u32,
+        ty: u32,
+        x: u16,
+        p: u16,
+        q: u16,
+        l: u16,
+    },
     /// `Inst::CallNative` of a native `ieee` subprogram with at most four arguments, none a signal:
     /// the call without the bookkeeping other natives need (they may reach the heap, files and
     /// the like; these work on temporary memory only).
@@ -1076,6 +1095,27 @@ enum NativeOp {
         rising: bool,
         sig: yavs_ir::Reg,
     },
+}
+
+/// The argument and type of a call of `'image` of an integer or enumeration value (`Op::Image`).
+fn scalar_image(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+) -> Option<(yavs_ir::Reg, yavs_ir::TyId)> {
+    let n = prog.natives.get(native)?;
+    let ty = n.ty?;
+    let &[a] = f.regs(args)? else {
+        return None;
+    };
+    (n.symbol == "yavs.attr.image"
+        && f.reg_ty.get(a.0 as usize) == Some(&yavs_ir::RegTy::I64)
+        && matches!(
+            prog.types.get(ty),
+            Some(yavs_ir::Ty::Int { .. } | yavs_ir::Ty::Enum { .. })
+        ))
+    .then_some((a, ty))
 }
 
 /// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most four arguments, none a
@@ -2131,6 +2171,36 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             ops[k] = op;
         }
     }
+    // `'image` and the reads of its string result.
+    for k in 0..ops.len() {
+        if let (
+            Op::Image { dst: x, a, ty },
+            Some(&Op::Load {
+                dst: p,
+                addr,
+                w: Width::B8,
+            }),
+            Some(&Op::LoadOff {
+                dst: q,
+                base,
+                off: 8,
+                w: Width::B8,
+            }),
+            Some(&Op::DopeLen {
+                dst: l,
+                dope,
+                dim: 0,
+            }),
+        ) = (ops[k], ops.get(k + 1), ops.get(k + 2), ops.get(k + 3))
+            && addr == x
+            && base == x
+            && p != x
+            && dope == q
+            && let (Some(x), Some(p), Some(q), Some(l)) = (r16(x), r16(p), r16(q), r16(l))
+        {
+            ops[k] = Op::ImageStr { a, ty, x, p, q, l };
+        }
+    }
     // A `Stmt` before the edge test or the wait of a clocked process is part of that op, and a
     // jump to such a wait is a copy of it (the end of every activation).
     for k in 0..ops.len() {
@@ -2963,6 +3033,13 @@ impl Code {
                 },
                 Inst::CallNative { native, args, dst } => {
                     match (native_op(prog, f, native, args), dst) {
+                        (_, Some(d)) if let Some((a, ty)) = scalar_image(prog, f, native, args) => {
+                            Op::Image {
+                                dst: d.0,
+                                a: a.0,
+                                ty: ty.0,
+                            }
+                        }
                         (Some(NativeOp::Gate { g, a, b }), Some(d)) => Op::Gate {
                             g,
                             dst: d.0,

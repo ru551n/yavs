@@ -1996,7 +1996,7 @@ impl Machine {
     }
 
     /// A string result: the fat pair `[data, dope]`, the `1 to len` descriptor and the bytes in
-    /// one block of temporary memory.
+    /// one block of temporary memory (`string_parts` reads it so).
     pub(crate) fn ret_string(&mut self, s: &[u8]) -> R<u64> {
         let fat = self.temp_alloc(40 + s.len() as u64)?;
         let (dope, data) = (add_addr(fat, 16)?, add_addr(fat, 40)?);
@@ -3634,6 +3634,19 @@ impl Machine {
             return Ok(Flow::Suspend);
         }
         Ok(Flow::Next)
+    }
+
+    /// `Op::Image`: `'image` of an integer or enumeration value as a string result.
+    #[inline(never)]
+    fn op_image(&mut self, ty: u32, v: u64) -> R<u64> {
+        crate::native::text_result(self, Some(yavs_ir::TyId(ty)), v, true)
+    }
+
+    /// The data address, descriptor address and length of a string result `ret_string` made.
+    #[inline(always)]
+    fn string_parts(&self, fat: u64) -> R<[u64; 3]> {
+        let n = self.load(add_addr(fat, 24)?, Width::B8)?;
+        Ok([add_addr(fat, 40)?, add_addr(fat, 16)?, n])
     }
 
     /// The temporaries of the statement that ended (`Inst::Stmt`).
@@ -5311,6 +5324,21 @@ impl Machine {
                             return Ok(flow);
                         }
                     }
+                }
+                Op::Image { dst, a, ty } => {
+                    self.regs[dst as usize] = t!(self.op_image(ty, self.regs[a as usize]));
+                    k += 1;
+                    enter!();
+                }
+                Op::ImageStr { a, ty, x, p, q, l } => {
+                    let fat = t!(self.op_image(ty, self.regs[a as usize]));
+                    let [data, dope, len] = t!(self.string_parts(fat));
+                    self.regs[x as usize] = fat;
+                    self.regs[p as usize] = data;
+                    self.regs[q as usize] = dope;
+                    self.regs[l as usize] = len;
+                    k += 4;
+                    enter!();
                 }
                 Op::CallIeee {
                     native,

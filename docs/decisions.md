@@ -4290,3 +4290,20 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   which differs per process (two analyses of the same files gave different ids); `Remap::formal_firsts` is
   ordered now. The default span (`Span::default()`, file 0 meaning no file) is written as such inside an
   entry (`yavs_diag::map_file_ids`).
+
+## Interpreter round 12: drives at zero delay, `'image` and message building (yavs-interp, yavs-kernel, #520, #440, 2026-10-22)
+
+Decisions:
+
+- **A zero-delay `LSetDrive` or `CopyDrive` of one range of a logic signal calls the kernel's fast case directly**
+  (`Ctx::assign_code_now`, and the new `Ctx::assign_planes_now` for up to 64 elements): no time conversion, delay mode or
+  plane bytes. Anything the fast case declines runs the old path, which also makes every error. Idea from the reference
+  simulator: a separate entry for a scalar assignment at zero delay that skips the delay and rejection checks; ours keeps
+  one kernel fast case and only shortens the way to it.
+- **The message of a procedure call is not evaluated lazily.** An actual parameter is evaluated before the call (LRM
+  4.2.2.1 and 14.6, association), and the expressions it holds may have effects (a `numeric_std` conversion of a
+  metavalue warns), so a message built for a library assertion procedure (`simAssertion(cond, "..." & integer'image(i))`)
+  is built on every call, as the references do. The report expression of an assertion statement is already evaluated only
+  when the condition is false (LRM 10.3). So the building is made cheap instead: `'image` of an integer or enumeration value
+  is an op of its own (`Op::Image`, no argument cells, no reclaim, no symbol checks: it reads only its argument and writes
+  only temporary memory), fused with the three ops that read its string (`Op::ImageStr`).

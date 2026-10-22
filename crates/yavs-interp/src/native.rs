@@ -99,21 +99,40 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
             .map(Some)
             .ok_or_else(|| format!("`{symbol}` is not a native ieee subprogram"));
     }
-    let k = known();
     let family = symbol
         .strip_prefix("yavs.implicit.")
         .map(|r| r.split('.').next().unwrap_or(r));
     let attr = symbol.strip_prefix("yavs.attr.");
-    let valid = k.explicit.contains(symbol)
-        || family.is_some_and(|f| k.families.contains(f))
-        || attr.is_some_and(|a| ATTRS.contains(&a));
-    if !valid {
+    // NATIVE.md (about 38 KB) is read only to tell "defined, not implemented" from "not a native
+    // symbol": a run that finds every implementation never parses it (#426). Debug builds still
+    // check that what is implemented is documented.
+    let valid = || {
+        let k = known();
+        k.explicit.contains(symbol)
+            || family.is_some_and(|f| k.families.contains(f))
+            || attr.is_some_and(|a| ATTRS.contains(&a))
+    };
+    let found = implemented(symbol, family, attr);
+    if found.is_some() {
+        debug_assert!(
+            valid(),
+            "`{symbol}` is implemented but not in lib/NATIVE.md"
+        );
+        return Ok(found);
+    }
+    if !valid() {
         return Err(format!(
             "`{symbol}` is not a native subprogram (lib/NATIVE.md defines the symbols)"
         ));
     }
+    Ok(None)
+}
+
+/// The implementation of the native `symbol` (`family`: the family of a `yavs.implicit.` symbol,
+/// `attr`: the name of a `yavs.attr.` one), when yavs has one.
+fn implemented(symbol: &str, family: Option<&str>, attr: Option<&str>) -> Option<NativeFn> {
     if let Some(f) = crate::implicit::lookup(symbol).or_else(|| crate::env::lookup(symbol)) {
-        return Ok(Some(f));
+        return Some(f);
     }
     let f: NativeFn = match (symbol, family, attr) {
         ("yavs.standard.now.void.r_delay_length", _, _) => now,
@@ -152,12 +171,9 @@ pub(crate) fn lookup(symbol: &str) -> Result<Option<NativeFn>, String> {
         ("yavs.env.dir_deletedir.string_boolean.r_dir_delete_status", _, _) => deletedir_fn,
         ("yavs.env.dir_deletefile.string_file_delete_status", _, _) => deletefile_proc,
         ("yavs.env.dir_deletefile.string.r_file_delete_status", _, _) => deletefile_fn,
-        _ => match crate::textio::lookup(symbol, family) {
-            Some(f) => f,
-            None => return Ok(None),
-        },
+        _ => crate::textio::lookup(symbol, family)?,
     };
-    Ok(Some(f))
+    Some(f)
 }
 
 fn kctx<'a, 'c>(ctx: &'a mut Option<&mut Ctx<'c>>) -> R<&'a mut Ctx<'c>> {

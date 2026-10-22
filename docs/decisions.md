@@ -4554,3 +4554,36 @@ every elaboration, and again for every instance. Decisions:
 - Idea from the reference simulator (sim1; read for its design, no code taken): a failing check there stores a position
   constant and calls an out-of-line helper per site, so no value flows into a shared failure block. Ours differs in
   that the interpreter resumes the frame, so each site also stores its live registers.
+
+## Floor of a run, round 3: what a tiny run still pays for (yavs-llvm, yavs-interp, yavs-elab, yavs-sem, #426, 2026-10-22)
+
+Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians; STATUS.md "performance: floor of a run,
+2026-10-22"). Decisions:
+
+- **The `--tier=auto` compile thread starts when the run has lasted 5 ms, not with the tier** (`AutoTier::tick`, called
+  from `watch_tick` every `WATCH` jumps and calls of the interpreter that has no compiled code). The thread alone cost a
+  tenth of a tiny run (clone, a CPU move, a read of the compilation cache's list, a wake-up every millisecond): 1.1 million
+  cycles of 11. A run that ends before the first tick, or before 5 ms, never starts it; a run with no interpreted
+  activity does not need it. `Tier` gets a default no-op `tick`; eager (test) tiers start the thread at once.
+  Why 5 ms: nothing a sampler sees in less pays for a compile (`Heat::DEFAULT` is 2 ms plus 40 us per IR instruction).
+  A failure to start the thread then is an internal error (the interpreter cannot carry an `Err` from there).
+- **`native::lookup` finds the implementation first and reads `lib/NATIVE.md` only when there is none** (to tell "defined,
+  not implemented" from "not a native symbol"). The old order parsed the 38 KB table in every run (4% of a tiny run). Debug
+  builds assert that an implemented symbol is documented, so the check the old order made for every run still happens in
+  the tests.
+- **The scans for the signals and shared variables of loaded packages skip std and ieee** (`walk.rs`): none of their
+  packages declares one (test `builtin_packages_declare_no_signals_or_shared_variables`), and the scans decoded every
+  declaration of every loaded package (8 of the 11 declaration pages of a tiny run, 12% of its cycles).
+- **`Db::release_analysis` leaves a small design to the process exit** (fewer than 50 000 declarations, expressions and
+  statements together): the thread and the freeing cost 3% of a tiny run; the memory is a few megabytes. A bigger design
+  is freed on a thread of its own, as before.
+- **The LLVM stub generator writes the names as one string** (no 1 300 relocations and 5 pages of pointers in a position
+  independent executable).
+- Not done, for the maintainer: the Rust runtime's probe of the main thread's stack (`pthread_getattr_np` reads and parses
+  `/proc/self/maps`) is 6 to 7% of a tiny run; avoiding it needs a C `main` (`#![no_main]`), which loses the runtime's
+  stack overflow report and needs the exit status as a number. The two helper threads that start with every piped run
+  (the output flusher and the Ctrl-C handler) cost 6% together; starting them late needs a time source that does not
+  depend on interpreted activity.
+- Idea from the reference simulator (read, nothing copied): it creates no helper threads for a run that is short, and
+  starts its worker for generated code on first use; ours now does the same for the compile thread.
+

@@ -290,12 +290,16 @@ pub struct TimeUnitUse {
 }
 
 impl Db {
+    /// Declarations, expressions and statements from which [`Db::release_analysis`] frees.
+    const FREE_FROM: usize = 50_000;
+
     /// Free the analysis results (units, declarations, expressions, statements, types, scopes
     /// and the analysis caches), keeping only the source map, for a run that needs nothing
     /// else of the design once it is elaborated and lowered (#409). Nothing may use the
     /// design below the source map afterwards: ids into the arenas dangle. The memory is freed
     /// on a thread of its own: dropping every node one by one took a fifth of a short run.
     pub fn release_analysis(&mut self) {
+        let size = self.decls.len() + self.exprs.len() + self.stmts.len();
         let mut junk: Vec<Box<dyn std::any::Any + Send>> = Vec::new();
         macro_rules! free {
             ($($f:ident),*) => {$(junk.push(Box::new(std::mem::take(&mut self.$f)));)*};
@@ -334,6 +338,12 @@ impl Db {
             lib_by_key,
             generic
         );
+        // A small design stays allocated until the process ends: a thread and the freeing cost
+        // a thirtieth of a tiny run (#426), and the memory is a few megabytes.
+        if size < Self::FREE_FROM {
+            std::mem::forget(junk);
+            return;
+        }
         // A failed spawn drops the closure, and with it the memory, here.
         let _ = std::thread::Builder::new().spawn(move || drop(junk));
     }

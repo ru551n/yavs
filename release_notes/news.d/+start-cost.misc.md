@@ -1,0 +1,1 @@
+A short `yavs run` starts faster: with the default `--tier=auto` the compile thread now starts only once a run has lasted a few milliseconds, the table of native subprograms is no longer read in every run, the standard libraries' packages are not scanned for signals, and a small design is not freed piece by piece before exit.

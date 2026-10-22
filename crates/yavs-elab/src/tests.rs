@@ -2258,3 +2258,61 @@ fn signal_copies_run_in_the_kernel() {
     assert_eq!(kernel.len(), 4);
     assert_eq!(kernel, interp);
 }
+
+/// The scans for the signals and shared variables of loaded packages skip std and ieee
+/// (`walk.rs` `builtin_lib`, #426): none of their packages may declare one.
+#[test]
+fn builtin_packages_declare_no_signals_or_shared_variables() {
+    use yavs_sem::decl::{DeclKind, ObjClass};
+    let uses: String = [
+        "std.textio",
+        "std.env",
+        "ieee.std_logic_1164",
+        "ieee.std_logic_textio",
+        "ieee.numeric_std",
+        "ieee.numeric_bit",
+        "ieee.numeric_std_unsigned",
+        "ieee.numeric_bit_unsigned",
+        "ieee.math_real",
+        "ieee.math_complex",
+        "ieee.fixed_pkg",
+        "ieee.float_pkg",
+        "ieee.std_logic_arith",
+        "ieee.std_logic_misc",
+        "ieee.std_logic_signed",
+        "ieee.std_logic_unsigned",
+        "ieee.vital_timing",
+        "ieee.vital_primitives",
+        "ieee.vital_memory",
+    ]
+    .iter()
+    .map(|p| format!("use {p}.all;\n"))
+    .collect();
+    let src = format!("library ieee;\n{uses}entity t is end; architecture a of t is begin end;");
+    let db = analyze("builtin", &src);
+    let mut packages = 0;
+    for (u, unit) in db.units.iter() {
+        if !matches!(
+            db.libs[unit.lib].source,
+            yavs_sem::loader::LibSource::StdDir(_)
+        ) {
+            continue;
+        }
+        for region in db.package_regions(u).unwrap_or_default() {
+            packages += 1;
+            for d in db.decls_with_instances(region) {
+                if let DeclKind::Object(o) = &db.decls[d].kind {
+                    assert!(
+                        !matches!(o.class, ObjClass::Signal | ObjClass::SharedVariable),
+                        "a built-in package declares a signal or shared variable: {:?}",
+                        db.decls[d].name
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        packages > 20,
+        "only {packages} built-in package regions loaded"
+    );
+}

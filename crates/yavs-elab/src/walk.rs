@@ -297,6 +297,12 @@ fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
     )
 }
 
+/// Whether `lib` is std or ieee, built into yavs: no package of them declares a signal or a
+/// shared variable, so the scans for those need not decode their declarations (#426).
+fn builtin_lib(db: &Db, lib: yavs_sem::ids::LibId) -> bool {
+    matches!(db.libs[lib].source, yavs_sem::loader::LibSource::StdDir(_))
+}
+
 /// The aliases of the external names used in the subprograms of every loaded package (not
 /// std), by package: they belong to the package and bind once the hierarchy is elaborated
 /// (#255). Made before any elaboration-time call lowers the packages.
@@ -541,6 +547,7 @@ pub(crate) fn elaborate(
             .db
             .units
             .iter()
+            .filter(|(_, u)| !builtin_lib(e.db, u.lib))
             .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
             .flat_map(|s| e.db.decls_with_instances(s))
             .filter(|&d| {
@@ -557,6 +564,7 @@ pub(crate) fn elaborate(
         let vars: Vec<DeclId> =
             e.db.units
                 .iter()
+                .filter(|(_, u)| !builtin_lib(e.db, u.lib))
                 .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
                 .flat_map(|s| e.db.decls_with_instances(s))
                 .filter(|&d| {
@@ -575,7 +583,9 @@ pub(crate) fn elaborate(
             e.db.units
                 .iter()
                 .filter_map(|(_, u)| match u.hir {
-                    UnitHir::PackageBody { package } => Some((package, u.scope)),
+                    UnitHir::PackageBody { package } if !builtin_lib(e.db, u.lib) => {
+                        Some((package, u.scope))
+                    }
                     _ => None,
                 })
                 .flat_map(|(p, s)| e.db.scopes[s].order.iter().map(move |&d| (p, d)))

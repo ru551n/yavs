@@ -2615,9 +2615,6 @@ struct Cur<'p> {
     /// The frame's base before each slow path being generated (`slow_path`), and whether its
     /// step may push a frame; `join` takes them back.
     joins: std::cell::RefCell<Vec<(Option<LLVMValueRef>, bool)>>,
-    /// Look an address of unknown space up in `Mem::objs` inline before calling `yavs_rt_host`
-    /// (frame-mode code of a process).
-    objs_inline: bool,
 }
 
 /// Deferred register stores (`regs.rs`): a definition of a pure instruction is kept as a value
@@ -3516,7 +3513,6 @@ impl Gen {
                 defer: None,
                 scal: None,
                 joins: Default::default(),
-                objs_inline: !native && f.kind == FuncKind::Process,
             };
             // Registers the interpreter starts the frame with hold the same address everywhere.
             let mut base_known: Vec<Option<Known>> = vec![None; nregs];
@@ -6570,13 +6566,12 @@ impl Gen {
                 }
                 let base = self.load(self.ptr, self.gep(e, self.c64(OBJ_PTR as i64)));
                 let len = self.load(self.i64, self.gep(e, self.c64(OBJ_LEN as i64)));
-                // The object, then on a miss (in a process) the temporary area and (reading)
-                // the instance data: the view's bytes, found by the address's high half.
+                // The object, then on a miss the temporary area and (reading) the instance data:
+                // the view's bytes, found by the address's high half (array descriptors and
+                // planes a caller made as temporaries, #527).
                 let at = |sp: u8| self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(sp) << 29));
                 let mut tries = vec![(hit, None)];
-                if c.objs_inline {
-                    tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
-                }
+                tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
                 if !write {
                     tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));
                 }

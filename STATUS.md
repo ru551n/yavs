@@ -4828,3 +4828,11 @@ What changed (details in `docs/decisions.md` "Optimiser round 11" and the commit
   process callers inline, a wrapper in front of a method is one callee (level 1), the inlining record is a chain (traces and `std.env`
   call paths unchanged). The verification library's `unsafe_push`/`unsafe_pop` no longer call a method per table access.
 - A call that passes 8-byte parameters in registers writes no slots (`Pre::lean`).
+
+### Temporaries found inline in every compiled function (#527)
+
+Array descriptors and plane blocks a caller makes as temporaries reached compiled functions only through `yavs_rt_host`
+(a process found the temporary area inline since round 3, other functions did not): on `poc_stat_histogram` every one of the
+80 million host-address calls of a run was a temporary. Every function now tests the temporary area inline after the object
+table. Core 4, warm `--tier=auto`, cycles against the interpreter: `poc_stat_histogram` 0.42 (before about 1.0 in the same
+session), window generator 0.50 (0.54), `uvvm_sb_slv` 1.02 (1.05).

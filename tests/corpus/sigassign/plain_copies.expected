@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:tb_plain_copies:watch	r2.a=00000000 r2.b=0 r2.c='0' r2.d=false ra1.a=00000000 ra0.b=0 v2=UUUUUUUU v3=UUUUUUUU i2=5 s2='U' ev=falsefalsefalse act=false lv=UUUUUUUU
+diag	note	0	1	:tb_plain_copies:watch	r2.a=00000000 r2.b=0 r2.c='0' r2.d=false ra1.a=00000000 ra0.b=0 v2=00000000 v3=00000000 i2=5 s2='U' ev=falsetruefalse act=true lv=UUUUUUUU
+diag	note	0	2	:tb_plain_copies:watch	r2.a=00000000 r2.b=0 r2.c='0' r2.d=false ra1.a=00000000 ra0.b=0 v2=00000000 v3=00000000 i2=5 s2='0' ev=falsefalsefalse act=false lv=UUUUUUUU
+diag	note	1000000	2	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='0' r2.d=false ra1.a=00000000 ra0.b=0 v2=00000000 v3=00000000 i2=5 s2='0' ev=truefalsefalse act=false lv=UUUUUUUU
+diag	note	1000000	3	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='0' r2.d=false ra1.a=01011010 ra0.b=0 v2=00000000 v3=00000000 i2=5 s2='0' ev=falsefalsefalse act=false lv=UUUUUUUU
+diag	note	2000000	2	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='0' r2.d=false ra1.a=01011010 ra0.b=0 v2=00100011 v3=00X10XX0 i2=9 s2='0' ev=falsetruetrue act=true lv=00000000
+diag	note	3000000	3	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='0' r2.d=false ra1.a=01011010 ra0.b=0 v2=00100011 v3=00X10XX0 i2=9 s2='1' ev=falsefalsefalse act=false lv=00000000
+diag	note	4000000	2	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='1' r2.d=true ra1.a=01011010 ra0.b=0 v2=00001111 v3=XXXX0000 i2=9 s2='1' ev=truetruefalse act=false lv=00100011
+diag	note	4000000	3	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='1' r2.d=true ra1.a=01011010 ra0.b=0 v2=00001111 v3=XXXX0000 i2=9 s2='1' ev=falsefalsefalse act=false lv=00100011
+diag	note	5000000	2	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='1' r2.d=true ra1.a=01011010 ra0.b=0 v2=00001111 v3=XXXX0000 i2=-1 s2='1' ev=falsefalsetrue act=true lv=00100011
+diag	note	5000000	3	:tb_plain_copies:watch	r2.a=01011010 r2.b=7 r2.c='1' r2.d=true ra1.a=01011010 ra0.b=0 v2=00001111 v3=XXXX0000 i2=-1 s2='0' ev=falsefalsefalse act=false lv=00100011
+diag	note	6000000	0	:tb_plain_copies:stim	done n=11 nt=7

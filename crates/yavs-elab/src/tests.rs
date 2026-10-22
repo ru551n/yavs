@@ -2133,9 +2133,9 @@ fn scope_vals_keep_entries_sorted_by_declaration() {
 }
 
 /// A concurrent `target <= source;` of static signal names (whole signals, record fields,
-/// indexed elements, through an `in` port that collapses into its actual) is a copy the kernel
-/// runs itself (`ProcInst::copy`, #529); conditional, delayed, guarded or computed ones, slices
-/// and aggregate targets are not. Copies give the same reports as the interpreted statements
+/// indexed elements, static slices, through an `in` port that collapses into its actual) is a
+/// copy the kernel runs itself (`ProcInst::copy`, #529); conditional, delayed, guarded or
+/// computed ones, aggregate targets and a target subtype that checks the value are not. Copies give the same reports as the interpreted statements
 /// (`Config::edge_triggers` off keeps them interpreted).
 #[test]
 fn signal_copies_run_in_the_kernel() {
@@ -2155,7 +2155,8 @@ fn signal_copies_run_in_the_kernel() {
         signal ar : arr;
         signal v : std_logic_vector(0 to 7) := x\"0F\";
         signal w, z : std_logic_vector(7 downto 0);
-        signal n1, n2 : integer;
+        signal n1, n2 : integer := 0;
+        signal nn : natural;
       begin
         u : entity work.inner port map (i => s, o => x);
         ar(2) <= x;
@@ -2165,6 +2166,7 @@ fn signal_copies_run_in_the_kernel() {
         z <= v when s.a = '1' else not v;
         n2 <= s.n after 1 ns;
         z(1 downto 0) <= w(3 downto 2);
+        nn <= n1;
         process begin
           for i in 1 to 4 loop
             s <= (std_logic'val(2 + i mod 2), x\"A5\", i);
@@ -2181,7 +2183,9 @@ fn signal_copies_run_in_the_kernel() {
     // inner's `o <= i`, then the statements of t in order, then its process.
     assert_eq!(
         copies,
-        [true, true, true, true, true, false, false, false, false]
+        [
+            true, true, true, true, true, false, false, true, false, false
+        ]
     );
     e.lower(&mut db).expect("lower");
     let run = |e: &Elaborated, cfg: yavs_kernel::Config| {

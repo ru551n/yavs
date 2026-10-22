@@ -2494,15 +2494,17 @@ impl Elab<'_> {
 
     /// The source of a concurrent `target <= source;` that copies one signal to another: no
     /// delay clause (or `transport`, or `inertial` without `reject`), not guarded or postponed,
-    /// one waveform element without `after`, and the source a name of a signal with static
-    /// indices and fields whose parts match the target's (just set by `process_refs`) one to
-    /// one in length and element kind, each target part a whole driver of the process. Its
-    /// parts in element order; `None` for anything else.
+    /// one waveform element without `after`, target and source static signal names whose
+    /// elaborated shapes have the same types, lengths and scalar subtypes or bounds (so no check
+    /// of the assignment can fail), and source parts that match the target's (just set by
+    /// `process_refs`) one to one in length and element kind, each target part a whole driver
+    /// of the process. Its parts in element order; `None` for anything else.
     fn copy_source(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<(LeafId, Range)>> {
         let db: &Db = &*self.db;
         let StmtKind::ConcSignalAssign {
             postponed: false,
             guarded: false,
+            target,
             delay: Delay::Default | Delay::Transport | Delay::Inertial { reject: None },
             rhs: Rhs::Simple(Waveform::Elements(elems)),
             ..
@@ -2519,15 +2521,12 @@ impl Elab<'_> {
         else {
             return None;
         };
-        let (d, path) = self.static_signal(*e)?;
-        let l = Lsp {
-            root: ObjRoot::Decl(d),
-            path: path.into(),
-            stat: Staticness::Globally,
-            span: db.exprs[*e].span,
-        };
-        let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
-        let (src, _) = self.m.nets.select(o, &sels).ok()?;
+        let (e, t) = (*e, target.expr);
+        let (src, sshape) = self.static_signal_parts(s, e)?;
+        let (_, tshape) = self.static_signal_parts(s, t)?;
+        if !same_values(&sshape, &tshape) {
+            return None;
+        }
         let p = self.procs.last()?;
         let [dst] = &p.lsps[..] else {
             return None;
@@ -2541,6 +2540,44 @@ impl Elab<'_> {
                     && nets.drivers[k].range == dr
             });
         ok.then_some(src)
+    }
+
+    /// The leaves and shape of `e` when it is a static name of a signal: an object, indexed,
+    /// sliced and selected by static expressions only.
+    fn static_signal_parts(
+        &mut self,
+        s: ScopeId,
+        e: ExprId,
+    ) -> Option<(Vec<(LeafId, Range)>, Shape)> {
+        let db: &Db = &*self.db;
+        fn whole(db: &Db, e: ExprId) -> bool {
+            let st = |x: ExprId| db.exprs[x].stat != Staticness::None;
+            match &db.exprs[e].kind {
+                ExprKind::Obj(d) => matches!(
+                    &db.decls[*d].kind,
+                    DeclKind::Object(o) if o.class == ObjClass::Signal
+                        && o.role != ObjRole::ImplicitSignal
+                ),
+                ExprKind::Index { prefix, indices } => {
+                    indices.iter().all(|&i| st(i)) && whole(db, *prefix)
+                }
+                ExprKind::Slice {
+                    prefix,
+                    range: yavs_sem::types::RangeC::Explicit { left, right, .. },
+                } => st(*left) && st(*right) && whole(db, *prefix),
+                ExprKind::Field { prefix, .. } => whole(db, *prefix),
+                _ => false,
+            }
+        }
+        if !whole(db, e) {
+            return None;
+        }
+        let l = db.lsp(e)?;
+        if !matches!(l.root, ObjRoot::Decl(_)) {
+            return None;
+        }
+        let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
+        self.m.nets.select(o, &sels).ok()
     }
 
     /// A process that does nothing unless one edge of one scalar signal happens (or its reset
@@ -4057,5 +4094,58 @@ fn port_mode(m: Mode) -> PortMode {
         Mode::Out => PortMode::Out,
         Mode::Inout => PortMode::Inout,
         Mode::Buffer => PortMode::Buffer,
+    }
+}
+
+/// Whether every value of shape `a` is a value of shape `b` with the same elements: the same
+/// types, array lengths per dimension, and scalar subtypes or bounds.
+fn same_values(a: &Shape, b: &Shape) -> bool {
+    match (a, b) {
+        (
+            Shape::Scalar {
+                ty: ta,
+                sub: sa,
+                range: ra,
+                ..
+            },
+            Shape::Scalar {
+                ty: tb,
+                sub: sb,
+                range: rb,
+                ..
+            },
+        ) => ta == tb && (sa == sb || ra.is_some() && ra == rb),
+        (
+            Shape::Array {
+                ty: ta,
+                dims: da,
+                elem: ea,
+                ..
+            },
+            Shape::Array {
+                ty: tb,
+                dims: db,
+                elem: eb,
+                ..
+            },
+        ) => {
+            ta == tb
+                && da.len() == db.len()
+                && da.iter().zip(db).all(|(x, y)| x.len() == y.len())
+                && same_values(ea, eb)
+        }
+        (
+            Shape::Record {
+                ty: ta, fields: fa, ..
+            },
+            Shape::Record {
+                ty: tb, fields: fb, ..
+            },
+        ) => {
+            ta == tb
+                && fa.len() == fb.len()
+                && fa.iter().zip(fb).all(|((_, x), (_, y))| same_values(x, y))
+        }
+        _ => false,
     }
 }

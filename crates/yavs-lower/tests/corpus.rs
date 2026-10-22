@@ -370,6 +370,7 @@ const PASS: &[&str] = &[
     "sigassign/implicit_in_subprogram",
     "sigassign/last_value_whole",
     "sigassign/out_param_elements",
+    "sigassign/plain_copies",
     "sigassign/port_elem_active",
     "sigassign/proc_local_drivers",
     "sigassign/pulse_swallow",

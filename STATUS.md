@@ -4759,6 +4759,84 @@ subtypes on both sides (#536: `natural <= integer` lost its range check) and tak
 Against sim1 (39 to 44 G instructions per run), interpreter instruction ratios went from 2.60 / 3.81 / 3.30 (dual, single_min,
 single_cache, `main` at `e4c8d983` this morning) to 2.37 / 3.37 / 2.96 with the kernel copies and this change. Not done: compiled
 code (`--tier=llvm`, `auto`) still names every signal of such a wait (LLVM tier).
+## Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22
+
+`tools/realbench` now times four phases apart (`--phases analyze,elab,codegen,run`, `tools/realbench/AGENTS.md` section 3), for yavs and
+sim1, with a ratio yavs / sim1 per test, per category and overall. Analysis: the whole compile order of a test, ONE FILE PER CALL
+(never batched, as the integrations do), into fresh libraries; cold = empty libraries, warm = the same unchanged files analysed again
+into the populated libraries; the VUnit/OSVVM/UVVM/project libraries (`-lib`) and the test's own files (`-own`) are timed apart and the
+library part once per corpus selection. Elaboration: `yavs elab` against sim1's elaboration step, cold (no compilation cache) and warm
+(cache entries present). Code generation: `yavs run --tier=llvm` minus `--tier=interp`, both stopped at time 0, cold and warm (object
+cache hit); sim1 generates its code inside its elaboration, so these ratios divide by sim1's whole elaboration and say how many times
+longer the llvm tier needs before time 0 than sim1 needs to be ready. Run: the existing cells.
+
+Method: main at `6ce6245e` (only the suite's own commit on top), release build with `--features llvm`, `--threads 1`.
+**Timing core: efficiency core 13 for both yavs and sim1, one test at a time, the same core for both tools.** All performance cores
+(1 to 7) were taken by other agents' timed runs, so these numbers are NOT performance-core numbers: absolute times are larger than the
+2026-10-21 baseline above (an efficiency core is slower), and the host load was 9 to 13 from other agents' builds during the run, so
+treat wall ratios of 10 to 20 percent as noise and use the instruction ratios (`cpu_atom/instructions/`). The headline numbers should be
+re-run on a performance core when one is free (not done). Median of 5, 3 or 2 runs by length, cells interleaved, 41 tests (the 30 of the
+2026-10-21 baseline, neorv32 (3), and the eight tests that were excluded then). Wall and CPU time come in steps of 10 ms, which matters
+for the elaboration cells (30 to 300 ms). Raw: `~/.cache/yavs-realbench/results/20261022-112922-phases-baseline.json`.
+
+Geometric mean of the ratio yavs / sim1 (below 1 is faster; the `codegen` rows divide by sim1's elaboration; `-lib` / `-own` split the
+analysis; `n` = tests in the mean; the three neorv32 configurations hit the 300 s limit in `codegen`, #532):
+
+| cell | n | wall, overall | instructions, overall | bus-tristate | cpu | fsm | memory | numeric | protected | records | rtl-datapath | strings-textio | wide-vectors |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| analyze-cold | 41 | **1.04** | 1.27 | 1.43 | 0.73 | 0.99 | 1.04 | 1.04 | 1.51 | 0.91 | 0.86 | 0.92 | 0.86 |
+| analyze-cold-lib | 41 | **1.02** | 1.24 | 1.43 | 0.73 | 0.99 | 1.05 | 1.03 | 1.34 | 0.90 | 0.93 | 0.92 | 0.86 |
+| analyze-cold-own | 41 | **1.15** | 1.21 | 1.00 | 1.00 | 1.00 | 1.00 | 1.10 | 1.78 | 1.11 | 0.81 | 1.00 | 1.00 |
+| analyze-warm | 41 | **1.11** | 1.36 | 1.37 | 0.79 | 1.04 | 1.06 | 1.08 | 1.53 | 1.03 | 0.91 | 1.14 | 0.97 |
+| analyze-warm-lib | 41 | **1.09** | 1.34 | 1.37 | 0.79 | 1.04 | 1.07 | 1.07 | 1.38 | 1.02 | 0.98 | 1.14 | 0.97 |
+| analyze-warm-own | 41 | **1.17** | 1.21 | 1.00 | 1.00 | 1.00 | 1.02 | 1.17 | 1.72 | 1.12 | 0.92 | 1.00 | 1.00 |
+| elab-cold | 41 | **1.44** | 1.98 | 1.44 | 0.70 | 1.84 | 1.25 | 1.07 | 3.44 | 1.33 | 1.36 | 0.73 | 0.91 |
+| elab-warm | 41 | **0.25** | 0.36 | 0.25 | 0.44 | 1.09 | 0.12 | 0.13 | 0.29 | 0.32 | 0.14 | 0.09 | 0.29 |
+| codegen-cold | 38 | **75.52** | 95.05 | 87.25 | - | 35.01 | 54.54 | 49.92 | 248.56 | 74.86 | 60.52 | 42.71 | 63.72 |
+| codegen-warm | 38 | **8.49** | 10.24 | 9.75 | - | 4.05 | 6.09 | 5.84 | 26.78 | 8.86 | 7.86 | 4.84 | 4.95 |
+| interp | 41 | **0.54** | 0.76 | 0.15 | 9.84 | 1.70 | 0.35 | 0.33 | 0.34 | 0.27 | 0.55 | 0.10 | 7.48 |
+| auto | 41 | **0.54** | 0.74 | 0.15 | 12.32 | 1.72 | 0.32 | 0.33 | 0.35 | 0.30 | 0.38 | 0.10 | 7.50 |
+| auto-cold | 41 | **1.35** | 1.73 | 0.72 | 13.86 | 2.04 | 1.20 | 0.99 | 0.82 | 0.95 | 1.26 | 0.52 | 8.07 |
+
+Reading: analysis is on par with sim1 on average (1.04 cold, 1.11 warm; summed time 1.23x and 1.31x) but "warm" is no faster than
+"cold" for yavs (no cache for `analyze`), and the OSVVM compile orders are 2.4x. Cold elaboration is 1.4x, warm 0.25x (the
+compilation cache works, except on `poc` testbenches that evaluate constants during elaboration). Code generation of the llvm tier
+costs 75x sim1's elaboration cold and 8.5x with a warm object cache (summed over the tests: 79x and 9.3x), 249x cold on the protected
+category: 8 to 25 s of machine-code generation before time 0 against 0.03 to 0.3 s for sim1 to elaborate. Note for UVVM testbenches:
+they do all their work at 0 ns, so "stop at time 0" still simulates them and the llvm minus interp difference also contains the run
+speed difference of the tiers (the simulation part is 1.8 s of the 4.0 s warm llvm run of `uvvm_util_rand`).
+
+The five slowest tests per phase (ratio to sim1; wall seconds yavs / sim1; reason from a quick `perf`/`--time-report` look):
+
+| phase | test | ratio | seconds | reason |
+|---|---|---:|---|---|
+| analyze cold | `osvvm_axis_random` | 2.42 | 31.6 / 13.1 | 449 library + 72 own files at 61 ms per file (sim1 25): dependency units are lexed, parsed and declared again in every call (#537, #477) |
+| analyze cold | `osvvm_axi4_random` | 2.32 | 25.1 / 10.8 | same, 475 + 46 files |
+| analyze cold | `uvvm_sb_slv` | 1.54 | 2.07 / 1.34 | same, 62 + 3 files at 32 ms (sim1 21) |
+| analyze cold | `uvvm_axistream_vvc` | 1.52 | 1.54 / 1.01 | same, 31 + 18 files |
+| analyze cold | `olo_intf_i2c_master` (and the other Open Logic tests, one shared library part) | 1.43 | 11.4 / 7.9 | 386 files at 29 ms (sim1 21); one VUnit file re-reads 57 dependency sources (326 M instructions, median file 81 M) |
+| elab cold | `poc_cache_cpu` | 9.2 (instr) | 0.26 / 0.08 | elaboration evaluates constants in the interpreter (46% `run_ops`), then lowers again (#539, #479) |
+| elab cold | `poc_uart_rx` | 7.5 (instr) | 0.20 / 0.05 | same; also not helped by the warm cache (0.15 s, 3.0x) |
+| elab cold | `uvvm_methods_log` | 7.3 (instr) | 0.15 / 0.03 | cold `elab` re-analyses the design closure from source: `analyze` 0.16 s of 0.17 s (#539, #405, #407) |
+| elab cold | `uvvm_sb_slv` | 6.3 (instr) | 0.16 / 0.03 | same |
+| elab cold | `uvvm_axistream_vvc`, `osvvm_axis_random` | 5.1 (instr) | 0.22 / 0.06, 0.21 / 0.05 | same |
+| codegen cold | `uvvm_util_rand` | 511 | 25.6 / 0.05 | `--tier=llvm` compiles every reachable function before time 0 (`init` 21.7 s of 23.6 s): the whole verification library (#538, #432) |
+| codegen cold | `uvvm_sb_slv` | 389 | 11.7 / 0.03 | same |
+| codegen cold | `uvvm_func_cov` | 380 | 19.0 / 0.05 | same |
+| codegen cold | `osvvm_axi4_random` | 306 | 24.5 / 0.08 | same |
+| codegen cold | `uvvm_axistream_vvc` | 263 | 15.8 / 0.06 | same |
+| codegen cold | `neorv32_*` (3) | > 300 s | killed | 815k IR instructions compiled up front (#532) |
+| codegen warm | `uvvm_util_rand` | 67 | 3.3 / 0.05 | an object-cache hit still builds the whole LLVM module (bitcode writer and `ValueEnumerator` dominate a perf profile of `hdlm_fifo_sync`: 1.3 s warm, 19 MB of objects) (#538) |
+| codegen warm | `uvvm_sb_slv`, `uvvm_func_cov`, `osvvm_axi4_random`, `uvvm_axistream_vvc` | 42, 39, 29, 28 | 1.3 to 2.9 | same |
+| run (interp) | `poc_stat_histogram` | 11.4 | 5.2 / 0.46 | composite layout work at run time (#518) |
+| run (interp) | `fletcher_bufferwriter_512` | 11.1 | 30.1 / 2.7 | 512 bit buses: interpreter and kernel signal path (#519) |
+| run (interp) | `neorv32_dual_full`, `neorv32_single_cache`, `neorv32_single_min` | 10.3, 9.6, 9.6 | 66.7 / 6.5, 45.3 / 4.7, 41.4 / 4.3 | interpreter-bound CPU model, `--tier=auto` is slower still (#521, #532) |
+| run (interp) | `hdlm_lfsr` | 7.7 | 9.7 / 1.3 | #523 |
+
+Run phase on this core (ratio to sim1 for `interp` / `auto` / `auto-cold`): overall 0.54 / 0.54 / 1.35, summed time 4.7x / 5.0x / 5.7x
+(the long tests decide the sum); instruction ratios 0.76 / 0.74 / 1.73. The classes are as on 2026-10-21 (CPU model and wide vectors
+slow, short testbenches fast). Issues filed from this run: #537 (analyze per call), #538 (llvm tier before time 0), #539 (elab cold
+and constants), #540 (tracked manifests name a reference simulator in `[flags]`, rule 11).
 
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 

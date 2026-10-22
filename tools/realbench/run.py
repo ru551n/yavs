@@ -672,7 +672,7 @@ def phases_of(meta):
 def summarize(tests, meta, names=None):
     """Per cell and metric: geometric mean of the ratio to its basis, overall and per category."""
     names = names or meta["cells"]
-    bas = basis(names, meta["refs"], meta["compare"], meta.get("basis"))
+    bas = {n: b for n, b in basis(meta["cells"], meta["refs"], meta["compare"], meta.get("basis")).items() if n in names}  # the basis may be in another phase
     cats = sorted({r["category"] for r in tests.values()})
     table = {}
     for n, b in bas.items():
@@ -719,7 +719,7 @@ def phase_md(res, phase, names, many):
                     geomean([ratio(floor(c[n]["wall"], "wall"), floor(c[b]["wall"], "wall")) for c in long_]), len(long_)))
     L += ["Run-length view (wall): ratio of the summed times, and geometric mean over the tests whose basis cell takes 1 s or more:", "",
           "| cell | sum ratio | n | geomean, basis >= 1 s | n |", "|---|---:|---:|---:|---:|"]
-    L += [f"| {n} | {a:.2f} | {k} | {g:.2f} | {m} |" if a and g else f"| {n} | - | {k} | - | {m} |" for n, a, k, g, m in tot] + [""]
+    L += [f"| {n} | {a:.2f} | {k} | {g:.2f} | {m} |" if a and g else f"| {n} | {a:.2f} | {k} | - | {m} |" if a else f"| {n} | - | {k} | - | {m} |" for n, a, k, g, m in tot] + [""]
     L += ["Per test (wall seconds, median; ratio to the basis in brackets; `ins` = instruction ratio):", ""]
     L += ["| test | category | " + " | ".join(shown) + " |", "|---|---|" + "---:|" * len(shown)]
     for tn, r in tests.items():

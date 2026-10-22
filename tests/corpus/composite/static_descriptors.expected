@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:static_descriptors:_p0	sum=110
+diag	note	0	0	:static_descriptors:_p0	sum=226 warm=30
+diag	note	0	0	:static_descriptors:_p0	attrs 4226true2
+diag	note	2000000	0	:static_descriptors:_p0	sig 7 vec 0000110 b 1010 07

@@ -1,0 +1,12 @@
+exit	1
+diag	note	0	0	:inline_small_functions:_p0	acc=55 c=41 tw=82
+diag	note	0	0	:inline_small_functions:_p0	fact=5040 even=true odd=true
+diag	note	0	0	:inline_small_functions:_p0	0 false
+diag	note	0	0	:inline_small_functions:_p0	1 false
+diag	note	0	0	:inline_small_functions:_p0	2 false
+diag	note	0	0	:inline_small_functions:_p0	3 false
+diag	note	0	0	:inline_small_functions:_p0	4 true
+diag	note	0	0	:inline_small_functions:_p0	5 true
+diag	note	0	0	:inline_small_functions:_p0	6 true
+diag	note	0	0	:inline_small_functions:_p0	checked 2
+diag	fatal	0	0	:inline_small_functions:_p0	division by zero

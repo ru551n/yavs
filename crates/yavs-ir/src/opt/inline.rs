@@ -140,7 +140,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Forwarder> {
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || raw.full().code.len() > 160
+        || raw.full().code.len() > 400
     {
         return None;
     }

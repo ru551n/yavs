@@ -445,6 +445,9 @@ struct Shared {
     halt: AtomicBool,
     /// The thread is compiling a function (or about to look at `halt` before it does).
     busy: AtomicBool,
+    /// Eager mode: per function, its compile (or the decision to leave it interpreted) is over,
+    /// `Tier::hot` returns then.
+    finished: Vec<AtomicBool>,
     /// The JITs once the thread has ended: compiled code lives as long as the tier.
     jit: Mutex<Vec<Jit>>,
 }
@@ -1009,7 +1012,12 @@ impl AutoTier {
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            finished: (0..prog.funcs.len())
+                .map(|_| AtomicBool::new(false))
+                .collect(),
+            ..Shared::default()
+        });
         let ntab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let ctab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let (table, sh) = (funcs.clone(), shared.clone());
@@ -1133,6 +1141,7 @@ impl AutoTier {
                             sh.busy.store(false, Ordering::SeqCst);
                             continue;
                         }
+                        let first = ids.first().map(|&(id, _)| id);
                         for (i, (id, part)) in ids.into_iter().enumerate() {
                             let done = w.compile(id, o2, sampled && i == 0, part);
                             // Its callees compile for its sake only.
@@ -1143,6 +1152,9 @@ impl AutoTier {
                             if done && heat.eager() && upgrade && !o2 {
                                 later.push(id);
                             }
+                        }
+                        if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
+                            f.store(true, Ordering::Release);
                         }
                         sh.busy.store(false, Ordering::SeqCst);
                     }
@@ -1286,16 +1298,21 @@ impl Tier for AutoTier {
     }
 
     fn hot(&self, func: FuncId) {
-        if self
-            .queued
-            .get(func.0 as usize)
-            .is_none_or(|q| q.swap(true, Ordering::Relaxed))
-        {
+        let Some(q) = self.queued.get(func.0 as usize) else {
             return;
+        };
+        if !q.swap(true, Ordering::Relaxed) {
+            if let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner) {
+                // The worker is gone only after `stop`: nothing to compile any more.
+                let _ = q.send(func);
+            }
         }
-        if let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner) {
-            // The worker is gone only after `stop`: nothing to compile any more.
-            let _ = q.send(func);
+        // Eager mode is for tests: the function runs compiled from this call on (or is known
+        // to stay interpreted), so a run cannot end before its compile and the notes.
+        // ponytail: polls; a condvar if a test ever needs thousands of functions.
+        let done = &self.shared.finished[func.0 as usize];
+        while !done.load(Ordering::Acquire) && !self.shared.halt.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_micros(50));
         }
     }
 }

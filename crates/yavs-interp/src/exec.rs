@@ -8054,6 +8054,21 @@ impl crate::TierHost for Host<'_, '_, '_> {
         )
     }
 
+    fn wait_same(&mut self, pc: u32) -> bool {
+        let m = &mut *self.m;
+        if m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {
+            return false;
+        }
+        let Some(c) = self.ctx.as_deref_mut() else {
+            return false;
+        };
+        if !c.wait_same() {
+            return false;
+        }
+        m.frames[0].pc = pc;
+        true
+    }
+
     fn wait_again(&mut self, pc: u32, sig: [u64; 2]) -> bool {
         let m = &mut *self.m;
         if sig[0] >> 32 == MULTI || m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {

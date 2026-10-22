@@ -39,6 +39,7 @@ const SIGNAL: &str = "yavs_rt_signal";
 const DRIVE: &str = "yavs_rt_drive";
 const WAIT: &str = "yavs_rt_wait";
 const WAIT_ON: &str = "yavs_rt_wait_on";
+const WAIT_SAME: &str = "yavs_rt_wait_same";
 const LCOPY: &str = "yavs_rt_lcopy";
 const LAYOUT: &str = "yavs_rt_layout";
 const FAST: &str = "yavs_rt_fast";
@@ -665,6 +666,27 @@ extern "C" fn yavs_rt_wait_on(
         return GO;
     }
     yavs_rt_signal(env, regs, mem, pc, 0)
+}
+
+/// The wait of a process that names the same signals at every activation
+/// (`yavs_interp::static_wait`), at its first statement: `TIER_SUSPEND` at the `Suspend` at `pc`
+/// when the kernel still holds the last wait (`TierHost::wait_same`), else `GO` (the wait runs).
+extern "C" fn yavs_rt_wait_same(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    _lo: u64,
+    _len: u64,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    if unsafe { (*envp).host.wait_same(pc) } {
+        TIER_SUSPEND
+    } else {
+        GO
+    }
 }
 
 /// `TierHost::native_direct` for a `CallNative` of a native frame: `cells` (`n`) are the
@@ -1507,6 +1529,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DRIVE, yavs_rt_drive as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
             (WAIT_ON, yavs_rt_wait_on as *const () as usize),
+            (WAIT_SAME, yavs_rt_wait_same as *const () as usize),
             (LCOPY, yavs_rt_lcopy as *const () as usize),
             (LAYOUT, yavs_rt_layout as *const () as usize),
             (FAST, yavs_rt_fast as *const () as usize),
@@ -2543,6 +2566,7 @@ struct Gen {
     wait_ty: LLVMTypeRef,
     wait: LLVMValueRef,
     wait_on: LLVMValueRef,
+    wait_same: LLVMValueRef,
     /// `yavs_rt_lcopy(dst, nd, d0, src, ns, s0, n)`.
     lcopy_ty: LLVMTypeRef,
     lcopy: LLVMValueRef,
@@ -2720,6 +2744,7 @@ impl Gen {
             let drive_ty = LLVMFunctionType(i32, dparams.as_mut_ptr(), 9, 0);
             let wait_name = CString::new(WAIT).expect("no NUL");
             let wait_on_name = CString::new(WAIT_ON).expect("no NUL");
+            let wait_same_name = CString::new(WAIT_SAME).expect("no NUL");
             let mut wparams = [ptr, ptr, ptr, i32, i64, i64];
             let wait_ty = LLVMFunctionType(i32, wparams.as_mut_ptr(), 6, 0);
             let lcopy_name = CString::new(LCOPY).expect("no NUL");
@@ -2781,6 +2806,7 @@ impl Gen {
                 wait_ty,
                 wait: LLVMAddFunction(module, wait_name.as_ptr(), wait_ty),
                 wait_on: LLVMAddFunction(module, wait_on_name.as_ptr(), wait_ty),
+                wait_same: LLVMAddFunction(module, wait_same_name.as_ptr(), wait_ty),
                 lcopy_ty,
                 lcopy: LLVMAddFunction(module, lcopy_name.as_ptr(), lcopy_ty),
                 layout_ty,
@@ -2852,6 +2878,7 @@ impl Gen {
                 self.drive,
                 self.wait,
                 self.wait_on,
+                self.wait_same,
                 self.lcopy,
                 self.layout,
                 self.fast,
@@ -3518,6 +3545,9 @@ impl Gen {
             } else {
                 (LLVMGetParam(fv, 1), LLVMGetParam(fv, 2), None)
             };
+            let static_wait = (!native && f.kind == FuncKind::Process)
+                .then(|| yavs_interp::static_wait(prog, f))
+                .flatten();
             let mut c = Cur {
                 prog,
                 consts: Default::default(),
@@ -4207,6 +4237,19 @@ impl Gen {
                         let v = LLVMBuildSelect(self.b, lt, base, len, c"".as_ptr());
                         self.mem_st(&c, MEM_TEMP_LEN, v);
                         self.join(&c, join);
+                        // The wait that names the same signals every time: the kernel keeps
+                        // the last one, and the process suspends without naming them (#530).
+                        if let Some((_, at)) = static_wait.filter(|w| w.0 == i) {
+                            let mut args = [
+                                c.env,
+                                c.regs,
+                                c.mem,
+                                self.c32(at as u32),
+                                self.c64(0),
+                                self.c64(0),
+                            ];
+                            self.call_go(&c, self.wait_ty, self.wait_same, &mut args, true);
+                        }
                     }
                     Inst::Alloc { dst, size } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);

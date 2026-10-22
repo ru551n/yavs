@@ -4865,3 +4865,8 @@ first to keep the waiter of the last wait (`yavs_rt_wait_on`, `TierHost::wait_on
 gap is the code footprint of the compiled processes: 5 times the instruction-cache misses (5.4 G against 1.1 G) and 4.5
 times the instruction-TLB misses of the interpreter, from a 27 MB object for the design's processes compiled once each
 (`--tier=auto` leaves single-instance clocked processes interpreted for that reason, round 2). h2h designs unchanged.
+
+The wait of a process that names the same signals every time (the interpreter's `WaitStatic`, #530) takes the same short
+cut in compiled code: at its first statement `yavs_rt_wait_same` asks the kernel whether it still holds the last wait
+(`Ctx::wait_same`) and the process suspends without naming the signals. `--tier=llvm` on `neorv32_single_min` (core 4,
+warm): 166 to 149 G instructions, 105 to 101 G cycles (interpreter 131.5 G / 55.9 G).

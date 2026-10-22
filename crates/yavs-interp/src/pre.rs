@@ -1764,6 +1764,22 @@ fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u
     let Some(k) = ops.iter().position(|o| matches!(o, Op::Suspend)) else {
         return;
     };
+    let Some((st, s)) = static_wait(prog, f) else {
+        return;
+    };
+    if at.get(k).is_none_or(|&p| p as usize != s) {
+        return;
+    }
+    if let Some(&k0) = entry.get(st)
+        && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
+    {
+        *o = Op::WaitStatic { to: k as u32 };
+    }
+}
+
+/// The wait of `f` that names the same signals at every activation (`static_waits`): the IR pc
+/// of the `Stmt` that starts it and of its `Suspend`. Compiled code takes the same short cut.
+pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
     let calls = |i: &Inst| match *i {
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
             .func(func)
@@ -1778,11 +1794,14 @@ fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u
             .count()
             == 1
         && (f.flags.contains(FuncFlags::SENS_LIST) || !f.code.iter().any(calls));
-    let Some(&s) = at.get(k).filter(|_| one) else {
-        return;
-    };
-    let s = s as usize;
-    let Some(st) = (0..s).rev().find(|&p| {
+    if !one {
+        return None;
+    }
+    let s = f
+        .code
+        .iter()
+        .position(|i| matches!(i, Inst::Suspend { .. }))?;
+    let st = (0..s).rev().find(|&p| {
         !matches!(
             f.code[p],
             Inst::Const { .. }
@@ -1799,24 +1818,15 @@ fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u
                 | Inst::SigSlice { .. }
                 | Inst::WaitOn { .. }
         )
-    }) else {
-        return;
-    };
+    })?;
     let waits = f.code[st + 1..s]
         .iter()
         .filter(|i| matches!(i, Inst::WaitOn { .. }))
         .count();
-    if !matches!(f.code[st], Inst::Stmt)
-        || waits < 2
-        || (st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p))
-    {
-        return;
-    }
-    if let Some(&k0) = entry.get(st)
-        && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
-    {
-        *o = Op::WaitStatic { to: k as u32 };
-    }
+    (matches!(f.code[st], Inst::Stmt)
+        && waits >= 2
+        && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
+    .then_some((st, s))
 }
 
 fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {

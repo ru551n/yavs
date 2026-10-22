@@ -47,6 +47,7 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
+pub use pre::static_wait;
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
@@ -525,6 +526,14 @@ pub trait TierHost {
     /// last wait (`Ctx::wait_on_again`); `false` (nothing done) otherwise.
     fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {
         let _ = sig;
+        false
+    }
+
+    /// The wait that names the same signals at every activation (`static_wait`) for compiled
+    /// code at its first statement: `true` when the kernel took it as the last wait
+    /// (`Ctx::wait_same`); the frame then waits at the `Suspend` at `pc`.
+    fn wait_same(&mut self, pc: u32) -> bool {
+        let _ = pc;
         false
     }
 

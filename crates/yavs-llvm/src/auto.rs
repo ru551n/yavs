@@ -1301,11 +1301,11 @@ impl Tier for AutoTier {
         let Some(q) = self.queued.get(func.0 as usize) else {
             return;
         };
-        if !q.swap(true, Ordering::Relaxed)
-            && let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner)
-        {
-            // The worker is gone only after `stop`: nothing to compile any more.
-            let _ = q.send(func);
+        if !q.swap(true, Ordering::Relaxed) {
+            if let Some(q) = &*self.queue.lock().unwrap_or_else(PoisonError::into_inner) {
+                // The worker is gone only after `stop`: nothing to compile any more.
+                let _ = q.send(func);
+            }
         }
         // Eager mode is for tests: the function runs compiled from this call on (or is known
         // to stay interpreted), so a run cannot end before its compile and the notes.

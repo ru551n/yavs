@@ -3645,6 +3645,55 @@ of the generic queue, waveform and dirty-range stages. Output is unchanged at an
   generic storage (`Buf` enum, `SmallVec`, bounds checks per access); reaching ~350 per `rtl_ff` activation needs a plain
   plane-word layout for direct signals or one kernel call per activation from the process side (#507).
 
+## Kernel round 12: unchanged values, lagging driver values, one-process deltas, kernel copies (yavs-kernel, yavs-elab, #440, #529, 2026-10-22)
+
+Round 11 left a dozen stages of 15 to 120 instructions per activation, most of them the generic storage (`SmallVec`
+and `Buf` layers) and the per-batch and per-delta machinery. This round measured the kernel alone (a bench of
+hand-written processes, exact counts from Intel PT traces of short stepped runs) and took ideas from the reference
+simulator's kernel (sim1): a zero-delay assignment of the value a driver already has schedules nothing; a net with
+one source keeps no separate driving value; the waiters of a value are woken when it changes; a plain signal copy
+has no process body. Output is unchanged at any thread count and with `--shuffle`.
+
+- **Unchanged direct values** (`Signal::commit_code`): a one-element direct entry whose code the driver and the
+  signal already have writes nothing at commit, on a signal whose activity nothing reads (`skip_ok`); its delta
+  still happens (`empty_delta`). Vectors are committed as before (the check cost more than it saved on registers
+  that change). A design whose registers keep their value: -4.7% instructions.
+- **One pending element** (`Signal::pend_one`): the first one-element entry of a signal in a cycle stays in
+  `last_commit`; a second one, or a vector, moves it to the bit mask. `finish_direct` finishes such a signal before
+  its loop over the general cases (`finish_pend_one`).
+- **The driving value is the driver's value** (`Signal::lag`): a direct commit writes only the driving value.
+  Before anything reads the sole-source drivers or makes the driving value differ from them (a force, release or
+  deposit applied to the signal, the dirty-range path of `finish_pend`), `sync_drivers` copies the driving value
+  back; `'driving_value` of a direct driver reads the driving value while the signal lags. A deposit makes the
+  signal `exact`: its commits write the driver value again. A test runs forces, releases and deposits between
+  direct commits against the same design on identity-resolved signals (no direct driver): same trace.
+- **Runs of one signal**: consecutive direct entries of one signal (a vector or an array of vectors with a process
+  per element) are committed with one lookup of the signal and its storage (`commit_codes`, `commit_planes_run`).
+- **Wake at finish** (`SimControl::wake_sole`): one changed element with one resident waiter without an edge
+  trigger is woken in `finish_direct`, without the changed list and the scan in `cycle`; not with an observer of
+  value changes.
+- **A batch of one process** (`SimControl::run_one`): no order, batch loop, late list or unwind guard around a loop;
+  the clocked commit takes the direct entries from the process's own lists (`commit_rest` is the old tail).
+- **Lists**: the per-process wait, waveform and schedule lists, a driver's pending transactions and
+  `Signal::changed` are `Vec`s (a `SmallVec` access tests where its data lives on every use); the commit swaps the
+  new wait into `sens_prev` instead of copying it. Memory is level (45 bytes more per process, 56 less per driver).
+- **Kernel copies** (#529): a concurrent `target <= source;` of a static signal name, part for part, with no delay,
+  guard or `after`, is `ProcInst::copy`; `build` runs it as `yavs_kernel::CopyProcess` when nothing observes
+  activations (`Config::edge_triggers`), reading each source part and assigning it to its driver, then keeping the
+  wait with `Ctx::wait_same` (the several-range form of `wait_on_again`). neorv32: 381 of 1879 anonymous
+  statements; -2.6% instructions.
+- **Tried and dropped**: the unchanged-value test at assignment time with a phantom (as costly as the commit it
+  saved); the same test for vector entries (+1.6% on `rtl_lfsr`); `#[inline]` on `Ctx::assign_code` with the
+  general path split off (+0.6%); inlined phase and callout checks (+1%); `finish_signal` out of line (no change).
+- **Measured** (instructions per unit, slope of 1x and 10x runs, core 5; `main` with the round reverted against
+  `main`): interpreter `rtl_ff` 1590 to 1495, `rtl_chain` 2064 to 1684 per delta, `rtl_lfsr` 3679 to 3568, `lfsr64`
+  2869 to 2756, `rtl_fan` 737 to 725, `lfsr64_xor` 4884 to 4771; `--tier=auto` 1538 to 1443, 2106 to 1726, 3725 to
+  3615, 2524 to 2414, 781 to 769, 4638 to 4530. Kernel alone (hand-written processes): a chain delta 1325 to 946 instructions, a clocked register activation 472 to 363 (each including 70 to 100 instructions of the hand-written process itself)..
+- **What is left**: per `rtl_ff` activation the kernel is the batch loop (~95), the assignment (~90), the commit
+  (~45) and the finish (~15) plus reads; per chain delta the finish and wake (~250), the batch of one (~150), the
+  commit (~125), the assignment (~90) and the cycle skeleton (~200). The interpreter is now the larger part of both
+  (`rtl_ff` about two thirds). `rtl_lfsr` lost a third to an optimiser change (#534).
+
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 
 Follow-up of "Tight compute loops": in compiled loops the registers and the frame's variables no longer go through

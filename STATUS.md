@@ -3622,6 +3622,50 @@ both lists (857 and 393) on the interpreter and `--tier=auto`; the `.pro` regres
 tiers; the verification library suite 102 pass, 9 fail, 26 skip as before on both tiers; VHPI conformance traces identical to
 `main` (23 of 23).
 
+### Kernel round 12: unchanged values, lagging driver values, one-process deltas, kernel copies (#440, #529, 2026-10-22)
+
+Eight commits (`docs/decisions.md` "Kernel round 12"), ideas from the reference simulator's kernel written for ours: a direct
+one-element commit of the value the driver and the signal already have writes nothing (its delta still happens); a direct commit
+writes only the driving value, which is the value of its sole-source driver (`Signal::lag`, copied back before a force, release or
+deposit); one changed element with one resident waiter wakes it at finish; a batch of one process runs without the batch
+machinery; the first pending element of a signal skips the bit mask; runs of direct entries of one signal are committed with one
+lookup; the hot per-process lists, pending transactions and `Signal::changed` are `Vec`s; plain concurrent copies
+(`target <= source;` of signal names) run as the kernel's own `CopyProcess` when nothing observes activations (#529).
+
+Instructions per unit (activation; a delta for `rtl_chain`), slope of 1x and 10x runs pinned to core 5, `main` at `6f2b527d` with the
+eight commits reverted (before) against `main` (after), ratio to sim1's per-unit count (STATUS round 11) in brackets:
+
+| Design | interp before | interp after | auto before | auto after | sim1 |
+|---|---:|---:|---:|---:|---:|
+| rtl_ff | 1590 (1.90) | 1495 (1.79) | 1538 (1.84) | 1443 (1.73) | 835 |
+| rtl_lfsr | 3679 (3.81) | 3568 (3.70) | 3725 (3.86) | 3615 (3.75) | 965 |
+| lfsr64 | 2869 (2.92) | 2756 (2.81) | 2524 (2.57) | 2414 (2.46) | 982 |
+| rtl_fan | 737 (0.93) | 725 (0.92) | 781 (0.99) | 769 (0.97) | 791 |
+| rtl_chain | 2064 (2.49) | 1684 (2.03) | 2106 (2.54) | 1726 (2.08) | 830 |
+| lfsr64_xor | 4884 | 4771 | 4638 | 4530 | |
+
+`rtl_lfsr` lost about a third to an optimiser change between the rounds (#534), so its ratio is above round 11's.
+`tools/bench/run.py --ref sim1 --group h2h --tiers interp,auto --instructions --cores 5 --runs 3` (normal length, instructions
+yavs over sim1, before to after): rtl_ff interp 1.60 to 1.58, auto 1.58 to 1.57; rtl_chain 2.08 to 1.70, auto 2.12 to 1.74;
+rtl_lfsr 3.39 to 3.29; lfsr64 2.36 to 2.27, auto 2.39 to 2.21; lfsr64_xor 2.15 to 2.10; rtl_fan 0.89 to 0.88; rtl_ram 1.59 to 1.57;
+rtl_bus, compute_h2h, xor_types level.
+
+Kernel alone (a bench of hand-written processes with the same shapes, exact counts): a chain delta 1325 to 946 instructions, a clocked register activation 472 to 363 (each including 70 to 100 instructions of the hand-written process itself).
+
+Real testbenches (`tools/realbench/run.py --compare --phases run --tiers interp,auto --cores 5`, the reverted build against `main`,
+all 41 tests; instructions B/A, interpreter / `--tier=auto`): geometric mean 0.99 / 0.99, cpu 0.94 / 0.94, wide vectors 0.95 / 0.95;
+neorv32_single_min 0.93 / 0.92, neorv32_single_cache 0.95 / 0.94, neorv32_dual_full 0.95 / 0.96, fletcher_bufferreader 0.93 / 0.93,
+fletcher_bufferwriter_512 0.95 / 0.95, sc5_fifo_repack 0.96 / 0.94, sc5_timestamp 0.95 / 0.95. Summed wall time 0.96 / 0.95. Flagged
+by the tool: `hdlm_axi_crossbar` and `vai_pe_array` under `--tier=auto` at 1.05 and 1.06 instructions (0.6 G tests, their wall time
+0.83 and 0.80; the interpreter cells are level), which is the compile in the run, not the kernel.
+
+Checks at each commit: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with and without `--features llvm`,
+`cargo test --workspace` (831 at the last), `cargo test -p yavs-llvm --features llvm` (36) and `llvm,gc-stress` (36); difftest 434 of
+434 at 1 and 4 threads, 4 threads shuffled, `--tier=auto` and `--tier=llvm`; `external.py --oracle --check` on both lists (857 and
+393, interpreter); the `.pro` regression 314 of 314 under 2008 and 2019 (interpreter); the verification library suite 102 pass, 9 fail,
+26 skip as before (interpreter); VHPI conformance traces identical to `main` with the round reverted (the known `fparam.fp_sigin`
+difference to sim1 in both).
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

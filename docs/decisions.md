@@ -4440,3 +4440,16 @@ every elaboration, and again for every instance. Decisions:
   call cache"). Ideas from the reference simulator (read, nothing copied): it too does not run a unit's constant
   evaluation again for an unchanged unit; yavs keeps the results of calls, not of units, because its elaboration is
   interpreted and the same call recurs per instance.
+
+## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
+
+- **`watch_tick` (name the running function for the sampler, look for compiled code) is a cold function** called every
+  `WATCH` jumps back and calls from `run_ops::<false, true>`; the flag tables and the run id are read there, not kept in
+  locals of the loop. Why: with its thread-local access inlined, the watching form of the 100 KB dispatch loop ran the
+  same instructions as the plain one but 5.7% more cycles, which made `--tier=auto` with nothing compiled 4 to 5%
+  slower than `--tier=interp` on neorv32 (now about 1%). A cost that does not show in instruction counts: check cycles
+  on every change to the loop's watching code.
+- Left (#544): the per-activation set-up of the watching form, 20 to 25 instructions (flag check, thread-local slot,
+  two slot stores, loop prologue), about 3% of cycles for designs of thousands of tiny processes with nothing compiled.
+  Idea, not built: let the kernel publish the running process once per batch instead of each activation storing the slot.
+

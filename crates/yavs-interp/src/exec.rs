@@ -231,6 +231,22 @@ const RECHECK: u32 = 256;
 /// Events (jumps, calls, returns) between two looks of the loop that has no compiled code yet.
 const WATCH: u32 = 128;
 
+/// Every `WATCH` jumps back and calls of the watching loop: name the running function for the
+/// sampler; true when it has compiled code or is to be compiled. Out of line on purpose: inlined,
+/// its thread-local access cost `run_ops::<false, true>` 4 percent of cycles on neorv32 (#521).
+#[cold]
+#[inline(never)]
+fn watch_tick(rt: &Runtime, func: FuncId) -> bool {
+    crate::slot().store(
+        u64::from(rt.id) << 32 | u64::from(func.0),
+        Ordering::Relaxed,
+    );
+    rt.native
+        .func
+        .get(func.0 as usize)
+        .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
+}
+
 /// The body of `Machine::push_frame` and `push_frame_pre`.
 macro_rules! push_frame_body {
     ($self:ident, $pre:ident, $f:ident, $func:ident, $link:ident, $ret:ident, $slots:expr) => {{
@@ -4081,26 +4097,14 @@ impl Machine {
                 enter!();
             };
         }
-        // `watch`: hand over to the loop with the tier when the function being run (the next op
-        // is `k` of frame `top`) has compiled code or is to be compiled.
-        macro_rules! look {
-            () => {
-                if watch
-                    && nat
-                        .get(func.0 as usize)
-                        .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
-                {
-                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                    return Ok(Flow::Retier);
-                }
-            };
-        }
         // `watch`: a call of a function with compiled code, one the tier calls on a native frame
         // or one to be compiled is made by the loop with the tier (the frame's pc is the call's).
         macro_rules! callee_look {
             ($callee:expr) => {
                 if watch
-                    && nat
+                    && rt
+                        .native
+                        .func
                         .get($callee as usize)
                         .is_some_and(|n| n.load(Ordering::Acquire) != 0)
                 {
@@ -4116,8 +4120,10 @@ impl Machine {
                     recheck -= 1;
                     if recheck == 0 {
                         recheck = WATCH;
-                        crate::slot().store(tag | u64::from(func.0), Ordering::Relaxed);
-                        look!();
+                        if watch_tick(rt, func) {
+                            self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                            return Ok(Flow::Retier);
+                        }
                     }
                 }
             };

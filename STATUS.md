@@ -5137,6 +5137,19 @@ nothing compiled (`rtl_ff`, about 750 instructions per activation; default `auto
 thread with nothing to compile costs about 5 us of CPU per millisecond on another core; the LLVM library is not loaded
 in a run that compiles nothing. Cycles vary 2 to 5 percent between runs on the shared host; instructions are the measure.
 
+### `--tier=auto` with nothing compiled: the cycles (#521, #544, 2026-10-22)
+
+On neorv32 (`single_min`, 100 us, core 9, `perf stat` cycles:u, median of 11, interleaved) `--tier=auto` ran 4.3 to 5.4%
+more cycles than `--tier=interp` for 0.9% more instructions, nothing compiled. Cause: the watching form of the dispatch
+loop (`run_ops::<false, true>`) executed the same number of instructions as the plain one (12.6 G each) but needed 5.7%
+more cycles; the every-128-events `watch_tick` (thread-local slot access, flag look) was inlined into the 100 KB function.
+Out of line (`#[cold]`) the form costs the same as the plain one: auto / interp cycles 1.054 to 1.011 (+1.0% instructions,
+the per-activation set-up and the compile thread). Disabling only the call look-up or the jump count recovered 1 to 2%.
+Designs of thousands of tiny processes with nothing compiled (`--tier-heat=100000000,100000000,1000`, core 10, median
+of 11): `rtl_ff` +3.8% cycles (+3.5% instructions, was +5.8% / +4.3%), `rtl_fan` +3.9% (+6.4%, was +4.8% / +8.4%),
+`rtl_lfsr` +2.6% (+2.0%), `rtl_chain` +1.2% (+2.6%). The rest is the per-activation set-up of the
+watching form, 20 to 25 instructions (#544).
+
 ## Interpreter cost on loops, arrays and calls: round 1 (#520, #523, #509, #511, #531, 2026-10-22)
 
 What the four slow real-world tests cost (`perf stat` instructions of one `--tier=interp` run, release build with the `llvm` feature;

@@ -717,7 +717,12 @@ impl Worker {
             return false;
         };
         let k = id.0 as usize;
-        if self.probed[k] || self.done[k][0] || seen < self.heat.threshold(f) {
+        // Not with a first-level generator: its code is not in the compilation cache.
+        if self.first.is_some()
+            || self.probed[k]
+            || self.done[k][0]
+            || seen < self.heat.threshold(f)
+        {
             return false;
         }
         // The look-up generates the function's code: within the budget, as a compile is, with at
@@ -916,7 +921,7 @@ impl Worker {
                     self.us_per_instr = (self.us_per_instr + per) / 2.0;
                 }
                 let key = (f.name.clone(), f.code.len() as u32);
-                if !hit && crate::objcache::enabled() && self.listed.insert(key) {
+                if !hit && !via_first && crate::objcache::enabled() && self.listed.insert(key) {
                     crate::objcache::add_compiled(&f.name, f.code.len() as u32);
                 }
                 if entry.native != 0 {

@@ -183,6 +183,29 @@ pub(crate) fn run(
     shared: Option<&Arc<Mutex<SharedState>>>,
     inst: Option<InstData>,
 ) -> Result<Val, Fail> {
+    run_with(rt, s, args, shared, inst, None)
+}
+
+/// [`run`] without shared state, saying what the call did besides computing (`CallTrace`).
+pub(crate) fn run_traced(
+    rt: &Arc<Runtime>,
+    s: &Sig,
+    args: &[Val],
+    inst: Option<InstData>,
+) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
+    let mut t = yavs_interp::CallTrace::default();
+    let r = run_with(rt, s, args, None, inst, Some(&mut t));
+    (r, t)
+}
+
+fn run_with(
+    rt: &Arc<Runtime>,
+    s: &Sig,
+    args: &[Val],
+    shared: Option<&Arc<Mutex<SharedState>>>,
+    inst: Option<InstData>,
+    trace: Option<&mut yavs_interp::CallTrace>,
+) -> Result<Val, Fail> {
     let prog = rt.prog.clone();
     let mut cvs = Vec::with_capacity(args.len());
     for (v, &t) in args.iter().zip(&s.params) {
@@ -202,14 +225,15 @@ pub(crate) fn run(
         .types
         .get(ret)
         .is_some_and(|t| t.scalar_size().is_none());
-    let r = yavs_interp::call_values_shared(
-        rt.clone(),
-        s.func,
-        Arc::new(inst.unwrap_or_default()),
-        &cvs,
-        composite.then_some(ret),
-        shared,
-    )
+    let (inst, ret_ty) = (Arc::new(inst.unwrap_or_default()), composite.then_some(ret));
+    let r = match trace {
+        Some(t) => {
+            let (r, tr) = yavs_interp::call_values_traced(rt.clone(), s.func, inst, &cvs, ret_ty);
+            *t = tr;
+            r
+        }
+        None => yavs_interp::call_values_shared(rt.clone(), s.func, inst, &cvs, ret_ty, shared),
+    }
     .map_err(runtime)?
     .ok_or(Fail::Unsupported("no result"))?;
     crate::value::decode(&prog, ret, &r).ok_or(Fail::Unsupported("a result of this type"))

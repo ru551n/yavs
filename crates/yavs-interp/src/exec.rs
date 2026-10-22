@@ -455,7 +455,7 @@ pub(crate) struct Machine {
     /// (`SharedState::tainted`, #407).
     pub(crate) tainted: Option<String>,
     /// The reports it printed, to print again when its state is restored (`Some` while a
-    /// package is initialised).
+    /// package is initialised or a traced call runs, `call_values_traced`).
     pub(crate) init_reports: Option<Vec<(u8, String)>>,
     pub entry: FuncId,
     dbg: Option<Dbg>,
@@ -3597,7 +3597,10 @@ impl Machine {
                 n.symbol
             );
         };
-        if self.pkg_init.is_some() && self.tainted.is_none() && !crate::native::pure(&n.symbol) {
+        if (self.pkg_init.is_some() || self.init_reports.is_some())
+            && self.tainted.is_none()
+            && !crate::native::pure(&n.symbol)
+        {
             self.tainted = Some(format!("it calls `{}`", n.symbol));
         }
         // The argument cells go through `Machine::cells`: a native call allocates no vector.

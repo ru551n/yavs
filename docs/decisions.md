@@ -4403,3 +4403,40 @@ Decisions:
 - Idea from the reference simulator (sim1; read for its design, no code taken): it has no idiom recognition, it compiles
   the loop to native code and the loop costs a nanosecond per bit there. Ours is a recogniser of one shape because the
   interpreter pays per operation; the compiled tier gets the same call.
+
+## Elaboration-time call cache (yavs-elab `callcache.rs`, yavs-interp, #539; user decision 2026-10-22: build it)
+
+A PoC testbench spent 100 of its 177 ms of warm `elab` in the interpreter running pure functions on constants (a
+device string parsed by nine string functions, a time converted to cycles): the same calls with the same arguments at
+every elaboration, and again for every instance. Decisions:
+
+- **The result of a pure elaboration-time call is kept** in the stage cache (kind `ecall`, one entry per closure,
+  made like `ir` on the second run of it, `Stages::key`: the analysis key, which covers every source file of the
+  closure, the build and the optimiser switches, and the `Db` extent). An entry is a list of
+  `(callee DeclId and argument values (postcard), result value and the reports the call made)`. A call is looked up
+  by exactly that key, in the entry and in the elaboration's own table (a repeat inside one elaboration is a hit too,
+  also on the first run of a closure). The entry keeps the newest 8192 calls and 4 MiB; a key or result above 64 KiB
+  is not kept. It is written once at the end of an elaboration that learnt a call (no re-read: two runs learning
+  different calls at once keep the later one's).
+- **What counts as pure (conservative, all of it must hold).** (1) The callee is declared `pure` and its declaring
+  region and all regions around it are a package, package body or context (no instance, block, architecture or
+  package instance). (2) `lower_one` lowered it on its own with no free object of an enclosing region (no
+  instance data: nothing but the arguments goes in); a function that needs package state (shared variables, package
+  objects, protected types) runs in the session as before and is never kept. (3) The run itself did nothing but
+  compute: `yavs_interp::call_values_traced` reports a taint as soon as the call reaches a native that is not on the
+  list `native::pure` (the list package initialisation caching already uses, #407: files, `getenv`, clocks, assert
+  state, reflection) or foreign code, and a call that failed (a report at failure severity included) is not kept.
+  Nothing else can differ between two runs of the same call: no kernel (so no `now`, signal, wait or driver), no
+  shared heap, no access value in or out (arguments and results must marshal, which excludes access and file types),
+  fixed default time resolution, the same lowered code (the key holds the build).
+- **Reports are replayed.** A pure function may `report` or `assert`: the reports of the call (severity and text) are
+  stored with the result and printed and counted again on a hit (`yavs_interp::replay_reports`), in call order, so a
+  warm elaboration prints what a cold one does, once per call.
+- **Invalidation.** Editing a package constant or body, or any other file of the closure, changes the analysis key and
+  with it the key of the entry; a `Db` that grew since the analysis (instantiation) has no entry and looks nothing
+  up. Nothing is stored across closures: the library-prefix caches are not used, because a function of a prefix can
+  read a constant of a later unit only through the closure. Tests: `crates/yavs/tests/elabcache.rs`.
+- **Measured** (`tools/realbench`, phase elab, P-cores 2 and 3, wall and instructions, STATUS.md "Elaboration-time
+  call cache"). Ideas from the reference simulator (read, nothing copied): it too does not run a unit's constant
+  evaluation again for an unchanged unit; yavs keeps the results of calls, not of units, because its elaboration is
+  interpreted and the same call recurs per instance.

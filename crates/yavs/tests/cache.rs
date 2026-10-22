@@ -260,6 +260,7 @@ fn read_only_library_is_not_cached_into() {
 }
 
 /// Every file and directory below `dir`, sorted.
+#[cfg(unix)]
 fn tree(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut todo = vec![dir.to_path_buf()];

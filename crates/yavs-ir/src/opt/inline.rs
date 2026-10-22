@@ -2,8 +2,8 @@
 //! computes, branches a little and calls one or two more (the package function in front of a
 //! protected method, an accessor, the method itself) becomes that code in the caller.
 //!
-//! A call costs about as much as ten operations (frame, argument slots, return), and a library
-//! testbench is a chain of such calls. The pass runs last, on the finished code of a
+//! A call costs about 500 host instructions, as much as ten to twenty operations (frame,
+//! registers, argument slots, return), and a library testbench is a chain of such calls. The pass runs last, on the finished code of a
 //! subprogram (after the other passes and the renumbering), and takes the callee from its own
 //! optimised code, made apart from the callee's published copy (`forwarder`), so the result
 //! does not depend on which function was optimised first.
@@ -33,9 +33,12 @@ use crate::{
 
 /// The most instructions of an inlined body of one path.
 const MAX_BODY: usize = 24;
-/// The most instructions and blocks of an inlined body that branches.
-const MAX_MULTI: usize = 120;
-const MAX_BLOCKS: usize = 14;
+/// The most instructions and blocks of an inlined body that branches. (Bigger bodies, such as
+/// the 61-instruction accessors of a pointer table, stay calls: inlined five times into one
+/// function they make a unit the compiled tier needs ten times as long to compile and runs
+/// 40 percent slower in `--tier=auto`, measured on the queue of a verification library.)
+const MAX_MULTI: usize = 60;
+const MAX_BLOCKS: usize = 8;
 /// The most arms of a `Case` that becomes compares.
 const MAX_ARMS: usize = 6;
 /// The most instructions inlining adds to one function, beyond four times its own size.
@@ -140,12 +143,17 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Forwarder> {
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || raw.full().code.len() > 400
+        || raw.full().code.len() > 2 * MAX_MULTI
     {
         return None;
     }
     let mut c = super::optimize_body(prog, callee)?;
-    if level > 0 {
+    // (A body without calls has nothing to inline: the common leaf costs no second walk.)
+    if level > 0
+        && c.code
+            .iter()
+            .any(|i| matches!(i, Inst::Call { .. } | Inst::CallProt { .. }))
+    {
         run(prog, callee, &mut c, level - 1);
     }
     if c.reg_ty.contains(&RegTy::Sig)

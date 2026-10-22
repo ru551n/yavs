@@ -4073,8 +4073,8 @@ Decisions:
 - **The clean-up of a subprogram that copied blocks (`cfg::thread`) is followed by one more walk** (`opt::tidy`): what is
   known when a block is entered decides the branches of its copy. The clean-up also drops what nothing reads, a decided
   condition's flag and the constants that fed it, and knows the result of `Bool` of known operands.
-- **Inlining takes callees with branches and protected methods** (`opt/inline.rs`, #509): a callee of up to 120 instructions in
-  14 blocks whose branches are conditional jumps and a `Case` of up to 6 arms (compares: a case table cannot be added to a
+- **Inlining takes callees with branches and protected methods** (`opt/inline.rs`, #509): a callee of up to 60 instructions in
+  8 blocks whose branches are conditional jumps and a `Case` of up to 6 arms (compares: a case table cannot be added to a
   program that is being optimised) is copied into the caller as appended blocks; the caller's block is cut at the call, a
   `Ret` becomes a move of the result and a jump back. `CallProt` is a call whose first argument is the object, and the
   caller may be a process. A level-1 callee has its own inlinable calls inlined first (a wrapper in front of a method is
@@ -4161,6 +4161,12 @@ Decisions:
 - Inlined bodies may call natives and read logic arrays (`CallNative`, `LGet`, `LEq`, `MemEq`, `SubtypeCheck`, real arithmetic): the
   native runs the same in the caller's frame and the record of the inlined call keeps its call path (#531, user function calls
   in a loop).
+- **The size limit of an inlined body that branches is 60 instructions (8 blocks), not more**, because of `--tier=auto`
+  (the default): the queue of a verification library with its 61-instruction table accessors inlined five times into
+  `unsafe_push` (516 instructions) ran 11.9 s interpreted (15.0 before) but 10.6 s with the tier (7.65 before), as the
+  compiled tier took 10 times as long to compile the bigger units and compiled them at lower quality; with the accessors left
+  as calls (they compile small and run on native frames) it runs 13.2 s interpreted and 7.3 s with the tier. Wrappers and
+  thin methods are still inlined.
 
 
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)

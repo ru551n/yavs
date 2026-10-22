@@ -5030,24 +5030,50 @@ in a run that compiles nothing. Cycles vary 2 to 5 percent between runs on the s
 
 ## Interpreter cost on loops, arrays and calls: round 1 (#520, #523, #509, #511, #531, 2026-10-22)
 
-What the four slow real-world tests spend (interpreter, `perf stat` instructions on core 6, main before the round): `poc_arith_addw`
-672 G (7.5 times the reference simulator's 89 G), `vai_window_gen_interlock` 379 G (9.4 times 40 G), `hdlm_lfsr` 136 G (7.8 times 17.5 G),
-`fletcher_bufferreader` 98 G (6.4 times 15.3 G). Where it goes: `poc_arith_addw` is a testbench that builds an error message for every
-one of 8.4 million assertions (about 130 operations each: twelve concatenation pieces, four multi-dimensional index computations of an
-instance signal array) and drives a 20-instance DUT; `vai_window_gen_interlock` is the verification library's queue (five protected
-method calls per byte, 25 percent of the instructions in the call and return machinery); `hdlm_lfsr` is an inner loop over a constant
-array of the instance (two instance-data loads and two address computations repeated per iteration, 17 percent of the loop) and
-`fletcher_bufferreader` is a design of small clocked processes (about 145 host instructions per interpreter operation, mostly kernel
-work; #440, #519 own that part). The dispatch (one indirect jump) is 12 to 24 percent of the cycles in all four.
+What the four slow real-world tests cost (`perf stat` instructions of one `--tier=interp` run, release build with the `llvm` feature;
+"before" is main at `6ce6245e`, "after" this round; the reference simulator's count in brackets) and their wall time against it
+(`tools/realbench --ref`, core 6, median of 3, after / before in the run of the baseline day):
 
-What changed (details in `docs/decisions.md` "Optimiser round 11" and the commit messages):
+| test | instructions before | after | wall x reference, interp | auto |
+|---|---:|---:|---:|---:|
+| `poc_arith_addw` (#520) | 672 G (89 G) | 583 G | 5.5 (7.0) | 5.3 |
+| `vai_window_gen_interlock` (#520) | 379 G (40 G) | 327 G | 4.3 (4.7) | 2.4 |
+| `hdlm_lfsr` (#523) | 136 G (17.5 G) | 96 G | 5.1 (6.9) | 5.1 (#545) |
+| `fletcher_bufferreader` (#523) | 98 G (15.3 G) | 75 G | 5.3 (7.2) | 5.4 |
 
-- Read-only instance data and constant pool in the optimiser; value numbering of registers defined more than once (loop counters,
-  promoted variables) and constants/addresses they hold (#511); decided branches in threaded blocks; one more walk after the clean-up.
-- Inlining: callees with branches (a case on the storage mode of a pointer table, an assert) become appended blocks, `CallProt` and
-  process callers inline, a wrapper in front of a method is one callee (level 1), the inlining record is a chain (traces and `std.env`
-  call paths unchanged). The verification library's `unsafe_push`/`unsafe_pop` no longer call a method per table access.
-- A call that passes 8-byte parameters in registers writes no slots (`Pre::lean`).
+Where it goes: `poc_arith_addw` builds an error message for every one of 8.4 million assertions (about 130 operations each) and
+drives a 20-instance DUT; `vai_window_gen_interlock` is the verification library's queue (115 operations per `unsafe_push` after
+inlining: pointer-table derefs, positions, range checks of `natural` arguments); `hdlm_lfsr` is the tap loop over a constant array
+of the instance; `fletcher_bufferreader` is a design of small clocked processes (about 145 host instructions per operation, a
+third of it kernel: #440, #519). The dispatch (one indirect jump) is 12 to 24 percent of the cycles in all four. A call cost
+about 540 host instructions (the `calls` benchmark: 2289 M to 551 M instructions now). The whole suite, main before against
+this round (`--compare`, 41 tests, interp): geometric mean of the wall ratio 0.85 (instructions 0.82), summed time 0.60; the
+protected category 0.91, records 0.96, numeric 0.93 (others' kernel work in the same range included).
+
+What changed (decisions in `docs/decisions.md` "Optimiser round 11", the commit messages have the numbers of each step):
+
+- Optimiser: instance data and the constant pool are read-only for the whole function; registers defined more than once (loop
+  counters, promoted variables) get versions, so positions, loads and sums on them are shared and constants they hold are known
+  (#511); decided branches in threaded blocks and one more walk after the clean-up; one-byte variables (boolean, bit, enumeration)
+  are promoted to registers.
+- Inlining (`opt/inline.rs`, #509, #531): callees with branches (a case on a storage mode, an assert) become appended blocks
+  (at most 60 instructions in 8 blocks: bigger bodies make units the compiled tier compiles slowly, see decisions.md);
+  `CallProt` and process callers inline; a wrapper in front of a method is one callee (level 1); bodies may call natives and read
+  logic arrays; the inlining record is a chain (traces and `std.env` call paths unchanged, corpus `env/call_path_*`).
+- Lowering: the descriptor of an array constant or signal of locally static bounds is a constant of the pool, also when an index is
+  a type mark, so lengths, directions and positions fold.
+- Interpreter: a call that passes 8-byte parameters in registers writes no slots (`Pre::lean`).
+
+Ideas of the reference simulator used (read for the design, no code): numbering the values of registers instead of the registers
+(`Opt::vsn`), promoting one-byte slots like wider ones, protected methods as plain calls with the object as first argument (so
+they inline like any call), arguments passed in registers without a callee frame store, and facts of the elaborated instance
+available to the code generator (the static descriptors).
+
+Left: the pointer-table navigation of the queue (facts do not survive the joins that inlined bodies make, #444); the cost of
+message building in testbenches (a native result is three more operations to read its string, a concatenation an allocation, a
+copy and a descriptor); loop-invariant loads of instance data in loops of processes (#541); under `--tier=auto` the compile
+heuristic `compute()` stopped compiling the lfsr loop once the optimiser shrank it (#545); designs with many small clocked
+processes (kernel, #440).
 
 ### Temporaries found inline in every compiled function (#527)
 

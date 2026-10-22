@@ -4604,3 +4604,19 @@ of the earlier rounds, "cold" empties it before every run; "before" is `--tier=a
 is about 4.2 times. The short library testbenches (0.15 to 0.9 s) compile next to nothing within the budget; what `--tier=auto`
 still costs there (1 to 4 percent) is mostly the interpreter's own bookkeeping with a tier set (1 to 3 percent with nothing
 compiled, measured with an infinite heat), not compilation.
+
+Third step (#510): the frame-mode code of a function that does not run on native frames itself (a testbench process, a
+procedure with a wait) calls the callees that do directly (`compile_one` takes its callees as roots of `native_set`; before,
+`--tier=auto` gave such code no native calls at all, so a compiled queue loop stepped every call and the interpreter ran a
+callee that has only native-frame code), a probe compiles the native-frame callees a native root needs before it is
+published, and a look-up gets at least the budget of a function called natively. Same method as the table above (core 4,
+median of 3, cycles G and ratio to the interpreter):
+
+| Testbench | interp | auto warm | auto cold |
+|---|---:|---:|---:|
+| `protected_queue` | 5.99 | 2.26 (0.38) | 5.84 (0.97) |
+| `protected_queue`, 10x | 59.9 | 19.6 (0.33) | 27.0 (0.45) |
+| window generator | 78.9 | 43.9 (0.56) | 60.7 (0.77) |
+| `uvvm_sb_slv`, `uvvm_util_rand`, `osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_func_cov` | | 1.01 to 1.04 | 1.01 to 1.04 |
+
+`--tier=llvm` runs `protected_queue` at 2.09 G cycles: warm `--tier=auto` now reaches the eager tier.

@@ -1560,8 +1560,12 @@ pub(crate) fn compile_one(
         return Err(format!("register r{} beyond the frame", r.0));
     }
     // Native callees are reached through `Mem::ntab`, so only the reachable set's shape
-    // matters here, not what is compiled yet.
-    let nc = native_set(prog, [id]);
+    // matters here, not what is compiled yet. The function's own callees are roots too: a
+    // function that does not run on native frames still calls those that do directly (#510).
+    let nc = native_set(
+        prog,
+        std::iter::once(id).chain(f.code.iter().filter_map(call_of).map(|c| c.0)),
+    );
     let name = format!("f{}", id.0);
     let nname = format!("f{}_n", id.0);
     let llvm = |e: Error| format!("LLVM: {e} (a bug in yavs)");

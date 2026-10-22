@@ -451,8 +451,8 @@ const US_PER_INSTR: f64 = 800.0;
 const LOAD_US: u64 = 10_000;
 
 /// A look-up in the compilation cache generates the code of the function, about this part of a
-/// compile.
-const PROBE_PART: u64 = 20;
+/// compile (generation and the key: 10 to 20 us per IR instruction).
+const PROBE_PART: u64 = 50;
 
 /// A function must have been seen interpreted this many times as long as compiling it takes:
 /// its remaining time is expected to be about its past time and compiled code saves about a
@@ -785,13 +785,14 @@ impl Worker {
         if self.probed[k] || self.done[k][0] || seen < self.heat.threshold(f) {
             return false;
         }
-        // The look-up generates the function's code: within the budget, as a compile is; asked
-        // again at the next sample while the budget has no room.
+        // The look-up generates the function's code: within the budget, as a compile is, with at
+        // least the factor of a function called natively (code compiled before for a function
+        // hot before is likely to pay); asked again at the next sample while there is no room.
         let go = crate::objcache::enabled()
             && self.listed.contains(&(f.name.clone(), f.code.len() as u32))
             && within_budget(
                 self.heat.budget,
-                self.factor(id),
+                self.factor(id).max(NATIVE_BUDGET),
                 self.spent,
                 self.load_cost() + self.cost(f) / PROBE_PART,
                 self.total,
@@ -832,11 +833,13 @@ impl Worker {
             self.spent += u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
             return false;
         }
-        // A compute loop's callees compile (it runs five to ten times faster compiled);
-        // other roots link what the cache has and leave the rest to the payback rule.
+        // A compute loop's callees compile (it runs five to ten times faster compiled), and so do
+        // the native-frame callees of a native root (its native-frame code is published only once
+        // all of them exist, #510); other callees link what the cache has and leave the rest to
+        // the payback rule.
         let compute = self.is_compute(root);
         for &(i, p) in &ids[1..] {
-            if compute {
+            if compute || p == Part::Native && self.nset(root).contains(&root) {
                 self.compile(i, false, false, p);
             } else {
                 self.probing = true;

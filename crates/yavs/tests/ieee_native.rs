@@ -235,6 +235,20 @@ fn testbench(seed: u64, per_op: usize) -> String {
             g.case(&format!("{f}({x})"), "img");
         }
         g.case(&format!("is_x({x})"), "img");
+        // Reductions, also over several plane words.
+        let w = if g.rng.below(2) == 0 {
+            x.clone()
+        } else {
+            let len = 60 + g.rng.below(37) as usize;
+            let (v, b) = g.vec_n(len);
+            format!("sv(\"{v}\", {b})")
+        };
+        for op in ["and", "nand", "or", "nor", "xor", "xnor"] {
+            g.case(&format!("std_ulogic'({op} {w})"), "img");
+            g.case(&format!("ieee.std_logic_misc.{op}_reduce({w})"), "img");
+            let u = g.operand("uv");
+            g.case(&format!("std_ulogic'({op} {u})"), "img");
+        }
         let m = sul.chars().nth(g.rng.below(9) as usize).unwrap_or('0');
         g.case(&format!("to_01({x}, '{m}')"), "img");
         for (ty, t) in [("uv", "unsigned"), ("gv", "signed")] {

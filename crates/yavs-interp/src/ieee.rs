@@ -511,6 +511,54 @@ fn to_01_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> 
 }
 
 /// `is_x` of a vector: any element not `0 1 L H`. A null vector has none.
+/// A gate over all elements of a vector (`Op::Reduce`), on the plane words: `and` is `0` if
+/// any element is `0`/`L`, else `U` if any is `U`, else `X` if any is not `1`/`H`, else `1`;
+/// `or` the same with `1` and `0` swapped; `xor` `U` if any is `U`, else `X` if any is not
+/// `0 1 L H`, else the parity of the ones. The bodies fold the same tables element by element.
+fn reduce<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
+    let (data, left, right, down) = fat_dim(m, a, 0)?;
+    let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
+    let n = usize::try_from(n).map_err(|_| Fault::Runtime("array too long".into()))?;
+    let b = match n {
+        0 => &[][..],
+        _ => m.rd(data, n.div_ceil(64) as u64 * 32)?,
+    };
+    // Per kind of element: any `1`/`H`, any `0`/`L`, any `U`, any of the other five.
+    let (mut one, mut zero, mut u, mut x, mut parity) = (false, false, false, false, 0);
+    for (i, w) in b.as_chunks::<32>().0.iter().enumerate() {
+        let valid = low(n - i * 64);
+        let (p0, p1, p2, p3) = (
+            le8(&w[0..8]),
+            le8(&w[8..16]),
+            le8(&w[16..24]),
+            le8(&w[24..32]),
+        );
+        let o = !p3 & p1 & p0 & valid;
+        let z = !p3 & p1 & !p0 & valid;
+        let un = !(p0 | p1 | p2 | p3) & valid;
+        one |= o != 0;
+        zero |= z != 0;
+        u |= un != 0;
+        x |= valid & !(o | z | un) != 0;
+        parity ^= o.count_ones() & 1;
+    }
+    let meta = if u { StdULogic::U } else { StdULogic::X };
+    let r = match GATES[G as usize] {
+        Gate::And | Gate::Nand if zero => StdULogic::Zero,
+        Gate::Or | Gate::Nor if one => StdULogic::One,
+        _ if u || x => meta,
+        Gate::And | Gate::Nand => StdULogic::One,
+        Gate::Or | Gate::Nor => StdULogic::Zero,
+        Gate::Xor | Gate::Xnor if parity == 1 => StdULogic::One,
+        Gate::Xor | Gate::Xnor => StdULogic::Zero,
+    };
+    let r = match GATES[G as usize] {
+        Gate::Nand | Gate::Nor | Gate::Xnor => r.not(),
+        _ => r,
+    };
+    Ok(Some(r as u64))
+}
+
 fn is_x_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     Ok(Some(u64::from(vh(m, a, 0)?.v.has_x())))
 }
@@ -1599,6 +1647,14 @@ pub(crate) fn lookup(symbol: &str) -> Option<NativeFn> {
             num_gate::<3>,
             num_gate::<4>,
             num_gate::<5>,
+        ][GATES.iter().position(|x| *x == g)?],
+        Op::Reduce(g) => [
+            reduce::<0> as NativeFn,
+            reduce::<1>,
+            reduce::<2>,
+            reduce::<3>,
+            reduce::<4>,
+            reduce::<5>,
         ][GATES.iter().position(|x| *x == g)?],
         Op::NumNot => num_not,
         Op::Not => not,

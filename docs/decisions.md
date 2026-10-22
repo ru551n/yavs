@@ -2493,6 +2493,13 @@ user's performance priority:
 - **Compiled tier:** `YAVS_IEEE_TIER=llvm` (with `YAVS_IEEE_SCALE=n` to shrink the straight-line
   testbenches, which take the JIT many minutes at full size) makes `ieee_native.rs` run the
   on/off comparison on `--tier=llvm`.
+- **Reductions (#519, 2026-10-22):** the unary `and nand or nor xor xnor` of
+  `std_ulogic_vector` (`std_logic_1164`) and of `unsigned`/`signed` (`numeric_std`) and the
+  `*_reduce` functions of the Synopsys `std_logic_misc` are one native (`Op::Reduce`) that works on
+  the plane words: the 1164 tables fold to "`0`/`L` decides `and`, `1`/`H` decides `or`, else `U`
+  if any element is `U`, else `X` if any is not `0 1 L H`", and `xor` to "`U`, else `X`, else the
+  parity of the ones", in any order. The bodies loop over the elements; a 512-bit `or_reduce`
+  cost about 50 us in the interpreter.
 
 ## Skipped unchanged assignments (yavs-kernel, yavs-elab, #420, 2026-10-20)
 

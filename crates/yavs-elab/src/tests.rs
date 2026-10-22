@@ -2416,3 +2416,34 @@ fn run_time_packages_come_with_the_image() {
     assert_eq!(back.stored_run_time_packages(), Some(&found[..]));
     assert_eq!(back.run_time_package_set(), found);
 }
+
+/// A subprogram whose external name is bound at elaboration makes its package a run-time one
+/// without growing the design: the stored set must not be used then (CI: ename6).
+#[test]
+fn stored_run_time_packages_are_not_used_with_external_names() {
+    let src = "package pack is procedure p; end package;
+      package body pack is
+        procedure p is
+          alias s1 is << signal .t.s : bit >>;
+        begin
+          s1 <= force '1';
+        end procedure;
+      end package body;
+      entity t is end;
+      use work.pack.all;
+      architecture a of t is
+        signal s : bit;
+      begin
+        process begin p; wait; end process;
+      end;";
+    let mut db = analyze("rtp-ext", src);
+    db.settle();
+    db.to_image().expect("image");
+    assert!(db.stored_run_time_packages().is_none());
+    // Before the external name is bound the package is not a run-time one, after it is.
+    let before = db.run_time_package_set();
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elaborate");
+    let after = db.run_time_package_set();
+    assert!(after.len() > before.len(), "{before:?} {after:?}");
+}

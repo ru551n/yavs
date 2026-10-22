@@ -419,10 +419,13 @@ impl Db {
     }
 
     /// [`Db::run_time_package_set`] as stored by [`Db::to_image`], while the design has not
-    /// grown since: finding it decodes the declarations of every package.
+    /// grown since and has no external name: finding it decodes the declarations of every
+    /// package. With external names the set changes when elaboration binds them (the aliases
+    /// of a subprogram's external names are found without growing the design), so it is found
+    /// again.
     pub fn stored_run_time_packages(&self) -> Option<&[UnitId]> {
         match &self.run_time_pkgs {
-            Some((key, p)) if *key == self.run_time_key() => Some(p),
+            Some((key, p)) if *key == self.run_time_key() && self.externals.is_empty() => Some(p),
             _ => None,
         }
     }

@@ -240,19 +240,56 @@ fn damaged_entries_are_ignored() {
 #[cfg(unix)]
 #[test]
 fn read_only_library_is_not_cached_into() {
-    use std::os::unix::fs::PermissionsExt;
     let e = Env::new("readonly");
     let work = e.tmp.join("work");
     let plain = e.run(&["--no-cache"]);
-    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let before = tree(&work);
+    set_tree_mode(&work, 0o555);
     let writable = std::fs::File::create(work.join("probe")).is_ok();
     let r = e.run(&[]);
-    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    set_tree_mode(&work, 0o755);
     if writable {
         return; // running as a user the mode does not bind
     }
     assert_eq!(visible(&plain), visible(&r));
-    assert_eq!(e.entries(), 0);
+    assert_eq!(
+        before,
+        tree(&work),
+        "nothing is written into a read-only library"
+    );
+}
+
+/// Every file and directory below `dir`, sorted.
+fn tree(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p.clone());
+            }
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Set the mode of `dir` and of every directory below it (a read-only library: a read-only mount
+/// or another user's tree, the cache directories `analyze` made included).
+#[cfg(unix)]
+fn set_tree_mode(dir: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut dirs: Vec<PathBuf> = tree(dir).into_iter().filter(|p| p.is_dir()).collect();
+    dirs.push(dir.to_path_buf());
+    // Children first when locking, the top first when unlocking.
+    if mode & 0o200 == 0 {
+        dirs.reverse();
+    }
+    for d in dirs {
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
 }
 
 #[test]
@@ -1178,17 +1215,21 @@ fn parallel_runs_share_compiled_code() {
 #[cfg(all(unix, feature = "llvm"))]
 #[test]
 fn read_only_library_gets_no_compiled_code() {
-    use std::os::unix::fs::PermissionsExt;
     let e = Env::new("objreadonly");
     let work = e.tmp.join("work");
     let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
-    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let before = tree(&work);
+    set_tree_mode(&work, 0o555);
     let writable = std::fs::File::create(work.join("probe")).is_ok();
     let r = e.run(&["--tier=llvm"]);
-    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    set_tree_mode(&work, 0o755);
     if writable {
         return; // running as a user the mode does not bind
     }
     assert_eq!(plain, visible(&r));
-    assert!(!e.cache_dir().exists());
+    assert_eq!(
+        before,
+        tree(&work),
+        "nothing is written into a read-only library"
+    );
 }

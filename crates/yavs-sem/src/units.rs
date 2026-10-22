@@ -2726,6 +2726,8 @@ mod tests {
             "diags",
             "loads",
             "file_owner",
+            // Made by `to_image` from the finished design, never by a unit (#426).
+            "run_time_pkgs",
         ];
         for f in field_names(&db) {
             if f == "generic" {

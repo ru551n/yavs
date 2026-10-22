@@ -90,7 +90,7 @@ impl Db {
 
     /// The image of this `Db`, or why it cannot be restored later: an error was reported, an
     /// analysis is in progress, or work is pending.
-    pub fn to_image(&self) -> Result<Vec<u8>, String> {
+    pub fn to_image(&mut self) -> Result<Vec<u8>, String> {
         let pending = [
             ("errors", self.error_count()),
             ("stack", self.stack.len()),
@@ -107,6 +107,8 @@ impl Db {
         if let Some((what, n)) = pending.iter().find(|p| p.1 != 0) {
             return Err(format!("{n} {what}"));
         }
+        // Found now, while every page is decoded, instead of by every run that reads the image.
+        self.run_time_pkgs = Some((self.run_time_key(), self.run_time_package_set()));
         let (payload, table) = yavs_syntax::encode_table(|| postcard::to_stdvec(self));
         let payload = payload.map_err(|e| e.to_string())?;
         let table = postcard::to_stdvec(&table).map_err(|e| e.to_string())?;

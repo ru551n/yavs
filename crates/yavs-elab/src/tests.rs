@@ -2321,3 +2321,24 @@ fn builtin_packages_without_signals(db: Db) {
         "only {packages} built-in package regions loaded"
     );
 }
+
+/// The packages with run-time objects are found when the image is made and come back with it,
+/// as long as the design has not grown (#426).
+#[test]
+fn run_time_packages_come_with_the_image() {
+    let src = "package p is signal s : bit; end;
+      package q is constant c : integer := 1; end;
+      entity t is end; architecture a of t is begin end;";
+    let mut db = analyze("rtp", src);
+    db.settle();
+    let found = db.run_time_package_set();
+    assert_eq!(found.len(), 1, "only p has a run-time object");
+    assert!(db.stored_run_time_packages().is_none());
+    let image = db.to_image().expect("image");
+    assert_eq!(db.stored_run_time_packages(), Some(&found[..]));
+    let opts = Options::new(LangRev::Vhdl2008, yavs_sem::default_stdlib());
+    let image = yavs_sem::image::Image::new(yavs_diag::Buffer::new(image));
+    let back = Db::from_image(opts, image, &|_| true).expect("restore");
+    assert_eq!(back.stored_run_time_packages(), Some(&found[..]));
+    assert_eq!(back.run_time_package_set(), found);
+}

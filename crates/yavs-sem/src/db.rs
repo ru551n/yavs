@@ -243,6 +243,9 @@ pub struct Db {
     pub(crate) generic: crate::generic::GenericState,
     /// Whole-design facts found by [`Db::settle`] (see [`Facts`]).
     pub(crate) facts: Option<Facts>,
+    /// The packages outside std with run-time objects as [`Db::run_time_package_set`] found them
+    /// when the image was made, with the sizes of the arenas they were found in (#426).
+    pub(crate) run_time_pkgs: Option<((usize, usize, usize), Vec<UnitId>)>,
     /// The facts of the units replayed from the analysed-unit cache since the last settle, by
     /// load (their entries are not scanned; `units.rs`).
     #[serde(skip)]
@@ -379,6 +382,48 @@ impl Db {
         });
         if !zero && !builtin && fs < 1_000_000_000_000_000 && self.well_known.time == Some(ty) {
             self.time_units.push(TimeUnitUse { span, unit, fs });
+        }
+    }
+
+    pub(crate) fn run_time_key(&self) -> (usize, usize, usize) {
+        (self.units.len(), self.decls.len(), self.exprs.len())
+    }
+
+    /// Packages outside std with objects that exist at run time: signals, shared variables,
+    /// files, or constants sem did not fold (in the declaration or the body), or the aliases of
+    /// external names its subprograms use (#255), in unit order.
+    pub fn run_time_package_set(&self) -> Vec<UnitId> {
+        use crate::decl::{DeclKind, ObjClass};
+        let run_time = |d: DeclId| match &self.decls[d].kind {
+            DeclKind::Object(o) => match o.class {
+                ObjClass::Constant => o.default.is_some_and(|e| self.exprs[e].value.is_none()),
+                _ => true,
+            },
+            _ => self.decl_subprograms(d).into_iter().any(|m| {
+                !self
+                    .external_uses(crate::external::ExtOwner::Sub(m))
+                    .is_empty()
+            }),
+        };
+        self.units
+            .iter()
+            .filter(|(_, u)| self.libs[u.lib].name.key.as_str() != "std")
+            .filter(|&(id, _)| {
+                self.package_regions(id).is_some_and(|rs| {
+                    rs.into_iter()
+                        .any(|s| self.decls_with_instances(s).into_iter().any(run_time))
+                })
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// [`Db::run_time_package_set`] as stored by [`Db::to_image`], while the design has not
+    /// grown since: finding it decodes the declarations of every package.
+    pub fn stored_run_time_packages(&self) -> Option<&[UnitId]> {
+        match &self.run_time_pkgs {
+            Some((key, p)) if *key == self.run_time_key() => Some(p),
+            _ => None,
         }
     }
 
@@ -577,6 +622,7 @@ impl Db {
             pending_specs: Vec::new(),
             generic: Default::default(),
             facts: None,
+            run_time_pkgs: None,
             unit_facts: Default::default(),
             diags: Vec::new(),
             errors: 0,

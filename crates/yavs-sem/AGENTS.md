@@ -26,7 +26,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 
 | Item | File |
 |---|---|
-| `Db` (`release_analysis`: frees everything but the source map for a run that is done with the design, #409, on a thread of its own, or not at all for a design under 50 000 declarations, expressions and statements, #426; arenas, `WellKnown`, `Poison`, `report`/`error`/`ice`/`unsupported`, `diagnostics`, `take_diagnostics`) | `src/db.rs` |
+| `Db` (`run_time_pkgs` / `stored_run_time_packages`: the packages with run-time objects, found by `to_image` and valid while the arenas have their sizes, #426; `release_analysis`: frees everything but the source map for a run that is done with the design, #409, on a thread of its own, or not at all for a design under 50 000 declarations, expressions and statements, #426; arenas, `WellKnown`, `Poison`, `report`/`error`/`ice`/`unsupported`, `diagnostics`, `take_diagnostics`) | `src/db.rs` |
 | `Options` (`rev`, `stdlib`, `libraries`, `relaxed`, `defines`), `LangRev = yavs_syntax::Std`, `default_stdlib()` (`$YAVS_STDLIB`, else the built-in copy under `stdlib::EMBEDDED`) | `src/lib.rs` |
 | Built-in std/ieee: `build.rs` embeds `lib/std` and `lib/ieee` (`*.vhdl`); `stdlib::read`/`is_file` serve paths under `<yavs>/lib`, everything else from disk | `build.rs`, `src/stdlib.rs` |
 | `Db::analyze_file` (one `yavs analyze` file, returns `UnitRecord`s), `analyze_closure`, `load_primary`, `load_body`; HIR validation in debug builds | `src/loader.rs` |

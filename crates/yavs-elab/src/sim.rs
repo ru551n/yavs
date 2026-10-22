@@ -1725,33 +1725,12 @@ fn write_desc(
     Ok(())
 }
 
-/// Packages outside std with objects that exist at run time: signals, shared variables,
-/// files, or constants sem did not fold (in the declaration or the body), or the aliases of
-/// external names its subprograms use (#255).
+/// Packages outside std with objects that exist at run time (`Db::run_time_package_set`, from
+/// the image when it holds it), in the order they are elaborated.
 pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
-    use yavs_sem::decl::{DeclKind, ObjClass};
-    let run_time = |d: yavs_sem::DeclId| match &db.decls[d].kind {
-        DeclKind::Object(o) => match o.class {
-            ObjClass::Constant => o.default.is_some_and(|e| db.exprs[e].value.is_none()),
-            _ => true,
-        },
-        _ => db.decl_subprograms(d).into_iter().any(|m| {
-            !db.external_uses(yavs_sem::external::ExtOwner::Sub(m))
-                .is_empty()
-        }),
-    };
-    let wanted: Vec<UnitId> = db
-        .units
-        .iter()
-        .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
-        .filter(|&(id, _)| {
-            db.package_regions(id).is_some_and(|rs| {
-                rs.into_iter()
-                    .any(|s| db.decls_with_instances(s).into_iter().any(run_time))
-            })
-        })
-        .map(|(id, _)| id)
-        .collect();
+    let wanted = db
+        .stored_run_time_packages()
+        .map_or_else(|| db.run_time_package_set(), <[UnitId]>::to_vec);
     dependency_order(db, wanted)
 }
 

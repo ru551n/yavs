@@ -4588,6 +4588,15 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
 - **The symbol table and its per-thread mirror start with room for 1 024 names, not 2 048** (a tiny test interns 450 to 900,
   a test of `ieee.fixed_pkg` 2 300, which then grows once): the mirror started empty and doubled, the table was touched at
   random over 100 KB (about 30 page faults, 1.8% of a tiny run).
+- **The image holds the packages with run-time objects** (`Db::run_time_pkgs`, filled by `Db::to_image`, read through
+  `Db::stored_run_time_packages` while the units, declarations and expressions are as many as when it was made, the
+  criterion `pkgcall.rs` uses for its own copy). Finding them decoded every declaration page of every loaded package,
+  ieee's among them (a test that uses `std_logic_1164`: 8.9 M instructions against 11.0 M; 14 to 23% on four corpus
+  tests that use it). A design that gets implicit aliases of external names (a package subprogram with one) grows the
+  declarations and finds the set again.
+- **`alias_external_uses` does nothing in a design without external names**, and `is_std_ulogic` compares the name before it
+  reads the declaration: both decoded pages of the cached analysis (an expression page per statement, a declaration page
+  per enumeration type) for nothing (4.7% of the instructions of a tiny run).
 - **The LLVM stub generator writes the names as one string** (no 1 300 relocations and 5 pages of pointers in a position
   independent executable).
 - Measured and not worth it: `-z pack-relative-relocs` (DT_RELR) leaves the cycles and instructions of a tiny run as they

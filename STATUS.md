@@ -1535,6 +1535,53 @@ interpreter and the LLVM tier (4 shuffled threads); `cargo fmt --check`, `cargo 
 `llvm`), `cargo test --workspace`, the `llvm` and `gc-stress` unit tests green; pass lists 857 and 393 (`--oracle
 --check`); `.pro` 314/314 under 2008 and 2019; UVVM 102 pass, 9 fail, 26 skip (as before).
 
+## Interpreter round 11: the shape of the op loop (#508, 2026-10-22)
+
+`run_ops` keeps the dispatch and the arms the RTL processes and testbench loops run all the time; the bodies of the other
+ops are `Machine::op_*` methods (`#[inline(never)]`), every error with a message is built by a cold function (`ice_f!`
+and its siblings), and the helpers the hot arms use are inlined on purpose (`docs/decisions.md` "The shape of the
+interpreter's op loop"). Machine code of `run_ops` (`nm -S`, release build): `exec_fast::<false>` instance 124.6 KB
+(25437 instructions) to 103.6 KB (21422 instructions); the `llvm`-tier instance 144.4 KB to 116.3 KB. Op frequencies
+(executed ops over the head-to-head designs, the library testbenches and `vunit_vc30`) decided what stays in.
+
+Executed instructions, pinned `perf stat` (core 2, `--tier=interp`, user mode, `tools/bench/run.py --ref sim1 --instructions
+--runs 5`), main `08a3df30` to this change:
+
+| Design | before (G) | after (G) | change |
+|---|---:|---:|---:|
+| rtl_ff | 13.55 | 13.36 | -1.4% |
+| rtl_lfsr | 7.41 | 7.20 | -2.8% |
+| rtl_chain | 4.22 | 4.19 | -0.7% |
+| rtl_fan | 15.14 | 14.94 | -1.3% |
+| rtl_bus | 4.51 | 4.52 | +0.2% |
+| rtl_ram | 0.84 | 0.84 | 0.0% |
+| lfsr64_xor | 1.70 | 1.63 | -4.1% |
+| lfsr64 | 4.04 | 3.81 | -5.7% |
+| compute_h2h | 28.73 | 26.72 | -7.0% |
+| xor_sig | 23.61 | 23.15 | -1.9% |
+| xor_types | 19.28 | 18.98 | -1.6% |
+
+Library testbenches (total instructions of the run): `protected_queue` -1.2%,
+`uvvm_sb_slv_tb` -1.3%, `uvvm_util_rand_tb` -1.8%, `osvvm_axistream` -0.9%, `vunit_vc30` -0.7%. The real-world suite
+(`tools/realbench/run.py --compare`, core 2, `--tiers interp`, 41 tests): geometric means of wall, CPU and instructions
+all 0.99 B/A, per category 0.96 (wide-vectors) to 1.01 (records), no test above the slowdown thresholds.
+
+Stability: the instructions of a build with one perturbation against the same build without it, geometric mean over the
+16 designs of the set (the largest single design in brackets), before and after. A new unused op: +0.01% (0.1%) and +0.02%
+(0.3%); `#[cold]` on `ice` and `rt_err`: +0.39% (rtl_ff +5.7%) and -0.06% (0.7%); a check added to the `CatLCopy` arm: +0.03%
+and +0.01%; a check added to `deref`: +0.18% (0.9%) and +0.12% (0.7%, protected_queue, which calls it); a new arm that
+calls `pos_len`: +0.09% and +0.01%; `#[cold]` on `lcopy`: +0.74% (rtl_ff +3.2%) and -0.44% (-0.8%); a check in the `LSet` arm:
+-0.01% and +0.03%. Before, four of the seven moved some design by 0.5 to 5.7%; after, none moves any design by more than 0.8%.
+
+Sim1 ideas used (rule 22): its interpreter loop is a bare switch calling one small function per operation, and traps leave
+through exits; see the decisions entry. Tried and dropped: a `hot()` function with the common ops (+12%), `cold_path()` on
+the rare arms (+1%), outlining the descriptor ops that every library testbench runs (+2% to +4%).
+
+Verification: differential corpus 431/431 at 4 threads and 4 shuffled threads on the interpreter, `--tier=llvm` and
+`--tier=auto`; 431/431 with `gc-stress` (interpreter and llvm, 4 shuffled threads); fmt, clippy (with and without
+`llvm`), `cargo test --workspace`, the `llvm` and `gc-stress` unit tests green; pass lists 857 and 393 (`--oracle --check`);
+`.pro` 314/314 under 2008 and 2019; UVVM 102 pass, 9 fail, 26 skip (as before).
+
 ## Optimiser round 10: clean-up of finished subprograms (#444, 2026-10-21)
 
 A late pass over the finished code of a subprogram that cannot suspend (`crates/yavs-ir/src/opt/cfg.rs`, `docs/decisions.md`

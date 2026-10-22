@@ -3855,6 +3855,43 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   compiler's register allocation of the one large function (#508), so every change here is measured on
   several designs.
 
+## The shape of the interpreter's op loop: outlined ops, errors off the hot paths (yavs-interp, #508, 2026-10-22)
+
+- **Problem.** `Machine::run_ops` was one function of about 125 KB of machine code, 90 percent of it inlined helpers
+  (`mem_fast`, `deref`, `copy_fast`, the heap and `ieee` code, error constructors). Changes that touched no RTL op moved
+  the instructions of a clocked process by up to 5 percent through the register allocation of that one function (#493's
+  commits +3.6 percent, `#[cold]` on `ice` and `rt_err` +5.5 percent on rtl_ff, one unused arm +0.7 percent).
+- **Op frequencies decide what stays in the loop.** Counting executed ops over the head-to-head designs, the library
+  testbenches and `vunit_vc30` gives: the RTL ops (`SigRead1Slot`, `SigRead1`, `Gate`, `EdgeBr`, `WaitSuspend`, `FlagBr`,
+  `SigValSlot`, `LSetDrive`, `Cmp`, `MoveCondBr`, `LGet`), the scalar and address ops (`Bin`, `Aff1`, `Load`, `Move`, `Br`,
+  `CmpBr`, `CmpBrStep`, `BinRangeK`, `Index*`, `Load*`/`Store*`, `Stmt`) and the call, return and protected-call ops. The
+  bodies of every op outside that set (the descriptor ops, `Drive`, `WaveBuf`, `Layout`, `Field`, `MemEq`, `Cat`-adjacent
+  ops, `CopyConst`, `MakeDope`, `BinRange`, `PosIndexStore`, `IndexStore`, `WaitOn`, `SigReadScalar`) are methods
+  `Machine::op_*` with `#[inline(never)]`; the arm calls them and does `k += n`. A fault keeps the IR pc of the op (`t!`).
+- **Every error is built out of line.** `ice_f!`, `rt_err_f!`, `runtime_f!` (with `format!`) and `ice_s!`, `rt_err_s!`,
+  `runtime_s!` (a literal) run the constructor in `cold`, a `#[cold] #[inline(never)]` function; `ice` and `rt_err`
+  themselves are plain. A unit test (`errors_are_built_out_of_line`) fails on an error built the old way in `exec.rs`.
+  The fault path of `t!` is `fault_at`, also cold.
+- **Helpers are inlined or not on purpose.** The ones the hot ops use (`add_addr`, `split`, `mk_addr`, `is_multi`,
+  `driver`, `sigref`, `delay_mode`, `fill_blocks`, `new_pair`, `fat_root`, `temp_alloc`, `rd`) are `#[inline(always)]`; the ones
+  the rare ops use (`dim_of`, `layout_of`, `layout_words`, `copy_bits`, `cat`, `drive_parts`, `lcopy`, ...) are
+  `#[inline(never)]`. The one-element signal reads of a clocked process (`read_sig1`, `edge_sig1`, `wait_sig1`) read the
+  instance signal table and the kernel mirror directly, with the general code as `*_slow`.
+- **What was taken from sim1's interpreter** (ideas only, rule 22): its loop is a bare dispatch `switch` whose cases call one
+  small function per operation, so the compiler sizes and allocates each op on its own and the loop stays small (here:
+  the `op_*` methods for everything but the hot arms); operand access is a few always-inlined helpers over a flat register
+  array while errors and traps leave through out-of-line exits (here: `cold` and `fault_at`); and tier-up counting happens
+  per call, not per op. Not taken: a register pointer held in a local (needs `unsafe`, this crate forbids it), and the
+  per-call counting (the counters here already sit in `go!` and are `TIER`-only).
+- **Tried and dropped.** A separate `hot()` function with the common ops, called from `run_ops` in a loop (+12 percent: a call
+  per op and the same register pressure); `std::hint::cold_path` on the arms of the rare ops (+1 percent instructions, no gain
+  in stability); outlining more of the descriptor ops (the ones that run in every library testbench, `PosIndex`, `Pos`,
+  `AffPL`, got slower: +2 to +4 percent on the testbenches).
+- **Stability.** Measured as the change of executed instructions after a perturbation that touches no RTL op (a new unused arm,
+  a check added to an unrelated arm or helper, the error constructors marked cold, a new arm that calls `pos_len`): see
+  STATUS.md "Interpreter round 11". Marking a helper that a hot-ish arm calls `#[cold]` still moves the loop (the call
+  site becomes a cold block); do not mark helpers cold that run in a benchmark.
+
 ## Compiled clocked RTL processes, round 3: a leaner activation and fewer callbacks (yavs-llvm, #440, #507, 2026-10-21)
 
 - **One `Mem` per simulation thread** (`lower::MEM`, a thread-local pointer): an activation takes it, resets

@@ -978,6 +978,7 @@ impl Runtime {
     }
 
     /// The facts of function `id` (`f`), computed once.
+    #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
         Some(
             self.pre

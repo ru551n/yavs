@@ -11,7 +11,7 @@ use yavs_ir::{DOPE_DIM_BYTES, TyId, Width, dim_len};
 use yavs_kernel::{Ctx, LogicVec, Severity};
 use yavs_logic::{BitVec, StdULogic};
 
-use crate::exec::{Fault, Machine, R, add_addr, ice, rt_err};
+use crate::exec::{Fault, Machine, R, add_addr, cold, ice, ice_f, rt_err};
 use crate::native::NativeFn;
 
 type Ret = R<Option<u64>>;
@@ -66,7 +66,7 @@ fn arg(a: &[u64], i: usize) -> R<u64> {
 fn sul(a: &[u64], i: usize) -> R<StdULogic> {
     match arg(a, i)? {
         c @ 0..=8 => Ok(StdULogic::from_code_pub(c as u8)),
-        c => Err(ice(format!("std_ulogic code {c}"))),
+        c => Err(ice_f!("std_ulogic code {c}")),
     }
 }
 
@@ -333,7 +333,7 @@ pub(crate) fn scalar_not(x: u64) -> R<u64> {
 fn code(c: u64) -> R<StdULogic> {
     match c {
         0..=8 => Ok(StdULogic::from_code_pub(c as u8)),
-        c => Err(ice(format!("std_ulogic code {c}"))),
+        c => Err(ice_f!("std_ulogic code {c}")),
     }
 }
 

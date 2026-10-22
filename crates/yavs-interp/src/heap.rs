@@ -119,6 +119,7 @@ pub fn pack(tag: u8, index: u32, generation: u32) -> u64 {
     (u64::from(tag) << 56) | (u64::from(index) << 32) | u64::from(generation)
 }
 
+#[inline(always)]
 pub fn tag_of(h: u64) -> u8 {
     (h >> 56) as u8
 }

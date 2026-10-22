@@ -6,8 +6,8 @@
 //! every file with the checked-in list `tests/parse-corpus/<corpus>.txt`:
 //!
 //! ```text
-//! PASS 2008 nvc/test/regress/wait1.vhd
-//! FAIL 2019 nvc/test/parse/error1.vhd  # E0002 expected `;`, found `end`
+//! PASS 2008 sim1/test/regress/wait1.vhd
+//! FAIL 2019 sim1/test/parse/error1.vhd  # E0002 expected `;`, found `end`
 //! ```
 //!
 //! Any difference (a new failure, a new pass, a file added or gone) fails the
@@ -22,6 +22,28 @@ use std::time::{Duration, Instant};
 use yavs_diag::Severity;
 use yavs_diag::SourceMap;
 use yavs_syntax::{Encoding, Options, Std, load_source, parse_file};
+
+/// The lists name the reference corpora by label; the fetched checkouts keep the
+/// upstream directory names (`tools/fetch-corpus.sh`).
+const LABELS: &[(&str, &str)] = &[("sim1/", "nvc/"), ("sim2/", "ghdl/")];
+
+fn to_listed(rel: &str) -> String {
+    for (label, dir) in LABELS {
+        if let Some(r) = rel.strip_prefix(dir) {
+            return format!("{label}{r}");
+        }
+    }
+    rel.to_string()
+}
+
+fn from_listed(rel: &str) -> String {
+    for (label, dir) in LABELS {
+        if let Some(r) = rel.strip_prefix(label) {
+            return format!("{dir}{r}");
+        }
+    }
+    rel.to_string()
+}
 
 struct Corpus {
     name: &'static str,
@@ -48,7 +70,7 @@ const CORPORA: &[Corpus] = &[
         zero_errors: true,
     },
     Corpus {
-        name: "nvc",
+        name: "sim1",
         dirs: &[("nvc/test/regress", false), ("nvc/test/parse", false)],
         zero_errors: false,
     },
@@ -59,7 +81,7 @@ const CORPORA: &[Corpus] = &[
         zero_errors: false,
     },
     Corpus {
-        name: "ghdl",
+        name: "sim2",
         dirs: &[("ghdl/testsuite/gna", true)],
         zero_errors: false,
     },
@@ -218,7 +240,7 @@ fn read_list(path: &Path) -> BTreeMap<String, Entry> {
         };
         let std = std_from(std)
             .unwrap_or_else(|| panic!("{}:{}: bad standard `{std}`", path.display(), n + 1));
-        map.insert(file.to_string(), Entry { pass, std });
+        map.insert(from_listed(file), Entry { pass, std });
     }
     map
 }
@@ -283,8 +305,8 @@ fn external() {
         for (outcome, (rel, std)) in &results {
             let pass = outcome.error.is_none();
             match &outcome.error {
-                None => writeln!(out, "PASS {} {rel}", std_name(*std)),
-                Some(e) => writeln!(out, "FAIL {} {rel}  # {e}", std_name(*std)),
+                None => writeln!(out, "PASS {} {}", std_name(*std), to_listed(rel)),
+                Some(e) => writeln!(out, "FAIL {} {}  # {e}", std_name(*std), to_listed(rel)),
             }
             .expect("write");
             match expected.get(rel) {

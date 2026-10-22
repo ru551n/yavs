@@ -5,13 +5,13 @@ std = "2019"
 
 # Files not compiled, with the reason.
 exclude = [
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_007.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: cannot reference variable RESULT in pure function TO_STRING; questa: ** Error: tb_007.vhd(24): (vcom-1440) Language feature sequential block statement is not supported yet." },
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_016.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: missing actual for generic type anonymous; questa: ** Error: tb_016.vhd(7): near \"type\": (vcom-1576) expecting STRING or IDENTIFIER or << or '('." },
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_034.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: unexpected generic while parsing protected type declarative item, expecting one of attribute, use, function, procedure, impure, pure, private or alias; questa: ** Error: tb_034.vhd(11): (vcom-1440) Language feature Generic Clause in protected type is not supported yet." },
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_043.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: unexpected identifier while parsing concurrent procedure call statement, expecting one of ( or ;; questa: ** Error: tb_043.vhd(21): near \"default\": (vcom-1576) expecting BEGIN." },
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_049.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: no visible declaration for A; questa: ** Error: tb_049.vhd(10): (vcom-1396) Object \"a\" cannot appear within the same interface list in which it is declared." },
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_059.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: no visible subprogram \"=\" matches signature [FILE_TYPE, FILE_TYPE return BOOLEAN]; questa: ** Error: tb_059.vhd(5): near \"is\": (vcom-1576) expecting ';' or ')'." },
-  { source = "vhdl-compliance", path = "vhdl_2019/tb_099.vhd", reason = "round 1: rejected by NVC and Questa: NVC: ** Error: name R in discrete range does not refer to a type; questa: ** Error: tb_099.vhd(8): Prefix of attribute \"range\" must be appropriate for an array object or must denote an array subtype." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_007.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: cannot reference variable RESULT in pure function TO_STRING; sim3: ** Error: tb_007.vhd(24): (sim3-1440) Language feature sequential block statement is not supported yet." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_016.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: missing actual for generic type anonymous; sim3: ** Error: tb_016.vhd(7): near \"type\": (sim3-1576) expecting STRING or IDENTIFIER or << or '('." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_034.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: unexpected generic while parsing protected type declarative item, expecting one of attribute, use, function, procedure, impure, pure, private or alias; sim3: ** Error: tb_034.vhd(11): (sim3-1440) Language feature Generic Clause in protected type is not supported yet." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_043.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: unexpected identifier while parsing concurrent procedure call statement, expecting one of ( or ;; sim3: ** Error: tb_043.vhd(21): near \"default\": (sim3-1576) expecting BEGIN." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_049.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: no visible declaration for A; sim3: ** Error: tb_049.vhd(10): (sim3-1396) Object \"a\" cannot appear within the same interface list in which it is declared." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_059.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: no visible subprogram \"=\" matches signature [FILE_TYPE, FILE_TYPE return BOOLEAN]; sim3: ** Error: tb_059.vhd(5): near \"is\": (sim3-1576) expecting ';' or ')'." },
+  { source = "vhdl-compliance", path = "vhdl_2019/tb_099.vhd", reason = "round 1: rejected by sim1 and sim3: sim1: ** Error: name R in discrete range does not refer to a type; sim3: ** Error: tb_099.vhd(8): Prefix of attribute \"range\" must be appropriate for an array object or must denote an array subtype." },
 ]
 
 # Compile order: (library, source, path relative to the source root, std).
@@ -252,7 +252,7 @@ license = "Apache-2.0"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "run.py of the project (VUnit; uses NVC/Riviera-PRO/Active-HDL with 2019, others with 2008); each bench is one test case"
+runner = "run.py of the project (VUnit; uses sim1/sim4/other simulators with 2019, others with 2008); each bench is one test case"
 passes = "VUnit test case passes (test_runner_cleanup, no error()). Stub benches for unimplemented LCS issues call error() on purpose and are expected to FAIL when run"
 
 [[testbenches.bench]]

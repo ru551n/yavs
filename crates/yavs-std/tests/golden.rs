@@ -1,9 +1,9 @@
-//! Differential tests against sim1 goldens (golden/nvc-{2008,2019}.txt,
+//! Differential tests against sim1 goldens (golden/sim1-{2008,2019}.txt,
 //! produced by golden/gen.py). Each golden line is a function, its
 //! arguments and sim1's output (or ERROR when the case aborted sim1).
 //!
 //! Known, intended deviations from sim1 are listed in
-//! golden/nvc-deviations.txt with the reason; one rule is applied in code:
+//! golden/sim1-deviations.txt with the reason; one rule is applied in code:
 //! a failed READ leaves the line unchanged in yavs, so for a `g=false`
 //! golden the expected rest of line is the whole input.
 
@@ -402,7 +402,7 @@ fn writeline_case(lines: &[Vec<u8>]) -> Out {
 
 /// Deviations: (revision or "*", func, args) -> expected output.
 fn deviations() -> HashMap<(String, String, Vec<String>), String> {
-    let text = include_str!("../golden/nvc-deviations.txt");
+    let text = include_str!("../golden/sim1-deviations.txt");
     let mut m = HashMap::new();
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
@@ -504,10 +504,10 @@ fn run(rev: Revision, file: &str) -> usize {
 
 #[test]
 fn sim1_2008() {
-    assert!(run(Revision::Vhdl2008, "nvc-2008.txt") > 2500);
+    assert!(run(Revision::Vhdl2008, "sim1-2008.txt") > 2500);
 }
 
 #[test]
 fn sim1_2019() {
-    assert!(run(Revision::Vhdl2019, "nvc-2019.txt") > 2500);
+    assert!(run(Revision::Vhdl2019, "sim1-2019.txt") > 2500);
 }

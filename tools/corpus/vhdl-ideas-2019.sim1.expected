@@ -1,0 +1,20 @@
+# tools/corpus/run.py expected results for vhdl-ideas-2019 (sim1); one line per manifest entry, in order
+PASS work vhdl-ideas/interfaces/axi/axi4.vhdl
+PASS work vhdl-ideas/interfaces/axi/axi4-body.vhdl
+PASS work vhdl-ideas/interfaces/axi/axi4l.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/caui.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/mii.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/qsfp.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/rgmii.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/rmii.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/sfp.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/sgmii.vhdl
+PASS work vhdl-ideas/interfaces/ethernet/xaui.vhdl
+PASS work vhdl-ideas/interfaces/io.vhdl
+PASS work vhdl-ideas/interfaces/adi/ad9361.vhdl
+PASS work vhdl-ideas/interfaces/pcie.vhdl
+PASS work vhdl-ideas/poc/rangetest.vhdl
+FAIL work vhdl-ideas/sim/frequency.vhdl
+PASS work vhdl-ideas/util/generic_mux.vhdl
+PASS work vhdl-ideas/poc/hdmi_switch.vhdl
+PASS work vhdl-ideas/util/memory.vhdl

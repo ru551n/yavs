@@ -1,0 +1,45 @@
+# vhdl-compliance-2019: reference simulator validation
+
+Reference simulator sim1 1.23-devel (1.22.0.r66.gef5084a94)
+
+sim1 is the primary reference simulator, sim2 the second and sim3 the third; the roles are fixed by the corpus tooling.
+
+Every manifest entry analyzed in order into `~/.cache/rsim-corpora/sim1-vhdl-compliance-2019` with `tools/corpus/run.py vhdl-compliance-2019 --tool sim1 --bless` (one file per call, `--std=2019`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).
+
+- Files: 208; accepted by sim1: 208; rejected by sim1: 0. The manifest lists only files the reference tools accept (sim1, sim3 as second witness); the rest are under Excluded.
+- Flags needed: none.
+- The first 143 entries are the vunit-2019 library files the test benches need (vunit_lib, OSVVM); the project's own files follow.
+- Licenses: vhdl-compliance: Apache-2.0.
+
+## Excluded by validation (7 files; 7 direct, 0 cascades of a missing unit in a later round)
+
+- 1 x rejected by sim1 and sim3: sim1: ** Error: cannot reference variable RESULT in pure function TO_STRING; sim3: ** Error: (24): (sim3-1440) Language f (e.g. `vhdl_2019/tb_007.vhd`)
+- 1 x rejected by sim1 and sim3: sim1: ** Error: missing actual for generic type anonymous; sim3: ** Error: (7): near "_": (sim3-1576) expecting STRING or (e.g. `vhdl_2019/tb_016.vhd`)
+- 1 x rejected by sim1 and sim3: sim1: ** Error: unexpected generic while parsing protected type declarative item, expecting one of attribute, use, function (e.g. `vhdl_2019/tb_034.vhd`)
+- 1 x rejected by sim1 and sim3: sim1: ** Error: unexpected identifier while parsing concurrent procedure call statement, expecting one of ( or ;; sim3: * (e.g. `vhdl_2019/tb_043.vhd`)
+- 1 x rejected by sim1 and sim3: sim1: ** Error: no visible declaration for A; sim3: ** Error: (10): (sim3-1396) Object "_" cannot appear within the same (e.g. `vhdl_2019/tb_049.vhd`)
+- 1 x rejected by sim1 and sim3: sim1: ** Error: no visible subprogram "_" matches signature [FILE_TYPE, FILE_TYPE return BOOLEAN]; sim3: ** Error: (5): n (e.g. `vhdl_2019/tb_059.vhd`)
+- 1 x rejected by sim1 and sim3: sim1: ** Error: name R in discrete range does not refer to a type; sim3: ** Error: (8): Prefix of attribute "_" must be a (e.g. `vhdl_2019/tb_099.vhd`)
+
+## Tool disagreements
+
+- kept vhdl_2008/tb_generic_packages_on_entity.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_generic_packages_on_entity.vhd(20): (sim3-1022) Formal part (generic "MUX_DATA_SIZE") does not depict an interface object.)
+- kept vhdl_2008/tb_psl.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_psl.vhd(14): near "default": (sim3-1576) expecting BEGIN.)
+- kept vhdl_2019/tb_001.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_001.vhd(19): (sim3-1046) Formal "long_port" must not be associated with OPEN when subelements are associated individually.)
+- kept vhdl_2019/tb_002.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_002.vhd(10): (sim3-1440) Language feature Class VARIABLE parameter "x" of mode OUT or INOUT for FUNCTION is not supported yet.)
+- kept vhdl_2019/tb_004.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_004.vhd(8): Method cannot have a class FILE formal parameter.)
+- kept vhdl_2019/tb_006a.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_006a.vhd(24): (sim3-1136) Unknown identifier "READ_WRITE_MODE".)
+- kept vhdl_2019/tb_012.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_012.vhd(21): Attribute "image" requires a parameter.)
+- kept vhdl_2019/tb_018.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_018.vhd(9): Expecting a type name, found attribute name "base" instead.)
+- kept vhdl_2019/tb_018a.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_018a.vhd(7): (sim3-1440) Language feature index attribute is not supported yet.)
+- kept vhdl_2019/tb_018d.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_018d.vhd(5): (sim3-1440) Language feature designated_subtype attribute is not supported yet.)
+- kept vhdl_2019/tb_019.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_019.vhd(18): (sim3-1360) Array type of "prod" does not have an index constraint.)
+- kept vhdl_2019/tb_026c.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_026c.vhd(6): near "89345897098345": (sim3-119) Integer value exceeds INTEGER'high.)
+- kept vhdl_2019/tb_033.vhd: sim1=ok sim3=FAIL (sim3: ** Error (suppressible): tb_033.vhd(10): (sim3-1257) Variable "name" of protected type "sometype_t" cannot be declared before the protected type body.)
+- kept vhdl_2019/tb_041.vhd: sim1=ok sim3=FAIL (sim3: ** Error: (sim3-11) Could not find std.reflection. Make sure the top design unit is compiled into the correct library or that the correct library is being referenced.)
+- kept vhdl_2019/tb_047.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_047.vhd(26): Port "x" must be of class SIGNAL.)
+- kept vhdl_2019/tb_072b.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_072b.vhd(8): (sim3-1136) Unknown identifier "rv_t".)
+- kept vhdl_2019/tb_075.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_075.vhd(44): (sim3-1583) Illegal type conversion from 'b_t' to 'a_t' (not closely related).)
+- kept vhdl_2019/tb_086.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_086.vhd(6): (sim3-1396) Object "P1" cannot appear within the same interface list in which it is declared.)
+- kept vhdl_2019/tb_094a.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_094a.vhd(13): (sim3-1440) Language feature conditional return statement is not supported yet.)
+- kept vhdl_2019/tb_reading_function_return_value.vhd: sim1=ok sim3=FAIL (sim3: ** Error: tb_reading_function_return_value.vhd(14): (sim3-1136) Unknown identifier "return_value".)

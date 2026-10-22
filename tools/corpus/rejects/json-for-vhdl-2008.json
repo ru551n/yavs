@@ -1,8 +1,8 @@
 {
  "log": [],
  "rejects": {
-  "examples/Boards_VUnit.vhdl": "round 1: rejected by the reference tools: NVC: ** Error: design unit JSON_CTX not found in library JSON; ghdl: Boards_VUnit.vhdl:5:14:error: unit \"json_ctx\" not found in library \"JSON\"",
-  "src/JSON.ctx.vhdl": "round 1: rejected by the reference tools: NVC: ** Error: design unit JSON not found in library JSON; ghdl: JSON.ctx.vhdl:40:12:error: unit \"json\" not found in library \"JSON\"",
-  "tests/JSONTestSuite/TopLevel.vhdl": "round 1: rejected by the reference tools: NVC: ** Error: no visible declaration for JSONLOADFILE; ghdl: TopLevel.vhdl:15:60:error: no declaration for \"jsonloadfile\""
+  "examples/Boards_VUnit.vhdl": "round 1: rejected by the reference tools: sim1: ** Error: design unit JSON_CTX not found in library JSON; sim2: Boards_VUnit.vhdl:5:14:error: unit \"json_ctx\" not found in library \"JSON\"",
+  "src/JSON.ctx.vhdl": "round 1: rejected by the reference tools: sim1: ** Error: design unit JSON not found in library JSON; sim2: JSON.ctx.vhdl:40:12:error: unit \"json\" not found in library \"JSON\"",
+  "tests/JSONTestSuite/TopLevel.vhdl": "round 1: rejected by the reference tools: sim1: ** Error: no visible declaration for JSONLOADFILE; sim2: TopLevel.vhdl:15:60:error: no declaration for \"jsonloadfile\""
  }
 }

@@ -29,7 +29,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/env.rs` | STOP/FINISH, RESOLUTION_LIMIT, getenv, directories, TIME_RECORD, LOCALTIME, TOOL_* |
 | `src/arith.rs` | Checked `add/sub/mul/div/rem/modulo/neg/abs/pow`, `check_range`, `real_to_int`, physical times real, `TimeResolution` |
 | `src/error.rs` | `ConvError` (kind, input, span, expected form), `What`, `ErrorKind` |
-| `tests/golden.rs` | Differential test against the reference simulator goldens (`golden/nvc-2008.txt`, `nvc-2019.txt`) minus `golden/nvc-deviations.txt` |
+| `tests/golden.rs` | Differential test against the reference simulator goldens (`golden/sim1-2008.txt`, `sim1-2019.txt`) minus `golden/sim1-deviations.txt` |
 | `tests/roundtrip.rs` | proptest: `'value('image(x)) = x`, WRITE-then-READ |
 | `golden/gen.py`, `golden/mkdev.py` | Regenerate goldens with the reference simulator (`--sim2` for the second reference simulator; commands from `tools/sims.local.conf`); build the deviation list |
 
@@ -39,7 +39,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 |---|---|---|
 | All VHDL text is Latin-1 `[u8]`, one byte per CHARACTER; identifiers keep declared spelling | Matches the runtime STRING layout; rule 8 | `docs/decisions.md` "std value conversion" |
 | Output formats follow the reference simulator byte for byte where the LRM leaves them open (`%.15g` reals, `time'image` in fs, ...) | The reference simulator is the difftest reference | `docs/decisions.md` "std value conversion" |
-| The LRM wins where the reference simulator is wrong or crashes; each case listed with its reason in `golden/nvc-deviations.txt` | LRM policy | same; `docs/plan.md` "LRM interpretation policy" |
+| The LRM wins where the reference simulator is wrong or crashes; each case listed with its reason in `golden/sim1-deviations.txt` | LRM policy | same; `docs/plan.md` "LRM interpretation policy" |
 | Real literals (any base) are correctly rounded, ties to even, subnormals included; the reference simulator flushes based subnormals | LRM: nearest value | `docs/decisions.md` "std value conversion" |
 | Leniencies kept: leading `+`, integer literal for a real, `5ns`, format effectors as whitespace | Accepted by the reference simulators | same |
 | READ: failed READ leaves the line unchanged (the second reference simulator), TIME accepts decimals, CRs before LF dropped, WRITELINE writes LF everywhere | Permissive, deterministic across platforms | same |
@@ -49,13 +49,13 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | TIME mirror values in resolution-limit units (user, 2026-10-18) | An external test runner's reflection package | `docs/decisions.md` "Reflection: TIME values in mirrors" |
 
 Module-local decisions go in this section in the same commit; a new the reference simulator deviation goes into
-`golden/nvc-deviations.txt` with its reason (root `AGENTS.md` rule 24).
+`golden/sim1-deviations.txt` with its reason (root `AGENTS.md` rule 24).
 
 ## 4. Invariants and pitfalls
 
 - Never panic on bad input, never default a value: every failure is a `ConvError` or
   `ArithError` that the caller renders.
-- Do not edit `golden/nvc-*.txt` by hand; regenerate with `gen.py` (needs the reference simulator, wrap it per root
+- Do not edit `golden/sim1-*.txt` by hand; regenerate with `gen.py` (needs the reference simulator, wrap it per root
   `AGENTS.md` rule 15) and review the diff. A deviation needs a reason line.
 - Tests that touch the file system use pid-suffixed temp dirs (`yavs-std-file-<pid>`); env tests
   rely on unset variable names `YAVS_STD_SURELY_UNSET_VARIABLE`/`YAVS_TEXTIO_TEST_UNSET_VARIABLE`.

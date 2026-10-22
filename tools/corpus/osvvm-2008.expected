@@ -1,5 +1,5 @@
 # tools/corpus/run.py expected results for osvvm-2008 (yavs); one line per manifest entry, in order
-# Initial list: derived from NVC's results (osvvm-2008.nvc.expected). yavs must analyze every file NVC accepts;
+# Initial list: derived from sim1's results (osvvm-2008.sim1.expected). yavs must analyze every file sim1 accepts;
 # update with `run.py osvvm-2008 --bless` when yavs's behaviour legitimately changes.
 PASS osvvm osvvm-libraries/osvvm/IfElsePkg.vhd
 PASS osvvm osvvm-libraries/osvvm/OsvvmTypesPkg.vhd

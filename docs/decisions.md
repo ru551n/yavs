@@ -578,7 +578,7 @@ milestone users care about works.
   `min(floor(log10(unit)), 17)` truncated digits (the second reference simulator agrees on the last one). The second reference simulator prints reals
   as shortest round-trip VHDL literals (`1.0e-1`) and the third reference simulator as `%e`; neither is adopted.
 - **The LRM wins over the reference simulator** where the reference simulator is wrong or crashes, each case listed with its reason in
-  `crates/yavs-std/golden/nvc-deviations.txt`: extended identifiers keep case and doubled
+  `crates/yavs-std/golden/sim1-deviations.txt`: extended identifiers keep case and doubled
   backslashes; `'VALUE` takes full literal syntax (based literals, exponents, underscores only
   between digits, decimal physical literals rounded to the primary unit, unit-only `ns`, extended
   unit names) and rejects what is not one literal (`Fo o`, `1__0`, `.5`, `5.`); overflow is an

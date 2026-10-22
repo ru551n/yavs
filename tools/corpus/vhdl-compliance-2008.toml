@@ -5,7 +5,7 @@ std = "2008"
 
 # Files not compiled, with the reason.
 exclude = [
-  { source = "vhdl-compliance", path = "vhdl_2008/tb_generic_packages_on_entity.vhd", reason = "round 1: NVC and GHDL disagree (nvc=ok, ghdl=FAIL), Questa rejects: ghdl: tb_generic_packages_on_entity.vhd:55:26:error: matching a formal generic package with an explicit generic map aspect is not supported" },
+  { source = "vhdl-compliance", path = "vhdl_2008/tb_generic_packages_on_entity.vhd", reason = "round 1: sim1 and sim2 disagree (sim1=ok, sim2=FAIL), sim3 rejects: sim2: tb_generic_packages_on_entity.vhd:55:26:error: matching a formal generic package with an explicit generic map aspect is not supported" },
 ]
 
 # Compile order: (library, source, path relative to the source root, std).
@@ -209,7 +209,7 @@ license = "Apache-2.0"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "run.py of the project (VUnit; uses NVC/Riviera-PRO/Active-HDL with 2019, others with 2008); each bench is one test case"
+runner = "run.py of the project (VUnit; uses sim1/sim4/other simulators with 2019, others with 2008); each bench is one test case"
 passes = "VUnit test case passes (test_runner_cleanup, no error()). Stub benches for unimplemented LCS issues call error() on purpose and are expected to FAIL when run"
 
 [[testbenches.bench]]

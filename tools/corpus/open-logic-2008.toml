@@ -5,7 +5,7 @@ std = "2008"
 
 # Files not compiled, with the reason.
 exclude = [
-  { source = "open-logic", path = "test/fix/olo_fix_pkg_writer/olo_fix_pkg_writer_tb.vhd", reason = "round 1: rejected by the reference tools: NVC: ** Error: design unit PKG_WRITER_TEST_PKG not found in library OLO_TB; ghdl: olo_fix_pkg_writer_tb.vhd:22:16:error: unit \"pkg_writer_test_pkg\" not found in library \"olo_tb\"" },
+  { source = "open-logic", path = "test/fix/olo_fix_pkg_writer/olo_fix_pkg_writer_tb.vhd", reason = "round 1: rejected by the reference tools: sim1: ** Error: design unit PKG_WRITER_TEST_PKG not found in library OLO_TB; sim2: olo_fix_pkg_writer_tb.vhd:22:16:error: unit \"pkg_writer_test_pkg\" not found in library \"olo_tb\"" },
 ]
 
 # Compile order: (library, source, path relative to the source root, std).
@@ -432,7 +432,7 @@ license = "MIT"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "VUnit sim/run.py (--nvc/--ghdl); every bench is run once per generic configuration listed in the area's config (test/*/config.py style add_configs)"
+runner = "VUnit sim/run.py (--sim1/--sim2); every bench is run once per generic configuration listed in the area's config (test/*/config.py style add_configs)"
 passes = "VUnit test_runner_cleanup reached with no failed check/assert; each bench ends by itself"
 
 [[testbenches.bench]]

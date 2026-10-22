@@ -232,7 +232,7 @@ From alloc (alloc.rs):
   its arguments; the debug HIR validation reports that as an internal error for every procedure
   call statement (so `deallocate(p)` cannot have a negative-suite test yet).
 - **U-2**: the reference simulators 2026.1 all reject incomplete types in protected method profiles in
-  user code (`tests/diag/sem/NVC.md`); done: the ruling is limited to `std`.
+  user code (`tests/diag/sem/SIM1.md`); done: the ruling is limited to `std`.
 - ponytail: allocators do not filter overloads by designated type (`f(new integer)` with `f`
   overloaded on two access types is `E1302`), as `null` is.
 

@@ -1,18 +1,18 @@
 {
  "log": [],
  "rejects": {
-  "tb/cl_fix_abs_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_abs_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_add_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_add_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_addsub_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_addsub_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_compare_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_compare_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_from_real_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_from_real_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_mult_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_mult_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_neg_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_neg_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_resize_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_resize_tb.vhd:34:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_round_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_round_tb.vhd:34:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_saturate_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_saturate_tb.vhd:34:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_shift_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_shift_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/cl_fix_sub_tb.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: cl_fix_sub_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
-  "tb/util/en_cl_fix_fileio_pkg.vhd": "round 1: rejected by the reference tools: NVC: ** Error: library EN_TB not found; ghdl: en_cl_fix_fileio_pkg.vhd:101:9:error: cannot find resource library \"en_tb\""
+  "tb/cl_fix_abs_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_abs_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_add_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_add_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_addsub_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_addsub_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_compare_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_compare_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_from_real_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_from_real_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_mult_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_mult_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_neg_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_neg_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_resize_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_resize_tb.vhd:34:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_round_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_round_tb.vhd:34:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_saturate_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_saturate_tb.vhd:34:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_shift_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_shift_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/cl_fix_sub_tb.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: cl_fix_sub_tb.vhd:31:9:error: cannot find resource library \"en_tb\"",
+  "tb/util/en_cl_fix_fileio_pkg.vhd": "round 1: rejected by the reference tools: sim1: ** Error: library EN_TB not found; sim2: en_cl_fix_fileio_pkg.vhd:101:9:error: cannot find resource library \"en_tb\""
  }
 }

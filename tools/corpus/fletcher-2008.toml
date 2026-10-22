@@ -5,16 +5,16 @@ std = "2008"
 
 # Files not compiled, with the reason.
 exclude = [
-  { source = "vhlib", path = "sim/SimDataComms_pkg.sim.08.vhd", reason = "round 1: NVC and GHDL disagree (nvc=FAIL, ghdl=ok), Questa rejects: NVC: ** Error: parameters of protected type methods cannot be of an access type or a composite type containing an access type" },
-  { source = "vhlib", path = "stream/model/StreamMonitor_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: StreamMonitor_pkg.sim.08.vhd:24:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "stream/model/StreamMonitor_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: StreamMonitor_mdl.sim.08.vhd:21:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "stream/model/StreamSink_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: StreamSink_pkg.sim.08.vhd:24:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "stream/model/StreamSink_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: StreamSink_mdl.sim.08.vhd:22:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "stream/model/StreamSource_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: StreamSource_pkg.sim.08.vhd:25:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "stream/model/StreamSource_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: StreamSource_mdl.sim.08.vhd:21:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "sim/ClockGen_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: ClockGen_pkg.sim.08.vhd:25:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "sim/ClockGen_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: ClockGen_mdl.sim.08.vhd:22:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
-  { source = "vhlib", path = "sim/SimDataComms_tc.sim.08.vhd", reason = "round 2: rejected by the reference tools: NVC: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; ghdl: SimDataComms_tc.sim.08.vhd:24:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "sim/SimDataComms_pkg.sim.08.vhd", reason = "round 1: sim1 and sim2 disagree (sim1=FAIL, sim2=ok), sim3 rejects: sim1: ** Error: parameters of protected type methods cannot be of an access type or a composite type containing an access type" },
+  { source = "vhlib", path = "stream/model/StreamMonitor_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: StreamMonitor_pkg.sim.08.vhd:24:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "stream/model/StreamMonitor_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: StreamMonitor_mdl.sim.08.vhd:21:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "stream/model/StreamSink_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: StreamSink_pkg.sim.08.vhd:24:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "stream/model/StreamSink_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: StreamSink_mdl.sim.08.vhd:22:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "stream/model/StreamSource_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: StreamSource_pkg.sim.08.vhd:25:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "stream/model/StreamSource_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: StreamSource_mdl.sim.08.vhd:21:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "sim/ClockGen_pkg.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: ClockGen_pkg.sim.08.vhd:25:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "sim/ClockGen_mdl.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: ClockGen_mdl.sim.08.vhd:22:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
+  { source = "vhlib", path = "sim/SimDataComms_tc.sim.08.vhd", reason = "round 2: rejected by the reference tools: sim1: ** Error: design unit SIMDATACOMMS_PKG not found in library WORK; sim2: SimDataComms_tc.sim.08.vhd:24:10:error: unit \"simdatacomms_pkg\" not found in library \"work\"" },
 ]
 
 # Compile order: (library, source, path relative to the source root, std).
@@ -143,7 +143,7 @@ license = "Apache-2.0"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "plain benches (*_tb) run through vhdeps (ghdl/vsim) in the project's CI"
+runner = "plain benches (*_tb) run through vhdeps (sim2/sim3) in the project's CI"
 passes = "no 'severity failure' assertion; benches stop when their stimulus is exhausted"
 
 [[testbenches.bench]]

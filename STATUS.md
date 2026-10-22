@@ -5640,3 +5640,10 @@ size and cache misses, #532); the exits left there are `LayoutOf` of records wit
 `fletcher_bufferwriter_512`, each statement lays a process variable's descriptor out again, #518), `rising_edge` of a
 clock the process was not resumed for (7 M in `neorv32_single_min`), `WaitOn` of waits on several signals, `Drive` of
 more than 64 elements.
+
+## Interpreter round 14: entry of the dispatch loop, memoised signal references (#520, 2026-10-23)
+
+(Written during the round; the numbers are the final ones at the end of the section.)
+
+- Package data and the rare slot paths are out of the inline memory paths of `run_ops` (`docs/decisions.md` "Interpreter
+  round 14"): 17 to 11 address pairs spilled on every entry of the loop.

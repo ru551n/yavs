@@ -1647,10 +1647,6 @@ impl Machine {
             // The state of protected objects and shared variables, and package data.
             SHARED_HEAP => self.sh.as_ref()?.heap.as_ref()?.data(idx),
             SHARED => Some(&self.sh.as_ref()?.vars),
-            PKG => match &self.pkg_init {
-                Some((p, data)) if *p == idx => Some(data),
-                _ => Some(&self.rt.pkgs.get(idx as usize)?.data),
-            },
             _ => None,
         }
     }
@@ -1835,10 +1831,6 @@ impl Machine {
             TEMP => Some(&self.temp[..]),
             HEAP => self.heap.data(idx),
             SHARED_HEAP => self.sh.as_ref().and_then(|s| s.heap.as_ref()?.data(idx)),
-            PKG => match &self.pkg_init {
-                Some((p, data)) if *p == idx => Some(&data[..]),
-                _ => self.rt.pkgs.get(idx as usize).map(|p| &p.data[..]),
-            },
             _ => None,
         };
         if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
@@ -1852,11 +1844,22 @@ impl Machine {
     fn load_slow(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
         let (sp, idx, off) = split(a);
-        let mem = self.mem_fast(sp, idx);
+        // Package data is not in `mem_fast`: read here.
+        let mem = if sp == PKG {
+            self.obj(sp, idx).ok()
+        } else {
+            self.mem_fast(sp, idx)
+        };
         if let Some(b) = mem.and_then(|m| m.get(off as usize..(off + n) as usize)) {
             return Ok(cell_w(b, w));
         }
         Ok(cell_w(self.rd(a, n)?, w))
+    }
+
+    /// `store`, out of line (the rare paths of the slot stores).
+    #[inline(never)]
+    fn store_slow(&mut self, a: u64, w: Width, v: u64) -> R<()> {
+        self.store(a, w, v)
     }
 
     /// `load` of the element `pos` of `stride` bytes from `base` (`index_addr` and `load`), the
@@ -2317,6 +2320,17 @@ impl Machine {
         };
         c.assign_code(d.id, sr.range, t, code, mode)?;
         Ok(true)
+    }
+
+    /// The head of the waveform `LSetDrive` dropped (its time, in a temporary of `size` bytes
+    /// at `w`, the element address in `e`).
+    #[inline(never)]
+    fn waveform_head(&mut self, size: u16, time: u16, w: u16, e: u16) -> R<()> {
+        let a = self.temp_alloc(self.regs[size as usize])?;
+        self.regs[w as usize] = a;
+        self.store(a, Width::B8, self.regs[time as usize])?;
+        self.regs[e as usize] = add_addr(a, 8)?;
+        Ok(())
     }
 
     /// The `LSet` at IR pc `pc` and the `Drive` after it, as the IR has them.
@@ -4227,7 +4241,7 @@ impl Machine {
                 {
                     Some(b) => u64::from_le_bytes(*b),
                     None => t!(mk_addr(FRAME, top as u32, off.into())
-                        .and_then(|a| self.load(a, Width::B8))),
+                        .and_then(|a| self.load_slow(a, Width::B8))),
                 }
             }};
         }
@@ -4248,7 +4262,7 @@ impl Machine {
                     match fslots_mut!().and_then(|s| s.get_mut(o..o + n)) {
                         Some(b) => put_le(b, v),
                         None => t!(mk_addr(FRAME, top as u32, off.into())
-                            .and_then(|a| self.store(a, w, v))),
+                            .and_then(|a| self.store_slow(a, w, v))),
                     }
                 }
             }};
@@ -4342,9 +4356,8 @@ impl Machine {
                     let o = off as usize;
                     self.regs[dst as usize] = match fslots!().and_then(|s| s.get(o..o + n)) {
                         Some(b) => le_bytes(b),
-                        None => t!(
-                            mk_addr(FRAME, top as u32, off.into()).and_then(|a| self.load(a, w))
-                        ),
+                        None => t!(mk_addr(FRAME, top as u32, off.into())
+                            .and_then(|a| self.load_slow(a, w))),
                     };
                     k += 1;
                 }
@@ -5269,10 +5282,7 @@ impl Machine {
                             });
                     if !done {
                         // Not a scalar logic signal (or a bad code): the instructions as the IR has them.
-                        let a = t!(self.temp_alloc(self.regs[size as usize]));
-                        self.regs[w as usize] = a;
-                        t!(self.store(a, Width::B8, self.regs[time as usize]));
-                        self.regs[e as usize] = t!(add_addr(a, 8));
+                        t!(self.waveform_head(size, time, w, e));
                         self.replay_lset_drive(
                             prog,
                             f,

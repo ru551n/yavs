@@ -4770,3 +4770,33 @@ Decisions:
   (for signal scheduling, assertion failures and the like) takes a flat array of scalar arguments and is not on the
   path of data operations. `native_frame` is the same shape on top of our frames: the argument cells in an array, one
   result word, the generic step only for the cases the lean call declines.
+
+## Interpreter round 14: what the dispatch loop keeps for every entry (yavs-interp, yavs-ir, #520, 2026-10-23)
+
+`Machine::run_ops` is entered once per activation of a process. What the compiler hoists out of its loop (addresses of
+fields of the machine, loads of the runtime) is stored on the stack on every entry: about 105 instructions and 60 stores
+before the first op, 17 of them the address spills (`lea` and store) measured by disassembling the loop. In a design of
+many small processes that is a fifth of the interpreter's cycles (`perf annotate`), on the realistic ones (neorv32, the
+window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
+
+- **Package data (`PKG`) is not one of the spaces `mem_fast` and `load` know inline.** Its branch (a returned slice of
+  `pkg_init`'s vector next to those of the temporary area, the heap objects and the instance data) was merged by the
+  compiler into one load through a selected address, so the address of every vector had to live in the frame of the
+  loop. Package data goes through `load_slow` (`obj`); `store` never knew it. Measured by `run_ops`' disassembly: 17
+  hoisted address pairs before, 11 after.
+- **The rare paths of the slot accesses are out of line** (`slot8!`, `store_slot!`, `Op::LoadSlot`: `load_slow` and the new
+  `store_slow`; the waveform head of `Op::LSetDrive`: `waveform_head`). Each was an inline copy of the memory access
+  (`load`, `store`, `temp_alloc`) in a branch that is taken only for an error or an unusual frame.
+- Tried and not done, each measured on the realistic set (see `STATUS.md` "Interpreter round 14"): a copy of the loop
+  for functions of simple ops (`LITE`, 63 arms excluded by const guards; the entry of an activation 105 to 70 instructions)
+  gains 5 percent on a design of 4000 near-idle processes and nothing on any realistic design, because their processes use
+  memory ops; out-of-line memory access (`mem_fast`, `load`, `store_idx` as `inline(never)`) costs 5 percent of
+  instructions; outlining the growth of the vectors, the frame push and `temp_alloc` costs more calls than it saves
+  spills; `k` in a register (a by-value closure for `bin_range_slow`) is 20 percent slower on `compute_loop`.
+- The speed of the loop depends on the layout of the code: the same instructions, built with 64-byte aligned functions
+  (`-C llvm-args=-align-all-functions=6`), run `calls` 19 to 33 percent, `compute_loop` 10 percent and the histogram
+  testbench 6 percent slower. Changes to the loop are judged by instructions and by the geometric mean over many designs
+  on both cores, never by one design (`tools/bench`, `tools/realbench`).
+- Idea from the reference simulator (read for the design, no code taken): its interpreter keeps the hot state in a small
+  struct on the stack and the registers in a stack array, so entering a function stores a handful of words; the shared
+  interpreter state of yavs lives in the machine, which the compiler addresses field by field.

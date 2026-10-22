@@ -159,6 +159,8 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
 - `--candidate yavs-auto` runs the corpus with `--tier=auto` (also must equal `yavs`);
   `YAVS_RUN_FLAGS=--tier-heat=1,0,0` (period 0) compiles every function from its first call or jump, so the
   swap-ins happen in the middle of each test.
+  In that eager mode `Tier::hot` waits for the compile to finish (or to be declined), so a short run cannot
+  end before its compile and `--verbose` notes (the #533 flake: the test saw no note when the run won the race).
 
 - Open issues (snapshot 2026-10-20, `gh issue list -R ru551n/yavs --label crate:llvm`): #125
   LLVM tier milestone (tier-up done; open until the M2 to M5 suites pass LLVM-only); #336 (calls

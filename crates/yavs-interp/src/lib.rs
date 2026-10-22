@@ -328,7 +328,8 @@ pub trait Tier: Send + Sync {
     }
 
     /// Compile `func` (`Runtime::set_eager`: the fast loop entered it). Called from
-    /// simulation threads, so it must not block.
+    /// simulation threads; it returns once the compile is over (eager mode is for tests, so
+    /// that a run cannot end before its compile).
     fn hot(&self, _func: FuncId) {}
 
     /// Call `func` from the interpreter's top frame, which waits at its `Call` (or `CallProt`

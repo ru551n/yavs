@@ -821,6 +821,58 @@ fn tier_auto_matches_interp() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// A waveform whose value comes from a call (#542): the interpreter's fast loop drops the
+/// waveform's setup and fuses the `Copy` and `Drive` after the call, so compiled code taking
+/// over at the call's return (every function compiled from its first call) must not need it.
+#[cfg(feature = "llvm")]
+#[test]
+fn tier_auto_call_between_waveform_and_drive() {
+    let tmp = tempdir("tierwave");
+    std::fs::write(
+        tmp.join("w.vhd"),
+        "entity w is end;\n\
+         architecture t of w is\n\
+           function shl(x : bit_vector) return bit_vector is\n\
+           begin return x(x'left + 1 to x'right) & '1'; end function;\n\
+           signal s : bit_vector(0 to 3) := \"0000\";\n\
+         begin\n\
+           process begin\n\
+             s <= shl(s);\n\
+             wait for 1 ns;\n\
+             report to_string(s);\n\
+             wait;\n\
+           end process;\n\
+         end;\n",
+    )
+    .expect("write");
+    let yavs = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&tmp)
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        (
+            o.status.code().expect("exit code"),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    assert_eq!(yavs(&["analyze", "--work=work:lib", "w.vhd"]).0, 0);
+    let interp = yavs(&["run", "--work=work:lib", "w", "--tier=interp"]);
+    assert_eq!(interp.0, 0, "{}", interp.1);
+    assert!(interp.2.contains("0001"), "{}", interp.2);
+    let auto = yavs(&[
+        "run",
+        "--work=work:lib",
+        "w",
+        "--tier=auto",
+        "--tier-heat=1,0,0",
+    ]);
+    assert_eq!(auto, interp);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// `yavs elab` and `yavs run` (cli-contract section 5): exit codes and diagnostic codes.
 #[test]
 fn elab_and_run() {

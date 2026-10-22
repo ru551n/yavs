@@ -3693,6 +3693,44 @@ Checks at each commit: `cargo fmt`, `cargo clippy --workspace --all-targets -D w
 26 skip as before (interpreter); VHPI conformance traces identical to `main` with the round reverted (the known `fparam.fp_sigin`
 difference to sim1 in both).
 
+### Kernel round 13: delayed assignments, byte signals, time-step bookkeeping (#440, 2026-10-22)
+
+Three commits (`docs/decisions.md` "Kernel round 13"). The head-to-head designs (4096 registers on one clock) hide what a clock
+costs, and every testbench has one: a bare `c <= not c after 5 ns` took about 4000 instructions per edge against about 1000 in the
+reference simulator, and `sc5_timestamp` (three clocks) was 65% kernel. (1) A delayed assignment of one element or up to 64 logic
+elements to an idle driver is a quick transaction at `now + T` (it took the general path: `LogicVec`, transaction list,
+`Waveform::schedule`). (2) An enumeration, integer, boolean or real register (one byte element of at most 8 bytes) is a
+`Waveform::bquick` finished when applied, assigned from the interpreter without a `Value` (`Ctx::assign_bytes`) and read without a
+reference (`Ctx::elem_bytes`). (3) The future queue is a three-word heap, `last_delta` asks for the next time once, `update` does not
+build and read back a `Result`, several signals due together are updated without job lists, a copy process of a byte signal uses
+`assign_bytes`. New `crates/yavs-kernel/examples/clk.rs` counts the clock path with hand-written processes.
+
+Micro designs (interpreter; instructions G / cycles G, min of 5 on core 4, `main` 4a586fd3 against round 13, the reference simulator
+last; cycles are noisy on a shared host, instructions are not):
+
+| Design | before | after | sim1 |
+|---|---:|---:|---:|
+| three bare clocks, 6 ms | 14.32 / 4.23 | 9.54 / 2.44 | 3.50 / 1.00 |
+| 2048 enumeration registers, 1000 cycles | 4.30 / 1.50 | 3.24 / 1.06 | 1.42 / 0.48 |
+| 2048 integer counters, 1000 cycles | 6.88 / 2.01 | 5.16 / 1.39 | 1.91 / 0.57 |
+| `examples/clk.rs` (kernel alone, 3 clocks) | 7.67 / 1.95 | 7.10 / 1.60 | |
+
+Real testbenches (`tools/realbench/run.py --compare --phases run --tiers interp,auto --cores 4,5`, instructions B/A, interpreter /
+`--tier=auto`): `sc5_timestamp` 0.74 / 0.74 (14.7 G to 10.9 G; wall 1.33 s to 0.95 s under `auto`, noisy), `neorv32_single_min` 0.92 / 0.92,
+`poc_cache_cpu` 0.92 / 0.92, `uvvm_axistream_vvc` 1.00 / 0.92, `uvvm_sb_slv` 1.00 / 0.94, `osvvm_axi4_random` 0.99 / 0.99,
+`olo_axi_master_full` 0.99 / 1.00; wall times of the short tests are noise on this host (load 18 to 75 during the runs). Head-to-head
+designs unchanged to within 3% in instructions (`rtl_ff` 11.86 G to 11.89 G, `rtl_bus` 4.00 G to 3.89 G, `rtl_ram` 0.79 G to 0.74 G).
+
+Left in the time-step path (kernel alone, 3 clocks): about 1900 instructions per clock edge against about 1000 for the reference
+simulator's whole edge. It is spread over `update`, `run_batch`, `cycle`, the wake of the waiting process and the finish of the signal
+(each 100 to 400, much of it stalls from small structs copied through memory); a native process for `x <= not x after T` would remove
+the interpreter's 600 to 700 per edge and is not done.
+
+Checks on the pushed range: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with and without `--features llvm`,
+`cargo test --workspace` (853 passed), `cargo test -p yavs-llvm -p yavs --features llvm` (194), difftest 447 of 447 on the interpreter,
+`--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled, and `--tier=auto` with `--no-collapse-ports`; UVVM suite 102 pass,
+9 fail, 26 skip as before; OSVVM `.pro` 314 of 314 under 2008 and 2019.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

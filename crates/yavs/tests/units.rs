@@ -257,3 +257,39 @@ fn read_only_libraries_are_read_and_never_fail() {
     assert_eq!(r.code, 0, "{r:?}");
     assert!(r.stdout.contains("K=7 M=8 f=28"), "{r:?}");
 }
+
+/// Forces, `'active` reads and a package-path external name are facts of the elaborator
+/// (`Db::facts`); an entry stores them, so a replayed unit need not be scanned. The check mode
+/// compares them with those of an analysis from source.
+#[test]
+fn entries_carry_the_facts_of_their_unit() {
+    let e = Env::new("units_facts");
+    let sp = "library ieee; use ieee.std_logic_1164.all;\npackage sp is\n  signal s : std_logic;\nend;\n";
+    let tb = "library ieee; use ieee.std_logic_1164.all;\nuse work.sp.all;\n\
+entity ftb is end;\narchitecture a of ftb is\n  signal t : std_logic;\nbegin\n  process\n  begin\n\
+    t <= force '1';\n    wait for 1 ns;\n    t <= release;\n    wait for 1 ns;\n\
+    assert t'active or true;\n    report \"S=\" & std_logic'image(<<signal @work.sp.s : std_logic>>);\n    wait;\n\
+  end process;\nend;\n";
+    std::fs::write(e.tmp.join("sp.vhd"), sp).expect("write");
+    std::fs::write(e.tmp.join("ftb.vhd"), tb).expect("write");
+    // By absolute path, as integrations pass them: a dependency is found by the path the
+    // manifest records.
+    let paths: Vec<String> = ["sp.vhd", "ftb.vhd"]
+        .iter()
+        .map(|f| e.tmp.join(f).display().to_string())
+        .collect();
+    let files: Vec<&str> = paths.iter().map(String::as_str).collect();
+    e.analyze(&files, &[]);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    c.current_dir(&e.tmp)
+        .env_remove("YAVS_STDLIB")
+        .env("YAVS_UNIT_CHECK", "1")
+        .args(["analyze", "--work", &e.lib("work")])
+        .args(files);
+    let o = c.output().expect("run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let work = e.lib("work");
+    let r = e.yavs(&["run", "--work", &work, "ftb"]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("S=") || r.stderr.contains("S="), "{r:?}");
+}

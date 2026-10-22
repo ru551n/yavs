@@ -4939,6 +4939,20 @@ Not done, in order of expected gain (see the issue comments): the `settle` fact 
 replayed units (5 to 16 ms cold); the std/ieee bodies replayed at every cold run (12 to 18 ms); poc and neorv32 elaborate 100 to 200 ms in
 the interpreter at every run (#539, warm).
 
+## Cold front end: facts in the unit entries (#552, 2026-10-22)
+
+`Db::settle` decoded every expression and statement of the replayed units to find the elaborator's facts (`'active` reads, force and
+release statements, package-path external names): 5 to 16 ms of a cold elab. An entry now stores the facts of its own entries
+(found when it is made, ids mapped by the replay, entry format 2); `settle` scans only the entries of loads without recorded facts
+and merges the rest. `differs_from` and `YAVS_UNIT_CHECK=1` compare the facts: osvvm, uvvm, hdl-modules, open-logic, vunit,
+neorv32, poc, surf, satcat5, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl (2008, and 2019 where listed) analysed twice into one
+output directory all pass as expected. Test: `entries_carry_the_facts_of_their_unit` (fails with empty stored facts).
+
+Before / after, same pair interleaved on cores 6 and 7, `--phases elab`, 38 tests, 5 runs, host load from other agents (read the
+instruction ratio): elab-cold instructions 0.92, wall 0.93; elab-warm unchanged (1.00). Cold elab instructions (M) `osvvm_axis_random`
+800 to 750, `uvvm_sb_slv` 510 to 440, `uvvm_func_cov` 550 to 500, `hdlm_axi_fifo` 1150 to 1100; analysis phase of a cold
+`osvvm_axis_random` run (`--time-report`, core 6) 68 to 57 ms.
+
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:

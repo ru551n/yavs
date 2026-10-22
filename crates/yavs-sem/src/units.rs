@@ -56,7 +56,7 @@ use crate::{LangRev, UnitStore};
 pub type Hash = [u8; 32];
 
 /// The layout of entries; part of every identity.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 /// Entries of `Db::new` (index 0 of these arenas): the same in every session.
 const BASE: [u32; KINDS] = [0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];
@@ -911,6 +911,7 @@ impl Db {
     ) -> (Result<Head, String>, Result<Vec<u8>, String>) {
         let mut steps = Vec::new();
         let mut body = Vec::new();
+        let mut facts = crate::db::Facts::default();
         let r = (|| -> Result<(), String> {
             let put = |body: &mut Vec<u8>, v: &dyn erased::Ser| -> Result<(), String> {
                 v.extend(body).map_err(|e| e.to_string())
@@ -924,6 +925,12 @@ impl Db {
                         times,
                     } => {
                         let mut sizes = [0u32; KINDS];
+                        for i in start[Kind::Expr as usize]..end[Kind::Expr as usize] {
+                            self.note_expr(ExprId::from_index(i as usize), &mut facts);
+                        }
+                        for i in start[Kind::Stmt as usize]..end[Kind::Stmt as usize] {
+                            self.note_stmt(StmtId::from_index(i as usize), &mut facts);
+                        }
                         for k in ALL {
                             let (a, b) = (start[k as usize], end[k as usize]);
                             sizes[k as usize] = b - a;
@@ -1060,6 +1067,7 @@ impl Db {
             for (t, v) in vals {
                 (tables()[t as usize].write)(self, t, None, Some(v), &mut body)?;
             }
+            put(&mut body, &facts)?;
             Ok(())
         })();
         if let Err(e) = r {
@@ -1759,6 +1767,7 @@ impl Db {
         self.file_owner.truncate(m.file_owner);
         self.loads.truncate(m.loads);
         self.run_cache.retain(|&s, _| (s as usize) < m.loads);
+        self.unit_facts.retain(|&s, _| (s as usize) < m.loads);
         self.diags.truncate(m.diags);
         self.time_units.truncate(m.times);
         self.set_owner(self.owner_now());
@@ -2013,6 +2022,9 @@ impl Db {
                 f.nested_keys.insert((t, raw_key), raw_post);
             }
         }
+        // The facts of its entries (`Db::scan_facts`).
+        let facts: crate::db::Facts = take(&mut rest)?;
+        self.unit_facts.insert(pl.serial, facts);
         let u = UnitId::from_index(
             pl.runs[Kind::Unit as usize]
                 .first()
@@ -2241,6 +2253,12 @@ impl Db {
         }
         if c(canon::canon(&self.lib_by_key)) != c(canon::canon(&other.lib_by_key)) {
             return Some("libraries".into());
+        }
+        let (a, b) = (self.facts(), other.facts());
+        if (a.reads_activity, &a.forces, &a.package_paths)
+            != (b.reads_activity, &b.forces, &b.package_paths)
+        {
+            return Some("facts".into());
         }
         None
     }

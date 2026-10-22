@@ -4305,6 +4305,13 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   14 000 declarations and 60 of the 3 400 regions its dependencies replay, so this halved the
   cost of such a call. The ids are those of an eager replay; reading every page (as
   `differs_from` does) gives the same `Db`.
+- **An entry holds the elaborator's facts about its own expressions and statements** (`Db::facts`: `'active` reads,
+  force and release statements, package-path external names; format 2). They are found when the entry is made, from the
+  unit's own segments (those entries are decoded then anyway), written last in the body as ids (so they are mapped by the
+  replay like the other ids) and kept in `Db::unit_facts` by load until `settle`. `Db::scan_facts` skips the entries of
+  those loads and merges their facts (sorted by id, equal to a scan), so a cold `settle` reads no page of a replayed
+  unit (it decoded every expression and statement of the closure: 5 to 16 ms of a 60 to 100 ms cold elab, #552).
+  `differs_from` and `YAVS_UNIT_CHECK=1` compare the facts too.
 - **The bodies of `std`/`ieee` packages** are never loaded by `analyze` but by every `elab` and `run`; when an
   `analyze` session loaded a package whose body has no entry in any mapped library, it analyses the body
   once in a session of its own, only to store it (its output is not shown: it is the body's, replayed where

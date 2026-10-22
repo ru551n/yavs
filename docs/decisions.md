@@ -3751,9 +3751,17 @@ assignments had the quick shapes.
   `Ctx::elem_bytes` (no reference to build) and passes the assignment's bytes as they are in memory. A test compares
   random zero-delay and delayed assignments on plain signals with the same program on identity-resolved signals
   with explicit rejection limits (`tests/direct_paths.rs`).
+- **Time-step bookkeeping** (measured with `crates/yavs-kernel/examples/clk.rs`, three hand-written clock generators,
+  no interpreter in the count): the future queue is a small binary heap of three words per entry (`TimeHeap`, ordered by
+  time then driver, timeout, implicit kind and index, as `Entry` was) because the generic heap moved a 24-byte item
+  that the caller had stored in narrower pieces (a store-forwarding stall per push and per peek after a pop);
+  `last_delta` asks for the next time once when no observer wants the phases between (it asked three times per time
+  step); `update` returns a plain `Ok(())` when there is no implicit signal (the `Result` was built on the stack and read
+  back wide); `update_independent` updates several signals one after the other, with no job and result lists, when
+  the pool would not take them anyway (fewer than 256 due drivers; the same order, so the same errors). A copy
+  process of a byte signal uses `assign_bytes`.
 - **Tried and dropped**: update of heap entries through the fused in-place path of `update` (`from_delta == 0`): +2%
-  instructions on a clock generator, the independent-signal route is cheaper; a hand-written time heap with `Entry`
-  flattened to words (the generic heap's push showed a store-forwarding stall): -0.7% instructions, no change in cycles.
+  instructions on a clock generator, the independent-signal route is cheaper.
 - **Measured** (instructions, core 4/5, interpreter, `main` 4a586fd3 against the commit; the bare generator is three
   clocks for 6 ms): bare clock generator 14.36 G to 10.56 G, with `when not done` 15.05 G to 11.3 G; `sc5_timestamp`
   14.68 G to 12.82 G (wall 1.13 s to 0.96 s); head-to-head designs unchanged.

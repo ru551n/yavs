@@ -466,18 +466,123 @@ pub(crate) struct Implicit {
 /// in `(time, entry)` order.
 #[derive(Default)]
 struct Queue {
-    later: BinaryHeap<Reverse<(Time, Entry)>>,
+    later: TimeHeap,
     /// Entries at the current time, in push order.
     next_delta: Vec<Entry>,
 }
 
+/// A heap item: `Entry` flattened to words. Ordered by `(time, key)`: the key puts drivers
+/// before timeouts before implicit signals, then by index, as `Entry` does; `generation` is the
+/// generation of a timeout (which of two timeouts of one process at one time is live does not
+/// matter to the order).
+#[derive(Clone, Copy)]
+struct Later {
+    time: Time,
+    key: u64,
+    generation: u64,
+}
+
+impl Later {
+    fn entry(self) -> Entry {
+        let id = self.key as u32;
+        match self.key >> 32 {
+            0 => Entry::Driver(id),
+            1 => Entry::Timeout(id, self.generation),
+            _ => Entry::Implicit(id),
+        }
+    }
+}
+
+/// A binary min-heap of `Later`, written out so a push keeps the new item in registers and
+/// writes it field by field: the generic heap took it by pointer and copied it as one wide
+/// load of fields just stored narrower, which cost a store-forwarding stall per push.
+#[derive(Default)]
+struct TimeHeap {
+    v: Vec<Later>,
+}
+
+impl TimeHeap {
+    #[inline(always)]
+    fn push(&mut self, time: Time, key: u64, generation: u64) {
+        let mut i = self.v.len();
+        self.v.push(Later {
+            time,
+            key,
+            generation,
+        });
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            let p = self.v[parent];
+            if (p.time, p.key) <= (time, key) {
+                break;
+            }
+            self.v[i] = p;
+            i = parent;
+        }
+        self.v[i] = Later {
+            time,
+            key,
+            generation,
+        };
+    }
+
+    #[inline(always)]
+    fn peek(&self) -> Option<&Later> {
+        self.v.first()
+    }
+
+    fn pop(&mut self) {
+        let Some(last) = self.v.pop() else { return };
+        let n = self.v.len();
+        if n == 0 {
+            return;
+        }
+        let (time, key) = (last.time, last.key);
+        let mut i = 0;
+        loop {
+            let mut c = 2 * i + 1;
+            if c >= n {
+                break;
+            }
+            if c + 1 < n
+                && (self.v[c + 1].time, self.v[c + 1].key) < (self.v[c].time, self.v[c].key)
+            {
+                c += 1;
+            }
+            if (self.v[c].time, self.v[c].key) >= (time, key) {
+                break;
+            }
+            self.v[i] = self.v[c];
+            i = c;
+        }
+        self.v[i] = last;
+    }
+}
+
 impl Queue {
+    #[inline(always)]
     fn push(&mut self, now: Time, t: Time, e: Entry) {
         if t == now {
             self.next_delta.push(e);
         } else {
-            self.later.push(Reverse((t, e)));
+            match e {
+                Entry::Driver(d) => self.later.push(t, u64::from(d), 0),
+                Entry::Timeout(p, g) => self.later.push(t, 1 << 32 | u64::from(p), g),
+                Entry::Implicit(i) => self.later.push(t, 2 << 32 | u64::from(i), 0),
+            }
         }
+    }
+
+    /// The earliest future entry.
+    #[inline(always)]
+    fn peek(&self) -> Option<(Time, Entry)> {
+        self.later.peek().map(|l| (l.time, l.entry()))
+    }
+
+    /// The time of the earliest future entry.
+    #[inline(always)]
+    fn peek_time(&self) -> Option<Time> {
+        self.later.peek().map(|l| l.time)
     }
 }
 
@@ -1252,7 +1357,7 @@ impl SimControl {
             }
             self.queue.next_delta.pop();
         }
-        while let Some(&Reverse((t, e))) = self.queue.later.peek() {
+        while let Some((t, e)) = self.queue.peek() {
             if self.live(t, e) {
                 return Some(t);
             }
@@ -1495,14 +1600,29 @@ impl SimControl {
         // Another delta follows: nothing below runs, so `run_until` can use this answer.
         self.known_next = (next == Some(self.now)).then_some(next);
         if next != Some(self.now) {
+            // Observers of the phases below may schedule something (a force, a wake-up): ask again
+            // after them. Without any, `next` stands for `run_until` too.
+            let bits = [
+                Phase::LastKnownDelta,
+                Phase::StartOfPostponed,
+                Phase::EndOfTimeStep,
+            ]
+            .map(|p| 1u16 << p as u32)
+            .into_iter()
+            .fold(0, |m, b| m | b);
+            let watched = self.phase_mask & bits != 0;
             self.phase(Phase::LastKnownDelta);
-            if self.next_time() != Some(self.now) {
+            if !watched || self.next_time() != Some(self.now) {
                 let postponed = std::mem::take(&mut self.postponed);
                 if !postponed.is_empty() {
                     self.phase(Phase::StartOfPostponed);
                 }
+                let none = postponed.is_empty();
                 self.run_batch(postponed, true, false)?;
                 self.phase(Phase::EndOfTimeStep);
+                if !watched && none {
+                    self.known_next = Some(next);
+                }
             }
         }
         Ok(())
@@ -1518,7 +1638,7 @@ impl SimControl {
         // place.
         if self.ops.is_empty()
             && self.implicits.is_empty()
-            && (self.queue.later.peek()).is_none_or(|Reverse((t, _))| *t > now)
+            && self.queue.peek_time().is_none_or(|t| t > now)
         {
             let one = self.one_independent();
             if one.is_some() || self.queue.next_delta.is_empty() {
@@ -1587,12 +1707,12 @@ impl SimControl {
         // before `now` (time only advances to its first entry), as the delta list.
         let mut entries = std::mem::take(&mut self.queue.next_delta);
         let from_delta = entries.len();
-        while let Some(&Reverse((t, e))) = self.queue.later.peek() {
-            if t > now {
+        while let Some(l) = self.queue.later.peek() {
+            if l.time > now {
                 break;
             }
+            entries.push(l.entry());
             self.queue.later.pop();
-            entries.push(e);
         }
         // The usual clocked case: every entry a driver of one independent signal, already in
         // order, and no force or deposit: apply them in place, with no job list or second pass.
@@ -1736,13 +1856,12 @@ impl SimControl {
                 }
             }
         }
-        let r = if self.implicits.is_empty() {
-            Ok(())
-        } else {
-            let r = self.update_implicit(due);
-            due.clear();
-            r
-        };
+        if self.implicits.is_empty() {
+            self.work = Some(work);
+            return Ok(());
+        }
+        let r = self.update_implicit(due);
+        due.clear();
         self.work = Some(work);
         r
     }
@@ -1883,6 +2002,36 @@ impl SimControl {
                 self.changed_sigs.push(s as u32);
             }
             return Ok(());
+        }
+        // Several signals and no pool to hand them to (or too few for it): one after the other,
+        // with no job and result lists. An error is taken at the first signal that has one, after
+        // all of them were updated, as below.
+        // ponytail: the cut-off is the pool's below.
+        if self.pool.is_none() || due.len() < 256 {
+            let mut failed = None;
+            for run in due.chunk_by(|a, b| a.0 == b.0) {
+                let s = run[0].0 as usize;
+                let sig = self
+                    .signals
+                    .get_mut(s)
+                    .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+                for &(_, d) in run {
+                    let info = &self.drivers[d as usize];
+                    let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+                    sig.apply_driver(
+                        &mut slot.st.waveforms[info.local as usize],
+                        info.slot,
+                        now,
+                        cycle,
+                    );
+                }
+                match finish_signal(sig, now, cycle) {
+                    Ok(true) => self.changed_sigs.push(s as u32),
+                    Ok(false) => {}
+                    Err(e) => _ = failed.get_or_insert(e),
+                }
+            }
+            return failed.map_or(Ok(()), Err);
         }
         let mut jobs = Vec::new();
         let mut it = self.signals.iter_mut();

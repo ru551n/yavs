@@ -107,8 +107,7 @@ impl Process for CopyProcess {
                 crate::value::Elem::Bytes(es) => {
                     self.buf.resize(n * es as usize, 0);
                     ctx.read_into(src, &mut self.buf)?;
-                    let v = ValueRef::Bytes(&self.buf);
-                    ctx.assign(d, Some(dst), &[(Time::ZERO, v)], DelayMode::INERTIAL)?;
+                    ctx.assign_bytes(d, Some(dst), Time::ZERO, &self.buf, DelayMode::INERTIAL)?;
                 }
             }
         }

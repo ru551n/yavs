@@ -145,7 +145,7 @@ fn visible(o: &Out) -> Out {
         stderr: o
             .stderr
             .lines()
-            .filter(|l| !l.starts_with("debug: cache:"))
+            .filter(|l| !l.starts_with("debug: cache:") && !l.starts_with("debug: units:"))
             .map(|l| format!("{l}\n"))
             .collect(),
     }
@@ -252,7 +252,7 @@ fn read_only_library_is_not_cached_into() {
         return; // running as a user the mode does not bind
     }
     assert_eq!(visible(&plain), visible(&r));
-    assert!(!e.cache_dir().exists());
+    assert_eq!(e.entries(), 0);
 }
 
 #[test]
@@ -263,7 +263,14 @@ fn clean_removes_entries() {
     let work = e.work();
     let o = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(o.code, 0, "{o:?}");
-    assert!(o.stdout.contains("2 entries"), "{o:?}");
+    // The two of the run and the analysed units `analyze` made.
+    let n: usize = o
+        .stdout
+        .split_whitespace()
+        .nth(2)
+        .and_then(|n| n.parse().ok())
+        .expect("a count");
+    assert!(n > 2, "{o:?}");
     assert!(!e.cache_dir().exists());
     let again = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(again.code, 0);

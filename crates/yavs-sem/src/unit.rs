@@ -125,7 +125,7 @@ impl Db {
         let mut parent = None;
         if let Some((pname, want)) = primary {
             let pk = UnitKey::Primary(pname.key);
-            if self.locate(lib, pk).is_none() && !self.libs[lib].units.contains_key(&pk) {
+            if !self.unit_known(lib, pk) {
                 let what = if want == UnitKind::Entity {
                     "entity"
                 } else {
@@ -230,8 +230,7 @@ impl Db {
                 let lib = self.units[unit].lib;
                 let body = UnitKey::body(name.key);
                 if let Some(g) = &generics
-                    && self.locate(lib, body).is_none()
-                    && !self.libs[lib].units.contains_key(&body)
+                    && !self.unit_known(lib, body)
                 {
                     self.report_unused_generics(g);
                 }

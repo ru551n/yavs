@@ -243,8 +243,35 @@ pub struct Db {
     pub(crate) generic: crate::generic::GenericState,
     /// Whole-design facts found by [`Db::settle`] (see [`Facts`]).
     pub(crate) facts: Option<Facts>,
-    diags: Vec<Diagnostic>,
-    errors: usize,
+    pub(crate) diags: Vec<Diagnostic>,
+    pub(crate) errors: usize,
+    /// Every load of a unit in this session, by the owner number of its arena entries
+    /// (`units.rs`, the analysed-unit cache).
+    pub(crate) loads: Vec<crate::units::LoadRec>,
+    /// The load that registered each source file (`ids::SESSION` for none).
+    pub(crate) file_owner: Vec<u32>,
+    /// The units being analysed from source and recorded, innermost last.
+    #[serde(skip)]
+    pub(crate) frames: Vec<crate::units::Frame>,
+    /// Questions about the libraries the innermost frame asked since its last step.
+    #[serde(skip)]
+    pub(crate) query_log: std::sync::Mutex<Vec<(crate::units::Query, crate::units::Answer)>>,
+    /// How to undo the replay in progress (`units.rs`).
+    #[serde(skip)]
+    pub(crate) undo: Vec<crate::units::Undo>,
+    /// The owner of the entries pushed now.
+    #[serde(skip, default = "session_owner")]
+    pub(crate) owner: u32,
+    /// Depth of replays from the analysed-unit cache in progress.
+    #[serde(skip)]
+    pub(crate) replaying: u32,
+    /// The runs of the entries of finished loads, by load (`units.rs` `Dec`).
+    #[serde(skip)]
+    pub(crate) run_cache: rustc_hash::FxHashMap<u32, crate::units::Runs>,
+}
+
+fn session_owner() -> u32 {
+    crate::ids::SESSION
 }
 
 // Helpers below are used by the slices being filled in (CONTRIBUTING.md).
@@ -501,6 +528,14 @@ impl Db {
             facts: None,
             diags: Vec::new(),
             errors: 0,
+            loads: Vec::new(),
+            file_owner: Vec::new(),
+            frames: Vec::new(),
+            query_log: Default::default(),
+            undo: Vec::new(),
+            owner: crate::ids::SESSION,
+            replaying: 0,
+            run_cache: Default::default(),
         }
     }
 

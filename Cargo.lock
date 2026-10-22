@@ -1642,6 +1642,7 @@ dependencies = [
  "postcard",
  "rustc-hash",
  "serde",
+ "sha2",
  "smallvec",
  "tempfile",
  "yavs-diag",

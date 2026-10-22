@@ -240,6 +240,89 @@ fn with_stages(
     db
 }
 
+/// The analysed-unit cache (`docs/decisions.md` "Analysed-unit cache", `yavs_sem::units`): the
+/// entries of a library's units in its directory, those of std/ieee in the work library's.
+#[derive(Debug)]
+pub struct Units {
+    dirs: std::collections::HashMap<String, std::path::PathBuf>,
+    work: std::path::PathBuf,
+    writable: bool,
+}
+
+impl Units {
+    /// The store for a run with `libs` mapped and `work` the work library's directory; only
+    /// `yavs analyze` writes (`writable`). `None` with a custom std/ieee tree (its files are not
+    /// part of the build).
+    pub fn store_for(
+        opts: &Options,
+        work: &Path,
+        writable: bool,
+    ) -> Option<std::sync::Arc<dyn yavs_sem::UnitStore>> {
+        if opts.stdlib != Path::new(yavs_sem::stdlib::EMBEDDED) {
+            return None;
+        }
+        let dirs = opts
+            .libraries
+            .names()
+            .filter_map(|n| Some((n.to_string(), opts.libraries.get(n)?.dir.clone())))
+            .collect();
+        Some(std::sync::Arc::new(Units {
+            dirs,
+            work: work.to_path_buf(),
+            writable,
+        }))
+    }
+
+    fn store(&self, lib: &str, identity: &[u8; 32]) -> Option<(Store, Key)> {
+        let dir = match lib {
+            "std" | "ieee" => &self.work,
+            _ => self.dirs.get(lib)?,
+        };
+        let mut k = KeyBuilder::new("unit");
+        k.text(lib).part(identity);
+        Some((Store::units_of_library(dir), k.finish()))
+    }
+}
+
+impl yavs_sem::UnitStore for Units {
+    fn get(&self, lib: &str, identity: &[u8; 32]) -> Option<yavs_diag::Buffer> {
+        let (s, k) = self.store(lib, identity)?;
+        if let Some(e) = s.get("unit", &k) {
+            return Some(yavs_diag::Buffer::new(e));
+        }
+        // std/ieee units another work library analysed: the same for every library.
+        if !matches!(lib, "std" | "ieee") {
+            return None;
+        }
+        let mut dirs: Vec<&std::path::PathBuf> = self.dirs.values().collect();
+        dirs.sort();
+        dirs.into_iter()
+            .filter(|d| **d != self.work)
+            .find_map(|d| Store::units_of_library(d).get("unit", &k))
+            .map(yavs_diag::Buffer::new)
+    }
+
+    fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]) {
+        if !self.writable {
+            return;
+        }
+        if let Some((s, k)) = self.store(lib, identity) {
+            self.note(&format!("store {lib} {} ({} bytes)", k.hex(), bytes.len()));
+            s.put("unit", &k, bytes);
+        }
+    }
+
+    fn writable(&self) -> bool {
+        self.writable
+    }
+
+    fn note(&self, msg: &str) {
+        if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
+            eprintln!("debug: units: {msg}");
+        }
+    }
+}
+
 fn debug(msg: String) {
     if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
         eprintln!("debug: cache: {msg}");
@@ -302,6 +385,10 @@ pub fn analyze_closure(
 ) -> (Db, Result<(), Reported>) {
     // ponytail: a custom std/ieee tree ($YAVS_STDLIB) is not cached (its files are not verified)
     let enabled = enabled && opts.stdlib == Path::new(yavs_sem::stdlib::EMBEDDED);
+    let mut opts = opts;
+    if enabled {
+        opts.units = Units::store_for(&opts, work_dir, false);
+    }
     if !enabled {
         let mut db = Db::new(opts);
         let r = analyze(&mut db, files).and_then(|()| bodies(&mut db));

@@ -13,8 +13,8 @@ pub trait Id: Copy + Eq {
 }
 
 macro_rules! id {
-    ($($name:ident),* $(,)?) => {$(
-        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+    ($($name:ident = $kind:ident),* $(,)?) => {$(
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(NonZeroU32);
 
         impl Id for $name {
@@ -28,28 +28,156 @@ macro_rules! id {
             }
         }
 
+        impl IdKind for $name {
+            const KIND: Kind = Kind::$kind;
+        }
+
         impl fmt::Debug for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, concat!(stringify!($name), "({})"), self.index())
             }
         }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                ser_id(*self, s)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                de_id(d)
+            }
+        }
     )*};
 }
 
+/// The arena an id indexes, for [`Reloc`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Lib,
+    Unit,
+    Decl,
+    Scope,
+    Type,
+    Subtype,
+    Expr,
+    Stmt,
+    Const,
+    Inst,
+    View,
+    External,
+    AttrValue,
+}
+
+/// The number of [`Kind`]s.
+pub const KINDS: usize = 13;
+
+pub trait IdKind: Id {
+    const KIND: Kind;
+}
+
+/// How ids are written and read while a unit of the analysed-unit cache is (`units.rs`): as an
+/// owner (an index into the entry's table of the units it refers to) and a position among that
+/// owner's entries, so that they mean the same in a session where the arenas are filled in
+/// another order.
+pub trait Reloc {
+    fn enc(&self, kind: Kind, index: u32) -> Option<(u32, u32)>;
+    fn dec(&self, kind: Kind, owner: u32, offset: u32) -> Option<u32>;
+}
+
+thread_local! {
+    static RELOC: std::cell::RefCell<Option<std::rc::Rc<dyn Reloc>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with ids written and read through `r`.
+pub fn with_reloc<R>(r: std::rc::Rc<dyn Reloc>, f: impl FnOnce() -> R) -> R {
+    let before = RELOC.with(|c| c.borrow_mut().replace(r));
+    let out = f();
+    RELOC.with(|c| *c.borrow_mut() = before);
+    out
+}
+
+/// Run `f` with ids and file ids written and read as they are (no [`Reloc`], no file map).
+pub(crate) fn plain<R>(f: impl FnOnce() -> R) -> R {
+    let before = RELOC.with(|c| c.borrow_mut().take());
+    let out = yavs_diag::unmapped_file_ids(f);
+    RELOC.with(|c| *c.borrow_mut() = before);
+    out
+}
+
+fn reloc_on() -> bool {
+    RELOC.with(|c| c.borrow().is_some())
+}
+
+fn reloc_enc(kind: Kind, i: u32) -> Option<(u32, u32)> {
+    RELOC.with(|c| c.borrow().as_ref()?.enc(kind, i))
+}
+
+fn reloc_dec(kind: Kind, owner: u32, offset: u32) -> Option<u32> {
+    RELOC.with(|c| c.borrow().as_ref()?.dec(kind, owner, offset))
+}
+
+fn ser_id<I: IdKind, S: serde::Serializer>(id: I, s: S) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    let i = id.index() as u32;
+    if !reloc_on() {
+        return s.serialize_newtype_struct("Id", &(i + 1));
+    }
+    match reloc_enc(I::KIND, i) {
+        Some(pair) => pair.serialize(s),
+        None => Err(serde::ser::Error::custom("id outside the unit's owners")),
+    }
+}
+
+fn de_id<'de, I: IdKind, D: serde::Deserializer<'de>>(d: D) -> Result<I, D::Error> {
+    use serde::Deserialize;
+    use serde::de::Error;
+    match reloc_on() {
+        false => {
+            struct V;
+            impl<'de> serde::de::Visitor<'de> for V {
+                type Value = u32;
+                fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                    f.write_str("an id")
+                }
+                fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                    self,
+                    d: D,
+                ) -> Result<u32, D::Error> {
+                    u32::deserialize(d)
+                }
+            }
+            let n = d.deserialize_newtype_struct("Id", V)?;
+            if n == 0 {
+                return Err(D::Error::custom("id 0"));
+            }
+            Ok(I::from_index(n as usize - 1))
+        }
+        true => {
+            let (owner, offset) = <(u32, u32)>::deserialize(d)?;
+            reloc_dec(I::KIND, owner, offset)
+                .map(|i| I::from_index(i as usize))
+                .ok_or_else(|| D::Error::custom("id outside the unit's owners"))
+        }
+    }
+}
+
 id!(
-    LibId,
-    UnitId,
-    DeclId,
-    ScopeId,
-    TypeId,
-    SubtypeId,
-    ExprId,
-    StmtId,
-    ConstId,
-    InstId,
-    ViewId,
-    ExternalId,
-    AttrValueId,
+    LibId = Lib,
+    UnitId = Unit,
+    DeclId = Decl,
+    ScopeId = Scope,
+    TypeId = Type,
+    SubtypeId = Subtype,
+    ExprId = Expr,
+    StmtId = Stmt,
+    ConstId = Const,
+    InstId = Inst,
+    ViewId = View,
+    ExternalId = External,
+    AttrValueId = AttrValue,
 );
 
 /// A growable vector indexed by a typed id. Entries are never removed.
@@ -65,7 +193,31 @@ pub struct Arena<I, T> {
     track: bool,
     /// Mutable accesses so far; not serialized.
     version: u64,
+    /// Who the next `push` belongs to (`units.rs`: a load of a unit, or [`SESSION`]).
+    owner: u32,
+    /// The owner of every entry: `(first index, owner)` at each change of owner.
+    runs: Vec<(u32, u32)>,
+    /// What the unit being recorded writes below `Watch::floor` (`units.rs`).
+    watch: Option<Box<Watch<T>>>,
     _id: PhantomData<I>,
+}
+
+/// The owner of the entries no unit made: those of `Db::new` and the libraries.
+pub const SESSION: u32 = u32::MAX;
+
+/// The entries below `floor` that were written through `IndexMut` while a unit was recorded, each
+/// with its bytes before the first write (`snap`), for the analysed-unit cache.
+pub(crate) struct Watch<T> {
+    pub floor: usize,
+    snap: fn(&T) -> Vec<u8>,
+    seen: rustc_hash::FxHashSet<u32>,
+    pub touched: Vec<(u32, Vec<u8>)>,
+}
+
+/// The bytes of a value that compare equal exactly when the values do, within this process.
+pub(crate) fn raw_bytes<T: serde::Serialize>(t: &T) -> Vec<u8> {
+    plain(|| yavs_syntax::raw_symbols(|| postcard::to_stdvec(t)))
+        .unwrap_or_else(|e| panic!("internal error: cannot write a value: {e}"))
 }
 
 /// Entries per lazily decoded chunk.
@@ -87,10 +239,12 @@ impl<T> Lazy<T> {
     fn decode_chunk(&self, c: usize) -> Vec<T> {
         let n = CHUNK.min(self.len - c * CHUNK);
         let bytes = &self.data.get()[self.starts[c] as usize..self.starts[c + 1] as usize];
-        match &self.syms {
+        // A chunk may be read while a unit of the analysed-unit cache is written or read: its ids
+        // and files are the image's own.
+        plain(|| match &self.syms {
             Some(t) => t.run(|| (self.decode)(bytes, n)),
             None => (self.decode)(bytes, n),
-        }
+        })
     }
 
     fn chunk(&self, c: usize) -> &Vec<T> {
@@ -121,6 +275,9 @@ impl<I: Id, T> Arena<I, T> {
             lazy: None,
             track: false,
             version: 0,
+            owner: SESSION,
+            runs: Vec::new(),
+            watch: None,
             _id: PhantomData,
         }
     }
@@ -139,8 +296,12 @@ impl<I: Id, T> Arena<I, T> {
     }
 
     pub fn push(&mut self, item: T) -> I {
+        let i = self.len();
+        if self.runs.last().is_none_or(|r| r.1 != self.owner) {
+            self.runs.push((i as u32, self.owner));
+        }
         self.items.push(item);
-        I::from_index(self.len() - 1)
+        I::from_index(i)
     }
 
     /// The id the next `push` will return.
@@ -158,8 +319,75 @@ impl<I: Id, T> Arena<I, T> {
 }
 
 impl<I, T> Arena<I, T> {
+    /// The owner of the entries pushed from now on (`units.rs`).
+    pub(crate) fn set_owner(&mut self, owner: u32) {
+        self.owner = owner;
+    }
+
+    /// `(first index, owner)` at each change of owner.
+    pub(crate) fn runs_raw(&self) -> &[(u32, u32)] {
+        &self.runs
+    }
+
+    /// `(first index, length)` of each run of entries of `owner`, in order.
+    pub(crate) fn runs_of(&self, owner: u32) -> Vec<(u32, u32)> {
+        let len = self.len() as u32;
+        let mut out = Vec::new();
+        for (k, r) in self.runs.iter().enumerate() {
+            if r.1 == owner {
+                let end = self.runs.get(k + 1).map_or(len, |n| n.0);
+                if end > r.0 {
+                    out.push((r.0, end - r.0));
+                }
+            }
+        }
+        out
+    }
+
+    /// Drop the entries from `len` on (an analysed-unit cache read that is undone). They were all
+    /// pushed after the lazily decoded ones.
+    pub(crate) fn truncate(&mut self, len: usize) {
+        let base = self.lazy.as_ref().map_or(0, |l| l.len);
+        assert!(len >= base, "internal error: truncating restored entries");
+        self.items.truncate(len - base);
+        while self.runs.last().is_some_and(|r| r.0 as usize >= len) {
+            self.runs.pop();
+        }
+    }
+
+    /// Replace entry `i` without counting it as a write of the unit being recorded.
+    pub(crate) fn replace(&mut self, i: usize, item: T) -> T {
+        self.version += 1;
+        let base = self.lazy.as_ref().map_or(0, |l| l.len);
+        let slot = match &mut self.lazy {
+            Some(l) if i < base => &mut l.chunk_mut(i / CHUNK)[i % CHUNK],
+            _ => &mut self.items[i - base],
+        };
+        std::mem::replace(slot, item)
+    }
+
+    /// Room for `n` more entries.
+    pub(crate) fn reserve(&mut self, n: usize) {
+        self.items.reserve(n);
+    }
+
+    /// Count a change no `IndexMut` made (visibility caches see it).
+    pub(crate) fn bump(&mut self) {
+        self.version += 1;
+    }
+
+    /// End watching; the entries written and their bytes before.
+    pub(crate) fn unwatch(&mut self) -> Option<Box<Watch<T>>> {
+        self.watch.take()
+    }
+
     pub fn len(&self) -> usize {
         self.lazy.as_ref().map_or(0, |l| l.len) + self.items.len()
+    }
+
+    /// Entry `i` by index.
+    pub(crate) fn get_at(&self, i: usize) -> &T {
+        self.at(i)
     }
 
     fn at(&self, i: usize) -> &T {
@@ -178,6 +406,7 @@ struct Image<'a> {
     track: bool,
     len: usize,
     starts: std::borrow::Cow<'a, [u32]>,
+    runs: std::borrow::Cow<'a, [(u32, u32)]>,
 }
 
 impl<I, T: serde::Serialize> serde::Serialize for Arena<I, T> {
@@ -199,6 +428,7 @@ impl<I, T: serde::Serialize> serde::Serialize for Arena<I, T> {
             track: self.track,
             len,
             starts: starts.into(),
+            runs: self.runs[..].into(),
         })?;
         t.serialize_element(&BytesRef(&data))?;
         t.end()
@@ -237,8 +467,23 @@ impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I
             }),
             track: img.track,
             version: 0,
+            owner: SESSION,
+            runs: img.runs.into_owned(),
+            watch: None,
             _id: PhantomData,
         })
+    }
+}
+
+impl<I, T: serde::Serialize> Arena<I, T> {
+    /// Watch the writes of entries below `floor` (`units.rs`).
+    pub(crate) fn watch(&mut self, floor: usize) {
+        self.watch = Some(Box::new(Watch {
+            floor,
+            snap: raw_bytes::<T>,
+            seen: Default::default(),
+            touched: Vec::new(),
+        }));
     }
 }
 
@@ -259,6 +504,15 @@ impl<I: Id, T> std::ops::IndexMut<I> for Arena<I, T> {
     fn index_mut(&mut self, id: I) -> &mut T {
         self.version += 1;
         let i = id.index();
+        if self.watch.as_ref().is_some_and(|w| i < w.floor) {
+            let w = self.watch.as_ref().expect("checked");
+            if !w.seen.contains(&(i as u32)) {
+                let before = (w.snap)(self.at(i));
+                let w = self.watch.as_mut().expect("checked");
+                w.seen.insert(i as u32);
+                w.touched.push((i as u32, before));
+            }
+        }
         let base = self.lazy.as_ref().map_or(0, |l| l.len);
         match &mut self.lazy {
             Some(l) if i < base => &mut l.chunk_mut(i / CHUNK)[i % CHUNK],

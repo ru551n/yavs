@@ -2225,7 +2225,8 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   which is what makes a warm run byte-identical to a cold one; per-unit relocation of ids would need an
   audit of every mutation of earlier arena entries in `yavs-sem` and would have no such guarantee.
   Invalidation of dependents is implicit: the key covers every file of the closure.
-- **Written by `elab`/`run`, not by `analyze`.** `yavs analyze` loads a file's dependencies on demand in
+- **Written by `elab`/`run`, not by `analyze`** (the analysis image; the analysed units of each library are
+  a separate store that `analyze` writes, see "Analysed-unit cache"). `yavs analyze` loads a file's dependencies on demand in
   demand order; the closure that `elab`/`run` analyze is in dependency order, so the two histories are
   different `Db`s and an image from one cannot serve the other. Writing from `analyze` would also cost a
   second analysis per file. The first `elab` or `run` of a design notes it; the second stores the image
@@ -4228,3 +4229,58 @@ Decisions:
 - Left: the per-activation slot stores, about 15 instructions, are 2 to 3 percent of a design of thousands of one-line
   processes (`rtl_ff`, about 750 instructions per activation) when nothing is compiled; default `--tier=auto` compiles
   that process, so the real run is level with the interpreter.
+## Analysed-unit cache (yavs-sem `units.rs`, yavs-cache, CLI, #537, #539, #407; user decision 2026-10-22: build it)
+
+Integrations call `yavs analyze` once per file, and every call parsed and analysed the units the file
+depends on again (a verification library's compile order was 2.4 times sim1); a first `elab` of a
+library testbench analysed the whole closure from source (3.4 times sim1). The user decided (2026-10-22)
+to keep analysed units in the library directories, keyed on their source, the build and their
+dependencies; this overrides "no incremental compilation cache" for analysis too. Decisions:
+
+- **One entry per design unit**, `<lib dir>/yavs-cache/units/unit-<key>.img`, written by `analyze` when it
+  analyses the unit from source (also a dependency it had to analyse, into that library's directory, and
+  `std`/`ieee` units into the work library's), read by `analyze`, `elab` and `run`; `elab` and `run` never
+  write one (plan rule 14). The key names the library, the unit, its file path, the design revision, the
+  options and the build (`yavs-cache` adds the build); the entry holds the *address* (path, content hash,
+  standard of the file) and the *full key* (the address and the full keys of the units it loaded, the
+  libraries it named and the answers it got about libraries, below). A reader computes the address
+  (the manifest's hash while the file keeps its size and time) and compares the full key of every unit
+  the entry loaded with the unit loaded now or the one its own entry would give: an edit upstream
+  invalidates everything below it. Limits of their own (16384 entries, 512 MiB) beside the 96 entries;
+  a read does not refresh the entry's time (a call reads a hundred).
+- **An entry is the recorded analysis, replayed id for id.** The ids of `yavs-sem` index arenas shared by
+  all units, so an entry is not a free-standing tree: it records, in order, segments of the unit's own
+  arena entries, diagnostics and TIME unit uses, separated by the points where the unit loaded another
+  unit, registered a source file or named a library; then its writes to entries of other units (a package
+  body completing its package's subprograms) and its table changes, each with the value it found before.
+  A replay does the same in the same order and loads a unit it reaches the way analysis would (from its
+  own entry). So the `Db` is the one analysis from source makes, id for id (the stage entries keyed by
+  extent stay valid); `Db::differs_from` and `YAVS_UNIT_CHECK=1` (`analyze` analyses each file a second
+  time without the cache and fails on any difference) check that over the analysis corpora.
+- **Ids are written as owner and offset** (`ids::Reloc`): every arena entry records which load made it
+  (`Arena::runs`, `Db::loads`), and an id is written as an index into the entry's table of owners (the
+  unit itself, a unit it loaded directly or through others, a library, `Db::new`'s entries) and its position
+  among that owner's entries; file ids the same way by the files each load read. This is sim1's idea of a
+  unit's objects living in an arena of their own that is frozen once analysed, references between units
+  being an (arena, offset) pair and dependencies being named with a checksum; yavs keeps its shared arenas
+  for analysis and applies the idea only at the boundary of an entry. A unit that refers to anything else
+  (an entry of a unit it did not load, such as a clone another unit made) is not stored.
+- **Read only what replays exactly.** A replay is planned before anything changes (every unit it will load,
+  where their entries land, the libraries and files it will make), so a miss leaves the session untouched;
+  the few checks that need values (an entry or table key the unit wrote holds what it held when the entry
+  was made) run during the replay, and a failed one undoes it (`Db::rollback`) and the unit is analysed
+  from source. A corrupt or stale entry is never an error. Questions a unit asks about libraries without
+  loading a unit (whether a unit exists, an entity, the last architecture: `Db::unit_known`, `has_entity`,
+  `last_architecture`) are recorded with their answer and asked again before a replay.
+- **Writes are checked, not audited.** What a unit changes is found by comparison: arena entries it
+  writes below its own (`Arena::watch`, the bytes before the first write) and every table of `Db` before
+  and after it (`units::tables!`; a test fails when a new serialized field of `Db` or `GenericState` is
+  not listed). A change it shares with a unit loaded inside it, work left pending, an error, or an id it
+  cannot name makes it not stored (`YAVS_LOG=debug` says why).
+- **Warm analysis of a file** whose manifest record has the same content and whose units all have
+  entries registers the file without parsing it; a unit that misses is parsed then. **A first `elab`/`run`**
+  replays the closure's units the same way (`Db::analyze_file_hashed` with the closure's hashes).
+- **Found on the way:** a generic instance cloned the formal types of an instance in a hash set's order,
+  which differs per process (two analyses of the same files gave different ids); `Remap::formal_firsts` is
+  ordered now. The default span (`Span::default()`, file 0 meaning no file) is written as such inside an
+  entry (`yavs_diag::map_file_ids`).

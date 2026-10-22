@@ -124,7 +124,8 @@ raises an error itself for a project containing VHDL-93/2002 files.
 - Concurrency (plan rule 14): `run` and `elab` never write a manifest or lock a library
   for writing. The only thing they write into a library directory is the compilation cache
   entry of the work library (below, in `<work dir>/yavs-cache/`), best effort and by atomic
-  rename, so any number of them may run at once against the same libraries.
+  rename, so any number of them may run at once against the same libraries. They never write
+  analysed-unit entries (`yavs-cache/units/`); `analyze` does, by atomic rename as well.
   `analyze` must be safe when several processes analyze into the same library
   at the same time (two `run.py` invocations, or a future parallel compile in
   the test runner). yavs does this with automatic library locking like the reference simulator's: each library
@@ -202,7 +203,22 @@ identical to a run without it, at any `--threads`.
   of compiling it. Same rules: identical results, damaged or foreign entries ignored and compiled
   again, atomic writes, nothing stored into a directory that cannot be written, `--no-cache`, `yavs
   cache clean`. The directory keeps at most 4096 objects and 256 MiB, apart from the 96 entries.
-- `yavs analyze` does not read or write the cache.
+- **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit
+  cache"): `yavs analyze` keeps the analysis of every design unit it analyses from source in
+  `<dir>/yavs-cache/units/unit-<key>.img` of the unit's library (`std` and `ieee` units in the work
+  library's), and a later `analyze`, `elab` or `run` that needs the unit reads it from there instead of
+  parsing and analysing its file again: the dependencies of a file analysed one file per call, a
+  file analysed again unchanged, the closure of a first `elab` or `run`. An entry is used only if the
+  unit's file has the content (and standard) it was made from, the units it depends on are the ones
+  it was made with (an edit anywhere upstream invalidates everything below it), the yavs build and the
+  options (`--std` of the design, `--relaxed`, `--psl`, `--encoding`, `-D`) are the same and the
+  libraries answer what they answered then; anything else, a damaged entry included, is a miss and the
+  unit is analysed from source. Diagnostics, warnings included, and results are identical either way.
+  Only `analyze` writes entries (under its library session; the units of other libraries and of
+  `std`/`ieee` by atomic rename, no lock); `elab` and `run` only read them. A library directory that
+  cannot be written is read and never fails. `analyze --no-cache` neither reads nor writes them; `yavs
+  cache clean` removes them. The directory keeps at most 16384 entries and 512 MiB, apart from the 96
+  entries.
 
 ## 4. `yavs analyze`
 

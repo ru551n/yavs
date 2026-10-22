@@ -25,7 +25,7 @@ fn visible(o: &Out) -> Out {
         stderr: o
             .stderr
             .lines()
-            .filter(|l| !l.starts_with("debug: cache:"))
+            .filter(|l| !l.starts_with("debug: cache:") && !l.starts_with("debug: units:"))
             .map(|l| format!("{l}\n"))
             .collect(),
     }

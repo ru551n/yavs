@@ -198,7 +198,8 @@ pub(crate) struct Remap {
     /// Formal constants to actual expressions.
     consts: HashMap<DeclId, ExprId>,
     /// First subtypes of formal types (a `subtype s is T` inherits the actual's constraint).
-    formal_firsts: HashSet<SubtypeId>,
+    /// Ordered: a hash set writes its elements in another order in every session.
+    formal_firsts: std::collections::BTreeSet<SubtypeId>,
     /// Clone subprogram bodies (the body pass) or leave them pending (visible part).
     bodies: bool,
     changed: bool,
@@ -2700,7 +2701,7 @@ impl Db {
         match &self.decls[g].kind {
             DeclKind::Unit(u) => {
                 let (lib, key) = (self.units[*u].lib, UnitKey::body(self.units[*u].name.key));
-                if self.locate(lib, key).is_none() && !self.libs[lib].units.contains_key(&key) {
+                if !self.unit_known(lib, key) {
                     return Ok(None);
                 }
                 let b = self.load_unit(lib, key, Some(span))?;
@@ -2747,7 +2748,7 @@ impl Db {
                 let u = *u;
                 let lib = self.units[u].lib;
                 let key = UnitKey::body(self.units[u].name.key);
-                if self.locate(lib, key).is_none() && !self.libs[lib].units.contains_key(&key) {
+                if !self.unit_known(lib, key) {
                     return Ok(None);
                 }
                 let b = self.load_unit(lib, key, Some(span))?;
@@ -2848,7 +2849,7 @@ impl Db {
                 && let DeclKind::Unit(u) = self.decls[o].kind
             {
                 let (lib, key) = (self.units[u].lib, UnitKey::body(self.units[u].name.key));
-                if self.locate(lib, key).is_some() || self.libs[lib].units.contains_key(&key) {
+                if self.unit_known(lib, key) {
                     self.load_unit(lib, key, Some(span))?;
                 }
                 return Ok(());

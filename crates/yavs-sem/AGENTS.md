@@ -34,6 +34,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | HIR shapes consumed by M2 (`Expr`/`ExprKind`, `Stmt`/`StmtKind`, `Call`, `Lsp`, `UnitHir`, `Binding`, `GenSelect`) | `src/hir.rs` |
 | HIR invariants (sem.md 7.3) | `src/validate.rs` |
 | `Db::to_image`, `from_image`, `settle`: the compilation cache image of a settled `Db` (serde + postcard, symbols through a per-image table interned on first read, sources without text); `Db::extent` (size of every arena), `Db::stages`/`set_stages` and the `StageCache` trait (`Options::stages`): the store later stages (lowering) keep their results in, valid for a `Db` of the extent it was analyzed to, and the entries of the closure's library prefixes (`Prefix`, `prefix_get`/`put`/`seen`/`claim`/`release`/`db`, `closure`, `analysed`; `image::Image` derefs to its payload) | `src/image.rs`, `src/lib.rs` |
+| The analysed-unit cache (`docs/decisions.md` "Analysed-unit cache"): a unit analysed from source is recorded (`Frame`: segments of its own entries, the units it loaded, files, libraries, writes of other entries, table changes, library questions) and written through `Options::units` (`UnitStore`); `load_unit` replays an entry that holds (`try_replay`: plan, replay, undo); ids written as owner and offset (`ids::Reloc`, `Arena::runs`, `Db::loads`); `Db::differs_from` compares two analyses by content (`units/canon.rs`) | `src/units.rs` |
 | Static folding, `ConstValue`, `Db::fold_with` (used by elab) | `src/stat.rs` |
 | Generics, instances by HIR cloning, `Db::instance_body`; for M2 `Db::package_regions` and `Db::decls_with_instances` (an instance's objects belong to the region declaring it, #101) | `src/generic.rs` |
 | Group templates, groups, disconnection specifications (`DeclKind::GroupTemplate`/`Group`, `Db::disconnect_times`), `E1640`, `E1641`, `E1650`, `E1651` (#260) | `src/group.rs` |
@@ -110,6 +111,14 @@ Module-local decisions go in this section and in the matching sem.md section, LR
 - **Fail early.** Any error means `Err(Reported)`; never hand a partial HIR to elab. Never
   `unwrap_or(default)` on design data; `expect` only for yavs's own invariants.
 - **`Db` is serialized (`image.rs`).** Every type reachable from a `Db` field derives `serde::Serialize`/`Deserialize` (no `&'static str`, no references, no trait objects, no interior pointers). A new `Db` field is either serialized (its type derives) or `#[serde(skip)]` because it is transient: then `Db::settle` clears it and `to_image` must refuse an image while it is non-empty. State that survives `analyze_closure` and is read later by elab or lowering must be serialized, or a warm run differs from a cold one (`crates/yavs/tests/cache.rs`, the difftest corpus). Library sources (manifests) are never serialized.
+- **The analysed-unit cache replays a unit's changes (`units.rs`).** A new serialized field of `Db` or
+  `GenericState` must be listed in `units.rs` `tables!` (or be handled by the replay), else
+  `every_field_is_covered` fails. A question a unit's analysis asks about the libraries without loading a
+  unit (does it exist, is it an entity, which architecture is last) must go through `unit_known`,
+  `has_entity` or `last_architecture`, which record it; reading `libs[l].units` or a manifest directly from
+  analysis makes a cached unit answer from another session. Never iterate a `std` hash map or set where
+  the order decides ids or output: it differs per process (`Remap::formal_firsts` did). `YAVS_UNIT_CHECK=1
+  yavs analyze ...` analyses every file twice, with and without the cache, and fails on any difference.
 - **A restored `Db` decodes lazily (`ids.rs`, `Image`, #426).** `Arena` keeps the image bytes (a `yavs_diag::Slice`, a range of the mapped cache entry) and decodes an entry's chunk of 64 the first time it is read; `IndexMut` decodes the chunk too, `push` appends after the lazy entries. So a whole-design scan (`arena.iter()`) decodes everything: do not add one on the run path. The scans the elaborator needs are answered from `Db::facts()` (found by `settle` and stored in the image: `'active` reads, force/release statements, package-path external names); `facts()` recomputes when an arena grew since. A decode error is an internal-error panic (the entry was checksummed, so it is a bug). The source map holds no text in an image (`yavs-diag` `SourceFile`).
 - **Determinism.** Diagnostics order must not depend on hash-map iteration; snapshots and the
   negative suite compare exact `(code, line, col)` sets.

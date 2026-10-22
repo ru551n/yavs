@@ -42,6 +42,15 @@ pub const OBJ_DIR: &str = "obj";
 pub const OBJ_MAX_ENTRIES: usize = 4096;
 pub const OBJ_MAX_BYTES: u64 = 256 << 20;
 
+/// The subdirectory of [`DIR`] that holds the analysed-unit cache ([`Store::units_of_library`]):
+/// one entry per design unit of the library (`yavs_sem::units`), under limits of their own.
+pub const UNIT_DIR: &str = "units";
+
+/// Entries and bytes kept in [`UNIT_DIR`]: room for every unit of a big verification library and
+/// the std/ieee units it uses.
+pub const UNIT_MAX_ENTRIES: usize = 16384;
+pub const UNIT_MAX_BYTES: u64 = 512 << 20;
+
 /// Notes ([`Store::note`]) kept per directory: the newest ones. Trimming asks the age of every
 /// note (a system call each), so it waits until the directory is [`NOTES_SLACK`] past this.
 pub const MAX_NOTES: usize = 512;
@@ -190,6 +199,9 @@ pub struct Store {
     dir: PathBuf,
     /// Entries and bytes kept ([`MAX_ENTRIES`] and [`MAX_BYTES`], or the `OBJ_*` limits).
     limits: (usize, u64),
+    /// `get` refreshes the time of the entry it reads (not for the analysed units: a run reads
+    /// a hundred of them, and a library keeps them all).
+    touch: bool,
 }
 
 /// What [`Store::clean`] removed.
@@ -211,6 +223,7 @@ impl Store {
         Store {
             dir: lib.join(DIR),
             limits: (MAX_ENTRIES, MAX_BYTES),
+            touch: true,
         }
     }
 
@@ -220,6 +233,17 @@ impl Store {
         Store {
             dir: lib.join(DIR).join(OBJ_DIR),
             limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
+            touch: true,
+        }
+    }
+
+    /// The store of the analysed units of library directory `lib` ([`UNIT_DIR`]);
+    /// [`Store::clean`] of the library's store removes it as well.
+    pub fn units_of_library(lib: &Path) -> Store {
+        Store {
+            dir: lib.join(DIR).join(UNIT_DIR),
+            limits: (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES),
+            touch: false,
         }
     }
 
@@ -240,7 +264,9 @@ impl Store {
             return None;
         }
         // Recently used entries survive pruning; failing to say so is harmless.
-        if let Ok(f) = fs::File::options().write(true).open(&path) {
+        if self.touch
+            && let Ok(f) = fs::File::options().write(true).open(&path)
+        {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
         Some(Entry { data: bytes })
@@ -458,15 +484,21 @@ impl Store {
     /// the directory itself.
     pub fn clean(&self) -> std::io::Result<Cleaned> {
         let mut c = Cleaned::default();
-        let obj = self.dir.join(OBJ_DIR);
-        if obj.is_dir() {
-            let o = Store {
-                dir: obj,
-                limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
+        for (sub, limits) in [
+            (OBJ_DIR, (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES)),
+            (UNIT_DIR, (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES)),
+        ] {
+            let dir = self.dir.join(sub);
+            if dir.is_dir() {
+                let o = Store {
+                    dir,
+                    limits,
+                    touch: true,
+                }
+                .clean()?;
+                c.entries += o.entries;
+                c.bytes += o.bytes;
             }
-            .clean()?;
-            c.entries += o.entries;
-            c.bytes += o.bytes;
         }
         for (p, _, len) in self.entries() {
             fs::remove_file(p)?;

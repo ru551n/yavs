@@ -30,6 +30,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | Writes: temporary file in the same directory, then `rename`; no lock | Concurrent runs never see half an entry; readers need no lock | same |
 | `put` never returns an error to the caller | The cache can only make a run faster | same |
 | Pruning by modification time, which `get` refreshes | Keep what is in use | same |
+| Analysed units in `units/` (`Store::units_of_library`, `UNIT_MAX_ENTRIES` 16384, `UNIT_MAX_BYTES` 512 MiB); a read does not refresh the entry's time; `clean` removes them too | One entry per design unit of a library, a hundred read per call (#537) | `docs/decisions.md` "Analysed-unit cache" |
 | Compiled code in `obj/` under limits of its own (`OBJ_MAX_ENTRIES` 4096, `OBJ_MAX_BYTES` 256 MiB); `clean` of the library's store removes it too | One small object per compiled module would otherwise push the stage entries out | `docs/decisions.md` "Compiled code in the compilation cache" (#505) |
 | An entry is mapped, validated before use, and never written in place | No read and no copy of a 7 MB image; a mapping stays valid when the name is replaced or removed (Unix) | `docs/decisions.md` "Zero-copy cache entries" |
 

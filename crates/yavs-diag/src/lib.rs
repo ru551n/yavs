@@ -37,27 +37,130 @@ use std::io::IsTerminal;
 use annotate_snippets::{AnnotationKind, Group, Level, Origin, Renderer, Snippet};
 
 /// Index of a file in a [`SourceMap`].
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct FileId(pub u32);
 
+/// Maps file ids while values are written or read (see [`map_file_ids`]); `None` fails the write
+/// or read.
+pub type FileIdMap = std::rc::Rc<dyn Fn(FileId) -> Option<FileId>>;
+
+thread_local! {
+    static FILE_MAP: std::cell::RefCell<Option<FileIdMap>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with every [`FileId`] written or read passed through `map`: the analysed-unit cache
+/// stores a unit's spans with file numbers of its own and turns them into the ids of the session
+/// that reads it.
+pub fn map_file_ids<R>(map: FileIdMap, f: impl FnOnce() -> R) -> R {
+    let before = FILE_MAP.with(|m| m.borrow_mut().replace(map));
+    let r = f();
+    FILE_MAP.with(|m| *m.borrow_mut() = before);
+    r
+}
+
+/// Run `f` with file ids written and read as they are, inside a [`map_file_ids`].
+pub fn unmapped_file_ids<R>(f: impl FnOnce() -> R) -> R {
+    let before = FILE_MAP.with(|m| m.borrow_mut().take());
+    let r = f();
+    FILE_MAP.with(|m| *m.borrow_mut() = before);
+    r
+}
+
+fn mapped_file(id: FileId) -> Option<Option<FileId>> {
+    FILE_MAP.with(|m| m.borrow().as_ref().map(|m| m(id)))
+}
+
+impl serde::Serialize for FileId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match mapped_file(*self) {
+            None => s.serialize_newtype_struct("FileId", &self.0),
+            Some(Some(id)) => s.serialize_newtype_struct("FileId", &id.0),
+            Some(None) => Err(serde::ser::Error::custom("file id outside the map")),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FileId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = u32;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a file id")
+            }
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                d: D,
+            ) -> Result<u32, D::Error> {
+                <u32 as serde::Deserialize>::deserialize(d)
+            }
+        }
+        let id = FileId(d.deserialize_newtype_struct("FileId", V)?);
+        match mapped_file(id) {
+            None => Ok(id),
+            Some(Some(id)) => Ok(id),
+            Some(None) => Err(serde::de::Error::custom("file id outside the map")),
+        }
+    }
+}
+
 /// A byte range in one source file.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Span {
     pub file: FileId,
     pub start: u32,
     pub end: u32,
+}
+
+/// The file number the default span (no place) is written as under [`map_file_ids`]: its
+/// `FileId(0)` names no file.
+const NO_FILE: u32 = u32::MAX;
+
+impl serde::Serialize for Span {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut t = s.serialize_struct("Span", 3)?;
+        if *self == Span::default() && FILE_MAP.with(|m| m.borrow().is_some()) {
+            t.serialize_field("file", &NO_FILE)?;
+        } else {
+            t.serialize_field("file", &self.file)?;
+        }
+        t.serialize_field("start", &self.start)?;
+        t.serialize_field("end", &self.end)?;
+        t.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Span {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Span;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a span")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<Span, A::Error> {
+                use serde::de::Error;
+                let mapped = FILE_MAP.with(|m| m.borrow().is_some());
+                let file = if mapped {
+                    let raw: u32 = a.next_element()?.ok_or_else(|| A::Error::custom("span"))?;
+                    if raw == NO_FILE {
+                        FileId(0)
+                    } else {
+                        mapped_file(FileId(raw))
+                            .flatten()
+                            .ok_or_else(|| A::Error::custom("file id outside the map"))?
+                    }
+                } else {
+                    a.next_element()?.ok_or_else(|| A::Error::custom("span"))?
+                };
+                let start = a.next_element()?.ok_or_else(|| A::Error::custom("span"))?;
+                let end = a.next_element()?.ok_or_else(|| A::Error::custom("span"))?;
+                Ok(Span { file, start, end })
+            }
+        }
+        d.deserialize_struct("Span", &["file", "start", "end"], V)
+    }
 }
 
 impl Span {
@@ -257,13 +360,13 @@ impl SourceFile {
     }
 }
 
-/// What an image holds of a file: no text (see [`SourceFile`]).
-#[derive(serde::Serialize, serde::Deserialize)]
-struct FileStub {
-    path: String,
-    line_starts: Vec<u32>,
-    latin1: bool,
-    digest: u64,
+/// What an image holds of a file: no text (see [`SourceFile`]), only what locates and verifies it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FileStub {
+    pub path: String,
+    pub line_starts: Vec<u32>,
+    pub latin1: bool,
+    pub digest: u64,
 }
 
 /// All files a session has loaded, addressed by [`FileId`].
@@ -274,12 +377,7 @@ pub struct SourceMap {
 
 impl serde::Serialize for SourceMap {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_seq(self.files.iter().map(|f| FileStub {
-            path: f.path.clone(),
-            line_starts: f.line_starts.clone(),
-            latin1: f.is_latin1(),
-            digest: f.digest(),
-        }))
+        s.collect_seq(self.files.iter().map(SourceFile::stub))
     }
 }
 
@@ -290,18 +388,34 @@ impl<'de> serde::Deserialize<'de> for SourceMap {
         let stubs = Vec::<FileStub>::deserialize(d)?;
         let files = stubs
             .into_iter()
-            .map(|f| SourceFile {
-                path: f.path,
-                line_starts: f.line_starts,
-                full: std::sync::OnceLock::new(),
-                lazy: Some(Lazy {
-                    latin1: f.latin1,
-                    digest: f.digest,
-                    read: |p| std::fs::read(p),
-                }),
-            })
+            .map(|f| SourceFile::unloaded(f, |p| std::fs::read(p)))
             .collect();
         Ok(SourceMap { files })
+    }
+}
+
+impl SourceFile {
+    fn unloaded(f: FileStub, read: SourceReader) -> SourceFile {
+        SourceFile {
+            path: f.path,
+            line_starts: f.line_starts,
+            full: std::sync::OnceLock::new(),
+            lazy: Some(Lazy {
+                latin1: f.latin1,
+                digest: f.digest,
+                read,
+            }),
+        }
+    }
+
+    /// What an image keeps of this file.
+    pub fn stub(&self) -> FileStub {
+        FileStub {
+            path: self.path.clone(),
+            line_starts: self.line_starts.clone(),
+            latin1: self.is_latin1(),
+            digest: self.digest(),
+        }
     }
 }
 
@@ -335,6 +449,25 @@ impl SourceMap {
         for l in self.files.iter_mut().filter_map(|f| f.lazy.as_mut()) {
             l.read = read;
         }
+    }
+
+    /// Add a file known only by its stub; its text is read with `read` when first needed.
+    pub fn add_stub(&mut self, stub: FileStub, read: SourceReader) -> FileId {
+        self.files.push(SourceFile::unloaded(stub, read));
+        FileId(self.files.len() as u32 - 1)
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// Forget the files added after the first `n` (an analysed-unit cache read that is undone).
+    pub fn truncate(&mut self, n: usize) {
+        self.files.truncate(n);
     }
 
     pub fn get(&self, id: FileId) -> &SourceFile {

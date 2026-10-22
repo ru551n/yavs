@@ -547,6 +547,16 @@ image restore about 14 ms), elaborate 23 ms, init 22 ms, simulate 38 ms; process
 verification-component suite: analyze 35 to 60 ms (closure 3.5 ms, image restore 30 ms), elaborate 35 to 140 ms.
 The next levers are the image restore (#426) and caching elaboration (#407).
 
+### Analysed-unit cache (#537, #539, #407)
+
+`yavs analyze` stores every design unit it analyses from source in `yavs-cache/units/` of its library (`std`/`ieee`
+in the work library's) and every later `analyze`, `elab` and `run` reads the units it needs from there when source,
+build, options and dependencies are unchanged (`docs/decisions.md` "Analysed-unit cache"). A replayed `Db` is the
+one analysis from source makes, id for id; `YAVS_UNIT_CHECK=1 yavs analyze` compares the two for every file and
+passes on every analysis corpus. First measurement (realbench, P-core 2, two tests, against main before):
+`osvvm_axis_random` analyze 19.98 s to 10.76 s cold and 7.14 s warm, `uvvm_sb_slv` 1.92 s to 1.16 s cold and 0.77 s
+warm; elab cold 0.18 s to 0.16 s and 0.13 s to 0.08 s.
+
 ### Compilation cache (#407)
 
 Cache keys name the build (a hash of all sources) and the optimiser and tier switches (#491, `docs/decisions.md`

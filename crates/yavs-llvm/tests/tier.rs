@@ -188,9 +188,10 @@ fn auto_tier_compiles_hot_functions() {
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
     tier.stop(true);
+    // A note per module: its native-frame code and its frame-mode code (#510).
     let notes = notes.lock().unwrap();
-    assert_eq!(notes.len(), 1);
-    assert!(notes[0].0 == f && notes[0].1.is_ok(), "{notes:?}");
+    assert!(!notes.is_empty() && notes.len() <= 2, "{notes:?}");
+    assert!(notes.iter().all(|n| n.0 == f && n.1.is_ok()), "{notes:?}");
 }
 
 /// With a budget the compile thread waits until compiling costs at most a few percent of the
@@ -244,14 +245,16 @@ fn auto_tier_recompiles_hot_compiled_code_at_o2() {
     let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     let t0 = Instant::now();
-    while notes.lock().unwrap().len() < 2 {
+    while !notes.lock().unwrap().iter().any(|n| n.1 == OptLevel::O2) {
         assert!(t0.elapsed() < Duration::from_secs(60), "never recompiled");
         assert_eq!(call().unwrap(), Some(5_000_050_000));
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
     tier.stop(true);
     let notes = notes.lock().unwrap();
-    let levels: Vec<_> = notes.iter().map(|n| (n.0, n.1, n.2.is_ok())).collect();
+    let mut levels: Vec<_> = notes.iter().map(|n| (n.0, n.1, n.2.is_ok())).collect();
+    // A note per module (native-frame and frame-mode code, #510).
+    levels.dedup();
     assert_eq!(levels, [(f, OptLevel::O0, true), (f, OptLevel::O2, true)]);
 }
 

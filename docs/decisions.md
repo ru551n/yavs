@@ -2907,8 +2907,18 @@ Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run
   (`Store::note`, `<kind>-<key>.seen`, newest 512 kept, removed by `yavs cache clean`) and makes no image and
   no lowered-package entry; the run that finds the note makes both. A run that happens once (a test case of a
   suite) no longer pays the serialisation (a fifth of its run); a design run twice or more has its image from
-  the third run on. Prefix images are made at once: they are shared. Supersedes "The first `elab` or `run`
+  the third run on. Supersedes "The first `elab` or `run`
   of a design stores the image".
+- **A prefix image is made when the second different closure starts with its prefix** (#549, supersedes "made at
+  once: they are shared"; `Store::sightings`, group = the prefix key, member = the closure's key, and one maker at a
+  time through `Store::claim`). Why: with the analysed-unit cache a closure's first run replays its units cheaply, and
+  the three images (4.7 to 5.6 MB, 11 to 17 ms of CPU each: `to_image` serialises the whole `Db` again) were a third
+  of a cold run of a verification-library testbench (`osvvm_axis_random` 143 ms, 43 of them images; `uvvm_sb_slv` 75 ms,
+  11 of them), for entries that only a later closure reads. The first closure of a suite pays nothing, the second pays
+  what the first did, every later one restores. A suite of one closure per prefix never writes an image and replays its
+  units every run (what a cold run does anyway). The claim also stops testbenches that start together from each writing
+  the same three images. The library stages are unaffected: they need four closures (`libstage::SIGHTINGS`), so the
+  image exists by then.
 
 ## Library stages: what a closure shares with others that start with the same files (#407, yavs decisions under the user's single-thread performance priority)
 

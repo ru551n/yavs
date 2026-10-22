@@ -250,12 +250,13 @@ fn closures_share_the_lowered_library_and_its_state() {
         assert!(p.stdout.contains(&format!("k={}", 46 + n)), "{t}: {p:?}");
         assert_eq!(p.code, 0, "{p:?}");
     }
-    // The first closure leaves the prefix image; the next ones, up to the one that makes it,
-    // lower what they reach themselves.
+    // The first closure only notes the prefix, the second makes its image (#549); the next ones,
+    // up to the one that makes the library, lower what they reach themselves.
     let r1 = l.run(&tops[0], &[]);
-    assert!(note(&r1, "store prefix of 10 files"), "{r1:?}");
+    assert!(!note(&r1, "store prefix of 10 files"), "{r1:?}");
     for (i, t) in tops.iter().enumerate().take(SIGHTINGS as usize - 1) {
         let r = l.run(t, &[]);
+        assert_eq!(note(&r, "store prefix of 10 files"), i == 1, "{t}: {r:?}");
         assert!(
             !note(&r, "store prefix lib ") && !note(&r, "hit prefix lib "),
             "{t}: {r:?}"

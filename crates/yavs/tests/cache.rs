@@ -828,10 +828,10 @@ fn an_unavailable_source_drops_the_snippet_only() {
     check(&warm, "could not be read");
 }
 
-/// Two testbenches of one library share the analysis of the packages they both use: the first
-/// stores a prefix image next to the library of the last package, the second restores it and
-/// analyzes the rest, with the output of an analysis from source. Editing a package of the
-/// prefix invalidates it.
+/// Testbenches of one library share the analysis of the packages they both use: the second to
+/// start with them stores a prefix image next to the library of the last package (the first
+/// only leaves a note, #549), the third restores it and analyzes the rest, with the output of an
+/// analysis from source. Editing a package of the prefix invalidates it.
 #[test]
 fn closures_share_the_analysis_of_their_first_files() {
     let tmp = tempdir("prefix");
@@ -872,7 +872,7 @@ fn closures_share_the_analysis_of_their_first_files() {
              report \"k=\" & integer'image(k9 + {n});\n    wait;\n  end process;\nend;\n"
         )
     };
-    for n in [1, 2] {
+    for n in [1, 2, 3] {
         let f = tmp.join(format!("tb{n}.vhd"));
         std::fs::write(&f, tb(n)).expect("write");
         analyze("work", &["liba"], &f);
@@ -896,17 +896,27 @@ fn closures_share_the_analysis_of_their_first_files() {
     };
     let plain1 = run("tb1", &["--no-cache"]);
     let plain2 = run("tb2", &["--no-cache"]);
+    let plain3 = run("tb3", &["--no-cache"]);
     assert!(plain1.stdout.contains("k=46"), "{plain1:?}");
     assert!(plain2.stdout.contains("k=47"), "{plain2:?}");
+    assert!(plain3.stdout.contains("k=48"), "{plain3:?}");
     let first = run("tb1", &[]);
-    assert!(note(&first, "store prefix of 10 files"), "{first:?}");
+    assert!(!note(&first, "store prefix of"), "one sighting: {first:?}");
     assert_eq!(visible(&plain1), visible(&first));
     let second = run("tb2", &[]);
-    assert!(note(&second, "hit prefix of 10 files"), "{second:?}");
-    assert!(!note(&second, "store prefix of"), "{second:?}");
+    assert!(note(&second, "store prefix of 10 files"), "{second:?}");
     assert_eq!(visible(&plain2), visible(&second));
-    // The same testbench again is a hit of its own image.
-    assert!(note(&run("tb2", &[]), "hit"), "own image");
+    let third = run("tb3", &[]);
+    assert!(note(&third, "hit prefix of 10 files"), "{third:?}");
+    assert!(!note(&third, "store prefix of"), "{third:?}");
+    assert_eq!(visible(&plain3), visible(&third));
+    // The same testbench again makes its own image, the next run hits it.
+    run("tb3", &[]);
+    let own = run("tb3", &[]);
+    assert!(
+        note(&own, "hit ") && !note(&own, "hit prefix"),
+        "own image: {own:?}"
+    );
     // A package of the prefix changes: no prefix image applies, and the new value is what runs.
     let f = tmp.join("pa3.vhd");
     std::fs::write(&f, pkg(3).replace("+ 3", "+ 4")).expect("write");

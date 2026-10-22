@@ -24,6 +24,10 @@ const PREFIX_KIND: &str = "pre";
 /// How long a run that makes a library prefix entry is trusted to be at it.
 const CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// How many different closures must start with a prefix before its image is made: the first run
+/// of a suite's first test must not pay (15 ms of CPU per image) for entries only later runs read.
+const PREFIX_SIGHTINGS: usize = 2;
+
 /// The smallest prefix (in files) that gets an image of its own.
 const PREFIX_MIN: usize = 8;
 
@@ -467,18 +471,26 @@ pub fn analyze_closure(
         }
         db.settle();
         levels.extend(level(&db, b));
-        match (db.to_image(), prefix_store(&opts, files, b)) {
-            (Ok(image), Some(s)) => {
-                let pk = key(PREFIX_KIND, &opts, &files[..b]);
-                debug(format!(
-                    "store prefix of {b} files {} ({} bytes)",
-                    pk.hex(),
-                    image.len()
-                ));
-                s.put(PREFIX_KIND, &pk, &image);
+        if let Some(s) = prefix_store(&opts, files, b) {
+            let pk = key(PREFIX_KIND, &opts, &files[..b]);
+            let seen = s.sightings(PREFIX_KIND, &pk, &k);
+            // One run makes it at a time: closures that start together would all write it.
+            if seen >= PREFIX_SIGHTINGS && s.claim(PREFIX_KIND, &pk, CLAIM_TTL) {
+                match db.to_image() {
+                    Ok(image) => {
+                        debug(format!(
+                            "store prefix of {b} files {} ({} bytes)",
+                            pk.hex(),
+                            image.len()
+                        ));
+                        s.put(PREFIX_KIND, &pk, &image);
+                    }
+                    Err(why) => debug(format!("no prefix image: {why}")),
+                }
+                s.release(PREFIX_KIND, &pk);
+            } else {
+                debug(format!("prefix of {b} files {} seen by {seen}", pk.hex()));
             }
-            (Err(why), _) => debug(format!("no prefix image: {why}")),
-            _ => {}
         }
     }
     let r = analyze(&mut db, &files[start..]);

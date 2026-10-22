@@ -4,6 +4,10 @@ Status: analysis and design (2026-10-21, issue #481 item 3). Nothing here is imp
 prototype measured in section 5 lives on the branch `spike/mt-chunks` (instrumentation plus the run-phase
 changes, behind environment variables); it is evidence, not product code.
 
+Caveat (#513, #521): every neorv32 number in this document (and in `STATUS.md` "Multi-threaded scaling") was taken on a
+run in which the core slept in `wfi` after about 70 instructions. The corrected scaling on the real program is in
+`STATUS.md` "neorv32 processor testbench against sim1" (Threads): 1.2x to 1.3x at 4 to 8 threads, not 1.8x to 2.3x.
+
 Sources: the kernel (`crates/yavs-kernel/src/kernel.rs`: `cycle`, `update`, `update_independent`, `wake`,
 `order`, `run_batch`, `commit`), the process interface (`process.rs`: `Ctx`, `ProcState`), the interpreter's
 process and shared state (`crates/yavs-interp/src/lib.rs`: `InterpProcess::run`, `exec`, `SharedState`,

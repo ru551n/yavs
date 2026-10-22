@@ -4548,6 +4548,70 @@ the JSON-for-VHDL and vhdl-extras testbenches that need files, the fletcher arra
 whose generics have no default. For a decision run `python3 -I tools/realbench/run.py BIN --ref sim1 --cores 6,7`
 and `--compare A B` (section 5 of its guide); on a loaded host wall time is noise, quote the instruction ratios.
 
+## neorv32 processor testbench against sim1: where the time goes (#521, 2026-10-22)
+
+The three CPU tests of the real-world suite (`neorv32_dual_full` 200 us, `neorv32_single_min` and `neorv32_single_cache`
+300 us, the core runs its built-in program; traces match sim1). Release build with `--features llvm`, `tools/realbench`,
+core 7, median of 3, load average 13 (other agents), so read the ratios.
+
+| test | sim1 | interp | `--tier=auto` | `--tier=llvm` |
+|---|---:|---:|---:|---:|
+| baseline at `448e11beea` (main at d1a06176) | 4.55 / 4.08 / 5.02 s | 38.3 / 37.2 / 44.3 s (8.4x / 9.1x / 8.8x) | 39.0 / 43.6 / 51.6 s (8.6x / 10.7x / 10.3x) | 98.7 s (24x) on single_min; dual and cache pass 300 s |
+| after the lowering fix (`bd2f2e43`), same order, sim1 not rerun | | 18.2 / 18.6 / 17.4 s (0.47 / 0.47 / 0.40 of before; 3x to 5x of sim1) | 20.2 / 20.2 / 20.1 s | |
+
+Instructions per run: sim1 39 to 44 G; interpreter before 347 to 398 G, after 125 to 165 G.
+With `52159b17` and `deea791d` on top (second run, same method, load 13, so absolute times are not comparable with the table): interpreter
+14.0 s (dual_full) and 18.9 s (single_min), `--tier=auto` 14.5 s and 19.4 s, 3% above the interpreter instead of 8% to 15%.
+
+**Profile** (`neorv32_single_min`, interpreter, before the fix; per-process time and activation counts from a temporary timer around
+every `Process::run`, not committed): analysis 0.06 s, elaboration 0.08 s, init 0.3 s, simulation 41 s. 2413 processes, 3806
+signals with 125.6k elements (1903 scalars, 785 of 2 to 8 elements, 867 of 9 to 32, 192 of 33 to 64, 59 wider), 18.1 M
+activations in 30000 clock cycles = 605 per cycle. 1745 processes ran fewer than 1000 times; 388 run once per clock (the registers,
+42% of process time), 86 run more than once per clock (combinational logic that settles over deltas, 38%); 1879 are anonymous
+concurrent statements (copies such as `a_req_o <= port_req(0)`, 5.5 M activations, 29% of process time, 1.5 to 5 us each).
+Hot processes: `cpu_counters.counter_increment` 12% (65 us per activation), the 87 processes of `cpu_control` 11%
+(`exec_comb` 4.4%, 150 record-field `Drive`s), `bus_gateway` 8%, `cpu_trace` 5%, the bit-manipulation ALU 4%, `pmp`, debug module,
+UART/TWI/SPI engines about 1.5% each, textio trace of the dual run 2.4%. `perf` by symbol: op dispatch (`run_ops`, `run_quick`)
+42%, signal reads and assigns (`Ctx::read_into`, `assign_*`) 15%, kernel scheduler (cycle, commit, wake scan, update) 15%,
+`memmove` 11%, other interpreter machine functions 10%, process entry and exit 4%.
+
+**The main cost was a lowering defect** (fixed, `bd2f2e43`): a name below a record signal (`ctrl_i.cnt_event`, `port_rsp(i).data`)
+was lowered as a read of the whole record followed by a field select. `ctrl_i` has 41 leaves; `counter_increment` read it
+29 times per activation (3095 IR instructions, 65 us). `Fx::rec_part` now reads only the selected leaves (one `SigRead`, or
+`SigReadScalar` for a scalar leaf); the process is 633 instructions and 22 us. After it: op dispatch 44%, kernel scheduler 25%,
+`Ctx` 10%, other machine 9%, `memmove` 3.5%, entry 3%.
+
+**Why `--tier=auto` was slower** (`neorv32_single_min`): it compiled 146 functions, 8.4 s of compile CPU on the thread that shares
+the pinned core (20% of the run), and the compiled small RTL processes ran about three times slower per activation than the
+interpreter (bus gateway copy processes 1.8 us interpreted, 5.6 us compiled): the instruction count is the same
+(167 G against 170 G) but cycles are 16% higher (cache and branch misses), compiled code spends its time in the host callbacks
+(`Host::signal`, `drive_now`, `view_again`, `yavs_rt_host`) for every signal read and drive. The `RTL_BUDGET` rule (16 times the
+compile budget because RTL "runs a tenth faster compiled") did not hold here. The policy fix is `52159b17` (#510: a clocked
+process is compiled only when 16 or more share its code). `--tier=llvm` compiles 815k IR instructions up front (14 to 17 s) and
+then runs 2.2x slower than the interpreter (#532).
+
+**Levers left, ranked** (owner; sim1 idea in brackets):
+
+1. Op dispatch and record-heavy process bodies, 44% (interpreter agents: #508, #443, #467 drives, #518 layout). sim1 compiles
+   every process to straight-line code.
+2. Concurrent signal-copy processes, 29% of process time (#529, kernel and elab): execute a copy statement in the kernel without
+   the interpreter. [sim1: processes are tiny compiled functions; a record signal is one handle per field and a copy moves
+   the fields.]
+3. Kernel scheduler, 25% (kernel round 11, #440): 605 activations per clock cycle, wake scan and commit per activation.
+   [sim1: a process wakes through a trigger it evaluates on the signal update, before it is queued; we do this for edges since round 11.]
+4. User functions in loops (`or_reduce_f` 29 times per activation; #531, interpreter call cost, #443).
+5. Sensitivity lists of 45 signals re-run their `WaitOn` sequence on every activation (#530, interpreter and kernel).
+6. Compiled tier: native signal read and drive for vectors without a host callback, compile of 14 to 17 s for `--tier=llvm`
+   (#532, #339, #527, LLVM agent).
+7. Slices of an array of records still read the whole array (`rec_part` handles fields and indexes only); not on the hot path here.
+
+**Threads** (`--threads N`, N cores = P-core 7 plus N-1 of the efficiency cores 23, 22, ...; interpreter, 100 us, median of 3,
+`main` at `52159b17`, load average 13 from other agents; the efficiency cores are slower than core 7, so the speed-up is a floor):
+dual_full 8.00 s at 1 thread, 7.76 at 2, 6.65 at 4, 6.19 at 8 (1.0x, 1.03x, 1.20x, 1.29x; CPU time user plus system 8 s at 1 thread, 17 s at 8);
+single_min 6.46 s, 7.40, 5.52, 5.61 (1.0x, 0.87x, 1.17x, 1.15x). The earlier 1.75x at 4 threads and 2.3x at 6
+(`docs/design/parallel-kernel.md`) timed a core asleep in `wfi` (#513) and do not stand. With the real program the gain is 1.2x to 1.3x at 4 to 8 threads for twice the CPU time; batch sizes were not
+measured again here.
+
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:

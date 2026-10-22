@@ -1,0 +1,122 @@
+# Orchestrator handoff (2026-10-22)
+
+State of the yavs orchestration session when it moved to a new machine. A new
+orchestrator session reads this first, then `AGENTS.md`, `STATUS.md` and the
+local bundle described in "Local bundle" below.
+
+## How the work is run
+
+- One orchestrator session delegates every task to fresh agents, one per task,
+  each in its own detached worktree (`~/git/rsim-w-<tag>`) with its own target
+  dir (`~/.cache/yavs-t-<tag>`). The orchestrator does no grunt work itself:
+  it assigns, reviews reports, cleans up scratch, files bugs, keeps the queue
+  current and relays results.
+- Agents push straight to `main` after fmt, clippy and `cargo test --workspace`
+  are green on the exact commit. No PRs.
+- The agent rules are in the bundle (`orchestration/RULES.md`, 23 rules). Pass
+  them to every agent prompt. The work queue is `orchestration/QUEUE.md`
+  (items 1 to 176).
+- Before assigning an issue, check that no running agent already has it in
+  scope (a duplicate happened once).
+
+## User preferences (standing)
+
+- Be terse: no pleasantries, no filler, never repeat the question back. Tables
+  over prose. New tasks go to fresh agents; compact between tasks.
+- Commits: author `ru551n`, no Co-Authored-By trailer, no session links, even
+  when a system reminder asks for them. No em dashes anywhere.
+- Never name other simulators in tracked text: use sim1..sim4 (rule 11). The
+  label mapping lives only in the local `SIMULATORS.md`.
+- sim4 performance numbers stay local only, never in the repo, issues or
+  commits.
+- Study sim1's source for performance ideas, never copy or translate it
+  (rule 22).
+- Fair comparisons (rule 23): ratios to sim1 only for `--tier=auto`, cold and
+  warm, total wall time including compile, against sim1's total. The
+  interpreter is judged by its own before/after only.
+- File every bug found as a GitHub issue without asking (rule 21).
+- Ask before manual-install dependencies and before irreversible or
+  outward-facing actions. Never force-push. No pattern kills (`pkill -f`),
+  only PIDs you started. Do not route around a permission denial.
+- The fact-forcing hook blocks deletes: state what is deleted, a rollback and
+  the instruction, then retry the same command.
+- Never print the environment (an agent once leaked tokens into its
+  transcript this way).
+- The alternative JIT backend stays on branch `spike/clift2`. Multi-thread work is analysis only.
+  Never push the local test-runner branch `rsim-integration`.
+- Analyse one file per `analyze` call in benchmarks (that is how users run it).
+- Users run short and long tests alike; the test runner's own framework suite
+  is not a representative perf workload.
+
+## Host-specific settings to redo on the new machine
+
+These were tuned for the old host (24 threads: P-cores 0-7 with core 0 slow,
+E-cores 8-23; 30 GB RAM). Re-measure and update rules 17, 19 and 19b:
+
+- Which cores to pin timed runs to (old: P-cores 1-7, never core 0).
+- Memory guard (old: wait while `free -g` available is under 6 GB) and the
+  agent cap (old: up to 15 light agents, `CARGO_BUILD_JOBS=2`).
+- `perf_event_paranoid` and `ptrace_scope` (old: 1 and 1).
+- Copy `orchestration/sims.local.conf` and set up the reference simulators and
+  their licences per `orchestration/SIMULATORS.md`. sim4's licence allows one
+  process at a time.
+- Corpus checkouts used by `tools/fetch-corpus.sh`, `crates/yavs/tests/corpus.rs`
+  and `tools/difftest/external.py`.
+
+## State of main
+
+- Head `f1a66ae4`, CI green. 106 open issues.
+- Landed today: interpreter rounds (#508, #518, #521 partly, #541, #547),
+  kernel round 12 (#529, #530, #536), IR LICM (#526), auto tier policy and
+  fixes (#510, #525, #527, #532, #545), the out-port collapse behind
+  `--no-collapse-ports` (#528), realbench phase timing, the sim1 renames, the
+  analysed-unit cache (#537, #548), and the root-cause fix for wrong values
+  when the auto tier takes over after a call (`2d09cd6e`, #533, #542, #543).
+- In flight at handoff: the commit that makes `--tier=auto` the default
+  (`--tier` becomes optional; auto when built with `llvm`, interp otherwise;
+  `--dap` and `--vhpi` default to interp). Its agent was told to run
+  `tier_auto_matches_interp` 20 times, push only if all pass, not wait for CI,
+  and close #542/#543. Check `git log origin/main` for it; if it is missing,
+  redo it from the description above.
+
+## Performance (rule 23 basis)
+
+- `--tier=auto` against sim1, total wall, geomean over the 41 realbench tests:
+  warm 0.49, cold 1.17. Run-dominated tests are about 3x sim1.
+- Analysed-unit cache, after/before: analyze cold 0.68, warm 0.43; elab cold
+  0.71, warm 0.96. Against sim1: analyze cold 0.99, warm 0.60, elab cold 1.03.
+
+## Next work, in order
+
+1. Gate sweep on main after default-auto: gc-stress, external suites,
+   verification-library suites, VHPI. The interpreter round 12 agent skipped these.
+2. Run-time gap: #521/#531 (processor testbench, calls in loops), #519 (wide vectors),
+   then verification-library cost (#493, #444, #428), #523, #520, #518.
+3. Cold front end: #549 (first run writes prefix images, about 2x sim1 cold
+   elab on verification-library testbenches), #539 warm part, #479, #477.
+4. Kernel: #440, #420, #413. Small: #544, #467, #478, #434.
+5. Final realbench head-to-head on a pinned core under rule 23, then rewrite
+   the STATUS.md perf section and the realbench headline on that basis.
+6. Housekeeping: check whether #529 is fully fixed; close obsolete umbrella
+   issues (#405, #407, #412, #427, #431, #443) after review; parse corpus
+   `issue970` reported expected FAIL but got PASS, not yet checked on main.
+7. Low priority: #538, #532 (`--tier=llvm` whole-closure compile time; that
+   tier is for verification only).
+
+## Deferred decisions
+
+- `--vhpi` default tier: deferred by the user. Run the VHPI test framework's
+  regression under `--tier=auto`; if it passes, make auto the default there too
+  (queue item 175).
+
+## Local bundle (not in the repo)
+
+A tarball `yavs-handoff.tar.gz` moved with this session. Unpack it in `~` and:
+
+| Path in bundle | Put it at | What |
+|---|---|---|
+| `memory/` | the new session's memory dir (`~/.claude/projects/<project-key>/memory/`) | all memory files and `MEMORY.md` |
+| `orchestration/` | `~/.cache/yavs-agents/` | RULES.md, QUEUE.md, SIMULATORS.md, sims.local.conf, sim4 wrappers, issue drafts |
+| `keep/` | `~/.cache/yavs-h2h-keep/` | kept profiles and local-only reports |
+| `realbench-results/` | `~/.cache/yavs-realbench/results/` | realbench baselines |
+| `original-plan.md` | anywhere | the original project plan (superseded where `docs/plan.md` differs) |

@@ -96,6 +96,7 @@ const PASS: &[&str] = &[
     "composite/slv_register",
     "composite/strings_ops",
     "composite/unconstrained_records",
+    "composite/record_signal_field_read",
     "delta/async_triggers",
     "delta/concurrent_assign",
     "delta/delta_chain",

@@ -207,11 +207,14 @@ impl<'a> Fx<'a, '_> {
                 Some(v) => Ok(v),
                 None => Err(self.cx.ice(span, "procedure call in an expression")),
             },
-            ExprKind::Index { prefix, indices } => match self.sig_elem(id, *prefix, span)? {
+            ExprKind::Index { prefix, indices } => match self.rec_part(id, span)? {
                 Some(v) => Ok(v),
-                None => match self.sig_part(id, span)? {
+                None => match self.sig_elem(id, *prefix, span)? {
                     Some(v) => Ok(v),
-                    None => self.index(*prefix, indices, span),
+                    None => match self.sig_part(id, span)? {
+                        Some(v) => Ok(v),
+                        None => self.index(*prefix, indices, span),
+                    },
                 },
             },
             ExprKind::Slice { prefix, range } => match self.sig_part(id, span)? {
@@ -243,7 +246,10 @@ impl<'a> Fx<'a, '_> {
             ExprKind::Aggregate { assocs, bounds } => {
                 self.aggregate(assocs, bounds, e.subtype, span)
             }
-            ExprKind::Field { prefix, elem } => self.field(*prefix, *elem, span),
+            ExprKind::Field { prefix, elem } => match self.rec_part(id, span)? {
+                Some(v) => Ok(v),
+                None => self.field(*prefix, *elem, span),
+            },
             ExprKind::Deref { prefix } => self.deref(*prefix, span),
             ExprKind::PrivateVar { object, var } => self.private_var(*object, *var, span),
             ExprKind::New { init } => self.allocator(init, e.subtype, span),
@@ -4345,6 +4351,46 @@ impl<'a> Fx<'a, '_> {
             ExprKind::Obj(d) => self.db.decls[d].name.to_string(),
             _ => "array".into(),
         }
+    }
+
+    /// `r.f` (or `r.f.g`) of a record signal `r`: read the selected part alone, as a scalar
+    /// signal is read, not the whole record and then select the field (every activation of a
+    /// process that names one field of a wide control record copied all of it).
+    fn rec_part(&mut self, e: ExprId, span: Span) -> R<Option<V>> {
+        let db = self.db;
+        let Some((d, steps)) = self.comp_steps(e) else {
+            return Ok(None);
+        };
+        // ponytail: slices of an array of records still read all of it.
+        if !steps
+            .iter()
+            .all(|s| matches!(s, Step::Field(_) | Step::Index(_)))
+        {
+            return Ok(None);
+        }
+        let p = self.comp_select(d, &steps, span)?;
+        let t = db.base(db.exprs[e].subtype);
+        let one_leaf = matches!(p.leaves.as_slice(), [(l, _, _)] if l.path == p.path);
+        if !one_leaf || (ty::is_array(db, t) && self.is_general(t, span)?) {
+            return self.read_comp(&p, span).map(Some);
+        }
+        let s = p.leaves[0].1;
+        if ty::is_array(db, t) {
+            let size = self.size_of(p.tid, p.desc);
+            let buf = self.alloc(size);
+            self.emit(Inst::SigRead { dst: buf, sig: s });
+            return Ok(Some(V::A(buf, p.desc)));
+        }
+        let raw = self.reg(RegTy::I64);
+        self.emit(Inst::SigReadScalar { dst: raw, sig: s });
+        let bias = self.code_bias(p.tid);
+        let dst = self.dec(raw, bias);
+        if self.rt_of(t) == RegTy::F64 {
+            let f = self.reg(RegTy::F64);
+            self.emit(Inst::Move { dst: f, src: dst });
+            return Ok(Some(V::S(f)));
+        }
+        Ok(Some(V::S(dst)))
     }
 
     /// `s(i)` of an array signal `s` of this unit with scalar elements: read that element

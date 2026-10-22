@@ -1,0 +1,2 @@
+exit	0
+diag	note	2000000	1	:record_signal_field_read:_p1	done

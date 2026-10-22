@@ -5109,13 +5109,16 @@ fusable"). `YAVS_DUMPIR=1` dumps the finished IR and the predecoded ops of every
 (`collapse.rs` `ports`): the formal's drivers drive the actual, which takes the formal's initial value; `inout` ports, actuals
 with another source, a guard, a force, a conversion or an effective value from above stay apart (`docs/decisions.md`
 "Elaboration"). In `fletcher_bufferwriter_512` 422 of 450 `out` leaves collapse (20 are open, 8 kept).
-Release `--features llvm`, `tools/realbench --compare` before / after, core 7, median of the suite's runs, against sim1:
+Release `--features llvm`, `tools/realbench`, core 7. Interpreter, before / after (`--compare`, median): `fletcher_bufferwriter_512`
+instructions 0.80, wall 0.75; `neorv32_dual_full` 0.96 and 0.91 (CPU); `neorv32_single_min` 0.92 and 0.84 (CPU).
+`--tier=auto` against sim1 (total wall of `yavs run`, compilation included, against sim1's elaboration plus run; instructions
+in brackets), before and after:
 
-| test | sim1 | before interp | after interp | after auto |
+| test | auto warm before | auto warm after | auto cold before | auto cold after |
 |---|---:|---:|---:|---:|
-| `fletcher_bufferwriter_512` wall / G instr | 1.89 s / 26.8 | 13.48 s / 174.6 (7.1x / 6.5x) | 10.12 s / 139.4 (5.4x / 5.2x) | 10.41 s / 140.7 |
-| `neorv32_dual_full` CPU / G instr | 4.04 s / 44.3 | 10.06 s / 95.8 | 9.18 s / 92.1 (2.3x / 2.1x) | 10.10 s / 95.4 |
-| `neorv32_single_min` CPU / G instr | 3.35 s / 38.7 | 11.47 s / 120.6 | 9.59 s / 111.2 (2.9x / 2.9x) | 10.00 s / 115.8 |
+| `fletcher_bufferwriter_512` | 7.9x (6.6x) | 5.8x (5.2x) | 8.5x (6.6x) | 6.2x (5.3x) |
+| `neorv32_dual_full` | 2.5x (2.2x) | 2.4x (2.1x) | 2.6x (2.3x) | 2.5x (2.2x) |
+| `neorv32_single_min` | 3.7x (3.2x) | 3.3x (3.0x) | 3.8x (3.3x) | 3.5x (3.1x) |
 
 Whole suite (41 tests, cores 6 and 7): geometric mean of instructions 0.98 (interp and auto), wall 0.97; `fletcher_bufferreader`
 0.81 instructions; no slowdowns (two flagged cells rerun on core 7 were noise). Checked: differential corpus 444/444 collapsed

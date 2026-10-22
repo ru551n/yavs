@@ -73,7 +73,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   one element through its code byte. A signal with a force layer, or a force or deposit in that
   cycle, takes the elements to its dirty ranges and the general path instead. Activity stamps
   are not written for a signal whose activity nothing reads (`Signal::inactive`:
-  `Config::skip_unchanged`, and no implicit signal has it as its prefix).
+  `Config::skip_unchanged`, and no implicit signal has it as its prefix). A one-element entry
+  whose code the driver and the signal already have writes nothing on such a signal, only the
+  delta happens (`empty_delta`); the first one-element entry of a signal in a cycle waits in
+  `Signal::last_commit` (`pend_one`), not in the bit mask.
 - **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
   (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
   the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the

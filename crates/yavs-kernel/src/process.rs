@@ -131,18 +131,18 @@ pub(crate) struct OutV {
 /// Per-process state the process mutates while it runs.
 #[derive(Default)]
 pub(crate) struct ProcState {
-    pub waveforms: SmallVec<[Waveform; 1]>,
+    pub waveforms: Vec<Waveform>,
     pub effects: Vec<Effect>,
-    pub sens: SmallVec<[(SignalId, Range); 2]>,
+    pub sens: Vec<(SignalId, Range)>,
     /// The sensitivity the last commit registered, when that wait had no timeout.
-    pub sens_prev: SmallVec<[(SignalId, Range); 2]>,
+    pub sens_prev: Vec<(SignalId, Range)>,
     /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
     /// stays empty and the commit takes it from `sens_prev`.
     pub again: bool,
     pub deadline: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
-    pub scheduled: SmallVec<[(Time, DriverId); 2]>,
+    pub scheduled: Vec<(Time, DriverId)>,
     /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
     /// this run.
     pub phantoms: Vec<u32>,
@@ -957,6 +957,10 @@ impl Ctx<'_> {
     pub fn wait_on(&mut self, r: impl Into<SigRef>) -> Result<(), SimError> {
         let r = r.into();
         let range = self.sig(r)?.1;
+        // Most waits name one signal: no room for four (the list becomes the previous one).
+        if self.st.sens.capacity() == 0 {
+            self.st.sens.reserve_exact(1);
+        }
         self.st.sens.push((r.signal, range));
         Ok(())
     }

@@ -271,12 +271,12 @@ impl Waiters {
     /// element): what `take_woken` of an event on `e` alone would look at.
     #[inline]
     pub fn sole_resident(&self, e: u32) -> Option<&Waiter> {
-        let wide = self.lists.len().checked_sub(1).filter(|&w| w > 0)?;
-        let c = (e >> self.shift) as usize;
-        if c >= wide || !self.lists[wide].0.is_empty() {
+        let (wide, chunks) = self.lists.split_last()?;
+        let list = chunks.get((e >> self.shift) as usize)?;
+        if !wide.0.is_empty() {
             return None;
         }
-        match self.lists[c].0.as_slice() {
+        match list.0.as_slice() {
             [w] if w.perm != 0 && w.range.overlaps(Range::new(e, 1)) => Some(w),
             _ => None,
         }
@@ -585,7 +585,7 @@ pub(crate) struct Signal {
     pub queued_up: u64,
     pub queued_down: u64,
     /// Elements changed in the current cycle.
-    pub changed: SmallVec<[Range; 2]>,
+    pub changed: Vec<Range>,
     /// Ranges whose driving value must be recomputed this cycle.
     pub dirty: SmallVec<[Range; 2]>,
     /// Ranges whose driving value was written when the transaction was applied (a vector quick
@@ -622,6 +622,8 @@ pub(crate) struct Signal {
     /// one bit each (made at the first one), and the words with a bit set.
     pend: Vec<u64>,
     pend_words: SmallVec<[u32; 2]>,
+    /// One element is pending and it is not in `pend`: the one `last_commit` holds.
+    pend_one: bool,
     /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
     /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
     pub inactive: bool,
@@ -632,13 +634,7 @@ pub(crate) struct Signal {
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
 /// (`Signal::watched`), else only counted.
 #[inline(always)]
-fn note_run(
-    changed: &mut SmallVec<[Range; 2]>,
-    nruns: &mut u64,
-    watched: bool,
-    e: usize,
-    len: u32,
-) {
+fn note_run(changed: &mut Vec<Range>, nruns: &mut u64, watched: bool, e: usize, len: u32) {
     if !watched {
         *nruns += 1;
         return;
@@ -732,7 +728,7 @@ impl Signal {
             level: 0,
             queued_up: 0,
             queued_down: 0,
-            changed: SmallVec::new(),
+            changed: Vec::new(),
             dirty: SmallVec::new(),
             fast_dirty: SmallVec::new(),
             eff_dirty: SmallVec::new(),
@@ -748,6 +744,7 @@ impl Signal {
             nruns: 0,
             pend: Vec::new(),
             pend_words: SmallVec::new(),
+            pend_one: false,
             inactive: false,
             last_commit: (u32::MAX, 0),
         };
@@ -1335,18 +1332,43 @@ impl Signal {
     /// A zero-delay transaction of one element of a direct driver (`DriverInfo::direct`),
     /// committed: the driver value and the driving value now (the update phase is over, and
     /// nothing reads them before the next one), the element waiting in `pend` for the next
-    /// update (`finish_pend`). True for the signal's first one.
+    /// update (`finish_pend`). True for the signal's first one. `None`: the driver and the
+    /// signal already have the value and the signal allows skipping (`skip_ok`): nothing to
+    /// write or finish, only the delta it causes.
     #[inline]
-    pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> bool {
+    pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> Option<bool> {
         let d = &mut self.drivers[slot as usize];
         if let Buf::Planes { b, .. } = &mut d.value {
-            put_plane_code(b, (elem - d.range.offset) as usize, code);
+            let rel = (elem - d.range.offset) as usize;
+            if self.codes.get(elem as usize) == Some(&code)
+                && self.skip_ok
+                && plane_code(b, rel) == code
+            {
+                return None;
+            }
+            put_plane_code(b, rel, code);
         }
         if let Buf::Planes { b, .. } = &mut self.driving {
             put_plane_code(b, elem as usize, code);
         }
+        // The signal's first element of the cycle stays in `last_commit` alone (`pend_one`);
+        // a second one moves it to the bit mask.
+        if !self.pend_one && self.pend_words.is_empty() {
+            self.pend_one = true;
+            self.last_commit = (elem, code);
+            return Some(true);
+        }
+        self.spill_pend_one();
         self.last_commit = (elem, code);
-        self.mark_pend(elem, 1)
+        Some(self.mark_pend(elem, 1))
+    }
+
+    /// The element `pend_one` holds, into the bit mask.
+    #[inline(always)]
+    fn spill_pend_one(&mut self) {
+        if std::mem::take(&mut self.pend_one) {
+            self.mark_pend(self.last_commit.0, 1);
+        }
     }
 
     /// `commit_code` of at most 64 elements given as plane words.
@@ -1363,8 +1385,10 @@ impl Signal {
         if let Buf::Planes { b, .. } = &mut self.driving {
             put_block(b, elem as usize, len as usize, planes, !0);
         }
+        let first = !self.pend_one;
+        self.spill_pend_one();
         self.last_commit.0 = u32::MAX;
-        self.mark_pend(elem, len)
+        self.mark_pend(elem, len) && first
     }
 
     #[inline(always)]
@@ -1397,6 +1421,15 @@ impl Signal {
             && self.force_eff.is_none()
             && self.force_drv.is_none()
             && self.force_ev.is_empty();
+        // One element (one stage of a chain): no bit mask.
+        if self.pend_one {
+            let (e, code) = self.last_commit;
+            if plain && let Some(&old) = self.codes.get(e as usize) {
+                self.pend_one = false;
+                return Some(self.finish_code(e as usize, code, old, now, cycle));
+            }
+            self.spill_pend_one();
+        }
         // One word (a register, or one stage of a chain): no list to sort or walk.
         if let [w] = self.pend_words[..] {
             self.pend_words.clear();
@@ -1420,6 +1453,29 @@ impl Signal {
         Some(any)
     }
 
+    /// `finish_pend` of one element `e` whose driving value is `code` and current value `old`
+    /// (a plain logic signal that keeps `codes`).
+    #[inline(always)]
+    fn finish_code(&mut self, e: usize, code: u8, old: u8, now: Time, cycle: u64) -> bool {
+        let n = self.ty.len as usize;
+        if !self.inactive {
+            let st = self.stamps.as_mut_slice();
+            st[n + e] = cycle;
+            st[3 * n + e] = stamp(now);
+        }
+        if code == old {
+            return false;
+        }
+        self.codes[e] = code;
+        if let (Some(cur), Some(last)) = (self.cur.planes_mut(), self.last_value.planes_mut()) {
+            put_plane_code(cur, e, code);
+            put_plane_code(last, e, old);
+        }
+        set_event(&mut self.stamps, n, e, cycle, now);
+        self.note_run(e, 1);
+        true
+    }
+
     /// `finish_pend` of the elements `m` of word `w`.
     #[inline(always)]
     fn finish_word(&mut self, w: usize, m: u64, now: Time, cycle: u64, plain: bool) -> bool {
@@ -1428,30 +1484,12 @@ impl Signal {
         if plain && m.is_power_of_two() {
             let e = base + m.trailing_zeros() as usize;
             if let (Some(&old), Buf::Planes { b: drv, .. }) = (self.codes.get(e), &self.driving) {
-                let n = self.ty.len as usize;
-                if !self.inactive {
-                    let st = self.stamps.as_mut_slice();
-                    st[n + e] = cycle;
-                    st[3 * n + e] = stamp(now);
-                }
                 // The code the last one-element commit wrote, if it was this element.
                 let code = match self.last_commit {
                     (le, c) if le as usize == e => c,
                     _ => plane_code(drv, e),
                 };
-                if code == old {
-                    return false;
-                }
-                self.codes[e] = code;
-                if let (Some(cur), Some(last)) =
-                    (self.cur.planes_mut(), self.last_value.planes_mut())
-                {
-                    put_plane_code(cur, e, code);
-                    put_plane_code(last, e, old);
-                }
-                set_event(&mut self.stamps, n, e, cycle, now);
-                self.note_run(e, 1);
-                return true;
+                return self.finish_code(e, code, old, now, cycle);
             }
         }
         if plain {

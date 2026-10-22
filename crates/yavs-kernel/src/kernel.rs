@@ -1767,7 +1767,14 @@ impl SimControl {
     fn commit_direct(&mut self) {
         if !self.direct.is_empty() || !self.directv.is_empty() {
             let sigs = &mut self.direct_sigs;
-            commit_out(&mut self.signals, sigs, &mut self.direct, &mut self.directv);
+            let empty = &mut self.empty_delta;
+            commit_out(
+                &mut self.signals,
+                sigs,
+                empty,
+                &mut self.direct,
+                &mut self.directv,
+            );
         }
     }
 
@@ -2371,6 +2378,7 @@ impl SimControl {
                 commit_out(
                     &mut self.signals,
                     &mut self.direct_sigs,
+                    &mut self.empty_delta,
                     &mut st.out,
                     &mut st.outv,
                 );
@@ -2395,6 +2403,7 @@ impl SimControl {
             commit_out(
                 &mut self.signals,
                 &mut self.direct_sigs,
+                &mut self.empty_delta,
                 &mut st.out,
                 &mut st.outv,
             );
@@ -2409,21 +2418,22 @@ impl SimControl {
                 // More was added to the wait (`Ctx::wait_on_again`): the last wait's ranges
                 // come first, as they were first named.
                 let mut all = st.sens_prev.clone();
-                all.extend(st.sens.drain(..));
+                all.append(&mut st.sens);
                 st.sens = all;
                 again = false;
             }
             let same = !timed && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
             let mut perm = 0;
+            // The ranges to register: `sens`, or `sens_prev` when they are the same or the new
+            // wait became the previous one (the buffers swap, nothing is copied).
+            let mut from_prev = false;
             if same {
                 perm = self.procs[p as usize].perm;
                 if perm == 0 {
                     self.perm_epoch += 1;
                     perm = self.perm_epoch;
                     self.procs[p as usize].perm = perm;
-                    if again {
-                        st.sens.extend_from_slice(&st.sens_prev);
-                    }
+                    from_prev = again;
                 } else {
                     st.sens.clear();
                 }
@@ -2435,27 +2445,29 @@ impl SimControl {
                     }
                 }
                 self.procs[p as usize].perm = 0;
-                st.sens_prev.clear();
-                if !timed {
-                    st.sens_prev.extend_from_slice(&st.sens);
-                }
+                std::mem::swap(&mut st.sens_prev, &mut st.sens);
+                st.sens.clear();
+                from_prev = true;
             }
-            if !st.sens.is_empty() {
-                for (s, range) in st.sens.drain(..) {
-                    self.signals[s.0 as usize].watched = true;
-                    let procs = &self.procs;
-                    self.waiters[s.0 as usize].add(
-                        p,
-                        range,
-                        Reg {
-                            generation,
-                            perm,
-                            trigger,
-                            tid,
-                        },
-                        |w| alive(procs, w),
-                    );
-                }
+            let list = if from_prev { &st.sens_prev } else { &st.sens };
+            for &(s, range) in list {
+                self.signals[s.0 as usize].watched = true;
+                let procs = &self.procs;
+                self.waiters[s.0 as usize].add(
+                    p,
+                    range,
+                    Reg {
+                        generation,
+                        perm,
+                        trigger,
+                        tid,
+                    },
+                    |w| alive(procs, w),
+                );
+            }
+            st.sens.clear();
+            if timed {
+                st.sens_prev.clear();
             }
             let result = if slot.result.is_ok() {
                 Ok(())
@@ -2680,12 +2692,15 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
 fn commit_out(
     signals: &mut [Signal],
     direct_sigs: &mut Vec<u32>,
+    empty: &mut bool,
     out: &mut Vec<Out>,
     outv: &mut Vec<OutV>,
 ) {
     for &o in out.iter() {
-        if signals[o.sig as usize].commit_code(o.slot, o.elem, o.code as u8) {
-            direct_sigs.push(o.sig);
+        match signals[o.sig as usize].commit_code(o.slot, o.elem, o.code as u8) {
+            Some(true) => direct_sigs.push(o.sig),
+            Some(false) => {}
+            None => *empty = true,
         }
     }
     out.clear();

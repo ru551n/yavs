@@ -184,3 +184,84 @@ fn a_clock_batch_keeps_the_report_order() {
     );
     assert_eq!(one, clock_batch(4));
 }
+
+/// Direct assignments that change nothing: with `skip_unchanged` the commit writes nothing for
+/// one element (a vector is written as before), yet every delta, phase and report is where it
+/// was, also when a later assignment of the run preempts the unchanged one.
+fn unchanged_direct(skip: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let lv = |s: &str| s.parse::<LogicVec>().unwrap();
+    let (s, t, v) = (
+        b.signal("s", SignalType::logic(1), &lv("1")),
+        b.signal("t", SignalType::logic(1), &lv("0")),
+        b.signal("v", SignalType::logic(4), &lv("0101")),
+    );
+    let (ds, dt, dv) = (b.driver(s), b.driver(t), b.driver(v));
+    // The same value at 0 fs (an empty delta follows) and at 5 ns.
+    b.process(
+        "same",
+        NONE,
+        &[ds, dv],
+        p(move |c| {
+            c.assign_code(ds, None, Time::ZERO, ONE, DelayMode::INERTIAL)?;
+            c.assign(dv, None, &[(Time::ZERO, &lv("0101"))], DelayMode::INERTIAL)?;
+            if c.now() == Time::ZERO {
+                c.wait_for(ns(5))?;
+            }
+            Ok(())
+        }),
+    );
+    // The same value, then a different one after a delay that preempts it; at 4 ns the same
+    // value, then a different one at once.
+    b.process(
+        "preempted",
+        NONE,
+        &[dt],
+        p(move |c| {
+            if c.now() == Time::ZERO {
+                c.assign_code(dt, None, Time::ZERO, ZERO, DelayMode::INERTIAL)?;
+                c.assign_code(dt, None, ns(2), ONE, DelayMode::INERTIAL)?;
+                c.wait_for(ns(4))?;
+            } else if c.now() == ns(4) {
+                c.assign_code(dt, None, Time::ZERO, ONE, DelayMode::INERTIAL)?;
+                c.assign_code(dt, None, Time::ZERO, ZERO, DelayMode::INERTIAL)?;
+            }
+            Ok(())
+        }),
+    );
+    b.process(
+        "watch",
+        ProcFlags {
+            postponed: true,
+            ..NONE
+        },
+        &[],
+        p(move |c| {
+            c.report(Severity::Note, format!("t={:?}", c.logic(t)?.to_string()));
+            c.wait_on(s)?;
+            c.wait_on(t)?;
+            c.wait_on(v)?;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b
+        .build(Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        })
+        .unwrap();
+    let trace = Trace {
+        phases: true,
+        ..Trace::default()
+    };
+    sim.subscribe(Box::new(trace.clone()));
+    sim.run_until(ns(20)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn unchanged_direct_assignments_keep_the_deltas() {
+    let (off, on) = (unchanged_direct(false), unchanged_direct(true));
+    assert!(off.iter().any(|l| l.contains("+1 NextCycle")), "{off:?}");
+    assert_eq!(off, on);
+}

@@ -51,6 +51,10 @@ fetch ghdl https://github.com/ghdl/ghdl 71b3e1ac7088489b1214e0c626e00d2dfad7c6d9
 # Analysis corpora (tools/corpus/*.toml): standalone OSVVM (tag 2026.09, with its library submodules) and UVVM.
 fetch_with_submodules osvvm-libraries https://github.com/OSVVM/OsvvmLibraries ab47a2637008a0709bbf593aa1ab0060dcc39aac
 fetch uvvm https://github.com/UVVM/UVVM 90d56e93c542bf0d5e2ab9f791cc7395bd1aa896
+# Third-party designs the UVVM maintenance testbenches of the SPI and I2C VIPs need (tools/suites/uvvm.py maps them back).
+fetch uvvm-supplementary https://github.com/UVVM/UVVM_SUPPLEMENTARY c91e3d7365a9aa0c0d67708e7bc9a5e3db9d8a75 '/bitvis_vip_spi/tb/maintenance_tb/spi_master_slave_opencores/'
+fetch uvvm-i2c-master https://github.com/freecores/i2c 3b067f00ccced753b0502024766a51f58f3e04bc '/rtl/vhdl/'
+fetch uvvm-i2c-slave https://github.com/oetr/FPGA-I2C-Minion dde7b0fc71241a8821c1dd21ef7b1716e12c31dc '/I2C_slave.vhd' '/debounce.vhd' '/txt_util.vhd'
 # hdl-modules release v6.2.1 (src/ and rtl/ of each module are the analysis corpus).
 fetch hdl-modules https://github.com/hdl-modules/hdl-modules c4f01c4bb69aab66c879f545e80abb477f1ebf35
 

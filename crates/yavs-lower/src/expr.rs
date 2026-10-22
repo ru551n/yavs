@@ -4355,6 +4355,16 @@ impl<'a> Fx<'a, '_> {
                 self.konst(&v, st, span)
             }
             AttrPrefix::Entity(d) if matches!(attr, PathName | InstanceName) => {
+                // An item of a library-unit package is named the same in every instance, and the
+                // subprogram that reads it is shared by them: a constant, not an instance slot.
+                if let Some(name) = crate::pathname::library_package_item_name(db, d) {
+                    let st = self.string_subtype(span)?;
+                    let v = ConstValue::Array(yavs_sem::stat::ArrayConst {
+                        bounds: Box::new([(1, Direction::To, name.len() as i64)]),
+                        elems: Elems::Bytes(name.into_bytes().into_boxed_slice()),
+                    });
+                    return self.konst(&v, st, span);
+                }
                 let instance = attr == InstanceName;
                 let off = match self
                     .cx

@@ -108,7 +108,7 @@ impl Db {
 
     /// The package region of package body region `body`: its parent for a nested body, else
     /// the parent of its context region (unit.rs).
-    pub(crate) fn body_package(&self, body: ScopeId) -> Option<ScopeId> {
+    pub fn body_package(&self, body: ScopeId) -> Option<ScopeId> {
         if self.scopes[body].kind != ScopeKind::PackageBody {
             return None;
         }

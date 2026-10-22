@@ -28,6 +28,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 | `src/ty.rs` | HIR type to IR `Ty`, widths, `signal_elem` |
 | `src/composite.rs`, `access.rs`, `protected.rs`, `file.rs`, `force.rs` | Records and composite arrays, access types, protected types, files/textio, force/release (lower2) |
 | `src/reduce.rs` | The reduction idiom: `reduction` recognises a user function that folds a `std_ulogic` array with `and`/`or`/`xor` from the gate's identity, `symbol` names the unary-operator native it is called as (#531) |
+| `src/pathname.rs` | Static `'path_name`/`'instance_name` text of library-package items (`library_package_item_name`), `subprogram_element`, `package_prefix` (shared with yavs-elab) |
 | `src/reflect.rs` | `'reflect` and mirror lowering |
 | `src/foreign.rs` | Calls of `'FOREIGN` (VHPIDIRECT and `"VHPI library model"`, `ForeignRef::model`) subprograms: one `ForeignRef` per subprogram (`Cx::foreigns`), arguments as `cells(.., native)`, result range check |
 | `tests/corpus.rs` | `tests/corpus` groups through sem, elab (lowering), verifier, interpreter and kernel vs the reference simulator `.expected` (honours `ignore=order` and `ignore=path`); `PASS` list must match exactly |
@@ -36,6 +37,7 @@ yavs-interp and yavs-elab and the Requests are in `crates/yavs-lower/DESIGN.md`;
 
 | Decision | Why | Source |
 |---|---|---|
+| `'path_name`/`'instance_name` of an item of a library-unit package (a package subprogram's parameters and locals included) lowers to a constant string (`pathname.rs`), not a slot in the instance data | The subprogram is lowered once and shared by every architecture; a slot belongs to the architecture lowered first, so a call from another architecture read garbage or failed with an internal error (#460) | #460 |
 | An alias of a logic element or slice of a variable with a static name has no storage: uses lower the aliased name (reads and writes), seen with the alias subtype's bounds; a non-static name stays `E2001` | Logic arrays are bit planes, so the part is not addressable; a static name denotes the same part at every use (#296) | LRM 6.6.2 |
 | A name below a record signal made of fields, nested fields and indexed elements (`r.f`, `r.sub.g`, `arr(i).f`, `arr(i)`) reads only the leaves it selects (`Fx::rec_part`, `comp_select`): one `SigRead` of the leaf, or `SigReadScalar` for a scalar leaf, never the whole record and then a field select; slices of an array of records still read all of it | A process naming one field of a 40-field control record copied the whole record on every activation, and the neorv32 processor testbench ran twice as long; the reference simulator keeps a record signal as one handle per field and selects by offset | #521 |
 | A `Failed` that reaches a `Lowerer` entry point with no diagnostic is an ICE (`Cx::take_failed`), never an empty error list | A failed run must always say why (#292) | root `AGENTS.md` rule 1 |

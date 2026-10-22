@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:package_subprogram_param_names:i1:_p0	:work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:c
+diag	note	0	0	:package_subprogram_param_names:i2:_p0	:work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:c
+diag	note	0	0	:package_subprogram_param_names:i3:_p0	:work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:c
+diag	note	1000000	0	:package_subprogram_param_names:_p0	:work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:idx | :work:pspn:wr[integer]:c

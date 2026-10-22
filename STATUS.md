@@ -2377,6 +2377,8 @@ subtype indications as generate specifications.
 
 ## lower (`crates/yavs-lower`, M2)
 
+`'driving` / `'driving_value` of a signal the process has no driver of is a run-time error (L116, #546); signal parameters and partly driven composites are still `E2001`.
+
 HIR to IR for every architecture the elaborator instantiates: generics, ports (unconstrained
 array ports take the actual's bounds), blocks (guarded ones with their guard process), generates
 (one instance data per region), processes and concurrent statements; scalar and array

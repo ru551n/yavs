@@ -4167,6 +4167,36 @@ impl<'a> Fx<'a, '_> {
                     _ => None,
                 };
                 let Some(slot) = slot else {
+                    // A signal this process does not drive at all (LRM 16.2.4: an error when
+                    // evaluated, so at run time, as the reference simulators do). Signal
+                    // parameters and partly driven composites stay unlowered.
+                    if let ExprKind::Obj(d) = db.exprs[e].kind {
+                        let root = yavs_sem::hir::ObjRoot::Decl(d);
+                        if !self.drivers.iter().any(|l| l.root == root)
+                            && !matches!(self.cx.objs.get(&d), Some(Obj::SignalRef { .. }))
+                        {
+                            let what = self.msg(
+                                &format!(
+                                    "'{} of signal {} in a process that does not contain a driver for it (LRM 16.2.4)",
+                                    if attr == Driving { "driving" } else { "driving_value" },
+                                    db.decls[d].name
+                                ),
+                                Dir::To,
+                            );
+                            self.term(Inst::Unreachable { what });
+                            let dead = self.block();
+                            self.at(dead);
+                            return Ok(match (attr == Driving, self.dope_of_signal(e)?) {
+                                (true, _) => V::S(self.int(0)),
+                                (_, Some(dope)) => {
+                                    let tid = self.ty(db.base(db.exprs[e].subtype), span)?;
+                                    let size = self.size_of(tid, dope);
+                                    V::A(self.alloc(size), dope)
+                                }
+                                _ => V::S(self.int(0)),
+                            });
+                        }
+                    }
                     return Err(self
                         .cx
                         .unsupported(span, "'driving of signal parameters and sub-elements"));

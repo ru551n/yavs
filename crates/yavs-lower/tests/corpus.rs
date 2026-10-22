@@ -178,6 +178,7 @@ const PASS: &[&str] = &[
     "hierarchy/config_generate_index",
     "hierarchy/config_port_expr",
     "hierarchy/out_port_collapse",
+    "hierarchy/driving_value_no_driver",
     "hierarchy/use_type_operations",
     "protected/region_shared_elab",
     "hierarchy/use_type_functions",

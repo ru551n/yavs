@@ -1566,6 +1566,22 @@ impl<'a> Fx<'a, '_> {
         let val = self.alloc(size);
         for (l, sref, len) in &p.leaves {
             let facts = self.leaf_facts(l, span)?;
+            let rel = &l.path[p.path.len()..];
+            // A logic vector that is a field of nested records: read it where it lies.
+            if facts.0 && self.plain_vector_field(p.t, rel, span)? {
+                let (mut a, mut d, mut t) = (val, p.desc, p.t);
+                for &n in rel {
+                    let tid = self.ty(t, span)?;
+                    (a, d) = self.field_addr(tid, a, d, n, span)?;
+                    t = self.db.base(self.field_subtype(t, n)?);
+                }
+                self.emit(if last {
+                    Inst::SigLastValue { dst: a, sig: *sref }
+                } else {
+                    Inst::SigRead { dst: a, sig: *sref }
+                });
+                continue;
+            }
             let size = self.leaf_size(l, *len, span)?;
             let buf = self.alloc(size);
             self.emit(if last {
@@ -1580,10 +1596,23 @@ impl<'a> Fx<'a, '_> {
                 }
             });
             let k = self.int(0);
-            let rel = &l.path[p.path.len()..];
             self.leaf_walk(p.t, val, p.desc, rel, k, (buf, *len), facts, true, span)?;
         }
         Ok(V::A(val, p.desc))
+    }
+
+    /// Does the field path `rel` from record type `t` lead through records only to an array
+    /// of logic scalars, whose planes then lie in one piece in the record's value?
+    fn plain_vector_field(&mut self, t: TypeId, rel: &[u32], span: Span) -> R<bool> {
+        let mut t = t;
+        for &n in rel {
+            if !matches!(self.db.types[t].kind, TypeKind::Record { .. }) {
+                return Ok(false);
+            }
+            t = self.db.base(self.field_subtype(t, n)?);
+        }
+        let tid = self.ty(t, span)?;
+        Ok(!rel.is_empty() && ty::is_array(self.db, t) && self.is_logic(tid))
     }
 
     /// Write the elements of leaf `l` (relative field path `rel`) of value `(data, desc)` of

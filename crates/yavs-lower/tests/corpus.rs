@@ -102,6 +102,7 @@ const PASS: &[&str] = &[
     "composite/strings_ops",
     "composite/unconstrained_records",
     "composite/record_signal_field_read",
+    "composite/record_signal_vector_read",
     "delta/async_triggers",
     "delta/concurrent_assign",
     "delta/delta_chain",

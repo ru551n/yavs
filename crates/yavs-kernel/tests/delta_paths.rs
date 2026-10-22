@@ -276,7 +276,8 @@ fn second_assignment_of_an_activation_replaces_the_first() {
 
 /// The byte codes of a logic signal (`Ctx::elem_code`, `Ctx::code_view`) agree with the planes
 /// after every kind of update: one-element finishes of drivers that are an element's only
-/// source, a vector driver, a block pass of many elements and a deposit.
+/// source, a vector driver, a block pass of many elements and a deposit. A signal of more than
+/// 64 elements keeps no byte codes: its elements are read from the planes.
 #[test]
 fn element_codes_follow_every_kind_of_update() {
     for n in [3u32, 64, 70, 200] {
@@ -337,7 +338,11 @@ fn element_codes_follow_every_kind_of_update() {
             &[],
             p(move |c| {
                 let view = c.code_view(s);
-                assert_eq!(view.map(|v| v.1), Some(n as usize), "{n} elements");
+                assert_eq!(
+                    view.map(|v| v.1),
+                    (n <= 64).then_some(n as usize),
+                    "{n} elements"
+                );
                 assert!(c.code_view(clk).is_some_and(|v| v.1 == 1));
                 let whole = c.logic(s)?;
                 for e in 0..n {

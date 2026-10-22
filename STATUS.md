@@ -4721,6 +4721,39 @@ about 45% (records with array elements: `layout_words`, #518) and half of the ke
 collapsing `out` ports would remove (#528, a decision for the maintainer: `--no-collapse-ports` doubles the instructions of this
 test, so `in` port collapsing already halved them).
 
+## Wide buses, round 2: byte codes and record signal reads (#519, #523, 2026-10-22)
+
+A fresh profile of the 512 bit stream test (`fletcher_bufferwriter_512`, interpreter, core 11 of the 7950X3D; `perf` with frame
+pointers, per-process timers and a per-op trace, none committed) found no single dominant cost left: `run_ops` 30% (dispatch
+14% of that, the rest spread over 40 ops), the kernel 40% (`update_effective` 12%, then 40 functions under 3%). Two changes
+(`docs/decisions.md` unchanged; `crates/yavs-kernel/AGENTS.md` and `crates/yavs-lower/AGENTS.md` decisions):
+
+- A logic signal of more than 64 elements whose sources are wider than 16 elements keeps no byte code per element
+  (`CODES_SOURCE_MAX`): the refresh of 64 codes per changed block was 12% of `update_effective`. Vectors of registers keep them
+  (a blanket limit of 64 made `rtl_ff` and `rtl_chain` 1.5 times slower).
+- A vector field of a record signal is read into the field of the record value, not into a temporary and copied (the buffer,
+  its size arithmetic and an `LCopy` per field).
+
+Interpreter, core 11, `tools/realbench --compare` before/after (41 tests, run phase): geometric mean wall 0.99, instructions
+1.00, no slowdown in instructions; `fletcher_bufferwriter_512` 11.46 s to 10.87 s (instructions 0.94), `fletcher_bufferreader`
+4.74 s to 4.60 s (0.94), `sc5_fifo_repack` and `hdlm_lfsr` unchanged (0.99 to 1.00). `tools/bench` group `h2h`: total CPU 0.96,
+`xor_sig` and `xor_types` 0.78. A micro design that drives twenty 512 bit signals per clock: 31.1 G to 21.6 G instructions.
+
+What was measured and not changed (ranked by what the profile says is left):
+
+1. Compiled code of these processes is slower than the interpreter: `--tier=llvm` on `fletcher_bufferwriter_512` simulates in
+   20.3 s against 11.5 s (38440 IR instructions compiled, 3436 run through the interpreter, `LayoutOf` 592 and `Drive` 500
+   the largest); `--tier=auto` compiles none of the processes (`--verbose` shows only refusals), so auto equals the interpreter here;
+   with `--tier-heat=1,0,0` everything compiles and the run takes 24 s. #532, #339.
+2. Zero-delay drive and commit of small vectors: 20 drives of a 32 bit vector cost 2.9 K instructions each, 37% of the time in
+   `finish_direct` (kernel scheduler, #440).
+3. Composite statements: 14 interpreter operations per statement of `ctrl_comb_proc` (`DopeLen`, `SigVal`, `LayoutWord`,
+   `Aff1`/`Div`/`Aff1` size arithmetic, `SubtypeCheck`) of which a third depend on instance constants only; hoisting them out of
+   the process loop would save at most 5% of the time because each is a cheap operation (#518, #520).
+4. The layout memo keeps one entry per type: 100 K real `Ty::layout` calls per 100 us of simulated time on this test, 2% (#518).
+5. A wide `update_effective` word costs about 470 instructions on fully changing buses (popcount in software on the baseline
+   target, event records, plane blends); lazy run lists would save 2.5% at most.
+
 ## Loop-invariant code motion (#526, 2026-10-22)
 
 `crates/yavs-ir/src/opt/licm.rs` (`docs/decisions.md` "Loop-invariant code motion"): in a function or procedure that cannot

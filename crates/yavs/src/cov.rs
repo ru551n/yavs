@@ -9,6 +9,7 @@ use yavs_diag::{Diagnostic, MessageFormat, SourceMap};
 
 use crate::analyze::Out;
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 pub enum Command {
     /// Add up the counts of several coverage databases into one.

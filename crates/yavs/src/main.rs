@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, Severity, SourceMap};
 use yavs_syntax::{Encoding, Options, Std};
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Parser)]
 #[command(
     name = "yavs",
@@ -25,6 +26,16 @@ use yavs_syntax::{Encoding, Options, Std};
     args_override_self = true
 )]
 struct Cli {
+    #[command(flatten)]
+    top: Top,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// The options before the subcommand (`color`, `message_format` and `encoding` also after it).
+#[cfg_attr(test, derive(Debug))]
+#[derive(clap::Args)]
+struct Top {
     /// When to colour diagnostics.
     #[arg(long, global = true, value_enum, default_value = "auto")]
     color: Color,
@@ -38,10 +49,60 @@ struct Cli {
     /// Print the long explanation of a diagnostic code, such as `E0002`, and exit.
     #[arg(long, value_name = "CODE")]
     explain: Option<String>,
-    #[command(subcommand)]
-    command: Option<Command>,
 }
 
+/// The command line of `analyze`, `elab` and `run`, which test runners call by the hundred, parsed
+/// from a command that holds only the subcommand called: building all 70 arguments of all
+/// subcommands cost 4% of a tiny run (#426). `None` for anything else and for every error or
+/// request for help, which then go through the whole command (`Cli::parse_from`), so their text
+/// is that of the whole command's.
+fn parse_hot(args: &[String]) -> Option<Cli> {
+    use clap::{Args, FromArgMatches};
+    let mut i = 1;
+    let name = loop {
+        match args.get(i)?.as_str() {
+            "--color" | "--message-format" | "--encoding" => i += 2,
+            a if a.starts_with("--color=")
+                || a.starts_with("--message-format=")
+                || a.starts_with("--encoding=") =>
+            {
+                i += 1
+            }
+            a @ ("analyze" | "elab" | "run") => break a,
+            _ => return None,
+        }
+    };
+    if args
+        .iter()
+        .any(|a| matches!(a.as_str(), "-h" | "--help" | "-V" | "--version"))
+    {
+        return None;
+    }
+    // ponytail: the attributes of `Cli` and of the variants of `Command` are repeated here; the
+    // test `hot_parse_equals_the_whole_command` compares the two.
+    let sub = match name {
+        "analyze" => analyze::Args::augment_args(
+            clap::Command::new("analyze").about("Analyze one VHDL file into a library"),
+        ),
+        "elab" => elab::Common::augment_args(
+            clap::Command::new("elab").about("Elaborate a design (no simulation)"),
+        ),
+        _ => elab::RunArgs::augment_args(
+            clap::Command::new("run").about("Elaborate and simulate a design"),
+        ),
+    };
+    let top = clap::Command::new("yavs")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("A VHDL simulator")
+        .args_override_self(true);
+    let mut matches = Top::augment_args(top)
+        .subcommand(sub)
+        .try_get_matches_from(args)
+        .ok()?;
+    Cli::from_arg_matches_mut(&mut matches).ok()
+}
+
+#[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 // Parsed once per process, boxing RunArgs buys nothing.
 #[allow(clippy::large_enum_variant)]
@@ -77,6 +138,7 @@ enum Command {
     Cache(cache::Command),
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, ValueEnum)]
 pub(crate) enum StdArg {
     #[value(name = "2008")]
@@ -85,6 +147,7 @@ pub(crate) enum StdArg {
     V2019,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, ValueEnum)]
 enum EncodingArg {
     Auto,
@@ -92,6 +155,7 @@ enum EncodingArg {
     Utf8,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, ValueEnum)]
 pub(crate) enum Color {
     Auto,
@@ -99,6 +163,7 @@ pub(crate) enum Color {
     Never,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, ValueEnum)]
 enum Format {
     Human,
@@ -153,8 +218,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let cli = Cli::parse_from(&args);
-    if let Some(code) = &cli.explain {
+    let cli = parse_hot(&args).unwrap_or_else(|| Cli::parse_from(&args));
+    if let Some(code) = &cli.top.explain {
         return match explain::explain(&code.to_ascii_uppercase()) {
             Some(text) => {
                 println!("{}: {text}", code.to_ascii_uppercase());
@@ -175,18 +240,18 @@ fn main() -> ExitCode {
             )
             .exit()
     };
-    let color = match cli.color {
+    let color = match cli.top.color {
         Color::Auto => ColorChoice::Auto,
         Color::Always => ColorChoice::Always,
         Color::Never => ColorChoice::Never,
     }
     .use_color();
-    let format = match cli.message_format {
+    let format = match cli.top.message_format {
         Format::Human => MessageFormat::Human,
         Format::Short => MessageFormat::Short,
         Format::Json => MessageFormat::Json,
     };
-    let encoding = match cli.encoding {
+    let encoding = match cli.top.encoding {
         EncodingArg::Auto => Encoding::Auto,
         EncodingArg::Latin1 => Encoding::Latin1,
         EncodingArg::Utf8 => Encoding::Utf8,
@@ -274,6 +339,98 @@ mod tests {
     fn panic_becomes_exit_3() {
         let r = guard(MessageFormat::Short, false, || panic!("boom"));
         assert_eq!(format!("{r:?}"), format!("{:?}", ExitCode::from(3)));
+    }
+
+    /// The command line of the hot subcommands parses to what the whole command gives, and
+    /// whatever is not plain (help, errors, other subcommands) is left to the whole command.
+    #[test]
+    fn hot_parse_equals_the_whole_command() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let same = [
+            &["yavs", "run", "--work=w:d", "top"][..],
+            &[
+                "yavs",
+                "--color",
+                "never",
+                "run",
+                "--work=w:d",
+                "top",
+                "-gN=3",
+                "--stop-time=10ns",
+                "--threads",
+                "4",
+                "+arg=1",
+            ],
+            &[
+                "yavs",
+                "run",
+                "--color=always",
+                "--message-format",
+                "json",
+                "--work=w:d",
+                "t",
+            ],
+            &[
+                "yavs",
+                "--encoding=latin1",
+                "analyze",
+                "--work=w:d",
+                "--std=2019",
+                "a.vhd",
+                "b.vhd",
+            ],
+            &[
+                "yavs",
+                "analyze",
+                "--work=w:d",
+                "-Werror",
+                "-D",
+                "A=1",
+                "--relaxed",
+                "--psl",
+                "a.vhd",
+            ],
+            &[
+                "yavs",
+                "elab",
+                "--std=2019",
+                "--work=w:d",
+                "--map=x:y",
+                "top",
+            ],
+            &[
+                "yavs",
+                "--message-format",
+                "short",
+                "elab",
+                "--work=w:d",
+                "top",
+                "-gN=3",
+            ],
+        ];
+        for a in same {
+            let a = args(a);
+            let hot = parse_hot(&a).unwrap_or_else(|| panic!("not hot: {a:?}"));
+            let full = Cli::try_parse_from(&a).unwrap();
+            assert_eq!(format!("{hot:?}"), format!("{full:?}"), "{a:?}");
+        }
+        let whole = [
+            &["yavs"][..],
+            &["yavs", "--help"],
+            &["yavs", "--version"],
+            &["yavs", "--explain", "E0002"],
+            &["yavs", "run", "--help"],
+            &["yavs", "run", "-h"],
+            &["yavs", "parse", "x.vhd"],
+            &["yavs", "cov", "merge"],
+            &["yavs", "run"],
+            &["yavs", "run", "--bogus", "t"],
+            &["yavs", "--bogus", "run", "t"],
+            &["yavs", "ru", "t"],
+        ];
+        for a in whole {
+            assert!(parse_hot(&args(a)).is_none(), "{a:?}");
+        }
     }
 
     /// The default tier (#125): `auto` with the `llvm` feature, also under `--vhpi`; `interp`

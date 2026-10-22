@@ -21,6 +21,7 @@ use yavs_kernel::{EndReason, RunStatus};
 use crate::StdArg;
 use crate::analyze::Out;
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 pub struct Common {
     /// Design revision of std/ieee; default: the newest standard in the design's closure.
@@ -58,6 +59,7 @@ pub struct Common {
     generics: Vec<(String, String)>,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum ResolutionArg {
     Fs,
@@ -68,6 +70,7 @@ enum ResolutionArg {
     Sec,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 pub struct RunArgs {
     #[command(flatten)]
@@ -234,6 +237,7 @@ impl RunArgs {
     }
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TierArg {
     Interp,
@@ -241,6 +245,7 @@ pub enum TierArg {
     Auto,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum CovKindArg {
     Statement,
@@ -248,6 +253,7 @@ pub enum CovKindArg {
     Toggle,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum SeverityArg {
     Note,

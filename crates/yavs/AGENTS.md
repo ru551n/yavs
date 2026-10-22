@@ -17,7 +17,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | File | Responsibility |
 |---|---|
-| `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding`; `parse` subcommand; `@file` expansion before clap |
+| `src/main.rs` | `Cli`/`Command` (clap), global `--color`, `--message-format`, `--encoding` (`Top`); `parse_hot` (the command line of `analyze`, `elab` and `run` parsed from a command that holds only that subcommand; help, errors and the other subcommands go through `Cli::parse_from`, so their text is the whole command's); `parse` subcommand; `@file` expansion before clap |
 | `src/analyze.rs` | `yavs analyze` (`Args`), `expand_response_files`, `Out` (counts errors/warnings, `-Werror`, "aborting due to" line, exit code), batch notes |
 | `src/cov.rs` | `yavs cov merge`, `yavs cov report` (`--exclude`, `--uncovered`, `--tests`, `--html`, `-W`; E0110, E0111, E0112, E0113) and `yavs cov rank` |
 | `src/gui.rs` | `run --gui`: starts `yavs-gui --yavs <this exe> -- <run args>` (next to the exe, else PATH; E0122), exit status passed through |

@@ -19,12 +19,13 @@ struct Interner {
 }
 
 impl Default for Interner {
-    /// Sized for a short run's names: the table is touched at random, so every name of a bigger
-    /// table costs a page fault (0.15 ms of a short run); a longer one grows by rehashing.
+    /// Sized for a short run's names (450 to 900 for a tiny test): the table is touched at
+    /// random, so every page of a bigger table costs a page fault; a longer run grows it by
+    /// rehashing.
     fn default() -> Self {
         Interner {
-            map: FxHashMap::with_capacity_and_hasher(1 << 11, Default::default()),
-            strings: Vec::with_capacity(1 << 11),
+            map: FxHashMap::with_capacity_and_hasher(NAMES, Default::default()),
+            strings: Vec::with_capacity(NAMES),
         }
     }
 }
@@ -34,12 +35,24 @@ fn interner() -> &'static RwLock<Interner> {
     I.get_or_init(Default::default)
 }
 
+/// Names a table starts with room for.
+const NAMES: usize = 1 << 10;
+
 /// Per-thread mirror of the table: a hit or `as_str` of a known symbol takes no lock (the
 /// table only grows, so a copy never goes stale, it only lacks newer entries).
-#[derive(Default)]
 struct Local {
     map: FxHashMap<&'static str, Symbol>,
     strings: Vec<&'static str>,
+}
+
+impl Default for Local {
+    /// Sized like the table, so a short run does not grow it by doubling.
+    fn default() -> Self {
+        Local {
+            map: FxHashMap::with_capacity_and_hasher(NAMES, Default::default()),
+            strings: Vec::with_capacity(NAMES),
+        }
+    }
 }
 
 thread_local! {

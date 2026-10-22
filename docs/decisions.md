@@ -4570,8 +4570,19 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
 - **`Db::release_analysis` leaves a small design to the process exit** (fewer than 50 000 declarations, expressions and
   statements together): the thread and the freeing cost 3% of a tiny run; the memory is a few megabytes. A bigger design
   is freed on a thread of its own, as before.
+- **`analyze`, `elab` and `run` parse their command line from a command that holds only that subcommand** (`parse_hot` in
+  `main.rs`): the whole command has 70 arguments. Help, `--version`, every error and every other command go through the
+  whole command, so their text is unchanged; the test `hot_parse_equals_the_whole_command` compares the results. Saves
+  1.6% of a tiny `run` and 3.7% of an `analyze`. The attributes of `Cli` and the `about` texts of the three variants are
+  repeated in `parse_hot`.
+- **The symbol table and its per-thread mirror start with room for 1 024 names, not 2 048** (a tiny test interns 450 to 900,
+  a test of `ieee.fixed_pkg` 2 300, which then grows once): the mirror started empty and doubled, the table was touched at
+  random over 100 KB (about 30 page faults, 1.8% of a tiny run).
 - **The LLVM stub generator writes the names as one string** (no 1 300 relocations and 5 pages of pointers in a position
   independent executable).
+- Measured and not worth it: `-z pack-relative-relocs` (DT_RELR) leaves the cycles and instructions of a tiny run as they
+  are (the 16 700 relative relocations cost their page copies, not their processing) and needs glibc 2.36; `arena_max=1`
+  saves 1%.
 - Not done, for the maintainer: the Rust runtime's probe of the main thread's stack (`pthread_getattr_np` reads and parses
   `/proc/self/maps`) is 6 to 7% of a tiny run; avoiding it needs a C `main` (`#![no_main]`), which loses the runtime's
   stack overflow report and needs the exit status as a number. The two helper threads that start with every piped run

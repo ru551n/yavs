@@ -12,6 +12,7 @@ use yavs_syntax::Encoding;
 
 use crate::StdArg;
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 pub struct Args {
     /// Language standard of this file.

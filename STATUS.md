@@ -4759,6 +4759,7 @@ subtypes on both sides (#536: `natural <= integer` lost its range check) and tak
 Against sim1 (39 to 44 G instructions per run), interpreter instruction ratios went from 2.60 / 3.81 / 3.30 (dual, single_min,
 single_cache, `main` at `e4c8d983` this morning) to 2.37 / 3.37 / 2.96 with the kernel copies and this change. Not done: compiled
 code (`--tier=llvm`, `auto`) still names every signal of such a wait (LLVM tier).
+
 ## Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22
 
 `tools/realbench` now times four phases apart (`--phases analyze,elab,codegen,run`, `tools/realbench/AGENTS.md` section 3), for yavs and

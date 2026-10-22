@@ -11,7 +11,8 @@ use smallvec::{SmallVec, smallvec};
 use crate::error::ErrorKind;
 use crate::time::Time;
 use crate::value::{
-    Buf, Elem, SignalType, bits, bytes_eq, fill_bits, plane_code, put_bits, put_plane_code,
+    Buf, Elem, SignalType, bits, bytes_eq, fill_bits, plane_code, put_bits, put_bytes,
+    put_plane_code,
 };
 use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
@@ -1472,6 +1473,52 @@ impl Signal {
         Some(self.mark_pend(elem, 1))
     }
 
+    /// A zero-delay transaction of one element of a byte signal's direct driver
+    /// (`DriverInfo::bdirect`), committed as `commit_code` commits a logic one: the driving
+    /// value now (the driver value too after a deposit), the element waiting for the next update
+    /// (`finish_pend`). True for the signal's first one; `None` when the driver and the signal
+    /// already have the bytes and the signal allows skipping.
+    #[inline]
+    pub(crate) fn commit_bytes(
+        &mut self,
+        slot: u32,
+        elem: u32,
+        es: usize,
+        val: &[u8; 8],
+    ) -> Option<bool> {
+        let v = &val[..es];
+        let at = elem as usize * es;
+        let (Buf::Bytes { data: drv, .. }, Buf::Bytes { data: cur, .. }) =
+            (&mut self.driving, &self.cur)
+        else {
+            unreachable!("commit_bytes of logic storage")
+        };
+        let same = bytes_eq(&cur[at..at + es], v);
+        if self.exact {
+            let d = &mut self.drivers[slot as usize];
+            let rel = (elem - d.range.offset) as usize * es;
+            if let Buf::Bytes { data, .. } = &mut d.value {
+                if same && self.skip_ok && bytes_eq(&data[rel..rel + es], v) {
+                    return None;
+                }
+                data[rel..rel + es].copy_from_slice(v);
+            }
+        } else if same && self.skip_ok && bytes_eq(&drv[at..at + es], v) {
+            return None;
+        }
+        put_bytes(&mut drv[at..at + es], v);
+        self.lag |= !self.exact;
+        // The first element of the cycle stays in `last_commit` alone (`pend_one`).
+        if !self.pend_one && self.pend_words.is_empty() {
+            self.pend_one = true;
+            self.last_commit = (elem, 0);
+            return Some(true);
+        }
+        self.spill_pend_one();
+        self.last_commit = (elem, 0);
+        Some(self.mark_pend(elem, 1))
+    }
+
     /// `commit_code` of entries of this signal in order (a vector with a process per element that
     /// ran in one batch), its storage looked up once. True when the signal had nothing pending
     /// and has now.
@@ -1630,6 +1677,9 @@ impl Signal {
             // The general paths compute the driving value from the drivers.
             self.sync_drivers();
         }
+        if matches!(self.ty.elem, Elem::Bytes(_)) {
+            return self.finish_pend_bytes(now, cycle, plain);
+        }
         // One element (one stage of a chain): no bit mask.
         if self.pend_one {
             let (e, code) = self.last_commit;
@@ -1662,6 +1712,75 @@ impl Signal {
         Some(any)
     }
 
+    /// `finish_pend` of a byte signal: each pending element's driving bytes against its current
+    /// ones (an event if they differ), or, with a layer on the signal, dirty ranges for the
+    /// general paths.
+    fn finish_pend_bytes(&mut self, now: Time, cycle: u64, plain: bool) -> Option<bool> {
+        let one = |s: &mut Signal, e: usize| -> bool {
+            if plain {
+                s.finish_bytes_elem(e, now, cycle)
+            } else {
+                let r = Range::new(e as u32, 1);
+                s.mark_active(r, now, cycle);
+                s.push_dirty(r);
+                false
+            }
+        };
+        if self.pend_one {
+            self.pend_one = false;
+            return Some(one(self, self.last_commit.0 as usize));
+        }
+        if self.pend_words.is_empty() {
+            return None;
+        }
+        let mut words = std::mem::take(&mut self.pend_words);
+        if !words.is_sorted() {
+            words.sort_unstable();
+        }
+        let mut any = false;
+        for &w in &words {
+            let mut m = std::mem::take(&mut self.pend[w as usize]);
+            while m != 0 {
+                let e = w as usize * 64 + m.trailing_zeros() as usize;
+                m &= m - 1;
+                any |= one(self, e);
+            }
+        }
+        words.clear();
+        self.pend_words = words;
+        Some(any)
+    }
+
+    /// An element of a plain byte signal committed directly: active, and an event when its
+    /// driving bytes differ from the current ones.
+    #[inline]
+    fn finish_bytes_elem(&mut self, e: usize, now: Time, cycle: u64) -> bool {
+        let n = self.ty.len as usize;
+        if !self.inactive {
+            let st = self.stamps.as_mut_slice();
+            st[n + e] = cycle;
+            st[3 * n + e] = stamp(now);
+        }
+        let (
+            Buf::Bytes { es, data: drv },
+            Buf::Bytes { data: cur, .. },
+            Buf::Bytes { data: last, .. },
+        ) = (&self.driving, &mut self.cur, &mut self.last_value)
+        else {
+            unreachable!("finish_bytes_elem of logic storage")
+        };
+        let es = *es;
+        let (d, c) = (&drv[e * es..(e + 1) * es], &mut cur[e * es..(e + 1) * es]);
+        if bytes_eq(c, d) {
+            return false;
+        }
+        put_bytes(&mut last[e * es..(e + 1) * es], c);
+        put_bytes(c, d);
+        set_event(&mut self.stamps, n, e, cycle, now);
+        self.note_run(e, 1);
+        true
+    }
+
     /// `finish_pend` when only the element `pend_one` holds is pending, on a plain signal with
     /// nothing else to finish: whether it changed. `None` (nothing done) otherwise.
     #[inline(always)]
@@ -1674,6 +1793,10 @@ impl Signal {
             || self.unfinished()
         {
             return None;
+        }
+        if matches!(self.ty.elem, Elem::Bytes(_)) {
+            self.pend_one = false;
+            return Some(self.finish_bytes_elem(e as usize, now, cycle));
         }
         let &old = self.codes.get(e as usize)?;
         self.pend_one = false;

@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutV, ProcId, ProcState, Process, Severity,
-    Shared, SignalOp, check_ref, make_op,
+    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId, ProcState, Process,
+    Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -715,6 +715,7 @@ pub struct SimControl {
     /// signals once the batch is over.
     direct: Vec<Out>,
     directv: Vec<OutV>,
+    directb: Vec<OutB>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
     ops: Vec<SignalOp>,
@@ -912,6 +913,11 @@ impl SimControl {
                     None | Some(crate::signal::Resolution::StdLogic)
                 )
                 && !s.drivers[d.slot as usize].shared;
+            d.bdirect = independent[d.signal.0 as usize]
+                && matches!(s.ty.elem, Elem::Bytes(es) if es <= 8)
+                && s.guard.is_none()
+                && s.resolution.is_none()
+                && !s.drivers[d.slot as usize].shared;
         }
         let mut sim = SimControl {
             names,
@@ -935,6 +941,7 @@ impl SimControl {
             queue: Queue::default(),
             direct: Vec::new(),
             directv: Vec::new(),
+            directb: Vec::new(),
             direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
@@ -2053,7 +2060,7 @@ impl SimControl {
 
     /// The direct transactions of the processes committed in the batch loop, to their signals.
     fn commit_direct(&mut self) {
-        if !self.direct.is_empty() || !self.directv.is_empty() {
+        if !self.direct.is_empty() || !self.directv.is_empty() || !self.directb.is_empty() {
             let sigs = &mut self.direct_sigs;
             let empty = &mut self.empty_delta;
             commit_out(
@@ -2062,6 +2069,7 @@ impl SimControl {
                 empty,
                 &mut self.direct,
                 &mut self.directv,
+                &mut self.directb,
             );
         }
     }
@@ -2574,6 +2582,7 @@ impl SimControl {
                             || !slot.st.phantoms.is_empty()
                             || !slot.st.out.is_empty()
                             || !slot.st.outv.is_empty()
+                            || !slot.st.outb.is_empty()
                             || slot.st.scheduled.iter().any(|&(t, _)| t == sh.now))
             };
             let run = |p: u32, slot: &mut Slot, live: bool| {
@@ -2685,6 +2694,10 @@ impl SimControl {
                                     self.directv.extend_from_slice(&st.outv);
                                     st.outv.clear();
                                 }
+                                if !st.outb.is_empty() {
+                                    self.directb.extend_from_slice(&st.outb);
+                                    st.outb.clear();
+                                }
                                 if !st.phantoms.is_empty() {
                                     self.empty_delta |= st.take_phantoms();
                                 }
@@ -2761,6 +2774,7 @@ impl SimControl {
             &mut self.empty_delta,
             &mut st.out,
             &mut st.outv,
+            &mut st.outb,
         );
         self.stats.process_runs += 1;
         let mut old = std::mem::replace(&mut self.last_ran, pids);
@@ -2827,6 +2841,7 @@ impl SimControl {
                     &mut self.empty_delta,
                     &mut st.out,
                     &mut st.outv,
+                    &mut st.outb,
                 );
                 continue;
             }
@@ -2836,6 +2851,7 @@ impl SimControl {
                     || !st.phantoms.is_empty()
                     || !st.out.is_empty()
                     || !st.outv.is_empty()
+                    || !st.outb.is_empty()
                     || st.scheduled.iter().any(|&(t, _)| t == self.now));
             if !st.scheduled.is_empty() {
                 for &(t, d) in st.scheduled.iter() {
@@ -2852,6 +2868,7 @@ impl SimControl {
                 &mut self.empty_delta,
                 &mut st.out,
                 &mut st.outv,
+                &mut st.outb,
             );
             let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
@@ -3175,6 +3192,7 @@ fn commit_out(
     empty: &mut bool,
     out: &mut Vec<Out>,
     outv: &mut Vec<OutV>,
+    outb: &mut Vec<OutB>,
 ) {
     // Runs of entries of one signal (processes of one vector, in order) at once.
     let mut i = 0;
@@ -3202,6 +3220,15 @@ fn commit_out(
         i += n;
     }
     out.clear();
+    for o in outb.iter() {
+        let sig = &mut signals[o.sig as usize];
+        match sig.commit_bytes(o.slot, o.elem, o.es as usize, &o.val) {
+            Some(true) => direct_sigs.push(o.sig),
+            Some(false) => {}
+            None => *empty = true,
+        }
+    }
+    outb.clear();
     if outv.is_empty() {
         return;
     }

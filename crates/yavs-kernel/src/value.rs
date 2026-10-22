@@ -146,6 +146,30 @@ pub(crate) fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
     a == b
 }
 
+/// `dst.copy_from_slice(src)` for the element sizes of byte signals, without the library call
+/// of the generic copy (the lengths are equal).
+#[inline(always)]
+pub(crate) fn put_bytes(dst: &mut [u8], src: &[u8]) {
+    if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 4]>::try_from(&mut *dst),
+        <[u8; 4]>::try_from(src),
+    ) {
+        *d = s;
+    } else if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 1]>::try_from(&mut *dst),
+        <[u8; 1]>::try_from(src),
+    ) {
+        *d = s;
+    } else if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 8]>::try_from(&mut *dst),
+        <[u8; 8]>::try_from(src),
+    ) {
+        *d = s;
+    } else {
+        dst.copy_from_slice(src);
+    }
+}
+
 /// Bits `off .. off + n` (`n <= 64`) of a bitset.
 pub(crate) fn bits(words: &[u64], off: usize, n: usize) -> u64 {
     let (w, s) = (off / 64, off % 64);

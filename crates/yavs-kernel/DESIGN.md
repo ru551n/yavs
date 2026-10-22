@@ -92,6 +92,14 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   applied or the general path computes the driving value from them, and a deposit makes the
   signal `exact` (its commits then write the driver value too). When one element changes and
   one resident process without an edge trigger waits for it, `finish_direct` wakes it at once.
+- **Direct byte transactions**: the same for one element of at most 8 bytes of a byte signal (an enumeration,
+  an integer, a boolean, a real, a time) with no port, group, guard or resolution function whose driver is the
+  element's only source (`DriverInfo::bdirect`). A zero-delay assignment to an idle driver is an `OutB` entry
+  (signal, slot, element, size, bytes) in `ProcState::outb`; the commit (`Signal::commit_bytes`) writes the
+  driving value (the driver value too after a deposit; `lag` as above) and puts the element in `pend_one` or the
+  bit mask; the update finishes it (`finish_pend_bytes`: the driving bytes against the current ones, an event if
+  they differ, the activity stamps unless `inactive`), or takes it to the dirty ranges on a signal with a layer.
+  Unchanged assignments, spilling (`Ctx::spill_out`) and `'driving_value` are as for logic.
 - **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
   (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
   the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the

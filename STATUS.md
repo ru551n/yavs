@@ -3874,14 +3874,22 @@ is 15 to 20% (`run_ops` is 38 to 54%): what is left of the edge path is spread o
 processes: ~25 instructions per waiter and ~12 per wake), `run_batch` (~100 per process of a batch), the plane writes of the
 update (~130) and the heap.
 
+(3) Direct byte transactions (item 5 of round 13): a zero-delay assignment to an enumeration, integer, boolean, real or time
+register that is the only source of its signal is committed at the end of the run like a logic one (`OutB`, no queue entry, no
+apply, no dirty range). Instructions of the head-to-head and internal designs, `main` before this commit against it (`perf
+stat`, one run each, core 6): `ff_rtl` 0.212 G to 0.117 G, `rtl_ram` 0.783 G to 0.689 G, `lfsr64` 3.423 G to 3.306 G, `rtl_bus`
+0.98, `resolved_bus` 0.97, `delta_chain` 0.98, `rtl_chain`, `rtl_ff`, `rtl_lfsr`, `rtl_fan` within 1%. 64 integer counters on one
+clock, 1000 cycles: 245 M to 225 M instructions, per activation 3830 to ~3500 of which the interpreter has ~2650 (the kernel
+part ~1150 to ~850).
+
 Measured and not taken: the per-element event stamps are half of `update_word` of a 32-bit register (~150 of 600 kernel
 instructions per activation), but records for signals of 8 to 64 elements cost more when the data is random (see the decision);
-signal fields in hot-first order (with and without cache-line alignment) did nothing for neorv32. An enumeration or integer
-register is still ~1150 kernel instructions of ~3800 per activation (`n <= n + 1`, interpreter ~2650): the direct path logic
-registers have would take about 400 of them.
+signal fields in hot-first order (with and without cache-line alignment) did nothing for neorv32. What the cycle costs per
+activation that is left, from the exact counts: `run_batch` ~100 to 220 (per process of a batch: resumption, context, the
+clocked commit), the assignment entry ~130, `commit_out` ~90 with the move into `directb`, `cycle` ~110, `finish_direct` ~80.
 
 Checks: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with and without `--features llvm`, `cargo test --workspace`
-(860 passed), difftest 449 of 449 on the interpreter, `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled and
+(869 passed), difftest 451 of 451 on the interpreter, `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled and
 `--tier=auto` with `--no-collapse-ports`; `external.py --oracle --check` 857 (sim1) and 393 (sim2); OSVVM `.pro` 314 of 314 under
 2008 and 2019; UVVM suite 130 pass, 1 fail, 6 skip as before.
 

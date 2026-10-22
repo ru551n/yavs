@@ -234,6 +234,18 @@ pub(crate) struct OutV {
     pub planes: [u64; 4],
 }
 
+/// `Out` of one element of a byte signal of at most 8 bytes per element (`DriverInfo::bdirect`):
+/// its bytes. The commit (`Signal::commit_bytes`) writes the driving value, the next update
+/// finishes it (`Signal::finish_pend`).
+#[derive(Clone, Copy)]
+pub(crate) struct OutB {
+    pub sig: u32,
+    pub slot: u32,
+    pub elem: u32,
+    pub es: u32,
+    pub val: [u8; 8],
+}
+
 /// Per-process state the process mutates while it runs.
 #[derive(Default)]
 pub(crate) struct ProcState {
@@ -263,6 +275,7 @@ pub(crate) struct ProcState {
     /// Direct transactions of this run: one element, and up to 64.
     pub out: Vec<Out>,
     pub outv: Vec<OutV>,
+    pub outb: Vec<OutB>,
 }
 
 impl ProcState {
@@ -291,6 +304,11 @@ pub(crate) struct DriverInfo {
     /// guard or resolution function (`SimControl::new`): its zero-delay quick transactions go
     /// straight to the signal at commit (`SimControl::direct`), not through the queue.
     pub direct: bool,
+    /// The driver is the only source of its elements of a byte signal (an enumeration, an
+    /// integer, a boolean, a real, a time of at most 8 bytes) with no port, group, guard or
+    /// resolution function: its zero-delay one-element assignments are `OutB` entries
+    /// committed like `Out` ones.
+    pub bdirect: bool,
 }
 
 /// Read-only kernel state shared by all processes running in a delta.
@@ -558,13 +576,40 @@ impl Ctx<'_> {
     /// Move this run's direct transactions of driver `d` (`Out`) into its waveform, in order,
     /// for an assignment that preempts or inspects pending transactions.
     pub(crate) fn spill_out(&mut self, d: DriverId) {
-        if self.st.out.is_empty() && self.st.outv.is_empty() {
+        if self.st.out.is_empty() && self.st.outv.is_empty() && self.st.outb.is_empty() {
             return;
         }
         let Some(info) = self.sh.drivers.get(d.0 as usize) else {
             return;
         };
         let key = (info.signal.0, info.slot);
+        // The entries of a byte driver (all of its entries are in `outb`).
+        if self.st.outb.iter().any(|o| (o.sig, o.slot) == key) {
+            let (local, now) = (info.local as usize, self.sh.now);
+            let mut moved: SmallVec<[(Range, u32, [u8; 8]); 2]> = SmallVec::new();
+            self.st.outb.retain(|o| {
+                let hit = (o.sig, o.slot) == key;
+                if hit {
+                    moved.push((Range::new(o.elem, 1), o.es, o.val));
+                }
+                !hit
+            });
+            for (r, es, val) in moved {
+                let value = Buf::Bytes {
+                    es: es as usize,
+                    data: smallvec::SmallVec::from_slice(&val[..es as usize]),
+                };
+                let mut t = TxnList::new();
+                t.push(Txn {
+                    time: now,
+                    range: r,
+                    value: Some(value),
+                });
+                self.st.waveforms[local].schedule(r, None, &mut t);
+                self.st.scheduled.push((now, d));
+            }
+            return;
+        }
         let mut moved: SmallVec<[(Range, [u64; 4]); 2]> = SmallVec::new();
         self.st.out.retain(|o| {
             let c = u64::from(o.code);
@@ -621,7 +666,7 @@ impl Ctx<'_> {
         let info = self.own(d)?;
         let s = &self.sh.signals[info.signal.0 as usize];
         // A direct driver whose commits wrote only the driving value (`Signal::lag`).
-        if s.lag && info.direct {
+        if s.lag && (info.direct || info.bdirect) {
             let r = info.range;
             return Ok(s
                 .driving
@@ -914,7 +959,6 @@ impl Ctx<'_> {
         let n = bytes.len();
         if at.is_none()
             || info.owner != self.pid
-            || info.direct
             || r.len != 1
             || n == 0
             || n > 8
@@ -934,6 +978,25 @@ impl Ctx<'_> {
         }
         let now = self.sh.now;
         let at = at.unwrap_or(now);
+        if info.bdirect {
+            if at == now {
+                // The commit writes it to the signal; a later assignment of the run to the driver
+                // is another entry (the last one wins), one that needs the waveform moves them.
+                self.st.outb.push(OutB {
+                    sig: sig as u32,
+                    slot: info.slot,
+                    elem: r.offset,
+                    es: n as u32,
+                    val: pack8(bytes),
+                });
+                return true;
+            }
+            // The entries commit at the end of the run, before this one: the general path
+            // orders them (inertial preemption must see them).
+            if self.direct_entries(sig as u32, info.slot) {
+                return false;
+            }
+        }
         if at == now && self.unchanged(sig, d, r, ValueRef::Bytes(bytes)) {
             let w = &mut self.st.waveforms[local];
             w.phantom.push(r);
@@ -1075,6 +1138,7 @@ impl Ctx<'_> {
             || code >= 9
             || !self.st.out.is_empty()
             || !self.st.outv.is_empty()
+            || !self.st.outb.is_empty()
             || !info.range.contains(Range::new(elem, 1))
             || !matches!(
                 self.sh.signals[info.signal.0 as usize].ty.elem,
@@ -1101,6 +1165,7 @@ impl Ctx<'_> {
     fn direct_entries(&self, sig: u32, slot: u32) -> bool {
         self.st.out.iter().any(|o| (o.sig, o.slot) == (sig, slot))
             || self.st.outv.iter().any(|o| (o.sig, o.slot) == (sig, slot))
+            || self.st.outb.iter().any(|o| (o.sig, o.slot) == (sig, slot))
     }
 
     /// Whether a zero-delay assignment of `v` to `r` of driver `d` would change nothing: the

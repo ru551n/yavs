@@ -3800,6 +3800,16 @@ the native process first, then the edge path itself.
   `take_woken` and its scan (`Waiters::small_list`; any stale or plain waiter takes the scan as before), and `build_cache`
   is asked only for 16 or more waiters; (4) `Ctx::assign_later`. `examples/clk.rs` (one clock, kernel alone) goes from 2032
   to 1330 instructions per edge.
+- **Direct byte transactions** (round 13 item 5): a zero-delay assignment of one element of at most 8 bytes of a byte
+  signal to its sole-source driver is a per-process entry committed at the end of the run, as the logic ones are
+  (`OutB`, `DriverInfo::bdirect`, `Signal::commit_bytes`, `finish_pend_bytes`): no queue entry, no `apply_bquick`, no
+  dirty range, no `finish_applied`. Same rules as the logic direct path: the driving value is the driver's value
+  (`lag`), an unchanged value writes nothing and only makes the delta happen, a force layer or a force or deposit in the
+  cycle takes the element to the dirty ranges, anything that needs the waveform spills the entries first. Tests compare
+  the direct path with the same program on identity-resolved signals (forces, releases, deposits, `'driving_value`,
+  repeats, delayed assignments in between) and `skip_unchanged` on and off. An integer register (`n <= n + 1`) goes from
+  3830 to 3500 instructions per activation of which the interpreter has ~2650; `ff_rtl` 0.55, `rtl_ram` 0.88, `lfsr64` 0.97
+  of the instructions, the other head-to-head designs within 1%.
 - **Tried and dropped**: event records (`Signal::blk_event`) for signals of 8 to 64 elements when many elements change
   (the stamp loop was half of `update_word` of a 32-bit register): +400 instructions per update with random data, since the
   superseded records pile up (each update leaves the elements that did not change in the older ones). Signal fields in

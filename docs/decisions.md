@@ -4349,7 +4349,7 @@ Decisions:
 - Idea from the reference simulator (sim1; read for its design, no code taken): it tiers up on a per-function entry
   counter. yavs keeps sampling (no cost per entry) and uses the share of sampled time instead of a count.
 
-## `--tier=auto` is the default tier (yavs CLI, #510, user decision 2026-10-22)
+## `--tier=auto` is the default tier (yavs CLI, #125, user decision 2026-10-22)
 
 - **`yavs run` defaults to `--tier=auto` in a build with the `llvm` feature** (user, 2026-10-22); `--tier=interp` stays
   available for the interpreter alone. Why: the real-world suite runs 0.5 to 0.6 of the interpreter's wall on the designs

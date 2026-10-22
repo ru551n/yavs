@@ -4892,6 +4892,30 @@ Run phase on this core (ratio to sim1 for `interp` / `auto` / `auto-cold`): over
 slow, short testbenches fast). Issues filed from this run: #537 (analyze per call), #538 (llvm tier before time 0), #539 (elab cold
 and constants), #540 (tracked manifests name a reference simulator in `[flags]`, rule 11).
 
+## Cold front end: prefix images on the second closure, cached files not parsed (#549, #551, #479, 2026-10-22)
+
+Cold `yavs elab` of a library testbench (`tools/realbench` `--phases elab`, cold cell = pristine world, empty compilation cache; the
+analysed-unit cache of the libraries is present as after `yavs analyze`). Profile of `osvvm_axis_random` before (143 ms in-process
+timers): closure 2.5, replay of the first 44 files 36, std/ieee bodies 11, `settle` 5, three prefix images 43 (15, 15 and 12), rest of the
+analysis 12, elaborate 19, lower 5. Two findings: (1) the first run of a closure wrote three prefix images (#549); (2) `Db::warm_stub`
+never matched, because every unit entry begins with an empty segment, so each of the 73 files of the closure was lexed and parsed
+although all its units had entries (#551, 16 percent of the run).
+
+Changes: a prefix image is made when the second different closure starts with its prefix, one maker at a time (`Store::sightings` and
+`Store::claim` in `crates/yavs/src/cache.rs`; `docs/decisions.md` "Prefix images ..."); `warm_stub` skips leading empty segments.
+
+Before / after, same binary pair interleaved on cores 6 and 7, `--phases elab`, host load 12 to 15 from other agents (wall ratios
+are noisy, the instruction ratios are not): geometric mean over 38 tests, elab-cold wall 0.71, instructions 0.68 (protected 0.60
+and 0.64, numeric 0.62, memory 0.63); elab-warm unchanged (1.00 instructions). Instructions of the cold elab (M): `osvvm_axis_random`
+1554 to 792, `uvvm_sb_slv` 825 to 505, `hdlm_axi_fifo` 1739 to 1145. Cold elab wall, medians of 9 on core 7 (core 6 in brackets), ms:
+`osvvm_axis_random` 207 (232) to 98 (134), `uvvm_sb_slv` 128 (130) to 60 (85), `hdlm_axi_fifo` 223 (284) to 147 (202).
+#479 (cache the lowered design, verify on first call) was done earlier (4959a178); what remains of its 40 ms is decoding the analysis of
+the subprograms a first run reaches (`lower_with` cold 5 to 38 ms, 1 to 2 ms warm), which the library stages remove from the fourth closure on.
+
+Not done, in order of expected gain (see the issue comments): the `settle` fact scan decodes every expression and statement of the
+replayed units (5 to 16 ms cold); the std/ieee bodies replayed at every cold run (12 to 18 ms); poc and neorv32 elaborate 100 to 200 ms in
+the interpreter at every run (#539, warm).
+
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:

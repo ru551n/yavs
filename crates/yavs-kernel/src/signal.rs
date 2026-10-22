@@ -2108,7 +2108,7 @@ const SPARE_BUFS: usize = 4;
 /// The projected output waveform of one driver, sorted by time.
 #[derive(Default)]
 pub(crate) struct Waveform {
-    pub pending: TxnList,
+    pub pending: Vec<Txn>,
     /// The one pending transaction of a zero-delay one-element logic assignment
     /// (`Ctx::assign_code`), kept apart from `pending` (which is empty then) because it costs
     /// no list entry and no value buffer. It matures in the next update; anything that
@@ -2322,7 +2322,7 @@ impl Waveform {
 }
 
 /// Push the runs of `t` not marked in `mask`.
-fn split_kept(t: Txn, mask: &[u64], out: &mut TxnList) {
+fn split_kept(t: Txn, mask: &[u64], out: &mut Vec<Txn>) {
     let n = t.range.len as usize;
     // The length of the run of bits equal to `set` from `k` on, a word at a time.
     let run = |k: usize, set: bool| {

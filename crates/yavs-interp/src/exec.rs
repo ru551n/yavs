@@ -2543,6 +2543,32 @@ impl Machine {
         if self.layouts.len() <= t {
             self.layouts.resize_with(t + 1, || None);
         }
+        // A memo made from the same descriptor bytes (a loop asks for the same layout again and
+        // again), or an array of scalars whose words come straight from the bounds: answered
+        // in place, without taking the memo apart.
+        if let Some(m) = &self.layouts[t]
+            && let Ok(d) = self.rd_hot(desc, m.dsz)
+        {
+            let words = match m.simple {
+                Some(n) => simple_words(n, d),
+                None if m.desc == d => Some([0; 4]),
+                None => None,
+            };
+            let simple = m.simple.is_some();
+            if let Some(w) = words {
+                let m = self.layouts[t]
+                    .as_mut()
+                    .ok_or_else(|| ice("layout memo missing"))?;
+                m.ckey = if split(desc).0 == CONST { desc } else { 0 };
+                if simple {
+                    m.words.clear();
+                    for w in w {
+                        m.words.extend_from_slice(&w.to_le_bytes());
+                    }
+                }
+                return Ok(&m.words);
+            }
+        }
         let mut memo = self.layouts[t].take();
         let dsz = match &memo {
             Some(m) => m.dsz,

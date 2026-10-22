@@ -860,8 +860,8 @@ impl<'a, 'b> Fx<'a, 'b> {
             desc: dope,
         });
         let size = self.load(l, Width::B8, RegTy::I64);
-        // The element count is the fourth word of an array layout; a record layout has its
-        // field offsets there instead (and may be shorter), so its count is 0.
+        // A record layout has its field offsets where an array has its element count (and may
+        // be shorter), so its count is 0.
         if !matches!(
             self.fb.program().types().get(tid),
             Some(yavs_ir::Ty::Array { .. })
@@ -869,25 +869,43 @@ impl<'a, 'b> Fx<'a, 'b> {
             let count = self.int(0);
             return (size, count);
         }
-        let c = self.offset(l, 24);
-        let count = self.load(c, Width::B8, RegTy::I64);
+        let count = self.layout_count(tid, dope);
         (size, count)
     }
 
-    /// The element count of an array of type `tid` with descriptor `dope`: the length of a
-    /// one-dimensional array is read from the descriptor directly; the rest goes through the
-    /// layout.
+    /// The element count of an array of type `tid` with descriptor `dope` (the fourth word of
+    /// its layout), computed from the lengths in the descriptor: the product of the lengths of
+    /// the dimensions, times the element count of a logic array's elements (all leaves are in
+    /// one plane vector). No `LayoutOf`: a layout is a run-time walk of the descriptor, and
+    /// the same count asked inside a loop is a few cheap instructions the optimiser can share
+    /// and fold.
     pub fn layout_count(&mut self, tid: TyId, dope: Reg) -> Reg {
         let types = self.fb.program().types();
-        if let Some(yavs_ir::Ty::Array { elem, dims: 1, .. }) = types.get(tid)
-            && (types.get(*elem).is_some_and(|e| e.scalar_size().is_some())
-                || yavs_ir::Ty::logic_leaf(types, tid).is_none())
-        {
+        let Some(&yavs_ir::Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        }) = types.get(tid)
+        else {
+            return self.layout(tid, dope).1;
+        };
+        let nested = yavs_ir::Ty::logic_leaf(types, tid).is_some()
+            && matches!(types.get(elem), Some(yavs_ir::Ty::Array { .. }));
+        let mut count = self.dope_len(dope);
+        for dim in 1..dims {
             let dst = self.reg(RegTy::I64);
-            self.emit(Inst::DopeLen { dst, dope, dim: 0 });
-            return dst;
+            self.emit(Inst::DopeLen { dst, dope, dim });
+            count = self.bin(yavs_ir::IntOp::Mul, count, dst);
         }
-        self.layout(tid, dope).1
+        if nested {
+            let ed = match elem_desc {
+                Some(c) => self.const_addr(c),
+                None => self.offset(dope, 24 * u32::from(dims)),
+            };
+            let m = self.layout_count(elem, ed);
+            count = self.bin(yavs_ir::IntOp::Mul, count, m);
+        }
+        count
     }
 
     /// Return `v`, closing the files this subprogram declared first.

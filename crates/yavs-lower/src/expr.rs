@@ -4454,6 +4454,44 @@ impl<'a> Fx<'a, '_> {
         Ok(Some(V::A(buf, dope)))
     }
 
+    /// Whether `e` is an index or slice of an array variable, parameter or constant, possibly
+    /// nested: a name [`Fx::place`] selects without copying.
+    fn is_view_name(&self, e: ExprId) -> bool {
+        let mut e = e;
+        let mut steps = 0;
+        loop {
+            match &self.db.exprs[e].kind {
+                ExprKind::Index { prefix, .. } | ExprKind::Slice { prefix, .. } => {
+                    e = *prefix;
+                    steps += 1;
+                }
+                ExprKind::Obj(d) => {
+                    return steps > 0 && matches!(self.cx.objs.get(d), Some(Obj::Array { .. }));
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// Plane index of element `pos` (from the left) of a logic array with `dope` seen through
+    /// the plane offset `off` (a slice or row of a larger array).
+    pub(crate) fn logic_elem_idx(
+        &mut self,
+        tid: TyId,
+        dope: Reg,
+        pos: Reg,
+        off: Option<Reg>,
+    ) -> Reg {
+        let count = self.layout_count(tid, dope);
+        let one = self.int(1);
+        let last = self.bin(IntOp::Sub, count, one);
+        let idx = self.bin(IntOp::Sub, last, pos);
+        match off {
+            Some(o) => self.bin(IntOp::Add, idx, o),
+            None => idx,
+        }
+    }
+
     fn index(&mut self, prefix: ExprId, indices: &[ExprId], span: Span) -> R<V> {
         let db = self.db;
         let t = db.base(db.exprs[prefix].subtype);
@@ -4462,6 +4500,28 @@ impl<'a> Fx<'a, '_> {
         }
         let (_, logic, w) = self.elem_facts(t, span)?;
         let what = self.prefix_name(prefix);
+        // `a(i)(j)` of a logic row: the element in place, not through a copy of row `a(i)`.
+        if logic && self.is_view_name(prefix) {
+            let tid = self.ty(t, span)?;
+            if let Place::Array {
+                data, dope, off, ..
+            } = self.place(prefix)?
+            {
+                let pos = self.flat_pos(dope, indices, &what)?;
+                let idx = self.logic_elem_idx(tid, dope, pos, off);
+                let dst = self.reg(RegTy::I64);
+                self.emit(Inst::LGet {
+                    dst,
+                    base: data,
+                    idx,
+                });
+                let bias = self.code_bias(tid);
+                return Ok(V::S(self.dec(dst, bias)));
+            }
+            return Err(self
+                .cx
+                .ice(span, "view of a variable array is not an array"));
+        }
         let v = self.expr(prefix)?;
         let (data, dope) = self.arr(v, span)?;
         let pos = self.flat_pos(dope, indices, &what)?;
@@ -4663,13 +4723,7 @@ impl<'a> Fx<'a, '_> {
                 };
                 let pos = self.flat_pos(dope, indices, &what)?;
                 if self.is_logic(tid) {
-                    let count = self.layout_count(tid, dope);
-                    let one = self.int(1);
-                    let last = self.bin(IntOp::Sub, count, one);
-                    let mut idx = self.bin(IntOp::Sub, last, pos);
-                    if let Some(o) = off {
-                        idx = self.bin(IntOp::Add, idx, o);
-                    }
+                    let idx = self.logic_elem_idx(tid, dope, pos, off);
                     return Ok(Place::Logic {
                         data,
                         idx,

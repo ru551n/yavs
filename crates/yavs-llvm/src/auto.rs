@@ -1056,6 +1056,7 @@ impl AutoTier {
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
             .spawn(move || {
+                off_simulation_cpus();
                 let mut running = Vec::new();
                 w.listed = crate::objcache::compiled_list();
                 let mut last = std::time::Instant::now();
@@ -1219,6 +1220,40 @@ impl Drop for AutoTier {
         self.stop(true);
     }
 }
+
+/// Move the calling thread (the compile thread) off the CPUs the process was restricted to,
+/// when it was restricted to some (`taskset`, a pinned benchmark): there it would take turns
+/// with the simulation thread on one core every sampling period, and run the LLVM load and
+/// every compile on it (#525). Left as it is when the process may run anywhere, or when no
+/// other CPU is allowed (a cgroup cpuset).
+#[cfg(target_os = "linux")]
+fn off_simulation_cpus() {
+    // A `cpu_set_t` of glibc and musl: 1024 CPUs.
+    const WORDS: usize = 16;
+    unsafe extern "C" {
+        fn sched_getaffinity(pid: std::ffi::c_int, size: usize, mask: *mut u64) -> std::ffi::c_int;
+        fn sched_setaffinity(
+            pid: std::ffi::c_int,
+            size: usize,
+            mask: *const u64,
+        ) -> std::ffi::c_int;
+    }
+    let mut mask = [0u64; WORDS];
+    let size = std::mem::size_of_val(&mask);
+    // SAFETY: pid 0 is the calling thread; `mask` holds `size` bytes for both calls. The kernel
+    // ignores CPUs that do not exist and fails, changing nothing, when none of the rest is
+    // allowed.
+    unsafe {
+        if sched_getaffinity(0, size, mask.as_mut_ptr()) != 0 {
+            return;
+        }
+        let rest = mask.map(|w| !w);
+        sched_setaffinity(0, size, rest.as_ptr());
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn off_simulation_cpus() {}
 
 /// End the process with `code` at once, without exit handlers (after `AutoTier::stop`
 /// returned `false`: the static destructors of LLVM must not run under the compile thread).

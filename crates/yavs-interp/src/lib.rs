@@ -800,12 +800,12 @@ pub struct NativeFlags {
     /// Some function has compiled code (or `set_eager` asks for it): until then the fast loop
     /// runs without the compiled tier's bookkeeping and looks here now and then.
     any: std::sync::atomic::AtomicBool,
-    /// Per function: 1 when it has compiled code (`Tier::ready`), so the fast loop asks
-    /// without a virtual call; 2 asks the tier to compile it on the next entry (`set_eager`).
+    /// Per function, so the fast loop asks without a virtual call: `NAT_CODE` when it has
+    /// compiled code (`Tier::ready`), `NAT_ASK` to ask the tier to compile it on the next
+    /// entry (`set_eager`), `NAT_CALL` when the tier calls it on a native frame from the
+    /// interpreter (`Tier::call`). One byte, so a call in the loop without the tier looks once
+    /// (#525).
     func: Box<[std::sync::atomic::AtomicU8]>,
-    /// Per function: 1 when the tier calls it on a native frame from the interpreter
-    /// (`Tier::call`).
-    call: Box<[std::sync::atomic::AtomicU8]>,
     /// Per process function: the processes made of it (`InterpProcess::new`).
     instances: Box<[std::sync::atomic::AtomicU32]>,
 }
@@ -820,27 +820,34 @@ impl NativeFlags {
 
     /// The tier calls `func` from the interpreter now (`Tier::call`).
     pub fn set_call(&self, func: FuncId) {
-        if let Some(n) = self.call.get(func.0 as usize) {
-            n.store(1, Ordering::Release);
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_or(NAT_CALL, Ordering::Release);
         }
     }
 
     /// Whether `set_call` marked `func`.
     #[inline(always)]
     pub(crate) fn callable(&self, func: u32) -> bool {
-        self.call
+        self.func
             .get(func as usize)
-            .is_some_and(|n| n.load(Ordering::Acquire) == 1)
+            .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CALL != 0)
     }
 
     /// `func` has compiled code now.
     pub fn set(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
-            n.store(1, Ordering::Release);
+            n.fetch_or(NAT_CODE, Ordering::Release);
         }
         self.any.store(true, Ordering::Release);
     }
 }
+
+/// `NativeFlags::func`: the function has compiled code.
+pub(crate) const NAT_CODE: u8 = 1;
+/// `NativeFlags::func`: ask the tier to compile the function when the fast loop enters it.
+pub(crate) const NAT_ASK: u8 = 2;
+/// `NativeFlags::func`: the tier calls the function on a native frame (`Tier::call`).
+pub(crate) const NAT_CALL: u8 = 4;
 
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
@@ -943,7 +950,6 @@ impl Runtime {
             native: Arc::new(NativeFlags {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
-                call: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 instances: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
@@ -1057,10 +1063,9 @@ impl Runtime {
     /// process interpreted. Returns `false` if a tier was set before.
     pub fn set_tier(&self, tier: Arc<dyn Tier>) -> bool {
         for (i, n) in self.native.func.iter().enumerate() {
+            n.store(0, Ordering::Relaxed);
             if tier.ready(FuncId(i as u32)) {
                 self.native.set(FuncId(i as u32));
-            } else {
-                n.store(0, Ordering::Relaxed);
             }
             if tier.callable(FuncId(i as u32)) {
                 self.native.set_call(FuncId(i as u32));
@@ -1092,7 +1097,7 @@ impl Runtime {
                     let compiled = native
                         .func
                         .get(func as usize)
-                        .is_some_and(|n| n.load(Ordering::Relaxed) == 1);
+                        .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
                     out.push((FuncId(func), compiled));
                 }
             }
@@ -1103,7 +1108,9 @@ impl Runtime {
     /// (tests: compiled code swapped in at the first call or jump).
     pub fn set_eager(&self) {
         for n in self.native.func.iter() {
-            let _ = n.compare_exchange(0, 2, Ordering::Relaxed, Ordering::Relaxed);
+            let _ = n.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                (v & NAT_CODE == 0).then_some(v | NAT_ASK)
+            });
         }
         self.native.any.store(true, Ordering::Release);
     }

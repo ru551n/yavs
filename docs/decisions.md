@@ -4094,7 +4094,8 @@ Decisions:
   case": auto halves the run of testbench-heavy and many-instance designs and is level on protected-call library
   testbenches, but runs where nothing pays are 1 to 6 percent slower (the interpreter's bookkeeping with a tier set, #525,
   plus the compile thread and the LLVM library), and single-instance RTL designs (a CPU) do not gain.
-- **When to switch:** once a run in which nothing is compiled costs no more than noise (#525) and compiled clocked code of
+- **When to switch:** once a run in which nothing is compiled costs no more than noise (#525, done 2026-10-22 except
+  designs of thousands of one-line processes, see the #525 entry below) and compiled clocked code of
   single-instance designs no longer loses (#532, #527). The policy is ready for it: cold runs compile within a budget of
   their own time, warm runs link what earlier runs compiled at once.
 
@@ -4182,3 +4183,25 @@ Decisions:
   an operation count changed. `crates/yavs/tests/memo.rs` keeps the shape of this assignment (slot-reading ops, `CopyDrive`, no
   `WaveBuf`). Instructions per cycle and process, `rtl_lfsr` (`--tier=interp`): 3550 before, 2890 after; whole design 9.20 G to
   7.46 G; the other `tools/bench` designs and the real testbenches of round 11 are within 0.3 percent.
+
+## `--tier=auto` with nothing compiled costs the interpreter almost nothing (yavs-interp, yavs-llvm, #525, 2026-10-22)
+
+- **The watching loop is a monomorphised form of its own** (`exec_fast::<false, true>`, `run_ops::<false, true>`): the
+  loop without a tier has none of the tier's code, and the one with a tier set does only this for code without compiled
+  code: name the function in the thread's sampling slot when an activation enters a frame (two stores per activation, the
+  slot fetched once), count jumps back and calls (every `WATCH` of them the slot is stored again and the running function
+  is looked up), and at a call read the callee's flag byte once, before the frame is pushed: compiled, to be compiled or
+  called on a native frame, the loop with the tier makes the call. Forward jumps and returns cost nothing. Why: per-jump
+  and per-return counting, two flag reads per call and the tier object passed through the loop cost 1 to 3 percent with
+  nothing compiled (#525).
+- **`NativeFlags` is one byte per function with three bits** (`NAT_CODE`, `NAT_ASK`, `NAT_CALL`) instead of two arrays,
+  so the call check is one load.
+- **The compile thread moves itself off the CPUs the process was restricted to** (Linux, `sched_setaffinity`), when it was
+  restricted and another CPU is allowed: a run pinned to one core (`taskset`, benchmarks) shared that core with the
+  sampler every millisecond and with every compile and the LLVM load. An unrestricted process is left to the scheduler.
+- Idea from the reference simulator: it decides tier-up from a per-function entry counter and never looks for compiled
+  code inside a running loop, so interpreted code pays nothing per jump. Ours keeps time sampling and the hand-over
+  inside loops (jumps back only) and pays per activation and per call instead of per jump.
+- Left: the per-activation slot stores, about 15 instructions, are 2 to 3 percent of a design of thousands of one-line
+  processes (`rtl_ff`, about 750 instructions per activation) when nothing is compiled; default `--tier=auto` compiles
+  that process, so the real run is level with the interpreter.

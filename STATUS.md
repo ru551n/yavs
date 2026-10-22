@@ -4993,8 +4993,8 @@ queue-based testbenches, `hdlm_lfsr`, the histogram, `rtl_lfsr`); compute loops 
 and thread count; the compilation cache makes repeat runs warm.
 
 Against: the runs where nothing pays are 1 to 6 percent slower than the interpreter (the CPU and wide-vector designs, the
-short library testbenches): about 1 to 3 percent is the interpreter's own bookkeeping with a tier set even when nothing is
-compiled (#525), the rest is the compile thread (pinned to the same core in these measurements; on a free core it costs
+short library testbenches): about 1 to 3 percent was the interpreter's own bookkeeping with a tier set even when nothing is
+compiled (#525, now noise except on designs of thousands of one-line processes), the rest is the compile thread (pinned to the same core in these measurements; on a free core it costs
 CPU, not wall) and the LLVM library (10 ms at the first compile); cold runs of short testbenches pay up to 4 percent; the
 compile thread adds CPU and memory to every run that compiles; when a function is compiled depends on sampling, so run
 times (not results) vary more than with the interpreter.
@@ -5002,6 +5002,31 @@ times (not results) vary more than with the interpreter.
 Recommendation: not yet. Make `--tier=auto` the default once a run in which nothing pays costs no more than noise
 (#525), and once compiled clocked processes of single-instance designs no longer lose (#532, #527: signal operations and
 array accesses without host calls); keep `--tier=interp` for runs below a second, where nothing can pay.
+
+### `--tier=auto` with nothing compiled (#525, 2026-10-22)
+
+The interpreter's bookkeeping with a tier set is now a loop of its own (decisions.md "`--tier=auto` with nothing compiled
+costs the interpreter almost nothing"), and the compile thread runs off the CPUs of a pinned run. `perf stat` instructions
+(cycles alongside), core 4, min of 2, `auto0` = `--tier=auto` with a heat so high that nothing is compiled, against
+`--tier=interp` of the same binary (before: main at 3015e1ab):
+
+| Test | before auto0 / interp | after auto0 / interp | after, warm `auto` / interp |
+|---|---:|---:|---:|
+| `rtl_ff` | +2.9% (+6.0%) | +3.3% (+2.0%) | +0.6% (-1.8%) |
+| `rtl_lfsr` | +1.3% (+0.2%) | +0.2% (-5.0%) | +0.2% (-4.3%) |
+| `sc5_timestamp` | +1.1% (+1.5%) | +1.0% (+2.6%) | +1.0% (+1.3%) |
+| `neorv32_single_min`, `_single_cache`, `_dual_full` | +1.1 to +1.2% | +0.4% (-0.3 to +0.3%) | +1.4 to +2.0% (#532) |
+| `fletcher_bufferwriter_512`, `_bufferreader`, `_prim32` | +0.3 to +0.5% | -0.1 to 0.0% | -0.2 to +0.1% |
+| `poc_arith_addw` (core 5, one run) | +0.4% | -0.3% | |
+| `protected_queue` | +1.4% | +0.5% | -33% (was -18%) |
+| `vai_window_gen_interlock` | +1.2% | +0.1% | -25% (unchanged) |
+| `poc_stat_histogram` | +1.2% | -0.7% | -47% (unchanged) |
+
+The interpreter itself (`--tier=interp`) is unchanged within noise (`rtl_ff` 2% fewer instructions). What is left is the
+sampling slot of each activation (about 15 instructions): visible only on designs of thousands of one-line processes with
+nothing compiled (`rtl_ff`, about 750 instructions per activation; default `auto` compiles that process). The compile
+thread with nothing to compile costs about 5 us of CPU per millisecond on another core; the LLVM library is not loaded
+in a run that compiles nothing. Cycles vary 2 to 5 percent between runs on the shared host; instructions are the measure.
 
 ## Interpreter cost on loops, arrays and calls: round 1 (#520, #523, #509, #511, #531, 2026-10-22)
 

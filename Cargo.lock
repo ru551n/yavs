@@ -1645,6 +1645,7 @@ dependencies = [
  "sha2",
  "smallvec",
  "tempfile",
+ "twox-hash",
  "yavs-diag",
  "yavs-lib",
  "yavs-std",

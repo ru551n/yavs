@@ -195,9 +195,36 @@ enum Step {
 /// The values of the tables before a unit, to find what it changed.
 type Snap = Vec<TabSnap>;
 
+/// A table before a unit: each key's hash with its value's (raw bytes, `hash_raw`), or a value
+/// table's bytes.
 enum TabSnap {
-    Map(FxHashMap<Vec<u8>, Vec<u8>>),
+    Map(FxHashMap<H, H>),
     Val(Vec<u8>),
+}
+
+/// A 128-bit hash of the raw bytes of a value (`hash_raw`): equal hashes are taken for equal
+/// values.
+type H = u128;
+
+/// What a unit changed in a table: the key's hash (0 for a value table) and the value's hash
+/// before and after; for a value table also its bytes before and after.
+struct Change {
+    t: u8,
+    key: H,
+    pre: Option<H>,
+    post: Option<H>,
+    val: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+/// The hash of the raw bytes of `t`, written into `buf` (kept between calls).
+fn hash_raw<T: Serialize + ?Sized>(t: &T, buf: &mut Vec<u8>) -> H {
+    buf.clear();
+    let b = std::mem::take(buf);
+    let b = plain(|| yavs_syntax::raw_symbols(|| postcard::to_extend(t, b)))
+        .unwrap_or_else(|e| panic!("internal error: cannot write a value: {e}"));
+    let h = twox_hash::XxHash3_128::oneshot(&b);
+    *buf = b;
+    h
 }
 
 /// A unit being analysed from source (`Db::frames`).
@@ -222,7 +249,7 @@ pub(crate) struct Frame {
     touched: Vec<(Kind, u32, Vec<u8>)>,
     touched_set: FxHashSet<(Kind, u32)>,
     /// What units loaded inside this one changed: table keys with their value after, entries.
-    nested_keys: FxHashMap<(u8, Vec<u8>), Option<Vec<u8>>>,
+    nested_keys: FxHashMap<(u8, H), Option<H>>,
     nested_touched: FxHashSet<(Kind, u32)>,
     pending: [usize; 6],
 }
@@ -637,8 +664,8 @@ impl Db {
         }
         if let Some(p) = self.frames.last_mut() {
             if let Some(changes) = changes {
-                for (t, k, _, post) in changes {
-                    p.nested_keys.insert((t, k), post);
+                for c in changes {
+                    p.nested_keys.insert((c.t, c.key), c.post);
                 }
             } else {
                 // Not captured: the frame around it cannot tell its own changes apart.
@@ -775,27 +802,42 @@ impl Db {
         tables().iter().map(|t| (t.snap)(self)).collect()
     }
 
-    /// The table changes since `before`: (table, raw key, raw value before, raw value after).
-    #[allow(clippy::type_complexity)]
-    fn diff(&self, before: &Snap) -> Vec<(u8, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>)> {
+    /// The table changes since `before`, in table order (and key hash order within a table).
+    fn diff(&self, before: &Snap) -> Vec<Change> {
         let mut out = Vec::new();
         for (i, t) in tables().iter().enumerate() {
-            let now = (t.snap)(self);
-            match (&before[i], now) {
+            let t8 = i as u8;
+            match (&before[i], (t.snap)(self)) {
                 (TabSnap::Map(b), TabSnap::Map(n)) => {
-                    let mut keys: Vec<&Vec<u8>> = n.keys().chain(b.keys()).collect();
-                    keys.sort();
+                    let mut keys: Vec<H> = n.keys().chain(b.keys()).copied().collect();
+                    keys.sort_unstable();
                     keys.dedup();
                     for k in keys {
-                        let (pre, post) = (b.get(k), n.get(k));
+                        let (pre, post) = (b.get(&k).copied(), n.get(&k).copied());
                         if pre != post {
-                            out.push((i as u8, k.clone(), pre.cloned(), post.cloned()));
+                            out.push(Change {
+                                t: t8,
+                                key: k,
+                                pre,
+                                post,
+                                val: None,
+                            });
                         }
                     }
                 }
                 (TabSnap::Val(b), TabSnap::Val(n)) => {
                     if *b != n {
-                        out.push((i as u8, Vec::new(), Some(b.clone()), Some(n)));
+                        let mut buf = Vec::new();
+                        out.push(Change {
+                            t: t8,
+                            key: 0,
+                            pre: Some(twox_hash::XxHash3_128::oneshot(b)),
+                            post: Some({
+                                buf.extend_from_slice(&n);
+                                twox_hash::XxHash3_128::oneshot(&buf)
+                            }),
+                            val: Some((b.clone(), n)),
+                        });
                     }
                 }
                 _ => unreachable!("a table keeps its shape"),
@@ -814,7 +856,7 @@ impl Db {
         unit: UnitId,
         address: Hash,
         full: Hash,
-        changes: &[(u8, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>)],
+        changes: &[Change],
     ) -> Result<(Hash, Vec<u8>), String> {
         if f.pending != self.pending_lens() {
             return Err("analysis left work pending".into());
@@ -856,7 +898,7 @@ impl Db {
         &self,
         f: &Frame,
         enc: &Enc,
-        changes: &[(u8, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>)],
+        changes: &[Change],
         address: Hash,
         full: Hash,
     ) -> (Result<Head, String>, Result<Vec<u8>, String>) {
@@ -977,24 +1019,39 @@ impl Db {
                 put(&mut body, &reenc_entry(self, k, &before)?)?;
                 put(&mut body, &entry_rel(self, k, i as usize)?)?;
             }
-            // Table changes not made by the units it loaded: (table, key, before, after).
-            let mut ops = Vec::new();
-            for (t, key, pre, post) in changes {
-                if let Some(np) = f.nested_keys.get(&(*t, key.clone())) {
-                    if np == post {
+            // Table changes not made by the units it loaded. A unit adds keys of its own; one that
+            // changes or removes a key another unit made is not stored.
+            let mut keys: FxHashMap<u8, FxHashSet<H>> = FxHashMap::default();
+            let mut vals = Vec::new();
+            for c in changes {
+                let name = tables()[c.t as usize].name;
+                if let Some(np) = f.nested_keys.get(&(c.t, c.key)) {
+                    if *np == c.post {
                         continue;
                     }
                     return Err(format!(
-                        "table {} key changed by the unit and by one it loaded",
-                        tables()[*t as usize].name
+                        "table {name} key changed by the unit and by one it loaded"
                     ));
                 }
-                ops.push((*t, key, pre, post));
+                match &c.val {
+                    Some(v) => vals.push((c.t, v)),
+                    None if c.pre.is_some() => {
+                        return Err(format!("a key of table {name} that existed changed"));
+                    }
+                    None => {
+                        keys.entry(c.t).or_default().insert(c.key);
+                    }
+                }
             }
-            put(&mut body, &(ops.len() as u32))?;
-            for (t, key, pre, post) in ops {
-                put(&mut body, &t)?;
-                (tables()[t as usize].write)(key, pre.as_deref(), post.as_deref(), &mut body)?;
+            let n = keys.values().map(|k| k.len()).sum::<usize>() + vals.len();
+            put(&mut body, &(n as u32))?;
+            let mut ts: Vec<u8> = keys.keys().copied().collect();
+            ts.sort_unstable();
+            for t in ts {
+                (tables()[t as usize].write)(self, t, Some(&keys[&t]), None, &mut body)?;
+            }
+            for (t, v) in vals {
+                (tables()[t as usize].write)(self, t, None, Some(v), &mut body)?;
             }
             Ok(())
         })();
@@ -2181,17 +2238,24 @@ impl Db {
 // ---------------------------------------------------------------------------------------------
 // The tables a unit may change, besides the arenas
 
-/// What a replayed table change leaves for the frame around it: the raw key and value.
-type Changed = Option<(Vec<u8>, Option<Vec<u8>>)>;
+/// What a replayed table change leaves for the frame around it: the hashes of the key and value.
+type Changed = Option<(H, Option<H>)>;
 
 /// One table of `Db`: how to compare it, write a change and replay it.
 struct Desc {
     name: &'static str,
     snap: fn(&Db) -> TabSnap,
-    /// Write the change of a key (raw key and values of this process) under the current
-    /// `Reloc`: the key, the value before and the value after.
+    /// Write changes under the current `Reloc`, each as the table number, the key, the value
+    /// before and the value after: of a map, the keys with these hashes (added by the unit); of a
+    /// value table, the raw bytes before and after.
     #[allow(clippy::type_complexity)]
-    write: fn(&[u8], Option<&[u8]>, Option<&[u8]>, &mut Vec<u8>) -> Result<(), String>,
+    write: fn(
+        &Db,
+        u8,
+        Option<&FxHashSet<H>>,
+        Option<&(Vec<u8>, Vec<u8>)>,
+        &mut Vec<u8>,
+    ) -> Result<(), String>,
     /// Read a change written by `write` and make it, if the table holds the value before; the
     /// undo, and the raw key and value set when asked (`raw`).
     #[allow(clippy::type_complexity)]
@@ -2272,27 +2336,39 @@ where
 }
 
 fn map_snap<M: MapLike>(m: &M) -> TabSnap {
+    let mut buf = Vec::new();
     TabSnap::Map(
         m.entries()
             .into_iter()
-            .map(|(k, v)| (raw_bytes(k), raw_bytes(v)))
+            .map(|(k, v)| (hash_raw(k, &mut buf), hash_raw(v, &mut buf)))
             .collect(),
     )
 }
 
 fn map_write<M: MapLike>(
-    _: fn(&Db) -> &M,
-    k: &[u8],
-    pre: Option<&[u8]>,
-    post: Option<&[u8]>,
+    acc: fn(&Db) -> &M,
+    db: &Db,
+    t: u8,
+    keys: Option<&FxHashSet<H>>,
+    _: Option<&(Vec<u8>, Vec<u8>)>,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let key: M::K = raw_decode(k)?;
-    let pre: Option<M::V> = pre.map(raw_decode).transpose()?;
-    let post: Option<M::V> = post.map(raw_decode).transpose()?;
-    put(&key, out)?;
-    put(&pre, out)?;
-    put(&post, out)
+    let keys = keys.ok_or("a map without keys")?;
+    let mut buf = Vec::new();
+    let mut found = 0;
+    for (k, v) in acc(db).entries() {
+        if keys.contains(&hash_raw(k, &mut buf)) {
+            found += 1;
+            put(&t, out)?;
+            put(k, out)?;
+            put(&None::<&M::V>, out)?;
+            put(&Some(v), out)?;
+        }
+    }
+    if found != keys.len() {
+        return Err("a changed key is gone".into());
+    }
+    Ok(())
 }
 
 fn map_replay<M: MapLike>(
@@ -2307,7 +2383,13 @@ fn map_replay<M: MapLike>(
     if !same(acc(db).get_v(&key), pre.as_ref())? {
         return Err("a table changed since".into());
     }
-    let changed = raw.then(|| (raw_bytes(&key), post.as_ref().map(raw_bytes)));
+    let changed = raw.then(|| {
+        let mut buf = Vec::new();
+        (
+            hash_raw(&key, &mut buf),
+            post.as_ref().map(|v| hash_raw(v, &mut buf)),
+        )
+    });
     let old = match post {
         Some(v) => acc(db).put(key.clone(), v),
         None => acc(db).del(&key),
@@ -2342,13 +2424,16 @@ fn val_snap<T: Serialize>(v: &T) -> TabSnap {
 
 fn val_write<T: Serialize + DeserializeOwned>(
     _: fn(&Db) -> &T,
-    _: &[u8],
-    pre: Option<&[u8]>,
-    post: Option<&[u8]>,
+    _: &Db,
+    t: u8,
+    _: Option<&FxHashSet<H>>,
+    val: Option<&(Vec<u8>, Vec<u8>)>,
     out: &mut Vec<u8>,
 ) -> Result<(), String> {
-    let pre: T = raw_decode(pre.ok_or("a value table without value")?)?;
-    let post: T = raw_decode(post.ok_or("a value table without value")?)?;
+    let (pre, post) = val.ok_or("a value table without value")?;
+    let pre: T = raw_decode(pre)?;
+    let post: T = raw_decode(post)?;
+    put(&t, out)?;
     put(&pre, out)?;
     put(&post, out)
 }
@@ -2364,7 +2449,10 @@ fn val_replay<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
     if !same(Some(&*acc(db)), Some(&pre))? {
         return Err("a value changed since".into());
     }
-    let changed = raw.then(|| (Vec::new(), Some(raw_bytes(&post))));
+    let changed = raw.then(|| {
+        let b = raw_bytes(&post);
+        (0, Some(twox_hash::XxHash3_128::oneshot(&b)))
+    });
     let old = std::mem::replace(acc(db), post);
     let undo: Undo = Box::new(move |db: &mut Db| {
         *acc(db) = old;
@@ -2382,7 +2470,7 @@ macro_rules! tables {
         Desc {
             name: stringify!($($f).+),
             snap: |db| map_snap(&db.$($f).+),
-            write: |k, a, b, out| map_write(|db: &Db| &db.$($f).+, k, a, b, out),
+            write: |db, t, k, v, out| map_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
             replay: |db, rest, raw| map_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| map_canon(&db.$($f).+),
         }
@@ -2391,7 +2479,7 @@ macro_rules! tables {
         Desc {
             name: stringify!($($f).+),
             snap: |db| val_snap(&db.$($f).+),
-            write: |k, a, b, out| val_write(|db: &Db| &db.$($f).+, k, a, b, out),
+            write: |db, t, k, v, out| val_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
             replay: |db, rest, raw| val_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| canon::canon(&db.$($f).+),
         }

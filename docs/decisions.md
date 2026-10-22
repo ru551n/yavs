@@ -4282,8 +4282,11 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
 - **Writes are checked, not audited.** What a unit changes is found by comparison: arena entries it
   writes below its own (`Arena::watch`, the bytes before the first write) and every table of `Db` before
   and after it (`units::tables!`; a test fails when a new serialized field of `Db` or `GenericState` is
-  not listed). A change it shares with a unit loaded inside it, work left pending, an error, or an id it
-  cannot name makes it not stored (`YAVS_LOG=debug` says why).
+  not listed). The tables are compared by a 128-bit hash (xxh3) of every key and value, so recording a
+  unit allocates nothing per entry; a unit stores the keys it added, and one that changes or removes a
+  key another unit made is not stored (10 units of all the analysis corpora, all removals from
+  `GenericState::unused`). A change it shares with a unit loaded inside it, work left pending, an error,
+  or an id it cannot name makes it not stored too (`YAVS_LOG=debug` says why).
 - **Whole pages of a replayed unit stay bytes until read** (`Arena::push_page`). An arena keeps its
   entries in pages of 64 (the chunks of an image are pages too); a run of a page or more of a unit's
   entries carries the length of each entry, and the replay keeps every page that falls inside the run

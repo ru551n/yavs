@@ -264,6 +264,9 @@ unchanged; `'driving` and `'driving_value` do not apply to `in` ports. This reve
 current "uncollapsed ports" choice for the `in` case only; conversion ports (K1) stay
 uncollapsed. It needs a `docs/decisions.md` entry and the user's confirmation (section 8).
 Crates: `yavs-elab` (the `NetGraph`), `yavs-kernel` (fewer ports, no other change).
+Extended to `out` and `buffer` ports that are the only source of their actual (#528, user,
+2026-10-22): their effective value is their driving value, as is the actual's, so the formal's
+drivers drive the actual directly (`docs/decisions.md` "Elaboration").
 
 **R5 (rank 8): parallel batch policy.** The reference simulators run processes serially; yavs
 runs a batch on a pool. At about 10 us per activation the pool hand-off cost is comparable to

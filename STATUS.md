@@ -3939,7 +3939,7 @@ takes the direction of sem's result subtype (that of a constrained context, LRM 
 it used the index subtype's direction before, so a `(3 downto 0)` constant came out mirrored in generate conditions
 (#513: every peripheral of the neorv32 I/O switch sat at the mirrored index). Test: `generics/named_aggregate_direction`.
 
-In-port collapsing (R4, #413; `collapse.rs`, on by default, `--no-collapse-ports` turns it off): done for `in` ports and component pass-through ports whose actual is whole leaves or part of one leaf (element, slice). Verified identical with and without it: difftest corpus (353) at 1 and 4 threads and 4 threads shuffled on both tiers, UVVM suite (76 pass / 33 fail / 28 skip either way), OSVVM `.pro` 2008 and 2019 (314/314), external runner pass lists. Measured (release, median CPU of 5, collapsed vs not): elab_heavy total 0.66 s -> 0.56 s (0.85), peak RSS 254 -> 211 MiB (0.83); ff_rtl, resolved_bus, vai_pe_array, vai_window_gen, uvvm_axistream_vvc_tb within noise (0.97 to 1.03), peak RSS unchanged. Still apart: forced or released ports, ports with conversions or drivers, guarded, user-resolved or whole-resolved composites, every port under `--dap`/`--vhpi`; widening these was not measured as worthwhile (the designs above have none of them in a hot path).
+In-port collapsing (R4, #413; `collapse.rs`, on by default, `--no-collapse-ports` turns it off): done for `in` ports and component pass-through ports whose actual is whole leaves or part of one leaf (element, slice). Verified identical with and without it: difftest corpus (353) at 1 and 4 threads and 4 threads shuffled on both tiers, UVVM suite (76 pass / 33 fail / 28 skip either way), OSVVM `.pro` 2008 and 2019 (314/314), external runner pass lists. Measured (release, median CPU of 5, collapsed vs not): elab_heavy total 0.66 s -> 0.56 s (0.85), peak RSS 254 -> 211 MiB (0.83); ff_rtl, resolved_bus, vai_pe_array, vai_window_gen, uvvm_axistream_vvc_tb within noise (0.97 to 1.03), peak RSS unchanged. Still apart: forced or released ports, ports with conversions or drivers, guarded, user-resolved or whole-resolved composites, every port under `--dap`/`--vhpi`; widening these was not measured as worthwhile (the designs above have none of them in a hot path). `out` and `buffer` ports that are the only source of their actual collapse too (#528, below).
 
 CLI: `yavs elab` and `yavs run` per docs/cli-contract.md (closure from the manifests, design
 revision = newest standard in the closure, `-g` after TOP, `@file`, exit codes, reports in the reference simulator's
@@ -5102,3 +5102,23 @@ warm): 166 to 149 G instructions, 105 to 101 G cycles (interpreter 131.5 G / 55.
 optimiser round 11 (#534): memoisation across a block and its sole successor, a cell of its own for shared linear-run
 temporaries, and fusions across block starts nothing jumps to (`docs/decisions.md` "Shared offsets must stay memoisable and
 fusable"). `YAVS_DUMPIR=1` dumps the finished IR and the predecoded ops of every function that runs.
+
+## Out-port collapsing (#528, 2026-10-22)
+
+`out` and `buffer` ports that are the only source of their actual's elements collapse into the actual like `in` ports
+(`collapse.rs` `ports`): the formal's drivers drive the actual, which takes the formal's initial value; `inout` ports, actuals
+with another source, a guard, a force, a conversion or an effective value from above stay apart (`docs/decisions.md`
+"Elaboration"). In `fletcher_bufferwriter_512` 422 of 450 `out` leaves collapse (20 are open, 8 kept).
+Release `--features llvm`, `tools/realbench --compare` before / after, core 7, median of the suite's runs, against sim1:
+
+| test | sim1 | before interp | after interp | after auto |
+|---|---:|---:|---:|---:|
+| `fletcher_bufferwriter_512` wall / G instr | 1.89 s / 26.8 | 13.48 s / 174.6 (7.1x / 6.5x) | 10.12 s / 139.4 (5.4x / 5.2x) | 10.41 s / 140.7 |
+| `neorv32_dual_full` CPU / G instr | 4.04 s / 44.3 | 10.06 s / 95.8 | 9.18 s / 92.1 (2.3x / 2.1x) | 10.10 s / 95.4 |
+| `neorv32_single_min` CPU / G instr | 3.35 s / 38.7 | 11.47 s / 120.6 | 9.59 s / 111.2 (2.9x / 2.9x) | 10.00 s / 115.8 |
+
+Whole suite (41 tests, cores 6 and 7): geometric mean of instructions 0.98 (interp and auto), wall 0.97; `fletcher_bufferreader`
+0.81 instructions; no slowdowns (two flagged cells rerun on core 7 were noise). Checked: differential corpus 444/444 collapsed
+and with `--no-collapse-ports` (4 threads), `--tier=auto` and `--tier=llvm`; new `hierarchy/out_port_collapse` matches sim1 both
+ways; VHPI conformance traces identical before and after (collapsing is off under `--vhpi`); waves of the `hierarchy` and `force`
+groups equal with and without collapsing (`crates/yavs/tests/wave.rs`); `cargo test --workspace`.

@@ -2069,8 +2069,7 @@ fn clocked_processes_get_edge_triggers() {
 }
 
 /// R4: an `in` port whose actual is whole signal leaves, or part of one leaf, is an alias of
-/// the actual (through the component port too); a forced port and an `out` port keep their
-/// edges.
+/// the actual (through the component port too); a forced port keeps its edges.
 #[test]
 fn in_ports_collapse() {
     let src = "
@@ -2105,14 +2104,67 @@ end;
     let (link, _) = obj(&e, ":top:link");
     assert_eq!(obj(&e, ":top:u:p"), (link, Some(Range::new(0, 1))));
     assert_ne!(obj(&e, ":top:u:f").0, obj(&e, ":top:z").0);
-    // Component and entity ports of `a`, `v` and `p`, and the component's `f` (only the
-    // entity's is forced).
-    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 7);
-    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 7);
+    // Component and entity ports of `a`, `v`, `p` and `y` (an `out` port, #528), and the
+    // component's `f` (only the entity's is forced).
+    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 9);
+    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 9);
     for p in &e.nets.ports {
         assert!(
             p.formal.0.index() < e.nets.leaves.len() && p.actual.0.index() < e.nets.leaves.len()
         );
+    }
+}
+
+/// #528: an `out` or `buffer` port that is the only source of its actual's elements is an
+/// alias of the actual, which takes the formal's initial value; an `inout` port, an actual
+/// with another source, a forced actual and an actual fed from above keep their edges.
+#[test]
+fn out_ports_collapse() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+entity leaf is
+  port (y : out bit := '1'; v : out bit_vector(3 downto 0); bf : buffer bit;
+        io : inout bit; s : out std_logic);
+end;
+architecture rtl of leaf is begin
+  y <= '0'; v <= \"0101\"; bf <= not bf after 1 ns; io <= '0'; s <= '1';
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity mid is port (y : inout bit); end;
+architecture a of mid is begin
+  u : entity work.leaf port map (y => y, v => open, bf => open, io => open, s => open);
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is end;
+architecture t of top is
+  signal y, b, io, f, m : bit;
+  signal w : bit_vector(0 to 7);
+  signal s1, s2 : std_logic;
+begin
+  u : entity work.leaf port map (y => y, v => w(2 to 5), bf => b, io => io, s => s1);
+  k : entity work.leaf port map (y => f, v => open, bf => open, io => open, s => s2);
+  s2 <= 'Z';
+  i : entity work.mid port map (y => m);
+  process begin f <= force '1'; wait; end process;
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        (e.nets.objs[k].leaves, e.nets.objs[k].part)
+    };
+    let init = |e: &Elaborated, path: &str| e.nets.leaf(obj(e, path).0.0).init.clone();
+    let (_, apart) = elab_ports("outcollapse", src, "top", &[]);
+    let (_, e) = elab("outcollapse", src, "top", &[]);
+    assert_eq!(obj(&e, ":top:u:y"), obj(&e, ":top:y"));
+    assert_eq!(init(&e, ":top:y"), init(&apart, ":top:u:y"));
+    assert_ne!(init(&apart, ":top:y"), init(&apart, ":top:u:y"));
+    // `w(2 to 5)`: kernel offsets 2 to 5 of the mirrored logic leaf.
+    let (wl, _) = obj(&e, ":top:w");
+    assert_eq!(obj(&e, ":top:u:v"), (wl, Some(Range::new(2, 4))));
+    assert_eq!(obj(&e, ":top:u:bf"), obj(&e, ":top:b"));
+    assert_eq!(obj(&e, ":top:u:s"), obj(&e, ":top:s1"));
+    for kept in [":top:u:io", ":top:k:s", ":top:k:y", ":top:i:u:y"] {
+        let (l, _) = obj(&e, kept);
+        assert!(e.nets.ports.iter().any(|p| p.formal.0 == l.0), "{kept}");
     }
 }
 

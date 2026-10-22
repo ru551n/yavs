@@ -993,6 +993,23 @@ a note and a help suggesting an access type, as the reference simulators reject 
   deposit any port; edge triggers make the same choice). On by default, `--no-collapse-ports`
   (`ElabConfig::collapse_ports`) keeps every port apart; the difftest corpus runs both ways
   (`YAVS_RUN_FLAGS=--no-collapse-ports`).
+- **`out` and `buffer` ports collapse into their actuals too** (#528, user, 2026-10-22; extends
+  plan rule 3 and the entry above): a formal of mode `out` or `buffer` that is the only source
+  of its actual's elements (no driver, other port or conversion on them), with the same
+  conditions on the association as for `in` ports, takes the actual's leaves, and its drivers
+  drive the actual. The effective value of an `out` or `buffer` port and of a signal is its
+  driving value (LRM 14.7.3.3), and the driving value of an actual with one source is that
+  source's (unresolved, or `resolved`, the identity on one value; a formal resolved by
+  `resolved` with several drivers resolves them the same way in the actual), so values,
+  events, activity, `'transaction` and `'last_value` seen through either name are the same;
+  `'driving` and `'driving_value` read the process's own driver, which only moves. The actual
+  takes the formal's initial value (the deepest formal's through a chain): it is the actual's
+  value after initialisation either way (LRM 14.7.5.2) and the drivers start from it. Not
+  collapsed: `inout` ports; an actual that is the formal of an `in` or `inout` port or of a
+  conversion (its effective value comes from above), guarded, in a composite resolved as a
+  whole, or forced or released by a VHDL statement; a resolved formal on an unresolved actual.
+  The same `--no-collapse-ports`, `--dap` and `--vhpi` switch it off; the difftest corpus runs
+  both ways and `hierarchy/out_port_collapse` covers the cases.
 
 - **The elaboration-time session grows one program** (#383, elab agent, 2026-10-19): a function
   that uses package state and is called for the first time is lowered into the session's

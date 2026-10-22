@@ -1,0 +1,67 @@
+exit	0
+diag	note	0	0	:out_port_collapse:_p2	init q=1010 n=7 r.n=5 r.b=01 z='H' u='1' b=10 w=11101011 two=UUUU halves=UUUU bus_q=1010 forced=1010
+diag	note	0	0	:out_port_collapse:_p3	q'transaction q=1010 active=false
+diag	note	5000000	1	:out_port_collapse:m:l:_p0	drv=1010 driving=true n drv=7
+diag	note	5000000	1	:out_port_collapse:p:_p0	drv=1010 driving=true n drv=7
+diag	note	5000000	1	:out_port_collapse:s:_p0	drv=1010 driving=true n drv=7
+diag	note	5000000	1	:out_port_collapse:h:_p0	drv=1010 driving=true n drv=7
+diag	note	5000000	1	:out_port_collapse:i:l:_p0	drv=1010 driving=true n drv=7
+diag	note	5000000	1	:out_port_collapse:f:_p0	drv=1010 driving=true n drv=7
+diag	note	5000000	2	:out_port_collapse:m:l:_p4	leaf q=0001 n=1 q'event=true n'last_value=7 n'active=true
+diag	note	5000000	2	:out_port_collapse:m:_p0	mid r.n=10 r.b=10 b=11 r'last_event=0 fs
+diag	note	5000000	2	:out_port_collapse:p:_p4	leaf q=0001 n=1 q'event=true n'last_value=7 n'active=true
+diag	note	5000000	2	:out_port_collapse:s:_p4	leaf q=0001 n=1 q'event=true n'last_value=7 n'active=true
+diag	note	5000000	2	:out_port_collapse:h:_p4	leaf q=0001 n=1 q'event=true n'last_value=7 n'active=true
+diag	note	5000000	2	:out_port_collapse:i:l:_p4	leaf q=0001 n=1 q'event=true n'last_value=7 n'active=true
+diag	note	5000000	2	:out_port_collapse:f:_p4	leaf q=0001 n=1 q'event=true n'last_value=7 n'active=true
+diag	note	5000000	2	:out_port_collapse:_p3	q'transaction q=0001 active=true
+diag	note	5000000	3	:out_port_collapse:m:_p0	mid r.n=10 r.b=11 b=11 r'last_event=0 fs
+diag	note	10000000	1	:out_port_collapse:_p2	k=1 q=0001 n=1 r.n=10 z='H' u='0' b=11 w=11000111 two=0001 halves=0001 bus_q=0001 forced=0001 q'last_event=5000000 fs n'last_value=7
+diag	note	15000000	1	:out_port_collapse:m:l:_p0	drv=0001 driving=true n drv=1
+diag	note	15000000	1	:out_port_collapse:p:_p0	drv=0001 driving=true n drv=1
+diag	note	15000000	1	:out_port_collapse:s:_p0	drv=0001 driving=true n drv=1
+diag	note	15000000	1	:out_port_collapse:h:_p0	drv=0001 driving=true n drv=1
+diag	note	15000000	1	:out_port_collapse:i:l:_p0	drv=0001 driving=true n drv=1
+diag	note	15000000	1	:out_port_collapse:f:_p0	drv=0001 driving=true n drv=1
+diag	note	15000000	2	:out_port_collapse:m:l:_p4	leaf q=0010 n=2 q'event=true n'last_value=1 n'active=true
+diag	note	15000000	2	:out_port_collapse:m:_p0	mid r.n=20 r.b=11 b=00 r'last_event=0 fs
+diag	note	15000000	2	:out_port_collapse:p:_p4	leaf q=0010 n=2 q'event=true n'last_value=1 n'active=true
+diag	note	15000000	2	:out_port_collapse:s:_p4	leaf q=0010 n=2 q'event=true n'last_value=1 n'active=true
+diag	note	15000000	2	:out_port_collapse:h:_p4	leaf q=0010 n=2 q'event=true n'last_value=1 n'active=true
+diag	note	15000000	2	:out_port_collapse:i:l:_p4	leaf q=0010 n=2 q'event=true n'last_value=1 n'active=true
+diag	note	15000000	2	:out_port_collapse:f:_p4	leaf q=0010 n=2 q'event=true n'last_value=1 n'active=true
+diag	note	15000000	2	:out_port_collapse:_p3	q'transaction q=0010 active=true
+diag	note	15000000	3	:out_port_collapse:m:_p0	mid r.n=20 r.b=00 b=00 r'last_event=0 fs
+diag	note	20000000	1	:out_port_collapse:_p2	k=2 q=0010 n=2 r.n=20 z='L' u='1' b=00 w=11001011 two=001X halves=0010 bus_q=0010 forced=0110 q'last_event=5000000 fs n'last_value=1
+diag	note	25000000	1	:out_port_collapse:m:l:_p0	drv=0010 driving=true n drv=2
+diag	note	25000000	1	:out_port_collapse:p:_p0	drv=0010 driving=true n drv=2
+diag	note	25000000	1	:out_port_collapse:s:_p0	drv=0010 driving=true n drv=2
+diag	note	25000000	1	:out_port_collapse:h:_p0	drv=0010 driving=true n drv=2
+diag	note	25000000	1	:out_port_collapse:i:l:_p0	drv=0010 driving=true n drv=2
+diag	note	25000000	1	:out_port_collapse:f:_p0	drv=0010 driving=true n drv=2
+diag	note	25000000	2	:out_port_collapse:m:l:_p4	leaf q=0011 n=3 q'event=true n'last_value=2 n'active=true
+diag	note	25000000	2	:out_port_collapse:m:_p0	mid r.n=30 r.b=00 b=01 r'last_event=0 fs
+diag	note	25000000	2	:out_port_collapse:p:_p4	leaf q=0011 n=3 q'event=true n'last_value=2 n'active=true
+diag	note	25000000	2	:out_port_collapse:s:_p4	leaf q=0011 n=3 q'event=true n'last_value=2 n'active=true
+diag	note	25000000	2	:out_port_collapse:h:_p4	leaf q=0011 n=3 q'event=true n'last_value=2 n'active=true
+diag	note	25000000	2	:out_port_collapse:i:l:_p4	leaf q=0011 n=3 q'event=true n'last_value=2 n'active=true
+diag	note	25000000	2	:out_port_collapse:f:_p4	leaf q=0011 n=3 q'event=true n'last_value=2 n'active=true
+diag	note	25000000	2	:out_port_collapse:_p3	q'transaction q=0011 active=true
+diag	note	25000000	3	:out_port_collapse:m:_p0	mid r.n=30 r.b=01 b=01 r'last_event=0 fs
+diag	note	30000000	1	:out_port_collapse:_p2	k=3 q=0011 n=3 r.n=30 z='W' u='0' b=01 w=11001111 two=0011 halves=0011 bus_q=0011 forced=0110 q'last_event=5000000 fs n'last_value=2
+diag	note	35000000	1	:out_port_collapse:m:l:_p0	drv=0011 driving=true n drv=3
+diag	note	35000000	1	:out_port_collapse:p:_p0	drv=0011 driving=true n drv=3
+diag	note	35000000	1	:out_port_collapse:s:_p0	drv=0011 driving=true n drv=3
+diag	note	35000000	1	:out_port_collapse:h:_p0	drv=0011 driving=true n drv=3
+diag	note	35000000	1	:out_port_collapse:i:l:_p0	drv=0011 driving=true n drv=3
+diag	note	35000000	1	:out_port_collapse:f:_p0	drv=0011 driving=true n drv=3
+diag	note	35000000	2	:out_port_collapse:m:l:_p4	leaf q=0100 n=4 q'event=true n'last_value=3 n'active=true
+diag	note	35000000	2	:out_port_collapse:m:_p0	mid r.n=40 r.b=01 b=10 r'last_event=0 fs
+diag	note	35000000	2	:out_port_collapse:p:_p4	leaf q=0100 n=4 q'event=true n'last_value=3 n'active=true
+diag	note	35000000	2	:out_port_collapse:s:_p4	leaf q=0100 n=4 q'event=true n'last_value=3 n'active=true
+diag	note	35000000	2	:out_port_collapse:h:_p4	leaf q=0100 n=4 q'event=true n'last_value=3 n'active=true
+diag	note	35000000	2	:out_port_collapse:i:l:_p4	leaf q=0100 n=4 q'event=true n'last_value=3 n'active=true
+diag	note	35000000	2	:out_port_collapse:f:_p4	leaf q=0100 n=4 q'event=true n'last_value=3 n'active=true
+diag	note	35000000	2	:out_port_collapse:_p3	q'transaction q=0100 active=true
+diag	note	35000000	3	:out_port_collapse:m:_p0	mid r.n=40 r.b=10 b=10 r'last_event=0 fs
+diag	note	40000000	1	:out_port_collapse:_p2	k=4 q=0100 n=4 r.n=40 z='Z' u='1' b=10 w=11010011 two=010X halves=0100 bus_q=0100 forced=0100 q'last_event=5000000 fs n'last_value=3

@@ -682,7 +682,7 @@ type VectorKey = (yavs_sem::TypeId, yavs_sem::TypeId, bool, (i64, i64, bool));
 #[derive(Clone, Copy)]
 enum At {
     /// Row-major instance `k` of the node in the leaves from `leaf` on; `part`: the kernel
-    /// range of `leaf` an `in` port collapsed into part of its actual's leaf covers
+    /// range of `leaf` a port collapsed into part of its actual's leaf covers
     /// (yavs-elab `SigObj::part`).
     Sig {
         leaf: u32,

@@ -40,20 +40,20 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 
 ### Verification library: its own testbenches (#277)
 
-`tools/suites/uvvm.py` (without `--private-copies`), release build of main at 92dfc349 (#328, #329, #303 and the force of composite signals in), `-j 2`; one run per testbench
-entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 102 runs pass at the commit of #391 to #393 and #419 (78 at f2ab69be, 76 at 666f5ee3 and b9dcddb6, 73 at 92dfc349, 45 at ba53e23d); re-measured at f2ab69be with `-j 2`, 1240 s wall (2100 s at 666f5ee3 on a more loaded host, 1560 s at b9dcddb6). Only the first root cause of each run is counted.
-No run fails at elaboration on the record-resolution or composite-force cause any more; #391 (a force through an external name with no mode follows the named signal), #392 (a resolution function that touches a shared variable of a non-protected type) and #393 (a file object in a protected type body) are fixed, and with them #419 (the unwanted-activity checks of the stream testbench). The remaining failures: two uvvm_util runs and the avalon_mm and absent-design cases below, #460 (1), and a uart run not reduced (1).
+`tools/suites/uvvm.py`, release build of main at bbe56abf (#460 fixed), `-j 2`; one run per testbench entity, architecture and generic set the component's own regression script lists (137 in all).
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 130 runs pass (102 before the SPI and I2C third-party designs were fetched and the driver fixes below; 78 at f2ab69be, 45 at ba53e23d); the whole suite takes 1.5 minutes at `-j 2`, the slowest run 12 s, so no run needs the 5 minute limit (the old over-5-minutes skips of #394 are gone: `axistream_vvc_tb` takes 4.4 s on core 2). Only the first root cause of each run is counted.
+The remaining non-passes: one run fails on yavs (#559, a signal initial value that reads an `in` port, the I2C slave design) and six are skipped because vendor simulation libraries or designs are not obtainable (five `avalon_mm` runs: the testbench's FIFO, SPI and SDRAM-controller components stay unbound; one ethernet MAC run).
+Driver fixes of this round (not yavs bugs): `--exit-severity=failure` on every run (a design under test reports errors by design, as the project's tool and a sim1 run), `func_cov_tb` runs share a directory and run in order (a test reads what an earlier one wrote), `questa_extension_tb` runs with its extension switch off (sim1 behaves the same).
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
 |---|---|---|---|---|
-| uvvm_util | 34 | 2 | 0 | not yavs results: a test that reads a file an earlier run wrote (1), a test that needs one reference simulator's extension (1); the three long random-distribution tests run within 5 minutes since the interpreter work of #386 (re-run of this component at `bc74c892`) |
+| uvvm_util | 36 | 0 | 0 | none (the two former fails were driver expectations, above) |
 | uvvm_assertions | 2 | 0 | 0 | none |
 | uvvm_vvc_framework | 3 | 0 | 0 | none (#392 fixed) |
 | bitvis_irqc | 2 | 0 | 0 | none |
 | bitvis_uart | 3 | 0 | 0 | none |
 | bitvis_vip_scoreboard | 3 | 0 | 0 | none |
-| bitvis_vip_avalon_mm | 0 | 5 | 0 | not yavs results: the testbenches' FIFO and SPI designs are third-party files absent from the pinned checkout, so the component stays unbound |
+| bitvis_vip_avalon_mm | 0 | 0 | 5 | skipped: the FPGA vendor simulation libraries and the SDRAM controller the testbenches instantiate are not obtainable, so their components stay unbound |
 | bitvis_vip_avalon_st | 6 | 0 | 0 | none |
 | bitvis_vip_axi | 2 | 0 | 0 | none |
 | bitvis_vip_axilite | 2 | 0 | 0 | none (#391 fixed) |
@@ -62,16 +62,16 @@ No run fails at elaboration on the record-resolution or composite-force cause an
 | bitvis_vip_error_injection | 2 | 0 | 0 | none |
 | bitvis_vip_gmii | 2 | 0 | 0 | none |
 | bitvis_vip_sbi | 2 | 0 | 0 | none |
-| bitvis_vip_ethernet | 2 | 1 | 1 | #460 (1); 1 skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_ethernet | 3 | 0 | 1 | none (#460 fixed); 1 skipped: the vendor simulation libraries of the MAC testbench are not obtainable |
 | bitvis_vip_gpio | 1 | 0 | 0 | none |
-| bitvis_vip_i2c | 0 | 0 | 1 | skipped: third-party design files absent from the pinned checkout |
+| bitvis_vip_i2c | 0 | 1 | 0 | #559 (the slave design initialises a signal from an `in` port) |
 | bitvis_vip_rgmii | 2 | 0 | 0 | none |
 | bitvis_vip_spec_cov | 1 | 0 | 0 | none (#393 fixed) |
-| bitvis_vip_spi | 0 | 0 | 24 | skipped: third-party design files absent from the pinned checkout |
-| bitvis_vip_uart | 2 | 1 | 0 | one run fails, cause not reduced (#392 and #391 fixed) |
+| bitvis_vip_spi | 24 | 0 | 0 | none (the master and slave designs are fetched at a pinned commit) |
+| bitvis_vip_uart | 3 | 0 | 0 | none (the demo run reports errors by design, driver fix above) |
 | bitvis_vip_wishbone | 2 | 0 | 0 | none (#391 fixed) |
 | external_vip_apb | 6 | 0 | 0 | none (#391 fixed) |
-| Total | 102 | 9 | 26 | per-component rows above are from this commit |
+| Total | 130 | 1 | 6 | per-component rows above are from this commit |
 
 The generated-VIP tests of the framework component (generator output compiled and simulated) are not run by the driver.
 

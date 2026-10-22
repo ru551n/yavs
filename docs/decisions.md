@@ -1298,6 +1298,7 @@ a note and a help suggesting an access type, as the reference simulators reject 
   (`forget_free_objects`) before the design is lowered, which lowers them again for the
   architecture. Such a lowering is never read from or stored in the stage cache. Not covered:
   a non-protected (`--relaxed`) shared variable of a region, which stays `E2106` (#524).
+- **Signal initial values that read signals (#559, L117):** the initial value of a signal may read an `in` port or a signal declared before it (e.g. `signal r : std_logic := port_in;`, a registered input in a debounce or synchroniser). The value is the declared initial value of the signal; an `in` formal starts with its actual's (`Elab::edges`), so a port reads as its actual's initial value, through any chain of ports. Only while a signal's own initial value is evaluated (`Model::sig_init`): a port actual, constant or generic that reads a signal is still not static (`E2106`, or the equivalent process for an expression actual). One reference accepts, one rejects at analysis; LRM unclear, so permissive.
 
 ## Runtime: default exit severity (user, 2026-10-18)
 

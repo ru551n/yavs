@@ -265,8 +265,22 @@ pub(crate) fn ports(
     count
 }
 
+/// The elements `r` of `v`, a leaf of `len` elements.
+pub(crate) fn slice_init(v: &Value, len: u32, r: Range) -> Value {
+    match v {
+        Value::Bytes(b) if len > 0 => {
+            let w = b.len() / len as usize;
+            Value::Bytes(b[r.offset as usize * w..(r.offset + r.len) as usize * w].to_vec())
+        }
+        Value::Logic(l) => Value::Logic(yavs_kernel::LogicVec::from_fn(r.len as usize, |i| {
+            l.get(r.offset as usize + i)
+        })),
+        v => v.clone(),
+    }
+}
+
 /// The `len` elements of `src` into `dst` from element `off`.
-fn put_init(dst: &mut Value, off: u32, src: &Value, len: u32) {
+pub(crate) fn put_init(dst: &mut Value, off: u32, src: &Value, len: u32) {
     match (dst, src) {
         (Value::Bytes(d), Value::Bytes(s)) if len > 0 => {
             let o = off as usize * (s.len() / len as usize);

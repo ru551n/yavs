@@ -1148,10 +1148,10 @@ impl Elab<'_> {
                 }
                 (ObjClass::Signal, ObjRole::Plain) => {
                     let span = decl.span;
-                    let init = match o.default {
-                        Some(e) => Some(self.m.eval(db, e, Some(s))?),
-                        None => None,
-                    };
+                    self.m.sig_init = true;
+                    let init = o.default.map(|e| self.m.eval(db, e, Some(s)));
+                    self.m.sig_init = false;
+                    let init = init.transpose()?;
                     let Some(shape) =
                         self.m
                             .shape_init(db, o.subtype, init.as_ref(), Some(s), span)?
@@ -4034,6 +4034,18 @@ impl Model {
             let Some(&mode) = modes.get(&f.0) else {
                 return Err(Box::new(ice(span, "formal leaf without a mode")));
             };
+            // An `in` formal starts with its actual's value (LRM 14.7.3.3), which the
+            // initial value of a later signal may read.
+            if mode == PortMode::In {
+                let al = self.nets.leaf(a.0);
+                let src = crate::collapse::slice_init(&al.init, al.ty.len, a.1);
+                crate::collapse::put_init(
+                    &mut self.nets.leaves[f.0.index()].init,
+                    f.1.offset,
+                    &src,
+                    f.1.len,
+                );
+            }
             self.nets.ports.push(PortEdge {
                 formal: *f,
                 actual: *a,

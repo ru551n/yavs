@@ -41,8 +41,8 @@ suite (`vunit/vhdl/<suite>/test`), including `tb_axi_stream_protocol_checker` wi
 ### Verification library: its own testbenches (#277)
 
 `tools/suites/uvvm.py`, release build of main at bbe56abf (#460 fixed), `-j 2`; one run per testbench entity, architecture and generic set the component's own regression script lists (137 in all).
-Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 130 runs pass (102 before the SPI and I2C third-party designs were fetched and the driver fixes below; 78 at f2ab69be, 45 at ba53e23d); the whole suite takes 1.5 minutes at `-j 2`, the slowest run 12 s, so no run needs the 5 minute limit (the old over-5-minutes skips of #394 are gone: `axistream_vvc_tb` takes 4.4 s on core 2). Only the first root cause of each run is counted.
-The remaining non-passes: one run fails on yavs (#559, a signal initial value that reads an `in` port, the I2C slave design) and six are skipped because vendor simulation libraries or designs are not obtainable (five `avalon_mm` runs: the testbench's FIFO, SPI and SDRAM-controller components stay unbound; one ethernet MAC run).
+Pass = exit 0 and the library's final summary `>> Simulation SUCCESS`. 131 runs pass (130 before the I2C slave design could elaborate, #559; 102 before the SPI and I2C third-party designs were fetched and the driver fixes below; 78 at f2ab69be, 45 at ba53e23d); the whole suite takes 1.5 minutes at `-j 2`, the slowest run 12 s, so no run needs the 5 minute limit (the old over-5-minutes skips of #394 are gone: `axistream_vvc_tb` takes 4.4 s on core 2). Only the first root cause of each run is counted.
+The remaining non-passes: none fails on yavs (#559 fixed: a signal initial value may read an `in` port, as the I2C slave design does) and six are skipped because vendor simulation libraries or designs are not obtainable (five `avalon_mm` runs: the testbench's FIFO, SPI and SDRAM-controller components stay unbound; one ethernet MAC run).
 Driver fixes of this round (not yavs bugs): `--exit-severity=failure` on every run (a design under test reports errors by design, as the project's tool and a sim1 run), `func_cov_tb` runs share a directory and run in order (a test reads what an earlier one wrote), `questa_extension_tb` runs with its extension switch off (sim1 behaves the same).
 
 | Component | Pass | Fail | Skip | First root cause (issues) |
@@ -64,7 +64,7 @@ Driver fixes of this round (not yavs bugs): `--exit-severity=failure` on every r
 | bitvis_vip_sbi | 2 | 0 | 0 | none |
 | bitvis_vip_ethernet | 3 | 0 | 1 | none (#460 fixed); 1 skipped: the vendor simulation libraries of the MAC testbench are not obtainable |
 | bitvis_vip_gpio | 1 | 0 | 0 | none |
-| bitvis_vip_i2c | 0 | 1 | 0 | #559 (the slave design initialises a signal from an `in` port) |
+| bitvis_vip_i2c | 1 | 0 | 0 | none (#559 fixed) |
 | bitvis_vip_rgmii | 2 | 0 | 0 | none |
 | bitvis_vip_spec_cov | 1 | 0 | 0 | none (#393 fixed) |
 | bitvis_vip_spi | 24 | 0 | 0 | none (the master and slave designs are fetched at a pinned commit) |

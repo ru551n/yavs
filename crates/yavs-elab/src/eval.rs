@@ -121,6 +121,9 @@ pub struct Model {
     /// being bound. The actual's context subtype (`(others => ..)` for a generic of subtype
     /// `bit_vector(W - 1 downto 0)`) names the instance's earlier generics (LRM 6.5.6.2).
     pub(crate) actual_of: Option<ScopeId>,
+    /// While the initial value of a signal is evaluated: a signal of the instance reads as
+    /// its initial value (an `in` port's is its actual's, see `walk::Elab::edges`).
+    pub(crate) sig_init: bool,
 }
 
 /// How a scalar crosses the kernel: its element and its class.
@@ -1070,6 +1073,17 @@ impl Model {
                 .with_primary(span, "while elaborating this")
                 .with_note("this is a bug in yavs"),
             )),
+            (ObjClass::Signal, _, _) if self.sig_init => {
+                let Some(v) = scope.and_then(|s| self.signal_init(db, d, s)) else {
+                    return Err(err(
+                        codes::NOT_EVALUATED,
+                        span,
+                        format!("the initial value of `{}` cannot be read yet", decl.name),
+                        "an array of composites or an unelaborated signal",
+                    ));
+                };
+                Ok(v)
+            }
             _ => Err(err(
                 codes::NOT_EVALUATED,
                 span,
@@ -1080,6 +1094,14 @@ impl Model {
                 "needs a globally static value",
             )),
         }
+    }
+
+    /// The initial value of signal `d` of the instance `scope` from its leaves; `None` for
+    /// an array of composites (its leaves are not one run of elements).
+    fn signal_init(&self, db: &Db, d: DeclId, scope: ScopeId) -> Option<Val> {
+        let obj = self.nets.obj(self.signal(scope, d)?);
+        let mut next = obj.leaves.0.index();
+        init_val(db, &obj.shape, &self.nets, &mut next)
     }
 
     /// Array value `v` of a constant of subtype `st`: with the bounds of `st` when it is
@@ -1950,6 +1972,79 @@ pub(crate) fn calls_impure(db: &Db, e: ExprId) -> bool {
         })
     })
     .is_some()
+}
+
+/// The value of `shape` from the initial values of the leaves from `*next` on (the inverse
+/// of [`leaf_values`]).
+fn init_val(db: &Db, shape: &Shape, nets: &NetGraph, next: &mut usize) -> Option<Val> {
+    let scalar = |sh: &Shape, init: &Value, i: usize, n: usize| {
+        let Shape::Scalar { ty, left, .. } = sh else {
+            return None;
+        };
+        Some(match init {
+            Value::Logic(l) => {
+                let off = if is_std_ulogic(db, *ty) { 0 } else { 2 };
+                Val::Enum(u32::from(l.get(n - 1 - i) as u8) - off)
+            }
+            Value::Bytes(b) => {
+                let w = b.len() / n;
+                let c = &b[i * w..(i + 1) * w];
+                match (left, w) {
+                    (Val::Real(_), _) => Val::Real(f64::from_le_bytes(c.try_into().ok()?)),
+                    (Val::Enum(_), 1) => Val::Enum(u32::from(c[0])),
+                    (Val::Enum(_), _) => Val::Enum(u32::from_le_bytes(c.try_into().ok()?)),
+                    (v, 4) => {
+                        let x = i64::from(i32::from_le_bytes(c.try_into().ok()?));
+                        if matches!(v, Val::Phys(_)) {
+                            Val::Phys(x)
+                        } else {
+                            Val::Int(x)
+                        }
+                    }
+                    (v, _) => {
+                        let x = i64::from_le_bytes(c.try_into().ok()?);
+                        if matches!(v, Val::Phys(_)) {
+                            Val::Phys(x)
+                        } else {
+                            Val::Int(x)
+                        }
+                    }
+                }
+            }
+        })
+    };
+    match shape {
+        Shape::Scalar { .. } => {
+            let init = &nets.leaves.get(*next)?.init;
+            *next += 1;
+            scalar(shape, init, 0, 1)
+        }
+        Shape::Array { dims, elem, .. } if matches!(**elem, Shape::Scalar { .. }) => {
+            let init = &nets.leaves.get(*next)?.init;
+            *next += 1;
+            let n = shape.len() as usize;
+            let vals: Vec<Val> = (0..n)
+                .map(|i| scalar(elem, init, i, n))
+                .collect::<Option<_>>()?;
+            let bytes =
+                dims.len() == 1 && vals.iter().all(|v| matches!(v, Val::Enum(x) if *x < 256));
+            let elems = if bytes {
+                Elems::Bytes(vals.iter().map(|v| v.as_int().unwrap_or(0) as u8).collect())
+            } else {
+                Elems::Runs(vals.into_iter().map(|v| (1, v)).collect())
+            };
+            Some(Val::Array(ArrayConst {
+                bounds: dims.iter().map(|b| (b.left, b.dir, b.right)).collect(),
+                elems,
+            }))
+        }
+        Shape::Record { fields, .. } => fields
+            .iter()
+            .map(|(_, f)| init_val(db, f, nets, next))
+            .collect::<Option<Box<[_]>>>()
+            .map(Val::Record),
+        Shape::Array { .. } => None,
+    }
 }
 
 /// A value of `shape`, each scalar its subtype's `'left`.

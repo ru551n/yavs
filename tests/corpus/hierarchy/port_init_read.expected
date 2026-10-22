@@ -1,0 +1,2 @@
+exit	0
+diag	note	1000000	0	:tb_port_init_read:_p0	ok

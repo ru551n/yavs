@@ -180,6 +180,7 @@ const PASS: &[&str] = &[
     "hierarchy/binding_actual_names",
     "hierarchy/config_generate_index",
     "hierarchy/config_port_expr",
+    "hierarchy/port_init_read",
     "hierarchy/out_port_collapse",
     "hierarchy/driving_value_no_driver",
     "hierarchy/use_type_operations",

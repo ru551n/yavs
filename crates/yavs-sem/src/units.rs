@@ -884,14 +884,26 @@ impl Db {
                             if k == Kind::Lib {
                                 return Err("library entries outside a library step".into());
                             }
+                            // A run of a page or more says how long each entry is, so that the
+                            // reader can keep whole pages as bytes (`Arena::push_page`).
+                            let mut entries = Vec::new();
+                            let mut lens = Vec::new();
                             macro_rules! m {
                                 ($fl:ident) => {
                                     for i in a..b {
-                                        put(&mut body, self.$fl.get_at(i as usize))?;
+                                        let at = entries.len();
+                                        put(&mut entries, self.$fl.get_at(i as usize))?;
+                                        lens.push((entries.len() - at) as u32);
                                     }
                                 };
                             }
                             by_kind!(k, m);
+                            if lens.len() >= PAGE {
+                                let raw: Vec<u8> =
+                                    lens.iter().flat_map(|l| l.to_le_bytes()).collect();
+                                body.extend_from_slice(&raw);
+                            }
+                            body.extend_from_slice(&entries);
                         }
                         for d in &self.diags[diags.0..diags.1] {
                             if d.severity == Severity::Error {
@@ -1710,23 +1722,24 @@ impl Db {
         let saved = self.owner;
         self.set_owner(pl.serial);
         let dec = match Dec::new(self, p, pl) {
-            Ok(d) => Rc::new(d),
+            Ok(d) => std::sync::Arc::new(d),
             Err(e) => {
                 self.set_owner(saved);
                 return Err(e);
             }
         };
         let files = dec.files.clone();
-        let map: yavs_diag::FileIdMap = Rc::new(move |id: FileId| {
+        let shared: SharedFileMap = std::sync::Arc::new(move |id: FileId| {
             let (o, k) = (id.0 >> 8, (id.0 & 255) as usize);
             files.get(o as usize)?.as_ref()?.get(k).copied()
         });
+        let ctx = PageCtx {
+            syms: Some(e.syms.clone()),
+            reloc: Some(dec.clone()),
+            files: Some(shared),
+        };
         self.replaying += 1;
-        let r = e.syms.clone().run(|| {
-            with_reloc(dec.clone(), || {
-                yavs_diag::map_file_ids(map, || self.replay_steps(p, pl, &e, &dec))
-            })
-        });
+        let r = ctx.run(|| self.replay_steps(p, pl, &e, &dec, &ctx));
         self.replaying -= 1;
         self.set_owner(saved);
         let u = r?;
@@ -1740,6 +1753,7 @@ impl Db {
         pl: &Planned,
         e: &Entry,
         dec: &Dec,
+        ctx: &PageCtx,
     ) -> Result<UnitId, String> {
         let mut rest = &e.buf[e.body..];
         let serial = pl.serial as usize;
@@ -1766,13 +1780,45 @@ impl Db {
                                 return Err(format!("{k:?} entries out of step"));
                             }
                         }
+                        // Whole pages stay bytes until an entry of them is read.
+                        // The length of each entry, 4 bytes each, when there is a page or more.
+                        let lens: &[u8] = if n as usize >= PAGE {
+                            let (l, r) = rest
+                                .split_at_checked(4 * n as usize)
+                                .ok_or("entry lengths")?;
+                            rest = r;
+                            l
+                        } else {
+                            &[]
+                        };
+                        let len_of = |j: usize| {
+                            u32::from_le_bytes(lens[4 * j..4 * j + 4].try_into().expect("4 bytes"))
+                                as usize
+                        };
                         macro_rules! m {
-                            ($f:ident) => {
-                                for _ in 0..n {
-                                    let v = take(&mut rest)?;
-                                    self.$f.push(v);
+                            ($f:ident) => {{
+                                let mut j = 0usize;
+                                while j < n as usize {
+                                    let at = self.$f.len();
+                                    let left = n as usize - j;
+                                    if !lens.is_empty() && at % PAGE == 0 && left >= PAGE {
+                                        let bytes: usize = (j..j + PAGE).map(len_of).sum();
+                                        if bytes > rest.len() {
+                                            return Err("short page".into());
+                                        }
+                                        let start = e.buf.len() - rest.len();
+                                        let data =
+                                            yavs_diag::Slice::of(&e.buf, start, start + bytes);
+                                        self.$f.push_page(data, ctx.clone());
+                                        rest = &rest[bytes..];
+                                        j += PAGE;
+                                    } else {
+                                        let v = take(&mut rest)?;
+                                        self.$f.push(v);
+                                        j += 1;
+                                    }
                                 }
-                            };
+                            }};
                         }
                         by_kind!(k, m);
                     }
@@ -1928,7 +1974,7 @@ impl Db {
 /// The `Reloc` of a unit being read: its owners' entries where the plan puts them.
 struct Dec {
     owners: Vec<OwnerAt>,
-    files: Rc<Vec<Option<Vec<FileId>>>>,
+    files: std::sync::Arc<Vec<Option<Vec<FileId>>>>,
 }
 
 enum OwnerAt {
@@ -1984,7 +2030,7 @@ impl Dec {
         }
         Ok(Dec {
             owners,
-            files: Rc::new(files),
+            files: std::sync::Arc::new(files),
         })
     }
 }

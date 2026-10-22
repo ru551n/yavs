@@ -4284,6 +4284,14 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   and after it (`units::tables!`; a test fails when a new serialized field of `Db` or `GenericState` is
   not listed). A change it shares with a unit loaded inside it, work left pending, an error, or an id it
   cannot name makes it not stored (`YAVS_LOG=debug` says why).
+- **Whole pages of a replayed unit stay bytes until read** (`Arena::push_page`). An arena keeps its
+  entries in pages of 64 (the chunks of an image are pages too); a run of a page or more of a unit's
+  entries carries the length of each entry, and the replay keeps every page that falls inside the run
+  as the entry's bytes with what decodes them (symbol table, `Reloc`, file map), decoded the first
+  time an entry of it is read. Analysing one verification component reads about 1 200 of the
+  14 000 declarations and 60 of the 3 400 regions its dependencies replay, so this halved the
+  cost of such a call. The ids are those of an eager replay; reading every page (as
+  `differs_from` does) gives the same `Db`.
 - **The bodies of `std`/`ieee` packages** are never loaded by `analyze` but by every `elab` and `run`; when an
   `analyze` session loaded a package whose body has no entry in any mapped library, it analyses the body
   once in a session of its own, only to store it (its output is not shown: it is the body's, replayed where

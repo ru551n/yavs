@@ -182,13 +182,14 @@ id!(
 
 /// A growable vector indexed by a typed id. Entries are never removed.
 ///
-/// An arena restored from an analysis image decodes its entries lazily, [`CHUNK`] at a time, the
-/// first time one of them is read (`docs/decisions.md` "Compilation cache"): a run that never
-/// looks at an entry never pays for it.
+/// Entries live in pages of [`PAGE`]. A page restored from an analysis image or read from the
+/// analysed-unit cache may stay bytes until one of its entries is read (`docs/decisions.md`
+/// "Compilation cache", "Analysed-unit cache"): a run that never looks at an entry never pays for
+/// decoding it.
 pub struct Arena<I, T> {
-    /// The entries after the lazily decoded ones (all of them when `lazy` is `None`).
-    items: Vec<T>,
-    lazy: Option<Lazy<T>>,
+    /// Every page but the last holds [`PAGE`] entries.
+    pages: Vec<Page<T>>,
+    len: usize,
     /// A tracked arena counts every mutable access in `version` (visibility caches).
     track: bool,
     /// Mutable accesses so far; not serialized.
@@ -220,48 +221,128 @@ pub(crate) fn raw_bytes<T: serde::Serialize>(t: &T) -> Vec<u8> {
         .unwrap_or_else(|e| panic!("internal error: cannot write a value: {e}"))
 }
 
-/// Entries per lazily decoded chunk.
-const CHUNK: usize = 64;
+/// Entries per page.
+pub const PAGE: usize = 64;
 
-/// The entries of an image, one postcard sequence per chunk.
-struct Lazy<T> {
-    len: usize,
-    /// Start of each chunk in `data`, and the end of the last.
-    starts: Vec<u32>,
+/// A file id map that a lazily decoded page keeps (`yavs_diag::map_file_ids`).
+pub(crate) type SharedFileMap =
+    std::sync::Arc<dyn Fn(yavs_diag::FileId) -> Option<yavs_diag::FileId> + Send + Sync>;
+
+/// What a page of bytes is decoded under: the symbol table of its image or entry, and for the
+/// analysed-unit cache the relocation of its ids and files.
+#[derive(Clone)]
+pub(crate) struct PageCtx {
+    pub syms: Option<yavs_syntax::DecodeTable>,
+    pub reloc: Option<std::sync::Arc<dyn Reloc + Send + Sync>>,
+    pub files: Option<SharedFileMap>,
+}
+
+struct ArcReloc(std::sync::Arc<dyn Reloc + Send + Sync>);
+
+impl Reloc for ArcReloc {
+    fn enc(&self, kind: Kind, index: u32) -> Option<(u32, u32)> {
+        self.0.enc(kind, index)
+    }
+    fn dec(&self, kind: Kind, owner: u32, offset: u32) -> Option<u32> {
+        self.0.dec(kind, owner, offset)
+    }
+}
+
+impl PageCtx {
+    /// Run `f` with this context set, whatever the caller had set (a page may be read while a
+    /// unit of the analysed-unit cache is written or read).
+    pub(crate) fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        plain(|| {
+            let with_syms = || match &self.syms {
+                Some(t) => t.run(f),
+                None => f(),
+            };
+            let with_files = || match &self.files {
+                Some(m) => {
+                    let m = m.clone();
+                    yavs_diag::map_file_ids(std::rc::Rc::new(move |id| m(id)), with_syms)
+                }
+                None => with_syms(),
+            };
+            match &self.reloc {
+                Some(r) => with_reloc(std::rc::Rc::new(ArcReloc(r.clone())), with_files),
+                None => with_files(),
+            }
+        })
+    }
+}
+
+enum Page<T> {
+    Eager(Vec<T>),
+    Lazy(Box<LazyPage<T>>),
+}
+
+struct LazyPage<T> {
+    n: usize,
     data: yavs_diag::Slice,
-    chunks: Vec<std::sync::OnceLock<Vec<T>>>,
-    syms: Option<yavs_syntax::DecodeTable>,
-    /// Decodes `n` entries from a chunk's bytes (monomorphic: made where `T: Deserialize` is known).
+    ctx: PageCtx,
+    cell: std::sync::OnceLock<Vec<T>>,
+    /// Decodes `n` entries (monomorphic: made where `T: Deserialize` is known).
     decode: fn(&[u8], usize) -> Vec<T>,
 }
 
-impl<T> Lazy<T> {
-    fn decode_chunk(&self, c: usize) -> Vec<T> {
-        let n = CHUNK.min(self.len - c * CHUNK);
-        let bytes = &self.data.get()[self.starts[c] as usize..self.starts[c + 1] as usize];
-        // A chunk may be read while a unit of the analysed-unit cache is written or read: its ids
-        // and files are the image's own.
-        plain(|| match &self.syms {
-            Some(t) => t.run(|| (self.decode)(bytes, n)),
-            None => (self.decode)(bytes, n),
-        })
+impl<T> LazyPage<T> {
+    fn get(&self) -> &Vec<T> {
+        self.cell
+            .get_or_init(|| self.ctx.run(|| (self.decode)(self.data.get(), self.n)))
     }
 
-    fn chunk(&self, c: usize) -> &Vec<T> {
-        self.chunks[c].get_or_init(|| self.decode_chunk(c))
+    fn get_mut(&mut self) -> &mut Vec<T> {
+        self.get();
+        self.cell.get_mut().expect("page decoded just now")
     }
 
-    fn chunk_mut(&mut self, c: usize) -> &mut Vec<T> {
-        self.chunk(c);
-        self.chunks[c].get_mut().expect("chunk decoded just now")
+    fn take(mut self) -> Vec<T> {
+        self.get();
+        self.cell.take().expect("page decoded just now")
     }
 }
 
-fn decode_entries<T: serde::de::DeserializeOwned>(mut rest: &[u8], n: usize) -> Vec<T> {
+impl<T> Page<T> {
+    fn get(&self) -> &Vec<T> {
+        match self {
+            Page::Eager(v) => v,
+            Page::Lazy(l) => l.get(),
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut Vec<T> {
+        match self {
+            Page::Eager(v) => v,
+            Page::Lazy(l) => l.get_mut(),
+        }
+    }
+
+    /// Decode the page for good (it is about to grow or shrink).
+    fn make_eager(&mut self) -> &mut Vec<T> {
+        if let Page::Lazy(_) = self {
+            let Page::Lazy(l) = std::mem::replace(self, Page::Eager(Vec::new())) else {
+                unreachable!("checked")
+            };
+            *self = Page::Eager(l.take());
+        }
+        match self {
+            Page::Eager(v) => v,
+            Page::Lazy(_) => unreachable!("made eager above"),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_lazy_undecoded(&self) -> bool {
+        matches!(self, Page::Lazy(l) if l.cell.get().is_none())
+    }
+}
+
+pub(crate) fn decode_entries<T: serde::de::DeserializeOwned>(mut rest: &[u8], n: usize) -> Vec<T> {
     (0..n)
         .map(|_| {
             let (t, r) = postcard::take_from_bytes::<T>(rest)
-                .unwrap_or_else(|e| panic!("internal error: corrupt image chunk: {e}"));
+                .unwrap_or_else(|e| panic!("internal error: corrupt page of entries: {e}"));
             rest = r;
             t
         })
@@ -271,8 +352,8 @@ fn decode_entries<T: serde::de::DeserializeOwned>(mut rest: &[u8], n: usize) -> 
 impl<I: Id, T> Arena<I, T> {
     pub fn new() -> Self {
         Arena {
-            items: Vec::new(),
-            lazy: None,
+            pages: Vec::new(),
+            len: 0,
             track: false,
             version: 0,
             owner: SESSION,
@@ -296,11 +377,17 @@ impl<I: Id, T> Arena<I, T> {
     }
 
     pub fn push(&mut self, item: T) -> I {
-        let i = self.len();
-        if self.runs.last().is_none_or(|r| r.1 != self.owner) {
-            self.runs.push((i as u32, self.owner));
+        let i = self.len;
+        self.note_owner(i);
+        match self.pages.last_mut() {
+            Some(p) if i % PAGE != 0 => p.make_eager().push(item),
+            _ => {
+                let mut v = Vec::with_capacity(PAGE);
+                v.push(item);
+                self.pages.push(Page::Eager(v));
+            }
         }
-        self.items.push(item);
+        self.len += 1;
         I::from_index(i)
     }
 
@@ -319,6 +406,40 @@ impl<I: Id, T> Arena<I, T> {
 }
 
 impl<I, T> Arena<I, T> {
+    fn note_owner(&mut self, i: usize) {
+        if self.runs.last().is_none_or(|r| r.1 != self.owner) {
+            self.runs.push((i as u32, self.owner));
+        }
+    }
+
+    /// Append a full page of [`PAGE`] entries as bytes, decoded under `ctx` the first time one of
+    /// them is read (`units.rs`). The arena must end on a page boundary.
+    pub(crate) fn push_page(&mut self, data: yavs_diag::Slice, ctx: PageCtx)
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        assert_eq!(
+            self.len % PAGE,
+            0,
+            "internal error: a page of bytes off a page boundary"
+        );
+        self.note_owner(self.len);
+        self.pages.push(Page::Lazy(Box::new(LazyPage {
+            n: PAGE,
+            data,
+            ctx,
+            cell: std::sync::OnceLock::new(),
+            decode: decode_entries::<T>,
+        })));
+        self.len += PAGE;
+    }
+
+    /// The number of pages that are still bytes (tests).
+    #[cfg(test)]
+    pub(crate) fn undecoded_pages(&self) -> usize {
+        self.pages.iter().filter(|p| p.is_lazy_undecoded()).count()
+    }
+
     /// The owner of the entries pushed from now on (`units.rs`).
     pub(crate) fn set_owner(&mut self, owner: u32) {
         self.owner = owner;
@@ -344,12 +465,18 @@ impl<I, T> Arena<I, T> {
         out
     }
 
-    /// Drop the entries from `len` on (an analysed-unit cache read that is undone). They were all
-    /// pushed after the lazily decoded ones.
+    /// Drop the entries from `len` on (an analysed-unit cache read that is undone).
     pub(crate) fn truncate(&mut self, len: usize) {
-        let base = self.lazy.as_ref().map_or(0, |l| l.len);
-        assert!(len >= base, "internal error: truncating restored entries");
-        self.items.truncate(len - base);
+        if len >= self.len {
+            return;
+        }
+        self.pages.truncate(len.div_ceil(PAGE));
+        if len % PAGE != 0
+            && let Some(p) = self.pages.last_mut()
+        {
+            p.make_eager().truncate(len % PAGE);
+        }
+        self.len = len;
         while self.runs.last().is_some_and(|r| r.0 as usize >= len) {
             self.runs.pop();
         }
@@ -358,17 +485,12 @@ impl<I, T> Arena<I, T> {
     /// Replace entry `i` without counting it as a write of the unit being recorded.
     pub(crate) fn replace(&mut self, i: usize, item: T) -> T {
         self.version += 1;
-        let base = self.lazy.as_ref().map_or(0, |l| l.len);
-        let slot = match &mut self.lazy {
-            Some(l) if i < base => &mut l.chunk_mut(i / CHUNK)[i % CHUNK],
-            _ => &mut self.items[i - base],
-        };
-        std::mem::replace(slot, item)
+        std::mem::replace(&mut self.pages[i / PAGE].get_mut()[i % PAGE], item)
     }
 
     /// Room for `n` more entries.
     pub(crate) fn reserve(&mut self, n: usize) {
-        self.items.reserve(n);
+        self.pages.reserve(n / PAGE + 1);
     }
 
     /// Count a change no `IndexMut` made (visibility caches see it).
@@ -382,7 +504,7 @@ impl<I, T> Arena<I, T> {
     }
 
     pub fn len(&self) -> usize {
-        self.lazy.as_ref().map_or(0, |l| l.len) + self.items.len()
+        self.len
     }
 
     /// Entry `i` by index.
@@ -390,12 +512,9 @@ impl<I, T> Arena<I, T> {
         self.at(i)
     }
 
+    #[inline]
     fn at(&self, i: usize) -> &T {
-        match &self.lazy {
-            Some(l) if i < l.len => &l.chunk(i / CHUNK)[i % CHUNK],
-            Some(l) => &self.items[i - l.len],
-            None => &self.items[i],
-        }
+        &self.pages[i / PAGE].get()[i % PAGE]
     }
 }
 
@@ -414,10 +533,10 @@ impl<I, T: serde::Serialize> serde::Serialize for Arena<I, T> {
         use serde::ser::Error;
         let len = self.len();
         let mut data = Vec::new();
-        let mut starts = Vec::with_capacity(len / CHUNK + 2);
-        for c in 0..len.div_ceil(CHUNK) {
+        let mut starts = Vec::with_capacity(len / PAGE + 2);
+        for c in 0..len.div_ceil(PAGE) {
             starts.push(data.len() as u32);
-            for i in c * CHUNK..len.min((c + 1) * CHUNK) {
+            for i in c * PAGE..len.min((c + 1) * PAGE) {
                 data = postcard::to_extend(self.at(i), data).map_err(S::Error::custom)?;
             }
         }
@@ -447,7 +566,7 @@ impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         let (img, data) = <(Image, yavs_diag::Slice)>::deserialize(d)?;
-        let chunks = img.len.div_ceil(CHUNK);
+        let chunks = img.len.div_ceil(PAGE);
         let starts = img.starts.into_owned();
         if starts.len() != chunks + 1
             || starts.windows(2).any(|w| w[0] > w[1])
@@ -455,16 +574,25 @@ impl<'de, I, T: serde::de::DeserializeOwned> serde::Deserialize<'de> for Arena<I
         {
             return Err(D::Error::custom("arena chunk table"));
         }
+        let ctx = PageCtx {
+            syms: yavs_syntax::DecodeTable::current(),
+            reloc: None,
+            files: None,
+        };
+        let pages = (0..chunks)
+            .map(|c| {
+                Page::Lazy(Box::new(LazyPage {
+                    n: PAGE.min(img.len - c * PAGE),
+                    data: data.range(starts[c] as usize, starts[c + 1] as usize),
+                    ctx: ctx.clone(),
+                    cell: std::sync::OnceLock::new(),
+                    decode: decode_entries::<T>,
+                }))
+            })
+            .collect();
         Ok(Arena {
-            items: Vec::new(),
-            lazy: Some(Lazy {
-                len: img.len,
-                starts,
-                data,
-                chunks: (0..chunks).map(|_| std::sync::OnceLock::new()).collect(),
-                syms: yavs_syntax::DecodeTable::current(),
-                decode: decode_entries::<T>,
-            }),
+            pages,
+            len: img.len,
             track: img.track,
             version: 0,
             owner: SESSION,
@@ -513,11 +641,7 @@ impl<I: Id, T> std::ops::IndexMut<I> for Arena<I, T> {
                 w.touched.push((i as u32, before));
             }
         }
-        let base = self.lazy.as_ref().map_or(0, |l| l.len);
-        match &mut self.lazy {
-            Some(l) if i < base => &mut l.chunk_mut(i / CHUNK)[i % CHUNK],
-            _ => &mut self.items[i - base],
-        }
+        &mut self.pages[i / PAGE].get_mut()[i % PAGE]
     }
 }
 
@@ -529,7 +653,7 @@ mod tests {
     #[test]
     fn lazy_arena_reads_pushes_and_writes_like_an_eager_one() {
         let mut a: Arena<DeclId, String> = Arena::tracked();
-        let n = 3 * CHUNK + 5;
+        let n = 3 * PAGE + 5;
         for i in 0..n {
             a.push(format!("item {i}"));
         }
@@ -538,15 +662,13 @@ mod tests {
         let mut b: Arena<DeclId, String> =
             yavs_diag::sharing(&buf, || postcard::from_bytes(&buf)).expect("deserialize");
         assert_eq!(b.len(), n);
-        // Only the chunk read is decoded.
-        let l = b.lazy.as_ref().expect("lazy");
-        assert!(l.chunks.iter().all(|c| c.get().is_none()));
+        // Only the page read is decoded.
+        assert_eq!(b.undecoded_pages(), 4);
         assert_eq!(
-            b[DeclId::from_index(CHUNK + 1)],
-            format!("item {}", CHUNK + 1)
+            b[DeclId::from_index(PAGE + 1)],
+            format!("item {}", PAGE + 1)
         );
-        let l = b.lazy.as_ref().expect("lazy");
-        assert_eq!(l.chunks.iter().filter(|c| c.get().is_some()).count(), 1);
+        assert_eq!(b.undecoded_pages(), 3);
         // A write decodes its chunk, a push lands after the lazy entries.
         b[DeclId::from_index(n - 1)].push('!');
         let id = b.push("new".into());
@@ -562,6 +684,49 @@ mod tests {
         let again = postcard::to_stdvec(&b).expect("serialize again");
         let c: Arena<DeclId, String> = postcard::from_bytes(&again).expect("deserialize again");
         assert!(c.iter().map(|(_, s)| s).eq(all.iter()));
+    }
+
+    /// Pages of bytes appended after eager entries, read, written, truncated and grown again.
+    #[test]
+    fn pages_of_bytes_mix_with_eager_entries() {
+        let mut a: Arena<DeclId, String> = Arena::new();
+        for i in 0..PAGE {
+            a.push(format!("e{i}"));
+        }
+        let mut bytes = Vec::new();
+        for i in 0..2 * PAGE {
+            bytes = postcard::to_extend(&format!("l{i}"), bytes).expect("write");
+        }
+        let half = {
+            let mut b = Vec::new();
+            for i in 0..PAGE {
+                b = postcard::to_extend(&format!("l{i}"), b).expect("write");
+            }
+            b.len()
+        };
+        let all = yavs_diag::Slice::from(bytes);
+        let ctx = PageCtx {
+            syms: None,
+            reloc: None,
+            files: None,
+        };
+        a.push_page(all.range(0, half), ctx.clone());
+        a.push_page(all.range(half, all.len()), ctx);
+        let id = a.push("tail".into());
+        assert_eq!((a.len(), id.index()), (3 * PAGE + 1, 3 * PAGE));
+        assert_eq!(a.undecoded_pages(), 2);
+        assert_eq!(
+            a[DeclId::from_index(2 * PAGE + 3)],
+            format!("l{}", PAGE + 3)
+        );
+        assert_eq!(a.undecoded_pages(), 1);
+        a[DeclId::from_index(PAGE)].push('!');
+        assert_eq!(a[DeclId::from_index(PAGE)], "l0!");
+        a.truncate(PAGE + 2);
+        assert_eq!(a.len(), PAGE + 2);
+        let id = a.push("again".into());
+        assert_eq!(a[id], "again");
+        assert_eq!(a[DeclId::from_index(PAGE + 1)], "l1");
     }
 
     #[test]

@@ -1952,6 +1952,8 @@ the table of native symbols 4%, the thread that freed the analysis 3%. The 16 70
 function entries (1 100 of them derived `Debug`); `-z pack-relative-relocs` leaves the cost unchanged (the cost is the page
 copies, not the processing).
 
+The "before" rows are e2cd4595 and the "after" rows the code of 6f00c2fa, so they include the other agents' commits in between (the `array_attrs` gain is almost all this round's: 9.23 M to 6.71 M instructions on adjacent builds of e2cd4595 with and without it; the `concat_chain` row has an unmeasured share of upstream work).
+
 What changed (`docs/decisions.md` "Floor of a run, round 3"): the compile thread sleeps its first 5 ms; the table of native
 symbols is read only for a symbol without an implementation; the scans for signals, shared variables and implicit signals of
 loaded packages skip std and ieee; the image holds the packages with run-time objects; `alias_external_uses` does nothing
@@ -1982,7 +1984,7 @@ wrapper measured once at the start (3.59 ms in the invocation of the old binary,
 Runs of 0.2 to 2 s (`tools/bench` designs, `--tier=auto`, pinned to core 9, binary of e9d80fff against the one before this round):
 instructions 12.31 G against 12.26 G for `rtl_ff`, 19.78 G against 19.77 G for `xor_sig` (`rtl_lfsr` 5.60 G against 7.38 G is another
 agent's compile of its process); `--verbose` compile notes in three runs each: `rtl_ff` 2, `lfsr64` 2, `compute_h2h` 1 for both
-binaries, `protected_queue` between 4 and 13 for both (it depends on timing). Checks on the same binary: the warm-identity loop (analyze
+binaries, `protected_queue` between 4 and 13 for both (it depends on timing). Checks on that binary (e9d80fff, before the external-name fix 3b29ba95; the external lists, the 30 analysis corpora, the discrepancy cases and the workspace tests were run again on 3b29ba95, the loop and difftest were not): the warm-identity loop (analyze
 once, `run` four times in one library, so that runs 3 and 4 read the image: stdout, stderr and status of run 1 equal run 4 for all 451
 corpus tests at `--threads 1` and `4`, on `--tier=auto`; the exception is `textio/file_append_2019`, which appends to a file and differs
 the same way before) and `tools/difftest` 451/451 on `yavs-auto` at 1 and 4 threads, `yavs-interp` and `yavs-llvm` at 4.

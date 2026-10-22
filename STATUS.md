@@ -5087,6 +5087,35 @@ copy and a descriptor); loop-invariant loads of instance data in loops of proces
 heuristic `compute()` stopped compiling the lfsr loop once the optimiser shrank it (#545); designs with many small clocked
 processes (kernel, #440).
 
+### Interpreter round 12: process loops, zero-delay drives, `'image` (#541, #547, #520, #440, 2026-10-22)
+
+Four changes (`docs/decisions.md` "Loop-invariant code motion" and "Interpreter round 12"):
+
+- Loop-invariant code motion also runs on the loops of a process that hold no suspension, and a load from read-only memory
+  (instance data, constant pool) at a constant address moves like a constant (#541). The tap loop of the hdl-modules LFSR is
+  two operations per pass instead of four.
+- `--tier=auto` finds loops as natural loops (#547): the preheaders and inlined bodies the optimiser appends after the code made
+  `compute()` count whole functions as loops and refuse them (`compute_h2h` stopped compiling with the first change; `hdlm_lfsr`
+  `main` is compiled again, which #545 had lost).
+- A zero-delay `LSetDrive` or `CopyDrive` of one range of a logic signal calls the kernel's fast case directly
+  (`Ctx::assign_code_now`, new `Ctx::assign_planes_now`).
+- `'image` of an integer or enumeration value is `Op::Image`, fused with the reads of its string (`Op::ImageStr`). The message a
+  testbench builds for an assertion procedure is an actual parameter and stays eager (LRM); it cost 146 G of the 595 G
+  instructions of `poc_arith_addw` (8.7 k per message), now about 106 G.
+
+Instructions, interpreter, core 6 (`perf stat cpu_core/instructions/u`, warm), before the round against after:
+`hdlm_lfsr` 94.7 G to 78.3 G; `poc_arith_addw` 594.7 G to 554.7 G (the last change alone); `rtl_ff` 12.14 G to 11.84 G, `rtl_chain`
+3.37 G to 3.29 G, `rtl_lfsr` 7.32 G to 7.19 G, `lfsr64` 3.51 G to 3.45 G, `report_heavy` 1.16 G to 1.11 G; the other `tools/bench`
+designs level. `hdlm_lfsr` under `--tier=auto`, warm: 4.3 s to 2.1 s wall.
+
+Ideas of the reference simulator used (read for the design, no code): a separate entry for a scalar assignment at zero delay
+that skips the delay and rejection checks (ours keeps one kernel fast case and shortens the way to it); its lowering hoists only
+the bounds and step of a `for` loop, ours moves any invariant computation and read-only load out of a loop without a wait.
+
+Left: the rest of the message cost (the concatenation, about 930 instructions per message, and the second `to_integer` of the
+same signals, which a conversion's warnings keep from being shared); the drive path's kernel half (two driver lookups per
+assignment, one on each side of `Ctx`); `tier_auto_matches_interp` still fails about one run in three (#533).
+
 ### Temporaries found inline in every compiled function (#527)
 
 Array descriptors and plane blocks a caller makes as temporaries reached compiled functions only through `yavs_rt_host`

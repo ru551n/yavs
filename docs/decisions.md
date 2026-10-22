@@ -4024,6 +4024,20 @@ Decisions:
 - **The clean-up of a subprogram that copied blocks (`cfg::thread`) is followed by one more walk** (`opt::tidy`): what is
   known when a block is entered decides the branches of its copy. The clean-up also drops what nothing reads, a decided
   condition's flag and the constants that fed it, and knows the result of `Bool` of known operands.
+- **Inlining takes callees with branches and protected methods** (`opt/inline.rs`, #509): a callee of up to 120 instructions in
+  14 blocks whose branches are conditional jumps and a `Case` of up to 6 arms (compares: a case table cannot be added to a
+  program that is being optimised) is copied into the caller as appended blocks; the caller's block is cut at the call, a
+  `Ret` becomes a move of the result and a jump back. `CallProt` is a call whose first argument is the object, and the
+  caller may be a process. A level-1 callee has its own inlinable calls inlined first (a wrapper in front of a method is
+  one body); level 0 is the callee as optimised, so cycles end and the result does not depend on the order functions are first
+  used. The record of where an instruction came from is a chain (`Func::via_nodes`, `ViaNode::up`): the stack trace and the
+  `std.env` call path list every inlined function as a frame of its own. Why: a protected-method call cost about 500 host
+  instructions in the call and return machinery alone, and one character of a verification library's queue makes five.
+- **A call that passes its parameters in registers leaves their slots alone** (`Pre::lean`, #443): the prologue the call
+  skips was their only reader. Ideas taken from the reference simulator (sim1; read for its design, no code taken): its
+  calls pass arguments in one array of cells and the callee's frame is not zeroed or sized beyond what it uses; protected
+  methods are plain calls with the object as the first argument, and its optimiser numbers the values of registers, not the
+  registers (the versions of `Opt::vsn` follow that idea).
 
 
 ## `--tier=auto` as the default: not yet (yavs-llvm, #510, 2026-10-22; recommendation, the maintainer decides)

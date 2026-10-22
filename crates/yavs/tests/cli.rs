@@ -740,7 +740,7 @@ fn tier_auto_matches_interp() {
          entity hot is end;\n\
          architecture t of hot is\n\
            function mix(a, b : integer) return integer is\n\
-           begin return (a * 31 + b) mod 1000003; end function;\n\
+           begin assert a >= 0 report \"mix\"; return (a * 31 + b) mod 1000003; end function;\n\
            signal s : integer := 0;\n\
          begin\n\
            p0 : process\n\

@@ -160,19 +160,19 @@ pub(crate) fn verify_func(
             let inst = &f.code[pc];
             let s = f.loc[pc];
             // An inlined instruction has the statement of the function it came from, and the
-            // statement of the call is one of this function's.
-            let own = match f.inlined_at(pc) {
-                Some((site, callee)) => {
-                    if prog.stmts.get(site).is_none_or(|i| i.func != id) {
-                        err(
-                            Some(pc),
-                            format!("inlined call statement {} is not this function's", site.0),
-                        );
-                    }
-                    callee
+            // statement of each call it was inlined through is one of the function that
+            // contained the call: the next callee outward, this function for the last.
+            let chain: Vec<crate::ViaNode> = f.inlined_chain(pc).collect();
+            for (k, n) in chain.iter().enumerate() {
+                let outer = chain.get(k + 1).map_or(id, |o| o.callee);
+                if prog.stmts.get(n.site).is_none_or(|i| i.func != outer) {
+                    err(
+                        Some(pc),
+                        format!("inlined call statement {} is not of {outer}", n.site.0),
+                    );
                 }
-                None => id,
-            };
+            }
+            let own = chain.first().map_or(id, |n| n.callee);
             match prog.stmts.get(s) {
                 Some(info) if info.func == own => {}
                 Some(_) => err(

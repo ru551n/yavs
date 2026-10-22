@@ -233,12 +233,12 @@ const WATCH: u32 = 128;
 
 /// The body of `Machine::push_frame` and `push_frame_pre`.
 macro_rules! push_frame_body {
-    ($self:ident, $pre:ident, $f:ident, $func:ident, $link:ident, $ret:ident) => {{
+    ($self:ident, $pre:ident, $f:ident, $func:ident, $link:ident, $ret:ident, $slots:expr) => {{
         let idx = $self.frames.len();
         if idx >= $self.rt.limits.max_depth as usize {
             return $self.depth_fail($f);
         }
-        let slen = $pre.slots as usize;
+        let slen = $slots as usize;
         let (rbase, sbase) = if idx == 0 {
             $self.regs.v.clear();
             $self.root.clear();
@@ -274,7 +274,7 @@ macro_rules! push_frame_body {
             pc: 0,
             rbase: rb,
             sbase: sb,
-            slen: $pre.slots,
+            slen: $slots,
             link: $link,
             ret: $ret,
             temp_base: tb,
@@ -1036,7 +1036,7 @@ impl Machine {
             .rt
             .pre(func, f)
             .ok_or_else(|| ice_f!("no function {func}"))?;
-        push_frame_body!(self, pre, f, func, link, ret);
+        push_frame_body!(self, pre, f, func, link, ret, pre.slots);
         Ok(())
     }
 
@@ -1051,7 +1051,22 @@ impl Machine {
         link: Option<u32>,
         ret: Option<Reg>,
     ) -> R<()> {
-        push_frame_body!(self, pre, f, func, link, ret);
+        push_frame_body!(self, pre, f, func, link, ret, pre.slots);
+        Ok(())
+    }
+
+    /// `push_frame_pre` for a call whose parameters go to registers only (`Pre::lean`): the
+    /// frame has the slots the callee needs beside them (`Pre::fslots`).
+    #[inline(always)]
+    fn push_frame_lean(
+        &mut self,
+        f: &Func,
+        func: FuncId,
+        pre: &pre::Pre,
+        ret: Option<Reg>,
+    ) -> R<()> {
+        let link: Option<u32> = None;
+        push_frame_body!(self, pre, f, func, link, ret, pre.fslots);
         Ok(())
     }
 
@@ -1137,7 +1152,7 @@ impl Machine {
                         .get(pc)
                         .copied()
                         .into_iter()
-                        .chain(f.inlined_at(pc).map(|(site, _)| site)),
+                        .chain(f.inlined_chain(pc).map(|n| n.site)),
                 )
             })
             .flatten()
@@ -4909,7 +4924,14 @@ impl Machine {
                         }
                         return Ok(flow);
                     }
-                    self.call_pre(f, cf, cid, cpre, args, dst, None)?;
+                    if !TIER && cpre.lean {
+                        let regs = f
+                            .regs(args)
+                            .ok_or_else(|| ice("operand list out of range"))?;
+                        self.call_lean(cf, cid, cpre, regs, dst, None)?;
+                    } else {
+                        self.call_pre(f, cf, cid, cpre, args, dst, None)?;
+                    }
                     save_caller!();
                     // The callee's ops go on in this loop.
                     top += 1;
@@ -4956,7 +4978,14 @@ impl Machine {
                         }
                         return Ok(flow);
                     }
-                    self.call_pre(f, cf, cid, cpre, args, dst, Some(h))?;
+                    if !TIER && cpre.lean {
+                        let regs = f
+                            .regs(args)
+                            .ok_or_else(|| ice("operand list out of range"))?;
+                        self.call_lean(cf, cid, cpre, regs, dst, Some(h))?;
+                    } else {
+                        self.call_pre(f, cf, cid, cpre, args, dst, Some(h))?;
+                    }
                     self.top().shared_alloc |= heap::tag_of(h) == heap::SHARED;
                     save_caller!();
                     top += 1;
@@ -6572,6 +6601,38 @@ impl Machine {
         if params.next().is_some() {
             let name = &callee.params[regs.len() + usize::from(first.is_some())].name;
             return Err(ice_f!("missing argument {name}"));
+        }
+        Ok(())
+    }
+
+    /// `call_pre` for a callee that takes its parameters in registers (`Pre::lean`): the
+    /// argument registers go to the registers its prologue would load them into, and the
+    /// parameters' slots stay as they are.
+    #[inline(always)]
+    fn call_lean(
+        &mut self,
+        callee: &Func,
+        func: FuncId,
+        pre: &pre::Pre,
+        args: &[Reg],
+        dst: Option<Reg>,
+        first: Option<u64>,
+    ) -> R<()> {
+        let caller = self.regs.base;
+        self.push_frame_lean(callee, func, pre, dst)?;
+        let base = self.regs.base;
+        let mut pro = pre.pro.iter();
+        if let Some(h) = first
+            && let Some(&r) = pro.next()
+        {
+            self.regs.v[base + r as usize] = h;
+        }
+        for (&r, &p) in args.iter().zip(pro.by_ref()) {
+            let v = self.regs.v[caller + r.0 as usize];
+            self.regs.v[base + p as usize] = v;
+        }
+        if pro.next().is_some() {
+            return Err(ice_f!("missing argument of `{}`", callee.name));
         }
         Ok(())
     }

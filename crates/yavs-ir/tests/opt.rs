@@ -1365,7 +1365,12 @@ fn thin_call(variant: &str) -> (Vec<Inst>, Vec<Via>, FuncId) {
     gb.finish();
     let p = pb.finish().expect("optimised code verifies");
     let g = p.func(g).expect("g");
-    (g.code.clone(), g.via.clone(), f)
+    let via = if g.via.is_empty() {
+        Vec::new()
+    } else {
+        (0..g.code.len()).map(|pc| g.inlined_at(pc)).collect()
+    };
+    (g.code.clone(), via, f)
 }
 
 #[test]
@@ -1393,12 +1398,30 @@ fn a_call_of_a_thin_function_becomes_its_code() {
             .iter()
             .all(|v| v.is_none() || v.is_some_and(|(_, c)| c == f))
     );
-    // A parameter slot whose address escapes, a branch: the call stays, nothing is recorded.
-    for variant in ["escape", "branch"] {
-        let (code, via, _) = thin_call(variant);
-        assert_eq!(count(&code, is_call), 1, "{variant}: {code:?}");
-        assert!(via.is_empty(), "{variant}: {via:?}");
-    }
+    // A parameter slot whose address escapes: the call stays, nothing is recorded.
+    let (code, via, _) = thin_call("escape");
+    assert_eq!(count(&code, is_call), 1, "escape: {code:?}");
+    assert!(via.is_empty(), "escape: {via:?}");
+    // A branch: the callee's blocks are appended to the caller, which jumps to them and gets the
+    // result back through a move and a jump to the rest of its block.
+    let (code, via, f) = thin_call("branch");
+    assert_eq!(count(&code, is_call), 0, "branch: {code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Ret { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(via.len(), code.len());
+    let at = code
+        .iter()
+        .position(|i| matches!(i, Inst::CondBr { .. }))
+        .expect("the branch");
+    assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
 }
 
 #[test]
@@ -1807,6 +1830,123 @@ fn a_multiply_defined_register_is_shared_until_it_is_written_again() {
     });
     assert_eq!(
         count(&code, |i| matches!(i, Inst::Bin { op: IntOp::Add, .. })),
+        2,
+        "{code:?}"
+    );
+}
+
+/// `f(a, b) = a + b`, `g(a) = f(a, 1)` and `h` calling `g` on a value of the instance.
+#[test]
+fn a_chain_of_inlined_calls_is_recorded_whole() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    let (x, y) = (load(&mut fb, sa), load(&mut fb, sb));
+    let sum = bin(&mut fb, IntOp::Add, x, y);
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    let ga = gb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    gb.stmt(StmtKind::Return, sp());
+    let a = load(&mut gb, ga);
+    let one = gb.int(1);
+    let r = gb.reg(RegTy::I64);
+    let args = gb.regs(&[a, one]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let h = pb.declare("h", FuncKind::Function, None);
+    let mut hb = pb.define(h);
+    hb.slot(16, 8);
+    hb.stmt(StmtKind::Return, sp());
+    let u = unknown(&mut hb, 0);
+    let r = hb.reg(RegTy::I64);
+    let args = hb.regs(&[u]);
+    hb.emit(Inst::Call {
+        func: g,
+        args,
+        dst: Some(r),
+    });
+    hb.emit(Inst::Ret { v: Some(r) });
+    hb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let hf = p.func(h).expect("h");
+    assert_eq!(count(&hf.code, |i| matches!(i, Inst::Call { .. })), 0);
+    let at = hf
+        .code
+        .iter()
+        .position(|i| matches!(i, Inst::Bin { op: IntOp::Add, .. }))
+        .expect("the addition");
+    let chain: Vec<FuncId> = hf.inlined_chain(at).map(|n| n.callee).collect();
+    assert_eq!(chain, vec![f, g], "{:?}", hf.via_nodes);
+}
+
+#[test]
+fn a_case_of_the_callee_becomes_compares() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    let x = load(&mut fb, sa);
+    let (b1, b2, bd) = (fb.block(), fb.block(), fb.block());
+    let table = fb.program().case_table(CaseTable {
+        arms: vec![(1, 1, b1), (5, 7, b2)],
+        default: bd,
+    });
+    fb.emit(Inst::Case { v: x, table });
+    fb.at(b1);
+    let ten = fb.int(10);
+    fb.emit(Inst::Ret { v: Some(ten) });
+    fb.at(b2);
+    let twenty = fb.int(20);
+    fb.emit(Inst::Ret { v: Some(twenty) });
+    fb.at(bd);
+    let zero = fb.int(0);
+    fb.emit(Inst::Ret { v: Some(zero) });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    gb.slot(16, 8);
+    gb.stmt(StmtKind::Return, sp());
+    let u = unknown(&mut gb, 0);
+    let r = gb.reg(RegTy::I64);
+    let args = gb.regs(&[u]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let code = &p.func(g).expect("g").code;
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Call { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Case { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::CondBr { .. })),
         2,
         "{code:?}"
     );

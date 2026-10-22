@@ -8,8 +8,10 @@ use common::tempdir;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// (`f` reports, so the process calls it: a function the optimiser can copy into its caller would
+// not be called, and the entry would have nothing to learn.)
 const PKG: &str = "package p is\n  constant K : integer := 7;\n  function f (x : integer) return integer;\nend;\n\
-package body p is\n  function f (x : integer) return integer is begin return x * K; end;\nend;\n";
+package body p is\n  function f (x : integer) return integer is begin assert x > 0 report \"f\"; return x * K; end;\nend;\n";
 
 const OTHER: &str = "package q is\n  constant Z : integer := 1;\nend;\n";
 

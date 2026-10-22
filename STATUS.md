@@ -4807,3 +4807,24 @@ times (not results) vary more than with the interpreter.
 Recommendation: not yet. Make `--tier=auto` the default once a run in which nothing pays costs no more than noise
 (#525), and once compiled clocked processes of single-instance designs no longer lose (#532, #527: signal operations and
 array accesses without host calls); keep `--tier=interp` for runs below a second, where nothing can pay.
+
+## Interpreter cost on loops, arrays and calls: round 1 (#520, #523, #509, #511, #531, 2026-10-22)
+
+What the four slow real-world tests spend (interpreter, `perf stat` instructions on core 6, main before the round): `poc_arith_addw`
+672 G (7.5 times the reference simulator's 89 G), `vai_window_gen_interlock` 379 G (9.4 times 40 G), `hdlm_lfsr` 136 G (7.8 times 17.5 G),
+`fletcher_bufferreader` 98 G (6.4 times 15.3 G). Where it goes: `poc_arith_addw` is a testbench that builds an error message for every
+one of 8.4 million assertions (about 130 operations each: twelve concatenation pieces, four multi-dimensional index computations of an
+instance signal array) and drives a 20-instance DUT; `vai_window_gen_interlock` is the verification library's queue (five protected
+method calls per byte, 25 percent of the instructions in the call and return machinery); `hdlm_lfsr` is an inner loop over a constant
+array of the instance (two instance-data loads and two address computations repeated per iteration, 17 percent of the loop) and
+`fletcher_bufferreader` is a design of small clocked processes (about 145 host instructions per interpreter operation, mostly kernel
+work; #440, #519 own that part). The dispatch (one indirect jump) is 12 to 24 percent of the cycles in all four.
+
+What changed (details in `docs/decisions.md` "Optimiser round 11" and the commit messages):
+
+- Read-only instance data and constant pool in the optimiser; value numbering of registers defined more than once (loop counters,
+  promoted variables) and constants/addresses they hold (#511); decided branches in threaded blocks; one more walk after the clean-up.
+- Inlining: callees with branches (a case on the storage mode of a pointer table, an assert) become appended blocks, `CallProt` and
+  process callers inline, a wrapper in front of a method is one callee (level 1), the inlining record is a chain (traces and `std.env`
+  call paths unchanged). The verification library's `unsafe_push`/`unsafe_pop` no longer call a method per table access.
+- A call that passes 8-byte parameters in registers writes no slots (`Pre::lean`).

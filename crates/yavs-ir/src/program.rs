@@ -328,6 +328,16 @@ pub struct Block {
     pub end: u32,
 }
 
+/// A call that was inlined: its statement (of the function that contained the call), the
+/// function called, and the call it was itself inlined through (0: none, else 1 and an index
+/// in `Func::via_nodes`).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViaNode {
+    pub site: StmtId,
+    pub callee: FuncId,
+    pub up: u32,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Func {
     /// Original spelling (rule 8).
@@ -351,10 +361,12 @@ pub struct Func {
     /// Operand lists (`Regs`).
     pub operands: Vec<Reg>,
     /// Only in an optimised copy that inlined a call (`opt/inline.rs`): for each instruction,
-    /// the statement of the call it was inlined at and the function that was called (`None`
-    /// for the function's own instructions). Empty when nothing was inlined. A trace shows an
-    /// inlined function as a frame of its own: [`Func::inlined_at`].
-    pub via: Vec<Option<(StmtId, FuncId)>>,
+    /// 0 for the function's own instructions, else 1 and the index in `via_nodes` of the
+    /// innermost call it was inlined through. Empty when nothing was inlined. A trace shows an
+    /// inlined function as a frame of its own: [`Func::inlined_at`], [`Func::inlined_chain`].
+    pub via: Vec<u32>,
+    /// The inlined calls: see [`ViaNode`].
+    pub via_nodes: Vec<ViaNode>,
     /// Resume points: the instruction after each `Suspend` and each call of a `MAY_SUSPEND`
     /// procedure, in code order. `Suspend::resume` indexes this.
     pub resume: Vec<u32>,
@@ -496,6 +508,7 @@ impl Func {
             loc: Vec::new(),
             operands: Vec::new(),
             via: Vec::new(),
+            via_nodes: Vec::new(),
             resume: Vec::new(),
             flags: self.flags,
             body: self.body,
@@ -528,7 +541,19 @@ impl Func {
     /// function called, when the instruction belongs to an inlined function.
     #[inline]
     pub fn inlined_at(&self, pc: usize) -> Option<(StmtId, FuncId)> {
-        self.via.get(pc).copied().flatten()
+        self.inlined_chain(pc).next().map(|n| (n.site, n.callee))
+    }
+
+    /// The calls instruction `pc` was inlined through, innermost first: the first node's
+    /// callee is the function the instruction belongs to and its site a statement of the
+    /// next node's callee (of this function for the last), and so on outward.
+    pub fn inlined_chain(&self, pc: usize) -> impl Iterator<Item = ViaNode> + '_ {
+        let mut at = self.via.get(pc).copied().unwrap_or(0);
+        std::iter::from_fn(move || {
+            let n = *self.via_nodes.get(at.checked_sub(1)? as usize)?;
+            at = n.up;
+            Some(n)
+        })
     }
 
     pub fn nregs(&self) -> u32 {

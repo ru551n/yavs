@@ -1,6 +1,6 @@
-//! Inlining of thin subprograms: a call of a function whose body is straight-line code that
-//! reads its parameters, computes and calls one or two more (the package function in front of
-//! a protected method, an accessor) becomes that code in the caller.
+//! Inlining of small subprograms: a call of a function whose body reads its parameters,
+//! computes, branches a little and calls one or two more (the package function in front of a
+//! protected method, an accessor, the method itself) becomes that code in the caller.
 //!
 //! A call costs about as much as ten operations (frame, argument slots, return), and a library
 //! testbench is a chain of such calls. The pass runs last, on the finished code of a
@@ -13,34 +13,73 @@
 //! came from, so a runtime error lists the callee as a frame of its own (`Machine::trace`).
 //! Callees that allocate temporaries, have statements of their own to free (their `Stmt`
 //! markers go: a new frame has no temporaries to free), touch their frame beyond reading the
-//! parameters, branch, suspend or are nested are not inlined. `YAVS_NO_INLINE=1` turns it off.
+//! parameters, suspend or are nested are not inlined. `YAVS_NO_INLINE=1` turns it off.
+//!
+//! A body of one path is spliced in where the call was. A body with branches (a protected
+//! method: a case on the storage mode, one arm calling on) becomes blocks appended to the
+//! caller after its last block, so existing block ids, which the program's case tables name,
+//! never move: the call's block is cut at the call and jumps to the copy of the callee's first
+//! block, every `Ret` becomes a move of the result and a jump to the block that holds the rest
+//! of the cut block, and a `Case` of the callee a chain of compares (a table cannot be added to
+//! the program here). The protected object of a `CallProt` is the callee's first argument.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::{AddrSpace, FuncId, FuncKind, Inst, Reg, RegTy, Role, StmtId, Width};
+use crate::{
+    AddrSpace, BlockId, BoolOp, CmpOp, FuncId, FuncKind, Inst, Reg, RegTy, Role, StmtId, ViaNode,
+    Width,
+};
 
-/// The most instructions of an inlined body.
+/// The most instructions of an inlined body of one path.
 const MAX_BODY: usize = 24;
+/// The most instructions and blocks of an inlined body that branches.
+const MAX_MULTI: usize = 120;
+const MAX_BLOCKS: usize = 14;
+/// The most arms of a `Case` that becomes compares.
+const MAX_ARMS: usize = 6;
+/// The most instructions inlining adds to one function, beyond four times its own size.
+const GROWTH: usize = 800;
 
-/// The part of a callee that is inlined: its straight-line code with the parameter loads taken
-/// out.
+/// An instruction, its statement and the call it was inlined through (0: none, else 1 and an
+/// index in the `via_nodes` it belongs to).
+type Ent = (Inst, StmtId, u32);
+
+/// The part of a callee that is inlined: its code with the parameter loads taken out, as
+/// blocks.
 pub(crate) struct Forwarder {
-    /// The instructions, without frame addresses, parameter loads and statement markers; the
-    /// last is the `Ret`.
-    body: Vec<(Inst, StmtId)>,
+    /// The blocks (callee order, the first is the entry), each ending in a `Br`, `CondBr`,
+    /// `Ret` or `Unreachable`; no frame addresses, parameter loads, statement markers or
+    /// `Case`.
+    blocks: Vec<Vec<Ent>>,
     /// The callee's operand lists.
     operands: Vec<Reg>,
     reg_ty: Vec<RegTy>,
+    /// The calls inlined in the body (a body with calls of its own that were inlined), by
+    /// the `Ent` indices.
+    via_nodes: Vec<ViaNode>,
     /// For each parameter the registers its loads defined.
     params: Vec<Vec<Reg>>,
     /// How many instructions of the body define each register.
     defs: Vec<u8>,
 }
 
+impl Forwarder {
+    fn len(&self) -> usize {
+        self.blocks.iter().map(Vec::len).sum()
+    }
+
+    /// One path ending in the `Ret`: spliced in without new blocks.
+    fn straight(&self) -> bool {
+        self.blocks.len() == 1 && matches!(self.blocks[0].last(), Some((Inst::Ret { .. }, ..)))
+    }
+}
+
 /// Forwarders by callee, made once per program (a copy of the program starts without them).
 #[derive(Default, Debug)]
-pub struct FwdCache(Mutex<HashMap<u32, Option<Arc<Forwarder>>>>);
+pub struct FwdCache(Mutex<HashMap<(u32, u8), Fwd>>);
+
+type Fwd = Option<Arc<Forwarder>>;
 
 impl Clone for FwdCache {
     fn clone(&self) -> Self {
@@ -50,7 +89,7 @@ impl Clone for FwdCache {
 
 impl std::fmt::Debug for Forwarder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Forwarder({} instructions)", self.body.len())
+        write!(f, "Forwarder({} instructions)", self.len())
     }
 }
 
@@ -64,28 +103,31 @@ pub(super) fn enabled() -> bool {
     })
 }
 
-/// The inlinable body of `callee`, if it has one.
-fn forwarder(prog: &crate::Program, callee: FuncId) -> Option<Arc<Forwarder>> {
+/// The inlinable body of `callee`, if it has one: at level 0 its own optimised code, at level 1
+/// that with the calls inlined that level 0 makes inlinable. (A level is a function of the
+/// program alone, so the result does not depend on the order functions are first used, and a
+/// cycle of calls ends at level 0.)
+fn forwarder(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Arc<Forwarder>> {
     if let Some(r) = prog
         .fwd
         .0
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(&callee.0)
+        .get(&(callee.0, level))
     {
         return r.clone();
     }
     // Not under the lock: the optimiser takes the program's other locks.
-    let made = make(prog, callee).map(Arc::new);
+    let made = make(prog, callee, level).map(Arc::new);
     prog.fwd
         .0
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(callee.0, made.clone());
+        .insert((callee.0, level), made.clone());
     made
 }
 
-fn make(prog: &crate::Program, callee: FuncId) -> Option<Forwarder> {
+fn make(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Forwarder> {
     let raw = prog.funcs.get(callee)?;
     // Cheap exits before optimising a function: not a small subprogram of the plain kind.
     if !matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
@@ -95,35 +137,26 @@ fn make(prog: &crate::Program, callee: FuncId) -> Option<Forwarder> {
         || raw.flags.contains(crate::FuncFlags::MAY_SUSPEND)
         || raw.flags.contains(crate::FuncFlags::HAS_COVER)
         || raw
-            .roots
-            .iter()
-            .any(|&(off, _)| !raw.params.iter().any(|p| p.slot == off))
-        || raw
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || raw.full().code.len() > 4 * MAX_BODY
+        || raw.full().code.len() > 160
     {
         return None;
     }
-    let c = super::optimize_body(prog, callee)?;
-    if c.reg_ty.contains(&RegTy::Sig) {
-        return None;
+    let mut c = super::optimize_body(prog, callee)?;
+    if level > 0 {
+        run(prog, callee, &mut c, level - 1);
     }
-    // One path: the first block ends in the `Ret`, no branches, nothing else reachable.
-    let first = c.blocks.get(crate::BlockId(0))?;
-    let code = c.code.get(first.start as usize..first.end as usize)?;
-    if !matches!(code.last(), Some(Inst::Ret { .. }))
-        || code
-            .iter()
-            .any(|i| matches!(i, Inst::Br { .. } | Inst::CondBr { .. } | Inst::Case { .. }))
-        || first.start != 0
+    if c.reg_ty.contains(&RegTy::Sig)
+        || c.code.len() > 4 * MAX_MULTI
+        || c.blocks.len() > 4 * MAX_BLOCKS
     {
         return None;
     }
     // The registers holding the address of a parameter's slot.
     let mut frame: HashMap<u32, u32> = HashMap::new();
-    for i in code {
+    for i in &c.code {
         if let Inst::AddrOf {
             dst,
             space: AddrSpace::Frame,
@@ -135,66 +168,232 @@ fn make(prog: &crate::Program, callee: FuncId) -> Option<Forwarder> {
     }
     let slot = |off: u32| c.params.iter().position(|p| p.slot == off);
     let mut params: Vec<Vec<Reg>> = vec![Vec::new(); c.params.len()];
-    let mut body: Vec<(Inst, StmtId)> = Vec::new();
-    for (k, i) in code.iter().enumerate() {
-        let loc = *c.loc.get(first.start as usize + k)?;
-        match *i {
-            Inst::Stmt => continue,
-            Inst::AddrOf {
-                space: AddrSpace::Frame,
-                ..
-            } => continue,
-            Inst::Load { dst, addr, w } if frame.contains_key(&addr.0) => {
-                let p = slot(*frame.get(&addr.0)?)?;
-                if w != Width::B8 {
-                    return None;
+    let mut reg_ty = c.reg_ty.clone();
+    let mut blocks: Vec<Vec<Ent>> = Vec::with_capacity(c.blocks.len());
+    // Blocks the converted `Case`s add: (index, entries).
+    let mut extra: Vec<Vec<Ent>> = Vec::new();
+    let nb = c.blocks.len();
+    for (b, blk) in c.blocks.iter() {
+        let mut out: Vec<Ent> = Vec::new();
+        for pc in blk.start as usize..blk.end as usize {
+            let i = *c.code.get(pc)?;
+            let loc = *c.loc.get(pc)?;
+            let via = c.via.get(pc).copied().unwrap_or(0);
+            match i {
+                Inst::Stmt => continue,
+                Inst::AddrOf {
+                    space: AddrSpace::Frame,
+                    ..
+                } => continue,
+                Inst::Load { dst, addr, w } if frame.contains_key(&addr.0) => {
+                    // Parameters are read once, at the start of the entry block.
+                    let p = slot(*frame.get(&addr.0)?)?;
+                    if w != Width::B8 || b.0 != 0 {
+                        return None;
+                    }
+                    params[p].push(dst);
+                    continue;
                 }
-                params[p].push(dst);
-                continue;
+                Inst::Case { v, table } => {
+                    let t = prog.cases.get(table)?;
+                    if t.arms.len() > MAX_ARMS {
+                        return None;
+                    }
+                    case_chain(v, t, (loc, via), &mut reg_ty, &mut out, &mut extra, nb)?;
+                    continue;
+                }
+                _ => {}
             }
-            _ => {}
+            if !allowed(prog, &i) {
+                return None;
+            }
+            // The frame is touched by the parameter loads only.
+            let mut touches = false;
+            i.visit(&mut |r, role, _| touches |= role == Role::Use && frame.contains_key(&r.0));
+            if let Some(l) = i.list() {
+                touches |= c
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)?
+                    .iter()
+                    .any(|r| frame.contains_key(&r.0));
+            }
+            if touches {
+                return None;
+            }
+            out.push((i, loc, via));
         }
-        if !allowed(prog, i) {
-            return None;
-        }
-        // The frame is touched by the parameter loads only.
-        let mut touches = false;
-        i.visit(&mut |r, role, _| touches |= role == Role::Use && frame.contains_key(&r.0));
-        if let Some(l) = i.list() {
-            touches |= c
-                .operands
-                .get(l.start as usize..(l.start + l.len) as usize)?
-                .iter()
-                .any(|r| frame.contains_key(&r.0));
-        }
-        if touches {
-            return None;
-        }
-        body.push((*i, loc));
+        blocks.push(out);
     }
-    if body.len() > MAX_BODY || !matches!(body.last(), Some((Inst::Ret { .. }, _))) {
+    blocks.extend(extra);
+    // Blocks nothing reaches (the arms of a `Case` that only fail) are not copied.
+    let mut seen = vec![false; blocks.len()];
+    let mut work = vec![0usize];
+    while let Some(b) = work.pop() {
+        if std::mem::replace(&mut seen[b], true) {
+            continue;
+        }
+        let (last, ..) = blocks[b].last()?;
+        for t in last.targets() {
+            let t = t.0 as usize;
+            if t >= blocks.len() {
+                return None;
+            }
+            work.push(t);
+        }
+        if !last.is_terminator() {
+            return None;
+        }
+    }
+    let mut renum = vec![u32::MAX; blocks.len()];
+    let mut kept: Vec<Vec<Ent>> = Vec::new();
+    for (b, blk) in blocks.into_iter().enumerate() {
+        if seen[b] {
+            renum[b] = kept.len() as u32;
+            kept.push(blk);
+        }
+    }
+    for blk in &mut kept {
+        if let Some((last, ..)) = blk.last_mut() {
+            match last {
+                Inst::Br { to } => *to = BlockId(renum[to.0 as usize]),
+                Inst::CondBr { t, f, .. } => {
+                    *t = BlockId(renum[t.0 as usize]);
+                    *f = BlockId(renum[f.0 as usize]);
+                }
+                _ => {}
+            }
+        }
+    }
+    let total: usize = kept.iter().map(Vec::len).sum();
+    let limit = if kept.len() == 1 { MAX_BODY } else { MAX_MULTI };
+    if total > limit || kept.len() > MAX_BLOCKS || total == 0 {
         return None;
     }
-    let mut defs = vec![0u8; c.reg_ty.len()];
-    for (i, _) in &body {
-        i.visit(&mut |r, role, _| {
-            if role == Role::Def
-                && let Some(d) = defs.get_mut(r.0 as usize)
-            {
-                *d = d.saturating_add(1);
-            }
-        });
+    // Something must return.
+    if !kept
+        .iter()
+        .any(|b| matches!(b.last(), Some((Inst::Ret { .. }, ..))))
+    {
+        return None;
+    }
+    let mut defs = vec![0u8; reg_ty.len()];
+    for blk in &kept {
+        for (i, ..) in blk {
+            i.visit(&mut |r, role, _| {
+                if role == Role::Def
+                    && let Some(d) = defs.get_mut(r.0 as usize)
+                {
+                    *d = d.saturating_add(1);
+                }
+            });
+        }
     }
     Some(Forwarder {
-        body,
+        blocks: kept,
         operands: c.operands.clone(),
-        reg_ty: c.reg_ty.clone(),
+        reg_ty,
+        via_nodes: c.via_nodes.clone(),
         params,
         defs,
     })
 }
 
-/// Instructions an inlined body may have: reads, computations, checks, calls.
+/// A `Case` as compares and branches: the entries that follow the block's own in `out` (the
+/// test of the first arm), and new blocks for the tests of the others (`extra`; block `nb + i`
+/// is `extra[i]`). The arms are sorted and disjoint, so the tests run in turn and the last
+/// falls to the default.
+fn case_chain(
+    v: Reg,
+    t: &crate::CaseTable,
+    at: (StmtId, u32),
+    reg_ty: &mut Vec<RegTy>,
+    out: &mut Vec<Ent>,
+    extra: &mut Vec<Vec<Ent>>,
+    nb: usize,
+) -> Option<()> {
+    fn fresh(reg_ty: &mut Vec<RegTy>) -> Reg {
+        let r = Reg(reg_ty.len() as u32);
+        reg_ty.push(RegTy::I64);
+        r
+    }
+    let (loc, via) = at;
+    if t.arms.is_empty() {
+        out.push((Inst::Br { to: t.default }, loc, via));
+        return Some(());
+    }
+    let first_extra = nb + extra.len();
+    let mut tests: Vec<Vec<Ent>> = Vec::with_capacity(t.arms.len());
+    for (k, &(lo, hi, to)) in t.arms.iter().enumerate() {
+        let mut cur: Vec<Ent> = if k == 0 {
+            std::mem::take(out)
+        } else {
+            Vec::new()
+        };
+        let hit = if lo == hi {
+            let (kr, c) = (fresh(reg_ty), fresh(reg_ty));
+            cur.push((Inst::Const { dst: kr, v: lo }, loc, via));
+            let cmp = Inst::Cmp {
+                op: CmpOp::Eq,
+                dst: c,
+                a: v,
+                b: kr,
+            };
+            cur.push((cmp, loc, via));
+            c
+        } else {
+            let (k1, k2, c1, c2, c) = (
+                fresh(reg_ty),
+                fresh(reg_ty),
+                fresh(reg_ty),
+                fresh(reg_ty),
+                fresh(reg_ty),
+            );
+            cur.push((Inst::Const { dst: k1, v: lo }, loc, via));
+            cur.push((Inst::Const { dst: k2, v: hi }, loc, via));
+            let ge = Inst::Cmp {
+                op: CmpOp::Ge,
+                dst: c1,
+                a: v,
+                b: k1,
+            };
+            let le = Inst::Cmp {
+                op: CmpOp::Le,
+                dst: c2,
+                a: v,
+                b: k2,
+            };
+            let both = Inst::Bool {
+                op: BoolOp::And,
+                dst: c,
+                a: c1,
+                b: c2,
+            };
+            cur.extend([(ge, loc, via), (le, loc, via), (both, loc, via)]);
+            c
+        };
+        let next = if k + 1 == t.arms.len() {
+            t.default
+        } else {
+            BlockId((first_extra + k) as u32)
+        };
+        cur.push((
+            Inst::CondBr {
+                c: hit,
+                t: to,
+                f: next,
+            },
+            loc,
+            via,
+        ));
+        tests.push(cur);
+    }
+    let mut it = tests.into_iter();
+    *out = it.next()?;
+    extra.extend(it);
+    Some(())
+}
+
+/// Instructions an inlined body may have: reads, computations, checks, calls, branches.
 fn allowed(prog: &crate::Program, i: &Inst) -> bool {
     match *i {
         Inst::Const { .. }
@@ -212,6 +411,9 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::Pos { .. }
         | Inst::DopeLen { .. }
         | Inst::Deref { .. }
+        | Inst::Br { .. }
+        | Inst::CondBr { .. }
+        | Inst::Unreachable { .. }
         | Inst::Ret { .. } => true,
         Inst::AddrOf { space, .. } => !matches!(space, AddrSpace::Frame | AddrSpace::Up(_)),
         Inst::Load { w, .. } | Inst::Store { w, .. } => w != Width::Sig,
@@ -223,157 +425,199 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
     }
 }
 
+/// A call to inline: the callee's body, the arguments in the order of its parameters (the
+/// protected object of a `CallProt` first) and the register receiving the result.
+struct Site {
+    fw: Arc<Forwarder>,
+    func: FuncId,
+    args: Vec<Reg>,
+    dst: Option<Reg>,
+}
+
+/// Where each register of the body lives in the caller at one site: a parameter the body never
+/// writes is the argument itself, any other register is a new one.
+fn place(site: &Site, reg_ty: &mut Vec<RegTy>) -> HashMap<u32, Reg> {
+    let fw = &site.fw;
+    let mut at: HashMap<u32, Reg> = HashMap::new();
+    for (k, regs) in fw.params.iter().enumerate() {
+        for &r in regs {
+            if fw.defs[r.0 as usize] == 0 {
+                at.insert(r.0, site.args[k]);
+            }
+        }
+    }
+    let mut ret_into = None;
+    // One path: the returned value is made in the result register when nothing else is.
+    if fw.straight()
+        && let (Some(d), Some((Inst::Ret { v: Some(r) }, ..))) = (site.dst, fw.blocks[0].last())
+    {
+        let is_arg = site.args.contains(&d);
+        let is_param = fw.params.iter().any(|p| p.contains(r));
+        if fw.defs[r.0 as usize] == 1 && !is_param && !is_arg {
+            ret_into = Some((r.0, d));
+        }
+    }
+    if let Some((r, d)) = ret_into {
+        at.insert(r, d);
+    }
+    let mut used: Vec<u32> = Vec::new();
+    for blk in &fw.blocks {
+        for (inst, ..) in blk {
+            inst.visit(&mut |r, _, _| used.push(r.0));
+            if let Some(l) = inst.list() {
+                used.extend(
+                    fw.operands[l.start as usize..(l.start + l.len) as usize]
+                        .iter()
+                        .map(|r| r.0),
+                );
+            }
+        }
+    }
+    // The registers the parameter loads defined and the body reads.
+    used.sort_unstable();
+    used.dedup();
+    for r in used {
+        if let std::collections::hash_map::Entry::Vacant(e) = at.entry(r) {
+            e.insert(Reg(reg_ty.len() as u32));
+            reg_ty.push(fw.reg_ty[r as usize]);
+        }
+    }
+    at
+}
+
+type Out = (Inst, StmtId, u32);
+
 /// Inline the calls of `f` (function `id`) whose callee has a forwarder. `true`: the code
 /// changed.
-pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func) -> bool {
+pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level: u8) -> bool {
     if !enabled()
         || super::keep_variables_on()
-        || !matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+        || !matches!(
+            f.kind,
+            FuncKind::Function | FuncKind::Procedure | FuncKind::Process
+        )
     {
         return false;
     }
     // The calls to inline and their callees.
-    let mut sites: HashMap<usize, Arc<Forwarder>> = HashMap::new();
+    let mut sites: HashMap<usize, Site> = HashMap::new();
+    let mut added = 0usize;
     for (pc, i) in f.code.iter().enumerate() {
-        let Inst::Call { func, args, dst } = *i else {
-            continue;
+        let (func, args, obj, dst) = match *i {
+            Inst::Call { func, args, dst } => (func, args, None, dst),
+            Inst::CallProt {
+                func,
+                obj,
+                args,
+                dst,
+            } => (func, args, Some(obj), dst),
+            _ => continue,
         };
         if func == id {
             continue;
         }
-        let Some(fw) = forwarder(prog, func) else {
+        let Some(fw) = forwarder(prog, func, level) else {
             continue;
         };
         let Some(callee) = prog.funcs.get(func) else {
             continue;
         };
+        let Some(rest) = f
+            .operands
+            .get(args.start as usize..(args.start + args.len) as usize)
+        else {
+            continue;
+        };
+        let sargs: Vec<Reg> = obj.into_iter().chain(rest.iter().copied()).collect();
         // One argument for each parameter, the result in a register of the type it is returned in.
-        let ret = match fw.body.last() {
-            Some((Inst::Ret { v }, _)) => *v,
-            _ => continue,
-        };
-        let arg_ty = |k: usize| {
-            f.operands
-                .get(args.start as usize + k)
-                .and_then(|r| f.reg_ty.get(r.0 as usize))
-        };
-        // The arguments are registers of the types the parameter loads define.
-        let typed = fw.params.iter().enumerate().all(|(k, regs)| {
-            regs.iter()
-                .all(|r| arg_ty(k).is_some() && arg_ty(k) == fw.reg_ty.get(r.0 as usize))
-        });
-        let fits = typed
-            && args.len as usize == callee.params.len()
-            && match (dst, ret) {
-                (Some(d), Some(r)) => {
-                    f.reg_ty.get(d.0 as usize).is_some()
-                        && f.reg_ty.get(d.0 as usize) == fw.reg_ty.get(r.0 as usize)
-                }
+        let ty = |r: Reg| f.reg_ty.get(r.0 as usize);
+        let typed = sargs.len() == callee.params.len()
+            && fw.params.iter().enumerate().all(|(k, regs)| {
+                regs.iter()
+                    .all(|r| ty(sargs[k]).is_some() && ty(sargs[k]) == fw.reg_ty.get(r.0 as usize))
+            });
+        let returns = fw.blocks.iter().all(|b| match b.last() {
+            Some((Inst::Ret { v }, ..)) => match (dst, v) {
+                (Some(d), Some(r)) => ty(d).is_some() && ty(d) == fw.reg_ty.get(r.0 as usize),
                 (None, _) => true,
                 (Some(_), None) => false,
-            };
-        if fits {
-            sites.insert(pc, fw);
+            },
+            _ => true,
+        });
+        let cost = if fw.straight() { 0 } else { fw.len() + 2 };
+        if typed && returns && added + cost <= GROWTH + 4 * f.code.len() {
+            added += cost;
+            sites.insert(
+                pc,
+                Site {
+                    fw,
+                    func,
+                    args: sargs,
+                    dst,
+                },
+            );
         }
     }
     if sites.is_empty() {
         return false;
     }
-    let mut code: Vec<Inst> = Vec::with_capacity(f.code.len() + 8 * sites.len());
-    let mut loc: Vec<StmtId> = Vec::with_capacity(code.capacity());
-    let mut via: Vec<Option<(StmtId, FuncId)>> = Vec::with_capacity(code.capacity());
-    let mut blocks = Vec::with_capacity(f.blocks.len());
+    let nb = f.blocks.len();
+    let mut blocks: Vec<Option<Vec<Out>>> = vec![None; nb];
     let mut reg_ty = f.reg_ty.clone();
     let mut operands = f.operands.clone();
-    let old_via = |pc: usize| f.via.get(pc).copied().flatten();
-    for (_, b) in f.blocks.iter() {
-        let start = code.len() as u32;
-        for pc in b.start as usize..b.end as usize {
-            let Some(fw) = sites.get(&pc) else {
-                code.push(f.code[pc]);
-                loc.push(f.loc[pc]);
-                via.push(old_via(pc));
+    let old_via = |pc: usize| f.via.get(pc).copied().unwrap_or(0);
+    let mut nodes = f.via_nodes.clone();
+    for b in 0..nb {
+        let Some(blk) = f.blocks.get(BlockId(b as u32)) else {
+            return false;
+        };
+        let mut cur: Vec<Out> = Vec::new();
+        let mut cur_id = b;
+        for pc in blk.start as usize..blk.end as usize {
+            let Some(site) = sites.get(&pc) else {
+                cur.push((f.code[pc], f.loc[pc], old_via(pc)));
                 continue;
             };
-            let Inst::Call { func, args, dst } = f.code[pc] else {
-                // Not reachable: the sites are calls. Leave the function as it was.
-                return false;
-            };
-            let site = f.loc[pc];
-            let arg = |k: usize| f.operands[args.start as usize + k];
-            let args_of = |k: usize| arg(k);
-            // Where each register of the body lives in this function: a parameter the body
-            // never writes is the argument itself, the returned value is made in the result
-            // register when nothing else is, any other register is a new one.
-            let mut at: HashMap<u32, Reg> = HashMap::new();
-            for (k, regs) in fw.params.iter().enumerate() {
-                for &r in regs {
-                    if fw.defs[r.0 as usize] == 0 {
-                        at.insert(r.0, args_of(k));
-                    }
-                }
-            }
-            let ret = match fw.body.last() {
-                Some((Inst::Ret { v }, _)) => *v,
-                _ => None,
-            };
-            let mut ret_moved = None;
-            if let (Some(d), Some(r)) = (dst, ret) {
-                let is_arg = (0..args.len as usize).any(|k| arg(k) == d);
-                let is_param = fw.params.iter().any(|p| p.contains(&r));
-                if fw.defs[r.0 as usize] == 1 && !is_param && !is_arg {
-                    at.insert(r.0, d);
-                } else {
-                    ret_moved = Some((d, r));
-                }
-            }
-            let mut used: Vec<u32> = Vec::new();
-            for (inst, _) in &fw.body {
-                inst.visit(&mut |r, _, _| used.push(r.0));
-                if let Some(l) = inst.list() {
-                    used.extend(
-                        fw.operands[l.start as usize..(l.start + l.len) as usize]
-                            .iter()
-                            .map(|r| r.0),
-                    );
-                }
-            }
-            // The registers the parameter loads defined and the body reads.
-            used.sort_unstable();
-            used.dedup();
-            for r in used {
-                if let std::collections::hash_map::Entry::Vacant(e) = at.entry(r) {
-                    e.insert(Reg(reg_ty.len() as u32));
-                    reg_ty.push(fw.reg_ty[r as usize]);
-                }
-            }
+            let at = place(site, &mut reg_ty);
             let map = |r: Reg| at.get(&r.0).copied().unwrap_or(r);
+            let fw = &site.fw;
+            let loc = f.loc[pc];
+            // This call, and the calls the body's own inlined instructions came through,
+            // now inlined through it as well.
+            nodes.push(ViaNode {
+                site: loc,
+                callee: site.func,
+                up: old_via(pc),
+            });
+            let outer = nodes.len() as u32;
+            let mut remap: Vec<u32> = Vec::with_capacity(fw.via_nodes.len());
+            for n in &fw.via_nodes {
+                let up = match n.up {
+                    0 => outer,
+                    u => remap[u as usize - 1],
+                };
+                nodes.push(ViaNode { up, ..*n });
+                remap.push(nodes.len() as u32);
+            }
+            let chain = |v: u32| if v == 0 { outer } else { remap[v as usize - 1] };
             // The other parameters arrive in the registers the loads defined.
             for (k, regs) in fw.params.iter().enumerate() {
                 for &r in regs {
-                    if at.get(&r.0) != Some(&arg(k)) && at.contains_key(&r.0) {
-                        code.push(Inst::Move {
-                            dst: map(r),
-                            src: arg(k),
-                        });
-                        loc.push(site);
-                        via.push(None);
+                    if at.get(&r.0) != Some(&site.args[k]) && at.contains_key(&r.0) {
+                        cur.push((
+                            Inst::Move {
+                                dst: map(r),
+                                src: site.args[k],
+                            },
+                            loc,
+                            0,
+                        ));
                     }
                 }
             }
-            for &(inst, l) in &fw.body {
+            // The body's instruction with its registers placed.
+            let place_inst = |inst: Inst, operands: &mut Vec<Reg>| {
                 let mut inst = inst;
-                if let Inst::Ret { .. } = inst {
-                    if let Some((d, r)) = ret_moved {
-                        code.push(Inst::Move {
-                            dst: d,
-                            src: map(r),
-                        });
-                        loc.push(site);
-                        via.push(None);
-                    }
-                    continue;
-                }
                 inst.visit_mut(&mut |r, _, _| *r = map(*r));
                 match &mut inst {
                     Inst::Call { args, .. } | Inst::CallProt { args, .. } => {
@@ -384,22 +628,97 @@ pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func) -> boo
                     }
                     _ => {}
                 }
-                code.push(inst);
-                loc.push(l);
-                via.push(Some((site, func)));
+                inst
+            };
+            let ret_move = |inst: &Inst| match (*inst, site.dst) {
+                (Inst::Ret { v: Some(r) }, Some(d)) if map(r) != d => Some(Inst::Move {
+                    dst: d,
+                    src: map(r),
+                }),
+                _ => None,
+            };
+            if fw.straight() {
+                for &(inst, l, v) in &fw.blocks[0] {
+                    if let Inst::Ret { .. } = inst {
+                        if let Some(m) = ret_move(&inst) {
+                            cur.push((m, loc, 0));
+                        }
+                        continue;
+                    }
+                    cur.push((place_inst(inst, &mut operands), l, chain(v)));
+                }
+                continue;
             }
+            let base = blocks.len();
+            let n = fw.blocks.len();
+            blocks.resize(base + n + 1, None);
+            let cont = BlockId((base + n) as u32);
+            cur.push((
+                Inst::Br {
+                    to: BlockId(base as u32),
+                },
+                loc,
+                0,
+            ));
+            blocks[cur_id] = Some(std::mem::take(&mut cur));
+            for (i, cb) in fw.blocks.iter().enumerate() {
+                let mut ents: Vec<Out> = Vec::with_capacity(cb.len() + 1);
+                for &(inst, l, v) in cb {
+                    match inst {
+                        Inst::Ret { .. } => {
+                            if let Some(m) = ret_move(&inst) {
+                                ents.push((m, loc, 0));
+                            }
+                            ents.push((Inst::Br { to: cont }, loc, 0));
+                        }
+                        Inst::Br { to } => {
+                            let to = BlockId(base as u32 + to.0);
+                            ents.push((Inst::Br { to }, l, chain(v)));
+                        }
+                        Inst::CondBr { c, t, f: e } => {
+                            let (t, e) = (BlockId(base as u32 + t.0), BlockId(base as u32 + e.0));
+                            ents.push((Inst::CondBr { c: map(c), t, f: e }, l, chain(v)));
+                        }
+                        other => ents.push((place_inst(other, &mut operands), l, chain(v))),
+                    }
+                }
+                blocks[base + i] = Some(ents);
+            }
+            cur_id = base + n;
         }
-        blocks.push((start, code.len() as u32));
+        blocks[cur_id] = Some(cur);
     }
-    for (k, (s, e)) in blocks.into_iter().enumerate() {
-        if let Some(b) = f.blocks.get_mut(crate::BlockId(k as u32)) {
-            b.start = s;
-            b.end = e;
+    let mut code = Vec::new();
+    let mut loc = Vec::new();
+    let mut via = Vec::new();
+    let mut ranges = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        let Some(ents) = b else {
+            return false;
+        };
+        let start = code.len() as u32;
+        for (i, l, v) in ents {
+            code.push(i);
+            loc.push(l);
+            via.push(v);
+        }
+        ranges.push((start, code.len() as u32));
+    }
+    for (k, &(s, e)) in ranges.iter().enumerate() {
+        match f.blocks.get_mut(BlockId(k as u32)) {
+            Some(b) => {
+                b.start = s;
+                b.end = e;
+            }
+            None => {
+                f.blocks.push(crate::Block { start: s, end: e });
+            }
         }
     }
     f.code = code;
     f.loc = loc;
     f.via = via;
+    f.via_nodes = nodes;
     f.reg_ty = reg_ty;
     f.operands = operands;
     true

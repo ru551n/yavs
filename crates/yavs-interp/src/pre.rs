@@ -29,6 +29,11 @@ pub(crate) struct Pre {
     /// The function's frame size in bytes (`Func::frame`), its parameters' slots and widths and
     /// whether it is nested: what a call needs, without touching the function itself.
     pub slots: u32,
+    /// A call from the plain loop needs not write the parameters to their slots: the prologue it
+    /// skips is the only reader (`lean_params`).
+    pub lean: bool,
+    /// The bytes of slots such a call allocates: none when the parameters are all the frame has.
+    pub fslots: u32,
     pub params: Box<[(u32, Width)]>,
     /// For each parameter, the register the function's first ops load it into (`NONE`: none).
     /// A call writes these registers itself and goes on at `Code::skip`.
@@ -156,9 +161,23 @@ impl Pre {
         let mut code = Code::new(f, prog, &skip, &known, &next);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
+        let lean = lean_params(f, prog, &code, &pro);
+        // The registers holding the address of a parameter's slot are only read by the
+        // prologue the call skips: they need no address.
+        if lean {
+            frame.retain(|&(_, off)| !f.params.iter().any(|p| p.slot as u64 == off));
+        }
+        let all_params: u32 = f.params.iter().map(|p| p.width.bytes()).sum();
+        let fslots = if lean && f.frame == all_params && f.roots.is_empty() {
+            0
+        } else {
+            f.frame
+        };
         Pre {
             init,
             slots: f.frame,
+            lean,
+            fslots,
             params,
             pro,
             nested: f.parent.is_some(),
@@ -912,6 +931,75 @@ pub(crate) struct Code {
     /// The op a call goes on at when it has written `Pre::pro` itself: after the ops that
     /// only load parameters (`NONE`: there are none).
     pub skip: u32,
+}
+
+/// Is every parameter handed over in the register the prologue loads it into, and read from
+/// its slot by nothing else? Then a call writes the registers and leaves the slots alone.
+/// Plain functions and procedures whose parameters are whole 8-byte values passed in only.
+fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> bool {
+    if f.nested
+        || f.parent.is_some()
+        || f.body.is_some()
+        || !matches!(
+            f.kind,
+            yavs_ir::FuncKind::Function | yavs_ir::FuncKind::Procedure
+        )
+        || code.skip == NONE
+        || pro.len() != f.params.len()
+        || pro.contains(&NONE)
+        || f.params.iter().any(|p| {
+            p.width != Width::B8
+                || p.class != yavs_ir::ParamClass::Value
+                || p.mode != yavs_ir::Mode::In
+        })
+    {
+        return false;
+    }
+    let in_param = |off: u32| f.params.iter().any(|p| p.slot == off);
+    // The registers holding a parameter slot's address, each defined once.
+    let mut addr: Vec<u32> = Vec::new();
+    for i in &f.code {
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Frame,
+            off,
+        } = *i
+            && in_param(off)
+        {
+            addr.push(dst.0);
+        }
+    }
+    let Some(&end) = code.at.get(code.skip as usize) else {
+        return false;
+    };
+    // The prologue is entered by the call only: no jump goes back to it.
+    let targets = f.code.iter().flat_map(|i| match *i {
+        Inst::Case { table, .. } => prog.cases.get(table).map_or_else(Vec::new, |t| {
+            std::iter::once(t.default)
+                .chain(t.arms.iter().map(|a| a.2))
+                .collect()
+        }),
+        ref i => i.targets(),
+    });
+    for t in targets {
+        if f.blocks.get(t).is_none_or(|b| b.start < end) {
+            return false;
+        }
+    }
+    // Nothing at or after the first op the call runs reads one of them.
+    for i in f.code.iter().skip(end as usize) {
+        let mut used = false;
+        i.visit(&mut |r, role, _| used |= role == Role::Use && addr.contains(&r.0));
+        if let Some(l) = i.list() {
+            used |= f
+                .regs(l)
+                .is_none_or(|rs| rs.iter().any(|r| addr.contains(&r.0)));
+        }
+        if used {
+            return false;
+        }
+    }
+    true
 }
 
 /// The leading ops that load a parameter from its slot into a register, each a whole 8-byte

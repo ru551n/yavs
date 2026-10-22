@@ -229,7 +229,17 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 /// does not depend on which function was optimised first.
 pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
     let mut f = optimize_body(prog, id)?;
-    if inline::run(prog, id, &mut f) {
+    if inline::run(prog, id, &mut f, 1) {
+        // The inlined bodies are code of this function now: what is known at the call decides
+        // their branches and repeated reads are shared.
+        if matches!(f.kind, FuncKind::Function | FuncKind::Procedure) {
+            let mut layouts = prog
+                .layouts
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            tidy(prog, &mut f, &mut layouts);
+        }
         crate::build::number_func(&mut f, |c| {
             prog.funcs
                 .get(c)
@@ -274,7 +284,7 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     );
     o.run();
     let mut loc = raw.loc.clone();
-    let blocks = o.changed.then(|| o.compact(&mut loc));
+    let blocks = o.changed.then(|| o.compact(&mut loc, None));
     let mut f = raw.shell();
     if let Some(blocks) = blocks {
         for (i, nb) in blocks.iter().enumerate() {
@@ -349,10 +359,11 @@ fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Ve
         o.kill_unreachable();
         o.dead_defs();
         let mut loc = f.loc.clone();
-        let blocks = o.compact(&mut loc);
-        (o.code, o.operands, o.new_regs, loc, blocks)
+        let mut via = f.via.clone();
+        let blocks = o.compact(&mut loc, (!via.is_empty()).then_some(&mut via));
+        (o.code, o.operands, o.new_regs, loc, via, blocks)
     };
-    let (code, operands, new_regs, loc, blocks) = done;
+    let (code, operands, new_regs, loc, via, blocks) = done;
     for (i, nb) in blocks.iter().enumerate() {
         if let Some(b) = f.blocks.get_mut(BlockId(i as u32)) {
             b.start = nb.0;
@@ -361,6 +372,7 @@ fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Ve
     }
     f.code = code;
     f.loc = loc;
+    f.via = via;
     f.operands = operands;
     f.reg_ty.extend(new_regs);
 }
@@ -3656,11 +3668,15 @@ impl<'a> Opt<'a> {
     /// Remove the dead instructions and add the inserted ones, with their locations; the new
     /// block ranges.
     #[allow(clippy::needless_range_loop)]
-    fn compact(&mut self, loc: &mut Vec<StmtId>) -> Vec<(u32, u32)> {
+    fn compact(&mut self, loc: &mut Vec<StmtId>, via: Option<&mut Vec<u32>>) -> Vec<(u32, u32)> {
         self.inserts.sort_by_key(|x| x.0);
         let mut ins = self.inserts.iter().peekable();
         let mut code = Vec::with_capacity(self.code.len() + self.inserts.len());
         let mut locs = Vec::with_capacity(code.capacity());
+        // The inlining record of each instruction, when the function has one.
+        let mut vias: Vec<u32> = Vec::new();
+        let keep_via = via.is_some();
+        let old_via = |pc: usize| via.as_ref().map_or(0, |v| v[pc]);
         let mut blocks = Vec::with_capacity(self.blocks.len());
         for &(s, e) in &self.blocks {
             let start = code.len() as u32;
@@ -3674,16 +3690,25 @@ impl<'a> Opt<'a> {
                     }
                     code.push(i);
                     locs.push(loc[pc]);
+                    if keep_via {
+                        vias.push(old_via(pc));
+                    }
                 }
                 if !is_dead(&self.code[pc]) {
                     code.push(self.code[pc]);
                     locs.push(loc[pc]);
+                    if keep_via {
+                        vias.push(old_via(pc));
+                    }
                 }
             }
             blocks.push((start, code.len() as u32));
         }
         self.code = code;
         *loc = locs;
+        if let Some(v) = via {
+            *v = vias;
+        }
         blocks
     }
 }

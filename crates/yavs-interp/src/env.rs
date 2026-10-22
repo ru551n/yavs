@@ -108,11 +108,23 @@ impl Machine {
             // A function inlined at this instruction is an element of its own, its caller the
             // next one.
             let mut at = vec![(f.name.as_str(), loc)];
-            if let Some((site, callee)) = f.inlined_at(fr.pc as usize) {
-                let g = prog
-                    .func(callee)
-                    .ok_or_else(|| ice(format!("no function {callee}")))?;
-                at = vec![(g.name.as_str(), loc), (f.name.as_str(), site)];
+            let chain: Vec<_> = f.inlined_chain(fr.pc as usize).collect();
+            if !chain.is_empty() {
+                // (The instruction's function, then each caller outward with the statement of
+                // the call.)
+                let name = |id| {
+                    prog.func(id)
+                        .map(|g| g.name.as_str())
+                        .ok_or_else(|| ice(format!("no function {id}")))
+                };
+                at = vec![(name(chain[0].callee)?, loc)];
+                for (k, n) in chain.iter().enumerate() {
+                    let outer = match chain.get(k + 1) {
+                        Some(o) => name(o.callee)?,
+                        None => f.name.as_str(),
+                    };
+                    at.push((outer, n.site));
+                }
             }
             for (name, s) in at {
                 let st = prog

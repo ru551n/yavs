@@ -1919,6 +1919,14 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::Store { addr, src, w } => [vec![addr], pair(src, w)].concat(),
         Inst::Copy { dst, src, bytes } => vec![dst, src, bytes],
         Inst::Pos { dst, dope, idx, .. } => vec![dst, dope, idx],
+        Inst::SlicePos {
+            dst,
+            dope,
+            left,
+            right,
+            dir,
+            ..
+        } => vec![dst, dope, left, right, dir],
         Inst::Field {
             dst, base, layout, ..
         } => vec![dst, base, layout],
@@ -2245,6 +2253,7 @@ fn keeps_objects(i: &Inst) -> bool {
             | Inst::Copy { .. }
             | Inst::Fill { .. }
             | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
             | Inst::Index { .. }
             | Inst::Field { .. }
             | Inst::Bin { .. }
@@ -4530,6 +4539,59 @@ impl Gen {
                             let (d, w) = (self.ld(&c, dope), self.ld(&c, want));
                             self.fast_op(&c, FAST_SUBTYPE, u32::from(dims), d, w, slow);
                         }
+                        self.join(&c, join);
+                    }
+                    Inst::SlicePos {
+                        dst,
+                        dope,
+                        left,
+                        right,
+                        dir,
+                        ..
+                    } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let p = self.host(
+                            &c,
+                            self.ld(&c, dope),
+                            fk(dope),
+                            self.c64(0),
+                            self.c64(24),
+                            false,
+                            slow,
+                        );
+                        let (l, r, d) = self.dope_words(p);
+                        let (a, b, w) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let and = |x, y| LLVMBuildAnd(self.b, x, y, c"".as_ptr());
+                        let le = |x, y| self.icmp(IP::LLVMIntSLE, x, y);
+                        let down = self.icmp(IP::LLVMIntEQ, w, self.c64(1));
+                        // A null slice names no element and checks nothing.
+                        let null = LLVMBuildSelect(
+                            self.b,
+                            down,
+                            self.icmp(IP::LLVMIntSLT, a, b),
+                            self.icmp(IP::LLVMIntSGT, a, b),
+                            c"".as_ptr(),
+                        );
+                        let up = self.icmp(IP::LLVMIntEQ, d, self.c64(0));
+                        let inside = |i| {
+                            let u = and(up, and(le(l, i), le(i, r)));
+                            let n = and(
+                                self.icmp(IP::LLVMIntEQ, d, self.c64(1)),
+                                and(le(r, i), le(i, l)),
+                            );
+                            self.or(u, n)
+                        };
+                        let valid = and(self.icmp(IP::LLVMIntEQ, w, d), and(inside(a), inside(b)));
+                        self.guard(&c, self.or(null, valid), slow);
+                        let from_l = LLVMBuildSub(self.b, a, l, c"".as_ptr());
+                        let from_a = LLVMBuildSub(self.b, l, a, c"".as_ptr());
+                        let pos = LLVMBuildSelect(self.b, up, from_l, from_a, c"".as_ptr());
+                        let zero = self.c64(0);
+                        self.st(
+                            &c,
+                            dst,
+                            LLVMBuildSelect(self.b, null, zero, pos, c"".as_ptr()),
+                        );
                         self.join(&c, join);
                     }
                     Inst::Pos {

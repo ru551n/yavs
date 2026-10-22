@@ -45,7 +45,10 @@ fn speculable(i: &Inst) -> bool {
 
 /// Does it read a descriptor (which a write in the loop could change)?
 fn reads_dope(i: &Inst) -> bool {
-    matches!(i, Inst::Pos { .. } | Inst::DopeLen { .. })
+    matches!(
+        i,
+        Inst::Pos { .. } | Inst::SlicePos { .. } | Inst::DopeLen { .. }
+    )
 }
 
 /// May it move out of the start of the header: a computation whose result depends only on

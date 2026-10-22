@@ -728,6 +728,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 | Area | Implemented as |
 |---|---|
 | bounds-checked `Index{..idx..}` | split: `Pos{dst, dope, dim, idx, what}` (checked position from the left, message from the dope's own direction) then `Index{dst, base, pos, stride}`; logic arrays index from the right, so lowering computes `len - 1 - pos` for `LGet`/`LSet` |
+| slice start | `SlicePos{dst, dope, left, right, dir, what, dir_what}` (added, #520): 0 for a null slice, else the checked `Pos` of `left`, `right` checked as well, and `dir` against the array's direction; one instruction instead of a branch and three |
 | temporaries | `Alloc{dst, size}` (added) bumps the per-process temp area; `Stmt` resets it to the current frame's base. `Ret` does not reset, so a callee's result in temp memory lives until the caller's next statement |
 | package data of run-time size | `PkgAlloc{dst, size}` (added, #73) appends zeroed bytes to the data of the package being initialised (package initialisation thunks only, an ICE elsewhere), for constants whose bounds are known only at run time |
 | `Stmt{id}` | `Stmt` has no operand: its statement is `Func::loc[pc]` |

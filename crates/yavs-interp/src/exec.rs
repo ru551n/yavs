@@ -4528,6 +4528,14 @@ impl Machine {
                     ));
                     k += 1;
                 }
+                Op::SlicePos(pc) => {
+                    let inst = f.code[pc as usize];
+                    let p = t!(self.slice_pos(&inst));
+                    if let Inst::SlicePos { dst, .. } = inst {
+                        self.regs[dst.0 as usize] = p;
+                    }
+                    k += 1;
+                }
                 Op::Bin { op, dst, a, b } => {
                     self.regs[dst as usize] = t!(bin(
                         op,
@@ -6887,6 +6895,33 @@ impl Machine {
         Ok(pos as u64)
     }
 
+    /// `Inst::SlicePos`: the start position of a slice, checked unless the slice is null.
+    #[inline(always)]
+    fn slice_pos(&self, inst: &Inst) -> R<u64> {
+        let &Inst::SlicePos {
+            dope,
+            left,
+            right,
+            dir,
+            what,
+            dir_what,
+            ..
+        } = inst
+        else {
+            return Err(ice_s!("slice position of another instruction"));
+        };
+        let (l, r, w) = (self.ri(left), self.ri(right), self.ri(dir));
+        if if w == 1 { l < r } else { l > r } {
+            return Ok(0);
+        }
+        let dp = self.r(dope);
+        let p = self.pos_of(dp, 0, l, what)?;
+        self.pos_of(dp, 0, r, what)?;
+        let (_, _, d) = self.dim_of(dp, 0)?;
+        self.check_val(CheckKind::Range, w, d as i64, d as i64, dir_what)?;
+        Ok(p)
+    }
+
     #[cold]
     #[inline(never)]
     fn pos_fail(&self, l: i64, rr: i64, dir: u64, i: i64, what: yavs_ir::CheckMsgId) -> R<()> {
@@ -7118,6 +7153,10 @@ impl Machine {
                 idx,
                 what,
             } => self.do_pos(dst, dope, dim, idx, what)?,
+            Inst::SlicePos { dst, .. } => {
+                let p = self.slice_pos(&inst)?;
+                self.set(dst, p);
+            }
             Inst::Index {
                 dst,
                 base,

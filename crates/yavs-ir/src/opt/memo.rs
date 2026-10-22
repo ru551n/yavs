@@ -23,6 +23,14 @@
 //! cells again) so that the fast copy keeps the register counts the predecoder's fusions
 //! count on.
 //!
+//! A descriptor the block builds (`Alloc` of a constant size, one `MakeDope` of instance-constant
+//! parts, and from there on only reads on every path until the register is defined again) is
+//! frame bytes too: the slow copy fills them once and the fast copy has their address (a
+//! constant) and builds nothing, so the positions, lengths and layouts computed from it are
+//! instance-constant like the generics it came from. The state on entry to the join of an
+//! `if` on an instance-constant condition is what holds on both arms (the arm taken is the same
+//! at every activation), so a statement with a null-slice test is planned as a whole.
+//!
 //! The flag and the slots are frame bytes behind the function's own frame, which start zero.
 //! Debuggers keep the old shape ([`super::keep_variables`]).
 
@@ -32,7 +40,7 @@
 use super::*;
 
 /// Slots (and loads in the fast copy) a block may use.
-const MAX_ROOTS: usize = 12;
+const MAX_ROOTS: usize = 40;
 /// Instructions the fast copy has to save, net of the flag test, to be worth a copy. Native
 /// code does the saved arithmetic in a few cycles and pays for the extra code it compiles and
 /// the loads of the slots, so with the LLVM tier a copy has to save more (measured on the
@@ -53,6 +61,9 @@ enum K {
     Free,
     /// Instance-constant, computed once.
     Memo,
+    /// The `Alloc` of a descriptor whose `MakeDope` is instance-constant: the descriptor lives in
+    /// frame bytes the slow copy fills once, so the address is a constant and the build goes.
+    Dope,
 }
 
 /// What to do with one block.
@@ -60,6 +71,8 @@ struct Plan {
     block: usize,
     first: usize,
     kind: Vec<K>,
+    /// Bytes of frame a `K::Dope` instruction owns.
+    dope: Vec<u32>,
     keep: Vec<bool>,
     root: Vec<bool>,
     last_memo: usize,
@@ -213,6 +226,7 @@ fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool]) -> (K, bool) {
         Inst::Select { dst, c, a, b } if ok(c) && ok(a) && ok(b) && plain(dst) => (K::Memo, false),
         Inst::Pos { dst, dope, idx, .. } if rof(dope) && ok(idx) && plain(dst) => (K::Memo, false),
         Inst::DopeLen { dst, dope, .. } if rof(dope) && plain(dst) => (K::Memo, false),
+        Inst::LayoutOf { dst, desc, .. } if rof(desc) && plain(dst) => (K::Memo, true),
         Inst::Index { dst, base, pos, .. } if ok(base) && ok(pos) && plain(dst) => {
             (K::Memo, rof(base))
         }
@@ -229,12 +243,34 @@ fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool]) -> (K, bool) {
 }
 
 /// Classify the instructions of block `b` from the state (`inv`, `ro`) on entry, leaving the
-/// state on exit.
-fn classify_block(f: &crate::Func, b: usize, inv: &mut [bool], ro: &mut [bool]) -> Vec<K> {
+/// state on exit. `dopes` (the planned block only) holds the frame bytes of each descriptor
+/// allocation that [`dope_sizes`] found: one whose `MakeDope` is instance-constant becomes a
+/// [`K::Dope`], and the register points to frozen memory from there on.
+fn classify_block(
+    f: &crate::Func,
+    b: usize,
+    inv: &mut [bool],
+    ro: &mut [bool],
+    dopes: Option<&[u32]>,
+) -> Vec<K> {
     let blk = f.blocks.values()[b];
     let insts = &f.code[blk.start as usize..blk.end as usize];
     let mut kind = vec![K::Other; insts.len()];
+    let mut pending: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for (i, ins) in insts.iter().enumerate() {
+        if dopes.is_some()
+            && let Inst::MakeDope { at, parts } = *ins
+            && let Some(&a) = pending.get(&at.0)
+            && f.regs(parts)
+                .is_some_and(|rs| rs.iter().all(|r| inv[r.0 as usize]))
+        {
+            kind[a] = K::Dope;
+            kind[i] = K::Memo;
+            inv[at.0 as usize] = true;
+            ro[at.0 as usize] = true;
+            pending.remove(&at.0);
+            continue;
+        }
         let (k, is_ro) = classify(f, ins, inv, ro);
         kind[i] = k;
         operands(f, ins, |r, role| {
@@ -243,34 +279,220 @@ fn classify_block(f: &crate::Func, b: usize, inv: &mut [bool], ro: &mut [bool]) 
             {
                 *a = k != K::Other;
                 *c = is_ro;
+                pending.remove(&r.0);
             }
         });
+        if let (Some(dm), Inst::Alloc { dst, .. }) = (dopes, *ins)
+            && dm[i] > 0
+        {
+            pending.insert(dst.0, i);
+        }
     }
     kind
 }
 
-/// The state on exit from block `b`, starting from that of its only predecessor chain (what
-/// the walk shared across blocks, such as the offsets of an element, is instance-constant in
-/// the blocks that follow too, #534).
-fn exit_state(f: &crate::Func, only_pred: &[Option<usize>], b: usize) -> (Vec<bool>, Vec<bool>) {
-    let n = f.reg_ty.len();
-    let mut chain = vec![b];
-    while let Some(Some(p)) = chain.last().map(|&x| only_pred[x]) {
-        if chain.len() >= 8 || chain.contains(&p) {
-            break;
+/// The frame bytes (else 0) of each `Alloc` of block `b` that allocates a descriptor: a
+/// constant number of bytes, one `MakeDope` of it in the block, and from there on, along every
+/// path until the register is defined again, only reads of the descriptor or of the pointer.
+fn dope_sizes(f: &crate::Func, succ: &[Vec<usize>], b: usize) -> Vec<u32> {
+    let blk = f.blocks.values()[b];
+    let insts = &f.code[blk.start as usize..blk.end as usize];
+    let n = insts.len();
+    let mut out = vec![0u32; n];
+    let mut konst: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
+    for i in 0..n {
+        if let Inst::Alloc { dst, size } = insts[i]
+            && let Some(&sz) = konst.get(&size.0)
+            && (8..=256).contains(&sz)
+            && sz % 8 == 0
+            && dope_region(f, succ, b, i, dst)
+        {
+            out[i] = sz as u32;
         }
-        chain.push(p);
+        match insts[i] {
+            Inst::Const { dst, v } => {
+                konst.insert(dst.0, v);
+            }
+            ref ins => operands(f, ins, |r, role| {
+                if role == Role::Def {
+                    konst.remove(&r.0);
+                }
+            }),
+        }
     }
-    let (mut inv, mut ro) = (vec![false; n], vec![false; n]);
-    for &x in chain.iter().rev() {
-        classify_block(f, x, &mut inv, &mut ro);
+    out
+}
+
+/// How a scan of instructions ended.
+enum Scan {
+    /// A use that is not a read of a descriptor.
+    Bad,
+    /// The register is defined again.
+    Defined,
+    /// The end of the range.
+    Open,
+}
+
+/// Scan `insts` for the uses of descriptor register `d` (`made`: its `MakeDope` has run).
+fn scan_dope(f: &crate::Func, insts: &[Inst], d: Reg, made: &mut bool) -> Scan {
+    for ins in insts {
+        let (mut used, mut defd) = (false, false);
+        operands(f, ins, |r, role| {
+            if r == d {
+                if role == Role::Use {
+                    used = true;
+                } else {
+                    defd = true;
+                }
+            }
+        });
+        if used {
+            let in_list = |l: Option<crate::Regs>| {
+                l.and_then(|l| f.regs(l)).is_some_and(|rs| rs.contains(&d))
+            };
+            let ok = match *ins {
+                Inst::MakeDope { at, parts } => {
+                    at == d && !*made && !in_list(Some(parts)) && {
+                        *made = true;
+                        true
+                    }
+                }
+                _ if !*made => false,
+                Inst::DopeLen { dope, .. } => dope == d,
+                Inst::Pos { dope, idx, .. } => dope == d && idx != d,
+                Inst::LayoutOf { desc, .. } => desc == d,
+                Inst::SubtypeCheck { .. } => true,
+                Inst::Copy { dst, bytes, .. } => dst != d && bytes != d,
+                Inst::Store { addr, .. } => addr != d,
+                Inst::TempRoot { addr, .. } => addr != d,
+                Inst::NewFrame {
+                    desc, data, size, ..
+                } => desc == d && data != d && size != d,
+                Inst::Call { .. }
+                | Inst::CallNative { .. }
+                | Inst::CallProt { .. }
+                | Inst::Cat { .. } => {
+                    let mut fixed = false;
+                    ins.visit(&mut |r, role, _| fixed |= r == d && role == Role::Use);
+                    !fixed
+                }
+                _ => false,
+            };
+            if !ok {
+                return Scan::Bad;
+            }
+        }
+        if defd {
+            return Scan::Defined;
+        }
     }
-    (inv, ro)
+    Scan::Open
+}
+
+/// Is the `Alloc` at `i` of block `b` (register `d`) written once, by a `MakeDope` of the same
+/// block, and only read after that, on every path from it until `d` is defined again?
+fn dope_region(f: &crate::Func, succ: &[Vec<usize>], b: usize, i: usize, d: Reg) -> bool {
+    let blk = f.blocks.values()[b];
+    let (s, e) = (blk.start as usize, blk.end as usize);
+    let mut made = false;
+    match scan_dope(f, &f.code[s + i + 1..e], d, &mut made) {
+        Scan::Bad => return false,
+        Scan::Defined => return made,
+        Scan::Open => {}
+    }
+    if !made {
+        return false;
+    }
+    let mut seen = vec![false; f.blocks.len()];
+    let mut work: Vec<usize> = succ[b].clone();
+    while let Some(x) = work.pop() {
+        if x >= seen.len() || std::mem::replace(&mut seen[x], true) {
+            continue;
+        }
+        let r = f.blocks.values()[x];
+        // Coming back to the allocation's own block, the allocation ends the region.
+        let end = if x == b { s + i } else { r.end as usize };
+        let mut m = true;
+        match scan_dope(f, &f.code[r.start as usize..end], d, &mut m) {
+            Scan::Bad => return false,
+            Scan::Defined => {}
+            Scan::Open if x != b => work.extend(succ[x].iter().copied()),
+            Scan::Open => {}
+        }
+    }
+    true
+}
+
+/// Which registers are instance-constant, and which of them point to frozen memory.
+type State = (Vec<bool>, Vec<bool>);
+/// The arms and the head of an `if`: (first arm, second arm, head).
+type Join = (usize, usize, usize);
+
+/// What the planner knows about the control flow of the process.
+struct Flow {
+    succ: Vec<Vec<usize>>,
+    /// The one predecessor of a block that nothing else enters.
+    only: Vec<Option<usize>>,
+    /// A block entered from the two arms of an `if` (or the head and its one arm) whose
+    /// condition may be instance-constant: (first arm, second arm, head).
+    join: Vec<Option<Join>>,
+    exits: std::cell::RefCell<std::collections::HashMap<usize, State>>,
+    sizes: std::cell::RefCell<std::collections::HashMap<usize, Vec<u32>>>,
+}
+
+impl Flow {
+    fn sizes(&self, f: &crate::Func, b: usize) -> Vec<u32> {
+        let mut m = self.sizes.borrow_mut();
+        m.entry(b)
+            .or_insert_with(|| dope_sizes(f, &self.succ, b))
+            .clone()
+    }
+
+    /// The state on entry to block `b`: that on exit from its only predecessor (what the walk
+    /// shared across blocks, such as the offsets of an element, is instance-constant in the
+    /// blocks that follow too, #534); at the join of an `if` on an instance-constant condition,
+    /// what holds on both arms (the arm taken is the same at every activation, so a value
+    /// either arm defines is as constant as the one it defines on the other).
+    fn entry(&self, f: &crate::Func, b: usize, depth: usize) -> State {
+        let n = f.reg_ty.len();
+        let none = (vec![false; n], vec![false; n]);
+        if depth > 48 {
+            return none;
+        }
+        if let Some(p) = self.only[b] {
+            return self.exit(f, p, depth + 1);
+        }
+        let Some((a1, a2, h)) = self.join[b] else {
+            return none;
+        };
+        let (hi, _) = self.exit(f, h, depth + 1);
+        let blk = f.blocks.values()[h];
+        let Inst::CondBr { c, .. } = f.code[blk.end as usize - 1] else {
+            return none;
+        };
+        if !hi.get(c.0 as usize).copied().unwrap_or(false) {
+            return none;
+        }
+        let (i1, r1) = self.exit(f, a1, depth + 1);
+        let (i2, r2) = self.exit(f, a2, depth + 1);
+        let and = |x: Vec<bool>, y: &[bool]| x.iter().zip(y).map(|(&p, &q)| p && q).collect();
+        (and(i1, &i2), and(r1, &r2))
+    }
+
+    fn exit(&self, f: &crate::Func, b: usize, depth: usize) -> State {
+        if let Some(x) = self.exits.borrow().get(&b) {
+            return x.clone();
+        }
+        let (mut inv, mut ro) = self.entry(f, b, depth);
+        classify_block(f, b, &mut inv, &mut ro, Some(&self.sizes(f, b)));
+        self.exits.borrow_mut().insert(b, (inv.clone(), ro.clone()));
+        (inv, ro)
+    }
 }
 
 /// For each block, its one predecessor when exactly one reachable block jumps to it and
-/// nothing else enters it.
-fn only_preds(f: &crate::Func, succ: &[Vec<usize>]) -> Vec<Option<usize>> {
+/// nothing else enters it, and the arms and head when two such blocks do (see [`Flow`]).
+fn only_preds(f: &crate::Func, succ: &[Vec<usize>]) -> (Vec<Option<usize>>, Vec<Option<Join>>) {
     let nb = f.blocks.len();
     let body = f.body.map(|b| b.0 as usize);
     let mut reach = vec![false; nb];
@@ -297,25 +519,52 @@ fn only_preds(f: &crate::Func, succ: &[Vec<usize>]) -> Vec<Option<usize>> {
             }
         }
     }
-    (0..nb)
-        .map(|b| {
-            let r = f.blocks.values()[b];
-            let entered =
-                b == 0 || Some(b) == body || r.end <= r.start || falls_into(f, r.start as usize);
-            match preds[b][..] {
-                [p] if !entered && p != b => Some(p),
-                _ => None,
-            }
+    let entered = |b: usize| {
+        let r = f.blocks.values()[b];
+        b == 0 || Some(b) == body || r.end <= r.start || falls_into(f, r.start as usize)
+    };
+    let only: Vec<Option<usize>> = (0..nb)
+        .map(|b| match preds[b][..] {
+            [p] if !entered(b) && p != b => Some(p),
+            _ => None,
         })
-        .collect()
+        .collect();
+    let join = (0..nb)
+        .map(|b| {
+            let [p, q] = preds[b][..] else {
+                return None;
+            };
+            if entered(b) || p == q || p == b || q == b {
+                return None;
+            }
+            let h = match (only[p], only[q]) {
+                (Some(x), Some(y)) if x == y => x,
+                (_, Some(y)) if y == p => p,
+                (Some(x), _) if x == q => q,
+                _ => return None,
+            };
+            let r = f.blocks.values()[h];
+            let Inst::CondBr { t, f: e, .. } = f.code[r.end as usize - 1] else {
+                return None;
+            };
+            let mut targets = [t.0 as usize, e.0 as usize];
+            let mut want = if h == p {
+                [q, b]
+            } else if h == q {
+                [p, b]
+            } else {
+                [p, q]
+            };
+            targets.sort_unstable();
+            want.sort_unstable();
+            (targets == want).then_some((p, q, h))
+        })
+        .collect();
+    (only, join)
 }
 
-fn plan_block(
-    f: &crate::Func,
-    b: usize,
-    live_out: &[u64],
-    (mut inv, mut ro): (Vec<bool>, Vec<bool>),
-) -> Option<Plan> {
+fn plan_block(f: &crate::Func, flow: &Flow, b: usize, live_out: &[u64]) -> Option<Plan> {
+    let (mut inv, mut ro) = flow.entry(f, b, 0);
     let blk = f.blocks.values()[b];
     let (s, e) = (blk.start as usize, blk.end as usize);
     let n = e.checked_sub(s)?;
@@ -327,8 +576,12 @@ fn plan_block(
         return None;
     }
     let nregs = f.reg_ty.len();
-    let kind = classify_block(f, b, &mut inv, &mut ro);
-    let first = kind.iter().position(|&k| k == K::Memo)?;
+    let sizes = flow.sizes(f, b);
+    let kind = classify_block(f, b, &mut inv, &mut ro, Some(&sizes));
+    let first = kind.iter().position(|&k| matches!(k, K::Memo | K::Dope))?;
+    let dope: Vec<u32> = (0..n)
+        .map(|i| if kind[i] == K::Dope { sizes[i] } else { 0 })
+        .collect();
     // Backward over the rest of the block: which instructions the fast copy needs.
     let mut live: Vec<bool> = (0..nregs as u32).map(|r| bit(live_out, r)).collect();
     let mut keep = vec![true; n];
@@ -345,10 +598,13 @@ fn plan_block(
         let needed = defs.iter().any(|&d| live[d]);
         match kind[i] {
             K::Other => {}
-            K::Free => keep[i] = needed,
+            K::Free | K::Dope => keep[i] = needed,
             K::Memo => {
                 keep[i] = false;
-                if needed {
+                if needed && matches!(ins, Inst::LayoutOf { .. }) {
+                    // (A layout is temporary memory: recomputed, not remembered.)
+                    keep[i] = true;
+                } else if needed {
                     let d = defs[0];
                     if f.reg_ty[d] != RegTy::I64 {
                         return None;
@@ -372,7 +628,7 @@ fn plan_block(
     let roots = root.iter().filter(|&&r| r).count();
     if roots > MAX_ROOTS
         || gain
-            < roots
+            < roots / 2
                 + if super::compiled() {
                     MIN_GAIN_COMPILED
                 } else {
@@ -406,6 +662,7 @@ fn plan_block(
         block: b,
         first,
         kind,
+        dope,
         keep,
         root,
         last_memo,
@@ -584,12 +841,21 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     };
     let succ = successors(prog, f);
     let nb = f.blocks.len();
-    let only = only_preds(f, &succ);
+    let (only, join) = only_preds(f, &succ);
+    let flow = Flow {
+        succ,
+        only,
+        join,
+        exits: Default::default(),
+        sizes: Default::default(),
+    };
+    let (succ, only) = (&flow.succ, &flow.only);
     // Cheap test first: some cyclic block with a load from frozen memory, or one that follows
     // another block alone (the values it needs may be instance-constant there).
     let candidate = |b: usize| {
         let blk = f.blocks.values()[b];
         (only[b].is_some()
+            || flow.join[b].is_some()
             || f.code[blk.start as usize..blk.end as usize]
                 .iter()
                 .any(|i| {
@@ -601,23 +867,17 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                         }
                     )
                 }))
-            && on_cycle(&succ, b)
+            && on_cycle(succ, b)
     };
     let cands: Vec<usize> = (0..nb).filter(|&b| candidate(b)).collect();
     if cands.is_empty() {
         restore(f);
         return;
     }
-    let out = live_out(f, &succ);
+    let out = live_out(f, succ);
     let plans: Vec<Plan> = cands
         .into_iter()
-        .filter_map(|b| {
-            let seed = match only[b] {
-                Some(p) => exit_state(f, &only, p),
-                None => (vec![false; f.reg_ty.len()], vec![false; f.reg_ty.len()]),
-            };
-            plan_block(f, b, &out[b], seed)
-        })
+        .filter_map(|b| plan_block(f, &flow, b, &out[b]))
         .collect();
     if plans.is_empty() {
         restore(f);
@@ -693,6 +953,14 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                 slots += 1;
             }
         }
+        // Frame bytes of the descriptors.
+        let mut dope_off = vec![0u32; e - s];
+        for i in p.first..e - s {
+            if p.kind[i] == K::Dope {
+                dope_off[i] = base + 8 * slots;
+                slots += p.dope[i] / 8;
+            }
+        }
         // Fast copy.
         let mut fast = Vec::new();
         for i in p.first..e - s {
@@ -722,6 +990,19 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                     },
                     l,
                 ));
+            } else if p.kind[i] == K::Dope {
+                if p.keep[i]
+                    && let Inst::Alloc { dst, .. } = ins
+                {
+                    fast.push((
+                        Inst::AddrOf {
+                            dst,
+                            space: AddrSpace::Frame,
+                            off: dope_off[i],
+                        },
+                        l,
+                    ));
+                }
             } else if p.keep[i] || p.kind[i] == K::Other {
                 fast.push((ins, l));
             }
@@ -759,6 +1040,15 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                         len: rs.len() as u32,
                     };
                 }
+            }
+            if p.kind[i] == K::Dope
+                && let Inst::Alloc { dst, .. } = ins
+            {
+                ins = Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Frame,
+                    off: dope_off[i],
+                };
             }
             slow.push((ins, l));
             if p.root[i] {

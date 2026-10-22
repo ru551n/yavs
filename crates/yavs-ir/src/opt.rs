@@ -512,6 +512,7 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
         | Inst::Cmp { dst, .. }
         | Inst::Bool { dst, .. }
         | Inst::Pos { dst, .. }
+        | Inst::SlicePos { dst, .. }
         | Inst::DopeLen { dst, .. }
         | Inst::Field { dst, .. }
         | Inst::Un { dst, .. } => f(dst),
@@ -1423,6 +1424,7 @@ impl<'a> Opt<'a> {
                             | Inst::Bool { .. }
                             | Inst::Check { .. }
                             | Inst::Pos { .. }
+                            | Inst::SlicePos { .. }
                             | Inst::DopeLen { .. }
                             | Inst::Deref { .. }
                             | Inst::Br { .. }
@@ -2309,6 +2311,7 @@ impl<'a> Opt<'a> {
             | Inst::FCheck { .. }
             | Inst::BinRange { .. }
             | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
             | Inst::DopeLen { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
@@ -2830,6 +2833,38 @@ impl<'a> Opt<'a> {
                 }
                 if let (Some(d), Some(i)) = (self.kopn(dope), self.kopn(idx)) {
                     self.cse(pc, Some(dst), Key::Pos(d, dim, i));
+                }
+            }
+            Inst::SlicePos {
+                dst,
+                dope,
+                left,
+                right,
+                dir,
+                ..
+            } => {
+                if let (Opn::K(a), Opn::K(b), Opn::K(w)) =
+                    (self.opn(left), self.opn(right), self.opn(dir))
+                {
+                    // A null slice: no element, no check.
+                    if dim_len(a, b, w == 1) == Some(0) {
+                        return self.make_const(pc, dst, 0);
+                    }
+                    if let Some((l, r, d)) = self.const_dim(self.opn(dope), 0) {
+                        let inside = |i: i64| match d {
+                            0 => l <= i && i <= r,
+                            1 => r <= i && i <= l,
+                            _ => false,
+                        };
+                        if w == d as i64 && inside(a) && inside(b) {
+                            let pos = if d == 0 {
+                                a.wrapping_sub(l)
+                            } else {
+                                l.wrapping_sub(a)
+                            };
+                            self.make_const(pc, dst, pos);
+                        }
+                    }
                 }
             }
             Inst::LayoutOf { dst, ty, desc } => {
@@ -3756,6 +3791,7 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::Copy { .. }
             | Inst::Fill { .. }
             | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
             | Inst::Index { .. }
             | Inst::Field { .. }
             | Inst::Bin { .. }
@@ -3802,6 +3838,7 @@ fn retargetable(i: &Inst) -> bool {
         | Inst::Select { .. }
         | Inst::Index { .. }
         | Inst::Pos { .. }
+        | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
         | Inst::Field { .. }
         | Inst::FBin { .. }

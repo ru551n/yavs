@@ -4617,3 +4617,35 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   compare costs more than the misses it saves. A 32-entry direct-mapped table: no change. The misses that remain are
   the object table emptied by an edit of the heap (`Mem::forget_since`), which refills one object per access.
 
+## Slice positions, memoised descriptors and static waits over slices (yavs-ir, yavs-interp, #520, 2026-10-22)
+
+Decisions:
+
+- **`Inst::SlicePos{dst, dope, left, right, dir, what, dir_what}` replaces the null-slice diamond of a slice**: 0 for a null
+  slice (no element, no check, whatever the bounds), else the checked position of `left` with `right` and the direction
+  checked like the three instructions it replaces (same messages). Why: the diamond cut every statement with a slice into
+  five blocks, so the instance-constant memoisation could not plan it as a whole (each piece paid its own flag test) and
+  the interpreter ran six operations where one does. `opt.rs` folds it like `Pos` (a null range, or constant bounds inside
+  a known descriptor), the interpreter has an op of its own (`Op::SlicePos`, reads the instruction) and the LLVM tier
+  lowers it inline with the same guards (a failure leaves to the interpreter, which raises the error).
+- **A descriptor a process builds from instance constants lives in frame bytes** (`opt/memo.rs`, `K::Dope`): an `Alloc` of a
+  constant size, one `MakeDope` of it in the same block with instance-constant parts, and from there on only reads of the
+  descriptor or its address on every path until the register is defined again (`dope_region`). The slow copy writes it
+  once, the fast copy has the address and builds nothing; `DopeLen`, `Pos` and `LayoutOf` of it are instance-constant.
+  Not done when the register is also written (`Copy` into it, `Store` through it, `Index` of it): that block keeps the
+  `Alloc`.
+- **The join of an `if` on an instance-constant condition inherits what holds on both arms** (`Flow::entry`): the arm taken
+  is the same at every activation, so a register either arm defines with an instance-constant value is instance-constant
+  after the join. Recursion over predecessors is cached per block (`Flow::exits`).
+- **Memo plans pay when the dropped instructions exceed half the roots plus 3** (was all the roots plus 3), and a block may
+  have 40 roots (was 12). Why: with the descriptors gone, a statement has many small roots (sizes, offsets) that replace
+  an equal number of computations one for one; only the dropped instructions are saved. A `LayoutOf` still needed by a
+  kept instruction stays (its memory is temporary).
+- **A static wait may contain slice descriptors** (`static_wait`): `Alloc`, `MakeDope`, `LayoutOf`, `SlicePos`, compares and
+  selects between the wait's `Stmt` and its `Suspend`, so `process (a(HI downto LO))` takes the same short cut as a
+  wait on whole signals (they write temporary memory and registers only; a failing check would have failed at the first
+  activation).
+- Idea from the reference simulator (sim1; read for its design, no code taken): it elaborates every instance with its
+  generics as constants, so the slice bounds of an instance fold at elaboration. yavs keeps one function per unit (ir.md
+  2) and computes the instance-constant parts once per instance instead.
+

@@ -4678,42 +4678,17 @@ impl<'a> Fx<'a, '_> {
         let nd = self.one_dope(r.left, r.right, dir);
         let n = self.dope_len(nd);
         let p = self.reg(RegTy::I64);
-        let (null, chk, j) = (self.block(), self.block(), self.block());
-        let z = self.int(0);
-        let isnull = self.cmp(CmpOp::Eq, n, z);
-        self.branch(isnull, null, chk);
-        self.at(chk);
-        let m = self.msg(what, Dir::To);
-        self.emit(Inst::Pos {
+        let what_id = self.msg(what, Dir::To);
+        let dir_what = self.msg(&format!("direction of the slice of {what}"), Dir::To);
+        self.emit(Inst::SlicePos {
             dst: p,
             dope,
-            dim: 0,
-            idx: r.left,
-            what: m,
+            left: r.left,
+            right: r.right,
+            dir,
+            what: what_id,
+            dir_what,
         });
-        let q = self.reg(RegTy::I64);
-        self.emit(Inst::Pos {
-            dst: q,
-            dope,
-            dim: 0,
-            idx: r.right,
-            what: m,
-        });
-        let pd = self.offset(dope, 16);
-        let pdir = self.load(pd, Width::B8, RegTy::I64);
-        let m = self.msg(&format!("direction of the slice of {what}"), Dir::To);
-        self.emit(Inst::Check {
-            kind: CheckKind::Range,
-            v: dir,
-            lo: pdir,
-            hi: pdir,
-            what: m,
-        });
-        self.jump(j);
-        self.at(null);
-        self.emit(Inst::Const { dst: p, v: 0 });
-        self.jump(j);
-        self.at(j);
         Ok((p, n, nd))
     }
 

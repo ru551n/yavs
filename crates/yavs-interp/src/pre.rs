@@ -377,6 +377,8 @@ pub(crate) enum Op {
         what: CheckMsgId,
         dim: u8,
     },
+    /// `Inst::SlicePos` at this pc.
+    SlicePos(u32),
     Bin {
         op: IntOp,
         dst: u32,
@@ -1682,7 +1684,7 @@ fn peephole(
                             && !(from + 3..to).any(|p| {
                                 let mut def = false;
                                 f.code[p].visit(&mut |r, role, _| {
-                                    def |= role == Role::Def && r.0 == time
+                                    def |= role == Role::Def && (r.0 == time || r.0 == size)
                                 });
                                 def
                             });
@@ -1896,11 +1898,19 @@ pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
                 | Inst::AddrOf { .. }
                 | Inst::DopeLen { .. }
                 | Inst::Pos { .. }
+                | Inst::SlicePos { .. }
                 | Inst::Index { .. }
                 | Inst::Field { .. }
                 | Inst::Bin { .. }
                 | Inst::BinRange { .. }
+                | Inst::Un { .. }
+                | Inst::Cmp { .. }
+                | Inst::Bool { .. }
+                | Inst::Select { .. }
                 | Inst::Load { .. }
+                | Inst::Alloc { .. }
+                | Inst::MakeDope { .. }
+                | Inst::LayoutOf { .. }
                 | Inst::SigVal { .. }
                 | Inst::SigSlice { .. }
                 | Inst::WaitOn { .. }
@@ -3055,6 +3065,7 @@ impl Code {
                         },
                     }
                 }
+                Inst::SlicePos { .. } => Op::SlicePos(pc as u32),
                 Inst::DopeLen { dst, dope, dim } => Op::DopeLen {
                     dst: dst.0,
                     dope: dope.0,

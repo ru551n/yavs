@@ -305,6 +305,19 @@ pub enum Inst {
         idx: Reg,
         what: CheckMsgId,
     },
+    /// The start position of the slice `left` to or downto `right` (`dir` 0 or 1) in dimension 0
+    /// of the descriptor `dope`: 0 for a null slice, which names no element and checks nothing;
+    /// otherwise the checked position (as [`Inst::Pos`], message `what`) of `left`, with `right`
+    /// checked the same way and `dir` checked against the array's direction (message `dir_what`).
+    SlicePos {
+        dst: Reg,
+        dope: Reg,
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+        what: CheckMsgId,
+        dir_what: CheckMsgId,
+    },
     /// `base + pos * stride`.
     Index {
         dst: Reg,
@@ -837,6 +850,20 @@ impl Inst {
                 d(dst, i);
                 f(dope, Use, p);
                 f(idx, Use, i);
+            }
+            Inst::SlicePos {
+                dst,
+                dope,
+                left,
+                right,
+                dir,
+                ..
+            } => {
+                d(dst, i);
+                f(dope, Use, p);
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
             }
             Inst::Index { dst, base, pos, .. } => {
                 d(dst, p);

@@ -163,3 +163,87 @@ fn a_shifted_element_assignment_keeps_its_fused_ops() {
     assert!(!err.contains("WaveBuf"), "{err}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Slices with generic bounds (the descriptors the process builds are instance-constant, so the
+/// process keeps them in its frame) and the null slice (which checks nothing): the run is the
+/// same as without the memoisation, the slice that fails fails at the same time with the same
+/// text, and the direction of a slice is checked against the array's.
+const SLICES: &str = "
+entity slices is generic (HI : natural := 5; LO : natural := 2; BAD : natural := 99); end;
+architecture a of slices is
+  signal clk : bit := '0';
+  signal v : bit_vector(7 downto 0) := \"10110100\";
+  signal o : bit_vector(HI downto LO);
+  signal n : natural := 0;
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin
+    if clk = '1' then
+      n <= n + 1;
+      o <= v(HI downto LO) xor v(HI - LO + 2 downto 2);
+      if n = 3 then o <= v(BAD downto LO); end if;
+      if n = 2 then o(LO + 1 downto LO + 2) <= \"\"; end if;
+    end if;
+  end process;
+  process (v(HI downto LO)) begin report \"slice sensitivity\"; end process;
+end;
+";
+
+#[test]
+fn slices_of_generic_bounds_do_not_change_a_run() {
+    let d = tmp("slices");
+    let with = run(&d, "slices", SLICES, false);
+    let without = run(&d, "slices", SLICES, true);
+    assert_ne!(with.0, 0, "{with:?}");
+    // The fourth rising edge, at 35 ns, is the slice outside the array.
+    assert!(
+        with.2.contains("35 ns") || with.2.contains("35000000fs"),
+        "{with:?}"
+    );
+    assert!(with.2.contains("outside of range"), "{with:?}");
+    assert_eq!(with, without);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Whole-array signal copies sized by generics, one after the other in a clocked process: the
+/// sizes of the waveforms are instance-constant (memoised), and the waveform of each copy is
+/// built, filled and driven by one op whose size register must still hold its own size.
+const COPIES: &str = "
+entity copies is generic (N : natural := 9); end;
+architecture a of copies is
+  signal clk : bit := '0';
+  type arr_t is array (0 to N - 1) of integer;
+  signal a, b, c, d : arr_t := (others => 3);
+  signal e : arr_t := (others => 0);
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin
+    if clk = '1' then
+      a <= e;
+      b <= a;
+      c <= b;
+      d <= c;
+      e <= (others => e(0) + 1);
+    end if;
+  end process;
+  process begin
+    wait for 100 ns;
+    report integer'image(a(0)) & \" \" & integer'image(b(N - 1)) & \" \" & integer'image(d(4));
+    wait;
+  end process;
+end;
+";
+
+#[test]
+fn memoised_array_copies_drive_their_own_sizes() {
+    let d = tmp("copies");
+    let with = run(&d, "copies", COPIES, false);
+    let without = run(&d, "copies", COPIES, true);
+    assert_eq!(with.0, 0, "{with:?}");
+    assert!(
+        with.1.contains("9 8 6") || with.2.contains("9 8 6"),
+        "{with:?}"
+    );
+    assert_eq!(with, without);
+    let _ = std::fs::remove_dir_all(&d);
+}

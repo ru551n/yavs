@@ -5420,3 +5420,36 @@ temporary and instance tests, and the object table key separates private and sha
 `--tier=llvm`, same core, interpreter in brackets: queue push and pop 0.79 s to 0.69 s (0.48 s with `YAVS_LLVM_FAST_MIN`
 raised, the code `--tier=auto` compiles at `O2`) [1.33 s], 2 million accessor calls 0.114 s to 0.074 s [0.221 s].
 
+
+## Slice positions, memoised descriptors, static waits over slices (#520, 2026-10-22)
+
+Three changes in the interpreter's cost of RTL processes with generic widths (`docs/decisions.md` "Slice positions,
+memoised descriptors and static waits over slices"):
+
+- `Inst::SlicePos` is the start of a slice (null slice: 0 and no check) in one instruction instead of a branch and three
+  (`yavs-lower` `slice_of`; folded in the optimiser, an op of its own in the interpreter, inline in the LLVM tier).
+- The memoisation of instance constants (`opt/memo.rs`) keeps a descriptor built from instance constants in frame bytes,
+  sees through an `if` on an instance-constant condition, memoises `LayoutOf`, and pays off sooner (half the roots plus 3
+  dropped instructions, 40 roots).
+- A wait over slices with generic bounds is a static wait (`pre::static_wait`).
+- Found on the way: the `CopyDrive` fusion read the size register at the copy, so a register reused between the `Alloc` of a
+  waveform and its drive gave a waveform of the wrong size (`pre.rs` `peephole`); the new fast paths of the memoisation
+  exposed it on the window generator testbench. Test: `memoised_array_copies_drive_their_own_sizes`.
+
+Core 15, `tools/realbench`, warm, `perf stat` instructions (G), before / after: `poc_arith_addw` interpreter 494.8 / 408.9
+(`--tier=auto` 462.6 / 394.3), wall of the interpreter 27.2 s / 24.3 s (the host was noisier in the second run; the
+`--compare` of all 41 tests on cores 15 and 8 has 27.4 s / 23.1 s); against the reference simulator (`--tier=auto`, total
+wall) 5.33 to 4.03 warm, 5.33 to 4.05 cold. The window generator testbench and the histogram are unchanged in instructions
+(504.97 G, 40.9 G): their time is the queue's protected-method chain (#493, #444) and element loops. Whole suite (41 tests,
+`--compare`): geometric mean of wall 0.99 interpreter, 0.97 `--tier=auto`; no test slower beyond noise.
+Checked: `cargo test --workspace`, the differential corpus (447/447) on `yavs-interp` at 1 and 4 threads, `yavs-llvm`
+and `yavs-auto`.
+
+Where `poc_arith_addw` stands: per activation of a combinational process 120 operations before, about 70 now; what is
+left is the work (reads of the signals into buffers, concatenation, the native addition, the drive) and the kernel
+between activations (about 150 ns, #523), plus the message built for every assertion (a third of the interpreter time:
+the message is an actual parameter, so it stays eager, and the `to_integer` warnings keep it from sharing).
+
+Ideas of the reference simulator used (read for the design, no code): it folds the generics of an instance into its
+code at elaboration; ours computes the same facts once per instance in the shared code.
+

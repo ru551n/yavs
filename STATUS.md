@@ -806,6 +806,58 @@ hierarchy, types and every change before and after, at 1 and 4 threads (difftest
 byte-identical); a run of up to 125 000 signals writes the same bytes as before, longer ones differ in block layout
 only. No regression without waves (`vai_window_gen`, `compute_loop`, `protected_scoreboard`, `ff_rtl` within 4%).
 
+### Waveform recording cost, round 2 (#410, 2026-10-23)
+
+`--wave` was not free: +39 percent of a neorv32 run, a factor 3 on a design of 512-bit buses (the 0 to 5 percent
+above was measured on designs with few changing signals). Where it went, from `perf` on neorv32: every changed range
+cost a hook, a copy of the range list, a lock and a search; every value an allocation (`Value`), a `Vec`, a `String`
+and two `Vec`s in the FST library; every port collapsed into its actual was a separate entry that was read,
+converted and written again; and the recorder asked for six phase hooks in every delta cycle.
+
+Cycles of `yavs run --tier=interp`, median of 5 (7 for the two short ones), core 11 of the 7950X3D, a loaded host,
+before (`9be61682`) and after (`b5ab7b91`) interleaved in one batch; the overhead is `--wave` over no waves of the
+same binary, so other agents' commits in the binaries do not count. The reference column is the reference
+simulator's own overhead (`--wave` with `--dump-arrays`, elaboration plus run), the FST column MB before, after,
+reference:
+
+| Testbench | before | after | with `--wave-variables` before, after | reference | FST MB |
+|---|---|---|---|---|---|
+| `neorv32_single_min` | +39% | +4% | +47%, +9% | +27% | 19.3, 4.3, 0.19 |
+| `neorv32_dual_full` | +29% | +3% | +33%, +9% | +10% | 28.2, 5.2, 0.22 |
+| `sc5_fifo_repack` | +36% | +14% | +52%, +25% | +96% | 11.7, 10.2, 6.4 |
+| `fletcher_bufferwriter_512` | +212% | +35% | | +1009% | 681, 238, 136 |
+| `osvvm_axis_random` | +8% | +4% | +24%, +17% | +4% | 0.09, 0.08, 0.02 |
+| `hdlm_axi_fifo` | +10% | +4% | +26%, +21% | -2% | 0.02, 0.01, 0.00 |
+
+The head-to-head designs (`tools/bench/designs`; the reference with `--dump-arrays` writes the same names and the same
+number of changes on the seven checked, `rtl_lfsr`, `rtl_chain`, `rtl_ram`, `lfsr64`, `delta_chain`, `rtl_bus`, `lfsr64_xor`), before, after, reference: `rtl_ff` +3, +3, +4; `rtl_lfsr` +194, +54, +93; `rtl_chain` +72, +18, +6;
+`rtl_fan` +1, 0, 0; `rtl_bus` +11, +4, +1; `rtl_ram` +68, +39, +6741 (the reference dumps the 16384 elements
+very slowly); `lfsr64_xor` +133, +47, +55; `lfsr64` +233, +74, +185; `ff_rtl` +34, +13, +4; `resolved_bus` +17, +8,
++4; `delta_chain` +76, +19, +4. Total wall of `--tier=auto` against the reference's elaboration plus run (yavs / reference),
+without and with waves, warm cache: neorv32 2.67 and 2.13, `sc5_fifo_repack` 4.26 and 2.52, `osvvm_axis_random` 0.36 and 0.37;
+cold cache (`--no-cache`): 2.77 and 2.28, 4.48 and 2.65, 0.59 and 0.58. The ratio with waves improves because the
+reference's overhead is larger than ours.
+
+What changed (`e1efd95d`, `f1f3900c`, `b5ab7b91`, `03330f88`): names that are the same value (same kernel
+elements, conversion, type and class: a port collapsed into its actual at any depth) are FST aliases of one
+chain, read, converted and written once (`--wave` only; the live stream of `--dap` keeps one id per name);
+`Observer::value_changes` gives an observer a whole cycle in one call and `Hook::view` reads a range in place (no
+`Value`, no copy); logic vectors become positions from the plane words eight elements at a time and are mapped to
+characters eight at a time when binary; scalar 0/1 use the library's binary fast path and the library's SIMD
+packing is on; a one-entry leaf is marked without a search and an array of equal elements by division; the recorder
+asks for four phases only (the same fault was in the toggle coverage observer, #568: `--cov` on a long chain -15
+percent); value chains are LZ4-compressed (files -50 to -60 percent on neorv32 and the bus testbench; the hierarchy
+block was LZ4 already); a process's variables are skipped after one idle check (`03330f88`, not in the timings). Writer alone (`examples/writer_bench`,
+3000 scalars and 2000 32-bit vectors): 96 to 59 ns per change. Read back with the reader library: every name and every
+change equal to before on 445 designs of `tests/corpus` (with `--wave-variables`; 100 byte-identical, 345 with
+aliases) and on the six benchmark testbenches, and the same file at `--threads 1` and `4`; files of runs under the
+5 s flush interval that have no aliases are byte-identical to before.
+
+Left (follow-up issue): the library's per-change work (two allocations per vector change; a prototype that takes the
+ASCII bytes cut the writer from 121 to 77 ns per 32-bit change but needs a vendored copy), an off-thread writer (wall
+time), the declaration of millions of variable entries (`uvvm_axistream_vvc_tb` with `--wave-variables`: 1.06 s,
+1.5 GB), and the kernel's cost of watching every signal (`rtl_chain` +18 percent against +6).
+
 ### Simulation kernel (#385, #411)
 
 Kernel and kernel/interpreter boundary costs for signal-heavy designs, one commit each, output byte-identical

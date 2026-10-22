@@ -37,8 +37,8 @@ jobs:
 
   # The LLVM tier on the three release platforms. LLVM 21 is pinned: apt.llvm.org on Linux, the
   # official release tarball (sha256-checked, trimmed, cached) on Windows; see
-  # crates/yavs-llvm/WINDOWS.md. The simulation smoke runs a slice of tests/corpus with `--tier=llvm`
-  # and with `--tier=auto`.
+  # crates/yavs-llvm/WINDOWS.md. The simulation smoke runs a slice of tests/corpus with `--tier=llvm`,
+  # with `--tier=auto`, with the default tier and with `--tier=interp`.
   llvm:
     name: llvm (${{ matrix.os }})
     strategy:
@@ -113,6 +113,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           cargo build --locked -p yavs --features llvm
+          # The default tier of this build (auto), then the interpreter alone.
+          YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
+          YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-interp --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
           YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-llvm --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
           # --tier=auto with every function compiled from its first call or jump: swap-ins in the
           # middle of each test, at 1 and 4 threads.

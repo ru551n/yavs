@@ -146,11 +146,13 @@ pub struct RunArgs {
     /// Load a VHPI plugin, `LIB[:ENTRY]`.
     #[arg(long, value_name = "LIB[:ENTRY]")]
     vhpi: Vec<String>,
-    /// Execution tier: `interp`; `llvm` to compile every function with LLVM before time 0; or
-    /// `auto` to compile the functions that become hot on a background thread while the
-    /// simulation runs (both need a yavs built with the `llvm` feature).
-    #[arg(long, value_enum, default_value = "interp")]
-    tier: TierArg,
+    /// Execution tier: `auto` to compile the functions that become hot on a background thread
+    /// while the simulation runs; `llvm` to compile every function with LLVM before time 0; or
+    /// `interp` for the interpreter alone. `llvm` and `auto` need a yavs built with the `llvm`
+    /// feature. Default: `auto` with that feature, but `interp` with `--dap` or `--vhpi` and
+    /// without it.
+    #[arg(long, value_enum)]
+    tier: Option<TierArg>,
     /// With `--tier=llvm` or `auto`: functions of more than N IR instructions stay
     /// interpreted (compile time grows faster than their size).
     #[arg(long, value_name = "N", default_value = "50000")]
@@ -217,6 +219,20 @@ fn plusarg(s: &str) -> Result<String, String> {
         Ok(s.to_string())
     } else {
         Err(format!("expected +NAME or +NAME=VALUE, found `{s}`"))
+    }
+}
+
+impl RunArgs {
+    /// The tier of this run: the one asked for, else `auto` where it is built in and nothing
+    /// needs the interpreter alone (a debugger reads frame slots, a VHPI plugin writes variables).
+    fn tier(&self) -> TierArg {
+        self.tier.unwrap_or(
+            if cfg!(feature = "llvm") && self.dap.is_none() && self.vhpi.is_empty() {
+                TierArg::Auto
+            } else {
+                TierArg::Interp
+            },
+        )
     }
 }
 
@@ -561,10 +577,10 @@ fn use_tier(
     let opt = yavs_llvm::OptLevel::O2;
     // Compiled code is kept in the compilation cache of the work library (#505).
     let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
-    if a.tier != TierArg::Interp && !a.common.no_cache && !work.is_empty() {
+    if a.tier() != TierArg::Interp && !a.common.no_cache && !work.is_empty() {
         yavs_llvm::set_cache(Some(std::path::Path::new(work)));
     }
-    match a.tier {
+    match a.tier() {
         TierArg::Interp => Ok(None),
         TierArg::Llvm => {
             let tier = yavs_llvm::compile(&rt.prog, opt, a.tier_max_size).map_err(bug)?;
@@ -651,7 +667,7 @@ fn use_tier(
     _: Option<&yavs_interp::Runtime>,
     a: &RunArgs,
 ) -> Result<Option<StopTierUp>, Box<Diagnostic>> {
-    let name = match a.tier {
+    let name = match a.tier() {
         TierArg::Interp => return Ok(None),
         TierArg::Llvm => "llvm",
         TierArg::Auto => "auto",
@@ -684,7 +700,7 @@ pub fn run(
     if a.dap.is_some() {
         yavs_interp::keep_variables();
     }
-    if a.tier == TierArg::Llvm {
+    if a.tier() == TierArg::Llvm {
         yavs_interp::compiled_tier();
     }
     // A plugin may deposit into process variables between activations, and the waveform
@@ -709,7 +725,7 @@ pub fn run(
     let (mut out, mut db, e) = match elaborate(
         &a.common,
         counters,
-        a.tier == TierArg::Llvm,
+        a.tier() == TierArg::Llvm,
         collapse,
         format,
         color,

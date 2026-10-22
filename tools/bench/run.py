@@ -101,7 +101,7 @@ def prep_vunit_vc(Y, key):
     for line in (HERE / "vc_tests.tsv").read_text().splitlines():
         tb, case = line.split("\t")
         cfg = f"active python runner : false,enabled_test_cases : {case},output path : {vc}/,tb path : {tests}/,use_color : false"
-        cmds.append((["{Y}", "run", f"--std={STD}", "--relaxed", f"--work=vunit_lib:{vc}/vunit_lib", f"--map=osvvm:{libs}/osvvm",
+        cmds.append((["{Y}", "run", "--tier=interp", f"--std={STD}", "--relaxed", f"--work=vunit_lib:{vc}/vunit_lib", f"--map=osvvm:{libs}/osvvm",
                       tb, f"-grunner_cfg={cfg}"], str(vc)))
     return cmds
 
@@ -168,7 +168,7 @@ def prep_vai(tb, Y, key):
             pending = rest
         marker.write_text("\n".join(f"{l} {f}" for l, f in pending))
     cfg = f"active python runner : false,seed : 12345,output path : {wd}/,tb path : {mod}/test/,use_color : false"
-    return [(["{Y}", "run", f"--std={STD}", "--relaxed", f"--work=cnn_accel:{wd}/cnn_accel"] + maps + [tb, f"-grunner_cfg={cfg}"], str(wd))]
+    return [(["{Y}", "run", "--tier=interp", f"--std={STD}", "--relaxed", f"--work=cnn_accel:{wd}/cnn_accel"] + maps + [tb, f"-grunner_cfg={cfg}"], str(wd))]
 
 
 def registry():

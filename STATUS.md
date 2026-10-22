@@ -5017,7 +5017,9 @@ CPU, not wall) and the LLVM library (10 ms at the first compile); cold runs of s
 compile thread adds CPU and memory to every run that compiles; when a function is compiled depends on sampling, so run
 times (not results) vary more than with the interpreter.
 
-Recommendation: not yet. Make `--tier=auto` the default once a run in which nothing pays costs no more than noise
+**Decision (user, 2026-10-22): `--tier=auto` is the default** (builds with the `llvm` feature; `--dap` and `--vhpi` keep the interpreter, builds without the feature quietly interpret; `docs/decisions.md`). The blockers below were cleared by #525, #532 and #545.
+
+Recommendation at the time: not yet. Make `--tier=auto` the default once a run in which nothing pays costs no more than noise
 (#525), and once compiled clocked processes of single-instance designs no longer lose (#532, #527: signal operations and
 array accesses without host calls); keep `--tier=interp` for runs below a second, where nothing can pay.
 

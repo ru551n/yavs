@@ -54,10 +54,13 @@ otherwise.
   kept, so its cost stays proportional to the allocation. A larger value collects less often
   and uses more memory on designs that allocate heavily; the default is ``1m``. The output is
   the same for any value. There is no way to switch collection off.
-* ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code;
-  ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
-  simulation runs in the interpreter. The output is the same as with ``--tier=interp``. Both
-  need a yavs built with the ``llvm`` feature (LLVM 21); the default is ``--tier=interp``. Functions of
+* ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
+  simulation runs in the interpreter; ``--tier=llvm`` compiles every function with LLVM before
+  time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
+  with every tier. ``auto`` is the default in a yavs built with the ``llvm`` feature (LLVM 21),
+  except under ``--dap`` or ``--vhpi``, which run in the interpreter unless you ask for a tier;
+  a yavs built without the feature always defaults to ``--tier=interp``, and ``--tier=auto`` or
+  ``--tier=llvm`` on it is an error. Functions of
   more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``
   prints what the LLVM tier compiles and what it leaves to the interpreter.
 * ``--resolution=ps`` sets the time resolution limit (``fs``, ``ps``, ``ns``, ``us``, ``ms`` or

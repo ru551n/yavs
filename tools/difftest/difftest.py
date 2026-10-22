@@ -32,18 +32,20 @@ BLESS_REF = "sim1"  # the label whose output the checked-in .expected files hold
 YAVS = ('R=${{YAVS_BIN:-yavs}}; o=$("$R" analyze --std={std} --work=work:{work} {relaxed} {psl} {file} 2>&1) || {{ printf \'%s\\n\' "$o" >&2; exit 97; }}; '
         '"$R" elab --std={std} --work=work:{work} {relaxed} {psl} {top} || exit 98; '
         '"$R" run --std={std} --work=work:{work} {relaxed} {psl} {stop_flag} {res_flag} --threads={threads} {shuffle_on} $YAVS_RUN_FLAGS {top}')
+# yavs with the interpreter alone (`--tier=interp`): the default tier is `auto` in a build with the `llvm` feature.
+YAVS_INTERP = YAVS.replace("--threads=", "--tier=interp --threads=")
 # yavs with every function compiled by the LLVM tier (needs a yavs built with `--features llvm`);
 # compared with the same `.expected`, so it must match the interpreter (rule 5).
 YAVS_LLVM = YAVS.replace("--threads=", "--tier=llvm --threads=")
 # yavs compiling hot functions in the background (`--tier=auto`): identical output whenever
 # compilation finishes.
 YAVS_AUTO = YAVS.replace("--threads=", "--tier=auto --threads=")
-TEMPLATES = {"yavs": YAVS, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO}
+TEMPLATES = {"yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-RELAXED = {"yavs": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904"}
+RELAXED = {"yavs": "--relaxed -Wno-W1904", "yavs-interp": "--relaxed -Wno-W1904", "yavs-llvm": "--relaxed -Wno-W1904", "yavs-auto": "--relaxed -Wno-W1904"}
 # Fields masked by default per builtin candidate (a reference label: key `difftest_ignore`; the reference prints them all).
-DEFAULT_IGNORE = {"yavs": "", "yavs-llvm": "", "yavs-auto": ""}
+DEFAULT_IGNORE = {"yavs": "", "yavs-interp": "", "yavs-llvm": "", "yavs-auto": ""}
 
 UNITS = {"fs": 1, "ps": 10**3, "ns": 10**6, "us": 10**9, "ms": 10**12, "sec": 10**15, "s": 10**15}
 
@@ -340,7 +342,7 @@ def one(vhd, args, template, ignore):
 def main():
     global CORPUS
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--candidate", default=BLESS_REF, help="a reference label (sim1, sim2, ...), yavs, yavs-llvm, yavs-auto or a bash command template (see README)")
+    ap.add_argument("--candidate", default=BLESS_REF, help="a reference label (sim1, sim2, ...), yavs (the default tier), yavs-interp, yavs-llvm, yavs-auto or a bash command template (see README)")
     ap.add_argument("--bless", action="store_true", help="regenerate .expected from sim1 (candidate must be sim1)")
     ap.add_argument("--jobs", type=int, default=8, help=f"parallel simulations (max {MAX_JOBS})")
     ap.add_argument("--filter", default="", help="regex on the corpus-relative path")

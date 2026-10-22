@@ -183,6 +183,9 @@ pub(crate) fn in_ports(
             mr(&mut q);
             (*l, *r) = q;
         }
+        if let Some(c) = &mut p.copy {
+            c.iter_mut().for_each(mr);
+        }
         if let Some(t) = &mut p.trigger {
             let (l, off) = m(t.leaf);
             (t.leaf, t.elem) = (l, t.elem + off);

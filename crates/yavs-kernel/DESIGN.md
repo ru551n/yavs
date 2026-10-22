@@ -303,6 +303,8 @@ pub trait Process: Send {
   `force`/`release` to `Ctx::force/release`, textio `OUTPUT` to `Ctx::output`; disk files are
   the interpreter's own (its callers are serial).
 - Runtime errors as `Err(ctx.error(ErrorKind::Runtime(..)))` with the VHDL call stack in `trace`.
+- A plain concurrent copy (`target <= source;` of signal names) needs no process code: the
+  elaborator builds the kernel's own `CopyProcess` for it (#529).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

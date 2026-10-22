@@ -69,6 +69,58 @@ impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {
     }
 }
 
+/// A process whose whole body is `target <= source;` (zero delay) of signals of the same
+/// structure: the kernel copies each source part to its driver and waits for the sources, with
+/// no process code (the elaborator recognises the shape, #529). Parts are in element order.
+pub struct CopyProcess {
+    /// Source part, the driver of the matching target part, that target part.
+    parts: Vec<(SigRef, DriverId, Range)>,
+    buf: Vec<u8>,
+}
+
+impl CopyProcess {
+    pub fn new(parts: Vec<(SigRef, DriverId, Range)>) -> CopyProcess {
+        CopyProcess {
+            parts,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl Process for CopyProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let ty = |ctx: &Ctx<'_>, r: SigRef| {
+            ctx.sh
+                .signals
+                .get(r.signal.0 as usize)
+                .map(|s| s.ty.elem)
+                .ok_or_else(|| ctx.error(ErrorKind::BadRef(format!("signal {}", r.signal.0))))
+        };
+        for &(src, d, dst) in &self.parts {
+            let n = src.range.map_or(0, |r| r.len) as usize;
+            match ty(ctx, src)? {
+                crate::value::Elem::Logic => {
+                    self.buf.resize(n.div_ceil(64) * 32, 0);
+                    ctx.read_into(src, &mut self.buf)?;
+                    ctx.assign_blocks(d, Some(dst), Time::ZERO, &self.buf, DelayMode::INERTIAL)?;
+                }
+                crate::value::Elem::Bytes(es) => {
+                    self.buf.resize(n * es as usize, 0);
+                    ctx.read_into(src, &mut self.buf)?;
+                    let v = ValueRef::Bytes(&self.buf);
+                    ctx.assign(d, Some(dst), &[(Time::ZERO, v)], DelayMode::INERTIAL)?;
+                }
+            }
+        }
+        if !ctx.wait_same() {
+            for &(src, _, _) in &self.parts {
+                ctx.wait_on(src)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Writes reports and textio `OUTPUT` text as a serially running process makes them, in the
 /// order they would be committed in (#483). An observer offers one with
 /// [`Observer::live_sink`](crate::Observer::live_sink) and then gets such reports only once,
@@ -985,6 +1037,20 @@ impl Ctx<'_> {
             && let [prev] = &st.sens_prev[..]
             && *prev == (signal, range)
         {
+            st.again = true;
+            return true;
+        }
+        false
+    }
+
+    /// The same wait as the last one (its sensitivity, no timeout), when that one had no
+    /// timeout and nothing was added to this one: the commit keeps the registered waiters, as
+    /// `wait_on_again` does for one range. `false` (nothing done) otherwise; the caller then
+    /// names the wait with `wait_on`.
+    #[inline]
+    pub fn wait_same(&mut self) -> bool {
+        let st = &mut *self.st;
+        if st.sens.is_empty() && st.deadline.is_none() && !st.sens_prev.is_empty() {
             st.again = true;
             return true;
         }

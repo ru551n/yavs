@@ -19,7 +19,7 @@ pub use kernel::{
     Config, EndReason, Hook, Interrupt, Observer, Phase, Report, RunStatus, SimControl, Stats,
     WakeId,
 };
-pub use process::{Ctx, LiveSink, ProcId, Process, Severity};
+pub use process::{CopyProcess, Ctx, LiveSink, ProcId, Process, Severity};
 pub use signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Range, Resolution, Resolver, SigRef, SignalId,
 };

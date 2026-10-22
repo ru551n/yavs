@@ -9,8 +9,9 @@ use yavs_sem::decl::{Alias, DeclKind, ObjClass, ObjRole};
 use yavs_sem::external::ExtOwner;
 use yavs_sem::generic::GenericActual;
 use yavs_sem::hir::{
-    Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
-    InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, Sensitivity, StmtKind, UnitHir,
+    Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, Delay, EntityAspect, ExprKind,
+    GenSelect, InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, Rhs, Sensitivity, StmtKind,
+    UnitHir, WaveElem, Waveform,
 };
 use yavs_sem::loader::UnitKind;
 use yavs_sem::stat::Staticness;
@@ -2483,10 +2484,63 @@ impl Elab<'_> {
         }
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
+        let copy = self.copy_source(s, st);
         if let Some(p) = self.procs.last_mut() {
             p.trigger = trigger;
+            p.copy = copy;
         }
         Ok(())
+    }
+
+    /// The source of a concurrent `target <= source;` that copies one signal to another: no
+    /// delay clause (or `transport`, or `inertial` without `reject`), not guarded or postponed,
+    /// one waveform element without `after`, and the source a name of a signal with static
+    /// indices and fields whose parts match the target's (just set by `process_refs`) one to
+    /// one in length and element kind, each target part a whole driver of the process. Its
+    /// parts in element order; `None` for anything else.
+    fn copy_source(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<(LeafId, Range)>> {
+        let db: &Db = &*self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            delay: Delay::Default | Delay::Transport | Delay::Inertial { reject: None },
+            rhs: Rhs::Simple(Waveform::Elements(elems)),
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let [
+            WaveElem {
+                value: Some(e),
+                after: None,
+            },
+        ] = &elems[..]
+        else {
+            return None;
+        };
+        let (d, path) = self.static_signal(*e)?;
+        let l = Lsp {
+            root: ObjRoot::Decl(d),
+            path: path.into(),
+            stat: Staticness::Globally,
+            span: db.exprs[*e].span,
+        };
+        let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
+        let (src, _) = self.m.nets.select(o, &sels).ok()?;
+        let p = self.procs.last()?;
+        let [dst] = &p.lsps[..] else {
+            return None;
+        };
+        let nets = &self.m.nets;
+        let ok = src.len() == dst.len()
+            && src.iter().zip(dst).all(|(&(sl, sr), &(k, dl, dr))| {
+                sr.len == dr.len
+                    && nets.leaf(sl).ty.elem == nets.leaf(dl).ty.elem
+                    && nets.drivers[k].leaf == dl
+                    && nets.drivers[k].range == dr
+            });
+        ok.then_some(src)
     }
 
     /// A process that does nothing unless one edge of one scalar signal happens (or its reset
@@ -2790,6 +2844,7 @@ impl Elab<'_> {
             lsps: Vec::new(),
             actual: None,
             trigger: None,
+            copy: None,
         });
         ProcIdx(self.procs.len() as u32 - 1)
     }

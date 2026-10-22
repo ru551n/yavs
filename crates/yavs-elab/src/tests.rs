@@ -2131,3 +2131,75 @@ fn scope_vals_keep_entries_sorted_by_declaration() {
     let order: Vec<_> = v.iter().map(|(k, _)| k.index()).collect();
     assert_eq!(order, [2, 5, 7, 9]);
 }
+
+/// A concurrent `target <= source;` of static signal names (whole signals, record fields,
+/// indexed elements, through an `in` port that collapses into its actual) is a copy the kernel
+/// runs itself (`ProcInst::copy`, #529); conditional, delayed, guarded or computed ones, slices
+/// and aggregate targets are not. Copies give the same reports as the interpreted statements
+/// (`Config::edge_triggers` off keeps them interpreted).
+#[test]
+fn signal_copies_run_in_the_kernel() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      package p is
+        type rec is record a : std_logic; b : std_logic_vector(7 downto 0); n : integer; end record;
+        type arr is array (0 to 3) of rec;
+      end;
+      library ieee; use ieee.std_logic_1164.all; use work.p.all;
+      entity inner is port (i : in rec; o : out rec); end;
+      architecture a of inner is begin
+        o <= i;
+      end;
+      library ieee; use ieee.std_logic_1164.all; use work.p.all;
+      entity t is end; architecture a of t is
+        signal s, x, y : rec := ('0', x\"00\", 0);
+        signal ar : arr;
+        signal v : std_logic_vector(0 to 7) := x\"0F\";
+        signal w, z : std_logic_vector(7 downto 0);
+        signal n1, n2 : integer;
+      begin
+        u : entity work.inner port map (i => s, o => x);
+        ar(2) <= x;
+        w <= v;
+        n1 <= s.n;
+        y.b <= ar(2).b;
+        z <= v when s.a = '1' else not v;
+        n2 <= s.n after 1 ns;
+        z(1 downto 0) <= w(3 downto 2);
+        process begin
+          for i in 1 to 4 loop
+            s <= (std_logic'val(2 + i mod 2), x\"A5\", i);
+            v <= not v;
+            wait for 2 ns;
+            report std_logic'image(x.a) & to_string(x.b) & integer'image(ar(2).n)
+              & to_string(w) & integer'image(n1) & integer'image(n2) & to_string(y.b) & to_string(z);
+          end loop;
+          wait;
+        end process;
+      end;";
+    let (mut db, mut e) = elab("copies", src, "t", &[]);
+    let copies: Vec<bool> = e.procs.iter().map(|p| p.copy.is_some()).collect();
+    // inner's `o <= i`, then the statements of t in order, then its process.
+    assert_eq!(
+        copies,
+        [true, true, true, true, true, false, false, false, false]
+    );
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        let got = got.lock().expect("lock").clone();
+        got
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(kernel.len(), 4);
+    assert_eq!(kernel, interp);
+}

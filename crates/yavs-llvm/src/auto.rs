@@ -417,6 +417,33 @@ const RTL_MIN: usize = 120;
 /// a measured comparison per process if a design sits near the line.
 const RTL_INSTANCES: u32 = 16;
 
+/// A clocked process (`rtl`) seen for less than this part of the sampled time stays interpreted
+/// (`cold`): between its activations so much other code runs that its compiled code starts cold
+/// every time. The processes of 16 to 63 instances compiled in the CPU designs, a wide-vector
+/// design and two testbenches (0.2 to 6.5 percent of the run when decided) each cost 200 to 900
+/// instructions more per activation than interpreted; the processes that gain are half of the
+/// run or more (#532). ponytail: the share when the decision is made, early in the run; a
+/// measured comparison per process if a design sits near the line.
+const RTL_SHARE: u64 = 8;
+
+/// Why an `rtl` process made `n` times and seen for `seen` of `total` sampled microseconds would
+/// run its compiled code cold, so slower than interpreted (`RTL_INSTANCES`, `RTL_SHARE`).
+fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
+    if n < RTL_INSTANCES {
+        Some(format!(
+            "a clocked process made {n} times: compiled code of few instances ran slower (its \
+             code does not stay in the caches)"
+        ))
+    } else if seen.saturating_mul(RTL_SHARE) < total {
+        Some(format!(
+            "a clocked process seen for {seen} of {total} us: compiled code of a process that is \
+             a small part of the run ran slower (its code does not stay in the caches)"
+        ))
+    } else {
+        None
+    }
+}
+
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
 
@@ -581,6 +608,8 @@ struct Worker {
     /// for (`charge`); emptied when a function is first seen.
     leaf: std::collections::HashMap<FuncId, Option<FuncId>>,
     seen: usize,
+    /// Per function: `pick` said once that the budget refused it.
+    told: Vec<bool>,
     /// Per function: looked up in the compilation cache already (`probe`).
     probed: Vec<bool>,
     /// A `probe` is running: a failure is no note and leaves the function to compile later.
@@ -829,6 +858,17 @@ impl Worker {
         if !within_budget(self.heat.budget, factor, self.spent, cost, self.total) {
             let per = u64::from(self.heat.budget).saturating_mul(factor).max(1);
             self.pick_at = (self.spent + cost).saturating_mul(100) / per;
+            // Said once per function (`--verbose`), so a hot function that never compiles says why.
+            if let Some(t) = self.told.get_mut(id.0 as usize)
+                && !std::mem::replace(t, true)
+            {
+                let why = format!(
+                    "the compile budget has no room for it yet (about {cost} us of compiling, \
+                     possible after {} us of the run seen)",
+                    self.pick_at
+                );
+                (self.note)(id, self.opt, Err(why));
+            }
             return None;
         }
         cands.swap_remove(best);
@@ -953,11 +993,32 @@ impl Worker {
             self.opt
         };
         let level = crate::lower::level_for(&self.prog, f, level);
-        let t_load = std::time::Instant::now();
-        let loaded = crate::lazy::ensure();
-        if !std::mem::replace(&mut self.loaded, true) {
-            self.spent += u64::try_from(t_load.elapsed().as_micros()).unwrap_or(u64::MAX);
-        }
+        let few = rtl(&self.prog, f)
+            .then(|| {
+                let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
+                cold(self.native.instances(id), seen, self.total)
+            })
+            .flatten();
+        let short = (sampled && !o2)
+            .then(|| {
+                too_short(&self.prog, f, id)
+                    .or_else(|| too_many_callbacks(&self.prog, f, id))
+                    .or(few)
+            })
+            .flatten();
+        let short_only = short.is_some() && too_big(f, self.max_size).is_none();
+        let refused = too_big(f, self.max_size).or(short);
+        // A refused function does not open the LLVM library.
+        let loaded = if refused.is_none() {
+            let t_load = std::time::Instant::now();
+            let loaded = crate::lazy::ensure();
+            if !std::mem::replace(&mut self.loaded, true) {
+                self.spent += u64::try_from(t_load.elapsed().as_micros()).unwrap_or(u64::MAX);
+            }
+            loaded
+        } else {
+            Ok(())
+        };
         if let Err(e) = loaded {
             // Said once, not for every hot function; they all stay interpreted.
             if !std::mem::replace(&mut self.warned, true) {
@@ -976,23 +1037,8 @@ impl Worker {
             &mut self.jit
         };
         let t0 = std::time::Instant::now();
-        let few = (rtl(&self.prog, f) && self.native.instances(id) < RTL_INSTANCES).then(|| {
-            format!(
-                "a clocked process made {} times: compiled code of few instances ran slower \
-                 (its code does not stay in the caches)",
-                self.native.instances(id)
-            )
-        });
-        let short = (sampled && !o2)
-            .then(|| {
-                too_short(&self.prog, f, id)
-                    .or_else(|| too_many_callbacks(&self.prog, f, id))
-                    .or(few)
-            })
-            .flatten();
-        let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let hits = crate::objcache::cache_stats().0;
-        let r = match (too_big(f, self.max_size).or(short), j) {
+        let r = match (refused, j) {
             (Some(why), _) => Err(why),
             (None, Some(j)) => compile_one(j, &self.prog, id, f, level, part),
             (None, j @ None) => match new_jit(level) {
@@ -1103,6 +1149,7 @@ impl AutoTier {
             leaf: Default::default(),
             seen: 0,
             probed: vec![false; nfuncs],
+            told: vec![false; nfuncs],
             probing: false,
             warned: false,
             loaded: false,
@@ -1392,7 +1439,7 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPUTE_BUDGET, compute, loops, too_many_callbacks, within_budget};
+    use super::{COMPUTE_BUDGET, cold, compute, loops, too_many_callbacks, within_budget};
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
 
@@ -1526,6 +1573,16 @@ mod tests {
             let why = too_many_callbacks(&prog, prog.func(f).unwrap(), f);
             assert_eq!(why.is_some(), refused, "{ops} {outs}: {why:?}");
         }
+    }
+
+    /// A clocked process stays interpreted unless it has many instances and is a good part of
+    /// the run: the processes of a CPU design are a few percent of it each (#532).
+    #[test]
+    fn a_clocked_process_that_is_a_small_part_of_the_run_stays_interpreted() {
+        assert!(cold(4096, 44_000, 44_000).is_none());
+        assert!(cold(64, 23_000, 44_000).is_none());
+        assert!(cold(32, 11_700, 310_000).is_some());
+        assert!(cold(1, 44_000, 44_000).is_some());
     }
 
     /// A process that interprets one loop for seconds without ever suspending: the sampler sees

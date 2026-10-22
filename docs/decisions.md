@@ -4312,3 +4312,28 @@ Decisions:
   when the condition is false (LRM 10.3). So the building is made cheap instead: `'image` of an integer or enumeration value
   is an op of its own (`Op::Image`, no argument cells, no reclaim, no symbol checks: it reads only its argument and writes
   only temporary memory), fused with the three ops that read its string (`Op::ImageStr`).
+
+## `--tier=auto`: clocked processes that are a small part of the run (yavs-llvm, #532, #545, 2026-10-22)
+
+- **A clocked process (`rtl`) is compiled only when it was seen for at least an eighth of the sampled time**
+  (`RTL_SHARE`, `cold` in `auto.rs`), besides the 16 instances (`RTL_INSTANCES`). Why: on the CPU designs default
+  `--tier=auto` ran 1.4 to 2.0 percent more instructions than `--tier=interp`, all of it in the seven processes it
+  compiled (FIFO pointers and memories, the hardware counters, a ring oscillator model: 16 to 63 instances each, 0.2 to
+  6.5 percent of the run when decided). Compiled one at a time, each cost 200 to 900 more instructions per activation than
+  interpreted (activations counted per function, main thread only): an activation runs a few dozen IR instructions, and
+  between two activations so much other code runs that the compiled code starts cold. The processes that gain
+  (`rtl_ff`, `lfsr64`, `lfsr64_xor`, `rtl_lfsr`) are more than half of the run. The share is the one when the decision is
+  made, early in the run (`ponytail:`).
+- **A refused function does not open the LLVM library**: the reasons that keep a hot function interpreted are checked
+  before the load, so a run that compiles nothing never pays for it.
+- **Compute loops (#545):** the natural loops of #547 already make the tap loops of `hdlm_lfsr` compute again
+  (`main` compiled, 0.52 of the interpreter's instructions). Measured before #547 landed and dropped with it: the
+  ratio over the innermost loops without a wait (also called clock generators and string helpers compute), over each
+  loop on its own (most CPU processes and library helpers), over loops without a wait (the protected-queue testbench
+  lost its compiled process, 4 percent more instructions) and without counting waits (clock generators).
+- **`--verbose` says when the compile budget refuses a hot function**, once per function, with the compile time it needs
+  and when the budget will allow it.
+- Measured and not built: counting activations per function in the interpreter (the diagnostic above) to decide on
+  time per activation; it costs a few instructions per activation of every process, which #544 is removing.
+- Idea from the reference simulator (sim1; read for its design, no code taken): it tiers up on a per-function entry
+  counter. yavs keeps sampling (no cost per entry) and uses the share of sampled time instead of a count.

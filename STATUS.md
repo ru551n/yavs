@@ -5015,6 +5015,25 @@ Recommendation: not yet. Make `--tier=auto` the default once a run in which noth
 (#525), and once compiled clocked processes of single-instance designs no longer lose (#532, #527: signal operations and
 array accesses without host calls); keep `--tier=interp` for runs below a second, where nothing can pay.
 
+### `--tier=auto` on the CPU designs (#532, #545, 2026-10-22)
+
+Default `--tier=auto` no longer compiles a clocked process that is under an eighth of the sampled time (`RTL_SHARE`):
+the seven processes it compiled on neorv32 each cost 200 to 900 instructions more per activation than interpreted.
+`hdlm_lfsr` compiles its tap loops again since the natural loops of #547 (#545); `--verbose` now says when the compile
+budget refuses a hot function.
+Main-thread instructions, core 4, `--tier=auto` against `--tier=interp` of the same binary: `neorv32_single_min` +2.5%
+to +0.5%, `_single_cache` +1.7% to +0.6%, `_dual_full` +3.0% to +0.6% (cycles -0.7 to +0.5%; the rest is the
+per-activation cost of #544); nothing is compiled there now. The h2h designs and `protected_queue` are unchanged within
+0.5% (`rtl_ff`, `lfsr64`, `lfsr64_xor`, `rtl_lfsr` still compile their process).
+
+Real-world suite (`tools/realbench --compare` before/after, `--ref sim1`, cores 4,5, loaded host, all threads counted;
+the after binary had an innermost-loop `compute` rule since replaced by #547, which compiles `hdlm_lfsr` the same way):
+geometric mean of auto/interp instructions 0.977 before and after; per test after: `hdlm_lfsr` 0.52 (1.01 before),
+`poc_stat_histogram` 0.51, `vai_window_gen_interlock` 0.74, `poc_arith_addw` 0.95, neorv32 1.01 to 1.02 (1.03 to 1.04
+before), the rest 0.94 to 1.03 except tests under 0.1 s, where sampling noise of the whole process is a few percent.
+Against sim1 (rule: `--tier=auto` only, total wall of the run command against sim1's elaboration plus run): geometric
+mean warm 0.49, cold 1.17 (1.22 before); the CPU designs 3.0 warm and cold.
+
 ### `--tier=auto` with nothing compiled (#525, 2026-10-22)
 
 The interpreter's bookkeeping with a tier set is now a loop of its own (decisions.md "`--tier=auto` with nothing compiled

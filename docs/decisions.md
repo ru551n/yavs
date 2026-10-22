@@ -3966,7 +3966,6 @@ is one module of minutes, and every test case of a suite paid it again. Decision
     as yavs's do (`TIER_SERIAL` is the only check); it swaps one entry pointer to tier up, as `Entry` and `ctab` do.
     Unlike it, yavs samples instead of counting calls and keeps compiled code across runs.
 
-
 ## Optimiser round 11: read-only instance data, value numbering of multiply defined registers (yavs-ir, #511, #520, #523, 2026-10-22)
 
 Decisions:

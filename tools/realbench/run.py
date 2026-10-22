@@ -793,7 +793,7 @@ def markdown(res):
                 c, d = r["cells"].get(n) or {}, r["cells"].get(b) or {}
                 wi, ii = ratio(c.get("wall"), d.get("wall")), ratio(c.get("ins"), d.get("ins"))
                 if (ii and ii > 1.05) or (wi and wi > 1.10 and c["wall"] - d["wall"] > 0.05):
-                    worse.append(f"- {tn} / {n[2:]}: wall x{wi:.2f}" + (f", instructions x{ii:.2f}" if ii else ""))
+                    worse.append(f"- {tn} / {n[2:]}: wall " + (f"x{wi:.2f}" if wi else "-") + (f", instructions x{ii:.2f}" if ii else ""))
         L += ["Slowdowns of B (instructions above 1.05, or wall above 1.10 and 0.05 s): " + ("none" if not worse else ""), ""] + worse + ([""] if worse else [])
     hidden = set(meta.get("hidden", []))
     fails = [(tn, n, c) for tn, r in tests.items() for n, c in r["cells"].items() if c.get("wall") is None and n not in hidden]

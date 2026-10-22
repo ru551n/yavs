@@ -4595,6 +4595,26 @@ the JSON-for-VHDL and vhdl-extras testbenches that need files, the fletcher arra
 whose generics have no default. For a decision run `python3 -I tools/realbench/run.py BIN --ref sim1 --cores 6,7`
 and `--compare A B` (section 5 of its guide); on a loaded host wall time is noise, quote the instruction ratios.
 
+## Layout work in loops: `poc_stat_histogram` (#518, 2026-10-22)
+
+The profile of the baseline named the layout walk (`layout_words`), but the arrays were not copied or compared whole: the
+testbench's `to_slm` and `to_slvv_8` are element loops over a matrix and an array of vectors (about 43 million element
+iterations), and every iteration asked for the layout of two or three types only for the element count word. Fixed in the
+lowering and the layout memo, no IR change: the count of an array (fourth layout word) is the product of the lengths in its
+descriptor (`DopeLen`s, times the element count of a logic array of arrays), never a `LayoutOf`; `a(i)(j)` of a logic row
+reads the element in place (`LGet` at the row's plane offset) instead of copying row `a(i)` into a temporary; the
+interpreter's layout memo answers a repeated query in place. Ideas taken from the reference simulator's lowering: array
+length and element stride are products of per-dimension lengths computed inline (folded when the bounds are constant), and
+an element of an array of arrays is pointer arithmetic into the row, with no layout object at run time. Ours differs: logic
+arrays are bit planes, so the row is addressed by plane offset, not pointer.
+
+Pinned core 1, median of 5, ratios yavs / sim1: `interp` 15.2 to 9.4 (instructions 89.3 G to 64.2 G), `auto` 9.6 to 3.9 (71.2 G
+to 31.9 G). Whole suite `--compare` before / after (41 tests, interp and auto): geometric mean of wall 0.99 and 0.95, of
+instructions 0.99 and 0.97; memory category 0.89 and 0.79; no test slower beyond noise (host load 10 to 20). `tools/bench`
+groups `internal` and `h2h`: geometric mean of total CPU 0.998 and 0.994. What is left in the test is interpretation
+(no loop-invariant code motion: #526) and, in `auto`, the host address call of the compiled code (#527). #518 stays open for
+that.
+
 ## neorv32 processor testbench against sim1: where the time goes (#521, 2026-10-22)
 
 The three CPU tests of the real-world suite (`neorv32_dual_full` 200 us, `neorv32_single_min` and `neorv32_single_cache`

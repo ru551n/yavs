@@ -95,6 +95,8 @@ pub struct Model {
     /// User functions lowered for elaboration-time calls (ir.md 3.6): `None` when lowering
     /// failed (the reason is reported at the call).
     pub(crate) funcs: HashMap<DeclId, Result<Lowered1, crate::pkgcall::Fail>>,
+    /// Results of pure calls from earlier elaborations (`callcache`, #539).
+    pub(crate) calls: crate::callcache::CallCache,
     /// Package state for calls of functions that use package objects (#77).
     pub(crate) session: crate::pkgcall::Session,
     /// Package scopes by package unit, library scopes by library.
@@ -789,6 +791,15 @@ impl Model {
             ),
             crate::pkgcall::Fail::Lower(why) => not_callable(db, callee, ex.span, &why),
         };
+        let key = crate::callcache::cacheable(db, callee)
+            .then(|| crate::callcache::key(callee, &vals))
+            .flatten();
+        if let Some(k) = &key
+            && let Some(hit) = self.calls.get(db, k)
+        {
+            yavs_interp::replay_reports(&hit.reports);
+            return Ok(hit.val);
+        }
         match self
             .funcs
             .entry(callee)
@@ -798,7 +809,20 @@ impl Model {
                 let (rt, sig, free, size) =
                     (l.rt.clone(), l.sig.clone(), l.free.clone(), l.inst_size);
                 let inst = self.free_data(db, &rt, &free, size, scope, ex.span)?;
-                crate::pkgcall::run(&rt, &sig, &vals, None, inst).map_err(failed)
+                // A call that only computed, from nothing but its arguments, is kept (#539).
+                let Some(k) = key.filter(|_| free.is_empty()) else {
+                    return crate::pkgcall::run(&rt, &sig, &vals, None, inst).map_err(failed);
+                };
+                let (r, trace) = crate::pkgcall::run_traced(&rt, &sig, &vals, inst);
+                let v = r.map_err(failed)?;
+                if trace.tainted.is_none() {
+                    let hit = crate::callcache::Hit {
+                        val: v.clone(),
+                        reports: trace.reports,
+                    };
+                    self.calls.put(db, k, &hit);
+                }
+                Ok(v)
             }
             // A function that uses package objects (shared variables, say) runs against the
             // elaborated packages, in elaboration order (LRM 14.4); one that reads shared

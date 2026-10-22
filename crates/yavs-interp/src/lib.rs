@@ -1752,8 +1752,53 @@ pub fn call_values_shared(
     ret: Option<yavs_ir::TyId>,
     shared: Option<&Arc<Mutex<SharedState>>>,
 ) -> Result<Option<CallVal>, SimError> {
+    call_values_inner(rt, func, inst, args, ret, shared, None)
+}
+
+/// What a call did besides computing its value (`call_values_traced`).
+#[derive(Debug, Default)]
+pub struct CallTrace {
+    /// The reports it made, `(severity, text)`, in order (printed and counted already).
+    pub reports: Vec<(u8, String)>,
+    /// Why its result cannot be reproduced from its arguments alone: it printed nothing but
+    /// called a native that reads the environment, a file or a clock, or foreign code.
+    pub tainted: Option<String>,
+}
+
+/// [`call_values`] that also says what the call did besides computing (`CallTrace`), so that
+/// a caller can keep the result of a call that only computed and print its reports again
+/// ([`replay_reports`]) when it reuses the result (elaboration-time call cache, #539).
+pub fn call_values_traced(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[CallVal],
+    ret: Option<yavs_ir::TyId>,
+) -> (Result<Option<CallVal>, SimError>, CallTrace) {
+    let mut t = CallTrace::default();
+    let r = call_values_inner(rt, func, inst, args, ret, None, Some(&mut t));
+    (r, t)
+}
+
+/// Print and count again reports of a [`CallTrace`], as the call made them.
+pub fn replay_reports(reports: &[(u8, String)]) {
+    env::replay_elab(reports);
+}
+
+fn call_values_inner(
+    rt: Arc<Runtime>,
+    func: FuncId,
+    inst: Arc<InstData>,
+    args: &[CallVal],
+    ret: Option<yavs_ir::TyId>,
+    shared: Option<&Arc<Mutex<SharedState>>>,
+    trace: Option<&mut CallTrace>,
+) -> Result<Option<CallVal>, SimError> {
     let prog = rt.prog.clone();
     let mut m = Machine::new(rt, inst, Vec::new(), func);
+    if trace.is_some() {
+        m.init_reports = Some(Vec::new());
+    }
     let mut guard = match shared {
         Some(s) => Some(s.lock().map_err(|_| {
             SimError::new(ErrorKind::Internal("shared state lock poisoned".into()))
@@ -1790,6 +1835,10 @@ pub fn call_values_shared(
     })();
     if let (Some(g), Some(st)) = (guard.as_mut(), m.sh.take()) {
         **g = st;
+    }
+    if let Some(t) = trace {
+        t.reports = m.init_reports.take().unwrap_or_default();
+        t.tainted = m.tainted.take();
     }
     r.map_err(|e| m.error(e, None))
 }

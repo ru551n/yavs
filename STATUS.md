@@ -564,6 +564,15 @@ one step earlier): analyze cold 0.99 (was 1.23 in the baseline), analyze warm 0.
 1.36), but the verification-library testbenches still elaborate cold at about 2 times sim1 (#549: their first run
 writes prefix images).
 
+### Elaboration-time call cache (#539)
+
+The results of pure package functions called while elaborating (`docs/decisions.md` "Elaboration-time call cache") are
+kept per closure (stage kind `ecall`) and per elaboration, with the reports they made replayed. `tools/realbench` phase
+elab, P-cores 2 and 3 (CCD0), 5 runs interleaved, main against main with the cache, 41 tests, geometric mean of the
+ratio (instructions / wall): elab warm 0.84 / 0.86, elab cold 0.96 / 0.96 (a repeat inside one elaboration hits too).
+`poc_uart_rx` warm 1.78 G to 0.06 G instructions (0.16 s to 0.01 s), `poc_cache_cpu` warm 2.62 G to 0.13 G (0.24 s to
+0.02 s) and cold 2.73 G to 0.50 G (0.26 s to 0.07 s); the other 39 tests are within noise.
+
 ### Compilation cache (#407)
 
 Cache keys name the build (a hash of all sources) and the optimiser and tier switches (#491, `docs/decisions.md`
@@ -5248,6 +5257,19 @@ sampling slot of each activation (about 15 instructions): visible only on design
 nothing compiled (`rtl_ff`, about 750 instructions per activation; default `auto` compiles that process). The compile
 thread with nothing to compile costs about 5 us of CPU per millisecond on another core; the LLVM library is not loaded
 in a run that compiles nothing. Cycles vary 2 to 5 percent between runs on the shared host; instructions are the measure.
+
+### `--tier=auto` with nothing compiled: the cycles (#521, #544, 2026-10-22)
+
+On neorv32 (`single_min`, 100 us, core 9, `perf stat` cycles:u, median of 11, interleaved) `--tier=auto` ran 4.3 to 5.4%
+more cycles than `--tier=interp` for 0.9% more instructions, nothing compiled. Cause: the watching form of the dispatch
+loop (`run_ops::<false, true>`) executed the same number of instructions as the plain one (12.6 G each) but needed 5.7%
+more cycles; the every-128-events `watch_tick` (thread-local slot access, flag look) was inlined into the 100 KB function.
+Out of line (`#[cold]`) the form costs the same as the plain one: auto / interp cycles 1.054 to 1.011 (+1.0% instructions,
+the per-activation set-up and the compile thread). Disabling only the call look-up or the jump count recovered 1 to 2%.
+Designs of thousands of tiny processes with nothing compiled (`--tier-heat=100000000,100000000,1000`, core 10, median
+of 11): `rtl_ff` +3.8% cycles (+3.5% instructions, was +5.8% / +4.3%), `rtl_fan` +3.9% (+6.4%, was +4.8% / +8.4%),
+`rtl_lfsr` +2.6% (+2.0%), `rtl_chain` +1.2% (+2.6%). The rest is the per-activation set-up of the
+watching form, 20 to 25 instructions (#544).
 
 ## Interpreter cost on loops, arrays and calls: round 1 (#520, #523, #509, #511, #531, 2026-10-22)
 

@@ -610,6 +610,7 @@ pub(crate) fn elaborate(
         v.append(&mut e.errors);
         return Err(v);
     }
+    e.m.calls.flush();
     Ok(Elaborated {
         top,
         hier: e.m.hier,

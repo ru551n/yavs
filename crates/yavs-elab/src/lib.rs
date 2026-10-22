@@ -9,6 +9,7 @@
 //! Fail early: any error-severity diagnostic means there is no [`Elaborated`].
 
 mod build;
+mod callcache;
 mod collapse;
 mod eval;
 mod hier;

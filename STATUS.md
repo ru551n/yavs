@@ -3124,6 +3124,20 @@ entry, strings and heap in the runtime, and in the interpreter for functions tha
 2.1x LLVM's (0.32 against 0.15 s, 4.1 G against 2.5 G instructions): registers live in the frame array, every definition
 is stored, and nothing is carried across blocks.
 
+### clift: merged with main and measured again (2026-10-22, #481)
+
+`spike/clift2` merged with main at e2cd4595 (merge commits dfb80ad5, 3e44a48c). The runtime half in `crates/yavs-llvm/src/rt.rs` is rebuilt from main's callbacks (native frames, `NSlot`/`TabSlots`, direct-mapped object cache, `Mem::begin`/`end`, `enter_on`, `call`, `preloads`); `AutoTier::start` takes the first-level generator as its sixth argument; `yavs-clift` got a `gc-stress` feature. One real porting bug: `Pre::lean` leaves the register of a parameter's slot address unset, so the Cranelift tier now starts every block from the preloaded addresses as known (#566). Checks: fmt, clippy `-D warnings` (default, `llvm,clift`, `clift`, `llvm`), `cargo test --workspace` 851 passed, `-p yavs-llvm -p yavs-clift -p yavs --features llvm,clift` 207 passed, `--features clift` alone 163 passed; difftest corpus 449/449 identical to the interpreter at 1 and 4 threads for `--tier=llvm`, `auto`, `clift`, `clift-auto`, `auto3` and `auto3 --tier-heat=0,0,0`, and 449/449 at 1 thread under `--features gc-stress` for `llvm`, `clift` and `auto3-eager`; CI on all ten jobs green, including `clift` on Linux aarch64 and Windows x86_64 (clippy, tests, difftest smoke; no runtime numbers there).
+
+Measurements (one release `llvm,clift` binary, cores 0 and 1 of the 7950X3D, `perf stat` cycles and instructions of the whole process including the compile thread, median of 5 to 7 interleaved runs, host load 8 to 110 from other agents, so cycles carry up to 50% spread and instructions are the figure to compare; every cell has its own copy of the work library; "cold" = empty compiled-code cache, "warm" = populated). Instructions relative to the interpreter, geometric mean:
+
+| set | llvm cold | llvm warm | clift | clift-auto | auto cold | auto warm | auto3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| clocked RTL (8 designs) | 1.60 | 1.09 | 1.68 | 1.37 | 1.05 | 1.03 | 1.06 |
+| loops and subprograms (10 designs) | 1.02 | 0.51 | 0.98 | 0.98 | 0.87 | 0.73 | 0.88 |
+| testbenches with a run phase (8) | 3.48 | 1.52 | 2.17 | 1.31 | 1.01 | 0.87 | 1.22 |
+
+Compile time of the eager tiers (the `init` phase): Cranelift 19 to 76 us per IR instruction against 57 to 930 us for LLVM (typically 6 to 8 times faster; neorv32 testbench 3.5 s against 10.4 s, the verification-library testbenches 1 to 2 s against 8 to 14 s). Instructions per loop iteration of `compute_h2h`: interpreter 1357, LLVM 121, Cranelift 212 (native frames and inlining: `calls` 34 instructions per call in both). Cranelift is behind LLVM on: code quality of loops (1.75x the instructions of O2), clocked RTL and testbenches (1.3 to 2.2x the interpreter's instructions: entry and callbacks, no inline object-cache lookup, no `drive`/`wait` fast paths), calls from the interpreter to native frames, a compiled-code cache, and the tiering policy (`clift-auto` still has the first scheme). The full tables and the gap list are in the #481 comment of 2026-10-22.
+
 ## performance (tiers against two reference simulators, 2026-10-19)
 
 Measurement only (#125, #383, #385, #386, #395). yavs at `d76a08b5`, release build with the

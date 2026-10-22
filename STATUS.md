@@ -4615,6 +4615,24 @@ groups `internal` and `h2h`: geometric mean of total CPU 0.998 and 0.994. What i
 (no loop-invariant code motion: #526) and, in `auto`, the host address call of the compiled code (#527). #518 stays open for
 that.
 
+## Loop-invariant code motion (#526, 2026-10-22)
+
+`crates/yavs-ir/src/opt/licm.rs` (`docs/decisions.md` "Loop-invariant code motion"): in a function or procedure that cannot
+suspend, computations a loop does not change move into a preheader, inner loops first; nested loops that share a header get
+one each. Instructions that can fail move only from the effect-free start of the header, whose first pass the preheader
+replays, so runtime errors and their order are unchanged (tests `composite/loop_invariant*`). Descriptor reads move only
+from loops that write no memory a descriptor can be in; loads stay (no alias analysis yet). The inner loop of `to_slm` in
+`poc_stat_histogram` went from 27 IR instructions per element to 12.
+
+Pinned core 1, `tools/realbench --compare` before / after (memory category, interp and auto, median of 5):
+`poc_stat_histogram` wall 0.69 and 0.85 (instructions 0.66 and 0.81); the other memory tests and the wide-vector category
+unchanged. Against sim1: `interp` 6.0 (instructions 8.5), `auto` 3.1 (5.0), from 9.4 and 3.9. `tools/bench`: `h2h` designs
+instructions 1.000 (interp) and 0.996 (auto), `internal` geometric mean of CPU 0.988 (no loops of this shape in either).
+Compile cost: cold `--no-cache` runs of `osvvm_axis_random` and `uvvm_util_rand` +0.03% and -0.2% instructions; the
+pass is linear in the code times the loop depth.
+Checked: differential corpus 441/441 (interpreter at 4 threads and shuffled, `--tier=auto`, `--tier=llvm`, `gc-stress` on
+the interpreter and `--tier=llvm`), pass lists 857 and 393 (`--oracle --check`), `cargo test --workspace`.
+
 ## neorv32 processor testbench against sim1: where the time goes (#521, 2026-10-22)
 
 The three CPU tests of the real-world suite (`neorv32_dual_full` 200 us, `neorv32_single_min` and `neorv32_single_cache`

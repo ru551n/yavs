@@ -7968,18 +7968,21 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 .iter()
                 .map(|s| {
                     let view = c.code_view(s.signal).filter(|_| s.ty.elem == Elem::Logic);
-                    let (codes, len) = match view {
+                    let (codes, len, cap) = match view {
                         // The instance signal's own elements start at `s.off`.
-                        Some((p, n)) if (s.off as usize) < n => {
-                            (p as u64 + u64::from(s.off), (n - s.off as usize) as u64)
-                        }
-                        _ => (0, 0),
+                        Some((p, n)) if (s.off as usize) < n => (
+                            p as u64 + u64::from(s.off),
+                            (n - s.off as usize) as u64,
+                            c.code_cap(s.signal).saturating_sub(s.off as usize) as u64,
+                        ),
+                        _ => (0, 0, 0),
                     };
                     crate::TierSig {
                         codes,
                         len,
                         signal: u64::from(s.signal.0),
                         off: u64::from(s.off),
+                        cap,
                     }
                 })
                 .collect();

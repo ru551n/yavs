@@ -4753,6 +4753,15 @@ Decisions:
   descriptor in the constant pool or the frame, the pair every native call and report of a string takes. Shared (IR): both
   tiers; the interpreter saves the instruction, compiled code the helper call and, because no root is recorded, the stepped
   `Stmt` after it. A word of unknown origin keeps the root.
+- **A `SigRead` of a logic vector is inline whatever its length** (`Gen::sig_read_block`, `Gen::sig_read_dyn`, `TierSig::cap`,
+  `Ctx::code_cap`). The inline form read the byte codes eight at a time and required the whole last group of eight inside
+  the signal's elements (`TierSig::len`), so a vector whose length is no multiple of eight (1, 4, 9, 12 elements, nearly
+  every control signal and generic-width datapath) always took the callback. The kernel keeps the codes in whole plane
+  blocks and writes whole groups (the bytes past the last element are 0), so the guard now is that the elements are
+  there (`len`) and the groups are inside the allocation (`cap`); the planes are masked to the elements as before. A count
+  that is a run-time value (a generic width) calls `yavs_rt_codes`, a pure function of the codes, the group count and the
+  mask, after the same guards. The callback this removes costs 220 host instructions. Shared: the `TierSig` field and the
+  kernel accessor; the second code generator calls the same helper.
 - Not changed: `is_inline` and the `--tier=auto` callback count (`too_many_callbacks`) still treat these natives as
   leaving the compiled code, the policy owner's call (#507 was tuned with the dearer callback).
 - Idea from the reference simulator (sim1; read for its design, no code taken): its `numeric_std` and

@@ -52,6 +52,7 @@ const FAST_SUBTYPE: u32 = 2;
 const FAST_FAT_ROOT: u32 = 3;
 const FAST_DEREF: u32 = 4;
 const MEMEQ: &str = "yavs_rt_memeq";
+const CODES: &str = "yavs_rt_codes";
 const NATIVE: &str = "yavs_rt_native";
 const TROOT: &str = "yavs_rt_troot";
 const ENDSTMT: &str = "yavs_rt_endstmt";
@@ -251,6 +252,7 @@ const SIG_CODES: i64 = std::mem::offset_of!(yavs_interp::TierSig, codes) as i64;
 const SIG_LEN: i64 = std::mem::offset_of!(yavs_interp::TierSig, len) as i64;
 const SIG_SIGNAL: i64 = std::mem::offset_of!(yavs_interp::TierSig, signal) as i64;
 const SIG_OFF: i64 = std::mem::offset_of!(yavs_interp::TierSig, off) as i64;
+const SIG_CAP: i64 = std::mem::offset_of!(yavs_interp::TierSig, cap) as i64;
 
 impl Mem {
     fn of(fr: TierFrame) -> Mem {
@@ -920,6 +922,26 @@ extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u64 {
     }
 }
 
+/// The plane block of `groups` groups of eight `std_ulogic` codes at `codes`, as `Inst::SigRead`
+/// of up to 64 elements makes it: the four planes (element 0 in bit 0) masked by `mask` into the
+/// 32 bytes at `out`. Pure, no host state: compiled code calls it where it does not know the
+/// length (`Gen::sig_read_block`).
+extern "C" fn yavs_rt_codes(codes: *const u8, groups: u64, mask: u64, out: *mut u64) {
+    let mut planes = [0u64; 4];
+    for j in 0..groups as usize {
+        // SAFETY: the caller checked `groups * 8` readable bytes at `codes`.
+        let w = unsafe { std::ptr::read_unaligned(codes.add(8 * j).cast::<u64>()) };
+        for (p, plane) in planes.iter_mut().enumerate() {
+            let bits = (w >> p) & 0x0101_0101_0101_0101;
+            *plane |= (bits.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * j);
+        }
+    }
+    for (p, plane) in planes.iter().enumerate() {
+        // SAFETY: the caller checked 32 writable bytes at `out`.
+        unsafe { std::ptr::write_unaligned(out.add(p), plane & mask) };
+    }
+}
+
 /// The body of `yavs_rt_step`.
 ///
 /// # Safety
@@ -1553,6 +1575,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DEOPT_SLOTS, yavs_rt_deopt_slots as *const () as usize),
             (DEOPT_END, yavs_rt_deopt_end as *const () as usize),
             (MEMEQ, yavs_rt_memeq as *const () as usize),
+            (CODES, yavs_rt_codes as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
@@ -2639,6 +2662,9 @@ struct Gen {
     /// `yavs_rt_memeq(a, b, n) -> i64`.
     memeq_ty: LLVMTypeRef,
     memeq: LLVMValueRef,
+    /// `yavs_rt_codes(codes, groups, mask, out)`.
+    codes_ty: LLVMTypeRef,
+    codes: LLVMValueRef,
     /// `yavs_rt_native(env, mem, native, cells, n, depth, out) -> u32`.
     native_ty: LLVMTypeRef,
     native: LLVMValueRef,
@@ -2823,6 +2849,8 @@ impl Gen {
             let deopt_end_ty = LLVMFunctionType(i32, deparams.as_mut_ptr(), 3, 0);
             let mut mparams = [ptr, ptr, i64];
             let memeq_ty = LLVMFunctionType(i64, mparams.as_mut_ptr(), 3, 0);
+            let mut cparams = [ptr, i64, i64, ptr];
+            let codes_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), cparams.as_mut_ptr(), 4, 0);
             let mut nparams = [ptr, ptr, i32, ptr, i32, i64, ptr];
             let native_ty = LLVMFunctionType(i32, nparams.as_mut_ptr(), 7, 0);
             let mut tparams = [ptr, ptr, i64, i32, ptr, i64];
@@ -2880,6 +2908,8 @@ impl Gen {
                 deopt_end: add(DEOPT_END, deopt_end_ty),
                 memeq_ty,
                 memeq: add(MEMEQ, memeq_ty),
+                codes_ty,
+                codes: add(CODES, codes_ty),
                 native_ty,
                 native: add(NATIVE, native_ty),
                 troot_ty,
@@ -2952,7 +2982,14 @@ impl Gen {
                 self.attr(f, false, "nounwind", 0);
             }
             self.attr(self.memeq, false, "nounwind", 0);
-            for f in [self.host, self.lcopy, self.deopt_slots, self.memeq] {
+            self.attr(self.codes, false, "nounwind", 0);
+            for f in [
+                self.host,
+                self.lcopy,
+                self.deopt_slots,
+                self.memeq,
+                self.codes,
+            ] {
                 self.attr(f, false, "willreturn", 0);
             }
             self.attr(self.memeq, false, "memory", mem_effects(REF, 0, 0));
@@ -2962,6 +2999,9 @@ impl Gen {
             self.attr(self.lcopy, false, "memory", mem_effects(RW, 0, 0));
             self.attr(self.lcopy, false, "nofree", 0);
             self.attr(self.lcopy, false, "nosync", 0);
+            self.attr(self.codes, false, "memory", mem_effects(RW, 0, 0));
+            self.attr(self.codes, false, "nofree", 0);
+            self.attr(self.codes, false, "nosync", 0);
             self.attr(self.deopt_slots, false, "memory", mem_effects(REF, 0, 0));
         }
     }
@@ -5235,20 +5275,27 @@ impl Gen {
     /// elements at a time; anything else through `TierHost::signal`. `false`: not that case,
     /// nothing generated.
     unsafe fn sig_read_block(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) -> bool {
-        let Some(l) = self
-            .kint(c, Reg(sig.0 + 1))
-            .filter(|l| (1..=64).contains(l))
-        else {
-            return false;
+        let Some(l) = self.kint(c, Reg(sig.0 + 1)) else {
+            // SAFETY: as below.
+            unsafe { self.sig_read_dyn(c, pc, dst, sig) };
+            return true;
         };
+        if !(1..=64).contains(&l) {
+            return false;
+        }
         let groups = (l as u64).div_ceil(8);
         // SAFETY: see `sig_entry`; the guards check the groups lie within the codes.
         unsafe {
             let (slow, join) = self.slow_signal(c, pc, 0);
             let (ent, off) = self.sig_entry(c, sig, Some(l), slow);
+            // The elements are there, and so are the whole groups of eight codes that hold them
+            // (the codes are kept in whole plane blocks; the planes are masked to the elements).
             let tl = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            let used = LLVMBuildAdd(self.b, off, self.c64(l), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), slow);
+            let cap = self.load(self.i64, self.gep(ent, self.c64(SIG_CAP)));
             let end = LLVMBuildAdd(self.b, off, self.c64(8 * groups as i64), c"".as_ptr());
-            self.guard(c, self.icmp(IP::LLVMIntULE, end, tl), slow);
+            self.guard(c, self.icmp(IP::LLVMIntULE, end, cap), slow);
             let codes = self.tag(
                 self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
                 AA_CODES,
@@ -5285,6 +5332,71 @@ impl Gen {
             self.join(c, join);
         }
         true
+    }
+
+    /// `Inst::SigRead` of a plain reference whose count (`sig + 1`) is only known at run time, to
+    /// a logic signal that keeps its codes: when the count is 1 to 64 and the codes are there,
+    /// the planes come from `yavs_rt_codes`, a call that touches no host state; anything else
+    /// through `TierHost::signal`.
+    unsafe fn sig_read_dyn(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) {
+        // SAFETY: see `sig_entry`; the guards check the groups lie within the codes and the
+        // count is 1 to 64.
+        unsafe {
+            let (slow, join) = self.slow_signal(c, pc, 0);
+            let l = self.ld(c, Reg(sig.0 + 1));
+            let l1 = LLVMBuildSub(self.b, l, self.c64(1), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULT, l1, self.c64(64)), slow);
+            let (ent, off) = self.sig_entry(c, sig, None, slow);
+            let tl = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            let used = LLVMBuildAdd(self.b, off, l, c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), slow);
+            let groups = LLVMBuildLShr(
+                self.b,
+                LLVMBuildAdd(self.b, l, self.c64(7), c"".as_ptr()),
+                self.c64(3),
+                c"".as_ptr(),
+            );
+            let end = LLVMBuildAdd(
+                self.b,
+                off,
+                LLVMBuildShl(self.b, groups, self.c64(3), c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let cap = self.load(self.i64, self.gep(ent, self.c64(SIG_CAP)));
+            self.guard(c, self.icmp(IP::LLVMIntULE, end, cap), slow);
+            let codes = self.tag(
+                self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
+                AA_CODES,
+            );
+            let base = self.gep(codes, off);
+            // (1 << l) - 1, all ones for 64 (a shift by 64 is poison).
+            let ones = self.c64(-1);
+            let mask = LLVMBuildLShr(
+                self.b,
+                ones,
+                LLVMBuildSub(self.b, self.c64(64), l, c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                self.c64(32),
+                true,
+                slow,
+            );
+            let mut args = [base, groups, mask, pd];
+            LLVMBuildCall2(
+                self.b,
+                self.codes_ty,
+                self.codes,
+                args.as_mut_ptr(),
+                4,
+                c"".as_ptr(),
+            );
+            self.join(c, join);
+        }
     }
 
     /// `rising_edge` / `falling_edge` of one element: true in place when the kernel resumed the
@@ -6158,6 +6270,7 @@ impl Gen {
             } else {
                 self.flush(c, pc as usize + 1);
                 self.leave(c, self.c32(TIER_SUSPEND));
+                c.cold.borrow_mut().push(out);
             }
             LLVMPositionBuilderAtEnd(self.b, cont);
             self.join(c, join);

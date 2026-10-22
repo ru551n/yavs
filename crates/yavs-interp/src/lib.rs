@@ -734,6 +734,9 @@ pub struct TierSig {
     pub len: u64,
     pub signal: u64,
     pub off: u64,
+    /// The bytes that may be read from `codes` (`len`, rounded up to whole plane blocks, minus
+    /// the instance signal's start): the groups of eight codes around the last element.
+    pub cap: u64,
 }
 
 impl Default for TierFrame {

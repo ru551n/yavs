@@ -314,6 +314,8 @@ pub trait Process: Send {
 - Runtime errors as `Err(ctx.error(ErrorKind::Runtime(..)))` with the VHDL call stack in `trace`.
 - A plain concurrent copy (`target <= source;` of signal names) needs no process code: the
   elaborator builds the kernel's own `CopyProcess` for it (#529).
+- A clock generator `x <= not x after T;` on one scalar element needs none either: the elaborator
+  evaluates `T` and builds the kernel's own `ToggleProcess` (#440).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

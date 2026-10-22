@@ -2496,9 +2496,11 @@ impl Elab<'_> {
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
         let copy = self.copy_source(s, st);
+        let toggle = self.toggle_source(s, st);
         if let Some(p) = self.procs.last_mut() {
             p.trigger = trigger;
             p.copy = copy;
+            p.toggle = toggle;
         }
         Ok(())
     }
@@ -2666,6 +2668,118 @@ impl Elab<'_> {
             wait,
             legacy,
             reset,
+        })
+    }
+
+    /// A concurrent `x <= not x after T;` (a clock generator, not postponed or guarded, no
+    /// rejection limit) on one element of a signal of `std_ulogic`, BIT or BOOLEAN itself (so
+    /// no check of the assignment can fail) with the predefined `not`, a delay that is static
+    /// and evaluates now to a positive time without calling a subprogram, and the process's
+    /// one driver exactly that element. `None` for anything else.
+    fn toggle_source(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcToggle> {
+        let db: &Db = self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: delay @ (Delay::Default | Delay::Transport | Delay::Inertial { reject: None }),
+            rhs: Rhs::Simple(Waveform::Elements(elems)),
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let [
+            WaveElem {
+                value: Some(e),
+                after: Some(after),
+            },
+        ] = &elems[..]
+        else {
+            return None;
+        };
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[*e].kind
+        else {
+            return None;
+        };
+        let [
+            Arg {
+                actual: Actual::Expr(arg),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return None;
+        };
+        let (callee, arg, after, texpr) = (*callee, *arg, *after, target.expr);
+        let transport = matches!(delay, Delay::Transport);
+        if db.decls[callee].name.key().as_str() != "\"not\""
+            || db.exprs[after].stat == Staticness::None
+        {
+            return None;
+        }
+        let (leaf, elem) = self.static_elem(s, texpr)?;
+        if self.static_elem(s, arg)? != (leaf, elem) {
+            return None;
+        }
+        let (_, shape) = self.static_signal_parts(s, texpr)?;
+        let db: &Db = self.db;
+        let decl = &db.decls[callee];
+        let Shape::Scalar {
+            ty,
+            range: Some(range),
+            elem: kind,
+            ..
+        } = &shape
+        else {
+            return None;
+        };
+        let wk = &db.well_known;
+        let ok = match kind {
+            // The IEEE `not` of `std_ulogic` (the whole type), or the predefined one of BIT
+            // or BOOLEAN (bit-plane logic too).
+            Elem::Logic if range.low_high() == (0, 8) => {
+                !decl.implicit
+                    && db.scopes[decl.scope]
+                        .owner
+                        .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+            }
+            Elem::Logic if range.low_high() == (0, 1) => {
+                decl.implicit && (Some(*ty) == wk.boolean || Some(*ty) == wk.bit)
+            }
+            _ => false,
+        };
+        if !ok || db.base(db.exprs[arg].subtype) != *ty {
+            return None;
+        }
+        let [dst] = &self.procs.last()?.lsps[..] else {
+            return None;
+        };
+        let [(k, l, r)] = &dst[..] else {
+            return None;
+        };
+        let nets = &self.m.nets;
+        if (*l, r.offset, r.len) != (leaf, elem, 1) || nets.drivers[*k].leaf != leaf {
+            return None;
+        }
+        // A probe: a delay that needs a subprogram call (or fails) stays with the process.
+        let mark = self.m.session.mark();
+        let v = self.m.eval(db, after, Some(s));
+        let called = self.m.session.mark() != mark;
+        self.m.session.undo(db, mark).ok()?;
+        let Ok(Val::Phys(t)) = v else {
+            return None;
+        };
+        (t > 0 && !called).then_some(crate::ProcToggle {
+            leaf,
+            elem,
+            delay: t,
+            transport,
         })
     }
 
@@ -2893,6 +3007,7 @@ impl Elab<'_> {
             actual: None,
             trigger: None,
             copy: None,
+            toggle: None,
         });
         ProcIdx(self.procs.len() as u32 - 1)
     }

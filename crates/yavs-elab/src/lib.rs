@@ -168,6 +168,19 @@ pub struct ProcInst {
     /// source parts, one per part of `lsps[0]` (the target) and of the same length and kind.
     /// The kernel copies them itself (`yavs_kernel::CopyProcess`, #529).
     pub copy: Option<Vec<(LeafId, yavs_kernel::Range)>>,
+    /// A concurrent `x <= not x after T;` on one scalar element with `T` known now
+    /// (`Walker::toggle_source`): the kernel runs it itself (`yavs_kernel::ToggleProcess`, #440).
+    pub toggle: Option<ProcToggle>,
+}
+
+/// The clock generator `x <= not x after T;` of [`ProcInst::toggle`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcToggle {
+    pub leaf: LeafId,
+    pub elem: u32,
+    /// The delay in femtoseconds, positive.
+    pub delay: i64,
+    pub transport: bool,
 }
 
 /// The trigger of a clocked process ([`ProcInst::trigger`]).

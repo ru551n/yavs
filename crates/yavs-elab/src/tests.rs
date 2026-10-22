@@ -2259,6 +2259,80 @@ fn signal_copies_run_in_the_kernel() {
     assert_eq!(kernel, interp);
 }
 
+/// A concurrent `x <= not x after T;` on `std_ulogic`, BIT or BOOLEAN with a static delay is a
+/// kernel `ToggleProcess`; other shapes (a computed or signal-dependent delay, another source,
+/// a rejection limit, a constrained subtype, vector `not`) stay processes. Same reports either
+/// way (`Config::edge_triggers` off keeps them interpreted).
+#[test]
+fn clock_generators_run_in_the_kernel() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      entity t is generic (h : time := 3 ns); end; architecture a of t is
+        constant k : time := h * 2;
+        signal a : std_logic := '0';
+        signal b : std_ulogic := '1';
+        signal c : bit;
+        signal d : boolean;
+        signal v : std_logic_vector(1 downto 0) := \"01\";
+        signal e : std_logic := '0';
+        signal f, g, i, j : std_logic := '0';
+        signal l : std_logic range '0' to '1' := '0';
+        signal per : time := 2 ns;
+        signal m, n : std_logic := '0';
+        signal o : bit_vector(0 to 1);
+      begin
+        a <= not a after h;
+        b <= not b after k;
+        c <= transport not c after 5 ns;
+        d <= not d after k / 2;
+        v(1) <= not v(1) after 4 ns;
+        e <= not f after 4 ns;
+        f <= '1' after 2 ns;
+        g <= reject 1 ns inertial not g after 4 ns;
+        i <= not i after per;
+        j <= not i;
+        l <= not l after 3 ns;
+        m <= not m after 3 ns;
+        m <= '1' after 20 ns;
+        n <= not n after 3 ns, '1' after 9 ns;
+        o <= not o after 1 ns;
+        process (a, b, c, d, v, e, f, g, i, j, l, m, n) begin
+          report std_logic'image(a) & std_ulogic'image(b) & bit'image(c) & boolean'image(d)
+            & to_string(v) & std_logic'image(e) & std_logic'image(f) & std_logic'image(g)
+            & std_logic'image(i) & std_logic'image(j) & std_logic'image(l) & std_logic'image(m)
+            & std_logic'image(n);
+        end process;
+        process begin wait for 40 ns; report \"end\"; wait; end process;
+      end;";
+    let (mut db, mut e) = elab("toggles", src, "t", &[]);
+    let toggles: Vec<bool> = e.procs.iter().map(|p| p.toggle.is_some()).collect();
+    // The statements in order (one process each), then the two processes.
+    assert_eq!(
+        toggles,
+        [
+            true, true, true, true, true, false, false, false, false, false, false, true, false,
+            false, false, false, false
+        ]
+    );
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::ns(40)).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert!(kernel.len() > 40);
+    assert_eq!(kernel, interp);
+}
+
 /// The scans for the signals and shared variables of loaded packages skip std and ieee
 /// (`walk.rs` `builtin_lib`, #426): none of their packages may declare one.
 #[test]

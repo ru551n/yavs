@@ -3786,6 +3786,44 @@ Checks on the pushed range: `cargo fmt`, `cargo clippy --workspace --all-targets
 `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled, and `--tier=auto` with `--no-collapse-ports`; UVVM suite 102 pass,
 9 fail, 26 skip as before; OSVVM `.pro` 314 of 314 under 2008 and 2019.
 
+### Kernel round 14: clock generators in the kernel, the clock edge path (#440, 2026-10-22)
+
+(`docs/decisions.md` "Kernel round 14".) Ranked from the round 13 list after an exact per-function count of one clock edge (a
+single-stepping tracer over `examples/clk.rs`, ~2030 kernel instructions per edge): (1) the clock generator `x <= not x after T;`
+is a kernel process (`ToggleProcess`, built by the elaborator when `T` is static and the signal is `std_ulogic`, BIT or BOOLEAN),
+(2) the edge path of the kernel (a cycle with one due driver in the future queue is applied in place, no `run_batch` for an empty
+postponed list, a clock with a few resident waiters wakes them without the scan): 2032 to 1330 instructions per edge,
+kernel alone. Item 3 of the list, publishing the running process once per batch, is in `yavs-interp`'s activation and left to
+that owner.
+
+Instructions G / min cycles G, interpreter, core 4 (`main` 788fb084 against this commit; `perf stat`, min of 7, interleaved):
+
+| Design | before | after |
+|---|---:|---:|
+| three bare clocks, 3 ms (`std_logic`, `std_ulogic`, 8 ns to 12 ns periods) | 4.77 / 1.09 | 2.59 / 0.62 |
+| a `std_logic`, a BIT and a BOOLEAN clock and a counter process, 3 ms | 4.58 / 1.39 | 3.37 / 1.03 |
+| `examples/clk.rs`, one clock, kernel alone (`ToggleProcess` in both) | 1.524 | 0.982 |
+
+Real testbenches (`tools/realbench/run.py --compare --phases run --tiers interp,auto --cores 4,5`, instruction ratio): `sc5_timestamp`
+0.77 / 0.77 (10.94 G to 8.42 G; wall 0.74 s to 0.57 s), `hdlm_lfsr` 0.96 / 0.92 (wall 0.97 / 0.90), `fletcher_bufferreader` 0.98 / 0.98,
+`poc_cache_cpu` 0.99 / 0.99, `poc_uart_rx` 0.97 / 0.97, the rest of the 14 tests 1.00 (`neorv32_single_min`, `olo_*`, `hdlm_axi_*`,
+`osvvm_axi4_random`, `sc5_fifo_repack`, `fletcher_bufferreader`); one cell of `neorv32_single_min` ran 1.22 slower in wall at the
+same instruction count and was noise (`perf stat` cycles of four builds within 1% on 100 us of it, repeated). The suite's kernel share
+is 15 to 20% (`run_ops` is 38 to 54%): what is left of the edge path is spread over `cycle` (the waiters of a clock with several
+processes: ~25 instructions per waiter and ~12 per wake), `run_batch` (~100 per process of a batch), the plane writes of the
+update (~130) and the heap.
+
+Measured and not taken: the per-element event stamps are half of `update_word` of a 32-bit register (~150 of 600 kernel
+instructions per activation), but records for signals of 8 to 64 elements cost more when the data is random (see the decision);
+signal fields in hot-first order (with and without cache-line alignment) did nothing for neorv32. An enumeration or integer
+register is still ~1150 kernel instructions of ~3800 per activation (`n <= n + 1`, interpreter ~2650): the direct path logic
+registers have would take about 400 of them.
+
+Checks: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with and without `--features llvm`, `cargo test --workspace`
+(860 passed), difftest 449 of 449 on the interpreter, `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled and
+`--tier=auto` with `--no-collapse-ports`; `external.py --oracle --check` 857 (sim1) and 393 (sim2); OSVVM `.pro` 314 of 314 under
+2008 and 2019; UVVM suite 130 pass, 1 fail, 6 skip as before.
+
 ## lib (`crates/yavs-lib`)
 
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`

@@ -1,5 +1,5 @@
-//! Kernel cost of clock generators: `c <= not c after T` as hand-written processes, so the
-//! count has no interpreter in it. Run under `perf stat -e instructions:u`.
+//! Kernel cost of clock generators: `c <= not c after T` as `ToggleProcess`es, so the count
+//! has no interpreter in it. Run under `perf stat -e instructions:u`.
 //!
 //! `cargo run --release --example clk -- [clocks] [simulated microseconds]`
 
@@ -22,22 +22,11 @@ fn main() -> Result<(), SimError> {
         );
         let d = b.driver(c);
         let half = Time::ns(4 + u64::from(k));
-        b.process(
+        b.process_boxed(
             &format!("gen{k}"),
             ProcFlags::default(),
             &[d],
-            move |ctx: &mut Ctx<'_>| -> Result<(), SimError> {
-                let next = if ctx.elem_code(c, 0)? == StdULogic::One as u8 {
-                    StdULogic::Zero
-                } else {
-                    StdULogic::One
-                };
-                ctx.assign_code(d, None, half, next as u8, DelayMode::INERTIAL)?;
-                if !ctx.wait_same() {
-                    ctx.wait_on(c)?;
-                }
-                Ok(())
-            },
+            Box::new(ToggleProcess::new(c, 0, d, half, DelayMode::INERTIAL)),
         );
     }
     let mut sim = b.build(Config::default())?;

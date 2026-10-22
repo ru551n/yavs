@@ -120,6 +120,61 @@ impl Process for CopyProcess {
     }
 }
 
+/// A process whose whole body is `x <= not x after T;` on one scalar element of a logic
+/// signal (std_ulogic, bit or boolean: a clock generator): the kernel reads the element, assigns its complement and waits for it again,
+/// with no process code (the elaborator recognises the shape and evaluates `T`, #440).
+pub struct ToggleProcess {
+    signal: SignalId,
+    elem: u32,
+    /// The driver of the element and the element as a range of it.
+    driver: DriverId,
+    range: Range,
+    delay: Time,
+    /// `delay` truncated to the resolution, once known (`None`: not yet).
+    quantized: Option<Time>,
+    mode: DelayMode,
+}
+
+impl ToggleProcess {
+    pub fn new(
+        signal: SignalId,
+        elem: u32,
+        driver: DriverId,
+        delay: Time,
+        mode: DelayMode,
+    ) -> ToggleProcess {
+        ToggleProcess {
+            signal,
+            elem,
+            driver,
+            range: Range::new(elem, 1),
+            delay,
+            quantized: None,
+            mode,
+        }
+    }
+}
+
+impl Process for ToggleProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let c = ctx.elem_code(self.signal, self.elem)?;
+        let n = StdULogic::from_code_pub(c).not() as u8;
+        let q = *self
+            .quantized
+            .get_or_insert_with(|| self.delay.quantize(ctx.sh.resolution));
+        // A positive delay to an idle driver: one quick transaction, nothing to preempt.
+        let at = ctx.sh.now.checked_add(q).ok().filter(|_| q != Time::ZERO);
+        let fast = at.is_some_and(|at| ctx.assign_later(self.driver, self.elem, at, n));
+        if !fast {
+            ctx.assign_code(self.driver, Some(self.range), self.delay, n, self.mode)?;
+        }
+        if !ctx.wait_on_again(self.signal, self.range) {
+            ctx.wait_on(self.signal.slice(self.elem, 1))?;
+        }
+        Ok(())
+    }
+}
+
 /// Writes reports and textio `OUTPUT` text as a serially running process makes them, in the
 /// order they would be committed in (#483). An observer offers one with
 /// [`Observer::live_sink`](crate::Observer::live_sink) and then gets such reports only once,
@@ -1006,6 +1061,39 @@ impl Ctx<'_> {
             return Some(self.sh.now);
         }
         self.after(delay).ok().filter(|&t| t > self.sh.now)
+    }
+
+    /// A transaction of one logic element of the process's own idle driver at `at`, later than
+    /// now, when the run has no direct entry yet: a quick transaction, as `assign_code_fast`
+    /// makes it. False (nothing done) otherwise; the caller then uses `assign_code`.
+    #[inline]
+    fn assign_later(&mut self, d: DriverId, elem: u32, at: Time, code: u8) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        if info.owner != self.pid
+            || code >= 9
+            || !self.st.out.is_empty()
+            || !self.st.outv.is_empty()
+            || !info.range.contains(Range::new(elem, 1))
+            || !matches!(
+                self.sh.signals[info.signal.0 as usize].ty.elem,
+                crate::value::Elem::Logic
+            )
+        {
+            return false;
+        }
+        let w = &mut self.st.waveforms[info.local as usize];
+        if !w.idle() || !w.phantom.is_empty() {
+            return false;
+        }
+        w.quick = Some(Quick {
+            time: at,
+            elem,
+            code,
+        });
+        self.st.scheduled.push((at, d));
+        true
     }
 
     /// The process has a direct entry for `slot` of signal `sig` in this run (they commit at its

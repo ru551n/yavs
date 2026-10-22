@@ -164,9 +164,23 @@ impl Elaborated {
                         })
                         .collect::<Option<Vec<_>>>()
                 });
-            let proc: Box<dyn Process> = match copy {
-                Some(parts) => Box::new(yavs_kernel::CopyProcess::new(parts)),
-                None => make(p, &ds)?,
+            // So does a clock generator `x <= not x after T;`.
+            let toggle = p.toggle.filter(|_| cfg.edge_triggers).and_then(|t| {
+                let time = yavs_kernel::Time::from_vhdl(t.delay).ok()?;
+                let k = p.lsps.first()?.first()?.0;
+                let d = *ds.get(p.drivers.iter().position(|&x| x == k)?)?;
+                let mode = if t.transport {
+                    yavs_kernel::DelayMode::Transport
+                } else {
+                    yavs_kernel::DelayMode::INERTIAL
+                };
+                let sig = yavs_kernel::SignalId(t.leaf.0);
+                Some(yavs_kernel::ToggleProcess::new(sig, t.elem, d, time, mode))
+            });
+            let proc: Box<dyn Process> = match (copy, toggle) {
+                (Some(parts), _) => Box::new(yavs_kernel::CopyProcess::new(parts)),
+                (None, Some(t)) => Box::new(t),
+                (None, None) => make(p, &ds)?,
             };
             let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);

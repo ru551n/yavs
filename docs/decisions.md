@@ -3769,6 +3769,43 @@ assignments had the quick shapes.
   clocks for 6 ms): bare clock generator 14.36 G to 10.56 G, with `when not done` 15.05 G to 11.3 G; `sc5_timestamp`
   14.68 G to 12.82 G (wall 1.13 s to 0.96 s); head-to-head designs unchanged.
 
+## Kernel round 14: clock generators in the kernel, the clock edge path (yavs-kernel, yavs-elab, #440, 2026-10-22)
+
+Round 13 left a clock edge at ~1900 kernel instructions plus 600 to 700 of interpreter for the process `x <= not x after T;`
+(238 clock generators of the corpora are this form) against ~1000 for the reference simulator's whole edge. Ranked by the
+baseline (an exact per-function count of the instructions of one edge, from a single-stepping tracer over `examples/clk.rs`):
+the native process first, then the edge path itself.
+
+- **`ToggleProcess`** (kernel, `process.rs`), built by the elaborator (`ProcInst::toggle`, `Walker::toggle_source`) for a
+  concurrent `x <= not x after T;` (also `transport`; not guarded, postponed or with a rejection limit) on one element of a
+  signal of `std_ulogic`, BIT or BOOLEAN itself, with the IEEE `not` of `std_ulogic` or the predefined one of BIT or BOOLEAN
+  on the same static element, a static delay that evaluates at elaboration to a positive time without calling a
+  subprogram, and the process's one driver exactly that element. Anything else (a signal-dependent or function-computed
+  delay, zero or negative, a constrained subtype, another source, a vector `not`) stays an interpreted process, so every
+  error message and every LRM corner is the interpreter's. Like the plain signal copy it is built only when
+  `Config::edge_triggers` is on, i.e. when nothing observes activations (coverage, a debugger breakpoint on that line,
+  foreign callbacks). The process reads the element (`elem_code`), assigns the complement and waits again
+  (`wait_on_again`); the assignment is `Ctx::assign_later` (the checks of `assign_code_fast` once, `T` truncated to the
+  resolution once) and falls back to `assign_code` for anything unusual (a pending transaction of a second source's
+  event, a delay that truncates to zero). Wake-ups, forcing, `'event`, `'last_value` and the waveform output are the
+  kernel's own, so they are those of the interpreted process: `tests/toggle.rs` compares the two in the kernel (alone, with a
+  second source, with a delay below the resolution), `clock_generators_run_in_the_kernel` in the elaborator on a design with
+  `std_logic`, `std_ulogic`, BIT, BOOLEAN, a vector element, `transport` and the shapes that must stay processes.
+- **Clock edge path** (ideas from the reference simulator's kernel: timed events are one heap of driver pointers drained
+  in one pass per time step, the waiters of a value are woken when it changes, an empty phase costs nothing): (1) `last_delta`
+  no longer runs `run_batch` for an empty postponed list (~180 instructions, and `last_ran` kept); (2) a cycle whose one due
+  entry is a driver of an independent signal in the future queue pops the heap and applies the transaction in place
+  (`update_one_timed`; the second heap item must not be due), and finishes it without `finish_signal` when nothing else is
+  pending; (3) a signal with one waiter list of at most 8 resident, alive waiters wakes them in `cycle` without
+  `take_woken` and its scan (`Waiters::small_list`; any stale or plain waiter takes the scan as before), and `build_cache`
+  is asked only for 16 or more waiters; (4) `Ctx::assign_later`. `examples/clk.rs` (one clock, kernel alone) goes from 2032
+  to 1330 instructions per edge.
+- **Tried and dropped**: event records (`Signal::blk_event`) for signals of 8 to 64 elements when many elements change
+  (the stamp loop was half of `update_word` of a 32-bit register): +400 instructions per update with random data, since the
+  superseded records pile up (each update leaves the elements that did not change in the older ones). Signal fields in
+  the order the commit and finish paths touch them, with and without 64-byte alignment: neorv32 cycles within 1% (the
+  thousands of signals are in L2/L3 whatever the order).
+
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 
 Follow-up of "Tight compute loops": in compiled loops the registers and the frame's variables no longer go through

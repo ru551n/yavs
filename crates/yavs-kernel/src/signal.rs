@@ -284,6 +284,16 @@ impl Waiters {
         }
     }
 
+    /// The waiters of a signal that has one list of at most `max` (a clock read by a few
+    /// processes), in registration order.
+    #[inline]
+    pub fn small_list(&self, max: usize) -> Option<&[Waiter]> {
+        match self.lists.as_slice() {
+            [(l, _)] if l.len() <= max => Some(l.as_slice()),
+            _ => None,
+        }
+    }
+
     /// Forget the wake list (a waiter changed).
     pub fn drop_cache(&mut self) {
         self.cache = None;
@@ -536,7 +546,12 @@ impl Waiters {
         if self.lists.len() == 1 && self.lists[0].0.is_empty() {
             self.trig = Trig::Empty;
         }
-        if self.cache.is_none() && self.lists.len() == 1 && scanned == 1 && !runs.is_empty() {
+        if self.cache.is_none()
+            && self.lists.len() == 1
+            && self.lists[0].0.len() >= 16
+            && scanned == 1
+            && !runs.is_empty()
+        {
             self.build_cache();
         }
         if scanned > 1 && out.len() > 1 {
@@ -1069,6 +1084,12 @@ impl Signal {
             && self.port_in.is_none()
             && self.force_eff.is_none()
             && matches!(self.resolution, None | Some(Resolution::StdLogic))
+    }
+
+    /// A direct transaction waits to be finished (`finish_pend`).
+    #[inline(always)]
+    pub fn has_pending(&self) -> bool {
+        self.pend_one || !self.pend_words.is_empty()
     }
 
     /// Something besides direct transactions is left to finish (`finish_signal`).

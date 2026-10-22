@@ -601,6 +601,16 @@ impl TimeHeap {
         self.v.first()
     }
 
+    /// The time of the second earliest item (the smaller of the root's children).
+    #[inline(always)]
+    fn second_time(&self) -> Option<Time> {
+        match (self.v.get(1), self.v.get(2)) {
+            (Some(a), Some(b)) => Some(a.time.min(b.time)),
+            (Some(a), None) => Some(a.time),
+            _ => None,
+        }
+    }
+
     fn pop(&mut self) {
         let Some(last) = self.v.pop() else { return };
         let n = self.v.len();
@@ -1560,6 +1570,30 @@ impl SimControl {
                 }
                 continue;
             }
+            // One event on a signal with a few waiters, all resident and alive: the same wake as
+            // the scan below makes, in list order, with nothing to remove from the list.
+            if let [r] = runs[..]
+                && let Some(list) = waiters.small_list(8)
+            {
+                let mut woken: smallvec::SmallVec<[u32; 8]> = smallvec::SmallVec::new();
+                let mut plain = true;
+                for w in list.iter().filter(|w| w.range.overlaps(r)) {
+                    if w.perm == 0 || !live(w) {
+                        plain = false;
+                        break;
+                    }
+                    if !(uniform.is_none() && hold(w)) {
+                        woken.push(w.proc);
+                    }
+                }
+                if plain {
+                    self.signals[s as usize].changed.clear();
+                    for p in woken {
+                        self.wake(p, false);
+                    }
+                    continue;
+                }
+            }
             // Every waiter resident for the whole signal: the wake list is known.
             if let Some(tids) = waiters.cache_tids() {
                 let held: smallvec::SmallVec<[(u32, bool); 4]> = tids
@@ -1688,12 +1722,12 @@ impl SimControl {
             let watched = self.phase_mask & bits != 0;
             self.phase(Phase::LastKnownDelta);
             if !watched || self.next_time() != Some(self.now) {
-                let postponed = std::mem::take(&mut self.postponed);
-                if !postponed.is_empty() {
+                let none = self.postponed.is_empty();
+                if !none {
+                    let postponed = std::mem::take(&mut self.postponed);
                     self.phase(Phase::StartOfPostponed);
+                    self.run_batch(postponed, true, false)?;
                 }
-                let none = postponed.is_empty();
-                self.run_batch(postponed, true, false)?;
                 self.phase(Phase::EndOfTimeStep);
                 if !watched && none {
                     self.known_next = Some(next);
@@ -1742,6 +1776,13 @@ impl SimControl {
                 }
                 return self.finish_direct();
             }
+        }
+        if self.ops.is_empty()
+            && self.implicits.is_empty()
+            && self.queue.next_delta.is_empty()
+            && let Some(r) = self.update_one_timed()
+        {
+            return r;
         }
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
         // Kept between cycles (empty here), so an empty one costs no construction and no drop.
@@ -1939,6 +1980,53 @@ impl SimControl {
         due.clear();
         self.work = Some(work);
         r
+    }
+
+    /// The update of a cycle whose one due entry is a driver of an independent signal in the
+    /// future queue (the edge of a clock generator, the end of a delayed assignment): taken off
+    /// the heap and applied in place, with no work lists. `None` (nothing done) for anything
+    /// else: a second entry due, a timeout, a port or group, a force.
+    #[inline]
+    fn update_one_timed(&mut self) -> Option<Result<(), ErrorKind>> {
+        let (now, cycle) = (self.now, self.cycle);
+        let l = self.queue.later.peek()?;
+        if l.time > now
+            || l.key >> 32 != 0
+            || self.queue.later.second_time().is_some_and(|t| t <= now)
+        {
+            return None;
+        }
+        let d = l.key as u32;
+        let info = &self.drivers[d as usize];
+        let s0 = info.signal.0;
+        if !self.independent[s0 as usize] {
+            return None;
+        }
+        self.queue.later.pop();
+        let sig = &mut self.signals[s0 as usize];
+        let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+        let w = &mut slot.st.waveforms[info.local as usize];
+        match w.quick {
+            Some(q) if q.time <= now => {
+                w.quick = None;
+                sig.apply_quick(q, info.slot, now, cycle);
+            }
+            _ => sig.apply_driver(w, info.slot, now, cycle),
+        }
+        // Nothing but the quick transaction: its event is all there is to finish.
+        let fused = sig.end_apply();
+        let changed = if sig.unfinished() || sig.has_pending() {
+            match finish_applied(sig, fused, now, cycle) {
+                Ok(c) => c,
+                Err(e) => return Some(Err(e)),
+            }
+        } else {
+            fused
+        };
+        if changed {
+            self.changed_sigs.push(s0);
+        }
+        Some(self.finish_direct())
     }
 
     /// The signal of `queue.next_delta` when every entry is a driver of that one independent
@@ -3029,6 +3117,11 @@ impl SimControl {
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Quick transactions finished when they were applied.
     let fused = sig.end_apply();
+    finish_applied(sig, fused, now, cycle)
+}
+
+/// `finish_signal` after `Signal::end_apply` said whether a quick transaction made an event.
+fn finish_applied(sig: &mut Signal, fused: bool, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Direct transactions, element order: first, so the runs stay in order when nothing else
     // came.
     let pend = sig.finish_pend(now, cycle, false);

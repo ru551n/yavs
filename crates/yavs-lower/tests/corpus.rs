@@ -589,6 +589,20 @@ fn path_mask(text: &str) -> String {
     out
 }
 
+/// Replaces the text of every `fatal` `diag` event with `-`.
+fn fatalmsg_mask(text: &str) -> String {
+    let mut out = String::new();
+    for l in text.lines() {
+        let mut f: Vec<&str> = l.split('\t').collect();
+        if f.len() == 6 && f[0] == "diag" && f[1] == "fatal" {
+            f[5] = "-";
+        }
+        out.push_str(&f.join("\t"));
+        out.push('\n');
+    }
+    out
+}
+
 /// Sorts each run of `diag` events of one time and delta stably by process path.
 fn order_mask(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -659,6 +673,11 @@ fn corpus_groups() {
             if ignores("path") {
                 expected = path_mask(&expected);
                 got = got.map(|o| path_mask(&o));
+            }
+            // `ignore=fatalmsg`: the text of a fatal run-time error is not compared.
+            if ignores("fatalmsg") {
+                expected = fatalmsg_mask(&expected);
+                got = got.map(|o| fatalmsg_mask(&o));
             }
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {

@@ -194,34 +194,6 @@ fn auto_tier_compiles_hot_functions() {
     assert!(notes.iter().all(|n| n.0 == f && n.1.is_ok()), "{notes:?}");
 }
 
-/// The compile thread is not started with the tier: it starts once the interpreted run has
-/// lasted a few milliseconds, and a tier stopped before that never starts one (#426).
-#[test]
-fn auto_tier_starts_its_thread_late() {
-    let (prog, f) = sum();
-    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
-    let note: Note = Box::new(|_, _, _| {});
-    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
-    assert!(!tier.running());
-    let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
-    let t0 = Instant::now();
-    while !tier.running() {
-        assert!(t0.elapsed() < Duration::from_secs(60), "never started");
-        assert_eq!(call().unwrap(), Some(5_000_050_000));
-    }
-    assert!(tier.stop(true));
-    let idle = AutoTier::start(
-        &Runtime::new(Arc::new(sum().0), Bindings::default()).unwrap(),
-        OptLevel::O2,
-        usize::MAX,
-        HOT,
-        Box::new(|_, _, _| {}),
-    )
-    .unwrap();
-    assert!(idle.stop(true));
-    assert!(!idle.running());
-}
-
 /// With a budget the compile thread waits until compiling costs at most a few percent of the
 /// time it saw the interpreter run; a long run compiles, and the results never change. The
 /// decision itself is tested deterministically (`within_budget` in `auto.rs`): no wall-clock

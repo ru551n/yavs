@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
@@ -518,20 +518,7 @@ pub struct AutoTier {
     queue: Mutex<Option<Sender<FuncId>>>,
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    /// Starts the compile thread; taken when it starts (see [`Tier::tick`]) or by `stop`.
-    launch: Mutex<Option<Launch>>,
-    /// `launch` has not run yet and may (one load per tick).
-    armed: AtomicBool,
-    born: Instant,
 }
-
-/// Builds the worker's state and starts its thread.
-type Launch = Box<dyn FnOnce() -> Result<JoinHandle<()>, Error> + Send>;
-
-/// How long a run goes on before its compile thread starts (`Tier::tick`): a run of a few
-/// milliseconds ends before anything it samples could pay for a compile, and a thread costs a
-/// tenth of such a run (#426).
-const START_AFTER: Duration = Duration::from_millis(5);
 
 /// What the tier and its compile thread share.
 #[derive(Default)]
@@ -1143,157 +1130,151 @@ impl AutoTier {
             heat.period.into()
         });
         let nfuncs = prog.funcs.len();
-        let (ntab2, ctab2) = (ntab.clone(), ctab.clone());
-        let launch: Launch = Box::new(move || {
-            let mut w = Worker {
-                time: vec![[0; 2]; prog.funcs.len()],
-                done: vec![[false; 2]; prog.funcs.len()],
-                nat: vec![(0, false); prog.funcs.len()],
-                calls: vec![0; prog.funcs.len()],
-                prog,
-                table,
-                ntab: ntab2,
-                ctab: ctab2,
-                native,
-                heat,
-                opt,
-                max_size,
-                jit: None,
-                jit2: None,
-                jit0: None,
-                jitf: None,
-                total: 0,
-                spent: 0,
-                us_per_instr: US_PER_INSTR,
-                compute: vec![Default::default(); nfuncs],
-                nsets: vec![Default::default(); nfuncs],
-                pick_at: 0,
-                note,
-                leaf: Default::default(),
-                seen: 0,
-                probed: vec![false; nfuncs],
-                told: vec![false; nfuncs],
-                probing: false,
-                warned: false,
-                loaded: false,
-                listed: Default::default(),
-            };
-            std::thread::Builder::new()
-                .name("yavs-tier-up".into())
-                .spawn(move || {
-                    off_simulation_cpus();
-                    let mut running = Vec::new();
-                    w.listed = crate::objcache::compiled_list();
-                    let mut last = std::time::Instant::now();
-                    // Functions `Tier::hot` asked for (eager), those the sampler found hot, those to
-                    // compile again at O2.
-                    let mut asked: std::collections::VecDeque<FuncId> = Default::default();
-                    let mut cands: Vec<FuncId> = Vec::new();
-                    let mut later: Vec<FuncId> = Vec::new();
-                    // Functions to look up in the compilation cache (`Worker::probe`).
-                    let mut probes: Vec<FuncId> = Vec::new();
-                    let upgrade = opt != OptLevel::O2;
+        let mut w = Worker {
+            time: vec![[0; 2]; prog.funcs.len()],
+            done: vec![[false; 2]; prog.funcs.len()],
+            nat: vec![(0, false); prog.funcs.len()],
+            calls: vec![0; prog.funcs.len()],
+            prog,
+            table,
+            ntab: ntab.clone(),
+            ctab: ctab.clone(),
+            native,
+            heat,
+            opt,
+            max_size,
+            jit: None,
+            jit2: None,
+            jit0: None,
+            jitf: None,
+            total: 0,
+            spent: 0,
+            us_per_instr: US_PER_INSTR,
+            compute: vec![Default::default(); nfuncs],
+            nsets: vec![Default::default(); nfuncs],
+            pick_at: 0,
+            note,
+            leaf: Default::default(),
+            seen: 0,
+            probed: vec![false; nfuncs],
+            told: vec![false; nfuncs],
+            probing: false,
+            warned: false,
+            loaded: false,
+            listed: Default::default(),
+        };
+        let worker = std::thread::Builder::new()
+            .name("yavs-tier-up".into())
+            .spawn(move || {
+                off_simulation_cpus();
+                let mut running = Vec::new();
+                w.listed = crate::objcache::compiled_list();
+                let mut last = std::time::Instant::now();
+                // Functions `Tier::hot` asked for (eager), those the sampler found hot, those to
+                // compile again at O2.
+                let mut asked: std::collections::VecDeque<FuncId> = Default::default();
+                let mut cands: Vec<FuncId> = Vec::new();
+                let mut later: Vec<FuncId> = Vec::new();
+                // Functions to look up in the compilation cache (`Worker::probe`).
+                let mut probes: Vec<FuncId> = Vec::new();
+                let upgrade = opt != OptLevel::O2;
+                loop {
+                    match rx.recv_timeout(period) {
+                        Ok(id) => asked.push_back(id),
+                        Err(RecvTimeoutError::Timeout) => {
+                            // The time since the last look, whatever the compile thread did.
+                            let now = std::time::Instant::now();
+                            let dt = u64::try_from((now - last).as_micros()).unwrap_or(u64::MAX);
+                            last = now;
+                            running.clear();
+                            sample(&mut running);
+                            for &(id, compiled) in &running {
+                                let id = if compiled { id } else { w.charge(id) };
+                                let Some(t) = w.time.get_mut(id.0 as usize) else {
+                                    continue;
+                                };
+                                let t = &mut t[usize::from(compiled)];
+                                let was = *t;
+                                *t += dt;
+                                w.total += dt;
+                                let (now, at) = (*t, w.threshold(id, compiled));
+                                if !compiled && w.wants_probe(id, now) {
+                                    probes.push(id);
+                                }
+                                if was < at && now >= at {
+                                    if !compiled {
+                                        cands.push(id);
+                                    } else if upgrade
+                                        || w.prog.func(id).is_some_and(|f| rtl(&w.prog, f))
+                                    {
+                                        later.push(id);
+                                    }
+                                }
+                            }
+                        }
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
                     loop {
-                        match rx.recv_timeout(period) {
-                            Ok(id) => asked.push_back(id),
-                            Err(RecvTimeoutError::Timeout) => {
-                                // The time since the last look, whatever the compile thread did.
-                                let now = std::time::Instant::now();
-                                let dt =
-                                    u64::try_from((now - last).as_micros()).unwrap_or(u64::MAX);
-                                last = now;
-                                running.clear();
-                                sample(&mut running);
-                                for &(id, compiled) in &running {
-                                    let id = if compiled { id } else { w.charge(id) };
-                                    let Some(t) = w.time.get_mut(id.0 as usize) else {
-                                        continue;
-                                    };
-                                    let t = &mut t[usize::from(compiled)];
-                                    let was = *t;
-                                    *t += dt;
-                                    w.total += dt;
-                                    let (now, at) = (*t, w.threshold(id, compiled));
-                                    if !compiled && w.wants_probe(id, now) {
-                                        probes.push(id);
-                                    }
-                                    if was < at && now >= at {
-                                        if !compiled {
-                                            cands.push(id);
-                                        } else if upgrade
-                                            || w.prog.func(id).is_some_and(|f| rtl(&w.prog, f))
-                                        {
-                                            later.push(id);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(RecvTimeoutError::Disconnected) => break,
+                        while let Ok(id) = rx.try_recv() {
+                            asked.push_back(id);
                         }
-                        loop {
-                            while let Ok(id) = rx.try_recv() {
-                                asked.push_back(id);
-                            }
-                            let probe = if asked.is_empty() { probes.pop() } else { None };
-                            let Some((ids, o2, sampled)) = probe
-                                .map(|id| (vec![(id, Part::Both)], false, true))
-                                .or_else(|| {
-                                    asked
-                                        .pop_front()
-                                        .map(|id| (vec![(id, Part::Both)], false, false))
-                                })
-                                .or_else(|| {
-                                    later.pop().map(|id| (vec![(id, Part::Both)], true, false))
-                                })
-                                .or_else(|| w.pick(&mut cands).map(|ids| (ids, false, true)))
-                            else {
-                                break;
-                            };
-                            // `busy` before `halt` here and `halt` before `busy` in `stop` (both
-                            // SeqCst): either this thread sees the halt or `stop` sees it busy.
-                            sh.busy.store(true, Ordering::SeqCst);
-                            if sh.halt.load(Ordering::SeqCst) {
-                                break;
-                            }
-                            if let Some(id) = probe {
-                                if w.probe(id) {
-                                    cands.retain(|&c| c != id);
-                                }
-                                sh.busy.store(false, Ordering::SeqCst);
-                                continue;
-                            }
-                            let first = ids.first().map(|&(id, _)| id);
-                            for (i, (id, part)) in ids.into_iter().enumerate() {
-                                let done = w.compile(id, o2, sampled && i == 0, part);
-                                // Its callees compile for its sake only.
-                                if !done && i == 0 {
-                                    break;
-                                }
-                                // Eager (tests): swap the O2 code in during the run too.
-                                if done && heat.eager() && upgrade && !o2 {
-                                    later.push(id);
-                                }
-                            }
-                            if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
-                                f.store(true, Ordering::Release);
-                            }
-                            sh.busy.store(false, Ordering::SeqCst);
-                        }
+                        let probe = if asked.is_empty() { probes.pop() } else { None };
+                        let Some((ids, o2, sampled)) = probe
+                            .map(|id| (vec![(id, Part::Both)], false, true))
+                            .or_else(|| {
+                                asked
+                                    .pop_front()
+                                    .map(|id| (vec![(id, Part::Both)], false, false))
+                            })
+                            .or_else(|| later.pop().map(|id| (vec![(id, Part::Both)], true, false)))
+                            .or_else(|| w.pick(&mut cands).map(|ids| (ids, false, true)))
+                        else {
+                            break;
+                        };
+                        // `busy` before `halt` here and `halt` before `busy` in `stop` (both
+                        // SeqCst): either this thread sees the halt or `stop` sees it busy.
+                        sh.busy.store(true, Ordering::SeqCst);
                         if sh.halt.load(Ordering::SeqCst) {
                             break;
                         }
+                        if let Some(id) = probe {
+                            if w.probe(id) {
+                                cands.retain(|&c| c != id);
+                            }
+                            sh.busy.store(false, Ordering::SeqCst);
+                            continue;
+                        }
+                        let first = ids.first().map(|&(id, _)| id);
+                        for (i, (id, part)) in ids.into_iter().enumerate() {
+                            let done = w.compile(id, o2, sampled && i == 0, part);
+                            // Its callees compile for its sake only.
+                            if !done && i == 0 {
+                                break;
+                            }
+                            // Eager (tests): swap the O2 code in during the run too.
+                            if done && heat.eager() && upgrade && !o2 {
+                                later.push(id);
+                            }
+                        }
+                        if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
+                            f.store(true, Ordering::Release);
+                        }
+                        sh.busy.store(false, Ordering::SeqCst);
                     }
-                    *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
-                        .jit
-                        .into_iter()
-                        .chain(w.jit2)
-                        .chain(w.jit0)
-                        .chain(w.jitf)
-                        .collect();
-                    sh.busy.store(false, Ordering::SeqCst);
-                })
-                .map_err(|e| Error(format!("cannot start the compile thread: {e}")))
-        });
+                    if sh.halt.load(Ordering::SeqCst) {
+                        break;
+                    }
+                }
+                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
+                    .jit
+                    .into_iter()
+                    .chain(w.jit2)
+                    .chain(w.jit0)
+                    .chain(w.jitf)
+                    .collect();
+                sh.busy.store(false, Ordering::SeqCst);
+            })
+            .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
@@ -1301,14 +1282,8 @@ impl AutoTier {
             ctab,
             queue: Mutex::new(Some(tx)),
             shared,
-            worker: Mutex::new(None),
-            launch: Mutex::new(Some(launch)),
-            armed: AtomicBool::new(!heat.eager()),
-            born: Instant::now(),
+            worker: Mutex::new(Some(worker)),
         });
-        if heat.eager() {
-            tier.launch_now()?;
-        }
         if !rt.set_tier(tier.clone()) {
             tier.stop(true);
             return Err(Error(
@@ -1327,15 +1302,7 @@ impl AutoTier {
     /// own, and the process must not run its exit handlers under the running LLVM
     /// ([`exit_now`]).
     pub fn stop(&self, wait: bool) -> bool {
-        self.armed.store(false, Ordering::Relaxed);
         self.shared.halt.store(true, Ordering::SeqCst);
-        // A thread that never started has nothing to end; one that is starting is waited for.
-        drop(
-            self.launch
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
-        );
         drop(
             self.queue
                 .lock()
@@ -1354,25 +1321,6 @@ impl AutoTier {
             resume_unwind(p);
         }
         true
-    }
-
-    /// Start the compile thread unless it started or `stop` ended tier-up.
-    fn launch_now(&self) -> Result<(), Error> {
-        self.armed.store(false, Ordering::Relaxed);
-        let mut l = self.launch.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(f) = l.take() {
-            *self.worker.lock().unwrap_or_else(PoisonError::into_inner) = Some(f()?);
-        }
-        Ok(())
-    }
-
-    /// Whether the compile thread has started (it starts when the run has lasted
-    /// [`START_AFTER`], see [`Tier::tick`]).
-    pub fn running(&self) -> bool {
-        self.worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
     }
 
     /// The functions compiled so far.
@@ -1440,16 +1388,6 @@ pub fn exit_now(code: u8) -> ! {
 }
 
 impl Tier for AutoTier {
-    fn tick(&self) {
-        if self.armed.load(Ordering::Relaxed) && self.born.elapsed() >= START_AFTER {
-            // ponytail: a spawn failure (out of threads) ends the run as an internal error;
-            // the interpreter has no way to carry it from here.
-            if let Err(e) = self.launch_now() {
-                panic!("{e}");
-            }
-        }
-    }
-
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();

@@ -237,9 +237,6 @@ const WATCH: u32 = 128;
 #[cold]
 #[inline(never)]
 fn watch_tick(rt: &Runtime, func: FuncId) -> bool {
-    if let Some(t) = rt.tier.get() {
-        t.tick();
-    }
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
         Ordering::Relaxed,

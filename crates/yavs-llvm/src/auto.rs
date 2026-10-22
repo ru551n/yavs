@@ -97,39 +97,94 @@ fn called_natively(prog: &yavs_ir::Program, f: &yavs_ir::Func, id: FuncId) -> bo
         && native_set(prog, [id]).contains(&id)
 }
 
-/// The backward jumps of `f` as ranges of instructions (a jump back to a block start and the jump).
+/// The instructions of the loops of `f`, as ranges of the blocks of each natural loop: per back
+/// edge of a depth-first walk from the entry, the blocks that reach its latch without passing its
+/// header. A process's way back from its suspension is no loop (as in `loops`). A jump to a lower
+/// pc is not enough: the optimiser appends blocks (preheaders, inlined bodies) after the code.
 fn back_edges(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Vec<std::ops::Range<usize>> {
     use yavs_ir::Inst;
-    let start = |b: yavs_ir::BlockId| f.blocks.get(b).map_or(0, |b| b.start as usize);
-    // A process's way back through its suspension is no loop (as in `loops`).
-    let mut waits = vec![false; f.code.len()];
-    if f.kind == FuncKind::Process {
-        for (_, b) in f.blocks.iter() {
-            let r = b.start as usize..(b.end as usize).min(f.code.len());
-            if f.code[r.clone()]
-                .iter()
-                .any(|i| matches!(i, Inst::Suspend { .. }))
-            {
-                waits[r].fill(true);
+    let blocks: Vec<std::ops::Range<usize>> = f
+        .blocks
+        .iter()
+        .map(|(_, b)| b.start as usize..(b.end as usize).min(f.code.len()))
+        .collect();
+    let nb = blocks.len();
+    let waits: Vec<bool> = blocks
+        .iter()
+        .map(|r| {
+            f.kind == FuncKind::Process
+                && f.code[r.clone()]
+                    .iter()
+                    .any(|i| matches!(i, Inst::Suspend { .. }))
+        })
+        .collect();
+    let succ = |b: usize| -> Vec<usize> {
+        if waits[b] {
+            return Vec::new();
+        }
+        let mut to = Vec::new();
+        for i in &f.code[blocks[b].clone()] {
+            match i {
+                Inst::Br { to: t } => to.push(t.0 as usize),
+                Inst::CondBr { t, f: e, .. } => to.extend([t.0 as usize, e.0 as usize]),
+                Inst::Case { table, .. } => {
+                    if let Some(t) = prog.cases.get(*table) {
+                        to.push(t.default.0 as usize);
+                        to.extend(t.arms.iter().map(|a| a.2.0 as usize));
+                    }
+                }
+                _ => {}
+            }
+        }
+        to.retain(|&t| t < nb);
+        to
+    };
+    let mut preds = vec![Vec::new(); nb];
+    for b in 0..nb {
+        for t in succ(b) {
+            preds[t].push(b);
+        }
+    }
+    let mut edges = Vec::new();
+    let mut state = vec![0u8; nb]; // 0 new, 1 on the path, 2 done
+    if nb > 0 {
+        let mut stack = vec![(0usize, succ(0), 0usize)];
+        state[0] = 1;
+        while let Some((b, next, k)) = stack.last_mut() {
+            match next.get(*k).copied() {
+                Some(t) => {
+                    *k += 1;
+                    match state[t] {
+                        1 => edges.push((*b, t)),
+                        0 => {
+                            state[t] = 1;
+                            stack.push((t, succ(t), 0));
+                        }
+                        _ => {}
+                    }
+                }
+                None => {
+                    state[*b] = 2;
+                    stack.pop();
+                }
             }
         }
     }
     let mut out = Vec::new();
-    for (pc, i) in f.code.iter().enumerate() {
-        if waits[pc] {
-            continue;
+    let mut seen = vec![usize::MAX; nb];
+    for (k, (latch, h)) in edges.into_iter().enumerate() {
+        seen[h] = k;
+        let mut work = vec![latch];
+        while let Some(b) = work.pop() {
+            if std::mem::replace(&mut seen[b], k) == k && b != latch {
+                continue;
+            }
+            out.push(blocks[b].clone());
+            if b != h {
+                work.extend(preds[b].iter().copied().filter(|&p| seen[p] != k));
+            }
         }
-        let targets: Vec<usize> = match i {
-            Inst::Br { to } => vec![start(*to)],
-            Inst::CondBr { t, f: e, .. } => vec![start(*t), start(*e)],
-            Inst::Case { table, .. } => prog.cases.get(*table).map_or(Vec::new(), |t| {
-                std::iter::once(start(t.default))
-                    .chain(t.arms.iter().map(|a| start(a.2)))
-                    .collect()
-            }),
-            _ => Vec::new(),
-        };
-        out.extend(targets.into_iter().filter(|&t| t <= pc).map(|t| t..pc + 1));
+        out.push(blocks[h].clone());
     }
     out
 }
@@ -1337,7 +1392,7 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPUTE_BUDGET, loops, too_many_callbacks, within_budget};
+    use super::{COMPUTE_BUDGET, compute, loops, too_many_callbacks, within_budget};
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
 
@@ -1367,6 +1422,65 @@ mod tests {
             let (prog, f) = self_jump(reached);
             assert_eq!(loops(&prog, prog.func(f).unwrap()), is_loop, "{reached}");
         }
+    }
+
+    /// A loop of inline additions entered through a preheader block appended after the code (as
+    /// loop-invariant code motion makes them), followed by code the compiled code hands to the
+    /// interpreter: the jump from the preheader to the loop is no loop, so the code after the
+    /// loop does not count against it (#547).
+    #[test]
+    fn a_preheader_appended_after_the_code_is_no_loop() {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        let head = fb.block();
+        let exit = fb.block();
+        let pre = fb.block();
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let x = fb.int(1);
+        let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+        fb.emit(Inst::AddrOf {
+            dst: ptr,
+            space: yavs_ir::AddrSpace::Frame,
+            off: 0,
+        });
+        fb.emit(Inst::Br { to: pre });
+        fb.at(head);
+        for _ in 0..20 {
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: x,
+                a: x,
+                b: x,
+            });
+        }
+        let (y, c) = (fb.reg(yavs_ir::RegTy::I64), fb.reg(yavs_ir::RegTy::I64));
+        fb.emit(Inst::Load {
+            dst: y,
+            addr: ptr,
+            w: yavs_ir::Width::B8,
+        });
+        fb.emit(Inst::Cmp {
+            op: yavs_ir::CmpOp::Lt,
+            dst: c,
+            a: x,
+            b: y,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: exit,
+            f: head,
+        });
+        fb.at(exit);
+        for _ in 0..10 {
+            fb.emit(Inst::Free { ptr });
+        }
+        fb.emit(Inst::Ret { v: None });
+        fb.at(pre);
+        fb.emit(Inst::Br { to: head });
+        fb.finish();
+        let prog = pb.finish().unwrap();
+        assert!(compute(&prog, prog.func(f).unwrap()));
     }
 
     /// A process whose activation (after its `Suspend`) runs `ops` inline additions, an address

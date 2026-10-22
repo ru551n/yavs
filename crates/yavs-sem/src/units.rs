@@ -2018,6 +2018,37 @@ impl Reloc for Dec {
 }
 
 impl Db {
+    /// The bodies of the `std`/`ieee` packages this session loaded that the cache has no entry
+    /// for, as (library, package). `yavs analyze` never needs them, but every `elab` and `run`
+    /// does: the CLI analyses them once in a session of their own so that they are stored.
+    pub fn builtin_bodies_missing(&self) -> Vec<(String, String)> {
+        if self.store().is_none_or(|s| !s.writable()) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for (lid, lib) in self.libs.iter() {
+            if !matches!(lib.source, LibSource::StdDir(_)) {
+                continue;
+            }
+            for (k, slot) in &lib.units {
+                let (UnitKey::Primary(p), UnitSlot::Done(u)) = (k, slot) else {
+                    continue;
+                };
+                let body = UnitKey::body(*p);
+                if self.units[*u].kind != UnitKind::Package
+                    || lib.units.contains_key(&body)
+                    || self.locate(lid, body).is_none()
+                    || self.entry_for(lid, body).is_ok()
+                {
+                    continue;
+                }
+                out.push((lib.name.key.to_string(), p.to_string()));
+            }
+        }
+        out.sort();
+        out
+    }
+
     /// Why this analysis differs from `other` (for tests and `YAVS_UNIT_CHECK`): every arena entry,
     /// table, source file, diagnostic and library unit by content. What only says how the
     /// session was built (the loads of the cache, the owners of entries) is not compared.

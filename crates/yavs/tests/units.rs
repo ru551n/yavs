@@ -147,6 +147,11 @@ fn cached_analysis_reports_what_source_does() {
     let r = e.run(&[]);
     assert_eq!(r.code, 0, "{r:?}");
     assert!(r.stdout.contains("K=7 M=8 f=28"), "{r:?}");
+    // `analyze` stored the std/ieee package bodies elaboration loads (the files here were
+    // analysed by relative path, so their own units are entries of another identity than the
+    // closure's absolute paths).
+    assert_eq!(r.notes("miss ieee") + r.notes("miss std"), 0, "{r:?}");
+    assert!(r.notes("hit ieee.std_logic_1164/body") == 1, "{r:?}");
 }
 
 #[test]

@@ -242,6 +242,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             o.units = None;
             std::mem::ManuallyDrop::new(Db::new(o))
         });
+        let bodies_opts = opts.clone();
         let mut db = std::mem::ManuallyDrop::new(Db::new(opts));
         let mut shown = 0;
         for (i, file) in a.files.iter().enumerate() {
@@ -282,6 +283,15 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
                 return Some(i);
             }
             done.borrow_mut().push(file.display().to_string());
+        }
+        // The std/ieee package bodies every elaboration loads, stored once (their warnings stay
+        // theirs: this session's output is not changed).
+        let missing = db.builtin_bodies_missing();
+        if !missing.is_empty() {
+            let mut scratch = std::mem::ManuallyDrop::new(Db::new(bodies_opts.clone()));
+            for (lib, pkg) in missing {
+                let _ = scratch.load_body(&lib, &pkg);
+            }
         }
         None
     }));

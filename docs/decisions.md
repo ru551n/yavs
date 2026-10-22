@@ -4235,6 +4235,7 @@ Decisions:
 - Left: the per-activation slot stores, about 15 instructions, are 2 to 3 percent of a design of thousands of one-line
   processes (`rtl_ff`, about 750 instructions per activation) when nothing is compiled; default `--tier=auto` compiles
   that process, so the real run is level with the interpreter.
+
 ## Analysed-unit cache (yavs-sem `units.rs`, yavs-cache, CLI, #537, #539, #407; user decision 2026-10-22: build it)
 
 Integrations call `yavs analyze` once per file, and every call parsed and analysed the units the file
@@ -4283,6 +4284,10 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   and after it (`units::tables!`; a test fails when a new serialized field of `Db` or `GenericState` is
   not listed). A change it shares with a unit loaded inside it, work left pending, an error, or an id it
   cannot name makes it not stored (`YAVS_LOG=debug` says why).
+- **The bodies of `std`/`ieee` packages** are never loaded by `analyze` but by every `elab` and `run`; when an
+  `analyze` session loaded a package whose body has no entry in any mapped library, it analyses the body
+  once in a session of its own, only to store it (its output is not shown: it is the body's, replayed where
+  elaboration loads it). The first library of a project pays this once (about 30 ms).
 - **Warm analysis of a file** whose manifest record has the same content and whose units all have
   entries registers the file without parsing it; a unit that misses is parsed then. **A first `elab`/`run`**
   replays the closure's units the same way (`Db::analyze_file_hashed` with the closure's hashes).

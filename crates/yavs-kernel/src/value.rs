@@ -140,14 +140,29 @@ pub(crate) fn bits(words: &[u64], off: usize, n: usize) -> u64 {
     v & nmask(n)
 }
 
-/// Set or clear bits `off .. off + n` of a bitset.
+/// Set or clear bits `off .. off + n` of a bitset, a word at a time.
 pub(crate) fn fill_bits(words: &mut [u64], off: usize, n: usize, on: bool) {
-    for i in off..off + n {
+    let (mut i, end) = (off, off + n);
+    while i < end {
+        let (s, k) = (i % 64, (64 - i % 64).min(end - i));
+        let m = nmask(k) << s;
         if on {
-            words[i / 64] |= 1 << (i % 64);
+            words[i / 64] |= m;
         } else {
-            words[i / 64] &= !(1 << (i % 64));
+            words[i / 64] &= !m;
         }
+        i += k;
+    }
+}
+
+/// Write the low `n` bits (at most 64) of `v` to bits `off .. off + n` of a bitset.
+pub(crate) fn put_bits(words: &mut [u64], off: usize, n: usize, v: u64) {
+    let (w, s) = (off / 64, off % 64);
+    let v = v & nmask(n);
+    let m = nmask(n);
+    words[w] = words[w] & !(m << s) | v << s;
+    if s != 0 && s + n > 64 {
+        words[w + 1] = words[w + 1] & !(m >> (64 - s)) | v >> (64 - s);
     }
 }
 

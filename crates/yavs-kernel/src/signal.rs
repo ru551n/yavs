@@ -10,7 +10,7 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::error::ErrorKind;
 use crate::time::Time;
-use crate::value::{Buf, Elem, SignalType, bits, fill_bits, plane_code, put_plane_code};
+use crate::value::{Buf, Elem, SignalType, bits, fill_bits, plane_code, put_bits, put_plane_code};
 use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
@@ -1964,10 +1964,9 @@ fn same_value(t: &Txn, first: &Option<Buf>, r: Range) -> Vec<u64> {
         (None, None) => fill_bits(&mut eq, to, k, true),
         (Some(a), Some(b)) => {
             let d = a.diff(to, b, fo, k);
-            for i in 0..k {
-                if bits(&d, i, 1) == 0 {
-                    eq[(to + i) / 64] |= 1 << ((to + i) % 64);
-                }
+            for c in (0..k).step_by(64) {
+                let m = (k - c).min(64);
+                put_bits(&mut eq, to + c, m, !bits(&d, c, m));
             }
         }
         _ => {}
@@ -2040,28 +2039,35 @@ impl Waveform {
             .iter()
             .map(|t| (in_window(t) && t.range.overlaps(r)).then(|| same_value(t, first, r)))
             .collect();
-        // Per element, decide which overlapping old transactions to delete.
-        // ponytail: O(elements * pending); fine while waveforms stay short.
+        // Which elements of the overlapping old transactions to delete, newest transaction
+        // first, 64 elements at a time: those at or after `t1`, and in the rejection window
+        // those from the first one (going back) whose value differs from the new one. `chain`
+        // has a bit per element of `r`: every window transaction so far had the new value.
         let mut deleted: Vec<Option<Vec<u64>>> = vec![None; self.pending.len()];
-        for e in r.elems() {
-            let mut chain = true;
-            for (i, t) in self.pending.iter().enumerate().rev() {
-                if !t.range.elems().contains(&e) {
-                    continue;
-                }
-                let k = e - t.range.offset as usize;
-                let delete = if t.time >= t1 {
-                    true
-                } else if let Some(eq) = &eqs[i] {
-                    chain &= bits(eq, k, 1) == 1;
-                    !chain
-                } else {
-                    false
-                };
-                if delete {
-                    let mask = deleted[i]
-                        .get_or_insert_with(|| vec![0; (t.range.len as usize).div_ceil(64)]);
-                    fill_bits(mask, k, 1, true);
+        let mut chain = vec![!0u64; (r.len as usize).div_ceil(64)];
+        for (i, t) in self.pending.iter().enumerate().rev() {
+            let Some(ov) = t.range.intersect(r) else {
+                continue;
+            };
+            let (to, ro, k) = (
+                (ov.offset - t.range.offset) as usize,
+                (ov.offset - r.offset) as usize,
+                ov.len as usize,
+            );
+            let mask = || vec![0u64; (t.range.len as usize).div_ceil(64)];
+            if t.time >= t1 {
+                fill_bits(deleted[i].get_or_insert_with(mask), to, k, true);
+            } else if let Some(eq) = &eqs[i] {
+                for c in (0..k).step_by(64) {
+                    let m = (k - c).min(64);
+                    let ch = bits(&chain, ro + c, m) & bits(eq, to + c, m);
+                    put_bits(&mut chain, ro + c, m, ch);
+                    let del = !ch & nmask(m);
+                    if del != 0 {
+                        let d = deleted[i].get_or_insert_with(mask);
+                        let old = bits(d, to + c, m);
+                        put_bits(d, to + c, m, old | del);
+                    }
                 }
             }
         }
@@ -2120,21 +2126,30 @@ impl Waveform {
 /// Push the runs of `t` not marked in `mask`.
 fn split_kept(t: Txn, mask: &[u64], out: &mut TxnList) {
     let n = t.range.len as usize;
-    let mut start = None;
-    for k in 0..=n {
-        let keep = k < n && bits(mask, k, 1) == 0;
-        match (keep, start) {
-            (true, None) => start = Some(k),
-            (false, Some(s)) => {
-                out.push(Txn {
-                    time: t.time,
-                    range: Range::new(t.range.offset + s as u32, (k - s) as u32),
-                    value: t.value.as_ref().map(|v| v.extract(s, k - s)),
-                });
-                start = None;
+    // The length of the run of bits equal to `set` from `k` on, a word at a time.
+    let run = |k: usize, set: bool| {
+        let mut len = 0;
+        while k + len < n {
+            let m = (n - k - len).min(64);
+            let w = bits(mask, k + len, m);
+            let t = (if set { w } else { !w & nmask(m) }).trailing_ones() as usize;
+            len += t;
+            if t < m {
+                break;
             }
-            _ => {}
         }
+        len
+    };
+    let mut k = run(0, true);
+    while k < n {
+        let len = run(k, false);
+        out.push(Txn {
+            time: t.time,
+            range: Range::new(t.range.offset + k as u32, len as u32),
+            value: t.value.as_ref().map(|v| v.extract(k, len)),
+        });
+        k += len;
+        k += run(k, true);
     }
 }
 
@@ -2302,7 +2317,7 @@ mod tests {
     }
 
     #[test]
-    fn events_of_a_wide_signal_by_blocks() {
+    fn events_of_a_wide_signal_by_words() {
         // Random changes of a 200-element signal, cycle c at c ns, against a per-element model
         // of the last event; the update takes whole plane words (`update_word`).
         let ty = SignalType::logic(200);
@@ -2374,6 +2389,73 @@ mod tests {
             w.pending.to_vec(),
             vec![txn(10, 0, &[0]), txn(20, 0, &[0, 1])]
         );
+    }
+
+    #[test]
+    fn preemption_of_wide_transactions_per_element() {
+        // Random old transactions over 200 elements against a per-element model of LRM
+        // 10.5.2.2: at or after `t1` deleted, in the window deleted from the first value
+        // (going back) that differs from the new one.
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        for round in 0..300 {
+            let mut w = Waveform::default();
+            let mut model: Vec<Vec<(u64, u8)>> = vec![Vec::new(); 200];
+            for _ in 0..1 + rnd(5) {
+                let off = rnd(190) as u32;
+                let len = 1 + rnd(200 - u64::from(off)) as u32;
+                let ns = 5 * (1 + rnd(5));
+                let v: Vec<u8> = (0..len).map(|_| rnd(2) as u8).collect();
+                let t = txn(ns, off, &v);
+                let at = w.pending.partition_point(|p| p.time <= t.time);
+                w.pending.insert(at, t);
+            }
+            for t in &w.pending {
+                for (k, e) in t.range.elems().enumerate() {
+                    let b = t.value.as_ref().unwrap().bytes(k, 1).unwrap()[0];
+                    model[e].push((t.time.raw(), b));
+                }
+            }
+            let off = rnd(150) as u32;
+            let r = Range::new(off, 1 + rnd(200 - u64::from(off)) as u32);
+            let v: Vec<u8> = (0..r.len).map(|_| rnd(2) as u8).collect();
+            let reject = (round % 3 != 0).then(|| Time::ns(5 * rnd(4)));
+            let t1 = Time::ns(20);
+            for e in r.elems() {
+                let new = v[e - off as usize];
+                let mut chain = true;
+                let mut keep: Vec<(u64, u8)> = Vec::new();
+                for &(t, b) in model[e].iter().rev() {
+                    let del = if t >= t1.raw() {
+                        true
+                    } else if reject.is_some_and(|f| t >= f.raw()) {
+                        chain &= b == new;
+                        !chain
+                    } else {
+                        false
+                    };
+                    if !del {
+                        keep.insert(0, (t, b));
+                    }
+                }
+                keep.push((t1.raw(), new));
+                model[e] = keep;
+            }
+            w.schedule(r, reject, &mut smallvec![txn(20, off, &v)]);
+            let mut got: Vec<Vec<(u64, u8)>> = vec![Vec::new(); 200];
+            for t in &w.pending {
+                for (k, e) in t.range.elems().enumerate() {
+                    let b = t.value.as_ref().unwrap().bytes(k, 1).unwrap()[0];
+                    got[e].push((t.time.raw(), b));
+                }
+            }
+            assert_eq!(got, model, "round {round}");
+        }
     }
 
     #[test]

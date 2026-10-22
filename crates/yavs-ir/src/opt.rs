@@ -17,6 +17,8 @@
 //! - drops pure definitions nobody reads,
 //! - keeps scalar frame slots that only direct loads and stores reach in registers
 //!   (`Opt::promote`, then the walk runs again over the result),
+//! - in a subprogram that cannot suspend, moves computations that do not change in a loop to
+//!   a block run before it (`licm.rs`),
 //! - and, last, empties the blocks no branch reaches, drops the `Stmt` markers of statements
 //!   that allocate no temporary memory, merges registers holding the same constant or address,
 //!   and gives the registers in use consecutive numbers.
@@ -34,6 +36,7 @@
 
 mod cfg;
 mod inline;
+mod licm;
 mod live;
 mod memo;
 mod range;
@@ -303,9 +306,11 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
         && f.body.is_none()
         && !f.flags.contains(FuncFlags::MAY_SUSPEND)
         && !f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
-        && cfg::run(prog, &mut f)
     {
-        tidy(prog, &mut f, &mut layouts);
+        let threaded = cfg::run(prog, &mut f);
+        if licm::run(prog, &mut f) | threaded {
+            tidy(prog, &mut f, &mut layouts);
+        }
     }
     if memo_enabled() {
         memo::run(prog, &mut f);

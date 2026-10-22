@@ -839,7 +839,7 @@ fn may_coalesce(f: &crate::Func) -> bool {
 }
 
 /// Does some branch go back to a block at or before its own (a loop)?
-fn has_back_edge(f: &crate::Func) -> bool {
+pub(super) fn has_back_edge(f: &crate::Func) -> bool {
     f.blocks.values().iter().enumerate().any(|(b, r)| {
         f.code[r.end as usize - 1]
             .targets()

@@ -42,6 +42,10 @@ const PASS: &[&str] = &[
     "composite/layout_memo_lengths",
     "scalar/slot_promotion",
     "composite/logic_fill",
+    "composite/loop_invariant",
+    "composite/loop_invariant_effect",
+    "composite/loop_invariant_fault_order",
+    "composite/loop_invariant_replay",
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/case_slice_choice",
@@ -774,6 +778,61 @@ fn static_array_bounds_are_constant() {
     for d in pos {
         assert!(konst.contains(&d), "{}", p.dump_func(funcs[0]));
     }
+}
+
+/// The inner loop of a matrix built from an array of vectors computes only what changes per
+/// element: the position of `i`, the element descriptor, the lengths and their products are
+/// computed before it (#526).
+#[test]
+fn loop_invariant_code_leaves_the_inner_loop() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg_loop_invariant.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
+    opts.libraries
+        .add_spec(&format!("work:{}", dir.display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let body = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
+        .map(|(id, _)| id)
+        .unwrap();
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    let funcs = l.subprograms_of(body).unwrap();
+    assert_eq!(funcs.len(), 1);
+    let p = l.finish().unwrap().program;
+    let f = p.func(funcs[0]).unwrap();
+    // The block of the element write: before, four positions and four lengths.
+    let blk = f
+        .blocks
+        .values()
+        .iter()
+        .find(|b| {
+            f.code[b.start as usize..b.end as usize]
+                .iter()
+                .any(|i| matches!(i, yavs_ir::Inst::LSet { .. }))
+        })
+        .unwrap();
+    let code = &f.code[blk.start as usize..blk.end as usize];
+    let count = |m: fn(&yavs_ir::Inst) -> bool| code.iter().filter(|i| m(i)).count();
+    let dump = p.dump_func(funcs[0]);
+    assert_eq!(
+        count(|i| matches!(i, yavs_ir::Inst::DopeLen { .. })),
+        0,
+        "{dump}"
+    );
+    assert!(
+        count(|i| matches!(i, yavs_ir::Inst::Pos { .. })) <= 2,
+        "{dump}"
+    );
 }
 
 /// A periodic composite constant (an array of records holding long logic vectors and arrays of

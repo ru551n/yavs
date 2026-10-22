@@ -4068,3 +4068,35 @@ Decisions:
 - Idea taken from the reference simulator (sim1; read for its design, no code taken): it registers the triggers of a
   static wait once, when the process is reset, and the wait only suspends; yavs registers at the first activation and
   keeps the waiters resident (`ProcMeta::perm`), so only the interpreter's re-execution of the wait had to go.
+
+## Loop-invariant code motion (yavs-ir `opt/licm.rs`, #526, 2026-10-22)
+
+Decisions:
+
+- **Only in a function or procedure that cannot suspend, without a debugger, after the clean-up (`cfg.rs`) and before
+  register numbering and inlining**; `YAVS_NO_CFG=1` turns it off with the clean-up. When it moved something, the walk of
+  `opt::tidy` runs again over the result. Why: the element loops of conversion functions are where the time goes (#518,
+  #526), a process loop would need registers live across a suspension, and a debugger expects every instruction at its
+  statement.
+- **Loops are natural loops with a single entry, found from the back edges of one depth-first walk**, taken inner first; a
+  header that several back edges share (the outer loop's body starts with the inner loop, which the clean-up's threading
+  produces) is split: the latch with the smallest loop keeps it, the entry and the other back edges go through a new block
+  that only jumps there. A new preheader block is made unless the one outside predecessor only jumps to the header.
+- **Failures stay where they were.** Almost every instruction can fail at run time (positions, checked arithmetic, checks,
+  descriptor lengths). One that can fail moves only from the start of the header up to its first instruction with an
+  effect, and the preheader replays that start as the loop's first pass would execute it: the moved instructions in their
+  order, between copies with fresh result registers of the instructions that stay in the loop and can fail (copies that
+  cannot fail are kept only where a kept copy reads them). The header runs whenever the loop is entered, so a failure of
+  the first pass happens in the preheader at the same instruction, with the same message and statement, after the same
+  effects; when the first pass passes, the loop runs as before. Moving such instructions stops at the point where the moved
+  instructions most outweigh the copies (a loop of one pass pays the copies). An instruction that can neither fail nor read
+  memory (constant, move, compare, select, address) moves from anywhere in the loop.
+- **Memory**: descriptor reads (`Pos`, `DopeLen`) move only when no instruction of the loop writes memory a descriptor can
+  be in (stores, copies, calls and the like; writes of logic elements cannot reach a descriptor); loads stay in the loop.
+  Why: no alias analysis yet; the loops in question write logic elements only.
+- **A register is invariant when the loop does not define it; a moved instruction's result register is defined once** (so
+  every use is still dominated by its definition, the verifier's must-defined rule).
+- Idea from the reference simulator: its lowering of a `for` loop computes the step and the bounds once, before the loop.
+  It has no general loop-invariant motion (its optimiser numbers values over the dominator tree); ours moves computations
+  out of loops after lowering, and keeps failures identical by replaying the first pass's start instead of proving that
+  checks pass.

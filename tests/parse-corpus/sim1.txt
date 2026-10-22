@@ -828,7 +828,7 @@ PASS 2008 sim1/test/regress/issue960.vhd
 PASS 2008 sim1/test/regress/issue962.vhd
 PASS 2008 sim1/test/regress/issue963.vhd
 PASS 2008 sim1/test/regress/issue968.vhd
-FAIL 2019 sim1/test/regress/issue970.vhd  # E0002 expected `;`, found `generic`
+PASS 2019 sim1/test/regress/issue970.vhd
 PASS 2008 sim1/test/regress/issue971.vhd
 PASS 2008 sim1/test/regress/issue972.vhd
 PASS 2008 sim1/test/regress/issue978.vhd

@@ -193,15 +193,18 @@ struct Obj {
 }
 
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
-/// object index (`obj_at`), two objects whose indices agree there evict each other; ways if a
-/// profile shows such conflicts.
+/// object index xor its space (`obj_at`: a private and a shared heap object of the same index
+/// are two objects of one protected-type library function), two objects whose keys agree there
+/// evict each other; ways if a profile shows such conflicts.
 const OBJS: usize = 16;
 
-/// The entry of `Mem::objs` for the object whose addresses have high half `hi` (and for the
-/// access values of heap index `hi & 0x1fff_ffff`, whose bits 32 and up are that index).
+/// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low four
+/// bits of its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4).
+/// The access value of a heap object has the same index in bits 32 to 55 and, as its tag, a
+/// shared flag in bit 57 (`obj_entry` with `handle`: the same key from the handle's high half).
 #[inline(always)]
 fn obj_at(hi: u64) -> usize {
-    hi as usize & (OBJS - 1)
+    (hi ^ hi >> 26) as usize & (OBJS - 1)
 }
 
 const NO_OBJ: Obj = Obj {
@@ -1569,7 +1572,8 @@ pub(crate) enum Part {
     Frame,
 }
 
-/// A `--tier=llvm` module of more LLVM instructions than this is compiled at `OptLevel::Fast`.
+/// A `--tier=llvm` module of more LLVM instructions than this is compiled at `OptLevel::Fast`
+/// (`YAVS_LLVM_FAST_MIN` overrides it, a tuning aid like `YAVS_LLVM_PIPELINE`).
 const EAGER_FAST_MIN: usize = 150_000;
 
 /// Predecessors of one exit block of a frame-mode function (`Gen::exit_for`).
@@ -1813,7 +1817,11 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     };
     notes.extend(more);
     // Optimised code generation of a module this big takes minutes (#501).
-    let opt = if opt == OptLevel::O2 && m.instruction_count() > EAGER_FAST_MIN {
+    let fast_min = std::env::var("YAVS_LLVM_FAST_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(EAGER_FAST_MIN);
+    let opt = if opt == OptLevel::O2 && m.instruction_count() > fast_min {
         OptLevel::Fast
     } else {
         opt
@@ -2388,6 +2396,9 @@ enum Known {
     Inst(u64),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
+    /// An address in a heap object (what a `Deref` makes, or an index into it): not in a frame, the
+    /// temporary area, the instance data or a constant.
+    Heap,
 }
 
 /// The registers `f` defines exactly once, by a `Const` or `ConstF` (its bits), and their values.
@@ -2490,6 +2501,7 @@ fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
             off,
         } => Some((dst, Known::Inst(off.into()))),
         Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
+        Inst::Deref { dst, .. } => Some((dst, Known::Heap)),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
         Inst::Index {
@@ -2516,6 +2528,7 @@ fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
                 }
                 // An offset past 4 GiB leaves the block through the instruction's own exit.
                 (Some(Known::Temp), _) => Some((dst, Known::Temp)),
+                (Some(Known::Heap), _) => Some((dst, Known::Heap)),
                 _ => None,
             }
         }
@@ -4626,8 +4639,11 @@ impl Gen {
                     Inst::Deref { dst, handle, .. } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
                         let h = self.ld(&c, handle);
-                        let e = self
-                            .obj_entry(&c, LLVMBuildLShr(self.b, h, self.c64(32), c"".as_ptr()));
+                        let e = self.obj_entry(
+                            &c,
+                            LLVMBuildLShr(self.b, h, self.c64(32), c"".as_ptr()),
+                            true,
+                        );
                         let eh = self.load(self.i64, self.gep(e, self.c64(OBJ_H as i64)));
                         let hit = LLVMBuildAnd(
                             self.b,
@@ -6425,10 +6441,19 @@ impl Gen {
     }
 
     /// The address of the entry of `Mem::objs` for high half `hi` (`obj_at`).
-    unsafe fn obj_entry(&self, c: &Cur, hi: LLVMValueRef) -> LLVMValueRef {
+    unsafe fn obj_entry(&self, c: &Cur, hi: LLVMValueRef, handle: bool) -> LLVMValueRef {
         // SAFETY: integer arithmetic on values of c.f; the entry lies inside `Mem`.
         unsafe {
-            let k = LLVMBuildAnd(self.b, hi, self.c64(OBJS as i64 - 1), c"".as_ptr());
+            // The low index bits, bit 3 flipped by the shared flag (bit 29 of an address's high half
+            // shifted down by 26; bit 25 of a handle's, isolated).
+            let flag = if handle {
+                let f = LLVMBuildLShr(self.b, hi, self.c64(22), c"".as_ptr());
+                LLVMBuildAnd(self.b, f, self.c64(8), c"".as_ptr())
+            } else {
+                LLVMBuildLShr(self.b, hi, self.c64(26), c"".as_ptr())
+            };
+            let k = LLVMBuildXor(self.b, hi, flag, c"".as_ptr());
+            let k = LLVMBuildAnd(self.b, k, self.c64(OBJS as i64 - 1), c"".as_ptr());
             let off = LLVMBuildMul(self.b, k, self.c64(OBJ_SIZE as i64), c"".as_ptr());
             let off = LLVMBuildAdd(self.b, off, self.c64(MEM_OBJS as i64), c"".as_ptr());
             self.gep(c.mem, off)
@@ -6614,8 +6639,9 @@ impl Gen {
                 return self.gep(self.tag(self.mem_ld(c, base, self.ptr), kind), o);
             }
             // A native frame's own slots are found here: the interpreter has no frame for it.
+            let heap = matches!(at, Some(Known::Heap));
             let (own, other, merge) = match &c.nat {
-                Some(nat) => {
+                Some(nat) if !heap => {
                     let (own, other, merge) = (self.block(c), self.block(c), self.block(c));
                     let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                     LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, hi, nat.fhi), own, other);
@@ -6661,7 +6687,7 @@ impl Gen {
                     LLVMPositionBuilderAtEnd(self.b, rest_blk);
                     (vec![(p, from), (pu, from_up)], other, merge)
                 }
-                None => (Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
+                _ => (Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
             };
             // Other memory: first the object's entry of `Mem::objs` (the objects found before, in
             // a process kept between activations: its heap variables; heap objects a `Deref`
@@ -6677,7 +6703,7 @@ impl Gen {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-                let e = self.obj_entry(c, hi);
+                let e = self.obj_entry(c, hi, false);
                 let mut hit = self.icmp(IP::LLVMIntEQ, self.load(self.i64, e), hi);
                 if write {
                     let w = self.load(self.i64, self.gep(e, self.c64(OBJ_W as i64)));
@@ -6691,9 +6717,11 @@ impl Gen {
                 // planes a caller made as temporaries, #527).
                 let at = |sp: u8| self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(sp) << 29));
                 let mut tries = vec![(hit, None)];
-                tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
-                if !write {
-                    tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));
+                if !heap {
+                    tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
+                    if !write {
+                        tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));
+                    }
                 }
                 for (hit, view) in tries {
                     let (base, len) = match view {

@@ -1873,7 +1873,6 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   (O(n) per array access). Slices of references are an instruction (`SigSlice`), so names below
   a formal work on both forms.
 
-
 ## Sem: user decisions of 2026-10-19
 
 - **Named return values in `return` and actuals (L62, #33; user, 2026-10-19):** a call of a function
@@ -2374,7 +2373,6 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   - *Entries per design:* `ir` is one more beside `sem` and `low`, so the store keeps the 96 most
     recently used entries instead of 48.
 
-
 ## Lazy image decode (#426, yavs decisions under the user's single-thread performance priority)
 
 Decoding the whole analysis image (serde and postcard: about 5 MB of arenas, 3 MB of source text, 13 000
@@ -2616,7 +2614,6 @@ user's performance priority:
 - **The shared heap in `SharedState` is boxed** (yavs-interp): each process carries the
   shared-state fields it fills in only while it runs; 120 bytes less per process.
 
-
 ## Narrow integer storage (R12; yavs-ir, yavs-lower, yavs-interp, yavs-elab, VHPI, waves, DAP, LLVM; #415, user approval 2026-10-19)
 
 - **What:** an integer type whose range fits in 32 bits (2008 `INTEGER`, `NATURAL`,
@@ -2776,7 +2773,6 @@ user's performance priority:
   not stored). `--tier=auto` keeps the interpreter's value: the functions it compiles run
   interpreted first, and the measured difference there is below the noise.
 
-
 ## Clean-up of finished subprograms: threading through short-circuit tests, slice emptiness tests, coalesced moves (yavs-ir `opt/cfg.rs`, #444)
 
 - **What:** after the optimiser's walks and before registers are numbered, a linear pass over the finished code of a
@@ -2838,15 +2834,11 @@ user's performance priority:
 - **Why:** these values are equal exactly when their stored bytes are; the key comparison of the
   data-types dictionary tests spent its time in that loop.
 
-
-
-
 ## Floor of a run: freeing the analysis (#426, yavs decision under the user's single-thread performance priority)
 
 - **`Db::release_analysis` frees the arenas on a thread of its own.** Dropping every node of the analysed
   design one by one took a fifth of a short run (#409 freed them for the peak, the drop sat in the run). The
   arenas are moved to a detached thread; a failed spawn drops them in place. Peak memory is unchanged.
-
 
 ## Zero-copy cache entries (yavs-cache, yavs-diag `shared.rs`, yavs-ir, #481 item 2, #407, yavs decisions under the user's single-thread performance priority)
 
@@ -3307,7 +3299,6 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   faults, about 7% of the cycles of a short run. The user chose PIE for hardening and packaging, so
   that gain is given up: `crates/yavs/build.rs` links no `-no-pie`, and the executable's code keeps
   address space layout randomisation.
-
 
 ## Compiled frames and calls between compiled functions (yavs-llvm, yavs-interp, #432, #337, #340, 2026-10-21)
 
@@ -4247,7 +4238,6 @@ Decisions:
   as calls (they compile small and run on native frames) it runs 13.2 s interpreted and 7.3 s with the tier. Wrappers and
   thin methods are still inlined.
 
-
 ## Shared offsets must stay memoisable and fusable (yavs-ir `opt/memo.rs`, `opt/share.rs`, yavs-interp `pre.rs`, #534, 2026-10-22)
 
 - Optimiser round 11 shares the position and length of an array element across the arms of an `if`, so the offsets of
@@ -4587,4 +4577,32 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   stack overflow report and needs the exit status as a number. The two helper threads that start with every piped run
   (the output flusher and the Ctrl-C handler) cost 6% together; starting them late needs a time source that does not
   depend on interpreted activity.
+
+## Compiled memory access: heap addresses are known, objects of different spaces do not share an entry (yavs-llvm, #554, 2026-10-22)
+
+- **A register defined by `Deref`, and every `Index`/`Move` of it, is a known heap address** (`Known::Heap`, the
+  generator's per-block knowledge of address registers). `Gen::host` then skips what only a frame, the temporary area or
+  the instance data can need: the native frame's own-slots test and its callers'-slots test, and the temporary and
+  instance tries of the object table. What is left of an access in a pointer-chasing function (a protected object's
+  storage, a table of access values) is the entry compare, the bounds test and the load. Frame-mode code gains the
+  same two tries.
+- **`Mem::objs` is still 16 direct-mapped entries, but the key mixes the space into the index** (`obj_at`, `Gen::obj_entry`).
+  It was the object index alone, so a private and a shared heap object of the same index, the first of every space and so
+  the hot ones of a protected-type library (the storage of the queue and of its pointer tables are shared objects, the
+  loop's own data private ones), evicted each other at every access: two lookups through `yavs_rt_host` and
+  `TierHost::object` per element. The key is the index with bit 3 flipped for a shared heap (space 7, bit 29 of the high
+  half); a `Deref` looks the entry up from the access value before it knows the address, whose shared flag is bit 25 of
+  its high half (tag 2), so the two sides compute the same key.
+- Measured (`--tier=llvm`, warm cache, simulate phase, median of 5, one pinned core; the interpreter in brackets): the
+  codec loop, queue push and pop and 2 million calls of an array accessor, with the exit change of the previous
+  section alone, then with this one, then with the whole module at `O2` code generation (`YAVS_LLVM_FAST_MIN`):
+  0.132 / 0.787 / 0.114 s, 0.137 / 0.685 / 0.074 s, 0.097 / 0.483 / 0.074 s [0.157 / 1.326 / 0.221 s].
+- `YAVS_LLVM_FAST_MIN=<n>` replaces the 150000 LLVM instructions above which a `--tier=llvm` module is compiled without
+  optimisation (a tuning aid like `YAVS_LLVM_PIPELINE`): a large value gives the code `--tier=auto` makes for the
+  functions it compiles at `O2`, which is what a code quality measurement wants.
+- **Tried and dropped:** a two-way table (32 entries, as 16 sets of two, a new object in the first way and the old
+  one in the second) removed the object callbacks from the profile (`yavs_rt_host` and `yavs_rt_fast` from 5 percent to
+  under 1) and made the codec queue slower (0.48 s to 0.50 s), the accessor loop slower (0.074 s to 0.087 s): the second
+  compare costs more than the misses it saves. A 32-entry direct-mapped table: no change. The misses that remain are
+  the object table emptied by an edit of the heap (`Mem::forget_since`), which refills one object per access.
 

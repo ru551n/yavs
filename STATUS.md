@@ -4962,6 +4962,24 @@ instruction ratio): elab-cold instructions 0.92, wall 0.93; elab-warm unchanged 
 800 to 750, `uvvm_sb_slv` 510 to 440, `uvvm_func_cov` 550 to 500, `hdlm_axi_fifo` 1150 to 1100; analysis phase of a cold
 `osvvm_axis_random` run (`--time-report`, core 6) 68 to 57 ms.
 
+## Cold front end: instance bodies of generic packages (#555, 2026-10-22)
+
+`Db::instance_body` cloned the 13 generic package instances of a cold `osvvm_axis_random` elab in 9.4 ms (of 11.5 ms at the first
+prefix end). Perf shows a third of it in page faults (#556), a sixth in decoding the generic body's lazy pages, the rest in the
+clone, where the memo tables of `Remap` hashed with SipHash. Changes (`crates/yavs-sem/src/generic.rs`): `Remap` tables are
+`FxHashMap`, `fill_scope` builds no hash map per region, the protected-body loop of `fix_bodies` is in id order. Decisions and the
+options that were tried or left: `docs/decisions.md` "Instance bodies of generic packages".
+
+Before / after, `--compare` interleaved on cores 6 and 7, `--phases elab`, 8 tests, 11 runs: elab-cold instructions 0.98 (protected
+5 tests 0.98; `osvvm_axis_random` 0.96, `osvvm_axi4_random` 0.96, `uvvm_sb_slv` 0.98), elab-warm 0.99 (the prefix image holds the
+memo tables). Cold elab instructions (M) `osvvm_axis_random` 742 to 716. In-process time of the 13 `instance_body`
+calls at the first prefix end, core 7, min of 8: 9.6 to 7.4 ms. Wall medians are within the 10 ms resolution of the table.
+YAVS_UNIT_CHECK=1 over osvvm, uvvm (2008, 2019), hdl-modules (2008, 2019), open-logic, vunit (2008, 2019), neorv32, poc, surf,
+satcat5, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl: all as expected.
+
+Not done: cloning only the bodies a run reaches (needs the stage and prefix rules to change, see the decision), the page faults of
+the whole run (#556).
+
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:

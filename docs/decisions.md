@@ -4368,6 +4368,32 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   ordered now. The default span (`Span::default()`, file 0 meaning no file) is written as such inside an
   entry (`yavs_diag::map_file_ids`).
 
+## Instance bodies of generic packages: what a cold run pays and why it is cloned (yavs-sem `generic.rs`, #555, 2026-10-22)
+
+`load_bodies_in` at the first prefix end of a cold `osvvm_axis_random` elab spent 9.4 of 11.5 ms in `Db::instance_body` (13
+instances of 3 generic packages, 35 000 cloned arena entries). Findings and decisions:
+
+- **Where the time went** (perf, cycles, frame-pointer build): a third in the kernel (page faults on the growing heap, #556),
+  a sixth decoding the generic body's lazy pages (the first instance of each generic only), the rest in the clone. In the clone
+  the memo tables of `Remap` (original id to clone id, 3 000 expressions per instance) used std `HashMap` (SipHash): they cost
+  about 26 M of the 742 M instructions of the cold elab. They are `FxHashMap` now (also deterministic in iteration order), `fill_scope` no longer builds a hash map per cloned region, and the
+  protected-body loop of `fix_bodies` visits types in id order like the declaration loop (the order decides the ids of the
+  cloned bodies; it was the order of a std hash map). Instance body part of a cold elab: 9.5 to 7.5 ms (min of 8), cold elab
+  instructions 742 M to 716 M.
+- **Every cold run clones every instance.** `load_bodies` ("every loaded package") needs all of them, and the prefix end only
+  moves the work there (skipping it at the prefix end made the final `bodies` pass do the same clones). So the cost is paid per
+  cold run, not per prefix; a warm run restores the cloned bodies from the prefix image as lazy pages.
+- **Tried and rejected: clone at analysis time of the instantiating unit** (so that the unit's entry in the analysed-unit
+  cache holds the clone and a replay maps it as pages). The generic's body must then be loaded while the instance's unit is
+  analysed, out of compile order in a closure run: the unit's entry records the body and what it loaded, a replay in another
+  session loads them in another order, and 43 of 134 entries of a cold osvvm elab missed ("changed", full keys differ).
+  A condition that fires only when the body is already analysed does not fire in `yavs analyze` runs (one file per call).
+- **Not done, needs the owners of lowering and the stage rules:** cloning a subprogram body only when something reaches it.
+  Lowering reads `Body::Hir` through `&Db`, the `low`/`lib` stage entries are valid only for a `Db` that has not grown since
+  its analysis, and the state at a prefix end must be the same whether restored or computed, so a body materialised during
+  lowering would break all three. A deterministic variant (a per-instance lazily decoded clone stored in the prefix image or
+  a stage entry, written by `elab`) is a new cache stage kind; left to a decision.
+
 ## Interpreter round 12: drives at zero delay, `'image` and message building (yavs-interp, yavs-kernel, #520, #440, 2026-10-22)
 
 Decisions:

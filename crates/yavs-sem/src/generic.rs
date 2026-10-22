@@ -18,6 +18,7 @@
 //! - subtypes and expressions that mention none of the above keep their ids;
 //!   changed expressions lose their folded value and are folded again.
 
+use rustc_hash::FxHashMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -189,14 +190,14 @@ pub(crate) enum Want {
 pub(crate) struct Remap {
     /// Regions whose content is cloned.
     roots: Vec<ScopeId>,
-    decls: HashMap<DeclId, DeclId>,
-    types: HashMap<TypeId, TypeId>,
-    subtypes: HashMap<SubtypeId, SubtypeId>,
-    scopes: HashMap<ScopeId, ScopeId>,
-    exprs: HashMap<ExprId, ExprId>,
-    stmts: HashMap<StmtId, StmtId>,
+    decls: FxHashMap<DeclId, DeclId>,
+    types: FxHashMap<TypeId, TypeId>,
+    subtypes: FxHashMap<SubtypeId, SubtypeId>,
+    scopes: FxHashMap<ScopeId, ScopeId>,
+    exprs: FxHashMap<ExprId, ExprId>,
+    stmts: FxHashMap<StmtId, StmtId>,
     /// Formal constants to actual expressions.
-    consts: HashMap<DeclId, ExprId>,
+    consts: FxHashMap<DeclId, ExprId>,
     /// First subtypes of formal types (a `subtype s is T` inherits the actual's constraint).
     /// Ordered: a hash set writes its elements in another order in every session.
     formal_firsts: std::collections::BTreeSet<SubtypeId>,
@@ -2897,7 +2898,8 @@ impl Db {
                 x.body = Body::Hir { scope: s, stmts };
             }
         }
-        let tpairs: Vec<(TypeId, TypeId)> = r.types.iter().map(|(a, b)| (*a, *b)).collect();
+        let mut tpairs: Vec<(TypeId, TypeId)> = r.types.iter().map(|(a, b)| (*a, *b)).collect();
+        tpairs.sort();
         for (orig, new) in tpairs {
             if orig == new {
                 continue;
@@ -2943,20 +2945,22 @@ impl Db {
                 new_order.push(n);
             }
         }
-        let mut new_names: HashMap<Symbol, Vec<DeclId>> = HashMap::new();
+        let mut new_names: Vec<(Symbol, Vec<DeclId>)> = Vec::with_capacity(names.len());
         for (k, ds) in names {
-            let v = new_names.entry(k).or_default();
+            let mut v = Vec::with_capacity(ds.len());
             for d in ds {
                 let n = self.r_decl(r, d);
                 if !v.contains(&n) {
                     v.push(n);
                 }
             }
+            new_names.push((k, v));
         }
         let uses: Vec<UseItem> = uses.into_iter().map(|u| self.r_use(r, u)).collect();
         let private_from = self.scopes[from].private_from;
         let s = &mut self.scopes[to];
         s.order.extend(new_order);
+        s.names.reserve(new_names.len());
         for (k, v) in new_names {
             s.names.entry(k).or_default().extend(v);
         }
@@ -3233,7 +3237,7 @@ impl Db {
             formal_firsts: inner.formal_firsts.clone(),
             ..Default::default()
         };
-        fn sorted<K: Copy + Ord, V: Copy>(m: &HashMap<K, V>) -> Vec<(K, V)> {
+        fn sorted<K: Copy + Ord, V: Copy>(m: &FxHashMap<K, V>) -> Vec<(K, V)> {
             let mut v: Vec<_> = m.iter().map(|(&a, &b)| (a, b)).collect();
             v.sort_by_key(|p| p.0);
             v

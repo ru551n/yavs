@@ -322,6 +322,11 @@ pub trait Tier: Send + Sync {
         true
     }
 
+    /// Called now and then (every 128 jumps and calls) by a simulation thread that runs
+    /// interpreted code while no compiled code is waiting; a tier starts its background work
+    /// here once the run has lasted long enough to need it.
+    fn tick(&self) {}
+
     /// Whether [`Tier::call`] takes `func` now (`Runtime::set_tier` marks it).
     fn callable(&self, _func: FuncId) -> bool {
         false

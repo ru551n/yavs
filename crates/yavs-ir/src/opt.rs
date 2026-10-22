@@ -1272,9 +1272,105 @@ impl<'a> Opt<'a> {
             }
             self.forward_frame_copies();
         }
+        self.drop_clean_roots();
         self.drop_statements();
         self.merge_consts();
         self.dce();
+    }
+
+    /// A fat pair in a block this function just allocated, whose two words (stored just before
+    /// its `TempRoot`) are addresses of the frame, the constant pool, instance or temporary
+    /// memory, points into no heap: the record would be empty (`Machine::fat_root`), so the
+    /// instruction goes. Strings built for a native call or a report were one in four
+    /// instructions of some testbenches; compiled code stepped each `TempRoot` and then every
+    /// `Stmt` after it (the markers are stepped while roots are recorded).
+    fn drop_clean_roots(&mut self) {
+        // Instructions between the stores and the root that change no memory.
+        let pure = |i: &Inst| {
+            matches!(
+                i,
+                Inst::Const { .. }
+                    | Inst::ConstF { .. }
+                    | Inst::Move { .. }
+                    | Inst::AddrOf { .. }
+                    | Inst::Index { .. }
+                    | Inst::Alloc { .. }
+                    | Inst::Load { .. }
+                    | Inst::Bin { .. }
+                    | Inst::Un { .. }
+                    | Inst::Cmp { .. }
+                    | Inst::Select { .. }
+                    | Inst::Bool { .. }
+            )
+        };
+        for b in 0..self.blocks.len() {
+            let rg = self.range(b);
+            for pc in rg.clone() {
+                let Inst::TempRoot {
+                    addr: fat,
+                    ty: None,
+                    ..
+                } = self.code[pc]
+                else {
+                    continue;
+                };
+                let fat_at = self.opn(fat);
+                if !self.single(fat) || !matches!(self.cls_of(fat_at), Some(Cls::Block(_))) {
+                    continue;
+                }
+                // The latest stores of words 0 and 8 of the pair, read forwards from the
+                // window's start; anything that may write memory forgets them.
+                let (mut w0, mut w8) = (None, None);
+                let mut second: Vec<Reg> = Vec::new();
+                for k in pc.saturating_sub(16).max(rg.start)..pc {
+                    match self.code[k] {
+                        Inst::Index {
+                            dst,
+                            base,
+                            pos,
+                            stride: 1,
+                        } if self.single(dst)
+                            && self.opn(base) == fat_at
+                            && self.opn(pos) == Opn::K(8) =>
+                        {
+                            second.push(self.resolve(dst));
+                        }
+                        Inst::Store {
+                            addr,
+                            src,
+                            w: Width::B8,
+                        } => {
+                            if self.opn(addr) == fat_at {
+                                w0 = Some(src);
+                            } else if second.contains(&self.resolve(addr)) {
+                                w8 = Some(src);
+                            } else if !matches!(self.cls_of(self.opn(addr)), Some(Cls::Block(x))
+                                if Some(Cls::Block(x)) != self.cls_of(fat_at))
+                            {
+                                (w0, w8) = (None, None);
+                            }
+                        }
+                        ref i if pure(i) => {}
+                        _ => (w0, w8) = (None, None),
+                    }
+                }
+                let off_heap = |s: &Self, r: Reg| match s.opn(r) {
+                    Opn::A(..) => true,
+                    Opn::K(v) => !matches!((v as u64) >> 61, 4 | 7),
+                    o @ Opn::R(_) => {
+                        matches!(s.cls_of(o), Some(Cls::Space(_) | Cls::Temp | Cls::Block(_)))
+                    }
+                    Opn::V(..) => false,
+                };
+                if let (Some(a), Some(c)) = (w0, w8)
+                    && off_heap(self, a)
+                    && off_heap(self, c)
+                {
+                    self.code[pc] = dead();
+                    self.changed = true;
+                }
+            }
+        }
     }
 
     /// A `NewFrame` copy of constant size that only constant-offset loads read (the local

@@ -254,6 +254,7 @@ const PASS: &[&str] = &[
     "ieee/numeric_std_ops_2019",
     "ieee/std_logic_1164_ops",
     "ieee/std_logic_1164_ops_2019",
+    "ieee/user_reduce_idiom",
     "postponed/postponed_basic",
     "postponed/postponed_wait",
     "process/call_conversions",
@@ -903,4 +904,51 @@ fn periodic_constant_is_compact() {
         })
         .count();
     assert!(compact > 0, "{}", p.dump_func(funcs[0]));
+}
+
+/// A function that folds a logic vector with the identity of one gate is called as the native
+/// of the unary operator; a look-alike with another start value stays a call (#531).
+#[test]
+fn reduction_idiom_calls_the_native() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg_reduce.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let tmp = tempfile::tempdir().expect("tmp");
+    opts.libraries
+        .add_spec(&format!("work:{}", tmp.path().display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let body = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
+        .map(|(id, _)| id)
+        .unwrap();
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    let funcs = l.subprograms_of(body).unwrap();
+    let p = l.finish().unwrap().program;
+    let wrap = funcs
+        .iter()
+        .copied()
+        .find(|&f| p.func(f).unwrap().name.contains("wrap"))
+        .unwrap();
+    let code = &p.func(wrap).unwrap().code;
+    let reduce = "yavs.ieee.std_logic_1164.\"or\"(std_ulogic_vector)std_ulogic";
+    let natives = code
+        .iter()
+        .filter(|i| match **i {
+            yavs_ir::Inst::CallNative { native, .. } => {
+                p.natives.get(native).is_some_and(|n| n.symbol == reduce)
+            }
+            _ => false,
+        })
+        .count();
+    // `any_f` (start value assigned) and `any_d` (start value as the default) are the native;
+    // `all_f`, which has no gate in its loop, is not.
+    assert_eq!(natives, 2, "{}", p.dump_func(wrap));
 }

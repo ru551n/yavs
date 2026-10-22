@@ -2600,6 +2600,20 @@ impl<'a> Fx<'a, '_> {
                 self.copy_out(span)?;
                 Ok(r)
             }
+            // A user function that folds a logic vector with one gate runs as the native of the
+            // unary operator (#531).
+            Body::Hir { .. }
+                if !self.cx.opts.no_native_ieee
+                    && !self.cx.opts.coverage
+                    && crate::reduce::reduction(db, callee).is_some() =>
+            {
+                let gate = crate::reduce::reduction(db, callee)
+                    .ok_or_else(|| self.cx.ice(span, "reduction idiom"))?;
+                let cells = self.cells(sp, args, span, true)?;
+                let r = self.native(&crate::reduce::symbol(gate), None, &cells, sp.ret, span)?;
+                self.copy_out(span)?;
+                Ok(r)
+            }
             Body::Hir { scope, .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
                 let mut cells = self.cells(sp, args, span, false)?;

@@ -4794,6 +4794,29 @@ single_min 6.46 s, 7.40, 5.52, 5.61 (1.0x, 0.87x, 1.17x, 1.15x). The earlier 1.7
 (`docs/design/parallel-kernel.md`) timed a core asleep in `wfi` (#513) and do not stand. With the real program the gain is 1.2x to 1.3x at 4 to 8 threads for twice the CPU time; batch sizes were not
 measured again here.
 
+## Reduction idiom as a native (#531, #521, 2026-10-22)
+
+A user function that is exactly `v := identity; for i in d'range loop v := v and|or|xor d(i); end loop; return v` over a
+`std_ulogic` array runs as the unary reduction native (`crates/yavs-lower/src/reduce.rs`, `docs/decisions.md` "Reduction
+idiom as a native"). Re-baselined on the 7950X3D, `main` at `ce929024` (interpreter 2.0 / 2.9 / 2.6 of sim1 for dual_full /
+single_min / single_cache, `--tier=auto` 9.3 / 10.4 / 10.5 s against 4.5 / 3.3 / 3.8 s). `tools/realbench --compare`, core 9
+(second CCD), median of 3, interpreter and `--tier=auto`:
+
+| test | interp wall | interp instructions | auto wall | auto instructions |
+|---|---:|---:|---:|---:|
+| neorv32_dual_full | 9.23 to 8.56 s (0.93) | 92.98 G to 86.66 G (0.93) | 9.32 to 8.94 s (0.96) | 0.93 |
+| neorv32_single_min | 10.02 to 9.51 s (0.95) | 111.85 G to 102.90 G (0.92) | 10.41 to 9.87 s (0.95) | 0.92 |
+| neorv32_single_cache | 10.15 to 9.62 s (0.95) | 108.16 G to 98.70 G (0.91) | 10.52 to 10.01 s (0.95) | 0.91 |
+| sc5_fifo_repack (uses `or_reduce`) | 4.11 to 4.13 s (1.00) | 0.99 | 4.04 to 4.16 s | 1.03 |
+
+`neorv32_cpu_counters.counter_increment` per activation: 13.5 us to 7.1 us. Where the neorv32 time is now (per-op timing by sampling,
+100 us of `neorv32_single_min`): signal reads and drives (`SigRead1` 29 ns, `Drive` 51 ns, `LSetDrive` 41 ns, `CopyDrive` 55 ns,
+`AllocReadVec` 29 ns per op) are about 23% of interpreted time, the kernel (commit, wake scan, cycle) 13% of cycles, `exec_comb`
+and the gateway `request` (about 150 and 110 per-leaf record drives per activation) 6.4% and 6.1% of process time. `--tier=auto`
+against the interpreter: 4% more cycles for 1.3% more instructions; no function is compiled in these runs (0.7% of samples in
+generated code), the extra cycles are the sampling variant of the dispatch loop (`run_ops::<false, true>`: jump counting 1%, the rest
+code layout of the 120 KB function, #508).
+
 ## Static waits and checked kernel copies (#530, #536, #529, 2026-10-22)
 
 Decisions: docs/decisions.md "Static waits and checked copies". The one wait of a single-suspension process skips its signal

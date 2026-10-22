@@ -19,6 +19,7 @@ mod foreign;
 pub use foreign::vhpi_model;
 mod func;
 mod protected;
+mod reduce;
 mod reflect;
 mod stmt;
 mod ty;

@@ -4376,3 +4376,23 @@ Decisions:
 - **Tools and tests name the tier where it matters**: difftest keeps `yavs` (the build's default), `yavs-interp`,
   `yavs-llvm` and `yavs-auto` (CI runs the first, the second and the last two on the `llvm` build); `tools/bench` passes
   `--tier=interp` in its binary-versus-binary mode (its `--ref` mode and `tools/realbench` already named tiers).
+
+## Reduction idiom as a native (yavs-lower, #531, #521, 2026-10-22)
+
+- **A call of a user function whose body is exactly `v := <identity>; for i in d'range loop v := v <gate> d(i); end loop;
+  return v;` is lowered to the native of the unary `std_logic_1164` operator** (`Op::Reduce`, the word-parallel fold the
+  `and`/`or`/`xor` of a vector and the `std_logic_misc` reduce functions already use). Conditions (`crates/yavs-lower/src/reduce.rs`):
+  one `constant` parameter that is an unconstrained one-dimensional array of `std_ulogic` (also `std_logic`), result
+  `std_ulogic`, a local variable of that type, the gate the `std_logic_1164` `and`/`or`/`xor` of two `std_ulogic` (a user
+  operator never matches), either operand order, the start value the gate's identity (`'1'` for `and`, `'0'` for `or`
+  and `xor`) assigned before the loop or given as the variable's default, `'range` not `'reverse_range`, nothing else in the body. Anything else stays a call (a start value that is not
+  the identity, `nand`/`nor`/`xnor`, a second statement, a constrained parameter).
+- Why: the inlined loop cost about 7 interpreter operations per bit; neorv32's `counter_increment` (29 reductions per
+  activation) ran 13.5 us per activation, now 7.1 us. The fold of the nine values is the one the library body computes
+  (the table is the same one the native reduction documents), checked over every vector of up to three values in
+  `ieee/user_reduce_idiom`.
+- Off with `YAVS_NO_NATIVE_IEEE` (the same switch as the library natives) and with coverage on (the function's own
+  statements are then counted). With a debugger the call is not stepped into, like a library native.
+- Idea from the reference simulator (sim1; read for its design, no code taken): it has no idiom recognition, it compiles
+  the loop to native code and the loop costs a nanosecond per bit there. Ours is a recogniser of one shape because the
+  interpreter pays per operation; the compiled tier gets the same call.

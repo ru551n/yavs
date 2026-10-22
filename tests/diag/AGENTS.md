@@ -1,7 +1,7 @@
 # AGENTS.md: tests/diag/ (diagnostic snapshots and the negative sem suite)
 
 Read the root `AGENTS.md` and `tests/AGENTS.md` first. Contracts: `crates/yavs/tests/diag.rs`
-(top level) and `tests/diag/sem/README.md` (the `sem/` suite; also `CODES.md`, `NVC.md`).
+(top level) and `tests/diag/sem/README.md` (the `sem/` suite; also `CODES.md`, `SIM1.md`).
 
 ## 1. Purpose and boundaries
 
@@ -22,7 +22,7 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first. Contracts: `crates/yavs/t
 |---|---|---|
 | Snapshots of rendered text are part of review | Diagnostics are a user interface | `docs/plan.md` "Verification", root rule 14 |
 | Exact `(code, line, col)` sets, warnings included, positions at the start of the primary span | Checks cascade suppression | `tests/diag/sem/README.md`, sem.md 8.2 |
-| Every negative file is checked against the reference simulators (`check_ref.py`); disagreements are justified in `NVC.md` | LRM policy (match existing simulators) | `tests/diag/sem/README.md` |
+| Every negative file is checked against the reference simulators (`check_ref.py`); disagreements are justified in `SIM1.md` | LRM policy (match existing simulators) | `tests/diag/sem/README.md` |
 | One illegal thing per file, `-- LRM <clause>` named | Focused failures | same, "Adding a test" |
 | Files that cannot pass yet are listed in `crates/yavs-sem/tests/diag_sem_xfail.txt`; any ICE fails regardless | Visible progress, no hidden crashes | `crates/yavs-sem/CONTRIBUTING.md` "Testing" |
 | `fuzz/` holds minimised fuzzer finds as regression tests | Rule 15 | `STATUS.md` "sem robustness" |

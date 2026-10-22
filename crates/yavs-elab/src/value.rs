@@ -730,7 +730,7 @@ use yavs_diag::Diagnostic;
 use yavs_sem::decl::Body;
 use yavs_sem::hir::{Actual, AggAssoc, AggBounds, Choice, ExprKind};
 use yavs_sem::implicit::Family;
-use yavs_sem::types::TypeKind;
+use yavs_sem::types::{Constraint, TypeKind};
 use yavs_sem::{Db, ExprId};
 
 use crate::codes;
@@ -1288,6 +1288,14 @@ impl Model {
             AggBounds::Named { low, high } => {
                 let lo = int(&self.eval(db, *low, scope)?, ex.span)?;
                 let hi = int(&self.eval(db, *high, scope)?, ex.span)?;
+                // Sem's result subtype has the direction of a constrained context (LRM
+                // 9.3.3.3), not the index subtype's: `(0 => g0, 1 => g1)` for `(1 downto 0)`.
+                let dir = match &db.subtypes[ex.subtype].constraint {
+                    Constraint::Array { dims: Some(ds), .. } if dim < ds.len() => {
+                        self.range(db, &ds[dim], scope, ex.span)?.dir
+                    }
+                    _ => dir,
+                };
                 match dir {
                     Direction::To => Bounds {
                         left: lo,

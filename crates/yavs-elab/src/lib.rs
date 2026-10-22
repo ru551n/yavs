@@ -163,6 +163,10 @@ pub struct ProcInst {
     /// A clocked process on one edge of one scalar signal
     /// (`yavs_kernel::EdgeTrigger`, `Walker::edge_trigger`).
     pub trigger: Option<ProcTrigger>,
+    /// A concurrent `target <= source;` of a static signal name (`Walker::copy_source`): the
+    /// source parts, one per part of `lsps[0]` (the target) and of the same length and kind.
+    /// The kernel copies them itself (`yavs_kernel::CopyProcess`, #529).
+    pub copy: Option<Vec<(LeafId, yavs_kernel::Range)>>,
 }
 
 /// The trigger of a clocked process ([`ProcInst::trigger`]).

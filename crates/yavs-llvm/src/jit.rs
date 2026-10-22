@@ -55,11 +55,66 @@ unsafe fn take_message(msg: *mut c_char) -> String {
     }
 }
 
+/// Code generator switches (LLVM command line options, process-wide, set once before the first
+/// target machine). Instruction scheduling and the machine-level motion and clean-up passes
+/// (sinking, LICM, CSE, block placement, copy propagation, post-RA scheduling, if-conversion,
+/// tail duplication) cost about a quarter of the codegen time of the generated code and change
+/// the speed of the compiled code by less than the run-to-run noise of the benchmarks (#432);
+/// instruction selection, register allocation, peepholes and branch folding stay.
+const CODEGEN_ARGS: &str = "-enable-misched=false -enable-post-misched=false \
+    -disable-machine-sink -disable-machine-licm -disable-machine-cse -disable-block-placement \
+    -disable-copyprop -disable-post-ra -disable-early-ifcvt -disable-postra-machine-licm \
+    -disable-postra-machine-sink -disable-early-taildup";
+
+/// Copies and disposes an LLVM memory buffer.
+unsafe fn take_buffer(buf: LLVMMemoryBufferRef) -> Vec<u8> {
+    if buf.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the caller passes a live buffer, which is ours to dispose.
+    unsafe {
+        let v = std::slice::from_raw_parts(
+            LLVMGetBufferStart(buf).cast::<u8>(),
+            LLVMGetBufferSize(buf),
+        )
+        .to_vec();
+        LLVMDisposeMemoryBuffer(buf);
+        v
+    }
+}
+
+/// What machine code depends on besides the module, the level and `optimize_as`'s `full`: the
+/// target triple, the CPU baseline, the LLVM version, the code generator switches and a custom
+/// pipeline (part of the key of the object cache).
+pub fn target_id() -> String {
+    init();
+    let (mut major, mut minor, mut patch) = (0, 0, 0);
+    // SAFETY: plain queries; the triple is an owned LLVM message.
+    unsafe {
+        LLVMGetVersion(&mut major, &mut minor, &mut patch);
+        let triple = take_message(LLVMGetDefaultTargetTriple());
+        format!(
+            "{triple} {} llvm-{major}.{minor}.{patch} args={} pipeline={}",
+            portable_cpu().to_string_lossy(),
+            std::env::var("YAVS_LLVM_ARGS")
+                .as_deref()
+                .unwrap_or(CODEGEN_ARGS),
+            std::env::var("YAVS_LLVM_PIPELINE").unwrap_or_default(),
+        )
+    }
+}
+
 fn init() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         // SAFETY: plain one-time LLVM initialisation.
         unsafe {
+            let dev = std::env::var("YAVS_LLVM_ARGS");
+            let a = dev.as_deref().unwrap_or(CODEGEN_ARGS);
+            let mut v: Vec<CString> = vec![CString::new("yavs").unwrap()];
+            v.extend(a.split_whitespace().map(|x| CString::new(x).unwrap()));
+            let p: Vec<*const c_char> = v.iter().map(|x| x.as_ptr()).collect();
+            llvm_sys::support::LLVMParseCommandLineOptions(p.len() as i32, p.as_ptr(), ptr::null());
             assert_eq!(LLVM_InitializeNativeTarget(), 0, "no native LLVM target");
             assert_eq!(
                 LLVM_InitializeNativeAsmPrinter(),
@@ -80,12 +135,28 @@ pub fn portable_cpu() -> &'static CStr {
     }
 }
 
+/// The most LLVM instructions (before optimisation) a module may have to get the full `O2`
+/// pipeline. The generator asks for it only for compute loops (`optimize_as`); everything else
+/// (library and testbench functions, whose time goes to what the interpreter's own functions
+/// do) gets `LEAN`: it costs a third of `default<O2>` and the compiled code is as fast within
+/// the noise (#432).
+const FULL_MAX: usize = 3000;
+
+/// Scalar clean-up of the frame register traffic and the guards, no loop, inlining or
+/// vectorisation passes: promote, common subexpressions, one combine, branch folding.
+const LEAN: &CStr =
+    c"function(sroa,early-cse,instcombine<max-iterations=1;no-verify-fixpoint>,simplifycfg,adce)";
+
 /// Optimisation level for the new pass manager and for codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptLevel {
     O0,
     O1,
     O2,
+    /// `LEAN` passes and the unoptimised code generator (instruction selection of one
+    /// instruction at a time, no live-variable analysis): for functions so large that
+    /// optimised code generation takes longer than linear time (`lower::level_for`).
+    Fast,
 }
 
 impl OptLevel {
@@ -94,6 +165,7 @@ impl OptLevel {
             OptLevel::O0 => c"default<O0>",
             OptLevel::O1 => c"default<O1>",
             OptLevel::O2 => c"default<O2>",
+            OptLevel::Fast => LEAN,
         }
     }
 
@@ -102,6 +174,7 @@ impl OptLevel {
             OptLevel::O0 => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
             OptLevel::O1 => LLVMCodeGenOptLevel::LLVMCodeGenLevelLess,
             OptLevel::O2 => LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault,
+            OptLevel::Fast => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
         }
     }
 }
@@ -232,6 +305,12 @@ impl Module {
     /// Sets triple and data layout, then runs `default<On>` through the new
     /// pass manager (`LLVMRunPasses`).
     pub fn optimize(&mut self, opt: OptLevel) -> Result<()> {
+        self.optimize_as(opt, true)
+    }
+
+    /// As `optimize`; at `O2` the full pipeline only when `full` and the module is small
+    /// (`FULL_MAX`), else `LEAN`.
+    pub fn optimize_as(&mut self, opt: OptLevel, full: bool) -> Result<()> {
         let tm = target_machine(opt)?;
         // SAFETY: tm and module are live; everything created here is disposed.
         unsafe {
@@ -243,11 +322,56 @@ impl Module {
             LLVMDisposeTargetData(dl);
             dump(self.module, "pre");
             let opts = LLVMCreatePassBuilderOptions();
-            let err = LLVMRunPasses(self.module, opt.pipeline().as_ptr(), tm, opts);
+            let custom = std::env::var("YAVS_LLVM_PIPELINE")
+                .ok()
+                .and_then(|p| CString::new(p).ok());
+            let pipeline = match opt {
+                OptLevel::O2 if !full || self.instruction_count() > FULL_MAX => LEAN,
+                _ => opt.pipeline(),
+            };
+            let err = LLVMRunPasses(
+                self.module,
+                custom.as_deref().unwrap_or(pipeline).as_ptr(),
+                tm,
+                opts,
+            );
             dump(self.module, "post");
             LLVMDisposePassBuilderOptions(opts);
             LLVMDisposeTargetMachine(tm);
             check(err)
+        }
+    }
+
+    /// The module as bitcode: what its machine code is made from (the key of the object cache).
+    pub fn bitcode(&self) -> Vec<u8> {
+        // SAFETY: the module is live; the buffer is copied and disposed.
+        unsafe {
+            take_buffer(llvm_sys::bit_writer::LLVMWriteBitcodeToMemoryBuffer(
+                self.module,
+            ))
+        }
+    }
+
+    /// The machine code of the module, after `optimize(opt)`, as an object file: what ORC
+    /// makes of the module when it is added with `Jit::add` to a JIT made at `opt`.
+    pub fn emit(&self, opt: OptLevel) -> Result<Vec<u8>> {
+        let tm = target_machine(opt)?;
+        let mut msg = ptr::null_mut();
+        let mut buf = ptr::null_mut();
+        // SAFETY: tm and module are live; the message and the buffer are taken over.
+        unsafe {
+            let bad = LLVMTargetMachineEmitToMemoryBuffer(
+                tm,
+                self.module,
+                LLVMCodeGenFileType::LLVMObjectFile,
+                &mut msg,
+                &mut buf,
+            );
+            LLVMDisposeTargetMachine(tm);
+            if bad != 0 {
+                return Err(Error(take_message(msg)));
+            }
+            Ok(take_buffer(buf))
         }
     }
 
@@ -368,6 +492,22 @@ impl Jit {
         }
     }
 
+    /// Adds an object file (`Module::emit`, or one the object cache kept) to the main dylib.
+    /// ORC links it when one of its symbols is looked up: its references to the runtime
+    /// callbacks are resolved by name to this JIT's absolute symbols.
+    pub fn add_object(&mut self, obj: &[u8]) -> Result<()> {
+        // SAFETY: the buffer is a copy that LLJIT takes over, also on failure.
+        unsafe {
+            let buf = LLVMCreateMemoryBufferWithMemoryRangeCopy(
+                obj.as_ptr().cast::<c_char>(),
+                obj.len(),
+                c"yavs-object".as_ptr(),
+            );
+            let jd = LLVMOrcLLJITGetMainJITDylib(self.raw);
+            check(LLVMOrcLLJITAddObjectFile(self.raw, jd, buf))
+        }
+    }
+
     /// Looks up an (unmangled) symbol, compiling and linking it if needed.
     pub fn lookup(&mut self, name: &str) -> Result<usize> {
         let name = CString::new(name).expect("symbol name has NUL");
@@ -378,6 +518,9 @@ impl Jit {
             .session_errors
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        if res.is_ok() {
+            perf_map(&name, addr as usize);
+        }
         match res {
             Ok(()) if errors.is_empty() => Ok(addr as usize),
             Ok(()) => Err(Error(errors.drain(..).collect::<Vec<_>>().join("; "))),
@@ -411,4 +554,25 @@ impl Drop for Jit {
             eprintln!("error: tearing down the LLVM JIT failed: {e}");
         }
     }
+}
+
+/// Profiling aid: with `YAVS_PERFMAP` set, every looked-up symbol is listed in `/tmp/perf-<pid>.map`
+/// (the file `perf report` reads for code it does not know), so compiled functions show under
+/// their symbol (`f<id>`, `f<id>_n`) instead of as anonymous JIT addresses. A symbol's size is the
+/// distance to the next one.
+fn perf_map(name: &CStr, addr: usize) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    static MAP: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    if !*ON.get_or_init(|| std::env::var_os("YAVS_PERFMAP").is_some()) {
+        return;
+    }
+    let mut m = MAP.lock().unwrap_or_else(|p| p.into_inner());
+    m.push((addr, name.to_string_lossy().into_owned()));
+    m.sort_unstable();
+    let mut out = String::new();
+    for (i, (a, n)) in m.iter().enumerate() {
+        let end = m.get(i + 1).map_or(a + 0x4000, |x| x.0);
+        out += &format!("{a:x} {:x} {n}\n", (end - a).min(0x10_0000));
+    }
+    let _ = std::fs::write(format!("/tmp/perf-{}.map", std::process::id()), out);
 }

@@ -243,8 +243,39 @@ pub struct Db {
     pub(crate) generic: crate::generic::GenericState,
     /// Whole-design facts found by [`Db::settle`] (see [`Facts`]).
     pub(crate) facts: Option<Facts>,
-    diags: Vec<Diagnostic>,
-    errors: usize,
+    /// The facts of the units replayed from the analysed-unit cache since the last settle, by
+    /// load (their entries are not scanned; `units.rs`).
+    #[serde(skip)]
+    pub(crate) unit_facts: rustc_hash::FxHashMap<u32, Facts>,
+    pub(crate) diags: Vec<Diagnostic>,
+    pub(crate) errors: usize,
+    /// Every load of a unit in this session, by the owner number of its arena entries
+    /// (`units.rs`, the analysed-unit cache).
+    pub(crate) loads: Vec<crate::units::LoadRec>,
+    /// The load that registered each source file (`ids::SESSION` for none).
+    pub(crate) file_owner: Vec<u32>,
+    /// The units being analysed from source and recorded, innermost last.
+    #[serde(skip)]
+    pub(crate) frames: Vec<crate::units::Frame>,
+    /// Questions about the libraries the innermost frame asked since its last step.
+    #[serde(skip)]
+    pub(crate) query_log: std::sync::Mutex<Vec<(crate::units::Query, crate::units::Answer)>>,
+    /// How to undo the replay in progress (`units.rs`).
+    #[serde(skip)]
+    pub(crate) undo: Vec<crate::units::Undo>,
+    /// The owner of the entries pushed now.
+    #[serde(skip, default = "session_owner")]
+    pub(crate) owner: u32,
+    /// Depth of replays from the analysed-unit cache in progress.
+    #[serde(skip)]
+    pub(crate) replaying: u32,
+    /// The runs of the entries of finished loads, by load (`units.rs` `Dec`).
+    #[serde(skip)]
+    pub(crate) run_cache: rustc_hash::FxHashMap<u32, crate::units::Runs>,
+}
+
+fn session_owner() -> u32 {
+    crate::ids::SESSION
 }
 
 // Helpers below are used by the slices being filled in (CONTRIBUTING.md).
@@ -356,35 +387,72 @@ impl Db {
     /// analysis never changes afterwards) and those of the entries added since, so that a `Db`
     /// restored from an image does not decode the arenas of a prefix again to settle.
     pub(crate) fn scan_facts(&self, prev: Option<&Facts>) -> Facts {
-        use crate::hir::{ExprKind, PredefAttr, StmtKind};
         let mut f = prev.cloned().unwrap_or_default();
-        for i in f.exprs..self.exprs.len() {
-            let id = ExprId::from_index(i);
-            match self.exprs[id].kind {
-                ExprKind::Attr {
-                    attr: PredefAttr::Active | PredefAttr::LastActive,
-                    ..
-                } => f.reads_activity = true,
-                ExprKind::External(x)
-                    if self.externals[x].path_kind == yavs_syntax::ast::PathKind::Package =>
-                {
-                    f.package_paths.push((id, x));
-                }
-                _ => {}
-            }
+        // The entries of units replayed from the analysed-unit cache come with their facts.
+        self.scan_new(&self.exprs, f.exprs, |i| {
+            self.note_expr(ExprId::from_index(i), &mut f)
+        });
+        self.scan_new(&self.stmts, f.stmts, |i| {
+            self.note_stmt(StmtId::from_index(i), &mut f)
+        });
+        for u in self.unit_facts.values() {
+            f.reads_activity |= u.reads_activity;
+            f.forces.extend_from_slice(&u.forces);
+            f.package_paths.extend_from_slice(&u.package_paths);
         }
-        for i in f.stmts..self.stmts.len() {
-            let id = StmtId::from_index(i);
-            if matches!(
-                self.stmts[id].kind,
-                StmtKind::Force { .. } | StmtKind::Release { .. }
-            ) {
-                f.forces.push(id);
-            }
+        if !self.unit_facts.is_empty() {
+            f.forces.sort_unstable_by_key(|s| s.index());
+            f.package_paths.sort_unstable_by_key(|p| p.0.index());
         }
         f.exprs = self.exprs.len();
         f.stmts = self.stmts.len();
         f
+    }
+
+    /// Call `f` with the index of every entry of `a` from `from` on that no replayed unit with
+    /// recorded facts made.
+    fn scan_new<I, T>(&self, a: &Arena<I, T>, from: usize, mut f: impl FnMut(usize)) {
+        let runs = a.runs_raw();
+        let first = runs
+            .partition_point(|r| r.0 as usize <= from)
+            .saturating_sub(1);
+        for (k, &(start, owner)) in runs.iter().enumerate().skip(first) {
+            if self.unit_facts.contains_key(&owner) {
+                continue;
+            }
+            let end = runs.get(k + 1).map_or(a.len(), |r| r.0 as usize);
+            for i in (start as usize).max(from)..end {
+                f(i);
+            }
+        }
+    }
+
+    /// Add what expression `id` contributes to `f`.
+    pub(crate) fn note_expr(&self, id: ExprId, f: &mut Facts) {
+        use crate::hir::{ExprKind, PredefAttr};
+        match self.exprs[id].kind {
+            ExprKind::Attr {
+                attr: PredefAttr::Active | PredefAttr::LastActive,
+                ..
+            } => f.reads_activity = true,
+            ExprKind::External(x)
+                if self.externals[x].path_kind == yavs_syntax::ast::PathKind::Package =>
+            {
+                f.package_paths.push((id, x));
+            }
+            _ => {}
+        }
+    }
+
+    /// Add what statement `id` contributes to `f`.
+    pub(crate) fn note_stmt(&self, id: StmtId, f: &mut Facts) {
+        use crate::hir::StmtKind;
+        if matches!(
+            self.stmts[id].kind,
+            StmtKind::Force { .. } | StmtKind::Release { .. }
+        ) {
+            f.forces.push(id);
+        }
     }
 
     pub fn new(opts: Options) -> Db {
@@ -499,8 +567,17 @@ impl Db {
             pending_specs: Vec::new(),
             generic: Default::default(),
             facts: None,
+            unit_facts: Default::default(),
             diags: Vec::new(),
             errors: 0,
+            loads: Vec::new(),
+            file_owner: Vec::new(),
+            frames: Vec::new(),
+            query_log: Default::default(),
+            undo: Vec::new(),
+            owner: crate::ids::SESSION,
+            replaying: 0,
+            run_cache: Default::default(),
         }
     }
 

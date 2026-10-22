@@ -1,2 +1,0 @@
-# tools/corpus/run.py expected results for vhdl-tool-checks-2008 (nvc); one line per manifest entry, in order
-PASS work vhdl-tool-checks/Ranges.2008.vhdl

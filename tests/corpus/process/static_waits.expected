@@ -1,0 +1,14 @@
+exit	0
+diag	note	0	0	:tb_static_waits:sens	sens r.a=0000 r.b=0 v(k)=00 x='0'
+diag	note	1000000	1	:tb_static_waits:sens	sens r.a=1010 r.b=0 v(k)=00 x='0'
+diag	note	2000000	1	:tb_static_waits:sens	sens r.a=1010 r.b=0 v(k)=11 x='0'
+diag	note	4000000	1	:tb_static_waits:sens	sens r.a=1010 r.b=0 v(k)=11 x='1'
+diag	note	4000000	1	:tb_static_waits:on_list	on x='1' y='0' r.b=0
+diag	note	5000000	1	:tb_static_waits:on_list	on x='1' y='1' r.b=0
+diag	note	5000000	1	:tb_static_waits:until_eq	until x=y='1'
+diag	note	6000000	1	:tb_static_waits:sens	sens r.a=1010 r.b=4 v(k)=11 x='1'
+diag	note	6000000	1	:tb_static_waits:on_list	on x='1' y='1' r.b=4
+diag	note	7000000	1	:tb_static_waits:sens	sens r.a=1010 r.b=4 v(k)=11 x='0'
+diag	note	7000000	1	:tb_static_waits:on_list	on x='0' y='0' r.b=4
+diag	note	7000000	1	:tb_static_waits:until_eq	until x=y='0'
+diag	note	8000000	0	:tb_static_waits:stim	o=1000 sens=6 on=4 until=2 call=7

@@ -1,0 +1,2 @@
+# tools/corpus/run.py expected results for vhdl-tool-checks-2008 (sim1); one line per manifest entry, in order
+PASS work vhdl-tool-checks/Ranges.2008.vhdl

@@ -18,7 +18,8 @@
 //! (`Frame::pc`), so traces, messages, coverage, root maps and the debug loop see the IR.
 
 use yavs_ir::{
-    AddrSpace, BoolOp, CheckKind, CheckMsgId, CmpOp, Func, Inst, IntOp, Program, Role, Width,
+    AddrSpace, BoolOp, CheckKind, CheckMsgId, CmpOp, Func, FuncFlags, Inst, IntOp, Program, Role,
+    Width,
 };
 
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
@@ -29,7 +30,15 @@ pub(crate) struct Pre {
     /// The function's frame size in bytes (`Func::frame`), its parameters' slots and widths and
     /// whether it is nested: what a call needs, without touching the function itself.
     pub slots: u32,
+    /// A call from the plain loop needs not write the parameters to their slots: the prologue it
+    /// skips is the only reader (`lean_params`).
+    pub lean: bool,
+    /// The bytes of slots such a call allocates: none when the parameters are all the frame has.
+    pub fslots: u32,
     pub params: Box<[(u32, Width)]>,
+    /// For each parameter, the register the function's first ops load it into (`NONE`: none).
+    /// A call writes these registers itself and goes on at `Code::skip`.
+    pub pro: Box<[u32]>,
     pub nested: bool,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
@@ -150,11 +159,28 @@ impl Pre {
                 *n = *t;
             }
         }
-        let code = Code::new(f, prog, &skip, &known, &next);
+        let mut code = Code::new(f, prog, &skip, &known, &next);
+        let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
+        let pro = prologue(&mut code, &params);
+        let lean = lean_params(f, prog, &code, &pro);
+        // The registers holding the address of a parameter's slot are only read by the
+        // prologue the call skips: they need no address.
+        if lean {
+            frame.retain(|&(_, off)| !f.params.iter().any(|p| p.slot as u64 == off));
+        }
+        let all_params: u32 = f.params.iter().map(|p| p.width.bytes()).sum();
+        let fslots = if lean && f.frame == all_params && f.roots.is_empty() {
+            0
+        } else {
+            f.frame
+        };
         Pre {
             init,
             slots: f.frame,
-            params: f.params.iter().map(|p| (p.slot, p.width)).collect(),
+            lean,
+            fslots,
+            params,
+            pro,
             nested: f.parent.is_some(),
             frame,
             next,
@@ -183,6 +209,11 @@ pub(crate) const SCAN: u8 = 0x80;
 pub(crate) enum Op {
     /// The IR instruction at this pc, through `Machine::step`.
     Step(u32),
+    /// `Inst::Case`: the arms of `Code::cases[tab]` as op indices.
+    Case {
+        v: u32,
+        tab: u32,
+    },
     Stmt,
     Move {
         dst: u32,
@@ -568,6 +599,23 @@ pub(crate) enum Op {
         d2: u32,
         off: u32,
     },
+    /// `Deref`, and the `IndexImm` of its result (which is also written): the address `off` bytes
+    /// into the object (the elements of an array behind an access value).
+    DerefImm {
+        d1: u32,
+        handle: u32,
+        d2: u32,
+        off: u32,
+    },
+    /// `LoadOff` of an access value (also written), its `Deref` and the `IndexImm` of that.
+    LoadDerefImm {
+        base: u32,
+        h: u32,
+        d1: u32,
+        d2: u32,
+        o1: u16,
+        o2: u16,
+    },
     /// `MoveBr` to a `CondBr` on the moved register: the move, then the branch on it.
     MoveCondBr {
         dst: u32,
@@ -575,19 +623,31 @@ pub(crate) enum Op {
         t: u32,
         f: u32,
     },
-    /// `EdgeSig` and the `CondBr` on its result (which is also written).
+    /// `EdgeSig` and the `CondBr` on its result (which is also written). With `stmt`, the
+    /// `Stmt` before it too (the op stands in its place and goes on as the next one).
     EdgeBr {
         dst: u32,
         rising: bool,
+        stmt: bool,
         sig: u32,
         offset: u32,
         t: u32,
         f: u32,
     },
-    /// `WaitSig` and the `Suspend` after it.
+    /// `WaitSig` and the `Suspend` after it, as op `at`: the op itself, or the op a `Br` to it
+    /// was replaced by a copy of (the copy runs as op `at`). With `stmt`, op `at` is the `Stmt`
+    /// before them (and the op after it the `WaitSig`).
     WaitSuspend {
         sig: u32,
         offset: u32,
+        at: u32,
+        stmt: bool,
+    },
+    /// The `Stmt` of a wait statement whose sensitivity is the same at every activation
+    /// (`static_waits`): when the kernel can keep the last wait (`Ctx::wait_same`), the
+    /// op goes on at the `Suspend` (op `to`) without naming the signals again.
+    WaitStatic {
+        to: u32,
     },
     /// `StmtLoadSlot8` and the `CondBr` on the register it loaded (which is also written).
     FlagBr {
@@ -757,6 +817,25 @@ pub(crate) enum Op {
         len: u32,
         dst: u32,
     },
+    /// `Inst::CallNative` of `'image` of an integer or enumeration value in register `a` (type
+    /// `ty`): the string made at once, without the argument cells and checks of other natives
+    /// (it reads nothing but its argument and writes only temporary memory).
+    Image {
+        dst: u32,
+        a: u32,
+        ty: u32,
+    },
+    /// `Image` (result `x`) and the three ops after it that read its string: the data address
+    /// into `p`, the descriptor into `q`, the length into `l` (`Load`, `LoadOff` by 8,
+    /// `DopeLen`); steps over them.
+    ImageStr {
+        a: u32,
+        ty: u32,
+        x: u16,
+        p: u16,
+        q: u16,
+        l: u16,
+    },
     /// `Inst::CallNative` of a native `ieee` subprogram with at most four arguments, none a signal:
     /// the call without the bookkeeping other natives need (they may reach the heap, files and
     /// the like; these work on temporary memory only).
@@ -873,6 +952,130 @@ pub(crate) struct Code {
     /// For each `Aff` op (sorted by op index): the IR pcs of the `Bin` run it stands for, from
     /// its first instruction to the one defining the op's result.
     pub aff: Vec<(u32, u32, u32)>,
+    /// The `Case` tables of the `Op::Case`s, with op indices as targets.
+    pub cases: Vec<CaseOps>,
+    /// The op a call goes on at when it has written `Pre::pro` itself: after the ops that
+    /// only load parameters (`NONE`: there are none).
+    pub skip: u32,
+}
+
+/// Is every parameter handed over in the register the prologue loads it into, and read from
+/// its slot by nothing else? Then a call writes the registers and leaves the slots alone.
+/// Plain functions and procedures whose parameters are whole 8-byte values passed in only.
+fn lean_params(f: &Func, prog: &Program, code: &Code, pro: &[u32]) -> bool {
+    if f.nested
+        || f.parent.is_some()
+        || f.body.is_some()
+        || !matches!(
+            f.kind,
+            yavs_ir::FuncKind::Function | yavs_ir::FuncKind::Procedure
+        )
+        || code.skip == NONE
+        || pro.len() != f.params.len()
+        || pro.contains(&NONE)
+        || f.params.iter().any(|p| {
+            p.width != Width::B8
+                || p.class != yavs_ir::ParamClass::Value
+                || p.mode != yavs_ir::Mode::In
+        })
+    {
+        return false;
+    }
+    let in_param = |off: u32| f.params.iter().any(|p| p.slot == off);
+    // The registers holding a parameter slot's address, each defined once.
+    let mut addr: Vec<u32> = Vec::new();
+    for i in &f.code {
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Frame,
+            off,
+        } = *i
+            && in_param(off)
+        {
+            addr.push(dst.0);
+        }
+    }
+    let Some(&end) = code.at.get(code.skip as usize) else {
+        return false;
+    };
+    // The prologue is entered by the call only: no jump goes back to it.
+    let targets = f.code.iter().flat_map(|i| match *i {
+        Inst::Case { table, .. } => prog.cases.get(table).map_or_else(Vec::new, |t| {
+            std::iter::once(t.default)
+                .chain(t.arms.iter().map(|a| a.2))
+                .collect()
+        }),
+        ref i => i.targets(),
+    });
+    for t in targets {
+        if f.blocks.get(t).is_none_or(|b| b.start < end) {
+            return false;
+        }
+    }
+    // Nothing at or after the first op the call runs reads one of them.
+    for i in f.code.iter().skip(end as usize) {
+        let mut used = false;
+        i.visit(&mut |r, role, _| used |= role == Role::Use && addr.contains(&r.0));
+        if let Some(l) = i.list() {
+            used |= f
+                .regs(l)
+                .is_none_or(|rs| rs.iter().any(|r| addr.contains(&r.0)));
+        }
+        if used {
+            return false;
+        }
+    }
+    true
+}
+
+/// The leading ops that load a parameter from its slot into a register, each a whole 8-byte
+/// parameter, and the statement markers after them: for each parameter the register (`NONE`),
+/// and `code.skip` set past the ops.
+fn prologue(code: &mut Code, params: &[(u32, Width)]) -> Box<[u32]> {
+    let mut pro = vec![NONE; params.len()];
+    let param = |off: u32| params.iter().position(|&p| p == (off, Width::B8));
+    let mut k = code.first as usize;
+    let mut any = false;
+    while let Some(&op) = code.ops.get(k) {
+        let loads: &[(u32, u32)] = match op {
+            Op::LoadSlot8 { dst, off }
+            | Op::LoadSlot {
+                dst,
+                off,
+                w: Width::B8,
+            } => &[(dst, off)],
+            Op::LoadSlot8x2 { d1, o1, d2, o2 } => &[(d1, o1), (d2, o2)],
+            _ => break,
+        };
+        if !loads.iter().all(|&(_, off)| param(off).is_some()) {
+            break;
+        }
+        for &(dst, off) in loads {
+            if let Some(p) = param(off) {
+                pro[p] = dst;
+            }
+        }
+        any = true;
+        k += 1;
+    }
+    // A statement marker at the start frees nothing: the frame has no temporaries yet.
+    while matches!(code.ops.get(k), Some(Op::Stmt)) {
+        any = true;
+        k += 1;
+    }
+    code.skip = if any { k as u32 } else { NONE };
+    if pro.iter().any(|&r| r != NONE) {
+        pro.into()
+    } else {
+        Box::default()
+    }
+}
+
+/// A `Case` table with its targets as op indices.
+pub(crate) struct CaseOps {
+    /// Sorted, non-overlapping inclusive ranges and their targets.
+    pub arms: Vec<(i64, i64, u32)>,
+    pub default: u32,
 }
 
 pub(crate) const NONE: u32 = u32::MAX;
@@ -892,6 +1095,27 @@ enum NativeOp {
         rising: bool,
         sig: yavs_ir::Reg,
     },
+}
+
+/// The argument and type of a call of `'image` of an integer or enumeration value (`Op::Image`).
+fn scalar_image(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+) -> Option<(yavs_ir::Reg, yavs_ir::TyId)> {
+    let n = prog.natives.get(native)?;
+    let ty = n.ty?;
+    let &[a] = f.regs(args)? else {
+        return None;
+    };
+    (n.symbol == "yavs.attr.image"
+        && f.reg_ty.get(a.0 as usize) == Some(&yavs_ir::RegTy::I64)
+        && matches!(
+            prog.types.get(ty),
+            Some(yavs_ir::Ty::Int { .. } | yavs_ir::Ty::Enum { .. })
+        ))
+    .then_some((a, ty))
 }
 
 /// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most four arguments, none a
@@ -1335,10 +1559,46 @@ fn waveform_is_private(
         && !live_after(f, to, yavs_ir::Reg(base))
 }
 
+/// Whether compiled code may take over the frame at the instruction after `i`
+/// (`yavs_llvm`'s `resumes`; broader is safe, narrower is not): a call that is not run inline, a
+/// report, a suspension. Natives the tier does as tables or edge tests are inline.
+fn tier_resumes(prog: &Program, f: &Func, i: &Inst) -> bool {
+    match *i {
+        Inst::CallNative { native, args, dst } => {
+            let Some(sym) = prog.natives.get(native).map(|n| n.symbol.as_str()) else {
+                return true;
+            };
+            let (Some(rs), Some(d)) = (f.regs(args), dst) else {
+                return true;
+            };
+            if let Some(t) = crate::code_table(sym) {
+                let nregs = f.reg_ty.len() as u32;
+                let fits = t.len() == 9usize.pow(rs.len() as u32)
+                    && rs.iter().chain([&d]).all(|r| r.0 < nregs)
+                    && rs
+                        .iter()
+                        .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig));
+                return !fits;
+            }
+            crate::edge_native(sym).is_none()
+        }
+        _ => matches!(
+            i,
+            Inst::Call { .. }
+                | Inst::CallForeign { .. }
+                | Inst::CallIndirect { .. }
+                | Inst::CallProt { .. }
+                | Inst::Report { .. }
+                | Inst::Suspend { .. }
+        ),
+    }
+}
+
 /// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
 /// first op's pc stays an entry, the others' pcs are not).
 #[allow(clippy::too_many_arguments)]
 fn peephole(
+    prog: &Program,
     f: &Func,
     ops: &mut Vec<Op>,
     at: &mut Vec<u32>,
@@ -1385,82 +1645,93 @@ fn peephole(
             ) if addr == w && base == w && free(i + 1) && free(i + 2) => {
                 // The `Copy` into the waveform and the `Drive` of it, later in the block, with
                 // nothing else using it: both become one op there and these three are not run.
-                let pair = (i + 3..old.len()).take_while(|&j| free(j)).find_map(|j| {
-                    let Some(&Op::Drive {
-                        driver,
-                        target,
-                        wave,
-                        n,
-                        reject: NONE,
-                        inertial,
-                    }) = old.get(j + 1)
-                    else {
-                        return None;
-                    };
-                    let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
-                    let value = match old[j] {
-                        Op::Copy { dst, src, bytes } if dst == e => Some((src, bytes, true)),
-                        Op::LSet { base, idx, v } if base == e && int(idx) == Some(0) => {
-                            Some((v, 0, false))
-                        }
-                        _ => None,
-                    }?;
-                    let clean = wave == w
-                        && int(n) == Some(1)
-                        && free(j + 1)
-                        && waveform_is_private(f, block_start, from, to, w, e)
-                        && !(from + 3..to).any(|p| {
-                            let mut def = false;
-                            f.code[p]
-                                .visit(&mut |r, role, _| def |= role == Role::Def && r.0 == time);
-                            def
-                        });
-                    let r = |x: u32| u16::try_from(x).ok();
-                    match (r(driver), r(target), r(time), r(size), r(w), r(e), r(n)) {
-                        (
-                            Some(driver),
-                            Some(target),
-                            Some(time),
-                            Some(size),
-                            Some(w16),
-                            Some(e16),
-                            Some(n),
-                        ) if clean => {
-                            let (a, b, copy) = value;
-                            if copy {
-                                Some((
-                                    j,
-                                    Op::CopyDrive {
-                                        driver,
-                                        target,
-                                        src: r(a)?,
-                                        bytes: r(b)?,
-                                        time,
-                                        size,
-                                        w: w16,
-                                        n,
-                                        inertial,
-                                    },
-                                ))
-                            } else {
-                                Some((
-                                    j,
-                                    Op::LSetDrive {
-                                        v: a,
-                                        driver,
-                                        target,
-                                        time,
-                                        size,
-                                        w: w16,
-                                        e: e16,
-                                        inertial,
-                                    },
-                                ))
+                // Not across an instruction after which compiled code may take over the frame
+                // (`Tier::run` at a call's return): it would find the waveform's registers
+                // undefined.
+                let hands_over = |k: usize| {
+                    old_at
+                        .get(k)
+                        .is_some_and(|&p| tier_resumes(prog, f, &f.code[p as usize]))
+                };
+                let pair = (i + 3..old.len())
+                    .take_while(|&j| free(j) && !(i + 3..j).any(hands_over))
+                    .find_map(|j| {
+                        let Some(&Op::Drive {
+                            driver,
+                            target,
+                            wave,
+                            n,
+                            reject: NONE,
+                            inertial,
+                        }) = old.get(j + 1)
+                        else {
+                            return None;
+                        };
+                        let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
+                        let value = match old[j] {
+                            Op::Copy { dst, src, bytes } if dst == e => Some((src, bytes, true)),
+                            Op::LSet { base, idx, v } if base == e && int(idx) == Some(0) => {
+                                Some((v, 0, false))
                             }
+                            _ => None,
+                        }?;
+                        let clean = wave == w
+                            && int(n) == Some(1)
+                            && free(j + 1)
+                            && waveform_is_private(f, block_start, from, to, w, e)
+                            && !(from + 3..to).any(|p| {
+                                let mut def = false;
+                                f.code[p].visit(&mut |r, role, _| {
+                                    def |= role == Role::Def && r.0 == time
+                                });
+                                def
+                            });
+                        let r = |x: u32| u16::try_from(x).ok();
+                        match (r(driver), r(target), r(time), r(size), r(w), r(e), r(n)) {
+                            (
+                                Some(driver),
+                                Some(target),
+                                Some(time),
+                                Some(size),
+                                Some(w16),
+                                Some(e16),
+                                Some(n),
+                            ) if clean => {
+                                let (a, b, copy) = value;
+                                if copy {
+                                    Some((
+                                        j,
+                                        Op::CopyDrive {
+                                            driver,
+                                            target,
+                                            src: r(a)?,
+                                            bytes: r(b)?,
+                                            time,
+                                            size,
+                                            w: w16,
+                                            n,
+                                            inertial,
+                                        },
+                                    ))
+                                } else {
+                                    Some((
+                                        j,
+                                        Op::LSetDrive {
+                                            v: a,
+                                            driver,
+                                            target,
+                                            time,
+                                            size,
+                                            w: w16,
+                                            e: e16,
+                                            inertial,
+                                        },
+                                    ))
+                                }
+                            }
+                            _ => None,
                         }
-                        _ => None,
-                    }
-                });
+                    });
                 match pair {
                     Some((j, op)) => {
                         dropped.push((j, op));
@@ -1567,6 +1838,84 @@ fn peephole(
 /// Superinstructions over resolved ops: an op that starts a known sequence is replaced by one
 /// that does all of it; the ops after it stay as they are (a jump or a frame resumed there
 /// runs them one by one), so no index changes.
+/// The wait statement of a process that has no other (`Program::single_suspend`, and a
+/// sensitivity list or no call of anything that may suspend), from the `Stmt` that starts it
+/// to its `Suspend` in one block, when it only names signals: constants, addresses, loads,
+/// lengths, positions, indices, fields and arithmetic, signal references and at least two
+/// `WaitOn`s (no timeout). Its `Stmt` op becomes `WaitStatic` (#530). The signals of a wait are
+/// static names (LRM 10.2, 11.3 and the equivalent processes of concurrent statements), so
+/// every activation names the same ones; with one suspension point, the last wait the kernel
+/// holds is this one unless the process just started. Skipping the instructions changes
+/// nothing else: they write registers only, and no register is live across a suspension.
+fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u32]) {
+    let Some(k) = ops.iter().position(|o| matches!(o, Op::Suspend)) else {
+        return;
+    };
+    let Some((st, s)) = static_wait(prog, f) else {
+        return;
+    };
+    if at.get(k).is_none_or(|&p| p as usize != s) {
+        return;
+    }
+    if let Some(&k0) = entry.get(st)
+        && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
+    {
+        *o = Op::WaitStatic { to: k as u32 };
+    }
+}
+
+/// The wait of `f` that names the same signals at every activation (`static_waits`): the IR pc
+/// of the `Stmt` that starts it and of its `Suspend`. Compiled code takes the same short cut.
+pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
+    let calls = |i: &Inst| match *i {
+        Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
+            .func(func)
+            .is_none_or(|c| c.flags.contains(FuncFlags::MAY_SUSPEND)),
+        Inst::CallIndirect { .. } => true,
+        _ => false,
+    };
+    let one = f.resume.len() == 1
+        && f.code
+            .iter()
+            .filter(|i| matches!(i, Inst::Suspend { .. }))
+            .count()
+            == 1
+        && (f.flags.contains(FuncFlags::SENS_LIST) || !f.code.iter().any(calls));
+    if !one {
+        return None;
+    }
+    let s = f
+        .code
+        .iter()
+        .position(|i| matches!(i, Inst::Suspend { .. }))?;
+    let st = (0..s).rev().find(|&p| {
+        !matches!(
+            f.code[p],
+            Inst::Const { .. }
+                | Inst::ConstF { .. }
+                | Inst::AddrOf { .. }
+                | Inst::DopeLen { .. }
+                | Inst::Pos { .. }
+                | Inst::Index { .. }
+                | Inst::Field { .. }
+                | Inst::Bin { .. }
+                | Inst::BinRange { .. }
+                | Inst::Load { .. }
+                | Inst::SigVal { .. }
+                | Inst::SigSlice { .. }
+                | Inst::WaitOn { .. }
+        )
+    })?;
+    let waits = f.code[st + 1..s]
+        .iter()
+        .filter(|i| matches!(i, Inst::WaitOn { .. }))
+        .count();
+    (matches!(f.code[st], Inst::Stmt)
+        && waits >= 2
+        && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
+    .then_some((st, s))
+}
+
 fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
@@ -1602,6 +1951,46 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             {
                 Some(Op::CmpSelect { m, dst, a, b, x, y })
             }
+            (
+                Op::LoadOff {
+                    dst: h,
+                    base,
+                    off: o1,
+                    w: Width::B8,
+                },
+                Some(&Op::Deref {
+                    dst: d1, handle, ..
+                }),
+                Some(&Op::IndexImm {
+                    dst: d2,
+                    base: b2,
+                    off: o2,
+                }),
+            ) if handle == h
+                && b2 == d1
+                && let (Ok(o1), Ok(o2)) = (u16::try_from(o1), u16::try_from(o2)) =>
+            {
+                Some(Op::LoadDerefImm {
+                    base,
+                    h,
+                    d1,
+                    d2,
+                    o1,
+                    o2,
+                })
+            }
+            (
+                Op::Deref {
+                    dst: d1, handle, ..
+                },
+                Some(&Op::IndexImm { dst: d2, base, off }),
+                _,
+            ) if base == d1 => Some(Op::DerefImm {
+                d1,
+                handle,
+                d2,
+                off,
+            }),
             (
                 Op::Deref {
                     dst: d1,
@@ -1641,14 +2030,18 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             ) if c == dst => Some(Op::EdgeBr {
                 dst,
                 rising,
+                stmt: false,
                 sig,
                 offset,
                 t,
                 f,
             }),
-            (Op::WaitSig { sig, offset }, Some(&Op::Suspend), _) => {
-                Some(Op::WaitSuspend { sig, offset })
-            }
+            (Op::WaitSig { sig, offset }, Some(&Op::Suspend), _) => Some(Op::WaitSuspend {
+                sig,
+                offset,
+                at: k as u32,
+                stmt: false,
+            }),
             (Op::StmtLoadSlot8 { dst, off }, Some(&Op::CondBr { c, t, f }), _) if c == dst => {
                 Some(Op::FlagBr { dst, off, t, f })
             }
@@ -1825,6 +2218,87 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
             ops[k] = op;
         }
     }
+    // `'image` and the reads of its string result.
+    for k in 0..ops.len() {
+        if let (
+            Op::Image { dst: x, a, ty },
+            Some(&Op::Load {
+                dst: p,
+                addr,
+                w: Width::B8,
+            }),
+            Some(&Op::LoadOff {
+                dst: q,
+                base,
+                off: 8,
+                w: Width::B8,
+            }),
+            Some(&Op::DopeLen {
+                dst: l,
+                dope,
+                dim: 0,
+            }),
+        ) = (ops[k], ops.get(k + 1), ops.get(k + 2), ops.get(k + 3))
+            && addr == x
+            && base == x
+            && p != x
+            && dope == q
+            && let (Some(x), Some(p), Some(q), Some(l)) = (r16(x), r16(p), r16(q), r16(l))
+        {
+            ops[k] = Op::ImageStr { a, ty, x, p, q, l };
+        }
+    }
+    // A `Stmt` before the edge test or the wait of a clocked process is part of that op, and a
+    // jump to such a wait is a copy of it (the end of every activation).
+    for k in 0..ops.len() {
+        let fused = match (ops[k], ops.get(k + 1)) {
+            (
+                Op::Stmt,
+                Some(&Op::EdgeBr {
+                    dst,
+                    rising,
+                    stmt: false,
+                    sig,
+                    offset,
+                    t,
+                    f,
+                }),
+            ) => Some(Op::EdgeBr {
+                dst,
+                rising,
+                stmt: true,
+                sig,
+                offset,
+                t,
+                f,
+            }),
+            (
+                Op::Stmt,
+                Some(&Op::WaitSuspend {
+                    sig,
+                    offset,
+                    stmt: false,
+                    ..
+                }),
+            ) => Some(Op::WaitSuspend {
+                sig,
+                offset,
+                at: k as u32,
+                stmt: true,
+            }),
+            _ => None,
+        };
+        if let Some(op) = fused {
+            ops[k] = op;
+        }
+    }
+    for k in 0..ops.len() {
+        if let Op::Br { to } = ops[k]
+            && let Some(&w @ Op::WaitSuspend { .. }) = ops.get(to as usize)
+        {
+            ops[k] = w;
+        }
+    }
     // The search loop: a load and compare of a position, then a step of the index that jumps
     // back, with nothing else in the loop.
     for k in 0..ops.len() {
@@ -1877,9 +2351,44 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
 impl Code {
     fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
         let n = f.code.len();
+        // A block start stops a fusion only where something can jump to it: a block that
+        // only a skipped jump (to where execution goes on anyway) or nothing reaches is run
+        // through, and what the optimiser left split by it fuses as one block (#534).
+        let mut refd = vec![false; f.blocks.len()];
+        let mut mark = |b: yavs_ir::BlockId| {
+            if let Some(r) = refd.get_mut(b.0 as usize) {
+                *r = true;
+            }
+        };
+        let mut all = false;
+        mark(yavs_ir::BlockId(0));
+        f.body.map(&mut mark);
+        for (pc, i) in f.code.iter().enumerate() {
+            match *i {
+                _ if skip[pc] => {}
+                Inst::Br { to } => mark(to),
+                Inst::CondBr { t, f, .. } => {
+                    mark(t);
+                    mark(f);
+                }
+                Inst::Case { table, .. } => match prog.cases.get(table) {
+                    Some(t) => {
+                        mark(t.default);
+                        t.arms.iter().for_each(|a| mark(a.2));
+                    }
+                    None => all = true,
+                },
+                _ => {}
+            }
+        }
         let mut block_start = vec![false; n + 1];
-        for (_, b) in f.blocks.iter() {
-            if let Some(s) = block_start.get_mut(b.start as usize) {
+        for (b, blk) in f.blocks.iter() {
+            if let Some(s) = block_start.get_mut(blk.start as usize) {
+                *s |= all || refd[b.0 as usize];
+            }
+        }
+        for &pc in &f.resume {
+            if let Some(s) = block_start.get_mut(pc as usize) {
                 *s = true;
             }
         }
@@ -2571,6 +3080,13 @@ impl Code {
                 },
                 Inst::CallNative { native, args, dst } => {
                     match (native_op(prog, f, native, args), dst) {
+                        (_, Some(d)) if let Some((a, ty)) = scalar_image(prog, f, native, args) => {
+                            Op::Image {
+                                dst: d.0,
+                                a: a.0,
+                                ty: ty.0,
+                            }
+                        }
                         (Some(NativeOp::Gate { g, a, b }), Some(d)) => Op::Gate {
                             g,
                             dst: d.0,
@@ -2685,6 +3201,10 @@ impl Code {
                     (Some(t), Some(e)) => Op::CondBr { c: c.0, t, f: e },
                     _ => Op::Step(pc as u32),
                 },
+                Inst::Case { v, table } => Op::Case {
+                    v: v.0,
+                    tab: table.0,
+                },
                 _ => Op::Step(pc as u32),
             };
             ops.push(op);
@@ -2695,6 +3215,7 @@ impl Code {
         ops.push(Op::Step(n as u32));
         at.push(n as u32);
         peephole(
+            prog,
             f,
             &mut ops,
             &mut at,
@@ -2712,9 +3233,30 @@ impl Code {
         // block, never inside a fused op; should one be, a jump is left to the step path and
         // a fused compare is an internal error (`Step(NONE)` runs off the code).
         let to = |p: u32| entry.get(p as usize).copied().filter(|&k| k != NONE);
+        let mut cases = Vec::new();
         for (k, op) in ops.iter_mut().enumerate() {
             let ir = at[k];
             *op = match *op {
+                Op::Case { v, tab } => {
+                    let go = |b| target(b).and_then(to);
+                    let t = prog.cases.get(yavs_ir::CaseTableId(tab));
+                    let arms: Option<Vec<_>> = t.and_then(|t| {
+                        t.arms
+                            .iter()
+                            .map(|&(lo, hi, b)| Some((lo, hi, go(b)?)))
+                            .collect()
+                    });
+                    match (arms, t.and_then(|t| go(t.default))) {
+                        (Some(arms), Some(default)) => {
+                            cases.push(CaseOps { arms, default });
+                            Op::Case {
+                                v,
+                                tab: cases.len() as u32 - 1,
+                            }
+                        }
+                        _ => Op::Step(ir),
+                    }
+                }
                 Op::Br { to: t } => to(t).map_or(Op::Step(ir), |t| Op::Br { to: t }),
                 Op::StoreSlotBr { src, off, to: t, w } => {
                     to(t).map_or(Op::Step(NONE), |t| Op::StoreSlotBr { src, off, to: t, w })
@@ -2771,13 +3313,23 @@ impl Code {
             };
         }
         superops(&mut ops, &at, f, known, &uses);
+        static_waits(prog, f, &mut ops, &at, &entry);
         let first = entry.first().copied().unwrap_or(NONE);
+        // Debug aid next to the IR dump of `YAVS_DUMPIR`.
+        if std::env::var_os("YAVS_DUMPIR").is_some() {
+            eprintln!("ops of `{}`", f.name);
+            for (i, o) in ops.iter().enumerate() {
+                eprintln!("{i:6} pc{} {o:?}", at[i]);
+            }
+        }
         Code {
             ops,
             at,
             entry,
             first,
             aff,
+            cases,
+            skip: NONE,
         }
     }
 }

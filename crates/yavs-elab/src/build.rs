@@ -149,7 +149,25 @@ impl Elaborated {
                     b.driver(yavs_kernel::SignalId(d.leaf.0).slice(d.range.offset, d.range.len))
                 })
                 .collect();
-            let proc = make(p, &ds)?;
+            // A plain signal copy runs in the kernel when no one observes its activations
+            // (coverage, a debugger, foreign callbacks: `Config::edge_triggers` is off then).
+            let copy = p
+                .copy
+                .as_ref()
+                .filter(|_| cfg.edge_triggers)
+                .and_then(|src| {
+                    (src.iter().zip(p.lsps.first()?))
+                        .map(|(&(sl, sr), &(k, _, dr))| {
+                            let src = yavs_kernel::SignalId(sl.0).slice(sr.offset, sr.len);
+                            let d = ds[p.drivers.iter().position(|&x| x == k)?];
+                            Some((src, d, dr))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                });
+            let proc: Box<dyn Process> = match copy {
+                Some(parts) => Box::new(yavs_kernel::CopyProcess::new(parts)),
+                None => make(p, &ds)?,
+            };
             let proc_waits = proc.several_waits();
             let name = self.hier.path_name(p.scope, Case::Lrm);
             let name = name.strip_suffix(':').unwrap_or(&name);

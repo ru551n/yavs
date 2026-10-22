@@ -202,7 +202,7 @@ from the port's subtype (rule 9).
 | external library `osvvm/ScoreboardPkg_slv.vhd:52-55` | `package ScoreBoardPkg_slv is new work.ScoreboardGenericPkg generic map (ExpectedType => std_logic_vector, ActualType => std_logic_vector, ...` | map `ExpectedType`, `ActualType -> (resolved) std_ulogic_vector(open)`; but 53 cloned objects such as `Item` of `Push` (`ScoreboardGenericPkg.vhd:194-197`) keep `bounds from Subtype` on an unconstrained subtype (F7) |
 | The test runner `verification_components/src/axi_stream_pkg.vhd:369-377, 1044-1050` | `type axi_stream_transaction_t is record tdata : std_logic_vector; ...`; `variable axi_stream_transaction : out axi_stream_transaction_t`; `axi_stream_transaction.tdata := pop_std_ulogic_vector(msg);` | record `[Unconstrained]`; all six parameters of that type bounds from Actual; element assignments are checked against the actual's bounds at run time |
 
-The reference simulator accepts all five files (`tools/corpus/*.nvc.expected`). Tests `corpus::*`. The external AXI4
+The reference simulator accepts all five files (`tools/corpus/*.sim1.expected`). Tests `corpus::*`. The external AXI4
 record types (`Axi4InterfacePkg.vhd`) and the external VIP records are not covered: those files do
 not analyze in yavs yet for unrelated reasons (missing units, #60 and a cascade in the other library).
 

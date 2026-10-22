@@ -40,7 +40,8 @@ otherwise.
 * ``--exit-severity=failure`` (the default): a report of that severity or higher stops the
   simulation with exit status 1. An ``error`` report below it is printed, the run continues,
   and the exit status is 1 at the end, unless ``ClearVhdlAssert`` (VHDL-2019 ``std.env``)
-  cleared the assert counts since.
+  cleared the assert counts since. When the option is given, even as ``--exit-severity=failure``,
+  only reports at or above that level affect the exit status.
 * ``--time-report`` prints the wall and CPU time of each phase (``analyze``, ``elaborate``,
   ``init``, ``simulate``) and the total to standard error when the simulation ends, for example
   ``time-report: simulate wall=1.204 cpu=1.19``. CPU time is for the whole process, in 10 ms
@@ -53,10 +54,13 @@ otherwise.
   kept, so its cost stays proportional to the allocation. A larger value collects less often
   and uses more memory on designs that allocate heavily; the default is ``1m``. The output is
   the same for any value. There is no way to switch collection off.
-* ``--tier=llvm`` compiles every function with LLVM before time 0 and runs that code;
-  ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
-  simulation runs in the interpreter. The output is the same as with ``--tier=interp``. Both
-  need a yavs built with the ``llvm`` feature (LLVM 21); the default is ``--tier=interp``. Functions of
+* ``--tier=auto`` compiles only the functions that become hot, on a background thread while the
+  simulation runs in the interpreter; ``--tier=llvm`` compiles every function with LLVM before
+  time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
+  with every tier. ``auto`` is the default in a yavs built with the ``llvm`` feature (LLVM 21),
+  except under ``--dap``, which runs in the interpreter unless you ask for a tier;
+  a yavs built without the feature always defaults to ``--tier=interp``, and ``--tier=auto`` or
+  ``--tier=llvm`` on it is an error. Functions of
   more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``
   prints what the LLVM tier compiles and what it leaves to the interpreter.
   ``--tier=clift`` and ``--tier=clift-auto`` do the same with Cranelift instead of LLVM, in a yavs built
@@ -104,6 +108,12 @@ of its packages after they start and the optimised code of the functions earlier
 are kept once next to the library (about 10 MB for a large verification library; a library
 directory keeps at most 512 MiB of entries), made when a few different test cases (four) have asked for them, so the
 first run of a new test case does not make them again.
+
+With ``--tier=llvm`` or ``--tier=auto`` the machine code of the compiled tier is kept there as
+well (``yavs-cache/obj/``). The next run of the design, and the other test cases of a testbench,
+link that code instead of compiling it again; ``--tier=auto`` uses the stored code of a hot
+computation loop as soon as the loop is hot, without waiting until compiling it would pay off. The
+code is the same that compiling makes, so the results are too.
 
 * ``--no-cache`` (``elab``, ``run``) neither reads nor writes the cache.
 * ``yavs cache clean --work=lib:out/lib [--map=NAME:PATH ...]`` removes the entries of those

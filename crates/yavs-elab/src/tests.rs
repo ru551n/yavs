@@ -776,6 +776,64 @@ fn impure_constant_at_run_time_warns() {
     assert_eq!(*got.lock().expect("lock"), ["0 0 first=1 late=7 third=2"]);
 }
 
+/// A function that reads a protected shared variable of its architecture is called during
+/// elaboration (#512): the variable is created for the call, later calls and the processes see
+/// its state, also when the simulation cannot start from the session's state and replays the
+/// calls (`start` dropped), and when a call is undone and the state rebuilt from the log.
+#[test]
+fn elaboration_calls_with_region_shared_variable() {
+    let src = "entity leaf is generic (base : natural); end;
+      architecture a of leaf is
+        type counter_t is protected
+          impure function bump return natural;
+        end protected;
+        type counter_t is protected body
+          variable n : natural := 0;
+          impure function bump return natural is begin n := n + 1; return n; end;
+        end protected body;
+        shared variable c : counter_t;
+        impure function next_id return natural is begin return base + c.bump; end;
+        signal x : bit := '1';
+        constant first : natural := next_id;
+        constant late : natural := next_id + x'path_name'length;
+        constant third : natural := next_id;
+      begin
+        process begin
+          report \"first=\" & integer'image(first) & \" late=\" & integer'image(late)
+            & \" third=\" & integer'image(third) & \" next=\" & integer'image(c.bump);
+          wait;
+        end process;
+      end;
+      entity t is end; architecture a of t is begin
+        u : entity work.leaf generic map (base => 10);
+        v : entity work.leaf generic map (base => 20);
+      end;";
+    for replay in [false, true] {
+        let (mut db, mut e) = elab("region_var", src, "t", &[]);
+        let w: Vec<&str> = e.warnings.iter().map(|d| d.code).collect();
+        assert_eq!(w, [codes::IMPURE_AT_RUN_TIME; 2]);
+        if replay {
+            e.start = None;
+        }
+        e.lower(&mut db).expect("lower");
+        let mut sim = e.build(yavs_kernel::Config::default()).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        let mut got = got.lock().expect("lock").clone();
+        got.sort();
+        // `late` runs its call at the start of the simulation: after the elaboration-time ones.
+        assert_eq!(
+            got,
+            [
+                "0 0 first=11 late=19 third=12 next=4",
+                "0 1 first=21 late=29 third=22 next=4"
+            ],
+            "replay={replay}"
+        );
+    }
+}
+
 /// BIT and BOOLEAN leaves store '0'/'1' as the std_ulogic codes 2/3 (docs/decisions.md).
 #[test]
 fn bit_and_boolean_use_std_ulogic_codes() {
@@ -2011,8 +2069,7 @@ fn clocked_processes_get_edge_triggers() {
 }
 
 /// R4: an `in` port whose actual is whole signal leaves, or part of one leaf, is an alias of
-/// the actual (through the component port too); a forced port and an `out` port keep their
-/// edges.
+/// the actual (through the component port too); a forced port keeps its edges.
 #[test]
 fn in_ports_collapse() {
     let src = "
@@ -2047,14 +2104,67 @@ end;
     let (link, _) = obj(&e, ":top:link");
     assert_eq!(obj(&e, ":top:u:p"), (link, Some(Range::new(0, 1))));
     assert_ne!(obj(&e, ":top:u:f").0, obj(&e, ":top:z").0);
-    // Component and entity ports of `a`, `v` and `p`, and the component's `f` (only the
-    // entity's is forced).
-    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 7);
-    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 7);
+    // Component and entity ports of `a`, `v`, `p` and `y` (an `out` port, #528), and the
+    // component's `f` (only the entity's is forced).
+    assert_eq!(apart.nets.leaves.len() - e.nets.leaves.len(), 9);
+    assert_eq!(apart.nets.ports.len() - e.nets.ports.len(), 9);
     for p in &e.nets.ports {
         assert!(
             p.formal.0.index() < e.nets.leaves.len() && p.actual.0.index() < e.nets.leaves.len()
         );
+    }
+}
+
+/// #528: an `out` or `buffer` port that is the only source of its actual's elements is an
+/// alias of the actual, which takes the formal's initial value; an `inout` port, an actual
+/// with another source, a forced actual and an actual fed from above keep their edges.
+#[test]
+fn out_ports_collapse() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+entity leaf is
+  port (y : out bit := '1'; v : out bit_vector(3 downto 0); bf : buffer bit;
+        io : inout bit; s : out std_logic);
+end;
+architecture rtl of leaf is begin
+  y <= '0'; v <= \"0101\"; bf <= not bf after 1 ns; io <= '0'; s <= '1';
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity mid is port (y : inout bit); end;
+architecture a of mid is begin
+  u : entity work.leaf port map (y => y, v => open, bf => open, io => open, s => open);
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity top is end;
+architecture t of top is
+  signal y, b, io, f, m : bit;
+  signal w : bit_vector(0 to 7);
+  signal s1, s2 : std_logic;
+begin
+  u : entity work.leaf port map (y => y, v => w(2 to 5), bf => b, io => io, s => s1);
+  k : entity work.leaf port map (y => f, v => open, bf => open, io => open, s => s2);
+  s2 <= 'Z';
+  i : entity work.mid port map (y => m);
+  process begin f <= force '1'; wait; end process;
+end;
+";
+    let obj = |e: &Elaborated, path: &str| {
+        let k = sig_paths(e).iter().position(|p| p == path).expect(path);
+        (e.nets.objs[k].leaves, e.nets.objs[k].part)
+    };
+    let init = |e: &Elaborated, path: &str| e.nets.leaf(obj(e, path).0.0).init.clone();
+    let (_, apart) = elab_ports("outcollapse", src, "top", &[]);
+    let (_, e) = elab("outcollapse", src, "top", &[]);
+    assert_eq!(obj(&e, ":top:u:y"), obj(&e, ":top:y"));
+    assert_eq!(init(&e, ":top:y"), init(&apart, ":top:u:y"));
+    assert_ne!(init(&apart, ":top:y"), init(&apart, ":top:u:y"));
+    // `w(2 to 5)`: kernel offsets 2 to 5 of the mirrored logic leaf.
+    let (wl, _) = obj(&e, ":top:w");
+    assert_eq!(obj(&e, ":top:u:v"), (wl, Some(Range::new(2, 4))));
+    assert_eq!(obj(&e, ":top:u:bf"), obj(&e, ":top:b"));
+    assert_eq!(obj(&e, ":top:u:s"), obj(&e, ":top:s1"));
+    for kept in [":top:u:io", ":top:k:s", ":top:k:y", ":top:i:u:y"] {
+        let (l, _) = obj(&e, kept);
+        assert!(e.nets.ports.iter().any(|p| p.formal.0 == l.0), "{kept}");
     }
 }
 
@@ -2072,4 +2182,79 @@ fn scope_vals_keep_entries_sorted_by_declaration() {
     assert!(!v.contains_key(&d(3)));
     let order: Vec<_> = v.iter().map(|(k, _)| k.index()).collect();
     assert_eq!(order, [2, 5, 7, 9]);
+}
+
+/// A concurrent `target <= source;` of static signal names (whole signals, record fields,
+/// indexed elements, static slices, through an `in` port that collapses into its actual) is a
+/// copy the kernel runs itself (`ProcInst::copy`, #529); conditional, delayed, guarded or
+/// computed ones, aggregate targets and a target subtype that checks the value are not. Copies give the same reports as the interpreted statements
+/// (`Config::edge_triggers` off keeps them interpreted).
+#[test]
+fn signal_copies_run_in_the_kernel() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      package p is
+        type rec is record a : std_logic; b : std_logic_vector(7 downto 0); n : integer; end record;
+        type arr is array (0 to 3) of rec;
+      end;
+      library ieee; use ieee.std_logic_1164.all; use work.p.all;
+      entity inner is port (i : in rec; o : out rec); end;
+      architecture a of inner is begin
+        o <= i;
+      end;
+      library ieee; use ieee.std_logic_1164.all; use work.p.all;
+      entity t is end; architecture a of t is
+        signal s, x, y : rec := ('0', x\"00\", 0);
+        signal ar : arr;
+        signal v : std_logic_vector(0 to 7) := x\"0F\";
+        signal w, z : std_logic_vector(7 downto 0);
+        signal n1, n2 : integer := 0;
+        signal nn : natural;
+      begin
+        u : entity work.inner port map (i => s, o => x);
+        ar(2) <= x;
+        w <= v;
+        n1 <= s.n;
+        y.b <= ar(2).b;
+        z <= v when s.a = '1' else not v;
+        n2 <= s.n after 1 ns;
+        z(1 downto 0) <= w(3 downto 2);
+        nn <= n1;
+        process begin
+          for i in 1 to 4 loop
+            s <= (std_logic'val(2 + i mod 2), x\"A5\", i);
+            v <= not v;
+            wait for 2 ns;
+            report std_logic'image(x.a) & to_string(x.b) & integer'image(ar(2).n)
+              & to_string(w) & integer'image(n1) & integer'image(n2) & to_string(y.b) & to_string(z);
+          end loop;
+          wait;
+        end process;
+      end;";
+    let (mut db, mut e) = elab("copies", src, "t", &[]);
+    let copies: Vec<bool> = e.procs.iter().map(|p| p.copy.is_some()).collect();
+    // inner's `o <= i`, then the statements of t in order, then its process.
+    assert_eq!(
+        copies,
+        [
+            true, true, true, true, true, false, false, true, false, false
+        ]
+    );
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::MAX).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert_eq!(kernel.len(), 4);
+    assert_eq!(kernel, interp);
 }

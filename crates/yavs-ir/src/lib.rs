@@ -25,7 +25,7 @@ pub use inst::{
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
     ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, OptCopy, Param, ParamClass,
-    Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam,
+    Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam, ViaNode,
 };
 pub use program::{bytes, lazy_bodies};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};

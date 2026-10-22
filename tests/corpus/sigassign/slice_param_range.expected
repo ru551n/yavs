@@ -1,0 +1,2 @@
+exit	0
+diag	note	3000000	0	:tb_slice_param_range:_p0	ok

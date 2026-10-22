@@ -125,7 +125,7 @@ impl Db {
         let mut parent = None;
         if let Some((pname, want)) = primary {
             let pk = UnitKey::Primary(pname.key);
-            if self.locate(lib, pk).is_none() && !self.libs[lib].units.contains_key(&pk) {
+            if !self.unit_known(lib, pk) {
                 let what = if want == UnitKind::Entity {
                     "entity"
                 } else {
@@ -230,8 +230,7 @@ impl Db {
                 let lib = self.units[unit].lib;
                 let body = UnitKey::body(name.key);
                 if let Some(g) = &generics
-                    && self.locate(lib, body).is_none()
-                    && !self.libs[lib].units.contains_key(&body)
+                    && !self.unit_known(lib, body)
                 {
                     self.report_unused_generics(g);
                 }
@@ -509,7 +508,8 @@ impl Db {
 
     /// 12.4: a use clause naming a type also makes its enumeration literals, its
     /// units and its operations potentially visible, the implicitly declared ones and the
-    /// subprograms of the same region that take or return the type (#452).
+    /// operators of the same region that take or return the type (#452). Other subprograms
+    /// of the region stay hidden: all four reference simulators reject their use (#514).
     fn with_type_associates(&self, region: ScopeId, mut ds: Vec<DeclId>) -> Vec<DeclId> {
         let types: Vec<crate::ids::TypeId> = ds
             .iter()
@@ -525,7 +525,10 @@ impl Db {
         for &d in &self.scopes[region].order {
             let assoc = match &self.decls[d].kind {
                 DeclKind::EnumLit { ty, .. } | DeclKind::PhysUnit { ty, .. } => types.contains(ty),
-                DeclKind::Subprogram(sp) => {
+                DeclKind::Subprogram(sp)
+                    if self.decls[d].implicit
+                        || matches!(self.decls[d].name, Designator::Operator { .. }) =>
+                {
                     sp.params
                         .iter()
                         .any(|p| types.contains(&self.base(p.subtype)))

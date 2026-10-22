@@ -39,6 +39,7 @@ RUNS = {
     "intvec": [("intvec", "intvec")],
     "strput": [("strput", "strput")],
     "vecedge": [("vecedge", "vecedge")],
+    "lateedge": [("lateedge", "lateedge")],
     "tport": [("tport", "tport")],
     "vars": [("vars", "vars")],
     "fresult": [("fresult", f"fr_{c}") for c in ("rev", "iota", "word", "nosize", "fixed")],

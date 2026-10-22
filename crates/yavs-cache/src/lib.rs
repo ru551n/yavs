@@ -33,15 +33,34 @@ pub const MAX_ENTRIES: usize = 96;
 /// about 10 MB): the least recently used entries go first, but the newest is always kept.
 pub const MAX_BYTES: u64 = 512 << 20;
 
+/// The subdirectory of [`DIR`] that holds the compiled code of the LLVM tier
+/// ([`Store::objects_of_library`]): many small entries, one per compiled module, under limits of
+/// their own, so they never push the stage entries out.
+pub const OBJ_DIR: &str = "obj";
+
+/// Entries and bytes kept in [`OBJ_DIR`].
+pub const OBJ_MAX_ENTRIES: usize = 4096;
+pub const OBJ_MAX_BYTES: u64 = 256 << 20;
+
+/// The subdirectory of [`DIR`] that holds the analysed-unit cache ([`Store::units_of_library`]):
+/// one entry per design unit of the library (`yavs_sem::units`), under limits of their own.
+pub const UNIT_DIR: &str = "units";
+
+/// Entries and bytes kept in [`UNIT_DIR`]: room for every unit of a big verification library and
+/// the std/ieee units it uses.
+pub const UNIT_MAX_ENTRIES: usize = 16384;
+pub const UNIT_MAX_BYTES: u64 = 512 << 20;
+
 /// Notes ([`Store::note`]) kept per directory: the newest ones. Trimming asks the age of every
 /// note (a system call each), so it waits until the directory is [`NOTES_SLACK`] past this.
 pub const MAX_NOTES: usize = 512;
 const NOTES_SLACK: usize = 64;
 
-/// Whether a put of `added` bytes into a directory of `n` entries must look at them all (their
-/// size and age: 0.25 ms for 90 entries); `due` is that the last time was `SWEEP_EVERY` ago.
-fn needs_sweep(n: usize, added: u64, due: bool) -> bool {
-    n > MAX_ENTRIES || added > MAX_BYTES / FEW_ENTRIES as u64 || (n > FEW_ENTRIES && due)
+/// Whether a put of `added` bytes into a directory of `n` entries kept to `max_entries` and
+/// `max_bytes` must look at them all (their size and age: 0.25 ms for 90 entries); `due` is that
+/// the last time was `SWEEP_EVERY` ago.
+fn needs_sweep(n: usize, added: u64, due: bool, (max_entries, max_bytes): (usize, u64)) -> bool {
+    n > max_entries || added > max_bytes / FEW_ENTRIES as u64 || (n > FEW_ENTRIES && due)
 }
 
 /// The file whose modification time says when a directory was last pruned by size, and how
@@ -50,31 +69,49 @@ fn needs_sweep(n: usize, added: u64, due: bool) -> bool {
 const SWEPT: &str = ".swept";
 const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A directory of at most this many entries, each at most `MAX_BYTES / FEW_ENTRIES`, cannot be
-/// over [`MAX_BYTES`]: a put into it needs no pruning.
+/// A directory of at most this many entries, each at most a sixteenth of its byte limit, cannot be
+/// over that limit: a put into it needs no pruning.
 const FEW_ENTRIES: usize = 16;
 
 const MAGIC: &[u8; 8] = b"YAVSIMG\0";
 const HEADER: usize = 8 + 4 + 32 + 8 + 8;
 
-/// Identifies the running build: the version, the executable's size and modification time. Any
-/// rebuild changes it, so an entry never outlives the analyzer that made it.
+static SOURCES: OnceLock<String> = OnceLock::new();
+
+/// Names the sources the running executable was built from (a hash made at build time, see
+/// `crates/yavs/build.rs`). Call it once, before the first key is made; without it the build is
+/// identified by the executable's modification time.
+pub fn set_sources(hash: &str) {
+    if !hash.is_empty() {
+        let _ = SOURCES.set(hash.to_string());
+    }
+}
+
+/// Identifies the running build: the version, the sources it was built from (or, without them,
+/// the executable's modification time), the executable's size, and `YAVS_CACHE_SALT` (a way to
+/// stand in for another build; tests). A copy of a build has the same id, another build never
+/// does, so an entry never outlives the code that made it.
 pub fn build_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         let exe = std::env::current_exe()
             .and_then(fs::metadata)
             .map(|m| {
-                let t = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_nanos());
+                let t = match SOURCES.get() {
+                    Some(h) => h.clone(),
+                    None => m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_nanos())
+                        .to_string(),
+                };
                 format!("{}:{t}", m.len())
             })
             // ponytail: an unreadable executable gives a per-process id (never matches)
             .unwrap_or_else(|_| format!("unknown:{}", std::process::id()));
-        format!("{}+{exe}", env!("CARGO_PKG_VERSION"))
+        let salt = std::env::var("YAVS_CACHE_SALT").unwrap_or_default();
+        format!("{}+{exe}+{salt}", env!("CARGO_PKG_VERSION"))
     })
 }
 
@@ -160,6 +197,11 @@ impl KeyBuilder {
 #[derive(Clone, Debug)]
 pub struct Store {
     dir: PathBuf,
+    /// Entries and bytes kept ([`MAX_ENTRIES`] and [`MAX_BYTES`], or the `OBJ_*` limits).
+    limits: (usize, u64),
+    /// `get` refreshes the time of the entry it reads (not for the analysed units: a run reads
+    /// a hundred of them, and a library keeps them all).
+    touch: bool,
 }
 
 /// What [`Store::clean`] removed.
@@ -178,7 +220,31 @@ fn debug(msg: String) {
 impl Store {
     /// The store of library directory `lib`.
     pub fn of_library(lib: &Path) -> Store {
-        Store { dir: lib.join(DIR) }
+        Store {
+            dir: lib.join(DIR),
+            limits: (MAX_ENTRIES, MAX_BYTES),
+            touch: true,
+        }
+    }
+
+    /// The store of the compiled code of library directory `lib` ([`OBJ_DIR`]); [`Store::clean`]
+    /// of the library's store removes it as well.
+    pub fn objects_of_library(lib: &Path) -> Store {
+        Store {
+            dir: lib.join(DIR).join(OBJ_DIR),
+            limits: (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES),
+            touch: true,
+        }
+    }
+
+    /// The store of the analysed units of library directory `lib` ([`UNIT_DIR`]);
+    /// [`Store::clean`] of the library's store removes it as well.
+    pub fn units_of_library(lib: &Path) -> Store {
+        Store {
+            dir: lib.join(DIR).join(UNIT_DIR),
+            limits: (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES),
+            touch: false,
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -198,7 +264,9 @@ impl Store {
             return None;
         }
         // Recently used entries survive pruning; failing to say so is harmless.
-        if let Ok(f) = fs::File::options().write(true).open(&path) {
+        if self.touch
+            && let Ok(f) = fs::File::options().write(true).open(&path)
+        {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
         Some(Entry { data: bytes })
@@ -330,7 +398,8 @@ impl Store {
         let _ = fs::remove_file(self.claim_file(kind, key));
     }
 
-    /// Keep the [`MAX_ENTRIES`] most recently used entries, and at most [`MAX_BYTES`] of them,
+    /// Keep the most recently used entries within the store's limits ([`MAX_ENTRIES`] and
+    /// [`MAX_BYTES`] for a library's store),
     /// after a put of `added` bytes. The names are counted first (one directory read); the sizes
     /// and ages are asked for a directory over the entry limit, after a big entry, and at most
     /// every [`SWEEP_EVERY`] otherwise, not for every put of every process.
@@ -343,9 +412,9 @@ impl Store {
                 .ok()
                 .and_then(|t| t.elapsed().ok())
                 .is_none_or(|age| age >= SWEEP_EVERY);
-        if needs_sweep(n, added, due) {
+        if needs_sweep(n, added, due, self.limits) {
             let _ = fs::File::create(&marker);
-            self.prune_to(MAX_ENTRIES, MAX_BYTES);
+            self.prune_to(self.limits.0, self.limits.1);
         }
     }
 
@@ -411,9 +480,26 @@ impl Store {
         .collect()
     }
 
-    /// Remove every entry (and leftover temporary files) and the directory itself.
+    /// Remove every entry (and leftover temporary files), the compiled code in [`OBJ_DIR`], and
+    /// the directory itself.
     pub fn clean(&self) -> std::io::Result<Cleaned> {
         let mut c = Cleaned::default();
+        for (sub, limits) in [
+            (OBJ_DIR, (OBJ_MAX_ENTRIES, OBJ_MAX_BYTES)),
+            (UNIT_DIR, (UNIT_MAX_ENTRIES, UNIT_MAX_BYTES)),
+        ] {
+            let dir = self.dir.join(sub);
+            if dir.is_dir() {
+                let o = Store {
+                    dir,
+                    limits,
+                    touch: true,
+                }
+                .clean()?;
+                c.entries += o.entries;
+                c.bytes += o.bytes;
+            }
+        }
         for (p, _, len) in self.entries() {
             fs::remove_file(p)?;
             c.entries += 1;
@@ -571,27 +657,49 @@ mod tests {
         assert!(!s.dir().exists());
     }
 
+    const LIB: (usize, u64) = (MAX_ENTRIES, MAX_BYTES);
+
+    /// Compiled code has a store of its own inside the library's: its entries do not count
+    /// against the library's limit, and cleaning the library removes them too.
+    #[test]
+    fn objects_have_limits_of_their_own_and_are_cleaned_with_the_library() {
+        let d = tempfile::tempdir().unwrap();
+        let lib = Store::of_library(d.path());
+        let obj = Store::objects_of_library(d.path());
+        assert!(obj.dir().starts_with(lib.dir()));
+        lib.put("t", &key("a"), b"stage");
+        for i in 0..MAX_ENTRIES + 5 {
+            obj.put("obj", &key(&i.to_string()), b"code");
+        }
+        assert_eq!(obj.entries().len(), MAX_ENTRIES + 5);
+        lib.put("t", &key("b"), b"stage");
+        assert_eq!(lib.get("t", &key("a")).as_deref(), Some(&b"stage"[..]));
+        let c = lib.clean().unwrap();
+        assert_eq!(c.entries, MAX_ENTRIES + 5 + 2);
+        assert!(!lib.dir().exists());
+    }
+
     /// Pruning asks the size and age of every entry: it waits for a reason.
     #[test]
     fn pruning_waits_for_a_reason() {
         assert!(
-            !needs_sweep(FEW_ENTRIES, 100, true),
+            !needs_sweep(FEW_ENTRIES, 100, true, LIB),
             "few entries cannot be over the limit"
         );
         assert!(
-            needs_sweep(FEW_ENTRIES + 1, 100, true),
+            needs_sweep(FEW_ENTRIES + 1, 100, true, LIB),
             "the first put of a process"
         );
         assert!(
-            !needs_sweep(FEW_ENTRIES + 1, 100, false),
+            !needs_sweep(FEW_ENTRIES + 1, 100, false, LIB),
             "later puts of the process"
         );
         assert!(
-            needs_sweep(MAX_ENTRIES + 1, 100, false),
+            needs_sweep(MAX_ENTRIES + 1, 100, false, LIB),
             "over the entry limit"
         );
         assert!(
-            needs_sweep(1, MAX_BYTES / 2, false),
+            needs_sweep(1, MAX_BYTES / 2, false, LIB),
             "an entry that can fill the byte limit"
         );
     }

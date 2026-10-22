@@ -2,8 +2,8 @@
 
 Read the root `AGENTS.md` and `tests/AGENTS.md` first.
 
-- One list per external corpus (`vunit.txt`, `osvvm.txt`, `rust_hdl.txt`, `nvc.txt`,
-  `vests.txt`, `ghdl.txt`), one line `PASS|FAIL <std> <source>/<path>` per file, compared by
+- One list per external corpus (`vunit.txt`, `osvvm.txt`, `rust_hdl.txt`, `sim1.txt`,
+  `vests.txt`, `sim2.txt`), one line `PASS|FAIL <std> <source>/<path>` per file, compared by
   `crates/yavs/tests/corpus.rs` (`--features corpus`), which fails when `YAVS_CORPUS` is unset.
   Which files are parsed as 2019 and why some are expected failures: `docs/decisions.md`
   "Parser" (corpus lists) and the table in `STATUS.md` "syntax".

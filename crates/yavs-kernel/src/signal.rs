@@ -10,7 +10,8 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::error::ErrorKind;
 use crate::time::Time;
-use crate::value::{Buf, Elem, SignalType, bits, fill_bits};
+use crate::value::{Buf, Elem, SignalType, bits, fill_bits, plane_code, put_bits, put_plane_code};
+use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
 /// Stable id of a signal: its index in creation (elaboration) order.
@@ -203,6 +204,19 @@ pub(crate) struct Waiters {
     /// signal (a clock and its processes): what a scan would produce, kept until a waiter is
     /// added or a process stops waiting this way.
     cache: Option<Cache>,
+    /// A waiter was ever added to a list other than the wide one: an event must look at the
+    /// lists of the elements it hit. Without, only the wide list is scanned, whatever the
+    /// number of runs (a wide bus whose processes all wait for all of it, #519).
+    chunked: bool,
+}
+
+/// `Cache::batch`: the plain processes (one suspension point, not postponed) in list order,
+/// the same by trigger id, and the others with their trigger ids.
+pub(crate) struct Batch {
+    pub plain: Vec<u32>,
+    /// `plain` by trigger id, each in list order.
+    pub by_tid: SmallVec<[(u32, Vec<u32>); 4]>,
+    pub others: Vec<(u32, u32)>,
 }
 
 struct Cache {
@@ -210,6 +224,10 @@ struct Cache {
     list: Vec<(u64, u32, u32)>,
     /// The distinct trigger ids in `list` (0: none), at most 4.
     tids: SmallVec<[u32; 4]>,
+    /// The processes of `list` that run as one batch in list order when they all wake, and
+    /// the others, which wake one by one (`SimControl::batch_of`); `None` inside when the list
+    /// is not in process order. Set by the kernel at first use.
+    batch: Option<Option<Batch>>,
 }
 
 /// What the waiters of a signal have in common: no waiter, all the same edge trigger, or not.
@@ -238,6 +256,7 @@ impl Waiters {
             shift,
             trig: Trig::Empty,
             cache: None,
+            chunked: false,
         }
     }
 
@@ -245,6 +264,22 @@ impl Waiters {
     #[inline(always)]
     pub fn is_unwatched(&self) -> bool {
         self.lists.is_empty()
+    }
+
+    /// The one waiter of element `e`, when its list holds exactly one resident waiter that
+    /// covers it and no waiter is in the wide list (a process per element, waiting for its
+    /// element): what `take_woken` of an event on `e` alone would look at.
+    #[inline]
+    pub fn sole_resident(&self, e: u32) -> Option<&Waiter> {
+        let (wide, chunks) = self.lists.split_last()?;
+        let list = chunks.get((e >> self.shift) as usize)?;
+        if !wide.0.is_empty() {
+            return None;
+        }
+        match list.0.as_slice() {
+            [w] if w.perm != 0 && w.range.overlaps(Range::new(e, 1)) => Some(w),
+            _ => None,
+        }
     }
 
     /// Forget the wake list (a waiter changed).
@@ -274,6 +309,19 @@ impl Waiters {
             .as_mut()
             .map(|c| std::mem::take(&mut c.list))
             .unwrap_or_default()
+    }
+
+    /// The batches of the wake list (`Cache::batch`), if known.
+    pub fn cache_batch(&self) -> Option<Option<&Batch>> {
+        self.cache
+            .as_ref()
+            .and_then(|c| c.batch.as_ref().map(Option::as_ref))
+    }
+
+    pub fn set_cache_batch(&mut self, b: Option<Batch>) {
+        if let Some(c) = &mut self.cache {
+            c.batch = Some(b);
+        }
     }
 
     pub fn restore_cache(&mut self, list: Vec<(u64, u32, u32)>) {
@@ -336,7 +384,9 @@ impl Waiters {
             }
             cache => *cache = None,
         }
+        let wide = self.lists.len() - 1;
         for i in self.lists_of(range) {
+            self.chunked |= i != wide;
             let (l, n) = &mut self.lists[i];
             if l.len() >= 2 * *n + 16 {
                 l.retain(|w| live(w));
@@ -372,7 +422,11 @@ impl Waiters {
             }
         }
         let list = l.iter().map(|w| (w.seq, w.proc, w.tid)).collect();
-        self.cache = Some(Cache { list, tids });
+        self.cache = Some(Cache {
+            list,
+            tids,
+            batch: None,
+        });
     }
 
     /// Remove the live waiters overlapping `runs` (sorted, disjoint) and put their
@@ -459,6 +513,8 @@ impl Waiters {
                 scan(&mut self.lists[c]);
             }
             scan(&mut self.lists[wide]);
+        } else if !self.chunked {
+            scan(&mut self.lists[wide]);
         } else {
             let mut last = usize::MAX;
             let chunks = runs.iter().flat_map(|r| {
@@ -500,6 +556,17 @@ pub(crate) struct Signal {
     /// last event, of the last activity, and the time (`stamp`, 0 if never) of
     /// the last event and of the last activity.
     stamps: SmallVec<[u64; 4]>,
+    /// A signal of more than 64 elements: per block of 64 elements, the cycle and time stamp of
+    /// the last `mark_active` that covered the whole block. The activity of an element is the
+    /// later of its own stamps and its block's, so marking a wide range costs a word per block
+    /// (#519).
+    blk_active: Vec<[u64; 2]>,
+    /// A signal of more than 64 elements: per block of 64 elements, the events of
+    /// `update_word` whose elements have not changed since, each with those elements (the
+    /// masks of a block are disjoint, so a block has at most 64). The last event of an element
+    /// is the later of its own stamps and the record that lists it: a wide bus that changes in
+    /// most cycles writes no element stamps (#519).
+    blk_event: Vec<SmallVec<[EvRec; 4]>>,
     /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
     pub segments: SmallVec<[Segment; 1]>,
@@ -524,7 +591,7 @@ pub(crate) struct Signal {
     pub queued_up: u64,
     pub queued_down: u64,
     /// Elements changed in the current cycle.
-    pub changed: SmallVec<[Range; 2]>,
+    pub changed: Vec<Range>,
     /// Ranges whose driving value must be recomputed this cycle.
     pub dirty: SmallVec<[Range; 2]>,
     /// Ranges whose driving value was written when the transaction was applied (a vector quick
@@ -556,18 +623,40 @@ pub(crate) struct Signal {
     /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
     pub watched: bool,
     pub nruns: u64,
+    /// Elements whose driving value a direct transaction wrote for the next update
+    /// (`commit_code`, `commit_planes`),
+    /// one bit each (made at the first one), and the words with a bit set.
+    pend: Vec<u64>,
+    pend_words: SmallVec<[u32; 2]>,
+    /// One element is pending and it is not in `pend`: the one `last_commit` holds.
+    pend_one: bool,
+    /// Direct commits wrote the driving value only: the values of the sole-source drivers
+    /// (`DriverSlot::shared` false) may be older than `driving`, which holds them
+    /// (`sync_drivers` copies them back). Never with `exact`.
+    pub lag: bool,
+    /// A deposit made the driving value differ from the drivers: direct commits write the driver
+    /// value too, as before.
+    pub exact: bool,
+    /// Nothing reads the activity of this signal (`Config::skip_unchanged`, and no implicit
+    /// signal has it as its prefix): `finish_pend` leaves the activity stamps alone.
+    pub inactive: bool,
+    /// The element and code of the last `commit_code`.
+    last_commit: (u32, u8),
+}
+
+/// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
+/// time stamp (`Signal::blk_event`).
+#[derive(Clone, Copy)]
+struct EvRec {
+    cycle: u64,
+    time: u64,
+    mask: u64,
 }
 
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
 /// (`Signal::watched`), else only counted.
 #[inline(always)]
-fn note_run(
-    changed: &mut SmallVec<[Range; 2]>,
-    nruns: &mut u64,
-    watched: bool,
-    e: usize,
-    len: u32,
-) {
+fn note_run(changed: &mut Vec<Range>, nruns: &mut u64, watched: bool, e: usize, len: u32) {
     if !watched {
         *nruns += 1;
         return;
@@ -580,6 +669,22 @@ fn note_run(
 
 /// The longest logic signal that keeps `Signal::codes`.
 const CODES_MAX: usize = 1 << 20;
+
+/// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
+#[inline(always)]
+fn mark_bits(pend: &mut [u64], words: &mut SmallVec<[u32; 2]>, elem: u32, len: u32) {
+    let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
+    if pend[w] == 0 {
+        words.push(w as u32);
+    }
+    pend[w] |= m << s;
+    if s + len > 64 {
+        if pend[w + 1] == 0 {
+            words.push(w as u32 + 1);
+        }
+        pend[w + 1] |= m >> (64 - s);
+    }
+}
 
 /// Byte `i` of `SPREAD[x]` is bit `i` of `x`.
 const SPREAD: [u64; 256] = {
@@ -599,9 +704,14 @@ const SPREAD: [u64; 256] = {
 /// Recompute `codes` for elements `lo .. hi` of `cur`, in groups of eight.
 #[inline]
 fn refresh_codes(codes: &mut [u8], cur: &Buf, lo: usize, hi: usize) {
-    let Buf::Planes { b, .. } = cur else {
-        return;
-    };
+    if let Buf::Planes { b, .. } = cur {
+        refresh_block_codes(codes, b, lo, hi);
+    }
+}
+
+/// `refresh_codes` of the plane blocks `b`.
+#[inline]
+fn refresh_block_codes(codes: &mut [u8], b: &[Block], lo: usize, hi: usize) {
     if codes.is_empty() || lo >= hi {
         return;
     }
@@ -637,6 +747,16 @@ impl Signal {
             driving: init.clone(),
             last_value: init,
             stamps: stamps(n),
+            blk_active: if n > 64 {
+                vec![[0; 2]; n.div_ceil(64)]
+            } else {
+                Vec::new()
+            },
+            blk_event: if n > 64 {
+                vec![SmallVec::new(); n.div_ceil(64)]
+            } else {
+                Vec::new()
+            },
             drivers: Vec::new(),
             segments: SmallVec::new(),
             resolution,
@@ -651,7 +771,7 @@ impl Signal {
             level: 0,
             queued_up: 0,
             queued_down: 0,
-            changed: SmallVec::new(),
+            changed: Vec::new(),
             dirty: SmallVec::new(),
             fast_dirty: SmallVec::new(),
             eff_dirty: SmallVec::new(),
@@ -665,6 +785,13 @@ impl Signal {
             fused_event: false,
             watched: false,
             nruns: 0,
+            pend: Vec::new(),
+            pend_words: SmallVec::new(),
+            pend_one: false,
+            lag: false,
+            exact: false,
+            inactive: false,
+            last_commit: (u32::MAX, 0),
         };
         sig.sync_codes();
         sig
@@ -929,6 +1056,12 @@ impl Signal {
             && matches!(self.resolution, None | Some(Resolution::StdLogic))
     }
 
+    /// Something besides direct transactions is left to finish (`finish_signal`).
+    #[inline(always)]
+    pub fn unfinished(&self) -> bool {
+        !self.dirty.is_empty() || !self.fast_dirty.is_empty() || self.fuse_n != 0
+    }
+
     /// The cycle's quick transactions are applied: the next cycle may finish some at once again.
     #[inline(always)]
     pub fn end_apply(&mut self) -> bool {
@@ -939,17 +1072,26 @@ impl Signal {
     /// `finish_one` for element `e` of the sole source, given its new `code`.
     #[inline]
     fn finish_quick(&mut self, e: usize, code: u8, now: Time, cycle: u64) {
-        self.driving.put_code(e, code);
-        let old = self.cur.swap_code(e, code);
+        // A plain signal is logic: three plane writes and the code byte, no storage dispatch.
+        let (Some(drv), Some(cur), Some(last)) = (
+            self.driving.planes_mut(),
+            self.cur.planes_mut(),
+            self.last_value.planes_mut(),
+        ) else {
+            unreachable!("finish_quick of byte storage")
+        };
+        put_plane_code(drv, e, code);
+        let old = match self.codes.get_mut(e) {
+            Some(c) => std::mem::replace(c, code),
+            None => plane_code(cur, e),
+        };
         if old == code {
             return;
         }
-        if let Some(c) = self.codes.get_mut(e) {
-            *c = code;
-        }
+        put_plane_code(cur, e, code);
+        put_plane_code(last, e, old);
         set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
         self.note_run(e, 1);
-        self.last_value.put_code(e, old);
         self.fused_event = true;
     }
 
@@ -1080,6 +1222,13 @@ impl Signal {
         let (off, n) = (r.offset as usize, r.len as usize);
         let layered =
             self.force_drv.is_some() || self.port_in.is_some() || self.force_eff.is_some();
+        if !layered
+            && off.is_multiple_of(64)
+            && self.force_ev.is_empty()
+            && let Some(any) = self.update_planes(off, n, now, cycle)
+        {
+            return any;
+        }
         let owned;
         let (src, soff) = if layered {
             owned = self.effective_of(r);
@@ -1143,6 +1292,425 @@ impl Signal {
         any
     }
 
+    /// `update_effective` of `off .. off + n` (`off` on a block boundary) of a logic signal
+    /// whose effective value is its driving value: whole plane words instead of the element
+    /// helpers. `None` for byte storage.
+    fn update_planes(&mut self, off: usize, n: usize, now: Time, cycle: u64) -> Option<bool> {
+        if !matches!(
+            (&self.cur, &self.driving, &self.last_value),
+            (Buf::Planes { .. }, Buf::Planes { .. }, Buf::Planes { .. })
+        ) {
+            return None;
+        }
+        let mut any = false;
+        for c in (0..n).step_by(64) {
+            any |= self.update_word((off + c) / 64, nmask((n - c).min(64)), now, cycle);
+        }
+        Some(any)
+    }
+
+    /// `update_effective` of the elements `m` of plane word `w` of a plain logic signal: the
+    /// changed ones by XOR, `last_value` and `cur` blended, then the stamps, runs and codes.
+    #[inline(always)]
+    fn update_word(&mut self, w: usize, m: u64, now: Time, cycle: u64) -> bool {
+        let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
+            (&mut self.cur, &self.driving, &mut self.last_value)
+        else {
+            return false;
+        };
+        let (Some(cw), Some(&y), Some(lw)) = (cur.get_mut(w), drv.get(w), last.get_mut(w)) else {
+            return false;
+        };
+        let x = *cw;
+        let m = ((x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])) & m;
+        if m == 0 {
+            return false;
+        }
+        let l = *lw;
+        *lw = std::array::from_fn(|p| l[p] & !m | x[p] & m);
+        let c: Block = std::array::from_fn(|p| x[p] & !m | y[p] & m);
+        *cw = c;
+        let len = self.ty.len as usize;
+        let base = w * 64;
+        let st = self.stamps.as_mut_slice();
+        let t = stamp(now);
+        // Event cycle and time of the changed elements, then the runs.
+        if let Some(b) = self.blk_event.get_mut(w) {
+            // The changed elements leave the older records, which go once empty; records
+            // stay in cycle order, so this cycle's, if any, is the last.
+            b.retain(|r| {
+                r.mask &= !m;
+                r.mask != 0
+            });
+            match b.last_mut() {
+                Some(x) if x.cycle == cycle => x.mask |= m,
+                _ => b.push(EvRec {
+                    cycle,
+                    time: t,
+                    mask: m,
+                }),
+            }
+        } else {
+            let mut v = m;
+            while v != 0 {
+                let e = base + v.trailing_zeros() as usize;
+                v &= v - 1;
+                st[e] = cycle;
+                st[2 * len + e] = t;
+            }
+        }
+        if self.watched {
+            let mut v = m;
+            while v != 0 {
+                let s = v.trailing_zeros();
+                let run = (v >> s).trailing_ones();
+                note_run(
+                    &mut self.changed,
+                    &mut self.nruns,
+                    true,
+                    base + s as usize,
+                    run,
+                );
+                v &= !(nmask(run as usize) << s);
+            }
+        } else {
+            self.nruns += u64::from((m & !(m << 1)).count_ones());
+        }
+        if m.is_power_of_two() {
+            let i = m.trailing_zeros() as usize;
+            if let Some(code) = self.codes.get_mut(base + i) {
+                *code = ((c[0] >> i & 1)
+                    | (c[1] >> i & 1) << 1
+                    | (c[2] >> i & 1) << 2
+                    | (c[3] >> i & 1) << 3) as u8;
+            }
+        } else {
+            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
+            refresh_block_codes(&mut self.codes, cur, base + lo, base + hi);
+        }
+        true
+    }
+
+    /// A zero-delay transaction of one element of a direct driver (`DriverInfo::direct`),
+    /// committed: the driver value and the driving value now (the update phase is over, and
+    /// nothing reads them before the next one), the element waiting in `pend` for the next
+    /// update (`finish_pend`). True for the signal's first one. `None`: the driver and the
+    /// signal already have the value and the signal allows skipping (`skip_ok`): nothing to
+    /// write or finish, only the delta it causes.
+    #[inline]
+    pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> Option<bool> {
+        if self.exact {
+            let d = &mut self.drivers[slot as usize];
+            if let Buf::Planes { b, .. } = &mut d.value {
+                let rel = (elem - d.range.offset) as usize;
+                if self.codes.get(elem as usize) == Some(&code)
+                    && self.skip_ok
+                    && plane_code(b, rel) == code
+                {
+                    return None;
+                }
+                put_plane_code(b, rel, code);
+            }
+        }
+        // The driver is the element's only source: the driving value is its value (`lag`).
+        if let Buf::Planes { b, .. } = &mut self.driving {
+            if !self.exact
+                && self.codes.get(elem as usize) == Some(&code)
+                && self.skip_ok
+                && plane_code(b, elem as usize) == code
+            {
+                return None;
+            }
+            put_plane_code(b, elem as usize, code);
+        }
+        self.lag |= !self.exact;
+        // The signal's first element of the cycle stays in `last_commit` alone (`pend_one`);
+        // a second one moves it to the bit mask.
+        if !self.pend_one && self.pend_words.is_empty() {
+            self.pend_one = true;
+            self.last_commit = (elem, code);
+            return Some(true);
+        }
+        self.spill_pend_one();
+        self.last_commit = (elem, code);
+        Some(self.mark_pend(elem, 1))
+    }
+
+    /// `commit_code` of entries of this signal in order (a vector with a process per element that
+    /// ran in one batch), its storage looked up once. True when the signal had nothing pending
+    /// and has now.
+    pub(crate) fn commit_codes(&mut self, outs: &[crate::process::Out], empty: &mut bool) -> bool {
+        let first = !self.pend_one && self.pend_words.is_empty();
+        self.spill_pend_one();
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        let exact = self.exact;
+        self.lag |= !exact;
+        let Signal {
+            drivers,
+            driving,
+            codes,
+            pend,
+            pend_words,
+            last_commit,
+            skip_ok,
+            ..
+        } = self;
+        let Buf::Planes { b: drv, .. } = driving else {
+            return false;
+        };
+        let (drv, pend): (&mut [Block], &mut [u64]) = (drv, pend);
+        for o in outs {
+            let (e, code) = (o.elem as usize, o.code as u8);
+            if exact {
+                let d = &mut drivers[o.slot as usize];
+                let Buf::Planes { b: dv, .. } = &mut d.value else {
+                    continue;
+                };
+                let rel = e - d.range.offset as usize;
+                if codes.get(e) == Some(&code) && *skip_ok && plane_code(dv, rel) == code {
+                    *empty = true;
+                    continue;
+                }
+                put_plane_code(dv, rel, code);
+            } else if codes.get(e) == Some(&code) && *skip_ok && plane_code(drv, e) == code {
+                *empty = true;
+                continue;
+            }
+            put_plane_code(drv, e, code);
+            let w = e / 64;
+            if pend[w] == 0 {
+                pend_words.push(w as u32);
+            }
+            pend[w] |= 1 << (e % 64);
+            *last_commit = (o.elem, code);
+        }
+        first && !pend_words.is_empty()
+    }
+
+    /// The driving values the direct commits wrote back into the drivers they came from (all
+    /// sole sources, `lag`), before something reads the drivers or makes the driving value
+    /// differ from them.
+    pub(crate) fn sync_drivers(&mut self) {
+        if !std::mem::take(&mut self.lag) {
+            return;
+        }
+        let Signal {
+            drivers, driving, ..
+        } = self;
+        for d in drivers.iter_mut().filter(|d| !d.shared) {
+            d.value
+                .copy(0, driving, d.range.offset as usize, d.range.len as usize);
+        }
+    }
+
+    /// The element `pend_one` holds, into the bit mask.
+    #[inline(always)]
+    fn spill_pend_one(&mut self) {
+        if std::mem::take(&mut self.pend_one) {
+            self.mark_pend(self.last_commit.0, 1);
+        }
+    }
+
+    /// `commit_code` of at most 64 elements given as plane words.
+    #[inline]
+    pub(crate) fn commit_planes(
+        &mut self,
+        slot: u32,
+        elem: u32,
+        len: u32,
+        planes: [u64; 4],
+    ) -> bool {
+        if self.exact {
+            let d = &mut self.drivers[slot as usize];
+            d.put_planes((elem - d.range.offset) as usize, len as usize, planes);
+        }
+        self.lag |= !self.exact;
+        if let Buf::Planes { b, .. } = &mut self.driving {
+            put_block(b, elem as usize, len as usize, planes, !0);
+        }
+        let first = !self.pend_one;
+        self.spill_pend_one();
+        self.last_commit.0 = u32::MAX;
+        self.mark_pend(elem, len) && first
+    }
+
+    #[inline(always)]
+    fn mark_pend(&mut self, elem: u32, len: u32) -> bool {
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        let first = self.pend_words.is_empty();
+        mark_bits(&mut self.pend, &mut self.pend_words, elem, len);
+        first
+    }
+
+    /// `commit_planes` of entries of this signal in order (processes of the elements of an
+    /// array of vectors, in one batch), its storage looked up once. True when the signal had
+    /// nothing pending.
+    pub(crate) fn commit_planes_run(&mut self, outs: &[crate::process::OutV]) -> bool {
+        let first = !self.pend_one && self.pend_words.is_empty();
+        self.spill_pend_one();
+        self.last_commit.0 = u32::MAX;
+        if self.pend.is_empty() {
+            self.pend = vec![0; (self.ty.len as usize).div_ceil(64)];
+        }
+        let exact = self.exact;
+        self.lag |= !exact;
+        let Signal {
+            drivers,
+            driving,
+            pend,
+            pend_words,
+            ..
+        } = self;
+        let Buf::Planes { b: drv, .. } = driving else {
+            return false;
+        };
+        let drv: &mut [Block] = drv;
+        for o in outs {
+            if exact {
+                let d = &mut drivers[o.slot as usize];
+                d.put_planes((o.elem - d.range.offset) as usize, o.len as usize, o.planes);
+            }
+            put_block(drv, o.elem as usize, o.len as usize, o.planes, !0);
+            mark_bits(pend, pend_words, o.elem, o.len);
+        }
+        first
+    }
+
+    /// The elements committed directly (`commit_code`, `commit_planes`) matured: active, and
+    /// their effective values a word at a time in element order, on a signal with no layer;
+    /// otherwise (`slow`, or a force layer) they become dirty ranges for the general paths.
+    /// Whether any changed, `None` with nothing pending.
+    #[inline(always)]
+    pub(crate) fn finish_pend(&mut self, now: Time, cycle: u64, slow: bool) -> Option<bool> {
+        let plain = !slow
+            && self.force_eff.is_none()
+            && self.force_drv.is_none()
+            && self.force_ev.is_empty();
+        if !plain {
+            // The general paths compute the driving value from the drivers.
+            self.sync_drivers();
+        }
+        // One element (one stage of a chain): no bit mask.
+        if self.pend_one {
+            let (e, code) = self.last_commit;
+            if plain && let Some(&old) = self.codes.get(e as usize) {
+                self.pend_one = false;
+                return Some(self.finish_code(e as usize, code, old, now, cycle));
+            }
+            self.spill_pend_one();
+        }
+        // One word (a register, or one stage of a chain): no list to sort or walk.
+        if let [w] = self.pend_words[..] {
+            self.pend_words.clear();
+            let m = std::mem::take(&mut self.pend[w as usize]);
+            return Some(self.finish_word(w as usize, m, now, cycle, plain));
+        }
+        if self.pend_words.is_empty() {
+            return None;
+        }
+        let mut words = std::mem::take(&mut self.pend_words);
+        if !words.is_sorted() {
+            words.sort_unstable();
+        }
+        let mut any = false;
+        for &w in &words {
+            let m = std::mem::take(&mut self.pend[w as usize]);
+            any |= self.finish_word(w as usize, m, now, cycle, plain);
+        }
+        words.clear();
+        self.pend_words = words;
+        Some(any)
+    }
+
+    /// `finish_pend` when only the element `pend_one` holds is pending, on a plain signal with
+    /// nothing else to finish: whether it changed. `None` (nothing done) otherwise.
+    #[inline(always)]
+    pub(crate) fn finish_pend_one(&mut self, now: Time, cycle: u64) -> Option<bool> {
+        let (e, code) = self.last_commit;
+        if !self.pend_one
+            || self.force_eff.is_some()
+            || self.force_drv.is_some()
+            || !self.force_ev.is_empty()
+            || self.unfinished()
+        {
+            return None;
+        }
+        let &old = self.codes.get(e as usize)?;
+        self.pend_one = false;
+        Some(self.finish_code(e as usize, code, old, now, cycle))
+    }
+
+    /// `finish_pend` of one element `e` whose driving value is `code` and current value `old`
+    /// (a plain logic signal that keeps `codes`).
+    #[inline(always)]
+    fn finish_code(&mut self, e: usize, code: u8, old: u8, now: Time, cycle: u64) -> bool {
+        let n = self.ty.len as usize;
+        if !self.inactive {
+            let st = self.stamps.as_mut_slice();
+            st[n + e] = cycle;
+            st[3 * n + e] = stamp(now);
+        }
+        if code == old {
+            return false;
+        }
+        self.codes[e] = code;
+        if let (Some(cur), Some(last)) = (self.cur.planes_mut(), self.last_value.planes_mut()) {
+            put_plane_code(cur, e, code);
+            put_plane_code(last, e, old);
+        }
+        set_event(&mut self.stamps, n, e, cycle, now);
+        self.note_run(e, 1);
+        true
+    }
+
+    /// `finish_pend` of the elements `m` of word `w`.
+    #[inline(always)]
+    fn finish_word(&mut self, w: usize, m: u64, now: Time, cycle: u64, plain: bool) -> bool {
+        let base = w * 64;
+        // One element: its codes, as a quick transaction finished at once.
+        if plain && m.is_power_of_two() {
+            let e = base + m.trailing_zeros() as usize;
+            if let (Some(&old), Buf::Planes { b: drv, .. }) = (self.codes.get(e), &self.driving) {
+                // The code the last one-element commit wrote, if it was this element.
+                let code = match self.last_commit {
+                    (le, c) if le as usize == e => c,
+                    _ => plane_code(drv, e),
+                };
+                return self.finish_code(e, code, old, now, cycle);
+            }
+        }
+        if plain {
+            if !self.inactive {
+                let (n, t) = (self.ty.len as usize, stamp(now));
+                let st = self.stamps.as_mut_slice();
+                let mut v = m;
+                while v != 0 {
+                    let s = v.trailing_zeros() as usize;
+                    let run = (v >> s).trailing_ones() as usize;
+                    let e = base + s;
+                    st[n + e..n + e + run].fill(cycle);
+                    st[3 * n + e..3 * n + e + run].fill(t);
+                    v &= !(nmask(run) << s);
+                }
+            }
+            return self.update_word(w, m, now, cycle);
+        }
+        let mut v = m;
+        while v != 0 {
+            let s = v.trailing_zeros();
+            let run = (v >> s).trailing_ones();
+            let r = Range::new((base + s as usize) as u32, run);
+            self.mark_active(r, now, cycle);
+            self.push_dirty(r);
+            v &= !(nmask(run as usize) << s);
+        }
+        false
+    }
+
     /// Events for the elements of `r` an earlier force of this cycle changed, if the cycle's
     /// last force changed them back.
     fn force_events(&mut self, r: Range, now: Time, cycle: u64) -> bool {
@@ -1153,7 +1721,7 @@ impl Signal {
                 continue;
             };
             for e in part.elems() {
-                if self.event_cycles()[e] == cycle {
+                if self.event_cycle(e) == cycle {
                     continue;
                 }
                 any = true;
@@ -1171,24 +1739,37 @@ impl Signal {
             && q.time <= now
         {
             w.quick = None;
-            let d = &mut self.drivers[slot as usize];
-            let rel = (q.elem - d.range.offset) as usize;
-            d.value.put_code(rel, q.code);
-            if let Some(off) = &mut d.off {
-                fill_bits(off, rel, 1, false);
-            }
-            let (n, e) = (self.ty.len as usize, q.elem as usize);
-            let st = self.stamps.as_mut_slice();
-            st[n + e] = cycle;
-            st[3 * n + e] = stamp(now);
-            if !self.drivers[slot as usize].shared && self.fuse_ok() {
-                // The element's only source: its driving and effective values follow now.
-                self.finish_quick(e, q.code, now, cycle);
-            } else {
-                self.push_dirty(Range::new(q.elem, 1));
-            }
+            self.apply_quick(q, slot, now, cycle);
             return;
         }
+        self.apply_rest(w, slot, now, cycle);
+    }
+
+    /// The due quick transaction `q` of driver `slot` (taken from its waveform): the driver
+    /// value, the activity, and the driving and effective values or a dirty range.
+    #[inline(always)]
+    pub(crate) fn apply_quick(&mut self, q: Quick, slot: u32, now: Time, cycle: u64) {
+        let d = &mut self.drivers[slot as usize];
+        let rel = (q.elem - d.range.offset) as usize;
+        d.value.put_code(rel, q.code);
+        if let Some(off) = &mut d.off {
+            fill_bits(off, rel, 1, false);
+        }
+        let shared = d.shared;
+        let (n, e) = (self.ty.len as usize, q.elem as usize);
+        let st = self.stamps.as_mut_slice();
+        st[n + e] = cycle;
+        st[3 * n + e] = stamp(now);
+        if !shared && self.fuse_ok() {
+            // The element's only source: its driving and effective values follow now.
+            self.finish_quick(e, q.code, now, cycle);
+        } else {
+            self.push_dirty(Range::new(q.elem, 1));
+        }
+    }
+
+    /// `apply_driver` without a quick transaction.
+    fn apply_rest(&mut self, w: &mut Waveform, slot: u32, now: Time, cycle: u64) {
         if let Some(q) = w.vquick
             && q.time <= now
         {
@@ -1235,17 +1816,43 @@ impl Signal {
     }
 
     pub fn mark_active(&mut self, r: Range, now: Time, cycle: u64) {
-        let n = self.ty.len as usize;
-        self.stamps[n..2 * n][r.elems()].fill(cycle);
-        self.stamps[3 * n..4 * n][r.elems()].fill(stamp(now));
+        let (n, t) = (self.ty.len as usize, stamp(now));
+        let (lo, hi) = (r.offset as usize, r.end() as usize);
+        // Whole blocks of a wide signal: their block stamps; the elements of the ends.
+        let (b0, b1) = (lo.div_ceil(64), hi / 64);
+        let mut fill = |a: usize, b: usize| {
+            self.stamps[n + a..n + b].fill(cycle);
+            self.stamps[3 * n + a..3 * n + b].fill(t);
+        };
+        if !self.blk_active.is_empty() && b0 < b1 {
+            fill(lo, b0 * 64);
+            fill(b1 * 64, hi);
+            self.blk_active[b0..b1].fill([cycle, t]);
+        } else {
+            fill(lo, hi);
+        }
+    }
+
+    /// The cycle of the last activity of element `e`.
+    #[inline]
+    fn active_cycle(&self, e: usize) -> u64 {
+        let own = self.stamps[self.ty.len as usize + e];
+        self.blk_active.get(e / 64).map_or(own, |b| own.max(b[0]))
     }
 
     /// The elements of `r` that are not active in `cycle`, or `None` when all are (a port
     /// passes activity on element by element, LRM 14.7.3.1).
     pub fn idle_elems(&self, r: Range, cycle: u64) -> Option<Vec<bool>> {
-        let n = self.ty.len as usize;
-        let from = &self.stamps[n..2 * n][r.elems()];
-        (!from.iter().all(|&c| c == cycle)).then(|| from.iter().map(|&c| c != cycle).collect())
+        let (n, lo, hi) = (self.ty.len as usize, r.offset as usize, r.end() as usize);
+        let own_idle = |a: usize, b: usize| self.stamps[n + a..n + b].iter().any(|&c| c != cycle);
+        let any_idle = if self.blk_active.is_empty() {
+            own_idle(lo, hi)
+        } else {
+            block_span(r).any(|k| {
+                self.blk_active[k][0] != cycle && own_idle(lo.max(k * 64), hi.min(k * 64 + 64))
+            })
+        };
+        any_idle.then(|| r.elems().map(|e| self.active_cycle(e) != cycle).collect())
     }
 
     /// `mark_active` of the elements of `r` that `idle` (from `idle_elems`) does not exclude.
@@ -1261,7 +1868,7 @@ impl Signal {
     /// so an element that did not change in that cycle keeps its current value.
     pub fn last_value_of(&self, r: Range) -> Buf {
         let mut b = self.last_value.extract(r.offset as usize, r.len as usize);
-        let ev = &self.event_cycles()[r.elems()];
+        let ev: Vec<u64> = r.elems().map(|e| self.event_cycle(e)).collect();
         if let Some(&latest) = ev.iter().max() {
             for (i, _) in ev.iter().enumerate().filter(|&(_, &c)| c != latest) {
                 b.copy(i, &self.cur, r.offset as usize + i, 1);
@@ -1270,30 +1877,65 @@ impl Signal {
         b
     }
 
-    fn event_cycles(&self) -> &[u64] {
-        &self.stamps[..self.ty.len as usize]
+    /// The cycle of the last event of element `e`.
+    fn event_cycle(&self, e: usize) -> u64 {
+        let own = self.stamps[e];
+        let bit = 1 << (e % 64);
+        self.blk_event.get(e / 64).map_or(own, |b| {
+            b.iter()
+                .find(|x| x.mask & bit != 0)
+                .map_or(own, |x| own.max(x.cycle))
+        })
+    }
+
+    /// The event records of the blocks of `r` that list an element of `r`.
+    fn block_events(&self, r: Range) -> impl Iterator<Item = &EvRec> {
+        let (lo, hi) = (r.offset as usize, r.end() as usize);
+        let span = if self.blk_event.is_empty() {
+            0..0
+        } else {
+            block_span(r)
+        };
+        span.flat_map(move |k| {
+            let (a, b) = (lo.max(k * 64) - k * 64, hi.min(k * 64 + 64) - k * 64);
+            let m = nmask(b - a) << a;
+            self.blk_event[k].iter().filter(move |x| x.mask & m != 0)
+        })
     }
 
     pub fn active_in(&self, r: Range, cycle: u64) -> bool {
         let n = self.ty.len as usize;
-        self.stamps[n..2 * n][r.elems()].contains(&cycle)
+        (!self.blk_active.is_empty()
+            && self.blk_active[block_span(r)].iter().any(|b| b[0] == cycle))
+            || self.stamps[n..2 * n][r.elems()].contains(&cycle)
     }
 
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
-        self.event_cycles()[r.elems()].contains(&cycle)
+        self.stamps[r.elems()].contains(&cycle)
+            || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
     }
 
     /// `'last_event` of `r`: time since the most recent event, `TIME'HIGH` if none.
     pub fn last_event(&self, r: Range, now: Time) -> Time {
         let n = self.ty.len as usize;
-        elapsed(now, &self.stamps[2 * n..3 * n][r.elems()])
+        let own = elapsed(now, &self.stamps[2 * n..3 * n][r.elems()]);
+        let blk: SmallVec<[u64; 8]> = self.block_events(r).map(|x| x.time).collect();
+        own.min(elapsed(now, &blk))
     }
 
     /// `'last_active` of `r`.
     pub fn last_active(&self, r: Range, now: Time) -> Time {
         let n = self.ty.len as usize;
-        elapsed(now, &self.stamps[3 * n..][r.elems()])
+        let own = elapsed(now, &self.stamps[3 * n..][r.elems()]);
+        if self.blk_active.is_empty() {
+            return own;
+        }
+        let blk: SmallVec<[u64; 8]> = self.blk_active[block_span(r)]
+            .iter()
+            .map(|b| b[1])
+            .collect();
+        own.min(elapsed(now, &blk))
     }
 }
 
@@ -1317,6 +1959,14 @@ fn push_range(list: &mut SmallVec<[Range; 2]>, r: Range) {
         }
         _ => list.push(r),
     }
+}
+
+/// The blocks of 64 elements that `r` touches.
+fn block_span(r: Range) -> std::ops::Range<usize> {
+    if r.len == 0 {
+        return 0..0;
+    }
+    r.offset as usize / 64..(r.end() as usize - 1) / 64 + 1
 }
 
 fn set_event(stamps: &mut [u64], n: usize, e: usize, cycle: u64, now: Time) {
@@ -1476,7 +2126,7 @@ const SPARE_BUFS: usize = 4;
 /// The projected output waveform of one driver, sorted by time.
 #[derive(Default)]
 pub(crate) struct Waveform {
-    pub pending: TxnList,
+    pub pending: Vec<Txn>,
     /// The one pending transaction of a zero-delay one-element logic assignment
     /// (`Ctx::assign_code`), kept apart from `pending` (which is empty then) because it costs
     /// no list entry and no value buffer. It matures in the next update; anything that
@@ -1530,10 +2180,9 @@ fn same_value(t: &Txn, first: &Option<Buf>, r: Range) -> Vec<u64> {
         (None, None) => fill_bits(&mut eq, to, k, true),
         (Some(a), Some(b)) => {
             let d = a.diff(to, b, fo, k);
-            for i in 0..k {
-                if bits(&d, i, 1) == 0 {
-                    eq[(to + i) / 64] |= 1 << ((to + i) % 64);
-                }
+            for c in (0..k).step_by(64) {
+                let m = (k - c).min(64);
+                put_bits(&mut eq, to + c, m, !bits(&d, c, m));
             }
         }
         _ => {}
@@ -1606,28 +2255,35 @@ impl Waveform {
             .iter()
             .map(|t| (in_window(t) && t.range.overlaps(r)).then(|| same_value(t, first, r)))
             .collect();
-        // Per element, decide which overlapping old transactions to delete.
-        // ponytail: O(elements * pending); fine while waveforms stay short.
+        // Which elements of the overlapping old transactions to delete, newest transaction
+        // first, 64 elements at a time: those at or after `t1`, and in the rejection window
+        // those from the first one (going back) whose value differs from the new one. `chain`
+        // has a bit per element of `r`: every window transaction so far had the new value.
         let mut deleted: Vec<Option<Vec<u64>>> = vec![None; self.pending.len()];
-        for e in r.elems() {
-            let mut chain = true;
-            for (i, t) in self.pending.iter().enumerate().rev() {
-                if !t.range.elems().contains(&e) {
-                    continue;
-                }
-                let k = e - t.range.offset as usize;
-                let delete = if t.time >= t1 {
-                    true
-                } else if let Some(eq) = &eqs[i] {
-                    chain &= bits(eq, k, 1) == 1;
-                    !chain
-                } else {
-                    false
-                };
-                if delete {
-                    let mask = deleted[i]
-                        .get_or_insert_with(|| vec![0; (t.range.len as usize).div_ceil(64)]);
-                    fill_bits(mask, k, 1, true);
+        let mut chain = vec![!0u64; (r.len as usize).div_ceil(64)];
+        for (i, t) in self.pending.iter().enumerate().rev() {
+            let Some(ov) = t.range.intersect(r) else {
+                continue;
+            };
+            let (to, ro, k) = (
+                (ov.offset - t.range.offset) as usize,
+                (ov.offset - r.offset) as usize,
+                ov.len as usize,
+            );
+            let mask = || vec![0u64; (t.range.len as usize).div_ceil(64)];
+            if t.time >= t1 {
+                fill_bits(deleted[i].get_or_insert_with(mask), to, k, true);
+            } else if let Some(eq) = &eqs[i] {
+                for c in (0..k).step_by(64) {
+                    let m = (k - c).min(64);
+                    let ch = bits(&chain, ro + c, m) & bits(eq, to + c, m);
+                    put_bits(&mut chain, ro + c, m, ch);
+                    let del = !ch & nmask(m);
+                    if del != 0 {
+                        let d = deleted[i].get_or_insert_with(mask);
+                        let old = bits(d, to + c, m);
+                        put_bits(d, to + c, m, old | del);
+                    }
                 }
             }
         }
@@ -1684,23 +2340,32 @@ impl Waveform {
 }
 
 /// Push the runs of `t` not marked in `mask`.
-fn split_kept(t: Txn, mask: &[u64], out: &mut TxnList) {
+fn split_kept(t: Txn, mask: &[u64], out: &mut Vec<Txn>) {
     let n = t.range.len as usize;
-    let mut start = None;
-    for k in 0..=n {
-        let keep = k < n && bits(mask, k, 1) == 0;
-        match (keep, start) {
-            (true, None) => start = Some(k),
-            (false, Some(s)) => {
-                out.push(Txn {
-                    time: t.time,
-                    range: Range::new(t.range.offset + s as u32, (k - s) as u32),
-                    value: t.value.as_ref().map(|v| v.extract(s, k - s)),
-                });
-                start = None;
+    // The length of the run of bits equal to `set` from `k` on, a word at a time.
+    let run = |k: usize, set: bool| {
+        let mut len = 0;
+        while k + len < n {
+            let m = (n - k - len).min(64);
+            let w = bits(mask, k + len, m);
+            let t = (if set { w } else { !w & nmask(m) }).trailing_ones() as usize;
+            len += t;
+            if t < m {
+                break;
             }
-            _ => {}
         }
+        len
+    };
+    let mut k = run(0, true);
+    while k < n {
+        let len = run(k, false);
+        out.push(Txn {
+            time: t.time,
+            range: Range::new(t.range.offset + k as u32, len as u32),
+            value: t.value.as_ref().map(|v| v.extract(k, len)),
+        });
+        k += len;
+        k += run(k, true);
     }
 }
 
@@ -1821,6 +2486,128 @@ mod tests {
     }
 
     #[test]
+    fn wide_list_waiters_wake_on_many_runs() {
+        let all = |_: &Waiter| true;
+        let none = |_: &Waiter| false;
+        let mut w = Waiters::new(300);
+        w.add(1, Range::new(0, 300), Reg::default(), all);
+        let runs: Vec<Range> = (0..100).map(|i| Range::new(3 * i, 1)).collect();
+        let mut out = Vec::new();
+        w.take_woken(&runs, all, none, &mut out);
+        assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+        // A waiter for one element: the lists of the runs are scanned again.
+        w.add(2, Range::new(1, 299), Reg::default(), all);
+        w.add(3, Range::new(150, 1), Reg::default(), all);
+        w.take_woken(&runs, all, none, &mut out);
+        assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2, 3]);
+        w.take_woken(&[Range::new(0, 1), Range::new(2, 1)], all, none, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn activity_of_a_wide_signal_by_blocks() {
+        let ty = SignalType::logic(200);
+        let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+        let r = |o, l| Range::new(o, l);
+        // Elements 10 to 159: block 1 by its block stamp, the ends by their own.
+        sig.mark_active(r(10, 150), Time::ns(1), 3);
+        assert!(sig.active_in(r(70, 1), 3) && sig.active_in(r(10, 1), 3));
+        assert!(sig.active_in(r(159, 1), 3) && sig.active_in(r(0, 11), 3));
+        assert!(!sig.active_in(r(0, 10), 3) && !sig.active_in(r(160, 40), 3));
+        assert_eq!(sig.idle_elems(r(10, 150), 3), None);
+        let idle = sig.idle_elems(r(8, 160), 3).unwrap();
+        let want: Vec<bool> = (8..168).map(|e| !(10..160).contains(&e)).collect();
+        assert_eq!(idle, want);
+        assert_eq!(sig.last_active(r(64, 64), Time::ns(4)), Time::ns(3));
+        assert_eq!(sig.last_active(r(0, 10), Time::ns(4)), Time::MAX);
+        // A later activity of one element in the block wins over the block stamp.
+        sig.mark_active(r(100, 1), Time::ns(2), 5);
+        assert_eq!(sig.last_active(r(64, 64), Time::ns(4)), Time::ns(2));
+        assert_eq!(sig.last_active(r(64, 30), Time::ns(4)), Time::ns(3));
+        assert_eq!(sig.idle_elems(r(99, 3), 5), Some(vec![true, false, true]));
+        assert!(!sig.active_in(r(64, 30), 5));
+        // A whole block again: its block stamp wins over the older element stamp.
+        sig.mark_active(r(64, 64), Time::ns(3), 7);
+        assert_eq!(sig.idle_elems(r(64, 64), 7), None);
+        assert_eq!(sig.last_active(r(100, 1), Time::ns(4)), Time::ns(1));
+    }
+
+    #[test]
+    fn events_of_a_wide_signal_by_words() {
+        // Random changes of a 200-element signal, cycle c at c ns, against a per-element model
+        // of the last event; the update takes whole plane words (`update_word`).
+        let ty = SignalType::logic(200);
+        let mut sig = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+        let mut last = [0u64; 200];
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for c in 1..60u64 {
+            for (e, l) in last.iter_mut().enumerate() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                // Busy and quiet stretches: some cycles change nothing in a block.
+                if x % 7 < (c % 4) {
+                    let v = if sig.driving.code(e) == 2 { 3 } else { 2 };
+                    sig.driving.put_code(e, v);
+                    *l = c;
+                }
+            }
+            let now = Time::ns(c);
+            let any = sig.update_effective(Range::new(0, 200), now, c);
+            assert_eq!(any, last.contains(&c));
+            // A second update in the same cycle (another part of the signal settles later).
+            if c % 5 == 0 {
+                for e in (c as usize % 7..200).step_by(9) {
+                    let v = if sig.driving.code(e) == 2 { 3 } else { 2 };
+                    sig.driving.put_code(e, v);
+                    last[e] = c;
+                }
+                assert!(sig.update_effective(Range::new(64, 136), now, c));
+                assert!(sig.update_effective(Range::new(0, 64), now, c));
+            }
+            for e in 0..200u32 {
+                let r = Range::new(e, 1);
+                assert_eq!(
+                    sig.event_in(r, c),
+                    last[e as usize] == c,
+                    "cycle {c} element {e}"
+                );
+                let want = match last[e as usize] {
+                    0 => Time::MAX,
+                    l => Time::ns(c - l),
+                };
+                assert_eq!(sig.last_event(r, now), want, "cycle {c} element {e}");
+            }
+            for (o, l) in [(0, 200), (60, 10), (63, 2), (100, 100), (130, 1)] {
+                let r = Range::new(o, l);
+                let span = &last[o as usize..(o + l) as usize];
+                assert_eq!(sig.event_in(r, c), span.contains(&c));
+                let want = match span.iter().max() {
+                    Some(&l) if l > 0 => Time::ns(c - l),
+                    _ => Time::MAX,
+                };
+                assert_eq!(sig.last_event(r, now), want);
+            }
+            // 'last_value: the elements whose last event is the latest of the range keep the
+            // value before it, the others their current value.
+            if c % 3 == 0 {
+                let r = Range::new(30, 120);
+                let lv = sig.last_value_of(r);
+                let latest = last[30..150].iter().copied().max().unwrap_or(0);
+                for i in 0..120 {
+                    let e = 30 + i;
+                    let want = if last[e] == latest && latest > 0 {
+                        sig.last_value.code(e)
+                    } else {
+                        sig.cur.code(e)
+                    };
+                    assert_eq!(lv.code(i), want, "cycle {c} element {e}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn transport_deletes_at_or_after() {
         let mut w = Waveform::default();
         w.schedule(Range::new(0, 1), None, &mut smallvec![txn(10, 0, &[1])]);
@@ -1844,6 +2631,73 @@ mod tests {
             w.pending.to_vec(),
             vec![txn(10, 0, &[0]), txn(20, 0, &[0, 1])]
         );
+    }
+
+    #[test]
+    fn preemption_of_wide_transactions_per_element() {
+        // Random old transactions over 200 elements against a per-element model of LRM
+        // 10.5.2.2: at or after `t1` deleted, in the window deleted from the first value
+        // (going back) that differs from the new one.
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        for round in 0..300 {
+            let mut w = Waveform::default();
+            let mut model: Vec<Vec<(u64, u8)>> = vec![Vec::new(); 200];
+            for _ in 0..1 + rnd(5) {
+                let off = rnd(190) as u32;
+                let len = 1 + rnd(200 - u64::from(off)) as u32;
+                let ns = 5 * (1 + rnd(5));
+                let v: Vec<u8> = (0..len).map(|_| rnd(2) as u8).collect();
+                let t = txn(ns, off, &v);
+                let at = w.pending.partition_point(|p| p.time <= t.time);
+                w.pending.insert(at, t);
+            }
+            for t in &w.pending {
+                for (k, e) in t.range.elems().enumerate() {
+                    let b = t.value.as_ref().unwrap().bytes(k, 1).unwrap()[0];
+                    model[e].push((t.time.raw(), b));
+                }
+            }
+            let off = rnd(150) as u32;
+            let r = Range::new(off, 1 + rnd(200 - u64::from(off)) as u32);
+            let v: Vec<u8> = (0..r.len).map(|_| rnd(2) as u8).collect();
+            let reject = (round % 3 != 0).then(|| Time::ns(5 * rnd(4)));
+            let t1 = Time::ns(20);
+            for e in r.elems() {
+                let new = v[e - off as usize];
+                let mut chain = true;
+                let mut keep: Vec<(u64, u8)> = Vec::new();
+                for &(t, b) in model[e].iter().rev() {
+                    let del = if t >= t1.raw() {
+                        true
+                    } else if reject.is_some_and(|f| t >= f.raw()) {
+                        chain &= b == new;
+                        !chain
+                    } else {
+                        false
+                    };
+                    if !del {
+                        keep.insert(0, (t, b));
+                    }
+                }
+                keep.push((t1.raw(), new));
+                model[e] = keep;
+            }
+            w.schedule(r, reject, &mut smallvec![txn(20, off, &v)]);
+            let mut got: Vec<Vec<(u64, u8)>> = vec![Vec::new(); 200];
+            for t in &w.pending {
+                for (k, e) in t.range.elems().enumerate() {
+                    let b = t.value.as_ref().unwrap().bytes(k, 1).unwrap()[0];
+                    got[e].push((t.time.raw(), b));
+                }
+            }
+            assert_eq!(got, model, "round {round}");
+        }
     }
 
     #[test]

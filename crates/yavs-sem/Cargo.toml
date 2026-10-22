@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
+sha2 = "0.11"
+twox-hash = { version = "2.1", default-features = false, features = ["xxhash3_128", "std"] }
 smallvec.workspace = true
 postcard.workspace = true
 rustc-hash.workspace = true

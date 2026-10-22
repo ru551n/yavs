@@ -100,3 +100,66 @@ fn a_failing_instance_check_fails_at_the_same_time() {
     assert_eq!(with, without);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Slice and concatenation of array elements (#534): the optimiser shares the positions of the
+/// element across the arms of the `if`, which must still leave the memoised offsets of the
+/// instance (slots read by fused ops) and the waveform of the assignment built, copied into and
+/// driven by one op (`CopyDrive`), not by a `WaveBuf`, a `Copy` and a `Drive` over block ends.
+const LFSR: &str = "
+library ieee; use ieee.std_logic_1164.all;
+entity lfsr is end;
+architecture a of lfsr is
+  signal clk : std_logic := '0';
+  type arr is array (natural range <>) of std_logic_vector(15 downto 0);
+  signal r : arr(0 to 3);
+begin
+  clk <= not clk after 5 ns;
+  g: for i in 0 to 3 generate
+    process (clk) begin
+      if rising_edge(clk) then
+        if r(i)(0) = 'U' then
+          r(i) <= x\"ACE1\";
+        else
+          r(i) <= r(i)(14 downto 0) & (r(i)(15) xor r(i)(13) xor r(i)(12) xor r(i)(10));
+        end if;
+      end if;
+    end process;
+  end generate;
+end;
+";
+
+#[test]
+fn a_shifted_element_assignment_keeps_its_fused_ops() {
+    let d = tmp("lfsr");
+    std::fs::write(d.join("lfsr.vhd"), LFSR).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let a = Command::new(yavs)
+        .current_dir(&d)
+        .args(["analyze", "--std=2008", "--work", &work, "lfsr.vhd"])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = Command::new(yavs)
+        .current_dir(&d)
+        .env("YAVS_DUMPIR", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--no-cache",
+            "--std=2008",
+            "--work",
+            &work,
+        ])
+        .args(["--tier=interp", "--stop-time=100ns", "lfsr"])
+        .output()
+        .expect("run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let err = String::from_utf8_lossy(&o.stderr);
+    for want in ["SigRead1Slot", "CopyDrive"] {
+        assert!(err.contains(want), "no {want}:\n{err}");
+    }
+    assert!(!err.contains("WaveBuf"), "{err}");
+    let _ = std::fs::remove_dir_all(&d);
+}

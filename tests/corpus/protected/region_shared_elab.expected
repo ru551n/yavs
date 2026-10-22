@@ -1,0 +1,4 @@
+exit	0
+diag	note	1100000	0	:tb_region_shared_elab:a:_p0	a first=101 second=102 next=3
+diag	note	1200000	0	:tb_region_shared_elab:b:_p0	b first=201 second=202 next=3
+diag	note	2000000	0	:tb_region_shared_elab:_p0	tb next=3

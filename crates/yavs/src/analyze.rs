@@ -38,6 +38,9 @@ pub struct Args {
     /// Allow `std`/`ieee` as `--work`/`--map` (analyzes yavs's own lib/ into a library).
     #[arg(long)]
     bootstrap: bool,
+    /// Neither read nor write the analysed-unit cache of the libraries.
+    #[arg(long)]
+    no_cache: bool,
     /// The files, analyzed in this order; the first failing file stops the batch.
     #[arg(required = true, value_name = "FILE")]
     files: Vec<PathBuf>,
@@ -207,11 +210,17 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         "2019"
     };
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
+    // Developer check of the analysed-unit cache: every file is analysed a second time without
+    // it, and the two analyses must be the same (`docs/decisions.md` "Analysed-unit cache").
+    let check = std::env::var_os("YAVS_UNIT_CHECK").is_some();
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
     opts.psl = a.psl;
     opts.defines = a.defines;
     opts.encoding = encoding;
+    if !a.no_cache {
+        opts.units = crate::cache::Units::store_for(&opts, &work_lib.dir, true);
+    }
 
     // One exclusive hold on the work library for the whole batch (contract section 3).
     let session = match work_lib.session() {
@@ -228,15 +237,36 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // The process exits right after the batch: freeing every AST and HIR node one by one is
         // pure cost (about a tenth of a cold analysis), so the database is never dropped.
+        let mut shadow = check.then(|| {
+            let mut o = opts.clone();
+            o.units = None;
+            std::mem::ManuallyDrop::new(Db::new(o))
+        });
+        let bodies_opts = opts.clone();
         let mut db = std::mem::ManuallyDrop::new(Db::new(opts));
         let mut shown = 0;
         for (i, file) in a.files.iter().enumerate() {
             current.set(i);
             // Stamped before the read: an edit in between is never trusted.
             let stamp = yavs_lib::Stamp::of(file);
-            let bytes = std::fs::read(file);
+            let hash = std::fs::read(file).map(|b| yavs_lib::hash_content(&b));
             let before = out.errors;
-            let r = db.analyze_file(work, file, rev);
+            let r = db.analyze_file_hashed(work, file, rev, hash.as_deref().ok());
+            if let Some(sh) = shadow.as_mut() {
+                let r2 = sh.analyze_file(work, file, rev);
+                if r.is_ok() != r2.is_ok() {
+                    panic!(
+                        "the analysed-unit cache changed the outcome of `{}`",
+                        file.display()
+                    );
+                }
+                if let Some(why) = db.differs_from(sh) {
+                    panic!(
+                        "the analysed-unit cache gave another analysis of `{}`: {why}",
+                        file.display()
+                    );
+                }
+            }
             for d in &db.diagnostics()[shown..] {
                 out.emit(&db.sources, d);
             }
@@ -245,14 +275,23 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
                 Ok(r) if out.errors == before => r,
                 _ => return Some(i),
             };
-            // bytes was readable or analysis would have failed.
-            let hash = yavs_lib::hash_content(&bytes.unwrap_or_default());
+            // The file was readable or analysis would have failed.
+            let hash = hash.unwrap_or_default();
             if let Err(d) = session.record_stamped(std_name, Path::new(file), &hash, stamp, records)
             {
                 out.emit(&none, &d);
                 return Some(i);
             }
             done.borrow_mut().push(file.display().to_string());
+        }
+        // The std/ieee package bodies every elaboration loads, stored once (their warnings stay
+        // theirs: this session's output is not changed).
+        let missing = db.builtin_bodies_missing();
+        if !missing.is_empty() {
+            let mut scratch = std::mem::ManuallyDrop::new(Db::new(bodies_opts.clone()));
+            for (lib, pkg) in missing {
+                let _ = scratch.load_body(&lib, &pkg);
+            }
         }
         None
     }));

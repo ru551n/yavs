@@ -207,11 +207,14 @@ impl<'a> Fx<'a, '_> {
                 Some(v) => Ok(v),
                 None => Err(self.cx.ice(span, "procedure call in an expression")),
             },
-            ExprKind::Index { prefix, indices } => match self.sig_elem(id, *prefix, span)? {
+            ExprKind::Index { prefix, indices } => match self.rec_part(id, span)? {
                 Some(v) => Ok(v),
-                None => match self.sig_part(id, span)? {
+                None => match self.sig_elem(id, *prefix, span)? {
                     Some(v) => Ok(v),
-                    None => self.index(*prefix, indices, span),
+                    None => match self.sig_part(id, span)? {
+                        Some(v) => Ok(v),
+                        None => self.index(*prefix, indices, span),
+                    },
                 },
             },
             ExprKind::Slice { prefix, range } => match self.sig_part(id, span)? {
@@ -243,7 +246,10 @@ impl<'a> Fx<'a, '_> {
             ExprKind::Aggregate { assocs, bounds } => {
                 self.aggregate(assocs, bounds, e.subtype, span)
             }
-            ExprKind::Field { prefix, elem } => self.field(*prefix, *elem, span),
+            ExprKind::Field { prefix, elem } => match self.rec_part(id, span)? {
+                Some(v) => Ok(v),
+                None => self.field(*prefix, *elem, span),
+            },
             ExprKind::Deref { prefix } => self.deref(*prefix, span),
             ExprKind::PrivateVar { object, var } => self.private_var(*object, *var, span),
             ExprKind::New { init } => self.allocator(init, e.subtype, span),
@@ -390,6 +396,12 @@ impl<'a> Fx<'a, '_> {
         let db = self.db;
         let decl = &db.decls[d];
         let obj = self.cx.objs.get(&d).copied();
+        if self.cx.capture_free
+            && obj.is_some()
+            && let Some(i) = self.cx.free_objs.iter().position(|o| o.decl == d)
+        {
+            self.cx.free_readers.push((i, self.fb.id()));
+        }
         match obj {
             Some(Obj::RecSignal(_)) => {
                 // ponytail: any name below a composite signal reads all of it, then selects;
@@ -415,7 +427,7 @@ impl<'a> Fx<'a, '_> {
                 Ok(V::A(data, dope))
             }
             Some(Obj::InstArray { space, off }) => {
-                let (data, dope) = self.inst_array(space, off);
+                let (data, dope) = self.inst_array(Some(d), space, off);
                 Ok(V::A(data, dope))
             }
             Some(Obj::Fixed { space, off, size }) => {
@@ -476,6 +488,60 @@ impl<'a> Fx<'a, '_> {
                     let c = self.deferred_completion(d).ok_or(Failed)?;
                     self.read_obj(c, span)
                 }
+                // A constant or generic of an enclosing region, read by a function called
+                // during elaboration: a slot of instance data the elaborator fills.
+                DeclKind::Object(o)
+                    if self.cx.capture_free
+                        && o.class == yavs_sem::decl::ObjClass::Constant
+                        && (o.role == yavs_sem::decl::ObjRole::Generic
+                            || o.default.is_none_or(|e| db.exprs[e].value.is_none()))
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Entity
+                                | yavs_sem::scope::ScopeKind::Architecture
+                                | yavs_sem::scope::ScopeKind::Block
+                                | yavs_sem::scope::ScopeKind::Generate
+                        ) =>
+                {
+                    self.capture_free(d, o.subtype, span)?;
+                    self.read_obj(d, span)
+                }
+                // A protected shared variable of an enclosing region: a slot holding the
+                // handle of its object, created and filled in by the elaborator.
+                DeclKind::Object(o)
+                    if self.cx.capture_free
+                        && self.cx.capture_vars
+                        && o.class == yavs_sem::decl::ObjClass::SharedVariable
+                        && matches!(
+                            db.types[db.base(o.subtype)].kind,
+                            yavs_sem::types::TypeKind::Protected { .. }
+                        )
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Entity
+                                | yavs_sem::scope::ScopeKind::Architecture
+                                | yavs_sem::scope::ScopeKind::Block
+                                | yavs_sem::scope::ScopeKind::Generate
+                        ) =>
+                {
+                    let t = self.ty(db.base(o.subtype), span)?;
+                    let off = self.cx.inst_alloc(8);
+                    self.cx.objs.insert(
+                        d,
+                        Obj::Scalar {
+                            space: Space::Inst,
+                            off,
+                            w: Width::B8,
+                        },
+                    );
+                    self.cx.free_objs.push(crate::FreeObj {
+                        decl: d,
+                        ty: t,
+                        off,
+                        var: true,
+                    });
+                    self.read_obj(d, span)
+                }
                 // A constant without run-time data (locally static) is evaluated from its
                 // folded initialiser.
                 DeclKind::Object(o)
@@ -509,6 +575,35 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
+    /// Give constant `d` of subtype `st` a slot of instance data (`Cx::capture_free`).
+    fn capture_free(&mut self, d: DeclId, st: SubtypeId, span: Span) -> R<()> {
+        let t = self.ty(self.db.base(st), span)?;
+        let w = match self.fb.program().types().get(t) {
+            Some(x) if x.scalar_size().is_some() => Some(ty::width(x)),
+            _ => None,
+        };
+        let off = self.cx.inst_alloc(if w.is_some() { 8 } else { 16 });
+        let obj = match w {
+            Some(w) => Obj::Scalar {
+                space: Space::Inst,
+                off,
+                w,
+            },
+            None => Obj::InstArray {
+                space: Space::Inst,
+                off,
+            },
+        };
+        self.cx.objs.insert(d, obj);
+        self.cx.free_objs.push(crate::FreeObj {
+            decl: d,
+            ty: t,
+            off,
+            var: false,
+        });
+        Ok(())
+    }
+
     /// The full declaration in the package body of deferred constant `d`.
     pub fn deferred_completion(&self, d: DeclId) -> Option<DeclId> {
         deferred_completion(self.db, d)
@@ -522,7 +617,7 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// Elements and descriptor of an array in instance data (`Obj::InstArray`).
-    pub fn inst_array(&mut self, space: Space, off: u32) -> (Reg, Reg) {
+    pub fn inst_array(&mut self, d: Option<DeclId>, space: Space, off: u32) -> (Reg, Reg) {
         let base = self.addr(space, 0);
         let at = |fx: &mut Self, k: u32| {
             let cell = fx.addr(space, off + k);
@@ -536,7 +631,12 @@ impl<'a> Fx<'a, '_> {
             });
             dst
         };
-        (at(self, 0), at(self, 8))
+        let data = at(self, 0);
+        // (A static subtype has its descriptor in the pool, `Cx::const_dope`.)
+        match d.and_then(|d| self.cx.const_dope.get(&d).copied()) {
+            Some(c) => (data, self.const_addr(c)),
+            None => (data, at(self, 8)),
+        }
     }
 
     /// A reference to all of the scalar signal or signal parameter `d`.
@@ -845,6 +945,31 @@ impl<'a> Fx<'a, '_> {
 
     /// The descriptor of an array signal (from its subtype, evaluated in this instance);
     /// `None` for a scalar signal.
+    /// The pool constant holding the descriptor of object `d` of subtype `st` when every bound
+    /// is locally static (the same in every instance), made once.
+    fn static_dope(&mut self, d: DeclId, st: SubtypeId, span: Span) -> Option<yavs_ir::ConstId> {
+        if let Some(c) = self.cx.const_dope.get(&d).copied() {
+            return Some(c);
+        }
+        let db = self.db;
+        let t = db.base(st);
+        let tid = self.ty(t, span).ok()?;
+        let b = crate::composite::static_desc(
+            db,
+            self.fb.program(),
+            t,
+            &db.subtypes[st].constraint,
+            tid,
+        )?;
+        let n = Ty::desc_size(self.fb.program().types(), tid)?;
+        if b.is_empty() || n != b.len() as u64 {
+            return None;
+        }
+        let k = self.fb.program().konst(yavs_ir::ConstData::Bytes(b));
+        self.cx.const_dope.insert(d, k);
+        Some(k)
+    }
+
     pub fn sig_dope(&mut self, d: DeclId, span: Span) -> R<Option<Reg>> {
         if let Some((t, st)) = self.alias_target(d) {
             let Some(dope) = self.dope_of_signal(t)? else {
@@ -868,6 +993,10 @@ impl<'a> Fx<'a, '_> {
             return Ok(None);
         }
         if let Some(&(space, off)) = self.cx.sig_dopes.get(&d) {
+            // (A static subtype has its descriptor in the pool, not in the instance's data.)
+            if let Some(c) = self.static_dope(d, o.subtype, span) {
+                return Ok(Some(self.const_addr(c)));
+            }
             return Ok(Some(self.addr(space, off)));
         }
         if let Some(Obj::SignalRef { space, off, out }) = self.cx.objs.get(&d).copied() {
@@ -1101,7 +1230,10 @@ impl<'a> Fx<'a, '_> {
                 let a = self.addr(p.space, p.desc_off());
                 self.load(a, Width::B8, RegTy::Ptr)
             }
-            (Some((space, off)), _) => self.addr(space, off),
+            (Some((space, off)), _) => match self.static_dope(d, st, span) {
+                Some(c) => self.const_addr(c),
+                None => self.addr(space, off),
+            },
             (None, _) => match self.desc_of(st, None, span)? {
                 Some(r) => r,
                 None => return Err(self.cx.ice(span, "composite signal without a descriptor")),
@@ -1555,7 +1687,9 @@ impl<'a> Fx<'a, '_> {
                     let a = self.addr(space, off);
                     return Ok(self.array_dope(d, a));
                 }
-                Some(Obj::InstArray { space, off }) => return Ok(self.inst_array(space, off).1),
+                Some(Obj::InstArray { space, off }) => {
+                    return Ok(self.inst_array(Some(d), space, off).1);
+                }
                 Some(Obj::Fixed { space, off, size }) => return Ok(self.addr(space, off + size)),
                 Some(Obj::Signal { .. }) => {
                     let span = self.db.exprs[e].span;
@@ -2463,6 +2597,20 @@ impl<'a> Fx<'a, '_> {
                 };
                 let cells = self.cells(sp, args, span, true)?;
                 let r = self.native(&sym, ty, &cells, sp.ret, span)?;
+                self.copy_out(span)?;
+                Ok(r)
+            }
+            // A user function that folds a logic vector with one gate runs as the native of the
+            // unary operator (#531).
+            Body::Hir { .. }
+                if !self.cx.opts.no_native_ieee
+                    && !self.cx.opts.coverage
+                    && crate::reduce::reduction(db, callee).is_some() =>
+            {
+                let gate = crate::reduce::reduction(db, callee)
+                    .ok_or_else(|| self.cx.ice(span, "reduction idiom"))?;
+                let cells = self.cells(sp, args, span, true)?;
+                let r = self.native(&crate::reduce::symbol(gate), None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
             }
@@ -4033,6 +4181,36 @@ impl<'a> Fx<'a, '_> {
                     _ => None,
                 };
                 let Some(slot) = slot else {
+                    // A signal this process does not drive at all (LRM 16.2.4: an error when
+                    // evaluated, so at run time, as the reference simulators do). Signal
+                    // parameters and partly driven composites stay unlowered.
+                    if let ExprKind::Obj(d) = db.exprs[e].kind {
+                        let root = yavs_sem::hir::ObjRoot::Decl(d);
+                        if !self.drivers.iter().any(|l| l.root == root)
+                            && !matches!(self.cx.objs.get(&d), Some(Obj::SignalRef { .. }))
+                        {
+                            let what = self.msg(
+                                &format!(
+                                    "'{} of signal {} in a process that does not contain a driver for it (LRM 16.2.4)",
+                                    if attr == Driving { "driving" } else { "driving_value" },
+                                    db.decls[d].name
+                                ),
+                                Dir::To,
+                            );
+                            self.term(Inst::Unreachable { what });
+                            let dead = self.block();
+                            self.at(dead);
+                            return Ok(match (attr == Driving, self.dope_of_signal(e)?) {
+                                (true, _) => V::S(self.int(0)),
+                                (_, Some(dope)) => {
+                                    let tid = self.ty(db.base(db.exprs[e].subtype), span)?;
+                                    let size = self.size_of(tid, dope);
+                                    V::A(self.alloc(size), dope)
+                                }
+                                _ => V::S(self.int(0)),
+                            });
+                        }
+                    }
                     return Err(self
                         .cx
                         .unsupported(span, "'driving of signal parameters and sub-elements"));
@@ -4167,7 +4345,7 @@ impl<'a> Fx<'a, '_> {
                         off
                     }
                 };
-                let (data, dope) = self.inst_array(Space::Inst, off);
+                let (data, dope) = self.inst_array(None, Space::Inst, off);
                 Ok(V::A(data, dope))
             }
             AttrPrefix::Entity(_) => Err(self.cx.unsupported(
@@ -4258,6 +4436,46 @@ impl<'a> Fx<'a, '_> {
         }
     }
 
+    /// `r.f` (or `r.f.g`) of a record signal `r`: read the selected part alone, as a scalar
+    /// signal is read, not the whole record and then select the field (every activation of a
+    /// process that names one field of a wide control record copied all of it).
+    fn rec_part(&mut self, e: ExprId, span: Span) -> R<Option<V>> {
+        let db = self.db;
+        let Some((d, steps)) = self.comp_steps(e) else {
+            return Ok(None);
+        };
+        // ponytail: slices of an array of records still read all of it.
+        if !steps
+            .iter()
+            .all(|s| matches!(s, Step::Field(_) | Step::Index(_)))
+        {
+            return Ok(None);
+        }
+        let p = self.comp_select(d, &steps, span)?;
+        let t = db.base(db.exprs[e].subtype);
+        let one_leaf = matches!(p.leaves.as_slice(), [(l, _, _)] if l.path == p.path);
+        if !one_leaf || (ty::is_array(db, t) && self.is_general(t, span)?) {
+            return self.read_comp(&p, span).map(Some);
+        }
+        let s = p.leaves[0].1;
+        if ty::is_array(db, t) {
+            let size = self.size_of(p.tid, p.desc);
+            let buf = self.alloc(size);
+            self.emit(Inst::SigRead { dst: buf, sig: s });
+            return Ok(Some(V::A(buf, p.desc)));
+        }
+        let raw = self.reg(RegTy::I64);
+        self.emit(Inst::SigReadScalar { dst: raw, sig: s });
+        let bias = self.code_bias(p.tid);
+        let dst = self.dec(raw, bias);
+        if self.rt_of(t) == RegTy::F64 {
+            let f = self.reg(RegTy::F64);
+            self.emit(Inst::Move { dst: f, src: dst });
+            return Ok(Some(V::S(f)));
+        }
+        Ok(Some(V::S(dst)))
+    }
+
     /// `s(i)` of an array signal `s` of this unit with scalar elements: read that element
     /// alone (as a scalar signal is read), not the whole signal and then index it. Index
     /// checks and their messages are those of `index`.
@@ -4319,6 +4537,44 @@ impl<'a> Fx<'a, '_> {
         Ok(Some(V::A(buf, dope)))
     }
 
+    /// Whether `e` is an index or slice of an array variable, parameter or constant, possibly
+    /// nested: a name [`Fx::place`] selects without copying.
+    fn is_view_name(&self, e: ExprId) -> bool {
+        let mut e = e;
+        let mut steps = 0;
+        loop {
+            match &self.db.exprs[e].kind {
+                ExprKind::Index { prefix, .. } | ExprKind::Slice { prefix, .. } => {
+                    e = *prefix;
+                    steps += 1;
+                }
+                ExprKind::Obj(d) => {
+                    return steps > 0 && matches!(self.cx.objs.get(d), Some(Obj::Array { .. }));
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// Plane index of element `pos` (from the left) of a logic array with `dope` seen through
+    /// the plane offset `off` (a slice or row of a larger array).
+    pub(crate) fn logic_elem_idx(
+        &mut self,
+        tid: TyId,
+        dope: Reg,
+        pos: Reg,
+        off: Option<Reg>,
+    ) -> Reg {
+        let count = self.layout_count(tid, dope);
+        let one = self.int(1);
+        let last = self.bin(IntOp::Sub, count, one);
+        let idx = self.bin(IntOp::Sub, last, pos);
+        match off {
+            Some(o) => self.bin(IntOp::Add, idx, o),
+            None => idx,
+        }
+    }
+
     fn index(&mut self, prefix: ExprId, indices: &[ExprId], span: Span) -> R<V> {
         let db = self.db;
         let t = db.base(db.exprs[prefix].subtype);
@@ -4327,6 +4583,28 @@ impl<'a> Fx<'a, '_> {
         }
         let (_, logic, w) = self.elem_facts(t, span)?;
         let what = self.prefix_name(prefix);
+        // `a(i)(j)` of a logic row: the element in place, not through a copy of row `a(i)`.
+        if logic && self.is_view_name(prefix) {
+            let tid = self.ty(t, span)?;
+            if let Place::Array {
+                data, dope, off, ..
+            } = self.place(prefix)?
+            {
+                let pos = self.flat_pos(dope, indices, &what)?;
+                let idx = self.logic_elem_idx(tid, dope, pos, off);
+                let dst = self.reg(RegTy::I64);
+                self.emit(Inst::LGet {
+                    dst,
+                    base: data,
+                    idx,
+                });
+                let bias = self.code_bias(tid);
+                return Ok(V::S(self.dec(dst, bias)));
+            }
+            return Err(self
+                .cx
+                .ice(span, "view of a variable array is not an array"));
+        }
         let v = self.expr(prefix)?;
         let (data, dope) = self.arr(v, span)?;
         let pos = self.flat_pos(dope, indices, &what)?;
@@ -4528,13 +4806,7 @@ impl<'a> Fx<'a, '_> {
                 };
                 let pos = self.flat_pos(dope, indices, &what)?;
                 if self.is_logic(tid) {
-                    let count = self.layout_count(tid, dope);
-                    let one = self.int(1);
-                    let last = self.bin(IntOp::Sub, count, one);
-                    let mut idx = self.bin(IntOp::Sub, last, pos);
-                    if let Some(o) = off {
-                        idx = self.bin(IntOp::Add, idx, o);
-                    }
+                    let idx = self.logic_elem_idx(tid, dope, pos, off);
                     return Ok(Place::Logic {
                         data,
                         idx,

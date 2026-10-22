@@ -361,7 +361,7 @@ pub struct SigObj {
     pub shape: Shape,
     /// Its leaves: `leaves.0 .. leaves.1`.
     pub leaves: (LeafId, LeafId),
-    /// An `in` port collapsed into part of its actual's leaf (`collapse.rs`): its one leaf is
+    /// A port collapsed into part of its actual's leaf (`collapse.rs`): its one leaf is
     /// the actual's, and it is the elements of this kernel range of it. `None`: the whole
     /// leaves.
     pub part: Option<Range>,

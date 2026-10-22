@@ -47,6 +47,17 @@ thread_local! {
 }
 
 impl Symbol {
+    /// Room for `n` more symbols, before reading values that hold that many new ones (the
+    /// analysed-unit cache knows how many its entries name).
+    pub fn reserve(n: usize) {
+        interner()
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .map
+            .reserve(n);
+        LOCAL.with(|l| l.borrow_mut().map.reserve(n));
+    }
+
     pub fn intern(s: &str) -> Symbol {
         LOCAL.with(|l| {
             let mut l = l.borrow_mut();
@@ -146,6 +157,18 @@ type EncTable = (Vec<u32>, Vec<Symbol>);
 thread_local! {
     static ENC: std::cell::RefCell<Option<EncTable>> = const { std::cell::RefCell::new(None) };
     static DEC: std::cell::RefCell<Option<DecodeTable>> = const { std::cell::RefCell::new(None) };
+    static RAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with symbols written and read as their number in this process instead of through a
+/// table: the bytes compare equal exactly when the values do, within one process (the
+/// analysed-unit cache compares state before and after a unit this way). Such bytes are only
+/// read back by the process that wrote them.
+pub fn raw_symbols<R>(f: impl FnOnce() -> R) -> R {
+    let before = RAW.with(|r| r.replace(true));
+    let r = f();
+    RAW.with(|r| r.set(before));
+    r
 }
 
 /// The texts of the symbols an image holds, as one string and the end offset of each.
@@ -158,9 +181,13 @@ pub struct SymbolTable {
 /// Run `f` (which serializes values holding symbols) and return its result with the table of
 /// the symbol texts it used; the written indices refer to that table.
 pub fn encode_table<R>(f: impl FnOnce() -> R) -> (R, SymbolTable) {
-    ENC.with(|e| *e.borrow_mut() = Some(Default::default()));
+    let before = ENC.with(|e| e.borrow_mut().replace(Default::default()));
+    let raw = RAW.with(|r| r.replace(false));
     let r = f();
-    let (_, list) = ENC.with(|e| e.borrow_mut().take()).unwrap_or_default();
+    RAW.with(|r| r.set(raw));
+    let (_, list) = ENC
+        .with(|e| std::mem::replace(&mut *e.borrow_mut(), before))
+        .unwrap_or_default();
     let mut t = SymbolTable {
         text: String::new(),
         ends: Vec::with_capacity(list.len()),
@@ -184,6 +211,15 @@ struct Decoded {
 }
 
 impl DecodeTable {
+    /// The number of symbols in the table.
+    pub fn len(&self) -> usize {
+        self.0.syms.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.syms.is_empty()
+    }
+
     pub fn new(table: SymbolTable) -> Self {
         let syms = (0..table.ends.len()).map(|_| Default::default()).collect();
         DecodeTable(std::sync::Arc::new(Decoded { table, syms }))
@@ -205,7 +241,9 @@ impl DecodeTable {
     /// Run `f` (which deserializes values holding symbols) against this table.
     pub fn run<R>(&self, f: impl FnOnce() -> R) -> R {
         let before = DEC.with(|d| d.borrow_mut().replace(self.clone()));
+        let raw = RAW.with(|r| r.replace(false));
         let r = f();
+        RAW.with(|r| r.set(raw));
         DEC.with(|d| *d.borrow_mut() = before);
         r
     }
@@ -213,6 +251,9 @@ impl DecodeTable {
 
 impl serde::Serialize for Symbol {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        if RAW.with(|r| r.get()) {
+            return s.serialize_u32(self.0);
+        }
         let i = ENC.with(|e| {
             let mut e = e.borrow_mut();
             let (ids, list) = e.as_mut()?;
@@ -238,6 +279,9 @@ impl serde::Serialize for Symbol {
 impl<'de> serde::Deserialize<'de> for Symbol {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let i = <u32 as serde::Deserialize>::deserialize(d)?;
+        if RAW.with(|r| r.get()) {
+            return Ok(Symbol(i));
+        }
         DEC.with(|t| t.borrow().as_ref().and_then(|t| t.get(i as usize)))
             .ok_or_else(|| serde::de::Error::custom("symbol outside decode_table or out of range"))
     }

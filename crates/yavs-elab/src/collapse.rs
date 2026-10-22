@@ -1,15 +1,25 @@
-//! In-port collapsing (`docs/design/performance.md` R4, plan rule 3): the formal of an `in`
-//! port whose actual is whole kernel leaves of the same type, or (a formal of one leaf) part
-//! of one leaf (`d => v(i)`), with no conversion, becomes an alias of them. The formal object
-//! keeps its name, scope and shape (waves, `'path_name`) and takes the actual's leaf range,
-//! with `SigObj::part` for a part of a leaf; its own leaves, their port edges and the copy per
-//! delta are gone. Run after `bind_late`, when every force target is known; leaves are
-//! renumbered in their old order, so elaboration order stays deterministic.
+//! Port collapsing (`docs/design/performance.md` R4, plan rule 3): the formal of an `in`,
+//! `out` or `buffer` port whose actual is whole kernel leaves of the same type, or (a formal
+//! of one leaf) part of one leaf (`d => v(i)`), with no conversion, becomes an alias of them.
+//! The formal object keeps its name, scope and shape (waves, `'path_name`) and takes the
+//! actual's leaf range, with `SigObj::part` for a part of a leaf; its own leaves, their port
+//! edges and the copy per delta are gone. Run after `bind_late`, when every force target is
+//! known; leaves are renumbered in their old order, so elaboration order stays deterministic.
 //!
 //! The effective value of an `in` formal is the effective value of its actual (LRM 14.7.3.3),
 //! so its value, events and activity are the actual's either way. Not collapsed: forced or
 //! released formals (a force of an `in` port acts on the port only, LRM 10.5.2.2), formals
 //! with drivers, a guard, a user resolution function or a composite resolved as a whole.
+//!
+//! An `out` or `buffer` formal that is the only source of its actual's elements (#528): the
+//! effective value of both is their driving value (LRM 14.7.3.3), and the actual's driving
+//! value is the formal's (one source, unresolved or resolved by `resolved`, the identity on
+//! one value), so the formal's drivers can drive the actual directly. The actual takes the
+//! formal's initial value: the drivers start from it, and it is the actual's value after
+//! initialisation anyway (LRM 14.7.5.2). Not collapsed: an actual with another source, a
+//! guard, a conversion, an effective value from above (the formal of an `in` or `inout` port),
+//! in a composite resolved as a whole, or forced or released; a formal resolved where the
+//! actual is not; `inout` ports.
 
 use std::collections::HashSet;
 
@@ -17,13 +27,13 @@ use yavs_sem::Db;
 use yavs_sem::decl::{DeclKind, ObjRole};
 use yavs_sem::hir::{ObjRoot, StmtKind};
 
-use yavs_kernel::Range;
+use yavs_kernel::{PortMode, Range, Value};
 
 use crate::ProcInst;
 use crate::hier::{LeafId, LeafRes, NetGraph, ObjId, ObjKind};
 
-/// Collapse the `in` ports of `nets` that qualify; returns how many formals were collapsed.
-pub(crate) fn in_ports(
+/// Collapse the ports of `nets` that qualify; returns how many formals were collapsed.
+pub(crate) fn ports(
     db: &Db,
     nets: &mut NetGraph,
     sigs: &std::collections::HashMap<(crate::ScopeId, yavs_sem::DeclId), ObjId>,
@@ -43,11 +53,27 @@ pub(crate) fn in_ports(
             _ => (edge[f], excluded[f]) = (usize::MAX, true),
         }
     }
+    // Per leaf: its source ranges (drivers, ports other than `in`, conversions), and whether
+    // its effective value comes from above (the formal of an `in` or `inout` port).
+    let mut sources: Vec<Vec<Range>> = vec![Vec::new(); n];
+    let mut fed = vec![false; n];
+    for e in &nets.ports {
+        if e.mode != PortMode::In {
+            sources[e.actual.0.index()].push(e.actual.1);
+        }
+        if matches!(e.mode, PortMode::In | PortMode::Inout) {
+            fed[e.formal.0.index()] = true;
+        }
+    }
     for p in &nets.conv_ports {
         p.formal.iter().for_each(|f| excluded[f.0.index()] = true);
+        p.formal.iter().for_each(|f| fed[f.0.index()] = true);
+        p.actual.iter().for_each(|a| sources[a.0.index()].push(a.1));
     }
+    let mut driven = vec![false; n];
     for d in &nets.drivers {
-        excluded[d.leaf.index()] = true;
+        driven[d.leaf.index()] = true;
+        sources[d.leaf.index()].push(d.range);
     }
     for w in &nets.wholes {
         w.instances
@@ -55,19 +81,29 @@ pub(crate) fn in_ports(
             .flatten()
             .for_each(|p| excluded[p.0.index()] = true);
     }
+    // The actual of an `out` formal: no other source of these elements, its effective value
+    // its driving value, no guard, not forced, not in a composite resolved as a whole.
+    let sole = |e: &crate::hier::PortEdge| {
+        let (a, r) = (e.actual.0.index(), e.actual.1);
+        let al = &nets.leaves[a];
+        let overlaps = sources[a].iter().filter(|s| s.overlaps(r)).count();
+        overlaps == 1 && !fed[a] && !excluded[a] && al.guard.is_none() && !forced.contains(&al.obj)
+    };
     // The leaf and kernel offset each collapsed formal leaf aliases (before following chains):
     // element `k` of the formal is element `offset + k` of the target (logic leaves too:
     // `NetGraph::select` mirrors both the same way).
     let mut alias: Vec<Option<(LeafId, u32)>> = vec![None; n];
     let mut count = 0;
+    // The collapsed `out` and `buffer` formal leaves (their actuals take their initial values).
+    let mut outs = Vec::new();
     for (o, obj) in nets.objs.iter().enumerate() {
-        let in_port = matches!(
-            obj.kind,
-            ObjKind::Port(yavs_kernel::PortMode::In)
-                | ObjKind::ComponentPort(yavs_kernel::PortMode::In)
-        );
+        let mode = match obj.kind {
+            ObjKind::Port(m) | ObjKind::ComponentPort(m) => m,
+            _ => continue,
+        };
+        let out = matches!(mode, PortMode::Out | PortMode::Buffer);
         let (a, b) = (obj.leaves.0.index(), obj.leaves.1.index());
-        if !in_port || a == b || forced.contains(&ObjId(o as u32)) {
+        if !(out || mode == PortMode::In) || a == b || forced.contains(&ObjId(o as u32)) {
             continue;
         }
         let mut targets = Vec::with_capacity(b - a);
@@ -77,11 +113,12 @@ pub(crate) fn in_ports(
                 && edge[l] != usize::MAX
                 && leaf.guard.is_none()
                 && leaf.implicit.is_none()
+                && (out || !driven[l])
                 && matches!(leaf.resolution, None | Some(LeafRes::StdLogic));
             let e = ok.then(|| &nets.ports[edge[l]]);
             let Some(e) = e.filter(|e| {
                 let al = &nets.leaves[e.actual.0.index()];
-                e.mode == yavs_kernel::PortMode::In
+                e.mode == mode
                     && e.to_formal.is_none()
                     && e.to_actual.is_none()
                     && e.formal.1.offset == 0
@@ -90,6 +127,17 @@ pub(crate) fn in_ports(
                     && al.ty.elem == leaf.ty.elem
                     // Several leaves keep one leaf range: whole leaves of one object.
                     && (b - a == 1 || (e.actual.1.offset == 0 && al.ty == leaf.ty))
+                    // An `out` formal's drivers drive the actual: it resolves them the same
+                    // way (an unresolved formal has at most one).
+                    && (!out
+                        || sole(e)
+                            && match (&leaf.resolution, &al.resolution) {
+                                (None, None | Some(LeafRes::StdLogic)) => true,
+                                (Some(LeafRes::StdLogic), r) => {
+                                    matches!(r, Some(LeafRes::StdLogic))
+                                }
+                                _ => false,
+                            })
             }) else {
                 break;
             };
@@ -104,11 +152,30 @@ pub(crate) fn in_ports(
             for (l, t) in (a..b).zip(targets) {
                 alias[l] = Some((t.0, t.1.offset));
             }
+            if out {
+                outs.extend(a..b);
+            }
             count += 1;
         }
     }
     if count == 0 {
         return 0;
+    }
+    // An actual takes its `out` formal's initial value, the deepest formal's of a chain
+    // first.
+    let depth = |mut l: usize| {
+        let mut d = 0;
+        while let Some((t, _)) = alias[l] {
+            (l, d) = (t.index(), d + 1);
+        }
+        d
+    };
+    outs.sort_by_key(|&l| std::cmp::Reverse(depth(l)));
+    for l in outs {
+        let (t, off) = alias[l].expect("collapsed");
+        let src = nets.leaves[l].init.clone();
+        let len = nets.leaves[l].ty.len;
+        put_init(&mut nets.leaves[t.index()].init, off, &src, len);
     }
     // Follow chains (a component port collapsed into a signal, the entity port into it).
     let find = |mut l: LeafId| {
@@ -183,6 +250,9 @@ pub(crate) fn in_ports(
             mr(&mut q);
             (*l, *r) = q;
         }
+        if let Some(c) = &mut p.copy {
+            c.iter_mut().for_each(mr);
+        }
         if let Some(t) = &mut p.trigger {
             let (l, off) = m(t.leaf);
             (t.leaf, t.elem) = (l, t.elem + off);
@@ -193,6 +263,22 @@ pub(crate) fn in_ports(
         }
     }
     count
+}
+
+/// The `len` elements of `src` into `dst` from element `off`.
+fn put_init(dst: &mut Value, off: u32, src: &Value, len: u32) {
+    match (dst, src) {
+        (Value::Bytes(d), Value::Bytes(s)) if len > 0 => {
+            let o = off as usize * (s.len() / len as usize);
+            d[o..o + s.len()].copy_from_slice(s);
+        }
+        (Value::Logic(d), Value::Logic(s)) => {
+            for i in 0..len as usize {
+                d.set(off as usize + i, s.get(i));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The signal objects a VHDL force or release names, directly, through an alias or through

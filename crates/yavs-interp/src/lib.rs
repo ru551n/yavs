@@ -47,10 +47,13 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
+pub use pre::static_wait;
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
-pub use yavs_ir::opt::{compiled_tier, external_variables, keep_variables};
+pub use yavs_ir::opt::{
+    compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables,
+};
 
 use exec::{Fault, Machine, Outcome};
 
@@ -69,7 +72,7 @@ pub struct InstData {
 pub struct InstSig {
     pub signal: SignalId,
     pub ty: SignalType,
-    /// Kernel offset of the object in `signal`: 0, or where an `in` port collapsed into part
+    /// Kernel offset of the object in `signal`: 0, or where a port collapsed into part
     /// of its actual's leaf starts (yavs-elab `SigObj::part`). Every element offset adds it.
     pub off: u32,
 }
@@ -319,9 +322,44 @@ pub trait Tier: Send + Sync {
         true
     }
 
+    /// Whether [`Tier::call`] takes `func` now (`Runtime::set_tier` marks it).
+    fn callable(&self, _func: FuncId) -> bool {
+        false
+    }
+
     /// Compile `func` (`Runtime::set_eager`: the fast loop entered it). Called from
-    /// simulation threads, so it must not block.
+    /// simulation threads; it returns once the compile is over (eager mode is for tests, so
+    /// that a run cannot end before its compile).
     fn hot(&self, _func: FuncId) {}
+
+    /// Call `func` from the interpreter's top frame, which waits at its `Call` (or `CallProt`
+    /// on the protected object `obj`) at `pc`, on a frame of the compiled code's own (native
+    /// frame), with argument `cells` (one per parameter, two for a signal; the object first):
+    /// what it did, or `None` (nothing done) when the interpreter must make the call. Asked
+    /// only for functions [`NativeFlags::set_call`] marked.
+    fn call(
+        &self,
+        _func: FuncId,
+        _cells: &[u64],
+        _obj: Option<u64>,
+        _pc: u32,
+        _host: &mut dyn TierHost,
+    ) -> Option<Called> {
+        None
+    }
+}
+
+/// What [`Tier::call`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Called {
+    /// The call returned this value (for a function).
+    Done(u64),
+    /// It left frames for the interpreter on top of the caller (`TierHost::materialise`).
+    Pushed,
+    /// A native the call ran ended the process: the frames are pushed and it suspends.
+    Suspend,
+    /// A fault, recorded by the host.
+    Fault,
 }
 
 /// What a tier keeps for one process between activations ([`Tier::run_cached`]).
@@ -353,6 +391,71 @@ pub enum Stepped {
     Call(FuncId),
     /// The process suspends ([`TIER_SUSPEND`]).
     Suspend,
+}
+
+/// The slots of the native frames of compiled code, which the machine reaches by address while
+/// a call from a native frame runs (`TierHost::native_direct`, `native_step`): the frame index
+/// is the one in the addresses.
+pub trait NativeSlots: Send {
+    fn slots(&self, idx: usize) -> Option<&[u8]>;
+    fn slots_mut(&mut self, idx: usize) -> Option<&mut [u8]>;
+}
+
+/// What [`TierHost::native_direct`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeCall {
+    /// The native ran: its result, if it returns one.
+    Done(Option<u64>),
+    /// Nothing happened (or nothing that cannot be done again): compiled code leaves the
+    /// instruction to the interpreter.
+    Slow,
+    /// The native ran and the process ends after it (a report at the stop severity): the
+    /// result, then compiled code leaves at the next instruction and the process suspends.
+    Stop(Option<u64>),
+}
+
+/// Whether compiled code may run the native `symbol` itself on a native frame
+/// ([`TierHost::native_direct`]): it computes from its arguments and the heap, so the
+/// interpreter can run the same call again where compiled code leaves it, or reads the
+/// simulation time.
+pub fn direct_native(symbol: &str) -> bool {
+    native::pure(symbol)
+        || symbol.starts_with("yavs.standard.now.")
+        || symbol.starts_with("yavs.textio.writeline.")
+        || symbol.starts_with("yavs.implicit.file_open.")
+        || symbol.starts_with("yavs.implicit.file_close.")
+}
+
+/// Whether the native `symbol` is one that runs once (ending the simulation): a native frame leaves to the interpreter for it
+/// (materialisation) instead of making every function that calls it use the interpreter's frames.
+pub fn cold_native(symbol: &str) -> bool {
+    symbol.starts_with("yavs.env.stop.") || symbol.starts_with("yavs.env.finish.")
+}
+
+/// The registers instruction `i` of `f` reads and writes, in operand order: a signal reference
+/// is two registers, and the operand list of a call or concatenation is read.
+pub fn inst_regs(f: &yavs_ir::Func, i: &yavs_ir::Inst) -> (Vec<yavs_ir::Reg>, Vec<yavs_ir::Reg>) {
+    let (mut uses, mut defs) = (Vec::new(), Vec::new());
+    i.visit(&mut |r, role, ty| {
+        let to = if role == yavs_ir::Role::Def {
+            &mut defs
+        } else {
+            &mut uses
+        };
+        to.push(r);
+        if ty == Some(yavs_ir::RegTy::Sig) {
+            to.push(yavs_ir::Reg(r.0 + 1));
+        }
+    });
+    if let Some(rs) = i.list().and_then(|l| f.regs(l)) {
+        for &r in rs {
+            uses.push(r);
+            if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) {
+                uses.push(yavs_ir::Reg(r.0 + 1));
+            }
+        }
+    }
+    (uses, defs)
 }
 
 /// The interpreter's side of [`Tier::run`].
@@ -404,8 +507,8 @@ pub trait TierHost {
     /// machine's fields; `false` (nothing written) when it is not (use `view`).
     fn view_again(&mut self, fr: &mut TierFrame) -> bool;
 
-    /// Compiled code keeps writing the heap object at `addr` that it found writable at an
-    /// earlier activation (`TierState`): count this activation's writes as the object's
+    /// Compiled code keeps writing the heap object (process or shared heap) at `addr` that it
+    /// found writable at an earlier activation or call: count this one's writes as the object's
     /// (`Heap::data_mut`), which tells the waveform recorder the object may have changed.
     fn wrote(&mut self, addr: u64) {
         let _ = addr;
@@ -416,6 +519,22 @@ pub trait TierHost {
     /// caller uses `drive_block`.
     fn drive_now(&mut self, driver: u32, target: [u64; 2], delay: i64, block: [u64; 4]) -> bool {
         let _ = (driver, target, delay, block);
+        false
+    }
+
+    /// `WaitOn` of the signal reference `sig` (its two words) for compiled code that waits on
+    /// more signals after it: `true` when the kernel took it as the same registration as at the
+    /// last wait (`Ctx::wait_on_again`); `false` (nothing done) otherwise.
+    fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {
+        let _ = sig;
+        false
+    }
+
+    /// The wait that names the same signals at every activation (`static_wait`) for compiled
+    /// code at its first statement: `true` when the kernel took it as the last wait
+    /// (`Ctx::wait_same`); the frame then waits at the `Suspend` at `pc`.
+    fn wait_same(&mut self, pc: u32) -> bool {
+        let _ = pc;
         false
     }
 
@@ -446,6 +565,56 @@ pub trait TierHost {
     /// The `WaitOn` at `pc` of the single-range signal reference `sig` (its two registers)
     /// and the `Suspend` after it, as `signal` runs them.
     fn wait_suspend(&mut self, fr: &mut TierFrame, pc: u32, sig: [u64; 2]) -> Stepped;
+
+    /// A `CallNative` of a native frame (`docs/decisions.md` "Compiled frames"): native
+    /// `native` ([`direct_native`]) with the argument `cells`, without an interpreter frame.
+    /// `slots` gives the slots of the native frames (frame indices from the machine's top frame
+    /// plus one up to `depth`), which addresses in the cells or in the memory the native reads
+    /// may name. [`NativeCall::Slow`] when a collection is due, the native fails or hands its
+    /// call to the VHDL body: compiled code then materialises the frames and the interpreter
+    /// executes the instruction (a native that fails has changed nothing the second run does
+    /// not see). `fr` is brought up to date.
+    fn native_direct(
+        &mut self,
+        fr: &mut TierFrame,
+        native: u32,
+        cells: &[u64],
+        depth: u64,
+        slots: &mut Option<Box<dyn NativeSlots>>,
+    ) -> NativeCall;
+
+    /// Instruction `pc` of function `func`, executed for a native frame by the interpreter's own
+    /// code on a frame it makes for the purpose (`docs/decisions.md` "Compiled frames"):
+    /// `ins` are the values of the registers `use_regs` (the registers [`inst_regs`] says it
+    /// reads), `outs` receive those it writes (`def_regs`), `slots` as for
+    /// [`TierHost::native_direct`] (frame index `depth`) and `temp_base` its temporary base.
+    /// For `New`, `NewFill`, `Free`, `LFill`, `LEq`, `LayoutOf` and `Report` and instructions
+    /// without an inline form. [`NativeCall::Slow`] when a collection is due (the machine does
+    /// not hold the native frames' registers), a report would show the call stack of frames the
+    /// machine does not have, or the instruction fails (compiled code then materialises the
+    /// frames and the interpreter executes it, with its error).
+    #[allow(clippy::too_many_arguments)]
+    fn native_step(
+        &mut self,
+        fr: &mut TierFrame,
+        func: u32,
+        pc: u32,
+        depth: u64,
+        regs: (&[u32], &[u32]),
+        ins: &[u64],
+        outs: &mut [u64],
+        slots: &mut Option<Box<dyn NativeSlots>>,
+        temp_base: u64,
+    ) -> NativeCall;
+
+    /// `Inst::TempRoot` from a native frame: record the temporary at `addr` for the GC until
+    /// its statement ends (`ty` its type and `desc` the descriptor bytes, or the fat pair at
+    /// `addr` when `ty` is `None`). `false`: the interpreter must execute the instruction.
+    fn temp_root(&mut self, fr: &mut TierFrame, addr: u64, ty: Option<u32>, desc: &[u8]) -> bool;
+
+    /// `Inst::Stmt` of a native frame whose temporaries start at `base`, while temporaries are
+    /// recorded: drop what the statement made.
+    fn end_stmt(&mut self, fr: &mut TierFrame, base: u64);
 }
 
 /// A native frame of compiled code, recorded for [`TierHost::materialise`].
@@ -457,6 +626,9 @@ pub struct NativeFrame {
     pub regs: Vec<u64>,
     pub slots: Vec<u8>,
     pub temp_base: u64,
+    /// The frame's static link, as compiled code passes it: the high half of the address of
+    /// the lexically enclosing frame (`space::FRAME << 29 | index`), `u64::MAX` for none.
+    pub link: u64,
 }
 
 /// What compiled code reads and writes itself (ir.md 5): a view of the top frame's
@@ -514,10 +686,29 @@ pub struct TierFrame {
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
     /// native frames stay below it.
     pub max_depth: u64,
-    /// The process heap's `epoch`: the host addresses of heap objects compiled code found stay
-    /// valid while it is unchanged.
+    /// The sum of the process heap's and the shared heap's `epoch`: the host addresses of heap
+    /// objects compiled code found stay valid while it is unchanged (refreshed with the
+    /// temporary area after every host call).
     pub heap_epoch: u64,
+    /// [`TIER_SHARED_ALLOC`] (the top frame allocates in the shared heap) and [`TIER_SERIAL`]
+    /// (the process may use the shared state): what native frames inherit and a protected call
+    /// needs.
+    pub flags: u64,
+    /// Which machine the view is of (a number no other machine of the process has): the
+    /// process heap, instance data and frames are that machine's.
+    pub owner: u64,
 }
+
+/// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
+pub const TIER_SHARED_ALLOC: u64 = 1;
+/// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
+pub const TIER_SERIAL: u64 = 2;
+/// `TierFrame::flags`: someone compares heap objects by their write counts (`Stamp`, the
+/// waveform recorder): compiled code that keeps writing an object it found earlier must say so
+/// (`TierHost::wrote`).
+pub const TIER_STAMPS: u64 = 4;
+/// The tag in the top byte of a handle into the shared heap.
+pub const SHARED_TAG: u8 = heap::SHARED;
 
 /// An instance signal as compiled code reads it (one `TierFrame::sigtab` entry): the element
 /// codes of the kernel signal's current value, starting at the instance signal's own first
@@ -559,13 +750,15 @@ impl Default for TierFrame {
             known_up: 0,
             max_depth: 0,
             heap_epoch: 0,
+            owner: 0,
+            flags: 0,
         }
     }
 }
 
 /// Address spaces: the top 3 bits of an address `[space: 3 | index: 29 | offset: 32]`.
 pub mod space {
-    pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, TEMP};
+    pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, SHARED_HEAP, TEMP};
 }
 
 /// A program bound for execution, shared by all processes of a simulation.
@@ -608,20 +801,54 @@ pub struct NativeFlags {
     /// Some function has compiled code (or `set_eager` asks for it): until then the fast loop
     /// runs without the compiled tier's bookkeeping and looks here now and then.
     any: std::sync::atomic::AtomicBool,
-    /// Per function: 1 when it has compiled code (`Tier::ready`), so the fast loop asks
-    /// without a virtual call; 2 asks the tier to compile it on the next entry (`set_eager`).
+    /// Per function, so the fast loop asks without a virtual call: `NAT_CODE` when it has
+    /// compiled code (`Tier::ready`), `NAT_ASK` to ask the tier to compile it on the next
+    /// entry (`set_eager`), `NAT_CALL` when the tier calls it on a native frame from the
+    /// interpreter (`Tier::call`). One byte, so a call in the loop without the tier looks once
+    /// (#525).
     func: Box<[std::sync::atomic::AtomicU8]>,
+    /// Per process function: the processes made of it (`InterpProcess::new`).
+    instances: Box<[std::sync::atomic::AtomicU32]>,
 }
 
 impl NativeFlags {
+    /// The processes made of process function `func` so far.
+    pub fn instances(&self, func: FuncId) -> u32 {
+        self.instances
+            .get(func.0 as usize)
+            .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
+    /// The tier calls `func` from the interpreter now (`Tier::call`).
+    pub fn set_call(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_or(NAT_CALL, Ordering::Release);
+        }
+    }
+
+    /// Whether `set_call` marked `func`.
+    #[inline(always)]
+    pub(crate) fn callable(&self, func: u32) -> bool {
+        self.func
+            .get(func as usize)
+            .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CALL != 0)
+    }
+
     /// `func` has compiled code now.
     pub fn set(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
-            n.store(1, Ordering::Release);
+            n.fetch_or(NAT_CODE, Ordering::Release);
         }
         self.any.store(true, Ordering::Release);
     }
 }
+
+/// `NativeFlags::func`: the function has compiled code.
+pub(crate) const NAT_CODE: u8 = 1;
+/// `NativeFlags::func`: ask the tier to compile the function when the fast loop enters it.
+pub(crate) const NAT_ASK: u8 = 2;
+/// `NativeFlags::func`: the tier calls the function on a native frame (`Tier::call`).
+pub(crate) const NAT_CALL: u8 = 4;
 
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
@@ -629,16 +856,31 @@ impl NativeFlags {
 static SLOTS: Mutex<Vec<&'static std::sync::atomic::AtomicU64>> = Mutex::new(Vec::new());
 
 thread_local! {
-    static SLOT: &'static std::sync::atomic::AtomicU64 = {
-        let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
-        SLOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(s);
-        s
-    };
+    // Const-initialised: an access is one thread-local load and a predictable null test (a lazy
+    // `thread_local!` with an initialiser costs a call per access, on every activation, #480).
+    static SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// This thread's sampling slot.
+#[inline(always)]
 pub(crate) fn slot() -> &'static std::sync::atomic::AtomicU64 {
-    SLOT.with(|s| *s)
+    match SLOT.get() {
+        Some(s) => s,
+        None => new_slot(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
+    let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
+    SLOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(s);
+    SLOT.set(Some(s));
+    s
 }
 
 fn usage(m: String) -> SimError {
@@ -709,6 +951,7 @@ impl Runtime {
             native: Arc::new(NativeFlags {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                instances: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
@@ -759,6 +1002,7 @@ impl Runtime {
     }
 
     /// The facts of function `id` (`f`), computed once.
+    #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
         Some(
             self.pre
@@ -820,10 +1064,12 @@ impl Runtime {
     /// process interpreted. Returns `false` if a tier was set before.
     pub fn set_tier(&self, tier: Arc<dyn Tier>) -> bool {
         for (i, n) in self.native.func.iter().enumerate() {
+            n.store(0, Ordering::Relaxed);
             if tier.ready(FuncId(i as u32)) {
                 self.native.set(FuncId(i as u32));
-            } else {
-                n.store(0, Ordering::Relaxed);
+            }
+            if tier.callable(FuncId(i as u32)) {
+                self.native.set_call(FuncId(i as u32));
             }
         }
         self.tier.set(tier).is_ok()
@@ -852,7 +1098,7 @@ impl Runtime {
                     let compiled = native
                         .func
                         .get(func as usize)
-                        .is_some_and(|n| n.load(Ordering::Relaxed) == 1);
+                        .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
                     out.push((FuncId(func), compiled));
                 }
             }
@@ -863,7 +1109,9 @@ impl Runtime {
     /// (tests: compiled code swapped in at the first call or jump).
     pub fn set_eager(&self) {
         for n in self.native.func.iter() {
-            let _ = n.compare_exchange(0, 2, Ordering::Relaxed, Ordering::Relaxed);
+            let _ = n.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                (v & NAT_CODE == 0).then_some(v | NAT_ASK)
+            });
         }
         self.native.any.store(true, Ordering::Release);
     }
@@ -934,6 +1182,9 @@ impl InterpProcess {
                     f.name, d.sig
                 )));
             }
+        }
+        if let Some(n) = rt.native.instances.get(func.0 as usize) {
+            n.fetch_add(1, Ordering::Relaxed);
         }
         Ok(InterpProcess {
             m: Machine::new(rt, inst, drivers, func),

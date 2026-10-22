@@ -860,8 +860,8 @@ impl<'a, 'b> Fx<'a, 'b> {
             desc: dope,
         });
         let size = self.load(l, Width::B8, RegTy::I64);
-        // The element count is the fourth word of an array layout; a record layout has its
-        // field offsets there instead (and may be shorter), so its count is 0.
+        // A record layout has its field offsets where an array has its element count (and may
+        // be shorter), so its count is 0.
         if !matches!(
             self.fb.program().types().get(tid),
             Some(yavs_ir::Ty::Array { .. })
@@ -869,25 +869,43 @@ impl<'a, 'b> Fx<'a, 'b> {
             let count = self.int(0);
             return (size, count);
         }
-        let c = self.offset(l, 24);
-        let count = self.load(c, Width::B8, RegTy::I64);
+        let count = self.layout_count(tid, dope);
         (size, count)
     }
 
-    /// The element count of an array of type `tid` with descriptor `dope`: the length of a
-    /// one-dimensional array is read from the descriptor directly; the rest goes through the
-    /// layout.
+    /// The element count of an array of type `tid` with descriptor `dope` (the fourth word of
+    /// its layout), computed from the lengths in the descriptor: the product of the lengths of
+    /// the dimensions, times the element count of a logic array's elements (all leaves are in
+    /// one plane vector). No `LayoutOf`: a layout is a run-time walk of the descriptor, and
+    /// the same count asked inside a loop is a few cheap instructions the optimiser can share
+    /// and fold.
     pub fn layout_count(&mut self, tid: TyId, dope: Reg) -> Reg {
         let types = self.fb.program().types();
-        if let Some(yavs_ir::Ty::Array { elem, dims: 1, .. }) = types.get(tid)
-            && (types.get(*elem).is_some_and(|e| e.scalar_size().is_some())
-                || yavs_ir::Ty::logic_leaf(types, tid).is_none())
-        {
+        let Some(&yavs_ir::Ty::Array {
+            elem,
+            elem_desc,
+            dims,
+        }) = types.get(tid)
+        else {
+            return self.layout(tid, dope).1;
+        };
+        let nested = yavs_ir::Ty::logic_leaf(types, tid).is_some()
+            && matches!(types.get(elem), Some(yavs_ir::Ty::Array { .. }));
+        let mut count = self.dope_len(dope);
+        for dim in 1..dims {
             let dst = self.reg(RegTy::I64);
-            self.emit(Inst::DopeLen { dst, dope, dim: 0 });
-            return dst;
+            self.emit(Inst::DopeLen { dst, dope, dim });
+            count = self.bin(yavs_ir::IntOp::Mul, count, dst);
         }
-        self.layout(tid, dope).1
+        if nested {
+            let ed = match elem_desc {
+                Some(c) => self.const_addr(c),
+                None => self.offset(dope, 24 * u32::from(dims)),
+            };
+            let m = self.layout_count(elem, ed);
+            count = self.bin(yavs_ir::IntOp::Mul, count, m);
+        }
+        count
     }
 
     /// Return `v`, closing the files this subprogram declared first.
@@ -1504,6 +1522,22 @@ pub(crate) fn thunk(
     v.map(|_| id)
 }
 
+/// The thunk that creates the object of protected shared variable `d` in the shared heap and
+/// returns its handle (`Lowerer::region_var_init`).
+pub(crate) fn region_var_init(
+    db: &Db,
+    pb: &mut ProgramBuilder,
+    cx: &mut Cx,
+    d: DeclId,
+) -> R<yavs_ir::FuncId> {
+    let decl = &db.decls[d];
+    let DeclKind::Object(o) = &decl.kind else {
+        return Err(cx.ice(decl.span, "not an object"));
+    };
+    let (t, span, name) = (db.base(o.subtype), decl.span, decl.name.to_string());
+    thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))
+}
+
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
     let decl = &db.decls[d];
     if let DeclKind::Alias(_) | DeclKind::Subprogram(_) | DeclKind::Type(_) = decl.kind {
@@ -1630,6 +1664,23 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                         off,
                     },
                 );
+                // The bounds of an array constant of a static subtype are the same in every
+                // instance: its descriptor is a constant of the pool, which the optimiser reads
+                // (loop bounds and directions, positions), not a cell of the instance's data.
+                if matches!(pb.types().get(t), Some(yavs_ir::Ty::Array { .. }))
+                    && let Some(b) = crate::composite::static_desc(
+                        db,
+                        pb,
+                        db.base(o.subtype),
+                        &db.subtypes[o.subtype].constraint,
+                        t,
+                    )
+                    && yavs_ir::Ty::desc_size(pb.types(), t) == Some(b.len() as u64)
+                    && !b.is_empty()
+                {
+                    let k = pb.konst(yavs_ir::ConstData::Bytes(b));
+                    cx.const_dope.insert(d, k);
+                }
                 // A composite constant elaboration did not fold is computed once per region
                 // by a thunk returning the address of its fat pair (#73); one initialised from
                 // an external name always has its elaborated value.
@@ -1653,6 +1704,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                         w: Width::B8,
                         comp: Some(t),
                         init,
+                        scope: elab_region(db, decl.scope),
                         instance_level: cx.arch_scopes.contains(&decl.scope),
                     });
                 }
@@ -1685,6 +1737,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                     w,
                     comp: None,
                     init,
+                    scope: elab_region(db, decl.scope),
                     instance_level: cx.arch_scopes.contains(&decl.scope),
                 });
             }
@@ -1713,6 +1766,7 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                 w: Width::B8,
                 comp: None,
                 init,
+                scope: elab_region(db, decl.scope),
                 instance_level: true,
             });
             Ok(())
@@ -2587,4 +2641,21 @@ pub(crate) fn lsp_fields(l: &hir::Lsp) -> Vec<u32> {
             _ => None,
         })
         .collect()
+}
+
+/// The block or generate (or entity or architecture) whose elaboration creates a constant
+/// declared in `scope`: the nearest such region around it, `None` when there is none.
+pub(crate) fn elab_region(db: &Db, scope: yavs_sem::ScopeId) -> Option<yavs_sem::ScopeId> {
+    use yavs_sem::scope::ScopeKind as K;
+    let mut cur = Some(scope);
+    while let Some(s) = cur {
+        if matches!(
+            db.scopes[s].kind,
+            K::Entity | K::Architecture | K::Block | K::Generate
+        ) {
+            return Some(s);
+        }
+        cur = db.scopes[s].parent;
+    }
+    None
 }

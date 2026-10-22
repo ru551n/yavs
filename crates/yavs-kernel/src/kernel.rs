@@ -7,12 +7,13 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rayon::prelude::*;
+use smallvec::SmallVec;
 
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, LiveSink, OpMode, ProcId, ProcState, Process, Severity, Shared,
-    SignalOp, check_ref, make_op,
+    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutV, ProcId, ProcState, Process, Severity,
+    Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -280,6 +281,8 @@ impl Hook<'_> {
             live: false,
         };
         ctx.assign(d, target, waveform, mode)?;
+        // No direct transaction: the signals are read-only here.
+        ctx.spill_out(d);
         for (t, d) in slot.st.scheduled.drain(..) {
             self.queue.push(self.now, t, Entry::Driver(d.0));
         }
@@ -523,6 +526,12 @@ pub struct SimControl {
     single_waits: bool,
     names: Vec<String>,
     queue: Queue,
+    /// Direct transactions of processes committed in the batch loop (`run_batch`), for the
+    /// signals once the batch is over.
+    direct: Vec<Out>,
+    directv: Vec<OutV>,
+    /// Signals with direct transactions (`commit_out`) for the next update.
+    direct_sigs: Vec<u32>,
     ops: Vec<SignalOp>,
     /// Signals with events in the current cycle.
     changed_sigs: Vec<u32>,
@@ -533,12 +542,16 @@ pub struct SimControl {
     /// Resumed processes with several suspension points: they run after the others, in an order
     /// of their own (`order`), so they wait here apart from `ready`.
     ready_several: Vec<u32>,
+    /// The processes of a clock that run as one batch in this cycle (`batch_ok`).
+    clock_batch: Option<Vec<u32>>,
     /// The batch `run_batch` is about to run is known to be in order.
     batch_mono: bool,
     /// `Tn` as the last delta computed it (only a cycle sets it, only `run_until` takes it).
     known_next: Option<Option<Time>>,
     postponed: Vec<u32>,
     last_ran: Vec<u32>,
+    /// The commit list of `run_batch`, kept between batches.
+    late: Vec<u32>,
     now: Time,
     delta: u32,
     cycle: u64,
@@ -581,9 +594,6 @@ pub struct SimControl {
     indep_buf: Vec<(u32, u32)>,
     /// The distinct edge triggers of the processes (`ProcMeta::tid`).
     triggers: Vec<crate::EdgeTrigger>,
-    /// Per trigger: the edge a signal resumes its process for, when `Ctx::edge` may take it as
-    /// held (`ProcState::known_edge`).
-    known_edges: Vec<Option<(SignalId, u32, bool)>>,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -695,6 +705,29 @@ impl SimControl {
                 }
             }
         }
+        if cfg.skip_unchanged {
+            for s in &mut signals {
+                s.inactive = true;
+            }
+            for im in &implicits {
+                signals[im.src.0 as usize].inactive = false;
+                for &(s, _) in &im.more {
+                    signals[s.0 as usize].inactive = false;
+                }
+            }
+        }
+        let mut drivers = drivers;
+        for d in &mut drivers {
+            let s = &signals[d.signal.0 as usize];
+            d.direct = independent[d.signal.0 as usize]
+                && matches!(s.ty.elem, Elem::Logic)
+                && s.guard.is_none()
+                && matches!(
+                    s.resolution,
+                    None | Some(crate::signal::Resolution::StdLogic)
+                )
+                && !s.drivers[d.slot as usize].shared;
+        }
         let mut sim = SimControl {
             names,
             rng: cfg.shuffle,
@@ -715,14 +748,19 @@ impl SimControl {
             single_waits: procs.iter().all(|m| !m.flags.several_waits),
             procs,
             queue: Queue::default(),
+            direct: Vec::new(),
+            directv: Vec::new(),
+            direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
             ready: Vec::new(),
             ready_mono: true,
             ready_several: Vec::new(),
+            clock_batch: None,
             batch_mono: false,
             postponed: Vec::new(),
             last_ran: Vec::new(),
+            late: Vec::new(),
             now: Time::ZERO,
             delta: 0,
             cycle: 1,
@@ -748,15 +786,15 @@ impl SimControl {
             perm_epoch: 0,
             woken_buf: Vec::new(),
             indep_buf: Vec::new(),
-            known_edges: triggers
-                .iter()
-                .map(|t| {
-                    (cfg_edge_triggers && t.reset.is_none() && !t.legacy)
-                        .then_some((t.signal, t.elem, t.rising))
-                })
-                .collect(),
             triggers,
         };
+        for (m, slot) in sim.procs.iter().zip(&mut sim.slots) {
+            if let Some(t) = m.trigger {
+                slot_mut(slot).st.known_edge =
+                    (cfg_edge_triggers && t.reset.is_none() && !t.legacy)
+                        .then_some((t.signal, t.elem, t.rising));
+            }
+        }
         sim.settle().map_err(SimError::new)?;
         sim.live = true;
         sim.signals.iter_mut().for_each(|s| s.live = true);
@@ -1194,7 +1232,7 @@ impl SimControl {
     /// `Tn`: the time of the next cycle, dropping stale queue entries. Pending observer
     /// wake-ups count, so the simulation is not idle while one waits.
     fn next_time(&mut self) -> Option<Time> {
-        if !self.ops.is_empty() || self.empty_delta {
+        if !self.ops.is_empty() || self.empty_delta || !self.direct_sigs.is_empty() {
             return Some(self.now);
         }
         if self.wakes.pending.is_empty() {
@@ -1269,23 +1307,24 @@ impl SimControl {
         }
         self.update().map_err(|k| self.err(k))?;
         self.commit_callouts();
-        let mut changed = std::mem::take(&mut self.changed_sigs);
-        if changed.len() > 1 {
-            changed.sort_unstable();
-            changed.dedup();
+        if self.changed_sigs.len() > 1 {
+            self.changed_sigs.sort_unstable();
+            self.changed_sigs.dedup();
         }
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
         if self.watch_changes {
-            for &s in &changed {
+            for i in 0..self.changed_sigs.len() {
+                let s = self.changed_sigs[i];
                 for r in self.signals[s as usize].changed.clone() {
                     self.notify(|o, h| o.value_change(h, SignalId(s), r));
                 }
             }
         }
-        let mut woken = std::mem::take(&mut self.woken_buf);
         let memo = std::cell::Cell::new((0u32, false));
-        for &s in &changed {
+        // Nothing below adds to `changed_sigs`: walked in place, cleared after.
+        for i in 0..self.changed_sigs.len() {
+            let s = self.changed_sigs[i];
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64 + std::mem::take(&mut sig.nruns);
             // No process ever waited for it (a signal only read by value).
@@ -1327,6 +1366,20 @@ impl SimControl {
                 self.signals[s as usize].changed.clear();
                 continue;
             }
+            // One element changed and one resident process waits for it (a stage of a chain):
+            // no list scan.
+            if let [r] = runs[..]
+                && r.len == 1
+                && let Some(w) = waiters.sole_resident(r.offset)
+                && live(w)
+            {
+                let (p, held) = (w.proc, uniform.is_none() && hold(w));
+                self.signals[s as usize].changed.clear();
+                if !held {
+                    self.wake(p, false);
+                }
+                continue;
+            }
             // Every waiter resident for the whole signal: the wake list is known.
             if let Some(tids) = waiters.cache_tids() {
                 let held: smallvec::SmallVec<[(u32, bool); 4]> = tids
@@ -1344,20 +1397,60 @@ impl SimControl {
                     continue;
                 }
                 let list = waiters.take_cache();
-                if held.iter().any(|&(_, h)| h) {
-                    for &(_, p, tid) in &list {
-                        if tid == 0 || !held.iter().any(|&(t, h)| t == tid && h) {
-                            self.wake(p, false);
+                let is_held = |t: u32| held.iter().any(|&(u, h)| u == t && h);
+                let batch = self.batch_of(s as usize, &list);
+                let waiters = std::mem::take(&mut self.waiters[s as usize]);
+                match waiters.cache_batch() {
+                    // The clock's plain processes, all resident, run as one batch in list
+                    // order, those of the triggers that hold: no wake per process (a resident
+                    // waiter needs no new generation, and nothing else wakes a process in this
+                    // cycle). The others wake as usual and run after them.
+                    Some(Some(b))
+                        if batch
+                            && self.changed_sigs.len() == 1
+                            && self.ready.is_empty()
+                            && self.ready_several.is_empty()
+                            && self.rng.is_none() =>
+                    {
+                        let mut pids = std::mem::take(&mut self.ready);
+                        if b.by_tid.iter().all(|&(t, _)| !is_held(t)) {
+                            pids.extend_from_slice(&b.plain);
+                        } else {
+                            let mut runs = 0;
+                            for (t, l) in &b.by_tid {
+                                if !is_held(*t) && !l.is_empty() {
+                                    pids.extend_from_slice(l);
+                                    runs += 1;
+                                }
+                            }
+                            if runs > 1 {
+                                pids.sort();
+                            }
+                        }
+                        for &(p, tid) in &b.others {
+                            if tid == 0 || !is_held(tid) {
+                                self.wake(p, false);
+                            }
+                        }
+                        if !pids.is_empty() {
+                            self.clock_batch = Some(pids);
+                        } else {
+                            self.ready = pids;
                         }
                     }
-                } else {
-                    for &(_, p, _) in &list {
-                        self.wake(p, false);
+                    _ => {
+                        for &(_, p, tid) in &list {
+                            if tid == 0 || !is_held(tid) {
+                                self.wake(p, false);
+                            }
+                        }
                     }
                 }
+                self.waiters[s as usize] = waiters;
                 self.waiters[s as usize].restore_cache(list);
                 continue;
             }
+            let mut woken = std::mem::take(&mut self.woken_buf);
             match uniform {
                 Some(_) => waiters.take_woken(runs, live, |_| false, &mut woken),
                 None => waiters.take_woken(runs, live, hold, &mut woken),
@@ -1366,15 +1459,18 @@ impl SimControl {
             for &(_, p) in &woken {
                 self.wake(p, false);
             }
+            self.woken_buf = woken;
         }
 
-        changed.clear();
-        self.changed_sigs = changed;
-        self.woken_buf = woken;
+        self.changed_sigs.clear();
 
         // e: run the resumed non-postponed processes.
         let mut ready = std::mem::take(&mut self.ready);
         self.batch_mono = std::mem::replace(&mut self.ready_mono, true);
+        if let Some(pids) = self.clock_batch.take() {
+            ready = pids;
+            self.batch_mono = true;
+        }
         if !self.ready_several.is_empty() {
             // The others come first in process order; these after them in their own order.
             let mut several = std::mem::take(&mut self.ready_several);
@@ -1417,6 +1513,41 @@ impl SimControl {
     fn update(&mut self) -> Result<(), ErrorKind> {
         let (now, cycle) = (self.now, self.cycle);
         self.empty_delta = false;
+        // The usual delta: direct transactions and drivers of one independent signal due, from
+        // this time's list, in driver order; no force, deposit or implicit signal. Applied in
+        // place.
+        if self.ops.is_empty()
+            && self.implicits.is_empty()
+            && (self.queue.later.peek()).is_none_or(|Reverse((t, _))| *t > now)
+        {
+            let one = self.one_independent();
+            if one.is_some() || self.queue.next_delta.is_empty() {
+                if let Some(s0) = one {
+                    let sig = &mut self.signals[s0 as usize];
+                    for e in &self.queue.next_delta {
+                        if let Entry::Driver(d) = *e {
+                            let info = &self.drivers[d as usize];
+                            let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+                            let w = &mut slot.st.waveforms[info.local as usize];
+                            // A scalar register's transaction: applied here, not through the
+                            // general entry.
+                            match w.quick {
+                                Some(q) if q.time <= now => {
+                                    w.quick = None;
+                                    sig.apply_quick(q, info.slot, now, cycle);
+                                }
+                                _ => sig.apply_driver(w, info.slot, now, cycle),
+                            }
+                        }
+                    }
+                    self.queue.next_delta.clear();
+                    if finish_signal(sig, now, cycle)? {
+                        self.changed_sigs.push(s0);
+                    }
+                }
+                return self.finish_direct();
+            }
+        }
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
         // Kept between cycles (empty here), so an empty one costs no construction and no drop.
         let mut work = self.work.take().unwrap_or_default();
@@ -1430,6 +1561,23 @@ impl SimControl {
                     up.push((sig.level, Reverse(s)));
                 }
                 ops.entry(s).or_default().push(op);
+            }
+        }
+        // A signal with a force or deposit takes its direct transactions to the worklists.
+        if !ops.is_empty() {
+            let mut i = 0;
+            while let Some(&s) = self.direct_sigs.get(i) {
+                if !ops.contains_key(&s) {
+                    i += 1;
+                    continue;
+                }
+                self.direct_sigs.swap_remove(i);
+                let sig = &mut self.signals[s as usize];
+                sig.finish_pend(now, cycle, true);
+                if sig.queued_up != cycle {
+                    sig.queued_up = cycle;
+                    up.push((sig.level, Reverse(s)));
+                }
             }
         }
         // Matured drivers of independent signals without forces or deposits, as
@@ -1528,6 +1676,7 @@ impl SimControl {
         indep.clear();
         self.indep_buf = indep;
         r?;
+        self.finish_direct()?;
 
         // Driving values bottom-up: formals before the actuals they feed.
         while !up.is_empty()
@@ -1544,7 +1693,13 @@ impl SimControl {
                 sig.eff_dirty.push(r);
             }
             sig.dirty = dirty;
-            for op in ops.remove(&s).unwrap_or_default() {
+            let sig_ops = ops.remove(&s).unwrap_or_default();
+            if !sig_ops.is_empty() {
+                // A release reads the drivers, a deposit makes the driving value differ.
+                sig.sync_drivers();
+                sig.exact |= sig_ops.iter().any(|op| op.mode == OpMode::Deposit);
+            }
+            for op in sig_ops {
                 apply_op(sig, &op, now, cycle)?;
             }
             if sig.queued_down != cycle {
@@ -1590,6 +1745,109 @@ impl SimControl {
         };
         self.work = Some(work);
         r
+    }
+
+    /// The signal of `queue.next_delta` when every entry is a driver of that one independent
+    /// signal, in driver order.
+    fn one_independent(&self) -> Option<u32> {
+        let Some(&Entry::Driver(d0)) = self.queue.next_delta.first() else {
+            return None;
+        };
+        let s0 = self.drivers[d0 as usize].signal.0;
+        if !self.independent[s0 as usize] {
+            return None;
+        }
+        let mut prev = d0;
+        for e in &self.queue.next_delta[1..] {
+            match *e {
+                Entry::Driver(d) if d >= prev && self.drivers[d as usize].signal.0 == s0 => {
+                    prev = d
+                }
+                _ => return None,
+            }
+        }
+        Some(s0)
+    }
+
+    /// The direct transactions of the processes committed in the batch loop, to their signals.
+    fn commit_direct(&mut self) {
+        if !self.direct.is_empty() || !self.directv.is_empty() {
+            let sigs = &mut self.direct_sigs;
+            let empty = &mut self.empty_delta;
+            commit_out(
+                &mut self.signals,
+                sigs,
+                empty,
+                &mut self.direct,
+                &mut self.directv,
+            );
+        }
+    }
+
+    /// Finish the signals with direct transactions (`commit_out`; one that a driver entry
+    /// finished already has nothing left).
+    fn finish_direct(&mut self) -> Result<(), ErrorKind> {
+        let (now, cycle) = (self.now, self.cycle);
+        // One element of one signal (a stage of a chain): no loop over the general cases.
+        if let [s] = self.direct_sigs[..]
+            && let Some(changed) = self.signals[s as usize].finish_pend_one(now, cycle)
+        {
+            self.direct_sigs.clear();
+            if changed && !(!self.watch_changes && self.wake_sole(s)) {
+                self.changed_sigs.push(s);
+            }
+            return Ok(());
+        }
+        for i in 0..self.direct_sigs.len() {
+            let s = self.direct_sigs[i];
+            let sig = &mut self.signals[s as usize];
+            let mut changed = sig.finish_pend(now, cycle, false) == Some(true);
+            // A force layer made dirty ranges of them.
+            if sig.unfinished() {
+                changed |= finish_signal(sig, now, cycle)?;
+            }
+            if changed {
+                // After runs that driver entries of the signal made.
+                if sig.changed.len() > 1 {
+                    sig.canonical_changed();
+                }
+                if !self.watch_changes && self.wake_sole(s) {
+                    continue;
+                }
+                self.changed_sigs.push(s);
+            }
+        }
+        self.direct_sigs.clear();
+        Ok(())
+    }
+
+    /// The resumption of `cycle` for signal `s` done at once when one element of it changed and
+    /// one resident process without an edge trigger waits for that element (a stage of a
+    /// chain), as the reference simulator wakes the waiters of a value when it changes. False
+    /// (nothing done) otherwise: `cycle` looks at the signal. Only with no observer of value
+    /// changes, which must see the change before any process is resumed.
+    #[inline]
+    fn wake_sole(&mut self, s: u32) -> bool {
+        let sig = &self.signals[s as usize];
+        let [r] = sig.changed[..] else {
+            return false;
+        };
+        let Some(w) = (r.len == 1)
+            .then(|| self.waiters[s as usize].sole_resident(r.offset))
+            .flatten()
+        else {
+            return false;
+        };
+        // An edge trigger reads signals this update may not have finished yet.
+        if self.cfg.edge_triggers && w.tid != 0 || !alive(&self.procs, w) {
+            return false;
+        }
+        let p = w.proc;
+        let sig = &mut self.signals[s as usize];
+        self.stats.events += 1 + std::mem::take(&mut sig.nruns);
+        sig.changed.clear();
+        self.wake(p, false);
+        true
     }
 
     /// Update phase of signals without ports or groups: each one only reads its own drivers'
@@ -1851,6 +2109,39 @@ impl SimControl {
         Ok(())
     }
 
+    /// Whether the cached wake list of signal `s` can run as one batch (`Waiters::cache_batch`,
+    /// worked out once per list): its processes with one suspension point that are not
+    /// postponed, in ascending order, run in the batch as listed; the others wake one by one.
+    fn batch_of(&mut self, s: usize, list: &[(u64, u32, u32)]) -> bool {
+        if let Some(b) = self.waiters[s].cache_batch() {
+            return b.is_some();
+        }
+        let procs = &self.procs;
+        let plain = |p: u32| {
+            let m = &procs[p as usize];
+            !m.flags.postponed && !m.flags.several_waits && m.perm != 0
+        };
+        let mut b = crate::signal::Batch {
+            plain: Vec::new(),
+            by_tid: SmallVec::new(),
+            others: Vec::new(),
+        };
+        for &(_, p, tid) in list {
+            if plain(p) {
+                b.plain.push(p);
+                match b.by_tid.iter_mut().find(|(t, _)| *t == tid) {
+                    Some((_, l)) => l.push(p),
+                    None => b.by_tid.push((tid, vec![p])),
+                }
+            } else {
+                b.others.push((p, tid));
+            }
+        }
+        let ok = b.plain.is_sorted() && !b.plain.is_empty();
+        self.waiters[s].set_cache_batch(ok.then_some(b));
+        ok
+    }
+
     #[inline(always)]
     fn wake(&mut self, p: u32, by_timeout: bool) {
         let meta = &mut self.procs[p as usize];
@@ -1932,11 +2223,22 @@ impl SimControl {
         postponed: bool,
         init: bool,
     ) -> Result<(), SimError> {
+        if let [p] = pids[..]
+            && !init
+            && !postponed
+            && self.rng.is_none()
+        {
+            self.batch_mono = false;
+            return self.run_one(p, pids);
+        }
         if let Some(state) = &mut self.rng {
             shuffle(&mut pids, state);
         } else if !std::mem::take(&mut self.batch_mono) {
             self.order(&mut pids, init);
         }
+        // The processes the commit loop has to commit, in batch order: those not committed right
+        // after they ran.
+        let mut late = std::mem::take(&mut self.late);
         {
             let sh = Shared {
                 now: self.now,
@@ -1958,6 +2260,8 @@ impl SimControl {
                     || postponed
                         && (slot.st.deadline == Some(sh.now)
                             || !slot.st.phantoms.is_empty()
+                            || !slot.st.out.is_empty()
+                            || !slot.st.outv.is_empty()
                             || slot.st.scheduled.iter().any(|&(t, _)| t == sh.now))
             };
             let run = |p: u32, slot: &mut Slot, live: bool| {
@@ -1970,28 +2274,24 @@ impl SimControl {
                 // A panic in process code is a broken invariant: report it as an internal
                 // error of that process, not a bare panic.
                 slot.result = catch_unwind(AssertUnwindSafe(|| slot.process.run(&mut ctx)))
-                    .unwrap_or_else(|panic| {
-                        let msg = panic_message(&*panic);
-                        let kind = ErrorKind::Internal(format!("process panicked: {msg}"));
-                        let mut e = SimError::at(kind, sh.now, sh.delta);
-                        e.process = Some((ProcId(p), sh.names[p as usize].clone()));
-                        Err(e)
-                    });
+                    .unwrap_or_else(|panic| Err(process_panic(&sh, p, &*panic)));
             };
+
             match &self.pool {
                 // ponytail: fixed cut-off; below it the pool hand-off costs more than the
                 // processes. Inline or pooled, the commit order is the batch order.
                 Some(pool) if pids.len() >= PAR_BATCH => {
+                    late.extend_from_slice(&pids);
                     let (serial, par): (Vec<u32>, Vec<u32>) = pids
                         .iter()
                         .partition(|&&p| self.procs[p as usize].flags.serial);
                     let slots = &self.slots;
-                    let (procs, known_edges) = (&self.procs, &self.known_edges);
+                    let procs = &self.procs;
                     pool.install(|| {
                         par.par_iter().for_each(|&p| {
                             let mut s = lock(&slots[p as usize]);
                             if !init {
-                                resumption(procs, known_edges, p, &mut s.st);
+                                resumption(procs, p, &mut s.st);
                             }
                             run(p, &mut s, false)
                         })
@@ -2007,7 +2307,7 @@ impl SimControl {
                     for &p in &serial {
                         let mut s = lock(&slots[p as usize]);
                         if !init {
-                            resumption(&self.procs, &self.known_edges, p, &mut s.st);
+                            resumption(&self.procs, p, &mut s.st);
                         }
                         run(p, &mut s, live);
                         if stops(&s) {
@@ -2015,58 +2315,178 @@ impl SimControl {
                         }
                     }
                 }
-                // No other thread touches the slots: no lock.
+                // No other thread touches the slots: no lock. One unwind guard for the batch
+                // (`i` is the process that panicked): a panic ends the batch at that process,
+                // as a failed run does.
                 _ => {
                     let now = self.now;
-                    for &p in &pids {
-                        let s = slot_mut(&mut self.slots[p as usize]);
-                        if !init {
-                            resumption(&self.procs, &self.known_edges, p, &mut s.st);
-                        }
-                        run(p, s, live_ok);
-                        if stops(s) {
-                            break;
-                        }
-                        // The usual clocked process, committed while its slot is hot: it waited
-                        // again (`Ctx::wait_on_again`) and only scheduled drivers. The commit
-                        // loop skips it (`ProcMeta::ready` is false). The order of the queue
-                        // pushes across processes does not matter: the entries are sorted.
-                        let st = &mut s.st;
-                        let meta = &mut self.procs[p as usize];
-                        if !init
-                            && !postponed
-                            && st.again
-                            && meta.perm != 0
-                            && st.sens.is_empty()
-                            && st.deadline.is_none()
-                            && st.effects.is_empty()
-                            && st.phantoms.is_empty()
-                            && s.result.is_ok()
-                        {
-                            st.again = false;
-                            meta.ready = false;
-                            meta.resumed = true;
-                            self.serial_ran |= meta.flags.serial;
-                            for &(t, d) in st.scheduled.iter() {
-                                self.queue.push(now, t, Entry::Driver(d.0));
+                    let mut i = 0;
+                    let caught = catch_unwind(AssertUnwindSafe(|| {
+                        while let Some(&p) = pids.get(i) {
+                            let s = slot_mut(&mut self.slots[p as usize]);
+                            if !init {
+                                resumption(&self.procs, p, &mut s.st);
                             }
-                            st.scheduled.clear();
+                            let mut ctx = Ctx {
+                                sh: &sh,
+                                pid: ProcId(p),
+                                st: &mut s.st,
+                                live: live_ok,
+                            };
+                            s.result = s.process.run(&mut ctx);
+                            if stops(s) {
+                                late.push(p);
+                                break;
+                            }
+                            i += 1;
+                            // The usual clocked process, committed while its slot is hot: it waited
+                            // again (`Ctx::wait_on_again`) and only scheduled drivers. The commit
+                            // loop skips it (`ProcMeta::ready` is false). The order of the queue
+                            // pushes across processes does not matter: the entries are sorted.
+                            let st = &mut s.st;
+                            let meta = &mut self.procs[p as usize];
+                            if !init
+                                && !postponed
+                                && st.again
+                                && meta.perm != 0
+                                && st.sens.is_empty()
+                                && st.deadline.is_none()
+                                && st.effects.is_empty()
+                                && s.result.is_ok()
+                            {
+                                st.again = false;
+                                meta.ready = false;
+                                meta.resumed = true;
+                                self.serial_ran |= meta.flags.serial;
+                                for &(t, d) in st.scheduled.iter() {
+                                    self.queue.push(now, t, Entry::Driver(d.0));
+                                }
+                                st.scheduled.clear();
+                                // Applied after the batch: the signals are shared until then.
+                                if !st.out.is_empty() {
+                                    for &o in &st.out {
+                                        self.direct.push(o);
+                                    }
+                                    st.out.clear();
+                                }
+                                if !st.outv.is_empty() {
+                                    self.directv.extend_from_slice(&st.outv);
+                                    st.outv.clear();
+                                }
+                                if !st.phantoms.is_empty() {
+                                    self.empty_delta |= st.take_phantoms();
+                                }
+                            } else {
+                                late.push(p);
+                            }
                         }
+                    }));
+                    if let Err(panic) = caught {
+                        let p = pids[i];
+                        late.push(p);
+                        slot_mut(&mut self.slots[p as usize]).result =
+                            Err(process_panic(&sh, p, &*panic));
                     }
                 }
             }
         }
+        self.commit_rest(late, pids, postponed, init)
+    }
+
+    /// `run_batch` of one process after initialisation (a stage of a chain of processes): no
+    /// order, no batch loop, and the usual clocked commit straight from its own lists.
+    fn run_one(&mut self, p: u32, pids: Vec<u32>) -> Result<(), SimError> {
+        let sh = Shared {
+            now: self.now,
+            delta: self.delta,
+            cycle: self.cycle,
+            resolution: self.cfg.resolution,
+            stop_severity: self.cfg.stop_severity,
+            signals: &self.signals,
+            drivers: &self.drivers,
+            names: &self.names,
+            live: self.live_sink.as_deref(),
+        };
+        let s = slot_mut(&mut self.slots[p as usize]);
+        resumption(&self.procs, p, &mut s.st);
+        let mut ctx = Ctx {
+            sh: &sh,
+            pid: ProcId(p),
+            st: &mut s.st,
+            live: sh.live.is_some(),
+        };
+        // A panic in process code is a broken invariant: an internal error of the process.
+        s.result = catch_unwind(AssertUnwindSafe(|| s.process.run(&mut ctx)))
+            .unwrap_or_else(|panic| Err(process_panic(&sh, p, &*panic)));
+        let st = &mut s.st;
+        let meta = &mut self.procs[p as usize];
+        // The usual clocked process (see `run_batch`): committed here.
+        if !(st.again
+            && meta.perm != 0
+            && st.sens.is_empty()
+            && st.deadline.is_none()
+            && st.effects.is_empty()
+            && s.result.is_ok())
+        {
+            let mut late = std::mem::take(&mut self.late);
+            late.push(p);
+            return self.commit_rest(late, pids, false, false);
+        }
+        st.again = false;
+        meta.ready = false;
+        meta.resumed = true;
+        self.serial_ran |= meta.flags.serial;
+        for &(t, d) in st.scheduled.iter() {
+            self.queue.push(self.now, t, Entry::Driver(d.0));
+        }
+        st.scheduled.clear();
+        if !st.phantoms.is_empty() {
+            self.empty_delta |= st.take_phantoms();
+        }
+        commit_out(
+            &mut self.signals,
+            &mut self.direct_sigs,
+            &mut self.empty_delta,
+            &mut st.out,
+            &mut st.outv,
+        );
+        self.stats.process_runs += 1;
+        let mut old = std::mem::replace(&mut self.last_ran, pids);
+        if self.ready.capacity() == 0 {
+            old.clear();
+            self.ready = old;
+        }
+        Ok(())
+    }
+
+    /// The end of `run_batch` after the run phase: the direct entries of the processes
+    /// committed in the batch loop, then the commit of the others (`late`) in batch order.
+    fn commit_rest(
+        &mut self,
+        mut late: Vec<u32>,
+        pids: Vec<u32>,
+        postponed: bool,
+        init: bool,
+    ) -> Result<(), SimError> {
+        self.commit_direct();
         self.stats.process_runs += pids.len() as u64;
+        if late.is_empty() {
+            // Every process was committed after it ran: nothing left for the commit loop.
+            self.late = late;
+            let mut old = std::mem::replace(&mut self.last_ran, pids);
+            if self.ready.capacity() == 0 {
+                old.clear();
+                self.ready = old;
+            }
+            return Ok(());
+        }
         // The batch is in commit order already unless it was shuffled to run.
         if self.rng.is_some() {
-            self.order(&mut pids, init);
+            self.order(&mut late, init);
         }
         let mut first_err = None;
-        for &p in &pids {
+        for &p in &late {
             let meta = &mut self.procs[p as usize];
-            if !init && !meta.ready {
-                continue; // committed right after it ran
-            }
             meta.ready = false;
             meta.resumed |= !init;
             self.serial_ran |= meta.flags.serial;
@@ -2089,12 +2509,21 @@ impl SimControl {
                     self.queue.push(self.now, t, Entry::Driver(d.0));
                 }
                 st.scheduled.clear();
+                commit_out(
+                    &mut self.signals,
+                    &mut self.direct_sigs,
+                    &mut self.empty_delta,
+                    &mut st.out,
+                    &mut st.outv,
+                );
                 continue;
             }
             let effects = (!st.effects.is_empty()).then(|| std::mem::take(&mut st.effects));
             let bad = postponed
                 && (st.deadline == Some(self.now)
                     || !st.phantoms.is_empty()
+                    || !st.out.is_empty()
+                    || !st.outv.is_empty()
                     || st.scheduled.iter().any(|&(t, _)| t == self.now));
             if !st.scheduled.is_empty() {
                 for &(t, d) in st.scheduled.iter() {
@@ -2105,6 +2534,13 @@ impl SimControl {
             if !st.phantoms.is_empty() {
                 self.empty_delta |= st.take_phantoms();
             }
+            commit_out(
+                &mut self.signals,
+                &mut self.direct_sigs,
+                &mut self.empty_delta,
+                &mut st.out,
+                &mut st.outv,
+            );
             let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
                 self.queue.push(self.now, t, Entry::Timeout(p, generation));
@@ -2116,21 +2552,22 @@ impl SimControl {
                 // More was added to the wait (`Ctx::wait_on_again`): the last wait's ranges
                 // come first, as they were first named.
                 let mut all = st.sens_prev.clone();
-                all.extend(st.sens.drain(..));
+                all.append(&mut st.sens);
                 st.sens = all;
                 again = false;
             }
             let same = !timed && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
             let mut perm = 0;
+            // The ranges to register: `sens`, or `sens_prev` when they are the same or the new
+            // wait became the previous one (the buffers swap, nothing is copied).
+            let mut from_prev = false;
             if same {
                 perm = self.procs[p as usize].perm;
                 if perm == 0 {
                     self.perm_epoch += 1;
                     perm = self.perm_epoch;
                     self.procs[p as usize].perm = perm;
-                    if again {
-                        st.sens.extend_from_slice(&st.sens_prev);
-                    }
+                    from_prev = again;
                 } else {
                     st.sens.clear();
                 }
@@ -2142,27 +2579,29 @@ impl SimControl {
                     }
                 }
                 self.procs[p as usize].perm = 0;
-                st.sens_prev.clear();
-                if !timed {
-                    st.sens_prev.extend_from_slice(&st.sens);
-                }
+                std::mem::swap(&mut st.sens_prev, &mut st.sens);
+                st.sens.clear();
+                from_prev = true;
             }
-            if !st.sens.is_empty() {
-                for (s, range) in st.sens.drain(..) {
-                    self.signals[s.0 as usize].watched = true;
-                    let procs = &self.procs;
-                    self.waiters[s.0 as usize].add(
-                        p,
-                        range,
-                        Reg {
-                            generation,
-                            perm,
-                            trigger,
-                            tid,
-                        },
-                        |w| alive(procs, w),
-                    );
-                }
+            let list = if from_prev { &st.sens_prev } else { &st.sens };
+            for &(s, range) in list {
+                self.signals[s.0 as usize].watched = true;
+                let procs = &self.procs;
+                self.waiters[s.0 as usize].add(
+                    p,
+                    range,
+                    Reg {
+                        generation,
+                        perm,
+                        trigger,
+                        tid,
+                    },
+                    |w| alive(procs, w),
+                );
+            }
+            st.sens.clear();
+            if timed {
+                st.sens_prev.clear();
             }
             let result = if slot.result.is_ok() {
                 Ok(())
@@ -2184,6 +2623,8 @@ impl SimControl {
                 break;
             }
         }
+        late.clear();
+        self.late = late;
         // The previous batch's buffer becomes the next cycle's ready list: no allocation per delta.
         let mut old = std::mem::replace(&mut self.last_ran, pids);
         if self.ready.capacity() == 0 {
@@ -2335,12 +2776,15 @@ impl SimControl {
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Quick transactions finished when they were applied.
     let fused = sig.end_apply();
+    // Direct transactions, element order: first, so the runs stay in order when nothing else
+    // came.
+    let pend = sig.finish_pend(now, cycle, false);
     let changed = if sig.dirty.is_empty() && sig.fast_dirty.is_empty() {
         fused
     } else {
         finish_dirty(sig, now, cycle)? | fused
-    };
-    if fused {
+    } | (pend == Some(true));
+    if fused || pend.is_some() && !sig.changed.is_sorted_by_key(|r| r.offset) {
         // The runs as the dirty ranges make them, whatever order the sources were applied in.
         sig.canonical_changed();
     }
@@ -2373,6 +2817,67 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
     }
     sig.fast_dirty = fast;
     Ok(changed)
+}
+
+/// Commit the direct transactions `out` and `outv` of a process (`Ctx::assign_code`, `Out`) to
+/// their signals (`Signal::commit_code`, `commit_planes`), listing each signal once in
+/// `direct_sigs` for the next update. The entries of one driver are all in one of the lists.
+#[inline]
+fn commit_out(
+    signals: &mut [Signal],
+    direct_sigs: &mut Vec<u32>,
+    empty: &mut bool,
+    out: &mut Vec<Out>,
+    outv: &mut Vec<OutV>,
+) {
+    // Runs of entries of one signal (processes of one vector, in order) at once.
+    let mut i = 0;
+    while let Some(&o) = out.get(i) {
+        let n = if out.get(i + 1).is_some_and(|x| x.sig == o.sig) {
+            out[i..].iter().take_while(|x| x.sig == o.sig).count()
+        } else {
+            1
+        };
+        let sig = &mut signals[o.sig as usize];
+        let first = if n == 1 {
+            match sig.commit_code(o.slot, o.elem, o.code as u8) {
+                Some(first) => first,
+                None => {
+                    *empty = true;
+                    false
+                }
+            }
+        } else {
+            sig.commit_codes(&out[i..i + n], empty)
+        };
+        if first {
+            direct_sigs.push(o.sig);
+        }
+        i += n;
+    }
+    out.clear();
+    if outv.is_empty() {
+        return;
+    }
+    let mut i = 0;
+    while let Some(&o) = outv.get(i) {
+        let n = if outv.get(i + 1).is_some_and(|x| x.sig == o.sig) {
+            outv[i..].iter().take_while(|x| x.sig == o.sig).count()
+        } else {
+            1
+        };
+        let sig = &mut signals[o.sig as usize];
+        let first = if n == 1 {
+            sig.commit_planes(o.slot, o.elem, o.len, o.planes)
+        } else {
+            sig.commit_planes_run(&outv[i..i + n])
+        };
+        if first {
+            direct_sigs.push(o.sig);
+        }
+        i += n;
+    }
+    outv.clear();
 }
 
 /// Whether the process of trigger `t` must run in this cycle: its edge, or its reset level.
@@ -2427,22 +2932,25 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 /// Lock a process slot. Process panics are caught inside the lock, so a poisoned slot cannot
 /// occur; its state would be intact anyway.
 /// A slot nothing else can reach (the kernel thread, outside a parallel batch): no lock.
+/// The error of a panic in the code of process `p`: a broken invariant, reported as an
+/// internal error of that process, not a bare panic.
+#[cold]
+fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> SimError {
+    let msg = panic_message(panic);
+    let kind = ErrorKind::Internal(format!("process panicked: {msg}"));
+    let mut e = SimError::at(kind, sh.now, sh.delta);
+    e.process = Some((ProcId(p), sh.names[p as usize].clone()));
+    e
+}
+
 /// What the resumption of process `p` tells it, set when it runs (not when it is woken, so
 /// the wake touches no slot): whether a timeout resumed it, and, for a signal that resumed a
 /// process with an edge trigger, the edge that holds (`Ctx::edge`). Not for the first run.
 #[inline(always)]
-fn resumption(
-    procs: &[ProcMeta],
-    known_edges: &[Option<(SignalId, u32, bool)>],
-    p: u32,
-    st: &mut ProcState,
-) {
-    let meta = &procs[p as usize];
-    st.timed_out = meta.by_timeout;
-    st.known_edge = match known_edges.get((meta.tid as usize).wrapping_sub(1)) {
-        Some(&k) if !meta.by_timeout => k,
-        _ => None,
-    };
+fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
+    let by_timeout = procs[p as usize].by_timeout;
+    st.timed_out = by_timeout;
+    st.edge_ok = !by_timeout;
 }
 
 fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {

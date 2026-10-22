@@ -78,6 +78,13 @@ pub(crate) fn verify_func(
         );
         return;
     }
+    if !f.via.is_empty() && f.via.len() != n {
+        err(
+            None,
+            format!("{} inlining records for {n} instructions", f.via.len()),
+        );
+        return;
+    }
     if f.blocks.is_empty() {
         err(None, "no blocks".into());
         return;
@@ -152,8 +159,22 @@ pub(crate) fn verify_func(
         for pc in blk.start as usize..blk.end as usize {
             let inst = &f.code[pc];
             let s = f.loc[pc];
+            // An inlined instruction has the statement of the function it came from, and the
+            // statement of each call it was inlined through is one of the function that
+            // contained the call: the next callee outward, this function for the last.
+            let chain: Vec<crate::ViaNode> = f.inlined_chain(pc).collect();
+            for (k, n) in chain.iter().enumerate() {
+                let outer = chain.get(k + 1).map_or(id, |o| o.callee);
+                if prog.stmts.get(n.site).is_none_or(|i| i.func != outer) {
+                    err(
+                        Some(pc),
+                        format!("inlined call statement {} is not of {outer}", n.site.0),
+                    );
+                }
+            }
+            let own = chain.first().map_or(id, |n| n.callee);
             match prog.stmts.get(s) {
-                Some(info) if info.func == id => {}
+                Some(info) if info.func == own => {}
                 Some(_) => err(
                     Some(pc),
                     format!("statement {} belongs to another function", s.0),

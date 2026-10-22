@@ -1,3 +1,0 @@
-# tools/corpus/run.py expected results for neotrng-2008 (nvc); one line per manifest entry, in order
-PASS neotrng neotrng/rtl/neoTRNG.vhd
-PASS neotrng neotrng/sim/neoTRNG_tb.vhd

@@ -21,7 +21,11 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   Element-addressed operations (copy a range, masked select, diff, resolve) work on chunks of 64
   elements with shifts and masks, so a sub-range at any offset is never transposed element by
   element. Per-element metadata (event cycle, active cycle, last event time, last active time)
-  are flat arrays over the whole signal (rule 2), the four in one buffer. Small collections
+  are flat arrays over the whole signal (rule 2), the four in one buffer; a signal of more than
+  64 elements also keeps the active cycle and time per block of 64 (`blk_active`), written when
+  a marked range covers the whole block, and the activity of an element is the later of the two;
+  the events its plane-word update finds are records per block (cycle, time, elements whose last
+  event it is) instead of element stamps (#519). Small collections
   (a `Buf` of up to 16 bytes or one logic block, one waiter, one segment, one pending
   transaction, a signal's scratch range lists) are stored inline (`SmallVec`): a scalar signal
   and its driver cost no allocation of their own (#421).
@@ -53,6 +57,32 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   value at once and lists the run in `Signal::fast_dirty`; `finish_signal` then only updates the
   effective value of those runs. Any other vector assignment of a cycle appends its one
   transaction directly (`Ctx::assign`).
+- **Direct transactions**: a driver that is the only source of its elements of a logic signal
+  with no port, composite group, guard or resolution function (std_logic resolution of one
+  source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).
+  A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
+  an entry in the process's `ProcState::out` (signal, source slot, element, code) or, for more
+  elements, `outv` (first element, length, plane words; the entries of one driver are in one of
+  the two, so their order is kept), not a waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in
+  the run is another entry (the last wins, as zero-delay preemption would give), and any
+  assignment that needs the waveform first moves the driver's entries there (`Ctx::spill_out`).
+  The commit (`commit_out`; for processes committed in the batch loop, after the batch, since
+  the signals are shared until then) writes the driver value and the signal's driving value at
+  once: the update phase is over and no process reads either before the next one. The elements
+  wait in a per-signal bit mask (`Signal::pend`); the next update finishes them a plane word at a
+  time (`finish_pend`: activity, then the XOR of `cur` and the driving value gives the events),
+  one element through its code byte. A signal with a force layer, or a force or deposit in that
+  cycle, takes the elements to its dirty ranges and the general path instead. Activity stamps
+  are not written for a signal whose activity nothing reads (`Signal::inactive`:
+  `Config::skip_unchanged`, and no implicit signal has it as its prefix). A one-element entry
+  whose code the driver and the signal already have writes nothing on such a signal, only the
+  delta happens (`empty_delta`); the first one-element entry of a signal in a cycle waits in
+  `Signal::last_commit` (`pend_one`), not in the bit mask. The commit writes only the driving
+  value, which is the value of the driver as its only source (`Signal::lag`); the driver values
+  are brought up to date (`sync_drivers`) before a force, release or deposit of the signal is
+  applied or the general path computes the driving value from them, and a deposit makes the
+  signal `exact` (its commits then write the driver value too). When one element changes and
+  one resident process without an edge trigger waits for it, `finish_direct` wakes it at once.
 - **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
   (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
   the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the
@@ -98,7 +128,10 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   signal keeps the wake list itself (`Waiters::cache`, with the few distinct trigger ids in it):
   an event wakes the list in order without scanning it. A waiter added, or a process that leaves
   its resident wait (`run_batch` drops the lists of its old signals), drops the list, and the
-  next scan builds it again.
+  next scan builds it again. The list is split once into the processes that can run as one batch
+  in its order (one suspension point, not postponed, ascending) and the others: when the signal is
+  the only one that changed and nothing else woke a process, the first are the batch without a
+  wake each, the others wake as usual.
 
 ## The cycle
 
@@ -270,6 +303,8 @@ pub trait Process: Send {
   `force`/`release` to `Ctx::force/release`, textio `OUTPUT` to `Ctx::output`; disk files are
   the interpreter's own (its callers are serial).
 - Runtime errors as `Err(ctx.error(ErrorKind::Runtime(..)))` with the VHDL call stack in `trace`.
+- A plain concurrent copy (`target <= source;` of signal names) needs no process code: the
+  elaborator builds the kernel's own `CopyProcess` for it (#529).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

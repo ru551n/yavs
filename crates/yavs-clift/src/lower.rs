@@ -53,7 +53,7 @@ extern "C" fn clift_deopt(
         eprintln!("materialise f{func} at pc {pc}");
     }
     // SAFETY: compiled code passes the `Env` and `Mem` it was given.
-    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen) }
+    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, u64::MAX) }
 }
 
 /// `memmove` (`Inst::Copy`; ranges may overlap).
@@ -646,7 +646,7 @@ fn gen_func(
         }
     }
     for (i, inst) in f.code.iter().enumerate() {
-        if resumes(inst) {
+        if resumes(prog, f, inst) {
             leader[i + 1] = true;
         }
     }
@@ -689,8 +689,22 @@ fn gen_func(
         region(&mut b, 2, "guest"),
         region(&mut b, 3, "mem"),
     );
+    // The registers the interpreter starts a frame with hold the same address everywhere; the
+    // register itself may be unset (`Pre::lean`: no address for a parameter's slot), so a use
+    // goes by what is known, as in the LLVM tier.
+    let mut base_known: Vec<Option<Known>> = vec![None; f.reg_ty.len()];
+    if !native {
+        for (r, addr, _) in preloads(f) {
+            base_known[r.0 as usize] = match addr {
+                Some((AddrSpace::Frame, off)) => Some(Known::Frame(off.into())),
+                Some((AddrSpace::Const(k), off)) => Some(Known::Const(k, off.into())),
+                Some((AddrSpace::Inst, off)) => Some(Known::Inst(off.into())),
+                _ => None,
+            };
+        }
+    }
     let mut g = Gen {
-        known: vec![None; f.reg_ty.len()],
+        known: base_known.clone(),
         frame_len: u64::from(f.frame),
         slots: None,
         rf: MemFlagsData::trusted().with_alias_region(Some(rr)),
@@ -733,7 +747,7 @@ fn gen_func(
             track(&mut g.known, &[], &p);
         }
         if leader[i] {
-            g.known.fill(None);
+            g.known.clone_from(&base_known);
         }
         if let Some(bb) = bbs[i] {
             if open {

@@ -13,7 +13,7 @@ exclude = [
   { source = "osvvm", path = "MemoryPkg_orig_c.vhd", reason = "non-generic fallback, unused with generic packages" },
   { source = "osvvm", path = "ScoreboardPkg_int_c.vhd", reason = "non-generic fallback, unused with generic packages" },
   { source = "osvvm", path = "ScoreboardPkg_slv_c.vhd", reason = "non-generic fallback, unused with generic packages" },
-  { source = "osvvm", path = "VendorCovApiPkg_Aldec.vhd", reason = "Aldec/Riviera-PRO only" },
+  { source = "osvvm", path = "VendorCovApiPkg_Aldec.vhd", reason = "sim4 only" },
   { source = "vunit", path = "vunit/vhdl/*/test/", reason = "VUnit's own test benches (M4 external suite, not a library)" },
   { source = "vunit", path = "vunit/vhdl/osvvm/", reason = "empty in the sparse checkout (a submodule); OSVVM comes from source 'osvvm'" },
 ]
@@ -167,7 +167,7 @@ file = [
 
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
-nvc = []
+sim1 = []
 yavs = []
 
 [[source]]

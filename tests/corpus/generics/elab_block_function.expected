@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:elab_block_function:u0:b:u:_p0	sub n=14 sev=warning
+diag	note	0	0	:elab_block_function:u0:b:g(1):_p0	gen 1
+diag	note	0	0	:elab_block_function:u0:b:g(2):_p0	gen 2
+diag	note	0	0	:elab_block_function:u1:b:u:_p0	sub n=10 sev=error
+diag	note	0	0	:elab_block_function:u1:b:g(1):_p0	gen 1
+diag	note	0	0	:elab_block_function:u1:b:g(2):_p0	gen 2
+diag	note	18000000	0	:elab_block_function:u1:b:_p0	block total=18 len=18
+diag	note	26000000	0	:elab_block_function:u0:b:_p0	block total=26 len=26

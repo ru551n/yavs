@@ -1,0 +1,295 @@
+//! The analysed-unit cache (`docs/decisions.md` "Analysed-unit cache"): `yavs analyze` of one
+//! file per call reads the units it depends on from their entries; the diagnostics and results
+//! are those of an analysis from source, an edited dependency invalidates everything below it,
+//! read-only libraries and damaged entries still work, and `run` never writes an entry.
+
+mod common;
+use common::tempdir;
+
+use std::path::PathBuf;
+use std::process::Command;
+
+const PKG: &str = "library ieee; use ieee.std_logic_1164.all;\npackage p is\n  constant K : integer := 7;\n\
+  function f (x : std_logic_vector) return integer;\nend;\n\
+package body p is\n  function f (x : std_logic_vector) return integer is begin return x'length * K; end;\nend;\n";
+
+/// Uses `p`; warns (a static index outside the bounds, in dead code).
+const MID: &str = "use work.p.all;\npackage m is\n  constant M : integer := K + 1;\nend;\n";
+
+const TB: &str = "library ieee; use ieee.std_logic_1164.all;\nuse work.p.all; use work.m.all;\n\
+entity tb is end;\narchitecture a of tb is\nbegin\n  process\n    variable v : bit_vector(0 to 3);\n  begin\n\
+    if false then v(5) := '1'; end if;\n\
+    report \"K=\" & integer'image(K) & \" M=\" & integer'image(M) & \" f=\" & integer'image(f(\"0101\"));\n\
+    wait;\n  end process;\nend;\n";
+
+struct Env {
+    tmp: common::Tmp,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Out {
+    code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+impl Out {
+    /// Without the debug notes of the caches.
+    fn visible(&self) -> (i32, String, String) {
+        let err = self
+            .stderr
+            .lines()
+            .filter(|l| !l.starts_with("debug: "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        (self.code, self.stdout.clone(), err)
+    }
+
+    fn notes(&self, what: &str) -> usize {
+        self.stderr
+            .lines()
+            .filter(|l| l.starts_with("debug: units: ") && l.contains(what))
+            .count()
+    }
+}
+
+impl Env {
+    fn new(name: &str) -> Env {
+        let tmp = tempdir(name);
+        for (f, t) in [("pkg.vhd", PKG), ("mid.vhd", MID), ("tb.vhd", TB)] {
+            std::fs::write(tmp.join(f), t).expect("write");
+        }
+        Env { tmp }
+    }
+
+    fn lib(&self, name: &str) -> String {
+        format!("{name}:{}", self.tmp.join(name).display())
+    }
+
+    fn units(&self, lib: &str) -> Vec<PathBuf> {
+        std::fs::read_dir(self.tmp.join(lib).join("yavs-cache").join("units"))
+            .map(|d| d.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default()
+    }
+
+    fn yavs(&self, args: &[&str]) -> Out {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&self.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_LOG", "debug")
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        Out {
+            code: o.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        }
+    }
+
+    /// `yavs analyze` of each file, one call per file, into `work` (with `more` arguments).
+    fn analyze(&self, files: &[&str], more: &[&str]) -> Vec<Out> {
+        let work = self.lib("work");
+        files
+            .iter()
+            .map(|f| {
+                let mut a = vec!["analyze", "--work", &work];
+                a.extend_from_slice(more);
+                a.push(f);
+                let o = self.yavs(&a);
+                assert_eq!(o.code, 0, "{f}: {o:?}");
+                o
+            })
+            .collect()
+    }
+
+    fn run(&self, more: &[&str]) -> Out {
+        let work = self.lib("work");
+        let mut a = vec!["run", "--work", &work];
+        a.extend_from_slice(more);
+        a.push("tb");
+        self.yavs(&a)
+    }
+}
+
+const ALL: [&str; 3] = ["pkg.vhd", "mid.vhd", "tb.vhd"];
+
+#[test]
+fn cached_analysis_reports_what_source_does() {
+    let e = Env::new("units_same");
+    let plain = Env::new("units_same_plain");
+    let cold = e.analyze(&ALL, &[]);
+    let reference = plain.analyze(&ALL, &["--no-cache"]);
+    assert!(plain.units("work").is_empty(), "--no-cache writes nothing");
+    assert!(!e.units("work").is_empty());
+    // The warning of the testbench comes out the same, from source and from its entry.
+    assert!(reference[2].stderr.contains("W1404"), "{:?}", reference[2]);
+    let warm = e.analyze(&ALL, &[]);
+    for i in 0..ALL.len() {
+        let strip = |o: &Out| o.visible().2.replace(&e.tmp.display().to_string(), "T");
+        let strip_p = |o: &Out| o.visible().2.replace(&plain.tmp.display().to_string(), "T");
+        assert_eq!(strip(&cold[i]), strip_p(&reference[i]), "{}", ALL[i]);
+        assert_eq!(strip(&warm[i]), strip_p(&reference[i]), "{}", ALL[i]);
+    }
+    // The second time every unit of the files is read back.
+    assert_eq!(warm[2].notes("hit work.tb ("), 1, "{:?}", warm[2]);
+    assert_eq!(warm[2].notes("miss"), 0, "{:?}", warm[2]);
+    // The file itself is not parsed: its units have entries made from it (no leading empty
+    // segment may hide the file step, which cost 15 ms of every first run of a library testbench).
+    assert_eq!(warm[2].notes("tb.vhd not parsed"), 1, "{:?}", warm[2]);
+    assert_eq!(cold[2].notes("not parsed"), 0, "{:?}", cold[2]);
+    // The check mode analyses again without the cache and compares the two.
+    let o = e.yavs(&["analyze", "--work", &e.lib("work"), "tb.vhd"]);
+    assert_eq!(o.code, 0);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    c.current_dir(&e.tmp)
+        .env_remove("YAVS_STDLIB")
+        .env("YAVS_UNIT_CHECK", "1")
+        .args(["analyze", "--work", &e.lib("work"), "mid.vhd", "tb.vhd"]);
+    assert!(c.status().expect("run").success());
+    let r = e.run(&[]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("K=7 M=8 f=28"), "{r:?}");
+    // `analyze` stored the std/ieee package bodies elaboration loads (the files here were
+    // analysed by relative path, so their own units are entries of another identity than the
+    // closure's absolute paths).
+    assert_eq!(r.notes("miss ieee") + r.notes("miss std"), 0, "{r:?}");
+    assert!(r.notes("hit ieee.std_logic_1164/body") == 1, "{r:?}");
+}
+
+#[test]
+fn editing_a_dependency_invalidates_its_dependents() {
+    let e = Env::new("units_edit");
+    e.analyze(&ALL, &[]);
+    std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace(":= 7", ":= 9")).expect("write");
+    // `p` changed: re-analysing the files below it reads nothing stale.
+    let again = e.analyze(&ALL, &[]);
+    assert_eq!(again[1].notes("hit work.m"), 0, "{:?}", again[1]);
+    assert!(again[1].notes("store work") >= 1, "{:?}", again[1]);
+    let r = e.run(&[]);
+    assert!(r.stdout.contains("K=9 M=10 f=36"), "{r:?}");
+    // A dependent analysed before the dependency is analysed again is not read either: its
+    // entry names the old `p`.
+    std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace(":= 7", ":= 3")).expect("write");
+    e.analyze(&["pkg.vhd"], &[]);
+    let tb = e.analyze(&["tb.vhd"], &[]);
+    assert_eq!(tb[0].notes("hit work.m"), 0, "{:?}", tb[0]);
+    let m = e.analyze(&["mid.vhd"], &[]);
+    assert_eq!(
+        m[0].notes("hit"),
+        m[0].notes("hit std") + m[0].notes("hit ieee") + m[0].notes("hit work.p")
+    );
+    let r = e.run(&[]);
+    assert!(r.stdout.contains("K=3 M=4 f=12"), "{r:?}");
+}
+
+#[test]
+fn damaged_entries_are_misses() {
+    let e = Env::new("units_damaged");
+    let reference = e.analyze(&ALL, &[]);
+    for f in e.units("work") {
+        let mut b = std::fs::read(&f).expect("read");
+        let n = b.len();
+        b[n / 2] ^= 0x55;
+        std::fs::write(&f, b).expect("write");
+    }
+    let again = e.analyze(&ALL, &[]);
+    for i in 0..ALL.len() {
+        assert_eq!(again[i].visible(), reference[i].visible());
+    }
+    assert!(e.run(&[]).stdout.contains("K=7 M=8 f=28"));
+}
+
+#[test]
+fn run_never_writes_entries() {
+    let e = Env::new("units_run");
+    e.analyze(&ALL, &[]);
+    let before: Vec<_> = e.units("work");
+    for f in &before {
+        std::fs::remove_file(f).expect("remove");
+    }
+    let r = e.run(&[]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(e.units("work").is_empty(), "{r:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn read_only_libraries_are_read_and_never_fail() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new("units_ro");
+    let shared = e.lib("common");
+    // By absolute path, as integrations pass them: a unit read as a dependency is found by the
+    // path the manifest records.
+    for f in ["pkg.vhd", "mid.vhd"] {
+        let f = e.tmp.join(f).display().to_string();
+        assert_eq!(e.yavs(&["analyze", "--work", &shared, &f]).code, 0);
+    }
+    let lib = e.tmp.join("common");
+    let tree: Vec<PathBuf> = vec![
+        lib.clone(),
+        lib.join("yavs-cache"),
+        lib.join("yavs-cache").join("units"),
+    ];
+    let mode = |m: u32| {
+        for d in tree.iter().rev() {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(m)).expect("chmod");
+        }
+    };
+    mode(0o555);
+    let writable = std::fs::File::create(lib.join("probe")).is_ok();
+    // Into another library, reading `common` (read-only): its units come from their entries.
+    let other = format!("other:{}", e.tmp.join("other").display());
+    let tb = format!("library common;\n{}", TB.replace("work.", "common."));
+    std::fs::write(e.tmp.join("tb_ro.vhd"), tb).expect("write");
+    let a = e.yavs(&["analyze", "--work", &other, "--map", &shared, "tb_ro.vhd"]);
+    let r = e.yavs(&["run", "--work", &other, "--map", &shared, "tb"]);
+    mode(0o755);
+    if writable {
+        return; // running as a user the mode does not bind
+    }
+    assert_eq!(a.code, 0, "{a:?}");
+    assert!(
+        a.notes("hit common.p ") + a.notes("hit common.m ") >= 1 && a.notes("miss common") == 0,
+        "{a:?}"
+    );
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("K=7 M=8 f=28"), "{r:?}");
+}
+
+/// Forces, `'active` reads and a package-path external name are facts of the elaborator
+/// (`Db::facts`); an entry stores them, so a replayed unit need not be scanned. The check mode
+/// compares them with those of an analysis from source.
+#[test]
+fn entries_carry_the_facts_of_their_unit() {
+    let e = Env::new("units_facts");
+    let sp = "library ieee; use ieee.std_logic_1164.all;\npackage sp is\n  signal s : std_logic;\nend;\n";
+    let tb = "library ieee; use ieee.std_logic_1164.all;\nuse work.sp.all;\n\
+entity ftb is end;\narchitecture a of ftb is\n  signal t : std_logic;\nbegin\n  process\n  begin\n\
+    t <= force '1';\n    wait for 1 ns;\n    t <= release;\n    wait for 1 ns;\n\
+    assert t'active or true;\n    report \"S=\" & std_logic'image(<<signal @work.sp.s : std_logic>>);\n    wait;\n\
+  end process;\nend;\n";
+    std::fs::write(e.tmp.join("sp.vhd"), sp).expect("write");
+    std::fs::write(e.tmp.join("ftb.vhd"), tb).expect("write");
+    // By absolute path, as integrations pass them: a dependency is found by the path the
+    // manifest records.
+    let paths: Vec<String> = ["sp.vhd", "ftb.vhd"]
+        .iter()
+        .map(|f| e.tmp.join(f).display().to_string())
+        .collect();
+    let files: Vec<&str> = paths.iter().map(String::as_str).collect();
+    e.analyze(&files, &[]);
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    c.current_dir(&e.tmp)
+        .env_remove("YAVS_STDLIB")
+        .env("YAVS_UNIT_CHECK", "1")
+        .args(["analyze", "--work", &e.lib("work")])
+        .args(files);
+    let o = c.output().expect("run");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let work = e.lib("work");
+    let r = e.yavs(&["run", "--work", &work, "ftb"]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("S=") || r.stderr.contains("S="), "{r:?}");
+}

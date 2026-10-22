@@ -300,7 +300,7 @@ impl Db {
         let lib = self.units[entity].lib;
         let ekey = self.units[entity].name.key;
         let key = UnitKey::Secondary(ekey, a.key);
-        if !self.libs[lib].units.contains_key(&key) && self.locate(lib, key).is_none() {
+        if !self.unit_known(lib, key) {
             let lname = self.libs[lib].name.text;
             return Err(self.error(
                 Diagnostic::error(
@@ -403,18 +403,34 @@ impl Db {
 
     /// Whether `lib` has an entity named `key`, without analyzing it.
     fn has_entity(&self, lib: LibId, key: Symbol) -> bool {
+        let a = self.has_entity_now(lib, key);
+        self.note_query(
+            crate::units::Query::Entity(self.libs[lib].name.key, key),
+            crate::units::Answer::Bool(a),
+        );
+        a
+    }
+
+    pub(crate) fn has_entity_now(&self, lib: LibId, key: Symbol) -> bool {
         let pk = UnitKey::Primary(key);
         match self.libs[lib].units.get(&pk) {
             Some(UnitSlot::Done(u) | UnitSlot::InProgress(u)) => {
                 self.units[*u].kind == UnitKind::Entity
             }
             Some(UnitSlot::NotLoaded { file, .. }) => {
-                self.files.get(&(lib, file.clone())).and_then(|f| f.units.as_ref()).is_some_and(|us| {
-                    us.iter().any(|(k, u)| {
-                        *k == pk
-                            && matches!(u, Some(du) if matches!(du.unit, ast::LibraryUnit::Entity(_)))
-                    })
-                })
+                match self.files.get(&(lib, file.clone())) {
+                    // Not parsed (the analysed-unit cache registered it): the manifest knows.
+                    Some(f) if !f.parsed => match &self.libs[lib].source {
+                        LibSource::Manifest(m) => m.find(LibKind::Entity, key.as_str()).is_some(),
+                        _ => false,
+                    },
+                    f => f.and_then(|f| f.units.as_ref()).is_some_and(|us| {
+                        us.iter().any(|(k, u)| {
+                            *k == pk
+                                && matches!(u, Some(du) if matches!(du.unit, ast::LibraryUnit::Entity(_)))
+                        })
+                    }),
+                }
             }
             Some(UnitSlot::Failed) => false,
             None => match &self.libs[lib].source {
@@ -518,25 +534,7 @@ impl Db {
         let key = self.decls[comp].name.key();
         let lib = self.default_entity_lib(scope, comp).0?;
         let entity = self.load_unit(lib, UnitKey::Primary(key), None).ok()?;
-        let arch = match &self.libs[lib].source {
-            LibSource::Manifest(m) => m
-                .units()
-                .filter(|u| {
-                    u.kind == LibKind::Architecture && u.primary.as_deref() == Some(key.as_str())
-                })
-                .last()
-                .and_then(|u| u.key.split_once('/').map(|(_, a)| Symbol::intern(a))),
-            _ => self
-                .units
-                .iter()
-                .filter(|(_, u)| {
-                    u.lib == lib
-                        && u.kind == UnitKind::Architecture
-                        && matches!(u.key, UnitKey::Secondary(e, _) if e == key)
-                })
-                .last()
-                .map(|(_, u)| u.name.key),
-        };
+        let arch = self.last_architecture(entity);
         Some((entity, arch))
     }
 
@@ -2122,7 +2120,7 @@ impl Db {
         let lib = self.units[entity].lib;
         let ekey = self.units[entity].name.key;
         let key = UnitKey::Secondary(ekey, a.key);
-        if !self.libs[lib].units.contains_key(&key) && self.locate(lib, key).is_none() {
+        if !self.unit_known(lib, key) {
             return Err(self.error(
                 Diagnostic::error(
                     diag::UNIT_NOT_FOUND,

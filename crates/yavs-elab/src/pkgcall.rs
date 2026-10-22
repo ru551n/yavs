@@ -22,10 +22,110 @@ use yavs_diag::Diagnostic;
 use yavs_interp::{Bindings, CallVal, InstData, Runtime, SharedState, Sources};
 use yavs_ir::{FuncId, Program, TyId};
 use yavs_kernel::SimError;
-use yavs_lower::{LowerOptions, Lowerer, PackageIr};
+use yavs_lower::{FreeObj, LowerOptions, Lowerer, PackageIr};
 use yavs_sem::{Db, DeclId, UnitId};
 
 use crate::eval::Val;
+use crate::hier::ScopeId;
+
+/// A shared variable of a region (instance, block, generate): the elaborated region that
+/// declares it and its declaration.
+pub(crate) type VarKey = (ScopeId, DeclId);
+
+/// How a call is given one object of an enclosing region it reads (`Lowerer::capture_free_objects`):
+/// the value of a constant or generic, or a shared variable (its object's handle).
+#[derive(Clone, Debug)]
+pub(crate) enum FillItem {
+    Val(Val),
+    Var(VarKey),
+}
+
+/// A shared variable's object, created for an elaboration-time call: `items` is what its
+/// creation thunk reads.
+#[derive(Clone, Debug)]
+pub(crate) struct Create {
+    pub(crate) key: VarKey,
+    pub(crate) items: Vec<(DeclId, FillItem)>,
+}
+
+/// What a call of a function declared in a region ran with besides its arguments: the objects of
+/// the region (by declaration, so that any lowering of the function can lay them out), and the
+/// shared variables created for it, in order, before it ran.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Fill {
+    pub(crate) items: Vec<(DeclId, FillItem)>,
+    pub(crate) creates: Vec<Create>,
+}
+
+/// The captured objects of a lowered function (or creation thunk) and the bytes of instance
+/// data it reads them from.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Needs {
+    pub(crate) free: Vec<FreeObj>,
+    pub(crate) size: u32,
+}
+
+/// The instance data of a call: `items` laid out as `needs` says, handles of shared variables
+/// from `vars`.
+pub(crate) fn inst_data(
+    prog: &Program,
+    needs: &Needs,
+    items: &[(DeclId, FillItem)],
+    vars: &HashMap<VarKey, u64>,
+) -> Result<InstData, Fail> {
+    let mut inst = InstData {
+        data: vec![0; needs.size as usize],
+        ..Default::default()
+    };
+    for f in &needs.free {
+        let Some((_, item)) = items.iter().find(|(d, _)| *d == f.decl) else {
+            return Err(Fail::Runtime(
+                "internal error: no value for an object a call reads".into(),
+            ));
+        };
+        let off = f.off as usize;
+        match item {
+            FillItem::Var(k) => {
+                let h = vars.get(k).ok_or_else(|| {
+                    Fail::Runtime("internal error: a shared variable is not created".into())
+                })?;
+                inst.data[off..off + 8].copy_from_slice(&h.to_le_bytes());
+            }
+            FillItem::Val(v) => match crate::value::encode(prog, f.ty, v) {
+                Some(CallVal::Cell(c)) => {
+                    let n = prog
+                        .types
+                        .get(f.ty)
+                        .and_then(|t| t.scalar_size())
+                        .unwrap_or(8) as usize;
+                    inst.data[off..off + n].copy_from_slice(&c.to_le_bytes()[..n]);
+                }
+                Some(CallVal::Composite { data, desc }) => {
+                    yavs_lower::UnitIr::write_composite(f.off, &data, &desc, &mut inst.data);
+                }
+                None => return Err(Fail::Unsupported("an object of this type read by a call")),
+            },
+        }
+    }
+    Ok(inst)
+}
+
+/// Run creation thunk `func` with `inst`: the handle of the new shared variable's object.
+fn create_var(
+    rt: &Arc<Runtime>,
+    shared: &Arc<Mutex<SharedState>>,
+    func: yavs_ir::FuncId,
+    inst: InstData,
+) -> Result<u64, Fail> {
+    match yavs_interp::call_values_shared(rt.clone(), func, Arc::new(inst), &[], None, Some(shared))
+        .map_err(runtime)?
+    {
+        Some(CallVal::Cell(h)) => Ok(h),
+        _ => Err(Fail::Runtime(
+            "internal error: a shared variable's thunk gave no handle".into(),
+        )),
+    }
+}
 
 /// A function lowered into a program, with the IR types of its parameters and result.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -81,6 +181,7 @@ pub(crate) fn run(
     s: &Sig,
     args: &[Val],
     shared: Option<&Arc<Mutex<SharedState>>>,
+    inst: Option<InstData>,
 ) -> Result<Val, Fail> {
     let prog = rt.prog.clone();
     let mut cvs = Vec::with_capacity(args.len());
@@ -104,7 +205,7 @@ pub(crate) fn run(
     let r = yavs_interp::call_values_shared(
         rt.clone(),
         s.func,
-        Arc::new(InstData::default()),
+        Arc::new(inst.unwrap_or_default()),
         &cvs,
         composite.then_some(ret),
         shared,
@@ -317,19 +418,39 @@ pub struct Call {
     pub(crate) name: String,
     pub(crate) args: Vec<Val>,
     pub(crate) result: Val,
+    /// The objects of its region it read (`None`: none).
+    pub(crate) fill: Option<Fill>,
+}
+
+/// The functions lowered for running calls again: their signatures, the captured objects each
+/// reads, and the thunks that create the shared variables among them.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Items {
+    pub(crate) sigs: HashMap<DeclId, Sig>,
+    /// By function, and by shared variable for its thunk.
+    pub(crate) needs: HashMap<DeclId, Needs>,
+    pub(crate) inits: HashMap<DeclId, yavs_ir::FuncId>,
+}
+
+fn fail_text(f: Fail) -> String {
+    match f {
+        Fail::Lower(m) | Fail::Runtime(m) => m,
+        Fail::Unsupported(w) => format!("internal error: {w}"),
+    }
 }
 
 /// Run `log` again, in order, on freshly initialised packages: the side effects of
-/// elaboration. Every call must return what it returned during elaboration.
+/// elaboration. Every call must return what it returned during elaboration. Gives the
+/// handles of the shared variables the calls created, in this run.
 pub(crate) fn replay(
     rt: &Arc<Runtime>,
     shared: &Arc<Mutex<SharedState>>,
-    sigs: &HashMap<DeclId, Sig>,
+    items: &Items,
     log: &[Call],
-) -> Result<(), String> {
+) -> Result<HashMap<VarKey, u64>, String> {
     // The reports of these calls were printed when they first ran (#390).
     rt.set_replay(true);
-    let r = replay_calls(rt, shared, sigs, log);
+    let r = replay_calls(rt, shared, items, log);
     rt.set_replay(false);
     r
 }
@@ -337,15 +458,31 @@ pub(crate) fn replay(
 fn replay_calls(
     rt: &Arc<Runtime>,
     shared: &Arc<Mutex<SharedState>>,
-    sigs: &HashMap<DeclId, Sig>,
+    items: &Items,
     log: &[Call],
-) -> Result<(), String> {
+) -> Result<HashMap<VarKey, u64>, String> {
+    let mut vars: HashMap<VarKey, u64> = HashMap::new();
     for c in log {
         let name = &c.name;
-        let s = sigs
+        let s = items
+            .sigs
             .get(&c.func)
             .ok_or_else(|| format!("internal error: `{name}` is not lowered for the replay"))?;
-        match run(rt, s, &c.args, Some(shared)) {
+        let mut inst = None;
+        if let Some(f) = &c.fill {
+            let not_lowered =
+                || format!("internal error: `{name}` has no objects lowered for the replay");
+            for cr in &f.creates {
+                let init = items.inits.get(&cr.key.1).ok_or_else(not_lowered)?;
+                let needs = items.needs.get(&cr.key.1).ok_or_else(not_lowered)?;
+                let data = inst_data(&rt.prog, needs, &cr.items, &vars).map_err(fail_text)?;
+                let h = create_var(rt, shared, *init, data).map_err(fail_text)?;
+                vars.insert(cr.key, h);
+            }
+            let needs = items.needs.get(&c.func).ok_or_else(not_lowered)?;
+            inst = Some(inst_data(&rt.prog, needs, &f.items, &vars).map_err(fail_text)?);
+        }
+        match run(rt, s, &c.args, Some(shared), inst) {
             Ok(v) if v == c.result => {}
             Ok(_) => {
                 return Err(format!(
@@ -353,21 +490,19 @@ fn replay_calls(
                      call was replayed"
                 ));
             }
-            Err(Fail::Runtime(m)) => return Err(m),
-            Err(Fail::Lower(m)) => return Err(m),
-            Err(Fail::Unsupported(w)) => {
-                return Err(format!("internal error: replaying `{name}`: {w}"));
-            }
+            Err(e) => return Err(fail_text(e)),
         }
     }
-    Ok(())
+    Ok(vars)
 }
 
 /// The program and package state elaboration-time calls run against.
 struct Live {
     rt: Arc<Runtime>,
     shared: Arc<Mutex<SharedState>>,
-    sigs: HashMap<DeclId, Sig>,
+    items: Items,
+    /// The shared variables of regions created so far, by their handles.
+    vars: HashMap<VarKey, u64>,
     /// The lowering that made `rt.prog`, with the run-time packages it lowered, to add
     /// functions to; `None` after a failed lowering.
     lowerer: Option<(yavs_lower::Suspended, Vec<UnitId>)>,
@@ -385,6 +520,9 @@ pub(crate) struct Start {
     /// What the session lowered after the packages, in order (`Session::lowered`): with the
     /// packages, it says what `lowerer`'s program holds.
     pub(crate) lowered: Vec<(DeclId, bool)>,
+    /// Whether it lowered anything for the objects of regions: its program then differs from
+    /// what the same requests give a fresh lowering (no lowering key).
+    pub(crate) captured: bool,
     pub(crate) state: Arc<StartState>,
     /// The library prefix the program starts with (`libstage`).
     pub(crate) lib: Option<crate::libstage::LibUse>,
@@ -396,6 +534,8 @@ pub struct StartState {
     pub(crate) shared: SharedState,
     /// The session's runtime, for its VHDL assert state.
     pub(crate) rt: Arc<Runtime>,
+    /// The shared variables of regions the calls created: their handles in `shared`.
+    pub(crate) vars: Vec<(VarKey, u64)>,
 }
 
 /// Package state during elaboration and the calls made with it.
@@ -405,30 +545,126 @@ pub(crate) struct Session {
     /// What is lowered after the packages, in order: functions, and package constants read
     /// from the package data (`true`).
     lowered: Vec<(DeclId, bool)>,
+    /// The shared variables of regions whose creation thunks were lowered after those, in order.
+    inits: Vec<DeclId>,
     live: Option<Live>,
     /// A call failed after it may have changed the package state.
     dirty: bool,
     /// `run_time_packages` for a `Db` of that size (it only grows, by instantiation).
     packages: Option<((usize, usize, usize), Vec<UnitId>)>,
+    /// Shared variables of regions created for the call being prepared; the next logged call
+    /// takes them.
+    pending: Vec<Create>,
 }
 
 impl Session {
     /// Call `f` with `args` against the package state, and log the call.
     pub(crate) fn call(&mut self, db: &Db, f: DeclId, args: Vec<Val>) -> Result<Val, Fail> {
-        let result = self.run(db, f, false, &args)?;
+        let result = self.run(db, f, false, &args, None)?;
         self.log.push(Call {
             func: f,
             name: db.decls[f].name.to_string(),
             args,
             result: result.clone(),
+            fill: None,
         });
         Ok(result)
+    }
+
+    /// Call `f`, declared in a region, with `args` and the objects of the region it reads
+    /// (`items`, for what [`Session::needs`] returned), and log the call with the shared
+    /// variables created for it.
+    pub(crate) fn call_in(
+        &mut self,
+        db: &Db,
+        f: DeclId,
+        args: Vec<Val>,
+        items: Vec<(DeclId, FillItem)>,
+    ) -> Result<Val, Fail> {
+        let result = self.run(db, f, false, &args, Some(&items))?;
+        self.log.push(Call {
+            func: f,
+            name: db.decls[f].name.to_string(),
+            args,
+            result: result.clone(),
+            fill: Some(Fill {
+                items,
+                creates: std::mem::take(&mut self.pending),
+            }),
+        });
+        Ok(result)
+    }
+
+    /// The captured objects function `f` reads, lowering it into the session if needed.
+    pub(crate) fn needs(&mut self, db: &Db, f: DeclId) -> Result<Needs, Fail> {
+        self.ensure(db, f, false)?;
+        self.live
+            .as_ref()
+            .and_then(|l| l.items.needs.get(&f))
+            .cloned()
+            .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))
+    }
+
+    /// The captured objects the thunk that creates shared variable `var` reads.
+    pub(crate) fn init_needs(&mut self, db: &Db, var: DeclId) -> Result<Needs, Fail> {
+        self.ensure_init(db, var)?;
+        self.live
+            .as_ref()
+            .and_then(|l| l.items.needs.get(&var))
+            .cloned()
+            .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))
+    }
+
+    /// The handle of the object of a region's shared variable, once created.
+    pub(crate) fn var(&self, key: VarKey) -> Option<u64> {
+        self.live.as_ref().and_then(|l| l.vars.get(&key).copied())
+    }
+
+    /// Create the object of shared variable `key.1` of region `key.0`, its thunk reading `items`
+    /// (for what [`Session::init_needs`] returned); the next logged call takes the creation.
+    pub(crate) fn create_var(
+        &mut self,
+        db: &Db,
+        key: VarKey,
+        items: Vec<(DeclId, FillItem)>,
+    ) -> Result<u64, Fail> {
+        self.ensure_init(db, key.1)?;
+        let live = self
+            .live
+            .as_mut()
+            .ok_or_else(|| Fail::Runtime("internal error: no package state".into()))?;
+        let init = *live
+            .items
+            .inits
+            .get(&key.1)
+            .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
+        let needs = live
+            .items
+            .needs
+            .get(&key.1)
+            .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
+        let data = inst_data(&live.rt.prog, needs, &items, &live.vars)?;
+        let r = create_var(&live.rt, &live.shared, init, data);
+        self.dirty |= r.is_err();
+        let h = r?;
+        live.vars.insert(key, h);
+        self.pending.push(Create { key, items });
+        Ok(h)
+    }
+
+    /// Give up the call being prepared: what it created is not logged, so the state is
+    /// rebuilt from the log before the next call.
+    pub(crate) fn abandon(&mut self) {
+        if !self.pending.is_empty() {
+            self.pending.clear();
+            self.dirty = true;
+        }
     }
 
     /// The package state at the end of elaboration, if the simulation can start from it: no
     /// call failed without being undone, the lowering can go on, no file was opened.
     pub(crate) fn finish(&mut self) -> Option<Start> {
-        if self.dirty {
+        if self.dirty || !self.pending.is_empty() {
             return None;
         }
         let mut live = self.live.take()?;
@@ -443,6 +679,10 @@ impl Session {
                 .and_then(Runtime::take_program)
                 .unwrap_or_else(|| (*live.rt.prog).clone()),
         );
+        // What read the objects of regions was laid out for the calls, not for the design.
+        let captured =
+            !live.items.inits.is_empty() || live.items.needs.values().any(|n| !n.free.is_empty());
+        lowerer.forget_free_objects();
         let data = live
             .rt
             .package_data()
@@ -451,14 +691,18 @@ impl Session {
             .collect();
         // Moved, not copied: the session ends here, and a copy doubled the shared heap (#409).
         let shared = std::mem::take(&mut *live.shared.lock().ok()?);
+        let mut vars: Vec<_> = live.vars.iter().map(|(&k, &h)| (k, h)).collect();
+        vars.sort_by_key(|&((r, d), _)| (r, yavs_sem::Id::index(d)));
         Some(Start {
             lowerer,
             pkgs,
             lowered: self.lowered.clone(),
+            captured,
             state: Arc::new(StartState {
                 data,
                 shared,
                 rt: live.rt,
+                vars,
             }),
             lib: live.lib,
         })
@@ -484,10 +728,11 @@ impl Session {
 
     /// Undo the calls made since `mark`: the package state is rebuilt from the earlier calls.
     pub(crate) fn undo(&mut self, db: &Db, mark: usize) -> Result<(), String> {
-        if self.log.len() == mark && !self.dirty {
+        if self.log.len() == mark && !self.dirty && self.pending.is_empty() {
             return Ok(());
         }
         self.log.truncate(mark);
+        self.pending.clear();
         self.live = None;
         let pkgs = self.run_time_packages(db);
         match self.rebuild(db, pkgs) {
@@ -504,51 +749,118 @@ impl Session {
     /// The value of package constant `d` in the package data (its initial value ran when
     /// the package was elaborated).
     pub(crate) fn package_const(&mut self, db: &Db, d: DeclId) -> Result<Val, Fail> {
-        self.run(db, d, true, &[])
+        self.run(db, d, true, &[], None)
+    }
+
+    /// Lower `d` (a function, or the reader of a package constant) into the live program, or
+    /// rebuild the program with it.
+    fn ensure(&mut self, db: &Db, d: DeclId, constant: bool) -> Result<(), Fail> {
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|l| l.items.sigs.contains_key(&d))
+        {
+            return Ok(());
+        }
+        self.lowered.push((d, constant));
+        let r = self.lower_more(db, |l, items| {
+            let (sig, needs) = item(l, db, d, constant)?;
+            items.sigs.insert(d, sig);
+            items.needs.insert(d, needs);
+            Ok(())
+        });
+        if r.is_err() {
+            self.lowered.pop();
+        }
+        r
+    }
+
+    /// [`Session::ensure`] for the creation thunk of shared variable `var`.
+    fn ensure_init(&mut self, db: &Db, var: DeclId) -> Result<(), Fail> {
+        if self
+            .live
+            .as_ref()
+            .is_some_and(|l| l.items.inits.contains_key(&var))
+        {
+            return Ok(());
+        }
+        self.inits.push(var);
+        let r = self.lower_more(db, |l, items| {
+            let (func, needs) = init_item(l, var)?;
+            items.inits.insert(var, func);
+            items.needs.insert(var, needs);
+            Ok(())
+        });
+        if r.is_err() {
+            self.inits.pop();
+        }
+        r
+    }
+
+    /// Add what `lower` lowers to the live program, keeping the package state when the
+    /// lowering can go on; else the program is rebuilt with `self.lowered` and `self.inits`
+    /// (which the request is already part of).
+    fn lower_more(
+        &mut self,
+        db: &Db,
+        lower: impl FnOnce(&mut Lowerer, &mut Items) -> Result<(), Fail>,
+    ) -> Result<(), Fail> {
+        // A failed call may have left the package state half changed: rebuild it then.
+        let pkgs = self.run_time_packages(db);
+        let added = match self.live.as_mut() {
+            Some(live) if !self.dirty => add(live, db, &pkgs, lower),
+            _ => None,
+        };
+        match added {
+            Some(r) => {
+                if r.is_err() {
+                    // `add` may have taken the runtime's program: the state is rebuilt.
+                    self.live = None;
+                }
+                r
+            }
+            None => {
+                self.live = None;
+                let l = self.rebuild(db, pkgs)?;
+                self.live = Some(l);
+                self.dirty = false;
+                Ok(())
+            }
+        }
     }
 
     /// Run `d` (a function, or the reader of a package constant) against the package state,
-    /// lowering it first if needed.
-    fn run(&mut self, db: &Db, d: DeclId, constant: bool, args: &[Val]) -> Result<Val, Fail> {
-        if self.live.as_ref().is_none_or(|l| !l.sigs.contains_key(&d)) {
-            self.lowered.push((d, constant));
-            // A failed call may have left the package state half changed: rebuild it then.
-            let pkgs = self.run_time_packages(db);
-            let added = match self.live.as_mut() {
-                Some(live) if !self.dirty => add(live, db, &pkgs, d, constant),
-                _ => None,
-            };
-            if !matches!(added, Some(Ok(()))) {
-                // `add` may have taken the runtime's program: the state is rebuilt.
-                self.live = None;
-            }
-            if let Some(r) = added {
-                if let Err(e) = r {
-                    self.lowered.pop();
-                    return Err(e);
-                }
-            } else {
-                match self.rebuild(db, pkgs) {
-                    Ok(l) => {
-                        self.live = Some(l);
-                        self.dirty = false;
-                    }
-                    Err(e) => {
-                        self.lowered.pop();
-                        return Err(e);
-                    }
-                }
-            }
-        }
+    /// lowering it first if needed; `items`: the objects of a region it reads.
+    fn run(
+        &mut self,
+        db: &Db,
+        d: DeclId,
+        constant: bool,
+        args: &[Val],
+        items: Option<&[(DeclId, FillItem)]>,
+    ) -> Result<Val, Fail> {
+        self.ensure(db, d, constant)?;
         let live = self
             .live
             .as_ref()
             .ok_or_else(|| Fail::Runtime("internal error: no package state".into()))?;
         let s = live
+            .items
             .sigs
             .get(&d)
             .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
-        let r = run(&live.rt, s, args, Some(&live.shared));
+        let inst = match items {
+            Some(items) => {
+                let needs = live
+                    .items
+                    .needs
+                    .get(&d)
+                    .ok_or_else(|| Fail::Runtime("internal error: not lowered".into()))?;
+                Some(inst_data(&live.rt.prog, needs, items, &live.vars)?)
+            }
+            None => None,
+        };
+        let r = run(&live.rt, s, args, Some(&live.shared), inst);
         self.dirty |= r.is_err();
         r
     }
@@ -557,10 +869,18 @@ impl Session {
     fn rebuild(&self, db: &Db, pkgs: Vec<UnitId>) -> Result<Live, Fail> {
         let lower = lower_fail;
         let (mut l, lib) = package_lowerer(db, &pkgs, LowerOptions::default()).map_err(lower)?;
+        l.capture_free_objects(true);
         let init = init_key(db, &pkgs, &LowerOptions::default(), lib.as_ref());
-        let mut sigs = HashMap::new();
+        let mut items = Items::default();
         for &(d, constant) in &self.lowered {
-            sigs.insert(d, item(&mut l, db, d, constant)?);
+            let (sig, needs) = item(&mut l, db, d, constant)?;
+            items.sigs.insert(d, sig);
+            items.needs.insert(d, needs);
+        }
+        for &v in &self.inits {
+            let (func, needs) = init_item(&mut l, v)?;
+            items.inits.insert(v, func);
+            items.needs.insert(v, needs);
         }
         let lw = l.snapshot_take().map_err(lower)?;
         let lowerer = Some((l.suspend(), pkgs));
@@ -589,11 +909,12 @@ impl Session {
             |_, _| Ok(()),
         )
         .map_err(runtime)?;
-        replay(&rt, &shared, &sigs, &self.log).map_err(Fail::Runtime)?;
+        let vars = replay(&rt, &shared, &items, &self.log).map_err(Fail::Runtime)?;
         Ok(Live {
             rt,
             shared,
-            sigs,
+            items,
+            vars,
             lowerer,
             shared_size: lw.shared_size,
             lib,
@@ -679,30 +1000,49 @@ fn lower_fail(ds: Vec<Diagnostic>) -> Fail {
     Fail::Lower(ds.into_iter().next().map(|d| d.message).unwrap_or_default())
 }
 
-/// Lower function `d`, or the reader of package constant `d` (`constant`), with `l`.
-fn item(l: &mut Lowerer, db: &Db, d: DeclId, constant: bool) -> Result<Sig, Fail> {
-    if !constant {
-        return sig(l, db, d).map_err(lower_fail);
+/// What `l` lowered for `f` reads of the regions' objects.
+pub(crate) fn needs_of(l: &Lowerer, f: yavs_ir::FuncId) -> Needs {
+    let (_, size) = l.free_objects();
+    Needs {
+        free: l.free_for(f),
+        size,
     }
-    let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
-        return Err(Fail::Runtime("internal error: not a constant".into()));
-    };
-    Ok(Sig {
-        func: l.package_value(d).map_err(lower_fail)?,
-        params: Vec::new(),
-        ret: Some(l.ty(db.base(o.subtype)).map_err(lower_fail)?),
-    })
 }
 
-/// Add `d` (as [`item`]) to `live`'s program, keeping the package state. `None` when it
+/// Lower function `d`, or the reader of package constant `d` (`constant`), with `l`: its
+/// signature and the objects of regions it reads.
+fn item(l: &mut Lowerer, db: &Db, d: DeclId, constant: bool) -> Result<(Sig, Needs), Fail> {
+    let sig = if !constant {
+        sig(l, db, d).map_err(lower_fail)?
+    } else {
+        let yavs_sem::decl::DeclKind::Object(o) = &db.decls[d].kind else {
+            return Err(Fail::Runtime("internal error: not a constant".into()));
+        };
+        Sig {
+            func: l.package_value(d).map_err(lower_fail)?,
+            params: Vec::new(),
+            ret: Some(l.ty(db.base(o.subtype)).map_err(lower_fail)?),
+        }
+    };
+    let needs = needs_of(l, sig.func);
+    Ok((sig, needs))
+}
+
+/// Lower the thunk that creates the object of shared variable `var` of a region, with `l`.
+fn init_item(l: &mut Lowerer, var: DeclId) -> Result<(yavs_ir::FuncId, Needs), Fail> {
+    let f = l.region_var_init(var).map_err(lower_fail)?;
+    let needs = needs_of(l, f);
+    Ok((f, needs))
+}
+
+/// Add what `lower` lowers to `live`'s program, keeping the package state. `None` when it
 /// cannot be added and the session must be rebuilt: no lowering to resume, other run-time
 /// packages, another shared variables area, or the runtime still in use.
 fn add(
     live: &mut Live,
     db: &Db,
     now: &[UnitId],
-    d: DeclId,
-    constant: bool,
+    lower: impl FnOnce(&mut Lowerer, &mut Items) -> Result<(), Fail>,
 ) -> Option<Result<(), Fail>> {
     let (mut st, pkgs) = live.lowerer.take()?;
     if pkgs != now {
@@ -714,10 +1054,10 @@ fn add(
     let stmts = rt.prog.stmts.len();
     st.restore(rt.take_program()?);
     let mut l = Lowerer::resume(db, st);
-    let s = match item(&mut l, db, d, constant) {
-        Ok(s) => s,
-        Err(e) => return Some(Err(e)),
-    };
+    l.capture_free_objects(true);
+    if let Err(e) = lower(&mut l, &mut live.items) {
+        return Some(Err(e));
+    }
     let lw = match l.snapshot_take() {
         Ok(lw) => lw,
         Err(ds) => return Some(Err(lower_fail(ds))),
@@ -728,7 +1068,6 @@ fn add(
     if let Err(e) = rt.extend_from(Arc::new(lw.program), stmts, &db.sources) {
         return Some(Err(runtime(e)));
     }
-    live.sigs.insert(d, s);
     live.lowerer = Some((l.suspend(), pkgs));
     Some(Ok(()))
 }

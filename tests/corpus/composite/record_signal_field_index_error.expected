@@ -1,0 +1,2 @@
+exit	1
+diag	fatal	1000000	0	-	index 5 outside of INTEGER range 0 to 2

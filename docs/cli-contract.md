@@ -124,7 +124,8 @@ raises an error itself for a project containing VHDL-93/2002 files.
 - Concurrency (plan rule 14): `run` and `elab` never write a manifest or lock a library
   for writing. The only thing they write into a library directory is the compilation cache
   entry of the work library (below, in `<work dir>/yavs-cache/`), best effort and by atomic
-  rename, so any number of them may run at once against the same libraries.
+  rename, so any number of them may run at once against the same libraries. They never write
+  analysed-unit entries (`yavs-cache/units/`); `analyze` does, by atomic rename as well.
   `analyze` must be safe when several processes analyze into the same library
   at the same time (two `run.py` invocations, or a future parallel compile in
   the test runner). yavs does this with automatic library locking like the reference simulator's: each library
@@ -167,7 +168,8 @@ identical to a run without it, at any `--threads`.
   of its own; the second run makes the analysis image and the lowered packages. A closure that starts
   with the files of a closure analyzed before (same options, same files with the same contents)
   continues from a prefix entry (`pre-<key>.img`) kept in the cache of the library of the prefix's last
-  file; the output is the same as from source. A closure under a prefix whose library is lowered and kept
+  file (made by the second different closure that starts with the prefix, the first only leaves a note);
+  the output is the same as from source. A closure under a prefix whose library is lowered and kept
   (kinds `lib`, `libopt`, `libinit` beside the prefix entry) makes no entries of its own at any run.
 - The lowered form of the packages with run-time objects (signals, shared variables, constants
   that are not static) is kept beside it, `<dir>/yavs-cache/low-<key>.img`, when the design is
@@ -196,7 +198,28 @@ identical to a run without it, at any `--threads`.
   prefix, nothing was instantiated at elaboration time and the run has no coverage counters and is not
   `--tier=llvm`; otherwise the run lowers as before. Results, messages and waveforms are identical with
   and without it. A library directory keeps at most 96 entries and 512 MiB of them.
-- `yavs analyze` does not read or write the cache.
+- With `--tier=llvm` or `--tier=auto`, the machine code of every module the compiled tier makes is
+  kept in `<dir>/yavs-cache/obj/obj-<key>.img` of the work library (#505); a later run that makes a
+  module with the same key (the same generated code, options, target and yavs build) links it instead
+  of compiling it. Same rules: identical results, damaged or foreign entries ignored and compiled
+  again, atomic writes, nothing stored into a directory that cannot be written, `--no-cache`, `yavs
+  cache clean`. The directory keeps at most 4096 objects and 256 MiB, apart from the 96 entries.
+- **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit
+  cache"): `yavs analyze` keeps the analysis of every design unit it analyses from source in
+  `<dir>/yavs-cache/units/unit-<key>.img` of the unit's library (`std` and `ieee` units in the work
+  library's), and a later `analyze`, `elab` or `run` that needs the unit reads it from there instead of
+  parsing and analysing its file again: the dependencies of a file analysed one file per call, a
+  file analysed again unchanged, the closure of a first `elab` or `run`. An entry is used only if the
+  unit's file has the content (and standard) it was made from, the units it depends on are the ones
+  it was made with (an edit anywhere upstream invalidates everything below it), the yavs build and the
+  options (`--std` of the design, `--relaxed`, `--psl`, `--encoding`, `-D`) are the same and the
+  libraries answer what they answered then; anything else, a damaged entry included, is a miss and the
+  unit is analysed from source. Diagnostics, warnings included, and results are identical either way.
+  Only `analyze` writes entries (under its library session; the units of other libraries and of
+  `std`/`ieee` by atomic rename, no lock); `elab` and `run` only read them. A library directory that
+  cannot be written is read and never fails. `analyze --no-cache` neither reads nor writes them; `yavs
+  cache clean` removes them. The directory keeps at most 16384 entries and 512 MiB, apart from the 96
+  entries.
 
 ## 4. `yavs analyze`
 
@@ -277,11 +300,14 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   error (exit 2). Python testbench frameworks append their plusargs this way.
 - `--exit-severity=LEVEL` (`note|warning|error|failure`): an assertion or
   report at or above LEVEL stops the simulation at the end of the current delta
-  and gives exit 1. Default `failure` (user decision 2026-10-18, as the other major
-  simulators): an `error` report is printed and the simulation continues, and the run
-  still exits 1 at the end because an `error` (or higher) was reported, unless
-  `ClearVhdlAssert` (2019 `std.env`) cleared the assert counts since: the status
-  follows the error and failure counts at the end of the run, as the other major simulators. yavs's own
+  and gives exit 1. Without the option the level is `failure` (user decision 2026-10-18, as
+  the other major simulators): an `error` report is printed and the simulation continues, and
+  the run still exits 1 at the end because an `error` (or higher) was reported, unless
+  `ClearVhdlAssert` (2019 `std.env`) cleared the assert counts since: the status follows the
+  error and failure counts at the end of the run. With the option given, even as
+  `--exit-severity=failure`, the level is the whole threshold (user decision 2026-10-21, #498,
+  as the other major simulators): only reports at or above it affect the exit status, so a run
+  that prints `error` reports and ends normally exits 0. yavs's own
   runtime errors (bound check, overflow, null access, delta limit, internal) stop
   at once whatever the level. The test runner passes its `vhdl_assert_stop_level` sim option.
 - `--ieee-warnings=off`: suppress the warnings raised inside `ieee` packages
@@ -416,7 +442,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   never waits for the client: when too many batches are queued the newest is merged into the
   last (`merged: true`, only the last change of each value kept). A failure of the live waves
   is `E0702` (the run fails). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
-- `--tier=interp|llvm|auto|clift|clift-auto|auto3` (`run`, default `interp`): `llvm` compiles every function of the
+- `--tier=interp|llvm|auto` (`run`; default `auto` in a build with the `llvm` feature unless `--dap` is
+  given, else `interp`, quietly: no error, no warning; user, 2026-10-22, #510): `llvm` compiles every function of the
   design with the LLVM tier before time 0 and runs that code; `auto` starts in the interpreter
   and compiles each function that becomes hot (once the instructions it ran in the interpreter
   would have paid for its compilation) at the cheapest optimisation level on one background
@@ -432,7 +459,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   (hidden, for tests and tuning): with `auto`, a function is hot once a sample every PERIOD
   microseconds has seen the interpreter in it for BASE microseconds plus PER_INSTR nanoseconds
   per IR instruction of it (PERIOD `0`, as in `1,0,0`: from its first call or jump). Both tiers need a yavs
-  built with the `llvm` cargo feature (LLVM 21): otherwise asking for them is error `E0120` (exit 2); a
+  built with the `llvm` cargo feature (LLVM 21): otherwise asking for them explicitly is error `E0120` (exit 2); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
   bug in yavs). `clift` and `clift-auto` are `llvm` and `auto` with the Cranelift code generator; they need a yavs built with
   the `clift` cargo feature (no LLVM needed), otherwise `E0120`, and give the same output. `auto3` is `auto` with Cranelift as its first level: a function that becomes warm is translated by Cranelift, one that stays hot is compiled again by LLVM at O2 (a yavs built with both features, otherwise `E0120`); the output is the same. `--verbose` prints, on stderr, a note per function left to the
@@ -450,8 +477,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - Exit codes:
   - 0: simulation ended without failure: event starvation, `std.env.finish`
     or `std.env.stop` with no status or status 0, or `--stop-time` reached.
-  - 1: simulation failure: an assertion/report at or above `--exit-severity`,
-    or of severity `error` or `failure` at any point,
+  - 1: simulation failure: an assertion/report at or above `--exit-severity`
+    (without the option: of severity `error` or `failure` at any point),
     `std.env.stop(N)`/`finish(N)` with N /= 0 (the status itself may be
     returned if it fits in 1..125; the test runner only tests zero/non-zero), a runtime
     error (bound check, null access, delta-cycle limit).
@@ -484,7 +511,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - Runtime errors (bound check, overflow, null access, delta limit, internal) are diagnostics
   on stderr like every other error: code `E3001`-`E3010` per kernel `ErrorKind` (`E9999`
   internal), the failing statement, one `called from here` label per calling subprogram,
-  and a note `at TIME, delta N, in process PATH`.
+  and a note `at TIME, delta N, in process PATH`. A subprogram the optimiser inlined into its
+  caller still has its label (and its element in a `get_call_path`).
 - `--message-format=json` (section 0) is accepted by `run` and `elab` too, and
   covers runtime errors with their VHDL stacktrace; the test runner does not pass it today.
 - `--cov[=FILE]` (`run` only) writes the run's coverage database to `FILE` (default

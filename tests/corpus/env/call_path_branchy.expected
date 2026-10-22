@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:call_path_branchy:main	a 0: WALK at line 12
+diag	note	0	0	:call_path_branchy:main	a 1: PICK at line 25
+diag	note	0	0	:call_path_branchy:main	a 2: GATED at line 34
+diag	note	0	0	:call_path_branchy:main	a 3: MAIN at line 42
+diag	note	0	0	:call_path_branchy:main	a 4
+diag	note	0	0	:call_path_branchy:main	b 0: WALK at line 12
+diag	note	0	0	:call_path_branchy:main	b 1: PICK at line 26
+diag	note	0	0	:call_path_branchy:main	b 2: GATED at line 34
+diag	note	0	0	:call_path_branchy:main	b 3: MAIN at line 43
+diag	note	0	0	:call_path_branchy:main	b 104
+diag	note	0	0	:call_path_branchy:main	c 7
+diag	note	0	0	:call_path_branchy:main	d 0

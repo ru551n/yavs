@@ -476,6 +476,7 @@ impl Builder {
                 signal: sig,
                 range,
                 slot: s.drivers.len() as u32,
+                direct: false,
             });
             add_source(s, range, &mut taken[sig.0 as usize]).map_err(usage)?;
         }

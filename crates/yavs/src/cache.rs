@@ -24,6 +24,10 @@ const PREFIX_KIND: &str = "pre";
 /// How long a run that makes a library prefix entry is trusted to be at it.
 const CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// How many different closures must start with a prefix before its image is made: the first run
+/// of a suite's first test must not pay (15 ms of CPU per image) for entries only later runs read.
+const PREFIX_SIGHTINGS: usize = 2;
+
 /// The smallest prefix (in files) that gets an image of its own.
 const PREFIX_MIN: usize = 8;
 
@@ -53,6 +57,16 @@ fn key(kind: &str, opts: &Options, files: &[ClosureFile]) -> Key {
         k.text(&f.path.to_string_lossy());
     }
     k.finish()
+}
+
+/// The key of a stage entry (`low`, `ir`, `init`, `lib`, `libopt`, `libinit`) of `base`: besides
+/// the build (which every key holds) it names the optimiser and tier switches
+/// (`yavs_interp::opt_fingerprint`), so a run with other switches never reads generated code
+/// another configuration made (#491).
+fn stage_key(kind: &str, base: &str) -> KeyBuilder {
+    let mut k = KeyBuilder::new(kind);
+    k.text(base).text(&yavs_interp::opt_fingerprint());
+    k
 }
 
 /// A library prefix of the closure (see [`bounds`]) whose analysis is stored by itself.
@@ -86,16 +100,16 @@ struct Stages {
 impl Stages {
     fn key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Key> {
         (self.closure && extent == self.extent).then(|| {
-            let mut k = KeyBuilder::new(kind);
-            k.text(&self.base).part(part);
+            let mut k = stage_key(kind, &self.base);
+            k.part(part);
             k.finish()
         })
     }
 
     fn level_key(&self, level: usize, kind: &str, part: &[u8]) -> Option<(&Level, Key)> {
         let l = self.levels.get(level)?;
-        let mut k = KeyBuilder::new(kind);
-        k.text(&l.key.hex()).part(part);
+        let mut k = stage_key(kind, &l.key.hex());
+        k.part(part);
         Some((l, k.finish()))
     }
 }
@@ -105,9 +119,8 @@ impl Stages {
 fn library_made(levels: &[Level]) -> bool {
     levels.iter().any(|l| {
         [false, true].into_iter().any(|native| {
-            let mut k = KeyBuilder::new(yavs_elab::libstage::LIB);
-            k.text(&l.key.hex())
-                .part(&yavs_elab::libstage::key_part(native));
+            let mut k = stage_key(yavs_elab::libstage::LIB, &l.key.hex());
+            k.part(&yavs_elab::libstage::key_part(native));
             l.store
                 .payload_len(yavs_elab::libstage::LIB, &k.finish())
                 .is_some_and(|n| n > 0)
@@ -231,6 +244,89 @@ fn with_stages(
     db
 }
 
+/// The analysed-unit cache (`docs/decisions.md` "Analysed-unit cache", `yavs_sem::units`): the
+/// entries of a library's units in its directory, those of std/ieee in the work library's.
+#[derive(Debug)]
+pub struct Units {
+    dirs: std::collections::HashMap<String, std::path::PathBuf>,
+    work: std::path::PathBuf,
+    writable: bool,
+}
+
+impl Units {
+    /// The store for a run with `libs` mapped and `work` the work library's directory; only
+    /// `yavs analyze` writes (`writable`). `None` with a custom std/ieee tree (its files are not
+    /// part of the build).
+    pub fn store_for(
+        opts: &Options,
+        work: &Path,
+        writable: bool,
+    ) -> Option<std::sync::Arc<dyn yavs_sem::UnitStore>> {
+        if opts.stdlib != Path::new(yavs_sem::stdlib::EMBEDDED) {
+            return None;
+        }
+        let dirs = opts
+            .libraries
+            .names()
+            .filter_map(|n| Some((n.to_string(), opts.libraries.get(n)?.dir.clone())))
+            .collect();
+        Some(std::sync::Arc::new(Units {
+            dirs,
+            work: work.to_path_buf(),
+            writable,
+        }))
+    }
+
+    fn store(&self, lib: &str, identity: &[u8; 32]) -> Option<(Store, Key)> {
+        let dir = match lib {
+            "std" | "ieee" => &self.work,
+            _ => self.dirs.get(lib)?,
+        };
+        let mut k = KeyBuilder::new("unit");
+        k.text(lib).part(identity);
+        Some((Store::units_of_library(dir), k.finish()))
+    }
+}
+
+impl yavs_sem::UnitStore for Units {
+    fn get(&self, lib: &str, identity: &[u8; 32]) -> Option<yavs_diag::Buffer> {
+        let (s, k) = self.store(lib, identity)?;
+        if let Some(e) = s.get("unit", &k) {
+            return Some(yavs_diag::Buffer::new(e));
+        }
+        // std/ieee units another work library analysed: the same for every library.
+        if !matches!(lib, "std" | "ieee") {
+            return None;
+        }
+        let mut dirs: Vec<&std::path::PathBuf> = self.dirs.values().collect();
+        dirs.sort();
+        dirs.into_iter()
+            .filter(|d| **d != self.work)
+            .find_map(|d| Store::units_of_library(d).get("unit", &k))
+            .map(yavs_diag::Buffer::new)
+    }
+
+    fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]) {
+        if !self.writable {
+            return;
+        }
+        if let Some((s, k)) = self.store(lib, identity) {
+            self.note(&format!("store {lib} {} ({} bytes)", k.hex(), bytes.len()));
+            s.put("unit", &k, bytes);
+        }
+    }
+
+    fn writable(&self) -> bool {
+        self.writable
+    }
+
+    fn note(&self, msg: &str) {
+        if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
+            eprintln!("debug: units: {msg}");
+        }
+    }
+}
+
 fn debug(msg: String) {
     if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
         eprintln!("debug: cache: {msg}");
@@ -293,6 +389,10 @@ pub fn analyze_closure(
 ) -> (Db, Result<(), Reported>) {
     // ponytail: a custom std/ieee tree ($YAVS_STDLIB) is not cached (its files are not verified)
     let enabled = enabled && opts.stdlib == Path::new(yavs_sem::stdlib::EMBEDDED);
+    let mut opts = opts;
+    if enabled {
+        opts.units = Units::store_for(&opts, work_dir, false);
+    }
     if !enabled {
         let mut db = Db::new(opts);
         let r = analyze(&mut db, files).and_then(|()| bodies(&mut db));
@@ -371,18 +471,26 @@ pub fn analyze_closure(
         }
         db.settle();
         levels.extend(level(&db, b));
-        match (db.to_image(), prefix_store(&opts, files, b)) {
-            (Ok(image), Some(s)) => {
-                let pk = key(PREFIX_KIND, &opts, &files[..b]);
-                debug(format!(
-                    "store prefix of {b} files {} ({} bytes)",
-                    pk.hex(),
-                    image.len()
-                ));
-                s.put(PREFIX_KIND, &pk, &image);
+        if let Some(s) = prefix_store(&opts, files, b) {
+            let pk = key(PREFIX_KIND, &opts, &files[..b]);
+            let seen = s.sightings(PREFIX_KIND, &pk, &k);
+            // One run makes it at a time: closures that start together would all write it.
+            if seen >= PREFIX_SIGHTINGS && s.claim(PREFIX_KIND, &pk, CLAIM_TTL) {
+                match db.to_image() {
+                    Ok(image) => {
+                        debug(format!(
+                            "store prefix of {b} files {} ({} bytes)",
+                            pk.hex(),
+                            image.len()
+                        ));
+                        s.put(PREFIX_KIND, &pk, &image);
+                    }
+                    Err(why) => debug(format!("no prefix image: {why}")),
+                }
+                s.release(PREFIX_KIND, &pk);
+            } else {
+                debug(format!("prefix of {b} files {} seen by {seen}", pk.hex()));
             }
-            (Err(why), _) => debug(format!("no prefix image: {why}")),
-            _ => {}
         }
     }
     let r = analyze(&mut db, &files[start..]);

@@ -1,0 +1,12 @@
+exit	0
+diag	note	0	0	:loop_invariant:_p0	up 252
+diag	note	0	0	:loop_invariant:_p0	dn 445
+diag	note	0	0	:loop_invariant:_p0	e 3 0
+diag	note	0	0	:loop_invariant:_p0	skipped 114
+diag	note	0	0	:loop_invariant:_p0	empty 19
+diag	note	0	0	:loop_invariant:_p0	p(-2) 5
+diag	note	0	0	:loop_invariant:_p0	p(-1) 4
+diag	note	0	0	:loop_invariant:_p0	p(0) 8
+diag	note	0	0	:loop_invariant:_p0	p(1) 8
+diag	note	0	0	:loop_invariant:_p0	p(2) 17
+diag	note	0	0	:loop_invariant:_p0	p(3) 19

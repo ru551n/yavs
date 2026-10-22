@@ -30,6 +30,10 @@ pub struct Program {
     /// Cache of the optimiser (`opt.rs`); leave it to `Default`.
     #[serde(skip)]
     pub layouts: crate::opt::LayoutCache,
+    /// Inlinable bodies of the functions asked about (`opt/inline.rs`); leave it to `Default`.
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub fwd: crate::opt::FwdCache,
     /// Functions from this id on were not verified when the program was built: [`Program::func`]
     /// verifies each when it hands it out first (`None`: all were, or a stored program).
     #[serde(skip)]
@@ -84,7 +88,8 @@ impl Program {
     #[cold]
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
-        raw.opt
+        let o = raw
+            .opt
             .get_or_init(|| {
                 if self.lazy_verify.is_some_and(|from| f.0 >= from) {
                     let mut errs = Vec::new();
@@ -100,7 +105,12 @@ impl Program {
                     .or_else(|| crate::opt::optimize_func(self, f))
             })
             .as_deref()
-            .unwrap_or_else(|| raw.full())
+            .unwrap_or_else(|| raw.full());
+        // Debug aid: the finished code of each function, as it first runs.
+        if std::env::var_os("YAVS_DUMPIR").is_some() {
+            eprintln!("{}", self.dump_func(f));
+        }
+        o
     }
 
     /// Is the optimised copy of `f` valid only while nothing outside writes process variables
@@ -324,6 +334,16 @@ pub struct Block {
     pub end: u32,
 }
 
+/// A call that was inlined: its statement (of the function that contained the call), the
+/// function called, and the call it was itself inlined through (0: none, else 1 and an index
+/// in `Func::via_nodes`).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViaNode {
+    pub site: StmtId,
+    pub callee: FuncId,
+    pub up: u32,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Func {
     /// Original spelling (rule 8).
@@ -346,6 +366,13 @@ pub struct Func {
     pub loc: Vec<StmtId>,
     /// Operand lists (`Regs`).
     pub operands: Vec<Reg>,
+    /// Only in an optimised copy that inlined a call (`opt/inline.rs`): for each instruction,
+    /// 0 for the function's own instructions, else 1 and the index in `via_nodes` of the
+    /// innermost call it was inlined through. Empty when nothing was inlined. A trace shows an
+    /// inlined function as a frame of its own: [`Func::inlined_at`], [`Func::inlined_chain`].
+    pub via: Vec<u32>,
+    /// The inlined calls: see [`ViaNode`].
+    pub via_nodes: Vec<ViaNode>,
     /// Resume points: the instruction after each `Suspend` and each call of a `MAY_SUSPEND`
     /// procedure, in code order. `Suspend::resume` indexes this.
     pub resume: Vec<u32>,
@@ -486,6 +513,8 @@ impl Func {
             code: Vec::new(),
             loc: Vec::new(),
             operands: Vec::new(),
+            via: Vec::new(),
+            via_nodes: Vec::new(),
             resume: Vec::new(),
             flags: self.flags,
             body: self.body,
@@ -511,6 +540,25 @@ impl Func {
             let mut f = self.shell();
             (f.code, f.loc, f.operands, f.resume) = (b.code, b.loc, b.operands, b.resume);
             Box::new(f)
+        })
+    }
+
+    /// The call at instruction `pc` was inlined from: the statement of the call and the
+    /// function called, when the instruction belongs to an inlined function.
+    #[inline]
+    pub fn inlined_at(&self, pc: usize) -> Option<(StmtId, FuncId)> {
+        self.inlined_chain(pc).next().map(|n| (n.site, n.callee))
+    }
+
+    /// The calls instruction `pc` was inlined through, innermost first: the first node's
+    /// callee is the function the instruction belongs to and its site a statement of the
+    /// next node's callee (of this function for the last), and so on outward.
+    pub fn inlined_chain(&self, pc: usize) -> impl Iterator<Item = ViaNode> + '_ {
+        let mut at = self.via.get(pc).copied().unwrap_or(0);
+        std::iter::from_fn(move || {
+            let n = *self.via_nodes.get(at.checked_sub(1)? as usize)?;
+            at = n.up;
+            Some(n)
         })
     }
 

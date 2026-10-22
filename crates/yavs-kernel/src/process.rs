@@ -69,6 +69,58 @@ impl<F: FnMut(&mut Ctx<'_>) -> Result<(), SimError> + Send> Process for F {
     }
 }
 
+/// A process whose whole body is `target <= source;` (zero delay) of signals of the same
+/// structure: the kernel copies each source part to its driver and waits for the sources, with
+/// no process code (the elaborator recognises the shape, #529). Parts are in element order.
+pub struct CopyProcess {
+    /// Source part, the driver of the matching target part, that target part.
+    parts: Vec<(SigRef, DriverId, Range)>,
+    buf: Vec<u8>,
+}
+
+impl CopyProcess {
+    pub fn new(parts: Vec<(SigRef, DriverId, Range)>) -> CopyProcess {
+        CopyProcess {
+            parts,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl Process for CopyProcess {
+    fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
+        let ty = |ctx: &Ctx<'_>, r: SigRef| {
+            ctx.sh
+                .signals
+                .get(r.signal.0 as usize)
+                .map(|s| s.ty.elem)
+                .ok_or_else(|| ctx.error(ErrorKind::BadRef(format!("signal {}", r.signal.0))))
+        };
+        for &(src, d, dst) in &self.parts {
+            let n = src.range.map_or(0, |r| r.len) as usize;
+            match ty(ctx, src)? {
+                crate::value::Elem::Logic => {
+                    self.buf.resize(n.div_ceil(64) * 32, 0);
+                    ctx.read_into(src, &mut self.buf)?;
+                    ctx.assign_blocks(d, Some(dst), Time::ZERO, &self.buf, DelayMode::INERTIAL)?;
+                }
+                crate::value::Elem::Bytes(es) => {
+                    self.buf.resize(n * es as usize, 0);
+                    ctx.read_into(src, &mut self.buf)?;
+                    let v = ValueRef::Bytes(&self.buf);
+                    ctx.assign(d, Some(dst), &[(Time::ZERO, v)], DelayMode::INERTIAL)?;
+                }
+            }
+        }
+        if !ctx.wait_same() {
+            for &(src, _, _) in &self.parts {
+                ctx.wait_on(src)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Writes reports and textio `OUTPUT` text as a serially running process makes them, in the
 /// order they would be committed in (#483). An observer offers one with
 /// [`Observer::live_sink`](crate::Observer::live_sink) and then gets such reports only once,
@@ -104,29 +156,59 @@ pub(crate) enum OpMode {
     Deposit,
 }
 
+/// A zero-delay assignment of one element to a direct driver (`DriverInfo::direct`) made in
+/// this run, its `std_ulogic` code: the commit writes it to the signal (`commit_out`) instead
+/// of queueing a transaction. A later assignment to the same driver in the run is another
+/// entry (the last one wins, as zero-delay preemption gives); one that needs the waveform
+/// moves the driver's entries there first (`Ctx::spill_out`). The entries of one driver are
+/// all in `ProcState::out` or all in `outv`, so their order is kept.
+#[derive(Clone, Copy)]
+pub(crate) struct Out {
+    pub sig: u32,
+    pub slot: u32,
+    pub elem: u32,
+    pub code: u32,
+}
+
+/// `Out` of at most 64 elements, as plane words.
+#[derive(Clone, Copy)]
+pub(crate) struct OutV {
+    pub sig: u32,
+    pub slot: u32,
+    pub elem: u32,
+    pub len: u32,
+    pub planes: [u64; 4],
+}
+
 /// Per-process state the process mutates while it runs.
 #[derive(Default)]
 pub(crate) struct ProcState {
-    pub waveforms: SmallVec<[Waveform; 1]>,
+    pub waveforms: Vec<Waveform>,
     pub effects: Vec<Effect>,
-    pub sens: SmallVec<[(SignalId, Range); 2]>,
+    pub sens: Vec<(SignalId, Range)>,
     /// The sensitivity the last commit registered, when that wait had no timeout.
-    pub sens_prev: SmallVec<[(SignalId, Range); 2]>,
+    pub sens_prev: Vec<(SignalId, Range)>,
     /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
     /// stays empty and the commit takes it from `sens_prev`.
     pub again: bool,
     pub deadline: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
-    pub scheduled: SmallVec<[(Time, DriverId); 2]>,
+    pub scheduled: Vec<(Time, DriverId)>,
     /// Drivers (locals) that hold skipped unchanged assignments (`Waveform::phantom`) from
     /// this run.
     pub phantoms: Vec<u32>,
-    /// The edge the kernel resumed the process for (`Builder::edge_trigger`: signal, element,
-    /// rising): true for the whole activation, so `Ctx::edge` of it need not look.
+    /// The edge of the process's trigger the kernel resumes it for (`Builder::edge_trigger`:
+    /// signal, element, rising; set once by `SimControl::new`), and whether this activation
+    /// was such a resumption (`edge_ok`: a signal resumed it, not a timeout or the initial
+    /// run): the edge then holds for the whole activation, so `Ctx::edge` of it need not look.
     pub known_edge: Option<(SignalId, u32, bool)>,
+    pub edge_ok: bool,
     /// A one-element logic value kept for `Ctx::assign_code`.
     pub one: Option<LogicVec>,
+    /// Direct transactions of this run: one element, and up to 64.
+    pub out: Vec<Out>,
+    pub outv: Vec<OutV>,
 }
 
 impl ProcState {
@@ -151,6 +233,10 @@ pub(crate) struct DriverInfo {
     pub range: Range,
     /// Index into the signal's source list.
     pub slot: u32,
+    /// The driver is the only source of its elements of a logic signal with no port, group,
+    /// guard or resolution function (`SimControl::new`): its zero-delay quick transactions go
+    /// straight to the signal at commit (`SimControl::direct`), not through the queue.
+    pub direct: bool,
 }
 
 /// Read-only kernel state shared by all processes running in a delta.
@@ -242,6 +328,21 @@ impl Ctx<'_> {
     #[inline]
     pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
         let (s, r) = self.sig(r)?;
+        // A logic value of one word (a register read): copied here, no call.
+        if let (Buf::Planes { b, .. }, Ok(dst)) = (&s.cur, <&mut [u8; 32]>::try_from(&mut *out))
+            && (1..=64).contains(&r.len)
+        {
+            let w = yavs_logic::wide::get_block(b, r.offset as usize, r.len as usize);
+            for (d, x) in dst.as_chunks_mut::<8>().0.iter_mut().zip(w) {
+                *d = x.to_le_bytes();
+            }
+            return Ok(());
+        }
+        self.read_slow(s, r, out)
+    }
+
+    #[inline(never)]
+    fn read_slow(&self, s: &Signal, r: Range, out: &mut [u8]) -> Result<(), SimError> {
         if s.cur.write_to(r.offset as usize, r.len as usize, out) {
             return Ok(());
         }
@@ -334,7 +435,7 @@ impl Ctx<'_> {
     /// The edge the kernel resumed this process for in this activation (signal, element,
     /// rising), if `Ctx::edge` takes it as held.
     pub fn known_edge(&self) -> Option<(SignalId, u32, bool)> {
-        self.st.known_edge
+        self.st.known_edge.filter(|_| self.st.edge_ok)
     }
 
     /// `rising_edge` / `falling_edge` of the first element of a logic signal range: an event
@@ -344,7 +445,7 @@ impl Ctx<'_> {
     #[inline(always)]
     pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
         let r = r.into();
-        if let (Some((sig, el, up)), Some(x)) = (self.st.known_edge, r.range)
+        if let (true, Some((sig, el, up)), Some(x)) = (self.st.edge_ok, self.st.known_edge, r.range)
             && r.signal == sig
             && x.offset == el
             && x.len == 1
@@ -389,6 +490,51 @@ impl Ctx<'_> {
         Ok(info)
     }
 
+    /// Move this run's direct transactions of driver `d` (`Out`) into its waveform, in order,
+    /// for an assignment that preempts or inspects pending transactions.
+    pub(crate) fn spill_out(&mut self, d: DriverId) {
+        if self.st.out.is_empty() && self.st.outv.is_empty() {
+            return;
+        }
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return;
+        };
+        let key = (info.signal.0, info.slot);
+        let mut moved: SmallVec<[(Range, [u64; 4]); 2]> = SmallVec::new();
+        self.st.out.retain(|o| {
+            let c = u64::from(o.code);
+            let hit = (o.sig, o.slot) == key;
+            if hit {
+                let planes = [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1];
+                moved.push((Range::new(o.elem, 1), planes));
+            }
+            !hit
+        });
+        self.st.outv.retain(|o| {
+            let hit = (o.sig, o.slot) == key;
+            if hit {
+                moved.push((Range::new(o.elem, o.len), o.planes));
+            }
+            !hit
+        });
+        let (local, now) = (info.local as usize, self.sh.now);
+        for (r, planes) in moved {
+            let value = Buf::Planes {
+                len: r.len as usize,
+                b: smallvec::smallvec![planes],
+            };
+            let mut t = TxnList::new();
+            t.push(Txn {
+                time: now,
+                range: r,
+                value: Some(value),
+            });
+            // Transport: a transaction at `now` replaces the earlier ones at `now`.
+            self.st.waveforms[local].schedule(r, None, &mut t);
+            self.st.scheduled.push((now, d));
+        }
+    }
+
     /// `'driving`: false if any element of this process's driver is disconnected.
     pub fn driving(&self, d: DriverId) -> Result<bool, SimError> {
         let info = self.own(d)?;
@@ -408,11 +554,16 @@ impl Ctx<'_> {
             )));
         }
         let info = self.own(d)?;
-        Ok(
-            self.sh.signals[info.signal.0 as usize].drivers[info.slot as usize]
-                .value
-                .to_value(),
-        )
+        let s = &self.sh.signals[info.signal.0 as usize];
+        // A direct driver whose commits wrote only the driving value (`Signal::lag`).
+        if s.lag && info.direct {
+            let r = info.range;
+            return Ok(s
+                .driving
+                .extract(r.offset as usize, r.len as usize)
+                .to_value());
+        }
+        Ok(s.drivers[info.slot as usize].value.to_value())
     }
 
     /// `now + delay` after truncating `delay` to the resolution limit.
@@ -440,6 +591,7 @@ impl Ctx<'_> {
         {
             return Ok(());
         }
+        self.spill_out(d);
         let (sig, r) = self.target(d, target)?;
         let elem = self.sh.signals[sig].ty.elem;
         let local = self.own(d)?.local as usize;
@@ -552,6 +704,20 @@ impl Ctx<'_> {
         if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
+        if info.direct {
+            let (sig, slot) = (info.signal.0, info.slot);
+            // The driver's vector entries keep the order: the general path moves them.
+            if self.st.outv.iter().any(|o| (o.sig, o.slot) == (sig, slot)) {
+                return false;
+            }
+            self.st.out.push(Out {
+                sig,
+                slot,
+                elem: r.offset,
+                code: u32::from(code),
+            });
+            return true;
+        }
         let s = &self.sh.signals[info.signal.0 as usize];
         if !matches!(s.ty.elem, crate::value::Elem::Logic) {
             return false;
@@ -583,6 +749,15 @@ impl Ctx<'_> {
     #[inline]
     pub fn assign_code_now(&mut self, d: DriverId, r: Range, code: u8) -> bool {
         self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
+    }
+
+    /// `assign_blocks` of at most 64 elements given as their four planes to `r` (the whole driver
+    /// when `None`) of driver `d` with
+    /// zero delay (transport or inertial without rejection): true when the usual fast case took
+    /// it, false (nothing done) where `assign_blocks` must run, which also produces every error.
+    #[inline]
+    pub fn assign_planes_now(&mut self, d: DriverId, r: Option<Range>, planes: [u64; 4]) -> bool {
+        self.assign_planes_fast(d, r, Time::ZERO, planes, None, DelayMode::Transport)
     }
 
     /// `assign` of a logic value of at most 64 elements given as the plane blocks `read_into`
@@ -653,6 +828,21 @@ impl Ctx<'_> {
         if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
+        if info.direct {
+            let (sig, slot) = (info.signal.0, info.slot);
+            // The driver's one-element entries keep the order: the general path moves them.
+            if self.st.out.iter().any(|o| (o.sig, o.slot) == (sig, slot)) {
+                return false;
+            }
+            self.st.outv.push(OutV {
+                sig,
+                slot,
+                elem: r.offset,
+                len,
+                planes: planes.map(|p| p & yavs_logic::wide::nmask(len as usize)),
+            });
+            return true;
+        }
         let s = &self.sh.signals[info.signal.0 as usize];
         let ds = &s.drivers[info.slot as usize];
         let (Buf::Planes { b: dv, .. }, Buf::Planes { b: cv, .. }) = (&ds.value, &s.cur) else {
@@ -693,6 +883,10 @@ impl Ctx<'_> {
             return false;
         }
         let ds = &s.drivers[info.slot as usize];
+        // The value of a lagging driver is in the driving value (`Signal::lag`).
+        if s.lag && !ds.shared {
+            return false;
+        }
         let (rel, n) = ((r.offset - ds.range.offset) as usize, r.len as usize);
         // The cheap tests first: most assignments of a running design change something.
         ds.value.same_as(rel, n, v)
@@ -746,6 +940,7 @@ impl Ctx<'_> {
         after: Option<Time>,
         mode: DelayMode,
     ) -> Result<(), SimError> {
+        self.spill_out(d);
         let (sig, r) = self.target(d, target)?;
         let s = &self.sh.signals[sig];
         if s.guard.is_none() {
@@ -832,6 +1027,10 @@ impl Ctx<'_> {
     pub fn wait_on(&mut self, r: impl Into<SigRef>) -> Result<(), SimError> {
         let r = r.into();
         let range = self.sig(r)?.1;
+        // Most waits name one signal: no room for four (the list becomes the previous one).
+        if self.st.sens.capacity() == 0 {
+            self.st.sens.reserve_exact(1);
+        }
         self.st.sens.push((r.signal, range));
         Ok(())
     }
@@ -847,6 +1046,20 @@ impl Ctx<'_> {
             && let [prev] = &st.sens_prev[..]
             && *prev == (signal, range)
         {
+            st.again = true;
+            return true;
+        }
+        false
+    }
+
+    /// The same wait as the last one (its sensitivity, no timeout), when that one had no
+    /// timeout and nothing was added to this one: the commit keeps the registered waiters, as
+    /// `wait_on_again` does for one range. `false` (nothing done) otherwise; the caller then
+    /// names the wait with `wait_on`.
+    #[inline]
+    pub fn wait_same(&mut self) -> bool {
+        let st = &mut *self.st;
+        if st.sens.is_empty() && st.deadline.is_none() && !st.sens_prev.is_empty() {
             st.again = true;
             return true;
         }

@@ -1,0 +1,560 @@
+# Real-world performance suite: one [[test]] per testbench, read by tools/realbench/run.py (see AGENTS.md).
+#
+# Fields: name, category, why (what it adds to the mix), source (checkout id, see tools/fetch-corpus.sh) and path (the
+# main file, relative to it), top and toplib (the entity and its library), corpus (analysis-corpus manifests of
+# tools/corpus whose libraries are built first), files (extra files analysed on top: lib, source, path or glob;
+# lib "@module" = the directory after `modules/`), relaxed, generics (-gNAME=VALUE), vunit (true = all test
+# cases, or one test case name), stop (--stop-time), std, ok (regex the output must match). A `driver` test
+# (driver args and pick) takes its library set and run command from a recorded run of tools/suites.
+# Nothing here is copied from the sources: they are read in place from the corpus cache.
+
+[[test]]
+name = "hdlm_fifo_sync"
+category = "rtl-datapath"
+why = "Synchronous FIFO with random stalls: clocked process pair, queue-based VUnit checking"
+source = "hdl-modules"
+path = "modules/fifo/test/tb_fifo.vhd"
+top = "tb_fifo"
+toplib = "fifo"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["seed=1", "depth=64"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/fifo/test/tb_fifo.vhd" },
+]
+
+[[test]]
+name = "hdlm_unsigned_divider"
+category = "numeric"
+why = "Bit-serial unsigned divider checked against numeric_std division: unsigned arithmetic and resize"
+source = "hdl-modules"
+path = "modules/math/test/tb_unsigned_divider.vhd"
+top = "tb_unsigned_divider"
+toplib = "math"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["dividend_width=8", "divisor_width=8"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/math/test/tb_unsigned_divider.vhd" },
+]
+
+[[test]]
+name = "hdlm_sine_generator"
+category = "numeric"
+why = "Phase accumulator and sine lookup with a ROM table and signed arithmetic over thousands of samples"
+source = "hdl-modules"
+path = "modules/sine_generator/test/tb_sine_generator.vhd"
+top = "tb_sine_generator"
+toplib = "sine_generator"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["clk_frequency_hz=134217728", "sine_frequency_hz=1000000", "memory_address_width=8", "enable_phase_dithering=false", "enable_first_order_taylor=false", "num_samples=2000"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/sine_generator/test/tb_sine_generator.vhd" },
+]
+
+[[test]]
+name = "hdlm_ring_buffer"
+category = "memory"
+why = "Ring buffer writer with AXI write BFM and an in-testbench memory model"
+source = "hdl-modules"
+path = "modules/ring_buffer/test/tb_ring_buffer_write_simple.vhd"
+top = "tb_ring_buffer_write_simple"
+toplib = "ring_buffer"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["seed=1", "segment_length_bytes=16", "buffer_size_segments=4"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/ring_buffer/test/tb_ring_buffer_write_simple.vhd" },
+]
+
+[[test]]
+name = "hdlm_axi_fifo"
+category = "records"
+why = "AXI FIFO: the AXI interface as records of records on every port"
+source = "hdl-modules"
+path = "modules/axi/test/tb_axi_fifo.vhd"
+top = "tb_axi_fifo"
+toplib = "axi"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["depth=16"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/axi/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/axi/test/tb_axi_fifo.vhd" },
+]
+
+[[test]]
+name = "olo_fix_cordic_rot"
+category = "numeric"
+why = "Fixed-point CORDIC rotation: custom fixed-point package, many small functions"
+source = "open-logic"
+path = "test/fix/olo_fix_cordic_rot/olo_fix_cordic_rot_tb.vhd"
+top = "olo_fix_cordic_rot_tb"
+toplib = "olo_tb"
+corpus = ["open-logic-2008"]
+relaxed = true
+vunit = true
+
+[[test]]
+name = "olo_intf_i2c_master"
+category = "bus-tristate"
+why = "I2C master against a slave model on open-drain std_logic lines: resolved signals with several drivers, FSMs"
+source = "open-logic"
+path = "test/intf/olo_intf_i2c_master/olo_intf_i2c_master_tb.vhd"
+top = "olo_intf_i2c_master_tb"
+toplib = "olo_tb"
+corpus = ["open-logic-2008"]
+relaxed = true
+vunit = true
+
+[[test]]
+name = "olo_axi_master_full"
+category = "records"
+why = "AXI master with record-typed bus and an AXI slave verification component"
+source = "open-logic"
+path = "test/axi/olo_axi_master_full/olo_axi_master_full_tb.vhd"
+top = "olo_axi_master_full_tb"
+toplib = "olo_tb"
+corpus = ["open-logic-2008"]
+relaxed = true
+vunit = true
+
+[[test]]
+name = "olo_base_cam"
+category = "memory"
+why = "Content-addressable memory: arrays, loops over entries, std_logic_vector compares"
+source = "open-logic"
+path = "test/base/olo_base_cam/olo_base_cam_tb.vhd"
+top = "olo_base_cam_tb"
+toplib = "olo_tb"
+corpus = ["open-logic-2008"]
+relaxed = true
+vunit = true
+
+[[test]]
+name = "vunit_axi_dma"
+category = "records"
+why = "The test runner's own AXI DMA example: RTL with register file and AXI master, bus functional models, random stalls"
+source = "vunit"
+path = "examples/vhdl/axi_dma/src/test/tb_axi_dma.vhd"
+top = "tb_axi_dma"
+toplib = "lib"
+corpus = ["vunit-tests-2008"]
+vunit = true
+
+[[test]]
+name = "vunit_logging"
+category = "strings-textio"
+why = "The logging example: string formatting, log levels, custom loggers, many report lines"
+source = "vunit"
+path = "examples/vhdl/logging/tb_logging_example.vhd"
+top = "tb_logging_example"
+toplib = "lib"
+corpus = ["vunit-tests-2008"]
+vunit = true
+
+[[test]]
+name = "en_cl_fix_pkg"
+category = "numeric"
+why = "Fixed-point arithmetic package self-test (format conversion, rounding, saturation) over large value sets"
+source = "en_cl_fix"
+path = "tb/en_cl_fix_pkg_tb.vhd"
+top = "en_cl_fix_pkg_tb"
+toplib = "lib_en_cl_fix_tb"
+corpus = ["en_cl_fix-2008"]
+vunit = true
+
+[[test]]
+name = "poc_arith_addw"
+category = "numeric"
+why = "Wide adder architectures compared over exhaustive operand sweeps: long numeric_std loops"
+source = "poc"
+path = "tb/arith/arith_addw_tb.vhdl"
+top = "arith_addw_tb"
+toplib = "test"
+corpus = ["poc-2008"]
+
+[[test]]
+name = "poc_stat_histogram"
+category = "memory"
+why = "Histogram with RAM-backed bins fed from a stimulus generator"
+source = "poc"
+path = "tb/misc/stat/stat_Histogram_tb.vhdl"
+top = "stat_Histogram_tb"
+toplib = "test"
+corpus = ["poc-2008"]
+
+[[test]]
+name = "poc_cache_cpu"
+category = "fsm"
+why = "Cache controller with CPU and memory models: FSM, tag RAM and data RAM, handshakes"
+source = "poc"
+path = "tb/cache/cache_cpu_tb.vhdl"
+top = "cache_cpu_tb"
+toplib = "test"
+corpus = ["poc-2008"]
+
+[[test]]
+name = "poc_strings"
+category = "strings-textio"
+why = "String helper package tests (to_string, str_match, str_replace ...): all string code"
+source = "poc"
+path = "tb/common/strings_tb.vhdl"
+top = "strings_tb"
+toplib = "test"
+corpus = ["poc-2008"]
+
+[[test]]
+name = "poc_uart_rx"
+category = "fsm"
+why = "UART receiver against a bit-banged transmitter: small FSM over many clock cycles"
+source = "poc"
+path = "tb/io/uart/uart_rx_tb.vhdl"
+top = "uart_rx_tb"
+toplib = "test"
+corpus = ["poc-2008"]
+
+[[test]]
+name = "fletcher_bufferwriter_512"
+category = "wide-vectors"
+why = "Buffer writer with 8 x 64 bit inputs and a 512 bit output bus: wide vectors, bit slicing, records of arrays"
+source = "fletcher"
+path = "hardware/buffers/test/bufferwriter/BufferWriter_8x64in512out_tc.vhd"
+top = "BufferWriter_8x64in512out_tc"
+toplib = "work"
+corpus = ["fletcher-2008"]
+
+[[test]]
+name = "neorv32_dual_full"
+category = "cpu"
+why = "Dual-core RISC-V system with caches, crypto and bit-manipulation extensions, SPI, UART, GPIO, runs the built-in program: thousands of processes, wide std_logic buses"
+source = "neorv32"
+path = "sim/neorv32_tb.vhd"
+top = "neorv32_tb"
+toplib = "neorv32"
+corpus = ["neorv32-2008"]
+generics = ["JTAG_TESTS_EN=false"]
+stop = "200us"
+
+[[test]]
+name = "neorv32_single_min"
+category = "cpu"
+why = "Single minimal RV32 core without caches and extensions: tight CPU pipeline and software loop"
+source = "neorv32"
+path = "sim/neorv32_tb.vhd"
+top = "neorv32_tb"
+toplib = "neorv32"
+corpus = ["neorv32-2008"]
+generics = ["JTAG_TESTS_EN=false", "SMC_PSRAM_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false", "ICACHE_EN=false", "DCACHE_EN=false", "RISCV_ISA_Zknd=false", "RISCV_ISA_Zkne=false", "RISCV_ISA_Zknh=false", "RISCV_ISA_Zksed=false", "RISCV_ISA_Zksh=false", "RISCV_ISA_Zfinx=false", "RISCV_ISA_Xcfu=false"]
+stop = "300us"
+
+[[test]]
+name = "neorv32_single_cache"
+category = "cpu"
+why = "Single-core system with instruction and data caches and the full extension set"
+source = "neorv32"
+path = "sim/neorv32_tb.vhd"
+top = "neorv32_tb"
+toplib = "neorv32"
+corpus = ["neorv32-2008"]
+generics = ["JTAG_TESTS_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false"]
+stop = "300us"
+
+[[test]]
+name = "osvvm_axis_random"
+category = "protected"
+why = "Verification-library AXI-stream test with randomised parameters: protected-type heavy (scoreboard, randomisation, alert and log packages)"
+source = "osvvm-libraries"
+path = "AXI4/AxiStream/TestCases/TbStream_AxiSendGetRandomParam2.vhd"
+driver = ["pro.py", "--jobs", "1", "--root", "{corpus}/osvvm-libraries", "--filter", "AxiStream/TbStream_AxiSendGetRandomParam2"]
+pick = "TbStream"
+
+[[test]]
+name = "uvvm_sb_slv"
+category = "protected"
+why = "Scoreboard library maintenance testbench: generic queues, records of arrays, string-heavy logging"
+source = "uvvm"
+path = "bitvis_vip_scoreboard/tb/maintenance_tb/generic_sb_slv_tb.vhd"
+driver = ["uvvm.py", "--only", "bitvis_vip_scoreboard", "-j", "1", "--no-wrap", "--root", "{corpus}"]
+pick = "generic_sb_slv_tb"
+
+[[test]]
+name = "uvvm_util_rand"
+category = "protected"
+why = "Utility library random generator testbench (first generic set): protected-type randomisation, many calls, string formatting"
+source = "uvvm"
+path = "uvvm_util/tb/maintenance_tb/rand_tb.vhd"
+driver = ["uvvm.py", "--only", "uvvm_util", "-j", "1", "--no-wrap", "--root", "{corpus}"]
+pick = "rand_tb"
+nth = 0
+
+[[test]]
+name = "uvvm_axistream_vvc"
+category = "protected"
+why = "AXI-stream verification component testbench (whole run, 296 us of simulated time): VVC framework, command queues, several processes per VVC"
+source = "uvvm"
+path = "bitvis_vip_axistream/tb/maintenance_tb/axistream_vvc_tb.vhd"
+driver = ["uvvm.py", "--only", "bitvis_vip_axistream", "-j", "1", "--no-wrap", "--root", "{corpus}"]
+pick = "axistream_vvc_tb"
+nth = 0
+
+[[test]]
+name = "sc5_fifo_repack"
+category = "wide-vectors"
+why = "Stream repacker between word widths with a FIFO: std_logic_vector slicing and handshake logic over 400 us of simulated time"
+source = "satcat5"
+path = "sim/vhdl/fifo_repack_tb.vhd"
+top = "fifo_repack_tb"
+toplib = "work"
+corpus = ["satcat5-2008"]
+relaxed = true
+stop = "500us"
+files = [
+  { lib = "work", source = "satcat5", path = "src/vhdl/lattice/ice40_mem.vhd" },
+]
+
+[[test]]
+name = "sc5_timestamp"
+category = "fsm"
+why = "Timestamp and configuration bus block with register interface and a long clocked run (900 us)"
+source = "satcat5"
+path = "sim/vhdl/config_timestamp_tb.vhd"
+top = "config_timestamp_tb"
+toplib = "work"
+corpus = ["satcat5-2008"]
+relaxed = true
+stop = "3ms"
+files = [
+  { lib = "work", source = "satcat5", path = "src/vhdl/lattice/ice40_mem.vhd" },
+]
+
+[[test]]
+name = "uvvm_rand_perf"
+category = "protected"
+why = "Utility library random generator performance case: millions of protected-type calls in a loop"
+source = "uvvm"
+path = "uvvm_util/tb/maintenance_tb/rand_tb.vhd"
+driver = ["uvvm.py", "--only", "uvvm_util", "-j", "1", "--no-wrap", "--root", "{corpus}"]
+pick = "GC_TESTCASE=rand_cyclic_performance"
+excluded = "reference: out of memory at 1 GiB heap (the testbench allocates a 1 GiB object)"
+
+[[test]]
+name = "uvvm_methods_log"
+category = "protected"
+why = "Utility library log and alert methods testbench: string formatting, report text, many log lines"
+source = "uvvm"
+path = "uvvm_util/tb/maintenance_tb/methods_tb_log_arch.vhd"
+driver = ["uvvm.py", "--only", "uvvm_util", "-j", "1", "--no-wrap", "--root", "{corpus}"]
+pick = "log_arch"
+
+[[test]]
+name = "uvvm_func_cov"
+category = "protected"
+why = "Functional coverage package testbench (cross bins): records of arrays, dynamic allocation, protected types"
+source = "uvvm"
+path = "uvvm_util/tb/maintenance_tb/func_cov_tb.vhd"
+driver = ["uvvm.py", "--only", "uvvm_util", "-j", "1", "--no-wrap", "--root", "{corpus}"]
+pick = "GC_TESTCASE=fc_cross_bin"
+
+[[test]]
+name = "osvvm_axi4_random"
+category = "protected"
+why = "AXI4 manager and subordinate models with random reads and writes: memory model, scoreboards, randomisation"
+source = "osvvm-libraries"
+path = "AXI4/Axi4/TestCases/TbAxi4_RandomReadWrite.vhd"
+driver = ["pro.py", "--jobs", "1", "--root", "{corpus}/osvvm-libraries", "--filter", "TbAxi4_RandomReadWrite"]
+pick = "TbAxi4_RandomReadWrite"
+nth = 0
+
+[[test]]
+name = "hdlm_lfsr"
+category = "numeric"
+why = "LFSR output bits checked statistically"
+source = "hdl-modules"
+path = "modules/lfsr/test/tb_lfsr.vhd"
+top = "tb_lfsr"
+toplib = "lfsr"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["seed=1", "output_width=16", "desired_lfsr_length=16"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/lfsr/test/tb_lfsr.vhd" },
+]
+
+[[test]]
+name = "hdlm_axi_crossbar"
+category = "records"
+why = "AXI crossbar with several BFM masters and slaves"
+source = "hdl-modules"
+path = "modules/axi/test/tb_axi_simple_crossbar.vhd"
+top = "tb_axi_simple_crossbar"
+toplib = "axi"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["test_axi_lite=false"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/axi/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/axi/test/tb_axi_simple_crossbar.vhd" },
+]
+
+[[test]]
+name = "hdlm_register_file"
+category = "records"
+why = "AXI-Lite register file against a BFM"
+source = "hdl-modules"
+path = "modules/register_file/test/tb_axi_lite_register_file.vhd"
+top = "tb_axi_lite_register_file"
+toplib = "register_file"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["seed=1"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/register_file/test/tb_axi_lite_register_file.vhd" },
+]
+
+[[test]]
+name = "hdlm_axis_bfm"
+category = "protected"
+why = "AXI-stream BFM self-test"
+source = "hdl-modules"
+path = "modules/bfm/test/tb_axi_stream_bfm.vhd"
+top = "tb_axi_stream_bfm"
+toplib = "bfm"
+corpus = ["hdl-modules-2008", "vunit-2008"]
+vunit = true
+generics = ["seed=1", "data_width=32"]
+files = [
+  { lib = "@module", source = "hdl-modules", glob = "modules/bfm/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", glob = "modules/register_file/sim/*.vhd" },
+  { lib = "@module", source = "hdl-modules", path = "modules/bfm/test/tb_axi_stream_bfm.vhd" },
+]
+
+[[test]]
+name = "poc_fifo_ic_assembly"
+category = "fsm"
+why = "Cross-clock FIFO with frame assembly"
+source = "poc"
+path = "tb/fifo/fifo_ic_assembly_tb.vhdl"
+top = "fifo_ic_assembly_tb"
+toplib = "test"
+corpus = ["poc-2008"]
+
+[[test]]
+name = "fletcher_bufferreader"
+category = "records"
+why = "Buffer reader with bus read channel"
+source = "fletcher"
+path = "hardware/buffers/test/bufferreader/BufferReader_tc.vhd"
+top = "BufferReader_tc"
+toplib = "work"
+corpus = ["fletcher-2008"]
+
+[[test]]
+name = "fletcher_bufferwriter_prim32"
+category = "records"
+why = "Array writer for 32 bit primitives"
+source = "fletcher"
+path = "hardware/arrays/test/arraywriter/prim32_tc.vhd"
+top = "prim32_tc"
+toplib = "work"
+corpus = ["fletcher-2008"]
+
+[[test]]
+name = "olo_fix_madd"
+category = "numeric"
+why = "Fixed-point multiply-add stage"
+source = "open-logic"
+path = "test/fix/olo_fix_madd/olo_fix_madd_tb.vhd"
+top = "olo_fix_madd_tb"
+toplib = "olo_tb"
+corpus = ["open-logic-2008"]
+relaxed = true
+vunit = true
+
+[[test]]
+name = "vai_window_gen_interlock"
+category = "rtl-datapath"
+why = "CNN window generator at full rate with row-bank interlock: block-RAM style arrays, long pipelined run"
+source = "vhdl-ai-test"
+path = "modules/cnn_accel/test/tb_cnn_accel_window_gen.vhd"
+top = "tb_cnn_accel_window_gen"
+toplib = "cnn_accel"
+corpus = ["vunit-2008"]
+relaxed = true
+vunit = "test_row_bank_interlock_full_rate"
+generics = ["g_assembly_buffers=3"]
+files = [
+  { lib = "@module", source = "vhdl-ai-test", glob = "hdl-modules/modules/*/src/*.vhd" },
+  { lib = "register_file", source = "vhdl-ai-test", glob = "hdl-modules/modules/register_file/sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_src/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/src/*.vhd" },
+  { lib = "sim_common", source = "vhdl-ai-test", glob = "modules/sim_common/sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_tb_util_pkg.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_window_gen.vhd" },
+]
+allow_skipped = true
+
+[[test]]
+name = "vai_pe_array"
+category = "numeric"
+why = "CNN processing-element array: signed multiply-accumulate lanes with random stalls"
+source = "vhdl-ai-test"
+path = "modules/cnn_accel/test/tb_cnn_accel_pe_array.vhd"
+top = "tb_cnn_accel_pe_array"
+toplib = "cnn_accel"
+corpus = ["vunit-2008"]
+relaxed = true
+vunit = "test_varying_kernels"
+files = [
+  { lib = "@module", source = "vhdl-ai-test", glob = "hdl-modules/modules/*/src/*.vhd" },
+  { lib = "register_file", source = "vhdl-ai-test", glob = "hdl-modules/modules/register_file/sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_src/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/src/*.vhd" },
+  { lib = "sim_common", source = "vhdl-ai-test", glob = "modules/sim_common/sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_tb_util_pkg.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_weight_mem_model.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_pe_array.vhd" },
+]
+allow_skipped = true
+
+[[test]]
+name = "vai_weight_buffer"
+category = "memory"
+why = "Weight buffer with a block-RAM style storage and fill/read control"
+source = "vhdl-ai-test"
+path = "modules/cnn_accel/test/tb_cnn_accel_weight_buffer.vhd"
+top = "tb_cnn_accel_weight_buffer"
+toplib = "cnn_accel"
+corpus = ["vunit-2008"]
+relaxed = true
+vunit = "test_fill_then_read_weight_and_bias"
+files = [
+  { lib = "@module", source = "vhdl-ai-test", glob = "hdl-modules/modules/*/src/*.vhd" },
+  { lib = "register_file", source = "vhdl-ai-test", glob = "hdl-modules/modules/register_file/sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_src/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/regs_sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", glob = "modules/cnn_accel/src/*.vhd" },
+  { lib = "sim_common", source = "vhdl-ai-test", glob = "modules/sim_common/sim/*.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/cnn_accel_tb_util_pkg.vhd" },
+  { lib = "cnn_accel", source = "vhdl-ai-test", path = "modules/cnn_accel/test/tb_cnn_accel_weight_buffer.vhd" },
+]
+allow_skipped = true

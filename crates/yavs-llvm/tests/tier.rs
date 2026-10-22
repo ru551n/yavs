@@ -188,9 +188,10 @@ fn auto_tier_compiles_hot_functions() {
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
     tier.stop(true);
+    // A note per module: its native-frame code and its frame-mode code (#510).
     let notes = notes.lock().unwrap();
-    assert_eq!(notes.len(), 1);
-    assert!(notes[0].0 == f && notes[0].1.is_ok(), "{notes:?}");
+    assert!(!notes.is_empty() && notes.len() <= 2, "{notes:?}");
+    assert!(notes.iter().all(|n| n.0 == f && n.1.is_ok()), "{notes:?}");
 }
 
 /// With a budget the compile thread waits until compiling costs at most a few percent of the
@@ -244,20 +245,22 @@ fn auto_tier_recompiles_hot_compiled_code_at_o2() {
     let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note, None).unwrap();
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     let t0 = Instant::now();
-    while notes.lock().unwrap().len() < 2 {
+    while !notes.lock().unwrap().iter().any(|n| n.1 == OptLevel::O2) {
         assert!(t0.elapsed() < Duration::from_secs(60), "never recompiled");
         assert_eq!(call().unwrap(), Some(5_000_050_000));
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
     tier.stop(true);
     let notes = notes.lock().unwrap();
-    let levels: Vec<_> = notes.iter().map(|n| (n.0, n.1, n.2.is_ok())).collect();
+    let mut levels: Vec<_> = notes.iter().map(|n| (n.0, n.1, n.2.is_ok())).collect();
+    // A note per module (native-frame and frame-mode code, #510).
+    levels.dedup();
     assert_eq!(levels, [(f, OptLevel::O0, true), (f, OptLevel::O2, true)]);
 }
 
-/// A short function without a loop stays interpreted while only interpreted code calls it,
-/// and is compiled (at O2) once a compiled loop calls it: each call would otherwise leave the
-/// compiled caller and enter it again.
+/// A short function without a loop that runs on native frames is compiled (at O2) when hot,
+/// for interpreted callers (`Tier::call`) and with a compiled loop that calls it, which would
+/// otherwise leave its compiled code at every call.
 #[test]
 fn auto_tier_compiles_short_callees_of_compiled_code() {
     let (prog, run, _) = calls();
@@ -899,7 +902,7 @@ fn precise_roots_under_compiled_code() {
     let (prog, p) = gc_roots::program();
     let both = Both::new(prog);
     let tier: Arc<dyn Tier> = both.tier.clone();
-    let (r, vals, slots) = gc_roots::run(both.prog.clone(), p, Some(tier), 1);
+    let (r, vals, slots, live) = gc_roots::run(both.prog.clone(), p, Some(tier), 1);
     assert!(
         both.tier.1.load(Ordering::Relaxed) > 0,
         "compiled code never ran"
@@ -907,10 +910,10 @@ fn precise_roots_under_compiled_code() {
     assert_eq!(vals, gc_roots::WANT, "{r:?}");
     let e = r.unwrap_err();
     assert!(e.to_string().contains("deallocated"), "{e}");
-    assert!(slots < 200, "{slots} slots");
+    gc_roots::assert_churn_collected(slots, live);
 }
 
-/// `inc(a) = a + 1` (range checked up to 1_000_000), `run(n)` calling it `n` times in a loop,
+/// `inc(a) = a + 1` (range checked up to 1_000_000, two paths to its return, one of them keeping a frame address), `run(n)` calling it `n` times in a loop,
 /// and `depth(n) = if n = 0 then 0 else depth(n - 1) + 1`.
 fn calls() -> (Program, FuncId, FuncId) {
     let mut pb = ProgramBuilder::new();
@@ -938,6 +941,28 @@ fn calls() -> (Program, FuncId, FuncId) {
             hi,
             what: msg,
         });
+        // Two ways to the same return.
+        let (zero, c) = (fb.int(0), fb.reg(RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        // (Keeps the address of a slot of its frame: the optimiser copies a function with
+        // branches into its caller, unless it does something with its frame.)
+        let keep = fb.slot(8, 8);
+        let at = fb.addr(AddrSpace::Frame, keep);
+        fb.emit(Inst::Store {
+            addr: at,
+            src: at,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: Some(dst) });
+        fb.at(e);
         fb.emit(Inst::Ret { v: Some(dst) });
         fb.finish();
     }
@@ -1363,4 +1388,676 @@ fn frame_variables_match_the_interpreter() {
     }
     let (x, y, _) = p.both(f, &[3, 5]);
     assert!(x.is_ok() && x == y, "{x:?}");
+}
+
+/// `outer(n, c)` calls `inner(n, c)`, which builds on its native frame a string of `n` copies of
+/// `c` (`NewFrame` with a fill), concatenates it with one more scalar element (`Cat`), fills a
+/// word array (`Fill`) and returns the elements it can tell apart. Both functions run on native
+/// frames and give the interpreter's results.
+fn string_ops() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let inner = pb.declare("inner", FuncKind::Function, None);
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(inner);
+        let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
+        let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
+        // The fill element: one byte.
+        let eight = fb.int(8);
+        let cell = alloc(&mut fb, eight);
+        fb.emit(Inst::Store {
+            addr: cell,
+            src: c,
+            w: Width::B1,
+        });
+        // s := n copies of c, kept by the frame.
+        let s = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::NewFrame {
+            dst: s,
+            desc: cell,
+            dsize: 0,
+            data: cell,
+            size: n,
+            fill: 1,
+        });
+        stmt(&mut fb);
+        // t := s & c (n + 1 bytes).
+        let one = fb.int(1);
+        let total = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: total,
+            a: n,
+            b: one,
+        });
+        let t = alloc(&mut fb, total);
+        let parts = fb.regs(&[s, n, c, one]);
+        fb.emit(Inst::Cat {
+            dst: t,
+            n: total,
+            m: one,
+            parts,
+            scalars: 0b10,
+            bias: 0,
+            logic: false,
+            w: Width::B1,
+        });
+        // w := three words of 0x01020304.
+        let (twelve, k3, word) = (fb.int(12), fb.int(3), fb.int(0x0102_0304));
+        let w = alloc(&mut fb, twelve);
+        let e = alloc(&mut fb, eight);
+        fb.emit(Inst::Store {
+            addr: e,
+            src: word,
+            w: Width::B4,
+        });
+        fb.emit(Inst::Fill {
+            dst: w,
+            elem: e,
+            n: k3,
+            size: 4,
+        });
+        // The first element of s, the scalar piece of t, the last word of w.
+        let (zero, eight_k, k8) = (fb.int(0), fb.int(8), fb.int(256));
+        let first = index(&mut fb, s, zero);
+        let a = load(&mut fb, first, Width::B1);
+        let last = index(&mut fb, t, n);
+        let b = load(&mut fb, last, Width::B1);
+        let wl = index(&mut fb, w, eight_k);
+        let d = load(&mut fb, wl, Width::B4);
+        let (x, y) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        fb.emit(Inst::Bin {
+            op: IntOp::Mul,
+            dst: x,
+            a: b,
+            b: k8,
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: y,
+            a,
+            b: x,
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: r,
+            a: y,
+            b: d,
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(outer);
+        let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
+        let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
+        let args = fb.regs(&[n, c]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: inner,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), outer)
+}
+
+/// `NewFrame`, `Cat` of non-logic elements and `Fill` run on native frames without a step
+/// (docs/decisions.md "Compiled frames"): nothing is materialised, the results are the
+/// interpreter's, and `outer` and `inner` both run on native frames.
+#[test]
+fn strings_on_native_frames() {
+    let (prog, outer) = string_ops();
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 2);
+    for (n, c) in [
+        (0u64, 65u64),
+        (1, 66),
+        (7, 90),
+        (64, 33),
+        (300, 255),
+        (5000, 1),
+    ] {
+        let (a, b, entries) = p.both(outer, &[n, c]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "n {n} c {c}");
+        // The entry into `outer`, and at most the one materialisation when the temporary area
+        // first has to grow.
+        assert!(entries <= 3, "n {n} c {c}: {entries} entries");
+    }
+}
+
+/// `inner(c)` keeps a four-element `std_ulogic_vector` of the code `c` and its descriptor in its
+/// own slots, makes the fat pair in temporary memory and calls the native `is_x` on it: the
+/// native reads the native frame's slots through the pair (indirect addresses, which only the
+/// frame windows resolve). `outer(c)` calls `inner(c)`. `half(a)` is `ceil(a / 4)` through a
+/// real native and `FToI`.
+fn native_calls() -> (Program, FuncId, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let is_x = pb.native(
+        "yavs.ieee.std_logic_1164.is_x(std_ulogic_vector)boolean",
+        None,
+    );
+    let ceil = pb.native("yavs.ieee.math_real.ceil(real)real", None);
+    let inner = pb.declare("inner", FuncKind::Function, None);
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    let half = pb.declare("half", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(inner);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        let planes = fb.slot(32, 8);
+        let dope_s = fb.slot(24, 8);
+        stmt(&mut fb);
+        let pc = fb.addr(AddrSpace::Frame, sc);
+        let c = load(&mut fb, pc, Width::B8);
+        // plane p holds bit p of the code in each of the four elements (1111b or 0).
+        let (two, fifteen) = (fb.int(2), fb.int(15));
+        let pl = fb.addr(AddrSpace::Frame, planes);
+        let mut q = c;
+        for p in 0..4 {
+            let bit = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Rem,
+                dst: bit,
+                a: q,
+                b: two,
+            });
+            let m = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Mul,
+                dst: m,
+                a: bit,
+                b: fifteen,
+            });
+            let at_p = fb.int(8 * p);
+            let to = index(&mut fb, pl, at_p);
+            fb.emit(Inst::Store {
+                addr: to,
+                src: m,
+                w: Width::B8,
+            });
+            let next = fb.reg(RegTy::I64);
+            fb.emit(Inst::Bin {
+                op: IntOp::Div,
+                dst: next,
+                a: q,
+                b: two,
+            });
+            q = next;
+        }
+        // The descriptor 0 to 3 and the fat pair [data, dope].
+        let dp = fb.addr(AddrSpace::Frame, dope_s);
+        let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
+        let parts = fb.regs(&[l, r, d]);
+        fb.emit(Inst::MakeDope { at: dp, parts });
+        let sixteen = fb.int(16);
+        let fat = alloc(&mut fb, sixteen);
+        fb.emit(Inst::Store {
+            addr: fat,
+            src: pl,
+            w: Width::B8,
+        });
+        let eight = fb.int(8);
+        let f8 = index(&mut fb, fat, eight);
+        fb.emit(Inst::Store {
+            addr: f8,
+            src: dp,
+            w: Width::B8,
+        });
+        let args = fb.regs(&[fat]);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::CallNative {
+            native: is_x,
+            args,
+            dst: Some(x),
+        });
+        fb.emit(Inst::Ret { v: Some(x) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(outer);
+        let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pc = fb.addr(AddrSpace::Frame, sc);
+        let c = load(&mut fb, pc, Width::B8);
+        let args = fb.regs(&[c]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: inner,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(half);
+        let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pa = fb.addr(AddrSpace::Frame, sa);
+        let a = load(&mut fb, pa, Width::B8);
+        let x = fb.reg(RegTy::F64);
+        fb.emit(Inst::IToF { dst: x, src: a });
+        let q = fb.reg(RegTy::F64);
+        fb.emit(Inst::ConstF { dst: q, v: 0.25 });
+        let y = fb.reg(RegTy::F64);
+        fb.emit(Inst::FBin {
+            op: FOp::Mul,
+            dst: y,
+            a: x,
+            b: q,
+        });
+        let args = fb.regs(&[y]);
+        let z = fb.reg(RegTy::F64);
+        fb.emit(Inst::CallNative {
+            native: ceil,
+            args,
+            dst: Some(z),
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::FToI { dst: r, src: z });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), outer, half)
+}
+
+/// A native call from a native frame runs without materialising it (the real arithmetic one),
+/// also when it reads the frame's own slots through memory (the vector one).
+#[test]
+fn natives_called_from_native_frames() {
+    let (prog, outer, half) = native_calls();
+    let p = Both::new(prog);
+    for c in 0..9u64 {
+        let (a, b, entries) = p.both(outer, &[c]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "code {c}");
+        assert!(entries <= 3, "code {c}: {entries} entries");
+    }
+    for a in [0u64, 1, 3, 4, 5, 100, 1 << 40, u64::MAX] {
+        let (x, y, entries) = p.both(half, &[a]);
+        assert_eq!(x, y, "half {a}");
+        assert!(entries <= 3, "half {a}: {entries} entries");
+    }
+}
+
+/// `top(n)` keeps `v := n`, calls its nested `bump(k)` (adds `k` to the parent's `v` through
+/// `Up(1)` and calls `deeper`, nested in it, which reads both `v` through `Up(2)` and `bump`'s
+/// own local through `Up(1)`), and returns `v`.
+fn nested() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let top = pb.declare("top", FuncKind::Function, None);
+    let bump = pb.declare("bump", FuncKind::Procedure, Some(top));
+    let deeper = pb.declare("deeper", FuncKind::Function, Some(bump));
+    // Slot offsets are decided as the functions are defined: top's `v` at 8 (after n).
+    let (v_slot, b_local);
+    {
+        let mut fb = pb.define(top);
+        let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        v_slot = fb.slot(8, 8);
+        stmt(&mut fb);
+        let pn = fb.addr(AddrSpace::Frame, sn);
+        let n = load(&mut fb, pn, Width::B8);
+        let pv = fb.addr(AddrSpace::Frame, v_slot);
+        fb.emit(Inst::Store {
+            addr: pv,
+            src: n,
+            w: Width::B8,
+        });
+        let three = fb.int(3);
+        let args = fb.regs(&[three]);
+        fb.emit(Inst::Call {
+            func: bump,
+            args,
+            dst: None,
+        });
+        let args = fb.regs(&[n]);
+        fb.emit(Inst::Call {
+            func: bump,
+            args,
+            dst: None,
+        });
+        let r = load(&mut fb, pv, Width::B8);
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(bump);
+        let sk = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
+        b_local = fb.slot(8, 8);
+        stmt(&mut fb);
+        let pk = fb.addr(AddrSpace::Frame, sk);
+        let k = load(&mut fb, pk, Width::B8);
+        let pl = fb.addr(AddrSpace::Frame, b_local);
+        fb.emit(Inst::Store {
+            addr: pl,
+            src: k,
+            w: Width::B8,
+        });
+        let up = fb.addr(AddrSpace::Up(1), v_slot);
+        let v = load(&mut fb, up, Width::B8);
+        let sum = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: sum,
+            a: v,
+            b: k,
+        });
+        fb.emit(Inst::Store {
+            addr: up,
+            src: sum,
+            w: Width::B8,
+        });
+        let args = fb.regs(&[k]);
+        let d = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: deeper,
+            args,
+            dst: Some(d),
+        });
+        // v := v + deeper(k)
+        let v = load(&mut fb, up, Width::B8);
+        let sum = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: sum,
+            a: v,
+            b: d,
+        });
+        fb.emit(Inst::Store {
+            addr: up,
+            src: sum,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: None });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(deeper);
+        let sk = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pk = fb.addr(AddrSpace::Frame, sk);
+        let k = load(&mut fb, pk, Width::B8);
+        let up1 = fb.addr(AddrSpace::Up(1), b_local);
+        let l = load(&mut fb, up1, Width::B8);
+        let up2 = fb.addr(AddrSpace::Up(2), v_slot);
+        let v = load(&mut fb, up2, Width::B8);
+        let t = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: t,
+            a: l,
+            b: v,
+        });
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: r,
+            a: t,
+            b: k,
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), top)
+}
+
+/// Nested subprograms run on native frames: their static links are passed to them and name
+/// the frames of the enclosing subprograms (also when those are native frames themselves).
+#[test]
+fn nested_subprograms_on_native_frames() {
+    let (prog, top) = nested();
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 3);
+    for n in [0u64, 1, 7, 1000, 1 << 40] {
+        let (a, b, entries) = p.both(top, &[n]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "n {n}");
+        assert!(entries <= 3, "n {n}: {entries} entries");
+    }
+}
+
+/// A tier that leaves `interp` to the interpreter and counts the calls the interpreter makes
+/// through `Tier::call` (native frames called from interpreted code, #510).
+struct FromInterp {
+    tier: LlvmTier,
+    interp: Vec<FuncId>,
+    calls: AtomicUsize,
+}
+
+impl Tier for FromInterp {
+    fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
+        if self.interp.contains(&func) {
+            return None;
+        }
+        self.tier.run(func, pc, host)
+    }
+
+    fn ready(&self, func: FuncId) -> bool {
+        !self.interp.contains(&func) && self.tier.ready(func)
+    }
+
+    fn callable(&self, func: FuncId) -> bool {
+        self.tier.callable(func)
+    }
+
+    fn call(
+        &self,
+        func: FuncId,
+        cells: &[u64],
+        obj: Option<u64>,
+        pc: u32,
+        host: &mut dyn TierHost,
+    ) -> Option<yavs_interp::Called> {
+        let r = self.tier.call(func, cells, obj, pc, host);
+        if r.is_some() {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+        }
+        r
+    }
+}
+
+/// `f(args)` interpreted, then with `interp` interpreted and everything else compiled: both
+/// results (value or error text) and the calls through `Tier::call`.
+fn from_interp(
+    prog: &Arc<Program>,
+    interp: &[FuncId],
+    f: FuncId,
+    args: &[u64],
+) -> (Result<u64, String>, Result<u64, String>, usize) {
+    let tier = Arc::new(FromInterp {
+        tier: yavs_llvm::compile(prog, OptLevel::O2, usize::MAX).unwrap(),
+        interp: interp.to_vec(),
+        calls: AtomicUsize::new(0),
+    });
+    let go = |t: Option<Arc<FromInterp>>| {
+        let rt = Runtime::new(prog.clone(), Bindings::default()).unwrap();
+        if let Some(t) = t {
+            assert!(rt.set_tier(t));
+        }
+        yavs_interp::call(rt, f, Arc::new(InstData::default()), args)
+            .map(|v| v.expect("a value"))
+            .map_err(|e| e.to_string())
+    };
+    let (a, b) = (go(None), go(Some(tier.clone())));
+    (a, b, tier.calls.load(Ordering::Relaxed))
+}
+
+/// The interpreter calls compiled functions on native frames (`Tier::call`): the results, an
+/// error inside the callee (its native frame left to the interpreter, which reports it), a
+/// recursion past the native stack allowance and past the depth limit are the interpreter's.
+#[test]
+fn interpreted_callers_call_native_frames() {
+    let (prog, run, depth) = calls();
+    let prog = Arc::new(prog);
+    let (a, b, n) = from_interp(&prog, &[run, depth], run, &[100_000]);
+    assert_eq!((a, b), (Ok(100_000), Ok(100_000)));
+    assert_eq!(n, 100_000, "one native call per call of `inc`");
+    let (a, b, _) = from_interp(&prog, &[run, depth], run, &[2_000_000]);
+    assert!(a.as_ref().is_err_and(|e| e.contains("result")), "{a:?}");
+    assert_eq!(a, b);
+    for k in [5000, 20_000] {
+        let (a, b, n) = from_interp(&prog, &[run, depth], depth, &[k]);
+        assert_eq!(a, b, "depth {k}");
+        assert!(n >= 1, "depth {k}: no native call");
+    }
+}
+
+/// `heap(n)`: a new integer object incremented through its handle `n` times (a `Deref` each
+/// time, found again in the object table after the first), its value returned; for `n` over 100
+/// the object is deallocated first, so the last `Deref` is the interpreter's stale-handle error.
+/// `outer(n) = heap(n)`.
+fn heap_calls() -> (Program, FuncId, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let int = pb.ty(Ty::Int {
+        lo: i64::MIN,
+        hi: i64::MAX,
+    });
+    let what = pb.check_msg("p.all", Dir::To);
+    let heap = pb.declare("heap", FuncKind::Function, None);
+    let outer = pb.declare("outer", FuncKind::Function, None);
+    {
+        let mut fb = pb.define(heap);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        let var = fb.local("v", int, 8, 8);
+        stmt(&mut fb);
+        let pn = fb.addr(AddrSpace::Frame, s);
+        let n = load(&mut fb, pn, Width::B8);
+        let eight = fb.int(8);
+        let init = alloc(&mut fb, eight);
+        let zero = fb.int(0);
+        fb.emit(Inst::Store {
+            addr: init,
+            src: zero,
+            w: Width::B8,
+        });
+        let h = fb.reg(RegTy::Handle);
+        fb.emit(Inst::New {
+            dst: h,
+            ty: int,
+            init,
+            size: eight,
+            shared: false,
+        });
+        let (head, body, done, free, out) =
+            (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+        let (i, one) = (fb.int(0), fb.int(1));
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: i,
+            b: n,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        stmt(&mut fb);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        let v = load(&mut fb, p, Width::B8);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: v,
+            a: v,
+            b: one,
+        });
+        fb.emit(Inst::Store {
+            addr: p,
+            src: v,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: i,
+            a: i,
+            b: one,
+        });
+        fb.emit(Inst::Br { to: head });
+        fb.at(done);
+        let (hundred, big) = (fb.int(100), fb.reg(RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Gt,
+            dst: big,
+            a: n,
+            b: hundred,
+        });
+        fb.emit(Inst::CondBr {
+            c: big,
+            t: free,
+            f: out,
+        });
+        fb.at(free);
+        // `deallocate` of a variable holding a copy of the handle: `h` is stale then.
+        let a = fb.addr(AddrSpace::Frame, var);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: h,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Free { ptr: a });
+        fb.emit(Inst::Br { to: out });
+        fb.at(out);
+        let p = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        let v = load(&mut fb, p, Width::B8);
+        fb.emit(Inst::Ret { v: Some(v) });
+        fb.finish();
+    }
+    {
+        let mut fb = pb.define(outer);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        stmt(&mut fb);
+        let pn = fb.addr(AddrSpace::Frame, s);
+        let n = load(&mut fb, pn, Width::B8);
+        let args = fb.regs(&[n]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: heap,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    (pb.finish().unwrap(), heap, outer)
+}
+
+/// Heap objects a `Deref` found stay in the object table across instructions the interpreter
+/// executes (`Mem::forget_since`); a deallocation empties it, so a stale handle is the
+/// interpreter's error, in frame-mode code and on a native frame called from the interpreter.
+#[test]
+fn heap_objects_found_again_until_deallocated() {
+    let (prog, heap, outer) = heap_calls();
+    let prog = Arc::new(prog);
+    for n in [0u64, 1, 50, 200] {
+        let (a, b, k) = from_interp(&prog, &[outer], outer, &[n]);
+        assert_eq!(a, b, "native frame, n {n}");
+        assert_eq!(k, 1, "n {n}");
+        assert_eq!(a.is_ok(), n <= 100, "{a:?}");
+        let (a, b, _) = from_interp(&prog, &[], heap, &[n]);
+        assert_eq!(a, b, "frame mode, n {n}");
+    }
 }

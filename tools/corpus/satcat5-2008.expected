@@ -1,5 +1,5 @@
 # tools/corpus/run.py expected results for satcat5-2008 (yavs); one line per manifest entry, in order
-# Initial list: derived from NVC's results (satcat5-2008.nvc.expected), every file expected to pass. yavs must analyze every file the reference tools accept;
+# Initial list: derived from sim1's results (satcat5-2008.sim1.expected), every file expected to pass. yavs must analyze every file the reference tools accept;
 # update with `run.py satcat5-2008 --bless` when yavs's behaviour legitimately changes.
 PASS work satcat5/src/vhdl/common/common_functions.vhd
 PASS work satcat5/src/vhdl/common/aes_cipher.vhd

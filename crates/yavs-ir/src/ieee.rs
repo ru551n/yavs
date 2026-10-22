@@ -7,8 +7,9 @@
 //! matches. `yavs-interp` implements every key; its `ieee` tests check both lists agree.
 
 /// The packages whose subprograms are listed.
-const PACKAGES: [&str; 6] = [
+const PACKAGES: [&str; 7] = [
     "ieee.std_logic_arith.",
+    "ieee.std_logic_misc.",
     "ieee.math_real.",
     "ieee.std_logic_1164.",
     "ieee.numeric_std.",
@@ -117,6 +118,9 @@ pub enum Op {
     VecGate(Gate),
     Not,
     VecNot,
+    /// A gate over all elements of one vector: the unary `std_logic_1164` and `numeric_std`
+    /// operators and the `std_logic_misc` `*_reduce` functions.
+    Reduce(Gate),
     /// `numeric_std` gate on two `unsigned` or two `signed`; unequal lengths are handed back to
     /// the body (its failure report).
     NumGate(Gate),
@@ -204,6 +208,13 @@ pub fn parse(key: &str) -> Option<Op> {
         ("std_logic_1164", n, ["std_ulogic", "std_ulogic"], "std_ulogic") => gate(n).map(Op::Gate),
         ("std_logic_1164", n, ["std_ulogic_vector", "std_ulogic_vector"], "std_ulogic_vector") => {
             gate(n).map(Op::VecGate)
+        }
+        ("std_logic_1164", n, ["std_ulogic_vector"], "std_ulogic") => gate(n).map(Op::Reduce),
+        ("std_logic_misc", n, ["std_ulogic_vector"], "std_ulogic") => {
+            gate(n.strip_suffix("_reduce")?).map(Op::Reduce)
+        }
+        ("numeric_std", n, ["unsigned" | "signed"], "std_ulogic") if !bit => {
+            gate(n).map(Op::Reduce)
         }
         ("std_logic_1164", "not", ["std_ulogic"], "std_ulogic") => Some(Op::Not),
         ("std_logic_1164", "not", ["std_ulogic_vector"], "std_ulogic_vector") => Some(Op::VecNot),

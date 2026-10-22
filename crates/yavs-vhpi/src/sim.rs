@@ -34,7 +34,7 @@ impl VhpiObserver {
         read_only: bool,
         early: bool,
         due: impl FnOnce(&mut State) -> Vec<u64>,
-    ) {
+    ) -> bool {
         let ids = with_state(|s| {
             s.clock.now = hook.now();
             s.clock.delta = hook.delta();
@@ -49,6 +49,7 @@ impl VhpiObserver {
             hooked(hook, || fire(&ids));
             with_state(|s| requests(s, hook, early));
         }
+        !ids.is_empty()
     }
 }
 
@@ -206,9 +207,13 @@ impl yavs_kernel::Observer for VhpiObserver {
         if !WATCHING.load(Ordering::Relaxed) {
             return;
         }
-        Self::dispatch(hook, false, false, |s| {
+        let mut ran = Self::dispatch(hook, false, false, |s| {
             let (now, delta) = (s.clock.now, s.clock.delta);
             s.cbs.changed(signal, range, now, delta)
         });
+        // Callbacks registered by those see the cycle's changes reported before them (#496).
+        while ran {
+            ran = Self::dispatch(hook, false, false, |s| s.cbs.late());
+        }
     }
 }

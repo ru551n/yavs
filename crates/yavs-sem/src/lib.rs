@@ -53,6 +53,7 @@ pub mod stmt;
 pub mod suggest;
 pub mod types;
 pub mod unit;
+pub mod units;
 pub mod validate;
 pub mod view;
 
@@ -84,6 +85,21 @@ pub struct Options {
     /// Where later stages keep what they derive from this analysis (`StageCache`); set by the
     /// CLI after analysis, `None` for no caching.
     pub stages: Option<std::sync::Arc<dyn StageCache>>,
+    /// The analysed-unit cache (`units.rs`): units are read from it when their entry holds, and
+    /// written to it when it is writable. `None`: every unit is analysed from source.
+    pub units: Option<std::sync::Arc<dyn UnitStore>>,
+}
+
+/// The store of the analysed-unit cache (`docs/decisions.md` "Analysed-unit cache"): entries by
+/// library name and identity (`units.rs`). A read that fails is a miss, a write that fails is
+/// silent.
+pub trait UnitStore: Send + Sync + std::fmt::Debug {
+    fn get(&self, lib: &str, identity: &[u8; 32]) -> Option<yavs_diag::Buffer>;
+    fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]);
+    /// Whether units analysed from source are written (`yavs analyze`; never `yavs run`).
+    fn writable(&self) -> bool;
+    /// A hit, a miss and why, for `YAVS_LOG=debug`.
+    fn note(&self, _msg: &str) {}
 }
 
 /// A store for what later stages derive from an analyzed `Db` (#407): the lowered run-time
@@ -166,6 +182,7 @@ impl Options {
             encoding: yavs_syntax::Encoding::Auto,
             psl: false,
             stages: None,
+            units: None,
         }
     }
 }

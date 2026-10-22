@@ -50,6 +50,26 @@ pub struct Slice {
 }
 
 impl Slice {
+    /// Bytes `start..end` of `buf`.
+    pub fn of(buf: &Buffer, start: usize, end: usize) -> Slice {
+        assert!(start <= end && end <= buf.len(), "slice out of its buffer");
+        Slice {
+            buf: buf.clone(),
+            start,
+            end,
+        }
+    }
+
+    /// Bytes `start..end` of this slice.
+    pub fn range(&self, start: usize, end: usize) -> Slice {
+        assert!(start <= end && end <= self.len(), "slice out of its slice");
+        Slice {
+            buf: self.buf.clone(),
+            start: self.start + start,
+            end: self.start + end,
+        }
+    }
+
     pub fn get(&self) -> &[u8] {
         &self.buf[self.start..self.end]
     }

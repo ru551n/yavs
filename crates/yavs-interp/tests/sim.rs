@@ -1443,8 +1443,21 @@ fn freed_slots_recycled_within_an_activation() {
         );
         assert_eq!(e.trace, [s]);
         // One slot per iteration without the recycling; at most twice its trigger with it.
-        let slots = shared.lock().unwrap().heap_slots();
-        assert!(slots <= 8192, "{slots} slots at {threads} threads");
+        // The `gc-stress` build never reuses a slot, so there only the live objects count.
+        let s = shared.lock().unwrap();
+        if cfg!(feature = "gc-stress") {
+            assert!(
+                s.heap_live() <= 8,
+                "{} live at {threads} threads",
+                s.heap_live()
+            );
+        } else {
+            assert!(
+                s.heap_slots() <= 8192,
+                "{} slots at {threads} threads",
+                s.heap_slots()
+            );
+        }
     }
 }
 
@@ -2146,7 +2159,7 @@ fn precise_roots_inside_an_activation() {
     let (prog, p) = gc_roots::program();
     let prog = std::sync::Arc::new(prog);
     for threads in [1, 4] {
-        let (r, vals, slots) = gc_roots::run(prog.clone(), p, None, threads);
+        let (r, vals, slots, live) = gc_roots::run(prog.clone(), p, None, threads);
         assert_eq!(vals, gc_roots::WANT, "{threads} threads {r:?}");
         let e = r.unwrap_err();
         assert!(
@@ -2154,6 +2167,27 @@ fn precise_roots_inside_an_activation() {
             "{e:?}"
         );
         // One slot per object without collections inside the activation.
-        assert!(slots < 200, "{slots} slots at {threads} threads");
+        gc_roots::assert_churn_collected(slots, live);
     }
+}
+
+/// The runtime counts the processes made of each process function (`NativeFlags::instances`):
+/// the compiled tier compiles a clocked process only when many share its code (#510).
+#[test]
+fn process_instances_are_counted() {
+    let mut pb = ProgramBuilder::new();
+    let p = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(p);
+        wait_forever(&mut fb);
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    assert_eq!(rt.native_flags().instances(p), 0);
+    for _ in 0..3 {
+        let inst = std::sync::Arc::new(yavs_interp::InstData::default());
+        yavs_interp::InterpProcess::new(rt.clone(), p, inst, vec![], None).unwrap();
+    }
+    assert_eq!(rt.native_flags().instances(p), 3);
 }

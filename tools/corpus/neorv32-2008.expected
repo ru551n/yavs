@@ -1,5 +1,5 @@
 # tools/corpus/run.py expected results for neorv32-2008 (yavs); one line per manifest entry, in order
-# Initial list: derived from NVC's results (neorv32-2008.nvc.expected), every file expected to pass. yavs must analyze every file the reference tools accept;
+# Initial list: derived from sim1's results (neorv32-2008.sim1.expected), every file expected to pass. yavs must analyze every file the reference tools accept;
 # update with `run.py neorv32-2008 --bless` when yavs's behaviour legitimately changes.
 PASS neorv32 neorv32/rtl/core/neorv32_bootrom_image.vhd
 PASS neorv32 neorv32/rtl/core/neorv32_debug_auth.vhd

@@ -17,6 +17,8 @@
 //! - drops pure definitions nobody reads,
 //! - keeps scalar frame slots that only direct loads and stores reach in registers
 //!   (`Opt::promote`, then the walk runs again over the result),
+//! - in a subprogram that cannot suspend, moves computations that do not change in a loop to
+//!   a block run before it (`licm.rs`),
 //! - and, last, empties the blocks no branch reaches, drops the `Stmt` markers of statements
 //!   that allocate no temporary memory, merges registers holding the same constant or address,
 //!   and gives the registers in use consecutive numbers.
@@ -32,10 +34,15 @@
 //! `Elab` and `Thunk` run once per instance and are left alone. `YAVS_NO_IROPT=1` turns the
 //! pass off (differential testing).
 
+mod cfg;
+mod inline;
+mod licm;
 mod live;
 mod memo;
 mod range;
 mod share;
+
+pub use inline::FwdCache;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -66,6 +73,17 @@ fn memo_enabled() -> bool {
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     }) && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Is the clean-up of finished subprograms (`cfg.rs`) on? Off with `YAVS_NO_CFG` set to anything
+/// but `0` or the empty string (differential testing).
+fn cfg_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_CFG")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    })
 }
 
 static KEEP_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -109,6 +127,50 @@ pub(crate) fn external() -> bool {
 /// (`Program::export_optimized`).
 pub fn copies_are_portable() -> bool {
     enabled() && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed) && !compiled()
+}
+
+/// Every switch that changes the code the optimiser or the tiers generate, as text: part of the
+/// key of every cache entry that holds generated code, so a run with other switches never reads
+/// what another configuration made (#491). Read when a key is made, i.e. after the command line
+/// set [`keep_variables`], [`compiled_tier`] and [`external_variables`].
+pub fn fingerprint() -> String {
+    fingerprint_of([
+        enabled(),
+        memo_enabled(),
+        cfg_enabled(),
+        inline::enabled(),
+        KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed),
+        compiled(),
+        external(),
+    ])
+}
+
+fn fingerprint_of(f: [bool; 7]) -> String {
+    let names = [
+        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external",
+    ];
+    let parts: Vec<String> = names
+        .iter()
+        .zip(f)
+        .map(|(n, v)| format!("{n}={v}"))
+        .collect();
+    parts.join(" ")
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::fingerprint_of;
+
+    /// Every switch is part of the fingerprint (#491).
+    #[test]
+    fn each_switch_changes_the_fingerprint() {
+        let base = fingerprint_of([false; 7]);
+        for i in 0..7 {
+            let mut f = [false; 7];
+            f[i] = true;
+            assert_ne!(fingerprint_of(f), base, "switch {i}");
+        }
+    }
 }
 
 /// Field offsets of the static record layouts met by the optimiser, kept in the program so
@@ -169,6 +231,40 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 /// Reads only what lowering produced of other functions (flags, kinds, types), so the result
 /// does not depend on which function was optimised first.
 pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
+    let mut f = optimize_body(prog, id)?;
+    if inline::run(prog, id, &mut f, 1) {
+        // The inlined bodies are code of this function now: what is known at the call decides
+        // their branches and repeated reads are shared.
+        if matches!(f.kind, FuncKind::Function | FuncKind::Procedure) {
+            let mut layouts = prog
+                .layouts
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            tidy(prog, &mut f, &mut layouts);
+        }
+        crate::build::number_func(&mut f, |c| {
+            prog.funcs
+                .get(c)
+                .is_some_and(|c| c.flags.contains(FuncFlags::MAY_SUSPEND))
+        });
+        #[cfg(debug_assertions)]
+        {
+            let mut errs = Vec::new();
+            crate::verify::verify_func(prog, id, &f, &mut errs);
+            assert!(errs.is_empty(), "inlining broke {}: {errs:?}", f.name);
+        }
+    }
+    Some(f)
+}
+
+/// Is a debugger keeping the variables of subprograms in their slots?
+fn keep_variables_on() -> bool {
+    KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The function optimised, without inlining: the copy [`optimize_func`] starts from.
+pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
     if !enabled() {
         return None;
     }
@@ -191,7 +287,7 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     );
     o.run();
     let mut loc = raw.loc.clone();
-    let blocks = o.changed.then(|| o.compact(&mut loc));
+    let blocks = o.changed.then(|| o.compact(&mut loc, None));
     let mut f = raw.shell();
     if let Some(blocks) = blocks {
         for (i, nb) in blocks.iter().enumerate() {
@@ -205,6 +301,20 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     f.loc = loc;
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
+    if cfg_enabled()
+        && matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
+        && f.body.is_none()
+        && !f.flags.contains(FuncFlags::MAY_SUSPEND)
+        && !f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
+    {
+        let threaded = cfg::run(prog, &mut f);
+        if licm::run(prog, &mut f) | threaded {
+            tidy(prog, &mut f, &mut layouts);
+        }
+    } else if cfg_enabled() && f.kind == FuncKind::Process {
+        // Loops of a process that do not suspend (#541).
+        licm::run(prog, &mut f);
+    }
     if memo_enabled() {
         memo::run(prog, &mut f);
     }
@@ -218,9 +328,61 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     {
         let mut errs = Vec::new();
         crate::verify::verify_func(prog, id, &f, &mut errs);
-        assert!(errs.is_empty(), "optimiser broke {}: {errs:?}", f.name);
+        assert!(
+            errs.is_empty(),
+            "optimiser broke {}: {errs:?}\n{:#?}",
+            f.name,
+            f.code
+        );
     }
     Some(Box::new(f))
+}
+
+/// Walk the finished code of `f` once more after the clean-up copied blocks into their
+/// predecessors: a value known where a block is entered now decides the branches of its copy.
+fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Vec<u64>>>) {
+    let done = {
+        let mut o = Opt::new(
+            prog,
+            f,
+            f.code.clone(),
+            f.operands.clone(),
+            f.nested,
+            layouts,
+        );
+        o.analyse();
+        o.pass();
+        let mut again = 0;
+        while o.pruned && again < 4 {
+            o.pruned = false;
+            again += 1;
+            o.dce();
+            o.reanalyse();
+            o.pass();
+        }
+        if !o.changed {
+            return;
+        }
+        o.dce();
+        o.kill_unreachable();
+        o.dead_defs();
+        let mut loc = f.loc.clone();
+        let mut via = f.via.clone();
+        let blocks = o.compact(&mut loc, (!via.is_empty()).then_some(&mut via));
+        (o.code, o.operands, o.new_regs, loc, via, blocks)
+    };
+    let (code, operands, new_regs, loc, via, blocks) = done;
+    for (i, nb) in blocks.iter().enumerate() {
+        if let Some(b) = f.blocks.get_mut(BlockId(i as u32)) {
+            b.start = nb.0;
+            b.end = nb.1;
+        }
+    }
+    f.code = code;
+    f.loc = loc;
+    f.via = via;
+    f.operands = operands;
+    f.reg_ty.extend(new_regs);
 }
 
 /// Give the registers the code uses consecutive numbers: lowering and the passes leave gaps
@@ -387,6 +549,9 @@ enum Opn {
     K(i64),
     A(AddrSpace, u32),
     R(Reg),
+    /// A register defined more than once, at the version of its last definition on the path:
+    /// only in keys (value numbering, [`Opt::kopn`]).
+    V(Reg, u32),
 }
 
 /// Which memory an address points into, where known.
@@ -397,6 +562,18 @@ enum Cls {
     Temp,
     /// The block one `Alloc` made (the register), disjoint from every other.
     Block(u32),
+}
+
+/// Is the address in memory nothing writes while the function runs: the constant pool and
+/// the instance data (frozen before the simulation, `docs/design/ir.md` 2)? Its facts survive
+/// calls, stores and statement markers.
+fn read_only(cls: &[Option<Cls>], a: Opn) -> bool {
+    let c = match a {
+        Opn::A(s, _) => Some(Cls::Space(s)),
+        Opn::R(r) => cls.get(r.0 as usize).copied().flatten(),
+        Opn::K(_) | Opn::V(..) => None,
+    };
+    matches!(c, Some(Cls::Space(AddrSpace::Const(_) | AddrSpace::Inst)))
 }
 
 /// Is the byte range `[a, a + n)` clear of every range in `rs`?
@@ -441,6 +618,8 @@ impl Key {
 #[derive(Clone, Copy)]
 enum Val {
     R(Reg),
+    /// A register defined more than once, valid while it still has this version.
+    V(Reg, u32),
     K(i64),
     Unit,
 }
@@ -535,6 +714,7 @@ enum Step {
         block: usize,
         log: usize,
         susp: (u32, u32),
+        vlog: usize,
     },
 }
 
@@ -588,6 +768,9 @@ struct Opt<'a> {
     /// Result registers of `LayoutOf` whose words are known (a descriptor of known lengths):
     /// the words, and the registers `Index`ing into them: (layout register, byte offset).
     lwords: FxMap<Reg, Vec<u64>>,
+    /// Result registers of `LayoutOf` of a one-dimensional array whose stride word (offset 16)
+    /// is the same under every descriptor: that stride.
+    lstride: FxMap<Reg, u64>,
     lat: FxMap<Reg, (Reg, i64)>,
     /// Field offsets of the static record layouts met so far (shared by the functions of one
     /// batch).
@@ -596,6 +779,17 @@ struct Opt<'a> {
     uses: Vec<u32>,
     /// The blocks some path from the entry reaches; definitions in the others do not count.
     reach: Vec<bool>,
+    /// Value numbering of registers defined more than once: the version of each (a number
+    /// nothing else has, given at every definition on the path of the walk and undone when
+    /// the walk leaves the block: `vlog`), the next number, and the constant or address such a
+    /// register holds since its last definition: (version, value, depth and instruction of the
+    /// definition).
+    vsn: Vec<u32>,
+    vnext: u32,
+    vlog: Vec<(u32, u32)>,
+    mval: FxMap<u32, (u32, Opn, u32, u32)>,
+    /// The key of the instruction being walked, to be recorded once its result has a version.
+    pend: Option<(Key, Reg)>,
     changed: bool,
     /// A branch on a constant was replaced by a jump: the join after it has one predecessor
     /// less, which the next walk can use.
@@ -650,11 +844,17 @@ impl<'a> Opt<'a> {
             new_regs: Vec::new(),
             inserts: Vec::new(),
             slay: FxMap::default(),
+            lstride: FxMap::default(),
             lwords: FxMap::default(),
             lat: FxMap::default(),
             layouts,
             uses: Vec::new(),
             reach: Vec::new(),
+            vsn: vec![0; n],
+            vnext: 0,
+            vlog: Vec::new(),
+            mval: FxMap::default(),
+            pend: None,
             changed: false,
             pruned: false,
         }
@@ -678,6 +878,77 @@ impl<'a> Opt<'a> {
             && matches!(self.rty(r), Some(RegTy::I64 | RegTy::Ptr))
     }
 
+    /// A register defined more than once, holding a plain value: the walk numbers its values.
+    fn multi(&self, r: Reg) -> bool {
+        self.defs.get(r.0 as usize).is_some_and(|&d| d > 1)
+            && matches!(self.rty(r), Some(RegTy::I64 | RegTy::Ptr))
+    }
+
+    /// Is something defined at (`depth`, `pc`) of the current path still usable: not before the
+    /// last suspension on it (a suspension forgets the registers)?
+    fn since_susp(&self, depth: u32, pc: u32) -> bool {
+        self.nosusp || depth > self.susp_depth || (depth == self.susp_depth && pc > self.susp_pc)
+    }
+
+    /// Give the multiply defined register `r` a version no earlier value has.
+    fn bump(&mut self, r: Reg) {
+        self.vnext += 1;
+        let old = std::mem::replace(&mut self.vsn[r.0 as usize], self.vnext);
+        self.vlog.push((r.0, old));
+    }
+
+    /// After the instruction at `pc` was simplified and its effect recorded: new versions for
+    /// the registers it defines, what a constant or address tells about its register, and the
+    /// key of its result.
+    fn define(&mut self, pc: usize) {
+        let i = self.code[pc];
+        let known = match i {
+            Inst::Const { dst, v } if self.multi(dst) => Some((dst, Opn::K(v))),
+            Inst::AddrOf { dst, space, off } if self.multi(dst) => Some((dst, Opn::A(space, off))),
+            Inst::Move { dst, src } if self.multi(dst) => match self.opn(src) {
+                o @ (Opn::K(_) | Opn::A(..)) => Some((dst, o)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut defs: [Option<Reg>; 2] = [None; 2];
+        let mut n = 0;
+        for_defs(&i, |r| {
+            if n < 2 {
+                defs[n] = Some(r);
+            }
+            n += 1;
+        });
+        // Instructions with more results than two are left to the plain rule: no versions kept.
+        let wide = n > 2;
+        for r in defs.into_iter().flatten() {
+            if self.multi(r) {
+                self.bump(r);
+            }
+        }
+        if wide {
+            self.pend = None;
+            return;
+        }
+        // A constant is an integer and an address a pointer: a register of the other type holds
+        // something this pass does not know the value of.
+        if let Some((dst, o)) = known
+            && matches!(
+                (o, self.rty(dst)),
+                (Opn::K(_), Some(RegTy::I64)) | (Opn::A(..), Some(RegTy::Ptr))
+            )
+        {
+            self.mval
+                .insert(dst.0, (self.vsn[dst.0 as usize], o, self.depth, pc as u32));
+        }
+        if let Some((key, d)) = self.pend.take()
+            && self.multi(d)
+        {
+            let v = Val::V(d, self.vsn[d.0 as usize]);
+            self.tbl.put(key, v);
+        }
+    }
+
     fn rty(&self, r: Reg) -> Option<RegTy> {
         let n0 = self.f.reg_ty.len();
         let i = r.0 as usize;
@@ -697,6 +968,7 @@ impl<'a> Opt<'a> {
         self.kc.push(Some(v));
         self.ka.push(None);
         self.cls.push(None);
+        self.vsn.push(0);
         self.rep.push(r.0);
         self.def_blk.push(b as u32);
         self.def_pc.push(pc as u32);
@@ -721,6 +993,11 @@ impl<'a> Opt<'a> {
             Opn::K(*v)
         } else if let Some(Some((s, o))) = self.ka.get(i) {
             Opn::A(*s, *o)
+        } else if let Some(&(ver, o, d, pc)) = self.mval.get(&r.0)
+            && self.vsn[i] == ver
+            && self.since_susp(d, pc)
+        {
+            o
         } else {
             Opn::R(r)
         }
@@ -730,7 +1007,7 @@ impl<'a> Opt<'a> {
         match o {
             Opn::A(s, _) => Some(Cls::Space(s)),
             Opn::R(r) => self.cls.get(r.0 as usize).copied().flatten(),
-            Opn::K(_) => None,
+            Opn::K(_) | Opn::V(..) => None,
         }
     }
 
@@ -796,12 +1073,18 @@ impl<'a> Opt<'a> {
                     {
                         self.set_cls(dst, Cls::Temp);
                         self.slay.insert(dst, ty);
+                        if let Some(w) = self.static_words(ty) {
+                            self.lwords.insert(dst, w);
+                        }
                     }
                     Inst::Alloc { dst, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Block(dst.0));
                     }
-                    Inst::LayoutOf { dst, .. } if self.single(dst) => {
+                    Inst::LayoutOf { dst, ty, .. } if self.single(dst) => {
                         self.set_cls(dst, Cls::Temp);
+                        if let Some(s) = self.static_stride(ty) {
+                            self.lstride.insert(dst, s);
+                        }
                     }
                     Inst::Index { dst, base, pos, .. } if self.single(dst) => {
                         if self.fold_index(pc) {
@@ -978,9 +1261,243 @@ impl<'a> Opt<'a> {
         if loops {
             self.dead_defs();
         }
+        if self.code.iter().any(|i| matches!(i, Inst::NewFrame { .. })) {
+            // The copy a local record variable is made of is read straight from its source
+            // when nothing can change the source meanwhile.
+            self.dce();
+            self.reanalyse();
+            if let Some(inited) = &promoted {
+                self.hide_inits(inited);
+            }
+            self.forward_frame_copies();
+        }
         self.drop_statements();
         self.merge_consts();
         self.dce();
+    }
+
+    /// A `NewFrame` copy of constant size that only constant-offset loads read (the local
+    /// record variable `variable s : rec_t := st.items(i)`, never written) is dropped: the loads
+    /// read the source, which nothing writes between the copy and the load (every instruction on
+    /// the way is a read, a computation or a branch: no store, call, statement marker or
+    /// allocation, which may change or free the source).
+    fn forward_frame_copies(&mut self) {
+        let nb = self.blocks.len();
+        // Constants the optimiser made and has not inserted yet.
+        let pending: FxMap<u32, i64> = self
+            .inserts
+            .iter()
+            .filter_map(|(_, i)| match *i {
+                Inst::Const { dst, v } => Some((dst.0, v)),
+                _ => None,
+            })
+            .collect();
+        let konst = |s: &Self, r: Reg| match s.opn(r) {
+            Opn::K(v) => Some(v),
+            Opn::R(r) => pending.get(&r.0).copied(),
+            Opn::A(..) | Opn::V(..) => None,
+        };
+        let mut block_of = vec![0usize; self.code.len()];
+        for b in 0..nb {
+            for pc in self.range(b) {
+                block_of[pc] = b;
+            }
+        }
+        for pc0 in 0..self.code.len() {
+            let Inst::NewFrame {
+                dst: q,
+                dsize: 0,
+                data,
+                size,
+                fill: 0,
+                ..
+            } = self.code[pc0]
+            else {
+                continue;
+            };
+            let Some(total) = konst(self, size) else {
+                continue;
+            };
+            let b0 = block_of[pc0];
+            if self.defs.get(q.0 as usize) != Some(&1)
+                || self.defs.get(data.0 as usize) != Some(&1)
+                || !self.reach[b0]
+                || self.in_cycle(b0)
+                || total < 0
+            {
+                continue;
+            }
+            // The registers that hold an address inside the copy: q and what is indexed from
+            // it by constants (offset from q), each defined once.
+            let mut at: FxMap<u32, i64> = FxMap::default();
+            at.insert(q.0, 0);
+            let mut grew = true;
+            while grew {
+                grew = false;
+                for pc in 0..self.code.len() {
+                    if let Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } = self.code[pc]
+                        && !at.contains_key(&dst.0)
+                        && let Some(&o) = at.get(&base.0)
+                        && let Some(c) = konst(self, pos)
+                        && let Some(d) = c
+                            .checked_mul(i64::from(stride))
+                            .and_then(|d| o.checked_add(d))
+                        && self.defs.get(dst.0 as usize) == Some(&1)
+                    {
+                        at.insert(dst.0, d);
+                        grew = true;
+                    }
+                }
+            }
+            // Every reader is an `Index` that is one of those or a load inside the copy.
+            let mut loads: Vec<usize> = Vec::new();
+            let mut ok = true;
+            for pc in 0..self.code.len() {
+                let i = self.code[pc];
+                if is_dead(&i) || pc == pc0 {
+                    continue;
+                }
+                let mut reads = false;
+                i.visit(&mut |r, role, _| {
+                    reads |= role == Role::Use && at.contains_key(&r.0);
+                });
+                if let Some(l) = i.list() {
+                    reads |= self
+                        .operands
+                        .get(l.start as usize..(l.start + l.len) as usize)
+                        .unwrap_or(&[])
+                        .iter()
+                        .any(|r| at.contains_key(&r.0));
+                }
+                if !reads {
+                    continue;
+                }
+                match i {
+                    Inst::Index { dst, .. } if at.contains_key(&dst.0) => {}
+                    Inst::Load { addr, w, .. }
+                        if w != Width::Sig
+                            && at
+                                .get(&addr.0)
+                                .is_some_and(|&o| o >= 0 && o + i64::from(w.bytes()) <= total) =>
+                    {
+                        loads.push(pc);
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok || loads.is_empty() {
+                continue;
+            }
+            // Dirty: some path from the copy to the start of the block passes an instruction
+            // that may change or free the source.
+            // A statement marker frees temporaries, not heap objects or constants.
+            let stmt_ok = matches!(
+                self.cls_of(self.opn(data)),
+                Some(Cls::Heap | Cls::Space(AddrSpace::Const(_)))
+            );
+            let harmless = |i: &Inst| {
+                (stmt_ok && matches!(i, Inst::Stmt))
+                    || matches!(
+                        i,
+                        Inst::Const { .. }
+                            | Inst::ConstF { .. }
+                            | Inst::Move { .. }
+                            | Inst::Select { .. }
+                            | Inst::AddrOf { .. }
+                            | Inst::Load { .. }
+                            | Inst::Index { .. }
+                            | Inst::Field { .. }
+                            | Inst::LayoutOf { .. }
+                            | Inst::Bin { .. }
+                            | Inst::BinRange { .. }
+                            | Inst::Un { .. }
+                            | Inst::Cmp { .. }
+                            | Inst::Bool { .. }
+                            | Inst::Check { .. }
+                            | Inst::Pos { .. }
+                            | Inst::DopeLen { .. }
+                            | Inst::Deref { .. }
+                            | Inst::Br { .. }
+                            | Inst::CondBr { .. }
+                            | Inst::Case { .. }
+                            | Inst::Ret { .. }
+                            | Inst::Unreachable { .. }
+                    )
+            };
+            let bad = |code: &[Inst]| code.iter().any(|i| !harmless(i));
+            let mut dirty_in = vec![false; nb];
+            let mut seen = vec![false; nb];
+            let mut work: Vec<usize> = Vec::new();
+            let d0 = bad(&self.code[pc0 + 1..self.blocks[b0].1 as usize]);
+            let mut k = 0;
+            while let Some(s) = self.succ(b0, k) {
+                k += 1;
+                if !seen[s] || (d0 && !dirty_in[s]) {
+                    seen[s] = true;
+                    dirty_in[s] |= d0;
+                    work.push(s);
+                }
+            }
+            while let Some(b) = work.pop() {
+                let d = dirty_in[b] || bad(&self.code[self.range(b)]);
+                let mut k = 0;
+                while let Some(s) = self.succ(b, k) {
+                    k += 1;
+                    if !seen[s] || (d && !dirty_in[s]) {
+                        seen[s] = true;
+                        dirty_in[s] |= d;
+                        work.push(s);
+                    }
+                }
+            }
+            for &pc in &loads {
+                let b = block_of[pc];
+                let dirty = if b == b0 {
+                    bad(&self.code[pc0 + 1..pc])
+                } else {
+                    !seen[b] || dirty_in[b] || bad(&self.code[self.blocks[b].0 as usize..pc])
+                };
+                if dirty {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            // Read the source instead.
+            for pc in 0..self.code.len() {
+                match self.code[pc] {
+                    Inst::Load { dst, addr, w } if addr == q => {
+                        self.code[pc] = Inst::Load { dst, addr: data, w };
+                    }
+                    Inst::Index {
+                        dst,
+                        base,
+                        pos,
+                        stride,
+                    } if base == q => {
+                        self.code[pc] = Inst::Index {
+                            dst,
+                            base: data,
+                            pos,
+                            stride,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            self.code[pc0] = dead();
+            self.changed = true;
+        }
     }
 
     /// The storage of a local composite variable (`[data, dope, handle, ...]` slot, object
@@ -1469,6 +1986,8 @@ impl<'a> Opt<'a> {
         order.reverse();
         let mut visited = vec![false; n];
         let mut work: Vec<Step> = Vec::new();
+        self.mval.clear();
+        self.pend = None;
         // The declarative part of a process runs once: its blocks come before the body.
         let cold = self.f.body.map_or(0, |b| b.0 as usize);
         for r in order.iter().copied().chain(0..n) {
@@ -1486,6 +2005,7 @@ impl<'a> Opt<'a> {
                             block: b,
                             log: self.tbl.log.len(),
                             susp: (self.susp_depth, self.susp_pc),
+                            vlog: self.vlog.len(),
                         });
                         self.depth += 1;
                         self.path_depth[b] = self.depth;
@@ -1496,8 +2016,18 @@ impl<'a> Opt<'a> {
                             c = child[c as usize];
                         }
                     }
-                    Step::Leave { block, log, susp } => {
+                    Step::Leave {
+                        block,
+                        log,
+                        susp,
+                        vlog,
+                    } => {
                         self.tbl.rollback(log);
+                        while self.vlog.len() > vlog {
+                            if let Some((r, old)) = self.vlog.pop() {
+                                self.vsn[r as usize] = old;
+                            }
+                        }
                         self.path_depth[block] = u32::MAX;
                         self.depth -= 1;
                         (self.susp_depth, self.susp_pc) = susp;
@@ -1579,6 +2109,7 @@ impl<'a> Opt<'a> {
             } else {
                 self.effect(&i);
             }
+            self.define(pc);
         }
     }
 
@@ -1676,14 +2207,17 @@ impl<'a> Opt<'a> {
                 let a = self.opn(addr);
                 self.kill(a, i64::from(w.bytes()));
                 // A stored 8-byte value is what a load of the address gives back.
-                if w == Width::B8 && self.key_ok(a) {
+                if w == Width::B8
+                    && let Some(k) = self.kopn(addr)
+                {
                     let v = match self.opn(src) {
                         Opn::K(v) => Some(Val::K(v)),
                         Opn::R(r) if self.single(r) => Some(Val::R(r)),
+                        Opn::R(r) if self.multi(r) => Some(Val::V(r, self.vsn[r.0 as usize])),
                         _ => None,
                     };
                     if let Some(v) = v {
-                        self.tbl.put(Key::Load(a, Width::B8), v);
+                        self.tbl.put(Key::Load(k, Width::B8), v);
                     }
                 }
             }
@@ -1727,7 +2261,7 @@ impl<'a> Opt<'a> {
                 let drop_key = |k: &Key| match k.region() {
                     _ if matches!(k, Key::Layout(..)) => true,
                     None => false,
-                    Some((Opn::A(AddrSpace::Const(_), _), ..)) => false,
+                    Some((a, ..)) if read_only(&this.cls, a) => false,
                     Some((Opn::A(AddrSpace::Frame, o), lo, n)) => {
                         !clear_of(named, i64::from(o) + lo, n)
                     }
@@ -1820,9 +2354,10 @@ impl<'a> Opt<'a> {
         self.ensure_esc();
         let esc = self.esc.as_deref().unwrap_or(&[]);
         let named = &self.named;
+        let cls = &self.cls;
         self.tbl.forget(|k| match k.region() {
             None => false,
-            Some((Opn::A(AddrSpace::Const(_), _), ..)) => false,
+            Some((a, ..)) if read_only(cls, a) => false,
             Some((Opn::A(AddrSpace::Frame, o), lo, n)) => {
                 let a = i64::from(o) + lo;
                 !(clear_of(named, a, n) && clear_of(esc, a, n))
@@ -1844,10 +2379,10 @@ impl<'a> Opt<'a> {
             let Some((a2, lo, n)) = k.region() else {
                 return true;
             };
-            let ce = this.cls_of(a2);
-            if matches!(ce, Some(Cls::Space(AddrSpace::Const(_)))) {
+            if read_only(&this.cls, a2) {
                 return true;
             }
+            let ce = this.cls_of(a2);
             let apart = matches!((cs, ce), (Some(x), Some(y)) if x != y);
             match (at, a2) {
                 (Opn::A(s1, o1), Opn::A(s2, o2)) => {
@@ -1874,13 +2409,17 @@ impl<'a> Opt<'a> {
     fn key_ok(&self, a: Opn) -> bool {
         match a {
             Opn::R(r) => self.single(r),
+            Opn::V(r, v) => self.vsn[r.0 as usize] == v,
             _ => true,
         }
     }
 
+    /// The operand as a key: a multiply defined register at its current version.
     fn kopn(&self, r: Reg) -> Option<Opn> {
-        let o = self.opn(r);
-        self.key_ok(o).then_some(o)
+        match self.opn(r) {
+            Opn::R(x) if self.multi(x) => Some(Opn::V(x, self.vsn[x.0 as usize])),
+            o => self.key_ok(o).then_some(o),
+        }
     }
 
     /// Reuse an available value, or record this one.
@@ -1897,14 +2436,67 @@ impl<'a> Opt<'a> {
                     self.make_const(pc, d, v);
                     return;
                 }
+                // The value is in a register that is not the only one holding it: a copy.
+                (Some(d), Val::R(x)) if self.copy_ok(d, x, None) => return self.copy(pc, d, x),
+                (Some(d), Val::V(x, ver)) if self.copy_ok(d, x, Some(ver)) => {
+                    return self.copy(pc, d, x);
+                }
                 _ => {}
             }
         }
         match dst {
             None => self.tbl.put(key, Val::Unit),
             Some(d) if self.single(d) => self.tbl.put(key, Val::R(d)),
+            Some(d) if self.multi(d) => self.pend = Some((key, d)),
             _ => {}
         }
+    }
+
+    /// May `d` take its value from `x` (a register holding the value an earlier instruction
+    /// made, still at `ver` when it is defined more than once)?
+    fn copy_ok(&self, d: Reg, x: Reg, ver: Option<u32>) -> bool {
+        d != x
+            && ver.is_none_or(|v| self.vsn[x.0 as usize] == v)
+            && (self.single(x) || self.multi(x))
+            && (self.single(d) || self.multi(d))
+            && self.rty(d) == self.rty(x)
+    }
+
+    /// `pc` becomes a move from `x`.
+    fn copy(&mut self, pc: usize, d: Reg, x: Reg) {
+        self.code[pc] = Inst::Move { dst: d, src: x };
+        self.changed = true;
+        self.simplify(pc);
+    }
+
+    /// The layout words (`[size, align, offsets...]`) of the record type `ty`, which has the
+    /// same layout under every descriptor.
+    fn static_words(&self, ty: TyId) -> Option<Vec<u64>> {
+        let (l, _) = Ty::layout(&self.prog.types, &self.prog.consts, ty, &[]).ok()?;
+        if l.offsets.is_empty() {
+            return None;
+        }
+        let mut w = vec![l.size, l.align];
+        w.extend(l.offsets);
+        Some(w)
+    }
+
+    /// The stride (word 2 of the layout) of the one-dimensional array type `ty` when it does
+    /// not depend on the bounds: arrays of elements of one size. Checked on three lengths.
+    fn static_stride(&self, ty: TyId) -> Option<u64> {
+        let types = &self.prog.types;
+        if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. }))
+        {
+            return None;
+        }
+        let stride = |n: u64| {
+            let mut d = [0u8; 24];
+            d[8..16].copy_from_slice(&(n as i64).wrapping_sub(1).to_le_bytes());
+            let (l, _) = Ty::layout(types, &self.prog.consts, ty, &d).ok()?;
+            l.offsets.is_empty().then_some(l.stride)
+        };
+        let s = stride(1)?;
+        (stride(3)? == s && stride(70)? == s).then_some(s)
     }
 
     /// Offset of field `n` in record type `ty`, which has the same layout under every
@@ -1974,11 +2566,19 @@ impl<'a> Opt<'a> {
         let inst = self.code[pc];
         match inst {
             Inst::Move { dst, src } if self.single(dst) => match self.opn(src) {
-                Opn::K(v) => self.make_const(pc, dst, v),
-                Opn::A(s, o) => self.make_addr(pc, dst, s, o),
+                // (A value known from the walk, not from the register's only definition, goes
+                // to a register of the type that value has.)
+                Opn::K(v) if self.single(src) || self.rty(dst) == Some(RegTy::I64) => {
+                    self.make_const(pc, dst, v);
+                }
+                Opn::A(s, o) if self.single(src) || self.rty(dst) == Some(RegTy::Ptr) => {
+                    self.make_addr(pc, dst, s, o);
+                }
+                Opn::K(_) | Opn::A(..) => {}
                 Opn::R(x) => {
                     self.alias_ok(pc, dst, x);
                 }
+                Opn::V(..) => {}
             },
             Inst::Select { dst, c, a, b } => {
                 let src = match self.opn(c) {
@@ -2093,7 +2693,7 @@ impl<'a> Opt<'a> {
                     && self.single(dst)
                 {
                     let (l, off) = self.lat.get(&x).copied().unwrap_or((x, 0));
-                    if self.lwords.contains_key(&l)
+                    if (self.lwords.contains_key(&l) || self.lstride.contains_key(&l))
                         && let Some(o) = c
                             .checked_mul(i64::from(stride))
                             .and_then(|d| off.checked_add(d))
@@ -2163,6 +2763,11 @@ impl<'a> Opt<'a> {
                     if let Some(words) = self.lwords.get(&l)
                         && off % 8 == 0
                         && let Some(&v) = words.get((off / 8) as usize)
+                    {
+                        return self.make_const(pc, dst, v as i64);
+                    }
+                    if off == 16
+                        && let Some(&v) = self.lstride.get(&l)
                     {
                         return self.make_const(pc, dst, v as i64);
                     }
@@ -2403,17 +3008,20 @@ impl<'a> Opt<'a> {
             };
             // (Handles and addresses of a process stay in their slots, where the collector
             // finds them: only numbers qualify.)
+            // (A byte holds a boolean, a bit, a character or another enumeration value: the
+            // register keeps the same number.)
+            let bytes = i64::from(a.w.bytes());
             if overlap
                 || !a.ok
-                || a.w != Width::B8
+                || !matches!(a.w, Width::B8 | Width::B1)
                 || ty == RegTy::Sig
                 || (process
                     && !a
                         .kinds
                         .iter()
                         .all(|k| matches!(k, Some(RegTy::I64 | RegTy::F64))))
-                || !clear_of(&esc, o, 8)
-                || !clear_of(&wide, o, 8)
+                || !clear_of(&esc, o, bytes)
+                || !clear_of(&wide, o, bytes)
             {
                 continue;
             }
@@ -2424,7 +3032,7 @@ impl<'a> Opt<'a> {
             // ones of each frame, `roots::live_refs`), and every access has exactly that type.
             if roots.iter().any(|&(s, z, comp)| {
                 o < s + z
-                    && s < o + 8
+                    && s < o + bytes
                     && (comp || (a.stores > 0 && !self.register_root(&a.kinds, ty, f, s)))
             }) {
                 continue;
@@ -2442,7 +3050,7 @@ impl<'a> Opt<'a> {
                 // (A plugin may deposit into the variables of a process.)
                 if keep_vars
                     || (process && external())
-                    || (scalar && (i64::from(l.slot) != o || l.size != 8))
+                    || (scalar && (i64::from(l.slot) != o || i64::from(l.size) != bytes))
                 {
                     continue;
                 }
@@ -2503,7 +3111,7 @@ impl<'a> Opt<'a> {
                     Inst::Load {
                         dst: p,
                         addr: a,
-                        w: Width::B8,
+                        w: acc[&off].w,
                     },
                 ));
             } else if undefined[k] {
@@ -2547,6 +3155,7 @@ impl<'a> Opt<'a> {
         self.nrep = 0;
         self.slay.clear();
         self.lwords.clear();
+        self.lstride.clear();
         self.lat.clear();
         self.esc = None;
         self.analyse();
@@ -2560,6 +3169,7 @@ impl<'a> Opt<'a> {
         self.kc.push(None);
         self.ka.push(None);
         self.cls.push(None);
+        self.vsn.push(0);
         self.rep.push(r.0);
         self.def_blk.push(0);
         self.def_pc.push(0);
@@ -3039,7 +3649,9 @@ impl<'a> Opt<'a> {
             }
             let dst = match i {
                 Inst::LayoutOf { dst, .. }
-                    if self.slay.contains_key(&dst) || self.lwords.contains_key(&dst) =>
+                    if self.slay.contains_key(&dst)
+                        || self.lwords.contains_key(&dst)
+                        || self.lstride.contains_key(&dst) =>
                 {
                     Some(dst)
                 }
@@ -3067,11 +3679,15 @@ impl<'a> Opt<'a> {
     /// Remove the dead instructions and add the inserted ones, with their locations; the new
     /// block ranges.
     #[allow(clippy::needless_range_loop)]
-    fn compact(&mut self, loc: &mut Vec<StmtId>) -> Vec<(u32, u32)> {
+    fn compact(&mut self, loc: &mut Vec<StmtId>, via: Option<&mut Vec<u32>>) -> Vec<(u32, u32)> {
         self.inserts.sort_by_key(|x| x.0);
         let mut ins = self.inserts.iter().peekable();
         let mut code = Vec::with_capacity(self.code.len() + self.inserts.len());
         let mut locs = Vec::with_capacity(code.capacity());
+        // The inlining record of each instruction, when the function has one.
+        let mut vias: Vec<u32> = Vec::new();
+        let keep_via = via.is_some();
+        let old_via = |pc: usize| via.as_ref().map_or(0, |v| v[pc]);
         let mut blocks = Vec::with_capacity(self.blocks.len());
         for &(s, e) in &self.blocks {
             let start = code.len() as u32;
@@ -3085,16 +3701,25 @@ impl<'a> Opt<'a> {
                     }
                     code.push(i);
                     locs.push(loc[pc]);
+                    if keep_via {
+                        vias.push(old_via(pc));
+                    }
                 }
                 if !is_dead(&self.code[pc]) {
                     code.push(self.code[pc]);
                     locs.push(loc[pc]);
+                    if keep_via {
+                        vias.push(old_via(pc));
+                    }
                 }
             }
             blocks.push((start, code.len() as u32));
         }
         self.code = code;
         *loc = locs;
+        if let Some(v) = via {
+            *v = vias;
+        }
         blocks
     }
 }

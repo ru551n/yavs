@@ -256,7 +256,7 @@ SPECS = {
                                "submodule 3rdParty/en_cl_fix, compiled into library olo")},
         src=[("open-logic", "src/**/*.vhd", "olo"), ("en_cl_fix", "hdl/*.vhd", "olo")],
         tb=[("open-logic", "test/tb/legacy/*.vhd", "olo_tb"), ("open-logic", "test/**/*.vhd", "olo_tb")],
-        tbinfo=dict(runner="VUnit sim/run.py (--nvc/--ghdl); every bench is run once per generic configuration listed in the area's config (test/*/config.py style add_configs)",
+        tbinfo=dict(runner="VUnit sim/run.py (--sim1/--sim2); every bench is run once per generic configuration listed in the area's config (test/*/config.py style add_configs)",
                     passes="VUnit test_runner_cleanup reached with no failed check/assert; each bench ends by itself")),
     "vhdl-compliance": dict(
         stds=("2008", "2019"), prefix=["vunit"],
@@ -265,7 +265,7 @@ SPECS = {
                                      "VHDL-2008 and VHDL-2019 feature tests, one self-contained VUnit test bench per language feature")},
         src=[],
         tb=[("vhdl-compliance", "vhdl_2008/*.vhd", "vhdl_2008"), ("vhdl-compliance", "vhdl_2019/*.vhd", "vhdl_2019", ("2019",))],
-        tbinfo=dict(runner="run.py of the project (VUnit; uses NVC/Riviera-PRO/Active-HDL with 2019, others with 2008); each bench is one test case",
+        tbinfo=dict(runner="run.py of the project (VUnit; uses sim1/sim4/other simulators with 2019, others with 2008); each bench is one test case",
                     passes="VUnit test case passes (test_runner_cleanup, no error()). Stub benches for unimplemented LCS issues call error() on purpose and are expected to FAIL when run")),
     "vhdl-interfaces": dict(
         stds=("2019",),
@@ -287,17 +287,17 @@ SPECS = {
                                    "JSON parser in VHDL-2008 (protected types, string handling, file reading)")},
         src=[("json-for-vhdl", "src/*.vhdl", "JSON")],
         tb=[("json-for-vhdl", "examples/*.vhdl", "JSON"), ("json-for-vhdl", "tests/JSONTestSuite/*.vhdl", "JSON")],
-        tbinfo=dict(runner="tests/VUnit/run.py (Boards_VUnit, Encodings_VUnit); Boards0/1/2 and TopLevel are plain benches run by name (regression.tcl, tests/ghdl/Boards2.sh)",
+        tbinfo=dict(runner="tests/VUnit/run.py (Boards_VUnit, Encodings_VUnit); Boards0/1/2 and TopLevel are plain benches run by name (regression.tcl, the sim2 script)",
                     passes="VUnit benches: test_runner_cleanup with no failed check; plain benches: no assertion failure, simulation ends by itself")),
     "neorv32": dict(
         stds=("2008",),
-        note="order: regex dependency scan; library neorv32 as in sim/ghdl.sh; VHDL STD",
+        note="order: regex dependency scan; library neorv32 as in the sim2 script; VHDL STD",
         sources={"neorv32": ("https://github.com/stnolting/neorv32", "b2620454ebb2407e81a6a1965ef52e2a860b0432", "BSD-3-Clause",
                              "sparse: /rtl/ and /sim/ only (software, docs, other setups are not needed)")},
         src=[("neorv32", "rtl/core/*.vhd", "neorv32"), ("neorv32", "rtl/system_integration/*.vhd", "neorv32"),
              ("neorv32", "rtl/test_setups/*.vhd", "neorv32")],
         tb=[("neorv32", "sim/*.vhd", "neorv32")],
-        tbinfo=dict(runner="sim/ghdl.sh: ghdl -m neorv32_tb; ghdl -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)",
+        tbinfo=dict(runner="the sim2 script: sim2 -m neorv32_tb; sim2 -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)",
                     passes="no assertion of severity error or worse within 10 ms of simulated time; the bench prints the UART output of the running program, the default image is the bootloader")),
     "neotrng": dict(
         stds=("2008",),
@@ -305,7 +305,7 @@ SPECS = {
         sources={"neotrng": ("https://github.com/stnolting/neoTRNG", "c688149f70fbd582eac1029cbfec4fcf97b719b2", "BSD-3-Clause",
                              "true random number generator, single entity + bench")},
         src=[("neotrng", "rtl/*.vhd", "neotrng")], tb=[("neotrng", "sim/*.vhd", "neotrng")],
-        tbinfo=dict(runner="sim/ (GHDL, ghdl -r neotrng_tb --stop-time=...)", passes="runs without assertion failure; the bench prints random words (no golden output)")),
+        tbinfo=dict(runner="sim/ (sim2, sim2 -r neotrng_tb --stop-time=...)", passes="runs without assertion failure; the bench prints random words (no golden output)")),
 }
 
 
@@ -321,25 +321,25 @@ SPECS.update({
               ("poc", "*.v93.vhdl", "VHDL-93 variant of a unit that also has a 2008 file"),
               ("poc", "tb/common/my_config_[!G]*", "board configuration other than GENERIC"),
               ("poc", "tb/common/config_tb.vhdl", "needs a board configuration package selected at run time")],
-        tbinfo=dict(runner="poc.sh ghdl|vsim <tb entity> (PoC's own tool chain; *.files list each bench's dependencies); equivalently ghdl -r <tb>",
+        tbinfo=dict(runner="poc.sh sim2|sim3 <tb entity> (PoC's own tool chain; *.files list each bench's dependencies); equivalently sim2 -r <tb>",
                     passes="PoC.simulation: the bench calls simAssert/simFinish and prints 'SIMULATION RESULT = PASSED'; severity failure on a failed assertion")),
     "satcat5": dict(
         stds=("2008",),
-        note="order: regex dependency scan; everything in library work as in the project's Vivado/ModelSim scripts; VHDL STD",
+        note="order: regex dependency scan; everything in library work as in the project's Vivado/sim3 scripts; VHDL STD",
         sources={"satcat5": ("https://github.com/the-aerospace-corporation/satcat5", "58402dcbe64adc9c30d00c08edc20e3aef314ac6", "CERN-OHL-W-2.0",
                              "Aerospace Corporation SatCat5 Ethernet switch/FPGA library")},
         src=[("satcat5", "src/vhdl/common/*.vhd", "work")],
         tb=[("satcat5", "sim/vhdl/*.vhd", "work")],
-        tbinfo=dict(runner="plain VHDL benches (*_tb), one entity each, run by the project's sim/ scripts for ModelSim/Vivado (xsim); any simulator with --stop-time works",
+        tbinfo=dict(runner="plain VHDL benches (*_tb), one entity each, run by the project's sim/ scripts for sim3/Vivado; any simulator with --stop-time works",
                     passes="no 'assert ... severity error' fires (benches use assert with severity error and finish by running out of stimulus)")),
     "vhdl-extras": dict(
         stds=("2008",),
-        note="order: regex dependency scan; libraries extras / extras_2008 / test per directory as in the makefile (vcom -work basename dir); VHDL STD",
+        note="order: regex dependency scan; libraries extras / extras_2008 / test per directory as in the makefile (sim3 -work basename dir); VHDL STD",
         sources={"vhdl-extras": ("https://github.com/kevinpt/vhdl-extras", "b8916c4942e99d02fac04e25799cb2c996eb5870", "MIT",
                                  "license stated in README.rst and the file headers (no LICENSE file)")},
         src=[("vhdl-extras", "rtl/extras/*.vhdl", "extras"), ("vhdl-extras", "rtl/extras_2008/*.vhdl", "extras_2008")],
         tb=[("vhdl-extras", "rtl/test/*.vhdl", "test"), ("vhdl-extras", "rtl/test_2008/*.vhdl", "test_2008")],
-        tbinfo=dict(runner="makefile + scripts/ (ModelSim, vsim -c <entity> -do 'run -all; quit'); each test_* entity stands alone",
+        tbinfo=dict(runner="makefile + scripts/ (sim3, sim3 -c <entity> -do 'run -all; quit'); each test_* entity stands alone",
                     passes="the bench ends by itself; failures are 'assert ... severity error/failure' (the project scripts grep the log for '** Error' / '** Failure')")),
     "vhlib": dict(
         stds=("2008",),
@@ -348,7 +348,7 @@ SPECS.update({
                            "vendor agnostic VHDL-2008 stream/util library with its own test case framework (sim/TestCase_pkg)")},
         src=[("vhlib", "util/*.vhd", "work"), ("vhlib", "stream/*.vhd", "work"), ("vhlib", "stream/model/*.vhd", "work")],
         tb=[("vhlib", "sim/*.vhd", "work"), ("vhlib", "stream/test/**/*.vhd", "work")],
-        tbinfo=dict(runner="vhdeps ghdl|vsim <top> (files *.sim.08.vhd are simulation-only VHDL-2008; tops are the *_tb entities, test cases *_tc are compiled into them)",
+        tbinfo=dict(runner="vhdeps sim2|sim3 <top> (files *.sim.08.vhd are simulation-only VHDL-2008; tops are the *_tb entities, test cases *_tc are compiled into them)",
                     passes="TestCase_pkg: every subtest ends with tc_pass; the bench reports the summary and stops, 'Test case failed' (severity failure) otherwise")),
     "fletcher": dict(
         stds=("2008",),
@@ -361,7 +361,7 @@ SPECS.update({
              ("vhlib", "sim/*.vhd", "work"), ("fletcher", "hardware/*/*.vhd", "work")],
         tb=[("fletcher", "hardware/**/test/**/*.vhd", "work")],
         skip=[("fletcher", "hardware/vhlib/*", "submodule, taken from source vhlib")],
-        tbinfo=dict(runner="plain benches (*_tb) run through vhdeps (ghdl/vsim) in the project's CI",
+        tbinfo=dict(runner="plain benches (*_tb) run through vhdeps (sim2/sim3) in the project's CI",
                     passes="no 'severity failure' assertion; benches stop when their stimulus is exhausted")),
     "vhdl-ideas": dict(
         stds=("2019",),
@@ -381,7 +381,7 @@ SPECS.update({
 })
 SPECS["surf"]["tb"] = [("surf", "**/tb/*.vhd", "surf")]
 SPECS["surf"]["skip"] = [("surf", "simlink/*", "needs the SLAC simlink C library (VHPI)")]
-SPECS["surf"]["tbinfo"] = dict(runner="plain benches run with GHDL/ModelSim by the project (ruckus based); no runner script in the repository subset",
+SPECS["surf"]["tbinfo"] = dict(runner="plain benches run with sim2/sim3 by the project (ruckus based); no runner script in the repository subset",
                                passes="benches end by themselves; failures are assertions of severity failure")
 _vt = "vunit/vhdl"
 SPECS["vunit-tests"] = dict(
@@ -398,13 +398,13 @@ SPECS["vunit-tests"] = dict(
        + [("vunit", f"examples/vhdl/{e}/src/*.vhd", "lib") for e in ("axi_dma", "uart")]
        + [("vunit", f"examples/vhdl/{e}/src/test/*.vhd", "lib") for e in ("axi_dma", "uart")],
     skip=[("vunit", "*/test/*-93*", "VHDL-93 variant")],
-    tbinfo=dict(runner="the module's run.py / examples/vhdl/*/run.py with VUnit itself (python3 run.py --nvc|--ghdl); VUnit's own tests are in vunit/vhdl/*/test",
+    tbinfo=dict(runner="the module's run.py / examples/vhdl/*/run.py with VUnit itself (python3 run.py --sim1|--sim2); VUnit's own tests are in vunit/vhdl/*/test",
                 passes="every test case reports pass: VUnit test_runner_cleanup with no failed check. tb_*_failed style benches are written to expect failures via mock/unmock and pass overall"))
 
 
 def neutral(s):
     """Documents name no other projects: tool names in generated prose become sim1/sim2/sim3."""
-    for a, b in (("NVC", "sim1"), ("nvc", "sim1"), ("GHDL", "sim2"), ("ghdl", "sim2"), ("Questa", "sim3"), ("questa", "sim3")):
+    for a, b in (("sim1", "sim1"), ("sim1", "sim1"), ("sim2", "sim2"), ("sim2", "sim2"), ("sim3", "sim3"), ("sim3", "sim3")):
         s = re.sub(rf"(?<![\w/.-]){a}(?![\w/-])", b, s)
     return re.sub(r"\s*\(Using LLVM [\d.]+\)", "", re.sub(r"^sim1 ", "Reference simulator sim1 ", s))
 

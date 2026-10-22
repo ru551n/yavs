@@ -663,7 +663,7 @@ impl Db {
     fn library_unit_decl(&mut self, lib: LibId, key: Symbol) -> Option<DeclId> {
         let unit = crate::loader::UnitKey::Primary(key);
         // Most names are no unit of the library: that is no error (10.4).
-        if !self.libs[lib].units.contains_key(&unit) && self.locate(lib, unit).is_none() {
+        if !self.unit_known(lib, unit) {
             return None;
         }
         let u = self.load_unit(lib, unit, None).ok()?;

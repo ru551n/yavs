@@ -8,8 +8,10 @@ use common::tempdir;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// (`f` reports, so the process calls it: a function the optimiser can copy into its caller would
+// not be called, and the entry would have nothing to learn.)
 const PKG: &str = "package p is\n  constant K : integer := 7;\n  function f (x : integer) return integer;\nend;\n\
-package body p is\n  function f (x : integer) return integer is begin return x * K; end;\nend;\n";
+package body p is\n  function f (x : integer) return integer is begin assert x > 0 report \"f\"; return x * K; end;\nend;\n";
 
 const OTHER: &str = "package q is\n  constant Z : integer := 1;\nend;\n";
 
@@ -143,7 +145,7 @@ fn visible(o: &Out) -> Out {
         stderr: o
             .stderr
             .lines()
-            .filter(|l| !l.starts_with("debug: cache:"))
+            .filter(|l| !l.starts_with("debug: cache:") && !l.starts_with("debug: units:"))
             .map(|l| format!("{l}\n"))
             .collect(),
     }
@@ -238,19 +240,57 @@ fn damaged_entries_are_ignored() {
 #[cfg(unix)]
 #[test]
 fn read_only_library_is_not_cached_into() {
-    use std::os::unix::fs::PermissionsExt;
     let e = Env::new("readonly");
     let work = e.tmp.join("work");
     let plain = e.run(&["--no-cache"]);
-    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+    let before = tree(&work);
+    set_tree_mode(&work, 0o555);
     let writable = std::fs::File::create(work.join("probe")).is_ok();
     let r = e.run(&[]);
-    std::fs::set_permissions(&work, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    set_tree_mode(&work, 0o755);
     if writable {
         return; // running as a user the mode does not bind
     }
     assert_eq!(visible(&plain), visible(&r));
-    assert!(!e.cache_dir().exists());
+    assert_eq!(
+        before,
+        tree(&work),
+        "nothing is written into a read-only library"
+    );
+}
+
+/// Every file and directory below `dir`, sorted.
+#[cfg(unix)]
+fn tree(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p.clone());
+            }
+            out.push(p);
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Set the mode of `dir` and of every directory below it (a read-only library: a read-only mount
+/// or another user's tree, the cache directories `analyze` made included).
+#[cfg(unix)]
+fn set_tree_mode(dir: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut dirs: Vec<PathBuf> = tree(dir).into_iter().filter(|p| p.is_dir()).collect();
+    dirs.push(dir.to_path_buf());
+    // Children first when locking, the top first when unlocking.
+    if mode & 0o200 == 0 {
+        dirs.reverse();
+    }
+    for d in dirs {
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
 }
 
 #[test]
@@ -261,7 +301,14 @@ fn clean_removes_entries() {
     let work = e.work();
     let o = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(o.code, 0, "{o:?}");
-    assert!(o.stdout.contains("2 entries"), "{o:?}");
+    // The two of the run and the analysed units `analyze` made.
+    let n: usize = o
+        .stdout
+        .split_whitespace()
+        .nth(2)
+        .and_then(|n| n.parse().ok())
+        .expect("a count");
+    assert!(n > 2, "{o:?}");
     assert!(!e.cache_dir().exists());
     let again = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(again.code, 0);
@@ -781,10 +828,10 @@ fn an_unavailable_source_drops_the_snippet_only() {
     check(&warm, "could not be read");
 }
 
-/// Two testbenches of one library share the analysis of the packages they both use: the first
-/// stores a prefix image next to the library of the last package, the second restores it and
-/// analyzes the rest, with the output of an analysis from source. Editing a package of the
-/// prefix invalidates it.
+/// Testbenches of one library share the analysis of the packages they both use: the second to
+/// start with them stores a prefix image next to the library of the last package (the first
+/// only leaves a note, #549), the third restores it and analyzes the rest, with the output of an
+/// analysis from source. Editing a package of the prefix invalidates it.
 #[test]
 fn closures_share_the_analysis_of_their_first_files() {
     let tmp = tempdir("prefix");
@@ -825,7 +872,7 @@ fn closures_share_the_analysis_of_their_first_files() {
              report \"k=\" & integer'image(k9 + {n});\n    wait;\n  end process;\nend;\n"
         )
     };
-    for n in [1, 2] {
+    for n in [1, 2, 3] {
         let f = tmp.join(format!("tb{n}.vhd"));
         std::fs::write(&f, tb(n)).expect("write");
         analyze("work", &["liba"], &f);
@@ -849,17 +896,27 @@ fn closures_share_the_analysis_of_their_first_files() {
     };
     let plain1 = run("tb1", &["--no-cache"]);
     let plain2 = run("tb2", &["--no-cache"]);
+    let plain3 = run("tb3", &["--no-cache"]);
     assert!(plain1.stdout.contains("k=46"), "{plain1:?}");
     assert!(plain2.stdout.contains("k=47"), "{plain2:?}");
+    assert!(plain3.stdout.contains("k=48"), "{plain3:?}");
     let first = run("tb1", &[]);
-    assert!(note(&first, "store prefix of 10 files"), "{first:?}");
+    assert!(!note(&first, "store prefix of"), "one sighting: {first:?}");
     assert_eq!(visible(&plain1), visible(&first));
     let second = run("tb2", &[]);
-    assert!(note(&second, "hit prefix of 10 files"), "{second:?}");
-    assert!(!note(&second, "store prefix of"), "{second:?}");
+    assert!(note(&second, "store prefix of 10 files"), "{second:?}");
     assert_eq!(visible(&plain2), visible(&second));
-    // The same testbench again is a hit of its own image.
-    assert!(note(&run("tb2", &[]), "hit"), "own image");
+    let third = run("tb3", &[]);
+    assert!(note(&third, "hit prefix of 10 files"), "{third:?}");
+    assert!(!note(&third, "store prefix of"), "{third:?}");
+    assert_eq!(visible(&plain3), visible(&third));
+    // The same testbench again makes its own image, the next run hits it.
+    run("tb3", &[]);
+    let own = run("tb3", &[]);
+    assert!(
+        note(&own, "hit ") && !note(&own, "hit prefix"),
+        "own image: {own:?}"
+    );
     // A package of the prefix changes: no prefix image applies, and the new value is what runs.
     let f = tmp.join("pa3.vhd");
     std::fs::write(&f, pkg(3).replace("+ 3", "+ 4")).expect("write");
@@ -905,7 +962,7 @@ fn lowered_design_is_cached() {
         let w = e.run_top(top, &["--threads", "4"]);
         assert!(note(&w, "hit ir"), "{top}: {w:?}");
         assert_eq!(nc, visible(&w), "{top}");
-        // With the optimiser off the stored copies stay unused.
+        // With the optimiser off the stored copies are not even looked up (#491).
         let work = e.work();
         let off = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .current_dir(&e.tmp)
@@ -914,7 +971,7 @@ fn lowered_design_is_cached() {
             .args(["--color", "never", "run", "--work", &work, top])
             .output()
             .expect("run");
-        assert!(String::from_utf8_lossy(&off.stderr).contains("hit ir"));
+        assert!(!String::from_utf8_lossy(&off.stderr).contains("hit ir"));
         assert_eq!(visible(&plain).stdout, String::from_utf8_lossy(&off.stdout));
         for f in e.entry_files("ir") {
             std::fs::remove_file(f).expect("remove");
@@ -1011,4 +1068,179 @@ fn lowered_design_depends_on_what_elaboration_asked_for() {
     assert!(note(&run("true"), "hit ir"));
     assert!(note(&run("false"), "hit ir"));
     assert_eq!(e.entry_files("ir").len(), 2);
+}
+
+/// Entries that hold generated code are keyed by the optimiser and tier switches and by the
+/// build (#491): another setting or another build is a miss with the right output, the same one
+/// a hit.
+#[test]
+fn lowered_design_depends_on_the_optimiser_and_the_build() {
+    let e = Env::new("irswitch");
+    let plain = e.run(&["--no-cache"]);
+    assert!(plain.stdout.contains("f=21"), "{plain:?}");
+    let _ = e.cold("tb", &[]);
+    let with = |env: &[(&str, &str)]| {
+        let work = e.work();
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.current_dir(&e.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_LOG", "debug")
+            .args(["--color", "never", "run", "--work", &work])
+            .arg("tb");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let o = c.output().expect("run");
+        Out {
+            code: o.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
+        }
+    };
+    assert!(note(&with(&[]), "hit ir"), "the same settings hit");
+    let cases = [
+        ("YAVS_NO_CFG", "1"),
+        ("YAVS_NO_MEMO", "1"),
+        ("YAVS_NO_INLINE", "1"),
+        ("YAVS_NO_IROPT", "1"),
+        ("YAVS_CACHE_SALT", "another build"),
+    ];
+    for env in cases {
+        let env = &[env];
+        let first = with(env);
+        assert!(!note(&first, "hit ir"), "{env:?}: {first:?}");
+        assert_eq!(visible(&plain).stdout, first.stdout, "{env:?}");
+        let second = with(env);
+        let third = with(env);
+        assert!(
+            note(&second, "store ir") || note(&third, "hit ir"),
+            "{env:?}: {second:?}"
+        );
+        assert!(note(&third, "hit ir"), "{env:?}: {third:?}");
+        assert_eq!(visible(&plain).stdout, third.stdout, "{env:?}");
+    }
+    // The settings made first still hit: nothing was replaced.
+    assert!(note(&with(&[]), "hit ir"));
+}
+
+/// The compiled tier makes other copies than the interpreter: its run never reads the entry the
+/// interpreter's runs made (#491).
+#[cfg(feature = "llvm")]
+#[test]
+fn compiled_tier_has_entries_of_its_own() {
+    let e = Env::new("irtier");
+    let plain = e.run(&["--no-cache"]);
+    let _ = e.cold("tb", &[]);
+    assert!(note(&e.run(&[]), "hit ir"));
+    let t = e.run(&["--tier=llvm"]);
+    assert!(!note(&t, "hit ir"), "{t:?}");
+    assert_eq!(visible(&plain).stdout, t.stdout);
+    assert!(
+        note(&e.run(&[]), "hit ir"),
+        "the interpreter's entry is kept"
+    );
+}
+
+/// The object files of the compiled tier in the work library's cache (#505).
+#[cfg(feature = "llvm")]
+fn objects(e: &Env) -> Vec<PathBuf> {
+    std::fs::read_dir(e.cache_dir().join("obj"))
+        .map(|d| {
+            d.flatten()
+                .map(|f| f.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "img"))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Compiled code is kept in the cache and linked by the next run, at one and four threads, with
+/// the output of a run that compiles everything; `--tier=auto` gives that output whatever it
+/// finds in the cache (whether its compile thread got to store anything before the run ended
+/// depends on timing; `yavs-llvm` `tests/objcache.rs` checks its hits); a damaged object is
+/// compiled again and `yavs cache clean` removes them (#505).
+#[cfg(feature = "llvm")]
+#[test]
+fn compiled_code_is_cached() {
+    let e = Env::new("objcache");
+    let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
+    let cold = e.run(&["--tier=llvm"]);
+    assert!(note(&cold, "obj stored"), "{cold:?}");
+    let warm = e.run(&["--tier=llvm"]);
+    assert!(
+        note(&warm, "obj hit") && !note(&warm, "obj stored"),
+        "{warm:?}"
+    );
+    let warm4 = e.run(&["--tier=llvm", "--threads", "4"]);
+    assert!(
+        note(&warm4, "obj hit") && !note(&warm4, "obj stored"),
+        "{warm4:?}"
+    );
+    for o in [&cold, &warm, &warm4] {
+        assert_eq!(plain, visible(o));
+    }
+    let auto = ["--tier=auto", "--tier-heat=1,0,0"];
+    let plain = visible(&e.run(&[&["--no-cache"][..], &auto].concat()));
+    for _ in 0..3 {
+        assert_eq!(plain, visible(&e.run(&auto)));
+    }
+    let objs = objects(&e);
+    assert!(!objs.is_empty());
+    for f in &objs {
+        std::fs::write(f, b"not an object").expect("write");
+    }
+    let r = e.run(&["--tier=llvm"]);
+    assert!(note(&r, "obj stored") && !note(&r, "obj hit"), "{r:?}");
+    assert!(r.stdout.contains("K=7"), "{r:?}");
+    let work = e.work();
+    let o = e.yavs(&["cache", "clean", "--work", &work]);
+    assert_eq!(o.code, 0, "{o:?}");
+    assert!(objects(&e).is_empty() && !e.cache_dir().exists());
+}
+
+/// Parallel runs that compile the same code into one library all get the right output and leave
+/// one intact entry per module (#505).
+#[cfg(feature = "llvm")]
+#[test]
+fn parallel_runs_share_compiled_code() {
+    let e = Env::new("objparallel");
+    let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| s.spawn(|| visible(&e.run(&["--tier=llvm"]))))
+            .collect();
+        for h in hs {
+            assert_eq!(plain, h.join().expect("join"));
+        }
+    });
+    assert_eq!(objects(&e).len(), 1);
+    let warm = e.run(&["--tier=llvm"]);
+    assert!(
+        note(&warm, "obj hit") && !note(&warm, "obj stored"),
+        "{warm:?}"
+    );
+    assert_eq!(plain, visible(&warm));
+}
+
+/// A read-only work library: the compiled tier runs, compiles and stores nothing (#505).
+#[cfg(all(unix, feature = "llvm"))]
+#[test]
+fn read_only_library_gets_no_compiled_code() {
+    let e = Env::new("objreadonly");
+    let work = e.tmp.join("work");
+    let plain = visible(&e.run(&["--no-cache", "--tier=llvm"]));
+    let before = tree(&work);
+    set_tree_mode(&work, 0o555);
+    let writable = std::fs::File::create(work.join("probe")).is_ok();
+    let r = e.run(&["--tier=llvm"]);
+    set_tree_mode(&work, 0o755);
+    if writable {
+        return; // running as a user the mode does not bind
+    }
+    assert_eq!(plain, visible(&r));
+    assert_eq!(
+        before,
+        tree(&work),
+        "nothing is written into a read-only library"
+    );
 }

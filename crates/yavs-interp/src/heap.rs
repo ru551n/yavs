@@ -119,6 +119,7 @@ pub fn pack(tag: u8, index: u32, generation: u32) -> u64 {
     (u64::from(tag) << 56) | (u64::from(index) << 32) | u64::from(generation)
 }
 
+#[inline(always)]
 pub fn tag_of(h: u64) -> u8 {
     (h >> 56) as u8
 }
@@ -609,18 +610,24 @@ mod tests {
         h.free(a).unwrap();
         assert_eq!(h.free(a), Err(HeapError::Stale));
         let (ai, ci) = (h.resolve(b).unwrap() + 1, h.resolve(b).unwrap() + 2);
-        // A deallocated slot is not reused before `recycle` (#81); a collected one is.
+        // A deallocated slot is not reused before `recycle` (#81); a collected one is. The
+        // `gc-stress` build never reuses a slot: each allocation takes the next fresh index
+        // and `recycle` only fills the free list.
+        let fresh = h.slots.len() as u32;
+        let at = |stress: u32, reuse: u32| if STRESS { stress } else { reuse };
         let d = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
-        assert_eq!(h.resolve(d), Ok(ci));
+        assert_eq!(h.resolve(d), Ok(at(fresh, ci)));
         let e = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
-        assert_eq!(h.resolve(e), Ok(3));
+        assert_eq!(h.resolve(e), Ok(at(fresh + 1, 3)));
         // A pinned slot stays in quarantine; an unpinned one is reused with a new generation.
         h.recycle(&[ai]);
+        assert!(!h.free.contains(&ai));
         let f = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
-        assert_eq!(h.resolve(f), Ok(4));
+        assert_eq!(h.resolve(f), Ok(at(fresh + 2, 4)));
         h.recycle(&[]);
+        assert!(h.free.contains(&ai) || !STRESS);
         let g = h.alloc(Obj::Typed(int), vec![0; 8]).unwrap();
-        assert_eq!(h.resolve(g), Ok(ai));
+        assert_eq!(h.resolve(g), Ok(at(fresh + 3, ai)));
         assert_ne!(g, a);
         assert_eq!(h.resolve(a), Err(HeapError::Stale));
         assert_eq!(h.resolve(0), Err(HeapError::Null));

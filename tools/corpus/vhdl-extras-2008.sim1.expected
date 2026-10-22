@@ -1,0 +1,26 @@
+# tools/corpus/run.py expected results for vhdl-extras-2008 (sim1); one line per manifest entry, in order
+PASS extras vhdl-extras/rtl/extras/binaryio.vhdl
+PASS extras vhdl-extras/rtl/extras/characters_latin_1.vhdl
+PASS extras vhdl-extras/rtl/extras/crc_ops.vhdl
+PASS extras vhdl-extras/rtl/extras/interrupt_ctl.vhdl
+PASS extras vhdl-extras/rtl/extras/lcar_ops.vhdl
+PASS extras vhdl-extras/rtl/extras/lfsr_ops.vhdl
+PASS extras vhdl-extras/rtl/extras/memory.vhdl
+PASS extras vhdl-extras/rtl/extras/muxing.vhdl
+PASS extras vhdl-extras/rtl/extras/parity_ops.vhdl
+PASS extras vhdl-extras/rtl/extras/pipelining.vhdl
+PASS extras vhdl-extras/rtl/extras/arithmetic.vhdl
+PASS extras vhdl-extras/rtl/extras/cordic.vhdl
+PASS extras vhdl-extras/rtl/extras/reg_file.vhdl
+PASS extras vhdl-extras/rtl/extras/strings.vhdl
+PASS extras vhdl-extras/rtl/extras/synchronizing.vhdl
+PASS extras_2008 vhdl-extras/rtl/extras_2008/common_2008.vhdl
+PASS extras_2008 vhdl-extras/rtl/extras_2008/muxing_2008.vhdl
+PASS extras_2008 vhdl-extras/rtl/extras_2008/pipelining_2008.vhdl
+PASS extras_2008 vhdl-extras/rtl/extras_2008/reg_file_2008.vhdl
+PASS extras_2008 vhdl-extras/rtl/extras_2008/sizing_2008.vhdl
+PASS test vhdl-extras/rtl/test/test_binaryio.vhdl
+PASS test vhdl-extras/rtl/test/test_lcar_ops.vhdl
+PASS test vhdl-extras/rtl/test/test_lfsr_ops.vhdl
+PASS test vhdl-extras/rtl/test/test_muxing.vhdl
+PASS test_2008 vhdl-extras/rtl/test_2008/test_muxing_2008.vhdl

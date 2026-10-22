@@ -1492,6 +1492,16 @@ impl Db {
             };
             best.retain(|b| b.1 == min);
             if best.len() > 1 {
+                // An actual that already failed fits every overload: its error was reported (8.2).
+                let poison = self.poison.ty;
+                for a in args {
+                    if let ast::Actual::Expr(x) = &a.actual
+                        && matches!(self.cands(scope, x),
+                            CandSet::Types(is) if is.iter().any(|i| i.ty == poison))
+                    {
+                        return Err(crate::Reported);
+                    }
+                }
                 let cands: Vec<DeclId> = best.iter().map(|b| b.0).collect();
                 let mut d = match self.ambiguous_actual(scope, &cands, args) {
                     Some(d) => d,

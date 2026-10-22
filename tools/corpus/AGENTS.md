@@ -19,7 +19,7 @@ of `run.py`, `gen_manifests.py` and `gen_external.py`.
 |---|---|
 | `<name>.toml` | Generated compile manifest: `name`, `std`, ordered files with library, `exclude` with reasons, `[flags]` per tool. Do not edit by hand |
 | `<name>.expected` | yavs expected list, one `PASS|FAIL <lib> <source>/<path>` per entry in order (PASS everywhere except the known yavs bugs; CI fails on any difference) |
-| `<name>.nvc.expected`, `<name>.nvc.md` | The reference simulator results and the validation note (tool version, accepted/rejected, flags) |
+| `<name>.sim1.expected`, `<name>.sim1.md` | The reference simulator results and the validation note (tool version, accepted/rejected, flags) |
 | `rejects/<name>.json` | Files the reference simulators rejected during validation, with the first error line |
 | `run.py MANIFEST [--tool yavs|sim1] [--cmd T] [--keep-going] [--bless] [--expected none] [--log F]` | Analyze one file per call in manifest order and compare with the expected list; exit 0 as expected, 1 differences, 2 usage |
 | `gen_manifests.py [--root DIR] [NAME...]`, `--validate NAME...` | Generate manifests from each project's own build description (its compile-order scripts and project files, and `lib/ORDER.md`) |

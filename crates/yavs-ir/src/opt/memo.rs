@@ -90,7 +90,7 @@ fn list_mut(i: &mut Inst) -> Option<&mut crate::Regs> {
     }
 }
 
-fn successors(prog: &Program, f: &crate::Func) -> Vec<Vec<usize>> {
+pub(super) fn successors(prog: &Program, f: &crate::Func) -> Vec<Vec<usize>> {
     f.blocks
         .values()
         .iter()
@@ -228,7 +228,94 @@ fn classify(f: &crate::Func, i: &Inst, inv: &[bool], ro: &[bool]) -> (K, bool) {
     }
 }
 
-fn plan_block(f: &crate::Func, b: usize, live_out: &[u64]) -> Option<Plan> {
+/// Classify the instructions of block `b` from the state (`inv`, `ro`) on entry, leaving the
+/// state on exit.
+fn classify_block(f: &crate::Func, b: usize, inv: &mut [bool], ro: &mut [bool]) -> Vec<K> {
+    let blk = f.blocks.values()[b];
+    let insts = &f.code[blk.start as usize..blk.end as usize];
+    let mut kind = vec![K::Other; insts.len()];
+    for (i, ins) in insts.iter().enumerate() {
+        let (k, is_ro) = classify(f, ins, inv, ro);
+        kind[i] = k;
+        operands(f, ins, |r, role| {
+            if role == Role::Def
+                && let (Some(a), Some(c)) = (inv.get_mut(r.0 as usize), ro.get_mut(r.0 as usize))
+            {
+                *a = k != K::Other;
+                *c = is_ro;
+            }
+        });
+    }
+    kind
+}
+
+/// The state on exit from block `b`, starting from that of its only predecessor chain (what
+/// the walk shared across blocks, such as the offsets of an element, is instance-constant in
+/// the blocks that follow too, #534).
+fn exit_state(f: &crate::Func, only_pred: &[Option<usize>], b: usize) -> (Vec<bool>, Vec<bool>) {
+    let n = f.reg_ty.len();
+    let mut chain = vec![b];
+    while let Some(Some(p)) = chain.last().map(|&x| only_pred[x]) {
+        if chain.len() >= 8 || chain.contains(&p) {
+            break;
+        }
+        chain.push(p);
+    }
+    let (mut inv, mut ro) = (vec![false; n], vec![false; n]);
+    for &x in chain.iter().rev() {
+        classify_block(f, x, &mut inv, &mut ro);
+    }
+    (inv, ro)
+}
+
+/// For each block, its one predecessor when exactly one reachable block jumps to it and
+/// nothing else enters it.
+fn only_preds(f: &crate::Func, succ: &[Vec<usize>]) -> Vec<Option<usize>> {
+    let nb = f.blocks.len();
+    let body = f.body.map(|b| b.0 as usize);
+    let mut reach = vec![false; nb];
+    let mut stack: Vec<usize> = std::iter::once(0)
+        .chain(body)
+        .chain((1..nb).filter(|&b| {
+            let r = f.blocks.values()[b];
+            r.end > r.start && falls_into(f, r.start as usize)
+        }))
+        .filter(|&b| b < nb)
+        .collect();
+    while let Some(b) = stack.pop() {
+        if !std::mem::replace(&mut reach[b], true) {
+            stack.extend(succ[b].iter().copied().filter(|&t| t < nb));
+        }
+    }
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); nb];
+    for (b, s) in succ.iter().enumerate() {
+        if reach[b] {
+            for &t in s {
+                if t < nb {
+                    preds[t].push(b);
+                }
+            }
+        }
+    }
+    (0..nb)
+        .map(|b| {
+            let r = f.blocks.values()[b];
+            let entered =
+                b == 0 || Some(b) == body || r.end <= r.start || falls_into(f, r.start as usize);
+            match preds[b][..] {
+                [p] if !entered && p != b => Some(p),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn plan_block(
+    f: &crate::Func,
+    b: usize,
+    live_out: &[u64],
+    (mut inv, mut ro): (Vec<bool>, Vec<bool>),
+) -> Option<Plan> {
     let blk = f.blocks.values()[b];
     let (s, e) = (blk.start as usize, blk.end as usize);
     let n = e.checked_sub(s)?;
@@ -240,21 +327,7 @@ fn plan_block(f: &crate::Func, b: usize, live_out: &[u64]) -> Option<Plan> {
         return None;
     }
     let nregs = f.reg_ty.len();
-    let mut inv = vec![false; nregs];
-    let mut ro = vec![false; nregs];
-    let mut kind = vec![K::Other; n];
-    for (i, ins) in insts.iter().enumerate() {
-        let (k, is_ro) = classify(f, ins, &inv, &ro);
-        kind[i] = k;
-        operands(f, ins, |r, role| {
-            if role == Role::Def
-                && let (Some(a), Some(c)) = (inv.get_mut(r.0 as usize), ro.get_mut(r.0 as usize))
-            {
-                *a = k != K::Other;
-                *c = is_ro;
-            }
-        });
-    }
+    let kind = classify_block(f, b, &mut inv, &mut ro);
     let first = kind.iter().position(|&k| k == K::Memo)?;
     // Backward over the rest of the block: which instructions the fast copy needs.
     let mut live: Vec<bool> = (0..nregs as u32).map(|r| bit(live_out, r)).collect();
@@ -511,20 +584,23 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     };
     let succ = successors(prog, f);
     let nb = f.blocks.len();
-    // Cheap test first: some cyclic block with a load from frozen memory.
+    let only = only_preds(f, &succ);
+    // Cheap test first: some cyclic block with a load from frozen memory, or one that follows
+    // another block alone (the values it needs may be instance-constant there).
     let candidate = |b: usize| {
         let blk = f.blocks.values()[b];
-        f.code[blk.start as usize..blk.end as usize]
-            .iter()
-            .any(|i| {
-                matches!(
-                    i,
-                    Inst::AddrOf {
-                        space: AddrSpace::Inst | AddrSpace::Const(_),
-                        ..
-                    }
-                )
-            })
+        (only[b].is_some()
+            || f.code[blk.start as usize..blk.end as usize]
+                .iter()
+                .any(|i| {
+                    matches!(
+                        i,
+                        Inst::AddrOf {
+                            space: AddrSpace::Inst | AddrSpace::Const(_),
+                            ..
+                        }
+                    )
+                }))
             && on_cycle(&succ, b)
     };
     let cands: Vec<usize> = (0..nb).filter(|&b| candidate(b)).collect();
@@ -535,7 +611,13 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
     let out = live_out(f, &succ);
     let plans: Vec<Plan> = cands
         .into_iter()
-        .filter_map(|b| plan_block(f, b, &out[b]))
+        .filter_map(|b| {
+            let seed = match only[b] {
+                Some(p) => exit_state(f, &only, p),
+                None => (vec![false; f.reg_ty.len()], vec![false; f.reg_ty.len()]),
+            };
+            plan_block(f, b, &out[b], seed)
+        })
         .collect();
     if plans.is_empty() {
         restore(f);

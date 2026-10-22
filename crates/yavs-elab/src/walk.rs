@@ -9,8 +9,9 @@ use yavs_sem::decl::{Alias, DeclKind, ObjClass, ObjRole};
 use yavs_sem::external::ExtOwner;
 use yavs_sem::generic::GenericActual;
 use yavs_sem::hir::{
-    Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, EntityAspect, ExprKind, GenSelect,
-    InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, Sensitivity, StmtKind, UnitHir,
+    Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, Delay, EntityAspect, ExprKind,
+    GenSelect, InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, Rhs, Sensitivity, StmtKind,
+    UnitHir, WaveElem, Waveform,
 };
 use yavs_sem::loader::UnitKind;
 use yavs_sem::stat::Staticness;
@@ -147,6 +148,8 @@ pub(crate) struct Elab<'d> {
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
     /// Aliases of the external names used in package subprograms, by package (#255).
     pkg_uses: Vec<(UnitId, DeclId)>,
+    /// How many units were loaded when the package bodies were last loaded (`load_new_bodies`).
+    units_seen: usize,
 }
 
 pub(crate) fn find_top(db: &mut Db, work: &str, name: &str) -> Result<Top, Vec<Diagnostic>> {
@@ -497,7 +500,9 @@ pub(crate) fn elaborate(
         pending: Vec::new(),
         deferred: Vec::new(),
         pkg_uses,
+        units_seen: 0,
     };
+    e.units_seen = e.db.units.len();
     let name = e.db.units[top.entity].name;
     let cfgp = top.config.map(|u| CfgPath {
         root: CfgRoot::Unit(u),
@@ -597,7 +602,7 @@ pub(crate) fn elaborate(
         e.check_sources();
     }
     if e.errors.is_empty() && e.cfg.collapse_ports {
-        crate::collapse::in_ports(e.db, &mut e.m.nets, &e.m.sigs, &mut e.procs);
+        crate::collapse::ports(e.db, &mut e.m.nets, &e.m.sigs, &mut e.procs);
     }
     if !e.errors.is_empty() {
         let mut v = e.db.take_diagnostics();
@@ -640,6 +645,21 @@ impl Elab<'_> {
             )));
         }
         d
+    }
+
+    /// The architectures and entities loaded on demand bring packages with them, and an
+    /// elaboration-time call of one of their subprograms needs the package body (#515, #516).
+    fn load_new_bodies(&mut self, at: Span) -> R<()> {
+        if self.db.units.len() == self.units_seen {
+            return Ok(());
+        }
+        let r = load_bodies(self.db);
+        self.units_seen = self.db.units.len();
+        r.map_err(|mut ds| {
+            let last = ds.pop();
+            self.errors.extend(ds);
+            Box::new(last.unwrap_or_else(|| ice(at, "body load failed without a diagnostic")))
+        })
     }
 
     /// Load the units Db needs on demand; their diagnostics become ours.
@@ -691,6 +711,7 @@ impl Elab<'_> {
         depth: u32,
         at: Span,
     ) -> R<ScopeId> {
+        self.load_new_bodies(at)?;
         // Generic types, subprograms and packages: elaborate the entity's clone for these
         // actuals, whose generics are the generic constants only.
         let (entity, arch, gens) = if self.db.has_non_constant_generics(entity) {
@@ -2463,10 +2484,100 @@ impl Elab<'_> {
         }
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
+        let copy = self.copy_source(s, st);
         if let Some(p) = self.procs.last_mut() {
             p.trigger = trigger;
+            p.copy = copy;
         }
         Ok(())
+    }
+
+    /// The source of a concurrent `target <= source;` that copies one signal to another: no
+    /// delay clause (or `transport`, or `inertial` without `reject`), not guarded or postponed,
+    /// one waveform element without `after`, target and source static signal names whose
+    /// elaborated shapes have the same types, lengths and scalar subtypes or bounds (so no check
+    /// of the assignment can fail), and source parts that match the target's (just set by
+    /// `process_refs`) one to one in length and element kind, each target part a whole driver
+    /// of the process. Its parts in element order; `None` for anything else.
+    fn copy_source(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<(LeafId, Range)>> {
+        let db: &Db = &*self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: Delay::Default | Delay::Transport | Delay::Inertial { reject: None },
+            rhs: Rhs::Simple(Waveform::Elements(elems)),
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let [
+            WaveElem {
+                value: Some(e),
+                after: None,
+            },
+        ] = &elems[..]
+        else {
+            return None;
+        };
+        let (e, t) = (*e, target.expr);
+        let (src, sshape) = self.static_signal_parts(s, e)?;
+        let (_, tshape) = self.static_signal_parts(s, t)?;
+        if !same_values(&sshape, &tshape) {
+            return None;
+        }
+        let p = self.procs.last()?;
+        let [dst] = &p.lsps[..] else {
+            return None;
+        };
+        let nets = &self.m.nets;
+        let ok = src.len() == dst.len()
+            && src.iter().zip(dst).all(|(&(sl, sr), &(k, dl, dr))| {
+                sr.len == dr.len
+                    && nets.leaf(sl).ty.elem == nets.leaf(dl).ty.elem
+                    && nets.drivers[k].leaf == dl
+                    && nets.drivers[k].range == dr
+            });
+        ok.then_some(src)
+    }
+
+    /// The leaves and shape of `e` when it is a static name of a signal: an object, indexed,
+    /// sliced and selected by static expressions only.
+    fn static_signal_parts(
+        &mut self,
+        s: ScopeId,
+        e: ExprId,
+    ) -> Option<(Vec<(LeafId, Range)>, Shape)> {
+        let db: &Db = &*self.db;
+        fn whole(db: &Db, e: ExprId) -> bool {
+            let st = |x: ExprId| db.exprs[x].stat != Staticness::None;
+            match &db.exprs[e].kind {
+                ExprKind::Obj(d) => matches!(
+                    &db.decls[*d].kind,
+                    DeclKind::Object(o) if o.class == ObjClass::Signal
+                        && o.role != ObjRole::ImplicitSignal
+                ),
+                ExprKind::Index { prefix, indices } => {
+                    indices.iter().all(|&i| st(i)) && whole(db, *prefix)
+                }
+                ExprKind::Slice {
+                    prefix,
+                    range: yavs_sem::types::RangeC::Explicit { left, right, .. },
+                } => st(*left) && st(*right) && whole(db, *prefix),
+                ExprKind::Field { prefix, .. } => whole(db, *prefix),
+                _ => false,
+            }
+        }
+        if !whole(db, e) {
+            return None;
+        }
+        let l = db.lsp(e)?;
+        if !matches!(l.root, ObjRoot::Decl(_)) {
+            return None;
+        }
+        let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
+        self.m.nets.select(o, &sels).ok()
     }
 
     /// A process that does nothing unless one edge of one scalar signal happens (or its reset
@@ -2770,6 +2881,7 @@ impl Elab<'_> {
             lsps: Vec::new(),
             actual: None,
             trigger: None,
+            copy: None,
         });
         ProcIdx(self.procs.len() as u32 - 1)
     }
@@ -3982,5 +4094,58 @@ fn port_mode(m: Mode) -> PortMode {
         Mode::Out => PortMode::Out,
         Mode::Inout => PortMode::Inout,
         Mode::Buffer => PortMode::Buffer,
+    }
+}
+
+/// Whether every value of shape `a` is a value of shape `b` with the same elements: the same
+/// types, array lengths per dimension, and scalar subtypes or bounds.
+fn same_values(a: &Shape, b: &Shape) -> bool {
+    match (a, b) {
+        (
+            Shape::Scalar {
+                ty: ta,
+                sub: sa,
+                range: ra,
+                ..
+            },
+            Shape::Scalar {
+                ty: tb,
+                sub: sb,
+                range: rb,
+                ..
+            },
+        ) => ta == tb && (sa == sb || ra.is_some() && ra == rb),
+        (
+            Shape::Array {
+                ty: ta,
+                dims: da,
+                elem: ea,
+                ..
+            },
+            Shape::Array {
+                ty: tb,
+                dims: db,
+                elem: eb,
+                ..
+            },
+        ) => {
+            ta == tb
+                && da.len() == db.len()
+                && da.iter().zip(db).all(|(x, y)| x.len() == y.len())
+                && same_values(ea, eb)
+        }
+        (
+            Shape::Record {
+                ty: ta, fields: fa, ..
+            },
+            Shape::Record {
+                ty: tb, fields: fb, ..
+            },
+        ) => {
+            ta == tb
+                && fa.len() == fb.len()
+                && fa.iter().zip(fb).all(|((_, x), (_, y))| same_values(x, y))
+        }
+        _ => false,
     }
 }

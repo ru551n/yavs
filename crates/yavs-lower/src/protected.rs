@@ -513,6 +513,7 @@ pub(crate) fn shared_var(
         w: Width::B8,
         comp: None,
         init,
+        scope: crate::func::elab_region(db, decl.scope),
         instance_level: cx.arch_scopes.contains(&decl.scope),
     });
     Ok(())

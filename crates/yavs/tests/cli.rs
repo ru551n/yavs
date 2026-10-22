@@ -304,6 +304,13 @@ fn runtime_error() {
     run_snapshot("runtime_error", 1);
 }
 
+/// The same labels when thin subprograms are inlined into their callers (`opt/inline.rs`): the
+/// frames of the inlined functions are listed as before.
+#[test]
+fn runtime_error_in_thin_subprograms() {
+    run_snapshot("runtime_error_thin", 1);
+}
+
 /// Reports are written in blocks on a pipe, but a diagnostic on the same pipe still comes after
 /// every report that preceded it (#428).
 #[test]
@@ -733,7 +740,7 @@ fn tier_auto_matches_interp() {
          entity hot is end;\n\
          architecture t of hot is\n\
            function mix(a, b : integer) return integer is\n\
-           begin return (a * 31 + b) mod 1000003; end function;\n\
+           begin assert a >= 0 report \"mix\"; return (a * 31 + b) mod 1000003; end function;\n\
            signal s : integer := 0;\n\
          begin\n\
            p0 : process\n\
@@ -811,6 +818,58 @@ fn tier_auto_matches_interp() {
             "{err}"
         );
     }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A waveform whose value comes from a call (#542): the interpreter's fast loop drops the
+/// waveform's setup and fuses the `Copy` and `Drive` after the call, so compiled code taking
+/// over at the call's return (every function compiled from its first call) must not need it.
+#[cfg(feature = "llvm")]
+#[test]
+fn tier_auto_call_between_waveform_and_drive() {
+    let tmp = tempdir("tierwave");
+    std::fs::write(
+        tmp.join("w.vhd"),
+        "entity w is end;\n\
+         architecture t of w is\n\
+           function shl(x : bit_vector) return bit_vector is\n\
+           begin return x(x'left + 1 to x'right) & '1'; end function;\n\
+           signal s : bit_vector(0 to 3) := \"0000\";\n\
+         begin\n\
+           process begin\n\
+             s <= shl(s);\n\
+             wait for 1 ns;\n\
+             report to_string(s);\n\
+             wait;\n\
+           end process;\n\
+         end;\n",
+    )
+    .expect("write");
+    let yavs = |args: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .current_dir(&tmp)
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run");
+        (
+            o.status.code().expect("exit code"),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    assert_eq!(yavs(&["analyze", "--work=work:lib", "w.vhd"]).0, 0);
+    let interp = yavs(&["run", "--work=work:lib", "w", "--tier=interp"]);
+    assert_eq!(interp.0, 0, "{}", interp.1);
+    assert!(interp.2.contains("0001"), "{}", interp.2);
+    let auto = yavs(&[
+        "run",
+        "--work=work:lib",
+        "w",
+        "--tier=auto",
+        "--tier-heat=1,0,0",
+    ]);
+    assert_eq!(auto, interp);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -965,6 +1024,90 @@ fn run_exit_after_clear_vhdl_assert() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// An explicit `--exit-severity=failure` makes only failure reports count for the exit status
+/// (#498); without the option an `error` report still fails the run.
+#[test]
+fn run_explicit_exit_severity() {
+    let tmp = tempdir("exitsev");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity t is end;\n\
+         architecture a of t is begin process begin report \"bad\" severity error; wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let o = run(&["analyze", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for (args, code) in [
+        (&["run", &lib, "t"][..], 1),
+        (&["run", &lib, "--exit-severity=failure", "t"][..], 0),
+        (&["run", &lib, "--exit-severity=error", "t"][..], 1),
+    ] {
+        let o = run(args);
+        assert_eq!(o.status.code(), Some(code), "{args:?}");
+        assert!(String::from_utf8_lossy(&o.stdout).contains("** Error: 0fs+0: bad"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A function called during elaboration reads a generic that has a default and an override
+/// (#494, #499); an empty override is an error, not the default.
+#[test]
+fn run_function_reads_generic_override() {
+    let tmp = tempdir("genfn");
+    let src = tmp.join("t.vhd");
+    std::fs::write(
+        &src,
+        "entity t is generic (flag : boolean := false); end;\n\
+         architecture a of t is\n\
+           function pick return natural is begin if flag then return 7; end if; return 3; end;\n\
+           constant c : natural := pick;\n\
+           signal s : bit_vector(1 to c);\n\
+         begin process begin report \"len=\" & integer'image(s'length); wait; end process; end;\n",
+    )
+    .expect("write");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never"])
+            .args(args)
+            .output()
+            .expect("run")
+    };
+    let o = run(&["analyze", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for (g, len) in [
+        ("", "len=3"),
+        ("-gflag=true", "len=7"),
+        ("-gflag=false", "len=3"),
+    ] {
+        let args: Vec<&str> = ["run", &lib, "t"]
+            .into_iter()
+            .chain((!g.is_empty()).then_some(g))
+            .collect();
+        let o = run(&args);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(String::from_utf8_lossy(&o.stdout).contains(len), "{g}");
+    }
+    let o = run(&["run", &lib, "t", "-gflag="]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("error[E2104]"));
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -1350,4 +1493,164 @@ fn run_gui() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs `yavs` with colours off.
+fn yavs_cmd(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["--color", "never"])
+        .args(args)
+        .output()
+        .expect("run")
+}
+
+/// Analyzes `files` (relative to `dir`) into library `lib` mapped at `dir/lib`, others by `maps`.
+fn analyze_into(dir: &std::path::Path, lib: &str, maps: &[&str], files: &[(&str, &str)]) {
+    let mut args = vec![
+        "analyze".to_string(),
+        "--std=2008".to_string(),
+        format!("--work={lib}:{}/{lib}", dir.display()),
+    ];
+    args.extend(
+        maps.iter()
+            .map(|m| format!("--map={m}:{}/{m}", dir.display())),
+    );
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text).expect("write");
+        args.push(dir.join(name).display().to_string());
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let o = yavs_cmd(&args);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// An elaboration-time call of a package function from an entity that is loaded while the design
+/// is elaborated (a default-bound component analyzed after its user): the package comes with
+/// the entity and its body must be loaded too (#515, #516).
+#[test]
+fn run_package_body_of_a_late_loaded_entity() {
+    let tmp = tempdir("latebody");
+    let dir: &std::path::Path = &tmp;
+    analyze_into(
+        dir,
+        "lib2",
+        &[],
+        &[
+            (
+                "pk.vhd",
+                "package pk is function twice(x : natural) return natural; end package;\n\
+                 package body pk is\n\
+                   function twice(x : natural) return natural is begin return 2 * x; end function;\n\
+                 end package body;\n",
+            ),
+            (
+                "comps.vhd",
+                "package comps is component leaf generic (n : natural := 3); end component; end package;\n",
+            ),
+            (
+                "top.vhd",
+                "use work.comps.all;\n\
+                 entity top is end entity;\n\
+                 architecture a of top is begin u : leaf generic map (n => 5); end architecture;\n",
+            ),
+        ],
+    );
+    analyze_into(
+        dir,
+        "lib2",
+        &[],
+        &[(
+            "leaf.vhd",
+            "use work.pk.all;\n\
+             entity leaf is generic (n : natural := 3); end entity;\n\
+             architecture a of leaf is\n\
+               impure function init_value return natural is begin return twice(n); end function;\n\
+               signal s : natural := init_value;\n\
+             begin process begin report \"s = \" & natural'image(s); wait; end process; end architecture;\n",
+        )],
+    );
+    let lib = format!("--work=lib2:{}/lib2", dir.display());
+    let o = yavs_cmd(&["run", "--std=2008", &lib, "top"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("s = 10"));
+}
+
+/// Packages are initialised in dependency order, not in the order their units happened to be
+/// loaded: the body of `ap` names `tp` (another library) and its initialisation calls into it
+/// (#517).
+#[test]
+fn run_package_initialisation_follows_dependencies() {
+    let tmp = tempdir("pkgorder");
+    let dir: &std::path::Path = &tmp;
+    analyze_into(
+        dir,
+        "libt",
+        &[],
+        &[(
+            "t.vhd",
+            "package tp is procedure say(msg : string); end package;\n\
+             package body tp is\n\
+               type flag_t is protected\n\
+                 procedure set(v : boolean);\n\
+                 impure function get return boolean;\n\
+               end protected;\n\
+               type flag_t is protected body\n\
+                 variable f : boolean := false;\n\
+                 procedure set(v : boolean) is begin f := v; end procedure;\n\
+                 impure function get return boolean is begin return f; end function;\n\
+               end protected body;\n\
+               shared variable enabled : flag_t;\n\
+               procedure say(msg : string) is begin if not enabled.get then report msg; end if; end procedure;\n\
+             end package body;\n",
+        )],
+    );
+    analyze_into(
+        dir,
+        "liba",
+        &["libt"],
+        &[
+            (
+                "a.vhd",
+                "package ap is impure function loud(x : natural) return natural; end package;\n",
+            ),
+            (
+                "b.vhd",
+                "library libt;\n\
+                 use libt.tp.all;\n\
+                 package body ap is\n\
+                   type cnt_t is protected impure function next_id return natural; end protected;\n\
+                   type cnt_t is protected body\n\
+                     variable n : natural := 0;\n\
+                     impure function next_id return natural is begin say(\"next_id\"); n := n + 1; return n; end function;\n\
+                   end protected body;\n\
+                   shared variable ids : cnt_t;\n\
+                   impure function loud(x : natural) return natural is\n\
+                   begin say(\"loud\"); return x + ids.next_id; end function;\n\
+                   constant first_id : natural := loud(1);\n\
+                 end package body;\n",
+            ),
+        ],
+    );
+    analyze_into(
+        dir,
+        "work",
+        &["liba", "libt"],
+        &[(
+            "top.vhd",
+            "library liba;\n\
+             use liba.ap.all;\n\
+             entity top is generic (g : natural := loud(2)); end entity;\n\
+             architecture a of top is begin\n\
+               process begin report \"g=\" & natural'image(g); wait; end process;\n\
+             end architecture;\n",
+        )],
+    );
+    let w = format!("--work=work:{}/work", dir.display());
+    let (a, t) = (
+        format!("--map=liba:{}/liba", dir.display()),
+        format!("--map=libt:{}/libt", dir.display()),
+    );
+    let o = yavs_cmd(&["run", "--std=2008", &w, &a, &t, "top"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("g=4"));
 }

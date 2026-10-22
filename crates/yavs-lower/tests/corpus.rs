@@ -32,13 +32,21 @@ const PASS: &[&str] = &[
     "arith/real_arith",
     "arith/real_to_int_range",
     "arith/time_arith",
+    "composite/alias_slice_call_constant",
     "composite/sig_array_part",
     "composite/record_conversion_2019",
+    "composite/record_subtype_others",
+    "sigassign/slice_param_range",
     "composite/static_slice_choice",
     "composite/narrow_int_storage",
     "composite/layout_memo_lengths",
     "scalar/slot_promotion",
     "composite/logic_fill",
+    "composite/loop_invariant",
+    "composite/loop_invariant_effect",
+    "composite/loop_invariant_fault_order",
+    "composite/loop_invariant_replay",
+    "composite/process_loop_invariant",
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/case_slice_choice",
@@ -93,6 +101,7 @@ const PASS: &[&str] = &[
     "composite/slv_register",
     "composite/strings_ops",
     "composite/unconstrained_records",
+    "composite/record_signal_field_read",
     "delta/async_triggers",
     "delta/concurrent_assign",
     "delta/delta_chain",
@@ -104,6 +113,7 @@ const PASS: &[&str] = &[
     "env/assert_count_cycles",
     "env/assert_count",
     "env/call_path",
+    "env/call_path_thin",
     "env/finish_in_function_call_order",
     "env/finish_noarg",
     "env/finish_status",
@@ -125,6 +135,7 @@ const PASS: &[&str] = &[
     "generics/attr_image_value",
     "generics/composite_eval",
     "generics/deferred_constant",
+    "generics/elab_block_function",
     "generics/elab_calls",
     "generics/elab_values",
     "generics/for_generate",
@@ -143,6 +154,7 @@ const PASS: &[&str] = &[
     "generics/package_generics",
     "generics/formal_package_subprograms",
     "generics/formal_packages",
+    "generics/named_aggregate_direction",
     "generics/nested_generic_packages",
     "generics/nested_packages",
     "generics/pkg_generic_kinds",
@@ -155,6 +167,7 @@ const PASS: &[&str] = &[
     "generics/subprog_instance_overload",
     "generics/subprog_instance_overload_2019",
     "generics/subprog_header_map_2019",
+    "generics/unelaborated_generate_constant",
     "hierarchy/entity_statements",
     "hierarchy/label_path_name",
     "hierarchy/component_binding",
@@ -165,7 +178,11 @@ const PASS: &[&str] = &[
     "hierarchy/binding_actual_names",
     "hierarchy/config_generate_index",
     "hierarchy/config_port_expr",
+    "hierarchy/out_port_collapse",
+    "hierarchy/driving_value_no_driver",
     "hierarchy/use_type_operations",
+    "protected/region_shared_elab",
+    "hierarchy/use_type_functions",
     "hierarchy/external_alias",
     "hierarchy/external_direct",
     "hierarchy/external_port_inertial",
@@ -237,6 +254,7 @@ const PASS: &[&str] = &[
     "ieee/numeric_std_ops_2019",
     "ieee/std_logic_1164_ops",
     "ieee/std_logic_1164_ops_2019",
+    "ieee/user_reduce_idiom",
     "postponed/postponed_basic",
     "postponed/postponed_wait",
     "process/call_chain",
@@ -261,6 +279,7 @@ const PASS: &[&str] = &[
     "process/named_return_scalar_2019",
     "process/return_when_2019",
     "process/sensitivity",
+    "process/static_waits",
     "process/subprograms",
     "process/wait_past_time_high",
     "process/unaffected_2019",
@@ -277,6 +296,8 @@ const PASS: &[&str] = &[
     "protected/method_in_init",
     "protected/method_alias_objects",
     "protected/method_nested",
+    "protected/null_in_table",
+    "protected/pointer_queue",
     "protected/private_variables",
     "protected/shared_var_regions",
     "protected/stack",
@@ -360,6 +381,7 @@ const PASS: &[&str] = &[
     "sigassign/implicit_in_subprogram",
     "sigassign/last_value_whole",
     "sigassign/out_param_elements",
+    "sigassign/plain_copies",
     "sigassign/port_elem_active",
     "sigassign/proc_local_drivers",
     "sigassign/pulse_swallow",
@@ -571,6 +593,20 @@ fn path_mask(text: &str) -> String {
     out
 }
 
+/// Replaces the text of every `fatal` `diag` event with `-`.
+fn fatalmsg_mask(text: &str) -> String {
+    let mut out = String::new();
+    for l in text.lines() {
+        let mut f: Vec<&str> = l.split('\t').collect();
+        if f.len() == 6 && f[0] == "diag" && f[1] == "fatal" {
+            f[5] = "-";
+        }
+        out.push_str(&f.join("\t"));
+        out.push('\n');
+    }
+    out
+}
+
 /// Sorts each run of `diag` events of one time and delta stably by process path.
 fn order_mask(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -641,6 +677,11 @@ fn corpus_groups() {
             if ignores("path") {
                 expected = path_mask(&expected);
                 got = got.map(|o| path_mask(&o));
+            }
+            // `ignore=fatalmsg`: the text of a fatal run-time error is not compared.
+            if ignores("fatalmsg") {
+                expected = fatalmsg_mask(&expected);
+                got = got.map(|o| fatalmsg_mask(&o));
             }
             let pass = matches!(&got, Ok(o) if o == &expected);
             let status = match &got {
@@ -764,6 +805,61 @@ fn static_array_bounds_are_constant() {
     }
 }
 
+/// The inner loop of a matrix built from an array of vectors computes only what changes per
+/// element: the position of `i`, the element descriptor, the lengths and their products are
+/// computed before it (#526).
+#[test]
+fn loop_invariant_code_leaves_the_inner_loop() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg_loop_invariant.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let tmp = tempfile::tempdir().expect("tmp");
+    let dir = tmp.path().to_path_buf();
+    opts.libraries
+        .add_spec(&format!("work:{}", dir.display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let body = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
+        .map(|(id, _)| id)
+        .unwrap();
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    let funcs = l.subprograms_of(body).unwrap();
+    assert_eq!(funcs.len(), 1);
+    let p = l.finish().unwrap().program;
+    let f = p.func(funcs[0]).unwrap();
+    // The block of the element write: before, four positions and four lengths.
+    let blk = f
+        .blocks
+        .values()
+        .iter()
+        .find(|b| {
+            f.code[b.start as usize..b.end as usize]
+                .iter()
+                .any(|i| matches!(i, yavs_ir::Inst::LSet { .. }))
+        })
+        .unwrap();
+    let code = &f.code[blk.start as usize..blk.end as usize];
+    let count = |m: fn(&yavs_ir::Inst) -> bool| code.iter().filter(|i| m(i)).count();
+    let dump = p.dump_func(funcs[0]);
+    assert_eq!(
+        count(|i| matches!(i, yavs_ir::Inst::DopeLen { .. })),
+        0,
+        "{dump}"
+    );
+    assert!(
+        count(|i| matches!(i, yavs_ir::Inst::Pos { .. })) <= 2,
+        "{dump}"
+    );
+}
+
 /// A periodic composite constant (an array of records holding long logic vectors and arrays of
 /// one record) is a compact pool constant, not its written-out bytes (#446).
 #[test]
@@ -810,4 +906,51 @@ fn periodic_constant_is_compact() {
         })
         .count();
     assert!(compact > 0, "{}", p.dump_func(funcs[0]));
+}
+
+/// A function that folds a logic vector with the identity of one gate is called as the native
+/// of the unary operator; a look-alike with another start value stays a call (#531).
+#[test]
+fn reduction_idiom_calls_the_native() {
+    let file = PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vhdl/pkg_reduce.vhd"
+    ));
+    let lib = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../lib"));
+    let mut opts = Options::new(LangRev::Vhdl2008, lib);
+    let tmp = tempfile::tempdir().expect("tmp");
+    opts.libraries
+        .add_spec(&format!("work:{}", tmp.path().display()))
+        .unwrap();
+    let mut db = Db::new(opts);
+    db.analyze_file("work", &file, LangRev::Vhdl2008).unwrap();
+    assert_eq!(db.error_count(), 0);
+    let body = db
+        .units
+        .iter()
+        .find(|(_, u)| matches!(u.hir, UnitHir::PackageBody { .. }))
+        .map(|(id, _)| id)
+        .unwrap();
+    let mut l = Lowerer::new(&db, LowerOptions::default());
+    let funcs = l.subprograms_of(body).unwrap();
+    let p = l.finish().unwrap().program;
+    let wrap = funcs
+        .iter()
+        .copied()
+        .find(|&f| p.func(f).unwrap().name.contains("wrap"))
+        .unwrap();
+    let code = &p.func(wrap).unwrap().code;
+    let reduce = "yavs.ieee.std_logic_1164.\"or\"(std_ulogic_vector)std_ulogic";
+    let natives = code
+        .iter()
+        .filter(|i| match **i {
+            yavs_ir::Inst::CallNative { native, .. } => {
+                p.natives.get(native).is_some_and(|n| n.symbol == reduce)
+            }
+            _ => false,
+        })
+        .count();
+    // `any_f` (start value assigned) and `any_d` (start value as the default) are the native;
+    // `all_f`, which has no gate in its loop, is not.
+    assert_eq!(natives, 2, "{}", p.dump_func(wrap));
 }

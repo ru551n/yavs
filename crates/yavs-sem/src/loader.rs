@@ -153,8 +153,15 @@ pub struct Unit {
 
 pub(crate) struct FileCache {
     pub file: FileId,
-    /// `None` once the parse failed.
+    /// `None` once the parse failed (or before it, see `parsed`).
     pub units: Option<Vec<(UnitKey, Option<ast::DesignUnit>)>>,
+    /// `false`: registered by the analysed-unit cache, which read units of the file from their
+    /// entries; the file is parsed when a unit of it is analysed from source after all.
+    pub parsed: bool,
+    /// The diagnostics of reading and parsing it (reported once, when it was registered).
+    pub diags: Vec<Diagnostic>,
+    /// Its content hash, when the analysed-unit cache is on (`units.rs`).
+    pub hash: Option<String>,
 }
 
 fn parse_rev(s: &str) -> Option<LangRev> {
@@ -177,22 +184,15 @@ impl Db {
     /// The library named `key` (folded), loading its manifest on first use.
     pub(crate) fn library(&mut self, name: Ident) -> Result<LibId, Reported> {
         if let Some(&id) = self.lib_by_key.get(&name.key) {
+            if let Some(l) = id {
+                self.lib_step(name, |_| l);
+            }
             return id.ok_or(Reported);
         }
         let key = name.key.as_str();
-        // A mapped `std`/`ieee` (only possible with `yavs analyze --bootstrap`) replaces
-        // the vendored tree; a library without a manifest is an empty library
-        // (cli-contract section 3).
-        let source = match self.opts.libraries.get(key) {
-            Some(l) if !l.has_manifest() => Some(Ok(LibSource::Files)),
-            Some(l) => Some(l.read().map(LibSource::Manifest)),
-            None if key == "std" || key == "ieee" => Some(Ok(LibSource::StdDir(
-                self.opts.stdlib.join(key).join(self.rev.as_str()),
-            ))),
-            None => None,
-        };
+        let source = self.lib_source(key);
         let r = match source {
-            Some(Ok(source)) => Ok(self.add_library(name, source)),
+            Some(Ok(source)) => Ok(self.lib_step(name, |db| db.add_library(name, source))),
             Some(Err(d)) => {
                 let mut d = *d;
                 if name.span != Span::default() {
@@ -225,6 +225,23 @@ impl Db {
         r
     }
 
+    /// The source of library `key` (folded) as it is now: `None` for a library that is not
+    /// mapped. A mapped `std`/`ieee` (only possible with `yavs analyze --bootstrap`) replaces the
+    /// vendored tree; a library without a manifest is an empty library (cli-contract section 3).
+    pub(crate) fn lib_source(
+        &self,
+        key: &str,
+    ) -> Option<Result<LibSource, Box<yavs_diag::Diagnostic>>> {
+        match self.opts.libraries.get(key) {
+            Some(l) if !l.has_manifest() => Some(Ok(LibSource::Files)),
+            Some(l) => Some(l.read().map(LibSource::Manifest)),
+            None if key == "std" || key == "ieee" => Some(Ok(LibSource::StdDir(
+                self.opts.stdlib.join(key).join(self.rev.as_str()),
+            ))),
+            None => None,
+        }
+    }
+
     fn add_library(&mut self, name: Ident, source: LibSource) -> LibId {
         let id = self.libs.next_id();
         let decl = self.decls.push(Decl {
@@ -248,7 +265,12 @@ impl Db {
         if let Some(UnitSlot::NotLoaded { file, rev }) = self.libs[lib].units.get(&key) {
             return Some((file.clone(), *rev));
         }
-        match &self.libs[lib].source {
+        self.locate_in(&self.libs[lib].source, key)
+    }
+
+    /// Where unit `key` of a library with this source is, by the source alone.
+    pub(crate) fn locate_in(&self, source: &LibSource, key: UnitKey) -> Option<(PathBuf, LangRev)> {
+        match source {
             LibSource::Files => None,
             LibSource::StdDir(dir) => {
                 let file = match key {
@@ -286,13 +308,69 @@ impl Db {
         rev: LangRev,
         at: Option<Span>,
     ) -> Result<(), Reported> {
+        if self.frames.is_empty() {
+            return self.parse_file(lib, path, rev, at);
+        }
+        self.file_step(lib, path, |db| db.parse_file(lib, path, rev, at))
+    }
+
+    fn parse_file(
+        &mut self,
+        lib: LibId,
+        path: &Path,
+        rev: LangRev,
+        at: Option<Span>,
+    ) -> Result<(), Reported> {
+        let opts = yavs_syntax::Options {
+            std: rev,
+            defines: self.opts.defines.clone(),
+            psl: self.opts.psl,
+        };
         if let Some(fc) = self.files.get(&(lib, path.to_path_buf())) {
+            if fc.parsed {
+                return if fc.units.is_some() {
+                    Ok(())
+                } else {
+                    Err(Reported)
+                };
+            }
+            // Registered by the analysed-unit cache: its diagnostics were reported then.
+            let file = fc.file;
+            let units = match self.sources.get(file).try_text() {
+                Ok(_) => yavs_syntax::parse_file(file, self.sources.get(file), &opts)
+                    .design
+                    .map(|d| {
+                        d.units
+                            .into_iter()
+                            .map(|u| (UnitKey::of(&u.unit), Some(u)))
+                            .collect()
+                    }),
+                Err(u) => {
+                    let mut d = Diagnostic::error(
+                        diag::SOURCE_UNREADABLE,
+                        format!("cannot read source file `{}`", path.display()),
+                    )
+                    .with_note(u.note(&path.display().to_string()));
+                    if let Some(at) = at {
+                        d = d.with_primary(at, "needed here");
+                    }
+                    self.report(d);
+                    None
+                }
+            };
+            let fc = self
+                .files
+                .get_mut(&(lib, path.to_path_buf()))
+                .expect("found above");
+            fc.parsed = true;
+            fc.units = units;
             return if fc.units.is_some() {
                 Ok(())
             } else {
                 Err(Reported)
             };
         }
+        let before = self.diagnostics().len();
         let bytes = match crate::stdlib::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -305,27 +383,47 @@ impl Db {
                     d = d.with_primary(at, "needed here");
                 }
                 let file = self.sources.add(path.display().to_string(), String::new());
-                self.files
-                    .insert((lib, path.to_path_buf()), FileCache { file, units: None });
+                self.note_file(file);
+                self.files.insert(
+                    (lib, path.to_path_buf()),
+                    FileCache {
+                        file,
+                        units: None,
+                        parsed: true,
+                        diags: Vec::new(),
+                        hash: None,
+                    },
+                );
                 return Err(self.error(d));
             }
         };
+        let hash = self.units_on().then(|| {
+            if matches!(self.libs[lib].source, LibSource::StdDir(_)) {
+                format!("builtin:{}", path.display())
+            } else {
+                yavs_lib::hash_content(&bytes)
+            }
+        });
         let (file, bad) = yavs_syntax::load_source(
             &mut self.sources,
             path.display().to_string(),
             bytes,
             self.opts.encoding,
         );
+        self.note_file(file);
         if let Some(d) = bad {
-            self.files
-                .insert((lib, path.to_path_buf()), FileCache { file, units: None });
+            self.files.insert(
+                (lib, path.to_path_buf()),
+                FileCache {
+                    file,
+                    units: None,
+                    parsed: true,
+                    diags: Vec::new(),
+                    hash,
+                },
+            );
             return Err(self.error(d));
         }
-        let opts = yavs_syntax::Options {
-            std: rev,
-            defines: self.opts.defines.clone(),
-            psl: self.opts.psl,
-        };
         let parsed = yavs_syntax::parse_file(file, self.sources.get(file), &opts);
         for d in parsed.diags {
             self.report(d);
@@ -337,14 +435,35 @@ impl Db {
                 .collect()
         });
         let ok = units.is_some();
-        self.files
-            .insert((lib, path.to_path_buf()), FileCache { file, units });
+        let diags = self.diagnostics()[before..].to_vec();
+        self.files.insert(
+            (lib, path.to_path_buf()),
+            FileCache {
+                file,
+                units,
+                parsed: true,
+                diags,
+                hash,
+            },
+        );
         if ok { Ok(()) } else { Err(Reported) }
     }
 
     /// The unit `key` of `lib`, analyzing it on first use. `at` is the
     /// reference that needs it (for diagnostics).
     pub(crate) fn load_unit(
+        &mut self,
+        lib: LibId,
+        key: UnitKey,
+        at: Option<Span>,
+    ) -> Result<UnitId, Reported> {
+        let began = self.child_begin(lib, key);
+        let r = self.load_unit_now(lib, key, at);
+        self.child_end(began, lib, key);
+        r
+    }
+
+    fn load_unit_now(
         &mut self,
         lib: LibId,
         key: UnitKey,
@@ -359,9 +478,28 @@ impl Db {
             }
             _ => {}
         }
+        if self.units_on()
+            && self.replaying == 0
+            && let Some(u) = self.try_replay(lib, key)
+        {
+            return Ok(u);
+        }
+        self.frame_begin(lib, key);
+        let r = self.load_from_source(lib, key, at);
+        self.frame_end(r.is_ok());
+        r
+    }
+
+    fn load_from_source(
+        &mut self,
+        lib: LibId,
+        key: UnitKey,
+        at: Option<Span>,
+    ) -> Result<UnitId, Reported> {
         let Some((path, rev)) = self.locate(lib, key) else {
             return Err(self.not_found(lib, key, at));
         };
+        self.frame_located(&path, rev);
         if self.parse_into_cache(lib, &path, rev, at).is_err() {
             self.libs[lib].units.insert(key, UnitSlot::Failed);
             return Err(Reported);
@@ -479,6 +617,18 @@ impl Db {
         path: &Path,
         rev: LangRev,
     ) -> Result<Vec<UnitRecord>, Reported> {
+        self.analyze_file_hashed(work, path, rev, None)
+    }
+
+    /// [`Db::analyze_file`] of a file whose content hash the caller knows (`yavs_lib`
+    /// `hash_content`), so that the analysed-unit cache need not read it to find its units.
+    pub fn analyze_file_hashed(
+        &mut self,
+        work: &str,
+        path: &Path,
+        rev: LangRev,
+        hash: Option<&str>,
+    ) -> Result<Vec<UnitRecord>, Reported> {
         let name = ident(work);
         let lib =
             if self.opts.libraries.get(work).is_some() || self.lib_by_key.contains_key(&name.key) {
@@ -489,14 +639,19 @@ impl Db {
                 self.lib_by_key.insert(name.key, Some(l));
                 l
             };
-        self.parse_into_cache(lib, path, rev, None)?;
-        let keys: Vec<UnitKey> = self.files[&(lib, path.to_path_buf())]
-            .units
-            .as_ref()
-            .expect("parsed")
-            .iter()
-            .map(|(k, _)| *k)
-            .collect();
+        let keys = match self.warm_file(lib, path, rev, hash) {
+            Some(keys) => keys,
+            None => {
+                self.parse_into_cache(lib, path, rev, None)?;
+                self.files[&(lib, path.to_path_buf())]
+                    .units
+                    .as_ref()
+                    .expect("parsed")
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .collect()
+            }
+        };
         for &k in &keys {
             self.libs[lib].units.insert(
                 k,
@@ -549,11 +704,88 @@ impl Db {
                 )));
                 continue;
             };
-            if self.analyze_file(&f.library, &f.path, rev).is_err() {
+            if self
+                .analyze_file_hashed(&f.library, &f.path, rev, Some(&f.hash))
+                .is_err()
+            {
                 r = Err(Reported);
             }
         }
         r
+    }
+
+    /// Whether `lib` has unit `key`, analyzed in this session or not (for the analysed-unit
+    /// cache: the answer is part of the analysis of the unit that asks).
+    pub(crate) fn unit_known(&self, lib: LibId, key: UnitKey) -> bool {
+        let a = self.unit_known_now(lib, key);
+        self.note_query(
+            crate::units::Query::Known(self.libs[lib].name.key, key),
+            crate::units::Answer::Bool(a),
+        );
+        a
+    }
+
+    pub(crate) fn unit_known_now(&self, lib: LibId, key: UnitKey) -> bool {
+        self.libs[lib].units.contains_key(&key) || self.locate(lib, key).is_some()
+    }
+
+    /// The units of `path` and an entry of the analysed-unit cache for each: when the manifest
+    /// of `lib` records the file with this content and every unit of it has an entry made from
+    /// it, the file is registered without being parsed (its units are read from their entries,
+    /// or parsed after all when one does not hold).
+    fn warm_file(
+        &mut self,
+        lib: LibId,
+        path: &Path,
+        rev: LangRev,
+        hash: Option<&str>,
+    ) -> Option<Vec<UnitKey>> {
+        if !self.units_on() || self.files.contains_key(&(lib, path.to_path_buf())) {
+            return None;
+        }
+        let LibSource::Manifest(m) = &self.libs[lib].source else {
+            return None;
+        };
+        let fe = m.file(&std::path::absolute(path).ok()?)?;
+        if fe.std != rev.as_str() || fe.units.is_empty() {
+            return None;
+        }
+        let hash = match hash {
+            Some(h) => h.to_string(),
+            None => yavs_lib::hash_content(&std::fs::read(path).ok()?),
+        };
+        if fe.hash != hash {
+            return None;
+        }
+        let keys: Vec<UnitKey> = fe
+            .units
+            .iter()
+            .map(|u| match u.kind {
+                LibKind::Architecture => {
+                    let (e, a) = u.key.split_once('/')?;
+                    Some(UnitKey::Secondary(Symbol::intern(e), Symbol::intern(a)))
+                }
+                LibKind::PackageBody => Some(UnitKey::body(Symbol::intern(&u.key))),
+                _ => Some(UnitKey::Primary(Symbol::intern(&u.key))),
+            })
+            .collect::<Option<_>>()?;
+        let stub = self.warm_stub(lib, &keys, path, &hash, rev)?;
+        let file = self
+            .sources
+            .add_stub(stub, |p| crate::stdlib::read(Path::new(p)));
+        self.note_file(file);
+        self.files.insert(
+            (lib, path.to_path_buf()),
+            FileCache {
+                file,
+                units: None,
+                parsed: false,
+                diags: Vec::new(),
+                hash: Some(hash),
+            },
+        );
+        self.note_warm_file(path);
+        Some(keys)
     }
 
     /// Load a primary unit by name, e.g. `("ieee", "numeric_std")`.
@@ -592,6 +824,16 @@ impl Db {
     /// one in manifest order, or in analysis order for a library of this session.
     pub fn last_architecture(&self, entity: UnitId) -> Option<Symbol> {
         let (lib, key) = (self.units[entity].lib, self.units[entity].name.key);
+        let a = self.last_arch_now(lib, key);
+        self.note_query(
+            crate::units::Query::LastArch(self.libs[lib].name.key, key),
+            crate::units::Answer::Name(a),
+        );
+        a
+    }
+
+    /// [`Db::last_architecture`] of entity `key` of `lib`, not recorded.
+    pub(crate) fn last_arch_now(&self, lib: LibId, key: Symbol) -> Option<Symbol> {
         match &self.libs[lib].source {
             LibSource::Manifest(m) => m
                 .units()

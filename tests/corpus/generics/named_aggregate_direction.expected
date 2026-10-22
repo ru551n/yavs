@@ -1,0 +1,3 @@
+exit	0
+diag	note	1000000	0	:named_aggregate_direction:check	up 0011 down 0011 range 0011 asc 0011 m 0011
+diag	note	1000000	0	:named_aggregate_direction:check	done

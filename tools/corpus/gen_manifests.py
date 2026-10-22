@@ -373,7 +373,6 @@ def write(name, std, srcs, files, excl, note, flags, extra=None):
         L.append(f"  {{ lib = {toml_str(l)}, source = {toml_str(s)}, path = {toml_str(p)}, std = {toml_str(st)} }},")
     L += ["]", "", "# Extra analyze flags per tool (UVVM has non-protected shared variables).", "[flags]"]
     for tool, fl in flags.items():
-        tool = simconf.get(tool, "corpus_flags_key", tool)  # the manifests key reference flags by this name
         L.append(f"{tool} = [{', '.join(toml_str(x) for x in fl)}]")
     for sid in srcs:
         url, commit, why, *lic = SOURCES.get(sid, ("(this repository)", "(see git)", "yavs's own lib/"))

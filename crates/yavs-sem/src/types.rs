@@ -2097,6 +2097,35 @@ impl Db {
             return self.poison.subtype;
         };
         let declared = elems[elem as usize].subtype;
+        // `r'subtype` of a record object: the element's bounds are the object's own, read at
+        // run time from `r.elem` (LRM 16.2.2).
+        if let Constraint::FromObject {
+            expr,
+            elem_depth: 0,
+        } = self.subtypes[st].constraint
+            && self.constrainedness(declared) != Constrainedness::Full
+        {
+            let (stat, span) = (self.exprs[expr].stat, self.exprs[expr].span);
+            let field = self.add_expr(Expr {
+                kind: ExprKind::Field { prefix: expr, elem },
+                subtype: declared,
+                span,
+                stat,
+                value: None,
+            });
+            let base = self.base(declared);
+            return self.subtypes.push(SubtypeDef {
+                base,
+                name: None,
+                parent: Some(declared),
+                constraint: Constraint::FromObject {
+                    expr: field,
+                    elem_depth: 0,
+                },
+                resolution: self.subtypes[declared].resolution.clone(),
+                span,
+            });
+        }
         let c = match &self.subtypes[st].constraint {
             Constraint::Record { elems } => elems
                 .iter()

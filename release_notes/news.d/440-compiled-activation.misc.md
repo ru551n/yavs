@@ -1,0 +1,1 @@
+Compiled clocked processes (`--tier=llvm`, `--tier=auto`) start and end each activation with less work and reach their own vector variables and temporaries without a runtime call, and `--tier=auto` now also compiles somewhat smaller clocked processes.

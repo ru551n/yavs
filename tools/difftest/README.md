@@ -7,7 +7,8 @@ Python 3 stdlib only.
 
     tools/difftest/difftest.py                      # the reference simulator against its own .expected (must be green)
     tools/difftest/difftest.py --candidate sim2     # report where the second reference simulator differs
-    tools/difftest/difftest.py --candidate yavs     # the real thing (M2 onwards)
+    tools/difftest/difftest.py --candidate yavs     # the real thing, with the default tier of the build
+    tools/difftest/difftest.py --candidate yavs-interp  # yavs with `--tier=interp`
     tools/difftest/difftest.py --candidate yavs-llvm  # yavs with `--tier=llvm` (a yavs built with `--features llvm`)
     tools/difftest/difftest.py --candidate yavs-auto  # yavs with `--tier=auto` (the same build)
     tools/difftest/difftest.py --candidate yavs-clift       # `--tier=clift` (a yavs built with `--features clift`)

@@ -134,6 +134,7 @@ fn guard(format: MessageFormat, color: bool, f: impl FnOnce() -> ExitCode) -> Ex
 const READ_ERROR: &str = "E0100";
 
 fn main() -> ExitCode {
+    yavs_cache::set_sources(env!("YAVS_SRC_HASH"));
     yavs_vhpi::keep_exports();
     let args = match analyze::expand_response_files(
         std::env::args_os().map(|a| a.to_string_lossy().into_owned()),
@@ -273,5 +274,28 @@ mod tests {
     fn panic_becomes_exit_3() {
         let r = guard(MessageFormat::Short, false, || panic!("boom"));
         assert_eq!(format!("{r:?}"), format!("{:?}", ExitCode::from(3)));
+    }
+
+    /// The default tier (#125): `auto` with the `llvm` feature, also under `--vhpi`; `interp`
+    /// under `--dap` and without the feature; an explicit `--tier=` wins.
+    #[test]
+    fn default_tier() {
+        let tier = |extra: &[&str]| {
+            let cli = Cli::try_parse_from(["yavs", "run", "--work=w:d", "top"].iter().chain(extra))
+                .unwrap();
+            match cli.command {
+                Some(Command::Run(a)) => a.tier(),
+                _ => unreachable!(),
+            }
+        };
+        let auto = if cfg!(feature = "llvm") {
+            elab::TierArg::Auto
+        } else {
+            elab::TierArg::Interp
+        };
+        assert!(tier(&[]) == auto);
+        assert!(tier(&["--vhpi=plugin.so"]) == auto);
+        assert!(tier(&["--dap=stdio"]) == elab::TierArg::Interp);
+        assert!(tier(&["--vhpi=plugin.so", "--tier=interp"]) == elab::TierArg::Interp);
     }
 }

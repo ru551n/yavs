@@ -5,9 +5,9 @@ std = "2008"
 
 # Files not compiled, with the reason.
 exclude = [
-  { source = "json-for-vhdl", path = "src/JSON.ctx.vhdl", reason = "round 1: rejected by the reference tools: NVC: ** Error: design unit JSON not found in library JSON; ghdl: JSON.ctx.vhdl:40:12:error: unit \"json\" not found in library \"JSON\"" },
-  { source = "json-for-vhdl", path = "examples/Boards_VUnit.vhdl", reason = "round 1: rejected by the reference tools: NVC: ** Error: design unit JSON_CTX not found in library JSON; ghdl: Boards_VUnit.vhdl:5:14:error: unit \"json_ctx\" not found in library \"JSON\"" },
-  { source = "json-for-vhdl", path = "tests/JSONTestSuite/TopLevel.vhdl", reason = "round 1: rejected by the reference tools: NVC: ** Error: no visible declaration for JSONLOADFILE; ghdl: TopLevel.vhdl:15:60:error: no declaration for \"jsonloadfile\"" },
+  { source = "json-for-vhdl", path = "src/JSON.ctx.vhdl", reason = "round 1: rejected by the reference tools: sim1: ** Error: design unit JSON not found in library JSON; sim2: JSON.ctx.vhdl:40:12:error: unit \"json\" not found in library \"JSON\"" },
+  { source = "json-for-vhdl", path = "examples/Boards_VUnit.vhdl", reason = "round 1: rejected by the reference tools: sim1: ** Error: design unit JSON_CTX not found in library JSON; sim2: Boards_VUnit.vhdl:5:14:error: unit \"json_ctx\" not found in library \"JSON\"" },
+  { source = "json-for-vhdl", path = "tests/JSONTestSuite/TopLevel.vhdl", reason = "round 1: rejected by the reference tools: sim1: ** Error: no visible declaration for JSONLOADFILE; sim2: TopLevel.vhdl:15:60:error: no declaration for \"jsonloadfile\"" },
 ]
 
 # Compile order: (library, source, path relative to the source root, std).
@@ -165,7 +165,7 @@ file = [
 
 # Extra analyze flags per tool (UVVM has non-protected shared variables).
 [flags]
-nvc = []
+sim1 = []
 yavs = []
 
 [[source]]
@@ -189,7 +189,7 @@ license = "Apache-2.0"
 
 # Test benches in the compile list above: how they are run, what passing means, and their top units.
 [testbenches]
-runner = "tests/VUnit/run.py (Boards_VUnit, Encodings_VUnit); Boards0/1/2 and TopLevel are plain benches run by name (regression.tcl, tests/ghdl/Boards2.sh)"
+runner = "tests/VUnit/run.py (Boards_VUnit, Encodings_VUnit); Boards0/1/2 and TopLevel are plain benches run by name (regression.tcl, the sim2 script)"
 passes = "VUnit benches: test_runner_cleanup with no failed check; plain benches: no assertion failure, simulation ends by itself"
 
 [[testbenches.bench]]

@@ -1130,6 +1130,300 @@ fn the_size_of_a_layout_of_known_length_is_a_constant() {
     );
 }
 
+/// A record of two integers and an array of them.
+fn pair_types(pb: &mut ProgramBuilder) -> (TyId, TyId) {
+    let int = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let field = |name: &str| Field {
+        name: name.into(),
+        ty: int,
+        desc: None,
+    };
+    let rec = pb.ty(Ty::Record {
+        fields: vec![field("a"), field("b")],
+    });
+    let arr = pb.ty(Ty::Array {
+        elem: rec,
+        elem_desc: None,
+        dims: 1,
+    });
+    (rec, arr)
+}
+
+#[test]
+fn the_words_of_a_record_layout_and_the_stride_of_an_array_of_them_are_constants() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let (rec, arr) = pair_types(&mut pb);
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Return, sp());
+    // Neither descriptor is known: the layout words that do not depend on it are.
+    let ptr = |fb: &mut FuncBuilder<'_>, off: u32| {
+        let a = fb.addr(AddrSpace::Inst, off);
+        let d = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: d,
+            addr: a,
+            w: Width::B8,
+        });
+        d
+    };
+    let (d_rec, d_arr) = (ptr(&mut fb, 0), ptr(&mut fb, 8));
+    let word = |fb: &mut FuncBuilder<'_>, ty: TyId, desc: Reg, off: i64| {
+        let l = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::LayoutOf { dst: l, ty, desc });
+        let at = fb.reg(RegTy::Ptr);
+        let o = fb.int(off);
+        fb.emit(Inst::Index {
+            dst: at,
+            base: l,
+            pos: o,
+            stride: 1,
+        });
+        let w = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: w,
+            addr: at,
+            w: Width::B8,
+        });
+        w
+    };
+    let size = word(&mut fb, rec, d_rec, 0);
+    let second = word(&mut fb, rec, d_rec, 24);
+    let stride = word(&mut fb, arr, d_arr, 16);
+    let sum = bin(&mut fb, IntOp::Add, size, second);
+    let sum = bin(&mut fb, IntOp::Add, sum, stride);
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let code = &p.func(f).expect("f").code;
+    let (l, _) = Ty::layout(&p.types, &p.consts, rec, &[]).expect("layout");
+    assert_eq!((l.size, l.offsets.get(1).copied()), (16, Some(8)));
+    // The size and the second field offset of the record, and the element size of the array:
+    // 16 + 8 + 16 added up at compile time, the descriptors never read.
+    assert_eq!(
+        count(code, |i| matches!(
+            i,
+            Inst::LayoutOf { .. } | Inst::Load { .. }
+        )),
+        0,
+        "{code:?}"
+    );
+    assert!(
+        code.iter().any(|i| matches!(i, Inst::Const { v: 40, .. })),
+        "{code:?}"
+    );
+}
+
+/// A record variable copied from an `Alloc`ed block (made into frame memory by the
+/// optimiser), then `between` and a load of its second field. Returns the code.
+fn copied_record(between: impl FnOnce(&mut FuncBuilder<'_>, Reg, FuncId)) -> Vec<Inst> {
+    let mut pb = ProgramBuilder::new();
+    let g = pb.declare("g", FuncKind::Procedure, None);
+    let mut gb = pb.define(g);
+    gb.stmt(StmtKind::Return, sp());
+    gb.emit(Inst::Ret { v: None });
+    gb.finish();
+    let (rec, _) = pair_types(&mut pb);
+    let what = pb.check_msg("object", Dir::To);
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let off = fb.local("v", rec, 56, 8);
+    fb.root(off + 16, RootKind::Handle);
+    fb.stmt(StmtKind::Decl, sp());
+    let n = fb.int(16);
+    let src = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: src, size: n });
+    let h = fb.reg(RegTy::Handle);
+    fb.emit(Inst::New {
+        dst: h,
+        ty: rec,
+        init: src,
+        size: n,
+        shared: false,
+    });
+    let hs = fb.addr(AddrSpace::Frame, off + 16);
+    fb.emit(Inst::Store {
+        addr: hs,
+        src: h,
+        w: Width::B8,
+    });
+    let p = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Deref {
+        dst: p,
+        handle: h,
+        what,
+    });
+    between(&mut fb, src, g);
+    let o = fb.int(8);
+    let at = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Index {
+        dst: at,
+        base: p,
+        pos: o,
+        stride: 1,
+    });
+    let b = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: b,
+        addr: at,
+        w: Width::B8,
+    });
+    fb.stmt(StmtKind::Return, sp());
+    fb.emit(Inst::Ret { v: Some(b) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    p.func(f).expect("f").code.clone()
+}
+
+#[test]
+fn a_copied_record_nothing_changes_is_read_from_its_source() {
+    if !on() {
+        return;
+    }
+    let frame = |i: &Inst| matches!(i, Inst::NewFrame { .. });
+    // Nothing between the copy and the read: no copy.
+    let code = copied_record(|_, _, _| {});
+    assert_eq!(count(&code, frame), 0, "{code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Load { .. })),
+        1,
+        "{code:?}"
+    );
+    // A store into the source, or a call, may change what the copy holds.
+    let code = copied_record(|fb, src, _| {
+        let v = fb.int(7);
+        fb.emit(Inst::Store {
+            addr: src,
+            src: v,
+            w: Width::B8,
+        });
+    });
+    assert_eq!(count(&code, frame), 1, "{code:?}");
+    let code = copied_record(|fb, _, g| {
+        let args = fb.regs(&[]);
+        fb.emit(Inst::Call {
+            func: g,
+            args,
+            dst: None,
+        });
+    });
+    assert_eq!(count(&code, frame), 1, "{code:?}");
+}
+
+type Via = Option<(StmtId, FuncId)>;
+
+/// `f(a, b) = a + b` and a caller that passes two values it reads from the instance, or a
+/// callee that lets the address of a parameter slot escape or branches: the caller's code and
+/// its inlining record.
+fn thin_call(variant: &str) -> (Vec<Inst>, Vec<Via>, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    if variant == "escape" {
+        // The address of a parameter's slot is stored: the slot is more than a way in.
+        pin(&mut fb, sa);
+    }
+    let (x, y) = (load(&mut fb, sa), load(&mut fb, sb));
+    let sum = bin(&mut fb, IntOp::Add, x, y);
+    if variant == "branch" {
+        let c = fb.reg(RegTy::I64);
+        let zero = fb.int(0);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: sum,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        fb.emit(Inst::Ret { v: Some(zero) });
+        fb.at(e);
+    }
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    gb.slot(16, 8);
+    gb.stmt(StmtKind::Return, sp());
+    let (u, v) = (unknown(&mut gb, 0), unknown(&mut gb, 8));
+    let r = gb.reg(RegTy::I64);
+    let args = gb.regs(&[u, v]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let g = p.func(g).expect("g");
+    let via = if g.via.is_empty() {
+        Vec::new()
+    } else {
+        (0..g.code.len()).map(|pc| g.inlined_at(pc)).collect()
+    };
+    (g.code.clone(), via, f)
+}
+
+#[test]
+fn a_call_of_a_thin_function_becomes_its_code() {
+    if !on() {
+        return;
+    }
+    let is_call = |i: &Inst| matches!(i, Inst::Call { .. });
+    let (code, via, f) = thin_call("plain");
+    assert_eq!(count(&code, is_call), 0, "{code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Bin { op: IntOp::Add, .. })),
+        1,
+        "{code:?}"
+    );
+    // The addition came from `f`: a trace lists `f` as a frame of its own.
+    assert_eq!(via.len(), code.len());
+    let at = code
+        .iter()
+        .position(|i| matches!(i, Inst::Bin { .. }))
+        .expect("the addition");
+    assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
+    assert!(
+        via[..at]
+            .iter()
+            .all(|v| v.is_none() || v.is_some_and(|(_, c)| c == f))
+    );
+    // A parameter slot whose address escapes: the call stays, nothing is recorded.
+    let (code, via, _) = thin_call("escape");
+    assert_eq!(count(&code, is_call), 1, "escape: {code:?}");
+    assert!(via.is_empty(), "escape: {via:?}");
+    // A branch: the callee's blocks are appended to the caller, which jumps to them and gets the
+    // result back through a move and a jump to the rest of its block.
+    let (code, via, f) = thin_call("branch");
+    assert_eq!(count(&code, is_call), 0, "branch: {code:?}");
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Ret { .. })),
+        1,
+        "{code:?}"
+    );
+    assert_eq!(via.len(), code.len());
+    let at = code
+        .iter()
+        .position(|i| matches!(i, Inst::CondBr { .. }))
+        .expect("the branch");
+    assert!(matches!(via[at], Some((_, c)) if c == f), "{via:?}");
+}
+
 #[test]
 fn a_concatenation_keeps_its_block_and_what_it_read() {
     if !on() {
@@ -1235,6 +1529,478 @@ fn a_select_nobody_reads_goes() {
     });
     assert_eq!(
         count(&code, |i| matches!(i, Inst::Select { .. })),
+        0,
+        "{code:?}"
+    );
+}
+
+fn unknown(fb: &mut FuncBuilder<'_>, off: u32) -> Reg {
+    let a = fb.addr(AddrSpace::Inst, off);
+    let d = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: d,
+        addr: a,
+        w: Width::B8,
+    });
+    d
+}
+
+#[test]
+fn a_slice_emptiness_test_compares_the_bounds() {
+    if !on() {
+        return;
+    }
+    for (dir, want_a, want_b) in [(0, 1, 0), (1, 0, 1)] {
+        let code = build(FuncKind::Function, |fb| {
+            fb.slot(16, 8);
+            fb.stmt(StmtKind::Return, sp());
+            // (Only code in a loop is cleaned up: the test goes round once more.)
+            let head = fb.block();
+            fb.emit(Inst::Br { to: head });
+            fb.at(head);
+            let (l, r) = (unknown(fb, 0), unknown(fb, 8));
+            let at = fb.reg(RegTy::Ptr);
+            let n24 = fb.int(24);
+            fb.emit(Inst::Alloc { dst: at, size: n24 });
+            let d = fb.int(dir);
+            let parts = fb.regs(&[l, r, d]);
+            fb.emit(Inst::MakeDope { at, parts });
+            let len = fb.reg(RegTy::I64);
+            fb.emit(Inst::DopeLen {
+                dst: len,
+                dope: at,
+                dim: 0,
+            });
+            let z = fb.int(0);
+            let c = fb.reg(RegTy::I64);
+            fb.emit(Inst::Cmp {
+                op: CmpOp::Eq,
+                dst: c,
+                a: len,
+                b: z,
+            });
+            let (t, e) = (fb.block(), fb.block());
+            fb.emit(Inst::CondBr { c, t, f: e });
+            fb.at(t);
+            fb.emit(Inst::Ret { v: Some(l) });
+            fb.at(e);
+            let done = fb.block();
+            fb.emit(Inst::CondBr {
+                c: r,
+                t: head,
+                f: done,
+            });
+            fb.at(done);
+            fb.emit(Inst::Ret { v: Some(r) });
+        });
+        for gone in [
+            count(&code, |i| matches!(i, Inst::DopeLen { .. })),
+            count(&code, |i| matches!(i, Inst::MakeDope { .. })),
+            count(&code, |i| matches!(i, Inst::Alloc { .. })),
+        ] {
+            assert_eq!(gone, 0, "{code:?}");
+        }
+        // Empty when the bounds are the wrong way round: loads come in order l, r.
+        let loads: Vec<Reg> = code
+            .iter()
+            .filter_map(|i| match i {
+                Inst::Load { dst, .. } => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        let cmp = code
+            .iter()
+            .find_map(|i| match i {
+                Inst::Cmp { op, a, b, .. } => Some((*op, *a, *b)),
+                _ => None,
+            })
+            .expect("one comparison");
+        assert_eq!(
+            cmp,
+            (CmpOp::Lt, loads[want_a], loads[want_b]),
+            "direction {dir}: {code:?}"
+        );
+    }
+}
+
+#[test]
+fn a_flag_set_on_each_path_is_branched_on_there() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        // (Only code in a loop is cleaned up: the test goes round once more.)
+        let head = fb.block();
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let (x, y, z) = (unknown(fb, 0), unknown(fb, 8), unknown(fb, 16));
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: x,
+            b: y,
+        });
+        let (bt, bf, join, yes, no) = (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t: bt, f: bf });
+        // `flag := x = z` on one path, `flag := false` on the other.
+        let flag = fb.reg(RegTy::I64);
+        fb.at(bt);
+        let c2 = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c2,
+            a: x,
+            b: z,
+        });
+        fb.emit(Inst::Move { dst: flag, src: c2 });
+        fb.emit(Inst::Br { to: join });
+        fb.at(bf);
+        fb.emit(Inst::Const { dst: flag, v: 0 });
+        fb.emit(Inst::Br { to: join });
+        fb.at(join);
+        fb.emit(Inst::CondBr {
+            c: flag,
+            t: yes,
+            f: no,
+        });
+        fb.at(yes);
+        fb.emit(Inst::Ret { v: Some(x) });
+        fb.at(no);
+        let done = fb.block();
+        fb.emit(Inst::CondBr {
+            c: y,
+            t: head,
+            f: done,
+        });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(y) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Move { .. })),
+        0,
+        "{code:?}"
+    );
+    // The two tests are branches, and the loop's exit test follows each path that reaches it
+    // (the flag is gone, and the false path goes straight to that test).
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        4,
+        "{code:?}"
+    );
+    let cmp_eq = code
+        .iter()
+        .find_map(|i| match i {
+            Inst::Cmp {
+                op: CmpOp::Eq, dst, ..
+            } => Some(*dst),
+            _ => None,
+        })
+        .expect("the equality");
+    assert!(
+        code.iter()
+            .any(|i| matches!(i, Inst::CondBr { c, .. } if *c == cmp_eq)),
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_constant_of_a_multiply_defined_register_is_known_until_it_is_written_again() {
+    if !on() {
+        return;
+    }
+    // r is written in three blocks, so it is no single-definition constant; in b2 it holds 0
+    // from its `Const` to the branch, and the branch on its negation is decided.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let zero = fb.int(0);
+        let r = fb.reg(RegTy::I64);
+        let (c, n) = (fb.reg(RegTy::I64), fb.reg(RegTy::I64));
+        fb.emit(Inst::Const { dst: r, v: 1 });
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: x,
+            b: zero,
+        });
+        let (b2, b3, yes, no) = (fb.block(), fb.block(), fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t: b2, f: b3 });
+        fb.at(b2);
+        fb.emit(Inst::Const { dst: r, v: 0 });
+        fb.emit(Inst::Bool {
+            op: BoolOp::Not,
+            dst: n,
+            a: r,
+            b: r,
+        });
+        fb.emit(Inst::CondBr {
+            c: n,
+            t: yes,
+            f: no,
+        });
+        fb.at(b3);
+        fb.emit(Inst::Const { dst: r, v: 7 });
+        fb.emit(Inst::Br { to: no });
+        fb.at(yes);
+        let one = fb.int(11);
+        fb.emit(Inst::Ret { v: Some(one) });
+        fb.at(no);
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::CondBr { .. })),
+        1,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn loads_of_instance_data_survive_statements_and_stores_through_pointers() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let fa = fb.addr(AddrSpace::Frame, 0);
+        let ptr = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Load {
+            dst: ptr,
+            addr: fa,
+            w: Width::B8,
+        });
+        let ia = fb.addr(AddrSpace::Inst, 8);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: ia,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Stmt);
+        fb.emit(Inst::Store {
+            addr: ptr,
+            src: x,
+            w: Width::B8,
+        });
+        let ib = fb.addr(AddrSpace::Inst, 8);
+        let y = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: y,
+            addr: ib,
+            w: Width::B8,
+        });
+        let s = bin(fb, IntOp::Add, x, y);
+        fb.emit(Inst::Ret { v: Some(s) });
+    });
+    let inst_loads = count(
+        &code,
+        |i| matches!(i, Inst::Load { addr, .. } if code.iter().any(|j| matches!(j, Inst::AddrOf { dst, space: AddrSpace::Inst, .. } if dst == addr))),
+    );
+    assert_eq!(inst_loads, 1, "{code:?}");
+}
+
+#[test]
+fn a_multiply_defined_register_is_shared_until_it_is_written_again() {
+    if !on() {
+        return;
+    }
+    // i is written twice: the two sums with the first value are one, the one after the second
+    // write is another.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        pin(fb, 0);
+        let x = load(fb, 0);
+        let i = fb.reg(RegTy::I64);
+        fb.emit(Inst::Move { dst: i, src: x });
+        let k = fb.int(5);
+        let a = bin(fb, IntOp::Add, i, k);
+        let b = bin(fb, IntOp::Add, i, k);
+        let y = load(fb, 8);
+        fb.emit(Inst::Move { dst: i, src: y });
+        let c = bin(fb, IntOp::Add, i, k);
+        let ab = bin(fb, IntOp::Mul, a, b);
+        let r = bin(fb, IntOp::Mul, ab, c);
+        fb.emit(Inst::Ret { v: Some(r) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(i, Inst::Bin { op: IntOp::Add, .. })),
+        2,
+        "{code:?}"
+    );
+}
+
+/// `f(a, b) = a + b`, `g(a) = f(a, 1)` and `h` calling `g` on a value of the instance.
+#[test]
+fn a_chain_of_inlined_calls_is_recorded_whole() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    let sb = fb.param("b", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    let (x, y) = (load(&mut fb, sa), load(&mut fb, sb));
+    let sum = bin(&mut fb, IntOp::Add, x, y);
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    let ga = gb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    gb.stmt(StmtKind::Return, sp());
+    let a = load(&mut gb, ga);
+    let one = gb.int(1);
+    let r = gb.reg(RegTy::I64);
+    let args = gb.regs(&[a, one]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let h = pb.declare("h", FuncKind::Function, None);
+    let mut hb = pb.define(h);
+    hb.slot(16, 8);
+    hb.stmt(StmtKind::Return, sp());
+    let u = unknown(&mut hb, 0);
+    let r = hb.reg(RegTy::I64);
+    let args = hb.regs(&[u]);
+    hb.emit(Inst::Call {
+        func: g,
+        args,
+        dst: Some(r),
+    });
+    hb.emit(Inst::Ret { v: Some(r) });
+    hb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let hf = p.func(h).expect("h");
+    assert_eq!(count(&hf.code, |i| matches!(i, Inst::Call { .. })), 0);
+    let at = hf
+        .code
+        .iter()
+        .position(|i| matches!(i, Inst::Bin { op: IntOp::Add, .. }))
+        .expect("the addition");
+    let chain: Vec<FuncId> = hf.inlined_chain(at).map(|n| n.callee).collect();
+    assert_eq!(chain, vec![f, g], "{:?}", hf.via_nodes);
+}
+
+#[test]
+fn a_case_of_the_callee_becomes_compares() {
+    if !on() {
+        return;
+    }
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sa = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    let x = load(&mut fb, sa);
+    let (b1, b2, bd) = (fb.block(), fb.block(), fb.block());
+    let table = fb.program().case_table(CaseTable {
+        arms: vec![(1, 1, b1), (5, 7, b2)],
+        default: bd,
+    });
+    fb.emit(Inst::Case { v: x, table });
+    fb.at(b1);
+    let ten = fb.int(10);
+    fb.emit(Inst::Ret { v: Some(ten) });
+    fb.at(b2);
+    let twenty = fb.int(20);
+    fb.emit(Inst::Ret { v: Some(twenty) });
+    fb.at(bd);
+    let zero = fb.int(0);
+    fb.emit(Inst::Ret { v: Some(zero) });
+    fb.finish();
+    let g = pb.declare("g", FuncKind::Function, None);
+    let mut gb = pb.define(g);
+    gb.slot(16, 8);
+    gb.stmt(StmtKind::Return, sp());
+    let u = unknown(&mut gb, 0);
+    let r = gb.reg(RegTy::I64);
+    let args = gb.regs(&[u]);
+    gb.emit(Inst::Call {
+        func: f,
+        args,
+        dst: Some(r),
+    });
+    gb.emit(Inst::Ret { v: Some(r) });
+    gb.finish();
+    let p = pb.finish().expect("optimised code verifies");
+    let code = &p.func(g).expect("g").code;
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Call { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::Case { .. })),
+        0,
+        "{code:?}"
+    );
+    assert_eq!(
+        count(code, |i| matches!(i, Inst::CondBr { .. })),
+        2,
+        "{code:?}"
+    );
+}
+
+#[test]
+fn a_byte_variable_lives_in_a_register() {
+    if !on() {
+        return;
+    }
+    // A boolean or enumeration variable has a one-byte slot: only direct accesses of that
+    // width, so it becomes a register like an integer.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let flag = fb.addr(AddrSpace::Frame, 8);
+        let one = fb.int(1);
+        fb.emit(Inst::Store {
+            addr: flag,
+            src: one,
+            w: Width::B1,
+        });
+        let x = load(fb, 0);
+        let zero = fb.int(0);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: x,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        fb.emit(Inst::Store {
+            addr: flag,
+            src: zero,
+            w: Width::B1,
+        });
+        fb.emit(Inst::Br { to: e });
+        fb.at(e);
+        let y = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: y,
+            addr: flag,
+            w: Width::B1,
+        });
+        fb.emit(Inst::Ret { v: Some(y) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(
+            i,
+            Inst::Load { w: Width::B1, .. } | Inst::Store { w: Width::B1, .. }
+        )),
         0,
         "{code:?}"
     );

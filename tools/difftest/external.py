@@ -195,7 +195,7 @@ def script(sim, t):
                 rest = " ".join(q(x) for x in opts if not x.startswith("-g"))
                 gens = " ".join(q(x) for x in opts if x.startswith("-g"))
                 lines.append(f"{yavs} elab {flags}{gens} {top} >/dev/null 2>e.txt || {{ cat e.txt >&2; exit 98; }}")
-                run = f"{yavs} run {flags}{rest} --threads=${{YAVS_THREADS:-1}} {top} {gens}"
+                run = f"{yavs} run {flags}{rest} --threads=${{YAVS_THREADS:-1}} ${{YAVS_RUN_FLAGS:-}} {top} {gens}"
             lines.append(f"{run} >r{i}.out 2>r{i}.err; echo $? >r{i}.rc")
             i += 1
     return "\n".join(lines) + "\n"

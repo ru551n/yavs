@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:pointer_queue:_p0	string bytes popped: 351, checksum 5972
+diag	note	0	0	:pointer_queue:_p0	other: size 80, checksum 1840
+diag	note	0	0	:pointer_queue:_p0	q: size 120, capacity 255
+diag	note	0	0	:pointer_queue:_p0	q popped: 7260, size 0

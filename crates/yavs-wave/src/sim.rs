@@ -97,6 +97,14 @@ struct Var {
 
 const NO_ENTRY: u32 = u32::MAX;
 
+/// Entries of one leaf that do not overlap, by offset.
+struct Layer {
+    ids: Vec<u32>,
+    /// `Some((base, stride))` if entry `k` is exactly elements `base + k * stride` and the
+    /// next `stride` (an array of equal elements): found by division, not by search.
+    tiles: Option<(u32, u32)>,
+}
+
 struct Entry {
     src: Src,
     conv: Conv,
@@ -107,7 +115,7 @@ struct State {
     entries: Vec<Entry>,
     /// Per kernel leaf: its entries in layers, each by offset and disjoint (a port collapsed
     /// into its actual shares the actual's elements: another layer).
-    by_leaf: Vec<Vec<Vec<u32>>>,
+    by_leaf: Vec<Vec<Layer>>,
     /// Per kernel leaf: its only entry (`NO_ENTRY`: none or several), the common case.
     solo: Vec<u32>,
     /// Value bytes of the entry being written.
@@ -235,7 +243,7 @@ fn record_with(
             flat[*leaf as usize].push(i as u32);
         }
     }
-    let by_leaf: Vec<Vec<Vec<u32>>> = (flat.into_iter())
+    let by_leaf: Vec<Vec<Layer>> = (flat.into_iter())
         .map(|mut v| {
             v.sort_by_key(|&i| entries[i as usize].span());
             let mut layers: Vec<Vec<u32>> = Vec::new();
@@ -252,14 +260,26 @@ fn record_with(
                     None => layers.push(vec![i]),
                 }
             }
-            layers
+            let tiles = |ids: &[u32]| {
+                let (base, stride) = entries[*ids.first()? as usize].span();
+                let tiled = (ids.iter().enumerate()).all(|(k, &i)| {
+                    entries[i as usize].span() == (base + k as u32 * stride, stride)
+                });
+                tiled.then_some((base, stride))
+            };
+            (layers.into_iter())
+                .map(|ids| Layer {
+                    tiles: tiles(&ids),
+                    ids,
+                })
+                .collect()
         })
         .collect();
     let solo = (by_leaf.iter().enumerate())
         .map(|(leaf, l)| match &l[..] {
-            [one] if one.len() == 1 => {
-                let covers = entries[one[0] as usize].span() == (0, e.nets.leaves[leaf].ty.len);
-                if covers { one[0] } else { NO_ENTRY }
+            [Layer { ids, .. }] if ids.len() == 1 => {
+                let covers = entries[ids[0] as usize].span() == (0, e.nets.leaves[leaf].ty.len);
+                if covers { ids[0] } else { NO_ENTRY }
             }
             _ => NO_ENTRY,
         })
@@ -501,15 +521,27 @@ impl State {
             return;
         };
         let (lo, hi) = (range.offset, range.offset + range.len);
-        for ids in layers {
-            let first = ids.partition_point(|&i| {
-                let (o, n) = self.entries[i as usize].span();
-                o + n <= lo
-            });
-            for &i in &ids[first..] {
-                if self.entries[i as usize].span().0 >= hi {
-                    break;
+        for Layer { ids, tiles } in layers {
+            let (first, last) = match *tiles {
+                Some((base, stride)) => {
+                    if hi <= base {
+                        continue;
+                    }
+                    let k0 = (lo.saturating_sub(base) / stride) as usize;
+                    (k0, (((hi - 1 - base) / stride) as usize + 1).min(ids.len()))
                 }
+                None => {
+                    let first = ids.partition_point(|&i| {
+                        let (o, n) = self.entries[i as usize].span();
+                        o + n <= lo
+                    });
+                    let past = ids[first..]
+                        .iter()
+                        .position(|&i| self.entries[i as usize].span().0 >= hi);
+                    (first, past.map_or(ids.len(), |p| first + p))
+                }
+            };
+            for &i in ids.get(first..last).unwrap_or_default() {
                 if !self.dirty[i as usize] {
                     self.dirty[i as usize] = true;
                     self.pending.push(i);
@@ -530,7 +562,10 @@ impl State {
             return;
         }
         let mut pending = std::mem::take(&mut self.pending);
-        pending.sort_unstable();
+        // Marked in kernel signal order, which is mostly entry order.
+        if !pending.is_sorted() {
+            pending.sort_unstable();
+        }
         let mut bytes = std::mem::take(&mut self.bytes);
         for &i in &pending {
             self.dirty[i as usize] = false;
@@ -695,6 +730,13 @@ fn make_plan(
 }
 
 impl Observer for Recorder {
+    fn wants_phase(&self, phase: Phase) -> bool {
+        matches!(
+            phase,
+            Phase::StartOfSim | Phase::NextTimeStep | Phase::EndOfTimeStep | Phase::EndOfSim
+        )
+    }
+
     fn phase(&mut self, hook: &mut Hook<'_>, phase: Phase) {
         let mut st = self.lock();
         match phase {

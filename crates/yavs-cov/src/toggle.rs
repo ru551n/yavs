@@ -194,6 +194,12 @@ impl State {
 }
 
 impl Observer for Toggles {
+    /// Only the start of the simulation: the kernel calls nothing else (every delta cycle
+    /// otherwise pays six hook calls).
+    fn wants_phase(&self, phase: Phase) -> bool {
+        phase == Phase::StartOfSim
+    }
+
     fn phase(&mut self, hook: &mut Hook<'_>, phase: Phase) {
         if phase != Phase::StartOfSim {
             return;

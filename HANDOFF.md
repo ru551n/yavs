@@ -15,7 +15,7 @@ local bundle described in "Local bundle" below.
   are green on the exact commit. No PRs.
 - The agent rules are in the bundle (`orchestration/RULES.md`, 23 rules). Pass
   them to every agent prompt. The work queue is `orchestration/QUEUE.md`
-  (items 1 to 176).
+  (items 1 to 177).
 - Before assigning an issue, check that no running agent already has it in
   scope (a duplicate happened once).
 
@@ -72,12 +72,12 @@ E-cores 8-23; 30 GB RAM). Re-measure and update rules 17, 19 and 19b:
   `--no-collapse-ports` (#528), realbench phase timing, the sim1 renames, the
   analysed-unit cache (#537, #548), and the root-cause fix for wrong values
   when the auto tier takes over after a call (`2d09cd6e`, #533, #542, #543).
-- In flight at handoff: the commit that makes `--tier=auto` the default
-  (`--tier` becomes optional; auto when built with `llvm`, interp otherwise;
-  `--dap` and `--vhpi` default to interp). Its agent was told to run
-  `tier_auto_matches_interp` 20 times, push only if all pass, not wait for CI,
-  and close #542/#543. Check `git log origin/main` for it; if it is missing,
-  redo it from the description above.
+- `92cca99e`: `--tier=auto` is the default in builds with `llvm`; `--dap` and
+  `--vhpi` keep the interpreter; builds without `llvm` use the interpreter.
+  Pushed without waiting for CI: check that its CI run is green first.
+  `tier_auto_matches_interp` passed 20 of 20 before the push; #542 and #543
+  are closed. No dedicated test for the default itself yet (the llvm CI job's
+  difftest covers it).
 
 ## Performance (rule 23 basis)
 

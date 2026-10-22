@@ -2,8 +2,8 @@
 
 use crate::error::{ErrorKind, SimError};
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Quick, Range, SigRef, Signal, SignalId, Txn, TxnList, VQuick,
-    Waveform,
+    BQuick, DelayMode, DriverId, ForceMode, Quick, Range, SigRef, Signal, SignalId, Txn, TxnList,
+    VQuick, Waveform,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, LogicVec, Value, ValueRef};
@@ -422,6 +422,17 @@ impl Ctx<'_> {
         }
     }
 
+    /// The bytes of the current value of element `e` of byte signal `s`; `None` for a logic
+    /// signal or an element out of range (the general `value` reports those).
+    #[inline(always)]
+    pub fn elem_bytes(&self, s: SignalId, e: u32) -> Option<&[u8]> {
+        let sig = self.sh.signals.get(s.0 as usize)?;
+        if e >= sig.ty.len {
+            return None;
+        }
+        sig.cur.bytes(e as usize, 1)
+    }
+
     /// The bytes of the `std_ulogic` codes of the current value of logic signal `s`, one per
     /// element, as a pointer and the number of elements, for compiled code that reads them
     /// itself. `None` for a signal that keeps no codes (bytes, or over `CODES_MAX` elements).
@@ -810,6 +821,80 @@ impl Ctx<'_> {
         let blocks: Vec<[u64; 4]> = blocks.as_chunks::<32>().0.iter().map(words).collect();
         let v = LogicVec::from_repr(yavs_logic::Planes::from_blocks(n, blocks));
         self.assign(d, target, &[(delay, &v)], mode)
+    }
+
+    /// `assign` of one element of a byte signal (an enum, an integer, a boolean, a real: at
+    /// most 8 bytes) with one waveform element, given as its bytes: the usual scalar assignment
+    /// without building a value or a waveform list.
+    pub fn assign_bytes(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        bytes: &[u8],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
+        if self.assign_bytes_fast(d, target, delay, bytes, mode) {
+            return Ok(());
+        }
+        self.assign(d, target, &[(delay, bytes)], mode)
+    }
+
+    /// The common scalar byte case of `assign` in one pass: one element to a driver with nothing
+    /// pending is kept as a `BQuick` (an unchanged zero-delay one is skipped as in `assign`).
+    /// False when the general path must run (it also produces every error).
+    #[inline]
+    fn assign_bytes_fast(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        bytes: &[u8],
+        mode: DelayMode,
+    ) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let r = target.unwrap_or(info.range);
+        let at = self.fast_time(delay, mode);
+        let n = bytes.len();
+        if at.is_none()
+            || info.owner != self.pid
+            || info.direct
+            || r.len != 1
+            || n == 0
+            || n > 8
+            || !info.range.contains(r)
+        {
+            return false;
+        }
+        let sig = info.signal.0 as usize;
+        if !matches!(self.sh.signals[sig].ty.elem, crate::value::Elem::Bytes(es) if es as usize == n)
+        {
+            return false;
+        }
+        let local = info.local as usize;
+        let w = &mut self.st.waveforms[local];
+        if !w.idle() || !w.phantom.is_empty() {
+            return false;
+        }
+        let now = self.sh.now;
+        let at = at.unwrap_or(now);
+        if at == now && self.unchanged(sig, d, r, ValueRef::Bytes(bytes)) {
+            let w = &mut self.st.waveforms[local];
+            w.phantom.push(r);
+            self.st.phantoms.push(local as u32);
+            return true;
+        }
+        let val = pack8(bytes);
+        self.st.waveforms[local].bquick = Some(BQuick {
+            time: at,
+            elem: r.offset,
+            es: n as u8,
+            val,
+        });
+        self.st.scheduled.push((at, d));
+        true
     }
 
     /// The common vector case of `assign` in one pass: a zero-delay assignment of at most 64
@@ -1228,6 +1313,23 @@ impl Ctx<'_> {
         self.st.effects.push(Effect::Op(op));
         Ok(())
     }
+}
+
+/// Up to 8 bytes padded with zeros, built in registers for the usual sizes (a variable-length
+/// copy and a wide read of it straight after is a store-forwarding stall).
+#[inline(always)]
+fn pack8(b: &[u8]) -> [u8; 8] {
+    if let Ok(x) = <[u8; 4]>::try_from(b) {
+        return u64::from(u32::from_le_bytes(x)).to_le_bytes();
+    }
+    if let Ok(x) = <[u8; 8]>::try_from(b) {
+        return x;
+    }
+    let mut v = [0u8; 8];
+    for (d, s) in v.iter_mut().zip(b) {
+        *d = *s;
+    }
+    v
 }
 
 /// Resolve a reference against the model: the signal must exist and the range must lie

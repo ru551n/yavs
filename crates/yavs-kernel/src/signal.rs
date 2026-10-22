@@ -10,7 +10,9 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::error::ErrorKind;
 use crate::time::Time;
-use crate::value::{Buf, Elem, SignalType, bits, fill_bits, plane_code, put_bits, put_plane_code};
+use crate::value::{
+    Buf, Elem, SignalType, bits, bytes_eq, fill_bits, plane_code, put_bits, put_plane_code,
+};
 use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
@@ -1742,7 +1744,76 @@ impl Signal {
             self.apply_quick(q, slot, now, cycle);
             return;
         }
+        if let Some(q) = w.bquick
+            && q.time <= now
+        {
+            w.bquick = None;
+            self.apply_bquick(q, slot, now, cycle);
+            return;
+        }
         self.apply_rest(w, slot, now, cycle);
+    }
+
+    /// The due byte transaction `q` of driver `slot`: as `apply_quick`.
+    fn apply_bquick(&mut self, q: BQuick, slot: u32, now: Time, cycle: u64) {
+        let (es, e) = (q.es as usize, q.elem as usize);
+        let d = &mut self.drivers[slot as usize];
+        let rel = (q.elem - d.range.offset) as usize;
+        if let Buf::Bytes { data, .. } = &mut d.value {
+            data[rel * es..(rel + 1) * es].copy_from_slice(&q.val[..es]);
+        }
+        if let Some(off) = &mut d.off {
+            fill_bits(off, rel, 1, false);
+        }
+        let shared = d.shared;
+        let n = self.ty.len as usize;
+        let st = self.stamps.as_mut_slice();
+        st[n + e] = cycle;
+        st[3 * n + e] = stamp(now);
+        if !shared && self.plain_bytes() {
+            // The element's only source: its driving and effective values follow now.
+            self.fuse_n += 1;
+            self.finish_bquick(e, &q.val[..es], now, cycle);
+        } else {
+            self.push_dirty(Range::new(q.elem, 1));
+        }
+    }
+
+    /// `finish_quick` for an element of byte storage.
+    fn finish_bquick(&mut self, e: usize, v: &[u8], now: Time, cycle: u64) {
+        let es = v.len();
+        let (
+            Buf::Bytes { data: drv, .. },
+            Buf::Bytes { data: cur, .. },
+            Buf::Bytes { data: last, .. },
+        ) = (&mut self.driving, &mut self.cur, &mut self.last_value)
+        else {
+            unreachable!("finish_bquick of logic storage")
+        };
+        drv[e * es..(e + 1) * es].copy_from_slice(v);
+        let c = &mut cur[e * es..(e + 1) * es];
+        if bytes_eq(c, v) {
+            return;
+        }
+        last[e * es..(e + 1) * es].copy_from_slice(c);
+        c.copy_from_slice(v);
+        set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
+        self.note_run(e, 1);
+        self.fused_event = true;
+    }
+
+    /// A byte signal with no layer, group, guard or resolution function to wait for: a sole
+    /// source's value is the signal's (`plain` for byte storage).
+    #[inline(always)]
+    fn plain_bytes(&self) -> bool {
+        matches!(self.ty.elem, Elem::Bytes(_))
+            && self.groups.is_empty()
+            && self.guard.is_none()
+            && self.force_ev.is_empty()
+            && self.force_drv.is_none()
+            && self.port_in.is_none()
+            && self.force_eff.is_none()
+            && self.resolution.is_none()
     }
 
     /// The due quick transaction `q` of driver `slot` (taken from its waveform): the driver
@@ -2136,6 +2207,9 @@ pub(crate) struct Waveform {
     /// (`Ctx::assign`, `Ctx::assign_blocks`) as plane words, no list entry, no value buffer.
     /// At most one of `quick`, `vquick` and `pending` is in use; `spill` and `idle` as for `quick`.
     pub vquick: Option<VQuick>,
+    /// The byte-signal counterpart: an assignment of one element of at most 8 bytes (an enum,
+    /// an integer, a boolean, a real). Same rules as `quick`.
+    pub bquick: Option<BQuick>,
     /// Values of applied transactions, reused by the next assignments (no allocation per
     /// transaction in the steady state).
     pub spare: Vec<Buf>,
@@ -2151,6 +2225,15 @@ pub(crate) struct Quick {
     /// The element, of the signal (not of the driver).
     pub elem: u32,
     pub code: u8,
+}
+
+/// A pending assignment of one element of a byte signal, `es` (at most 8) bytes in `val`.
+#[derive(Clone, Copy)]
+pub(crate) struct BQuick {
+    pub time: Time,
+    pub elem: u32,
+    pub es: u8,
+    pub val: [u8; 8],
 }
 
 /// A pending zero-delay assignment of at most 64 logic elements.
@@ -2194,21 +2277,38 @@ impl Waveform {
     /// Nothing is pending.
     #[inline]
     pub fn idle(&self) -> bool {
-        self.pending.is_empty() && self.quick.is_none() && self.vquick.is_none()
+        self.pending.is_empty()
+            && self.quick.is_none()
+            && self.vquick.is_none()
+            && self.bquick.is_none()
     }
 
     /// The time of the first pending transaction.
     #[inline]
     pub fn first_time(&self) -> Option<Time> {
-        match (&self.quick, &self.vquick) {
-            (Some(q), _) => Some(q.time),
-            (_, Some(q)) => Some(q.time),
+        match (&self.quick, &self.vquick, &self.bquick) {
+            (Some(q), _, _) => Some(q.time),
+            (_, Some(q), _) => Some(q.time),
+            (_, _, Some(q)) => Some(q.time),
             _ => self.pending.first().map(|t| t.time),
         }
     }
 
     /// Turn the quick transaction into a list entry, for the paths that preempt and merge.
     pub fn spill(&mut self) {
+        if let Some(q) = self.bquick.take() {
+            self.pending.insert(
+                0,
+                Txn {
+                    time: q.time,
+                    range: Range::new(q.elem, 1),
+                    value: Some(Buf::Bytes {
+                        es: q.es as usize,
+                        data: SmallVec::from_slice(&q.val[..q.es as usize]),
+                    }),
+                },
+            );
+        }
         if let Some(q) = self.vquick.take() {
             self.pending.insert(
                 0,
@@ -2313,6 +2413,21 @@ impl Waveform {
             d.value.put_code((q.elem - d.range.offset) as usize, q.code);
             if let Some(off) = &mut d.off {
                 fill_bits(off, (q.elem - d.range.offset) as usize, 1, false);
+            }
+            applied(Range::new(q.elem, 1));
+            return;
+        }
+        if let Some(q) = self.bquick {
+            if q.time > now {
+                return self.apply_pending(now, d, applied);
+            }
+            self.bquick = None;
+            let (rel, es) = ((q.elem - d.range.offset) as usize, q.es as usize);
+            if let Buf::Bytes { data, .. } = &mut d.value {
+                data[rel * es..(rel + 1) * es].copy_from_slice(&q.val[..es]);
+            }
+            if let Some(off) = &mut d.off {
+                fill_bits(off, rel, 1, false);
             }
             applied(Range::new(q.elem, 1));
             return;

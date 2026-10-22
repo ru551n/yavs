@@ -61,6 +61,11 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   with its time `now + T`: with nothing pending there is nothing to preempt. It is queued at that
   time and matures in the update of that time step. A direct driver takes it only when the run
   has no direct entry for the driver (those commit at the end of the run, before it).
+- **Byte quick transaction**: one element of at most 8 bytes of a byte signal (`Ctx::assign_bytes`) assigned to
+  an idle driver is `Waveform::bquick` (time, element, size, the bytes). When the driver is the element's only
+  source and the signal has no layer, group, guard or resolution function, `Signal::apply_bquick` writes the
+  driver, driving and effective values, the stamps and `'last_value` when it is applied (`finish_bquick`), as
+  `finish_quick` does for a logic element; otherwise the element goes to the dirty ranges.
 - **Direct transactions**: a driver that is the only source of its elements of a logic signal
   with no port, composite group, guard or resolution function (std_logic resolution of one
   source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).

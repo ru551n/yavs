@@ -3722,7 +3722,7 @@ has no process body. Output is unchanged at any thread count and with `--shuffle
   commit (~125), the assignment (~90) and the cycle skeleton (~200). The interpreter is now the larger part of both
   (`rtl_ff` about two thirds). `rtl_lfsr` lost a third to an optimiser change (#534).
 
-## Kernel round 13: delayed assignments, byte signals (yavs-kernel, #440, 2026-10-22)
+## Kernel round 13: delayed assignments, byte signals (yavs-kernel, yavs-interp, #440, 2026-10-22)
 
 Every testbench has a clock, and the head-to-head designs (4096 registers on one clock) hide what one costs: a bare
 `c <= not c after 5 ns` took about 4000 instructions per edge against about 1000 in the reference simulator, and the
@@ -3740,6 +3740,17 @@ assignments had the quick shapes.
   the run, before the delayed one, and inertial preemption must see them. `Waveform::apply_due`, `Signal::apply_driver`
   and `first_time` already handled a quick transaction with a later time; `tests/direct_paths.rs` runs random mixes of
   zero-delay and delayed assignments against the same program with an explicit rejection limit (general path).
+- **Byte signals have a quick transaction too** (`Waveform::bquick`, `Ctx::assign_bytes`, `Signal::apply_bquick`): one
+  element of at most 8 bytes (an enumeration, an integer, a boolean, a real, a time) assigned to an idle driver that
+  is the signal's sole source is kept as the bytes, with zero or a positive delay; on a signal with no layer, group,
+  guard or resolution function, applying it writes the driver, the driving and the effective value, the event stamps
+  and `'last_value` at once (`Signal::finish_bquick`). An unchanged zero-delay assignment is skipped as for logic
+  (the delta stays). Before, an enumeration or integer register took the general path: a `Value` per assignment, the
+  transaction list, `compute_driving` and `update_effective`: 3.0 and 3.6 times the reference simulator's instructions
+  on 2048 registers of each, against 1.5 for `std_logic`. The interpreter reads a scalar byte element through
+  `Ctx::elem_bytes` (no reference to build) and passes the assignment's bytes as they are in memory. A test compares
+  random zero-delay and delayed assignments on plain signals with the same program on identity-resolved signals
+  with explicit rejection limits (`tests/direct_paths.rs`).
 - **Tried and dropped**: update of heap entries through the fused in-place path of `update` (`from_delta == 0`): +2%
   instructions on a clock generator, the independent-signal route is cheaper; a hand-written time heap with `Entry`
   flattened to words (the generic heap's push showed a store-forwarding stall): -0.7% instructions, no change in cycles.

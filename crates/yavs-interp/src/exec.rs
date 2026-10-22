@@ -2218,6 +2218,18 @@ impl Machine {
                 c.assign_blocks(d.id, range, t, b, mode)?;
                 return Ok(());
             }
+            if let Elem::Bytes(es) = elem
+                && es <= 8
+                && len == 1
+            {
+                // One scalar of at most 8 bytes: the bytes go to the kernel as they are.
+                let b = self.rd(add_addr(w, 8)?, u64::from(es))?;
+                let Some(c) = ctx.as_deref_mut() else {
+                    return rt_err_s!("signal or wait operation during elaboration");
+                };
+                c.assign_bytes(d.id, range, t, b, mode)?;
+                return Ok(());
+            }
             let v = self.get_value(add_addr(w, 8)?, elem, len)?;
             let Some(c) = ctx.as_deref_mut() else {
                 return rt_err_s!("signal or wait operation during elaboration");
@@ -3369,6 +3381,16 @@ impl Machine {
 
     #[inline(never)]
     fn read_sig1_slow(&self, sig: u32, o: u64, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+        // A scalar of at most 8 bytes (an enum, an integer): its bytes, no reference to build.
+        if let Some(s) = self.inst.sigs.get(sig as usize)
+            && matches!(s.ty.elem, Elem::Bytes(es) if es <= 8)
+            && let Ok(o) = u32::try_from(o)
+            && let Some(e) = s.off.checked_add(o)
+            && let Some(c) = ctx.as_deref()
+            && let Some(b) = c.elem_bytes(s.signal, e)
+        {
+            return Ok(cell(b));
+        }
         let (sr, ty) = self.sig_elem(sig, o)?;
         Self::read_elem(sr, ty, ctx)
     }

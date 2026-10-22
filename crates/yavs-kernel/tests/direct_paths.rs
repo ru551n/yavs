@@ -447,3 +447,97 @@ fn delayed_assignments_to_idle_drivers_match_the_general_path() {
         assert_eq!(fast, general, "seed {seed}");
     }
 }
+
+/// Random zero-delay and delayed assignments of processes that are the only source of an
+/// integer and of the elements of an enumeration array (byte signals), reporting the signals'
+/// events, last values and last event times. `general` gives the signals an identity
+/// resolution function (they are updated through the dirty ranges) and the delayed inertial
+/// assignments an explicit rejection limit (the general assignment path).
+fn random_bytes(general: bool, seed: u64) -> Vec<String> {
+    let mut b = Builder::new();
+    let same: Resolver = std::sync::Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out.copy_from_slice(srcs[0]);
+        Ok(())
+    });
+    let mut sig = |name: &str, ty: SignalType, init: &[u8]| {
+        if general {
+            b.resolved_signal(name, ty, init, Resolution::Func(same.clone()))
+        } else {
+            b.signal(name, ty, init)
+        }
+    };
+    let n = sig("n", SignalType::bytes(4, 1), &[0; 4]);
+    let e = sig("e", SignalType::bytes(1, 3), &[0; 3]);
+    let drivers = [
+        b.driver(n),
+        b.driver(e.slice(0, 1)),
+        b.driver(e.slice(1, 1)),
+    ];
+    for (k, d) in drivers.into_iter().enumerate() {
+        let mut rng = seed ^ (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let sref = if k == 0 {
+            n.slice(0, 1)
+        } else {
+            e.slice(k as u32 - 1, 1)
+        };
+        b.process(
+            &format!("p{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                for _ in 0..1 + rng % 3 {
+                    rng = rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let r = rng >> 33;
+                    let (delay, v) = (r % 5, (r >> 8) as u32 % 3);
+                    let mode = if general && delay > 0 {
+                        DelayMode::Inertial {
+                            reject: Some(ns(delay)),
+                        }
+                    } else {
+                        DelayMode::INERTIAL
+                    };
+                    if r.is_multiple_of(7) {
+                        continue;
+                    }
+                    if k == 0 {
+                        c.assign_bytes(d, None, ns(delay), &v.to_le_bytes(), mode)?;
+                    } else {
+                        c.assign_bytes(d, None, ns(delay), &[v as u8], mode)?;
+                    }
+                }
+                c.report(
+                    Severity::Note,
+                    format!(
+                        "p{k} {:?} ev={} last={:?} at {:?} active={}",
+                        c.value(sref)?,
+                        c.event(sref)?,
+                        c.last_value(sref)?,
+                        c.last_event(sref)?,
+                        c.active(sref)?,
+                    ),
+                );
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let (mut sim, trace) = build(
+        b,
+        Config {
+            skip_unchanged: true,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(300)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn byte_signal_assignments_match_the_general_path() {
+    for seed in 0..8 {
+        let (fast, general) = (random_bytes(false, seed), random_bytes(true, seed));
+        assert!(fast.len() > 500, "{}", fast.len());
+        assert_eq!(fast, general, "seed {seed}");
+    }
+}

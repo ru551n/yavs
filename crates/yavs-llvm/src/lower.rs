@@ -531,7 +531,8 @@ fn stepped(
 }
 
 /// Record a native frame of `func` at `pc` for materialisation (`docs/decisions.md` "Compiled
-/// frames"): its registers go to the returned buffer, its slots to `yavs_rt_deopt_slots`.
+/// frames"): its registers are copied from `regs` (the function's spill buffer, filled at the
+/// exit site with the registers live at `pc`), its slots go to `yavs_rt_deopt_slots`.
 extern "C" fn yavs_rt_deopt(
     env: *mut c_void,
     mem: *mut Mem,
@@ -541,14 +542,15 @@ extern "C" fn yavs_rt_deopt(
     nregs: u64,
     slen: u64,
     link: u64,
+    regs: *const u64,
 ) -> *mut u64 {
-    // SAFETY: as in `yavs_rt_step`.
+    // SAFETY: as in `yavs_rt_step`; `regs` holds `nregs` words.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.ndeopt = 1;
     env.pending.push(NativeFrame {
         func: FuncId(func),
         pc,
-        regs: vec![0; nregs as usize],
+        regs: unsafe { std::slice::from_raw_parts(regs, nregs as usize) }.to_vec(),
         slots: vec![0; slen as usize],
         temp_base,
         link,
@@ -2576,7 +2578,7 @@ struct Gen {
     /// `yavs_rt_fast(env, regs, mem, op, dst, a, b) -> u32`.
     fast_ty: LLVMTypeRef,
     fast: LLVMValueRef,
-    /// `yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, link) -> ptr`.
+    /// `yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, link, regs) -> ptr`.
     deopt_ty: LLVMTypeRef,
     deopt: LLVMValueRef,
     /// `yavs_rt_deopt_slots(env) -> ptr`.
@@ -2661,6 +2663,9 @@ struct Cur<'p> {
     /// The frame's base before each slow path being generated (`slow_path`), and whether its
     /// step may push a frame; `join` takes them back.
     joins: std::cell::RefCell<Vec<(Option<LLVMValueRef>, bool)>>,
+    /// Blocks that run only when a guard fails: moved behind the rest at the end, so the hot
+    /// path falls through instead of jumping over them.
+    cold: std::cell::RefCell<Vec<LLVMBasicBlockRef>>,
 }
 
 /// Deferred register stores (`regs.rs`): a definition of a pure instruction is kept as a value
@@ -2711,6 +2716,11 @@ struct Nat {
     temp_base: LLVMValueRef,
     scratch: LLVMValueRef,
     id: FuncId,
+    /// Where the exit sites put the registers live at their pc, for `yavs_rt_deopt`: an
+    /// `alloca` that escapes to the call only, so the registers themselves stay SSA values.
+    spill: LLVMValueRef,
+    /// The registers live before each instruction (none: every register is recorded).
+    live: Option<crate::regs::Live>,
 }
 
 impl Gen {
@@ -2756,8 +2766,8 @@ impl Gen {
             let layout_name = CString::new(LAYOUT).expect("no NUL");
             let mut yparams = [ptr, ptr, ptr, i64, i32, i32, i64, i64, i64, i32];
             let layout_ty = LLVMFunctionType(i32, yparams.as_mut_ptr(), 10, 0);
-            let mut dparams = [ptr, ptr, i32, i32, i64, i64, i64, i64];
-            let deopt_ty = LLVMFunctionType(ptr, dparams.as_mut_ptr(), 8, 0);
+            let mut dparams = [ptr, ptr, i32, i32, i64, i64, i64, i64, ptr];
+            let deopt_ty = LLVMFunctionType(ptr, dparams.as_mut_ptr(), 9, 0);
             let mut dsparams = [ptr];
             let deopt_slots_ty = LLVMFunctionType(ptr, dsparams.as_mut_ptr(), 1, 0);
             let mut deparams = [ptr, ptr, i32];
@@ -2963,8 +2973,33 @@ impl Gen {
     unsafe fn leave(&self, c: &Cur, v: LLVMValueRef) {
         // SAFETY: the builder is in a block of c.f; the phi is the exit block's.
         unsafe {
+            if let Some(n) = &c.nat {
+                self.spill_live(c, n, v);
+            }
             let exit = self.exit_for(c, v);
             LLVMBuildBr(self.b, exit);
+        }
+    }
+
+    /// A native frame leaves to be materialised at the pc `v`: store the registers the
+    /// interpreter reads from there (all of them when `v` is no constant or liveness is not
+    /// known) in the spill buffer. Only these are live up to this exit, so the other registers
+    /// need not stay in machine registers or stack slots up to every guard.
+    unsafe fn spill_live(&self, c: &Cur, n: &Nat, v: LLVMValueRef) {
+        // SAFETY: the builder is in a block of c.f; `spill` has one word per register.
+        unsafe {
+            let row = (!LLVMIsAConstantInt(v).is_null())
+                .then(|| LLVMConstIntGetZExtValue(v) as usize)
+                .zip(n.live.as_ref())
+                .map(|(pc, l)| l.row(pc));
+            let nregs = c.known.borrow().len();
+            for r in 0..nregs {
+                if row.is_some_and(|w| w[r / 64] >> (r % 64) & 1 == 0) {
+                    continue;
+                }
+                let at = self.gep(n.spill, self.c64(r as i64 * 8));
+                self.store(self.ld(c, Reg(r as u32)), at);
+            }
         }
     }
 
@@ -3334,6 +3369,7 @@ impl Gen {
         unsafe {
             let out = self.block(c);
             let cont = self.block(c);
+            c.cold.borrow_mut().push(out);
             LLVMBuildCondBr(self.b, bad, out, cont);
             LLVMPositionBuilderAtEnd(self.b, out);
             self.flush_exit(c, pc);
@@ -3523,6 +3559,7 @@ impl Gen {
                 let sty = LLVMArrayType2(self.i64, (u64::from(f.frame)).div_ceil(8).max(1));
                 let slots = LLVMBuildAlloca(self.b, sty, c"".as_ptr());
                 let scratch = LLVMBuildAlloca(self.b, self.i64, c"".as_ptr());
+                let spill = LLVMBuildAlloca(self.b, rty, c"".as_ptr());
                 let tbase = LLVMBuildAlloca(self.b, self.i64, c"".as_ptr());
                 let depth = LLVMGetParam(fv, 2);
                 let tag = self.c64((u64::from(space::FRAME) << 29) as i64);
@@ -3540,6 +3577,8 @@ impl Gen {
                     temp_base: tbase,
                     scratch,
                     id,
+                    spill,
+                    live: crate::regs::Live::new(prog, f, None),
                 };
                 (regs, LLVMGetParam(fv, 1), Some(nat))
             } else {
@@ -3568,6 +3607,7 @@ impl Gen {
                 defer: None,
                 scal: None,
                 joins: Default::default(),
+                cold: Default::default(),
             };
             // Registers the interpreter starts the frame with hold the same address everywhere.
             let mut base_known: Vec<Option<Known>> = vec![None; nregs];
@@ -4956,19 +4996,16 @@ impl Gen {
                     self.c64(nregs as i64),
                     self.c64(i64::from(f.frame)),
                     nat.up[0],
+                    nat.spill,
                 ];
-                let rp = LLVMBuildCall2(
+                LLVMBuildCall2(
                     self.b,
                     self.deopt_ty,
                     self.deopt,
                     args.as_mut_ptr(),
-                    8,
+                    9,
                     c"".as_ptr(),
                 );
-                for r in 0..nregs {
-                    let v = self.ld(&c, Reg(r as u32));
-                    self.store(v, self.gep(rp, self.c64(r as i64 * 8)));
-                }
                 let mut env = [c.env];
                 let sp = LLVMBuildCall2(
                     self.b,
@@ -4980,6 +5017,9 @@ impl Gen {
                 );
                 LLVMBuildMemCpy(self.b, sp, 1, nat.slots, 8, self.c64(i64::from(f.frame)));
                 LLVMBuildRet(self.b, self.c64(0));
+            }
+            for &b in c.cold.borrow().iter() {
+                LLVMMoveBasicBlockAfter(b, LLVMGetLastBasicBlock(fv));
             }
             // A block nothing branches to (the generator and `regs::reach` agree on all but
             // dead code) has phis without incoming values.

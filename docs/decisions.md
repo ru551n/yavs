@@ -4523,3 +4523,34 @@ every elaboration, and again for every instance. Decisions:
   two slot stores, loop prologue), about 3% of cycles for designs of thousands of tiny processes with nothing compiled.
   Idea, not built: let the kernel publish the running process once per batch instead of each activation storing the slot.
 
+## Native frames: every exit records the registers live at its pc (yavs-llvm, #554, 2026-10-22)
+
+- **Problem:** `--tier=llvm` ran the array loops of a verification library's codec slower than the interpreter (a
+  576-bit `decode(encode(v))` 0.85 s against 0.16 s, queue push and pop 2.3 s against 1.3 s, a window-generator
+  testbench 47 s against 29 s). Every guard of a native-frame function branched to the one materialisation block, which
+  stored all registers of the frame; the registers were `alloca` words, so after promotion that block was a phi per
+  register with one incoming value per guard (about 130 phis and 475 blocks for a 100-instruction procedure). Every
+  value defined before any guard stayed live up to the last one, and the phi elimination and register allocator of the
+  code generator turned each guard edge into copies. At the unoptimised code generator level (`OptLevel::Fast`, which a
+  `--tier=llvm` module over 150000 LLVM instructions and every function of 300 IR instructions or more gets) that was
+  the whole cost; at `O2` it was spills inside the loops.
+- **Decision:** a native frame leaves through `Gen::leave`, which now stores the registers live before the exit's pc
+  (`regs::Live`, the analysis frame mode flushes by) into a per-function spill buffer, then branches with the pc only
+  (the chunked pc phi of `exit_for` is unchanged). The one materialisation block passes the buffer to `yavs_rt_deopt`,
+  which copies it into the recorded frame; the interpreter resumes at the pc and reads exactly the registers that were
+  live. The buffer is an `alloca` that escapes to that call only, so the frame's registers stay SSA values. The blocks of
+  failing guards (`exit_if`) are moved behind the rest of the function, so the hot path falls through.
+- Registers dead at the pc are recorded as zero. Nothing reads them: the interpreter's liveness (`yavs_interp::roots`)
+  decides which registers are roots, and the instruction at the pc is re-executed from live registers only. A test
+  (`materialised_frames_keep_the_live_registers`) fails when the stores are left out.
+- Measured (`--tier=llvm`, warm cache, core 14, simulate phase of 3000 iterations, median of 5; the interpreter in
+  brackets): codec `decode(encode(v))` 0.81 s to 0.132 s [0.164 s], queue push and pop 2.28 s to 0.77 s [1.34 s];
+  instructions per 1000 iterations 1.71 G to 0.72 G and 7.5 G to 4.7 G; at `O2` code generation the same change saves
+  about 5 percent of the instructions (`integer_vector_ptr.get` 1085 to 1060 per call). Window-generator testbench
+  46.4 s to 26.0 s [31.6 s]. Compile time of the hot library functions under `--tier=auto` fell by a fifth (`encode`
+  214 ms to 159 ms).
+- Shared with a second code generator: the liveness rows (`regs.rs`) and the per-pc spill are generator-independent;
+  only the emission is LLVM.
+- Idea from the reference simulator (sim1; read for its design, no code taken): a failing check there stores a position
+  constant and calls an out-of-line helper per site, so no value flows into a shared failure block. Ours differs in
+  that the interpreter resumes the frame, so each site also stores its live registers.

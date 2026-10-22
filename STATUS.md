@@ -5371,3 +5371,12 @@ Whole suite (41 tests, cores 6 and 7): geometric mean of instructions 0.98 (inte
 and with `--no-collapse-ports` (4 threads), `--tier=auto` and `--tier=llvm`; new `hierarchy/out_port_collapse` matches sim1 both
 ways; VHPI conformance traces identical before and after (collapsing is off under `--vhpi`); waves of the `hierarchy` and `force`
 groups equal with and without collapsing (`crates/yavs/tests/wave.rs`); `cargo test --workspace`.
+
+## llvm: exits of native frames record what is live (#554, 2026-10-22)
+
+Decision: docs/decisions.md "Native frames: every exit records the registers live at its pc". `--tier=llvm` ran the
+codec and queue loops of a verification library (576-bit `decode(encode(v))`, queue push and pop) and a window-generator
+testbench slower than the interpreter because all guards of a native-frame function joined one block that took every
+register through phis. Each exit now stores only the registers live at its pc. `--tier=llvm`, same core, interpreter
+in brackets: codec loop 0.81 s to 0.13 s [0.16 s], queue 2.28 s to 0.77 s [1.34 s], window generator 46.4 s to 26.0 s
+[31.6 s]; `--tier=auto` unchanged in run time, its hot library functions compile a fifth faster.

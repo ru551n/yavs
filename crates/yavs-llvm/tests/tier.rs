@@ -1183,6 +1183,71 @@ fn native_frames() {
     }
 }
 
+/// `deep(n)` recurses to `n = 0`; every level keeps `x = 3n` and `y = x + 7` across its call and
+/// returns `deep(n - 1) + x - y`, so the result is `-7n` only if the registers a materialised
+/// frame is resumed with are the ones that were live at the call.
+fn live_across() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let deep = pb.declare("deep", FuncKind::Function, None);
+    let mut fb = pb.define(deep);
+    let s = fb.param("a", Width::B8, ParamClass::Value, Mode::In, None);
+    stmt(&mut fb);
+    let p = fb.addr(AddrSpace::Frame, s);
+    let n = load(&mut fb, p, Width::B8);
+    let (base, rec) = (fb.block(), fb.block());
+    let (zero, one, three, seven) = (fb.int(0), fb.int(1), fb.int(3), fb.int(7));
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c,
+        a: n,
+        b: zero,
+    });
+    fb.emit(Inst::CondBr { c, t: base, f: rec });
+    fb.at(base);
+    fb.emit(Inst::Ret { v: Some(zero) });
+    fb.at(rec);
+    let (m, x, y, d, r) = (
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+        fb.reg(RegTy::I64),
+    );
+    let bin = |fb: &mut FuncBuilder<'_>, op, dst, a, b| fb.emit(Inst::Bin { op, dst, a, b });
+    bin(&mut fb, IntOp::Sub, m, n, one);
+    bin(&mut fb, IntOp::Mul, x, n, three);
+    bin(&mut fb, IntOp::Add, y, x, seven);
+    let args = fb.regs(&[m]);
+    fb.emit(Inst::Call {
+        func: deep,
+        args,
+        dst: Some(d),
+    });
+    bin(&mut fb, IntOp::Add, r, d, x);
+    bin(&mut fb, IntOp::Sub, r, r, y);
+    fb.emit(Inst::Ret { v: Some(r) });
+    fb.finish();
+    (pb.finish().unwrap(), deep)
+}
+
+/// Native frames left to the interpreter (a recursion deeper than the native stack allowance, one
+/// past the call depth limit) carry the registers live at their call, and only those.
+#[test]
+fn materialised_frames_keep_the_live_registers() {
+    let (prog, deep) = live_across();
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 1);
+    for n in [10u64, 5000, 9000] {
+        let (a, b, _) = p.both(deep, &[n]);
+        assert_eq!(a, Ok((-7 * n as i64) as u64), "{n}");
+        assert_eq!(a, b, "{n}");
+    }
+    let (a, b, _) = p.both(deep, &[20_000]);
+    assert!(a.as_ref().is_err_and(|e| e.contains("depth")), "{a:?}");
+    assert_eq!(a, b);
+}
+
 /// `vars(a, b)`: variables of the frame (a 64-bit, a 32-bit and an 8-bit one, each loaded and
 /// stored through an address of its own as the lowering does, and a fourth one whose address
 /// a `MakeDope` writes through) in a loop of `b mod 8` rounds with a call in it. Compiled code

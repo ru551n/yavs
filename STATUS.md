@@ -5414,7 +5414,8 @@ codec and queue loops of a verification library (576-bit `decode(encode(v))`, qu
 testbench slower than the interpreter because all guards of a native-frame function joined one block that took every
 register through phis. Each exit now stores only the registers live at its pc. `--tier=llvm`, same core, interpreter
 in brackets: codec loop 0.81 s to 0.13 s [0.16 s], queue 2.28 s to 0.77 s [1.34 s], window generator 46.4 s to 26.0 s
-[31.6 s]; `--tier=auto` unchanged in run time, its hot library functions compile a fifth faster.
+[31.6 s]; `--tier=auto` unchanged in run time (17.4 s; the reference simulator 4.1 s), its hot library functions compile
+3 to 7 percent faster.
 Memory access of compiled code (#554): a register `Deref` made is a known heap address, so its accesses skip the frame,
 temporary and instance tests, and the object table key separates private and shared heap objects of the same index.
 `--tier=llvm`, same core, interpreter in brackets: queue push and pop 0.79 s to 0.69 s (0.48 s with `YAVS_LLVM_FAST_MIN`

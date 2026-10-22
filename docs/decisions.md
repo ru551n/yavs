@@ -4538,8 +4538,10 @@ every elaboration, and again for every instance. Decisions:
   brackets): codec `decode(encode(v))` 0.81 s to 0.132 s [0.164 s], queue push and pop 2.28 s to 0.77 s [1.34 s];
   instructions per 1000 iterations 1.71 G to 0.72 G and 7.5 G to 4.7 G; at `O2` code generation the same change saves
   about 5 percent of the instructions (`integer_vector_ptr.get` 1085 to 1060 per call). Window-generator testbench
-  46.4 s to 26.0 s [31.6 s]. Compile time of the hot library functions under `--tier=auto` fell by a fifth (`encode`
-  214 ms to 159 ms).
+  46.4 s to 26.0 s [31.6 s]. `--tier=auto` on that testbench is unchanged (17.4 s,
+  interpreter 28.9 s, the reference simulator 4.1 s): the share of its time in compiled code is small
+  (about a quarter) and what is compiled is decided by the compile budget; the compile time of the hot
+  library functions is 3 to 7 percent lower (`YAVS_LLVM_TIMES`, `get` 19.2 ms to 17.9 ms).
 - Shared with a second code generator: the liveness rows (`regs.rs`) and the per-pc spill are generator-independent;
   only the emission is LLVM.
 - Idea from the reference simulator (sim1; read for its design, no code taken): a failing check there stores a position

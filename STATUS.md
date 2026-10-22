@@ -1944,7 +1944,7 @@ of the host, instructions do not:
 Where the cycles of `array_attrs` went before (sampled with frame pointers, share of all samples; `--tier=interp` of the same
 binary has 3 to 12% fewer cycles, depending on the load, which is the cost of the auto tier's thread): the dynamic loader 25% (relocations of the position independent
 executable and their page copies, the version checks of three libraries), the kernel's page faults (about 7 000 cycles each,
-440 of them), `clap` 9.6% of the cycles but only 1.6% of the instructions (first touch of its code and data), the Rust
+440 of them), `clap` 9.6% of the cycles (the instructions of building the whole command are small: pruning it to one subcommand saved 1.6% of a `run` and 3.7% of an `analyze`; the rest is the first touch of its code and data), the Rust
 runtime's probe of the main thread's stack 7.6% (`pthread_getattr_np` reads `/proc/self/maps`, #563), the image decode 12%
 (8 of 11 declaration pages decoded only by two scans of the elaborator), the two helper threads of a piped run 6% (#562),
 the table of native symbols 4%, the thread that freed the analysis 3%. The 16 700 relative relocations of the executable are
@@ -1974,11 +1974,18 @@ median over tests of the median over rounds, wall and CPU in ms; the host was lo
 
 (Cold is the first `analyze` plus first `run` in a fresh library: 3.3 ms of CPU for `analyze`, most of it analyzing
 `std.standard` from source, #564, and a sync of the manifest of 3 to 5 ms of wall, #561; the cold row of the tests that use
-`std_logic_1164` also analyzes `ieee`.) With `tools/bench/tiny.py` (analysis excluded, the references' elaborate and run,
-409 tests all tools run): median per test 3.37 ms before and 3.28 ms after against 24.2 ms for the reference simulator;
-the median corpus test is mostly elaboration and simulation, not fixed cost. Runs of 0.2 to 2 s (`tools/bench` designs,
-`--tier=auto`, pinned): the instruction counts are those of before (12.3 G for `rtl_ff`, 7.4 G for `rtl_lfsr`, 19.7 G for
-`xor_sig`) and the `--verbose` notes of the compiles are the same.
+`std_logic_1164` also analyzes `ieee`.) With `tools/bench/tiny.py` (analysis excluded, the reference's elaborate and run; 411 tests all tools run): median per test 2.9 ms
+for yavs at e9d80fff against 22.9 ms for the reference simulator; the median corpus test is mostly elaboration and simulation, not
+fixed cost. Two invocations of that tool cannot be compared with each other on this host: it subtracts the cost of `true` under its
+wrapper measured once at the start (3.59 ms in the invocation of the old binary, load average 60, and 2.71 ms in the new one, load
+15), a constant that moved the tests under 3 ms by +13% and the rest by -1%, against -20% in the interleaved table above.
+Runs of 0.2 to 2 s (`tools/bench` designs, `--tier=auto`, pinned to core 9, binary of e9d80fff against the one before this round):
+instructions 12.31 G against 12.26 G for `rtl_ff`, 19.78 G against 19.77 G for `xor_sig` (`rtl_lfsr` 5.60 G against 7.38 G is another
+agent's compile of its process); `--verbose` compile notes in three runs each: `rtl_ff` 2, `lfsr64` 2, `compute_h2h` 1 for both
+binaries, `protected_queue` between 4 and 13 for both (it depends on timing). Checks on the same binary: the warm-identity loop (analyze
+once, `run` four times in one library, so that runs 3 and 4 read the image: stdout, stderr and status of run 1 equal run 4 for all 451
+corpus tests at `--threads 1` and `4`, on `--tier=auto`; the exception is `textio/file_append_2019`, which appends to a file and differs
+the same way before) and `tools/difftest` 451/451 on `yavs-auto` at 1 and 4 threads, `yavs-interp` and `yavs-llvm` at 4.
 
 ## performance: floor of a run, 2026-10-21
 

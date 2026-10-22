@@ -37,7 +37,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `STATUS.md` "llvm".
   at `Ret`, every guard failure (overflow, check, zero divisor, non-finite real, address over
   4 GiB, re-executed by the interpreter for the identical error), and with `TIER_UNWIND` /
   `TIER_SUSPEND` when frames it pushed are left to the interpreter or the process suspends. The open native lowerings are issues (section 6).
-- `AutoTier::start` (`yavs run --tier=auto`) compiles at O2, on one background thread, the
+- `AutoTier::start` (`yavs run --tier=auto`; its thread waits `START_AFTER`, 5 ms, before it moves off the CPUs, reads the cache's list or samples, #426) compiles at O2, on one background thread, the
   functions where the sampled interpreter time reaches `PAYBACK` times their estimated compile
   time, with their small callees (`Worker::tree`), and only while the compile time spent is at
   most `Heat::budget` percent (2; fifty times that for a compute loop, `compute`, which also needs two times its compile time seen) of the interpreter

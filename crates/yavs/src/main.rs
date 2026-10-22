@@ -414,6 +414,38 @@ mod tests {
             let full = Cli::try_parse_from(&a).unwrap();
             assert_eq!(format!("{hot:?}"), format!("{full:?}"), "{a:?}");
         }
+        // Repeats, global options after the subcommand and plusargs parse alike.
+        for a in [
+            &["yavs", "run", "--work=w:d", "--std=2008", "--std=2019", "t"][..],
+            &["yavs", "run", "--work=w:d", "t", "+x=1", "--color", "never"],
+            &[
+                "yavs",
+                "analyze",
+                "--work=w:d",
+                "--message-format",
+                "json",
+                "a.vhd",
+            ],
+        ] {
+            let a = args(a);
+            let hot = parse_hot(&a).unwrap_or_else(|| panic!("not hot: {a:?}"));
+            let full = Cli::try_parse_from(&a).unwrap();
+            assert_eq!(format!("{hot:?}"), format!("{full:?}"), "{a:?}");
+        }
+        // What the whole command rejects the pruned one rejects too (and the whole command says why).
+        for a in [
+            &["yavs", "run", "--work=w:d"][..],
+            &["yavs", "run", "t"],
+            &["yavs", "run", "--work=w:d", "--tier=bogus", "t"],
+            &["yavs", "run", "--color=purple", "--work=w:d", "t"],
+            &["yavs", "elab", "--work=w:d", "--tier=interp", "t"],
+            &["yavs", "analyze", "--work=w:d"],
+            &["yavs", "analyze", "--work=w:d", "--threads=2", "a.vhd"],
+        ] {
+            let a = args(a);
+            assert!(Cli::try_parse_from(&a).is_err(), "{a:?}");
+            assert!(parse_hot(&a).is_none(), "{a:?}");
+        }
         let whole = [
             &["yavs"][..],
             &["yavs", "--help"],

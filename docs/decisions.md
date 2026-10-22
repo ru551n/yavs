@@ -4720,3 +4720,44 @@ Decisions:
   generics as constants, so the slice bounds of an instance fold at elaboration. yavs keeps one function per unit (ir.md
   2) and computes the instance-constant parts once per instance instead.
 
+
+## Host callbacks of compiled code: natives, concatenations, layouts, fat roots (yavs-llvm, yavs-ir, yavs-interp, #565, 2026-10-23)
+
+Counted on `poc_arith_addw` under `--tier=llvm` (callbacks by instruction kind, whole run): 117 million fat `TempRoot`
+helper calls, 105 million `TierHost::signal` calls (64 million vector `SigRead`, 39 million `Cat`), 100 million
+`attr.image` and 72 million other natives through the generic `TierHost::step`, 76 million `LayoutOf` helper calls. The
+time was not in the instruction counts (they were 14 percent above the interpreter's) but in what each exit costs:
+the frame view, the dispatch, the flush and reload of the live registers around the call, the object table swept.
+
+Decisions:
+
+- **A `CallNative` of a native `yavs_interp::direct_native` allows runs through `TierHost::native_frame` in frame-mode
+  code too** (`yavs_rt_native` with `NATIVE_FRAME_MODE | pc` as the depth; the argument cells are the registers' values in
+  an `alloca`, the result a register). The same natives native frames already ran, so the set and the replay rule are the
+  same: a native that fails, hands its call to the VHDL body, meets a due collection or a package initialisation is
+  declined (nothing the second run, the interpreter's step, does not see) and the call is stepped. No register is flushed
+  or reloaded around a call that succeeds. A native that reports at the stop severity (`ieee_stop`) flushes the
+  registers, returns `TIER_SUSPEND` and leaves the frame's pc at the call, which `native_frame` sets (the interpreter
+  adds one on `TIER_SUSPEND`). Why not all natives: those outside `direct_native` read the world (files, the
+  environment, assert counters) or may call VHDL, which moves the stacks compiled code holds pointers into. Shared with a
+  second code generator: `TierHost::native_frame` and the calling convention of `yavs_rt_native`; the generator's part is
+  the argument buffer and the result load.
+- **`Cat` of non-logic elements and `LayoutOf` of a one-dimensional array of static element layout are lowered in
+  frame-mode code** as they were on native frames (`cat_bytes` with address lookup and guards, `layout_words` with the
+  descriptor read inline); a failing guard steps the instruction as before. Arrays of two or more dimensions keep
+  `yavs_rt_layout`. LLVM-only (a Cranelift tier would lower them the same way or keep stepping).
+- **`Mem::forget_since` does nothing when no volatile object (frame, temporary) was found and the heap epoch is
+  unchanged**: it swept the 16 entries after every host call. All callbacks gain.
+- **A `TempRoot` of a fat pair whose two words are known not to point into a heap is dropped by the optimiser**
+  (`opt.rs` `drop_clean_roots`, see the module's decision row): `make_fat` of a string built in temporary memory and a
+  descriptor in the constant pool or the frame, the pair every native call and report of a string takes. Shared (IR): both
+  tiers; the interpreter saves the instruction, compiled code the helper call and, because no root is recorded, the stepped
+  `Stmt` after it. A word of unknown origin keeps the root.
+- Not changed: `is_inline` and the `--tier=auto` callback count (`too_many_callbacks`) still treat these natives as
+  leaving the compiled code, the policy owner's call (#507 was tuned with the dearer callback).
+- Idea from the reference simulator (sim1; read for its design, no code taken): its `numeric_std` and
+  `std_logic_1164` operations are intrinsics found by subprogram name and called with the same argument array as any
+  compiled function, so a call builds no frame object and goes through no generic dispatcher; the one generic exit
+  (for signal scheduling, assertion failures and the like) takes a flat array of scalar arguments and is not on the
+  path of data operations. `native_frame` is the same shape on top of our frames: the argument cells in an array, one
+  result word, the generic step only for the cases the lean call declines.

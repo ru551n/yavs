@@ -583,6 +583,18 @@ pub trait TierHost {
         slots: &mut Option<Box<dyn NativeSlots>>,
     ) -> NativeCall;
 
+    /// [`TierHost::native_direct`] for a `CallNative` at `pc` of a frame-mode function (the
+    /// top frame, which has no native frames above it): same results; on [`NativeCall::Stop`]
+    /// the frame's pc is `pc`, as `Tier::run` expects of a suspension. The caller leaves
+    /// registers it holds untouched: the native reads none and writes none.
+    fn native_frame(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        native: u32,
+        cells: &[u64],
+    ) -> NativeCall;
+
     /// Instruction `pc` of function `func`, executed for a native frame by the interpreter's own
     /// code on a frame it makes for the purpose (`docs/decisions.md` "Compiled frames"):
     /// `ins` are the values of the registers `use_regs` (the registers [`inst_regs`] says it

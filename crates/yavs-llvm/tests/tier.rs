@@ -2126,3 +2126,189 @@ fn heap_objects_found_again_until_deallocated() {
         assert_eq!(a, b, "frame mode, n {n}");
     }
 }
+
+/// `f(n, c)` entered from the interpreter, so in frame mode: a native computing from its
+/// arguments (`ceil`) and one reading the frame's slots through memory (`is_x`), a `Cat` of
+/// non-logic elements, and the layout of a one-dimensional array of `n` elements; the result
+/// mixes them all.
+fn frame_mode_ops() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let ceil = pb.native("yavs.ieee.math_real.ceil(real)real", None);
+    let is_x = pb.native(
+        "yavs.ieee.std_logic_1164.is_x(std_ulogic_vector)boolean",
+        None,
+    );
+    let byte = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let arr = pb.ty(Ty::Array {
+        elem: byte,
+        elem_desc: None,
+        dims: 1,
+    });
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+    let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
+    let planes = fb.slot(32, 8);
+    let dope_s = fb.slot(24, 8);
+    stmt(&mut fb);
+    let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
+    let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
+    // ceil(n / 4)
+    let x = fb.reg(RegTy::F64);
+    fb.emit(Inst::IToF { dst: x, src: n });
+    let q = fb.reg(RegTy::F64);
+    fb.emit(Inst::ConstF { dst: q, v: 0.25 });
+    let y = fb.reg(RegTy::F64);
+    fb.emit(Inst::FBin {
+        op: FOp::Mul,
+        dst: y,
+        a: x,
+        b: q,
+    });
+    let args = fb.regs(&[y]);
+    let z = fb.reg(RegTy::F64);
+    fb.emit(Inst::CallNative {
+        native: ceil,
+        args,
+        dst: Some(z),
+    });
+    let halves = fb.reg(RegTy::I64);
+    fb.emit(Inst::FToI {
+        dst: halves,
+        src: z,
+    });
+    // is_x on four elements whose planes are the bits of the low nibble of c, in the frame
+    let pl = fb.addr(AddrSpace::Frame, planes);
+    let nib = fb.int(15);
+    let low = fb.reg(RegTy::I64);
+    fb.emit(Inst::Bin {
+        op: IntOp::Rem,
+        dst: low,
+        a: c,
+        b: nib,
+    });
+    for p in 0..4 {
+        let at_p = fb.int(8 * p);
+        let to = index(&mut fb, pl, at_p);
+        fb.emit(Inst::Store {
+            addr: to,
+            src: low,
+            w: Width::B8,
+        });
+    }
+    let dp = fb.addr(AddrSpace::Frame, dope_s);
+    let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
+    let parts = fb.regs(&[l, r, d]);
+    fb.emit(Inst::MakeDope { at: dp, parts });
+    let sixteen = fb.int(16);
+    let fat = alloc(&mut fb, sixteen);
+    fb.emit(Inst::Store {
+        addr: fat,
+        src: pl,
+        w: Width::B8,
+    });
+    let eight = fb.int(8);
+    let f8 = index(&mut fb, fat, eight);
+    fb.emit(Inst::Store {
+        addr: f8,
+        src: dp,
+        w: Width::B8,
+    });
+    let args = fb.regs(&[fat]);
+    let isx = fb.reg(RegTy::I64);
+    fb.emit(Inst::CallNative {
+        native: is_x,
+        args,
+        dst: Some(isx),
+    });
+    // The layout of an array of n elements: [size, align, stride, count].
+    let (zero, one, dir) = (fb.int(0), fb.int(1), fb.int(0));
+    let last = fb.reg(RegTy::I64);
+    fb.emit(Inst::Bin {
+        op: IntOp::Sub,
+        dst: last,
+        a: n,
+        b: one,
+    });
+    let n24 = fb.int(24);
+    let desc = alloc(&mut fb, n24);
+    let parts = fb.regs(&[zero, last, dir]);
+    fb.emit(Inst::MakeDope { at: desc, parts });
+    let lay = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::LayoutOf {
+        dst: lay,
+        ty: arr,
+        desc,
+    });
+    let size = load(&mut fb, lay, Width::B8);
+    let sixteen_k = fb.int(16);
+    let sp = index(&mut fb, lay, sixteen_k);
+    let stride = load(&mut fb, sp, Width::B8);
+    // s := the byte at `cell`, then c.
+    let total = fb.int(2);
+    let cell = alloc(&mut fb, eight);
+    fb.emit(Inst::Store {
+        addr: cell,
+        src: c,
+        w: Width::B1,
+    });
+    let s = alloc(&mut fb, eight);
+    let parts = fb.regs(&[cell, one, c, one]);
+    fb.emit(Inst::Cat {
+        dst: s,
+        n: total,
+        m: one,
+        parts,
+        scalars: 0b10,
+        bias: 0,
+        logic: false,
+        w: Width::B1,
+    });
+    let at = index(&mut fb, s, one);
+    let tail = load(&mut fb, at, Width::B1);
+    // Mix.
+    let mut acc = halves;
+    for (v, k) in [(isx, 3), (size, 7), (stride, 11), (tail, 13)] {
+        let kk = fb.int(k);
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Mul,
+            dst: m,
+            a: acc,
+            b: kk,
+        });
+        let sum = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: sum,
+            a: m,
+            b: v,
+        });
+        acc = sum;
+    }
+    fb.emit(Inst::Ret { v: Some(acc) });
+    fb.finish();
+    (pb.finish().unwrap(), f)
+}
+
+/// Natives, a `Cat` and a one-dimensional `LayoutOf` in frame-mode code give the interpreter's
+/// results and run compiled, one entry into compiled code.
+#[test]
+fn natives_strings_and_layouts_in_frame_mode() {
+    let (prog, f) = frame_mode_ops();
+    let p = Both::new(prog);
+    for (n, c) in [
+        (1u64, 3u64),
+        (0, 5),
+        (7, 15),
+        (64, 33),
+        (300, 255),
+        (5000, 1),
+        (1 << 20, 9),
+    ] {
+        let (a, b, entries) = p.both(f, &[n, c]);
+        assert_eq!(a, b, "n {n} c {c}");
+        assert!(a.is_ok() || n == 0, "{a:?}");
+        assert_eq!(entries, 1, "n {n} c {c}");
+    }
+}

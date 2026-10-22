@@ -400,10 +400,11 @@ impl Mem {
     /// `forget` after a host call that started at heap epoch `epoch` (`TierFrame::heap_epoch`):
     /// heap objects stay too while no heap object was deallocated or edited in place.
     fn forget_since(&mut self, epoch: u64) {
-        if self.live == 0 {
+        let heap = self.fr.heap_epoch == epoch;
+        // Nothing volatile found, no heap object freed or edited: nothing to drop.
+        if self.live == 0 || heap && !self.transient {
             return;
         }
-        let heap = self.fr.heap_epoch == epoch;
         self.retain(|hi| match life(hi) {
             Life::Volatile => false,
             Life::Heap => heap,
@@ -694,8 +695,13 @@ extern "C" fn yavs_rt_wait_same(
     }
 }
 
+/// `depth` of `yavs_rt_native` with this bit set: a frame-mode function's call at the pc in the
+/// low 32 bits (`TierHost::native_frame`).
+const NATIVE_FRAME_MODE: u64 = 1 << 63;
+
 /// `TierHost::native_direct` for a `CallNative` of a native frame: `cells` (`n`) are the
-/// argument cells, `depth` the frame index of the calling native frame. Returns 0 where the
+/// argument cells, `depth` the frame index of the calling native frame (or `NATIVE_FRAME_MODE`
+/// and the pc of a frame-mode caller). Returns 0 where the
 /// interpreter must execute the instruction, 1 when the native ran, 2 when it ran and the
 /// process ends (compiled code leaves at the next instruction); bit 8 says the native returned
 /// a value, written to `out`.
@@ -708,14 +714,19 @@ extern "C" fn yavs_rt_native(
     depth: u64,
     out: *mut u64,
 ) -> u32 {
-    // SAFETY: as in `yavs_rt_step`; `cells` holds `n` words of the calling native frame (an
-    // `alloca` of the compiled code), `out` one word.
+    // SAFETY: as in `yavs_rt_step`; `cells` holds `n` words of the caller (an `alloca` of the
+    // compiled code), `out` one word.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let epoch = unsafe { (*mem).fr.heap_epoch };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         let cells = std::slice::from_raw_parts(cells, n as usize);
         let env = &mut *envp;
+        if depth & NATIVE_FRAME_MODE != 0 {
+            return env
+                .host
+                .native_frame(&mut (*mem).fr, depth as u32, native, cells);
+        }
         let w = env
             .windows
             .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
@@ -2001,6 +2012,21 @@ fn native_kind(
     yavs_interp::edge_native(sym).map(NativeKind::Edge)
 }
 
+/// A `CallNative` of a frame-mode function that runs through `TierHost::native_frame`: a native
+/// `yavs_interp::direct_native` allows, its operands in the frame.
+fn frame_direct(prog: &Program, f: &Func, i: &Inst) -> bool {
+    let Inst::CallNative { native, args, dst } = *i else {
+        return false;
+    };
+    let n = f.reg_ty.len() as u32;
+    prog.natives
+        .get(native)
+        .is_some_and(|n| yavs_interp::direct_native(&n.symbol))
+        && f.regs(args)
+            .is_some_and(|rs| rs.iter().all(|r| r.0 < n) && rs.len() <= 8)
+        && dst.is_none_or(|d| d.0 < n)
+}
+
 /// Instructions the compiled code executes itself on its fast path (keep in step with
 /// `Gen::func`).
 pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
@@ -2036,10 +2062,11 @@ const NC_REGS: usize = 512;
 const NC_SLOTS: u32 = 4096;
 const NC_CODE: usize = 2000;
 
-/// Instructions only a native frame lowers without a step (`Gen::func`): their frame is not the
-/// interpreter's, so a frame-mode function steps them. `NewFrame`, `Fill`, a `Cat` of
-/// non-logic elements, a typed `TempRoot`, a `CallNative` of a native `yavs_interp::direct_native`
-/// allows, and `CallProt` (its callee is checked by `native_set`).
+/// Instructions a native frame lowers without a step (`Gen::func`); a frame-mode function lowers
+/// the `Cat` of non-logic elements and the `CallNative` of a `direct_native` too
+/// (`frame_direct`) and steps the others. `NewFrame`, `Fill`, a `Cat` of non-logic elements, a
+/// typed `TempRoot`, a `CallNative` of a native `yavs_interp::direct_native` allows, and
+/// `CallProt` (its callee is checked by `native_set`).
 fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     let n = f.reg_ty.len() as u32;
     let fits = |rs: &[Reg]| rs.iter().all(|r| r.0 < n);
@@ -4320,7 +4347,9 @@ impl Gen {
                         self.join(&c, join);
                     }
                     Inst::LayoutOf { dst, ty, desc } => match static_layout(prog, ty) {
-                        Some(StaticLayout::Array { dims, elem, logic }) if c.nat.is_none() => {
+                        Some(StaticLayout::Array { dims, elem, logic })
+                            if c.nat.is_none() && dims > 1 =>
+                        {
                             // `yavs_rt_layout` does what `Ty::layout` would; 0 is the interpreter's.
                             let (slow, join) = self.slow_path(&c, pc, &inst);
                             let stride = elem.size.next_multiple_of(elem.align.max(1));
@@ -4966,6 +4995,9 @@ impl Gen {
                             None if c.nat.is_some() && nat_inline(prog, f, &inst) => {
                                 self.native_direct(&c, pc, &inst, f, native, args, dst)?
                             }
+                            None if c.nat.is_none() && frame_direct(prog, f, &inst) => {
+                                self.native_direct(&c, pc, &inst, f, native, args, dst)?
+                            }
                             None => self.step(&c, pc, &inst),
                         }
                     }
@@ -5018,7 +5050,7 @@ impl Gen {
                         bias: _,
                         logic: false,
                         w,
-                    } if c.nat.is_some() => {
+                    } if c.nat.is_some() || nat_inline(prog, f, &inst) => {
                         let rs = f.regs(parts).ok_or("operand list out of range")?;
                         let fk = |r: Reg| self.known_addr(&c, r);
                         self.cat_bytes(&c, pc, &inst, dst, elem, rs, scalars, w, &fk);
@@ -6040,9 +6072,11 @@ impl Gen {
         }
     }
 
-    /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, on a native frame:
-    /// the argument cells go to `TierHost::native_direct`; where it does not run the native
-    /// the frames are materialised and the interpreter executes the call.
+    /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows: the argument cells
+    /// go to `TierHost::native_direct` (a native frame; where it does not run the native the
+    /// frames are materialised and the interpreter executes the call) or `native_frame` (a
+    /// frame-mode function: the interpreter steps the call; no register is flushed or reloaded
+    /// on the way).
     #[allow(clippy::too_many_arguments)]
     unsafe fn native_direct(
         &self,
@@ -6056,7 +6090,6 @@ impl Gen {
     ) -> Result<(), String> {
         // SAFETY: the arguments match `native_ty`; well-formed blocks of c.f.
         unsafe {
-            let nat = c.nat.as_ref().ok_or("native call outside a native frame")?;
             let rs = f.regs(args).ok_or("operand list out of range")?;
             let mut cells = Vec::new();
             for &r in rs {
@@ -6070,14 +6103,21 @@ impl Gen {
             for (k, &r) in cells.iter().enumerate() {
                 self.store(self.ld(c, r), self.gep(buf, self.c64(k as i64 * 8)));
             }
+            let (depth, scratch) = match &c.nat {
+                Some(nat) => (nat.depth, nat.scratch),
+                None => (
+                    self.c64((NATIVE_FRAME_MODE | u64::from(pc)) as i64),
+                    self.entry_alloca(c, 8),
+                ),
+            };
             let mut a = [
                 c.env,
                 c.mem,
                 self.c32(native.0),
                 buf,
                 self.c32(cells.len() as u32),
-                nat.depth,
-                nat.scratch,
+                depth,
+                scratch,
             ];
             let st = LLVMBuildCall2(
                 self.b,
@@ -6100,10 +6140,11 @@ impl Gen {
             }
             self.guard(c, ok, slow);
             if let Some(d) = dst {
-                let v = LLVMBuildLoad2(self.b, self.i64, nat.scratch, c"".as_ptr());
+                let v = LLVMBuildLoad2(self.b, self.i64, scratch, c"".as_ptr());
                 self.st(c, d, v);
             }
-            // The native ended the process: the frames are materialised after the call.
+            // The native ended the process: a native frame is materialised after the call, a
+            // frame-mode function suspends with the registers in the frame.
             let (out, cont) = (self.block(c), self.block(c));
             LLVMBuildCondBr(
                 self.b,
@@ -6112,7 +6153,12 @@ impl Gen {
                 cont,
             );
             LLVMPositionBuilderAtEnd(self.b, out);
-            self.leave(c, self.c32(pc + 1));
+            if c.nat.is_some() {
+                self.leave(c, self.c32(pc + 1));
+            } else {
+                self.flush(c, pc as usize + 1);
+                self.leave(c, self.c32(TIER_SUSPEND));
+            }
             LLVMPositionBuilderAtEnd(self.b, cont);
             self.join(c, join);
             Ok(())

@@ -8495,6 +8495,46 @@ impl crate::TierHost for Host<'_, '_, '_> {
         }
     }
 
+    fn native_frame(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        at: u32,
+        native: u32,
+        cells: &[u64],
+    ) -> crate::NativeCall {
+        use crate::NativeCall::{Done, Slow, Stop};
+        let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        let (Some(n), Some(fun)) = (
+            prog.natives.get(yavs_ir::NativeId(native)),
+            rt.natives.get(native as usize).copied().flatten(),
+        ) else {
+            return Slow;
+        };
+        // As `native_direct`, for the top frame: no native frames above it, so no slot windows;
+        // the frame's own allocation mode is the view's.
+        if m.pkg_init.is_some()
+            || m.init_reports.is_some()
+            || self.ctx.is_some() && m.reclaim_pending()
+        {
+            return Slow;
+        }
+        m.top().pc = at;
+        let r = fun(m, self.ctx, n.ty, cells);
+        let fallback = std::mem::take(&mut m.ieee_fallback);
+        let stop = std::mem::take(&mut m.ieee_stop);
+        // A native run this way pushes no frame (it would be `Slow`): the stacks stay.
+        debug_assert!(m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots);
+        m.tier_temp(tf);
+        match r {
+            Ok(v) if !fallback && stop => {
+                self.stop = true;
+                Stop(v)
+            }
+            Ok(v) if !fallback => Done(v),
+            _ => Slow,
+        }
+    }
+
     fn native_step(
         &mut self,
         tf: &mut crate::TierFrame,

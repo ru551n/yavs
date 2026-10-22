@@ -5594,3 +5594,32 @@ the message is an actual parameter, so it stays eager, and the `to_integer` warn
 Ideas of the reference simulator used (read for the design, no code): it folds the generics of an instance into its
 code at elaboration; ours computes the same facts once per instance in the shared code.
 
+
+## llvm: host callbacks of compiled code, round 1 (#565, #532, #339, #337, 2026-10-23)
+
+Natives of frame-mode code run through `TierHost::native_frame` (the argument cells from the registers, one result word,
+nothing flushed or reloaded around the call), `Cat` of non-logic elements and `LayoutOf` of one-dimensional arrays are
+lowered in frame mode, `Mem::forget_since` returns at once when it has nothing to drop, and the optimiser drops the
+`TempRoot` of a fat pair of temporaries (`docs/decisions.md` "Host callbacks of compiled code"). The calls counted on
+`poc_arith_addw` (`--tier=llvm`, whole run, before): 117 M fat roots, 105 M `TierHost::signal` calls, 172 M natives
+stepped, 76 M layout helpers; after: 20 M fat roots, 89 M signal calls (64 M vector `SigRead`, 22 M logic `Cat`), the
+172 M natives through the lean call, no layout helper.
+
+Measured on cores 2 and 3, `perf stat` cycles / instructions (G, median of 3 interleaved runs after an untimed run that
+fills the object cache), `--tier=llvm` with `YAVS_LLVM_FAST_MIN=99999999` (the code `--tier=auto` makes at `O2`), main at
+9be61682 against this change. `poc_arith_addw` over the first 600 us of simulated time (of 2.6 ms): 27.1 / 93.1 to
+21.6 / 73.2 (-20 percent cycles, -21 percent instructions; the interpreter 25.9 / 93.7). Whole tests:
+
+| test | main | now | cycles |
+|---|---:|---:|---:|
+| `fletcher_bufferreader` | 43.6 / 59.4 | 39.0 / 58.7 | -11% |
+| `sc5_fifo_repack` | 26.2 / 48.1 | 23.1 / 44.3 | -12% |
+| `poc_cache_cpu` | 15.2 / 22.8 | 14.3 / 22.4 | -6% |
+| `neorv32_single_min` | 77.9 / 105.8 | 75.8 / 102.7 | -3% |
+| `poc_stat_histogram` | 4.60 / 19.2 | 4.66 / 19.3 | +1% (noise) |
+| `hdlm_lfsr` | 24.0 / 50.4 | 25.2 / 50.2 | +5% (instructions equal: noise) |
+| `sc5_timestamp` | 7.8 / 11.8 | 8.4 / 11.9 | +7% (instructions equal: noise) |
+
+What is left in `poc_arith_addw` (89 M `signal` calls: vector `SigRead` and `Cat` of generic widths, whose lengths are
+instance constants the generator does not know) and the shape of the rest of the gap to the interpreter on clocked RTL
+(code size and cache misses, not exits) are in the issue comments of #565 and #532.

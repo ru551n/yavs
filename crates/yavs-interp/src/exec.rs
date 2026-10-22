@@ -4927,7 +4927,7 @@ impl Machine {
                     if !TIER && cpre.lean {
                         let regs = f
                             .regs(args)
-                            .ok_or_else(|| ice("operand list out of range"))?;
+                            .ok_or_else(|| ice_s!("operand list out of range"))?;
                         self.call_lean(cf, cid, cpre, regs, dst, None)?;
                     } else {
                         self.call_pre(f, cf, cid, cpre, args, dst, None)?;
@@ -4981,7 +4981,7 @@ impl Machine {
                     if !TIER && cpre.lean {
                         let regs = f
                             .regs(args)
-                            .ok_or_else(|| ice("operand list out of range"))?;
+                            .ok_or_else(|| ice_s!("operand list out of range"))?;
                         self.call_lean(cf, cid, cpre, regs, dst, Some(h))?;
                     } else {
                         self.call_pre(f, cf, cid, cpre, args, dst, Some(h))?;

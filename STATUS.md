@@ -5051,6 +5051,14 @@ satcat5, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl: all as expected.
 Not done: cloning only the bodies a run reaches (needs the stage and prefix rules to change, see the decision), the page faults of
 the whole run (#556).
 
+## sem: deterministic ids and cache bytes across processes (#557, 2026-10-22)
+
+`Db::r_instance` cloned a nested instance's `GenericMap` in std hash order (seeded per process), so the ids of the cloned subtypes,
+expressions and declarations could differ between processes. `GenericMap` is a `BTreeMap` now (cloned in key order), `GenericState`
+and `Library::units` are `FxHashMap`/`FxHashSet` (they were the only std hash containers in the serialized `Db`, so the image
+bytes followed the process seed), the `inst_types` loop of the formal-package actual sorts, and `Remap`-style loops that allocate
+ids already sorted. Test: `entries_are_the_same_in_every_process` (`crates/yavs/tests/cache.rs`, fails before the change).
+
 ## llvm: protected-method calls compiled, calls from the interpreter on native frames (#510, 2026-10-22)
 
 Decisions: docs/decisions.md "Native calls from the interpreter and the object table". What changed:

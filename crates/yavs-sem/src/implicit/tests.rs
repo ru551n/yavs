@@ -2,7 +2,7 @@
 //! LRM (clauses in the module doc of `implicit.rs`) and against the
 //! `standard.vhdl` listing of both revisions.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use super::*;
 use crate::Options;
@@ -51,7 +51,7 @@ impl B {
             name: id(name),
             decl,
             source: LibSource::Files,
-            units: HashMap::new(),
+            units: HashMap::default(),
         })
     }
 

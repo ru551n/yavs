@@ -122,6 +122,10 @@ Module-local decisions go in this section and in the matching sem.md section, LR
 - **A restored `Db` decodes lazily (`ids.rs`, `Image`, #426).** `Arena` keeps the image bytes (a `yavs_diag::Slice`, a range of the mapped cache entry) and decodes an entry's chunk of 64 the first time it is read; `IndexMut` decodes the chunk too, `push` appends after the lazy entries. So a whole-design scan (`arena.iter()`) decodes everything: do not add one on the run path. The scans the elaborator needs are answered from `Db::facts()` (found by `settle` and stored in the image: `'active` reads, force/release statements, package-path external names); `facts()` recomputes when an arena grew since. Entries of the analysed-unit cache carry the facts of their unit's own entries (`Db::unit_facts`, `note_expr`/`note_stmt`): a new kind of fact is added in `note_expr`/`note_stmt` and `Facts`, nowhere else, and needs a `FORMAT` bump in `units.rs`. A decode error is an internal-error panic (the entry was checksummed, so it is a bug). The source map holds no text in an image (`yavs-diag` `SourceFile`).
 - **Determinism.** Diagnostics order must not depend on hash-map iteration; snapshots and the
   negative suite compare exact `(code, line, col)` sets.
+  Neither may ids or cache bytes: no std `HashMap`/`HashSet` in `yavs-sem` (they are seeded per
+  process; `GenericMap` is a `BTreeMap`, the rest `FxHashMap`/`FxHashSet`), and a loop over an
+  `Fx` map that allocates ids sorts first. `cache.rs` `entries_are_the_same_in_every_process`
+  compares the entries of several processes byte for byte (#557).
 - **xfail list.** A listed file that starts passing fails `diag_sem`: remove its line in the
   same commit (`YAVS_SEM_XFAIL_WRITE=1`, check the diff only removes lines). Any ICE fails the
   suite, xfail or not.

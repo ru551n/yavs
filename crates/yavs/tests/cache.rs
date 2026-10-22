@@ -1244,3 +1244,68 @@ fn read_only_library_gets_no_compiled_code() {
         "nothing is written into a read-only library"
     );
 }
+
+/// A package instance nested in a generic package, whose generic map has two entries of each
+/// kind: cloning the nested instance with the outer one numbers the clones in the map's order.
+const NESTED: &str = "package inner_g is\n\
+  generic (type t1; type t2; c1 : integer; c2 : integer; function cv (x : t1) return t2);\n\
+  constant k : integer := c1 + c2;\n  function g (x : t1) return t2;\nend;\n\
+package body inner_g is\n  function g (x : t1) return t2 is begin return cv(x); end;\nend;\n\
+package outer_g is\n  generic (type a; type b; function f (x : a) return b);\n\
+  package i is new work.inner_g generic map (t1 => a, t2 => b, c1 => 3, c2 => 4, cv => f);\nend;\n\
+entity tb is end;\n\
+architecture a of tb is\n  function f (x : integer) return bit is begin return '1'; end;\n\
+  package o is new work.outer_g generic map (a => integer, b => bit, f => f);\nbegin\n\
+  process begin report \"k=\" & integer'image(o.i.k) & \" g=\" & bit'image(o.i.g(1)); wait; end process;\nend;\n";
+
+/// The cache entries do not depend on the process: std hash maps are seeded per process, so
+/// an id or a byte that follows their order differs between runs (#557).
+#[test]
+fn entries_are_the_same_in_every_process() {
+    let mut first: Option<Vec<(String, Vec<u8>)>> = None;
+    // One directory, emptied between runs: the paths are part of the keys and the images.
+    let tmp = tempdir("bytes");
+    for n in 0..6 {
+        let _ = std::fs::remove_dir_all(tmp.join("work"));
+        std::fs::write(tmp.join("n.vhd"), NESTED).expect("write");
+        let work = format!("work:{}", tmp.join("work").display());
+        let run = |args: &[&str]| {
+            let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+                .current_dir(&tmp)
+                .env_remove("YAVS_STDLIB")
+                .args(args)
+                .output()
+                .expect("run");
+            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        run(&["analyze", "--work", &work, "n.vhd"]);
+        // The first run only notes the closure, the second stores the entries.
+        for _ in 0..2 {
+            assert!(run(&["run", "--work", &work, "tb"]).contains("k=7"));
+        }
+        let mut files: Vec<(String, Vec<u8>)> =
+            std::fs::read_dir(tmp.join("work").join("yavs-cache"))
+                .expect("cache dir")
+                .flatten()
+                .filter(|f| f.file_name().to_string_lossy().ends_with(".img"))
+                .map(|f| {
+                    let bytes = std::fs::read(f.path()).expect("read");
+                    (f.file_name().to_string_lossy().into_owned(), bytes)
+                })
+                .collect();
+        files.sort();
+        assert!(!files.is_empty());
+        match &first {
+            None => first = Some(files),
+            Some(f0) => {
+                let names =
+                    |v: &[(String, Vec<u8>)]| v.iter().map(|p| p.0.clone()).collect::<Vec<_>>();
+                assert_eq!(names(f0), names(&files), "process {n}");
+                for (a, b) in f0.iter().zip(&files) {
+                    assert!(a.1 == b.1, "{} differs in process {n}", a.0);
+                }
+            }
+        }
+    }
+}

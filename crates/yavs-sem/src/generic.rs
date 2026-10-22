@@ -18,8 +18,8 @@
 //! - subtypes and expressions that mention none of the above keep their ids;
 //!   changed expressions lose their folded value and are folded again.
 
-use rustc_hash::FxHashMap;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap, FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use yavs_diag::{Diagnostic, Span};
@@ -92,13 +92,13 @@ pub struct Instance {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericMap {
     /// Formal generic type to actual subtype.
-    pub types: HashMap<TypeId, SubtypeId>,
+    pub types: BTreeMap<TypeId, SubtypeId>,
     /// Formal constant to actual expression.
-    pub consts: HashMap<DeclId, ExprId>,
+    pub consts: BTreeMap<DeclId, ExprId>,
     /// Formal subprogram (and implicit operation of a formal type) to actual subprogram.
-    pub subprograms: HashMap<DeclId, DeclId>,
+    pub subprograms: BTreeMap<DeclId, DeclId>,
     /// Formal package to actual instance.
-    pub packages: HashMap<DeclId, InstId>,
+    pub packages: BTreeMap<DeclId, InstId>,
 }
 
 /// Default of a formal generic subprogram (6.5.6.2).
@@ -1529,7 +1529,7 @@ impl Db {
         span: Span,
     ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
         if !self.generic.implicit.contains_key(&e) {
-            return Some((e, HashMap::new()));
+            return Some((e, HashMap::default()));
         }
         let s = self.decls[e].kind.subprogram()?;
         let keys: Vec<Symbol> = s.params.iter().map(|p| p.name.key).collect();
@@ -1559,7 +1559,7 @@ impl Db {
         span: Span,
     ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
         let Some(types) = self.generic.implicit.get(&e).cloned() else {
-            return Some((e, HashMap::new()));
+            return Some((e, HashMap::default()));
         };
         let s = self.decls[e].kind.subprogram()?;
         let params: Vec<(Symbol, TypeId, Option<DeclId>)> = s
@@ -1567,7 +1567,7 @@ impl Db {
             .iter()
             .map(|p| (p.name.key, self.base(p.subtype), p.decl))
             .collect();
-        let mut pre = HashMap::new();
+        let mut pre = HashMap::default();
         let mut bound: Vec<(TypeId, SubtypeId)> = Vec::new();
         for (k, &(_, ft, pdecl)) in params.iter().enumerate() {
             if !types.contains(&ft) {
@@ -1826,7 +1826,7 @@ impl Db {
     ) -> Result<(), Reported> {
         let mut failed = false;
         // Actual spans of formal types, to place `E1504` at the actual that lacks the operation.
-        let mut type_spans: HashMap<TypeId, Span> = HashMap::new();
+        let mut type_spans: HashMap<TypeId, Span> = HashMap::default();
         for (i, &f) in formals.iter().enumerate() {
             let a = actuals[i];
             let ok = match &self.decls[f].kind {
@@ -2682,7 +2682,8 @@ impl Db {
     ) -> Result<InstId, Reported> {
         let i = self.package_actual(scope, f, Some(a), site, &mut Remap::default())?;
         if let Some(m) = self.generic.maps.get(&i) {
-            let pairs: Vec<(TypeId, TypeId)> = m.types.iter().map(|(&o, &c)| (o, c)).collect();
+            let mut pairs: Vec<(TypeId, TypeId)> = m.types.iter().map(|(&o, &c)| (o, c)).collect();
+            pairs.sort();
             for (o, c) in pairs {
                 let st = self.types[c].first_subtype;
                 self.inst_types.push((o, st));

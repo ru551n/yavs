@@ -5,7 +5,7 @@
 //! ieee), parses the whole file and analyzes only the requested unit. The
 //! other units of the file keep their AST in the file cache until asked for.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 use yavs_diag::{Diagnostic, FileId, Span};
@@ -256,7 +256,7 @@ impl Db {
             name,
             decl,
             source,
-            units: HashMap::new(),
+            units: HashMap::default(),
         })
     }
 

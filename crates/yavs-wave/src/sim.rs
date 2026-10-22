@@ -95,6 +95,17 @@ struct Var {
     stamp: Option<Stamp>,
 }
 
+/// What reading a variable found.
+enum Read {
+    /// A new value (`Var::raw`).
+    Changed,
+    /// The same value as before.
+    Same,
+    /// Its process has no frame or has not run since the last read, so no variable of it has
+    /// changed.
+    Idle,
+}
+
 const NO_ENTRY: u32 = u32::MAX;
 
 /// Entries of one leaf that do not overlap, by offset.
@@ -373,14 +384,27 @@ impl State {
     /// step that just ended (every process is suspended).
     fn sample_vars(&mut self, hook: &mut Hook<'_>) {
         let mut bytes = Vec::new();
+        let mut idle: Option<ProcId> = None;
         for k in 0..self.vars.len() {
             if self.error.is_some() {
                 return;
             }
+            if let VarAt::Proc { proc, .. } = &self.vars[k].at
+                && Some(*proc) == idle
+            {
+                continue;
+            }
             match self.read_var(hook, k) {
-                Ok(true) => {}
-                // The process has not started yet, or has ended: its last values stay.
-                Ok(false) => continue,
+                Ok(Read::Changed) => {}
+                Ok(Read::Same) => continue,
+                // The process has not started yet, has ended or has not run since: its last
+                // values stay, and so do those of its other variables (they were read together).
+                Ok(Read::Idle) => {
+                    if let VarAt::Proc { proc, .. } = &self.vars[k].at {
+                        idle = Some(*proc);
+                    }
+                    continue;
+                }
                 Err(m) => {
                     self.error = Some(Error::Value(m));
                     return;
@@ -460,7 +484,7 @@ impl State {
     /// Read variable `k` if it may differ from the last read: whether its raw value changed
     /// (then `Var::raw` is the new one and the plan is made). `false` while its process has
     /// no frame, has not run since, or the value is unchanged.
-    fn read_var(&mut self, hook: &mut Hook<'_>, k: usize) -> Result<bool, String> {
+    fn read_var(&mut self, hook: &mut Hook<'_>, k: usize) -> Result<Read, String> {
         let bug =
             |what: &str| format!("this is a bug in yavs: reading a recorded variable: {what}");
         let var = &mut self.vars[k];
@@ -482,20 +506,20 @@ impl State {
                         .and_then(|a| a.downcast_mut::<InterpProcess>())
                         .ok_or_else(|| bug("not an interpreter process"))?;
                     if !p.has_vars() || p.execs() == *execs {
-                        return Ok(false);
+                        return Ok(Read::Idle);
                     }
                     // Compared in place: most variables of a process that ran are unchanged.
                     if let Some(r) = raw.as_ref()
                         && p.var_is(name, r, stamp).map_err(|m| bug(&m))?
                     {
                         *execs = p.execs();
-                        return Ok(false);
+                        return Ok(Read::Same);
                     }
                     let (ty, cv) = p.var(name).map_err(|m| bug(&m))?;
                     *execs = p.execs();
                     make_plan(paths, plan, plan_desc, p.program(), ty, &cv)?;
                     *old = raw.replace(cv);
-                    Ok(true)
+                    Ok(Read::Changed)
                 })
                 .unwrap_or_else(|| Err(bug("no process"))),
             VarAt::Shared { slot, ty } => {
@@ -504,13 +528,13 @@ impl State {
                     && yavs_interp::shared_var_is(&b.rt, &b.shared, *slot, *ty, r, stamp)
                         .map_err(|m| bug(&m))?
                 {
-                    return Ok(false);
+                    return Ok(Read::Same);
                 }
                 let cv =
                     yavs_interp::shared_var(&b.rt, &b.shared, *slot, *ty).map_err(|m| bug(&m))?;
                 make_plan(paths, plan, plan_desc, &b.rt.prog, *ty, &cv)?;
                 *old = raw.replace(cv);
-                Ok(true)
+                Ok(Read::Changed)
             }
         }
     }
@@ -780,7 +804,7 @@ impl Observer for Recorder {
             // A leaf with one entry that covers it: any change is a change of the entry.
             let i = st.solo.get(s as usize).copied().unwrap_or(NO_ENTRY);
             if i != NO_ENTRY {
-                if !st.dirty[i as usize] {
+                if !st.dirty[i as usize] && !hook.changed(yavs_kernel::SignalId(s)).is_empty() {
                     st.dirty[i as usize] = true;
                     st.pending.push(i);
                 }

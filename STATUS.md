@@ -1927,30 +1927,58 @@ Raw data: JSON per row set, the translator and the drivers are scratch and not c
 
 ## performance: floor of a run, 2026-10-22 (round 3, #426)
 
-What a tiny `yavs run` costs now that `--tier=auto` and the LLVM stubs are the default build, `tests/corpus/scalar/array_attrs`
-(warm cache, run 5; `perf stat` on a pinned core, medians of 100 interleaved runs, cycles vary by 10% with the load of the
-host and instructions do not; the whole process including its threads):
+What a tiny warm `yavs run` costs in the default build (`--tier=auto`, the LLVM stubs), on two corpus tests: `scalar/array_attrs`
+(no package) and `composite/concat_chain` (uses `ieee.std_logic_1164`, like most testbenches). Warm cache, run 5; `perf stat`
+on a pinned core, medians of 80 interleaved runs, the whole process including its threads; cycles move by 10% with the load
+of the host, instructions do not:
 
-| Binary | cycles | instructions | page faults | task-clock |
+| Test and binary | cycles | instructions | page faults | task-clock |
 |---|---:|---:|---:|---:|
-| before (e2cd4595), `--tier=auto` | 9.5 M | 9.22 M | 436 | 1.97 ms |
-| before, `--tier=interp` | 9.2 M | 8.92 M | 428 | 1.90 ms |
-| after, `--tier=auto` | 8.5 M | 6.85 M | 396 | 1.76 ms |
-| after, `--tier=interp` | 8.0 M | 6.60 M | 386 | 1.64 ms |
+| `array_attrs` before (e2cd4595) | 10.1 M | 9.36 M | 443 | 2.06 ms |
+| `array_attrs` after | 8.3 M | 6.39 M | 389 | 1.70 ms |
+| `concat_chain` before | 13.0 M | 14.78 M | 570 | 2.65 ms |
+| `concat_chain` after | 10.0 M | 8.96 M | 471 | 2.04 ms |
 | `yavs --version` (the fixed part) | 3.6 M | 2.86 M | 214 | 0.74 ms |
 | `/bin/true` | 1.2 M | 0.88 M | 60 | 0.24 ms |
 
-Where the cycles went (a first sampling of the `before` binary with frame pointers, share of all samples): the dynamic loader 25% (relocating
-the 16 700 relative relocations of the position independent executable, 8 000 of them the vtables of derived `Debug`
-impls; `_dl_check_map_versions`; three libraries instead of one), the kernel's page faults (about 7 000 cycles each, 440
-of them), `clap` 9.6% (building the whole command tree, 70 arguments, and matching), the Rust runtime's probe of the main
-thread's stack 7.6% (`pthread_getattr_np` reads `/proc/self/maps`), the image decode 12% (8 of 11 declaration pages decoded
-only by two scans of the elaborator), the `--tier=auto` thread 10%, the two helper threads of a piped run 6%, NATIVE.md 4%,
-the thread that freed the analysis 3%.
+Where the cycles of `array_attrs` went before (sampled with frame pointers, share of all samples; `--tier=interp` of the same
+binary has 3 to 12% fewer cycles, depending on the load, which is the cost of the auto tier's thread): the dynamic loader 25% (relocations of the position independent
+executable and their page copies, the version checks of three libraries), the kernel's page faults (about 7 000 cycles each,
+440 of them), `clap` 9.6% of the cycles but only 1.6% of the instructions (first touch of its code and data), the Rust
+runtime's probe of the main thread's stack 7.6% (`pthread_getattr_np` reads `/proc/self/maps`, #563), the image decode 12%
+(8 of 11 declaration pages decoded only by two scans of the elaborator), the two helper threads of a piped run 6% (#562),
+the table of native symbols 4%, the thread that freed the analysis 3%. The 16 700 relative relocations of the executable are
+7 600 pointers into read-only data (string and slice tables), 1 300 slots of the LLVM stubs and about 5 000 vtable and
+function entries (1 100 of them derived `Debug`); `-z pack-relative-relocs` leaves the cost unchanged (the cost is the page
+copies, not the processing).
 
-What changed (`docs/decisions.md` "Floor of a run, round 3"): the compile thread waits 5 ms before it does anything; NATIVE.md is parsed only for a symbol without an implementation; the scans for signals, shared variables and implicit
-signals of loaded packages skip std and ieee; a design under 50 000 entries is not freed by a thread; the LLVM stub names are
-one string.
+What changed (`docs/decisions.md` "Floor of a run, round 3"): the compile thread sleeps its first 5 ms; the table of native
+symbols is read only for a symbol without an implementation; the scans for signals, shared variables and implicit signals of
+loaded packages skip std and ieee; the image holds the packages with run-time objects; `alias_external_uses` does nothing
+without external names and `is_std_ulogic` reads the name first; a design under 50 000 entries is not freed by a thread;
+the LLVM stub names are one string; `analyze`, `elab` and `run` parse their command line from a command with only that
+subcommand; the symbol table starts at 1 024 names.
+
+Per test as a runner calls it (`yavs analyze` of the file, then `yavs run` of the top, a fresh library for the cold row, the
+same library for the warm row; the reference simulator's analysis, elaboration and run; pinned to core 10, 15 rounds,
+median over tests of the median over rounds, wall and CPU in ms; the host was loaded, wall moves with it):
+
+| Sample | | cold wall | cold CPU | warm wall | warm CPU |
+|---|---|---:|---:|---:|---:|
+| 60 corpus tests | yavs before | 10.5 | 6.8 | 2.25 | 2.18 |
+| | yavs after | 10.0 | 6.5 | 1.84 | 1.75 |
+| | the reference simulator (analyse, elaborate, run) | 30.4 | 29.9 | 19.6 | 19.3 |
+| 40 corpus tests that use `ieee.std_logic_1164` | yavs before | 20.3 | 16.5 | 3.02 | 2.91 |
+| | yavs after | 19.8 | 16.0 | 2.26 | 2.16 |
+| | the reference simulator | 32.0 | 31.5 | 20.7 | 20.4 |
+
+(Cold is the first `analyze` plus first `run` in a fresh library: 3.3 ms of CPU for `analyze`, most of it analyzing
+`std.standard` from source, #564, and a sync of the manifest of 3 to 5 ms of wall, #561; the cold row of the tests that use
+`std_logic_1164` also analyzes `ieee`.) With `tools/bench/tiny.py` (analysis excluded, the references' elaborate and run,
+409 tests all tools run): median per test 3.37 ms before and 3.28 ms after against 24.2 ms for the reference simulator;
+the median corpus test is mostly elaboration and simulation, not fixed cost. Runs of 0.2 to 2 s (`tools/bench` designs,
+`--tier=auto`, pinned): the instruction counts are those of before (12.3 G for `rtl_ff`, 7.4 G for `rtl_lfsr`, 19.7 G for
+`xor_sig`) and the `--verbose` notes of the compiles are the same.
 
 ## performance: floor of a run, 2026-10-21
 

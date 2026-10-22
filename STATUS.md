@@ -550,12 +550,18 @@ The next levers are the image restore (#426) and caching elaboration (#407).
 ### Analysed-unit cache (#537, #539, #407)
 
 `yavs analyze` stores every design unit it analyses from source in `yavs-cache/units/` of its library (`std`/`ieee`
-in the work library's) and every later `analyze`, `elab` and `run` reads the units it needs from there when source,
-build, options and dependencies are unchanged (`docs/decisions.md` "Analysed-unit cache"). A replayed `Db` is the
-one analysis from source makes, id for id; `YAVS_UNIT_CHECK=1 yavs analyze` compares the two for every file and
-passes on every analysis corpus. First measurement (realbench, P-core 2, two tests, against main before):
-`osvvm_axis_random` analyze 19.98 s to 10.76 s cold and 7.14 s warm, `uvvm_sb_slv` 1.92 s to 1.16 s cold and 0.77 s
-warm; elab cold 0.18 s to 0.16 s and 0.13 s to 0.08 s.
+in the work library's, with the bodies of the packages it loaded) and every later `analyze`, `elab` and `run` reads
+the units it needs from there when source, build, options and dependencies are unchanged (`docs/decisions.md`
+"Analysed-unit cache"). A replayed `Db` is the one analysis from source makes, id for id; whole pages of replayed
+entries stay bytes until read. `YAVS_UNIT_CHECK=1 yavs analyze` compares the two analyses for every file and passes on
+every analysis corpus.
+
+Real-world suite (`tools/realbench`, phases analyze, elab, run interp; P-core 2; main before the cache against main
+with it, geometric mean of the wall ratio over 41 tests): analyze cold 0.68 (OSVVM compile order 16.1 s to 5.9 s,
+UVVM 0.45 to 0.56), analyze warm 0.43, elab cold 0.71, elab warm 0.96, run unchanged (1.00). Against sim1 (P-core 4,
+one step earlier): analyze cold 0.99 (was 1.23 in the baseline), analyze warm 0.60 (was 1.31), elab cold 1.03 (was
+1.36), but the verification-library testbenches still elaborate cold at about 2 times sim1 (#549: their first run
+writes prefix images).
 
 ### Compilation cache (#407)
 

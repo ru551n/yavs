@@ -5597,29 +5597,46 @@ code at elaboration; ours computes the same facts once per instance in the share
 
 ## llvm: host callbacks of compiled code, round 1 (#565, #532, #339, #337, 2026-10-23)
 
-Natives of frame-mode code run through `TierHost::native_frame` (the argument cells from the registers, one result word,
+What each exit of compiled code cost and what was changed (`docs/decisions.md` "Host callbacks of compiled code"):
+natives of frame-mode code run through `TierHost::native_frame` (argument cells from the registers, one result word,
 nothing flushed or reloaded around the call), `Cat` of non-logic elements and `LayoutOf` of one-dimensional arrays are
-lowered in frame mode, `Mem::forget_since` returns at once when it has nothing to drop, and the optimiser drops the
-`TempRoot` of a fat pair of temporaries (`docs/decisions.md` "Host callbacks of compiled code"). The calls counted on
-`poc_arith_addw` (`--tier=llvm`, whole run, before): 117 M fat roots, 105 M `TierHost::signal` calls, 172 M natives
-stepped, 76 M layout helpers; after: 20 M fat roots, 89 M signal calls (64 M vector `SigRead`, 22 M logic `Cat`), the
-172 M natives through the lean call, no layout helper.
+lowered in frame mode, `Mem::forget_since` returns at once when it has nothing to drop, the optimiser drops the
+`TempRoot` of a fat pair of temporaries, and a `SigRead` of a logic vector is inline whatever its length (it was a
+callback, 220 host instructions, for every length that is no multiple of eight; a generic width calls a pure helper).
 
-Measured on cores 2 and 3, `perf stat` cycles / instructions (G, median of 3 interleaved runs after an untimed run that
-fills the object cache), `--tier=llvm` with `YAVS_LLVM_FAST_MIN=99999999` (the code `--tier=auto` makes at `O2`), main at
-9be61682 against this change. `poc_arith_addw` over the first 600 us of simulated time (of 2.6 ms): 27.1 / 93.1 to
-21.6 / 73.2 (-20 percent cycles, -21 percent instructions; the interpreter 25.9 / 93.7). Whole tests:
+The calls counted on `poc_arith_addw` (`--tier=llvm`, whole run), before / after: fat roots 117 M / 20 M, natives through
+the generic step 172 M / 0 (through the lean call), layout helpers 76 M / 0, `TierHost::signal` 105 M / 89 M (vector
+`SigRead` of generic widths 64 M, logic `Cat` of generic widths 22 M; both are lengths that are instance constants the
+generator does not know).
 
-| test | main | now | cycles |
-|---|---:|---:|---:|
-| `fletcher_bufferreader` | 43.6 / 59.4 | 39.0 / 58.7 | -11% |
-| `sc5_fifo_repack` | 26.2 / 48.1 | 23.1 / 44.3 | -12% |
-| `poc_cache_cpu` | 15.2 / 22.8 | 14.3 / 22.4 | -6% |
-| `neorv32_single_min` | 77.9 / 105.8 | 75.8 / 102.7 | -3% |
-| `poc_stat_histogram` | 4.60 / 19.2 | 4.66 / 19.3 | +1% (noise) |
-| `hdlm_lfsr` | 24.0 / 50.4 | 25.2 / 50.2 | +5% (instructions equal: noise) |
-| `sc5_timestamp` | 7.8 / 11.8 | 8.4 / 11.9 | +7% (instructions equal: noise) |
+`poc_arith_addw`, the first 600 us of simulated time (of 2.6 ms), `--tier=llvm` with `YAVS_LLVM_FAST_MIN=99999999` (the
+code `--tier=auto` makes at `O2`), core 2, `perf stat` cycles / instructions in G, median of 5 interleaved runs after an
+untimed run that fills the object cache, each row on top of the one above (the interpreter: 25.9 / 93.7):
 
-What is left in `poc_arith_addw` (89 M `signal` calls: vector `SigRead` and `Cat` of generic widths, whose lengths are
-instance constants the generator does not know) and the shape of the rest of the gap to the interpreter on clocked RTL
-(code size and cache misses, not exits) are in the issue comments of #565 and #532.
+| step | cycles | instructions |
+|---|---:|---:|
+| main at 9be61682 | 27.4 | 93.1 |
+| natives through `native_frame` | 24.8 | 88.7 |
+| `Cat` of non-logic elements inline | 23.9 | 83.6 |
+| `LayoutOf` of one dimension inline | 23.2 | 81.9 |
+| lean `native_frame`, `forget_since` skip | 21.8 | 74.9 |
+| clean fat roots dropped (IR) | 21.3 | 73.3 |
+| `SigRead` of any length inline | 20.1 | 69.9 |
+
+The whole test, default `--tier=llvm` (the module over 150000 LLVM instructions at the unoptimised code generator),
+core 2, median of 3: 152.2 G cycles, 31.5 s before; 124.0 G, 25.7 s now (-19 percent cycles, -20 percent instructions);
+the interpreter 111.5 G, 23.4 s before and 113.7 G, 23.9 s now (instructions 409 G to 401 G). Cold compile of the whole program (`--no-cache`, init phase) 2.71 s to 2.81 s, the generated LLVM IR is 7 percent
+larger.
+
+Other tests, `--tier=llvm` at `O2` code generation, cycles G before / after the first commit (3 runs, cores 2 and 3):
+`fletcher_bufferreader` 43.6 / 39.0, `sc5_fifo_repack` 26.2 / 23.1, `poc_cache_cpu` 15.2 / 14.3, `neorv32_single_min` 77.9 / 75.8
+(and 64.8 / 63.5 with the `SigRead` change), `poc_stat_histogram`, `hdlm_lfsr`, `sc5_timestamp` within noise. The
+interpreter itself gains 1 percent in instructions from the dropped roots; a quarter of its time on `poc_arith_addw` is
+still natives (`ieee::small`, `ret_string`, `fat_dim`) and the kernel.
+
+What is left of the gap to the interpreter, by measurement: on clocked RTL (`fletcher_bufferwriter_512`, `neorv32_single_min`)
+instructions are within 5 percent of the interpreter's but cycles are 40 to 60 percent higher (IPC 1.8 against 2.4: code
+size and cache misses, #532); the exits left there are `LayoutOf` of records with descriptors (27 M in
+`fletcher_bufferwriter_512`, each statement lays a process variable's descriptor out again, #518), `rising_edge` of a
+clock the process was not resumed for (7 M in `neorv32_single_min`), `WaitOn` of waits on several signals, `Drive` of
+more than 64 elements.

@@ -751,6 +751,15 @@ impl Ctx<'_> {
         self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
     }
 
+    /// `assign_blocks` of at most 64 elements given as their four planes to `r` (the whole driver
+    /// when `None`) of driver `d` with
+    /// zero delay (transport or inertial without rejection): true when the usual fast case took
+    /// it, false (nothing done) where `assign_blocks` must run, which also produces every error.
+    #[inline]
+    pub fn assign_planes_now(&mut self, d: DriverId, r: Option<Range>, planes: [u64; 4]) -> bool {
+        self.assign_planes_fast(d, r, Time::ZERO, planes, None, DelayMode::Transport)
+    }
+
     /// `assign` of a logic value of at most 64 elements given as the plane blocks `read_into`
     /// produces for it: four little-endian `u64` planes (`blocks` is exactly 32 bytes for up to
     /// 64 elements, 32 per 64 more), unused bits zero. No `LogicVec` or `Value` is needed.

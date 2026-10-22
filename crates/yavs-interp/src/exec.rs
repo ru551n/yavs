@@ -2241,6 +2241,32 @@ impl Machine {
         self.drive_bit_at(ctx, d, target, time, code, mode)
     }
 
+    /// The usual one-element logic assignment with zero delay, straight to the kernel's fast case
+    /// (`Ctx::assign_code_now`, which takes inertial and transport alike at zero delay); false:
+    /// nothing was done and `drive_bit_at` runs.
+    #[inline(always)]
+    fn drive_code_now(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        driver: u32,
+        target: Reg,
+        code: u8,
+    ) -> bool {
+        let (v, len) = (self.r(target), self.r(Reg(target.0 + 1)));
+        if len != 1 || v >> 32 == MULTI {
+            return false;
+        }
+        let (Some(d), Some(s), Some(c)) = (
+            self.drivers.get(driver as usize),
+            self.inst.sigs.get((v >> 32) as usize),
+            ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        s.ty.elem == Elem::Logic
+            && c.assign_code_now(d.id, yavs_kernel::Range::new(s.off + v as u32, 1), code)
+    }
+
     /// `drive_bit` with the delay itself instead of the waveform.
     #[inline(never)]
     fn drive_bit_at(
@@ -5114,7 +5140,19 @@ impl Machine {
                             let Some(c) = ctx.as_deref_mut() else {
                                 t!(rt_err_s!("signal or wait operation during elaboration"))
                             };
-                            if len == 1 {
+                            if len > 1
+                                && t0 == Time::ZERO
+                                && let [blk] = b.as_chunks::<32>().0
+                                && c.assign_planes_now(
+                                    d.id,
+                                    sr.range,
+                                    std::array::from_fn(|p| {
+                                        u64::from_le_bytes(std::array::from_fn(|j| blk[p * 8 + j]))
+                                    }),
+                                )
+                            {
+                                // The usual vector at zero delay: the kernel's fast case.
+                            } else if len == 1 {
                                 let code = (0..4).fold(0u8, |c, p| c | (b[p * 8] & 1) << p);
                                 let dm = t!(self.delay_mode(mode, None));
                                 t!(c.assign_code(d.id, sr.range, t0, code, dm)
@@ -5169,11 +5207,14 @@ impl Machine {
                     };
                     let bit = self.regs[v as usize];
                     let tg = Reg(target.into());
-                    let done = bit <= 8 && !self.is_multi(tg) && {
-                        let d = t!(self.driver(driver.into()));
-                        let at = self.regs[time as usize];
-                        t!(self.drive_bit_at(ctx, d, tg, at, bit as u8, mode))
-                    };
+                    let done = bit <= 8
+                        && (self.regs[time as usize] == 0
+                            && self.drive_code_now(ctx, driver.into(), tg, bit as u8)
+                            || !self.is_multi(tg) && {
+                                let d = t!(self.driver(driver.into()));
+                                let at = self.regs[time as usize];
+                                t!(self.drive_bit_at(ctx, d, tg, at, bit as u8, mode))
+                            });
                     if !done {
                         // Not a scalar logic signal (or a bad code): the instructions as the IR has them.
                         let a = t!(self.temp_alloc(self.regs[size as usize]));

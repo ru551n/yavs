@@ -2558,7 +2558,7 @@ impl Machine {
             if let Some(w) = words {
                 let m = self.layouts[t]
                     .as_mut()
-                    .ok_or_else(|| ice("layout memo missing"))?;
+                    .ok_or_else(|| ice_s!("layout memo missing"))?;
                 m.ckey = if split(desc).0 == CONST { desc } else { 0 };
                 if simple {
                     m.words.clear();

@@ -4633,7 +4633,9 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   criterion `pkgcall.rs` uses for its own copy). Finding them decoded every declaration page of every loaded package,
   ieee's among them (a test that uses `std_logic_1164`: 8.9 M instructions against 11.0 M; 14 to 23% on four corpus
   tests that use it). A design that gets implicit aliases of external names (a package subprogram with one) grows the
-  declarations and finds the set again.
+  declarations and finds the set again. Not used at all in a design with external names: a subprogram's external name is
+  bound at elaboration without the design growing (its alias is declared already) and that makes its package a run-time
+  one (CI, the second reference's `ename6`, after 6f00c2fa).
 - **`alias_external_uses` does nothing in a design without external names**, and `is_std_ulogic` compares the name before it
   reads the declaration: both decoded pages of the cached analysis (an expression page per statement, a declaration page
   per enumeration type) for nothing (4.7% of the instructions of a tiny run).

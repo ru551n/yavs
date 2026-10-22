@@ -3555,6 +3555,12 @@ interp 1.20 / 1.82 to 0.86 / 1.53; lfsr64_xor interp 1.40 / 2.44 to 1.17 / 2.27 
 load moved between the two runs, so read the instruction ratios). neorv32 single core, 30 us, interpreter: 41.2 G to 40.2 G
 instructions (-2.4%; the interpreter is about 80% of it, the kernel's largest item the signal reads).
 
+Real testbenches (`tools/realbench/run.py --compare`, cores 6 and 7, `main` at `5816d068` with the four commits of this
+round reverted against `main` itself; instructions B/A, interpreter / `--tier=auto`): sc5_fifo_repack 0.73 / 0.70,
+neorv32_single_min 0.92 / 0.92, neorv32_dual_full 0.96 / 0.96, poc_cache_cpu 0.97 / 0.96, poc_arith_addw 0.97 / 0.97;
+no slowdown above the tool's thresholds. The whole suite against `1b7d6695` (31 tests that pass on both) moved by a wall
+geometric mean of 0.96 on the interpreter, with no test above 1.05 instructions on the interpreter.
+
 Kernel per `rtl_ff` activation (Intel PT, per function, signal reads included): ~670 to ~510 instructions: the register update (commit, apply,
 driving and effective value) ~240 to ~150, the wake ~50 to nearly nothing, the batch loop ~180 to ~150; assignment ~115 and the reads
 ~70 unchanged. What is left is the same dozen stages of 15 to 120 instructions, now each the cost of the generic storage

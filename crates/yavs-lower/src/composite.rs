@@ -153,14 +153,9 @@ fn dir_cell(d: Direction) -> i64 {
 }
 
 fn static_range(db: &Db, rc: &RangeC) -> Option<[i64; 3]> {
-    let RangeC::Explicit { left, dir, right } = rc else {
-        return None;
-    };
-    Some([
-        db.value(*left)?.as_int()?,
-        db.value(*right)?.as_int()?,
-        dir_cell(*dir),
-    ])
+    // (Also `t'range` of a scalar subtype with folded bounds: an index named by a type mark.)
+    let r = yavs_sem::expr::aggregate::range_value(db, rc)?;
+    Some([r.left, r.right, dir_cell(r.dir)])
 }
 
 /// The constraint of element `i` of record type `t` under `c`, else the element's own.

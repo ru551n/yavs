@@ -411,12 +411,24 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::Pos { .. }
         | Inst::DopeLen { .. }
         | Inst::Deref { .. }
+        | Inst::LGet { .. }
+        | Inst::LEq { .. }
+        | Inst::MemEq { .. }
+        | Inst::SubtypeCheck { .. }
+        | Inst::FBin { .. }
+        | Inst::FUn { .. }
+        | Inst::FCmp { .. }
+        | Inst::IToF { .. }
+        | Inst::FToI { .. }
         | Inst::Br { .. }
         | Inst::CondBr { .. }
         | Inst::Unreachable { .. }
         | Inst::Ret { .. } => true,
         Inst::AddrOf { space, .. } => !matches!(space, AddrSpace::Frame | AddrSpace::Up(_)),
         Inst::Load { w, .. } | Inst::Store { w, .. } => w != Width::Sig,
+        // (A native runs the same in the caller's frame; the record of the inlined call keeps
+        // its call path.)
+        Inst::CallNative { .. } => true,
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
             .funcs
             .get(func)
@@ -620,7 +632,9 @@ pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level:
                 let mut inst = inst;
                 inst.visit_mut(&mut |r, _, _| *r = map(*r));
                 match &mut inst {
-                    Inst::Call { args, .. } | Inst::CallProt { args, .. } => {
+                    Inst::Call { args, .. }
+                    | Inst::CallProt { args, .. }
+                    | Inst::CallNative { args, .. } => {
                         let start = operands.len() as u32;
                         let from = args.start as usize..(args.start + args.len) as usize;
                         operands.extend(fw.operands[from].iter().map(|&r| map(r)));

@@ -4149,3 +4149,15 @@ Decisions:
   It has no general loop-invariant motion (its optimiser numbers values over the dominator tree); ours moves computations
   out of loops after lowering, and keeps failures identical by replaying the first pass's start instead of proving that
   checks pass.
+
+- **One-byte scalar variables are promoted to registers like 8-byte ones** (`Opt::promote`): a boolean, bit or other
+  enumeration variable (loads zero-extend, and the lowering stores valid positions only), so `r := r or a(i)` over a
+  `std_ulogic` accumulator is a register move (#531).
+- **The descriptor of an array constant or signal whose bounds are locally static is a constant of the pool** (`Cx::const_dope`,
+  `Cx::static_dope`), also when an index is named by a type mark (`range_value` resolves `t'range` of a scalar subtype), instead of
+  a cell of the instance's data: the optimiser folds the lengths, directions and positions (a multi-dimensional index of an instance
+  signal array became a few multiplications by constants, a `for i in taps'range` loop lost its direction test).
+- Inlined bodies may call natives and read logic arrays (`CallNative`, `LGet`, `LEq`, `MemEq`, `SubtypeCheck`, real arithmetic): the
+  native runs the same in the caller's frame and the record of the inlined call keeps its call path (#531, user function calls
+  in a loop).
+

@@ -1664,6 +1664,23 @@ fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d
                         off,
                     },
                 );
+                // The bounds of an array constant of a static subtype are the same in every
+                // instance: its descriptor is a constant of the pool, which the optimiser reads
+                // (loop bounds and directions, positions), not a cell of the instance's data.
+                if matches!(pb.types().get(t), Some(yavs_ir::Ty::Array { .. }))
+                    && let Some(b) = crate::composite::static_desc(
+                        db,
+                        pb,
+                        db.base(o.subtype),
+                        &db.subtypes[o.subtype].constraint,
+                        t,
+                    )
+                    && yavs_ir::Ty::desc_size(pb.types(), t) == Some(b.len() as u64)
+                    && !b.is_empty()
+                {
+                    let k = pb.konst(yavs_ir::ConstData::Bytes(b));
+                    cx.const_dope.insert(d, k);
+                }
                 // A composite constant elaboration did not fold is computed once per region
                 // by a thunk returning the address of its fat pair (#73); one initialised from
                 // an external name always has its elaborated value.

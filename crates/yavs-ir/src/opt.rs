@@ -3005,17 +3005,20 @@ impl<'a> Opt<'a> {
             };
             // (Handles and addresses of a process stay in their slots, where the collector
             // finds them: only numbers qualify.)
+            // (A byte holds a boolean, a bit, a character or another enumeration value: the
+            // register keeps the same number.)
+            let bytes = i64::from(a.w.bytes());
             if overlap
                 || !a.ok
-                || a.w != Width::B8
+                || !matches!(a.w, Width::B8 | Width::B1)
                 || ty == RegTy::Sig
                 || (process
                     && !a
                         .kinds
                         .iter()
                         .all(|k| matches!(k, Some(RegTy::I64 | RegTy::F64))))
-                || !clear_of(&esc, o, 8)
-                || !clear_of(&wide, o, 8)
+                || !clear_of(&esc, o, bytes)
+                || !clear_of(&wide, o, bytes)
             {
                 continue;
             }
@@ -3026,7 +3029,7 @@ impl<'a> Opt<'a> {
             // ones of each frame, `roots::live_refs`), and every access has exactly that type.
             if roots.iter().any(|&(s, z, comp)| {
                 o < s + z
-                    && s < o + 8
+                    && s < o + bytes
                     && (comp || (a.stores > 0 && !self.register_root(&a.kinds, ty, f, s)))
             }) {
                 continue;
@@ -3044,7 +3047,7 @@ impl<'a> Opt<'a> {
                 // (A plugin may deposit into the variables of a process.)
                 if keep_vars
                     || (process && external())
-                    || (scalar && (i64::from(l.slot) != o || l.size != 8))
+                    || (scalar && (i64::from(l.slot) != o || i64::from(l.size) != bytes))
                 {
                     continue;
                 }
@@ -3105,7 +3108,7 @@ impl<'a> Opt<'a> {
                     Inst::Load {
                         dst: p,
                         addr: a,
-                        w: Width::B8,
+                        w: acc[&off].w,
                     },
                 ));
             } else if undefined[k] {

@@ -427,7 +427,7 @@ impl<'a> Fx<'a, '_> {
                 Ok(V::A(data, dope))
             }
             Some(Obj::InstArray { space, off }) => {
-                let (data, dope) = self.inst_array(space, off);
+                let (data, dope) = self.inst_array(Some(d), space, off);
                 Ok(V::A(data, dope))
             }
             Some(Obj::Fixed { space, off, size }) => {
@@ -617,7 +617,7 @@ impl<'a> Fx<'a, '_> {
     }
 
     /// Elements and descriptor of an array in instance data (`Obj::InstArray`).
-    pub fn inst_array(&mut self, space: Space, off: u32) -> (Reg, Reg) {
+    pub fn inst_array(&mut self, d: Option<DeclId>, space: Space, off: u32) -> (Reg, Reg) {
         let base = self.addr(space, 0);
         let at = |fx: &mut Self, k: u32| {
             let cell = fx.addr(space, off + k);
@@ -631,7 +631,12 @@ impl<'a> Fx<'a, '_> {
             });
             dst
         };
-        (at(self, 0), at(self, 8))
+        let data = at(self, 0);
+        // (A static subtype has its descriptor in the pool, `Cx::const_dope`.)
+        match d.and_then(|d| self.cx.const_dope.get(&d).copied()) {
+            Some(c) => (data, self.const_addr(c)),
+            None => (data, at(self, 8)),
+        }
     }
 
     /// A reference to all of the scalar signal or signal parameter `d`.
@@ -940,6 +945,31 @@ impl<'a> Fx<'a, '_> {
 
     /// The descriptor of an array signal (from its subtype, evaluated in this instance);
     /// `None` for a scalar signal.
+    /// The pool constant holding the descriptor of object `d` of subtype `st` when every bound
+    /// is locally static (the same in every instance), made once.
+    fn static_dope(&mut self, d: DeclId, st: SubtypeId, span: Span) -> Option<yavs_ir::ConstId> {
+        if let Some(c) = self.cx.const_dope.get(&d).copied() {
+            return Some(c);
+        }
+        let db = self.db;
+        let t = db.base(st);
+        let tid = self.ty(t, span).ok()?;
+        let b = crate::composite::static_desc(
+            db,
+            self.fb.program(),
+            t,
+            &db.subtypes[st].constraint,
+            tid,
+        )?;
+        let n = Ty::desc_size(self.fb.program().types(), tid)?;
+        if b.is_empty() || n != b.len() as u64 {
+            return None;
+        }
+        let k = self.fb.program().konst(yavs_ir::ConstData::Bytes(b));
+        self.cx.const_dope.insert(d, k);
+        Some(k)
+    }
+
     pub fn sig_dope(&mut self, d: DeclId, span: Span) -> R<Option<Reg>> {
         if let Some((t, st)) = self.alias_target(d) {
             let Some(dope) = self.dope_of_signal(t)? else {
@@ -963,6 +993,10 @@ impl<'a> Fx<'a, '_> {
             return Ok(None);
         }
         if let Some(&(space, off)) = self.cx.sig_dopes.get(&d) {
+            // (A static subtype has its descriptor in the pool, not in the instance's data.)
+            if let Some(c) = self.static_dope(d, o.subtype, span) {
+                return Ok(Some(self.const_addr(c)));
+            }
             return Ok(Some(self.addr(space, off)));
         }
         if let Some(Obj::SignalRef { space, off, out }) = self.cx.objs.get(&d).copied() {
@@ -1196,7 +1230,10 @@ impl<'a> Fx<'a, '_> {
                 let a = self.addr(p.space, p.desc_off());
                 self.load(a, Width::B8, RegTy::Ptr)
             }
-            (Some((space, off)), _) => self.addr(space, off),
+            (Some((space, off)), _) => match self.static_dope(d, st, span) {
+                Some(c) => self.const_addr(c),
+                None => self.addr(space, off),
+            },
             (None, _) => match self.desc_of(st, None, span)? {
                 Some(r) => r,
                 None => return Err(self.cx.ice(span, "composite signal without a descriptor")),
@@ -1650,7 +1687,9 @@ impl<'a> Fx<'a, '_> {
                     let a = self.addr(space, off);
                     return Ok(self.array_dope(d, a));
                 }
-                Some(Obj::InstArray { space, off }) => return Ok(self.inst_array(space, off).1),
+                Some(Obj::InstArray { space, off }) => {
+                    return Ok(self.inst_array(Some(d), space, off).1);
+                }
                 Some(Obj::Fixed { space, off, size }) => return Ok(self.addr(space, off + size)),
                 Some(Obj::Signal { .. }) => {
                     let span = self.db.exprs[e].span;
@@ -4262,7 +4301,7 @@ impl<'a> Fx<'a, '_> {
                         off
                     }
                 };
-                let (data, dope) = self.inst_array(Space::Inst, off);
+                let (data, dope) = self.inst_array(None, Space::Inst, off);
                 Ok(V::A(data, dope))
             }
             AttrPrefix::Entity(_) => Err(self.cx.unsupported(

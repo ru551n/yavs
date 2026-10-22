@@ -1951,3 +1951,57 @@ fn a_case_of_the_callee_becomes_compares() {
         "{code:?}"
     );
 }
+
+#[test]
+fn a_byte_variable_lives_in_a_register() {
+    if !on() {
+        return;
+    }
+    // A boolean or enumeration variable has a one-byte slot: only direct accesses of that
+    // width, so it becomes a register like an integer.
+    let code = build(FuncKind::Function, |fb| {
+        fb.slot(16, 8);
+        fb.stmt(StmtKind::Return, sp());
+        let flag = fb.addr(AddrSpace::Frame, 8);
+        let one = fb.int(1);
+        fb.emit(Inst::Store {
+            addr: flag,
+            src: one,
+            w: Width::B1,
+        });
+        let x = load(fb, 0);
+        let zero = fb.int(0);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: x,
+            b: zero,
+        });
+        let (t, e) = (fb.block(), fb.block());
+        fb.emit(Inst::CondBr { c, t, f: e });
+        fb.at(t);
+        fb.emit(Inst::Store {
+            addr: flag,
+            src: zero,
+            w: Width::B1,
+        });
+        fb.emit(Inst::Br { to: e });
+        fb.at(e);
+        let y = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: y,
+            addr: flag,
+            w: Width::B1,
+        });
+        fb.emit(Inst::Ret { v: Some(y) });
+    });
+    assert_eq!(
+        count(&code, |i| matches!(
+            i,
+            Inst::Load { w: Width::B1, .. } | Inst::Store { w: Width::B1, .. }
+        )),
+        0,
+        "{code:?}"
+    );
+}

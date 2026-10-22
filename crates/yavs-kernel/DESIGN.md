@@ -56,7 +56,11 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   `Signal::apply_driver` writes the plane words into the driver and into the signal's driving
   value at once and lists the run in `Signal::fast_dirty`; `finish_signal` then only updates the
   effective value of those runs. Any other vector assignment of a cycle appends its one
-  transaction directly (`Ctx::assign`).
+  transaction directly (`Ctx::assign`). A delayed assignment (`after T`, transport or inertial
+  without a rejection limit) of either shape to an idle driver is the same `quick` or `vquick`
+  with its time `now + T`: with nothing pending there is nothing to preempt. It is queued at that
+  time and matures in the update of that time step. A direct driver takes it only when the run
+  has no direct entry for the driver (those commit at the end of the run, before it).
 - **Direct transactions**: a driver that is the only source of its elements of a logic signal
   with no port, composite group, guard or resolution function (std_logic resolution of one
   source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).

@@ -3722,6 +3722,31 @@ has no process body. Output is unchanged at any thread count and with `--shuffle
   commit (~125), the assignment (~90) and the cycle skeleton (~200). The interpreter is now the larger part of both
   (`rtl_ff` about two thirds). `rtl_lfsr` lost a third to an optimiser change (#534).
 
+## Kernel round 13: delayed assignments, byte signals (yavs-kernel, #440, 2026-10-22)
+
+Every testbench has a clock, and the head-to-head designs (4096 registers on one clock) hide what one costs: a bare
+`c <= not c after 5 ns` took about 4000 instructions per edge against about 1000 in the reference simulator, and the
+testbench of a timestamp counter with three clocks (`sc5_timestamp`) spent 65% of its time in the kernel. A delayed
+assignment always took the general path (a `LogicVec`, a transaction list, `Waveform::schedule`); only zero-delay
+assignments had the quick shapes.
+
+- **A delayed assignment to an idle driver is a quick transaction** (`Ctx::assign_code_fast`, `assign_planes_fast`,
+  `Ctx::fast_time`): one element, or up to 64 logic elements, `after T` (transport, or inertial without a rejection
+  limit) to a driver with nothing pending and no skipped assignment is `Waveform::quick` / `vquick` with time
+  `now + T` and a queue entry at that time. With nothing pending there is nothing to preempt, so the one transaction is
+  exact for transport and inertial alike; anything else (a pending transaction, a rejection limit, a time past
+  `TIME'HIGH`, a delay that quantizes to zero) takes the general path, which also produces every error. A direct driver
+  takes it only when the run has no direct entry for the driver yet (`Ctx::direct_entries`): those commit at the end of
+  the run, before the delayed one, and inertial preemption must see them. `Waveform::apply_due`, `Signal::apply_driver`
+  and `first_time` already handled a quick transaction with a later time; `tests/direct_paths.rs` runs random mixes of
+  zero-delay and delayed assignments against the same program with an explicit rejection limit (general path).
+- **Tried and dropped**: update of heap entries through the fused in-place path of `update` (`from_delta == 0`): +2%
+  instructions on a clock generator, the independent-signal route is cheaper; a hand-written time heap with `Entry`
+  flattened to words (the generic heap's push showed a store-forwarding stall): -0.7% instructions, no change in cycles.
+- **Measured** (instructions, core 4/5, interpreter, `main` 4a586fd3 against the commit; the bare generator is three
+  clocks for 6 ms): bare clock generator 14.36 G to 10.56 G, with `when not done` 15.05 G to 11.3 G; `sc5_timestamp`
+  14.68 G to 12.82 G (wall 1.13 s to 0.96 s); head-to-head designs unchanged.
+
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 
 Follow-up of "Tight compute loops": in compiled loops the registers and the frame's variables no longer go through

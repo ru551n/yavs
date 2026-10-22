@@ -371,3 +371,79 @@ fn direct_drivers_keep_their_values_through_forces_and_deposits() {
     assert!(direct.len() > 80, "{direct:?}");
     assert_eq!(direct, forced_drivers(false));
 }
+
+/// Random zero-delay and delayed assignments (scalar and vector) of processes that are the only
+/// source of their elements, every nanosecond, with each process reporting its `'driving_value`.
+/// `explicit` names the rejection limit of a delayed inertial assignment (the delay itself, the
+/// same semantics), which sends it down the general path; the delayed one-element and vector
+/// assignments to an idle driver otherwise wait as a quick transaction for their time.
+fn random_delays(explicit: bool, seed: u64) -> Vec<String> {
+    let mut b = Builder::new();
+    let lv = |s: &str| s.parse::<LogicVec>().unwrap();
+    let a = b.signal("a", SignalType::logic(1), &lv("0"));
+    let v = b.signal("v", SignalType::logic(6), &lv("000000"));
+    let w = b.signal("w", SignalType::logic(2), &lv("00"));
+    let drivers = [
+        b.driver(a),
+        b.driver(v),
+        b.driver(w.slice(0, 1)),
+        b.driver(w.slice(1, 1)),
+    ];
+    for (k, d) in drivers.into_iter().enumerate() {
+        let mut rng = seed ^ (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        b.process(
+            &format!("p{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                // One to three assignments per run, so a delayed one meets the run's own
+                // zero-delay entries and earlier delayed transactions.
+                for _ in 0..1 + rng % 3 {
+                    rng = rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let r = rng >> 33;
+                    let (delay, bits) = (r % 5, (r >> 8) as u32);
+                    let mode = if explicit && delay > 0 {
+                        DelayMode::Inertial {
+                            reject: Some(ns(delay)),
+                        }
+                    } else {
+                        DelayMode::INERTIAL
+                    };
+                    if r.is_multiple_of(7) {
+                        continue;
+                    }
+                    if k == 1 {
+                        let planes: LogicVec = (0..6)
+                            .map(|i| if bits >> i & 1 == 1 { '1' } else { '0' })
+                            .collect::<String>()
+                            .parse()
+                            .unwrap();
+                        c.assign(d, None, &[(ns(delay), &planes)], mode)?;
+                    } else {
+                        let code = if bits & 1 == 1 { ONE } else { ZERO };
+                        c.assign_code(d, None, ns(delay), code, mode)?;
+                    }
+                }
+                c.report(
+                    Severity::Note,
+                    format!("p{k} driving {}", c.driving_value(d)?),
+                );
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(300)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn delayed_assignments_to_idle_drivers_match_the_general_path() {
+    for seed in 0..8 {
+        let (fast, general) = (random_delays(false, seed), random_delays(true, seed));
+        assert!(fast.len() > 600, "{}", fast.len());
+        assert_eq!(fast, general, "seed {seed}");
+    }
+}

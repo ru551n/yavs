@@ -691,18 +691,39 @@ impl Ctx<'_> {
             return false;
         };
         let r = target.unwrap_or(info.range);
-        let now_mode = delay == Time::ZERO
-            && match mode {
-                DelayMode::Transport => true,
-                DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
-            };
-        if !now_mode || code >= 9 || info.owner != self.pid || r.len != 1 || !info.range.contains(r)
+        let at = self.fast_time(delay, mode);
+        if at.is_none()
+            || code >= 9
+            || info.owner != self.pid
+            || r.len != 1
+            || !info.range.contains(r)
         {
             return false;
         }
         let w = &mut self.st.waveforms[info.local as usize];
         if !w.idle() || !w.phantom.is_empty() {
             return false;
+        }
+        let now = self.sh.now;
+        let at = at.unwrap_or(now);
+        if at > now {
+            // A delayed assignment to a driver with nothing pending has nothing to preempt.
+            if (info.direct && self.direct_entries(info.signal.0, info.slot))
+                || !matches!(
+                    self.sh.signals[info.signal.0 as usize].ty.elem,
+                    crate::value::Elem::Logic
+                )
+            {
+                return false;
+            }
+            let w = &mut self.st.waveforms[info.local as usize];
+            w.quick = Some(Quick {
+                time: at,
+                elem: r.offset,
+                code,
+            });
+            self.st.scheduled.push((at, d));
+            return true;
         }
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
@@ -809,13 +830,9 @@ impl Ctx<'_> {
             return false;
         };
         let r = target.unwrap_or(info.range);
-        let now_mode = delay == Time::ZERO
-            && match mode {
-                DelayMode::Transport => true,
-                DelayMode::Inertial { reject } => reject.is_none_or(|t| t == Time::ZERO),
-            };
+        let at = self.fast_time(delay, mode);
         let len = r.len;
-        if !now_mode
+        if at.is_none()
             || info.owner != self.pid
             || want.is_some_and(|w| w != len)
             || len == 0
@@ -827,6 +844,27 @@ impl Ctx<'_> {
         let w = &mut self.st.waveforms[info.local as usize];
         if !w.idle() || !w.phantom.is_empty() {
             return false;
+        }
+        let now = self.sh.now;
+        let at = at.unwrap_or(now);
+        if at > now {
+            if (info.direct && self.direct_entries(info.signal.0, info.slot))
+                || !matches!(
+                    self.sh.signals[info.signal.0 as usize].ty.elem,
+                    crate::value::Elem::Logic
+                )
+            {
+                return false;
+            }
+            let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
+            self.st.waveforms[info.local as usize].vquick = Some(VQuick {
+                time: at,
+                elem: r.offset,
+                len,
+                planes,
+            });
+            self.st.scheduled.push((at, d));
+            return true;
         }
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
@@ -869,6 +907,28 @@ impl Ctx<'_> {
         });
         self.st.scheduled.push((now, d));
         true
+    }
+
+    /// The time a fast-path assignment takes effect: `now` for a zero delay (transport, or
+    /// inertial without rejection), a later time for a positive delay with the same modes;
+    /// `None` where the general path must run (it also produces every error).
+    #[inline(always)]
+    fn fast_time(&self, delay: Time, mode: DelayMode) -> Option<Time> {
+        match mode {
+            DelayMode::Inertial { reject: Some(t) } if t != Time::ZERO => return None,
+            _ => {}
+        }
+        if delay == Time::ZERO {
+            return Some(self.sh.now);
+        }
+        self.after(delay).ok().filter(|&t| t > self.sh.now)
+    }
+
+    /// The process has a direct entry for `slot` of signal `sig` in this run (they commit at its
+    /// end, so a delayed assignment must come after them: the general path orders it).
+    fn direct_entries(&self, sig: u32, slot: u32) -> bool {
+        self.st.out.iter().any(|o| (o.sig, o.slot) == (sig, slot))
+            || self.st.outv.iter().any(|o| (o.sig, o.slot) == (sig, slot))
     }
 
     /// Whether a zero-delay assignment of `v` to `r` of driver `d` would change nothing: the

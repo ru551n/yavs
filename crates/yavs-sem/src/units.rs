@@ -1801,7 +1801,7 @@ impl Db {
                                 while j < n as usize {
                                     let at = self.$f.len();
                                     let left = n as usize - j;
-                                    if !lens.is_empty() && at % PAGE == 0 && left >= PAGE {
+                                    if !lens.is_empty() && at.is_multiple_of(PAGE) && left >= PAGE {
                                         let bytes: usize = (j..j + PAGE).map(len_of).sum();
                                         if bytes > rest.len() {
                                             return Err("short page".into());

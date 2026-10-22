@@ -380,7 +380,7 @@ impl<I: Id, T> Arena<I, T> {
         let i = self.len;
         self.note_owner(i);
         match self.pages.last_mut() {
-            Some(p) if i % PAGE != 0 => p.make_eager().push(item),
+            Some(p) if !i.is_multiple_of(PAGE) => p.make_eager().push(item),
             _ => {
                 let mut v = Vec::with_capacity(PAGE);
                 v.push(item);
@@ -471,7 +471,7 @@ impl<I, T> Arena<I, T> {
             return;
         }
         self.pages.truncate(len.div_ceil(PAGE));
-        if len % PAGE != 0
+        if !len.is_multiple_of(PAGE)
             && let Some(p) = self.pages.last_mut()
         {
             p.make_eager().truncate(len % PAGE);

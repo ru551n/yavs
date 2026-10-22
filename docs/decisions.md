@@ -143,6 +143,14 @@ milestone users care about works.
   protected object state. A process that ends keeps the values of its last suspension (its
   frame is gone). Reading a serial process's variables holds the shared state: its composite
   variables live in the shared heap.
+- **Equal values are one chain (#410):** `--wave` declares a signal that has the same kernel
+  elements, conversion, type and class as one already declared (a port collapsed into its actual,
+  at any depth of the hierarchy) as an FST alias of it, with its own name, direction, enum table
+  reference and type metadata: the recorder reads, converts and writes the value once. A viewer
+  or reader sees both names with identical changes; the file is smaller (neorv32: 44 percent).
+  The live stream of `--dap` keeps one id per name. The writer reads a vector straight from the
+  kernel's planes (`Hook::view`, eight elements per step), and the kernel hands an observer all
+  changes of a cycle in one call (`Observer::value_changes`).
 - **Durability:** a block is flushed on the next time advance after `flush_interval` (default
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel

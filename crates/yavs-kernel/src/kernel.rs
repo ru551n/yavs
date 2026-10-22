@@ -164,6 +164,48 @@ struct Wakes {
     next: u64,
 }
 
+/// A signal range read in place (`Hook::view`).
+pub struct SigView<'a> {
+    buf: &'a crate::value::Buf,
+    off: usize,
+    len: usize,
+}
+
+impl SigView<'_> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Element `i` (0 is the first element of the range) as its `std_ulogic` code for logic
+    /// storage, else its first byte.
+    #[inline]
+    pub fn code(&self, i: usize) -> u8 {
+        self.buf.code(self.off + i)
+    }
+
+    /// Elements `first .. first + k` (`k <= 64`) of logic storage as four plane words with
+    /// element `first` in bit 0 (bit `j` of word `p` is bit `p` of the code); `None` for byte
+    /// storage.
+    #[inline]
+    pub fn planes(&self, first: usize, k: usize) -> Option<[u64; 4]> {
+        match self.buf {
+            crate::value::Buf::Planes { b, .. } => {
+                Some(yavs_logic::wide::get_block(b, self.off + first, k))
+            }
+            crate::value::Buf::Bytes { .. } => None,
+        }
+    }
+
+    /// The bytes of the range, for byte storage (`None` for logic storage).
+    pub fn bytes(&self) -> Option<&[u8]> {
+        self.buf.bytes(self.off, self.len)
+    }
+}
+
 /// What an observer may do from a callback: read signals, queue forces and deposits
 /// (applied in the next cycle), schedule transactions on drivers, schedule wake-ups and end
 /// the simulation.
@@ -201,6 +243,21 @@ impl Hook<'_> {
     pub fn value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = check_ref(self.signals, r.into()).map_err(|k| self.err(k))?;
         Ok(s.cur.extract(r.offset as usize, r.len as usize).to_value())
+    }
+
+    /// The ranges of signal `s` that changed in this cycle (`Observer::value_changes`).
+    pub fn changed(&self, s: SignalId) -> &[Range] {
+        self.signals.get(s.0 as usize).map_or(&[], |g| &g.changed)
+    }
+
+    /// The effective value of `r` read in place: no copy, nothing allocated.
+    pub fn view(&self, r: impl Into<SigRef>) -> Result<SigView<'_>, SimError> {
+        let (s, r) = check_ref(self.signals, r.into()).map_err(|k| self.err(k))?;
+        Ok(SigView {
+            buf: &s.cur,
+            off: r.offset as usize,
+            len: r.len as usize,
+        })
     }
 
     /// The name of process `p`, as reports show it.
@@ -349,6 +406,19 @@ pub trait Observer: Send {
     fn phase(&mut self, _hook: &mut Hook<'_>, _phase: Phase) {}
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
+
+    /// All value changes of one cycle at once: the changed signals in id order, each with the
+    /// ranges `Hook::changed` gives. The default calls [`Self::value_change`] for every range;
+    /// an observer that costs per call (a lock, a lookup) overrides it. Observers are called
+    /// one after the other, each with the whole cycle.
+    fn value_changes(&mut self, hook: &mut Hook<'_>, signals: &[u32]) {
+        for &s in signals {
+            for k in 0..hook.changed(SignalId(s)).len() {
+                let r = hook.changed(SignalId(s))[k];
+                self.value_change(hook, SignalId(s), r);
+            }
+        }
+    }
     fn report(&mut self, _hook: &mut Hook<'_>, _report: &Report) {}
     /// A sink for the reports and `OUTPUT` text of processes that run serially: they reach it
     /// as they are made instead of when the process suspends, and this observer's `report`
@@ -1132,6 +1202,16 @@ impl SimControl {
         Ok(s.cur.extract(r.offset as usize, r.len as usize).to_value())
     }
 
+    /// Effective value read in place (see `Hook::view`).
+    pub fn view(&self, r: impl Into<SigRef>) -> Result<SigView<'_>, SimError> {
+        let (s, r) = self.check(r)?;
+        Ok(SigView {
+            buf: &s.cur,
+            off: r.offset as usize,
+            len: r.len as usize,
+        })
+    }
+
     /// Driving value, after `force out`.
     pub fn driving_value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = self.check(r)?;
@@ -1419,12 +1499,7 @@ impl SimControl {
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
         if self.watch_changes {
-            for i in 0..self.changed_sigs.len() {
-                let s = self.changed_sigs[i];
-                for r in self.signals[s as usize].changed.clone() {
-                    self.notify(|o, h| o.value_change(h, SignalId(s), r));
-                }
-            }
+            self.notify_changes();
         }
         let memo = std::cell::Cell::new((0u32, false));
         // Nothing below adds to `changed_sigs`: walked in place, cleared after.
@@ -2886,6 +2961,35 @@ impl SimControl {
                 o.phase(h, phase)
             }
         });
+    }
+
+    /// The changed ranges of `changed_sigs` to every observer (`Observer::value_changes`): one
+    /// hook and no copy of the range lists.
+    fn notify_changes(&mut self) {
+        let mut observers = std::mem::take(&mut self.observers);
+        let mut hook = Hook {
+            now: self.now,
+            delta: self.delta,
+            cycle: self.cycle,
+            cfg: &self.cfg,
+            drivers: &self.drivers,
+            names: &self.names,
+            queue: &mut self.queue,
+            signals: &self.signals,
+            ops: &mut self.ops,
+            end: &mut self.end,
+            wakes: &mut self.wakes,
+            empty_delta: &mut self.empty_delta,
+            slots: &self.slots,
+            observer: 0,
+        };
+        for (i, o) in observers.iter_mut().enumerate() {
+            if o.wants_value_changes() {
+                hook.observer = i;
+                o.value_changes(&mut hook, &self.changed_sigs);
+            }
+        }
+        self.observers = observers;
     }
 
     fn notify(&mut self, f: impl FnMut(&mut dyn Observer, &mut Hook<'_>)) {

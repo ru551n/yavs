@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use yavs_elab::{Built, DataLeaf, Elaborated, ObjKind, ScopeId, Shape, leaf_locs};
 use yavs_interp::{CallVal, InterpProcess, Stamp};
 use yavs_kernel::{
-    Elem, Hook, Observer, Phase, PortMode, ProcId, SigRef, SimControl, SimError, Value,
+    Elem, Hook, Observer, Phase, PortMode, ProcId, Range, SigRef, SigView, SimControl, SimError,
 };
 use yavs_sem::Db;
 use yavs_sem::decl::Designator;
@@ -32,7 +32,7 @@ use crate::model::*;
 use crate::{Error, Selection, WaveConfig, WaveWriter};
 
 /// How one entry's kernel value becomes the byte layout of its [`SigType`] (crate docs).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Conv {
     /// Logic elements, left first, as positions: the code minus `base` (2 for BIT, whose
     /// '0'/'1' are std_ulogic codes 2/3 in the kernel).
@@ -95,6 +95,8 @@ struct Var {
     stamp: Option<Stamp>,
 }
 
+const NO_ENTRY: u32 = u32::MAX;
+
 struct Entry {
     src: Src,
     conv: Conv,
@@ -106,6 +108,10 @@ struct State {
     /// Per kernel leaf: its entries in layers, each by offset and disjoint (a port collapsed
     /// into its actual shares the actual's elements: another layer).
     by_leaf: Vec<Vec<Vec<u32>>>,
+    /// Per kernel leaf: its only entry (`NO_ENTRY`: none or several), the common case.
+    solo: Vec<u32>,
+    /// Value bytes of the entry being written.
+    bytes: Vec<u8>,
     dirty: Vec<bool>,
     pending: Vec<u32>,
     /// The time of the pending changes, fs.
@@ -161,7 +167,8 @@ pub fn record(
     cfg: WaveConfig,
     built: Option<&Built>,
 ) -> Result<(Recorder, Vec<Skipped>), Error> {
-    record_to(db, e, sel, built, |h| {
+    // A file names equal values once (FST aliases); a live stream keeps one id per name.
+    record_with(db, e, sel, built, true, |h| {
         Ok(Box::new(WaveWriter::create(path, h, cfg)?))
     })
     .map(|(r, h)| (r, h.skipped))
@@ -176,6 +183,17 @@ pub fn record_to(
     built: Option<&Built>,
     sink: impl FnOnce(&Hierarchy) -> Result<Box<dyn Sink>, Error>,
 ) -> Result<(Recorder, Hierarchy), Error> {
+    record_with(db, e, sel, built, false, sink)
+}
+
+fn record_with(
+    db: &Db,
+    e: &Elaborated,
+    sel: Selection,
+    built: Option<&Built>,
+    alias: bool,
+    sink: impl FnOnce(&Hierarchy) -> Result<Box<dyn Sink>, Error>,
+) -> Result<(Recorder, Hierarchy), Error> {
     let mut d = Design {
         db,
         e,
@@ -188,6 +206,7 @@ pub fn record_to(
         vpath: Vec::new(),
         paths: Paths::default(),
         scalars: HashMap::new(),
+        alias: alias.then(HashMap::new),
         vectors: HashMap::new(),
     };
     d.package_vars();
@@ -236,11 +255,22 @@ pub fn record_to(
             layers
         })
         .collect();
+    let solo = (by_leaf.iter().enumerate())
+        .map(|(leaf, l)| match &l[..] {
+            [one] if one.len() == 1 => {
+                let covers = entries[one[0] as usize].span() == (0, e.nets.leaves[leaf].ty.len);
+                if covers { one[0] } else { NO_ENTRY }
+            }
+            _ => NO_ENTRY,
+        })
+        .collect();
     let n = entries.len();
     let st = State {
         writer: Some(writer),
         entries,
         by_leaf,
+        solo,
+        bytes: Vec::new(),
         dirty: vec![false; n],
         pending: Vec::new(),
         at: 0,
@@ -280,7 +310,7 @@ impl Recorder {
     /// file and return the first error of the run, if any.
     pub fn finish(&self, sim: &SimControl) -> Result<(), Error> {
         let mut st = self.lock();
-        st.flush(|r| sim.value(r));
+        st.flush(|r| sim.view(r));
         if let Some(e) = st.error.take() {
             st.writer = None; // drop finishes what can be finished
             return Err(e);
@@ -465,6 +495,29 @@ impl State {
         }
     }
 
+    /// Mark the entries that elements `range` of kernel leaf `leaf` touch.
+    fn mark_range(&mut self, leaf: u32, range: Range) {
+        let Some(layers) = self.by_leaf.get(leaf as usize) else {
+            return;
+        };
+        let (lo, hi) = (range.offset, range.offset + range.len);
+        for ids in layers {
+            let first = ids.partition_point(|&i| {
+                let (o, n) = self.entries[i as usize].span();
+                o + n <= lo
+            });
+            for &i in &ids[first..] {
+                if self.entries[i as usize].span().0 >= hi {
+                    break;
+                }
+                if !self.dirty[i as usize] {
+                    self.dirty[i as usize] = true;
+                    self.pending.push(i);
+                }
+            }
+        }
+    }
+
     fn mark(&mut self, i: u32) {
         if !self.dirty[i as usize] {
             self.dirty[i as usize] = true;
@@ -472,13 +525,13 @@ impl State {
         }
     }
 
-    fn flush(&mut self, read: impl Fn(SigRef) -> Result<Value, SimError>) {
+    fn flush<'h>(&mut self, read: impl Fn(SigRef) -> Result<SigView<'h>, SimError>) {
         if self.pending.is_empty() {
             return;
         }
         let mut pending = std::mem::take(&mut self.pending);
         pending.sort_unstable();
-        let mut bytes = Vec::new();
+        let mut bytes = std::mem::take(&mut self.bytes);
         for &i in &pending {
             self.dirty[i as usize] = false;
             if self.error.is_some() {
@@ -505,31 +558,81 @@ impl State {
         }
         pending.clear();
         self.pending = pending;
+        self.bytes = bytes;
     }
 }
 
-fn convert(en: &Entry, v: &Value, out: &mut Vec<u8>) {
-    match (en.conv, v) {
+fn convert(en: &Entry, v: &SigView<'_>, out: &mut Vec<u8>) {
+    match (en.conv, v.bytes()) {
         // Kernel offset 0 is the rightmost element (yavs-elab `NetGraph::select`).
-        (Conv::Logic { base }, Value::Logic(l)) => out.extend(
-            (0..l.len())
-                .rev()
-                .map(|i| (l.get(i) as u8).wrapping_sub(base)),
-        ),
-        (Conv::Bool, Value::Logic(l)) => {
-            out.extend_from_slice(&u32::from(l.get(0) as u8).wrapping_sub(2).to_le_bytes())
+        (Conv::Logic { base }, None) => logic_rev(v, base, out),
+        (Conv::Bool, None) => {
+            out.extend_from_slice(&u32::from(v.code(0)).wrapping_sub(2).to_le_bytes())
         }
-        (Conv::Enum8, Value::Bytes(b)) => {
+        (Conv::Enum8, Some(b)) => {
             out.extend_from_slice(&u32::from(b[0]).to_le_bytes());
         }
-        (Conv::Raw, Value::Bytes(b)) => out.extend_from_slice(b),
-        (Conv::Int32, Value::Bytes(b)) => {
+        (Conv::Raw, Some(b)) => out.extend_from_slice(b),
+        (Conv::Int32, Some(b)) => {
             for c in b.as_chunks::<4>().0 {
                 out.extend_from_slice(&i64::from(i32::from_le_bytes(*c)).to_le_bytes());
             }
         }
         // A mismatch reaches the writer as a wrong length, which it reports.
         _ => {}
+    }
+}
+
+/// Bit `j` of the low byte of `b` as byte `j` of the result (0 or 1).
+#[inline(always)]
+fn spread(b: u64) -> u64 {
+    let y = (b & 0xff).wrapping_mul(0x0101_0101_0101_0101) & 0x8040_2010_0804_0201;
+    ((y + 0x7f7f_7f7f_7f7f_7f7f) >> 7) & 0x0101_0101_0101_0101
+}
+
+/// The codes of the elements, last first, minus `base`, eight elements per step from the
+/// plane words. Codes below `base` (they do not occur) come out as an out-of-range position
+/// the writer refuses.
+fn logic_rev(v: &SigView<'_>, base: u8, out: &mut Vec<u8>) {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    let n = v.len();
+    let start = out.len();
+    out.resize(start + n, 0);
+    let dst = &mut out[start..];
+    let sub = u64::from(base) * ONES;
+    let mut c = 0;
+    while c < n {
+        let k = (n - c).min(64);
+        let Some(p) = v.planes(c, k) else {
+            out.truncate(start);
+            return;
+        };
+        // Only '0' and '1' (codes 2 and 3): the position is the value bit plus 2 - base.
+        let m = if k == 64 { !0 } else { (1u64 << k) - 1 };
+        let binary = base <= 2 && p[1] & m == m && (p[2] | p[3]) & m == 0;
+        let zero = u64::from(2 - base.min(2)) * ONES;
+        for j in (0..k.div_ceil(8)).rev() {
+            let sh = 8 * j;
+            let w = if binary {
+                zero | spread(p[0] >> sh)
+            } else {
+                let w = spread(p[0] >> sh)
+                    | spread(p[1] >> sh) << 1
+                    | spread(p[2] >> sh) << 2
+                    | spread(p[3] >> sh) << 3;
+                ((w | 0x8080_8080_8080_8080) - sub) & 0x7f7f_7f7f_7f7f_7f7f
+            };
+            let e = c + sh;
+            // Byte 0 of `r` is the highest element of the group.
+            let r = w.swap_bytes().to_le_bytes();
+            if k - sh >= 8 {
+                dst[n - e - 8..n - e].copy_from_slice(&r);
+            } else {
+                let m = k - sh;
+                dst[n - e - m..n - e].copy_from_slice(&r[8 - m..]);
+            }
+        }
+        c += k;
     }
 }
 
@@ -598,14 +701,14 @@ impl Observer for Recorder {
             Phase::StartOfSim => st.start(hook.now().as_fs()),
             Phase::NextTimeStep => {
                 // The step in progress is complete: its signals, then its variables.
-                st.flush(|r| hook.value(r));
+                st.flush(|r| hook.view(r));
                 st.sample_vars(hook);
                 st.step_done();
                 st.step = hook.now().as_fs();
             }
-            Phase::EndOfTimeStep => st.flush(|r| hook.value(r)),
+            Phase::EndOfTimeStep => st.flush(|r| hook.view(r)),
             Phase::EndOfSim => {
-                st.flush(|r| hook.value(r));
+                st.flush(|r| hook.view(r));
                 st.sample_vars(hook);
                 st.step_done();
             }
@@ -621,31 +724,29 @@ impl Observer for Recorder {
         }
     }
 
-    fn value_change(
-        &mut self,
-        hook: &mut Hook<'_>,
-        signal: yavs_kernel::SignalId,
-        range: yavs_kernel::Range,
-    ) {
+    fn value_change(&mut self, hook: &mut Hook<'_>, signal: yavs_kernel::SignalId, range: Range) {
         let mut st = self.lock();
         st.at = hook.now().as_fs();
-        let Some(layers) = st.by_leaf.get(signal.0 as usize) else {
-            return;
-        };
-        let (lo, hi) = (range.offset, range.offset + range.len);
-        let mut hit = Vec::new();
-        for ids in layers {
-            let first = ids.partition_point(|&i| {
-                let en = &st.entries[i as usize];
-                en.span().0 + en.span().1 <= lo
-            });
-            hit.extend(
-                (ids[first..].iter().copied())
-                    .take_while(|&i| st.entries[i as usize].span().0 < hi),
-            );
-        }
-        for i in hit {
-            st.mark(i);
+        st.mark_range(signal.0, range);
+    }
+
+    fn value_changes(&mut self, hook: &mut Hook<'_>, signals: &[u32]) {
+        let mut guard = self.lock();
+        let st = &mut *guard;
+        st.at = hook.now().as_fs();
+        for &s in signals {
+            // A leaf with one entry that covers it: any change is a change of the entry.
+            let i = st.solo.get(s as usize).copied().unwrap_or(NO_ENTRY);
+            if i != NO_ENTRY {
+                if !st.dirty[i as usize] {
+                    st.dirty[i as usize] = true;
+                    st.pending.push(i);
+                }
+                continue;
+            }
+            for &range in hook.changed(yavs_kernel::SignalId(s)) {
+                st.mark_range(s, range);
+            }
         }
     }
 }
@@ -668,7 +769,14 @@ struct Design<'a> {
     paths: Paths,
     scalars: HashMap<ScalarKey, (Arc<SigType>, Conv)>,
     vectors: HashMap<VectorKey, (Arc<SigType>, Conv)>,
+    /// With `alias`: the entry already declared for the same kernel elements, conversion and
+    /// type (a port collapsed into its actual and the actual itself), which a second
+    /// declaration then names again: the sink gets one change, an FST one value chain.
+    alias: Option<HashMap<AliasKey, SignalId>>,
 }
+
+/// Kernel leaf, offset and length, conversion, type (by identity), object class.
+type AliasKey = (u32, u32, u32, Conv, usize, ObjClass);
 
 type ScalarKey = (
     yavs_sem::TypeId,
@@ -975,10 +1083,6 @@ impl Design<'_> {
         len: u64,
         conv: Conv,
     ) {
-        let id = SignalId(self.entries.len() as u32);
-        if !self.b.signal_shared(name, id, ty, port, class) {
-            return;
-        }
         let src = match at {
             At::Sig { leaf, k, part } => {
                 let (base, n) = match part {
@@ -997,12 +1101,28 @@ impl Design<'_> {
                     len: len as u32,
                 }
             }
-            At::Var => {
-                self.paths.data.extend_from_slice(&self.vpath);
-                self.paths.ends.push(self.paths.data.len() as u32);
-                Src::Var
-            }
+            At::Var => Src::Var,
         };
+        let id = SignalId(self.entries.len() as u32);
+        let mut key = None;
+        if let (Some(m), Src::Sig { leaf, offset, len }) = (&self.alias, &src) {
+            let kk = (*leaf, *offset, *len, conv, Arc::as_ptr(ty) as usize, class);
+            if let Some(&first) = m.get(&kk) {
+                self.b.signal_shared(name, first, ty, port, class);
+                return;
+            }
+            key = Some(kk);
+        }
+        if !self.b.signal_shared(name, id, ty, port, class) {
+            return;
+        }
+        if let (Some(m), Some(kk)) = (&mut self.alias, key) {
+            m.insert(kk, id);
+        }
+        if matches!(src, Src::Var) {
+            self.paths.data.extend_from_slice(&self.vpath);
+            self.paths.ends.push(self.paths.data.len() as u32);
+        }
         self.entries.push(Entry { src, conv });
     }
 
@@ -1262,5 +1382,17 @@ fn index_image(dims: &[yavs_elab::Bounds], mut j: u64, out: &mut String) {
             out.push(',');
         }
         let _ = write!(out, "{x}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn spread_puts_bit_j_in_byte_j() {
+        for b in 0..256u64 {
+            let want: u64 = (0..8).map(|j| (b >> j & 1) << (8 * j)).sum();
+            assert_eq!(super::spread(b), want, "{b:#x}");
+            assert_eq!(super::spread(b | 0xabcd00), want, "{b:#x} with upper bits");
+        }
     }
 }

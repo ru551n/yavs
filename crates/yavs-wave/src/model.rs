@@ -130,7 +130,7 @@ pub enum PortDir {
     Linkage,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ObjClass {
     Signal,
     Variable,

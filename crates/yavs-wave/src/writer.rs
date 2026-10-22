@@ -6,8 +6,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use wavefst::{
-    FileType, FstWriter, GeomEntry, Header, MiscAttributeType, ScopeType, SignalValue,
-    SupplementalDataType as Dt, SupplementalVarType, SupplementalVariableMetadata, VarDir, VarType,
+    ChainCompression, FileType, FstWriter, GeomEntry, Header, MiscAttributeType, ScopeType,
+    SignalValue, SupplementalDataType as Dt, SupplementalVarType, SupplementalVariableMetadata,
+    VarDir, VarType,
 };
 
 use crate::model::*;
@@ -118,6 +119,7 @@ impl WaveWriter {
         let mut fst = FstWriter::builder(file)
             .timescale_exponent(cfg.timescale_exponent)
             .block_change_limit(block_change_limit)
+            .chain_compression(ChainCompression::Lz4)
             .build()?;
         let mut w = Self {
             fst: None,

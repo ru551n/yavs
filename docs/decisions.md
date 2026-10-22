@@ -151,6 +151,9 @@ milestone users care about works.
   The live stream of `--dap` keeps one id per name. The writer reads a vector straight from the
   kernel's planes (`Hook::view`, eight elements per step), and the kernel hands an observer all
   changes of a cycle in one call (`Observer::value_changes`).
+  Value chains are LZ4-compressed (until then they were stored raw; the hierarchy block was
+  LZ4 already, so a viewer needs it anyway): neorv32 50 percent, a 512-bit bus testbench 62
+  percent smaller, 0 to 6 percent more instructions with waves. Read-back is identical.
 - **Durability:** a block is flushed on the next time advance after `flush_interval` (default
   5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
   readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel

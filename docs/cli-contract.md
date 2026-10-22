@@ -318,7 +318,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   enum table, integers, reals and time as numbers (an integer with its subtype's name and
   the width its range needs; a generate alternative with a label is scope `label.alt`). Several deltas at one time step
   give one value change (the final value). The file is the same at any
-  `--threads`. Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
+  `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
   `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).

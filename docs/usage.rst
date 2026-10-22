@@ -138,6 +138,10 @@ Waveforms
   sized after elaboration. Records are scopes with one entry per field, and arrays of anything
   other than ``std_logic`` or ``bit`` are scopes with one entry per element (``mem(2)``,
   ``grid(1,2)``). Variables are only recorded with ``--wave-variables``.
+* A port that is connected to a signal, and the signal itself, are one value: the file holds
+  its data once and each name (the signal and the port at every level of the hierarchy) points
+  to it, so a viewer shows all of them with the same changes and the file does not grow with
+  the depth of the hierarchy.
 * FST has no delta cycles: several deltas at one time step give one change with the final
   value. The file is the same for any ``--threads``.
 * ``--wave-include GLOB`` and ``--wave-exclude GLOB`` (repeatable) choose what is recorded by

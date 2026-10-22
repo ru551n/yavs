@@ -1925,6 +1925,37 @@ rows and of the testbench row 3, self time, function names are those of the rele
 
 Raw data: JSON per row set, the translator and the drivers are scratch and not committed.
 
+## performance: floor of a run, 2026-10-22 (round 3, #426)
+
+What a tiny `yavs run` costs now that `--tier=auto` and the LLVM stubs are the default build, `tests/corpus/scalar/array_attrs`
+(warm cache, run 5; `perf stat` on a pinned core, medians of 80 interleaved runs; cycles and instructions of the whole
+process including its threads):
+
+| Binary | cycles | instructions | page faults | task-clock |
+|---|---:|---:|---:|---:|
+| before (e2cd4595) | 10.9 M | 9.25 M | 441 | 2.24 ms |
+| `--tier=interp` of the same binary | 9.6 M | 8.6 M | 428 | 1.96 ms |
+| after the compile thread starts late | 9.3 M | 8.6 M | 431 | 1.94 ms |
+| after the package scans, NATIVE.md on demand, no freeing thread | 7.9 M | 6.7 M | 399 | 1.60 ms |
+| `yavs --version` (the fixed part) | 4.2 M | 2.9 M | 220 | 0.86 ms |
+| `/bin/true` | 1.4 M | 0.9 M | 60 | 0.29 ms |
+
+Where the cycles of the 10.9 M went (sampled with frame pointers, share of all samples): the dynamic loader 25% (relocating
+the 16 700 relative relocations of the position independent executable, 8 000 of them the vtables of derived `Debug`
+impls; `_dl_check_map_versions`; three libraries instead of one), the kernel's page faults (about 7 000 cycles each, 440
+of them), `clap` 9.6% (building the whole command tree, 70 arguments, and matching), the Rust runtime's probe of the main
+thread's stack 7.6% (`pthread_getattr_np` reads `/proc/self/maps`), the image decode 12% (8 of 11 declaration pages decoded
+only by two scans of the elaborator), the `--tier=auto` thread 10%, the two helper threads of a piped run 6%, NATIVE.md 4%,
+the thread that freed the analysis 3%.
+
+What changed (`docs/decisions.md` "Floor of a run, round 3"): the compile thread starts at the first interpreter tick after
+5 ms; NATIVE.md is parsed only for a symbol without an implementation; the scans for signals, shared variables and implicit
+signals of loaded packages skip std and ieee; a design under 50 000 entries is not freed by a thread; the LLVM stub names are
+one string. Warm per-test wall of 40 corpus tests (one process each, pinned, 15 rounds, median over tests): 2.04 to 1.68 ms
+(CPU 2.01 to 1.61 ms); the same harness gives 8.96 ms for the reference simulator's `-r` alone and 28.9 ms for its
+analyse, elaborate and run. Runs of 0.2 to 2 s (`tools/bench` h2h designs, `--tier=auto`, pinned) are level (0.91 to 1.00 of
+before; no tier-up delay visible).
+
 ## performance: floor of a run, 2026-10-21
 
 Why a tiny test took 7.2 ms in the head-to-head against 5.6 ms (sim1 jit) and 2.3 ms (sim2): that binary was built with

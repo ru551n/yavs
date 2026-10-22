@@ -784,6 +784,7 @@ impl Db {
                 hash: Some(hash),
             },
         );
+        self.note_warm_file(path);
         Some(keys)
     }
 

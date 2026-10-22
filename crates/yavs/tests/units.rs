@@ -135,6 +135,10 @@ fn cached_analysis_reports_what_source_does() {
     // The second time every unit of the files is read back.
     assert_eq!(warm[2].notes("hit work.tb ("), 1, "{:?}", warm[2]);
     assert_eq!(warm[2].notes("miss"), 0, "{:?}", warm[2]);
+    // The file itself is not parsed: its units have entries made from it (no leading empty
+    // segment may hide the file step, which cost 15 ms of every first run of a library testbench).
+    assert_eq!(warm[2].notes("tb.vhd not parsed"), 1, "{:?}", warm[2]);
+    assert_eq!(cold[2].notes("not parsed"), 0, "{:?}", cold[2]);
     // The check mode analyses again without the cache and compares the two.
     let o = e.yavs(&["analyze", "--work", &e.lib("work"), "tb.vhd"]);
     assert_eq!(o.code, 0);

@@ -678,6 +678,13 @@ impl Db {
         }
     }
 
+    /// Say (debug log) that `path` was registered from the entries of its units, not parsed.
+    pub(crate) fn note_warm_file(&self, path: &Path) {
+        if let Some(s) = self.store() {
+            s.note(&format!("file {} not parsed", path.display()));
+        }
+    }
+
     fn note_miss(&self, f: &Frame, why: &str) {
         if let Some(s) = self.store() {
             s.note(&format!(
@@ -1459,7 +1466,11 @@ impl Db {
         let text = path.display().to_string();
         for &k in keys {
             let e = self.entry_at(lib, k, path, hash, rev).ok()?;
-            match e.head.steps.first() {
+            // The first segment of a unit is empty (nothing is made before its file is read).
+            let first = e.head.steps.iter().find(|s| {
+                !matches!(s, PStep::Seg { sizes, diags: 0, times: 0 } if sizes.iter().all(|&n| n == 0))
+            });
+            match first {
                 Some(PStep::File {
                     lib: l,
                     path: p,

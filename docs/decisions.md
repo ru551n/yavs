@@ -4025,3 +4025,13 @@ Decisions:
   known when a block is entered decides the branches of its copy. The clean-up also drops what nothing reads, a decided
   condition's flag and the constants that fed it, and knows the result of `Bool` of known operands.
 
+
+## `--tier=auto` as the default: not yet (yavs-llvm, #510, 2026-10-22; recommendation, the maintainer decides)
+
+- **Recommendation:** keep `--tier=interp` the default for now. Evidence in STATUS.md "`--tier=auto` as the default: the
+  case": auto halves the run of testbench-heavy and many-instance designs and is level on protected-call library
+  testbenches, but runs where nothing pays are 1 to 6 percent slower (the interpreter's bookkeeping with a tier set, #525,
+  plus the compile thread and the LLVM library), and single-instance RTL designs (a CPU) do not gain.
+- **When to switch:** once a run in which nothing is compiled costs no more than noise (#525) and compiled clocked code of
+  single-instance designs no longer loses (#532, #527). The policy is ready for it: cold runs compile within a budget of
+  their own time, warm runs link what earlier runs compiled at once.

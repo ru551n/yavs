@@ -4764,3 +4764,46 @@ the wide-vector writer 5 percent slower than the interpreter at the same instruc
 once, were compiled; with the processes not compiled, both are level with the interpreter (CPU design 130.0 against 130.6 G
 cycles; wide-vector writer 1.01 of the interpreter), while `rtl_ff` (0.93), `rtl_lfsr` (0.75) and `lfsr64` (0.90) keep their
 gain (core 4, warm, host load 10 to 15 during these runs, so cycle ratios carry several percent of noise).
+
+### `--tier=auto` as the default: the case (#510, 2026-10-22; the maintainer decides)
+
+Real-world suite (`tools/realbench`, 18 tests where tier-up matters, main at 52159b17, core 4, median of 3, run phase wall
+seconds; warm cells reuse the compilation cache, cold cells copy a pristine world, so they include building every cache):
+
+| Test | interp | auto | auto / interp | interp cold | auto cold |
+|---|---:|---:|---:|---:|---:|
+| window generator (`vai_window_gen_interlock`) | 21.29 | 10.90 | 0.51 | 23.21 | 15.34 |
+| `hdlm_lfsr` | 8.27 | 4.14 | 0.50 | 8.37 | 4.42 |
+| `poc_stat_histogram` | 5.51 | 3.40 | 0.62 | 5.07 | 4.37 |
+| `sc5_fifo_repack` | 4.93 | 4.60 | 0.93 | 5.15 | 5.42 |
+| `uvvm_axistream_vvc` | 5.76 | 5.73 | 0.99 | 5.90 | 6.24 |
+| `osvvm_axis_random`, `uvvm_sb_slv`, `uvvm_util_rand`, `uvvm_func_cov`, `osvvm_axi4_random` | 0.21 to 0.96 | | 0.99 to 1.03 | | |
+| `poc_cache_cpu` | 2.46 | 2.51 | 1.02 | 2.53 | 2.85 |
+| `poc_arith_addw` | 37.84 | 39.09 | 1.03 | 39.67 | 40.08 |
+| `neorv32_dual_full` | 16.69 | 17.14 | 1.03 | 17.23 | 17.61 |
+| `neorv32_single_cache` | 20.99 | 21.99 | 1.05 | 22.04 | 20.89 |
+| `fletcher_bufferwriter_512` | 25.33 | 26.54 | 1.05 | 28.00 | 27.21 |
+| `fletcher_bufferreader` | 7.33 | 7.68 | 1.05 | 7.66 | 8.03 |
+| `neorv32_single_min` | 17.64 | 18.75 | 1.06 | 18.44 | 19.64 |
+| `sc5_timestamp` | 0.82 | 0.87 | 1.06 | 0.86 | 0.87 |
+
+The whole suite before the last two steps (41 tests, `--ref sim1`): geometric mean of wall against sim1 0.54 interpreted,
+0.55 auto (instructions 0.76 and 0.74), cold 1.26 and 1.28. The h2h designs (core 4, warm, cycles against the interpreter):
+`rtl_ff` 0.93, `rtl_lfsr` 0.75, `lfsr64` 0.90, `compute_h2h` 0.14; `rtl_chain`, `rtl_fan`, `rtl_bus`, `rtl_ram` 1.00 to 1.03;
+`lfsr64_xor` 1.09 (80 ms: the LLVM library and one compile); at 10x length `rtl_ff` 0.91, `rtl_lfsr` 0.66, `lfsr64` 0.78,
+`lfsr64_xor` 0.89, the others 1.00 to 1.03.
+
+For: testbench-heavy runs and designs with many instances of one clocked process gain up to 2x (window generator, the
+queue-based testbenches, `hdlm_lfsr`, the histogram, `rtl_lfsr`); compute loops 7x; output is identical in every tier
+and thread count; the compilation cache makes repeat runs warm.
+
+Against: the runs where nothing pays are 1 to 6 percent slower than the interpreter (the CPU and wide-vector designs, the
+short library testbenches): about 1 to 3 percent is the interpreter's own bookkeeping with a tier set even when nothing is
+compiled (#525), the rest is the compile thread (pinned to the same core in these measurements; on a free core it costs
+CPU, not wall) and the LLVM library (10 ms at the first compile); cold runs of short testbenches pay up to 4 percent; the
+compile thread adds CPU and memory to every run that compiles; when a function is compiled depends on sampling, so run
+times (not results) vary more than with the interpreter.
+
+Recommendation: not yet. Make `--tier=auto` the default once a run in which nothing pays costs no more than noise
+(#525), and once compiled clocked processes of single-instance designs no longer lose (#532, #527: signal operations and
+array accesses without host calls); keep `--tier=interp` for runs below a second, where nothing can pay.

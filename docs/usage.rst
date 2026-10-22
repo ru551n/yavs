@@ -58,7 +58,7 @@ otherwise.
   simulation runs in the interpreter; ``--tier=llvm`` compiles every function with LLVM before
   time 0 and runs that code; ``--tier=interp`` runs the interpreter alone. The output is the same
   with every tier. ``auto`` is the default in a yavs built with the ``llvm`` feature (LLVM 21),
-  except under ``--dap`` or ``--vhpi``, which run in the interpreter unless you ask for a tier;
+  except under ``--dap``, which runs in the interpreter unless you ask for a tier;
   a yavs built without the feature always defaults to ``--tier=interp``, and ``--tier=auto`` or
   ``--tier=llvm`` on it is an error. Functions of
   more than ``--tier-max-size`` IR instructions (default 50000) stay interpreted. ``--verbose``

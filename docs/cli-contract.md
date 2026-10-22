@@ -441,8 +441,8 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   never waits for the client: when too many batches are queued the newest is merged into the
   last (`merged: true`, only the last change of each value kept). A failure of the live waves
   is `E0702` (the run fails). Supported requests and the id scheme: `crates/yavs-dap/AGENTS.md`.
-- `--tier=interp|llvm|auto` (`run`; default `auto` in a build with the `llvm` feature unless `--dap` or
-  `--vhpi` is given, else `interp`, quietly: no error, no warning; user, 2026-10-22, #510): `llvm` compiles every function of the
+- `--tier=interp|llvm|auto` (`run`; default `auto` in a build with the `llvm` feature unless `--dap` is
+  given, else `interp`, quietly: no error, no warning; user, 2026-10-22, #510): `llvm` compiles every function of the
   design with the LLVM tier before time 0 and runs that code; `auto` starts in the interpreter
   and compiles each function that becomes hot (once the instructions it ran in the interpreter
   would have paid for its compilation) at the cheapest optimisation level on one background

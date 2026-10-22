@@ -4357,9 +4357,12 @@ Decisions:
   within noise since #525, #532 and #545 (STATUS.md "`--tier=auto` as the default: the case").
 - **A build without the feature quietly defaults to the interpreter**: no error, no warning. An explicit
   `--tier=auto` or `--tier=llvm` on it is still E0120.
-- **`--dap` and `--vhpi` default to the interpreter** (`RunArgs::tier()`): a debugger reads and writes variables in their
-  frame slots and `--dap` never starts a tier; a plugin writes variables between activations and its exit handlers must
-  not wait for a compile. An explicit `--tier=` is honoured with `--vhpi` (the VHPI tests run it with `llvm` and `auto`).
+- **`--dap` defaults to the interpreter** (`RunArgs::tier()`): a debugger reads and writes variables in their frame
+  slots and `--dap` never starts a tier. An explicit `--tier=` is honoured with `--dap`.
+- **`--vhpi` follows the default (`auto`)** (user, 2026-10-22, #125; first slice of this decision kept it on the
+  interpreter): the Python testbench framework's regression (68 test cases, 553 test results) gives the same results on
+  `--tier=interp`, on the default `auto` and on `auto` with every function compiled at once (`--tier-heat=1,0,0`, 38 cases
+  compile). Plugins write variables between activations through `external_variables()`, which the tier already honours.
 - **Tools and tests name the tier where it matters**: difftest keeps `yavs` (the build's default), `yavs-interp`,
   `yavs-llvm` and `yavs-auto` (CI runs the first, the second and the last two on the `llvm` build); `tools/bench` passes
   `--tier=interp` in its binary-versus-binary mode (its `--ref` mode and `tools/realbench` already named tiers).

@@ -149,8 +149,7 @@ pub struct RunArgs {
     /// Execution tier: `auto` to compile the functions that become hot on a background thread
     /// while the simulation runs; `llvm` to compile every function with LLVM before time 0; or
     /// `interp` for the interpreter alone. `llvm` and `auto` need a yavs built with the `llvm`
-    /// feature. Default: `auto` with that feature, but `interp` with `--dap` or `--vhpi` and
-    /// without it.
+    /// feature. Default: `auto` with that feature, but `interp` with `--dap` and without it.
     #[arg(long, value_enum)]
     tier: Option<TierArg>,
     /// With `--tier=llvm` or `auto`: functions of more than N IR instructions stay
@@ -224,15 +223,14 @@ fn plusarg(s: &str) -> Result<String, String> {
 
 impl RunArgs {
     /// The tier of this run: the one asked for, else `auto` where it is built in and nothing
-    /// needs the interpreter alone (a debugger reads frame slots, a VHPI plugin writes variables).
-    fn tier(&self) -> TierArg {
-        self.tier.unwrap_or(
-            if cfg!(feature = "llvm") && self.dap.is_none() && self.vhpi.is_empty() {
+    /// needs the interpreter alone (a debugger reads frame slots).
+    pub(crate) fn tier(&self) -> TierArg {
+        self.tier
+            .unwrap_or(if cfg!(feature = "llvm") && self.dap.is_none() {
                 TierArg::Auto
             } else {
                 TierArg::Interp
-            },
-        )
+            })
     }
 }
 

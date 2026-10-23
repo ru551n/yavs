@@ -6164,5 +6164,5 @@ functions compiled only when needed (upper bound under 2 percent of a cold run: 
 (`window_hold_check`: 23 of 211 instructions leave the compiled code, `walk_control` 4373 IR instructions) stay interpreted.
 Idea of the reference simulator used (read for the design, no code): an access value there is a plain pointer, a dereference
 a null test and a load, and a protected object is a context pointer passed to an ordinary call; yavs's generational handles
-(design rule 6) make every dereference a table look-up, which the larger table makes a hit instead of a callback but does not
+(a design rule of docs/plan.md) make every dereference a table look-up, which the larger table makes a hit instead of a callback but does not
 make a load.

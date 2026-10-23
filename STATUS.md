@@ -3905,6 +3905,8 @@ mapping, atomic manifest updates under an exclusive lock, shared-lock reads that
 on-demand closure query (unknown library/unit with suggestion, cycles, stale hashes), multi-process
 concurrency test. The standard is stored per file (manifest format 2). The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file. A directory with a manifest from before the rename to yavs fails with L0004 (re-analyze).
 
+The manifest is renamed into place without an fsync and not rewritten when unchanged (#561, user decision 2026-10-23): a cold `analyze` of a tiny file went from 6.0 ms wall (2.9 ms CPU) to 2.9 ms (2.8 ms CPU).
+
 ## kernel (`crates/yavs-kernel`)
 
 LRM 14.7 cycle against an abstract `Process` trait, tested with hand-written processes: time with

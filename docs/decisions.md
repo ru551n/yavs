@@ -2446,6 +2446,14 @@ user's performance priority:
 - **Cache entries carry an xxh3 checksum of the payload instead of sha256** (format 2) and are read into one
   buffer without copying the payload out (mapped since #481, "Zero-copy cache entries"). Keys stay sha256. The checksum finds a damaged or truncated file;
   nothing here defends against someone who can write the library directory (they could edit the sources).
+- **The library manifest is renamed into place without an fsync, and not rewritten when unchanged
+  (#561, user, 2026-10-23).** Each `record` writes a temp file in the library directory and renames
+  it over `yavs-lib.toml` (the replace-existing rename on Windows too): readers and a crash see the
+  old or the new manifest, never a torn one. A power loss may lose the last `analyze`, which the next
+  `analyze` records again (`run` reports L0034 or unit not found meanwhile). The fsync that `Session`
+  did when it dropped cost 3 to 5 ms of wall per recording `analyze` (4.6 ms median, more than the 3.3 ms of
+  CPU of the analysis); the analysed-unit cache and image entries were never synced. A record whose
+  manifest text equals the file's is not written at all.
 - **`run` does not free the design and the runtime before the process ends** (not with `--wave` or
   `--vhpi`, whose teardown is orderly): the operating system takes the memory back; for a large design
   it was a tenth of the run time.

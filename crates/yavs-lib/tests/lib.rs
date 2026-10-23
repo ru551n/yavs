@@ -520,3 +520,75 @@ fn session_records_every_file_as_it_goes() {
     assert_eq!(m.files.len(), 3);
     assert_eq!(m.files.last().unwrap().hash, hash_content(b"a2"));
 }
+
+/// A reader polling the manifest file while a session records files sees a whole manifest every
+/// time (the old one or the new one, never a torn one), and the count never goes back (#561).
+#[test]
+fn manifest_is_never_torn() {
+    let (t, _, work, _) = setup();
+    let session = work.session().unwrap();
+    let first = t.path().join("f0.vhd");
+    std::fs::write(&first, "f0").unwrap();
+    session
+        .record(STD, &first, &hash_content(b"f0"), vec![pkg("f0")])
+        .unwrap();
+    let manifest = work.dir.join(yavs_lib::MANIFEST_FILE);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let seen = std::thread::scope(|s| {
+        let reader = s.spawn(|| {
+            let copy = tempfile::tempdir().unwrap();
+            let (mut last, mut reads) = (1, 0);
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let text = std::fs::read_to_string(&manifest).expect("manifest never missing");
+                std::fs::write(copy.path().join(yavs_lib::MANIFEST_FILE), text).unwrap();
+                let n = Library::new("work", copy.path())
+                    .read()
+                    .expect("manifest never torn")
+                    .files
+                    .len();
+                assert!(n >= last, "manifest went back from {last} to {n} files");
+                last = n;
+                reads += 1;
+            }
+            reads
+        });
+        for i in 1..300 {
+            let (name, text) = (format!("f{i}"), format!("text {i}"));
+            let p = t.path().join(format!("{name}.vhd"));
+            std::fs::write(&p, &text).unwrap();
+            session
+                .record(STD, &p, &hash_content(text.as_bytes()), vec![pkg(&name)])
+                .unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap()
+    });
+    assert!(seen > 0);
+    drop(session);
+    assert_eq!(work.read().unwrap().files.len(), 300);
+}
+
+/// Recording what the manifest already says does not rewrite it (#561).
+#[cfg(unix)]
+#[test]
+fn unchanged_record_skips_the_rewrite() {
+    use std::os::unix::fs::MetadataExt;
+    let (t, _, work, _) = setup();
+    let p = t.path().join("a.vhd");
+    std::fs::write(&p, "a").unwrap();
+    let h = hash_content(b"a");
+    let session = work.session().unwrap();
+    session.record(STD, &p, &h, vec![pkg("a")]).unwrap();
+    let ino = std::fs::metadata(work.dir.join(yavs_lib::MANIFEST_FILE))
+        .unwrap()
+        .ino();
+    session.record(STD, &p, &h, vec![pkg("a")]).unwrap();
+    let after = std::fs::metadata(work.dir.join(yavs_lib::MANIFEST_FILE)).unwrap();
+    assert_eq!(after.ino(), ino, "an identical manifest was written again");
+    // A changed record still replaces it.
+    session
+        .record(STD, &p, &hash_content(b"b"), vec![pkg("a")])
+        .unwrap();
+    let after = std::fs::metadata(work.dir.join(yavs_lib::MANIFEST_FILE)).unwrap();
+    assert_ne!(after.ino(), ino);
+}

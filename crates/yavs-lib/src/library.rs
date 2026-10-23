@@ -200,25 +200,16 @@ pub struct Session {
 }
 
 /// What a session keeps between records: the manifest (nobody else can write it while the
-/// exclusive lock is held, so it is read and parsed once, not once per file) and whether the
-/// last published manifest still has to be synced to disk.
+/// exclusive lock is held, so it is read and parsed once, not once per file) and the text
+/// of the manifest file as last read or written (a record that changes nothing skips the write).
 #[derive(Default)]
 struct SessionState {
     manifest: Option<Manifest>,
-    unsynced: bool,
+    disk_text: Option<String>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Records are renamed into place without a sync each (the rename keeps readers safe;
-        // a sync per file made a batch of 60 files spend most of its time waiting for the disk).
-        // The last manifest is the only one that has to survive a power loss.
-        if self.state.get_mut().is_ok_and(|s| s.unsynced) {
-            let _ = OpenOptions::new()
-                .write(true)
-                .open(self.lib.manifest_path())
-                .and_then(|f| f.sync_all());
-        }
         let mut h = HELD.lock().unwrap();
         if let Some(i) = h.iter().position(|k| *k == self.key) {
             h.remove(i);
@@ -252,32 +243,41 @@ impl Session {
         let mp = self.lib.manifest_path();
         let mut st = self.state.lock().unwrap();
         if st.manifest.is_none() {
-            st.manifest = Some(match fs::read_to_string(&mp) {
-                Ok(t) => Manifest::parse(&t, &mp)?,
+            let (m, text) = match fs::read_to_string(&mp) {
+                Ok(t) => (Manifest::parse(&t, &mp)?, Some(t)),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     self.lib.reject_old_manifest()?;
-                    Manifest::new(&self.lib.name)
+                    (Manifest::new(&self.lib.name), None)
                 }
                 Err(e) => return Err(io("L0002", "read", &mp, &e)),
-            });
+            };
+            st.manifest = Some(m);
+            st.disk_text = text;
         }
         let m = st.manifest.as_mut().unwrap();
         m.replace_file(path, hash.to_string(), stamp, standard.to_string(), units);
 
+        // No fsync (user, 2026-10-23, #561): the rename leaves the old or the new manifest, never a
+        // torn one; a power loss may lose the last analyze, which the next analyze redoes.
+        let text = m.to_text();
+        if st.disk_text.as_deref() == Some(text.as_str()) {
+            return Ok(());
+        }
         let tmp = self
             .lib
             .dir
             .join(format!("{MANIFEST_FILE}.{}.tmp", std::process::id()));
-        let r = fs::write(&tmp, m.to_text())
+        let r = fs::write(&tmp, &text)
             // std::fs::rename replaces an existing target on Windows too (MOVEFILE_REPLACE_EXISTING).
             .and_then(|()| fs::rename(&tmp, &mp));
         if let Err(e) = r {
             let _ = fs::remove_file(&tmp);
             // The in-memory manifest has the file now; the next record must start from the disk.
             st.manifest = None;
+            st.disk_text = None;
             return Err(io("L0002", "write", &mp, &e));
         }
-        st.unsynced = true;
+        st.disk_text = Some(text);
         Ok(())
     }
 }

@@ -2494,7 +2494,7 @@ user's performance priority:
   returns it again while the manifest file has its size and time and is two seconds old; the library lock
   is still taken for every read. The closure and the restore of the analysis image both read each library.
 - **A manifest is read by a parser for the text yavs writes, with `toml` as the fallback** (yavs-lib
-  `parse_written`): the `toml` crate took 5 ms for the manifests of a testbench library and a run parses
+  `parse_written`; superseded by the line reader of the index and the records, "Library layout", #599): the `toml` crate took 5 ms for the manifests of a testbench library and a run parses
   them at every start. The parser accepts only the exact shape `Manifest::to_text` produces (simple
   strings, no escapes, known keys, all required fields) and returns `None` for anything else, so
   other format versions, hand edits and unusual paths are read by `toml` with the same result and the
@@ -4751,6 +4751,53 @@ Decisions:
 - Idea from the reference simulator (sim1; read for its design, no code taken): it has no idiom recognition, it compiles
   the loop to native code and the loop costs a nanosecond per bit there. Ours is a recogniser of one shape because the
   interpreter pays per operation; the compiled tier gets the same call.
+
+## Library layout: an index and a record per source file (yavs-lib, #599; user decision 2026-10-23: per-file records plus a small index)
+
+- **Why.** Every `yavs analyze` read, parsed, cloned, rendered and rewrote the whole library manifest (244 KB
+  for the 246 files of satcat5; 30 to 40 percent of a warm call of one file, growing with the library).
+  Most of it was `depends_on`, which only the closure of `elab`/`run` reads.
+- **Layout.** `<lib>/yavs-lib.toml` (the index, `format = 3`) lists the files in analysis order, each with
+  path, standard, content hash, the optional `size`/`mtime_ns` stamp, `partial`, the units it still defines
+  as `[kind, key]` (`[kind, key, primary]` for architectures and package bodies) and `record`, a digest.
+  `<lib>/yavs-lib.d/<digest>.toml` is the record of one file: its path and, per unit, kind, original name,
+  key, primary, standard and `depends_on`. A call reads the index and the records it needs: `analyze` the
+  record of the file it analyses again (the analysed-unit cache compares it) and `elab`/`run` those of the
+  files in the closure; it writes the records that changed and the index. The index is plain TOML (the
+  text `yavs-lib.toml` has always been valid TOML); the library reads it with its own line reader and
+  keeps every string in one buffer (a parse is a few allocations and a clone a copy; `toml` is only a
+  dev-dependency now). A string with a quote, backslash or control character is escaped as TOML does.
+- **Records are never rewritten.** A record is named by the digest (first 16 bytes of the SHA-256) of its text
+  and the index names the digest. A write is: the record (temp file and rename), then the index (temp file and
+  rename, the commit point), then the unlink of the records the index no longer names (the file's earlier one,
+  files that lost every unit). No fsync (#561). A crash between the steps leaves the old index and a record
+  nobody names, which is harmless; a reader never meets a record that is not the one its index means, and a
+  damaged or missing record is `L0003` naming the record, its source file and the fix. `elab`/`run` hold the
+  shared lock of each library they read until the closure is done, so a writer cannot replace a record
+  under them (a library that cannot be locked, a read-only one, is not written by anyone).
+- **`partial` (#577)** is in the index only: when a later file takes some units of a file, the index drops
+  them from that file and marks it `partial`; its record is not rewritten (it still lists the lost units,
+  which nothing looks up through the index), and a file left with no unit leaves the index and its record is
+  deleted. The analysed-unit cache still parses a `partial` file instead of using its record.
+- **The default architecture** (LRM 7.3.3, the last analyzed) is still the last architecture of the entity in
+  index order; a file analysed again moves to the end of the order, as before.
+- **Old libraries are not converted (user rule "fail early", `yavs-lib` AGENTS.md section 6).** A `yavs-lib.toml`
+  of another format version is `L0004` naming the file and saying to delete the library directory and analyze
+  its files again (the earlier help said to re-analyze, which `analyze` refused as well). Migration was
+  rejected: `elab`/`run` never write a library, so they could not do it, and a library is rebuilt by
+  re-analyzing its files.
+- **Where the time went.** One warm `analyze` of one file into the satcat5 library: 17.4 to 9.1 million
+  instructions, 2.5 to 1.8 ms of wall (pinned, `perf stat`); the index is 99 KB instead of 244 KB. The realbench
+  `analyze` phase, one file per call, 41 tests (`--compare`, ratios new / old): warm instructions 0.80
+  (satcat5 0.57 to 0.65, Open Logic 0.72 to 0.78, hdl-modules 0.84, PoC 0.74 to 0.77), warm wall 0.87; cold (a
+  library built from nothing, dominated by the analysis itself) instructions 0.97, wall 0.96. What is left of
+  the library layer in a warm call is rendering and parsing the index, about 40 percent of its user-mode
+  time (the rest being startup and the analysis); a later step could write the index by splicing the text of
+  the changed file. `Manifest::parse_written` and the `toml` fallback of "Per-run overhead" (#426) and #581 are
+  gone with the single file.
+- **Considered:** splicing the text of one manifest (the analyzer still parses all of it); a `depends_on`
+  parsed lazily (the text is still read and written whole); records addressed by path (a record is rewritten
+  in place, so an index and a record can disagree after a crash); a database file (an unlisted dependency).
 
 ## Elaboration-time call cache (yavs-elab `callcache.rs`, yavs-interp, #539; user decision 2026-10-22: build it)
 

@@ -395,7 +395,7 @@ impl Db {
         match source {
             LibSource::StdDir(_) => Some(builtin_hash(path)),
             LibSource::Manifest(m) => match m.file(path) {
-                Some(f) if f.unchanged() => Some(f.hash.clone()),
+                Some(f) if f.unchanged() => Some(f.hash.to_string()),
                 _ => std::fs::read(path).ok().map(|b| yavs_lib::hash_content(&b)),
             },
             LibSource::Files => None,
@@ -1543,7 +1543,10 @@ impl Db {
             return None;
         };
         let fe = m.file(&std::path::absolute(path).ok()?)?;
-        if fe.units.len() != keys.len() {
+        // The record is only a hint here: a file that cannot be read back is analysed (and
+        // recorded again) as for any file the cache does not know.
+        let recs = m.records(&fe).ok()?;
+        if recs.len() != keys.len() {
             return None;
         }
         let name = self.libs[lib].name.key;
@@ -1557,7 +1560,7 @@ impl Db {
             entries: Default::default(),
             srcs: Default::default(),
         };
-        for (&k, rec) in keys.iter().zip(&fe.units) {
+        for (&k, rec) in keys.iter().zip(&recs) {
             let e = self.entry_for(lib, k).ok()?;
             if e.head.record != record_hash(rec) {
                 return None;
@@ -1583,7 +1586,7 @@ impl Db {
                 p.units.len()
             ));
         }
-        Some(fe.units.clone())
+        Some(recs)
     }
 
     /// Plan the replay of `(lib, key)` from `entry` on top of `p`.
@@ -1759,7 +1762,7 @@ impl Db {
                         .units()
                         .filter(|u| {
                             u.kind == yavs_lib::UnitKind::Architecture
-                                && u.primary.as_deref() == Some(k.as_str())
+                                && u.primary == Some(k.as_str())
                         })
                         .last()
                         .and_then(|u| u.key.split_once('/').map(|(_, a)| Symbol::intern(a))),

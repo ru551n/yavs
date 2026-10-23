@@ -1,7 +1,7 @@
 use crate::Result;
 use crate::error::err;
 use crate::library::Library;
-use crate::manifest::{Manifest, UnitKind, UnitRecord, UnitRef, fold, hash_content};
+use crate::manifest::{Manifest, UnitKind, UnitLoc, UnitRecord, UnitRef, fold, hash_content};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -62,10 +62,15 @@ type Node = (String, UnitKind, String); // library, kind, key
 struct Ctx<'a> {
     libs: &'a Libraries,
     manifests: HashMap<String, std::sync::Arc<Manifest>>,
+    /// The shared locks of the libraries read, held until the closure is done: a record is read
+    /// only while no writer can replace it.
+    guards: Vec<std::fs::File>,
+    /// The records read, by library and position of the file.
+    records: HashMap<(String, usize), Vec<UnitRecord>>,
 }
 
 impl Ctx<'_> {
-    fn manifest(&mut self, lib: &str) -> Result<&Manifest> {
+    fn manifest(&mut self, lib: &str) -> Result<std::sync::Arc<Manifest>> {
         if !self.manifests.contains_key(lib) {
             let Some(l) = self.libs.get(lib) else {
                 let known: Vec<_> = self.libs.libs.iter().map(|l| l.name.as_str()).collect();
@@ -82,16 +87,47 @@ impl Ctx<'_> {
                         .with_help(format!("map it with `{lib}:PATH`")),
                 ));
             };
-            let m = l.read()?;
+            let (m, guard) = l.read_locked()?;
+            self.guards.extend(guard);
             self.manifests.insert(lib.to_string(), m);
         }
-        Ok(&self.manifests[lib])
+        Ok(self.manifests[lib].clone())
+    }
+
+    /// The record of the unit `loc` of library `lib`.
+    fn record(&mut self, lib: &str, m: &Manifest, loc: UnitLoc<'_>) -> Result<UnitRecord> {
+        let at = (lib.to_string(), loc.file_idx);
+        if !self.records.contains_key(&at) {
+            let recs = m.records(&m.file_at(loc.file_idx))?;
+            self.records.insert(at.clone(), recs);
+        }
+        match self.records[&at]
+            .iter()
+            .find(|u| u.kind == loc.kind && u.key == loc.key)
+        {
+            Some(u) => Ok(u.clone()),
+            None => Err(Box::new(
+                err(
+                    "L0003",
+                    format!(
+                        "the record of `{}` in library `{lib}` lacks {} `{}`",
+                        loc.file.display(),
+                        loc.kind.describe(),
+                        loc.key
+                    ),
+                )
+                .with_help(format!(
+                    "the library was changed outside yavs: re-analyze `{}`",
+                    loc.file.display()
+                )),
+            )),
+        }
     }
 
     fn unit(&mut self, r: &UnitRef, needed_by: Option<&str>) -> Result<UnitRecord> {
         let m = self.manifest(&r.library)?;
-        if let Some(u) = m.find(r.kind, &r.key) {
-            return Ok(u.clone());
+        if let Some(loc) = m.find(r.kind, &r.key) {
+            return self.record(&r.library, &m, loc);
         }
         let want = format!("{} {}", r.kind.describe(), r.key);
         let mut d = err(
@@ -108,11 +144,12 @@ impl Ctx<'_> {
         }
         let best = m
             .units()
-            .map(|u| (edit_distance(&u.key, &r.key), u))
+            .map(|u| (edit_distance(u.key, &r.key), u))
             .filter(|(dist, _)| *dist <= (r.key.len() / 3).max(2))
             .min_by_key(|(dist, u)| (*dist, u.kind != r.kind));
         d = match best {
-            Some((_, u)) => {
+            Some((_, loc)) => {
+                let u = self.record(&r.library, &m, loc)?;
                 d.with_help(format!("did you mean {} `{}`?", u.kind.describe(), u.name))
             }
             None => d.with_help(format!(
@@ -125,12 +162,12 @@ impl Ctx<'_> {
 
     /// Latest analyzed architecture of an entity.
     fn latest_arch(&mut self, lib: &str, entity: &str) -> Result<Option<UnitRecord>> {
-        Ok(self
-            .manifest(lib)?
+        let m = self.manifest(lib)?;
+        let loc = m
             .units()
-            .filter(|u| u.kind == UnitKind::Architecture && u.primary.as_deref() == Some(entity))
-            .last()
-            .cloned())
+            .filter(|u| u.kind == UnitKind::Architecture && u.primary == Some(entity))
+            .last();
+        loc.map(|loc| self.record(lib, &m, loc)).transpose()
     }
 
     fn node(lib: &str, u: &UnitRecord) -> Node {
@@ -162,6 +199,8 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
     let mut cx = Ctx {
         libs,
         manifests: HashMap::new(),
+        guards: Vec::new(),
+        records: HashMap::new(),
     };
     let top_unit = cx.unit(top, None)?;
 
@@ -208,12 +247,12 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             UnitKind::Entity => {
                 pulls.extend(cx.latest_arch(&lib, &u.key)?.map(|a| (lib.clone(), a)))
             }
-            UnitKind::Package => pulls.extend(
-                cx.manifest(&lib)?
-                    .find(UnitKind::PackageBody, &u.key)
-                    .cloned()
-                    .map(|b| (lib.clone(), b)),
-            ),
+            UnitKind::Package => {
+                let m = cx.manifest(&lib)?;
+                if let Some(loc) = m.find(UnitKind::PackageBody, &u.key) {
+                    pulls.push((lib.clone(), cx.record(&lib, &m, loc)?));
+                }
+            }
             _ => {}
         }
         discovered.push(n.clone());
@@ -348,13 +387,13 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             .file(&path)
             .expect("file of a reachable unit");
         if !fe.unchanged() {
-            check_hash(&lib, &path, &fe.hash)?;
+            check_hash(&lib, &path, fe.hash)?;
         }
         out.push(ClosureFile {
             library: lib,
             path,
-            hash: fe.hash.clone(),
-            std: fe.std.clone(),
+            hash: fe.hash.to_string(),
+            std: fe.std.to_string(),
         });
     }
     Ok(out)

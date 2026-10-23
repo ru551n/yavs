@@ -107,6 +107,12 @@ raises an error itself for a project containing VHDL-93/2002 files.
   `--map=NAME:PATH` maps any other library. The test runner passes `--map` for every
   library in the project, including the work library: a `--map` identical to
   `--work` must be accepted.
+- A library directory holds `yavs-lib.toml` (the index: the files in analysis order with their standard,
+  content hash, size and modification time, and the units each defines), `yavs-lib.d/` (one record per source
+  file with the unit names and dependencies, named by a digest of their text), `_YAVS_LIB` (the lock) and
+  `yavs-cache/` (below). Only yavs reads and writes them: the test runner never parses them, and the layout
+  has a `format` number in the index (3). A library written by a yavs with another number is refused with
+  `L0004` naming the directory; delete it and analyze its files again (libraries are not converted).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
   it only creates the parent of the library directory.
@@ -130,16 +136,18 @@ raises an error itself for a project containing VHDL-93/2002 files.
   at the same time (two `run.py` invocations, or a future parallel compile in
   the test runner). yavs does this with automatic library locking like the reference simulator's: each library
   directory has a `_YAVS_LIB` lock file held exclusively by `analyze` while it
-  updates the manifest (written to a temp file, then atomically renamed);
-  `run`/`elab` hold it shared only while reading the manifest. Read-only
+  updates the library (each record and the index are written to a temp file, then atomically
+  renamed, the records first and the index last, so a reader sees the index it read and the records it
+  names, whole); `run`/`elab` hold it shared only while reading the index and the records of the
+  files in the closure. Read-only
   library directories never fail: shared lock via a read-only open, or no lock
   if the file cannot be opened at all. The test runner needs no locking of its own.
 - Edited sources: `run`/`elab` find a file that changed since it was analyzed (`L0034`) by its content
-  hash. When `analyze` recorded a file that had not been modified for two seconds, the manifest also
+  hash. When `analyze` recorded a file that had not been modified for two seconds, the index also
   holds its size and modification time (`size`, `mtime_ns`), and a file that still has both is not
   read and hashed again. So content of the same size written back under the recorded modification
-  time goes unnoticed (as with build tools in general); re-analyze such a file. A manifest without
-  the two fields (an older one, or a file edited right before it was analyzed) is always hashed.
+  time goes unnoticed (as with build tools in general); re-analyze such a file. A file recorded without
+  the two fields (one edited right before it was analyzed) is always hashed.
 
 ### Compilation cache
 
@@ -233,10 +241,11 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   response file with a file per line, section 0). All files get the same options
   and `--std`. They are analyzed in the given order by one analysis session: each
   file is parsed once and sees the units of the files before it, even before the
-  manifest is read again. The work library's exclusive lock is held for the
-  whole call, and each successful file is recorded (atomic manifest rename) as
-  soon as it is done (visible to readers at once; the manifest is renamed into place without an fsync, so a power loss may lose the last call's files, which the next `analyze` records again), so concurrent calls into the same library serialize per
-  call and never lose each other's files.
+  index is read again. The work library's exclusive lock is held for the
+  whole call, and each successful file is recorded (its record and the index are renamed into place) as
+  soon as it is done (visible to readers at once; they are renamed into place without an fsync, so a power loss may lose the last call's files, which the next `analyze` records again), so concurrent calls into the same library serialize per
+  call and never lose each other's files. A call reads the index and writes the records and the index of its
+  own files, not the whole library.
 - Exit 0: every file was analyzed and recorded in the work library. Warnings go
   to stderr/stdout and do not change the exit code (unless `-Werror`).
 - Exit 1: a file has errors. The call stops at the first failing file (fail

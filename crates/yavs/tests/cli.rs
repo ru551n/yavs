@@ -703,8 +703,9 @@ fn library_recorded_and_read_only() {
     };
     assert_eq!(yavs("ok.vhd").status.code(), Some(0));
     let m = std::fs::read_to_string(tmp.join("lib/yavs-lib.toml")).expect("manifest");
+    assert!(m.contains("name = \"work\""), "{m}");
     assert!(
-        m.contains("name = \"ok\"") && m.contains("std = \"2008\""),
+        m.contains("std = \"2008\"") && m.contains("[\"package\", \"ok\"]"),
         "{m}"
     );
 
@@ -784,7 +785,7 @@ fn concurrent_batches() {
     for p in ["pa", "pb"] {
         for i in 0..n {
             assert!(
-                m.contains(&format!("name = \"{p}{i}\"")),
+                m.contains(&format!("[\"package\", \"{p}{i}\"]")),
                 "{p}{i} missing\n{m}"
             );
         }

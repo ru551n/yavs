@@ -82,11 +82,7 @@ mod source_tag {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibSource, D::Error> {
         Ok(match <u8 as serde::Deserialize>::deserialize(d)? {
-            0 => LibSource::Manifest(std::sync::Arc::new(yavs_lib::Manifest {
-                format: 0,
-                name: String::new(),
-                files: Vec::new(),
-            })),
+            0 => LibSource::Manifest(std::sync::Arc::default()),
             1 => LibSource::StdDir(std::path::PathBuf::new()),
             2 => LibSource::Files,
             _ => return Err(serde::de::Error::custom("bad library source tag")),
@@ -295,7 +291,7 @@ impl Db {
                     }
                     UnitKey::Secondary(e, a) => m.find(LibKind::Architecture, &format!("{e}/{a}")),
                 };
-                rec.and_then(|r| Some((r.file.clone(), parse_rev(&r.std)?)))
+                rec.and_then(|r| Some((r.file.to_path_buf(), parse_rev(r.std)?)))
             }
         }
     }
@@ -775,7 +771,7 @@ impl Db {
             return None;
         };
         let fe = m.file(&std::path::absolute(path).ok()?)?;
-        if fe.std != rev.as_str() || fe.units.is_empty() || fe.partial {
+        if fe.std != rev.as_str() || fe.units().next().is_none() || fe.partial {
             return None;
         }
         let hash = match hash {
@@ -786,15 +782,14 @@ impl Db {
             return None;
         }
         let keys: Vec<UnitKey> = fe
-            .units
-            .iter()
+            .units()
             .map(|u| match u.kind {
                 LibKind::Architecture => {
                     let (e, a) = u.key.split_once('/')?;
                     Some(UnitKey::Secondary(Symbol::intern(e), Symbol::intern(a)))
                 }
-                LibKind::PackageBody => Some(UnitKey::body(Symbol::intern(&u.key))),
-                _ => Some(UnitKey::Primary(Symbol::intern(&u.key))),
+                LibKind::PackageBody => Some(UnitKey::body(Symbol::intern(u.key))),
+                _ => Some(UnitKey::Primary(Symbol::intern(u.key))),
             })
             .collect::<Option<_>>()?;
         let stub = self.warm_stub(lib, &keys, path, &hash, rev)?;
@@ -865,9 +860,7 @@ impl Db {
         match &self.libs[lib].source {
             LibSource::Manifest(m) => m
                 .units()
-                .filter(|u| {
-                    u.kind == LibKind::Architecture && u.primary.as_deref() == Some(key.as_str())
-                })
+                .filter(|u| u.kind == LibKind::Architecture && u.primary == Some(key.as_str()))
                 .last()
                 .and_then(|u| u.key.split_once('/').map(|(_, a)| Symbol::intern(a))),
             _ => self

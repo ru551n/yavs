@@ -310,6 +310,13 @@ fn clean_removes_entries() {
         .expect("a count");
     assert!(n > 2, "{o:?}");
     assert!(!e.cache_dir().exists());
+    // The records of the library's files are not cache entries (#599).
+    let lib = e
+        .cache_dir()
+        .parent()
+        .expect("library directory")
+        .to_path_buf();
+    assert!(lib.join("yavs-lib.d").is_dir() && lib.join("yavs-lib.toml").is_file());
     let again = e.yavs(&["cache", "clean", "--work", &work]);
     assert_eq!(again.code, 0);
     assert!(again.stdout.contains("0 entries"), "{again:?}");

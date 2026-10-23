@@ -213,15 +213,15 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "L0002",
-        "A library manifest cannot be read, written or resolved.",
+        "A library manifest or record cannot be read, written or resolved.",
     ),
     (
         "L0003",
-        "A library manifest is corrupt. Delete the library directory and analyze its files again.",
+        "A library manifest (the index `yavs-lib.toml`) or a record of a file in `yavs-lib.d/` is corrupt, damaged or missing. Delete the library directory and analyze its files again.",
     ),
     (
         "L0004",
-        "A library manifest has a format version this yavs does not read, or was written before the rename to yavs. Re-analyze the library's files.",
+        "A library manifest has a format version this yavs does not read, or was written before the rename to yavs. Libraries are not converted: delete the library directory and analyze its files again.",
     ),
     (
         "L0010",

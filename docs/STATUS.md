@@ -3994,7 +3994,9 @@ Checks: `cargo fmt`, `cargo clippy --workspace --all-targets -D warnings` with a
 Done: library directories (`yavs-lib.toml` manifest + `_YAVS_LIB` lock, rule 14), `NAME:PATH`
 mapping, atomic manifest updates under an exclusive lock, shared-lock reads that never write,
 on-demand closure query (unknown library/unit with suggestion, cycles, stale hashes), multi-process
-concurrency test. The standard is stored per file (manifest format 2). The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file. A directory with a manifest from before the rename to yavs fails with L0004 (re-analyze).
+concurrency test. The standard is stored per file. The analyzer supplies `UnitRecord`s (kind, name, dependencies) per file. A directory with a manifest from before the rename to yavs, or of another format version, fails with L0004 (delete the library, analyze again).
+
+The library is an index (`yavs-lib.toml`, format 3: files in analysis order, hash, stamp, `partial`, the units each defines) plus a record per source file (`yavs-lib.d/<digest>.toml`: names and dependencies), #599 (user decision 2026-10-23): a call reads the index and the records it needs and writes only its own records and the index. A warm `analyze` of one file into the 246-file satcat5 library: 17.4 to 9.1 million instructions, 2.5 to 1.8 ms of wall; the index is 99 KB where the manifest was 244 KB. Realbench `analyze` phase (41 tests, one file per call): warm instructions x0.80 and wall x0.87 of before, cold x0.97 and x0.96.
 
 The manifest is renamed into place without an fsync and not rewritten when unchanged (#561, user decision 2026-10-23): a cold `analyze` of a tiny file went from 6.0 ms wall (2.9 ms CPU) to 2.9 ms (2.8 ms CPU).
 

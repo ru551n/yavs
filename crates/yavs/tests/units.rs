@@ -194,11 +194,29 @@ impl Env {
             .collect()
     }
 
-    /// The manifest of `work` with this directory made anonymous.
+    /// The index of `work` with each record it names in its place, and this directory made
+    /// anonymous (the digests that name the records depend on it).
     fn manifest(&self) -> String {
-        std::fs::read_to_string(self.tmp.join("work").join("yavs-lib.toml"))
-            .expect("manifest")
-            .replace(&self.tmp.display().to_string(), "T")
+        let dir = self.tmp.join("work");
+        let index = std::fs::read_to_string(dir.join("yavs-lib.toml")).expect("manifest");
+        let mut out = String::new();
+        for line in index.lines() {
+            match line.strip_prefix("record = \"") {
+                Some(d) => {
+                    let name = format!("{}.toml", d.trim_end_matches('"'));
+                    out.push_str("record:\n");
+                    out.push_str(
+                        &std::fs::read_to_string(dir.join("yavs-lib.d").join(name))
+                            .expect("record"),
+                    );
+                }
+                None => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        out.replace(&self.tmp.display().to_string(), "T")
     }
 }
 

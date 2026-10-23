@@ -103,4 +103,6 @@ pub type Interps = smallvec::SmallVec<[Interp; 2]>;
 pub enum CandSet {
     Types(Interps),
     Class(ClassMask),
+    /// An allocator: any access type designating this (base) type (9.3.7).
+    Alloc(TypeId),
 }

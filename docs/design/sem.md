@@ -789,8 +789,10 @@ Bit-string expansion is type independent in 2008 (15.8), so it is folded once to
   context); legal between closely related types: numeric to numeric, same base type, arrays with
   the same dimensionality, closely related index types and element types (2008 relaxation: element
   types closely related, not identical). Otherwise `E1350`.
-- `new S` / `new T'(e)`: `cands = Class(ANY_ACCESS)`; on resolution, the designated type of the
-  expected access type must match.
+- `new S` / `new T'(e)`: `cands = Alloc(base type of S)` (9.3.7): it fits the access types whose
+  designated base type is that one, so `new integer = new integer` or an overloaded call picks the
+  matching access type (#27); on resolution, the designated subtype of the expected access type
+  is checked as before.
 
 ### 3.8 2008 rule changes to implement (not relaxations)
 

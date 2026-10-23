@@ -434,6 +434,7 @@ fn fits(db: &Db, c: &CandSet, ty: TypeId) -> bool {
                 }
         }),
         CandSet::Class(m) => m.0 & class_of(db, ty).0 != 0,
+        CandSet::Alloc(d) => db.alloc_admits(*d, ty),
     }
 }
 

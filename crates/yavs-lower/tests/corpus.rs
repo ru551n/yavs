@@ -24,6 +24,7 @@ const PASS: &[&str] = &[
     "access/access_string_array",
     "access/gc_random",
     "access/linked_list",
+    "access/allocator_overload",
     "access/null_deref",
     "access/package_alloc",
     "arith/div_zero",

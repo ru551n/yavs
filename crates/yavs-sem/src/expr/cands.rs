@@ -95,7 +95,19 @@ impl Db {
             K::Paren(inner) => self.cands(scope, inner),
             K::Name(n) => self.name_cands(scope, n),
             K::Aggregate(_) => CandSet::Class(ClassMask::ANY_COMPOSITE),
-            K::New(_) => CandSet::Class(ClassMask::ANY_ACCESS),
+            K::New(a) => {
+                let mark = match &**a {
+                    ast::Allocator::Subtype(si) => Some(&si.type_mark),
+                    ast::Allocator::Qualified(q) => match &q.kind {
+                        K::Qualified { type_mark, .. } => Some(&**type_mark),
+                        _ => None,
+                    },
+                };
+                match mark.and_then(|m| self.quiet_type_mark(scope, m)) {
+                    Some(st) => CandSet::Alloc(self.base(st)),
+                    None => CandSet::Class(ClassMask::ANY_ACCESS),
+                }
+            }
             K::Qualified { type_mark, .. } => match self.type_mark(scope, type_mark) {
                 Ok(st) => {
                     CandSet::Types(smallvec::smallvec![Interp::new(self.base(st), Via::Other)])
@@ -147,6 +159,21 @@ impl Db {
         }
         match (a, b) {
             (CandSet::Class(x), CandSet::Class(y)) => CandSet::Class(ClassMask(x.0 & y.0)),
+            (CandSet::Alloc(x), CandSet::Alloc(y)) if x == y => CandSet::Alloc(x),
+            (CandSet::Alloc(d), CandSet::Class(m)) | (CandSet::Class(m), CandSet::Alloc(d))
+                if m.contains(ClassMask::ANY_ACCESS) =>
+            {
+                CandSet::Alloc(d)
+            }
+            (CandSet::Alloc(_), CandSet::Alloc(_) | CandSet::Class(_))
+            | (CandSet::Class(_), CandSet::Alloc(_)) => CandSet::Class(ClassMask(0)),
+            (CandSet::Types(is), CandSet::Alloc(d)) | (CandSet::Alloc(d), CandSet::Types(is)) => {
+                CandSet::Types(
+                    is.into_iter()
+                        .filter(|i| self.alloc_admits(d, i.ty))
+                        .collect(),
+                )
+            }
             (CandSet::Types(is), CandSet::Class(m)) | (CandSet::Class(m), CandSet::Types(is)) => {
                 CandSet::Types(
                     is.into_iter()
@@ -280,7 +307,7 @@ impl Db {
             && self.generic.implicit.is_empty()
             && match &ocs[0] {
                 CandSet::Types(is) => !is.iter().any(|i| i.convertible),
-                CandSet::Class(_) => false,
+                CandSet::Class(_) | CandSet::Alloc(_) => false,
             };
         for &d in ds.iter() {
             if by_first {
@@ -443,6 +470,10 @@ impl Db {
                 Expected::Type(t) => self.class_admits(*m, t).then_some(0),
                 _ => None,
             },
+            CandSet::Alloc(d) => match exp {
+                Expected::Type(t) => self.alloc_admits(*d, t).then_some(0),
+                _ => None,
+            },
         }
     }
 
@@ -494,6 +525,13 @@ impl Db {
         (own.len() == 1).then(|| own[0])
     }
 
+    /// Whether an allocator of designated base type `d` admits type `t`: an access type
+    /// designating `d` (9.3.7), or the error type.
+    pub(crate) fn alloc_admits(&self, d: TypeId, t: TypeId) -> bool {
+        matches!(self.types[t].kind, TypeKind::Error)
+            || self.designated(t).is_some_and(|x| self.base(x) == d)
+    }
+
     /// Whether literal class `m` (aggregate, string, null, ...) admits type `t`.
     pub(crate) fn class_admits(&self, m: ClassMask, t: TypeId) -> bool {
         match &self.types[t].kind {
@@ -528,7 +566,7 @@ impl Db {
                 .filter(|i| i.ty == self.poison.ty || self.types[i.ty].kind.is_discrete())
                 .map(|i| i.ty)
                 .collect(),
-            CandSet::Class(_) => Vec::new(),
+            CandSet::Class(_) | CandSet::Alloc(_) => Vec::new(),
         };
         (self.memo, self.name_memo) = saved;
         out

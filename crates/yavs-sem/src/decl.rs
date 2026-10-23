@@ -843,7 +843,7 @@ impl Db {
                     )),
                 }
             }
-            crate::expr::CandSet::Class(_) => Err(self.error(
+            crate::expr::CandSet::Class(_) | crate::expr::CandSet::Alloc(_) => Err(self.error(
                 yavs_diag::Diagnostic::error(
                     crate::diag::NOT_AN_OBJECT,
                     "the aliased name does not denote an object",

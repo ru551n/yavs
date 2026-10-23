@@ -234,8 +234,8 @@ From alloc (alloc.rs):
   call statement (so `deallocate(p)` cannot have a negative-suite test yet).
 - **U-2**: the reference simulators 2026.1 all reject incomplete types in protected method profiles in
   user code (`tests/diag/sem/SIM1.md`); done: the ruling is limited to `std`.
-- ponytail: allocators do not filter overloads by designated type (`f(new integer)` with `f`
-  overloaded on two access types is `E1302`), as `null` is.
+- Allocators filter overloads by designated type (`CandSet::Alloc`, #27); `null` is still the
+  class `ANY_ACCESS`.
 
 From cli (`yavs analyze`):
 

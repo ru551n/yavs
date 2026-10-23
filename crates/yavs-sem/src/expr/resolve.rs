@@ -322,6 +322,38 @@ impl Db {
                     self.poison_expr()
                 }
             },
+            CandSet::Alloc(d) => match exp {
+                // Another access type: the allocator checks its designated subtype and says so.
+                Expected::Type(t) if self.alloc_admits(d, t) || self.designated(t).is_some() => {
+                    self.build_class(scope, e, t)
+                }
+                Expected::Type(t) => {
+                    let tn = self.type_name(t);
+                    let dn = self.type_name(d);
+                    self.report(
+                        Diagnostic::error(
+                            diag::TYPE_MISMATCH,
+                            format!("expected `{tn}`, found an allocator of `{dn}`"),
+                        )
+                        .with_primary(
+                            e.span,
+                            format!("an allocator of `{dn}` cannot be of type `{tn}`"),
+                        ),
+                    );
+                    self.poison_expr()
+                }
+                _ => {
+                    self.report(
+                        Diagnostic::error(
+                            diag::AMBIGUOUS,
+                            "the access type of this allocator cannot be determined from its context",
+                        )
+                        .with_primary(e.span, "type not determined")
+                        .with_help("qualify it with a type mark, as in `t'(...)`"),
+                    );
+                    self.poison_expr()
+                }
+            },
             CandSet::Types(is) => {
                 if is.iter().any(|i| i.ty == self.poison.ty) {
                     return self.build_any(scope, e, is[0], exp);
@@ -860,7 +892,7 @@ impl Db {
                         .iter()
                         .find(|i| self.type_contains_protected(i.ty))
                         .map(|i| i.ty),
-                    CandSet::Class(_) => None,
+                    CandSet::Class(_) | CandSet::Alloc(_) => None,
                 });
                 if let Some(t) = prot {
                     self.report(
@@ -1921,7 +1953,7 @@ impl Db {
         };
         let types = |db: &mut Db, x: &ast::Expr| match db.cands(scope, x) {
             CandSet::Types(is) => is.iter().map(|i| i.ty).collect(),
-            CandSet::Class(_) => Vec::new(),
+            CandSet::Class(_) | CandSet::Alloc(_) => Vec::new(),
         };
         let (l, r) = (types(self, left), types(self, right));
         // ponytail: keyed on the type names of numeric_std/numeric_bit; a table of known

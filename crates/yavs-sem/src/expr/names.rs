@@ -445,7 +445,7 @@ impl Db {
                 v.dedup();
                 Ok(v)
             }
-            CandSet::Class(_) => Ok(Vec::new()),
+            CandSet::Class(_) | CandSet::Alloc(_) => Ok(Vec::new()),
         }
     }
 

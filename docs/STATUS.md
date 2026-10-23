@@ -6411,7 +6411,7 @@ unchanged (28.4 G). The window generator (`vai_window_gen_interlock`, `--tier=au
 to 59.5 G cycles (-20 percent); against the reference simulator (wall, 5 runs): 3.49x to 1.96x warm, 3.94x to 2.32x cold
 (instructions 3.43x to 2.76x warm). Host callbacks of the window generator (`cb_*`, `op-census` build): `cb_host` 43.5 M to
 5.3 M, `cb_fast` 13.7 M (6.8 M with a 1024-entry object table, not kept).
-All 42 tests of the real-world suite (`tools/realbench`, interp and auto): wall geomean 0.98 and 0.98, instructions 1.00 and
+The 41 tests of the real-world suite that pass on both sides (`tools/realbench`, interp and auto): wall geomean 0.98 and 0.98, instructions 1.00 and
 0.99; no test slower beyond the run-to-run spread.
 
 Search loops (#578): a 100-element byte search called 400 thousand times through a native frame: compiled 887 to 143 M

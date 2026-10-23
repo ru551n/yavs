@@ -574,8 +574,10 @@ pub(crate) struct Machine {
 }
 
 /// Registers of a process's root frame up to which it keeps its working vectors
-/// ([`Machine::resident`]): at most 384 bytes of registers per process.
-const RESIDENT_REGS: usize = 256;
+/// ([`Machine::resident`]): at most 16 KB of registers per process. A process above 256 registers
+/// swapped its register file with the scratch at every activation, a copy of up to 2 KB from a template
+/// that is cold in the cache (neorv32's big processes: 14% of the L1 misses).
+const RESIDENT_REGS: usize = 2048;
 /// Bytes of registers all resident processes together may keep (a design of very many processes
 /// swaps the rest through the thread's scratch as before).
 const RESIDENT_BUDGET: usize = 96 << 20;

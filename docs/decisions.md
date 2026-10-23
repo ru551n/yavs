@@ -4114,6 +4114,12 @@ general update path for every cycle where two clocks edge together (`update_gene
   `tests/toggle.rs` `clocks_that_edge_together`: four generators (two with equal periods) with readers, a timeout process, a
   deposit and a force and release on one: native generators and their closures give the same trace (and the same trace as
   the kernel before this change, checked once by running the test on both).
+- **Processes of up to 2048 registers are resident** (`RESIDENT_REGS`, was 256; `yavs-interp`): the bigger processes of a CPU
+  design swapped their register file with the thread's scratch at every activation (`borrow_fill`: a copy of the pristine
+  frame from a template that is cold in the cache, `memmove` 14% of neorv32's L1 data misses). The 96 MB budget stays;
+  peak memory of neorv32 is unchanged. Instructions / cycles (bench builds, core 8, min of 3): `neorv32_single_min` 0.990 /
+  0.977, `fletcher_bufferreader` 0.977 / 0.951, `fletcher_bufferwriter_512` 0.989 / 0.973, `poc_cache_cpu` 0.999 / 0.977;
+  1024 registers gave back the neorv32 gain, 8192 no more.
 - **The idle skip records its state on the pool path** (`commit_rest`): a plain activation of a tracked process calls
   `note_idle` before the commit takes its lists, as the serial batch loop does, instead of forgetting the state. Runs with
   4 threads skip the same activations as runs with 1 (`idle_skips` and `process_runs` equal; `tests/idle_skip.rs`

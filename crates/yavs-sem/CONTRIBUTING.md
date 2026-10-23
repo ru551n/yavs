@@ -257,8 +257,8 @@ From cli (`yavs analyze`):
 - `Unit::refs` are manifest dependencies on units not loaded during analysis (an instance's
   named architecture, the default-bound entity of a component); `unit_record` adds them.
 - Generic types, subprograms and packages on entities, components and blocks report `E9999`
-  (S4, generic); a subtype indication as a generate specification (`for g(natural range 1 to
-  2)`) reports `E9999`.
+  (S4, generic). A subtype indication as a generate specification (`for g(natural range 1 to
+  2)`) is a `GenSelect::Range` over the subtype (#35).
 - An entity and its architecture are one region (12.1): `declare` in an architecture checks the
   entity's names (`E1101`).
 

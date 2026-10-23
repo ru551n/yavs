@@ -975,6 +975,25 @@ impl Db {
         )
     }
 
+    /// A range or subtype indication as the actual of an object formal (only a generic type
+    /// takes a subtype indication, 6.5.7.2).
+    fn not_an_expression_actual(&mut self, a: &ast::Actual, at: Span) -> Reported {
+        let what = if matches!(a, ast::Actual::Subtype(_)) {
+            "a subtype indication"
+        } else {
+            "a range"
+        };
+        let span = crate::generic::actual_span(a);
+        self.error(
+            Diagnostic::error(
+                diag::NOT_AN_OBJECT,
+                format!("{what} is not an expression and cannot be the actual of an object"),
+            )
+            .with_primary(span, "not an expression")
+            .with_secondary(at, "associated with this formal"),
+        )
+    }
+
     /// The actual of a whole formal.
     fn actual(
         &mut self,
@@ -1051,11 +1070,8 @@ impl Db {
                 });
             }
             ast::Actual::Expr(e) | ast::Actual::Inertial(e) => e,
-            ast::Actual::Subtype(si) => {
-                return Err(self.unsupported(si.span, "subtype actuals", "S4"));
-            }
-            ast::Actual::Range(_) => {
-                return Err(self.unsupported(fspan, "range actuals", "S4"));
+            ast::Actual::Subtype(_) | ast::Actual::Range(_) => {
+                return Err(self.not_an_expression_actual(a, fspan));
             }
         };
         // Decided on the rule 1 review (F8, #111): no bounds flow back through a formal
@@ -1568,11 +1584,7 @@ impl Db {
                 continue;
             }
             let (ast::Actual::Expr(e) | ast::Actual::Inertial(e)) = &a.actual else {
-                errs.keep::<()>(Err(self.unsupported(
-                    span,
-                    "range actuals of sub-elements",
-                    "S5",
-                )));
+                errs.keep::<()>(Err(self.not_an_expression_actual(&a.actual, span)));
                 continue;
             };
             let inertial = matches!(a.actual, ast::Actual::Inertial(_));
@@ -2249,12 +2261,32 @@ impl Db {
                         Some(GenSelect::Range(self.range(scope, r, base)?))
                     }
                     Some(ast::Actual::Subtype(si)) => {
-                        // ponytail: `for g(natural range 1 to 3)`; add with a RangeC of a subtype.
-                        return Err(self.unsupported(
-                            si.span,
-                            "subtype indications as generate specifications",
-                            "S5",
-                        ));
+                        // `for g(natural range 1 to 3)`: the loop parameter's type, constrained.
+                        let want = self.formal_subtype(*param).map(|p| self.base(p));
+                        let st = self.subtype_indication(scope, si)?;
+                        let t = self.base(st);
+                        if let Some(w) = want
+                            && w != t
+                            && w != self.poison.ty
+                            && t != self.poison.ty
+                        {
+                            let n = self.type_names(&[w, t]);
+                            return Err(self.error(
+                                Diagnostic::error(
+                                    diag::TYPE_MISMATCH,
+                                    format!(
+                                        "expected a range of `{}`, found one of `{}`",
+                                        n[0], n[1]
+                                    ),
+                                )
+                                .with_primary(si.span, "wrong type for this generate parameter"),
+                            ));
+                        }
+                        Some(GenSelect::Range(crate::types::RangeC::Attr {
+                            prefix: crate::hir::AttrPrefix::Subtype(st),
+                            reverse: false,
+                            dim: 1,
+                        }))
                     }
                     Some(_) => return Err(self.not_block(b.spec.span, named_in)),
                 };

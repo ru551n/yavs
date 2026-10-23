@@ -2520,8 +2520,9 @@ configuration; `l : c;`), generic and port maps (positional, named, sub-element,
 alternative, component configurations with incremental binding), default binding
 (`Db::default_binding`, `W1703`), manifest dependencies on named architectures and default-bound
 entities. Negative tests in `tests/diag/sem/unit/`; unit tests in `src/unit/tests.rs`. Generic
-types, subprograms and packages on components and blocks go through `generic.rs`. Open:
-subtype indications as generate specifications.
+types, subprograms and packages on components and blocks go through `generic.rs`. A subtype
+indication as a generate specification (`for g(natural range 1 to 2)`) selects that range; a
+range or subtype indication as the actual of an object formal is `E1361`.
 
 ## lower (`crates/yavs-lower`, M2)
 

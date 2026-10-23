@@ -181,6 +181,7 @@ const PASS: &[&str] = &[
     "hierarchy/use_library_all",
     "hierarchy/binding_actual_names",
     "hierarchy/config_generate_index",
+    "hierarchy/config_generate_range",
     "hierarchy/config_port_expr",
     "hierarchy/port_init_read",
     "hierarchy/out_port_collapse",

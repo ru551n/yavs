@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:config_generate_range:g(1):u:_p0	a1 1
+diag	note	0	0	:config_generate_range:g(2):u:_p0	a1 2
+diag	note	0	0	:config_generate_range:g(3):u:_p0	a1 3
+diag	note	0	0	:config_generate_range:g(4):u:_p0	a1 4
+diag	note	0	0	:config_generate_range:g(5):u:_p0	a2 5

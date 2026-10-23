@@ -747,7 +747,7 @@ impl Db {
             return None;
         };
         let fe = m.file(&std::path::absolute(path).ok()?)?;
-        if fe.std != rev.as_str() || fe.units.is_empty() {
+        if fe.std != rev.as_str() || fe.units.is_empty() || fe.partial {
             return None;
         }
         let hash = match hash {

@@ -740,6 +740,30 @@ fn warm_diagnostics_in_dependencies_render_identically() {
     assert_eq!(visible(&plain), visible(&warm));
 }
 
+/// A later file that redefines a unit of an earlier one (the same entity name, another context
+/// clause) leaves the earlier file's manifest record with its remaining units only. Analysing the
+/// earlier file again must give what the first time did: the file is parsed, its entity analysed
+/// again (#577; it was registered from the architecture alone and met the other file's entity).
+#[test]
+fn reanalysing_a_file_whose_unit_was_replaced_gives_the_first_result() {
+    let e = Env::new("replaced");
+    let first = "library ieee; use ieee.std_logic_1164.all;\nentity ent is end;\n\
+architecture rtl of ent is\n  signal s : std_logic;\nbegin\nend;\n";
+    let second = "entity ent is end;\narchitecture other of ent is begin end;\n";
+    std::fs::write(e.tmp.join("first.vhd"), first).expect("write");
+    std::fs::write(e.tmp.join("second.vhd"), second).expect("write");
+    for f in [
+        "first.vhd",
+        "second.vhd",
+        "first.vhd",
+        "second.vhd",
+        "first.vhd",
+    ] {
+        let o = e.yavs(&["analyze", "--work", &e.work(), f]);
+        assert_eq!(o.code, 0, "{f}: {o:?}");
+    }
+}
+
 /// A hit does not read the text of the sources (they are verified by size and modification time
 /// and decoded lazily): a run that has nothing to show works with a source nobody can read now.
 #[cfg(unix)]

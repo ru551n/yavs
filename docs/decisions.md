@@ -4418,7 +4418,10 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   once in a session of its own, only to store it (its output is not shown: it is the body's, replayed where
   elaboration loads it). The first library of a project pays this once (about 30 ms).
 - **Warm analysis of a file** whose manifest record has the same content and whose units all have
-  entries registers the file without parsing it; a unit that misses is parsed then. **A first `elab`/`run`**
+  entries registers the file without parsing it; a unit that misses is parsed then. A file whose units a later file replaced (the
+  same entity name in two files) is marked `partial` in the manifest (`FileEntry::partial`, an optional key of format 2) and
+  is never registered this way: its record lists only the units that remain, and analysing just those met the other
+  file's unit instead of the file's own (#577). **A first `elab`/`run`**
   replays the closure's units the same way (`Db::analyze_file_hashed` with the closure's hashes).
 - **Found on the way:** a generic instance cloned the formal types of an instance in a hash set's order,
   which differs per process (two analyses of the same files gave different ids); `Remap::formal_firsts` is

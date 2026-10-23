@@ -556,6 +556,9 @@ the units it needs from there when source, build, options and dependencies are u
 entries stay bytes until read. `YAVS_UNIT_CHECK=1 yavs analyze` compares the two analyses for every file and passes on
 every analysis corpus.
 
+Analysing a file again whose unit a later file replaced (the same entity name in two files) re-parses it and analyses all
+its units like the first time (#577; the manifest marks such a file `partial`).
+
 Real-world suite (`tools/realbench`, phases analyze, elab, run interp; P-core 2; main before the cache against main
 with it, geometric mean of the wall ratio over 41 tests): analyze cold 0.68 (OSVVM compile order 16.1 s to 5.9 s,
 UVVM 0.45 to 0.56), analyze warm 0.43, elab cold 0.71, elab warm 0.96, run unchanged (1.00). Against sim1 (P-core 4,

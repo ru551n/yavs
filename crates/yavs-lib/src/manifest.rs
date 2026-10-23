@@ -175,6 +175,10 @@ pub struct FileEntry {
     /// Modification time (ns since the epoch) of the file when `hash` was taken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtime_ns: Option<i64>,
+    /// A later file replaced some units this file defined: `units` lists only the rest, so the
+    /// file cannot be re-registered from them without parsing it (#577).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
     #[serde(default, rename = "unit")]
     pub units: Vec<UnitRecord>,
 }
@@ -261,8 +265,10 @@ impl Manifest {
             u.file = path.clone();
         }
         for f in &mut self.files {
+            let had = f.units.len();
             f.units
                 .retain(|o| !units.iter().any(|u| u.kind == o.kind && u.key == o.key));
+            f.partial |= f.units.len() < had;
         }
         self.files.retain(|f| !f.units.is_empty());
         self.files.push(FileEntry {
@@ -271,6 +277,7 @@ impl Manifest {
             std,
             size: stamp.map(|s| s.size),
             mtime_ns: stamp.map(|s| s.mtime_ns),
+            partial: false,
             units,
         });
     }
@@ -325,6 +332,7 @@ fn parse_written(text: &str) -> Option<Manifest> {
     let (mut path, mut hash, mut std): (Option<String>, Option<String>, Option<String>) =
         Default::default();
     let (mut size, mut mtime): (Option<u64>, Option<i64>) = Default::default();
+    let mut partial = false;
     let (mut kind, mut uname, mut key): (Option<String>, Option<String>, Option<String>) =
         Default::default();
     let (mut ustd, mut primary): (Option<String>, Option<String>) = Default::default();
@@ -386,6 +394,7 @@ fn parse_written(text: &str) -> Option<Manifest> {
                     std: std.take()?,
                     size: size.take(),
                     mtime_ns: mtime.take(),
+                    partial: std::mem::take(&mut partial),
                     units: std::mem::take(&mut units),
                 });
             }
@@ -421,6 +430,7 @@ fn parse_written(text: &str) -> Option<Manifest> {
                     (At::File, "std") => set(&mut std, v)?,
                     (At::File, "size") => num(&mut size, v)?,
                     (At::File, "mtime_ns") => num(&mut mtime, v)?,
+                    (At::File, "partial") if v == "true" && !partial => partial = true,
                     (At::Unit, "kind") => set(&mut kind, v)?,
                     (At::Unit, "name") => set(&mut uname, v)?,
                     (At::Unit, "key") => set(&mut key, v)?,
@@ -504,6 +514,45 @@ mod tests {
         );
         let empty = Manifest::new("empty").to_text();
         assert_eq!(parse_written(&empty), Some(by_toml(&empty)));
+    }
+
+    #[test]
+    fn a_file_that_lost_units_is_partial() {
+        let mut m = sample("/x/a.vhd");
+        assert!(m.files.iter().all(|f| !f.partial));
+        // b.vhd defines package pkg_a again: a.vhd keeps only its body.
+        m.replace_file(
+            "/x/c.vhd".into(),
+            "sha256:ef".into(),
+            None,
+            "2008".into(),
+            vec![UnitRecord::new(UnitKind::Package, "Pkg_A", "2008")],
+        );
+        let partial: Vec<_> = m
+            .files
+            .iter()
+            .map(|f| (f.path.clone(), f.partial))
+            .collect();
+        assert_eq!(
+            partial,
+            [
+                ("/x/a.vhd".into(), true),
+                ("/x/b.vhd".into(), false),
+                ("/x/c.vhd".into(), false)
+            ]
+        );
+        // Written, read by the fast reader and by toml alike, and a file written again is whole.
+        let text = m.to_text();
+        assert_eq!(parse_written(&text), Some(by_toml(&text)));
+        assert!(parse_written(&text).unwrap().files[0].partial);
+        m.replace_file(
+            "/x/a.vhd".into(),
+            "sha256:ab".into(),
+            None,
+            "2008".into(),
+            vec![UnitRecord::new(UnitKind::Package, "Pkg_A", "2008")],
+        );
+        assert!(m.files.iter().all(|f| !f.partial));
     }
 
     #[test]

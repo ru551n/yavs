@@ -41,6 +41,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `FileEntry` records `size`/`mtime_ns` (a `Stamp`) when `analyze` found the file unmodified for two seconds; `closure` skips the read and hash of a file with the same stamp | A run no longer reads and hashes every source of the closure (#426); the age rule keeps an edit within the clock granularity from being trusted | `docs/decisions.md` "Per-run overhead" |
 | `Library::read` returns the manifest it parsed before while the file has the same stamp (still taking the lock) | The closure and the image restore both read each library (#426) | same |
 | `Manifest::parse` first tries `parse_written`, a reader for exactly the text `to_text` writes, and falls back to `toml` | The `toml` crate took 5 ms per run for a testbench library (#426); the fallback keeps every other input, error and diagnostic as before | same |
+| `replace_file` marks a file `partial` (optional key, format 2) when a later file took some of its units; the record then lists only the rest, and the analysed-unit cache registers the file by parsing it, not from the record | A file registered from its remaining units alone left out the replaced ones, so re-analysing it met the other file's unit (#577) | `docs/decisions.md` "Analysed-unit cache" |
 | Names folded with `fold` (ASCII lower case; extended identifiers keep case) | Rule 8 lookup keys | `docs/plan.md` rule 8 |
 
 Module-local decisions go in this section in the same commit; library behaviour visible to external test runners

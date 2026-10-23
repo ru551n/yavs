@@ -112,6 +112,8 @@ impl AutoTier {
         let worker = std::thread::Builder::new()
             .name("yavs-clift-up".into())
             .spawn(move || {
+                // Off the CPUs a pinned run restricts the simulation to (as the LLVM tier's thread).
+                yavs_llvm::rt::off_simulation_cpus();
                 let mut jit: Option<Jit> = None;
                 let mut done = vec![false; prog.funcs.len()];
                 let mut time = vec![0u64; prog.funcs.len()];

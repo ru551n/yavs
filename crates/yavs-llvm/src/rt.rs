@@ -2542,3 +2542,50 @@ pub fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 pub trait FirstLevel: Send {
     fn compile(&mut self, prog: &Program, id: FuncId, f: &Func) -> Result<(RunFn, usize), String>;
 }
+
+/// Move the calling thread (the compile thread) off the CPUs the process was restricted to,
+/// when it was restricted to some (`taskset`, a pinned benchmark): there it would take turns
+/// with the simulation thread on one core every sampling period, and run the LLVM load and
+/// every compile on it (#525). Left as it is when the process may run anywhere, or when no
+/// other CPU is allowed (a cgroup cpuset).
+#[cfg(target_os = "linux")]
+pub fn off_simulation_cpus() {
+    // A `cpu_set_t` of glibc and musl: 1024 CPUs.
+    const WORDS: usize = 16;
+    unsafe extern "C" {
+        fn sched_getaffinity(pid: std::ffi::c_int, size: usize, mask: *mut u64) -> std::ffi::c_int;
+        fn sched_setaffinity(
+            pid: std::ffi::c_int,
+            size: usize,
+            mask: *const u64,
+        ) -> std::ffi::c_int;
+    }
+    let mut mask = [0u64; WORDS];
+    let size = std::mem::size_of_val(&mask);
+    // SAFETY: pid 0 is the calling thread; `mask` holds `size` bytes for both calls. The kernel
+    // ignores CPUs that do not exist and fails, changing nothing, when none of the rest is
+    // allowed.
+    unsafe {
+        if sched_getaffinity(0, size, mask.as_mut_ptr()) != 0 {
+            return;
+        }
+        let mut rest = mask.map(|w| !w);
+        // Measurement aid: `YAVS_COMPILE_CPUS=3,5-7` names the CPUs to move to (a host where
+        // the rest of the machine is not free).
+        if let Some(list) = std::env::var_os("YAVS_COMPILE_CPUS") {
+            rest = [0u64; WORDS];
+            for part in list.to_string_lossy().split(',') {
+                let (a, b) = part.split_once('-').unwrap_or((part, part));
+                if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
+                    for c in a..=b.min(WORDS * 64 - 1) {
+                        rest[c / 64] |= 1 << (c % 64);
+                    }
+                }
+            }
+        }
+        sched_setaffinity(0, size, rest.as_ptr());
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn off_simulation_cpus() {}

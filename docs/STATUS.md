@@ -135,6 +135,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - An aggregate with `others` as a case choice takes the case expression's subtype (9.3.3.3; `issue1360`, second suite).
 - `--relaxed` rule R5 (`W1325`): an `others` aggregate assigned to an unconstrained port or formal takes the object's run-time bounds, as both reference simulators do under their relaxed switch (`issue1191`, `issue2421`, second suite). The harness reads `--std=93c` as relaxed.
 - `x'subtype(value)` (and `'element`, `'base`) is a type conversion (9.3.6; `ieee9`, first suite, `issue2097`, second suite).
+- The function form of `file_open` returned no value (internal error), and `file_position (f, FILE_ORIGIN_END)` was negative (a NATURAL error); it is the distance to the end now (`file12`, first suite).
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

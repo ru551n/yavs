@@ -123,6 +123,7 @@ const PASS: &[&str] = &[
     "delta/signal_update_order",
     "delta/skip_unchanged",
     "env/assert_clear_exit",
+    "env/file_ops_2019",
     "env/assert_count_cycles",
     "env/assert_count",
     "env/call_path",

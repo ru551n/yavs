@@ -499,6 +499,7 @@ use crate::native::NativeFn as Native;
 /// The implementation of a textio or file native, `None` when the symbol is not one.
 pub(crate) fn lookup(symbol: &str, family: Option<&str>) -> Option<Native> {
     let f: Native = match (symbol, family) {
+        (s, Some("file_open")) if s.ends_with("#function") => file_open_function,
         (_, Some("file_open")) => file_open,
         (_, Some("file_close")) => file_close,
         (s, Some("read")) if is_text(s) => text_read,
@@ -631,6 +632,17 @@ fn file_open(
         None => {}
     }
     Ok(None)
+}
+
+/// The 2008 function `FILE_OPEN (F, name, kind) return FILE_OPEN_STATUS`.
+fn file_open_function(
+    m: &mut Machine,
+    _: &mut Option<&mut Ctx<'_>>,
+    _: Option<TyId>,
+    a: Args<'_>,
+) -> R<Option<u64>> {
+    let name = m.fat_bytes(arg(a, 1)?)?;
+    Ok(Some(m.file_open(arg(a, 0)?, &name, arg(a, 2)?)? as u64))
 }
 
 fn file_close(

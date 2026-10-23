@@ -374,7 +374,8 @@ impl TextFile {
         Ok(match origin {
             FileOrigin::Begin => pos,
             FileOrigin::Current => 0,
-            FileOrigin::End => pos - s.len()? as i128,
+            // The result is a NATURAL: the distance from the position to the end.
+            FileOrigin::End => s.len()? as i128 - pos,
         })
     }
 

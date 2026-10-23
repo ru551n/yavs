@@ -4131,6 +4131,12 @@ general update path for every cycle where two clocks edge together (`update_gene
   `wide_registers_are_direct_entries_per_plane_word` compares the set and the reports, forces, releases and deposits
   included). What is left of that design: the per-word update (`update_word`, ~470 instructions per changed plane word,
   half of it the event records of `blk_event`), 17% of its cycles.
+- **More per-signal lists are `Vec`s** (`Signal::dirty`, `fast_dirty`, `eff_dirty`, `force_ev`, `pend_words`, the outer list of
+  `Waiters`): the same trade as round 12 (a `SmallVec` access tests where the data lives; an empty `Vec` allocates nothing).
+  Instructions against the tip before them, bench builds: `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.989,
+  `rtl_chain` 0.989, `sc5_timestamp` 0.987, `poc_cache_cpu` 0.996; cycles level within the noise (minimum of 3 to 7 runs, core 8);
+  peak memory of neorv32 -1 MB, `elab_heavy` level. The list of generators skipped in a cycle (`skip_wake`) is cleared only when it has entries (it had cost `rtl_chain`
+  3 instructions a delta).
 - **Measured and not taken** (numbers in `docs/STATUS.md` "Kernel round 17"): merging the processes of a clock into one batch
   (at most 1.5 to 6.7% of the instructions of the real-world designs, needs shared frames and error-order care); the idle skip
   for processes with variables or constant-written variables (under 3% of the activations that were not skipped already, none

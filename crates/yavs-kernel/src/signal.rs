@@ -203,7 +203,7 @@ const WAIT_NARROW: u32 = 4;
 #[derive(Default)]
 pub(crate) struct Waiters {
     /// Per chunk, then the wide list last; empty until the first `add`.
-    lists: SmallVec<[(SmallVec<[Waiter; 1]>, usize); 1]>,
+    lists: Vec<(SmallVec<[Waiter; 1]>, usize)>,
     next: u64,
     /// Elements of the signal, and log2 of the chunk size.
     len: u32,
@@ -264,7 +264,7 @@ impl Waiters {
             _ => 6,
         };
         Waiters {
-            lists: SmallVec::new(),
+            lists: Vec::new(),
             next: 0,
             len,
             shift,
@@ -666,18 +666,18 @@ pub(crate) struct Signal {
     /// Elements changed in the current cycle.
     pub changed: Vec<Range>,
     /// Ranges whose driving value must be recomputed this cycle.
-    pub dirty: SmallVec<[Range; 2]>,
+    pub dirty: Vec<Range>,
     /// Ranges whose driving value was written when the transaction was applied (a vector quick
     /// transaction on a sole source, `apply_driver`): only the effective value is left to update.
-    pub fast_dirty: SmallVec<[Range; 2]>,
+    pub fast_dirty: Vec<Range>,
     /// Ranges whose effective value must be recomputed this cycle.
-    pub eff_dirty: SmallVec<[Range; 2]>,
+    pub eff_dirty: Vec<Range>,
     /// The simulation runs (not initialising): reports of its resolution function are
     /// collected in `callouts` for the kernel to commit (#372).
     pub live: bool,
     /// Ranges where a force or release of this cycle changed the effective value, whatever
     /// the cycle's last one left: an event even when the value ends up unchanged (#382).
-    pub force_ev: SmallVec<[Range; 2]>,
+    pub force_ev: Vec<Range>,
     pub callouts: Vec<(crate::process::Severity, String)>,
     /// An assignment of the value a source already has may be skipped (`Builder::build`).
     pub skip_ok: bool,
@@ -707,7 +707,7 @@ pub(crate) struct Signal {
     /// (`commit_code`, `commit_planes`),
     /// one bit each (made at the first one), and the words with a bit set.
     pend: Vec<u64>,
-    pend_words: SmallVec<[u32; 2]>,
+    pend_words: Vec<u32>,
     /// One element is pending and it is not in `pend`: the one `last_commit` holds.
     pend_one: bool,
     /// Direct commits wrote the driving value only: the values of the sole-source drivers
@@ -789,7 +789,7 @@ const CODES_SOURCE_MAX: usize = 16;
 
 /// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
 #[inline(always)]
-fn mark_bits(pend: &mut [u64], words: &mut SmallVec<[u32; 2]>, elem: u32, len: u32) {
+fn mark_bits(pend: &mut [u64], words: &mut Vec<u32>, elem: u32, len: u32) {
     let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
     if pend[w] == 0 {
         words.push(w as u32);
@@ -889,11 +889,11 @@ impl Signal {
             queued_up: 0,
             queued_down: 0,
             changed: Vec::new(),
-            dirty: SmallVec::new(),
-            fast_dirty: SmallVec::new(),
-            eff_dirty: SmallVec::new(),
+            dirty: Vec::new(),
+            fast_dirty: Vec::new(),
+            eff_dirty: Vec::new(),
             live: false,
-            force_ev: SmallVec::new(),
+            force_ev: Vec::new(),
             callouts: Vec::new(),
             skip_ok: false,
             static_plain: false,
@@ -905,7 +905,7 @@ impl Signal {
             fine: false,
             nruns: 0,
             pend: Vec::new(),
-            pend_words: SmallVec::new(),
+            pend_words: Vec::new(),
             pend_one: false,
             lag: false,
             exact: false,
@@ -2355,7 +2355,7 @@ fn stamp(t: Time) -> u64 {
 /// Add `r` to a list of ranges, extending the last one when `r` continues it (ascending, or
 /// descending: processes numbered the other way round).
 #[inline]
-fn push_range(list: &mut SmallVec<[Range; 2]>, r: Range) {
+fn push_range(list: &mut Vec<Range>, r: Range) {
     match list.last_mut() {
         Some(l) if l.end() == r.offset => l.len += r.len,
         Some(l) if r.end() == l.offset => {

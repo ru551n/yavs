@@ -186,7 +186,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1 on the total-wall basis, 2026-10-23"; geomean of the 41 realbench totals 0.98 warm, 1.14 cold (0.58 and 0.92 without the library analysis), tiny-test corpus 0.31 and 0.47, the h2h designs 0.73 and 0.87. The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1 on the total-wall basis, 2026-10-23"; geomean of the 41 realbench totals 0.30 warm, 0.60 cold (0.35 and 0.70 without the library analysis; 0.98 and 1.14 at 65b7f573), tiny-test corpus 0.12 and 0.27, the h2h designs 0.69 and 0.83. The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -4839,132 +4839,131 @@ Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI
 
 ## Real-world performance suite: yavs against sim1 on the total-wall basis, 2026-10-23 (`tools/realbench`)
 
-This is the current headline. Basis (root rule 23, user decision 2026-10-22): `--tier=auto` only, TOTAL wall as a user runs it, analysis of
-every file of the compile order (one tool call per file, never batched) plus elaboration, code generation and run, against sim1's analysis plus
-elaboration plus run. Cold = empty compilation cache and fresh libraries; warm = cache present. Interpreter times are only compared with
-earlier interpreter times, never with sim1. Ratios are yavs / sim1, below 1 means yavs is faster.
+This is the current headline (second run, `9a8d8f50`; the first, at `65b7f573`, is quoted as "before"). Basis (root rule 23, user decision 2026-10-22): `--tier=auto` only,
+TOTAL wall as a user runs it, analysis of every file of the compile order (one tool call per file, never batched) plus elaboration and run, against sim1's analysis plus
+elaboration plus run. Cold = empty compilation cache and fresh libraries; warm = cache present, unchanged sources. Interpreter times are only compared with earlier interpreter
+times, never with sim1. Ratios are yavs / sim1, below 1 means yavs is faster.
 
-Method: origin/main at `65b7f573`, release build with the `llvm` feature, all 41 tests, 5 timed runs per cell (medians, cells
-interleaved, order swapped every round), every timed run pinned to one of the physical cores 8 to 15 of a Ryzen 9 7950X3D (one CCD; eight tests
-at a time, the yavs and sim1 cells of a test on the same core), builds on cores 16 to 31, host load average 8 to 20 from other agents. Wall time
-comes in steps of 10 ms. The library part of the analysis is measured once per corpus selection and shared by its tests. This host is not
-comparable with the earlier Intel results below; no before/after is claimed. Raw results are not committed.
+Method: origin/main at `9a8d8f50`, `tools/build-bench.sh --features llvm`, all 41 tests (`grlib_leon3mp` stays excluded), 5 timed runs per cell (medians, cells interleaved, order
+swapped every round), two complete passes; per cell the lower of the two pass medians is used for yavs and sim1 alike, because other work on the host lands on the timing cores
+(the geometric means of the single passes are within 10 percent: total warm 0.30 and 0.33, cold 0.58 and 0.63). Every timed run was pinned to one of the physical cores 8, 10 to 15
+of a Ryzen 9 7950X3D (one CCD, one test per core at a time, the yavs and sim1 cells of a test on the same core; core 9 was occupied by a stray process), builds on cores 16 to 23,
+host load average 9 to 22. Wall time comes in steps of 10 ms. The library part of the analysis is measured once per corpus selection and shared by its tests. Raw results are not committed.
 
-Geometric mean of the total wall ratio (yavs `--tier=auto` / sim1) per category. The warm figure of 39 tests (two vunit examples fail their warm
-re-analysis, #577); the same 39 tests give 0.98 warm and 1.16 cold.
+Geometric mean of the total wall ratio (yavs `--tier=auto` / sim1). Left: the full total (analysis of the dependency libraries included). Right: the same tests with the
+dependency-library analysis left out (own files + elaboration + run). In brackets the values at `65b7f573`.
 
-| category | n | warm | cold |
-|---|---:|---:|---:|
-| **overall** | 41 | 0.98 | 1.14 |
-| bus-tristate | 1 | 1.13 | 1.21 |
-| cpu | 3 | 1.69 | 1.77 |
-| fsm | 4 | 0.81 | 0.94 |
-| memory | 4 | 0.98 | 1.18 |
-| numeric | 8 | 1.00 | 1.18 |
-| protected | 8 | 0.64 | 0.88 |
-| records | 7 | 0.94 | 1.04 |
-| rtl-datapath | 2 | 1.76 | 1.80 |
-| strings-textio | 2 | 0.58 | 0.72 |
-| wide-vectors | 2 | 2.58 | 2.59 |
-
-The same tests with the dependency-library analysis left out (own files + elaboration + run) and with elaboration + run only (the earlier
-basis of this suite):
+| category | n | total warm | total cold | own+elab+run warm | own+elab+run cold |
+|---|---:|---:|---:|---:|---:|
+| **overall** | 41 | 0.30 (0.98) | 0.60 (1.14) | 0.35 (0.58) | 0.70 (0.92) |
+| bus-tristate | 1 | 0.18 (1.13) | 0.46 (1.21) | 0.11 (0.14) | 0.39 (0.44) |
+| cpu | 3 | 1.00 (1.69) | 1.06 (1.77) | 1.19 (1.91) | 1.21 (1.98) |
+| fsm | 4 | 0.30 (0.81) | 0.55 (0.94) | 0.65 (0.67) | 1.31 (1.33) |
+| memory | 4 | 0.21 (0.98) | 0.53 (1.18) | 0.27 (0.59) | 0.64 (0.99) |
+| numeric | 8 | 0.25 (1.00) | 0.56 (1.18) | 0.26 (0.49) | 0.57 (0.76) |
+| protected | 8 | 0.26 (0.64) | 0.54 (0.88) | 0.32 (0.59) | 0.59 (0.80) |
+| records | 7 | 0.22 (0.94) | 0.48 (1.04) | 0.23 (0.39) | 0.48 (0.64) |
+| rtl-datapath | 2 | 0.53 (1.76) | 0.98 (1.80) | 0.56 (1.38) | 1.08 (1.75) |
+| strings-textio | 2 | 0.17 (0.58) | 0.43 (0.72) | 0.07 (0.06) | 0.25 (0.24) |
+| wide-vectors | 2 | 1.69 (2.58) | 1.93 (2.59) | 4.22 (4.58) | 4.32 (4.56) |
 
 | basis | warm | cold |
 |---|---:|---:|
-| total, libraries analysed too (above) | 0.98 | 1.14 |
-| own files + elab + run | 0.58 | 0.92 |
-| elab + run only | 0.36 | 0.71 |
+| total, libraries analysed too (first column above) | 0.30 (0.98) | 0.60 (1.14) |
+| own files + elab + run | 0.35 (0.58) | 0.70 (0.92) |
+| elab + run only (the earlier basis of this suite) | 0.34 (0.36) | 0.68 (0.71) |
 
-The analysis of the dependency libraries (1 to 11 s per test, `yavs analyze` has no cache) is more than half of the yavs total wall for 27 of the
-41 tests (30 for sim1), so the headline mostly compares library analysis speed on those; yavs analyses slower than sim1 on the selection of the hdl-modules FIFO tests
-(1.45x), satcat5 (1.37x) and Open Logic (1.16x), and faster on the OSVVM, UVVM, PoC, vunit-tests, fletcher, en_cl_fix, neorv32 and the other hdl-modules selection. Run-dominated tests are the problem set.
+Almost all of the change since `65b7f573` is analysis speed (#561, #581, #584, #577): summed over the 41 tests the analysis of the dependency libraries takes 23 s warm in yavs
+(143 s before) against 137 s in sim1; the full total summed over the 41 tests is 102 s (yavs) against 200 s (sim1) warm and 152 s against 202 s cold. The run phase is
+unchanged on most tests; it improved on the three neorv32 tests (warm run 9.8/9.5/9.9 s to 4.3/5.4/5.3 s) and `poc_arith_addw` (23.8 to 17.0 s). 35 of 41 tests are faster than sim1
+warm (20 of 39 before), 34 cold. The tests that are slower than sim1 are all run-bound.
 
-Worst 10 by warm total ratio (seconds are medians, sim1 vs yavs):
+Worst 10 by warm total ratio (seconds are medians; run = elaboration + run, sim1 vs yavs; in brackets the ratio at `65b7f573`):
 
 | test | warm | cold | dominant cost | issue |
 |---|---:|---:|---|---|
-| fletcher_bufferwriter_512 | 3.46 | 3.41 | run 2.11 vs 11.07 (512-bit buses, interpreter and kernel signal path) | #519 |
-| poc_arith_addw | 2.92 | 2.72 | run 6.04 vs 23.82 (exhaustive operand loops, interpreter ops; auto does not help) | #520 |
-| vai_window_gen_interlock | 2.31 | 2.53 | run 4.05 vs 16.01 (long pipelined array-heavy RTL) | #520 |
-| fletcher_bufferreader | 2.03 | 2.11 | run 1.22 vs 4.33 | #519, #523 |
-| neorv32_single_min | 2.02 | 2.13 | run 3.97 vs 9.46 (processor testbench) | #521, #529, #532 |
-| sc5_fifo_repack | 1.92 | 1.97 | run 0.91 vs 3.67 (wide vector slicing) and library analysis 3.46 vs 4.74 | #519 |
-| neorv32_single_cache | 1.70 | 1.80 | run 5.17 vs 9.88 | #521 |
-| neorv32_dual_full | 1.40 | 1.45 | run 6.46 vs 9.84 | #521 |
-| hdlm_fifo_sync | 1.33 | 1.28 | library analysis 3.47 vs 5.13; its run is 0.30 vs 0.02 | no issue yet |
-| hdlm_axi_fifo | 1.32 | 1.42 | library analysis 3.57 vs 5.28; run 0.41 vs 0.05 | no issue yet |
+| fletcher_bufferwriter_512 | 2.94 (3.46) | 3.09 (3.41) | run 2.05 vs 9.63 (512-bit buses, interpreter and kernel signal path) | #519 |
+| poc_arith_addw | 2.07 (2.92) | 2.39 (2.72) | run 6.14 vs 16.96 (exhaustive operand loops, interpreter ops; auto does not help) | #520 |
+| vai_window_gen_interlock | 1.83 (2.31) | 2.23 (2.53) | run 4.14 vs 15.14 (long pipelined array-heavy RTL) | #520 |
+| fletcher_bufferreader | 1.43 (2.03) | 1.55 (2.11) | run 1.15 vs 3.28 (records, wide vectors) | #519, #523 |
+| neorv32_single_min | 1.24 (2.02) | 1.32 (2.13) | run 3.58 vs 5.42 (processor testbench, signal-copy processes interpreted) | #521, #529 |
+| neorv32_single_cache | 1.08 (1.70) | 1.10 (1.80) | run 4.11 vs 5.26 | #521, #529 |
+| sc5_fifo_repack | 0.98 (1.92) | 1.21 (1.97) | run 0.91 vs 3.49 (wide vector slicing); library analysis 3.24 vs 0.57 hides most of it warm | #519 |
+| uvvm_axistream_vvc | 0.82 (1.01) | 0.92 (1.13) | run 3.73 vs 3.75 (equal); yavs wins on analysis only | none |
+| neorv32_dual_full | 0.75 (1.40) | 0.80 (1.45) | run 4.89 vs 4.28 (faster than sim1 on the run now) | #521 |
+| poc_cache_cpu | 0.67 (0.96) | 0.87 (1.08) | run 0.85 vs 1.73 (cache controller FSM, interpreted) | none |
 
-Per test (total wall in seconds and ratio; `-` = no warm total, #577):
+`poc_stat_histogram` run got slower: 0.78 to 0.95 s warm, 17.6 to 20.4 G instructions (sim1 unchanged); see #518.
+
+Per test (total wall in seconds and ratio):
 
 | test | category | sim1 warm s | auto warm s | warm | sim1 cold s | auto cold s | cold |
 |---|---|---:|---:|---:|---:|---:|---:|
-| hdlm_fifo_sync | rtl-datapath | 4.21 | 5.61 | 1.33 | 4.41 | 5.63 | 1.28 |
-| hdlm_unsigned_divider | numeric | 8.73 | 5.67 | 0.65 | 8.41 | 7.51 | 0.89 |
-| hdlm_sine_generator | numeric | 4.27 | 5.46 | 1.28 | 4.21 | 5.55 | 1.32 |
-| hdlm_ring_buffer | memory | 4.33 | 5.58 | 1.29 | 4.12 | 5.53 | 1.34 |
-| hdlm_axi_fifo | records | 4.46 | 5.87 | 1.32 | 4.23 | 6.02 | 1.42 |
-| olo_fix_cordic_rot | numeric | 8.82 | 9.48 | 1.07 | 8.62 | 10.31 | 1.20 |
-| olo_intf_i2c_master | bus-tristate | 7.68 | 8.70 | 1.13 | 8.36 | 10.09 | 1.21 |
-| olo_axi_master_full | records | 8.04 | 9.40 | 1.17 | 8.76 | 9.88 | 1.13 |
-| olo_base_cam | memory | 8.62 | 9.31 | 1.08 | 8.42 | 10.12 | 1.20 |
-| vunit_axi_dma | records | 4.32 | - | - | 4.20 | 3.24 | 0.77 |
-| vunit_logging | strings-textio | 4.19 | - | - | 4.25 | 3.07 | 0.72 |
-| en_cl_fix_pkg | numeric | 2.96 | 1.55 | 0.52 | 2.94 | 2.12 | 0.72 |
-| poc_arith_addw | numeric | 8.70 | 25.40 | 2.92 | 8.66 | 23.57 | 2.72 |
-| poc_stat_histogram | memory | 3.00 | 2.36 | 0.79 | 2.96 | 3.14 | 1.06 |
-| poc_cache_cpu | fsm | 3.50 | 3.36 | 0.96 | 3.46 | 3.72 | 1.08 |
-| poc_strings | strings-textio | 2.74 | 1.58 | 0.58 | 2.70 | 1.94 | 0.72 |
-| poc_uart_rx | fsm | 2.82 | 1.59 | 0.56 | 2.78 | 2.06 | 0.74 |
-| fletcher_bufferwriter_512 | wide-vectors | 3.45 | 11.94 | 3.46 | 3.48 | 11.88 | 3.41 |
-| neorv32_dual_full | cpu | 7.43 | 10.40 | 1.40 | 7.47 | 10.82 | 1.45 |
-| neorv32_single_min | cpu | 4.98 | 10.04 | 2.02 | 4.94 | 10.54 | 2.13 |
-| neorv32_single_cache | cpu | 6.14 | 10.44 | 1.70 | 6.18 | 11.14 | 1.80 |
-| osvvm_axis_random | protected | 13.67 | 10.08 | 0.74 | 13.50 | 12.93 | 0.96 |
-| uvvm_sb_slv | protected | 5.14 | 2.72 | 0.53 | 5.06 | 3.97 | 0.78 |
-| uvvm_util_rand | protected | 2.36 | 1.28 | 0.54 | 2.35 | 1.81 | 0.77 |
-| uvvm_axistream_vvc | protected | 4.93 | 4.98 | 1.01 | 4.91 | 5.53 | 1.13 |
-| sc5_fifo_repack | wide-vectors | 4.38 | 8.42 | 1.92 | 4.36 | 8.60 | 1.97 |
-| sc5_timestamp | fsm | 3.83 | 4.98 | 1.30 | 3.80 | 4.89 | 1.29 |
-| uvvm_methods_log | protected | 1.12 | 0.74 | 0.66 | 1.13 | 1.07 | 0.95 |
-| uvvm_func_cov | protected | 1.84 | 0.81 | 0.44 | 1.86 | 1.33 | 0.72 |
-| osvvm_axi4_random | protected | 14.05 | 10.06 | 0.72 | 14.11 | 13.12 | 0.93 |
-| hdlm_lfsr | numeric | 8.88 | 7.60 | 0.86 | 8.49 | 9.36 | 1.10 |
-| hdlm_axi_crossbar | records | 8.20 | 5.39 | 0.66 | 7.80 | 7.14 | 0.92 |
-| hdlm_register_file | records | 8.14 | 5.47 | 0.67 | 7.75 | 7.21 | 0.93 |
-| hdlm_axis_bfm | protected | 8.88 | 5.67 | 0.64 | 8.49 | 7.55 | 0.89 |
-| poc_fifo_ic_assembly | fsm | 2.89 | 1.79 | 0.62 | 2.85 | 2.14 | 0.75 |
-| fletcher_bufferreader | records | 2.56 | 5.20 | 2.03 | 2.59 | 5.46 | 2.11 |
-| fletcher_bufferwriter_prim32 | records | 2.11 | 1.05 | 0.50 | 2.14 | 1.25 | 0.58 |
-| olo_fix_madd | numeric | 8.49 | 9.28 | 1.09 | 8.29 | 10.09 | 1.22 |
-| vai_window_gen_interlock | rtl-datapath | 9.12 | 21.08 | 2.31 | 9.57 | 24.19 | 2.53 |
-| vai_pe_array | numeric | 5.89 | 4.76 | 0.81 | 5.69 | 5.96 | 1.05 |
-| vai_weight_buffer | memory | 5.41 | 4.63 | 0.86 | 5.19 | 5.95 | 1.15 |
+| hdlm_fifo_sync | rtl-datapath | 3.92 | 0.59 | 0.15 | 3.89 | 1.67 | 0.43 |
+| hdlm_unsigned_divider | numeric | 4.23 | 0.65 | 0.15 | 4.57 | 1.76 | 0.39 |
+| hdlm_sine_generator | numeric | 4.02 | 0.62 | 0.15 | 3.99 | 1.69 | 0.42 |
+| hdlm_ring_buffer | memory | 3.94 | 0.60 | 0.15 | 3.87 | 1.67 | 0.43 |
+| hdlm_axi_fifo | records | 4.13 | 0.65 | 0.16 | 4.07 | 1.80 | 0.44 |
+| olo_fix_cordic_rot | numeric | 7.71 | 1.53 | 0.20 | 7.71 | 3.57 | 0.46 |
+| olo_intf_i2c_master | bus-tristate | 7.35 | 1.33 | 0.18 | 7.30 | 3.37 | 0.46 |
+| olo_axi_master_full | records | 7.96 | 1.36 | 0.17 | 8.00 | 3.70 | 0.46 |
+| olo_base_cam | memory | 8.00 | 1.37 | 0.17 | 7.87 | 3.51 | 0.45 |
+| vunit_axi_dma | records | 4.04 | 0.70 | 0.17 | 4.07 | 1.86 | 0.46 |
+| vunit_logging | strings-textio | 3.93 | 0.68 | 0.17 | 3.92 | 1.82 | 0.46 |
+| en_cl_fix_pkg | numeric | 3.03 | 0.42 | 0.14 | 3.06 | 1.35 | 0.44 |
+| poc_arith_addw | numeric | 8.41 | 17.39 | 2.07 | 8.45 | 20.22 | 2.39 |
+| poc_stat_histogram | memory | 2.64 | 1.33 | 0.50 | 2.62 | 2.11 | 0.81 |
+| poc_cache_cpu | fsm | 3.16 | 2.13 | 0.67 | 3.10 | 2.69 | 0.87 |
+| poc_strings | strings-textio | 2.39 | 0.40 | 0.17 | 2.42 | 0.98 | 0.40 |
+| poc_uart_rx | fsm | 2.42 | 0.42 | 0.17 | 2.50 | 1.12 | 0.45 |
+| fletcher_bufferwriter_512 | wide-vectors | 3.35 | 9.85 | 2.94 | 3.36 | 10.39 | 3.09 |
+| neorv32_dual_full | cpu | 5.84 | 4.40 | 0.75 | 5.82 | 4.68 | 0.80 |
+| neorv32_single_min | cpu | 4.47 | 5.54 | 1.24 | 4.49 | 5.94 | 1.32 |
+| neorv32_single_cache | cpu | 4.97 | 5.38 | 1.08 | 5.05 | 5.58 | 1.10 |
+| osvvm_axis_random | protected | 12.59 | 2.55 | 0.20 | 12.68 | 6.09 | 0.48 |
+| uvvm_sb_slv | protected | 2.41 | 1.10 | 0.46 | 2.39 | 1.60 | 0.67 |
+| uvvm_util_rand | protected | 2.38 | 1.05 | 0.44 | 2.37 | 1.60 | 0.68 |
+| uvvm_axistream_vvc | protected | 4.80 | 3.92 | 0.82 | 4.82 | 4.42 | 0.92 |
+| sc5_fifo_repack | wide-vectors | 4.16 | 4.06 | 0.98 | 4.08 | 4.92 | 1.21 |
+| sc5_timestamp | fsm | 3.50 | 1.05 | 0.30 | 3.42 | 1.81 | 0.53 |
+| uvvm_methods_log | protected | 1.24 | 0.14 | 0.11 | 1.21 | 0.60 | 0.50 |
+| uvvm_func_cov | protected | 2.17 | 0.33 | 0.15 | 2.09 | 0.92 | 0.44 |
+| osvvm_axi4_random | protected | 12.86 | 2.82 | 0.22 | 12.35 | 6.34 | 0.51 |
+| hdlm_lfsr | numeric | 5.53 | 2.80 | 0.51 | 6.32 | 4.04 | 0.64 |
+| hdlm_axi_crossbar | records | 4.93 | 0.70 | 0.14 | 5.71 | 1.87 | 0.33 |
+| hdlm_register_file | records | 4.76 | 0.65 | 0.14 | 5.56 | 1.80 | 0.32 |
+| hdlm_axis_bfm | protected | 4.67 | 0.68 | 0.15 | 5.47 | 1.77 | 0.32 |
+| poc_fifo_ic_assembly | fsm | 2.48 | 0.59 | 0.24 | 2.56 | 1.17 | 0.46 |
+| fletcher_bufferreader | records | 2.45 | 3.50 | 1.43 | 2.46 | 3.81 | 1.55 |
+| fletcher_bufferwriter_prim32 | records | 1.91 | 0.37 | 0.19 | 1.92 | 0.70 | 0.36 |
+| olo_fix_madd | numeric | 7.91 | 1.32 | 0.17 | 7.86 | 3.57 | 0.45 |
+| vai_window_gen_interlock | rtl-datapath | 8.64 | 15.84 | 1.83 | 8.46 | 18.90 | 2.23 |
+| vai_pe_array | numeric | 5.34 | 0.77 | 0.14 | 5.21 | 2.29 | 0.44 |
+| vai_weight_buffer | memory | 5.02 | 0.71 | 0.14 | 4.66 | 2.31 | 0.50 |
 
-Head-to-head designs of `tools/bench/designs` (group h2h), same basis (analysis + elaboration + run in one process chain, 5 runs, cores 8 to 15,
-times in ms unless marked `s`, "range" = best yavs over worst sim1 .. worst over best). `xor_sig` is rejected by sim1 at analysis. Geometric mean over the
-ten designs both run: warm 0.73, cold 0.87.
+Head-to-head designs of `tools/bench/designs` (group h2h), same basis (analysis + elaboration + run in one process chain, 5 runs, cores 8 and 10 to 15, times in ms unless
+marked `s`, "range" = best yavs over worst sim1 .. worst over best). `xor_sig` is rejected by sim1 at analysis. Geometric mean over the ten designs both run: warm 0.69
+(0.73 before), cold 0.83 (0.87 before).
 
-| design | core | sim1 warm | auto warm | R warm | range | sim1 cold | auto cold | R cold | interp warm |
-|---|---:|---:|---:|---:|---|---:|---:|---:|---:|
-| rtl_ff | 8 | 529.7 | 743.2 | 1.40 | 1.38-1.46 | 534.2 | 762.7 | 1.43 | 712.6 |
-| compute_h2h | 8 | 3.41s | 179.0 | 0.05 | 0.05-0.06 | 3.45s | 435.8 | 0.13 | 1.63s |
-| rtl_lfsr | 9 | 381.7 | 649.9 | 1.70 | 1.67-1.80 | 374.2 | 686.4 | 1.83 | 783.7 |
-| xor_sig | 9 | - | 1.73s | - | - | - | 1.76s | - | 1.76s |
-| rtl_chain | 10 | 169.8 | 208.1 | 1.23 | 1.11-1.30 | 174.7 | 216.9 | 1.24 | 212.1 |
-| xor_types | 10 | 966.7 | 823.0 | 0.85 | 0.74-0.90 | 991.9 | 858.2 | 0.87 | 840.9 |
-| rtl_fan | 11 | 1.07s | 972.3 | 0.91 | 0.89-0.95 | 1.06s | 959.9 | 0.91 | 944.0 |
-| rtl_bus | 12 | 768.6 | 219.7 | 0.29 | 0.27-0.30 | 760.5 | 230.4 | 0.30 | 218.5 |
-| rtl_ram | 13 | 91.9 | 86.6 | 0.94 | 0.69-1.04 | 87.1 | 110.8 | 1.27 | 88.8 |
-| lfsr64_xor | 14 | 100.4 | 93.7 | 0.93 | 0.88-0.95 | 100.8 | 117.6 | 1.17 | 89.0 |
-| lfsr64 | 15 | 135.5 | 203.6 | 1.50 | 1.41-1.64 | 139.1 | 233.0 | 1.68 | 192.9 |
+| design | sim1 warm | auto warm | R warm | range | sim1 cold | auto cold | R cold |
+|---|---:|---:|---:|---|---:|---:|---:|
+| rtl_ff | 565.4 | 745.8 | 1.32 | 1.26-1.36 | 567.3 | 762.7 | 1.34 |
+| lfsr64 | 130.6 | 189.8 | 1.45 | 1.37-2.26 | 131.3 | 215.0 | 1.64 |
+| rtl_lfsr | 208.5 | 360.9 | 1.73 | 1.61-1.84 | 205.8 | 393.9 | 1.91 |
+| compute_h2h | 3.63s | 169.7 | 0.05 | 0.04-0.08 | 3.59s | 455.6 | 0.13 |
+| rtl_chain | 193.0 | 220.2 | 1.14 | 1.11-1.32 | 195.8 | 231.9 | 1.18 |
+| xor_sig | - | 972.3 | - | - | - | 984.5 | - |
+| rtl_fan | 1.07s | 906.6 | 0.85 | 0.60-1.18 | 1.09s | 882.7 | 0.81 |
+| xor_types | 958.5 | 814.4 | 0.85 | 0.80-0.95 | 975.1 | 861.3 | 0.88 |
+| rtl_bus | 788.1 | 221.7 | 0.28 | 0.27-0.30 | 786.9 | 231.2 | 0.29 |
+| rtl_ram | 96.3 | 84.5 | 0.88 | 0.86-1.00 | 97.2 | 110.8 | 1.14 |
+| lfsr64_xor | 111.4 | 92.4 | 0.83 | 0.78-0.92 | 108.0 | 115.4 | 1.07 |
 
-Tiny-test corpus (`tests/corpus`, 346 of 451 tests run on both tools; 21 runs per cell, total wall of analysis + elaboration + run in one process
-chain, the cost of `bash -c true` measured in every round and subtracted per test, #569): geometric mean auto / sim1 0.31 warm and 0.47 cold
-(without the subtraction 0.36 and 0.51); median per test 13.4 ms against 36.5 ms warm, 19.7 ms against 36.7 ms cold; yavs is faster on 346 of 346 tests
-warm and 339 of 346 cold. The cold exceptions are the `ieee` group (textio, fixed-point and VITAL packages that are analysed from source into a fresh
-library; geomean cold 0.85, worst `ieee_textio` 1.74). The harness for the last two tables is not in the repository: the stock `--ref` mode
-and `tiny.py` leave analysis out and have no cold cell (the cold cell and the interleaved `true` baseline are what #569 asks for).
+Tiny-test corpus (`tests/corpus`, 368 of 491 tests run on both tools; 21 runs per cell, total wall of analysis + elaboration + run in one process chain, the cost of
+`bash -c true` measured in every round and subtracted per test, #569): geometric mean auto / sim1 0.12 warm and 0.27 cold (without the subtraction 0.19 and 0.33; on the 346
+tests of the earlier run 0.31 and 0.47 before); median per test 4.6 ms against 38.6 ms warm, 8.5 ms against 38.3 ms cold; yavs is faster on 368 of 368 tests warm and 364 of 368 cold.
+The cold exceptions are the `ieee` group (textio, fixed-point and VITAL packages analysed from source into a fresh library; cold geomean 0.64, worst `ieee_textio` 1.48). The harness for
+the designs and tiny tables is not in the repository: the stock `--ref` mode and `tiny.py` leave analysis out and have no cold cell (the cold cell and the interleaved `true` baseline are what #569 asks for).
 
 Older figures below were measured on the earlier Intel host with the elaboration + run basis and an interpreter column that is compared with
 sim1; they are kept as history, not as targets.

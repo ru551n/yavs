@@ -653,7 +653,7 @@ everything before time 0. `--tier=auto` (#125) is the tier-up protocol above wit
 differences: hotness is the interpreted time the compile thread samples per function (#432), the
 side table is a per-function `OnceLock` in the tier, and the swap happens at the next call,
 return or (every 256) jumps rather than only at entries and resumptions (safe because both tiers
-share the frame and compiled code enters at any pc). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
+share the frame and compiled code enters at any pc). Registers a frame starts with: the preloaded `Const`/`ConstF`/`AddrOf` values, zero elsewhere, except that the registers holding the address of a lean function's parameter slot are zero too (`Pre::next` skips their `AddrOf`): compiled code entering at any pc must not read them (#566). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
 (user, 2026-10-19, #126).
 
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group

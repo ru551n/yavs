@@ -121,6 +121,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 
 ## 4. Invariants and pitfalls
 
+- A frame's registers when compiled code enters at any pc: the preloaded `Const`/`ConstF`/`AddrOf` values of `Pre`, zero elsewhere, and the registers holding a `lean` function's parameter slot address are zero too (`Pre::next` skips their `AddrOf`; #566). Never read them: address preloaded frame slots by the known offset (`Known::Frame`, `base_known` in `Gen::func`). A second code generator read the caller's parameter this way. Contract and test: `crates/yavs-interp/AGENTS.md` (`Pre::lean`).
 - Compile cost is measured with `--no-cache` (or a fresh work library): with the cache a second run
   links what the first compiled, and `YAVS_LLVM_TIMES` then shows the generation and the link only.
 - Measuring code quality: `--tier=llvm` gives a module over 150000 LLVM instructions the unoptimised code generator; `YAVS_LLVM_FAST_MIN=99999999` gives it the code `--tier=auto` makes for the functions it compiles at `O2`. Compare instructions or the simulate time of runs whose objects are all in the compilation cache (a difference of two runs that compiled differently measures the compile).

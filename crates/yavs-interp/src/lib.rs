@@ -300,6 +300,10 @@ impl Default for Bindings {
 /// and returns at the others (returns, error paths), which the interpreter then executes.
 /// A call `step` made may run on in compiled code without returning to the interpreter
 /// (`TierHost::ret` pops it). The interpreter stays the semantic reference (rule 5).
+///
+/// A frame starts with the preloaded registers of `Pre`; the registers holding the address of a
+/// lean parameter's slot are zero in every frame, though code entered at a later pc has skipped
+/// their definition: never read them (#566).
 pub trait Tier: Send + Sync {
     /// Run `func` from instruction `pc` of the top frame (whose view [`TierHost::view`]
     /// gives) until an instruction the interpreter must execute and return its index, or

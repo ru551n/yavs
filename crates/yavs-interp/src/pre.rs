@@ -3404,3 +3404,88 @@ impl Code {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yavs_diag::{FileId, Span};
+    use yavs_ir::{CmpOp, FuncKind, Mode, ParamClass, ProgramBuilder, RegTy, StmtKind};
+
+    /// `depth(n) = if n = 0 then 0 else depth(n - 1) + 1` (one 8-byte `in` parameter, so
+    /// `lean`); its first instruction takes the address of the parameter's slot.
+    fn depth() -> (Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let depth = pb.declare("depth", FuncKind::Function, None);
+        let mut fb = pb.define(depth);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let at = fb.addr(AddrSpace::Frame, s);
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: n,
+            addr: at,
+            w: Width::B8,
+        });
+        let (base, rec) = (fb.block(), fb.block());
+        let (zero, one, c) = (fb.int(0), fb.int(1), fb.reg(RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: n,
+            b: zero,
+        });
+        fb.emit(Inst::CondBr { c, t: base, f: rec });
+        fb.at(base);
+        fb.emit(Inst::Ret { v: Some(zero) });
+        fb.at(rec);
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Sub,
+            dst: m,
+            a: n,
+            b: one,
+        });
+        let args = fb.regs(&[m]);
+        let d = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: depth,
+            args,
+            dst: Some(d),
+        });
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Add,
+            dst: d,
+            a: d,
+            b: one,
+        });
+        fb.emit(Inst::Ret { v: Some(d) });
+        fb.finish();
+        (pb.finish().unwrap(), depth)
+    }
+
+    /// The contract tiers rely on (#566): the register holding a lean parameter's slot address
+    /// is zero in every frame `fill` makes, yet `next` skips its `AddrOf`, so a tier entering
+    /// at `next` must not read it (the other preloaded registers do hold their values).
+    #[test]
+    fn lean_parameter_address_register_is_unset() {
+        let (prog, id) = depth();
+        let f = prog.func(id).unwrap();
+        let pre = Pre::new(f, &prog);
+        assert!(pre.lean);
+        // `finish` numbers the registers afresh: find the register in the code.
+        let (def, at) = match f.code[0] {
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                off: 0,
+            } => (0, dst),
+            ref i => panic!("{i:?}"),
+        };
+        assert!(pre.next[def] as usize > def, "the AddrOf is skipped");
+        for idx in [0, 1, 7] {
+            let mut stack = vec![99];
+            pre.fill(&mut stack, idx).unwrap();
+            assert_eq!(stack[1 + at.0 as usize], 0, "frame {idx}");
+        }
+    }
+}

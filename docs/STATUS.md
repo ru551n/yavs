@@ -3930,10 +3930,14 @@ cycles of `neorv32_single_min` and the fletcher testbenches, 63% of `sc5_timesta
 | Several timed entries due together (clocks that edge together, timeouts on edges) stay on the timed path | 648741bf | `sc5_timestamp` 0.959 | 0.903 |
 | Processes of up to 2048 registers keep their register file (was 256) | c0a614a1 | `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.977, `fletcher_bufferwriter_512` 0.989, `poc_cache_cpu` 0.999 | 0.977, 0.951, 0.973, 0.977 |
 | A vector of more than 64 elements assigned to a direct driver is one entry per plane word | 0ad2e8a1 | `fletcher_bufferwriter_512` 0.957 | 0.893 |
-| The idle skip records its state on the pool path (4 threads skip what 1 thread skips) | 173fae51 | equal skips at 1 and 4 threads | - |
+| The idle skip records its state on the pool path (4 threads skip what 1 thread skips) | 173fae51 | equal skips at 1 and 4 threads (neorv32 at 4 threads: wall 1.67 s to 1.41 s) | - |
+| The lists every finish, update and wake of a signal tests are `Vec`s, not `SmallVec`s | 0e135389 | `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.989, `rtl_chain` 0.989, `sc5_timestamp` 0.987 | level |
 
 All 15 designs together (`main` before this round against the pushed tip, bench builds, minimum of 5 alternating runs): instructions
-geometric mean 0.991, cycles 0.984 (`rtl_ff`, `rtl_lfsr`, `rtl_fan`, `rtl_bus` level within 0.2% in instructions).
+geometric mean 0.985, cycles 0.977 (`neorv32_single_min` 0.978 / 0.968, `fletcher_bufferwriter_512` 0.933 / 0.881,
+`fletcher_bufferreader` 0.966 / 0.959, `sc5_timestamp` 0.948 / 0.879, `poc_cache_cpu` 0.994 / 0.979, `sc5_fifo_repack` 0.991 / 0.994,
+`hdlm_lfsr` 0.998 / 1.007; the head-to-head designs 0.991 to 1.000 in instructions, `rtl_chain` 0.991, `rtl_ram` 0.992, cycles level
+within the noise of aligned builds).
 Measured and not done: merging the processes of a clock into one batch (the fixed part of an activation the merge could remove,
 `run_batch` + `Process::run` + `run_quick` + `run_ops` entry and exit, ~340 instructions, is at most 5.1% of `neorv32_single_min`,
 6.7% of `fletcher_bufferreader`, 2.9% of the writer, 5.1% of `poc_cache_cpu`, 1.5% of `sc5_fifo_repack`, 2.1% of `hdlm_lfsr`); the idle

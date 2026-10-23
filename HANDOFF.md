@@ -81,10 +81,11 @@ E-cores 8-23; 30 GB RAM). Re-measure and update rules 17, 19 and 19b:
 
 ## Performance (rule 23 basis)
 
-- `--tier=auto` against sim1, total wall, geomean over the 41 realbench tests:
-  warm 0.49, cold 1.17. Run-dominated tests are about 3x sim1.
-- Analysed-unit cache, after/before: analyze cold 0.68, warm 0.43; elab cold
-  0.71, warm 0.96. Against sim1: analyze cold 0.99, warm 0.60, elab cold 1.03.
+- `--tier=auto` against sim1, total wall incl. analysis (rule 23), geomean over the 41 realbench tests, main at 65b7f573, cores 8-15:
+  warm 0.98, cold 1.14 (without the dependency-library analysis 0.58 and 0.92; elab + run only 0.36 and 0.71). Tiny corpus 0.31 and 0.47,
+  h2h designs 0.73 and 0.87. Problem set: run-dominated tests (wide vectors 2.6x, processor testbench 1.7x, #519 #520 #521) and
+  library analysis on the hdl-modules/satcat5/Open Logic selections (1.2 to 1.5x sim1). Details: STATUS.md "Real-world performance
+  suite: yavs against sim1 on the total-wall basis, 2026-10-23". Warm re-analysis of the vunit library fails on one file (#577).
 
 ## Next work, in order
 
@@ -95,8 +96,7 @@ E-cores 8-23; 30 GB RAM). Re-measure and update rules 17, 19 and 19b:
 3. Cold front end: #549 (first run writes prefix images, about 2x sim1 cold
    elab on verification-library testbenches), #539 warm part, #479, #477.
 4. Kernel: #440, #420, #413. Small: #544, #467, #478, #434.
-5. Final realbench head-to-head on a pinned core under rule 23, then rewrite
-   the STATUS.md perf section and the realbench headline on that basis.
+5. Done 2026-10-23 (rule-23 head-to-head, STATUS.md rewritten). Next: re-measure after the items above; fix #577.
 6. Housekeeping: check whether #529 is fully fixed; close obsolete umbrella
    issues (#405, #407, #412, #427, #431, #443) after review; parse corpus
    `issue970` reported expected FAIL but got PASS, not yet checked on main.

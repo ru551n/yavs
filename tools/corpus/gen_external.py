@@ -185,6 +185,9 @@ def gen_ext(name, std, G):
         G.SOURCES[sid] = (url, commit, note, lic)
         base[sid] = G.find_root(sid)
     seen = set()
+    if "lister" in spec:  # the project's own scripts give the order: no glob, no regex scan
+        sid = next(iter(spec["sources"]))
+        files = [(lib, sid, rel, base[sid] / rel) for lib, rel in spec["lister"](base[sid])]
     for kind in ("src", "tb"):
         for sid, glob, lib, *only in spec.get(kind, []):
             if only and std not in only[0]:
@@ -201,7 +204,7 @@ def gen_ext(name, std, G):
                 files.append((lib, sid, rel, base[sid] / rel))
                 if kind == "tb":
                     tbfiles.append(rel)
-    ordered = G.order_files(files)
+    ordered = files if "lister" in spec else G.order_files(files)
     rej = {} if G.VALIDATING else load_rejects().get(f"{name}-{std}", {}).get("rejects", {})
     kept = []
     for lib, sid, rel, ab in ordered:
@@ -229,6 +232,29 @@ def gen_ext(name, std, G):
     ex = {"testbenches": dict(spec.get("tbinfo", {}), bench=tbs) if tbs else None, "base": base,
           "spec": spec, "prefix_n": len(pre)}
     return srcs, allf, excl, spec["note"].replace("STD", std), ex
+
+
+def grlib_files(root):
+    """[(lib, path)] in GRLIB's own compile order for the leon3mp template with inferred technology, without the design's own files.
+    GRLIB's script generator (bin/scriptgen, Tcl, writes only into its working directory) runs in a temporary copy of the template
+    directory; the target named by key grlib_target of sim1 (tools/sims.local.conf) is a make target whose file lists every source in
+    order, one command per file. This reads that list (library from --work, only .vhd, only files under lib/)."""
+    import tempfile
+    target = simconf.get("sim1", "grlib_target")
+    if not target:
+        sys.exit("sim1: key grlib_target not configured (tools/sims.local.conf): the GRLIB make target that writes the ordered file list")
+    with tempfile.TemporaryDirectory(prefix="grlib-gen-", dir=WORK.parent) as td:
+        d = Path(td) / "leon3mp"
+        shutil.copytree(root / "designs/leon3mp", d)
+        p = subprocess.run(["make", "-s", f"GRLIB={root}", "TECHLIBS=inferred", target], cwd=d, capture_output=True, text=True)
+        if p.returncode:
+            sys.exit(f"grlib: make {target} failed (needs make and tclsh):\n{p.stderr[-800:]}")
+        out = []
+        for ln in (d / target).read_text().splitlines():
+            m = re.search(r"--work=(\w+)\S* .* (\S+\.vhd)\s*$", ln)
+            if m and m.group(2).startswith(f"{root}/lib/"):
+                out.append((m.group(1), str(Path(m.group(2)).relative_to(root))))
+        return out
 
 
 VU_RUN = ("VUnit run.py (project's own); each test bench is run with its generics from the project runner, "
@@ -299,6 +325,15 @@ SPECS = {
         tb=[("neorv32", "sim/*.vhd", "neorv32")],
         tbinfo=dict(runner="the sim2 script: sim2 -m neorv32_tb; sim2 -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)",
                     passes="no assertion of severity error or worse within 10 ms of simulated time; the bench prints the UART output of the running program, the default image is the bootloader")),
+    "grlib": dict(
+        stds=("2008",), lister=grlib_files,
+        flags={"sim1": ["--relaxed"], "sim2": ["-frelaxed-rules", "-fsynopsys"], "yavs": ["--relaxed"]},
+        note="order: GRLIB's script generator for designs/leon3mp (TECHLIBS=inferred, its LIBSKIP/DIRSKIP), library per file as it names it; VHDL STD, which GRLIB itself does not use (its files are VHDL-93 and its scripts pass the 93 flags)",
+        sources={"grlib": ("tools/fetch-corpus.sh (source grlib)", "020f83888d67e140bdca248f51fcc783fd8f99a0", "GPL-2.0-only",
+                           "GRLIB 2026.3 build 4301 (Gaisler IP library, LEON3 and NOEL-V); sparse: lib/, bin/, the leon3mp, leon3-minimal and noelv-generic templates")},
+        mdnote="GRLIB is VHDL-93 code (its scripts pass the 93 flags to every tool; `stdio.vhd` and `testlib.vhd` are marked `vhdlstd=93` in its file lists). Under 2008 `std_logic_vector` is a subtype of `std_ulogic_vector`, so the paired overloads of those two packages are homographs and every reference rejects them; the files that use them (the processor core, the bus controller, the simulation models) drop out as cascades. What is listed is the rest.",
+        tbinfo=dict(runner="designs/leon3mp (testbench.vhd, own files not in this list): the template's own simulation targets",
+                    passes="the self test in ram.srec prints 'Test passed' on the UART and halts the processor, which the bench reports as a failure assertion")),
     "neotrng": dict(
         stds=("2008",),
         note="order: regex dependency scan; VHDL STD",
@@ -419,7 +454,7 @@ def notes(name, std, nfiles, nprefix):
     rej = d["rejects"]
     ne = HERE / f"{name}.{suffix}.expected"
     nacc = sum(1 for x in ne.read_text().splitlines() if x.startswith("PASS")) if ne.exists() else nfiles
-    L = [f"# {name}: reference simulator validation", "", neutral(ver), "",
+    L = [f"# {name}: reference simulator validation", "", neutral(re.sub(r"^\S+ ", "sim1 ", ver)), "",
          "sim1 is the primary reference simulator, sim2 the second and sim3 the third; the roles are fixed by the corpus tooling.", "",
          f"Every manifest entry analyzed in order into `~/.cache/rsim-corpora/sim1-{name}` with `tools/corpus/run.py {name} --tool sim1 --bless` "
          f"(one file per call, `--std={std}`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).", "",
@@ -430,6 +465,8 @@ def notes(name, std, nfiles, nprefix):
         L.append(f"- The first {nprefix} entries are the {' + '.join(spec['prefix'])}-{std} library files the test benches need (the test runner library and a verification library); the project's own files follow.")
     src = spec["sources"]
     L.append("- Licenses: " + "; ".join(f"{k}: {v[2]}" for k, v in src.items()) + ".")
+    if spec.get("mdnote"):
+        L += ["", spec["mdnote"]]
     if rej:
         first = [(k, v) for k, v in rej.items() if v.startswith("round 1:")]
         casc = len(rej) - len(first)

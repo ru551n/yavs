@@ -75,3 +75,7 @@ fetch neotrng https://github.com/stnolting/neoTRNG c688149f70fbd582eac1029cbfec4
 fetch vhdl-ideas https://github.com/bpadalino/vhdl-ideas f5970bd9f66bf12179f651ab43bfa0db946a7035
 fetch neorv32 https://github.com/stnolting/neorv32 b2620454ebb2407e81a6a1965ef52e2a860b0432 '/rtl/' '/sim/' '/LICENSE'
 fetch surf https://github.com/slaclab/surf f0b5e3a7b5ab191be1cb5f4453e418299181c9d8 '*.vhd' '*.vhdl' '/LICENSE*'
+# GRLIB IP library with the LEON3 and NOEL-V templates (GPL-2.0), release 2026.3 build 4301. The commit is the tagged release in a
+# git mirror and is file-identical to the official tarball (https://download.gaisler.com/products/GRLIB/bin/grlib-gpl-2026.3-b4301.tar.gz,
+# sha256 0978edc1c3c9fd20a9e06f6f283a1d95eb72778eacfa645ec1ab3f9d742253f2; only empty directories and the mirror's README differ).
+fetch grlib https://github.com/TUT-ASI/leon3-grlib-gpl-mirror 020f83888d67e140bdca248f51fcc783fd8f99a0 '/Makefile' '/bin/' '/lib/' '/boards/gr-cpci-xc4v/' '/software/leon3/' '/software/noelv/' '/designs/leon3mp/' '/designs/leon3-minimal/' '/designs/noelv-generic/'

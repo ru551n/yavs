@@ -1529,7 +1529,7 @@ impl Db {
 
     /// The manifest records of the units `keys` of file `path` (registered by `warm_file`) when
     /// reading them back would change and report nothing: every unit has an entry that holds,
-    /// the entries of everything they load hold too, none of them has a diagnostic, and the
+    /// the entries of everything they load hold too, the units of the file have no diagnostic, and the
     /// manifest records the unit as it was when its entry was made. `yavs analyze` of such a
     /// file then loads none of it (a file that depends on 80 units no longer replays them to get
     /// back what the manifest says); a later file of the call loads a unit it needs the usual way.
@@ -1567,7 +1567,13 @@ impl Db {
             }
             self.plan(&mut p, name, k, e).ok()?;
         }
-        if !p.units.values().all(|u| u.entry.head.quiet()) {
+        // Only the units of the file report (`yavs analyze` shows no warning of a unit it reads,
+        // #584): what the units they load would print is not printed.
+        if !keys.iter().all(|&k| {
+            p.units
+                .get(&(name, k))
+                .is_some_and(|u| u.entry.head.quiet())
+        }) {
             return None;
         }
         if let Some(s) = self.store() {

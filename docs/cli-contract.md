@@ -214,7 +214,7 @@ identical to a run without it, at any `--threads`.
   it was made with (an edit anywhere upstream invalidates everything below it), the yavs build and the
   options (`--std` of the design, `--relaxed`, `--psl`, `--encoding`, `-D`) are the same and the
   libraries answer what they answered then; anything else, a damaged entry included, is a miss and the
-  unit is analysed from source. Diagnostics, warnings included, and results are identical either way.
+  unit is analysed from source. Diagnostics, warnings included, and results are identical either way. `yavs analyze` shows warnings and notes only for the files named in the call (a unit read from the library was reported when its file was analysed, #584; errors are always shown), so a file that uses a unit with a warning does not repeat it, and `-Werror` counts the named files' warnings only.
   Only `analyze` writes entries (under its library session; the units of other libraries and of
   `std`/`ieee` by atomic rename, no lock); `elab` and `run` only read them. A library directory that
   cannot be written is read and never fails. `analyze --no-cache` neither reads nor writes them; `yavs

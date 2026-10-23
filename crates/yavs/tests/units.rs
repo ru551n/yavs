@@ -249,11 +249,12 @@ fn warm_files_are_verified_not_replayed() {
     assert!(c.status().expect("run").success());
 }
 
-/// A warning of a dependency is printed by every file that loads it (as an analysis from source
-/// prints it), so a file whose closure reports something is read back, not skipped; and an edited
-/// dependency is not trusted.
+/// Warnings are shown for the files named in the call only (#584): a dependency's warning is not
+/// repeated by the files that use it, with the cache or without. A file whose own units report
+/// something is read back (and prints it); one whose units are quiet is verified even when a
+/// dependency has a warning. An edited dependency is not trusted.
 #[test]
-fn verification_needs_a_quiet_closure_and_unchanged_sources() {
+fn verification_needs_quiet_units_and_unchanged_sources() {
     let e = Env::new("units_verified_edge");
     let plain = Env::new("units_verified_edge_plain");
     let wa = "package wa is\n  shared variable v : time;\nend;\n";
@@ -266,15 +267,18 @@ fn verification_needs_a_quiet_closure_and_unchanged_sources() {
     let files: Vec<&str> = files.iter().map(String::as_str).collect();
     let files_plain = plain.abs(&["wa.vhd", "wb.vhd"]);
     let files_plain: Vec<&str> = files_plain.iter().map(String::as_str).collect();
-    e.analyze(&files, &["--relaxed"]);
+    let cold = e.analyze(&files, &["--relaxed"]);
     let warm = e.analyze(&files, &["--relaxed"]);
     let reference = plain.analyze(&files_plain, &["--relaxed", "--no-cache"]);
-    for i in 0..2 {
-        assert_eq!(warm[i].notes("verified work."), 0, "{:?}", warm[i]);
-        assert!(warm[i].stderr.contains("W1904"), "{:?}", warm[i]);
-        let strip = |o: &Out, env: &Env| o.visible().2.replace(&env.tmp.display().to_string(), "T");
-        assert_eq!(strip(&warm[i], &e), strip(&reference[i], &plain), "{i}");
+    let strip = |o: &Out, env: &Env| o.visible().2.replace(&env.tmp.display().to_string(), "T");
+    for (i, shows) in [true, false].into_iter().enumerate() {
+        for o in [&cold[i], &warm[i]] {
+            assert_eq!(o.stderr.contains("W1904"), shows, "{i}: {o:?}");
+            assert_eq!(strip(o, &e), strip(&reference[i], &plain), "{i}");
+        }
     }
+    assert_eq!(warm[0].notes("verified work."), 0, "{:?}", warm[0]);
+    assert_eq!(warm[1].notes("verified work.wb "), 1, "{:?}", warm[1]);
     // An edited dependency: the file below it is analysed from source, then verified again.
     let e = Env::new("units_verified_edit");
     let all = e.abs(&["pkg.vhd", "mid.vhd"]);

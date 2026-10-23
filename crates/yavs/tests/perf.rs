@@ -430,7 +430,7 @@ fn unit_notes(r: &Run, what: &str) -> u64 {
 }
 
 /// Three dependent files analysed one per call, then again: every unit of the second round is
-/// read back from its entry and no file is parsed.
+/// verified against its entry (nothing is replayed) and no file is parsed.
 #[test]
 fn unit_cache() {
     let d = tempdir("unit_cache");
@@ -463,6 +463,7 @@ fn unit_cache() {
     let counters: BTreeMap<String, u64> = [
         ("cold_stores", sum(&cold, "store")),
         ("warm_hits", sum(&warm, "hit")),
+        ("warm_verified", sum(&warm, "verified")),
         ("warm_misses", sum(&warm, "miss")),
         ("warm_stores", sum(&warm, "store")),
         ("warm_files_not_parsed", sum(&warm, "not parsed")),
@@ -480,7 +481,9 @@ fn unit_cache() {
         "unit_cache",
         &r,
         &[
-            ("warm_hits", Min(5)),
+            // A warm file whose units report nothing is verified, not loaded (#581): nothing is replayed.
+            ("warm_hits", Max(0)),
+            ("warm_verified", Min(3)),
             ("warm_misses", Max(0)),
             ("warm_stores", Max(0)),
             ("warm_files_not_parsed", Min(3)),

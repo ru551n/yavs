@@ -4512,9 +4512,9 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   analysed it; a replay of its units gave the same records back after loading the whole closure of the file
   (85 units and 2 MB for an Open Logic testbench). Now the call plans the replay (the entries of the units and
   of everything they load, their full keys, the answers to the library questions) and takes the records from the
-  manifest when (1) every unit of the file has an entry that holds, (2) no entry in the plan reports anything
-  (no diagnostic of a unit or a file step: a warning of a dependency is printed by each file that loads it,
-  as an analysis from source prints it, so such a file still replays) and (3) the entry's `Head::record`, a hash
+  manifest when (1) every unit of the file has an entry that holds, (2) no entry of the file's units reports anything
+  (no diagnostic of the file's own units or file steps; those of the units they load are not shown by
+  `analyze`, see below) and (3) the entry's `Head::record`, a hash
   of the unit's manifest record made when the entry was written, equals that of the record the manifest holds
   (a record written by another build is never trusted; `FORMAT` is 3). The units stay `NotLoaded`; a later file
   of the same call that needs one loads it the usual way. Output, exit status and the manifest are those of the
@@ -4522,6 +4522,13 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   Idea from the reference simulator: a unit names what it depends on with a checksum, so that whether a
   dependency changed is answered without loading it; ours checks the full key chain of the entries and still
   loads what a later file needs.
+- **`yavs analyze` shows warnings and notes only for the files named in the call** (`analyze.rs`, user decision
+  2026-10-23, #584). Before, every diagnostic of the session was shown, so each file repeated the warnings of
+  the library units it read (OSVVM: two `W1506` in 400 of 449 calls), and a warm file whose closure reported
+  anything had to replay it. A diagnostic whose primary file is not one of the call's files is dropped when it
+  is a warning or a note and kept when it is an error (an error in a dependency that changed on disk would
+  otherwise fail the call silently); cached and uncached analysis still print the same. `-Werror` counts only
+  what is shown. `elab` and `run` are unchanged.
 - **Manifest handling per call** (`yavs-lib`, #581): the manifest `Library::read` parses under the session's
   own lock is shared with the session (parsed once, not by the analyzer and again by the session; a parse is
   stale after any session of the process wrote, `WRITES`), `Manifest::to_text` writes the text directly

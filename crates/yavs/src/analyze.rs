@@ -243,6 +243,20 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             o.units = None;
             std::mem::ManuallyDrop::new(Db::new(o))
         });
+        // Warnings and notes are shown for the files of this call only; a unit read from the library
+        // was reported when its file was analysed (#584). Errors are always shown.
+        let paths: std::collections::HashSet<PathBuf> = a
+            .files
+            .iter()
+            .filter_map(|f| std::path::absolute(f).ok())
+            .collect();
+        let named = |sources: &SourceMap, d: &Diagnostic| match &d.primary {
+            Some(l) if d.severity != Severity::Error => {
+                std::path::absolute(&sources.get(l.span.file).path)
+                    .is_ok_and(|p| paths.contains(&p))
+            }
+            _ => true,
+        };
         let bodies_opts = opts.clone();
         let mut db = std::mem::ManuallyDrop::new(Db::new(opts));
         let mut shown = 0;
@@ -274,7 +288,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
                 }
             }
             for d in &db.diagnostics()[shown..] {
-                out.emit(&db.sources, d);
+                if named(&db.sources, d) {
+                    out.emit(&db.sources, d);
+                }
             }
             shown = db.diagnostics().len();
             let records = match r {

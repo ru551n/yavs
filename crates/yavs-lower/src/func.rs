@@ -524,11 +524,16 @@ impl<'a, 'b> Fx<'a, 'b> {
                 tid,
                 ..
             } => {
-                let dope = match subtype
-                    .map(|st| self.subtype_dope(st, span))
-                    .transpose()?
-                    .flatten()
-                {
+                // A subtype that constrains only the index (`arr(0 to n)` of an array of open
+                // arrays) takes the element bounds from the aliased object.
+                let want = match subtype {
+                    Some(st) => match self.subtype_dope(st, span)? {
+                        Some(w) => Some(w),
+                        None => self.desc_of(st, Some(dope), span)?,
+                    },
+                    None => None,
+                };
+                let dope = match want {
                     Some(want) => {
                         let t = db.base(db.exprs[target].subtype);
                         self.check_desc(t, tid, dope, want, &ty::obj_desc(db, d), span)?;

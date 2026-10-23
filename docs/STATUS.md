@@ -140,6 +140,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - An aggregate target with parts of a signal parameter (`issue3030`) is E2001 (not implemented) instead of an internal error.
 - A concurrent procedure call with mode view parameters is sensitive to the elements the view reads (`view6`, first suite).
 - A deferred constant of a package instance in an architecture read as zero (`genpack16`, first suite); it reads the body's full declaration.
+- An alias with a partly constrained subtype (`alias y : arr(0 to n - 1) is x`, arrays of open arrays) keeps the aliased object's index range (`issue932`, first suite); it has its own index range now.
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

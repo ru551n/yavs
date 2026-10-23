@@ -1201,10 +1201,22 @@ impl Db {
             .filter(|&d| matches!(self.decls[d].kind, DeclKind::Subtype(_)));
         let actual_conv = match &self.exprs[id].kind {
             _ if !call_syntax => None,
-            ExprKind::Call { callee, args, .. } if args.len() == 1 => match &args[0].actual {
-                Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
-                _ => None,
-            },
+            // A predefined operator in call syntax (`"not"(s)`) is an expression, not a
+            // conversion function: it has no body to convert with.
+            ExprKind::Call { callee, args, .. }
+                if args.len() == 1
+                    && !self.decls[*callee].kind.subprogram().is_some_and(|sp| {
+                        matches!(
+                            sp.body,
+                            crate::decl::Body::Implicit(_) | crate::decl::Body::Native(_)
+                        )
+                    }) =>
+            {
+                match &args[0].actual {
+                    Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
+                    _ => None,
+                }
+            }
             ExprKind::Conv { to, operand } if self.is_signal_name(*operand) => {
                 let t = self.types[self.subtypes[*to].base].decl;
                 Some((Some(mark.unwrap_or(t)), *operand))

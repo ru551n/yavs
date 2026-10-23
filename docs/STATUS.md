@@ -144,6 +144,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - A record constant with open fields kept the bounds of its initial value (`issue1274`, first suite); it has its subtype's field bounds, in analysis (folded values) and in elaboration (called values).
 - `x'attr(1)` of a user-defined attribute of an array type is an index of its value (`attr11`, first suite).
 - `p.st` (the label of the enclosing process or block as prefix) as a type mark and a loop range (`issue713`, second suite); `issue543` passes with the attribute index above.
+- `s => "not"(a)` in a port map is an expression actual: a call of a predefined operator has no body to convert with, so it is not read as a conversion function (`bug0134`, second suite).
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

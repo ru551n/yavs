@@ -5893,6 +5893,10 @@ to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 
 - **The kept-layout test of a long descriptor is one `memcmp`** (L, `LayoutOf` with a frame slot, descriptors over 32 bytes):
   a record of arrays has descriptors of 100+ bytes, and the word-by-word compare was 82 LLVM instructions per
   `LayoutOf` (1265 of them in the wide-vector design). `fletcher_bufferreader` another -5 percent cycles.
+- **`SigRead` of a signal of enumeration, integer, boolean, real or time elements is inline** (L, `Gen::sig_read_planes`):
+  the kernel's bytes (`TierSig::bytes`, `es`, as `Buf::write_to` copies them) are copied with one `memcpy` of
+  `count * element size`; it was a 220-instruction callback (800 thousand in `fletcher_bufferreader`, one per
+  integer field of a record read from signals). Instructions of that testbench -2.4 percent.
 
 ## Search loops in compiled code: one shared scan (yavs-interp `scan.rs`, yavs-llvm, #578, 2026-10-23)
 

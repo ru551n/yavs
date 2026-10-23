@@ -6509,9 +6509,50 @@ impl Gen {
         // lie within the signal and the destination holds their blocks.
         unsafe {
             let blocks = self.load(self.ptr, self.gep(ent, self.c64(SIG_PLANES)));
-            self.guard(c, LLVMBuildIsNotNull(self.b, blocks, c"".as_ptr()), slow);
+            let (logic, other) = (self.block(c), self.block(c));
+            self.cond_br(
+                LLVMBuildIsNotNull(self.b, blocks, c"".as_ptr()),
+                logic,
+                other,
+                true,
+            );
             // A count and an offset are below 2^32 where the reference was made; checked, so the
             // sum below cannot wrap.
+            LLVMPositionBuilderAtEnd(self.b, other);
+            self.guard(
+                c,
+                self.icmp(IP::LLVMIntULE, l, self.c64(i64::from(u32::MAX))),
+                slow,
+            );
+            let plen = self.load(self.i64, self.gep(ent, self.c64(SIG_PLEN)));
+            let used = LLVMBuildAdd(self.b, off, l, c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, plen), slow);
+            // A signal of enumeration, integer, boolean or real elements: its bytes, `Buf::write_to`.
+            let data = self.load(self.ptr, self.gep(ent, self.c64(SIG_BYTES)));
+            self.guard(c, LLVMBuildIsNotNull(self.b, data, c"".as_ptr()), slow);
+            let es = self.load(self.i64, self.gep(ent, self.c64(SIG_ES)));
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let e = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            self.guard(
+                c,
+                self.icmp(IP::LLVMIntULE, es, self.c64(i64::from(u32::MAX))),
+                slow,
+            );
+            // At most 2^32 elements of at most 2^32 bytes: no wrap.
+            let nbytes = LLVMBuildMul(self.b, l, es, c"".as_ptr());
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                nbytes,
+                true,
+                slow,
+            );
+            let src = self.gep(data, LLVMBuildMul(self.b, e, es, c"".as_ptr()));
+            LLVMBuildMemCpy(self.b, pd, 1, src, 1, nbytes);
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, logic);
             self.guard(
                 c,
                 self.icmp(IP::LLVMIntULE, l, self.c64(i64::from(u32::MAX))),

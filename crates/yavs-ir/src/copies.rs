@@ -396,6 +396,7 @@ impl Program {
             return;
         }
         let first = self.funcs.len();
+        self.funcs.reserve_exact(n);
         for _ in 0..n {
             self.funcs.push(Func::spare());
         }

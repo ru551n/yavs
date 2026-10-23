@@ -122,6 +122,12 @@ impl<I: Id, T> IdVec<I, T> {
         self.items.get_mut(i.index())
     }
 
+    /// Room for `n` more items, no more (a vector that doubles would hold a spare function's
+    /// 368 bytes twice over: `Program::reserve_copies`).
+    pub fn reserve_exact(&mut self, n: usize) {
+        self.items.reserve_exact(n);
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }

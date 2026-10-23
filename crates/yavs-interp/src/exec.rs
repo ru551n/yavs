@@ -1357,7 +1357,12 @@ impl Machine {
         // stay resident if they fit. A released one gets the copy's from `borrow_fill`, its
         // scratch being keyed by function.
         if !self.released {
+            // (Exactly the copy's registers: a vector that doubled would hold twice the bytes in
+            // every one of thousands of resident processes.)
+            let n = new.reg_ty.len();
             self.regs.v.clear();
+            self.regs.v.shrink_to(n);
+            self.regs.v.reserve_exact(n);
             let _ = pre.fill(&mut self.regs.v, 0);
             if self.resident {
                 let bytes = self.regs.v.len() * 8 + RESIDENT_TEMP;

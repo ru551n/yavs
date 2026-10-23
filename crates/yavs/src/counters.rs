@@ -63,6 +63,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     }
     if let Some(rt) = rt {
         let c = rt.prog.copy_stats();
+        rows.push(("spec_reserved", c.reserved as u64));
         rows.push(("spec_planned", c.planned));
         rows.push(("spec_copies", c.copies as u64));
         rows.push(("spec_switched", c.switched));

@@ -109,6 +109,11 @@ struct LoweringKey {
 
 /// The most specialised copies of processes one design may have (`Program::reserve_copies`).
 const MAX_COPIES: usize = 4096;
+/// A copy of fewer IR instructions than this is rare, and a design with many tiny processes
+/// keeps the rest shared if it is not (`spec_full`): the slots are sized by the cap.
+const MIN_COPY_IR: usize = 32;
+/// The slots every design with copies gets.
+const MIN_COPIES: usize = 32;
 
 /// The constant bytes up to which a lowering is stored: reading a big constant pool back costs
 /// more than lowering the design again (`Lowerer::image` has the same limit).
@@ -442,7 +447,7 @@ impl Elaborated {
         // made for them.
         let mut program = program;
         let mut may: HashMap<_, bool> = HashMap::new();
-        let mut instances = 0;
+        let (mut instances, mut ir, mut seen) = (0, 0, std::collections::HashSet::new());
         for p in self.procs.iter().filter(|p| p.actual.is_none()) {
             let i = self.instance_of(p.scope);
             let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
@@ -453,11 +458,24 @@ impl Elaborated {
                     u.processes
                         .iter()
                         .find(|x| x.actual.is_none() && x.stmt == p.stmt)
-                        .is_some_and(|x| program.specialisable(x.func))
+                        .is_some_and(|x| {
+                            let ok = program.specialisable(x.func);
+                            if ok && seen.insert(x.func) {
+                                ir += program.funcs.get(x.func).map_or(0, |f| f.full().code.len());
+                            }
+                            ok
+                        })
                 })
             }));
         }
-        program.reserve_copies(instances.min(MAX_COPIES));
+        // The growth cap lets at most that many copies of at least `MIN_COPY_IR` instructions in.
+        let cap = yavs_ir::cap_percent() as usize;
+        let room = if cap == 0 {
+            usize::MAX
+        } else {
+            (ir * cap / 100 / MIN_COPY_IR).max(MIN_COPIES)
+        };
+        program.reserve_copies(instances.min(MAX_COPIES).min(room));
         // The copies of processes earlier runs of this lowering made, read when the first is.
         if let Some(l) = &learn {
             let key = l.key.clone();

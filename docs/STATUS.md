@@ -6406,6 +6406,35 @@ itself as callbacks) are unchanged. The interpreter gained 1.2 percent of its in
 The code of a whole-program module in huge pages (`YAVS_LLVM_HUGE=0` off): `neorv32_single_min` `--tier=llvm` 70.3 to 65.7 G
 cycles at equal instructions (instruction TLB misses 52 M to 9 M; the table above is without it).
 
+## llvm: compiled clocked RTL, round 5: the front end, 2026-10-23 (#634)
+
+Decisions: `docs/decisions.md` "Compiled clocked RTL processes, round 5". An exact instruction trace of one `rtl_ff`
+activation (1231 instructions, 325 of them the compiled body) and `perf` front-end counters showed that the cost is
+plumbing and branch layout, not the body: the scratch swap at every suspension, the second copy of a wait that never
+short-cut, a 20 KB stack frame in `enter`, the waveform of every scalar assignment, `-disable-block-placement` (26 taken
+branches in 316 instructions) and a chain of four inline lookups at every access of unknown space.
+
+Cycles (G) of the simulation phase, bench builds, core 12 (13 for the wide design and the `rtl_*` pair), minimum of 5
+interleaved runs, host shared; `--tier=auto --tier-heat=1,0,0` (every executed function compiled) against the
+interpreter of the same binary:
+
+| Design | before (main `f7904064`) auto / interp | now auto / interp | auto / interp now |
+|---|---:|---:|---:|
+| `neorv32_single_min` | 33.4 / 28.8 | 23.9 / 23.6 | 1.01 |
+| `fletcher_bufferreader` | 21.4 / 14.7 | 14.6 / 13.0 | 1.12 |
+| `fletcher_bufferwriter_512` | 73.4 / 51.7 | 43.3 to 53.6 / 36.3 to 40.4 | 1.12 to 1.2 |
+| `sc5_fifo_repack` | 13.4 / 16.7 | 9.0 / 13.6 | 0.66 |
+| `rtl_ff` | 3.48 / 3.34 | 2.81 / 3.36 | 0.84 |
+| `rtl_lfsr` | 1.86 / 2.03 | 1.30 / 1.80 | 0.72 |
+| `rtl_chain` | 1.02 / 0.84 | 0.91 / 0.84 | 1.08 |
+
+Instructions: `rtl_ff` 12.2 G to 9.05 G (interpreter 11.6 G), `rtl_chain` 3.9 G to 3.17 G (3.2 G), `neorv32_single_min` 52.6 G to
+47.3 G (61.9 G), `fletcher_bufferreader` 37.0 G to 32.0 G. Process-size sweep (a clocked process of 1024 instances, K
+more `xor` terms, `--tier=auto` against interpreter, cycles): 144 IR lines 0.88, 221 0.71, 313 0.98, 497 0.85, 865 0.88,
+1041 1.19 (code footprint over the cache); no crossover from below any more, so the lower end of `RTL_BAND` (#575) has no
+measured reason left. The interpreter's own cost steps up 2.7 times between 32 and 40 terms (#662).
+
+
 ## `--tier=auto`: what leaves compiled code, and compiled clocked processes measured and taken back (#633, #596, 2026-10-23)
 
 The callback count of the policy now takes the signal reads, `'event`, the clock-edge tests, the wait that ends an activation and

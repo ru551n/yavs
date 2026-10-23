@@ -168,6 +168,8 @@ def normalise(rc, out, err, yavs=False):
 
     for stream, text in (("out", out), ("err", err)):  # sim2: reports on stdout, errors on stderr
         for line in text.splitlines():
+            if yavs and line.startswith("note: process order is shuffled with seed"):
+                continue  # `--shuffle` announces its seed on stderr
             if swallow and stream == "err" and (FMT1_TRACE.match(line) or FMT1_SNIP.match(line)):
                 continue
             swallow = False

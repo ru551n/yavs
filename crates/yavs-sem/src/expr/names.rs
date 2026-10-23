@@ -828,7 +828,7 @@ impl Db {
             let (PSrc::Entity(d) | PSrc::Object(d, _)) = *src else {
                 return None;
             };
-            let v = attr::user_value(self, self.entity(d), key)?;
+            let v = self.user_attr_value(d, key)?;
             let st = attr::spec_subtype(self, self.attr_values[v].attr)?;
             Some(self.base(st))
         })
@@ -2634,6 +2634,35 @@ impl Db {
         false
     }
 
+    /// The object an object alias `d` names as a whole (through further aliases), `None`
+    /// when `d` is not such an alias: a part of an object (`alias a : bit is v(1)`) is
+    /// another entity.
+    fn aliased_object(&self, d: DeclId) -> Option<DeclId> {
+        let mut d = d;
+        let mut hops = 0;
+        while let DeclKind::Alias(Alias::Object { target, .. }) = &self.decls[d].kind {
+            let ExprKind::Obj(next) = self.exprs[*target].kind else {
+                return None;
+            };
+            d = next;
+            hops += 1;
+            if hops > 64 {
+                return None;
+            }
+        }
+        (hops > 0).then_some(d)
+    }
+
+    /// The value of user attribute `key` of the named entity `d` denotes (7.2): its own,
+    /// else that of the object it is an alias of (an attribute of an object applies to every
+    /// alias of the whole object, 4.3.3).
+    fn user_attr_value(&self, d: DeclId, key: Symbol) -> Option<crate::ids::AttrValueId> {
+        attr::user_value(self, self.entity(d), key).or_else(|| {
+            let root = self.aliased_object(d)?;
+            attr::user_value(self, root, key)
+        })
+    }
+
     /// `x'a` for a user-defined attribute `a` (6.7): the value given to the
     /// named entity `x` by a specification (7.2).
     fn build_user_attr(
@@ -2647,9 +2676,7 @@ impl Db {
             return self.poison_expr();
         };
         let found = ps.iter().find_map(|(_, src)| match *src {
-            PSrc::Entity(d) | PSrc::Object(d, _) => {
-                attr::user_value(self, self.entity(d), attr.key)
-            }
+            PSrc::Entity(d) | PSrc::Object(d, _) => self.user_attr_value(d, attr.key),
             _ => None,
         });
         let Some(v) = found else {

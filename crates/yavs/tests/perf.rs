@@ -612,14 +612,16 @@ mod llvm {
         llvm_sigread,
         "wide=",
         [
-            ("cb_signal", Max(321)),
+            ("cb_signal", Max(56)),
             ("cb_step", Max(9)),
             ("cb_native", Max(56)),
             ("cb_drive", Max(263)),
+            ("cb_troot", Max(53)),
+            ("cb_endstmt", Max(53)),
             ("cb_lcopy", Max(106)),
             ("cb_fast", Max(1)),
-            ("llvm_inline_insts", Min(596)),
-            ("llvm_interpreted_insts", Max(67)),
+            ("llvm_inline_insts", Min(612)),
+            ("llvm_interpreted_insts", Max(50)),
             ("llvm_native_frames", Min(1)),
         ]
     );
@@ -639,14 +641,14 @@ mod llvm {
         llvm_clocked,
         "q=",
         [
-            ("cb_signal", Max(21)),
+            ("cb_signal", Max(4)),
             ("cb_step", Max(6)),
             ("cb_native", Max(55)),
-            ("cb_drive", Max(999)),
-            ("cb_wait", Max(912)),
-            ("cb_wait_same", Max(107)),
-            ("llvm_inline_insts", Min(608)),
-            ("llvm_interpreted_insts", Max(65)),
+            ("cb_drive", Max(998)),
+            ("cb_wait", Max(911)),
+            ("cb_wait_same", Max(106)),
+            ("llvm_inline_insts", Min(624)),
+            ("llvm_interpreted_insts", Max(48)),
             ("llvm_native_frames", Min(1)),
         ]
     );

@@ -145,3 +145,242 @@ fn signal_reads_in_compiled_code_match_the_interpreter() {
         assert_eq!(go(tier), want, "{tier}");
     }
 }
+
+/// Scalar signals of enumeration, integer, boolean, real and time elements, and logic vectors
+/// wider than 64 elements, read in a clocked process: compiled code reads all of them from the
+/// kernel's bytes and plane blocks.
+const KINDS: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity k is end;
+architecture a of k is
+  type st_t is (idle, run, done, fail);
+  signal clk : std_logic := '0';
+  signal st : st_t := idle;
+  signal cnt : integer := -5;
+  signal flag : boolean := false;
+  signal r : real := 1.5;
+  signal w128 : std_logic_vector(127 downto 0) := (others => '0');
+  signal w200 : unsigned(199 downto 0) := (others => '0');
+  signal t : time := 3 ns;
+  signal small : natural range 0 to 200 := 7;
+begin
+  clk <= not clk after 5 ns when now < 200 ns else clk;
+  process (clk)
+    variable n : integer := 0;
+    variable acc : integer := 0;
+  begin
+    if rising_edge(clk) then
+      n := n + 1;
+      case st is
+        when idle => st <= run;
+        when run => if cnt > 0 then st <= done; end if;
+        when done => st <= fail;
+        when fail => st <= idle;
+      end case;
+      cnt <= cnt + 2;
+      flag <= not flag;
+      if flag then r <= r * 2.0; end if;
+      if cnt < 0 then acc := acc + 1; end if;
+      w128 <= w128(126 downto 0) & clk;
+      w200 <= w200 + to_unsigned(n, 200);
+      t <= t + 1 ns;
+      small <= (small * 3) mod 201;
+      report st_t'image(st) & " " & integer'image(cnt) & " " & boolean'image(flag) & " " &
+             real'image(r) & " " & to_hstring(w128) & " " & to_hstring(std_logic_vector(w200)) &
+             " " & time'image(t) & " " & integer'image(small) & " " & integer'image(acc);
+    end if;
+  end process;
+end;
+"#;
+
+#[test]
+fn scalar_and_wide_signal_reads_in_compiled_code_match_the_interpreter() {
+    let dir = tempdir("compiled_kinds");
+    std::fs::write(dir.join("k.vhd"), KINDS).expect("write");
+    let a = yavs(&dir, &["analyze", "--work=work:work", "k.vhd"]);
+    assert!(a.status.success(), "{a:?}");
+    let go = |tier: &str| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["run", "--work=work:work", &format!("--tier={tier}"), "k"])
+            .env("YAVS_TIER_CENSUS", "1")
+            .current_dir(&dir)
+            .output()
+            .expect("run yavs");
+        let census: Vec<String> = String::from_utf8_lossy(&o.stderr)
+            .lines()
+            .filter(|l| l.starts_with("tier-census: "))
+            .map(str::to_string)
+            .collect();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            census,
+        )
+    };
+    let want = go("interp");
+    assert!(want.1.matches("** Note").count() >= 20, "{want:?}");
+    for tier in ["llvm", "auto"] {
+        let got = go(tier);
+        assert_eq!((got.0, &got.1), (want.0, &want.1), "{tier}");
+        // The reads of all the kinds are answered in compiled code.
+        if tier == "llvm" {
+            assert!(
+                !got.2
+                    .iter()
+                    .any(|l| l.ends_with(" SigRead") || l.ends_with(" SigReadScalar")),
+                "{:?}",
+                got.2
+            );
+        }
+    }
+}
+
+/// Equality of logic vectors of every length class, with metavalues in them.
+const COMPARES: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity q is end;
+architecture a of q is
+  signal clk : std_logic := '0';
+  signal a1, b1 : std_logic_vector(0 downto 0) := "1";
+  signal a5, b5 : std_logic_vector(4 downto 0) := "10X1Z";
+  signal a64, b64 : std_logic_vector(63 downto 0) := (others => '1');
+  signal a65, b65 : std_logic_vector(64 downto 0) := (others => '0');
+  signal a100, b100 : std_logic_vector(99 downto 0) := (others => 'U');
+begin
+  clk <= not clk after 5 ns when now < 120 ns else clk;
+  process (clk)
+    variable n : integer := 0;
+    variable s : string(1 to 10);
+    procedure mark (k : positive; v : boolean) is
+    begin
+      if v then s(k) := '1'; else s(k) := '0'; end if;
+    end;
+  begin
+    if rising_edge(clk) then
+      n := n + 1;
+      mark(1, a1 = b1);
+      mark(2, a5 = b5);
+      mark(3, a64 = b64);
+      mark(4, a65 = b65);
+      mark(5, a100 = b100);
+      mark(6, a5(3 downto 1) = b5(3 downto 1));
+      mark(7, a64(62 downto 0) = b64(62 downto 0));
+      mark(8, a64(63 downto 1) /= b64(63 downto 1));
+      mark(9, a100(70 downto 3) = b100(70 downto 3));
+      mark(10, a5 /= "10X1Z");
+      report s;
+      a1(0) <= to_unsigned(n, 1)(0);
+      b1(0) <= to_unsigned(n / 2, 1)(0);
+      a5 <= std_logic_vector(to_unsigned(n, 5));
+      b5 <= std_logic_vector(to_unsigned(n / 3, 5)) when n mod 4 /= 0 else a5;
+      b64 <= (others => to_unsigned(n, 1)(0)) when n mod 3 = 0 else a64;
+      a64 <= (others => to_unsigned(n / 2, 1)(0)) when n mod 5 /= 0 else (others => 'X');
+      a65(n mod 65) <= '1';
+      b65(n mod 7) <= '1';
+      a100 <= (others => '0');
+      b100 <= (others => '0') when n mod 2 = 0 else (others => 'H');
+      -- Runs set to one code: inside a block, across two, a whole one.
+      if n mod 3 = 0 then
+        a65(10 downto 2) <= (others => 'H');
+        a100(99 downto 30) <= (others => '-');
+        b64 <= (others => 'Z');
+      elsif n mod 3 = 1 then
+        a5(2 downto 1) <= (others => 'L');
+        b100(64 downto 63) <= (others => 'X');
+        a64(63 downto 0) <= (others => 'U');
+      end if;
+    end if;
+  end process;
+end;
+"#;
+
+#[test]
+fn logic_equality_in_compiled_code_matches_the_interpreter() {
+    let dir = tempdir("compiled_compares");
+    std::fs::write(dir.join("q.vhd"), COMPARES).expect("write");
+    let a = yavs(&dir, &["analyze", "--work=work:work", "q.vhd"]);
+    assert!(a.status.success(), "{a:?}");
+    let go = |tier: &str| {
+        let o = yavs(
+            &dir,
+            &["run", "--work=work:work", &format!("--tier={tier}"), "q"],
+        );
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let want = go("interp");
+    assert!(want.1.matches("** Note").count() >= 10, "{want:?}");
+    for tier in ["llvm", "auto"] {
+        assert_eq!(go(tier), want, "{tier}");
+    }
+}
+
+/// Two variables of one record type with different constraints in one process: the layout a
+/// process's frame keeps for the type is one of them, the other is made each time.
+const RECORDS: &str = r#"library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
+entity lc is end;
+architecture a of lc is
+  type rec_t is record
+    d : std_logic_vector;
+    n : integer;
+    e : std_logic_vector;
+  end record;
+  subtype r8 is rec_t(d(7 downto 0), e(3 downto 0));
+  subtype r16 is rec_t(d(15 downto 0), e(7 downto 0));
+  signal clk : std_logic := '0';
+  signal q8  : std_logic_vector(7 downto 0) := (others => '0');
+  signal q16 : std_logic_vector(15 downto 0) := (others => '0');
+  signal qe  : std_logic_vector(11 downto 0) := (others => '0');
+begin
+  clk <= not clk after 5 ns when now < 400 ns else clk;
+  process (clk)
+    variable x : r8;
+    variable y : r16;
+    variable k : integer := 0;
+  begin
+    if rising_edge(clk) then
+      k := k + 1;
+      x.d := std_logic_vector(to_unsigned(k, 8));
+      y.d := std_logic_vector(to_unsigned(k * 257, 16));
+      x.n := k;
+      y.n := x.n * 2;
+      x.e := y.d(3 downto 0);
+      y.e := x.d(7 downto 4) & x.e;
+      q8 <= x.d xor y.d(7 downto 0);
+      q16 <= y.d(15 downto 8) & x.d;
+      qe <= x.e & y.e;
+      report integer'image(x.n) & " " & integer'image(y.n) & " " & to_hstring(q8) & " " & to_hstring(q16) & " " & to_hstring(qe) & " " & to_hstring(x.d) & to_hstring(y.e);
+    end if;
+  end process;
+end;
+"#;
+
+#[test]
+fn record_layouts_kept_in_the_frame_match_the_interpreter() {
+    let dir = tempdir("compiled_records");
+    std::fs::write(dir.join("lc.vhd"), RECORDS).expect("write");
+    let a = yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "lc.vhd"],
+    );
+    assert!(a.status.success(), "{a:?}");
+    let go = |tier: &str| {
+        let o = yavs(
+            &dir,
+            &["run", "--work=work:work", &format!("--tier={tier}"), "lc"],
+        );
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let want = go("interp");
+    assert!(want.1.matches("** Note").count() >= 20, "{want:?}");
+    for tier in ["llvm", "auto"] {
+        assert_eq!(go(tier), want, "{tier}");
+    }
+}

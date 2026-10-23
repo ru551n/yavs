@@ -15,7 +15,7 @@ architecture t of edge_forms is
   signal b : bit := '0';
   signal rb : bit := '0';
   signal en : std_logic := '0';
-  signal s_re, s_fe, s_lr, s_lf, s_nr, s_nf, s_wr, s_wf, s_wl, s_wo, u_re, u_fe, u_lr, u_lf, u_nr, u_nf, u_wr, u_wf, u_wl, u_wo, b_re, b_fe, b_lr, b_lf, b_nr, b_nf, b_wr, b_wf, b_wl, b_wo, b_rs, s_ea, s_ae, s_ee : natural := 0;
+  signal s_re, s_fe, s_lr, s_lf, s_nr, s_nf, s_wr, s_wf, s_wl, s_wo, u_re, u_fe, u_lr, u_lf, u_nr, u_nf, u_wr, u_wf, u_wl, u_wo, b_re, b_fe, b_lr, b_lf, b_nr, b_nf, b_wr, b_wf, b_wl, b_wo, b_rs, s_ea, s_ae, s_ee, s_w1, s_w2, s_w3, u_w1, b_w1 : natural := 0;
 begin
   stim : process
     type levels is array (natural range <>) of std_logic;
@@ -70,6 +70,11 @@ begin
     report "s_ea = " & integer'image(s_ea);
     report "s_ae = " & integer'image(s_ae);
     report "s_ee = " & integer'image(s_ee);
+    report "s_w1 = " & integer'image(s_w1);
+    report "s_w2 = " & integer'image(s_w2);
+    report "s_w3 = " & integer'image(s_w3);
+    report "u_w1 = " & integer'image(u_w1);
+    report "b_w1 = " & integer'image(b_w1);
     wait;
   end process;
 
@@ -186,5 +191,25 @@ begin
   end process;
   p_s_ee : process (s, en) begin
     if en = '1' and s = '1' and not s'stable then s_ee <= s_ee + 1; end if;
+  end process;
+  p_s_w1 : process begin
+    wait until rising_edge(s) and en = '1';
+    s_w1 <= s_w1 + 1;
+  end process;
+  p_s_w2 : process begin
+    wait on s, en until rising_edge(s);
+    s_w2 <= s_w2 + 1;
+  end process;
+  p_s_w3 : process begin
+    wait until en = '1' and rising_edge(s);
+    s_w3 <= s_w3 + 1;
+  end process;
+  p_u_w1 : process begin
+    wait until rising_edge(u) and en = '1';
+    u_w1 <= u_w1 + 1;
+  end process;
+  p_b_w1 : process begin
+    wait until rising_edge(b) and rb = '1';
+    b_w1 <= b_w1 + 1;
   end process;
 end architecture;

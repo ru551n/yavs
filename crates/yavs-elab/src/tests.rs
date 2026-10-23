@@ -2042,6 +2042,14 @@ fn clocked_processes_get_edge_triggers() {
         p33 : process (bo) begin if rising_edge(bo) then q <= '1'; end if; end process;
         p34 : process (bt) begin if not bt'stable and bt = '1' then q <= '1'; end if; end process;
         p35 : process (clk) begin if clk = '1' then q <= '1'; end if; end process;
+        p36 : process begin wait until rising_edge(clk) and en = '1'; q <= '1'; end process;
+        p37 : process begin wait on clk, rst until rising_edge(clk); q <= '1'; end process;
+        p38 : process begin wait until en = '1' and rising_edge(clk); q <= '1'; end process;
+        p39 : process begin wait until rising_edge(bt) and bt2 = '1'; q <= '1'; end process;
+        p40 : process begin wait until clk'event and clk = '1' and en = '1'; q <= '1'; end process;
+        p41 : process begin wait until falling_edge(ul); q <= '1'; end process;
+        p42 : process begin wait until rising_edge(clk) or rst = '1'; q <= '1'; end process;
+        p43 : process begin wait until bt'event and bt = '1' and rst = '1'; q <= '1'; end process;
       end;";
     let (_, e) = elab("edges", src, "t", &[]);
     let t: Vec<_> = e
@@ -2100,6 +2108,14 @@ fn clocked_processes_get_edge_triggers() {
             x(true, 0, edge, None),
             x(true, 0, legacy, None),
             None,
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, true), None),
+            x(false, 0, (true, false), None),
+            None,
+            x(true, 0, (true, true), None),
         ]
     );
 }

@@ -2203,6 +2203,10 @@ fn held() -> (Program, FuncId) {
         src: v,
         w: Width::B8,
     });
+    // The rest in a block of its own that only this one jumps to: the object is still in hand.
+    let next = fb.block();
+    fb.emit(Inst::Br { to: next });
+    fb.at(next);
     let back = load(&mut fb, atk, Width::B8);
     let first = load(&mut fb, at0, Width::B8);
     let r = fb.reg(RegTy::I64);

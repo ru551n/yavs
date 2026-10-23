@@ -4483,6 +4483,36 @@ impl Gen {
                     .map(|b| b.start as usize)
                     .ok_or_else(|| format!("branch to missing block {}", b.0))
             };
+            // A native frame's block with a single way in takes what its predecessor knew at the
+            // jump: the values defined there dominate it (`inherit`).
+            let mut inherit: Vec<Option<Vec<Option<Known>>>> = vec![None; n + 1];
+            let mut ways = vec![0u32; n + 1];
+            ways[0] = 2;
+            if native {
+                for inst in &f.code {
+                    let to_all: Vec<yavs_ir::BlockId> = match *inst {
+                        Inst::Br { to } => vec![to],
+                        Inst::CondBr { t, f: e, .. } => vec![t, e],
+                        Inst::Case { table, .. } => prog
+                            .cases
+                            .get(table)
+                            .map(|t| {
+                                std::iter::once(t.default)
+                                    .chain(t.arms.iter().map(|a| a.2))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        _ => continue,
+                    };
+                    for b in to_all {
+                        if let Some(w) =
+                            f.blocks.get(b).and_then(|b| ways.get_mut(b.start as usize))
+                        {
+                            *w += 1;
+                        }
+                    }
+                }
+            }
             let mut open = false;
             let mut prev = None;
             let kinds = std::env::var_os("YAVS_LLVM_KINDS").is_some() && !native;
@@ -4535,7 +4565,33 @@ impl Gen {
                     d.pc.set(pc);
                 }
                 if block_start[i] {
-                    c.known.borrow_mut().clone_from(&base_known);
+                    match inherit[i].take() {
+                        Some(k) if native && ways[i] == 1 => *c.known.borrow_mut() = k,
+                        _ => c.known.borrow_mut().clone_from(&base_known),
+                    }
+                }
+                if native {
+                    let to_all: Vec<yavs_ir::BlockId> = match inst {
+                        Inst::Br { to } => vec![to],
+                        Inst::CondBr { t, f: e, .. } => vec![t, e],
+                        Inst::Case { table, .. } => prog
+                            .cases
+                            .get(table)
+                            .map(|t| {
+                                std::iter::once(t.default)
+                                    .chain(t.arms.iter().map(|a| a.2))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        _ => Vec::new(),
+                    };
+                    for b in to_all {
+                        if let Some(at) = f.blocks.get(b).map(|b| b.start as usize)
+                            && ways.get(at) == Some(&1)
+                        {
+                            inherit[at] = Some(c.known.borrow().clone());
+                        }
+                    }
                 }
                 // What is known about an address register (`Gen::host`).
                 let fk = |r: Reg| self.known_addr(&c, r);

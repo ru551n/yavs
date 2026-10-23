@@ -5794,3 +5794,8 @@ two of the leanest paths were not taken. Decisions, tagged shared (S, any code g
 Measured (bench builds, instructions of the simulation phase, main thread, `--tier=auto --tier-heat=1,0,0` warm):
 `rtl_ff` 12.17 G to 10.32 G (interpreter 11.57 G), `rtl_chain` 3.93 G to 3.49 G (interpreter 3.20 G), `rtl_lfsr` 5.09 G
 to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 3.02 G (interpreter 3.34 G).
+
+- **A native frame's block with a single way in takes what its predecessor knew at the jump** (the known registers and held
+  objects, `inherit` in `Gen::func`; the values defined in the predecessor dominate such a block). The arms of a `Case` of
+  a protected method (one block each) found their objects again with a full lookup each; now they are held from the
+  `Deref`s before the `Case`. Measured: one protected `get` 397 to 359 instructions, `protected_queue` 6.17 G to 5.88 G.

@@ -120,6 +120,16 @@ const CASES: &[Case] = &[
         code: 0,
     },
     Case {
+        name: "psl_formal_only",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "-Werror=W0004",
+            "psl_formal_only.vhd",
+        ],
+        code: 0,
+    },
+    Case {
         name: "psl_werror",
         args: &[
             "analyze",

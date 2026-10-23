@@ -39,7 +39,8 @@ const HANDLED: &[&str] = &[
     "isunknown",
 ];
 
-/// PSL built-in functions outside the subset: a call of one skips the directive.
+/// PSL built-in functions outside the subset: a call of one skips the directive (`nondet*`
+/// without a warning, `psl_formal_only`).
 const BUILTINS: &[&str] = &["ended", "nondet", "nondet_vector"];
 
 /// PSL operator words the VHDL expression parser would take for names.
@@ -110,6 +111,35 @@ impl Parser<'_> {
             }
         }
         self.psl_restore(save);
+        false
+    }
+
+    /// Is the construct at the current token meaningful to formal tools only (`restrict`,
+    /// `fairness`, `strong fairness`, or a directive that calls `nondet`/`nondet_vector`)?
+    /// Simulation has nothing to run for it, so it is skipped without `W0004`.
+    pub(super) fn psl_formal_only(&self) -> bool {
+        let k = self.toks[self.pos].kind;
+        if matches!(k, Tok::Kw(Kw::Restrict | Kw::Fairness))
+            || (k == Tok::Kw(Kw::Strong) && self.toks[self.pos + 1].kind == Tok::Kw(Kw::Fairness))
+        {
+            return true;
+        }
+        let mut depth = 0u32;
+        for i in self.pos..self.eof_index() {
+            let t = self.toks[i];
+            match t.kind {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+                Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) if depth == 0 => return false,
+                Tok::Ident if self.toks[i + 1].kind == Tok::LParen => {
+                    let w = self.text(t);
+                    if w.eq_ignore_ascii_case("nondet") || w.eq_ignore_ascii_case("nondet_vector") {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
         false
     }
 

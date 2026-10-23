@@ -857,6 +857,33 @@ fn psl_warnings(src: &str) -> Vec<String> {
 }
 
 #[test]
+fn psl_formal_only_directives_are_skipped_silently() {
+    // Nothing to run in simulation: no W0004, and the rest of the unit still parses.
+    for f in [
+        "restrict {a[*]; b};",
+        "l: restrict {a; b}[*];",
+        "fairness a;",
+        "strong fairness a, b;",
+        "assume always (nondet(1, 2) = 1);",
+        "assume always (nondet_vector(3, 0 to 7) = x);",
+        "assert always (a -> next (nondet(0, 1) = 0));",
+        "assert nondet(0, 1) = 0;",
+        "cover {a; nondet(0, 1) = 1};",
+    ] {
+        let src = conc(&format!("{f}\ns <= '1';"));
+        assert_eq!(psl_warnings(&src), Vec::<String>::new(), "{f}");
+        let p = parse_std(&src, Std::Vhdl2008);
+        let LibraryUnit::Architecture(a) = &p.design.unwrap().units[0].unit else {
+            panic!()
+        };
+        assert_eq!(a.stmts.len(), 1, "{f}: the assignment survives");
+    }
+    // A directive that is not formal-only still warns, also after one that is.
+    let src = conc("fairness a;\nassert eventually! a;");
+    assert_eq!(psl_warnings(&src), ["W0004"]);
+}
+
+#[test]
 fn psl_is_skipped_with_one_warning_per_unit() {
     // Every PSL form is skipped and the rest of the file still parses.
     let forms = [
@@ -867,10 +894,8 @@ fn psl_is_skipped_with_one_warning_per_unit() {
         "assert never {a; b};",
         "l: assume always a;",
         "cover {a; b};",
-        "restrict {a[*]; b};",
         "assume_guarantee always a;",
         "restrict_guarantee {a};",
-        "fairness a;",
         "assert always a report \"x\" severity error;",
         "one: assert (always (a -> next [2] (b))) until! areset;",
         "assert always (a -> next (not a or (b before_ a)));",

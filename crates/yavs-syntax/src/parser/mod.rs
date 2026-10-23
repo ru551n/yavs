@@ -273,9 +273,11 @@ impl<'a> Parser<'a> {
 
     /// Skip the PSL construct that starts at the current token, up to and
     /// including its `;` (outside parentheses, brackets and braces), and warn
-    /// once per design unit.
+    /// once per design unit, unless it is formal-only (`psl_formal_only`).
     fn psl_skip(&mut self) {
-        self.psl_warn();
+        if !self.psl_formal_only() {
+            self.psl_warn();
+        }
         self.sync();
     }
 
@@ -329,6 +331,11 @@ impl<'a> Parser<'a> {
                         }
                     }
                     let w = self.text(t).to_ascii_lowercase();
+                    if matches!(w.as_str(), "nondet" | "nondet_vector")
+                        && self.toks[i + 1].kind == Tok::LParen
+                    {
+                        return true;
+                    }
                     // Operators between two operands (`a before b`): a signal that has such a
                     // name, as in `assert abort = '0'`, is not one.
                     let ends = |k: Tok| {

@@ -1714,8 +1714,8 @@ impl Tier for AutoTier {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPUTE_BUDGET, NATIVE_BUDGET, cold, compute, first_fit, fused_search, loops, outside_band,
-        too_many_callbacks, within_budget,
+        COMPUTE_BUDGET, NATIVE_BUDGET, UNSEEN_MIN, cold, compute, first_fit, fused_search,
+        left_out, loops, outside_band, too_many_callbacks, within_budget,
     };
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};

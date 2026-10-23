@@ -5474,3 +5474,77 @@ through `TierHost::object` (22 percent of the main thread's instructions in the 
 - **A `TempRoot` of a fat pair reads both words in place** (`Gen::host` of 16 bytes, then the heap tags test of the two
   words) and calls `yavs_rt_fast` (`FAST_FAT_ROOT`) only where they cannot be reached inline: 22 million callbacks in the
   window generator, 1 percent of its instructions. LLVM-only.
+
+## Compiled clocked RTL processes, round 4: the exits, the cold paths, the frame's layouts (yavs-llvm, yavs-interp, yavs-kernel, yavs-ir, #532, #339, 2026-10-23)
+
+Compiled clocked RTL ran about the interpreter's instructions in more cycles (`neorv32_single_min` and
+`fletcher_bufferwriter_512` under `--tier=llvm`: IPC 1.4 to 1.8 against 2.2 to 2.4, branch misses 3 to 4 times, L1
+instruction-cache misses 3 times, instruction TLB misses 30 times). Two causes, found with `perf` and the census
+(`YAVS_TIER_CENSUS`, below): every exit from compiled code to the host is 400 to 600 instructions with cold branches on
+both sides (14 million of them on the CPU design, 64 million on the wide-vector one), and the code of a process
+interleaved its rare paths with the hot ones. Decisions, each tagged by what a second code generator shares:
+
+- **`YAVS_TIER_CENSUS=1` (or `=pc`)** counts the calls compiled code makes into `Host::step`, `signal`, `drive_block`,
+  `drive_wide`, `wait_suspend` and the refusals of `wait_same`, by IR instruction kind (with `pc`: function and pc), and
+  `yavs run` prints them. The tool for choosing the next exit and the test of a fast path (a count that stays at 0).
+  Shared (the host side, `tier_census.rs`).
+- **`rising_edge`, `falling_edge` and `'event` are answered in compiled code** from the kernel's event stamps (the cycle
+  of the last event of each element, signals of at most 64 elements) and the plane block of `'last_value`
+  (`TierSig::stamps`, `last`, `TierFrame::cycle`), after the known-edge test that stays for processes the kernel
+  resumes for their edge. A process behind an asynchronous reset or written as `clk'event and clk = '1'` has no known
+  edge and called the host for every test (7 million times on the CPU design). The forms `rising_edge (clk)`,
+  `clk'event and clk = '1'` (and `'0'`), `wait until clk = '1'` and `wait until rising_edge (clk)` all end in these two
+  primitives, so they take the same fast path, and the look-alikes (`rising_edge` is not `'event and = '1'`: it needs a
+  `0` or `L` before the `1`) keep their meaning (`crates/yavs/tests/compiled_edges.rs`). Shared: the kernel accessors
+  (`Signal::event_view`, `last_view`), the `TierSig` and `TierFrame` fields and the semantics; LLVM: `Gen::edge`,
+  `Gen::sig_event`.
+- **Signal reads without a call**: `SigReadScalar` of a signal that keeps no codes reads the kernel's plane blocks
+  (`TierSig::planes`) or, for an enumeration, integer, boolean, real or time signal, its bytes (`TierSig::bytes`, `es`; a
+  four-byte element sign-extended as `cell` does); `SigRead` of any length builds the planes from the kernel's blocks with
+  the pure helper `yavs_rt_planes` where the codes are not there (wider than 64 elements, or a bus). Shared: the
+  accessors and fields; LLVM: `sig_read_scalar`, `sig_read_planes`.
+- **`Drive` of one waveform element**: `drive_now` takes 1 to 64 logic elements (`Ctx::assign_planes_now`, before only one
+  element) and one scalar of a byte signal (`Ctx::assign_bytes_now`; the waveform element is 16 bytes there, bit 1 of the
+  flags of `yavs_rt_drive`), and more than 64 elements go to `TierHost::drive_wide` (bit 2) instead of the generic
+  `signal` fallback. Shared: the two kernel entry points and the host method; LLVM: `drive_block`.
+- **`LEq` of 1 to 64 elements** is the four planes under a mask, **`LFill`** of a run inside one plane block four masked
+  stores. LLVM only (a second generator would lower the same way or keep stepping).
+- **A wait of several ranges is named once** (kernel): `Ctx::wait_on_again` answers true for the next range of the last
+  wait in order (`ProcState::matched`), `again` once all are named, so a process that waits on `a, b, c` registers nothing
+  after its first activation, in the interpreter and from compiled code (one callback per name before: 2.9 million of 14
+  on the CPU design). A wait that ends after a part, or names another range, takes the part from `sens_prev` ahead of
+  the rest (`Ctx::wait_on`, `commit_rest`). Shared.
+- **`static_wait` accepts the split sensitivity lists** (shared, `pre.rs`): the instance-constant pass copies the block that
+  ends in a sensitivity list's wait (one copy stores the signal references, one loads them), so the process had two
+  suspension points and none of its waits was skipped (`ctrl_comb_proc` of the wide-vector design: 15 `WaitOn`
+  callbacks per activation). A process with a sensitivity list waits for the same list at every suspension point; the
+  copy that qualifies stands for them (`compiled_waits.rs`).
+- **The layout of a record is kept in the frame** (shared IR, `opt/layout_cache.rs`, `Inst::LayoutOf::cache`): a
+  `LayoutOf` of a record or of an array whose element layout the descriptor decides is a walk over the descriptor, and
+  compiled code stepped it (32 million times in the wide-vector design: every field access of a record whose arrays have
+  generic widths). The process's frame gets one slot per such type (flag, descriptor bytes, layout words); a tier that
+  keeps layouts compares the descriptor bytes with the slot's copy at each use and answers with the slot's address, else
+  makes the layout and keeps it. Nothing is assumed about the descriptor (an earlier idea, treating the descriptor
+  pointer loaded from a frame slot as instance-constant, needs a contract the IR does not have: descriptors of heap
+  objects are memory like any other). The interpreter ignores the slot (its per-type memo and the `FieldOf` fusion do
+  the same); compiled code hits without a call (`layout_keep` fills it after the interpreter's step).
+- **`TempRoot` of a fat pair and a `Stmt` with recorded roots use the host's light functions in frame-mode code too**
+  (`yavs_rt_troot`, `yavs_rt_endstmt`, as native frames do), not the generic `signal` step. LLVM.
+- **The rare paths are out of line** (LLVM only): the slow path of every inline fast path (`slow_path`) and the failed
+  lookup of `Gen::host` are in `Cur::cold`, behind the rest of the function, and their callbacks carry the `cold`
+  attribute, so the optimising code generator places them away too; the hot path falls through. Branch misses on the CPU
+  design fell by 25 to 30 percent from this alone, the instructions are unchanged.
+- **A constant `SigVal` is two deferred registers** (LLVM only): the index of the instance signal and the offset are
+  known, so the pair is a constant to every later guard and the instruction leaves to the interpreter (`exit_if`) in the
+  one case that fails, instead of a stored pair and a guard with a slow path.
+
+Not changed, for the policy owner: `lower::is_inline` still counts the signal operations among the instructions that
+leave compiled code (the `too_many_callbacks` rule of `--tier=auto`), and the rules of a clocked process made few times or
+a small part of the run (`RTL_INSTANCES`, `RTL_SHARE`) are as before. Measured and not built: `optsize` on the process
+functions (no change in size or cycles), the small code model with position-independent code (17 percent fewer branch
+misses, cycles equal).
+
+Ideas taken from the reference simulator (sim1; read for the design, no code taken): its `'event` and `rising_edge` are
+a flag of the signal the runtime keeps up to date and the compiled code tests, not a call (ours: the event stamp and
+the last-value planes, tested in place); and a process there is compiled once per architecture and takes its
+instance by pointer, which is what our one function per process of a design unit already is.

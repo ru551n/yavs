@@ -6149,6 +6149,10 @@ The implicit GUARD signal starts as the guard condition on the initial values (`
 signals, where the references update it in the same cycle (needs a kernel update-phase
 evaluation of the condition).
 
+
+
+
+
 ## Guarded record signals (#595, 2026-10-23)
 
 A `bus` or `register` record signal whose subtype has a record resolution function elaborates
@@ -6278,3 +6282,34 @@ Warm analysis (files already in the library) is 0.94 to 1.01 in instructions: it
 realbench test, cold analysis of the whole corpus manifest one file per call (`perf stat`, core 7, instructions): surf 44.1 G to 42.1 G,
 vhdl-extras 1.50 G to 1.22 G, json-for-vhdl 11.3 G to 9.3 G; osvvm (core 6) 16.1 G to 13.0 G. The wall columns are also noisy because
 sim1's own time moved by up to 1.5x between the two runs; use the instruction columns.
+
+## llvm: compiled clocked RTL, round 4, 2026-10-23 (#532, #339)
+
+Exits and layout of compiled clocked RTL (decisions.md "Compiled clocked RTL processes, round 4"). What compiled code
+sends to the host (`YAVS_TIER_CENSUS=1`, `--tier=llvm`, whole run; the "before" counts are the last snapshot of the
+same census at 500 000-call steps, so they are lower bounds):
+
+| Design | calls before | calls now | what was left |
+|---|---:|---:|---|
+| `neorv32_single_min` | 18.7 M and more (7.0 M `rising_edge`, 3.7 M `LEq`, 2.9 M `WaitOn`, 2.4 M and 2.0 M signal reads, 1.1 M and 20.5 M `Drive`) | 1.0 M | `Cat`, `TempRoot`/`Stmt` pairs of strings, `**` |
+| `fletcher_bufferwriter_512` | 68 M (31.9 M `LayoutOf`, 8.5 M `WaitOn`, 8.4 M `TempRoot`, 5.9 M `Stmt`, 4.5 M and 4.0 M signal reads and drives) | 7.3 M | wide `Drive`s through `drive_wide` (3.6 M), `LFill`, `LCopy` over 64 elements |
+
+Cost of the compiled run against the interpreter, `perf stat` of the simulation phase (the same run to time 0
+subtracted), core 3, bench builds (`tools/build-bench.sh`), median of 5 interleaved, host load average 20 to 30 so the
+spread of cycles is 2 to 37 percent: cycles (G) / instructions (G).
+
+| Design, tier | main before | with the round | interp (both) |
+|---|---:|---:|---:|
+| `neorv32_single_min` `--tier=llvm`, optimised code generator | 74.2 / 81.8 | 66.0 / 73.6 | 59.5 / 94.4 |
+| same, default `--tier=llvm` (unoptimised code generator over 150000 instructions) | 85.4 / 90.8 | 79.3 / 83.5 | |
+| same, `--tier=auto --tier-heat=1,0,0` (every executed function compiled) | 80.5 / 87.3 | 71.4 / 79.7 | |
+| `fletcher_bufferwriter_512` `--tier=llvm`, optimised | 102.9 / 123.2 | 92.2 / 106.9 | 80.4 / 128.8 |
+| same, `--tier=auto --tier-heat=1,0,0` | 110.6 / 131.5 | 101.5 / 115.3 | |
+
+Compiled clocked RTL executes 20 to 25 percent fewer instructions than the interpreter now and takes 11 to 15 percent
+more cycles (IPC 1.1 against 1.6 on the CPU design): the branch misses (407 M against 219 M), instruction-cache misses
+and instruction TLB misses of unique code per process remain, and so does the kernel's share (35 to 45 percent of the
+run, identical in both tiers). The default `--tier=auto` still compiles none of these processes; its rules
+(`RTL_INSTANCES`, `RTL_SHARE`, `too_many_callbacks`, which counts the signal operations compiled code now answers
+itself as callbacks) are unchanged. The interpreter gained 1.2 percent of its instructions on `fletcher_bufferwriter_512`
+(the waits of split sensitivity lists) and nothing elsewhere; the per-process frames grow only under `--tier=llvm`.

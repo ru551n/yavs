@@ -3963,7 +3963,7 @@ the native process first, then the edge path itself.
   in one pass per time step, the waiters of a value are woken when it changes, an empty phase costs nothing): (1) `last_delta`
   no longer runs `run_batch` for an empty postponed list (~180 instructions, and `last_ran` kept); (2) a cycle whose one due
   entry is a driver of an independent signal in the future queue pops the heap and applies the transaction in place
-  (`update_one_timed`; the second heap item must not be due), and finishes it without `finish_signal` when nothing else is
+  (`update_timed`; with a second item due see round 17), and finishes it without `finish_signal` when nothing else is
   pending; (3) a signal with one waiter list of at most 8 resident, alive waiters wakes them in `cycle` without
   `take_woken` and its scan (`Waiters::small_list`; any stale or plain waiter takes the scan as before), and `build_cache`
   is asked only for 16 or more waiters; (4) `Ctx::assign_later`. `examples/clk.rs` (one clock, kernel alone) goes from 2032
@@ -4002,7 +4002,7 @@ the native process first, then the edge path itself.
   implicit signal the kernel updates per event (4.4 times the instructions of `rising_edge` on `rtl_ff`).
   `Signal::event_in` of one element is a compare instead of a scan.
 - **A clock generator re-arms itself** (`SimControl::rearm`, `Process::generator`). When the transaction of a
-  `ToggleProcess` driver matures through the quick path of `update_one_timed` and makes an event (so the signal is plain
+  `ToggleProcess` driver matures through the quick path of `update_timed` and makes an event (so the signal is plain
   and the generator its sole source), the kernel does what the process would do on that event: the next quick transaction
   with the complement of the new value, its queue entry, and the process stays suspended. The process is not woken: its
   `ready` flag is set until the end of the cycle's wake phase (`wake` ignores a ready process), it is taken out of the
@@ -4093,6 +4093,26 @@ activations, 41% of `fletcher_bufferreader`'s, 22% of the writer's, 63% of `poc_
   to 5 alternating runs on cores 10 and 11): `neorv32_single_min` 0.745 / 0.689 (8.3 M of 18.1 M activations skipped),
   `fletcher_bufferreader` 0.80 / 0.82, `fletcher_bufferwriter_512` 0.97 / 0.96, `sc5_fifo_repack` 0.96 / 0.96, `poc_cache_cpu` 1.00 /
   0.99, `sc5_timestamp` 1.01 / 1.00, `rtl_ff` 1.006 / 1.007, `rtl_lfsr` 1.002 / 1.000.
+
+## Kernel round 17: coincident timed entries (yavs-kernel, #440, 2026-10-23)
+
+The baseline of this round (exact per-function counts from a ptrace single-stepper over `examples/clk.rs` and over windows of
+`sc5_timestamp`, `neorv32_single_min` and `rtl_fan`, `perf record` cycles of the real-world suite) put the kernel at 37 to 40% of
+the cycles of the CPU and fletcher designs, 63% of `sc5_timestamp` (three clocks) and 54% of `rtl_chain`. A bare clock edge is 933
+instructions of the kernel (`examples/clk.rs`), so the edge path of round 15 holds; the cost the exact counts found next was the
+general update path for every cycle where two clocks edge together (`update_general` 400000 of 3.25 M cycles in
+`sc5_timestamp`, 4700 instructions per such cycle against 2800 for a lone edge).
+
+- **A cycle with several timed entries due stays on the timed path** (`SimControl::update_timed`, `update_timed_many`): up to four
+  entries popped from the future queue, each a driver of a distinct independent signal (applied in signal order, as the general
+  path does, an error taken at the first signal that has one after all were updated) or a timeout (the process wakes if its
+  generation matches). An implicit-signal entry, a signal with a port or group, two drivers of one signal, a fifth entry: the
+  entries popped so far go back on the heap and the general path runs. Every generator that makes an event re-arms itself
+  (`rearm`), so `skip_wake` is a list of up to four processes (`skip_n`); a lone due entry is the old path. `perf.rs`
+  `clk_together` (three clocks that edge together, a process whose timeouts fall on the edges): `update_general` 68 to 0.
+  `tests/toggle.rs` `clocks_that_edge_together`: four generators (two with equal periods) with readers, a timeout process, a
+  deposit and a force and release on one: native generators and their closures give the same trace (and the same trace as
+  the kernel before this change, checked once by running the test on both).
 
 ## GUARD changes in the cycle of its condition (yavs-kernel, yavs-elab, #464, 2026-10-23)
 

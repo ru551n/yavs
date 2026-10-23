@@ -27,6 +27,8 @@ pub use hang::{DeadClock, LoopCause, LoopLink, ProcWait, StuckProc, StuckReport,
 
 /// Smallest batch of ready processes handed to the thread pool.
 const PAR_BATCH: usize = 32;
+/// Generators that re-arm themselves in one cycle (clocks that edge together); more resume.
+const SKIP_MAX: usize = 4;
 
 /// Kernel settings.
 #[derive(Clone, Debug)]
@@ -802,8 +804,10 @@ pub struct SimControl {
     /// `u32::MAX`; empty without generators).
     toggles: Vec<Toggle>,
     toggle_ix: Vec<u32>,
-    /// The generator whose resumption this cycle's event makes unnecessary (`rearm`).
-    skip_wake: Option<u32>,
+    /// The generators whose resumption this cycle's events make unnecessary (`rearm`): the first
+    /// `skip_n` of `skip_wake`.
+    skip_wake: [u32; SKIP_MAX],
+    skip_n: usize,
     /// The `_guard` processes of guarded blocks (`Builder::guard_process`) and, per signal, the
     /// ones whose conditions read it. Their `ProcMeta::ready` stays true, so no wake queues them.
     guard_procs: Vec<u32>,
@@ -1119,7 +1123,8 @@ impl SimControl {
             batch_mono: false,
             toggles: Vec::new(),
             toggle_ix: Vec::new(),
-            skip_wake: None,
+            skip_wake: [0; SKIP_MAX],
+            skip_n: 0,
             postponed: Vec::new(),
             last_ran: Vec::new(),
             late: Vec::new(),
@@ -1828,8 +1833,10 @@ impl SimControl {
                 continue;
             }
             // Only the clock generator that re-armed itself waits for it: nothing to wake.
-            if let Some(p) = self.skip_wake
-                && self.waiters[s as usize].only_resident(p)
+            if self.skip_n != 0
+                && self.skip_wake[..self.skip_n]
+                    .iter()
+                    .any(|&p| self.waiters[s as usize].only_resident(p))
             {
                 sig.changed.clear();
                 continue;
@@ -1962,7 +1969,7 @@ impl SimControl {
                                 self.wake(p, false);
                             }
                         }
-                        if let Some(p) = self.skip_wake {
+                        for &p in &self.skip_wake[..self.skip_n] {
                             // `pids` is in process order: find it, or fall back to a scan.
                             match pids.binary_search(&p) {
                                 Ok(i) => _ = pids.remove(i),
@@ -2000,9 +2007,10 @@ impl SimControl {
         }
 
         self.changed_sigs.clear();
-        if let Some(p) = self.skip_wake.take() {
+        for &p in &self.skip_wake[..self.skip_n] {
             self.procs[p as usize].ready = false;
         }
+        self.skip_n = 0;
 
         // e: run the resumed non-postponed processes.
         let mut ready = std::mem::take(&mut self.ready);
@@ -2124,7 +2132,7 @@ impl SimControl {
         if self.ops.is_empty()
             && self.implicits.is_empty()
             && self.queue.next_delta.is_empty()
-            && let Some(r) = self.update_one_timed()
+            && let Some(r) = self.update_timed()
         {
             self.stats.update_timed += 1;
             return r;
@@ -2338,27 +2346,39 @@ impl SimControl {
         r
     }
 
-    /// The update of a cycle whose one due entry is a driver of an independent signal in the
-    /// future queue (the edge of a clock generator, the end of a delayed assignment): taken off
-    /// the heap and applied in place, with no work lists. `None` (nothing done) for anything
-    /// else: a second entry due, a timeout, a port or group, a force.
+    /// The update of a cycle whose due entries are all in the future queue and are drivers of
+    /// independent signals (the edge of a clock generator, the end of a delayed assignment) or
+    /// timeouts: taken off the heap and applied in place, with no work lists. A few clocks that
+    /// edge together are one such cycle. `None` (nothing done) for anything else: a timeout of
+    /// an implicit signal, a port or group, a force, two drivers of one signal, too many.
     #[inline]
-    fn update_one_timed(&mut self) -> Option<Result<(), ErrorKind>> {
-        let (now, cycle) = (self.now, self.cycle);
+    fn update_timed(&mut self) -> Option<Result<(), ErrorKind>> {
+        let now = self.now;
         let l = self.queue.later.peek()?;
-        if l.time > now
-            || l.key >> 32 != 0
-            || self.queue.later.second_time().is_some_and(|t| t <= now)
-        {
+        if l.time > now {
             return None;
         }
+        if l.key >> 32 != 0 || self.queue.later.second_time().is_some_and(|t| t <= now) {
+            return self.update_timed_many();
+        }
         let d = l.key as u32;
-        let info = &self.drivers[d as usize];
-        let s0 = info.signal.0;
-        if !self.independent[s0 as usize] {
+        if !self.independent[self.drivers[d as usize].signal.0 as usize] {
             return None;
         }
         self.queue.later.pop();
+        if let Err(e) = self.apply_timed(d) {
+            return Some(Err(e));
+        }
+        Some(self.finish_direct())
+    }
+
+    /// Apply the matured quick or waveform transaction of driver `d` (of an independent signal)
+    /// and finish its signal; a generator's driver re-arms itself (`rearm`).
+    #[inline(always)]
+    fn apply_timed(&mut self, d: u32) -> Result<(), ErrorKind> {
+        let (now, cycle) = (self.now, self.cycle);
+        let info = &self.drivers[d as usize];
+        let s0 = info.signal.0;
         let sig = &mut self.signals[s0 as usize];
         let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
         let w = &mut slot.st.waveforms[info.local as usize];
@@ -2375,10 +2395,7 @@ impl SimControl {
         // Nothing but the quick transaction: its event is all there is to finish.
         let fused = sig.end_apply();
         let changed = if sig.unfinished() || sig.has_pending() {
-            match finish_applied(sig, fused, now, cycle) {
-                Ok(c) => c,
-                Err(e) => return Some(Err(e)),
-            }
+            finish_applied(sig, fused, now, cycle)?
         } else {
             fused
         };
@@ -2391,6 +2408,74 @@ impl SimControl {
             && k != u32::MAX
         {
             self.rearm(k as usize, q.code);
+        }
+        Ok(())
+    }
+
+    /// `update_timed` for several entries due now (`TIMED_MAX` of them at most): drivers of
+    /// distinct independent signals, applied in signal order as the general path does, and
+    /// timeouts. Entries taken off the heap before one that does not fit go back on it.
+    fn update_timed_many(&mut self) -> Option<Result<(), ErrorKind>> {
+        const TIMED_MAX: usize = 4;
+        let now = self.now;
+        // (signal, driver) and (process, generation).
+        let mut drv = [(0u32, 0u32); TIMED_MAX];
+        let mut tmo = [(0u32, 0u64); TIMED_MAX];
+        let (mut nd, mut nt) = (0, 0);
+        while let Some(l) = self.queue.later.peek() {
+            if l.time > now {
+                break;
+            }
+            let fits = match l.key >> 32 {
+                0 => {
+                    let d = l.key as u32;
+                    let s = self.drivers[d as usize].signal.0;
+                    let ok = nd < TIMED_MAX
+                        && self.independent[s as usize]
+                        && drv[..nd].iter().all(|x| x.0 != s);
+                    if ok {
+                        drv[nd] = (s, d);
+                        nd += 1;
+                    }
+                    ok
+                }
+                1 => {
+                    let ok = nt < TIMED_MAX;
+                    if ok {
+                        tmo[nt] = (l.key as u32, l.generation);
+                        nt += 1;
+                    }
+                    ok
+                }
+                _ => false,
+            };
+            if !fits {
+                // Back on the heap, as they were: the general path takes all of them.
+                for &(_, d) in &drv[..nd] {
+                    self.queue.later.push(now, u64::from(d), 0);
+                }
+                for &(p, g) in &tmo[..nt] {
+                    self.queue.later.push(now, 1 << 32 | u64::from(p), g);
+                }
+                return None;
+            }
+            self.queue.later.pop();
+        }
+        for &(p, g) in &tmo[..nt] {
+            if self.procs[p as usize].generation == g {
+                self.wake(p, true);
+            }
+        }
+        drv[..nd].sort_unstable();
+        // An error is taken at the first signal that has one, after all of them were updated.
+        let mut failed = None;
+        for &(_, d) in &drv[..nd] {
+            if let Err(e) = self.apply_timed(d) {
+                failed.get_or_insert(e);
+            }
+        }
+        if let Some(e) = failed {
+            return Some(Err(e));
         }
         Some(self.finish_direct())
     }
@@ -2406,7 +2491,7 @@ impl SimControl {
         let Ok(next) = self.now.checked_add(t.period) else {
             return;
         };
-        if self.procs[p as usize].perm == 0 || self.skip_wake.is_some() {
+        if self.procs[p as usize].perm == 0 || self.skip_n == SKIP_MAX {
             return;
         }
         let info = &self.drivers[d as usize];
@@ -2425,7 +2510,8 @@ impl SimControl {
         self.queue.later.push(next, u64::from(d), 0);
         // `wake` ignores a process that is ready already.
         self.procs[p as usize].ready = true;
-        self.skip_wake = Some(p);
+        self.skip_wake[self.skip_n] = p;
+        self.skip_n += 1;
     }
 
     /// The signal of `queue.next_delta` when every entry is a driver of that one independent

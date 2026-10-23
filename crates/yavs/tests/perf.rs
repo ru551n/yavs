@@ -185,6 +185,18 @@ case!(
     ]
 );
 case!(
+    clk_together,
+    "n=50,40,33,40",
+    &[],
+    [
+        ("cycles", Max(350)),
+        ("process_runs", Max(440)),
+        ("update_general", Max(0)),
+        ("update_timed", Min(185)),
+        ("ops", Max(5080)),
+    ]
+);
+case!(
     reg_planes,
     "c=",
     &[],

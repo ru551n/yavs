@@ -225,3 +225,85 @@ fn forces_and_deposits_resume_a_rearmed_clock() {
     assert_eq!(a, b);
     assert!(a.len() > 30, "{a:?}");
 }
+
+/// Clocks that edge at the same times (4, 5, 5 and 6 ns half periods), a process waiting 10 ns
+/// (its timeouts fall on edges), readers of every clock, and ops on one of them: the cycles with
+/// several due entries are updated together and each generator re-arms itself.
+fn clocks_together(native: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let one = "1".parse::<LogicVec>().unwrap();
+    let zero = "0".parse::<LogicVec>().unwrap();
+    let mut clocks = Vec::new();
+    for (k, half) in [4, 5, 5, 6].into_iter().enumerate() {
+        let c = b.signal(&format!("c{k}"), SignalType::logic(1), &zero);
+        let d = b.driver(c);
+        let delay = ns(half);
+        let proc: Box<dyn Process> = if native {
+            Box::new(ToggleProcess::new(c, 0, d, delay, DelayMode::INERTIAL))
+        } else {
+            Box::new(p(move |ctx| {
+                let next = StdULogic::from_code_pub(ctx.elem_code(c, 0)?).not() as u8;
+                ctx.assign_code(d, None, delay, next, DelayMode::INERTIAL)?;
+                if !ctx.wait_same() {
+                    ctx.wait_on(c)?;
+                }
+                Ok(())
+            }))
+        };
+        b.process_boxed(&format!("clk{k}"), NONE, &[d], proc);
+        let n = b.signal(&format!("n{k}"), SignalType::bytes(1, 1), &[0]);
+        let dn = b.driver(n);
+        let pid = b.process(
+            &format!("rise{k}"),
+            NONE,
+            &[dn],
+            p(move |ctx| {
+                let v = ctx.value(n)?[0];
+                ctx.assign(dn, None, &[(Time::ZERO, &[v + 1][..])], DelayMode::INERTIAL)?;
+                if !ctx.wait_same() {
+                    ctx.wait_on(c)?;
+                }
+                Ok(())
+            }),
+        );
+        b.edge_trigger(
+            pid,
+            EdgeTrigger {
+                signal: c,
+                elem: 0,
+                rising: true,
+                legacy: false,
+                reset: None,
+            },
+        );
+        clocks.push(c);
+    }
+    let t = b.signal("t", SignalType::bytes(1, 1), &[0]);
+    let dt = b.driver(t);
+    b.process(
+        "ticker",
+        NONE,
+        &[dt],
+        p(move |ctx| {
+            let v = ctx.value(t)?[0];
+            ctx.assign(dt, None, &[(Time::ZERO, &[v + 1][..])], DelayMode::INERTIAL)?;
+            ctx.wait_for(ns(10))
+        }),
+    );
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(37)).unwrap();
+    sim.deposit(clocks[1], &one).unwrap();
+    sim.run_until(ns(61)).unwrap();
+    sim.force(clocks[2], ForceMode::Driving, &one).unwrap();
+    sim.run_until(ns(83)).unwrap();
+    sim.release(clocks[2], ForceMode::Driving).unwrap();
+    sim.run_until(ns(250)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn clocks_that_edge_together() {
+    let (a, b) = (clocks_together(true), clocks_together(false));
+    assert_eq!(a, b);
+    assert!(a.len() > 200, "{}", a.len());
+}

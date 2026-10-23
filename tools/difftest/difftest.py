@@ -115,7 +115,7 @@ FMT2_CTL = re.compile(r"^simulation (finished|stopped) @(\d+)([a-z]+)(?: with st
 FMT2_ERR = re.compile(r"^\w+:error: (.*)$")
 FMT2_INFO = re.compile(r"^\w+:info: ")
 YAVS_RTE = re.compile(r"^error\[(?:E3\d{3}|E9999)\]: (.*)$")
-YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)")
+YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)(?:, in process (\S+))?")
 
 
 def yavs_fatal(out, err):
@@ -133,6 +133,10 @@ def yavs_fatal(out, err):
         at = next((a for a in at if a), None)
         if at:
             fatal.append(f"** Fatal: {at.group(1)}{at.group(2)}+{at.group(3)}: {m.group(1)}")
+            # sim1's trace names the process only when the error is inside a subprogram, which
+            # yavs shows as a "called from here" label (#506).
+            if at.group(4) and any("called from here" in l for l in lines[i:j]):
+                fatal.append(f"   Process {at.group(4)}")
             i = j
             continue
         if not (fatal and lines[i].startswith("error: aborting due to")):

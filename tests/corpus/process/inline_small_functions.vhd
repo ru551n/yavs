@@ -1,4 +1,4 @@
--- difftest: top=inline_small_functions std=2008 exit=1 ignore=path
+-- difftest: top=inline_small_functions std=2008 exit=1
 -- Small subprograms with branches, a case, recursion, a protected object and byte variables that
 -- the optimiser copies into their callers: results, the order of reports and runtime errors are
 -- the calls' own.

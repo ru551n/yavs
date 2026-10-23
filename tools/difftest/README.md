@@ -64,7 +64,8 @@ femtoseconds from whatever unit the simulator printed; the reference simulator s
 traces and the second reference simulator `instance:`/`from:` lines dropped (the first process trace gives `path`);
 the reference simulator's trailing full stop on "Assertion violation." removed and the path of that default assert
 message dropped (the reference simulator prints a source snippet instead of the process; yavs keeps the `Process`
-line of its CLI format); `FINISH called`/`simulation finished`
+line of its CLI format); a fatal runtime error has a `path` only when it happens inside a subprogram, the
+reference simulator's trace then names the process (yavs: the note "in process P" of a diagnostic with a "called from here" label); `FINISH called`/`simulation finished`
 unified; `sim2:info:` lines dropped. Streams are kept in separate sections (report text goes
 to stderr in the reference simulator and stdout in the second reference simulator, so cross-stream order is not compared).
 

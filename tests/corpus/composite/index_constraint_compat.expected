@@ -1,4 +1,4 @@
 exit	1
 diag	note	0	0	:index_constraint_compat:_p0	mk(0) 2
 diag	note	0	0	:index_constraint_compat:_p0	mk(1) 1
-diag	fatal	0	0	-	value -1 outside of NATURAL range 0 to 2147483647 for index constraint
+diag	fatal	0	0	:index_constraint_compat:_p0	value -1 outside of NATURAL range 0 to 2147483647 for index constraint

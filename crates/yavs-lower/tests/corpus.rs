@@ -262,6 +262,7 @@ const PASS: &[&str] = &[
     "postponed/postponed_basic",
     "postponed/postponed_wait",
     "process/call_conversions",
+    "process/call_error_path",
     "process/call_conversions_unconstrained",
     "process/case_if",
     "process/wait_in_sensitivity_proc",
@@ -564,9 +565,14 @@ fn simulate(file: &Path) -> Result<String, String> {
                 yavs_kernel::ErrorKind::Runtime(m) => m.clone(),
                 k => k.to_string(),
             };
+            // The reference names the process only for an error inside a subprogram (#506).
+            let path = match (&e.process, e.trace.len() > 1) {
+                (Some((_, p)), true) => p.as_str(),
+                _ => "-",
+            };
             writeln!(
                 out,
-                "diag\tfatal\t{}\t{}\t-\t{}",
+                "diag\tfatal\t{}\t{}\t{path}\t{}",
                 e.time.as_fs(),
                 e.delta,
                 escape(&msg)

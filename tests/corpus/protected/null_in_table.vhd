@@ -1,7 +1,6 @@
--- difftest: top=null_in_table std=2008 exit=1 ignore=path
+-- difftest: top=null_in_table std=2008 exit=1
 -- A null access value met in a table behind a protected method: the first reads work, the
 -- read of the table entry nobody allocated stops the run with the null dereference.
--- ignore=path: the reference simulator names the process of a fault inside a method.
 entity null_in_table is end;
 architecture t of null_in_table is
   type ints_t is array (natural range <>) of integer;

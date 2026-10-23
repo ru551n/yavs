@@ -2,4 +2,4 @@ exit	1
 diag	note	0	0	:loop_invariant_replay:_p0	sums 620
 diag	note	0	0	:loop_invariant_replay:_p0	sums 730
 diag	note	0	0	:loop_invariant_replay:_p0	sums 0
-diag	fatal	0	0	-	index 0 outside of range 1 to 4 for v
+diag	fatal	0	0	:loop_invariant_replay:_p0	index 0 outside of range 1 to 4 for v

@@ -1,3 +1,3 @@
 exit	1
 diag	note	0	0	:aggregate_target_range_length:_p0	hi(3)=50 lo(0)=0
-diag	fatal	0	0	-	value length 4 does not match target length 3
+diag	fatal	0	0	:aggregate_target_range_length:_p0	value length 4 does not match target length 3

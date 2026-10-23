@@ -2,4 +2,4 @@ exit	1
 diag	note	0	0	:subtype_range_compat:_p0	ok 2
 diag	note	0	0	:subtype_range_compat:_p0	first(2) 6
 diag	note	0	0	:subtype_range_compat:_p0	first(3) 6
-diag	fatal	0	0	-	value 0 outside of POSITIVE range 1 to 2147483647 for range constraint
+diag	fatal	0	0	:subtype_range_compat:_p0	value 0 outside of POSITIVE range 1 to 2147483647 for range constraint

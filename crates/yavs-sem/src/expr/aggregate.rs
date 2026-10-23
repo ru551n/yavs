@@ -1233,6 +1233,17 @@ pub fn resolve_aggregate(
                             })
                             .collect(),
                     ),
+                    // `x'element` of an array of arrays with open element bounds: the
+                    // part of the object's descriptor after the outer dimensions.
+                    Constraint::FromObject { .. } => Some(
+                        (1..=n_dims)
+                            .map(|dim| RangeC::Attr {
+                                prefix: crate::hir::AttrPrefix::Subtype(ctx),
+                                reverse: false,
+                                dim,
+                            })
+                            .collect(),
+                    ),
                     _ => None,
                 },
             };

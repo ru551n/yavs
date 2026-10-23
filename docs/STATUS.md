@@ -130,6 +130,9 @@ tests are listed in `tools/difftest/external-{sim1,sim2}.pass`; the CI `corpus` 
 against the suites' own verdicts (exit status) without a reference simulator. Every listed test gives
 identical output at `--threads 1` and `--threads 4`.
 
+Correctness fixes found by reviewing the non-pass entries (2026-10-23):
+- `x'element` of an array formal with open element bounds as the target of an `others` aggregate (`issue3204`, second suite): the aggregate takes the actual's element bounds.
+
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 
 Regression guard 2026-10-20 (f2ab69be, release build with the `llvm` feature): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests), the differential corpus passes 354/354 at 1 thread, 4 threads and 4 shuffled threads on the interpreter and, at 1 and 4 threads, with `--tier=llvm`, all 30 analysis corpora match their expected lists, the discrepancy catalogue checks green, the external test runner's 11 suites pass (1344 tests), the second verification library's `.pro` regression passes 314/314 under both 2008 and 2019 and the verification library suite runs 78 pass, 33 fail, 26 skip (no new failure). One regression was found on the way and fixed already: 185 of its 314 tests under 2019 failed between fd35a265 and 33e5f57e (#429).

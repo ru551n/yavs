@@ -8396,13 +8396,14 @@ impl Gen {
                 let at = |sp: u8| self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(sp) << 29));
                 let mut tries = vec![(hit, None)];
                 if !heap {
-                    // The function's own frame (the address of a layout the frame keeps).
-                    if c.nat.is_none() {
-                        tries.push((
-                            self.icmp(IP::LLVMIntEQ, hi, self.mem_ld(c, MEM_FRAME, self.i64)),
-                            Some((MEM_SLOTS, MEM_SLOTS_LEN)),
-                        ));
-                    }
+                    // The interpreter's top frame: the function's own (the address of a layout
+                    // the frame keeps), or for a native frame the frame its chain started in
+                    // (the variables of the process or function that called into compiled
+                    // code, reached through by-reference parameters).
+                    tries.push((
+                        self.icmp(IP::LLVMIntEQ, hi, self.mem_ld(c, MEM_FRAME, self.i64)),
+                        Some((MEM_SLOTS, MEM_SLOTS_LEN)),
+                    ));
                     tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
                     if !write {
                         tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));

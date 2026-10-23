@@ -5864,3 +5864,10 @@ position check and the object lookup at every element: 95 instructions an elemen
   permission of the entry it replaces for the same object) and no entry holds the null handle's value (the sentinel for "none" is
   1, not 0), so the load of the write flag and the test of the handle are gone: five instructions less per `Deref`, one protected
   `get` 359 to 337.
+- **A native frame finds the interpreter's top frame inline** (`Gen::host`, unknown-address chain): the variables of the
+  process or function that called into compiled code, reached by the by-reference parameters of protected methods and
+  helpers, were a callback each (`yavs_rt_host`, 33 million of the window generator's 43 million, found with the callback
+  counters of an `op-census` build: `YAVS_COUNTERS=1`, `cb_host`, by address space). The frame-mode form tested the view's
+  frame; native frames now do after a miss of the object table. `cb_host` 43.5 M to 5.3 M, main-thread instructions of the
+  window generator (warm `--tier=auto`) about -2.5 percent. A table of 1024 objects instead of 256 halves `cb_fast`
+  (13.7 M to 6.8 M) but moves `cb_host` by 8 percent and was not kept.

@@ -1675,6 +1675,43 @@ fn external_signal_alias_binds_in_elaboration_order() {
     assert_eq!(e.hier.scope(e.nets.obj(o).scope).name.text.as_str(), "u");
 }
 
+/// An external name's subtype indication must give the object's type and the lengths of its
+/// constrained array dimensions (LRM 8.7, #463); an unconstrained one takes the object's.
+#[test]
+fn external_name_subtype_must_match() {
+    let sub = "entity sub is end; architecture a of sub is
+        signal s : bit_vector(3 downto 0); signal b : bit;
+        constant c : integer := 4; begin end;";
+    let one = |name: &str, alias: &str| {
+        let src = format!(
+            "{sub} entity t is end; architecture a of t is
+             begin u : entity work.sub;
+               p : process {alias} begin wait; end process;
+             end;"
+        );
+        match try_elab(name, &src, "t", &[]).1 {
+            Ok(_) => Vec::new(),
+            Err(v) => v.into_iter().map(|(c, _)| c).collect(),
+        }
+    };
+    for ok in [
+        "alias x is <<signal .t.u.s : bit_vector(3 downto 0)>>;",
+        "alias x is <<signal .t.u.s : bit_vector(0 to 3)>>;",
+        "alias x is <<signal .t.u.s : bit_vector>>;",
+        "alias x is <<constant .t.u.c : natural>>;",
+    ] {
+        assert!(one("ext_ok", ok).is_empty(), "{ok}");
+    }
+    for bad in [
+        "alias x is <<signal .t.u.s : bit_vector(7 downto 0)>>;",
+        "alias x is <<signal .t.u.b : integer>>;",
+        "alias x is <<signal .t.u.s : bit>>;",
+        "alias x is <<constant .t.u.c : bit>>;",
+    ] {
+        assert_eq!(one("ext_bad", bad), [codes::EXTERNAL_MISMATCH], "{bad}");
+    }
+}
+
 const VAR_PORT_PKG: &str = "
   package pk is type prot_t is protected procedure p; end protected; end;
   package body pk is

@@ -550,6 +550,13 @@ fn body_not_elaborated() {
     run_snapshot("body_not_elaborated", 2);
 }
 
+/// An external name whose subtype indication has another length than its object is E2121
+/// (LRM 8.7, #463).
+#[test]
+fn external_mismatch() {
+    run_snapshot("external_mismatch", 2);
+}
+
 /// Analyze `tests/cli/NAME.vhd`, run its entity `NAME`, check the exit code and compare stderr
 /// with `NAME.stderr`.
 fn run_snapshot(name: &str, code: i32) {

@@ -3782,6 +3782,78 @@ impl Model {
         x: yavs_sem::ExternalId,
         scope: ScopeId,
     ) -> R<ExtTarget> {
+        let t = self.find_external(db, x, scope)?;
+        self.check_external(db, x, scope, &t)?;
+        Ok(t)
+    }
+
+    /// The type of the object an external name denotes is the type of its subtype indication,
+    /// and an array's constrained dimensions have the object's lengths (LRM 8.7): a mismatch
+    /// is an error when the name is bound.
+    fn check_external(
+        &mut self,
+        db: &Db,
+        x: yavs_sem::ExternalId,
+        scope: ScopeId,
+        t: &ExtTarget,
+    ) -> R<()> {
+        let ext = &db.externals[x];
+        let want = db.base(ext.subtype);
+        if matches!(db.types[want].kind, yavs_sem::types::TypeKind::Error) {
+            return Ok(());
+        }
+        let (name, class, got, shape) = match *t {
+            ExtTarget::Signal(o) => {
+                let obj = self.nets.obj(o);
+                (obj.name.text.to_string(), "signal", obj.shape.ty(), Some(o))
+            }
+            ExtTarget::Value(_, d) => {
+                let DeclKind::Object(o) = &db.decls[d].kind else {
+                    return Ok(());
+                };
+                let class = if ext.class == ExternalClass::Constant {
+                    "constant"
+                } else {
+                    "shared variable"
+                };
+                (
+                    db.decls[d].name.to_string(),
+                    class,
+                    db.base(o.subtype),
+                    None,
+                )
+            }
+        };
+        let fail = |why: String| {
+            Box::new(
+                Diagnostic::error(
+                    codes::EXTERNAL_MISMATCH,
+                    format!("external name does not match {class} `{name}`: {why}"),
+                )
+                .with_primary(ext.span, "external name")
+                .with_note("the object has the type and the array lengths of the name's subtype indication (LRM 8.7)"),
+            )
+        };
+        if want != got {
+            return Err(fail(format!(
+                "its type is `{}`, the name says `{}`",
+                db.type_name(got),
+                db.type_name(want)
+            )));
+        }
+        let Some(o) = shape else { return Ok(()) };
+        let Some(sub) = self.shape(db, ext.subtype, Some(scope), ext.span)? else {
+            return Ok(()); // unconstrained: the object's bounds
+        };
+        match length_mismatch(&sub, &self.nets.obj(o).shape) {
+            Some((name_n, obj_n)) => Err(fail(format!(
+                "the object has {obj_n} elements, the subtype indication {name_n}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    fn find_external(&mut self, db: &Db, x: yavs_sem::ExternalId, scope: ScopeId) -> R<ExtTarget> {
         use yavs_syntax::ast::PathKind;
         let ext = &db.externals[x];
         let span = ext.span;
@@ -4325,6 +4397,30 @@ impl Model {
             ));
         }
         Ok(())
+    }
+}
+
+/// The first pair of array dimension lengths (the name's, the object's) that differ.
+fn length_mismatch(name: &Shape, obj: &Shape) -> Option<(u64, u64)> {
+    match (name, obj) {
+        (
+            Shape::Array {
+                dims: a, elem: ea, ..
+            },
+            Shape::Array {
+                dims: b, elem: eb, ..
+            },
+        ) => a
+            .iter()
+            .zip(b)
+            .find(|(x, y)| x.len() != y.len())
+            .map(|(x, y)| (x.len(), y.len()))
+            .or_else(|| length_mismatch(ea, eb)),
+        (Shape::Record { fields: a, .. }, Shape::Record { fields: b, .. }) => a
+            .iter()
+            .zip(b)
+            .find_map(|((_, x), (_, y))| length_mismatch(x, y)),
+        _ => None,
     }
 }
 

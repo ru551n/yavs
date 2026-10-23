@@ -84,6 +84,8 @@ pub mod codes {
     pub const VARIABLE_PORT_OPEN: &str = "E2119";
     /// A TIME unit below the resolution limit appears in the design hierarchy (LRM 5.2.4.2).
     pub const TIME_BELOW_RESOLUTION: &str = "E2120";
+    /// An external name's subtype indication does not match the object it names (LRM 8.7).
+    pub const EXTERNAL_MISMATCH: &str = "E2121";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").

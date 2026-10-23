@@ -320,6 +320,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A TIME physical literal or unit name has a unit below the resolution limit selected with `yavs run --resolution` and appears in the design hierarchy, in a package it uses or in code that never runs (LRM 5.2.4.2). A literal whose abstract literal is zero (`0 fs`) is legal, and so is a value such as `0.4 ns` under `ns`: the rule is about the unit, not the value.",
     ),
     (
+        "E2121",
+        "An external name's subtype indication does not match the object it names: the type differs, or a constrained array dimension has another length (LRM 8.7).",
+    ),
+    (
         "W2118",
         "A constant whose initial value calls an impure function cannot be evaluated during elaboration yet; it is evaluated when the simulation starts, so its calls run after the elaboration-time calls instead of in declaration order.",
     ),

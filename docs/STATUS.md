@@ -6297,6 +6297,8 @@ sim1's own time moved by up to 1.5x between the two runs; use the instruction co
 
 ## llvm: compiled clocked RTL, round 4, 2026-10-23 (#532, #339)
 
+The layout slots are made under `--tier=auto` too (2026-10-23, user decision; measurements and cost in `docs/decisions.md` "The layout cache under `--tier=auto`": invisible by default, 42 MiB more peak RSS on `olo_axi_master_full` when everything is compiled at once, 10% fewer instructions on `fletcher_bufferwriter_512`).
+
 Exits and layout of compiled clocked RTL (decisions.md "Compiled clocked RTL processes, round 4"). What compiled code
 sends to the host (`YAVS_COUNTERS=kinds`, formerly `YAVS_TIER_CENSUS=1`, `--tier=llvm`, whole run; the "before" counts are the last snapshot of the
 same census at 500 000-call steps, so they are lower bounds):

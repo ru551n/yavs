@@ -56,7 +56,7 @@ pub use textio::{FILE_INPUT, FILE_OUTPUT};
 pub use tier_census::report as tier_census;
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
 pub use yavs_ir::opt::{
-    compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables,
+    compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables, layout_slots,
 };
 
 use exec::{Fault, Machine, Outcome};

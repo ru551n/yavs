@@ -5569,6 +5569,7 @@ interleaved its rare paths with the hot ones. Decisions, each tagged by what a s
   pointer loaded from a frame slot as instance-constant, needs a contract the IR does not have: descriptors of heap
   objects are memory like any other). The interpreter ignores the slot (its per-type memo and the `FieldOf` fusion do
   the same); compiled code hits without a call (`layout_keep` fills it after the interpreter's step).
+  Under `--tier=auto` too since 2026-10-23 ("The layout cache under `--tier=auto`", at the end).
 - **`TempRoot` of a fat pair and a `Stmt` with recorded roots use the host's light functions in frame-mode code too**
   (`yavs_rt_troot`, `yavs_rt_endstmt`, as native frames do), not the generic `signal` step. LLVM.
 - **The rare paths are out of line** (LLVM only): the slow path of every inline fast path (`slow_path`) and the failed
@@ -5614,3 +5615,38 @@ instance by pointer, which is what our one function per process of a design unit
   that runs 2019 as 64-bit has -2^63. The other reference stays at 32 bits (`integer-low-2019`). The edit is in
   `tools/derive_libs.py` and `lib/std/2019/standard.vhdl` (`lib/SOURCES.md`); arithmetic is checked as before, so
   `integer'low - 1` and `abs integer'low` are `E3009`.
+
+## The layout cache under `--tier=auto` (yavs-ir `opt::layout_slots`, yavs, #532, 2026-10-23)
+
+- **The frame slots of `opt/layout_cache.rs` are made under `--tier=auto` as well as `--tier=llvm`** (user, 2026-10-23, despite
+  the peak memory it costs: the slots are per process instance, so a design of thousands of instances pays them in every
+  run). `yavs run` calls `yavs_interp::layout_slots()` for the tier (`--tier=interp` has none); the switch is part of the
+  optimiser fingerprint (`layouts`), so cache entries of the interpreter and of `auto` never meet. Optimised copies stay
+  portable between runs of the same configuration.
+- **Measured** (bench builds with the `llvm` feature of main before and after, `tools/realbench/run.py --compare`, phase
+  `run`, pinned to cores 10 and 11, median of 3 to 7; peak RSS in MiB largest process, before / after; G = billions of
+  instructions of the whole process, compile thread included). "default" is `--tier=auto` as it ships; "compile at once" is
+  `--tier=auto --tier-heat=1,0,0`, which compiles every process as soon as it is seen and is the case `--tier=llvm` shows:
+
+| test | default: RSS | default: G instr | compile at once: RSS | compile at once: G instr |
+|---|---|---|---|---|
+| `hdlm_axi_fifo` | 50 / 51 | 0.57 / 0.61 | 123 / 122 | 8.97 / 9.05 |
+| `olo_axi_master_full` | 54 / 55 | 1.02 / 1.01 | 219 / 261 | 22.42 / 23.83 |
+| `vunit_axi_dma` | 51 / 51 | 0.53 / 0.53 | 122 / 123 | 7.28 / 7.40 |
+| `poc_cache_cpu` | 37 / 36 | 25.83 / 25.83 | 107 / 107 | 25.71 / 25.72 |
+| `fletcher_bufferwriter_512` | 40 / 40 | 112.93 / 112.92 | 151 / 151 | 121.01 / 108.53 |
+| `neorv32_single_min` | 76 / 76 | 66.20 / 66.19 | 224 / 225 | 87.35 / 87.54 |
+| `hdlm_axi_crossbar` | 51 / 51 | 0.56 / 0.56 | 121 / 121 | 8.09 / 8.07 |
+| `vai_window_gen_interlock` | 136 / 136 | 232.69 / 231.44 | 162 / 163 | 462.62 / 462.62 |
+
+  In the default policy the change is invisible: processes get hot late and few are compiled, so the slots of the others
+  stay in zeroed pages that are never touched (peak RSS within 1 MiB everywhere, instructions within the spread of a run).
+  Where compilation is eager the slots are filled: `fletcher_bufferwriter_512` runs 10% fewer instructions (the 32 million
+  `LayoutOf` calls compiled code made), `olo_axi_master_full` needs 42 MiB more (+19%) and 7% more instructions for no gain
+  (many small record-heavy processes, each with its slots filled and checked once or twice), the rest does not move.
+  The earlier "40 to 180 MB" of the fletcher testbench under `--tier=llvm` is the compile-everything cost (150 MiB here before
+  and after), not the slots'.
+- **Work-counter bounds did not move** (`cargo test -p yavs --features llvm --test perf`: the counters are measured under
+  `--tier=interp` and `--tier=llvm`, where nothing changed); there is no deterministic counter for `auto` (what it compiles
+  depends on the timing of the compile thread), so the cost above is not gated. `compiled_natives` checks the output of a
+  record-heavy design under `--tier=auto --tier-heat=1,0,0`.

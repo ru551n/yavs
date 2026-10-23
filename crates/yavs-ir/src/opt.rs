@@ -109,6 +109,19 @@ fn compiled() -> bool {
     COMPILED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static LAYOUT_SLOTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Some functions will be compiled to native code (`--tier=auto`): the frames of processes get
+/// the layout slots of `layout_cache` as under `--tier=llvm` (user, 2026-10-23: the peak memory
+/// is the price of the compiled code's hits). Call it before the first function is asked for.
+pub fn layout_slots() {
+    LAYOUT_SLOTS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn layout_slots_on() -> bool {
+    compiled() || LAYOUT_SLOTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static EXTERNAL_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Process variables may be read or written from outside (a plugin deposits a value through
@@ -143,12 +156,13 @@ pub fn fingerprint() -> String {
         KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed),
         compiled(),
         external(),
+        layout_slots_on(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 7]) -> String {
+fn fingerprint_of(f: [bool; 8]) -> String {
     let names = [
-        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external",
+        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -165,9 +179,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 7]);
-        for i in 0..7 {
-            let mut f = [false; 7];
+        let base = fingerprint_of([false; 8]);
+        for i in 0..8 {
+            let mut f = [false; 8];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -318,9 +332,8 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     }
     if memo_enabled() {
         memo::run(prog, &mut f);
-        // Frame bytes only a compiled tier uses: a design of thousands of process instances
-        // would pay them in every run (`--tier=auto` leaves such processes interpreted).
-        if compiled() {
+        // Frame bytes only a compiled tier uses (`--tier=interp` has none).
+        if layout_slots_on() {
             layout_cache::run(prog, &mut f);
         }
     }

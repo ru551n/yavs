@@ -731,8 +731,10 @@ pub fn run(
     if a.dap.is_some() {
         yavs_interp::keep_variables();
     }
-    if a.tier() == TierArg::Llvm {
-        yavs_interp::compiled_tier();
+    match a.tier() {
+        TierArg::Llvm => yavs_interp::compiled_tier(),
+        TierArg::Auto => yavs_interp::layout_slots(),
+        TierArg::Interp => {}
     }
     // A plugin may deposit into process variables between activations, and the waveform
     // recorder reads them from their slots.

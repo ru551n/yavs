@@ -399,10 +399,14 @@ fn record_layouts_kept_in_the_frame_match_the_interpreter() {
     );
     assert!(a.status.success(), "{a:?}");
     let go = |tier: &str| {
-        let o = yavs(
-            &dir,
-            &["run", "--work=work:work", &format!("--tier={tier}"), "lc"],
-        );
+        // `auto` compiles at once (and keeps layouts in the frame as `llvm` does, #532).
+        let tier = format!("--tier={tier}");
+        let mut args = vec!["run", "--work=work:work", &tier];
+        if tier == "--tier=auto" {
+            args.push("--tier-heat=1,0,0");
+        }
+        args.push("lc");
+        let o = yavs(&dir, &args);
         (
             o.status.code(),
             String::from_utf8_lossy(&o.stdout).into_owned(),

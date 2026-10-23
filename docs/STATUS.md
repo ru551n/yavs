@@ -3931,7 +3931,7 @@ cycles of `neorv32_single_min` and the fletcher testbenches, 63% of `sc5_timesta
 | Processes of up to 2048 registers keep their register file (was 256) | c0a614a1 | `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.977, `fletcher_bufferwriter_512` 0.989, `poc_cache_cpu` 0.999 | 0.977, 0.951, 0.973, 0.977 |
 | A vector of more than 64 elements assigned to a direct driver is one entry per plane word | 0ad2e8a1 | `fletcher_bufferwriter_512` 0.957 | 0.893 |
 | The idle skip records its state on the pool path (4 threads skip what 1 thread skips) | 173fae51 | equal skips at 1 and 4 threads (neorv32 at 4 threads: wall 1.67 s to 1.41 s) | - |
-| The lists every finish, update and wake of a signal tests are `Vec`s, not `SmallVec`s | 0e135389 | `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.989, `rtl_chain` 0.989, `sc5_timestamp` 0.987 | level |
+| The lists every finish, update and wake of a signal tests are `Vec`s, not `SmallVec`s | 4e595ac8 | `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.989, `rtl_chain` 0.989, `sc5_timestamp` 0.987 | level |
 
 All 15 designs together (`main` before this round against the pushed tip, bench builds, minimum of 5 alternating runs): instructions
 geometric mean 0.985, cycles 0.977 (`neorv32_single_min` 0.978 / 0.968, `fletcher_bufferwriter_512` 0.933 / 0.881,

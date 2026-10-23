@@ -296,11 +296,13 @@ pub(crate) struct ProcState {
     /// this run.
     pub phantoms: Vec<u32>,
     /// The edge of the process's trigger the kernel resumes it for (`Builder::edge_trigger`:
-    /// signal, element, rising; set once by `SimControl::new`), and whether this activation
-    /// was such a resumption (`edge_ok`: a signal resumed it, not a timeout or the initial
-    /// run): the edge then holds for the whole activation, so `Ctx::edge` of it need not look.
-    pub known_edge: Option<(SignalId, u32, bool)>,
-    pub edge_ok: bool,
+    /// signal, element, kind; set once by `SimControl::new`) and its `edge_key` (`NO_EDGE`
+    /// without one). `known` is that key for an activation a signal resumed (not a timeout or
+    /// the initial run), else `NO_EDGE`: the edge then holds for the whole activation, so
+    /// `Ctx::edge` of it need not look.
+    pub known_edge: Option<(SignalId, u32, u8)>,
+    pub known_key: u64,
+    pub known: u64,
     /// The run's number (from 1, bumped at every resumption), and per driver (local index) which
     /// kind of direct entry it has in this run: `epoch << 2 | kind`, kind 1 `out`, 2 `outv`,
     /// 3 `outb`. A mark of an older run means none, so the entries need no scan and no clearing.
@@ -314,6 +316,21 @@ pub(crate) struct ProcState {
     pub outv: Vec<OutV>,
     pub outb: Vec<OutB>,
 }
+
+/// `ProcState::known` when no edge is known.
+pub(crate) const NO_EDGE: u64 = u64::MAX;
+
+/// One word naming an edge (signal, element, kind) for the known-edge test. An element is below
+/// 2^30 (a signal that large does not fit in memory); `Ctx::edge_known` of a larger one cannot
+/// match a key that `SimControl::new` made.
+#[inline(always)]
+pub fn edge_key(signal: SignalId, elem: u32, kind: u8) -> u64 {
+    u64::from(signal.0) << 32 | u64::from(elem) << 2 | u64::from(kind)
+}
+
+/// Added to the kind of an edge (`known_edge`, `Ctx::edge_to`) that is an event ending on the
+/// level (`x'event and x = '1'`), not the IEEE function.
+pub const EDGE_LEVEL: u8 = 2;
 
 impl ProcState {
     /// End of a run: whether skipped assignments are left, which the kernel must replace by an
@@ -596,10 +613,17 @@ impl Ctx<'_> {
             .map_or(0, |sig| sig.codes_cap())
     }
 
+    /// The edge the kernel resumed this process for in this activation as an `edge_key`
+    /// (`u64::MAX`: none).
+    pub fn resumed_edge_key(&self) -> u64 {
+        self.st.known
+    }
+
     /// The edge the kernel resumed this process for in this activation (signal, element,
-    /// rising), if `Ctx::edge` takes it as held.
-    pub fn known_edge(&self) -> Option<(SignalId, u32, bool)> {
-        self.st.known_edge.filter(|_| self.st.edge_ok)
+    /// kind: `rising`, plus [`EDGE_LEVEL`] for an event ending on the level), if `Ctx::edge`
+    /// or `Ctx::edge_by` of that kind takes it as held.
+    pub fn known_edge(&self) -> Option<(SignalId, u32, u8)> {
+        self.st.known_edge.filter(|_| self.st.known != NO_EDGE)
     }
 
     /// `rising_edge` / `falling_edge` of the first element of a logic signal range: an event
@@ -608,15 +632,38 @@ impl Ctx<'_> {
     /// the three of `event` and two `first_code`.
     #[inline(always)]
     pub fn edge(&self, r: impl Into<SigRef>, rising: bool) -> Result<Option<bool>, SimError> {
-        let r = r.into();
-        if let (true, Some((sig, el, up)), Some(x)) = (self.st.edge_ok, self.st.known_edge, r.range)
-            && r.signal == sig
-            && x.offset == el
+        self.edge_kind(r.into(), u8::from(rising))
+    }
+
+    /// The edge test `code` of the first element of a logic signal range: bit 0 rising, plus
+    /// [`EDGE_LEVEL`] for `x'event and x = '1'` / `'0'` (an event in this cycle and that level
+    /// now, whatever it was before; also BIT and BOOLEAN) instead of the IEEE function
+    /// ([`Ctx::edge`]). `None` for a null range.
+    #[inline(always)]
+    pub fn edge_by(&self, r: impl Into<SigRef>, code: u8) -> Result<Option<bool>, SimError> {
+        self.edge_kind(r.into(), code)
+    }
+
+    /// Whether the kernel resumed this process for the edge `kind` of element `elem` of
+    /// `signal` (`known_edge`): then it holds.
+    #[inline(always)]
+    pub fn edge_known(&self, signal: SignalId, elem: u32, kind: u8) -> bool {
+        self.st.known == edge_key(signal, elem, kind)
+    }
+
+    #[inline(always)]
+    fn edge_kind(&self, r: SigRef, kind: u8) -> Result<Option<bool>, SimError> {
+        if let Some(x) = r.range
             && x.len == 1
-            && up == rising
+            && self.edge_known(r.signal, x.offset, kind)
         {
             return Ok(Some(true));
         }
+        self.edge_slow(r, kind)
+    }
+
+    #[inline(never)]
+    fn edge_slow(&self, r: SigRef, kind: u8) -> Result<Option<bool>, SimError> {
         let (s, r) = self.sig(r)?;
         if r.len == 0 {
             return Ok(None);
@@ -630,6 +677,15 @@ impl Ctx<'_> {
                 "{} holds bytes, read it with value()",
                 s.name
             ))));
+        }
+        let rising = kind & 1 != 0;
+        if kind & EDGE_LEVEL != 0 {
+            let end = if rising {
+                StdULogic::One
+            } else {
+                StdULogic::Zero
+            };
+            return Ok(Some(s.cur_code(i) == end as u8));
         }
         let x01 = |c: u8| match c {
             c if c == StdULogic::One as u8 || c == StdULogic::H as u8 => Some(true),

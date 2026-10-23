@@ -491,7 +491,7 @@ pub trait TierHost {
 
     /// Execute the signal instruction at `pc` of the top frame as `step` does, through the
     /// same interpreter functions without its generic dispatch: `SigReadScalar`, `SigRead`,
-    /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, and (`edge` 1 rising, 2 falling) a `CallNative`
+    /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, `Edge`, and (`edge` 1 rising, 2 falling) a `CallNative`
     /// of `rising_edge` / `falling_edge` ([`edge_native`]), and the instructions that only
     /// change the temporary area (`TempRoot`, `Stmt` and `NewFrame`: the view's temporary
     /// fields are brought up to date) or only memory and a register (`Deref`, `MemEq`, `Cat`);
@@ -712,11 +712,10 @@ pub struct TierFrame {
     /// runs without a kernel (elaboration). Filled once per entry, by [`TierHost::view`].
     pub sigtab: *const TierSig,
     pub sigtab_len: u64,
-    /// The edge the kernel resumed the process for in this activation: the kernel signal
-    /// (`u64::MAX`: none), the element, and 1 for rising, 0 for falling.
-    pub known_sig: u64,
-    pub known_elem: u64,
-    pub known_up: u64,
+    /// The edge the kernel resumed the process for in this activation as one word
+    /// (`yavs_kernel::edge_key` of the kernel signal, the element and the kind, `EdgeKind::code`),
+    /// `u64::MAX`: none.
+    pub known: u64,
     /// The number of the current simulation cycle (`TierSig::stamps` equal to it: an event).
     pub cycle: u64,
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
@@ -800,9 +799,7 @@ impl Default for TierFrame {
             up: [u64::MAX; 2],
             sigtab: std::ptr::null(),
             sigtab_len: 0,
-            known_sig: u64::MAX,
-            known_elem: 0,
-            known_up: 0,
+            known: u64::MAX,
             cycle: 0,
             max_depth: 0,
             heap_epoch: 0,

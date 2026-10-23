@@ -1152,9 +1152,12 @@ impl SimControl {
         };
         for (m, slot) in sim.procs.iter().zip(&mut sim.slots) {
             if let Some(t) = m.trigger {
-                slot_mut(slot).st.known_edge =
-                    (cfg_edge_triggers && t.reset.is_none() && !t.legacy)
-                        .then_some((t.signal, t.elem, t.rising));
+                let st = &mut slot_mut(slot).st;
+                if cfg_edge_triggers && t.reset.is_none() && t.elem < 1 << 30 {
+                    let kind = u8::from(t.rising) | if t.legacy { crate::EDGE_LEVEL } else { 0 };
+                    st.known_edge = Some((t.signal, t.elem, kind));
+                    st.known_key = crate::process::edge_key(t.signal, t.elem, kind);
+                }
             }
         }
         if cfg_edge_triggers {
@@ -3888,7 +3891,11 @@ fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
     }
     let by_timeout = procs[p as usize].by_timeout;
     st.timed_out = by_timeout;
-    st.edge_ok = !by_timeout;
+    st.known = if by_timeout {
+        crate::process::NO_EDGE
+    } else {
+        st.known_key
+    };
 }
 
 fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {

@@ -2705,6 +2705,47 @@ user's performance priority:
   function, which also needs the old value to be '0' or 'L'). Other literals ('H', ...) and
   non-`std_ulogic` signals are not recognised.
 
+## One edge-test instruction for every clock-edge idiom (yavs-sem, yavs-ir, yavs-lower, yavs-interp, yavs-llvm, yavs-kernel, yavs-elab, #632, #589, #590, #591, 2026-10-23)
+
+- **What:** `Inst::Edge { dst, kind, sig }` with `EdgeKind` `Rising`/`Falling` (the IEEE function:
+  event, `To_X01` of the value and of `'last_value`) and `To1`/`To0` (`x'event and x = '1'`/`'0'`:
+  event and exactly that value, whatever it was before). `sig` is one element of a `std_ulogic`,
+  BIT or BOOLEAN signal. `yavs-lower` (`edge.rs`) makes it from every shape `Db::edge_shape`
+  (yavs-sem `edge.rs`) knows: `rising_edge`/`falling_edge` of the IEEE function and of BIT and
+  BOOLEAN, `x'event and x = lit` either way round, on BOOLEAN also `x'event and x` and
+  `x'event and not x`, and the level of a `wait until x = '1'`/`'0'`. The elaborator's edge triggers
+  use the same `edge_shape`, so the kernel and the code agree on what an edge is.
+- **Why:** a spelling that is not an edge instruction costs more in every tier (the interpreter
+  stepped `'event` out of its loop, ~380 instructions; the compiled tiers had to recognise call and
+  attribute sequences), and a second backend would have had to recognise the idioms again.
+  User rule 2026-10-23: every clock-edge idiom gets the same fast paths.
+- **Look-alikes stay ordinary expressions:** no `'event` (a level), another signal in the compare
+  (`x'event and y = '1'`: `Db::same_name` of the two mentions), `'event` alone, a user-defined
+  `rising_edge`, `'stable(T)` with a time, `x'last_value` terms. Under `YAVS_NO_NATIVE_IEEE` the
+  IEEE function runs from its body as before.
+- **`wait until x = '1'`** becomes `Edge To1` only in a non-postponed process (not a procedure,
+  which both kinds share) whose wait has no timeout and whose sensitivity is `x` alone as a whole
+  object: it resumes on an event of `x` in that cycle, so "event and `x` is '1'" is the same test.
+  A postponed process may resume in a later cycle than the event.
+- **`not x'stable` is `x'event`** (yavs-sem, `Db::not_stable_as_event`): a stable time of zero is
+  false in exactly the cycle of an event. The analyser makes the `'event` and does not declare the
+  implicit signal (`attr::discard_implicit_signal`), which the kernel updated at every event of
+  `x` (4.4 times the instructions of `rising_edge`, #590). `'stable(T)` with an argument keeps its
+  implicit signal.
+- **Known edge for the legacy forms** (#589, #591): a trigger of the `'event` form or the plain
+  level of a `wait until` is now `ProcState::known` too (a key of signal, element and kind,
+  `edge_key`; `EDGE_LEVEL` in the kind says "event ending on the level"), so `Ctx::edge_by` of that
+  kind answers true without reading the signal. One word is compared (interpreter and compiled
+  code), not three fields. `x'event and x` on BOOLEAN is an edge trigger now too.
+- **Cost** (instructions per process per clock cycle, rtl_ff-style, 1024 processes, `--tier=interp`
+  / `--tier=llvm`): every spelling on every type 1420 / 1115 (the wait forms 1410 / 1110);
+  before: 1421 to 1860, `'event` 1798 to 1835, `not 'stable` 6490, BOOLEAN `'event and clk` 2711 /
+  2045 interpreted / compiled.
+- **Tests:** `crates/yavs/tests/edge_idioms.rs` (a self-checking design, 4 types x ~25 forms
+  against an oracle spelled out in VHDL, every tier, edge triggers off, threads), `edge_ir.rs`
+  (each form is one `Edge` of the right kind, look-alikes are not), `yavs-sem/tests/edge_shapes.rs`,
+  `compiled_edges.rs` (no host call left), work-counter design `perf/edge_forms.vhd`.
+
 ## Memory of designs with many instances (yavs-elab, yavs-kernel, #421, 2026-10-20)
 
 - **A plain run frees the elaborated model once the simulation is built.** `yavs run` without a

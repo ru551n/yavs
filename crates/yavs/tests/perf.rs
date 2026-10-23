@@ -326,6 +326,17 @@ case!(
     ]
 );
 case!(
+    edge_forms,
+    "edges=",
+    &[],
+    [
+        ("cycles", Max(415)),
+        ("process_runs", Max(1890)),
+        ("wakes", Max(1870)),
+        ("ops", Max(21230)),
+    ]
+);
+case!(
     wait_static,
     "s=",
     &[],

@@ -441,7 +441,12 @@ impl Db {
                 {
                     return crate::expr::literal::const_expr(self, e.span, i.ty, Some(v));
                 }
-                self.build_operator(scope, i, &[operand.as_ref()], e.span)
+                let id = self.build_operator(scope, i, &[operand.as_ref()], e.span);
+                if *op == ast::UnaryOp::Not {
+                    self.not_stable_as_event(id)
+                } else {
+                    id
+                }
             }
             K::Binary { left, right, .. } => {
                 self.build_operator(scope, i, &[left.as_ref(), right.as_ref()], e.span)
@@ -478,6 +483,72 @@ impl Db {
             K::Conditional(alts) => self.conditional(scope, e, alts, i.ty),
             K::Unaffected | K::Error => self.poison_expr(),
         }
+    }
+
+    /// `not s'stable` (the predefined `not`, no time argument) read as `s'event` (#632): a stable
+    /// time of zero is false in exactly the cycle of an event, so the value is the same, and the
+    /// implicit signal the occurrence would declare (kernel work at every event of `s`) is not
+    /// made. `id` is the call just built; any other expression is returned as it is.
+    fn not_stable_as_event(&mut self, id: ExprId) -> ExprId {
+        use crate::decl::{DeclKind, ObjRole};
+        use crate::hir::{AttrPrefix, PredefAttr};
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &self.exprs[id].kind
+        else {
+            return id;
+        };
+        let [
+            Arg {
+                actual: Actual::Expr(a),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return id;
+        };
+        if !self.decls[*callee].implicit
+            || self.decls[*callee].name.key().as_str() != "\"not\""
+            || Some(self.base(self.exprs[id].subtype)) != self.well_known.boolean
+        {
+            return id;
+        }
+        let ExprKind::Obj(d) = self.exprs[*a].kind else {
+            return id;
+        };
+        let DeclKind::Object(o) = &self.decls[d].kind else {
+            return id;
+        };
+        let Some(def) = o.default.filter(|_| o.role == ObjRole::ImplicitSignal) else {
+            return id;
+        };
+        let ExprKind::Attr {
+            attr: PredefAttr::Stable,
+            prefix: AttrPrefix::Expr(p),
+            args,
+        } = &self.exprs[def].kind
+        else {
+            return id;
+        };
+        if !args.is_empty() {
+            return id;
+        }
+        let (prefix, subtype, span) = (*p, self.exprs[id].subtype, self.exprs[id].span);
+        crate::attr::discard_implicit_signal(self, d);
+        self.add_expr(Expr {
+            kind: ExprKind::Attr {
+                attr: PredefAttr::Event,
+                prefix: AttrPrefix::Expr(prefix),
+                args: Box::new([]),
+            },
+            subtype,
+            span,
+            stat: Staticness::None,
+            value: None,
+        })
     }
 
     fn build_operator(

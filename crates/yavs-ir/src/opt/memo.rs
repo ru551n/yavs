@@ -886,7 +886,9 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
             Inst::Const { dst, .. } => {
                 consts[dst.0 as usize] = consts[dst.0 as usize].saturating_add(1)
             }
-            Inst::SigReadScalar { sig, .. } => fused[sig.0 as usize] = true,
+            Inst::SigReadScalar { sig, .. } | Inst::Edge { sig, .. } => {
+                fused[sig.0 as usize] = true
+            }
             _ => {}
         }
     }

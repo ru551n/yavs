@@ -27,8 +27,8 @@ use yavs_interp::{
     space,
 };
 use yavs_ir::{
-    AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
-    Program, Reg, Width,
+    AddrSpace, BoolOp, CheckKind, CmpOp, EdgeKind, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp,
+    IntUnOp, Program, Reg, Width,
 };
 
 use crate::census::{Cb, cb};
@@ -252,9 +252,7 @@ const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
 const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
 const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
-const MEM_KNOWN_SIG: u64 = std::mem::offset_of!(Mem, fr.known_sig) as u64;
-const MEM_KNOWN_ELEM: u64 = std::mem::offset_of!(Mem, fr.known_elem) as u64;
-const MEM_KNOWN_UP: u64 = std::mem::offset_of!(Mem, fr.known_up) as u64;
+const MEM_KNOWN: u64 = std::mem::offset_of!(Mem, fr.known) as u64;
 const MEM_CYCLE: u64 = std::mem::offset_of!(Mem, fr.cycle) as u64;
 const MEM_FRAME_IDX: u64 = std::mem::offset_of!(Mem, fr.frame) as u64;
 const MEM_MAX_DEPTH: u64 = std::mem::offset_of!(Mem, fr.max_depth) as u64;
@@ -2687,6 +2685,7 @@ fn keeps_objects(i: &Inst) -> bool {
             | Inst::SigReadScalar { .. }
             | Inst::SigLastValue { .. }
             | Inst::SigAttr { .. }
+            | Inst::Edge { .. }
             | Inst::Driving { .. }
             | Inst::DrivingValue { .. }
             | Inst::Drive { .. }
@@ -5686,6 +5685,7 @@ impl Gen {
                         }
                     }
                     Inst::SigReadScalar { dst, sig } => self.sig_read_scalar(&c, pc, dst, sig),
+                    Inst::Edge { dst, kind, sig } => self.edge(&c, pc, kind, sig, dst, 0),
                     Inst::SigAttr {
                         dst,
                         kind: yavs_ir::AttrKind::Event,
@@ -5742,7 +5742,14 @@ impl Gen {
                                 self.join(&c, join);
                             }
                             Some(NativeKind::Edge(rising)) => match (f.regs(args), dst) {
-                                (Some(&[s]), Some(d)) => self.edge(&c, pc, rising, s, d),
+                                (Some(&[s]), Some(d)) => {
+                                    let (kind, e) = if rising {
+                                        (EdgeKind::Rising, 1)
+                                    } else {
+                                        (EdgeKind::Falling, 2)
+                                    };
+                                    self.edge(&c, pc, kind, s, d, e)
+                                }
                                 _ => self.signal(&c, pc, if rising { 1 } else { 2 }),
                             },
                             None if c.nat.is_some()
@@ -6348,32 +6355,30 @@ impl Gen {
         }
     }
 
-    /// `rising_edge` / `falling_edge` of one element: true in place when the kernel resumed the
-    /// process for that edge (`TierFrame::known_sig`), else through `TierHost::signal`.
-    unsafe fn edge(&self, c: &Cur, pc: u32, rising: bool, sig: Reg, dst: Reg) {
+    /// The clock-edge test `kind` of one element (`Inst::Edge`, or the `rising_edge` /
+    /// `falling_edge` native, whose `TierHost::signal` entry is `edge` 1 or 2): true in place
+    /// when the kernel resumed the process for that edge (`TierFrame::known`), else from the
+    /// event stamp, the codes and, for the IEEE function, the `'last_value` planes; anything
+    /// else through `TierHost::signal`.
+    unsafe fn edge(&self, c: &Cur, pc: u32, kind: EdgeKind, sig: Reg, dst: Reg, edge: u32) {
         // SAFETY: see `sig_entry`; the stamps and the `'last_value` block are the kernel's, read
         // only here, and offered (nonzero) for a signal of at most 64 elements.
         unsafe {
-            let (slow, join) = self.slow_signal(c, pc, if rising { 1 } else { 2 });
+            let (slow, join) = self.slow_signal(c, pc, edge);
             let (ent, off) = self.sig_entry(c, sig, Some(1), slow);
             let signal = self.load(self.i64, self.gep(ent, self.c64(SIG_SIGNAL)));
             let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
             let elem = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
             let held = |a: LLVMValueRef, b: LLVMValueRef| self.icmp(IP::LLVMIntEQ, a, b);
-            let ks = self.mem_ld(c, MEM_KNOWN_SIG, self.i64);
-            let ke = self.mem_ld(c, MEM_KNOWN_ELEM, self.i64);
-            let ku = self.mem_ld(c, MEM_KNOWN_UP, self.i64);
-            let ok = LLVMBuildAnd(
-                self.b,
-                held(signal, ks),
-                LLVMBuildAnd(
-                    self.b,
-                    held(elem, ke),
-                    held(ku, self.c64(i64::from(rising))),
-                    c"".as_ptr(),
+            // `yavs_kernel::edge_key`.
+            let key = self.or(
+                self.or(
+                    LLVMBuildShl(self.b, signal, self.c64(32), c"".as_ptr()),
+                    LLVMBuildShl(self.b, elem, self.c64(2), c"".as_ptr()),
                 ),
-                c"".as_ptr(),
+                self.c64(i64::from(kind.code())),
             );
+            let ok = held(key, self.mem_ld(c, MEM_KNOWN, self.i64));
             // The kernel resumed the process for this very edge: it holds.
             let (fast, rest) = (self.block(c), self.block(c));
             LLVMBuildCondBr(self.b, ok, fast, rest);
@@ -6385,7 +6390,9 @@ impl Gen {
             let stamps = self.load(self.ptr, self.gep(ent, self.c64(SIG_STAMPS)));
             self.guard(c, LLVMBuildIsNotNull(self.b, stamps, c"".as_ptr()), slow);
             let last = self.load(self.ptr, self.gep(ent, self.c64(SIG_LAST)));
-            self.guard(c, LLVMBuildIsNotNull(self.b, last, c"".as_ptr()), slow);
+            if !kind.to_level() {
+                self.guard(c, LLVMBuildIsNotNull(self.b, last, c"".as_ptr()), slow);
+            }
             let len = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
             self.guard(c, self.icmp(IP::LLVMIntULT, off, len), slow);
             let at = LLVMBuildMul(self.b, elem, self.c64(8), c"".as_ptr());
@@ -6401,24 +6408,29 @@ impl Gen {
                 AA_CODES,
             );
             let cur = self.zext8(self.load(self.i8, self.gep(codes, off)));
-            let plane = |k: i64| {
-                let w = self.load(self.i64, self.gep(last, self.c64(8 * k)));
-                let bit = LLVMBuildAnd(
-                    self.b,
-                    LLVMBuildLShr(self.b, w, elem, c"".as_ptr()),
-                    self.c64(1),
-                    c"".as_ptr(),
-                );
-                LLVMBuildShl(self.b, bit, self.c64(k), c"".as_ptr())
+            let res = if kind.to_level() {
+                // An event ending on the level: the code is exactly '1' (3) or '0' (2).
+                self.zext(held(cur, self.c64(if kind.rising() { 3 } else { 2 })))
+            } else {
+                let plane = |k: i64| {
+                    let w = self.load(self.i64, self.gep(last, self.c64(8 * k)));
+                    let bit = LLVMBuildAnd(
+                        self.b,
+                        LLVMBuildLShr(self.b, w, elem, c"".as_ptr()),
+                        self.c64(1),
+                        c"".as_ptr(),
+                    );
+                    LLVMBuildShl(self.b, bit, self.c64(k), c"".as_ptr())
+                };
+                let before = self.or(plane(0), plane(1));
+                // `To_X01` of a code is '1' or '0' when its low two bits are 1 x (3 and 7 are '1'
+                // and 'H', 2 and 6 '0' and 'L'); the level is bit 0.
+                let (now_want, before_want) = if kind.rising() { (3, 2) } else { (2, 3) };
+                let m3 = |v: LLVMValueRef| LLVMBuildAnd(self.b, v, self.c64(3), c"".as_ptr());
+                let a = held(m3(cur), self.c64(now_want));
+                let b2 = held(m3(before), self.c64(before_want));
+                self.zext(LLVMBuildAnd(self.b, a, b2, c"".as_ptr()))
             };
-            let before = self.or(plane(0), plane(1));
-            // `To_X01` of a code is '1' or '0' when its low two bits are 1 x (3 and 7 are '1' and
-            // 'H', 2 and 6 '0' and 'L'); the level is bit 0.
-            let (now_want, before_want) = if rising { (3, 2) } else { (2, 3) };
-            let m3 = |v: LLVMValueRef| LLVMBuildAnd(self.b, v, self.c64(3), c"".as_ptr());
-            let a = held(m3(cur), self.c64(now_want));
-            let b2 = held(m3(before), self.c64(before_want));
-            let res = self.zext(LLVMBuildAnd(self.b, a, b2, c"".as_ptr()));
             let from_ev = LLVMGetInsertBlock(self.b);
             LLVMBuildBr(self.b, merge);
             LLVMPositionBuilderAtEnd(self.b, merge);

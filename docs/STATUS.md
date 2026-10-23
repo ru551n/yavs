@@ -3924,6 +3924,19 @@ signals it reads had an event since its last activation; `YAVS_IDLE_SKIP=check` 
 1.00 (processes that always change stop being tracked after 128 activations). GUARD changes in the cycle of the event on a
 signal of its condition (the guard process runs in the update phase); #464 is closed.
 
+### One edge-test instruction for every clock-edge idiom (#632, #589, #590, #591, 2026-10-23)
+
+`rising_edge`/`falling_edge` (IEEE, BIT, BOOLEAN), `x'event and x = '1'`/`'0'` either way round, BOOLEAN `x'event and x`,
+`not x'stable and ...` and the level of `wait until x = '1'` are one IR instruction, `Edge`, in the interpreter and the
+LLVM tier (`docs/decisions.md` "One edge-test instruction"). Instructions per process per clock cycle (rtl_ff-style,
+1024 processes, 500 to 1500 cycles, `--tier=interp` / `--tier=llvm`, before to after, identical for `std_logic`,
+`std_ulogic`, `bit` and `boolean` unless noted): `rising_edge` / `falling_edge` 1421 / 1132 to 1420 / 1113 (BIT and
+BOOLEAN 1860 / 1140 to 1420 / 1115); `'event and = '1'` or `'0'`, either order 1798 / 1124 to 1420 / 1115 (BIT, BOOLEAN
+1835 / 1135); `not 'stable and = '1'` 6490 / 5952 to 1420 / 1115; BOOLEAN `'event and clk` 2711 / 2045 to 1420 / 1117
+(it is an edge trigger now); `wait until clk = '1'` 1451 / 1105 to 1410 / 1110; `wait until rising_edge(clk)` 1413 / 1127
+to 1410 / 1108 (BIT and BOOLEAN 1841 to 1410). Tests: `edge_idioms.rs`, `edge_ir.rs`, `yavs-sem/tests/edge_shapes.rs`,
+`compiled_edges.rs`, work-counter design `perf/edge_forms.vhd`.
+
 ### Kernel round 15: edge spellings, clock generators that re-arm, wide buses and CPU clocks (#440, 2026-10-23)
 
 (`docs/decisions.md` "Kernel round 15".) (1) Every spelling of a clock edge gets the edge trigger: `wait until clk = '1'`,

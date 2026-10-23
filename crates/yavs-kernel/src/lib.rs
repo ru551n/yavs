@@ -20,7 +20,9 @@ pub use kernel::{
     Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer, Phase, ProcWait,
     Report, RunStatus, SigView, SimControl, Stats, StuckProc, StuckReport, StuckSignal, WakeId,
 };
-pub use process::{CopyProcess, Ctx, LiveSink, ProcId, Process, Severity, ToggleProcess};
+pub use process::{
+    CopyProcess, Ctx, EDGE_LEVEL, LiveSink, ProcId, Process, Severity, ToggleProcess, edge_key,
+};
 pub use signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Range, Resolution, Resolver, SigRef, SignalId,
 };

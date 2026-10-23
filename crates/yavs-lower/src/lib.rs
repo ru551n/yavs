@@ -12,6 +12,7 @@
 mod access;
 mod assoc;
 mod composite;
+mod edge;
 mod expr;
 mod file;
 mod force;

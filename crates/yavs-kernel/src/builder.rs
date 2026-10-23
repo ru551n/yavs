@@ -598,6 +598,8 @@ impl Builder {
                         d: vec![0; p.drivers.len()],
                     })
                 }),
+                known_key: crate::process::NO_EDGE,
+                known: crate::process::NO_EDGE,
                 ..Default::default()
             };
             slots.push(Mutex::new(Slot {

@@ -31,6 +31,7 @@ pub mod attr;
 pub mod db;
 pub mod decl;
 pub mod diag;
+pub mod edge;
 pub mod expr;
 pub mod external;
 pub mod generic;

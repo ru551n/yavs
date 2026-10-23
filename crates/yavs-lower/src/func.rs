@@ -153,6 +153,8 @@ pub(crate) struct Fx<'a, 'b> {
     pub fb: FuncBuilder<'b>,
     pub depth: u8,
     pub kind: FuncKind,
+    /// A postponed process (`FuncKind::Process` only).
+    pub postponed: bool,
     /// Whether the current block can still take instructions (no terminator yet).
     pub live: bool,
     /// Enclosing loops: (loop statement, `next` target, `exit` target).
@@ -203,6 +205,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             fb,
             depth,
             kind,
+            postponed: false,
             live: true,
             loops: Vec::new(),
             ret: None,
@@ -1908,6 +1911,7 @@ fn process(
     fx.drivers = drivers;
     fx.driver_base = bases;
     fx.guard = guard;
+    fx.postponed = postponed;
     fx.stmt_start(StmtKind::Process, st.span);
     let mut r = Ok(());
     if let Some(sc) = scope {

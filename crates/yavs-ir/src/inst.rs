@@ -192,6 +192,40 @@ pub enum AttrKind {
     LastActive,
 }
 
+/// The clock edge an [`Inst::Edge`] tests (#632). Signal values are `std_ulogic` codes; BIT and
+/// BOOLEAN signals hold the codes of '0' and '1'.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum EdgeKind {
+    /// `falling_edge`: an event, `To_X01` of the value '0' and of `'last_value` '1'.
+    Falling = 0,
+    /// `rising_edge`: an event in this cycle, `To_X01` of the value '1' and of `'last_value` '0'.
+    Rising = 1,
+    /// `x'event and x = '0'`.
+    To0 = 2,
+    /// `x'event and x = '1'`: an event and the value exactly '1' (whatever it was before).
+    To1 = 3,
+}
+
+impl EdgeKind {
+    /// The kernel's code of the test (`yavs_kernel::Ctx::edge_by`): bit 0 rising, bit 1 an
+    /// event ending on the level.
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Whether the edge ends on '1'.
+    pub fn rising(self) -> bool {
+        matches!(self, EdgeKind::Rising | EdgeKind::To1)
+    }
+
+    /// Whether it is an event ending on the level ([`EdgeKind::To1`], [`EdgeKind::To0`]), not the
+    /// IEEE function.
+    pub fn to_level(self) -> bool {
+        matches!(self, EdgeKind::To1 | EdgeKind::To0)
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DriveMode {
     Transport,
@@ -668,6 +702,14 @@ pub enum Inst {
         kind: AttrKind,
         sig: Reg,
     },
+    /// The clock-edge test `kind` (0 or 1) of the one element `sig` refers to, a `std_ulogic`,
+    /// BIT or BOOLEAN signal: the one instruction every clock-edge idiom lowers to
+    /// (`rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...).
+    Edge {
+        dst: Reg,
+        kind: EdgeKind,
+        sig: Reg,
+    },
     /// `'driving` of driver slot `driver`.
     Driving {
         dst: Reg,
@@ -1129,7 +1171,9 @@ impl Inst {
                 f(dst, Use, p);
                 f(sig, Use, s);
             }
-            Inst::SigReadScalar { dst, sig } | Inst::SigAttr { dst, sig, .. } => {
+            Inst::SigReadScalar { dst, sig }
+            | Inst::SigAttr { dst, sig, .. }
+            | Inst::Edge { dst, sig, .. } => {
                 d(dst, i);
                 f(sig, Use, s);
             }

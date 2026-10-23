@@ -2462,7 +2462,10 @@ impl Fx<'_, '_> {
             self.branch(to, exit, check);
             self.at(check);
         }
-        let c = self.scalar_expr(until)?;
+        let c = match self.wait_level(until, &sens, timeout.is_some())? {
+            Some(c) => c,
+            None => self.scalar_expr(until)?,
+        };
         self.branch(c, exit, top);
         self.at(exit);
         Ok(())

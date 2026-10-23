@@ -2443,6 +2443,7 @@ impl<'a> Opt<'a> {
             | Inst::SigSlice { .. }
             | Inst::SigReadScalar { .. }
             | Inst::SigAttr { .. }
+            | Inst::Edge { .. }
             | Inst::Driving { .. }
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }

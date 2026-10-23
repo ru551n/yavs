@@ -1008,6 +1008,15 @@ pub fn implicit_signal(
     Ok(d)
 }
 
+/// Take back the implicit signal `d` just made by [`implicit_signal`]: it is no longer a name of
+/// its region, so the elaborator never creates it (`not s'stable` becomes `s'event`).
+pub fn discard_implicit_signal(db: &mut Db, d: DeclId) {
+    let order = &mut db.scopes[db.decls[d].scope].order;
+    if let Some(i) = order.iter().rposition(|&x| x == d) {
+        order.remove(i);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // User-defined attributes (6.7, 7.2)
 

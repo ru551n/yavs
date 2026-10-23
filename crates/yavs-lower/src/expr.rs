@@ -203,10 +203,17 @@ impl<'a> Fx<'a, '_> {
                 args,
                 method_of,
                 ..
-            } => match self.call(*callee, args, *method_of, Some(e.subtype), span)? {
-                Some(v) => Ok(v),
-                None => Err(self.cx.ice(span, "procedure call in an expression")),
-            },
+            } => {
+                if method_of.is_none()
+                    && let Some(r) = self.edge_test(id)?
+                {
+                    return Ok(V::S(r));
+                }
+                match self.call(*callee, args, *method_of, Some(e.subtype), span)? {
+                    Some(v) => Ok(v),
+                    None => Err(self.cx.ice(span, "procedure call in an expression")),
+                }
+            }
             ExprKind::Index { prefix, indices } => match self.rec_part(id, span)? {
                 Some(v) => Ok(v),
                 None => match self.sig_elem(id, *prefix, span)? {

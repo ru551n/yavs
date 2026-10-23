@@ -127,7 +127,7 @@ fn clock_edge_forms_in_compiled_code_match_the_interpreter() {
         // calls left are the integer counters).
         for l in &census {
             assert!(
-                !l.contains(".SigAttr=") && !l.contains(".CallNative="),
+                !l.contains(".SigAttr=") && !l.contains(".CallNative=") && !l.contains(".Edge="),
                 "{flags:?}: {census:?}"
             );
         }

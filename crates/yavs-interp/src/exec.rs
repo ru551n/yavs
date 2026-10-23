@@ -10,9 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use yavs_ir::{
-    AddrSpace, AttrKind, BlockId, BoolOp, CheckKind, CmpOp, ConstData, Dir, DriveMode, FOp, FUnOp,
-    ForceKind, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp, LNumOp, LOp, LayoutError, ParamClass,
-    PhysOp, Program, Reg, StmtId, Ty, TyId, Width,
+    AddrSpace, AttrKind, BlockId, BoolOp, CheckKind, CmpOp, ConstData, Dir, DriveMode, EdgeKind,
+    FOp, FUnOp, ForceKind, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp, LNumOp, LOp, LayoutError,
+    ParamClass, PhysOp, Program, Reg, StmtId, Ty, TyId, Width,
 };
 use yavs_kernel::{
     Ctx, DelayMode, Elem, ErrorKind, ForceMode, LogicVec, Severity, SigRef, SimError, Time, Value,
@@ -3388,6 +3388,20 @@ impl Machine {
         Self::read_elem(sr, ty, ctx)
     }
 
+    /// `Inst::Edge`: the clock-edge test `kind` of the one element `sig` refers to.
+    #[inline(never)]
+    fn edge_inst(&mut self, kind: EdgeKind, sig: Reg, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+        let sr = if self.is_multi(sig) {
+            match self.sigparts(sig)?.as_slice() {
+                [(sr, _, _)] => *sr,
+                _ => return Err(ice_s!("edge test of a reference of several parts")),
+            }
+        } else {
+            self.sigref(sig)?.0
+        };
+        Self::edge_elem(sr, kind, ctx)
+    }
+
     /// The value of the one element of `sr`.
     #[inline(always)]
     fn read_elem(
@@ -3428,13 +3442,13 @@ impl Machine {
         Ok((s.signal.slice(s.off + o, 1), s.ty))
     }
 
-    /// `rising_edge` / `falling_edge` of the first element of `sr` (the native `edge`).
+    /// The clock-edge test `kind` of the first element of `sr` (`Inst::Edge`).
     #[inline(always)]
-    fn edge_elem(sr: SigRef, rising: bool, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+    fn edge_elem(sr: SigRef, kind: EdgeKind, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
         let Some(c) = ctx.as_deref_mut() else {
             return rt_err_s!("signal read during elaboration");
         };
-        let Some(hit) = c.edge(sr, rising)? else {
+        let Some(hit) = c.edge_by(sr, kind.code())? else {
             return Err(ice_s!("edge of a null signal range"));
         };
         Ok(u64::from(hit))
@@ -3488,18 +3502,28 @@ impl Machine {
         Self::read_elem(sr, ty, ctx)
     }
 
-    /// `rising_edge` / `falling_edge` of element `o` of instance signal `sig` (as `read_sig1`).
+    /// The clock-edge test `kind` of element `o` of instance signal `sig` (as `read_sig1`).
     #[inline(always)]
-    fn edge_sig1(&self, sig: u32, o: u64, rising: bool, ctx: &mut Option<&mut Ctx<'_>>) -> R<u64> {
+    fn edge_sig1(
+        &self,
+        sig: u32,
+        o: u64,
+        kind: EdgeKind,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<u64> {
         if let Some(s) = self.inst.sigs.get(sig as usize)
             && let Ok(o) = u32::try_from(o)
             && let Some(e) = s.off.checked_add(o)
             && let Some(c) = ctx.as_deref()
-            && let Ok(Some(hit)) = c.edge(s.signal.slice(e, 1), rising)
         {
-            return Ok(u64::from(hit));
+            if c.edge_known(s.signal, e, kind.code()) {
+                return Ok(1);
+            }
+            if let Ok(Some(hit)) = c.edge_by(s.signal.slice(e, 1), kind.code()) {
+                return Ok(u64::from(hit));
+            }
         }
-        self.edge_sig1_slow(sig, o, rising, ctx)
+        self.edge_sig1_slow(sig, o, kind, ctx)
     }
 
     #[inline(never)]
@@ -3507,11 +3531,11 @@ impl Machine {
         &self,
         sig: u32,
         o: u64,
-        rising: bool,
+        kind: EdgeKind,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<u64> {
         let (sr, _) = self.sig_elem(sig, o)?;
-        Self::edge_elem(sr, rising, ctx)
+        Self::edge_elem(sr, kind, ctx)
     }
 
     /// Add element `o` of instance signal `sig` to the sensitivity of the coming wait (as
@@ -5405,10 +5429,10 @@ impl Machine {
                     dst,
                     sig,
                     offset,
-                    rising,
+                    kind,
                 } => {
                     self.regs[dst as usize] =
-                        t!(self.edge_sig1(sig, self.regs[offset as usize], rising, ctx));
+                        t!(self.edge_sig1(sig, self.regs[offset as usize], kind, ctx));
                     k += 1;
                     enter!();
                 }
@@ -5623,7 +5647,7 @@ impl Machine {
                 }
                 Op::EdgeBr {
                     dst,
-                    rising,
+                    kind,
                     stmt,
                     sig,
                     offset,
@@ -5634,7 +5658,7 @@ impl Machine {
                         self.end_stmt();
                         k += 1;
                     }
-                    let v = t!(self.edge_sig1(sig, self.regs[offset as usize], rising, ctx));
+                    let v = t!(self.edge_sig1(sig, self.regs[offset as usize], kind, ctx));
                     self.regs[dst as usize] = v;
                     go!(if v != 0 { t } else { e });
                 }
@@ -6885,14 +6909,7 @@ impl Machine {
         tf.flags = m.tier_flags();
         tf.owner = m.owner;
         tf.cycle = c.cycle();
-        match c.known_edge() {
-            Some((s, e, up)) => {
-                tf.known_sig = u64::from(s.0);
-                tf.known_elem = u64::from(e);
-                tf.known_up = u64::from(up);
-            }
-            None => tf.known_sig = u64::MAX,
-        }
+        tf.known = c.resumed_edge_key();
         true
     }
 
@@ -8160,6 +8177,10 @@ impl Machine {
                 let v = self.sig_read_scalar(sig, ctx)?;
                 self.set(dst, v);
             }
+            Inst::Edge { dst, kind, sig } => {
+                let v = self.edge_inst(kind, sig, ctx)?;
+                self.set(dst, v);
+            }
             Inst::SigLastValue { dst, sig } => {
                 let parts = self.sigparts(sig)?;
                 let v = self.read_parts(kc!(), &parts, true)?;
@@ -8488,7 +8509,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let m = &mut *self.m;
         let Some(c) = self.ctx.as_deref() else {
             tf.sigtab_len = 0;
-            tf.known_sig = u64::MAX;
+            tf.known = u64::MAX;
             return;
         };
         if m.tier_sigs.len() != m.inst.sigs.len() {
@@ -8544,14 +8565,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         tf.sigtab = m.tier_sigs.as_ptr();
         tf.sigtab_len = m.tier_sigs.len() as u64;
         tf.cycle = c.cycle();
-        match c.known_edge() {
-            Some((s, e, up)) => {
-                tf.known_sig = u64::from(s.0);
-                tf.known_elem = u64::from(e);
-                tf.known_up = u64::from(up);
-            }
-            None => tf.known_sig = u64::MAX,
-        }
+        tf.known = c.resumed_edge_key();
     }
 
     fn view_again(&mut self, tf: &mut crate::TierFrame) -> bool {
@@ -8911,6 +8925,9 @@ impl crate::TierHost for Host<'_, '_, '_> {
             }
             Some(&Inst::SigRead { dst, sig }) if !m.is_multi(sig) => {
                 m.sig_read_vec(dst, sig, self.ctx)
+            }
+            Some(&Inst::Edge { dst, kind, sig }) => {
+                m.edge_inst(kind, sig, self.ctx).map(|v| m.set(dst, v))
             }
             Some(&Inst::Drive {
                 driver,

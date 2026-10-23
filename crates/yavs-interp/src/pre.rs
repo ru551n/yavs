@@ -640,7 +640,7 @@ pub(crate) enum Op {
     /// `Stmt` before it too (the op stands in its place and goes on as the next one).
     EdgeBr {
         dst: u32,
-        rising: bool,
+        kind: yavs_ir::EdgeKind,
         stmt: bool,
         sig: u32,
         offset: u32,
@@ -907,12 +907,13 @@ pub(crate) enum Op {
         sig: u32,
         off: u32,
     },
-    /// `SigVal` of one element and `rising_edge` / `falling_edge` of it.
+    /// `SigVal` of one element and the clock-edge test of it (`Inst::Edge`, or the
+    /// `rising_edge` / `falling_edge` native).
     EdgeSig {
         dst: u32,
         sig: u32,
         offset: u32,
-        rising: bool,
+        kind: yavs_ir::EdgeKind,
     },
     /// `SigVal` of one element and the `WaitOn` of it.
     WaitSig {
@@ -1131,9 +1132,10 @@ enum NativeOp {
     Not {
         a: yavs_ir::Reg,
     },
-    /// `rising_edge` / `falling_edge` of the signal reference in register `sig`.
+    /// The clock-edge test `kind` of the signal reference in register `sig`: `Inst::Edge`, or
+    /// the `rising_edge` / `falling_edge` native.
     Edge {
-        rising: bool,
+        kind: yavs_ir::EdgeKind,
         sig: yavs_ir::Reg,
     },
 }
@@ -1201,7 +1203,12 @@ fn native_op(
         }),
         (Ie::Not, [a]) if scalar(a) => Some(NativeOp::Not { a: *a }),
         (Ie::Edge(rising), [r]) if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) => {
-            Some(NativeOp::Edge { rising, sig: *r })
+            let kind = if rising {
+                yavs_ir::EdgeKind::Rising
+            } else {
+                yavs_ir::EdgeKind::Falling
+            };
+            Some(NativeOp::Edge { kind, sig: *r })
         }
         _ => None,
     }
@@ -2703,13 +2710,13 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                     dst,
                     sig,
                     offset,
-                    rising,
+                    kind,
                 },
                 Some(&Op::CondBr { c, t, f }),
                 _,
             ) if c == dst => Some(Op::EdgeBr {
                 dst,
-                rising,
+                kind,
                 stmt: false,
                 sig,
                 offset,
@@ -2936,7 +2943,7 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 Op::Stmt,
                 Some(&Op::EdgeBr {
                     dst,
-                    rising,
+                    kind,
                     stmt: false,
                     sig,
                     offset,
@@ -2945,7 +2952,7 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 }),
             ) => Some(Op::EdgeBr {
                 dst,
-                rising,
+                kind,
                 stmt: true,
                 sig,
                 offset,
@@ -3716,17 +3723,27 @@ impl Code {
                             sig,
                             offset: offset.0,
                         }),
+                        Some(Inst::Edge {
+                            dst: d,
+                            kind,
+                            sig: r,
+                        }) if one && r == dst => Some(Op::EdgeSig {
+                            dst: d.0,
+                            sig,
+                            offset: offset.0,
+                            kind,
+                        }),
                         Some(Inst::CallNative {
                             native,
                             args,
                             dst: d,
                         }) if one => match (native_op(prog, f, native, args), d) {
-                            (Some(NativeOp::Edge { rising, sig: r }), Some(d)) if r == dst => {
+                            (Some(NativeOp::Edge { kind, sig: r }), Some(d)) if r == dst => {
                                 Some(Op::EdgeSig {
                                     dst: d.0,
                                     sig,
                                     offset: offset.0,
-                                    rising,
+                                    kind,
                                 })
                             }
                             _ => None,

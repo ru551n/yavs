@@ -1451,10 +1451,19 @@ which tools/difftest parses.
   `Inst::Drive` of one element, a null element an `Inst::Disconnect` at its own time (the
   explicit `after`, 0 fs without one; the disconnection specification time belongs to the
   GUARD of a guarded concurrent assignment only). Still `E2001`: a null in an aggregate target
-  or a signal parameter, a pulse rejection limit with a null first element, and in a record
-  signal (blocked by #595). sim1 loses the value before and the null itself in some
+  or a signal parameter, a pulse rejection limit with a null first element. sim1 loses the value before and the null itself in some
   multi-element forms and sim2 cannot run them: the corpus case `sigassign/null_waveform_mixed`
   is `ref=hand`, `tests/discrepancies/null-waveform-in-waveform`.
+- **Guarded record signals** (LRM 4.6, 6.4.2.3, #595): a record (or array) subtype with a
+  resolution function is resolved as a whole, so the guard (`bus`/`register`) belongs to the
+  composite and its leaves need no resolution of their own. `yavs-elab` marks the leaves guarded
+  after it joins them into groups (the kernel check looked at each leaf before), and the kernel
+  resolves a guarded group over its connected sources only (a source is connected while some
+  element of it is). A null on a record signal or a false GUARD disconnects every leaf's
+  driver (`yavs-lower` `drive_record`, `guarded_assign`). sim1 does not disconnect a guarded
+  driver at initialisation (as for `resolution/bus_guarded`), so `resolution/guarded_record` is
+  `ref=hand`; sim2 agrees with it, and cannot run a null on a record
+  (`tests/discrepancies/null-record-signal`).
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for

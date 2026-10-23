@@ -172,7 +172,7 @@ impl Builder {
     /// bit-planes; `f` sees whole composite values (see [`Resolver`](crate::Resolver)). A
     /// signal may be split into several groups, but its groups must cover it; every part must
     /// get the same sources, each covering the part, in the same order (checked by `build`),
-    /// and none may be guarded.
+    /// and all must have the same guard kind (`guard` after this call).
     pub fn resolved_composite<R: Into<SigRef> + Copy>(&mut self, parts: &[R], f: crate::Resolver) {
         let g = self.groups.len() as u32;
         if parts.is_empty() {
@@ -678,14 +678,14 @@ impl Builder {
             let want = owners(l0, r0);
             for &(l, r) in &g.parts {
                 let s = &self.signals[l as usize];
-                let bad = s.guard.is_some()
+                let bad = s.guard != lead.guard
                     || s.level != lead.level
                     || want.is_none()
                     || owners(l, r) != want;
                 if bad {
                     return Err(format!(
                         "resolved composite {}: leaf {} does not share the sources of the \
-                         composite (a guarded or partly driven composite is not implemented)",
+                         composite (or has another guard kind; a partly driven composite is not implemented)",
                         lead.name, s.name
                     ));
                 }

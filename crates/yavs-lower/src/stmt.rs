@@ -523,11 +523,39 @@ impl Fx<'_, '_> {
                 return Err(self.cx.unsupported(span, "aggregate signal targets"));
             };
             let slot = self.driver_of(lsp)?;
-            let (_, sref, _) = self.sig_name(target.expr)?;
             let mode = match delay {
                 Delay::Transport => DriveMode::Transport,
                 _ => DriveMode::Inertial,
             };
+            // A record target: each leaf's driver, as `drive_record` addresses them.
+            if let Some((d, steps)) = self.comp_steps(target.expr) {
+                let path: Vec<u32> = steps
+                    .iter()
+                    .filter_map(|s| match *s {
+                        crate::expr::Step::Field(n) => Some(n),
+                        _ => None,
+                    })
+                    .collect();
+                if !matches!(self.leaves_under(d, &path).as_slice(), [l] if l.path == path) {
+                    let covered = self.leaves_under(d, &crate::func::lsp_fields(lsp));
+                    let p = self.comp_select(d, &steps, span)?;
+                    for (leaf, sref, _) in &p.leaves {
+                        let Some(k) = covered.iter().position(|l| l.path == leaf.path) else {
+                            return Err(self.cx.ice(span, "signal target outside its driver"));
+                        };
+                        self.emit(Inst::Disconnect {
+                            driver: slot + k as u32,
+                            target: Some(*sref),
+                            after: None,
+                            mode,
+                        });
+                    }
+                    self.jump(j);
+                    self.at(j);
+                    return Ok(());
+                }
+            }
+            let (_, sref, _) = self.sig_name(target.expr)?;
             // `after: None`: the kernel signal's disconnection time (set by elab from the
             // disconnection specification, 0 without one).
             self.emit(Inst::Disconnect {
@@ -1513,15 +1541,20 @@ impl Fx<'_, '_> {
         let what = self.target_name(target.expr);
         let dims = ty::array_of(db, p.t).map(|x| x.1);
         let mut vals = Vec::new();
+        let nulls = elems.iter().any(|e| e.value.is_none());
+        if nulls && base.is_err() {
+            return Err(self
+                .cx
+                .unsupported(span, "null waveform elements of signal parameters"));
+        }
         for el in elems {
-            let Some(v) = el.value else {
-                return Err(self
-                    .cx
-                    .unsupported(span, "null waveform elements of record signals"));
-            };
             let at = match el.after {
                 Some(a) => self.scalar_expr(a)?,
                 None => self.int(0),
+            };
+            let Some(v) = el.value else {
+                vals.push((at, None));
+                continue;
             };
             let x = self.expr(v)?;
             let (data, vd) = self.arr(x, span)?;
@@ -1534,7 +1567,7 @@ impl Fx<'_, '_> {
                     what: m,
                 });
             }
-            vals.push((at, (data, vd)));
+            vals.push((at, Some((data, vd))));
         }
         let (mode, reject) = match delay {
             Delay::Transport => (DriveMode::Transport, None),
@@ -1550,31 +1583,37 @@ impl Fx<'_, '_> {
         for (leaf, sref, len) in &p.leaves {
             let pos = covered.iter().position(|l| l.path == leaf.path);
             let rel = &leaf.path[p.path.len()..];
-            // Bytes per waveform element: the time, then the value rounded up to 8 bytes.
-            let size = self.leaf_size(leaf, *len, span)?;
-            let seven = self.int(7);
-            let r = self.bin(IntOp::Add, size, seven);
-            let eight = self.int(8);
-            let q = self.bin(IntOp::Div, r, eight);
-            let r8 = self.bin(IntOp::Mul, q, eight);
-            let stride = self.bin(IntOp::Add, r8, eight);
-            let n = self.int(vals.len() as i64);
-            let total = self.bin(IntOp::Mul, stride, n);
-            let wave = self.alloc(total);
-            for (j, &(at, v)) in vals.iter().enumerate() {
-                let jj = self.int(j as i64);
-                let o = self.bin(IntOp::Mul, jj, stride);
-                let e = self.reg(RegTy::Ptr);
-                self.emit(Inst::Index {
-                    dst: e,
-                    base: wave,
-                    pos: o,
-                    stride: 1,
-                });
-                self.store(e, at, Width::B8);
-                let va = self.offset(e, 8);
-                self.leaf_of_value(leaf, rel, p.t, v, (va, *len), span)?;
+            if let (true, Ok(b)) = (nulls, base) {
+                // Null elements disconnect the leaf's driver (a guarded composite, LRM
+                // 10.5.2.2), the others are driven one at a time.
+                let Some(k) = pos else {
+                    return Err(self.cx.ice(span, "signal target outside its driver"));
+                };
+                let t = p.t;
+                self.drive_nulls(
+                    elems,
+                    b + k as u32,
+                    *sref,
+                    mode,
+                    reject,
+                    span,
+                    |_, j| Ok(vals[j].0),
+                    |fx, j, mode, reject| {
+                        let (wave, n) = fx.record_wave(leaf, *len, rel, t, &vals[j..=j], span)?;
+                        fx.emit(Inst::Drive {
+                            driver: b + k as u32,
+                            target: Some(*sref),
+                            wave,
+                            n,
+                            mode,
+                            reject,
+                        });
+                        Ok(())
+                    },
+                )?;
+                continue;
             }
+            let (wave, n) = self.record_wave(leaf, *len, rel, p.t, &vals, span)?;
             match base {
                 Ok(b) => {
                     let Some(k) = pos else {
@@ -1605,6 +1644,47 @@ impl Fx<'_, '_> {
             }
         }
         Ok(())
+    }
+
+    /// The waveform of one leaf of a record target, `items` being the (delay, value) pairs
+    /// (`Inst::Drive`'s layout: the delay, then the value rounded up to 8 bytes).
+    fn record_wave(
+        &mut self,
+        leaf: &crate::RecLeaf,
+        len: Reg,
+        rel: &[u32],
+        t: yavs_sem::TypeId,
+        items: &[(Reg, Option<(Reg, Reg)>)],
+        span: Span,
+    ) -> R<(Reg, Reg)> {
+        let size = self.leaf_size(leaf, len, span)?;
+        let seven = self.int(7);
+        let r = self.bin(IntOp::Add, size, seven);
+        let eight = self.int(8);
+        let q = self.bin(IntOp::Div, r, eight);
+        let r8 = self.bin(IntOp::Mul, q, eight);
+        let stride = self.bin(IntOp::Add, r8, eight);
+        let n = self.int(items.len() as i64);
+        let total = self.bin(IntOp::Mul, stride, n);
+        let wave = self.alloc(total);
+        for (j, &(at, v)) in items.iter().enumerate() {
+            let Some(v) = v else {
+                return Err(self.cx.ice(span, "a null element in a value waveform"));
+            };
+            let jj = self.int(j as i64);
+            let o = self.bin(IntOp::Mul, jj, stride);
+            let e = self.reg(RegTy::Ptr);
+            self.emit(Inst::Index {
+                dst: e,
+                base: wave,
+                pos: o,
+                stride: 1,
+            });
+            self.store(e, at, Width::B8);
+            let va = self.offset(e, 8);
+            self.leaf_of_value(leaf, rel, t, v, (va, len), span)?;
+        }
+        Ok((wave, n))
     }
 
     /// `(a, b) <= v after t, ...` (LRM 10.5.2.1): each scalar element of the aggregate target is

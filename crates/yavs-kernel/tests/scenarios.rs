@@ -986,6 +986,62 @@ fn composite_resolved_as_a_whole() {
     );
 }
 
+/// A composite resolved as a whole and guarded (#595): a source disconnects as a unit (both
+/// leaves), the resolver sees only the connected ones; with none left a bus calls it with an
+/// empty list, a register keeps its value.
+#[test]
+fn guarded_composite_disconnects_as_a_unit() {
+    for (kind, last) in [(GuardKind::Bus, (0, 0)), (GuardKind::Register, (1, 4))] {
+        let mut b = Builder::new();
+        let a = b.signal("r.a", SignalType::bytes(1, 1), &[0]);
+        let n = b.signal("r.n", SignalType::bytes(4, 1), &[0; 4]);
+        b.resolved_composite(
+            &[a, n],
+            Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+                out[0] = srcs.len() as u8;
+                let sum: i32 = (srcs.iter())
+                    .map(|s| i32::from_le_bytes(s[1..5].try_into().unwrap()))
+                    .sum();
+                out[1..5].copy_from_slice(&sum.to_le_bytes());
+                Ok(())
+            }),
+        );
+        b.guard(a, kind, Time::ZERO);
+        b.guard(n, kind, Time::ZERO);
+        for (k, val) in [3i32, 4].into_iter().enumerate() {
+            let (da, dn) = (b.driver(a), b.driver(n));
+            b.process(
+                &format!("p{k}"),
+                ProcFlags::default(),
+                &[da, dn],
+                p(move |c| {
+                    let at = ns(k as u64 + 1);
+                    c.assign(da, None, &[(at, &[1u8])], DelayMode::Transport)?;
+                    c.assign(dn, None, &[(at, &val.to_le_bytes())], DelayMode::Transport)?;
+                    let off = ns(k as u64 + 3);
+                    c.disconnect(da, None, Some(off), DelayMode::Transport)?;
+                    c.disconnect(dn, None, Some(off), DelayMode::Transport)
+                }),
+            );
+        }
+        let (mut sim, _) = build(b, Config::default());
+        let get = |sim: &SimControl| {
+            (
+                v(sim, a)[0],
+                i32::from_le_bytes(v(sim, n).try_into().unwrap()),
+            )
+        };
+        sim.run_until(ns(1)).unwrap();
+        assert_eq!(get(&sim), (2, 3));
+        sim.run_until(ns(2)).unwrap();
+        assert_eq!(get(&sim), (2, 7));
+        sim.run_until(ns(3)).unwrap();
+        assert_eq!(get(&sim), (1, 4), "{kind:?}");
+        sim.run_until(ns(4)).unwrap();
+        assert_eq!(get(&sim), last, "{kind:?}");
+    }
+}
+
 /// An array of two records `(b : std_ulogic; n : integer)` resolved element by element, the
 /// record subtype resolved as a whole: one group per element over slices of the two leaves.
 /// Element 0 has two sources, element 1 one: each group sees only its own.

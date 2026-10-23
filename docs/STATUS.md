@@ -6053,7 +6053,7 @@ transport, a null as `Inst::Disconnect` at its own time. No IR, interpreter or k
 Corpus `sigassign/null_waveform` (reference output) and `sigassign/null_waveform_mixed`
 (`ref=hand`: sim1 loses a value before a null and a null in the middle of a waveform, sim2 cannot
 run a null among elements; `tests/discrepancies/null-waveform-in-waveform`). Still `E2001`: null in
-record signals (blocked by #595), aggregate targets and signal parameters.
+aggregate targets and signal parameters (record signals: #595, below).
 
 ## GUARD initial value (#464, 2026-10-23)
 
@@ -6062,3 +6062,14 @@ The implicit GUARD signal starts as the guard condition on the initial values (`
 `delta/guard_initial_value`. Open (#464): GUARD still changes a delta after the condition's
 signals, where the references update it in the same cycle (needs a kernel update-phase
 evaluation of the condition).
+
+## Guarded record signals (#595, 2026-10-23)
+
+A `bus` or `register` record signal whose subtype has a record resolution function elaborates
+(`E3010 guarded signal p.a must be resolved` came from guarding the leaves before the
+composite groups joined them) and simulates: the kernel resolves a guarded group over its
+connected sources (`SimControl::resolve_group`), a false GUARD (`guarded_assign`) and a `null`
+waveform element (`drive_record`) disconnect every leaf. Corpus `resolution/guarded_record`
+(`ref=hand`, sim1 does not disconnect at initialisation), `resolution/guarded_record_rec2` (the
+reproducer), `sigassign/null_record`; kernel test `guarded_composite_disconnects_as_a_unit`;
+discrepancy `null-record-signal`.

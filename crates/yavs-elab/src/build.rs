@@ -95,9 +95,6 @@ impl Elaborated {
                 }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
-            if let Some(g) = leaf.guard {
-                b.guard(id, g, leaf.disconnect);
-            }
         }
         // Composites resolved as a whole (#193): one group per instance, one resolver each.
         for w in &self.nets.wholes {
@@ -113,6 +110,12 @@ impl Elaborated {
                     .map(|&(l, r)| yavs_kernel::SignalId(l.0).slice(r.offset, r.len))
                     .collect();
                 b.resolved_composite(&parts, f.clone());
+            }
+        }
+        // After the groups: a leaf of a composite resolved as a whole is resolved by them.
+        for (i, leaf) in self.nets.leaves.iter().enumerate() {
+            if let Some(g) = leaf.guard {
+                b.guard(yavs_kernel::SignalId(i as u32), g, leaf.disconnect);
             }
         }
         let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| {

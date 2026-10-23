@@ -837,7 +837,7 @@ impl Db {
         args: &[ast::AssocElem],
     ) -> CandSet {
         if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind
-            && !is_subtype_attr(attr)
+            && takes_args(attr)
         {
             return self.attr_cands(scope, p, *attr, args);
         }
@@ -1188,7 +1188,7 @@ impl Db {
             }
             (ast::NameKind::Apply { prefix, args }, _) => {
                 if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind
-                    && !is_subtype_attr(attr)
+                    && takes_args(attr)
                 {
                     return self.build_attr(scope, p, *attr, args, i, span);
                 }
@@ -3047,7 +3047,10 @@ pub(crate) fn assoc_map(
     Ok(map)
 }
 
-/// `x'subtype`, `x'element` and `t'base` denote subtypes, so applying them is a type conversion.
-fn is_subtype_attr(attr: &ast::Ident) -> bool {
-    matches!(attr.key.as_str(), "subtype" | "element" | "base")
+/// Whether `attr(args)` is an attribute call. `x'subtype`, `x'element` and `t'base` denote
+/// subtypes, so applying them is a type conversion; a user-defined attribute has a value that
+/// the arguments index (`x'a(1)`, LRM 7.2).
+fn takes_args(attr: &ast::Ident) -> bool {
+    !matches!(attr.key.as_str(), "subtype" | "element" | "base")
+        && PredefAttr::from_key(attr.key).is_some()
 }

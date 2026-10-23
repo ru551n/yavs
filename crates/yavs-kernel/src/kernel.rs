@@ -2019,10 +2019,12 @@ impl SimControl {
         }
 
         self.changed_sigs.clear();
-        for &p in &self.skip_wake[..self.skip_n] {
-            self.procs[p as usize].ready = false;
+        if self.skip_n != 0 {
+            for &p in &self.skip_wake[..self.skip_n] {
+                self.procs[p as usize].ready = false;
+            }
+            self.skip_n = 0;
         }
-        self.skip_n = 0;
 
         // e: run the resumed non-postponed processes.
         let mut ready = std::mem::take(&mut self.ready);

@@ -76,6 +76,7 @@ const PASS: &[&str] = &[
     "composite/aggregate_named_pieces",
     "composite/aggregate_piece_direction",
     "composite/aggregate_open_elements",
+    "composite/aggregate_2d_named_rows",
     "composite/aggregate_fill",
     "composite/periodic_const",
     "composite/element_attr_open",

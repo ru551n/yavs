@@ -5571,3 +5571,14 @@ Ideas taken from the reference simulator (sim1; read for the design, no code tak
 a flag of the signal the runtime keeps up to date and the compiled code tests, not a call (ours: the event stamp and
 the last-value planes, tested in place); and a process there is compiled once per architecture and takes its
 instance by pointer, which is what our one function per process of a design unit already is.
+
+## textio and formal packages, 2026-10-23 (#622, #623; user: follow the LRM, else accept what a major simulator accepts)
+
+- **READ of a bit_vector skips white space before each bit** (L131, #623): the LRM (16.4) is silent
+  on white space inside the characters, the references split (sim1 accepts, sim2 rejects), so the
+  permissive reading holds. A failed READ still leaves the line and the value as they were.
+- **A formal package with a generic map still needs an actual** (L132, #622): an interface
+  package has no default (6.5.6.2, 6.5.7.2), so an unassociated one stays `E1502`; the formal's
+  generic map only constrains the actual instance (`E1503`). Not implemented: instantiating it
+  implicitly, as sim2 does.
+

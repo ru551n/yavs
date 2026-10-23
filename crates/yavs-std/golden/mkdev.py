@@ -17,7 +17,6 @@ REASONS = [
     (r"^read_real\t1\.5e\+", "an exponent needs digits (LRM 15.5.2); sim1 reads 1.5 and drops 'e+'"),
     (r"^read_time\t.*10000000 hr", "overflow is good=false; sim1 wraps the value"),
     (r"^read_time", "a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); sim1 READ(TIME) rejects it, sim2 accepts"),
-    (r"^read_bv\t1 0", "whitespace inside a bit string is not a bit value; sim2 also rejects it"),
     (r"^(real_digits|write_real|write_real_format)\t", "sim1 aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value"),
     (r"^real_format\t1\.5\t(%5|%\.3)\t", "an incomplete conversion is an error; sim1 returns an empty string"),
     (r"^real_format\t.*\t(%[-+ #]|x=|%%|%-)", "C99 printf flags and literal text are supported; sim1 rejects them"),

@@ -21,6 +21,7 @@ const PASS: &[&str] = &[
     "protected/access_method_call_2019",
     "textio/file_in_subprogram",
     "textio/read_failed",
+    "textio/read_bit_vector_white_space",
     "textio/binary_file_composites",
     "textio/binary_file_bounds",
     "access/access_string_array",

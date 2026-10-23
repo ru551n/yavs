@@ -273,7 +273,6 @@
 *	read_time	1.25 us	[g=true v=1250000000 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); sim1 READ(TIME) rejects it, sim2 accepts
 *	read_time	0.0000001 ns	[g=true v=0 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); sim1 READ(TIME) rejects it, sim2 accepts
 *	read_time	-1.5 ps	[g=true v=-1500 fs rest=]	a physical literal may use a decimal literal (LRM 5.2.4.1, 15.5); sim1 READ(TIME) rejects it, sim2 accepts
-*	read_bv	1 0	2	[g=false rest=1 0]	whitespace inside a bit string is not a bit value; sim2 also rejects it
 *	write_real	1.0e100	right	0	1	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.0]	sim1 aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
 *	write_real	1.0e100	right	0	3	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.000]	sim1 aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value
 *	write_real	1.0e100	right	10	2	[10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104.00]	sim1 aborts on its fixed-size buffer (checked_sprintf); yavs prints the full value

@@ -376,18 +376,16 @@ pub fn sread(line: &mut &[u8], n: usize) -> Vec<u8> {
     v
 }
 
-/// `read(l, bit_vector)` (and BREAD) of length `n`: `n` binary digits
-/// after leading whitespace, without underscores.
+/// `read(l, bit_vector)` (and BREAD) of length `n`: `n` binary digits, white space allowed
+/// before each (as a READ of each BIT would; LRM 16.4 is silent, L131), without underscores.
 pub fn read_bit_vector(line: &mut &[u8], n: usize) -> R<Vec<bool>> {
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-    let i = skip(line);
     let mut v = Vec::with_capacity(n);
+    let mut i = 0;
     for k in 0..n {
-        match line.get(i + k) {
+        i += line[i..].iter().take_while(|&&c| is_ws(c)).count();
+        match line.get(i) {
             Some(&c @ (b'0' | b'1')) => v.push(c == b'1'),
-            Some(_) => return Err(err(What::BitVector, line, i + k, "'0' or '1'")),
+            Some(_) => return Err(err(What::BitVector, line, i, "'0' or '1'")),
             None => {
                 return Err(ConvError::new(
                     What::BitVector,
@@ -396,12 +394,13 @@ pub fn read_bit_vector(line: &mut &[u8], n: usize) -> R<Vec<bool>> {
                         found: k,
                     },
                     line,
-                    i..i + k,
+                    0..i,
                 ));
             }
         }
+        i += 1;
     }
-    consume(line, i + n);
+    consume(line, i);
     Ok(v)
 }
 

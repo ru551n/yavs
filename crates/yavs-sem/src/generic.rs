@@ -1892,7 +1892,11 @@ impl Db {
             )
             .with_primary(site, "in this instantiation")
             .with_secondary(self.decls[f].span, "generic declared here")
-            .with_help(format!("add `{name} => ...` to the generic map")),
+            .with_help(if what == "package " {
+                format!("add `{name} => ...` to the generic map, naming an instance of the package (6.5.7.2; a generic map on the formal gives no default)")
+            } else {
+                format!("add `{name} => ...` to the generic map")
+            }),
         )
     }
 

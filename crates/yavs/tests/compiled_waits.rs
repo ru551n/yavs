@@ -46,14 +46,14 @@ fn run(dir: &Path, flags: &[&str]) -> (Output, Vec<String>) {
     args.push("waits");
     let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
         .args(&args)
-        .env("YAVS_TIER_CENSUS", "1")
+        .env("YAVS_COUNTERS", "kinds")
         .current_dir(dir)
         .output()
         .expect("run yavs");
     assert!(o.status.success(), "{o:?}");
     let census = String::from_utf8_lossy(&o.stderr)
         .lines()
-        .filter(|l| l.starts_with("tier-census: "))
+        .filter(|l| l.starts_with("counters: cb_") && l.contains('.'))
         .map(str::to_string)
         .collect();
     (o, census)
@@ -83,14 +83,8 @@ fn sensitivity_lists_wait_without_naming_their_signals() {
         // (the first ones, before the kernel holds a wait, are).
         let waits: u64 = census
             .iter()
-            .filter(|l| l.contains(" WaitOn"))
-            .filter_map(|l| {
-                l.strip_prefix("tier-census: ")?
-                    .split(' ')
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-            })
+            .filter(|l| l.contains(".WaitOn="))
+            .filter_map(|l| l.split_once('=')?.1.parse::<u64>().ok())
             .sum();
         assert!(waits < 100, "{flags:?}: {census:?}");
     }

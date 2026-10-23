@@ -203,13 +203,13 @@ fn scalar_and_wide_signal_reads_in_compiled_code_match_the_interpreter() {
     let go = |tier: &str| {
         let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
             .args(["run", "--work=work:work", &format!("--tier={tier}"), "k"])
-            .env("YAVS_TIER_CENSUS", "1")
+            .env("YAVS_COUNTERS", "kinds")
             .current_dir(&dir)
             .output()
             .expect("run yavs");
         let census: Vec<String> = String::from_utf8_lossy(&o.stderr)
             .lines()
-            .filter(|l| l.starts_with("tier-census: "))
+            .filter(|l| l.starts_with("counters: cb_") && l.contains('.'))
             .map(str::to_string)
             .collect();
         (
@@ -228,7 +228,7 @@ fn scalar_and_wide_signal_reads_in_compiled_code_match_the_interpreter() {
             assert!(
                 !got.2
                     .iter()
-                    .any(|l| l.ends_with(" SigRead") || l.ends_with(" SigReadScalar")),
+                    .any(|l| l.contains(".SigRead=") || l.contains(".SigReadScalar=")),
                 "{:?}",
                 got.2
             );

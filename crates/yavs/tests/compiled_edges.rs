@@ -68,22 +68,22 @@ fn yavs(dir: &Path, args: &[&str]) -> Output {
         .expect("run yavs")
 }
 
-/// The edge counts of a run and its `tier-census:` lines (the calls compiled code made into the
-/// host, `YAVS_TIER_CENSUS`).
+/// The edge counts of a run and its `cb_<entry>.<Kind>` counter lines (the calls compiled code made
+/// into the host, `YAVS_COUNTERS=kinds`).
 fn counts(dir: &Path, flags: &[&str]) -> (Vec<(u32, u32)>, Vec<String>) {
     let mut args = vec!["run", "--work=work:work"];
     args.extend_from_slice(flags);
     args.push("edges");
     let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
         .args(&args)
-        .env("YAVS_TIER_CENSUS", "1")
+        .env("YAVS_COUNTERS", "kinds")
         .current_dir(dir)
         .output()
         .expect("run yavs");
     assert!(o.status.success(), "{o:?}");
     let census = String::from_utf8_lossy(&o.stderr)
         .lines()
-        .filter(|l| l.starts_with("tier-census: "))
+        .filter(|l| l.starts_with("counters: cb_") && l.contains('.'))
         .map(str::to_string)
         .collect();
     let counts = String::from_utf8_lossy(&o.stdout)
@@ -127,7 +127,7 @@ fn clock_edge_forms_in_compiled_code_match_the_interpreter() {
         // calls left are the integer counters).
         for l in &census {
             assert!(
-                !l.contains(" SigAttr") && !l.contains(" CallNative"),
+                !l.contains(".SigAttr=") && !l.contains(".CallNative="),
                 "{flags:?}: {census:?}"
             );
         }

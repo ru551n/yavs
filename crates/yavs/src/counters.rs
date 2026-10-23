@@ -1,7 +1,9 @@
 //! `YAVS_COUNTERS=1`: the work counters of a run, one `counters: NAME=VALUE` line each on
 //! stderr after `yavs run`. They count work, not time, so they are the same on every host and
 //! run (with `--tier=interp --threads 1`): `crates/yavs/tests/perf.rs` checks them against
-//! ceilings (root `AGENTS.md` section 4, "Work-counter tests"). A hidden test aid, not part of
+//! ceilings (root `AGENTS.md` section 4, "Work-counter tests"). `YAVS_COUNTERS=kinds` (or `pc`)
+//! also splits the calls compiled code makes into the host by instruction kind (and function and
+//! pc): `cb_<entry>.<Kind>` lines, `yavs_interp::tier_census`. A hidden test aid, not part of
 //! the CLI contract.
 
 static OPS_BEFORE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -72,6 +74,10 @@ pub fn report(s: yavs_kernel::Stats) {
     // The callbacks of compiled code, by kind (debug builds and `op-census`).
     #[cfg(feature = "llvm")]
     for (name, v) in yavs_llvm::callback_counts().into_iter().flatten() {
+        eprintln!("counters: cb_{name}={v}");
+    }
+    // The calls into the host by instruction kind (`YAVS_COUNTERS=kinds|pc`, every build).
+    for (name, v) in yavs_interp::tier_census() {
         eprintln!("counters: cb_{name}={v}");
     }
 }

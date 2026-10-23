@@ -5511,14 +5511,18 @@ through `TierHost::object` (22 percent of the main thread's instructions in the 
 Compiled clocked RTL ran about the interpreter's instructions in more cycles (`neorv32_single_min` and
 `fletcher_bufferwriter_512` under `--tier=llvm`: IPC 1.4 to 1.8 against 2.2 to 2.4, branch misses 3 to 4 times, L1
 instruction-cache misses 3 times, instruction TLB misses 30 times). Two causes, found with `perf` and the census
-(`YAVS_TIER_CENSUS`, below): every exit from compiled code to the host is 400 to 600 instructions with cold branches on
+(the census, below): every exit from compiled code to the host is 400 to 600 instructions with cold branches on
 both sides (14 million of them on the CPU design, 64 million on the wide-vector one), and the code of a process
 interleaved its rare paths with the hot ones. Decisions, each tagged by what a second code generator shares:
 
-- **`YAVS_TIER_CENSUS=1` (or `=pc`)** counts the calls compiled code makes into `Host::step`, `signal`, `drive_block`,
+- **`YAVS_COUNTERS=kinds` (or `=pc`)** counts the calls compiled code makes into `Host::step`, `signal`, `drive_block`,
   `drive_wide`, `wait_suspend` and the refusals of `wait_same`, by IR instruction kind (with `pc`: function and pc), and
-  `yavs run` prints them. The tool for choosing the next exit and the test of a fast path (a count that stays at 0).
-  Shared (the host side, `tier_census.rs`).
+  `yavs run` prints them as `counters: cb_<entry>.<Kind>[.<function>.pc<N>]=N` with the other work counters. The tool for
+  choosing the next exit and the test of a fast path (a count that stays out). Shared (the host side, `tier_census.rs`).
+  Until 2026-10-23 it was a second mechanism, `YAVS_TIER_CENSUS` with its own `tier-census:` lines; the maintainer had it
+  merged into the `YAVS_COUNTERS` counters (`cb_*`, per callback kind in `yavs-llvm`), so there is one. What it keeps that
+  the totals do not have: the split by instruction kind and pc, the refusal reasons of `wait_same`, and every build (the
+  totals are counted in debug and `op-census` builds only).
 - **`rising_edge`, `falling_edge` and `'event` are answered in compiled code** from the kernel's event stamps (the cycle
   of the last event of each element, signals of at most 64 elements) and the plane block of `'last_value`
   (`TierSig::stamps`, `last`, `TierFrame::cycle`), after the known-edge test that stays for processes the kernel

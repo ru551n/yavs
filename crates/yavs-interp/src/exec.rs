@@ -8836,14 +8836,14 @@ impl crate::TierHost for Host<'_, '_, '_> {
     fn wait_same(&mut self, pc: u32) -> bool {
         let m = &mut *self.m;
         if m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {
-            crate::tier_census::note("wait_same refused (frame)", &self.f.name, pc, None);
+            crate::tier_census::note("wait_same_refused_frame", &self.f.name, pc, None);
             return false;
         }
         let Some(c) = self.ctx.as_deref_mut() else {
             return false;
         };
         if !c.wait_same() {
-            crate::tier_census::note("wait_same refused (kernel)", &self.f.name, pc, None);
+            crate::tier_census::note("wait_same_refused_kernel", &self.f.name, pc, None);
             return false;
         }
         m.frames[0].pc = pc;

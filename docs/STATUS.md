@@ -6298,7 +6298,7 @@ sim1's own time moved by up to 1.5x between the two runs; use the instruction co
 ## llvm: compiled clocked RTL, round 4, 2026-10-23 (#532, #339)
 
 Exits and layout of compiled clocked RTL (decisions.md "Compiled clocked RTL processes, round 4"). What compiled code
-sends to the host (`YAVS_TIER_CENSUS=1`, `--tier=llvm`, whole run; the "before" counts are the last snapshot of the
+sends to the host (`YAVS_COUNTERS=kinds`, formerly `YAVS_TIER_CENSUS=1`, `--tier=llvm`, whole run; the "before" counts are the last snapshot of the
 same census at 500 000-call steps, so they are lower bounds):
 
 | Design | calls before | calls now | what was left |

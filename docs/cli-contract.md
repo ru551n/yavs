@@ -575,7 +575,9 @@ prints the same line.
 The test runner sets no yavs environment variables. `YAVS_STDLIB` overrides the std/ieee
 tree (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
-`elab_flags` to both `run` and `elab`, and `run_flags` only to `run`.
+`elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
+from asking for transparent huge pages on its heap at start (Linux with glibc and the system's
+transparent huge pages in `madvise` mode only; on any other system it does nothing).
 
 ## 8. Not covered yet
 

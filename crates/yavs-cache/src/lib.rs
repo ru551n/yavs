@@ -155,6 +155,12 @@ pub fn trim_heap() {
     map::trim_heap();
 }
 
+/// Ask the system for transparent huge pages on the heap (Linux, glibc, THP in `madvise` mode;
+/// nothing elsewhere). Call once, first thing in `main`. `YAVS_HUGE_HEAP=0` switches it off.
+pub fn huge_heap() {
+    map::huge_heap();
+}
+
 /// A hash of everything an entry depends on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Key([u8; 32]);

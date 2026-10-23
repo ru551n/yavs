@@ -4889,3 +4889,35 @@ window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
 - Idea from the reference simulator (read for the design, no code taken): its interpreter keeps the hot state in a small
   struct on the stack and the registers in a stack array, so entering a function stores a handful of words; the shared
   interpreter state of yavs lives in the machine, which the compiler addresses field by field.
+
+## Huge pages for the heap (yavs-cache `map.rs`, yavs CLI `main`, #556; user decision 2026-10-22: in-process, no re-exec)
+
+A cold elaboration of `osvvm_axis_random` took 8 270 page faults (a fifth of its CPU time, mostly in the kernel) because
+glibc's `malloc` grows the heap in small steps. glibc's own tunable `glibc.malloc.hugetlb=1` removes most of them but is read
+at process start only, so the binary would have had to re-exec itself. Decisions:
+
+- **`yavs_cache::huge_heap()` runs first in `main`**: `mallopt` sets the top pad to 64 MiB (and the trim threshold to twice
+  that, the mapping threshold to 32 MiB, glibc's own upper limit, because setting any of them turns off the allocator's
+  tuning of that threshold), a 1 MiB block is allocated and freed so that the allocator extends the `brk` heap by one
+  64 MiB step now, and that range (from the first 2 MiB boundary) gets `madvise(MADV_HUGEPAGE)`. Only `mallopt`, `sbrk(0)`
+  and `madvise` (no new dependency, same `unsafe extern "C"` style as `trim_heap`). The kernel needs no setting beyond
+  transparent huge pages in `madvise` mode (the default of common distributions); the heap is the same glibc heap, only the
+  page size of its first 64 MiB differs, so #437 (no allocator replacement) stands.
+- **Harmless where it does not apply**: compiled only for Linux with glibc (Windows, macOS, musl: no-op); it does nothing
+  when `/sys/kernel/mm/transparent_hugepage/enabled` does not show `[madvise]` (`never`: nothing to ask for; `always`: the
+  kernel already does it); a failed call changes nothing. `YAVS_HUGE_HEAP=0` switches it off (`docs/cli-contract.md` 7).
+- **Why 64 MiB**: it covers the whole heap of a typical elaboration (median peak RSS of the realbench cells is 35 MiB). 256 MiB
+  was tried on the heaviest interpreted run (`neorv32_dual_full`): 83% fewer page faults again, cycles unchanged, RSS up.
+  Memory beyond the first step is ordinary 4 KiB pages as before (the kernel does not merge a later `brk` extension into the
+  advised range), and so are the arenas of other threads (`--threads N`; a spot check of `--threads 4` shows no change in
+  cycles). An allocator that asked for huge pages on every growth step (the tunable) would cover them; not worth a re-exec.
+- **Cost**: peak RSS rises by the huge page granularity: median +2 to 4 MiB (+8% geometric mean, 46 to 49 MiB for a cold
+  elab), at most +12 MiB on cells that run the interpreter and +39 MiB (4%) on runs that compile with LLVM (about 900 MiB). Zeroing a huge
+  page is part of the first touch, so a very small run (`--version`) pays one 2 MiB clear: not measurable in its cycles.
+- **Test**: `crates/yavs-cache/tests/huge_heap.rs` (own `main`: the allocator's `brk` heap belongs to the main thread) checks
+  the `hg` flag of the heap in `/proc/self/smaps`, with and without `YAVS_HUGE_HEAP=0`; it skips itself where huge pages are
+  not in `madvise` mode.
+
+Measured with `tools/realbench` `--compare` (41 tests, all phases, cold and warm, interleaved, cores 6 and 7, `perf stat`
+instructions, cycles and page faults as medians of every timed run, 2 to 5 runs) and the `tools/bench` h2h designs (9 runs):
+see STATUS.md "Huge pages for the heap". No test or phase gets slower beyond noise.

@@ -5218,6 +5218,38 @@ satcat5, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl: all as expected.
 Not done: cloning only the bodies a run reaches (needs the stage and prefix rules to change, see the decision), the page faults of
 the whole run (#556).
 
+## Huge pages for the heap (#556, 2026-10-23)
+
+`yavs_cache::huge_heap()` at the start of `main`: top pad 64 MiB, one growth step of the `brk` heap, `madvise(MADV_HUGEPAGE)` on it (Linux
+with glibc and transparent huge pages in `madvise` mode; no-op elsewhere; `YAVS_HUGE_HEAP=0` off). Decision and the options:
+`docs/decisions.md` "Huge pages for the heap". Test: `crates/yavs-cache/tests/huge_heap.rs`.
+
+Before / after (B = with, A = without; same sources), `tools/realbench` `--compare` of all 41 tests (the five uvvm tests included since #560),
+phases and cells as named, cores 6 and 7, cycles, instructions and page faults from `perf stat` (median of the timed runs, 2 to 5 runs,
+host load 2 to 13 from other agents), geometric means of B / A over the tests; peak RSS is the geometric mean of the per-cell maximum:
+
+| cell | instr | cycles | page faults | CPU time | wall (sum) | peak RSS |
+|---|---:|---:|---:|---:|---:|---:|
+| elab, cold | 0.949 | 0.857 | 0.145 | 0.826 | 0.857 | 1.079 |
+| elab, warm | 0.932 | 0.812 | 0.251 | 0.831 | 0.760 | 1.077 |
+| run, interp (warm) | 0.972 | 0.908 | 0.208 | 0.905 | 0.959 | 1.084 |
+| run, auto (warm) | 0.973 | 0.906 | 0.244 | 0.924 | 0.977 | 1.087 |
+| run, auto cold | 0.979 | 0.934 | 0.173 | 0.922 | 0.959 | 1.063 |
+| analyze, cold (library part) | 0.952 | 0.876 | 0.506 | 0.870 | 0.904 | 1.089 |
+| analyze, warm (library part) | 0.966 | 0.915 | 0.648 | 0.908 | 0.928 | 1.114 |
+| analyze, cold (own files) | 0.969 | 0.924 | 0.589 | 0.805 | 0.870 | 1.051 |
+| codegen, cold (llvm minus interp, time 0) | 0.998 | 0.987 | 0.756 | 0.986 | 0.998 | 1.018 |
+| codegen, warm | 0.985 | 0.954 | 0.785 | 0.955 | 0.973 | 1.034 |
+
+Absolute: cold elab of `osvvm_axis_random` 8 536 to 863 page faults, 354 M to 291 M cycles, peak RSS 51 to 54 MiB; median peak RSS
+increase 2 to 4 MiB per cell, at most +12 MiB for the interpreter cells and +39 MiB (4%) for the 900 MiB runs that compile with LLVM.
+By category (cycles, B / A): elab 0.80 (protected, memory, numeric) to 0.91 (fsm, rtl-datapath), run 0.83 (strings-textio) to 0.99
+(wide-vectors), analyze 0.85 (protected) to 1.10 (bus-tristate: one shared library cell, noise). The `tools/bench` h2h designs (9 runs,
+interp and auto, core 6 and 7): long RTL runs unchanged within noise (cycles 0.976 geometric mean, instructions 0.992, page faults
+0.59, peak RSS +1 to 3 MiB; `rtl_ram`, which builds 48 MiB, 0.85 cycles). Single cells above 1.05 in the first pass
+(`olo_fix_cordic_rot` auto cold, `hdlm_fifo_sync` and `uvvm_util_rand` elab cold, `poc_arith_addw` auto cold, `hdlm_axi_crossbar`
+codegen cold) were run again with 11 (5) runs: 0.95, 0.85, 0.78, 1.02 (a 28 s LLVM run, instructions 1.000) and 0.99; no test is slower beyond noise.
+
 ## sem: deterministic ids and cache bytes across processes (#557, 2026-10-22)
 
 `Db::r_instance` cloned a nested instance's `GenericMap` in std hash order (seeded per process), so the ids of the cloned subtypes,

@@ -5650,3 +5650,48 @@ instance by pointer, which is what our one function per process of a design unit
   `--tier=interp` and `--tier=llvm`, where nothing changed); there is no deterministic counter for `auto` (what it compiles
   depends on the timing of the compile thread), so the cost above is not gated. `compiled_natives` checks the output of a
   record-heavy design under `--tier=auto --tier-heat=1,0,0`.
+
+
+## Compiled protected-method accessors, round 2: closed frames (yavs-llvm, #626, 2026-10-23)
+
+Measured on `protected_queue` (`tools/bench`, `--tier=llvm` with the `LEAN` pipeline, so no inlining as in `--tier=auto`,
+main-thread instructions, deterministic) and a micro design calling one protected `get` a million times: a `get` of the
+test runner's pointer tables was about 450 instructions and 130 cycles, of which 35 in the prologue of the native frame.
+The study of the reference simulator's own optimiser gave the idea (it promotes stack allocations whose address is only
+used by direct loads and stores to registers); ours differs in that a native frame is also found by its frame index.
+
+- **A closed frame is not registered** (`closed_frame`, `Nat::closed`, tag LLVM-only; the analysis is shared in nature,
+  a second code generator needs the same registration rule): a native frame is entered in `Mem::nslots` so callees and
+  the interpreter's natives can reach its slots by the frame index in an address. When no address of the frame can leave
+  the function (no function nested in it, every `AddrOf Frame` defined once and used only as the address of a `Load` or
+  `Store`: never data, never an operand of a call, `Index`, `Copy`, a native or a stepped instruction) nothing can ask, so
+  the slots are an `alloca` LLVM promotes (`sroa`): the zeroing, the parameter stores and the reloads of the prologue go,
+  and the unknown-address lookup of such a function leaves out the test of its own frame (the dynamic offset kept the
+  `alloca` in memory). Its `nslots` entry is written with length 0 instead, so a stale entry of an earlier frame at that
+  depth can never be read. The bytes the exit sites hand to a materialised frame (`yavs_rt_deopt_slots`, already zero)
+  are only the ranges the function touches, and so is the zeroing at entry. A native frame also knows its preloaded
+  `AddrOf` registers in every block now (frame mode already did): a load through one in a later block is a direct slot
+  access instead of a lookup. Test: `closed_frames_hand_their_slots_to_the_interpreter` (a recursion past the native
+  stack allowance materialises the frames mid-way).
+- Measured (instructions of the main thread, `protected_queue` / micro `get`): 8.776 G to 8.143 G (-7.2 percent), 594 to
+  555 instructions per `get` of the micro design.
+- **A heap object a `Deref` found stays in hand in a native frame** (`Known::Heap(Some(ObjRef))`, `Cur::objnew`, tag
+  LLVM-only; a second code generator needs the same rule): the generated code keeps the object's pointer and length (read
+  from its entry of `Mem::objs` after the `Deref`) and the offset of each address register derived from it by `Index`,
+  `Field` or `Move`, and `Gen::host` reads and writes through them with only the bounds test of the access: no key
+  hash, no entry compare, no second lookup. The facts live up to the next instruction outside `keeps_objects` (the rule the
+  object table's own entries follow across steps), a call included, and to the end of the basic block; any redefinition of
+  the register drops its fact. Every such object is writable: a `Deref` hit requires the entry's write flag (an entry
+  found for reading goes through the callback, which enters the object writable) and a callback that found the address
+  but did not enter the object leaves the frame (checked, cold). A stale handle is the same slow-path error as before
+  (the access value must match the entry). Frame-mode code keeps the old form (its slow path steps the instruction and
+  goes on, so the entry is not known to hold the object afterwards). Test: `heap_object_held_between_instructions`.
+- **`Index` guards**: the 4 GiB checks were a multiply and an add with overflow flags and a compare; with a position
+  under 2^32 and a stride under 2^32 neither wraps, so `(pos | sum) >> 32 != 0` is the whole test (a stride of 0 tests the
+  sum only): identical failures, four instructions fewer per `Index`. **`Pos`**: the range test is `lo <= hi` and
+  `(i - lo) <= (hi - lo)` unsigned with `lo`, `hi` picked by the direction word, instead of two signed range tests
+  and a select (12 instructions fewer; shared by the scan loop work, #578).
+- A closed frame must be decided on every operand: `Inst::visit` leaves out the operand lists of calls, natives and
+  concatenations (`yavs_interp::inst_regs` has them). The first version missed `CallNative`'s argument list and the corpus
+  caught it (`textio/std_logic_textio`, a frame address passed to a native `READ` helper).
+

@@ -5054,6 +5054,7 @@ see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyon
 - **Process places** in diagnostics are the first statement of the body (`ProcTable`, built before
   the elaborated model is freed); the place of the wait statement a process is suspended at
   would need the interpreter to expose its resume point and is not reported.
+
 ## Sampling profiler: `yavs run --profile[=FILE]` (yavs CLI, yavs-kernel `profile.rs`, yavs-interp, #580, 2026-10-23)
 
 - **Decision**: a thread of the CLI samples 1000 times a second and tallies (a) the process each simulation thread runs, (b) the
@@ -5074,3 +5075,47 @@ see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyon
   prints the profile so far on the first Ctrl-C/SIGTERM (user, 2026-10-23, #587); `--dap` is `E0125` (a stop would be sampled as time in the stopped process). No signal or timer is
   used, so it cannot clash with a signal-driven report.
 - **Cost on** (tools/bench h2h designs, one performance core, geometric mean of total CPU, B with the option / B without): 1.03 with `--tier=interp`, 1.015 with `--tier=auto` (worst design 1.10, `rtl_fan`: many tiny activations)..
+
+## `--tier=auto`: search loops stay interpreted, the clocked-process band is 160 to 300 instructions (yavs-llvm, #573, #575, 2026-10-23)
+
+Found with the policy tuning of #572. Measured with benchmark builds (`tools/build-bench.sh --features llvm`, both sides the
+same flags), core 6, `perf stat --no-inherit` cycles and instructions, medians and minima of 11 to 15 interleaved runs, a
+fresh world per binary and tier, warm.
+
+- **A function whose loops are all search loops stays interpreted** (`auto.rs` `fused_search`): every loop reads one array
+  position per iteration (`Pos`, `Index`, `Load`), compares it and steps the index, with no other work. The interpreter runs
+  that loop as one fused op (`pre::SCAN`, `scan_loop`: about 1.5 cycles an element), compiled it takes 3 to 4 cycles and
+  14 instructions an element (the position check against the descriptor and the object lookup of every access). `uvvm_sb_slv`
+  spends half of its interpreted time in one such function (`pos_of_leftmost`, a search for a line feed in log text): compiled,
+  that function was the whole of the +5 to +12 percent of #573 (its time in compiled code is invisible to the sampler, which
+  counts it for the caller). Excluding it alone gives 1.009 of the interpreter's cycles (1.093 before), excluding the
+  other three helpers that compile as well changes nothing measurable. The test is the shape of the IR loop (`Pos`,
+  `Index`, `Load` in equal numbers, at most one `Add`/`Sub`, at most two compares, branches and constants), not the
+  interpreter's own test of its ops (`ponytail:`: a loop the interpreter does not fuse that has this shape stays
+  interpreted too, and a fused loop with a check or a statement in its body is compiled). Only a sampled function is
+  refused: a callee compiled with its caller is still compiled (one that leaves compiled code costs more).
+- **A clocked process (`rtl`, 120 to 600 IR instructions) is compiled only from 160 to 300** (`RTL_BAND`, `outside_band`,
+  an explicit refusal with a note; `cold` still applies to the whole class) (#575). The interpreter's clocked-process path got
+  faster (kernel rounds 13 and 14, #440) and the compiled path did not: a process of 136 instructions (`rtl_ff`) is 8 to 14
+  percent slower in cycles compiled (1.08 to 1.14 of the interpreter's minimum, 4 percent more instructions) and 2 to 4
+  percent slower left interpreted (the watching loop's bookkeeping, #544); the same at 64, 256 and 1024 instances (the
+  body, not the instance count), and at ten times the length. Bodies of 200 to 280 instructions gain (`rtl_lfsr`, 206:
+  0.94 to 0.98 of the cycles; a variant of `rtl_ff` with 4 more terms, 228: 0.95 to 0.96; with 6 more terms, 274: 0.91
+  to 1.0), and bodies of 320 and 458 instructions lose 12 to 20 percent in cycles at 7 to 20 percent fewer instructions (the
+  compiled code runs at a lower IPC: its size, #532); interpreted they are level (0.98 to 1.07). Without the explicit
+  refusal a process outside the band is an ordinary function for the policy and is compiled after the budget allows it
+  (seconds into the run, and for a longer run just the same), which is why the first version of this change (a narrower
+  `rtl`) was wrong: it also took the processes outside the band out of `cold` (`poc_arith_addw`'s `_p6`, `_p9`, `_p33`
+  compiled). Not compiled in the realbench designs of the clocked class before or after (neorv32, `poc_cache_cpu`, the
+  fletcher and satcat5 designs: same compile sets, `--verbose` notes compared before and after on ten tests); the change is
+  seen in the benchmark designs; `poc_arith_addw` is unchanged (main-thread instructions warm 384.4 G against 384.5 G). `lfsr64` (132 instructions, 64 instances) is refused too and stays level with the interpreter within the noise
+  of the measurement (0.99 to 1.04). Length stands for the work of an activation, which it does not: `rtl_ff` and `lfsr64`
+  have the same length and a different result (scalar bit operations on a long vector against 64-bit logic vector
+  operations); a cost model of the activation, or a check of the progress before and after compiling that takes
+  compiled code back (the same check would cover #573), is the better rule and is not built (`ponytail:`).
+- **Natives of frame-mode code count as leaving compiled code, as before** (the question of #565): a `CallNative` that
+  `frame_direct` runs through `yavs_rt_native` is still not `is_inline` for `callbacks`, `too_many_callbacks` and `compute`.
+  `poc_arith_addw` does not exercise the rule: with such natives counted as staying, the two clocked processes it refused
+  for it (`_p11` and `_p36`, 25 and 23 of 221 and 210 instructions leaving) are refused by the instance rule instead (made 8
+  times), and the main thread's instructions are identical to four digits (373.29 G against 373.27 G). The rule stays as
+  it is; the question is open until a design with such a process that passes `cold` exists.

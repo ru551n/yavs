@@ -97,6 +97,38 @@ fn called_natively(prog: &yavs_ir::Program, f: &yavs_ir::Func, id: FuncId) -> bo
         && native_set(prog, [id]).contains(&id)
 }
 
+/// Why `f` stays interpreted although hot: every loop of it only reads one array position per
+/// iteration and compares (a search for an element or an end), the loop the interpreter runs as
+/// one fused op (`pre::SCAN`, about 1.5 cycles an element). Compiled it takes 3 to 4 cycles an
+/// element (the position check and the object lookup of every access), so the string
+/// searches of a logging library ran 2 times slower compiled (#573). ponytail: the shape of
+/// the IR loop, not the interpreter's own test; a function with other work in a loop is
+/// compiled.
+fn fused_search(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
+    use yavs_ir::{Inst, IntOp};
+    let mut inside = vec![false; f.code.len()];
+    for r in back_edges(prog, f) {
+        inside[r].fill(true);
+    }
+    let (mut pos, mut load, mut index, mut step, mut cmp) = (0, 0, 0, 0, 0);
+    for (i, _) in f.code.iter().zip(&inside).filter(|(_, b)| **b) {
+        match i {
+            Inst::Pos { .. } => pos += 1,
+            Inst::Load { .. } => load += 1,
+            Inst::Index { .. } => index += 1,
+            Inst::Bin {
+                op: IntOp::Add | IntOp::Sub,
+                ..
+            } => step += 1,
+            Inst::Cmp { .. } => cmp += 1,
+            Inst::CondBr { .. } | Inst::Br { .. } | Inst::Const { .. } | Inst::Move { .. } => {}
+            _ => return None,
+        }
+    }
+    (pos > 0 && pos == load && pos == index && step <= pos && cmp <= 2 * pos)
+        .then(|| "its loops are searches the interpreter runs as one op".into())
+}
+
 /// The instructions of the loops of `f`, as ranges of the blocks of each natural loop: per back
 /// edge of a depth-first walk from the entry, the blocks that reach its latch without passing its
 /// header. A process's way back from its suspension is no loop (as in `loops`). A jump to a lower
@@ -406,8 +438,8 @@ fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 }
 
 /// The smallest process `rtl` takes: below this the way into and out of compiled code costs
-/// more than interpreting the body (the 134-instruction processes of `lfsr64` gain, the
-/// 90-instruction one of `rtl_chain` loses; decisions.md "round 3").
+/// more than interpreting the body (the 90-instruction one of `rtl_chain` loses; decisions.md
+/// "round 3").
 const RTL_MIN: usize = 120;
 
 /// A clocked process (`rtl`) of fewer instances than this stays interpreted: compiled, the
@@ -446,6 +478,26 @@ fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
 
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
+
+/// A clocked process (`rtl`) of fewer or more IR instructions than this stays interpreted
+/// (`outside_band`): of 136 instructions (`rtl_ff`) it ran 8 percent slower in cycles compiled, of 320
+/// and 458 13 to 17 percent (code size, #532); 200 to 280 gain. Interpreted, the classes still go
+/// through `cold`. ponytail: the length of the body stands for the work of an activation (`lfsr64`,
+/// 132, gains a little compiled and is refused too); a cost model of the activation, or a check of
+/// the progress before and after compiling, is the better rule (#575).
+const RTL_BAND: std::ops::RangeInclusive<usize> = 160..=300;
+
+/// Why an `rtl` process of `len` IR instructions stays interpreted: its length is outside `RTL_BAND`.
+fn outside_band(len: usize) -> Option<String> {
+    (!RTL_BAND.contains(&len)).then(|| {
+        format!(
+            "a clocked process of {len} IR instructions: compiled code of bodies outside {} to {} ran \
+             slower than interpreted",
+            RTL_BAND.start(),
+            RTL_BAND.end()
+        )
+    })
+}
 
 /// Microseconds of compile time per IR instruction at O0.
 const US_PER_INSTR_O0: f64 = 30.0;
@@ -1087,11 +1139,13 @@ impl Worker {
             .then(|| {
                 let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
                 cold(self.native.instances(id), seen, self.total)
+                    .or_else(|| outside_band(f.code.len()))
             })
             .flatten();
         let short = (sampled && !o2)
             .then(|| {
                 too_short(&self.prog, f, id)
+                    .or_else(|| fused_search(&self.prog, f))
                     .or_else(|| too_many_callbacks(&self.prog, f, id))
                     .or(few)
             })
@@ -1618,8 +1672,8 @@ impl Tier for AutoTier {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPUTE_BUDGET, NATIVE_BUDGET, cold, compute, first_fit, loops, too_many_callbacks,
-        within_budget,
+        COMPUTE_BUDGET, NATIVE_BUDGET, cold, compute, first_fit, fused_search, loops, outside_band,
+        too_many_callbacks, within_budget,
     };
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
@@ -1745,6 +1799,103 @@ mod tests {
         (pb.finish().unwrap(), f)
     }
 
+    /// A loop that reads one array position per iteration and compares (a search) is the loop
+    /// the interpreter fuses: left interpreted (#573). The same loop that also stores is not.
+    #[test]
+    fn a_search_loop_stays_interpreted() {
+        for (stores, refused) in [(false, true), (true, false)] {
+            let mut pb = ProgramBuilder::new();
+            let f = pb.declare("f", yavs_ir::FuncKind::Function, None);
+            let what = pb.check_msg("index of s", yavs_ir::Dir::To);
+            let mut fb = pb.define(f);
+            let (head, hit, next, step, exit) =
+                (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+            fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+            let i = fb.int(1);
+            let (dope, base) = (fb.reg(yavs_ir::RegTy::Ptr), fb.reg(yavs_ir::RegTy::Ptr));
+            let want = fb.int(65);
+            let (p, a, ch) = (
+                fb.reg(yavs_ir::RegTy::I64),
+                fb.reg(yavs_ir::RegTy::Ptr),
+                fb.reg(yavs_ir::RegTy::I64),
+            );
+            let (c1, c2) = (fb.reg(yavs_ir::RegTy::I64), fb.reg(yavs_ir::RegTy::I64));
+            for (r, off) in [(dope, 0), (base, 0)] {
+                fb.emit(Inst::AddrOf {
+                    dst: r,
+                    space: yavs_ir::AddrSpace::Frame,
+                    off,
+                });
+            }
+            fb.emit(Inst::Br { to: head });
+            fb.at(head);
+            fb.emit(Inst::Pos {
+                dst: p,
+                dope,
+                dim: 0,
+                idx: i,
+                what,
+            });
+            fb.emit(Inst::Index {
+                dst: a,
+                base,
+                pos: p,
+                stride: 1,
+            });
+            fb.emit(Inst::Load {
+                dst: ch,
+                addr: a,
+                w: yavs_ir::Width::B1,
+            });
+            fb.emit(Inst::Cmp {
+                op: yavs_ir::CmpOp::Eq,
+                dst: c1,
+                a: ch,
+                b: want,
+            });
+            fb.emit(Inst::CondBr {
+                c: c1,
+                t: hit,
+                f: next,
+            });
+            fb.at(next);
+            if stores {
+                fb.emit(Inst::Store {
+                    addr: a,
+                    src: want,
+                    w: yavs_ir::Width::B1,
+                });
+            }
+            fb.emit(Inst::Cmp {
+                op: yavs_ir::CmpOp::Eq,
+                dst: c2,
+                a: i,
+                b: want,
+            });
+            fb.emit(Inst::CondBr {
+                c: c2,
+                t: exit,
+                f: step,
+            });
+            fb.at(step);
+            fb.emit(Inst::Bin {
+                op: yavs_ir::IntOp::Add,
+                dst: i,
+                a: i,
+                b: want,
+            });
+            fb.emit(Inst::Br { to: head });
+            fb.at(hit);
+            fb.emit(Inst::Ret { v: Some(i) });
+            fb.at(exit);
+            fb.emit(Inst::Ret { v: Some(want) });
+            fb.finish();
+            let prog = pb.finish().unwrap();
+            let why = fused_search(&prog, prog.func(f).unwrap());
+            assert_eq!(why.is_some(), refused, "stores {stores}: {why:?}");
+        }
+    }
+
     /// A process whose activation leaves the compiled code for more than one instruction in ten
     /// stays interpreted (#507); one with fewer is compiled.
     #[test]
@@ -1764,6 +1915,21 @@ mod tests {
         assert!(cold(64, 23_000, 44_000).is_none());
         assert!(cold(32, 11_700, 310_000).is_some());
         assert!(cold(1, 44_000, 44_000).is_some());
+    }
+
+    /// Clocked processes are compiled only from 160 to 300 IR instructions (#575).
+    #[test]
+    fn a_clocked_process_outside_the_band_stays_interpreted() {
+        for (len, refused) in [
+            (120, true),
+            (159, true),
+            (160, false),
+            (300, false),
+            (301, true),
+            (600, true),
+        ] {
+            assert_eq!(outside_band(len).is_some(), refused, "{len}");
+        }
     }
 
     /// A process that interprets one loop for seconds without ever suspending: the sampler sees

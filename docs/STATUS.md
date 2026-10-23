@@ -5756,6 +5756,34 @@ temporary and instance tests, and the object table key separates private and sha
 raised, the code `--tier=auto` compiles at `O2`) [1.33 s], 2 million accessor calls 0.114 s to 0.074 s [0.221 s].
 
 
+## llvm: `--tier=auto` leftovers, search loops and the clocked-process band (#573, #575, 2026-10-23)
+
+Decisions: docs/decisions.md "search loops stay interpreted, the clocked-process band is 160 to 300". Benchmark builds
+(`tools/build-bench.sh --features llvm`), core 6, `perf stat --no-inherit`, cycles (median / minimum) and instructions
+relative to `--tier=interp`, warm, 11 to 15 interleaved runs:
+
+| design (IR instructions of the process) | auto before | auto now |
+|---|---|---|
+| `uvvm_sb_slv` (search function `pos_of_leftmost`, 63) | 1.093 cycles, 1.120 instr | 1.009 / 1.017, 1.015 instr |
+| `rtl_ff` (136, 4096 instances; also 64 to 1024 and ten times the length) | 1.08 to 1.34 (minimum), 1.05 instr | 1.02 to 1.14, 1.028 instr |
+| `lfsr64` (132, 64 instances) | 1.00 to 1.06 | 0.99 to 1.04 (refused now too: level within the noise) |
+| `rtl_lfsr` (206) | 0.84 to 0.98 | 0.74 to 0.94 (same policy: compiled) |
+| `rtl_ff` with 4 and 6 more terms (228, 274) | 0.95 and 0.93 | compiled as before |
+| `rtl_ff` with 8 and 14 more terms (320, 458) | 1.12 and 1.14 to 1.20 | interpreted: 0.98 to 1.01 and 1.07 |
+| `poc_arith_addw` main-thread instructions, warm | 384.4 G | 384.5 G (unchanged) |
+
+`realbench --compare` of main against this change on 13 tests (cold and warm, interp and auto, cores 6 and 7): instructions
+identical (within 1 percent) everywhere but `uvvm_sb_slv` (auto 14.84 G to 13.68 G, cold 17.56 G to 14.66 G); the short tests
+(0.02 to 0.3 s) are unchanged cold and warm; wall deviations on `sc5_timestamp` and `hdlm_lfsr` are host noise (the interpreter
+cell moves the same way at equal instructions).
+
+Findings: `uvvm_sb_slv` spends half of its interpreted run in one search loop (`pos_of_leftmost`, 0.45 s of 0.9 s) that the
+interpreter fuses (`scan_loop`, about 1.5 cycles an element) and compiled code reads at 3 to 4 cycles an element (#578). The compiled
+clocked process of `rtl_ff` spends a third of its cycles in the plumbing around the body (`enter` 8 percent, `yavs_rt_drive`
+10, `view_again` 6, `run_cached` 3.5, `wait_again` 3), the body itself 3 percent: the entry of a compiled activation costs
+what the interpreter's `run_quick` path costs, so only bodies of 200 to 280 instructions repay it (#532). The three helper
+threads of a run (#562) were not changed: see the issue for the options.
+
 ## llvm: `--tier=auto` compile policy (#572, #520, #493, 2026-10-23)
 
 Decisions: docs/decisions.md "`--tier=auto` compile policy". In short: `Worker::pick` compiles the hottest candidate per

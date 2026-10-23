@@ -155,7 +155,10 @@ impl Elaborated {
         };
         for (k, l) in links.iter().enumerate() {
             let next = &links[(k + 1) % links.len()];
-            let text = format!("`{}` assigns {}, which wakes `{}`", l.name, l.signal, next.name);
+            let text = format!(
+                "`{}` assigns {}, which wakes `{}`",
+                l.name, l.signal, next.name
+            );
             match span(l.process) {
                 Some(s) if d.primary.is_none() => d = d.with_primary(s, text),
                 Some(s) => d = d.with_secondary(s, text),
@@ -178,7 +181,11 @@ impl Elaborated {
                 "{} {} again in every delta: {} for 0 ns (`wait for 0 ns;`) in a loop",
                 names(z.iter().map(|(_, n)| n.as_str()), "process", "processes"),
                 if z.len() == 1 { "runs" } else { "run" },
-                if z.len() == 1 { "it waits" } else { "they wait" }
+                if z.len() == 1 {
+                    "it waits"
+                } else {
+                    "they wait"
+                }
             ),
             LoopCause::Unknown => "no loop of processes waking each other was found; look for \
                  a force, a deposit or a foreign callback that assigns in every delta"
@@ -227,9 +234,9 @@ fn describe(
     );
     let at = format!("{}, delta {}", r.now, r.delta);
     let head = match why {
-        StuckWhy::StopTime(t) => format!(
-            "the simulation reached --stop-time {t} without `stop` or `finish` ending it"
-        ),
+        StuckWhy::StopTime(t) => {
+            format!("the simulation reached --stop-time {t} without `stop` or `finish` ending it")
+        }
         StuckWhy::Idle => format!(
             "the simulation ran out of events at {} without `stop` or `finish` ending it",
             r.now
@@ -294,7 +301,11 @@ fn describe(
             c.name,
             c.last_event,
             plural(c.waiters.len(), "process", "processes"),
-            if c.waiters.len() == 1 { "waits" } else { "wait" },
+            if c.waiters.len() == 1 {
+                "waits"
+            } else {
+                "wait"
+            },
             w.join(", "),
             if c.waiters.len() > 3 { ", ..." } else { "" },
         );
@@ -343,7 +354,10 @@ fn describe(
 }
 
 fn signal_name(r: &StuckReport, s: SignalId) -> String {
-    r.names.get(s.0 as usize).cloned().unwrap_or_else(|| format!("signal {}", s.0))
+    r.names
+        .get(s.0 as usize)
+        .cloned()
+        .unwrap_or_else(|| format!("signal {}", s.0))
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {

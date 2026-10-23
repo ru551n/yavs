@@ -204,7 +204,8 @@ impl SimControl {
         let mut sig_live = vec![false; nsig];
         let mut timeout: Vec<Option<Time>> = vec![None; nproc];
         let now = self.now;
-        let mut entries: Vec<(Time, Entry)> = self.queue.next_delta.iter().map(|&e| (now, e)).collect();
+        let mut entries: Vec<(Time, Entry)> =
+            self.queue.next_delta.iter().map(|&e| (now, e)).collect();
         entries.extend(self.queue.later.v.iter().map(|l| (l.time, l.entry())));
         for (t, e) in entries {
             if !self.live(t, e) {

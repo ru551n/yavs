@@ -161,7 +161,10 @@ fn stuck_diagnostics_in_json() {
 fn shuffle_seed_is_printed() {
     let o = run("stuck_pingpong", &["--shuffle=7"]);
     let e = clean(&o);
-    assert!(e.starts_with("note: process order is shuffled with seed 7"), "{e}");
+    assert!(
+        e.starts_with("note: process order is shuffled with seed 7"),
+        "{e}"
+    );
     assert!(e.contains("replay it with `--shuffle=7`"), "{e}");
     assert!(e.contains("process order was shuffled with seed 7"), "{e}");
     // Without a value the seed is 1.
@@ -182,7 +185,14 @@ fn sigusr1_prints_a_report_and_the_run_goes_on() {
             .success()
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
-        .args(["--color", "never", "run", &lib, "--stop-time=100sec", "stuck_signal"])
+        .args([
+            "--color",
+            "never",
+            "run",
+            &lib,
+            "--stop-time=100sec",
+            "stuck_signal",
+        ])
         .current_dir(dir())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -195,7 +205,13 @@ fn sigusr1_prints_a_report_and_the_run_goes_on() {
     assert!(line.contains("started"), "{line}");
     let mut err = child.stderr.take().expect("stderr");
     let pid = child.id().to_string();
-    assert!(Command::new("kill").args(["-USR1", &pid]).status().unwrap().success());
+    assert!(
+        Command::new("kill")
+            .args(["-USR1", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
     let mut text = Vec::new();
     let mut buf = [0u8; 4096];
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -210,7 +226,10 @@ fn sigusr1_prints_a_report_and_the_run_goes_on() {
     child.kill().expect("kill");
     let _ = child.wait();
     let text = String::from_utf8_lossy(&text);
-    assert!(text.contains("W3101") && text.contains("simulation status at"), "{text}");
+    assert!(
+        text.contains("W3101") && text.contains("simulation status at"),
+        "{text}"
+    );
     assert!(text.contains(":stuck_signal:go"), "{text}");
     let _ = std::fs::remove_dir_all(&t);
 }

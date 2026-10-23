@@ -4944,3 +4944,30 @@ see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyon
   builds and with `op-census` only, so release builds (the benchmarked ones) pay nothing.
 - **Census**: `op-census` (off by default) counts executed ops and adjacent pairs at the dispatch loop to choose
   fusions from data (idea from a study of another simulator's opcode census).
+
+## Stuck and hung simulations (#582)
+
+- **E3002 causes without recording**: the loop is found when the error is made, from the drivers
+  (`DriverInfo::owner`) and the live waiters: from each process of the last delta, follow driver to
+  waiter until it returns (shortest cycle); processes with a timeout due now are `wait for 0 ns`
+  loops. No history is kept, so the run pays nothing (`yavs-kernel/src/kernel/hang.rs`). User
+  request, 2026-10-23.
+- **Hang report on demand and opt-in at the end**: SIGUSR1 (Unix) pauses the kernel through the
+  existing `Interrupt::pause` between two cycles from a signal thread; the run then reports and
+  continues. At `--stop-time` or idle the report is printed only with `--hang-report`, because a
+  stop time is a normal end of many testbenches (VUnit, OSVVM and UVVM end with `stop`/`finish`
+  and a watchdog; plain testbenches end at a stop time or idle). An idle end with nothing but
+  finished processes is clean and silent. The report is a warning (`W3101`) so JSON and `-W`
+  control apply. The profiler's sampler uses no signal, so SIGUSR1 is ours.
+- **Never woken** is a fixed point over pending transactions, timeouts, port edges and implicit
+  signals: a waiting process with no timeout whose signals have no pending event and no live
+  driver (transitively) cannot run again. Conservative: edge triggers and conditions are ignored.
+- **Dead clock**: only signals an edge trigger (`Builder::edge_trigger`) watches, that had an
+  event after time 0 and cannot change any more while a process waits for them. A `wait until`
+  on several signals registers no trigger, so such a clock is reported as an ordinary stuck
+  signal.
+- **Process without a wait** is `W3102` (a warning: the LRM allows it, and `stop`/`finish` can end
+  it). The silent hang itself (#583) needs a check on the interpreter loop and is not fixed.
+- **Process places** in diagnostics are the first statement of the body (`ProcTable`, built before
+  the elaborated model is freed); the place of the wait statement a process is suspended at
+  would need the interpreter to expose its resume point and is not reported.

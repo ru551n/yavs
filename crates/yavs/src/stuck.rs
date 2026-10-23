@@ -15,8 +15,11 @@ pub(crate) fn on_signal(pause: Interrupt) -> Result<(), Box<Diagnostic>> {
     use signal_hook::{consts::SIGUSR1, iterator::Signals};
     let fail = |e: std::io::Error| {
         Box::new(
-            Diagnostic::warning("W0116", "cannot install the SIGUSR1 handler for hang reports")
-                .with_note(e.to_string()),
+            Diagnostic::warning(
+                "W0116",
+                "cannot install the SIGUSR1 handler for hang reports",
+            )
+            .with_note(e.to_string()),
         )
     };
     let mut signals = Signals::new([SIGUSR1]).map_err(fail)?;

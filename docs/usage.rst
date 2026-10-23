@@ -48,6 +48,21 @@ otherwise.
   steps, and is shown as ``n/a`` on platforms that do not report it.
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--max-deltas N`` sets how many delta cycles may run at one simulated time (default 10000)
+  before the run fails with ``E3002``. The error names the processes and signals of the loop and
+  how they wake each other; raise the limit only for a design that needs more deltas.
+* ``--hang-report[=MAX]`` explains a simulation that did not finish. When the run ends at
+  ``--stop-time`` without ``stop`` or ``finish``, or runs out of events while a process still waits
+  for a signal, it prints warning ``W3101``: how many processes wait for a timeout, for signals that
+  can still change, or can never run again, what those processes wait for, and for a signal nothing
+  can change its value, last event and drivers ("it has no driver" is the usual answer). A clock
+  that stopped toggling while a process waits for its edge is named. At most MAX processes are
+  listed per part (default 30). Without the option nothing is printed at those ends. On Unix,
+  ``kill -USR1 PID`` prints the same report of a running simulation, which then goes on. A
+  process with no wait statement and no sensitivity list never suspends, so time cannot advance;
+  ``W3102`` warns about it before time 0.
+* ``--shuffle[=SEED]`` prints its seed at the start of the run and repeats it in the diagnostics
+  of the run; ``--shuffle=SEED`` replays the same order.
 * ``--gc-threshold SIZE`` sets how much memory access values may allocate (plain bytes, or a
   ``k``, ``m`` or ``g`` suffix; at least 1) before the heap is collected, during elaboration
   and in the simulation. A collection also waits until as much was allocated as the last one

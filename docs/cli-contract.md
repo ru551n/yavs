@@ -347,6 +347,32 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
+- Stuck and hung simulations (#582), `run` only, all as diagnostics (code, labels, notes, help; JSON
+  with `--message-format=json`; `yavs --explain CODE`):
+  - `E3002` (delta cycle limit) names the processes and signals of the loop found from the drivers
+    and waits at the time of the error (two processes waking each other, a process waiting only on a
+    signal it assigns, a combinational loop through concurrent statements, `wait for 0 ns;` in a
+    loop), labels their places and says how to raise the limit. `--max-deltas=N` (default 10000, at
+    least 1) sets the limit. Nothing is recorded during the run.
+  - `W3101` is the hang report: time and delta, how many processes wait for a timeout, for signals
+    that can still change, or can never run again; for each of those processes (at most MAX per
+    part) what it waits for, and for each signal that nothing can change its value, its last event
+    and the processes that drive it (`it has no driver`); a clock (a signal an edge-triggered
+    process waits for) that had an event and cannot toggle any more is named. Printed by
+    `--hang-report[=MAX]` (default 30) when the run ends at `--stop-time` without `stop` or `finish`,
+    or runs out of events while a process still waits for a signal (a run whose processes all
+    ended or are at `wait;` is a clean end and prints nothing); the end of a run is silent without
+    the option, because a stop time is the normal end of many testbenches. On Unix, SIGUSR1 prints
+    the same report (headed `simulation status at TIME`) of a running simulation, which then
+    continues; the signal is handled between two delta cycles, so a process that never suspends
+    (`W3102`) cannot be reported. SIGUSR1 is not handled on Windows. The report goes to stderr; a
+    warning does not change the exit status (`-Werror` and `-Wno-W3101` apply).
+  - `W3102`: a process whose body has no wait statement, no sensitivity list and no call of a
+    procedure that waits, printed before time 0. It never gives control back, so time cannot
+    advance (only `stop` or `finish` ends the run).
+  - `--shuffle[=SEED]` (seed 1 without a value) prints `note: process order is shuffled with seed N;
+    replay it with --shuffle=N` on stderr at the start, and the runtime diagnostics of a shuffled
+    run repeat the seed. That is the only run-time randomness; there is no time-based seed.
 - `--no-collapse-ports` (`run` and `elab`): keep every `in` port its own signal. By default the
   formal of an `in` port whose actual is a signal name (a whole signal, record elements, an
   element or a slice), with no conversion and no force or release of the port, is an alias of its actual: no separate signal

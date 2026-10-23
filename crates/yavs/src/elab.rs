@@ -832,7 +832,6 @@ pub fn run(
         // a debugger stepping through it, and foreign callbacks.
         edge_triggers: observed_free,
         skip_unchanged: observed_free && !db.facts().reads_activity,
-        ..Default::default()
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));

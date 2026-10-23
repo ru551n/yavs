@@ -25,6 +25,7 @@ the IR plugs in, error handling, open questions); read it before editing.
 | `src/lib.rs` | Re-exports (the public API is exactly this list) |
 | `src/builder.rs` | `Builder` (signals, resolved signals, ports with `Converter`/`PortConv`, drivers, implicit signals, guards, processes with `ProcFlags`: `postponed`, `serial`, `several_waits`), `PortMode` |
 | `src/kernel.rs` | `SimControl` (`run_until`, step, `subscribe`, `now`, `delta`), `Config` (`threads`, `shuffle`, `max_deltas` 10000, `resolution`, `stop_severity`), the cycle, run and commit phases, `Observer`/`Hook`/`Phase`, `Hook::with_process` (a suspended process, VHPI variables), `Hook::assign` (a transaction on a driver, VHPI foreign architectures), wake-ups (`WakeId`, `Hook::wake_at`/`cancel`, `Observer::wake`), `Report`, `RunStatus`/`EndReason`, `Interrupt`, `Stats` |
+| `src/kernel/hang.rs` | Cold introspection: `loop_cause` (the loop behind E3002: `LoopCause`, `LoopLink`) and `SimControl::stuck_report` (`StuckReport`: process waits, never-woken fixed point, stuck signals with drivers, stopped clocks). Reads the state between cycles; nothing is recorded during the run |
 | `src/process.rs` | `Process` trait (`run`, `serial`, `several_waits`, `as_any`), `Ctx` (reads, `read_into` without allocation, `assign`, `disconnect`, waits, `report`, `output`, `stop`/`finish`, `force`/`release`, `deposit` for VHPI foreign calls), `ProcId`, `Severity` |
 | `src/signal.rs` | Per-element event arrays, drivers, transactions, preemption, resolution (`Resolver`, `Resolution`), `Range`, `SigRef`, `DelayMode`, `ForceMode`, `GuardKind` |
 | `src/value.rs` | `SignalType` (`Elem::Bytes(n)` or `Elem::Logic`, `len`), `Value`, `ValueRef`, `LogicVec` |
@@ -147,7 +148,7 @@ python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and
 
 - Add a scenario test with hand-written processes (`tests/common/mod.rs` helpers); a
   thread-sensitive change also gets a case in `tests/determinism.rs`.
-- Codes owned: `E3000`-`E3099` (`ErrorKind::code`: E3001 time overflow, E3002 delta limit, E3003
+- Codes owned: `E3000`-`E3099` (`ErrorKind::code`: E3001 time overflow, E3002 delta limit (with its `LoopCause`), E3003
   postponed delta, E3004 invalid assignment, E3005 deadline in the past (wait or wake-up), E3006 bad reference,
   E3007 resolution, E3008 conversion, E3009 VHDL runtime error, E3010 usage), plus `E9999`.
 

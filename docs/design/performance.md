@@ -2,7 +2,7 @@
 
 Update (user, 2026-10-19): the no-cache premise of this study is lifted, see `docs/decisions.md` "Compilation cache" (#407).
 
-Status: study (2026-10-19, issue #395 and the performance section of `STATUS.md`). Nothing here
+Status: study (2026-10-19, issue #395 and the performance section of `docs/STATUS.md`). Nothing here
 is implemented by this document; section 9 is the ranked list the crate owners work from.
 
 ## 0. Scope, method, caveats
@@ -19,14 +19,14 @@ our own words, with no code and no tables from them (root `AGENTS.md` rule 6).
   subprogram it can reach, to machine code in memory in one fast pass with almost no
   optimisation, before the simulation starts. There is no interpreter in the simulation path.
 
-The measured gap (`STATUS.md` "performance"): yavs interpreted is 7x (compute loop, against A)
+The measured gap (`docs/STATUS.md` "performance"): yavs interpreted is 7x (compute loop, against A)
 to 80x (against B) slower, 90x to 200x on signal-heavy RTL, 20x to 75x on testbenches.
 
 Caveats, stated once:
 
 - Impact numbers below are **estimates from the structure of the mechanism and from the
-  `STATUS.md` measurements, not measurements**. Each recommendation therefore carries a
-  measurement gate: profile first, land the change, record before and after in `STATUS.md`.
+  `docs/STATUS.md` measurements, not measurements**. Each recommendation therefore carries a
+  measurement gate: profile first, land the change, record before and after in `docs/STATUS.md`.
 - Where a statement about a reference simulator is an inference from reading (not from a run
   or from its documentation), it says "appears".
 - Every recommendation keeps the design rules: the interpreter is the semantic reference
@@ -447,7 +447,7 @@ Crates: `yavs-elab` (package initialisation, session, specialisation hook), `yav
 
 ### Impact
 
-For yavs, `STATUS.md` shows compiling every function at the second optimisation level before
+For yavs, `docs/STATUS.md` shows compiling every function at the second optimisation level before
 time 0 costs 19 s to 57 s for 120k to 220k instructions (0.15 to 0.26 ms each) and makes every
 total worse than interpreting (the corpus goes from 9.4 s to 174 s). The tier gains nothing on
 signal-heavy and testbench designs (simulation within noise) because 71% of what stays
@@ -525,7 +525,7 @@ interpreter's `Index` on a logic array is a fused index-and-extract, and that bu
 Crates: `yavs-llvm`, `yavs-interp`.
 
 **R12 (rank 10; step 1 done, #415): narrow storage of integer arrays.** Done: integer types within
-32 bits are 4 bytes as array elements and in kernel signals (STATUS.md "Narrow integer storage": a
+32 bits are 4 bytes as array elements and in kernel signals (docs/STATUS.md "Narrow integer storage": a
 large integer array uses a quarter less peak memory, the library benchmarks are unchanged). Step 2, 1- and
 2-byte elements from subtype ranges, is not worth it for the measured workloads. The original text:
 Store integer
@@ -563,7 +563,7 @@ serial-step work and independent of the thread count by construction.
 
 ## 9. Ranked recommendations
 
-Order is expected gain per unit of effort for the workloads in `STATUS.md` (library testbenches
+Order is expected gain per unit of effort for the workloads in `docs/STATUS.md` (library testbenches
 first, then RTL). Gains are estimates (section 0). "Gate" is the measurement that must show the
 effect before the item is called done.
 
@@ -573,7 +573,7 @@ effect before the item is called done.
 | 2 | R6 | Interpreter constant factors: frame stack instead of two allocations per call, hoisted space bases, inline checked arithmetic, no mark phase per suspension | yavs-interp (yavs-ir if a bit is missing) | 3x to 5x on call-heavy code; possibly a large share of the 13 us per activation | design 1 under 400 ns per iteration; call and return under 100 ns; profile of design 2b before and after |
 | 3 | R2 | Kernel: allocation-free single-driver assignment (a), skip unchanged (b), static sensitivity (c), edge triggers (d) | yavs-kernel, yavs-elab, yavs-lower, yavs-ir, yavs-interp | 5x to 10x on RTL designs (half the activations, near-free assignment) | designs 2a and 2b under 2 s; identical output at 1, 4, 8 threads and shuffle |
 | 4 | R8, R9 | Tier-up of hot functions only, background, cheap optimisation, per function; inline memory kinds | yavs-llvm, yavs-interp | start-up with the tier back to the interpreted level; compiled loops faster than the interpreter | corpus total with `--tier=llvm` within 10% of interpreted; design 1 compiled under 100 ns per iteration |
-| 5 | R7 | Start-up breakdown, package initialisation on first use, one runtime for static evaluation, on-demand unit loading | yavs-elab, yavs-lower, yavs-lib, yavs-sem, yavs | design 3 start-up from 8.8 s to under 2 s; 3.2 s median small test to under 1 s | `--verbose` breakdown recorded in STATUS.md before and after |
+| 5 | R7 | Start-up breakdown, package initialisation on first use, one runtime for static evaluation, on-demand unit loading | yavs-elab, yavs-lower, yavs-lib, yavs-sem, yavs | design 3 start-up from 8.8 s to under 2 s; 3.2 s median small test to under 1 s | `--verbose` breakdown recorded in docs/STATUS.md before and after |
 | 6 | R4 | Collapse `in` ports and component pass-through | yavs-elab, yavs-kernel | less update work per delta in hierarchical RTL; fewer signals | port-heavy design before and after; names unchanged in waves and VHPI |
 | 7 | R3 | Memoised resolution tables for small enumerations, identity detection | yavs-kernel, yavs-elab | buses of user resolved types from a call per element to a lookup | bus bench with a user resolution function |
 | 8 | R5 | Run small batches inline | yavs-kernel | removes pool hand-off from the per-activation cost | only after R2 and R6; bench at 1 and 8 threads |

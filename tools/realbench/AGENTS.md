@@ -51,7 +51,7 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
   them one per simulation (state kept between cases); name one case then (`vunit = "test_name"`).
 - Testbenches that never finish need `stop` (`--stop-time`); the same flag is passed to both tools.
 - Results with a loaded host are noise: check the load average printed at the start and use the instruction ratio when wall differs.
-- Excluded testbenches (they fail on yavs or the reference) are listed with the reason in `STATUS.md`
+- Excluded testbenches (they fail on yavs or the reference) are listed with the reason in `docs/STATUS.md`
   ("Real-world performance suite, baseline 2026-10-21") and each yavs failure has an issue.
 - Do not read the `codegen` ratio as a code generation ratio against the reference: it divides by the reference's whole elaboration (which contains its code generation). Compare yavs `elab-X` + `codegen-X` with the reference `elab-X` for that.
 - Scratch worlds are removed after each test; a killed run may leave `~/.cache/yavs-realbench/scratch/*`.
@@ -78,4 +78,4 @@ Results (raw samples reduced to medians, plus the markdown) go to `~/.cache/yavs
 
 ## 6. Coordination
 
-- The baselines and the worst tests are in `STATUS.md` ("Real-world performance suite, baseline 2026-10-21" for run, "Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22" for the other phases). Slow spots are `perf` issues.
+- The baselines and the worst tests are in `docs/STATUS.md` ("Real-world performance suite, baseline 2026-10-21" for run, "Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22" for the other phases). Slow spots are `perf` issues.

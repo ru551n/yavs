@@ -42,7 +42,7 @@ yavs analyze --std=2008 --work=work:out/work tb.vhd
 yavs run --work=work:out/work tb
 ```
 
-See the [documentation](https://yavs.readthedocs.io) for the command line and the release notes. Contributors start with [`AGENTS.md`](AGENTS.md) and [`STATUS.md`](STATUS.md).
+See the [documentation](https://yavs.readthedocs.io) for the command line and the release notes. Contributors start with [`AGENTS.md`](AGENTS.md) and [`docs/STATUS.md`](docs/STATUS.md).
 
 ## License
 

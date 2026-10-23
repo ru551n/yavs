@@ -54,4 +54,4 @@ python3 -I tools/suites/uvvm.py --yavs target/release/yavs --out ~/.cache/yavs-u
 
 ## 6. Coordination
 
-- #277 (`uvvm.py`), #276 (`pro.py`), #115 (parent). Root causes found: #285 to #290, #291 to #304, fixed #391 to #393, open: #460 (see `STATUS.md`).
+- #277 (`uvvm.py`), #276 (`pro.py`), #115 (parent). Root causes found: #285 to #290, #291 to #304, fixed #391 to #393, open: #460 (see `docs/STATUS.md`).

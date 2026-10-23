@@ -25,7 +25,7 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first. Contracts: `crates/yavs/t
 | Every negative file is checked against the reference simulators (`check_ref.py`); disagreements are justified in `SIM1.md` | LRM policy (match existing simulators) | `tests/diag/sem/README.md` |
 | One illegal thing per file, `-- LRM <clause>` named | Focused failures | same, "Adding a test" |
 | Files that cannot pass yet are listed in `crates/yavs-sem/tests/diag_sem_xfail.txt`; any ICE fails regardless | Visible progress, no hidden crashes | `crates/yavs-sem/CONTRIBUTING.md` "Testing" |
-| `fuzz/` holds minimised fuzzer finds as regression tests | Rule 15 | `STATUS.md` "sem robustness" |
+| `fuzz/` holds minimised fuzzer finds as regression tests | Rule 15 | `docs/STATUS.md` "sem robustness" |
 
 ## 3. How to work here
 

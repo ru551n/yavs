@@ -6,7 +6,7 @@ Binding inputs: `docs/plan.md` (architecture table, "Designed for
 the GUI", "Parallel kernel design", rules 1 to 12, the error-handling motto) and
 `docs/decisions.md`. Interfaces read from: the kernel worktree (`yavs-kernel`: `Process`, `Ctx`,
 `Builder`, `SimControl`, `Observer`, `SimError { trace: Vec<StmtId> }`), `yavs-logic`,
-`yavs-wave`, the LLVM spike (`yavs-llvm`, `STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
+`yavs-wave`, the LLVM spike (`yavs-llvm`, `docs/STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
 the VHPI stub. The HIR is specified in `docs/design/sem.md`; section 0 lists what this design
 assumes of it.
 
@@ -617,7 +617,7 @@ and the DAP variable references.
 
 ## 5. JIT tier seam (M6)
 
-What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
+What the spike (`yavs-llvm`, docs/STATUS.md, decisions.md) fixes:
 
 | Spike result | Consequence for the IR |
 |---|---|

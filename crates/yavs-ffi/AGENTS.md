@@ -38,7 +38,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | The reference simulator's VHDL to C type convention | Existing VHPIDIRECT C code works | `src/vhdl.rs`; `docs/plan.md` "Foreign subprograms" |
 | More than 64 arguments is an error, never a crash | Fail early | `MAX_ARGS` |
 | Typed Rust callees bind without `unsafe` (`ForeignFn::from_fn`); real symbols are bound by the elaborator, the one unsafe step | Safe tests and natives | `docs/decisions.md` "IR and interpreter" (Foreign calls) |
-| All three platforms tier 1: test aarch64 under qemu-user, Windows under wine | Plan platforms | `docs/plan.md` "Platforms"; STATUS.md "ffi" |
+| All three platforms tier 1: test aarch64 under qemu-user, Windows under wine | Plan platforms | `docs/plan.md` "Platforms"; docs/STATUS.md "ffi" |
 
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 

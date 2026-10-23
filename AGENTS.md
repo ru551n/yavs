@@ -12,7 +12,7 @@ to, and those documents win over your memory.
 |---|---|
 | `docs/plan.md` | Binding plan: decisions, the 15 design rules, milestones, error motto, LRM policy |
 | `docs/decisions.md` | Decisions made since the plan, by area; append yours here |
-| `STATUS.md` | What exists and works, per crate and milestone |
+| `docs/STATUS.md` | What exists and works, per crate and milestone |
 | `release_notes/news.d/README.md` | Release note fragments (towncrier): one file per user-visible change (rule 25) |
 | `<module>/AGENTS.md` | Per-module guide (every crate, `lib/`, `tools/`, `tests/`, `fuzz/`): boundaries, map, binding decisions, pitfalls, commands, open issues (rule 23) |
 
@@ -170,7 +170,7 @@ to, and those documents win over your memory.
     a user can do now: features, not numbers. The user documentation (README, `docs/*.rst`,
     release notes) describes yavs as a simulator on its own: never mention other projects there
     (test runners, simulators, libraries, frameworks), and the same holds for every document in the
-    repository (developer docs, `AGENTS.md` files, `STATUS.md`, tool and test docs), except licence notes
+    repository (developer docs, `AGENTS.md` files, `docs/STATUS.md`, tool and test docs), except licence notes
     (user, 2026-10-18, widened the same day). Never write `release_notes/<version>.md` by hand
     outside a release. The user documentation (Sphinx, `docs/conf.py`, `docs/*.rst`, published
     on Read the Docs) shows the fragments under "Unreleased"; build it with
@@ -197,11 +197,11 @@ cargo test -p yavs-llvm --features llvm              # LLVM tier (needs LLVM 21)
 cargo run -p yavs -- analyze --std=2008 --work=work:out/work file.vhd
 ```
 
-AArch64 under qemu and Windows under Wine: see the commands in `STATUS.md` ("ffi").
+AArch64 under qemu and Windows under Wine: see the commands in `docs/STATUS.md` ("ffi").
 
 ## 5. When you finish a task
 
-- Update `STATUS.md` for what you changed, and `docs/decisions.md` for any decision you made.
+- Update `docs/STATUS.md` for what you changed, and `docs/decisions.md` for any decision you made.
 - Add a release note fragment in `release_notes/news.d/` for every user-visible change (rule 25),
   and update the user documentation in `docs/*.rst` when the change shows there.
 - Report: commits pushed, what works now (with test and corpus numbers), what is left, and

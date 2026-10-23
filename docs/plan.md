@@ -128,7 +128,7 @@ Other open source simulators kept running into these bug classes.
   - UNISIM/UNIMACRO, altera_mf/lpm and Lattice/Microchip primitives analyze and simulate, each with a documented test-runner recipe.
   - Python called from VHDL through VHPIDIRECT foreign subprograms and `--load` works under a test runner.
 - **M5: VHPI (mandatory).** The full VHPI object model over `SimControl` and the event bus. Install a Python testbench framework into a venv. Check: its own regression passes on yavs.
-- **M6: JIT tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against the primary reference simulator are tracked in `STATUS.md`.
+- **M6: JIT tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against the primary reference simulator are tracked in `docs/STATUS.md`.
 - **M7: waves.** FST output through `wellen`, as an event-bus subscriber.
 - **M8: DAP server.** Interpreter stepping, signal peek/force, and the wave-stream extension. Check: scripted DAP sessions in tests, plus manual use from a DAP-capable editor.
 - **M9: coverage.** Statement, branch and toggle coverage, merge, HTML and Cobertura output.
@@ -155,7 +155,7 @@ Other open source simulators kept running into these bug classes.
 - **External suites, gated in CI once they first pass:**
   - An external test runner's own VHDL test suites (M4) and a Python testbench framework's regression (M5).
   - External verification libraries' own suites (from M4), which stress protected types, access types and generic packages together.
-  - Pass counts are tracked in `STATUS.md`.
+  - Pass counts are tracked in `docs/STATUS.md`.
 - **Both tiers on every suite** (from M6). JIT-only and interpreter-only runs must give identical output.
 
 ## Out of scope (add when needed)

@@ -47,7 +47,7 @@ updates:
   # Cranelift is only on the spike/clift branch (yavs-clift, pinned "=0.137.0"); it is not on main.
   # Dependabot reads its config from the default branch and updates the manifest of the branch
   # named in target-branch, so this entry opens PRs against spike/clift only. Each PR is a signal to
-  # re-run the clift benchmarks (STATUS.md, "clift" section) before deciding anything; see
+  # re-run the clift benchmarks (docs/STATUS.md, "clift" section) before deciding anything; see
   # docs/decisions.md and issue #481. When yavs-clift merges into main, move the cranelift crates
   # into the main entry with an exact-pin policy like the llvm-sys entry above: major and minor
   # bumps are reviewed by hand, since 0.x minor releases are breaking.

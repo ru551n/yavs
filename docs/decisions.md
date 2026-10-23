@@ -70,14 +70,14 @@ milestone users care about works.
   import library for `yavs.exe`'s exports (Python testbench frameworks ship `.def` files per simulator). #124 is
   reduced to checking that the exports are there.
 - **Release notes with towncrier** (user, 2026-10-18, "for easier parallel work"), with fragments in `release_notes/news.d/` (AGENTS.md rule 25); a release runs
-  `uvx towncrier build --version X.Y.Z --yes` into `release_notes/unreleased.md` and renames it
+  `uvx towncrier build --config release_notes/towncrier.toml --version X.Y.Z --yes` into `release_notes/unreleased.md` and renames it
   `release_notes/X.Y.Z.md` in the version-bump commit. The GitHub release notes are that file.
   Fragments describe features, not numbers.
 - **No document names other projects** (user, 2026-10-18: "it is not related to this project, this is
   just a simulator"; "avoid mentioning other projects in the docs, except in license notes"; widened
   the same day to the developer docs: "clean the developer docs too"). Applies to every document in
   the repository: README, `docs/*.rst`, release notes, plan, decisions, design documents, CLI
-  contract, `STATUS.md`, every `AGENTS.md`, and tool and test docs. Use neutral terms ("reference
+  contract, `docs/STATUS.md`, every `AGENTS.md`, and tool and test docs. Use neutral terms ("reference
   simulators", "other simulators", "external test runners", "Python testbench frameworks").
   Exceptions: licence notes, and commands, flags, environment variables, file and directory names,
   crate and dependency names, code identifiers and corpus identifiers, which stay as they are.
@@ -87,7 +87,7 @@ milestone users care about works.
   checked each time a batch of agent work has landed. While the version is 0.x: a `breaking` or
   `feature` fragment bumps the minor version, only fixes bump the patch; every 0.x release is a
   GitHub pre-release. Steps: set `[workspace.package] version`, `cargo build` (Cargo.lock),
-  `uvx towncrier build --version X.Y.Z --yes`, rename `release_notes/unreleased.md` to
+  `uvx towncrier build --config release_notes/towncrier.toml --version X.Y.Z --yes`, rename `release_notes/unreleased.md` to
   `release_notes/X.Y.Z.md` with a one-line summary on top, run the rule 13 checks, commit
   "Release X.Y.Z", push, then an annotated tag `vX.Y.Z` on that commit. The tag triggers
   release.yml and the Read the Docs version.
@@ -224,7 +224,7 @@ milestone users care about works.
   `yavs run`, although only `--tier=llvm|auto` uses it (#426). A library that cannot be opened
   is an LLVM `Error` at the first use instead of a failure to start. Other targets link as before.
 - **Size threshold (rule 5):** codegen time grows faster than linearly with function size (about
-  0.15 s at 10k IR instructions, 3.8 s at 100k, 28 s at 300k at O2; numbers in STATUS.md).
+  0.15 s at 10k IR instructions, 3.8 s at 100k, 28 s at 300k at O2; numbers in docs/STATUS.md).
   Decided (user, 2026-10-19, #126): compile only functions that become hot (`--tier=auto`), and
   leave a function of more than about 50k IR instructions to the interpreter unless
   `--tier-max-size=N` raises the cap (default 50000, counted in yavs IR instructions, applied by
@@ -378,7 +378,7 @@ milestone users care about works.
   `numeric_std` in a reduction loop). The LLVM agent, 2026-10-20.
 - **Default:** `--tier=interp`, also in a yavs built with the `llvm` feature. After #336, #337
   and the sampling tier-up, `--tier=auto` is 0.77x to 1.36x the interpreter's CPU on the shared
-  benchmarks (geometric mean 1.016, STATUS.md "llvm"): it wins on compute and verification
+  benchmarks (geometric mean 1.016, docs/STATUS.md "llvm"): it wins on compute and verification
   component code (`uvvm_axistream_vvc_tb` 0.77x, `compute_loop` 0.82x) and loses where compiled
   code steps often or only compile time is added (`vai_window_gen` 1.36x, `ff_rtl` 1.10x, the
   RTL designs of many short process activations). It becomes the default only when measured
@@ -2894,7 +2894,7 @@ buffer once more for the stages (`StageCache::get`), and decoding. Decoding was 
 
 A suite runs one `yavs run` per test case and every test case is a new closure, so each run was a cold
 analysis of the library packages it shares with all the others (0.14 s of a 0.26 s small test of a verification library).
-Decisions that cut that, with the measured effect in `STATUS.md` "floor of a run":
+Decisions that cut that, with the measured effect in `docs/STATUS.md` "floor of a run":
 
 - **A closure that misses continues from the longest cached prefix of its files** (`crates/yavs/src/cache.rs`
   `bounds`). The files of a closure are in dependency order, so the testbenches of one library start with the
@@ -3190,7 +3190,7 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   simulation. It is a process-wide setting (`yavs_interp::set_default_gc_threshold`) read by `Limits::default`,
   so no entry point takes a new argument. Test runners pass it in their simulator flags.
 - There is still no off switch: memory stays bounded (#409, #422).
-- **The default stays 1 MiB.** A sweep of 1 to 256 MiB (`STATUS.md`, "Heap collection threshold") shows no run
+- **The default stays 1 MiB.** A sweep of 1 to 256 MiB (`docs/STATUS.md`, "Heap collection threshold") shows no run
   time difference beyond noise on the library testbenches and the corpus, and 64 times fewer collections. Peak
   memory is the same for the library testbenches and grows with the threshold for designs that allocate heavily.
   The threshold applies to each process heap, so a larger default would multiply the worst case by the number of
@@ -3679,7 +3679,7 @@ of the generic queue, waveform and dirty-range stages. Output is unchanged at an
 - Measured over the round (instructions per unit, interpreter, slope of 1x and 10x runs, before to after): `rtl_ff`
   activation 1852 to 1633, `rtl_lfsr` 3164 to 2871, `lfsr64` 3423 to 3072, `rtl_fan` 842 to 750, `rtl_chain` delta 2132
   to 2078; under `--tier=auto` 1721 to 1551, 2463 to 2244, 2949 to 2675, 883 to 791, 2166 to 2115. Kernel per `rtl_ff`
-  activation ~670 to ~510 instructions (signal reads included). Tables in STATUS.md "Kernel round 11".
+  activation ~670 to ~510 instructions (signal reads included). Tables in docs/STATUS.md "Kernel round 11".
 - What is left: the kernel per activation is the same dozen stages of 15 to 120 instructions, now each the cost of the
   generic storage (`Buf` enum, `SmallVec`, bounds checks per access); reaching ~350 per `rtl_ff` activation needs a plain
   plane-word layout for direct signals or one kernel call per activation from the process side (#507).
@@ -3928,7 +3928,7 @@ each variable and every live register at every block edge, and reloaded the base
   native-frame code only, `Part::Native`, no entry from the interpreter); its native-frame code is published to the
   call table only once all of that exists, since a missing callee would materialise at every call. Budget rules are
   unchanged: the code is large (an eager `--tier=llvm` compile of a library testbench takes minutes), so nothing is
-  compiled in a run of a second; see STATUS.md "llvm" for the measured steady-state gain.
+  compiled in a run of a second; see docs/STATUS.md "llvm" for the measured steady-state gain.
 
 ## Build and switch fingerprint of cache entries (#491, #407)
 
@@ -4068,7 +4068,7 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   `AffPL`, got slower: +2 to +4 percent on the testbenches).
 - **Stability.** Measured as the change of executed instructions after a perturbation that touches no RTL op (a new unused arm,
   a check added to an unrelated arm or helper, the error constructors marked cold, a new arm that calls `pos_len`): see
-  STATUS.md "Interpreter round 11". Marking a helper that a hot-ish arm calls `#[cold]` still moves the loop (the call
+  docs/STATUS.md "Interpreter round 11". Marking a helper that a hot-ish arm calls `#[cold]` still moves the loop (the call
   site becomes a cold block); do not mark helpers cold that run in a benchmark.
 
 ## Compiled clocked RTL processes, round 3: a leaner activation and fewer callbacks (yavs-llvm, #440, #507, 2026-10-21)
@@ -4220,7 +4220,7 @@ Decisions:
 
 ## `--tier=auto` as the default: not yet (yavs-llvm, #510, 2026-10-22; recommendation, the maintainer decides)
 
-- **Recommendation:** keep `--tier=interp` the default for now. Evidence in STATUS.md "`--tier=auto` as the default: the
+- **Recommendation:** keep `--tier=interp` the default for now. Evidence in docs/STATUS.md "`--tier=auto` as the default: the
   case": auto halves the run of testbench-heavy and many-instance designs and is level on protected-call library
   testbenches, but runs where nothing pays are 1 to 6 percent slower (the interpreter's bookkeeping with a tier set, #525,
   plus the compile thread and the LLVM library), and single-instance RTL designs (a CPU) do not gain.
@@ -4501,7 +4501,7 @@ Decisions:
 - **`yavs run` defaults to `--tier=auto` in a build with the `llvm` feature** (user, 2026-10-22); `--tier=interp` stays
   available for the interpreter alone. Why: the real-world suite runs 0.5 to 0.6 of the interpreter's wall on the designs
   where compiling pays (window generator, `hdlm_lfsr`, histogram, compute loops 7x), and the runs where nothing pays are
-  within noise since #525, #532 and #545 (STATUS.md "`--tier=auto` as the default: the case").
+  within noise since #525, #532 and #545 (docs/STATUS.md "`--tier=auto` as the default: the case").
 - **A build without the feature quietly defaults to the interpreter**: no error, no warning. An explicit
   `--tier=auto` or `--tier=llvm` on it is still E0120.
 - **`--dap` defaults to the interpreter** (`RunArgs::tier()`): a debugger reads and writes variables in their frame
@@ -4566,7 +4566,7 @@ every elaboration, and again for every instance. Decisions:
   with it the key of the entry; a `Db` that grew since the analysis (instantiation) has no entry and looks nothing
   up. Nothing is stored across closures: the library-prefix caches are not used, because a function of a prefix can
   read a constant of a later unit only through the closure. Tests: `crates/yavs/tests/elabcache.rs`.
-- **Measured** (`tools/realbench`, phase elab, P-cores 2 and 3, wall and instructions, STATUS.md "Elaboration-time
+- **Measured** (`tools/realbench`, phase elab, P-cores 2 and 3, wall and instructions, docs/STATUS.md "Elaboration-time
   call cache"). Ideas from the reference simulator (read, nothing copied): it too does not run a unit's constant
   evaluation again for an unchanged unit; yavs keeps the results of calls, not of units, because its elaboration is
   interpreted and the same call recurs per instance.
@@ -4619,7 +4619,7 @@ every elaboration, and again for every instance. Decisions:
 
 ## Floor of a run, round 3: what a tiny run still pays for (yavs-llvm, yavs-interp, yavs-elab, yavs-sem, #426, 2026-10-22)
 
-Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians; STATUS.md "performance: floor of a run,
+Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians; docs/STATUS.md "performance: floor of a run,
 2026-10-22"). Decisions:
 
 - **The `--tier=auto` compile thread waits 5 ms before it does anything** (`START_AFTER`): it neither moves itself off the
@@ -4709,7 +4709,7 @@ at all.
   24.0 G to 0.94 s / 17.8 G (-26 percent instructions; warm 0.53 s to 0.51 s). With the compiled code of before #565 the
   pick change alone gave -12 percent instructions cold on the window generator (340.5 G to 298.8 G): slower compiled
   code makes a late compile cost more. Everything else measured is level with main (12 library and design tests, 9
-  head-to-head designs, within 2 percent either way, STATUS.md), which is not level with the interpreter on four of them:
+  head-to-head designs, within 2 percent either way, docs/STATUS.md), which is not level with the interpreter on four of them:
   `rtl_fan` (nothing compiles; +5 percent cycles, the 45 instructions per activation of the watching loop, #544),
   `rtl_ff` (+5 percent; its process compiles and gains nothing now, +3 percent against not compiling it: #575),
   `lfsr64` (+3 percent, level with not compiling it, #575) and `uvvm_sb_slv` (#573).
@@ -4887,7 +4887,7 @@ window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
   were generic steps (a copy of the instruction, `step_out`, the big `match`): 4.4 percent of the operations of
   `sc5_fifo_repack` (its random-number procedure) and 1.1 percent for the reals. An address the machine cannot make
   stays a step, which reports it.
-- Tried and not done, each measured on the realistic set (see `STATUS.md` "Interpreter round 14"): a copy of the loop
+- Tried and not done, each measured on the realistic set (see `docs/STATUS.md` "Interpreter round 14"): a copy of the loop
   for functions of simple ops (`LITE`, 63 arms excluded by const guards; the entry of an activation 105 to 70 instructions)
   gains 5 percent on a design of 4000 near-idle processes and nothing on any realistic design, because their processes use
   memory ops; out-of-line memory access (`mem_fast`, `load`, `store_idx` as `inline(never)`) costs 5 percent of
@@ -4931,4 +4931,4 @@ at process start only, so the binary would have had to re-exec itself. Decisions
 
 Measured with `tools/realbench` `--compare` (41 tests, all phases, cold and warm, interleaved, cores 6 and 7, `perf stat`
 instructions, cycles and page faults as medians of every timed run, 2 to 5 runs) and the `tools/bench` h2h designs (9 runs):
-see STATUS.md "Huge pages for the heap". No test or phase gets slower beyond noise.
+see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyond noise.

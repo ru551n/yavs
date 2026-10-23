@@ -1661,3 +1661,33 @@ fn run_package_initialisation_follows_dependencies() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stdout).contains("g=4"));
 }
+
+/// A 2019 `T'VALUE` of an array type is not lowered yet: an explicit E2001, not an internal
+/// error (the first reference suite's `value4`).
+#[test]
+fn composite_value_attribute_is_not_an_ice() {
+    let dir = tempdir("composite_value");
+    let lib = format!("--work=work:{}/lib", dir.display());
+    let src = dir.join("top.vhd");
+    std::fs::write(
+        &src,
+        "entity top is end entity;\n\
+         architecture a of top is\n\
+           type abc is ('a', 'b', 'c');\n\
+           type abc_vec is array (natural range <>) of abc;\n\
+         begin\n\
+           process begin\n\
+             assert abc_vec'value(\"abc\") = \"abc\";\n\
+             wait;\n\
+           end process;\n\
+         end architecture;\n",
+    )
+    .expect("write");
+    let o = yavs_cmd(&["analyze", "--std=2019", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = yavs_cmd(&["elab", "--std=2019", &lib, "top"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("E2001"), "{err}");
+    assert!(!err.contains("E9999"), "{err}");
+}

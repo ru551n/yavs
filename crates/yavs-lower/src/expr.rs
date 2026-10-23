@@ -4212,6 +4212,13 @@ impl<'a> Fx<'a, '_> {
             }
             AttrPrefix::Subtype(st) => {
                 let Some(dope) = self.subtype_dope(st, span)? else {
+                    // Only the range attributes read the bounds of the type mark; the others
+                    // (2019 'value of a composite type) are not lowered.
+                    if !matches!(attr, Left | Right | Low | High | Ascending | Length) {
+                        return Err(self
+                            .cx
+                            .unsupported(span, &format!("attribute '{}", attr.name())));
+                    }
                     return Err(self
                         .cx
                         .ice(span, "array attribute of an unconstrained type"));

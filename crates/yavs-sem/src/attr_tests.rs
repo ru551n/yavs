@@ -245,7 +245,7 @@ fn object(fx: &mut Fx, scope: ScopeId, name: &str, class: ObjClass) -> DeclId {
         scope,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     fx.db.declare(scope, d);
     d

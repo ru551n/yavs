@@ -243,7 +243,7 @@ impl Db {
             scope,
             span: ast.span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         let mut out = vec![alias];
         let base = match self.decls[self.entity(target)].kind {
@@ -424,7 +424,7 @@ impl Db {
             scope,
             span: ast.span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         }))
     }
 
@@ -533,7 +533,7 @@ pub(crate) mod fixture {
             scope,
             span: sp(db.decls.len() as u32),
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         db.scopes[scope]
             .names

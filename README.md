@@ -53,7 +53,9 @@ option. The IEEE `std` and `ieee` sources in `lib/` are Apache-2.0 (`lib/LICENSE
 grant; they are redistributed unmodified, as other open-source VHDL simulators do (`lib/LICENSE-IEEE-VITAL`). The
 built-in Synopsys packages (`ieee.std_logic_arith`, `std_logic_unsigned`, `std_logic_signed`,
 `std_logic_misc`) are Synopsys copyright, redistributable without restriction when the notice is
-kept, and are also shipped unmodified (`lib/LICENSE-SYNOPSYS`).
+kept, and are also shipped unmodified (`lib/LICENSE-SYNOPSYS`). The VHDL-1993 mode ships the
+1995 IEEE 1076.3 `numeric_std` and `numeric_bit` under their original IEEE notice, unmodified
+(`lib/LICENSE-IEEE-1993`).
 
 The graphical debugger `yavs-gui` (`gui/`) is a separate program under the EUPL-1.2
 (`gui/LICENSE`), because the waveform viewer library it embeds (libsurfer) is. It talks to yavs

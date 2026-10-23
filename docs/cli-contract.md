@@ -82,23 +82,29 @@ The test runner's capability answers for yavs (`SimulatorInterface` hooks):
 
 ## 2. Standards
 
-`--std=2008` or `--std=2019`. Any other value is a usage error (exit 2). The test runner
-raises an error itself for a project containing VHDL-93/2002 files.
+`--std=93` (also `1993`), `--std=2008` or `--std=2019`. Any other value (`87`, `02`, ...) is a
+usage error (exit 2). The test runner raises an error itself for a project containing
+VHDL-93/2002 files, so it never passes `93`; the value is for people and scripts that call yavs
+directly (`docs/design/vhdl-93.md`).
 
-- A project may mix 2008 and 2019 files. `analyze --std=STD` gives the
+- A project may mix 1993, 2008 and 2019 files. `analyze --std=STD` gives the
   standard of that one file (default 2008), and yavs records it per file in the
-  library manifest. The test runner passes each file's own standard.
+  library manifest (`1993`, `2008`, `2019`). The test runner passes each file's own standard.
 - `run`/`elab` re-analyze every file with its recorded standard. Their `--std`
   is optional and the test runner does not pass it: the whole design uses ONE `std`
   and `ieee` revision, the newest standard recorded for any file in the
   design's closure (not the top level unit's standard), and that revision
   selects the run-time semantics of the whole design (e.g. 64-bit `integer`
-  in 2019, plan rule 7). `--std` on `run`/`elab` overrides it. A file using a
+  in 2019, plan rule 7; in a design of 1993 files alone `std_logic_vector` is a type of its own
+  and the 1993 `std_logic_1164`, `numeric_std`, `std.textio` are used). `--std` on `run`/`elab`
+  overrides it. A file using a
   declaration or construct that is not available under that revision fails
   early with `E1007`, naming the file and its recorded standard (exit 2),
   never a silent reinterpretation. A construct whose meaning changes under
   that revision is warning `W1008` (once per construct; `-Werror=W1008`
-  escalates it). See `docs/design/sem.md` section 0.1.
+  escalates it). A 1993 file in a 2008 or 2019 design sees that design's packages, so 1993 code
+  that overloads on both `std_logic_vector` and `std_ulogic_vector` fails with the usual
+  homograph error there. See `docs/design/sem.md` section 0.1.
 
 ## 3. Libraries
 

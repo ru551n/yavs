@@ -50,7 +50,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "bad_std",
-        args: &["analyze", "--std=93", "--work=work:$TMP/lib", "ok.vhd"],
+        args: &["analyze", "--std=87", "--work=work:$TMP/lib", "ok.vhd"],
         code: 2,
     },
     Case {

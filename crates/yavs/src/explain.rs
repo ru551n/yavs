@@ -44,6 +44,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "The file is not valid UTF-8 and `--encoding=utf8` was given. Use `--encoding=auto` or `latin1`.",
     ),
     (
+        "E0011",
+        "A VHDL-2008 construct was used in a VHDL-1993 file. Analyze with `--std=2008` or rewrite it.",
+    ),
+    (
         "W0001",
         "A `` `warning `` conditional analysis directive was reached; the message is the one in the directive.",
     ),

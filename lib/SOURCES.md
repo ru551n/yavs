@@ -70,6 +70,30 @@ in `ieee` with no flag.
   are in `SHA256SUMS`. The sem checks accept the unmodified text without an exemption.
 - Differential testbenches: `tests/corpus/synopsys/` (`tests/corpus/AGENTS.md`).
 
+## 1993 packages (not from VASG; #629)
+
+`lib/ieee/1993/` holds the 1993-era unit files, all vendored unmodified (SHA256SUMS):
+
+| Files | Source | Licence |
+|---|---|---|
+| `std_logic_1164{,-body}.vhdl` | `libraries/ieee/` of a GHDL checkout (`8350ea4f5`, nightly 2026-10): the IEEE P1076 WG text without the 2008 additions (`STD_LOGIC_VECTOR` is an array type of its own); the `--!V87` marker comments in it are part of the text | Apache-2.0 (header "Copyright 2019 IEEE P1076 WG Authors") |
+| `numeric_std{,-body}.vhdl`, `numeric_bit{,-body}.vhdl` | same directory: IEEE 1076.3, version 2.4 of 12 April 1995 | IEEE copyright, no free licence: "may be distributed without change ... may not be sold or distributed for profit" (header kept), `LICENSE-IEEE-1993`; redistributed as GHDL does, taken as the published text from that one checkout (no second independent copy was available to cross-check). **The user has not confirmed this licence** (issue #650). |
+| `math_real{,-body}.vhdl`, `math_complex{,-body}.vhdl` | the same bytes as `ieee/2008` (the same checkout's copies equal them) | Apache-2.0 |
+| `std_logic_textio{,-body}.vhdl` | `libraries/synopsys/` of the same checkout (Synopsys package, 1990-1992 notice), one file upstream cut at the line before `package body` (so the declaration file followed by the `-body` file is the upstream file byte for byte); the 2008 tree has only aliases into `std_logic_1164` | Synopsys notice, `LICENSE-SYNOPSYS` |
+| `std_logic_misc{,-body}.vhdl` | `libraries/synopsys/` (the unmarked 1993 text, with the `Drive`/`Sense` overloads on `STD_LOGIC_VECTOR` that the 2008 tree comments out) | Synopsys notice |
+| `std_logic_{arith,unsigned,signed}{,-body}.vhdl`, `vital_*` | the same bytes as `ieee/2008` (split as described above) | as there |
+
+Not in the 1993 tree: `numeric_std_unsigned`, `numeric_bit_unsigned`, `fixed_*`, `float_*`,
+`fixed_float_types`, the two contexts, `std.env` (none exists in VHDL-1993).
+
+`lib/std/1993/{standard,textio}.vhdl` are derived by `tools/derive_libs.py` from the 2008 copy:
+`standard` loses `BOOLEAN_VECTOR`, `INTEGER_VECTOR`, `REAL_VECTOR`, `TIME_VECTOR` (and their
+implicit-operation comments); `textio` loses `JUSTIFY`, `TEE`, `SREAD`, `STRING_READ`, the
+`BREAD`/`BINARY_READ`/`OREAD`/`OCTAL_READ`/`HREAD`/`HEX_READ` routines for `BIT_VECTOR`, `SWRITE`,
+`STRING_WRITE`, `BWRITE`, `BINARY_WRITE`, `OWRITE`, `OCTAL_WRITE`, `HWRITE`, `HEX_WRITE` and `WRITE`
+of `REAL` with a format (24 lines). Everything else is the 2008 text (INTEGER 32 bit, 64-bit TIME).
+`tools/update-ieee-libs.sh` keeps `ieee/1993` and checks `std/1993`.
+
 ## Which revision is which
 
 The VASG repository has a single release (published December 2019 with IEEE 1076-2019) and **no

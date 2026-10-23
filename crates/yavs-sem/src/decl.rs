@@ -1296,9 +1296,11 @@ impl Db {
         }
         // 4.2.1 (2008, 2019): the result of a pure function is not of an access type and
         // has no access subelement (clear; sim2 and sim4 reject, sim1 and sim3 accept).
-        // `--relaxed` makes it warning W1830. Vendored VITAL packages are exempt.
+        // `--relaxed` makes it warning W1830. Vendored VITAL packages are exempt, and a 1993
+        // file is: the rule is not in the 1993 text (a vests 1993 test returns an access type).
         if let (SubprogramKind::Function { pure: true }, Some(r), Some(n)) =
             (kind, ret, &s.return_type)
+            && self.file_rev() >= LangRev::Vhdl2008
             && !self.in_vital_library(scope)
             && let Some((_, bad)) = self.bad_elem(self.base(r), false)
             && matches!(self.types[bad].kind, crate::types::TypeKind::Access { .. })

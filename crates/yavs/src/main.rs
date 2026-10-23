@@ -144,6 +144,8 @@ enum Command {
 #[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, ValueEnum)]
 pub(crate) enum StdArg {
+    #[value(name = "93", alias = "1993")]
+    V1993,
     #[value(name = "2008")]
     V2008,
     #[value(name = "2019")]
@@ -280,6 +282,7 @@ fn main() -> ExitCode {
     };
     let opts = Options {
         std: match std {
+            StdArg::V1993 => Std::Vhdl1993,
             StdArg::V2008 => Std::Vhdl2008,
             StdArg::V2019 => Std::Vhdl2019,
         },

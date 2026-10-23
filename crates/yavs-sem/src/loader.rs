@@ -162,6 +162,7 @@ pub(crate) struct FileCache {
 
 fn parse_rev(s: &str) -> Option<LangRev> {
     match s {
+        "1993" => Some(LangRev::Vhdl1993),
         "2008" => Some(LangRev::Vhdl2008),
         "2019" => Some(LangRev::Vhdl2019),
         _ => None,
@@ -246,7 +247,7 @@ impl Db {
             scope: self.root,
             span: name.span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         self.libs.push(Library {
             name,
@@ -513,14 +514,23 @@ impl Db {
         let Some(ast) = ast else {
             return Err(self.not_found(lib, key, at));
         };
-        // sem.md 0.1: what the 2008 copy of a std/ieee package lacks gets `since: V2019`.
-        let fresh = (self.rev == LangRev::Vhdl2019
-            && matches!(key, UnitKey::Primary(_))
-            && matches!(self.libs[lib].source, LibSource::StdDir(_)))
-        .then(|| self.fresh_in_2019(lib, key, &path, &ast, file));
+        // sem.md 0.1: what the 2008 copy of a std/ieee package lacks gets `since: V2019`; under a
+        // 2008 design a unit without a 1993 copy gets `since: V2008`.
+        let std_primary = matches!(key, UnitKey::Primary(_))
+            && matches!(self.libs[lib].source, LibSource::StdDir(_));
+        let fresh = match self.rev {
+            LangRev::Vhdl2019 if std_primary => Some((
+                self.fresh_in_2019(lib, key, &path, &ast, file),
+                LangRev::Vhdl2019,
+            )),
+            LangRev::Vhdl2008 if std_primary => {
+                Some((self.fresh_in_2008(&path), LangRev::Vhdl2008))
+            }
+            _ => None,
+        };
         let r = self.analyze_unit(lib, key, ast, file, rev);
-        if let (Ok(u), Some(f)) = (&r, fresh) {
-            self.mark_fresh(*u, f);
+        if let (Ok(u), Some((f, since))) = (&r, fresh) {
+            self.mark_fresh(*u, f, since);
         }
         if r.is_err() {
             self.libs[lib].units.insert(key, UnitSlot::Failed);
@@ -545,7 +555,8 @@ impl Db {
                     && self.decls[self.units[u].decl].since > self.file_rev()
                 {
                     let what = format!("{}.{}", self.libs[lib].name.text, self.span_text(at));
-                    self.not_in_file_rev(what, at);
+                    let since = self.decls[self.units[u].decl].since;
+                    self.not_in_file_rev(what, at, since);
                 }
             }
             Err(_) => {

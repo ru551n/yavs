@@ -431,6 +431,7 @@ pub(crate) fn revision_of(db: &Db) -> yavs_std::types::Revision {
     match db.rev {
         yavs_syntax::Std::Vhdl2019 => yavs_std::types::Revision::Vhdl2019,
         yavs_syntax::Std::Vhdl2008 => yavs_std::types::Revision::Vhdl2008,
+        yavs_syntax::Std::Vhdl1993 => yavs_std::types::Revision::Vhdl1993,
     }
 }
 

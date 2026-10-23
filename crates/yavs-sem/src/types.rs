@@ -245,7 +245,7 @@ impl Db {
             scope,
             span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         })
     }
 

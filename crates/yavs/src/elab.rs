@@ -358,9 +358,13 @@ fn elaborate(
         }
     };
     let rev = match c.std {
+        Some(StdArg::V1993) => LangRev::Vhdl1993,
         Some(StdArg::V2008) => LangRev::Vhdl2008,
         Some(StdArg::V2019) => LangRev::Vhdl2019,
+        // The newest standard recorded in the closure (cli-contract section 2).
         None if files.iter().any(|f| f.std == "2019") => LangRev::Vhdl2019,
+        None if files.iter().any(|f| f.std == "2008") => LangRev::Vhdl2008,
+        None if !files.is_empty() => LangRev::Vhdl1993,
         None => LangRev::Vhdl2008,
     };
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());

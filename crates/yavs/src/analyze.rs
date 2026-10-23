@@ -202,14 +202,11 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let work_lib: Library = libs.get(work).expect("just added").clone();
 
     let rev = match a.std {
+        StdArg::V1993 => LangRev::Vhdl1993,
         StdArg::V2008 => LangRev::Vhdl2008,
         StdArg::V2019 => LangRev::Vhdl2019,
     };
-    let std_name = if matches!(a.std, StdArg::V2008) {
-        "2008"
-    } else {
-        "2019"
-    };
+    let std_name = rev.as_str();
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     // Developer check of the analysed-unit cache: every file is analysed a second time without
     // it, and the two analyses must be the same (`docs/decisions.md` "Analysed-unit cache").

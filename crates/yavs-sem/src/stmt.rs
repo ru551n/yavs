@@ -223,7 +223,7 @@ impl Db {
                 scope,
                 span: label.span,
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             },
         )?;
         crate::attr::label_declared(self, scope, d)?;
@@ -255,7 +255,7 @@ impl Db {
                 scope,
                 span: name.span,
                 implicit: false,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             },
         )
     }
@@ -1980,7 +1980,7 @@ impl Db {
                 scope,
                 span,
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             },
         )
     }

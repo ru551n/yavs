@@ -261,6 +261,17 @@ impl<'a> Parser<'a> {
         Err(self.expected("`;`"))
     }
 
+    /// `what` needs VHDL-2008 (`E0011`) in a VHDL-1993 file.
+    fn require_2008(&mut self, span: Span, what: &str) {
+        if self.std < Std::Vhdl2008 {
+            self.report(
+                Diagnostic::error(codes::NEEDS_2008, format!("{what} requires VHDL-2008"))
+                    .with_primary(span, "")
+                    .with_help("analyze with `--std 2008`"),
+            );
+        }
+    }
+
     fn require_2019(&mut self, span: Span, what: &str) {
         if self.std < Std::Vhdl2019 {
             self.report(

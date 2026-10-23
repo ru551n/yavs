@@ -847,7 +847,7 @@ mod tests {
             scope: root,
             span: Span::default(),
             implicit: false,
-            since: crate::LangRev::Vhdl2008,
+            since: crate::LangRev::Vhdl1993,
         })
     }
 
@@ -918,7 +918,7 @@ mod tests {
             scope: root,
             span: Span::default(),
             implicit: false,
-            since: crate::LangRev::Vhdl2008,
+            since: crate::LangRev::Vhdl1993,
         });
         let m = msgs(&t.db);
         assert!(m.iter().any(|m| m.contains("ExprKind::Error")), "{m:?}");

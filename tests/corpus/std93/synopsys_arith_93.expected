@@ -1,0 +1,4 @@
+exit	0
+diag	note	0	0	:synopsys_arith_93:_p0	101
+diag	note	0	0	:synopsys_arith_93:_p0	105
+diag	note	0	0	:synopsys_arith_93:_p0	103 4

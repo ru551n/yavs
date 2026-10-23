@@ -172,7 +172,7 @@ impl Db {
             scope: context,
             span: name.span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         self.scopes[context].owner = Some(decl);
         self.units[unit].context = context;
@@ -314,7 +314,7 @@ impl Db {
             scope: context,
             span: Span::default(),
             implicit: true,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         self.scopes[context]
             .names
@@ -375,7 +375,7 @@ impl Db {
                             scope: region,
                             span: n.span,
                             implicit: false,
-                            since: LangRev::Vhdl2008,
+                            since: LangRev::Vhdl1993,
                         });
                         self.declare(region, d);
                     }
@@ -776,7 +776,7 @@ impl Db {
                 scope,
                 span: Span::default(),
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             });
             let ty = self.new_type(decl, id, false, kind, Constraint::None, Span::default());
             self.decls[decl].kind = DeclKind::Type(ty);

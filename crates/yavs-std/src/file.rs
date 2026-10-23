@@ -26,7 +26,7 @@ impl FileOpenKind {
     pub fn from_pos(pos: u64, rev: Revision) -> Option<Self> {
         use FileOpenKind::*;
         let table = match rev {
-            Revision::Vhdl2008 => &[Read, Write, Append][..],
+            Revision::Vhdl1993 | Revision::Vhdl2008 => &[Read, Write, Append][..],
             Revision::Vhdl2019 => &[Read, ReadWrite, Write, Append][..],
         };
         table.get(pos as usize).copied()
@@ -37,8 +37,8 @@ impl FileOpenKind {
         use FileOpenKind::*;
         match (rev, self) {
             (_, Read) => 0,
-            (Revision::Vhdl2008, Write) => 1,
-            (Revision::Vhdl2008, Append | ReadWrite) => 2,
+            (Revision::Vhdl1993 | Revision::Vhdl2008, Write) => 1,
+            (Revision::Vhdl1993 | Revision::Vhdl2008, Append | ReadWrite) => 2,
             (Revision::Vhdl2019, ReadWrite) => 1,
             (Revision::Vhdl2019, Write) => 2,
             (Revision::Vhdl2019, Append) => 3,

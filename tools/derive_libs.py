@@ -101,6 +101,28 @@ wr(
     "end package ENV;\n",
 )
 
+# ---- std 1993: drop what 1076-2008 added ---------------------------------------
+# STANDARD: the four predefined vector types (15 lines of implicit-operation comments each
+# go with them); the other 2008 additions of STANDARD are implicit operations, made by the
+# analyzer per revision. TEXTIO: JUSTIFY, TEE, SREAD, the binary/octal/hex routines with
+# their aliases, SWRITE and WRITE of REAL with a format. There is no ENV in 1993.
+s8 = s
+s8 = drop_block(s8, r"  type BOOLEAN_VECTOR is", r"  type BIT_VECTOR is")
+s8 = drop_block(s8, r"  type INTEGER_VECTOR is", r"  -- The predefined types for opening files")
+wr("std/1993/standard.vhdl", s8)
+t8 = t
+t8, n = re.subn(
+    r"^  (procedure|alias|function) "
+    r"(JUSTIFY|TEE|SREAD|STRING_READ|BREAD|BINARY_READ|OREAD|OCTAL_READ|HREAD|HEX_READ|"
+    r"SWRITE|STRING_WRITE|BWRITE|BINARY_WRITE|OWRITE|OCTAL_WRITE|HWRITE|HEX_WRITE)\b[^\n]*\n",
+    "",
+    t8,
+    flags=re.M,
+)
+assert n == 24, n
+t8 = drop_line(t8, r"  procedure WRITE \(L: inout LINE; VALUE: in REAL; FORMAT")
+wr("std/1993/textio.vhdl", t8)
+
 # ---- ieee: identical files for both revisions + two tiny contexts --------------
 CTX = """-- Copyright 2026 yavs authors. Licensed under the Apache License, Version 2.0
 -- (http://www.apache.org/licenses/LICENSE-2.0). Content as specified by

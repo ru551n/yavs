@@ -52,6 +52,7 @@ use yavs_diag::{Diagnostic, FileId, Severity, SourceFile, SourceMap, Span};
     serde::Deserialize,
 )]
 pub enum Std {
+    Vhdl1993,
     #[default]
     Vhdl2008,
     Vhdl2019,
@@ -61,6 +62,7 @@ impl Std {
     /// The value of `VHDL_VERSION`.
     pub fn as_str(self) -> &'static str {
         match self {
+            Std::Vhdl1993 => "1993",
             Std::Vhdl2008 => "2008",
             Std::Vhdl2019 => "2019",
         }
@@ -88,6 +90,8 @@ pub mod codes {
     pub const NOT_LATIN1: &str = "E0009";
     /// A file that is not valid UTF-8 under `--encoding=utf8`.
     pub const INVALID_UTF8: &str = "E0010";
+    /// A VHDL-2008 construct used in VHDL-1993 mode.
+    pub const NEEDS_2008: &str = "E0011";
     /// Internal compiler error.
     pub const INTERNAL: &str = "E9999";
     /// A `` `warning `` directive.

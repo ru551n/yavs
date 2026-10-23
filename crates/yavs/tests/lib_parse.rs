@@ -23,6 +23,8 @@ fn lib() {
     let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lib");
     let mut problems = String::new();
     for (dir, std) in [
+        ("std/1993", Std::Vhdl1993),
+        ("ieee/1993", Std::Vhdl1993),
         ("std/2008", Std::Vhdl2008),
         ("ieee/2008", Std::Vhdl2008),
         ("std/2019", Std::Vhdl2019),

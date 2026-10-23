@@ -411,6 +411,12 @@ const PASS: &[&str] = &[
     "shared/pkg_vars",
     "shared/region_vars",
     "shared/elab_call",
+    "std93/numeric_std_93",
+    "std93/predefined_names",
+    "std93/shared_plain",
+    "std93/slv_overloads",
+    "std93/synopsys_arith_93",
+    "std93/textio_93",
     "sigassign/assign_inertial",
     "sigassign/assign_reject",
     "sigassign/assign_transport",
@@ -454,6 +460,7 @@ const GROUPS: &[&str] = &[
     "access",
     "protected",
     "shared",
+    "std93",
     "resolution",
     "force",
     "textio",
@@ -480,6 +487,7 @@ fn header(src: &str) -> (String, LangRev, Time, bool) {
     for kv in line.split_whitespace() {
         match kv.split_once('=') {
             Some(("top", v)) => top = v.to_string(),
+            Some(("std", "1993")) => rev = LangRev::Vhdl1993,
             Some(("std", "2019")) => rev = LangRev::Vhdl2019,
             Some(("stop", v)) => {
                 let ns = v.strip_suffix("ns").expect("stop in ns").parse().unwrap();

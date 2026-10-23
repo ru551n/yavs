@@ -1,0 +1,10 @@
+exit	0
+diag	note	0	0	:numeric_std_93:_p0	21
+diag	note	0	0	:numeric_std_93:_p0	123
+diag	note	0	0	:numeric_std_93:_p0	15400
+diag	note	0	0	:numeric_std_93:_p0	truefalsetrue
+diag	note	0	0	:numeric_std_93:_p0	-100 -70
+diag	note	0	0	:numeric_std_93:_p0	154 -25
+diag	note	0	0	:numeric_std_93:_p0	-100 8
+diag	note	0	0	:numeric_std_93:_p0	8
+diag	note	0	0	:numeric_std_93:_p0	28 4

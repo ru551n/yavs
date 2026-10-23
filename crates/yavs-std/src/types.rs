@@ -112,6 +112,8 @@ impl RealBounds {
 /// Which revision of the standard the design is analysed as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Revision {
+    /// 1076-1993: the 2008 numbers (a 32-bit INTEGER is within the 1993 minimum).
+    Vhdl1993,
     Vhdl2008,
     Vhdl2019,
 }
@@ -121,7 +123,7 @@ impl Revision {
     /// 5.2.3.2 requires at least 64 bits).
     pub fn integer_bounds(self) -> Bounds {
         match self {
-            Revision::Vhdl2008 => Bounds::I32,
+            Revision::Vhdl1993 | Revision::Vhdl2008 => Bounds::I32,
             Revision::Vhdl2019 => Bounds::I64,
         }
     }
@@ -129,6 +131,7 @@ impl Revision {
     /// `std.env.vhdl_version`.
     pub fn version_string(self) -> &'static str {
         match self {
+            Revision::Vhdl1993 => "1993",
             Revision::Vhdl2008 => "2008",
             Revision::Vhdl2019 => "2019",
         }
@@ -210,7 +213,9 @@ pub fn severity_level_type() -> EnumType {
 
 pub fn file_open_kind_type(rev: Revision) -> EnumType {
     match rev {
-        Revision::Vhdl2008 => EnumType::from_idents(&["READ_MODE", "WRITE_MODE", "APPEND_MODE"]),
+        Revision::Vhdl1993 | Revision::Vhdl2008 => {
+            EnumType::from_idents(&["READ_MODE", "WRITE_MODE", "APPEND_MODE"])
+        }
         Revision::Vhdl2019 => {
             EnumType::from_idents(&["READ_MODE", "READ_WRITE_MODE", "WRITE_MODE", "APPEND_MODE"])
         }

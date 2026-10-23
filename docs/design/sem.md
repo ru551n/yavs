@@ -39,9 +39,11 @@ an id. It runs single-threaded. It owns no files on disk: `yavs-lib` gives it a 
 
 Language revision: see 0.1. The analyzer is one code path with revision gates.
 
-### 0.1 Mixed 2008 and 2019 files (user decision, `docs/plan.md` "Test-runner integration")
+### 0.1 Mixed 1993, 2008 and 2019 files (user decision, `docs/plan.md` "Test-runner integration"; 1993 added by #629)
 
-A project may mix 2008 and 2019 files; `yavs-lib` records the standard per file.
+A project may mix 1993, 2008 and 2019 files; `yavs-lib` records the standard per file.
+`Vhdl1993 < Vhdl2008 < Vhdl2019`. The 1993 rules and what a 93 file sees in a 2008 design are in `docs/design/vhdl-93.md`;
+the baseline of `since` is `Vhdl1993`, and the implicit operations new in 2008 are `since: Vhdl2008`.
 
 | Step | Revision used |
 |---|---|

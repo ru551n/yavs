@@ -130,6 +130,8 @@ impl Db {
         let t = self.base(st);
         if matches!(self.types[t].kind, TypeKind::Error)
             || matches!(self.types[t].kind, TypeKind::Protected { .. })
+            // 1993 6.4.2.4: a shared variable can be of any type (protected types are new in 2000).
+            || self.file_rev() < LangRev::Vhdl2008
             || (self.file_rev() >= LangRev::Vhdl2019 && self.all_protected(t))
         {
             return Ok(());

@@ -5,7 +5,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 ## 1. Purpose and boundaries
 
 - Lexer, conditional analysis (`` `if `` and other tool directives, evaluated on the token stream)
-  and a hand-written recursive-descent parser for VHDL-2008 and VHDL-2019 into an owned,
+  and a hand-written recursive-descent parser for VHDL-1993, VHDL-2008 and VHDL-2019 into an owned,
   purely syntactic AST with spans.
 - Does not: resolve names, decide what an ambiguous form means (`f(x)` call vs index vs slice vs
   conversion, `label: p;` call vs instance, choices that may be subtypes), type anything, or read
@@ -37,7 +37,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | Decision | Why | Source |
 |---|---|---|
-| Own parser, 2008 and 2019 in one grammar, gated by `Std` (`E0004` for 2019 syntax in 2008) | Plan decision | `docs/plan.md` "Decisions made with the user" |
+| Own parser, 2008 and 2019 in one grammar, gated by `Std` (`E0004` for 2019 syntax in 2008, `E0011` for 2008 syntax in 1993, #629) | Plan decision | `docs/plan.md` "Decisions made with the user" |
 | `Ident` keeps original spelling plus folded key; extended identifiers fold to themselves | VHPI `CaseName`, waves, diagnostics | `docs/plan.md` rule 8 |
 | Global interner, leaked strings, per-thread mirror of the table | Symbols valid on runtime threads; a hit or `as_str` takes no lock (#424) | `docs/decisions.md` "Parser" |
 | List parsers (statements, declarations, interface and association lists) push onto a scratch stack in `Parser` and move the elements into an exact-size `Vec`; rare large AST variants (`Actual::Range/Subtype`, `Constraint::Range`, interface type/subprogram/package) are boxed | No doubling of 200 to 400 byte elements, smaller nodes, less copying per parse step | #424 |
@@ -91,7 +91,7 @@ cargo run -p yavs -- parse --std 2019 --dump-ast f.vhd   # inspect the tree
 - New syntax: a unit test in `src/tests.rs` plus, for an error, a `tests/diag/NAME.vhd` snapshot
   (first line `-- yavs: --std 2019` for 2019). Corpus list changes in `tests/parse-corpus/` must
   be explained in the commit.
-- Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0010, W0001 to
+- Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0011, W0001 to
   W0004), plus `E9999` for internal errors.
 
 ## 6. Coordination

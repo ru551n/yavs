@@ -1424,3 +1424,54 @@ fn encoding_utf8_rejects_invalid_utf8() {
     assert_eq!(d.code, crate::codes::INVALID_UTF8);
     assert_eq!(d.primary.expect("span").span.start, 6);
 }
+
+// ---- VHDL-1993 (#629) ----
+
+fn ok93(src: &str) -> DesignFile {
+    ok_std(src, Std::Vhdl1993)
+}
+
+fn codes93(src: &str) -> Vec<String> {
+    let p = parse_std(src, Std::Vhdl1993);
+    assert!(p.design.is_none(), "expected errors");
+    p.diags.iter().map(|d| d.code.to_string()).collect()
+}
+
+#[test]
+fn vhdl_1993_reserved_words_are_identifiers() {
+    ok93(
+        "package p is constant default : integer := 1; signal context, force, release : bit; end;",
+    );
+    assert!(!errors("package p is constant default : integer := 1; end;").is_empty());
+}
+
+#[test]
+fn vhdl_1993_rejects_2008_statements() {
+    for src in [
+        seq("wait;").replace("process begin", "process (all) begin"),
+        seq("s <= '1' when c else '0';"),
+        seq("with c select s <= '1' when true, '0' when others;"),
+        seq("v := 1 when c else 2;"),
+        "architecture a of e is begin g: if c generate begin elsif d generate begin end generate; end;"
+            .to_string(),
+        "architecture a of e is begin g: case c generate when true => s <= '1'; end generate; end;"
+            .to_string(),
+        pkg("").replace("package p is", "package p is generic (n : integer := 1);"),
+        "package q is new work.p generic map (n => 1);".to_string(),
+    ] {
+        assert_eq!(codes93(&src), ["E0011"], "{src}");
+    }
+    // 2008 takes them.
+    ok(&seq("s <= '1' when c else '0';"));
+}
+
+#[test]
+fn vhdl_1993_keeps_its_own_statements() {
+    ok93(&seq(
+        "s <= '1' after 1 ns; if c then v := 1; elsif d then v := 2; end if; wait on s;",
+    ));
+    ok93("architecture a of e is begin g: if c generate begin end generate; end;");
+    ok93(
+        "architecture a of e is begin s <= '1' when c else '0'; with c select t <= '1' when true, '0' when others; end;",
+    );
+}

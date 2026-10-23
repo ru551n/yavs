@@ -25,7 +25,7 @@ is early: a pre-release for people who want to try it and report what breaks.
 Key features
 ------------
 
-* VHDL-2008 and VHDL-2019, mixed in one project: each file is parsed with its own standard.
+* VHDL-2008 and VHDL-2019, mixed in one project: each file is parsed with its own standard. VHDL-1993 code runs with ``--std=93``.
 * :doc:`Diagnostics <usage>` with stable codes, source snippets, help, and VHDL call stacks
   for runtime errors. Fail early, fail clearly: nothing runs after a failed step.
 * The IEEE packages (``std_logic_1164``, ``numeric_std``, ``math_real``, ``fixed_pkg``,

@@ -1149,6 +1149,10 @@ impl Parser<'_> {
         let start = self.expect_kw(Kw::Package)?;
         let name = self.ident()?;
         self.expect_kw(Kw::Is)?;
+        if self.at_kw(Kw::New) {
+            let at = self.span();
+            self.require_2008(at, "a package instantiation");
+        }
         if self.eat_kw(Kw::New) {
             let package = self.type_mark()?;
             let generic_map = self.opt_map(Kw::Generic)?;
@@ -1159,6 +1163,10 @@ impl Parser<'_> {
                 generic_map,
                 span: self.span_from(start),
             }));
+        }
+        if self.at_kw(Kw::Generic) {
+            let at = self.span();
+            self.require_2008(at, "a package with generics");
         }
         let (generics, generic_map) = self.generic_header()?;
         let decls = self.decls(false);

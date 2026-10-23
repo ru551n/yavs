@@ -80,6 +80,35 @@ fn reflection_analyzes_clean() {
     analyze(LangRev::Vhdl2019, "std", "reflection");
 }
 
+/// The 1993 trees (#629): no `env`, no 2008 packages; `std_logic_textio` is a real package.
+const UNITS_1993: &[(&str, &str)] = &[
+    ("std", "standard"),
+    ("std", "textio"),
+    ("ieee", "std_logic_1164"),
+    ("ieee", "std_logic_textio"),
+    ("ieee", "numeric_std"),
+    ("ieee", "numeric_bit"),
+    ("ieee", "math_real"),
+    ("ieee", "math_complex"),
+    ("ieee", "std_logic_arith"),
+    ("ieee", "std_logic_unsigned"),
+    ("ieee", "std_logic_signed"),
+    ("ieee", "std_logic_misc"),
+    ("ieee", "vital_timing"),
+    ("ieee", "vital_primitives"),
+    ("ieee", "vital_memory"),
+];
+
+#[test]
+fn stdlib_1993_units_and_bodies_analyze_clean() {
+    for (lib, unit) in UNITS_1993 {
+        analyze(LangRev::Vhdl1993, lib, unit);
+    }
+    for (lib, unit) in UNITS_1993.iter().filter(|(l, _)| *l == "ieee") {
+        analyze_with(LangRev::Vhdl1993, lib, unit, true);
+    }
+}
+
 #[test]
 fn stdlib_units_analyze_clean() {
     for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {

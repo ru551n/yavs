@@ -22,13 +22,16 @@ if [ "$mode" = --write ]; then
   # The VITAL and Synopsys packages come from other sources (lib/SOURCES.md): keep them.
   mkdir "$tmp/vital"
   for r in 2008 2019; do mkdir "$tmp/vital/$r"; cp "$here"/lib/ieee/$r/vital_* "$here"/lib/ieee/$r/std_logic_{arith,unsigned,signed,misc}* "$tmp/vital/$r/"; done
+  # ieee/1993 is vendored whole (IEEE 1993-era packages, Synopsys and VITAL copies).
+  cp -r "$here/lib/ieee/1993" "$tmp/vital/1993"
   rm -rf "$here/lib/std" "$here/lib/ieee"
   cp -r "$tmp/out/std" "$tmp/out/ieee" "$here/lib/"
   for r in 2008 2019; do cp "$tmp/vital/$r"/* "$here/lib/ieee/$r/"; done
+  cp -r "$tmp/vital/1993" "$here/lib/ieee/1993"
   (cd "$here/lib" && find std ieee -type f | LC_ALL=C sort | xargs sha256sum > SHA256SUMS)
 else
   diff -r "$tmp/out/std" "$here/lib/std"
-  diff -r -x 'vital_*' -x 'std_logic_arith*' -x 'std_logic_unsigned*' -x 'std_logic_signed*' -x 'std_logic_misc*' "$tmp/out/ieee" "$here/lib/ieee"
+  diff -r -x 1993 -x 'vital_*' -x 'std_logic_arith*' -x 'std_logic_unsigned*' -x 'std_logic_signed*' -x 'std_logic_misc*' "$tmp/out/ieee" "$here/lib/ieee"
 fi
 (cd "$here/lib" && sha256sum -c --quiet SHA256SUMS)
 echo "ok: lib/std and lib/ieee match $PIN"

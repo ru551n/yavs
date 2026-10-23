@@ -25,7 +25,7 @@ The archive holds the ``yavs`` executable, the graphical debugger ``yavs-gui`` a
 licences. ``yavs-gui`` is licensed under the EUPL-1.2 (``LICENSE-EUPL-1.2-yavs-gui``, which
 applies to the ``yavs-gui`` binary only); everything else is MIT or Apache-2.0. The ``std`` and
 ``ieee`` sources are built into the executable; nothing else needs to be installed. ``YAVS_STDLIB`` points yavs at
-another copy of the tree (``<dir>/{std,ieee}/{2008,2019}/*.vhdl``).
+another copy of the tree (``<dir>/{std,ieee}/{1993,2008,2019}/*.vhdl``).
 
 From source
 -----------

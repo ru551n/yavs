@@ -65,6 +65,16 @@ impl Lexer<'_> {
         self.b.get(self.pos + off).copied().unwrap_or(0)
     }
 
+    /// A bit string base specifier of the file's standard: 1993 has `b`, `o` and `x` only.
+    fn is_base(&self, lower: &[u8]) -> bool {
+        let n = if self.std >= Std::Vhdl2008 {
+            BASES.len()
+        } else {
+            3
+        };
+        BASES.iter().take(n).any(|b| b.as_bytes() == lower)
+    }
+
     fn char_at(&self, pos: usize) -> Option<char> {
         self.src.char_at(pos)
     }
@@ -139,7 +149,7 @@ impl Lexer<'_> {
                 }
                 b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c => self.pos += 1,
                 b'-' if self.peek(1) == b'-' => self.comment(),
-                b'/' if self.peek(1) == b'*' => self.block_comment(),
+                b'/' if self.peek(1) == b'*' && self.std >= Std::Vhdl2008 => self.block_comment(),
                 b'0'..=b'9' => self.number(),
                 b'"' => {
                     self.string(b'"');
@@ -302,6 +312,19 @@ impl Lexer<'_> {
     fn delimiter(&mut self) {
         let start = self.pos;
         let (c0, c1, c2) = (self.peek(0), self.peek(1), self.peek(2));
+        // `?`, `<<` and `>>` are delimiters from 2008 on (LRM 15.3); `?` is not VHDL-1993.
+        let (c0, c1, c2) = if self.std < Std::Vhdl2008 {
+            if c0 == b'?' {
+                self.unexpected(start);
+                return;
+            }
+            match (c0, c1) {
+                (b'<' | b'>', b'<' | b'>') if c0 == c1 => (c0, 0, 0),
+                _ => (c0, c1, c2),
+            }
+        } else {
+            (c0, c1, c2)
+        };
         let (kind, len) = match (c0, c1, c2) {
             (b'=', b'>', _) => (Tok::Arrow, 2),
             (b'*', b'*', _) => (Tok::Pow, 2),
@@ -459,9 +482,7 @@ impl Lexer<'_> {
             &*dst
         });
         let q = self.peek(0);
-        if matches!(q, b'"' | b'%')
-            && lower.is_some_and(|l| BASES.iter().any(|b| b.as_bytes() == l))
-        {
+        if matches!(q, b'"' | b'%') && lower.is_some_and(|l| self.is_base(l)) {
             self.string(q);
             self.push(Tok::BitStr, start);
             self.check_latin1(start, self.pos, "bit string literal");
@@ -486,7 +507,7 @@ impl Lexer<'_> {
             .text(start as u32, self.pos as u32)
             .to_ascii_lowercase();
         let q = self.peek(0);
-        if matches!(q, b'"' | b'%') && BASES.contains(&lower.as_str()) {
+        if matches!(q, b'"' | b'%') && self.is_base(lower.as_bytes()) {
             self.string(q);
             self.push(Tok::BitStr, start);
             self.check_latin1(start, self.pos, "bit string literal");
@@ -522,7 +543,10 @@ impl Lexer<'_> {
         self.digits(false);
         // Sized bit string such as 8x"FF".
         let word = self.word_end(self.pos);
-        if word > self.pos && matches!(self.b.get(word), Some(b'"' | b'%')) {
+        if self.std >= Std::Vhdl2008
+            && word > self.pos
+            && matches!(self.b.get(word), Some(b'"' | b'%'))
+        {
             let base = self
                 .src
                 .text(self.pos as u32, word as u32)
@@ -675,6 +699,32 @@ mod tests {
         assert_eq!(t[0].kind, Tok::Kw(Kw::View));
         assert_eq!(t[1].kind, Tok::Kw(Kw::Private));
         assert_eq!(kinds("view")[0], Tok::Ident);
+    }
+
+    #[test]
+    fn lexical_differences_of_1993() {
+        let lex93 = |src: &str| {
+            let mut d = Vec::new();
+            let t = lex(FileId(0), utf8(src), Std::Vhdl1993, false, &mut d);
+            (t.iter().map(|t| t.kind).collect::<Vec<_>>(), d.len())
+        };
+        // Words 2008 reserved are identifiers; the older ones stay reserved.
+        let (k, n) = lex93("default context protected force xnor");
+        assert_eq!(k[..4], [Tok::Ident; 4]);
+        assert_eq!(k[4], Tok::Kw(Kw::Xnor));
+        assert_eq!(n, 0);
+        // `/*` is a divide and a multiply; bit string literals have no length or other bases.
+        let (k, _) = lex93("a /* b");
+        assert_eq!(k, [Tok::Ident, Tok::Slash, Tok::Star, Tok::Ident, Tok::Eof]);
+        assert_eq!(
+            lex93("x\"AB\" b\"01\"").0,
+            [Tok::BitStr, Tok::BitStr, Tok::Eof]
+        );
+        assert_eq!(lex93("8x\"AB\"").0[..2], [Tok::Abstract, Tok::BitStr]);
+        assert_eq!(lex93("ux\"AB\"").0[..2], [Tok::Ident, Tok::Str]);
+        // `?` is not a character of the language; `<<` is two tokens.
+        assert_eq!(lex93("a ?= b").1, 1);
+        assert_eq!(lex93("<<").0, [Tok::Lt, Tok::Lt, Tok::Eof]);
     }
 
     #[test]

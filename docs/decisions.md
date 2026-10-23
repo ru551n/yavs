@@ -852,6 +852,35 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
 - **Type names in messages** are qualified by their region (`work.i1.rec`) only when two names in
   one message collide.
 
+## VHDL-1993 mode (`--std=93`; yavs-syntax, yavs-sem, lib/, CLI; #629, user, 2026-10-23)
+
+The user decided to add a VHDL-93 mode so GRLIB (VHDL-93 code) runs unmodified. The design, with the references' verdicts per
+difference, is `docs/design/vhdl-93.md`.
+
+- **Scope**: `--std=93` (alias `1993`) only. `--std=87` and `02` are not added (no corpus needs them; 87 would be the 93 mode
+  with a smaller keyword table). The test runner never passes `93` (it refuses 93 projects itself).
+- **One analyzer, `Std::Vhdl1993` below 2008**: keyword table, lexer (no `?` delimiters, `<<`/`>>`, `/* */`, sized or based bit
+  strings) and `E0011` for the 2008 statements that are not 93 (`process (all)`, conditional and selected assignments in a
+  process, `elsif`/`else`/`case` generate, package generics and instantiation). The `since` baseline of sem declarations is
+  `Vhdl1993` (it was 2008); implicit operations 2008 added (`MINIMUM`/`MAXIMUM`, `TO_STRING`, matching operators, `??`,
+  reductions, array-scalar logical operators, `RISING_EDGE` of `bit`/`boolean`, file `FLUSH`) are `since: Vhdl2008`, so a 93 design
+  may declare its own `to_string` or `maximum`.
+- **Libraries**: `lib/std/1993` (derived from 2008 by deletion) and `lib/ieee/1993` (vendored whole: `std_logic_1164` with its own
+  `std_logic_vector` type, the 1995 `numeric_std`/`numeric_bit`, the Synopsys `std_logic_textio`, the 1993 `std_logic_misc`, the
+  unchanged math, Synopsys and VITAL packages). Licences in `lib/SOURCES.md`; the 1995 IEEE 1076.3 texts carry a notice that
+  forbids sale or distribution for profit (`lib/LICENSE-IEEE-1993`): shipped like the VITAL packages until the user decides (#650).
+- **Mixing** follows the 2008/2019 rule: design revision = the newest standard in the closure, each file keeps its own revision for
+  parsing and gates. A 93 file in a 2008 design sees the 2008 packages (so overloads on both vector types are homographs there) and
+  does not see what 2008 added (`E1007` for `to_string`, a 2008-only unit). The reference simulators refuse to mix standards;
+  yavs keeps one rule for all revisions. User question: refuse instead?
+- **Shared variables** of non-protected types are legal in a 93 file (no `E1904`/`W1904`).
+- **Homographs**: an explicit declaration hides an implicit one of a use clause in every mode (the references need `--relaxed` /
+  `-fexplicit` for this at 1993; GRLIB passes both).
+- **Not enforced** (rule 2): the 2008 relaxations (reading `out` ports, case and static rules) are accepted in a 93 file, since valid
+  93 code never depends on them being errors.
+- **Natives**: the `std_logic_1164` natives keyed by `std_ulogic_vector` serve `std_logic_vector` too (`yavs-ir` `ieee.rs`): both are
+  arrays of `std_ulogic`.
+
 ## IR and interpreter (yavs-ir, yavs-interp, M2)
 
 - **Memory model:** registers are untyped u64 cells; addresses are `[space: 3 | index: 29 |

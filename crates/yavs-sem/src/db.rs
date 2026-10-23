@@ -536,7 +536,7 @@ impl Db {
             scope: root,
             span: Span::default(),
             implicit: true,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         let ty = types.next_id();
         let subtype = subtypes.push(SubtypeDef {

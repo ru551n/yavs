@@ -1,0 +1,9 @@
+exit	0
+diag	note	1000000	0	:slv_overloads:_p3	slv ok slv 1010
+diag	note	1000000	0	:slv_overloads:_p3	sulv ok sulv 01XZ
+diag	note	1000000	0	:slv_overloads:_p3	convert up ok sulv 01XZ
+diag	note	1000000	0	:slv_overloads:_p3	convert down ok slv 01XZ
+diag	note	1000000	0	:slv_overloads:_p3	tri slv Z110
+diag	note	1000000	0	:slv_overloads:_p3	and ok slv 0010
+diag	note	1000000	0	:slv_overloads:_p3	not ok slv 0101
+diag	note	1000000	0	:slv_overloads:_p3	done

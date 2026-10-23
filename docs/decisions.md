@@ -4120,6 +4120,17 @@ general update path for every cycle where two clocks edge together (`update_gene
   peak memory of neorv32 is unchanged. Instructions / cycles (bench builds, core 8, min of 3): `neorv32_single_min` 0.990 /
   0.977, `fletcher_bufferreader` 0.977 / 0.951, `fletcher_bufferwriter_512` 0.989 / 0.973, `poc_cache_cpu` 0.999 / 0.977;
   1024 registers gave back the neorv32 gain, 8192 no more.
+- **A wide vector assigned to a direct driver is one entry per plane word** (`Ctx::assign_wide_fast`, from `assign_blocks`): a
+  zero-delay assignment of more than 64 logic elements to a driver that is the only source of its elements of a plain
+  logic signal (`DriverInfo::direct`) with nothing pending pushes an `OutV` per 64 elements, committed at the end of the run
+  as the entries of a short vector are (`commit_planes_run`, `finish_pend`). It took the general path before (a `LogicVec`,
+  a transaction, `schedule`, `apply_txn`, `compute_driving`, `update_effective`, `mark_active`: ~300 of the 3000
+  instructions of a 512-bit update in `fletcher_bufferwriter_512`, 10% of a stepped window). `fletcher_bufferwriter_512`
+  0.957 instructions / 0.893 cycles (bench builds, core 8). The ranges of one cycle's changes may be listed in another
+  order than the general path lists them when a deposit is applied in the same cycle (`tests/delta_paths.rs`
+  `wide_registers_are_direct_entries_per_plane_word` compares the set and the reports, forces, releases and deposits
+  included). What is left of that design: the per-word update (`update_word`, ~470 instructions per changed plane word,
+  half of it the event records of `blk_event`), 17% of its cycles.
 - **The idle skip records its state on the pool path** (`commit_rest`): a plain activation of a tracked process calls
   `note_idle` before the commit takes its lists, as the serial batch loop does, instead of forgetting the state. Runs with
   4 threads skip the same activations as runs with 1 (`idle_skips` and `process_runs` equal; `tests/idle_skip.rs`

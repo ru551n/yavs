@@ -210,6 +210,17 @@ case!(
     ]
 );
 case!(
+    wide_reg,
+    "q=",
+    &[],
+    [
+        ("cycles", Max(312)),
+        ("update_general", Max(2)),
+        ("direct_planes", Min(400)),
+        ("ops", Max(4120)),
+    ]
+);
+case!(
     reg_bytes,
     "n=",
     &[],

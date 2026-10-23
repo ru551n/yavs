@@ -1065,6 +1065,9 @@ impl Ctx<'_> {
         {
             return Ok(());
         }
+        if blocks.len() > 32 && self.assign_wide_fast(d, target, delay, blocks, mode) {
+            return Ok(());
+        }
         let (_, r) = self.target(d, target)?;
         let n = r.len as usize;
         if blocks.len() != n.div_ceil(64) * 32 {
@@ -1266,6 +1269,53 @@ impl Ctx<'_> {
             planes,
         });
         self.st.scheduled.push((now, d));
+        true
+    }
+
+    /// A zero-delay assignment of more than 64 logic elements (`blocks`, as in `assign_blocks`) to
+    /// a direct driver with nothing pending: one `OutV` entry per plane word, committed at the end
+    /// of the run like those of a short vector (a wide register or bus). False (nothing done)
+    /// where the general path must run (it also produces every error).
+    #[inline(never)]
+    fn assign_wide_fast(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        blocks: &[u8],
+        mode: DelayMode,
+    ) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        let r = target.unwrap_or(info.range);
+        let n = r.len as usize;
+        if !info.direct
+            || info.owner != self.pid
+            || n <= 64
+            || blocks.len() != n.div_ceil(64) * 32
+            || !info.range.contains(r)
+            || self.fast_time(delay, mode) != Some(self.sh.now)
+        {
+            return false;
+        }
+        let w = &self.st.waveforms[info.local as usize];
+        // The driver's one-element entries keep the order: the general path moves them.
+        if !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 1) {
+            return false;
+        }
+        self.mark_entries(info, 2);
+        let (sig, slot) = (info.signal.0, info.slot);
+        for (i, b) in blocks.as_chunks::<32>().0.iter().enumerate() {
+            let len = (n - 64 * i).min(64);
+            self.st.outv.push(OutV {
+                sig,
+                slot,
+                elem: r.offset + 64 * i as u32,
+                len: len as u32,
+                planes: words(b).map(|p| p & yavs_logic::wide::nmask(len)),
+            });
+        }
         true
     }
 

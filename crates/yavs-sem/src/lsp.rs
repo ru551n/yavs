@@ -732,6 +732,21 @@ impl Db {
         for (e, u) in uses {
             match u {
                 Use::Value | Use::Actual(Mode::In | Mode::Inout) => self.reads(e, out),
+                // A mode view reads its `in` and `inout` elements only (6.5.2).
+                Use::Actual(m @ Mode::View { .. }) => {
+                    let mut whole = Vec::new();
+                    self.name_reads(e, &mut whole);
+                    if let Some(l) = self.signal_lsp(e) {
+                        for p in self.view_read_paths(m) {
+                            let mut l = l.clone();
+                            l.path = l.path.iter().chain(&p).cloned().collect();
+                            push_unique(self, out, l);
+                        }
+                    }
+                    for l in whole {
+                        push_unique(self, out, l);
+                    }
+                }
                 Use::Target | Use::Actual(_) => self.name_reads(e, out),
             }
         }

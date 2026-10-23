@@ -6313,3 +6313,6 @@ run, identical in both tiers). The default `--tier=auto` still compiles none of 
 (`RTL_INSTANCES`, `RTL_SHARE`, `too_many_callbacks`, which counts the signal operations compiled code now answers
 itself as callbacks) are unchanged. The interpreter gained 1.2 percent of its instructions on `fletcher_bufferwriter_512`
 (the waits of split sensitivity lists) and nothing elsewhere; the per-process frames grow only under `--tier=llvm`.
+
+The code of a whole-program module in huge pages (`YAVS_LLVM_HUGE=0` off): `neorv32_single_min` `--tier=llvm` 70.3 to 65.7 G
+cycles at equal instructions (instruction TLB misses 52 M to 9 M; the table above is without it).

@@ -5538,6 +5538,12 @@ interleaved its rare paths with the hot ones. Decisions, each tagged by what a s
   known, so the pair is a constant to every later guard and the instruction leaves to the interpreter (`exit_if`) in the
   one case that fails, instead of a stored pair and a guard with a slow path.
 
+- **The code of a whole-program module is in huge pages** (LLVM, Linux; `huge_code`): `--tier=llvm` links megabytes of
+  code that every clock cycle runs through, a page of 4 KiB each in the instruction TLB; `madvise (MADV_HUGEPAGE,
+  MADV_COLLAPSE)` on the 2 MiB-aligned part of the code makes huge pages at once (a failure changes nothing,
+  `YAVS_LLVM_HUGE=0` leaves it out). The CPU design: instruction TLB misses 52 M to 9 M, cycles -6 percent, instructions
+  equal. Per-function modules of `--tier=auto` are small and scattered and are left as they are.
+
 Not changed, for the policy owner: `lower::is_inline` still counts the signal operations among the instructions that
 leave compiled code (the `too_many_callbacks` rule of `--tier=auto`), and the rules of a clocked process made few times or
 a small part of the run (`RTL_INSTANCES`, `RTL_SHARE`) are as before. Measured and not built: `optsize` on the process

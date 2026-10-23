@@ -324,4 +324,13 @@ The 2019 `standard.vhdl` lists 350 such commented declarations (counted as lines
 | `attribute FOREIGN` | `standard` | recognized by the analyzer |
 | `FILE_OPEN_KIND` etc. | `standard` | enumeration types, no native code |
 
+## 4. Out of scope: declared, not implemented
+
+These rows of section 1 have a symbol, so a design that names them elaborates, but calling one is
+a run-time error naming the symbol (`native subprogram ... is not implemented in yavs yet`).
+
+| Native symbol | Why |
+|---|---|
+| `yavs.env.pslassertfailed.void.r_boolean`, `yavs.env.psliscovered.void.r_boolean`, `yavs.env.setpslcoverassert.boolean`, `yavs.env.getpslcoverassert.void.r_boolean`, `yavs.env.pslisassertcovered.void.r_boolean`, `yavs.env.clearpslstate.void` | 2019 PSL state of the verification directives (LRM 2019 `std.env`). yavs runs a PSL subset as ordinary checker processes (`docs/decisions.md` "A PSL subset runs as implicit checker processes"), which keep no per-directive state a native could read, so there is no set of cover directives to be "covered" and no failure record to clear. The two reference simulators do not implement them either (the first fails with "not implemented", the second does not declare them). They need a PSL engine with directive registration; until then they stay out of scope (#79) |
+
 <!-- total explicit rows: 235 -->

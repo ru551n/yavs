@@ -1874,7 +1874,13 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   elements, skips the rest of the record and sets `LENGTH` to the number taken; the constrained
   form is a runtime error when the stored count differs. A value outside the type's range, or
   reading past the end of the file, is a runtime error.
-- Records and arrays of composites are not implemented (runtime error naming #79).
+- **Records and arrays of composites** (#79): the descriptor and the memory image of the value,
+  `u32` descriptor size, descriptor, `u32` data size, data (the value's layout in the interpreter,
+  logic planes included; no access values can be in a file). Only yavs reads it back, and only
+  into an object with the same bounds: another descriptor or size is a runtime error (`a value
+  read from a file has other bounds than the object it is read into`); `LENGTH` of the
+  unconstrained form is the stored length of the first dimension. Not exchangeable with other
+  simulators, which write their own layout (the format is implementation-defined, LRM 5.5.2).
 - **`std.textio.TEXT` is the exception** (#365, lrm-checks L100): its implicit `WRITE` stores the
   characters alone and `READ (F, VALUE, LENGTH)` reads `VALUE'LENGTH` characters, so `READLINE`
   and `WRITELINE` share the file; `WRITE (OUTPUT, s)` prints `s`. Other files of `string` keep the

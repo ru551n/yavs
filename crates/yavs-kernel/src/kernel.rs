@@ -142,6 +142,22 @@ pub struct Stats {
     pub process_runs: u64,
     /// Signal events, counted per contiguous run of changed elements.
     pub events: u64,
+    /// Processes made ready (a wake of a process that was not ready already).
+    pub wakes: u64,
+    /// Process runs that took the one-process path of the batch (`run_one`).
+    pub single_runs: u64,
+    /// Update phases by path: the usual delta of one independent signal (or nothing due), the
+    /// single timed entry, and the general worklist. The fast cases are the point of many
+    /// rounds: a design that moves to `update_general` lost one.
+    pub update_fast: u64,
+    pub update_timed: u64,
+    pub update_general: u64,
+    /// Scalar and byte transactions applied as quick transactions (no waveform).
+    pub quick_applied: u64,
+    /// Direct entries committed from process lists: single codes, plane vectors, byte signals.
+    pub direct_codes: u64,
+    pub direct_planes: u64,
+    pub direct_bytes: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -1758,6 +1774,7 @@ impl SimControl {
         {
             let one = self.one_independent();
             if one.is_some() || self.queue.next_delta.is_empty() {
+                self.stats.update_fast += 1;
                 if let Some(s0) = one {
                     let sig = &mut self.signals[s0 as usize];
                     for e in &self.queue.next_delta {
@@ -1770,6 +1787,7 @@ impl SimControl {
                             match w.quick {
                                 Some(q) if q.time <= now => {
                                     w.quick = None;
+                                    self.stats.quick_applied += 1;
                                     sig.apply_quick(q, info.slot, now, cycle);
                                 }
                                 _ => sig.apply_driver(w, info.slot, now, cycle),
@@ -1789,8 +1807,10 @@ impl SimControl {
             && self.queue.next_delta.is_empty()
             && let Some(r) = self.update_one_timed()
         {
+            self.stats.update_timed += 1;
             return r;
         }
+        self.stats.update_general += 1;
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
         // Kept between cycles (empty here), so an empty one costs no construction and no drop.
         let mut work = self.work.take().unwrap_or_default();
@@ -2016,6 +2036,7 @@ impl SimControl {
         match w.quick {
             Some(q) if q.time <= now => {
                 w.quick = None;
+                self.stats.quick_applied += 1;
                 sig.apply_quick(q, info.slot, now, cycle);
             }
             _ => sig.apply_driver(w, info.slot, now, cycle),
@@ -2064,6 +2085,7 @@ impl SimControl {
             let sigs = &mut self.direct_sigs;
             let empty = &mut self.empty_delta;
             commit_out(
+                &mut self.stats,
                 &mut self.signals,
                 sigs,
                 empty,
@@ -2471,6 +2493,7 @@ impl SimControl {
         meta.ready = true;
         meta.by_timeout = by_timeout;
         meta.generation += 1;
+        self.stats.wakes += 1;
         if meta.flags.postponed {
             self.postponed.push(p);
         } else {
@@ -2721,6 +2744,7 @@ impl SimControl {
     /// `run_batch` of one process after initialisation (a stage of a chain of processes): no
     /// order, no batch loop, and the usual clocked commit straight from its own lists.
     fn run_one(&mut self, p: u32, pids: Vec<u32>) -> Result<(), SimError> {
+        self.stats.single_runs += 1;
         let sh = Shared {
             now: self.now,
             delta: self.delta,
@@ -2769,6 +2793,7 @@ impl SimControl {
             self.empty_delta |= st.take_phantoms();
         }
         commit_out(
+            &mut self.stats,
             &mut self.signals,
             &mut self.direct_sigs,
             &mut self.empty_delta,
@@ -2836,6 +2861,7 @@ impl SimControl {
                 }
                 st.scheduled.clear();
                 commit_out(
+                    &mut self.stats,
                     &mut self.signals,
                     &mut self.direct_sigs,
                     &mut self.empty_delta,
@@ -2863,6 +2889,7 @@ impl SimControl {
                 self.empty_delta |= st.take_phantoms();
             }
             commit_out(
+                &mut self.stats,
                 &mut self.signals,
                 &mut self.direct_sigs,
                 &mut self.empty_delta,
@@ -3187,6 +3214,7 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
 /// `direct_sigs` for the next update. The entries of one driver are all in one of the lists.
 #[inline]
 fn commit_out(
+    stats: &mut Stats,
     signals: &mut [Signal],
     direct_sigs: &mut Vec<u32>,
     empty: &mut bool,
@@ -3194,6 +3222,9 @@ fn commit_out(
     outv: &mut Vec<OutV>,
     outb: &mut Vec<OutB>,
 ) {
+    stats.direct_codes += out.len() as u64;
+    stats.direct_planes += outv.len() as u64;
+    stats.direct_bytes += outb.len() as u64;
     // Runs of entries of one signal (processes of one vector, in order) at once.
     let mut i = 0;
     while let Some(&o) = out.get(i) {

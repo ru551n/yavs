@@ -616,7 +616,7 @@ mod llvm {
             ("cb_native", Max(56)),
             ("cb_drive", Max(263)),
             ("cb_lcopy", Max(106)),
-            ("cb_fast", Max(54)),
+            ("cb_fast", Max(1)),
             ("llvm_inline_insts", Min(596)),
             ("llvm_interpreted_insts", Max(67)),
             ("llvm_native_frames", Min(1)),

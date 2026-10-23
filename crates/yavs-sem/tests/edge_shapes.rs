@@ -44,8 +44,10 @@ begin
 end;
 ";
 
-fn analyze() -> Db {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("edge_shapes");
+// One directory per test and process: parallel tests would read a half written shared file.
+fn analyze(test: &str) -> Db {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("edge_shapes_{}_{test}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("tmp dir");
     let path = dir.join("e.vhd");
     std::fs::write(&path, SRC).expect("write");
@@ -79,7 +81,7 @@ fn cond_of(db: &Db, label: &str) -> yavs_sem::ids::ExprId {
 
 #[test]
 fn recognised_forms() {
-    let db = analyze();
+    let db = analyze("recognised_forms");
     for (label, rising, legacy) in [
         ("rise", true, false),
         ("fall", false, false),
@@ -107,7 +109,7 @@ fn recognised_forms() {
 
 #[test]
 fn look_alikes_are_not_edge_tests() {
-    let db = analyze();
+    let db = analyze("look_alikes_are_not_edge_tests");
     for label in ["level", "evonly", "evh", "user", "stab5"] {
         assert_eq!(shape(&db, label), None, "{label}");
     }
@@ -118,7 +120,7 @@ fn look_alikes_are_not_edge_tests() {
 
 #[test]
 fn not_stable_declares_no_implicit_signal() {
-    let db = analyze();
+    let db = analyze("not_stable_declares_no_implicit_signal");
     // `not clk'stable(5 ns)` keeps its implicit signal, the two without a time do not.
     let implicit = db
         .decls

@@ -3909,6 +3909,33 @@ impl Machine {
         Ok(Flow::Next)
     }
 
+    /// `Op::Uniform`: the generator in place when both seeds load and are in range, else the
+    /// native call (which has changed nothing by then, and reports or faults).
+    #[inline(never)]
+    fn op_uniform(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        vars: [u64; 3],
+        native: u32,
+        start: u32,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Flow> {
+        let [pa, pb, px] = vars;
+        if let (Ok(a), Ok(b)) = (self.load(pa, Width::B8), self.load(pb, Width::B8))
+            && (a as i64) <= 2147483562
+            && (b as i64) <= 2147483398
+        {
+            let (t1, t2, v) = crate::ieee::uniform_step(a as i64, b as i64);
+            self.store(pa, Width::B8, t1 as u64)?;
+            self.store(pb, Width::B8, t2 as u64)?;
+            self.store(px, Width::B8, v)?;
+            return Ok(Flow::Next);
+        }
+        let args = yavs_ir::Regs { start, len: 3 };
+        self.call_native(prog, f, yavs_ir::NativeId(native), args, None, ctx)
+    }
+
     /// `Op::Image`: `'image` of an integer or enumeration value as a string result.
     #[inline(never)]
     fn op_image(&mut self, ty: u32, v: u64) -> R<u64> {
@@ -5599,6 +5626,29 @@ impl Machine {
                     let args = yavs_ir::Regs { start, len };
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     match self.call_native(prog, f, yavs_ir::NativeId(native), args, dst, ctx)? {
+                        Flow::Next => {
+                            k += 1;
+                            enter!();
+                        }
+                        flow => {
+                            return Ok(flow);
+                        }
+                    }
+                }
+                Op::Uniform {
+                    s1,
+                    s2,
+                    x,
+                    native,
+                    start,
+                } => {
+                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                    let vars = [
+                        self.regs[s1 as usize],
+                        self.regs[s2 as usize],
+                        self.regs[x as usize],
+                    ];
+                    match self.op_uniform(prog, f, vars, native, start, ctx)? {
                         Flow::Next => {
                             k += 1;
                             enter!();

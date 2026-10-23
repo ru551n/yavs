@@ -6368,6 +6368,10 @@ core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median
 
 - `LoadUp`/`StoreUp` (interpreter only): a variable of an enclosing subprogram is read or written in one op instead of
   `AddrUp` and `Load`/`Store`. `sc5_fifo_repack` instructions 0.969.
+- `Uniform` (interpreter only): `math_real.uniform` of three variables steps the generator in place, the native call
+  only for a seed out of range. `sc5_fifo_repack` instructions 0.890 of main with `LoadUp` (0.919 of the commit before);
+  the other designs within 0.2 percent. Lesson of the round: a new arm with a body of its own in `run_ops` moves the
+  other designs by percents of instructions; an arm that calls an out-of-line function does not.
 
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 

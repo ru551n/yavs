@@ -5558,6 +5558,15 @@ cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` 
   statement (`sc5_fifo_repack`: `AddrUp -> Load` was 4.7 percent of its ops, `Stmt -> AddrUp` 4.5). A failing access reports
   what the plain `Load`/`Store` reports (the slow path is the old one). The compiled tiers are unaffected.
 
+- **`Uniform` (interpreter only).** `math_real.uniform(seed1, seed2, x)` is the stimulus generator of many testbenches
+  (`sc5_fifo_repack` calls it 1.1 M times in 30 us of simulated time). As a generic native call it cost 16 percent of that
+  run's instructions (`call_native`, `push_args`, `obj_mut` and the native itself) for 70 instructions of arithmetic. The
+  op loads both seeds, and when they load and are in range (`<= 2147483562` and `<= 2147483398`) steps the generator in
+  place (`ieee::uniform_step`, shared with the native, so the numbers are the native's) and stores the seeds and the real;
+  in any other case it is the native call, which has changed nothing by then and reports or faults as before. The arm of
+  `run_ops` calls an out-of-line function: the same op with its body inline in the arm moved the other designs by +0.2 to
+  +2.9 percent of instructions (the large function is laid out differently, #576), the call keeps them within 0.2.
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

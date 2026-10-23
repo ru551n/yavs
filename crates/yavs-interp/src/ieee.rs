@@ -950,6 +950,27 @@ fn conv_int<const SIGNED: bool>(
     put(m, &Vh::down(LogicVec::from_bitvec(&r)))
 }
 
+/// One step of the L'Ecuyer generator of `math_real.uniform`, in `i64` (every intermediate within
+/// INTEGER for the seeds the two range checks admit): the new seeds and the bits of the real.
+#[inline(always)]
+pub(crate) fn uniform_step(s1: i64, s2: i64) -> (i64, i64, u64) {
+    let k = s1 / 53668;
+    let mut t1 = 40014 * (s1 - k * 53668) - k * 12211;
+    if t1 < 0 {
+        t1 += 2147483563;
+    }
+    let k = s2 / 52774;
+    let mut t2 = 40692 * (s2 - k * 52774) - k * 3791;
+    if t2 < 0 {
+        t2 += 2147483399;
+    }
+    let mut z = t1 - t2;
+    if z < 1 {
+        z += 2147483562;
+    }
+    (t1, t2, (z as f64 * 4.656613e-10).to_bits())
+}
+
 /// `math_real.uniform`: the L'Ecuyer generator of the body in `i64`, every intermediate within
 /// INTEGER for the seeds the two range checks admit. The out-of-range reports are the body's.
 fn uniform(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
@@ -965,23 +986,10 @@ fn uniform(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> 
             return Ok(None);
         }
     }
-    let k = s1 / 53668;
-    let mut t1 = 40014 * (s1 - k * 53668) - k * 12211;
-    if t1 < 0 {
-        t1 += 2147483563;
-    }
-    let k = s2 / 52774;
-    let mut t2 = 40692 * (s2 - k * 52774) - k * 3791;
-    if t2 < 0 {
-        t2 += 2147483399;
-    }
-    let mut z = t1 - t2;
-    if z < 1 {
-        z += 2147483562;
-    }
+    let (t1, t2, x) = uniform_step(s1, s2);
     m.store(pa, Width::B8, t1 as u64)?;
     m.store(pb, Width::B8, t2 as u64)?;
-    m.store(px, Width::B8, (z as f64 * 4.656613e-10).to_bits())?;
+    m.store(px, Width::B8, x)?;
     Ok(None)
 }
 

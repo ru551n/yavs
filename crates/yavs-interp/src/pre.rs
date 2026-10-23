@@ -942,6 +942,15 @@ pub(crate) enum Op {
         a: u32,
         b: u32,
     },
+    /// `math_real.uniform` of three variables in memory, in place; a seed out of range or an
+    /// address that does not load runs the native call itself (interpreter only).
+    Uniform {
+        s1: u32,
+        s2: u32,
+        x: u32,
+        native: u32,
+        start: u32,
+    },
     /// Scalar `not` of a `std_ulogic`.
     NotL {
         dst: u32,
@@ -1153,6 +1162,12 @@ enum NativeOp {
         kind: yavs_ir::EdgeKind,
         sig: yavs_ir::Reg,
     },
+    /// `math_real.uniform(seed1, seed2, x)`: the addresses of the three variables.
+    Uniform {
+        s1: yavs_ir::Reg,
+        s2: yavs_ir::Reg,
+        x: yavs_ir::Reg,
+    },
 }
 
 /// The argument and type of a call of `'image` of an integer or enumeration value (`Op::Image`).
@@ -1217,6 +1232,13 @@ fn native_op(
             b: *b,
         }),
         (Ie::Not, [a]) if scalar(a) => Some(NativeOp::Not { a: *a }),
+        (Ie::Uniform, [s1, s2, x]) if scalar(s1) && scalar(s2) && scalar(x) => {
+            Some(NativeOp::Uniform {
+                s1: *s1,
+                s2: *s2,
+                x: *x,
+            })
+        }
         (Ie::Edge(rising), [r]) if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) => {
             let kind = if rising {
                 yavs_ir::EdgeKind::Rising
@@ -3923,6 +3945,13 @@ impl Code {
                             b: b.0,
                         },
                         (Some(NativeOp::Not { a }), Some(d)) => Op::NotL { dst: d.0, a: a.0 },
+                        (Some(NativeOp::Uniform { s1, s2, x }), None) => Op::Uniform {
+                            s1: s1.0,
+                            s2: s2.0,
+                            x: x.0,
+                            native: native.0,
+                            start: args.start,
+                        },
                         _ if light_ieee(prog, f, native, args) => Op::CallIeee {
                             native: native.0,
                             start: args.start,

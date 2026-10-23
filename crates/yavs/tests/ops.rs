@@ -73,3 +73,88 @@ fn static_chain_addresses_and_real_compares_are_ops() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `uniform` of three variables runs in place (`Op::Uniform`); a seed out of range is reported
+/// as the native call reports it and leaves the seeds and the real as it does.
+const UNIFORM: &str = "
+library ieee;
+use ieee.math_real.all;
+entity uni is end;
+architecture a of uni is
+begin
+  process
+    variable s1 : positive := 123456;
+    variable s2 : positive := 987654;
+    variable x  : real := 0.0;
+    variable acc : real := 0.0;
+    procedure draw(variable a, b : inout positive) is
+    begin
+      uniform(a, b, x);
+      acc := acc + x;
+    end procedure;
+  begin
+    for i in 1 to 1000 loop
+      draw(s1, s2);
+    end loop;
+    report \"acc=\" & real'image(acc) & \" s1=\" & integer'image(s1) & \" s2=\" & integer'image(s2);
+    s1 := positive'high;
+    draw(s1, s2);
+    report \"bad seed1 x=\" & real'image(x) & \" s1=\" & integer'image(s1);
+    s1 := 5;
+    s2 := positive'high;
+    draw(s1, s2);
+    report \"bad seed2 x=\" & real'image(x) & \" s2=\" & integer'image(s2);
+    wait;
+  end process;
+end;
+";
+
+#[test]
+fn uniform_is_an_op_and_reports_bad_seeds() {
+    let d = tmp("uniform");
+    std::fs::write(d.join("uni.vhd"), UNIFORM).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let a = Command::new(yavs)
+        .current_dir(&d)
+        .args(["analyze", "--std=2008", "--work", &work, "uni.vhd"])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = Command::new(yavs)
+        .current_dir(&d)
+        .env("YAVS_DUMPIR", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--no-cache",
+            "--std=2008",
+            "--work",
+            &work,
+        ])
+        .args(["--tier=interp", "uni"])
+        .output()
+        .expect("run");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // The generator's own numbers (the body's L'Ecuyer steps), and the two reports.
+    for want in [
+        "acc=501.184307579734 s1=1444183576 s2=208212704",
+        "SEED1 > 2147483562 in UNIFORM",
+        "bad seed1 x=0 s1=2147483647",
+        "SEED2 > 2147483398 in UNIFORM",
+        "bad seed2 x=0 s2=2147483647",
+    ] {
+        assert!(text.contains(want), "missing `{want}`:\n{text}");
+    }
+    assert!(
+        text.lines()
+            .any(|l| l.contains(" pc") && l.contains(" Uniform {")),
+        "no op Uniform\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

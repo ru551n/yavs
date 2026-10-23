@@ -285,6 +285,7 @@ const PASS: &[&str] = &[
     "ieee/user_reduce_idiom",
     "postponed/postponed_basic",
     "postponed/postponed_wait",
+    "process/all_local_subprogram",
     "process/call_conversions",
     "process/call_error_path",
     "process/call_conversions_unconstrained",

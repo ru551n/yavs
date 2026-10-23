@@ -885,6 +885,7 @@ impl Db {
         let reads_all = all.then(|| {
             let mut r = Vec::new();
             self.reads_deep(body, &mut r);
+            self.scope_subprogram_reads(scope, &mut r);
             r
         });
         ProcessInfo { drivers, reads_all }
@@ -1038,6 +1039,26 @@ impl Db {
             };
         });
         ok
+    }
+
+    /// Signals read in the bodies of subprograms declared in `scope` (and in their nested
+    /// regions), for `process (all)`: the process is sensitive to what its own procedures and
+    /// functions read, not to their parameters.
+    fn scope_subprogram_reads(&self, scope: ScopeId, out: &mut Vec<Lsp>) {
+        for &d in &self.scopes[scope].order {
+            if let Some(sp) = self.decls[d].kind.subprogram()
+                && let crate::decl::Body::Hir { scope, stmts } = &sp.body
+            {
+                let mut rs = Vec::new();
+                self.reads_deep(stmts, &mut rs);
+                for l in rs {
+                    if !self.is_param(l.root) {
+                        push_unique(self, out, self.cut_at_subprogram_values(l));
+                    }
+                }
+                self.scope_subprogram_reads(*scope, out);
+            }
+        }
     }
 
     fn seq_block_scopes(&self, body: &[StmtId], out: &mut Vec<ScopeId>) {

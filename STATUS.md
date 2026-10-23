@@ -5731,16 +5731,55 @@ What is left in `poc_arith_addw` (89 M `signal` calls: vector `SigRead` and `Cat
 instance constants the generator does not know) and the shape of the rest of the gap to the interpreter on clocked RTL
 (code size and cache misses, not exits) are in the issue comments of #565 and #532.
 
-## Interpreter round 14: entry of the dispatch loop, memoised signal references (#520, 2026-10-23)
+## Interpreter round 14: entry of the dispatch loop, memoised signal references, address and real-compare ops (#520, 2026-10-23)
 
-(Written during the round; the numbers are the final ones at the end of the section.)
+Three commits (`docs/decisions.md` "Interpreter round 14"):
 
-- The memoisation of instance constants (`opt/memo.rs`) covers `SlicePos` and `SigVal` of instance-constant bounds
-  (a signal reference is a root of two words, loaded by `LoadSlot8x2`); references of constant length and references
-  read as scalars stay as they are (fusions of the interpreter, inline code of the compiled tier). Instructions of
-  `poc_arith_addw` -3.5 percent (`--tier=llvm` -2.3 percent), `neorv32_single_min` -1.4 percent.
+- Package data and the rare slot paths are out of the inline memory paths of `run_ops`: 17 to 11 address pairs that the
+  compiler hoists out of the dispatch loop and stores on every entry (an activation of a small process enters it once;
+  about 105 instructions and 60 stores before the first op, 18 to 25 percent of `run_ops` on the realistic designs).
+- The memoisation of instance constants (`opt/memo.rs`) covers `SlicePos` and `SigVal` of instance-constant bounds (a signal
+  reference is a root of two words, loaded by `LoadSlot8x2`); references of constant length and references read as
+  scalars stay as they are (fusions of the interpreter, inline code of the compiled tier).
+- `AddrOf` (frame, up the static chain, fixed spaces) and `FCmp` are ops of the fast loop instead of generic steps.
 
-- Package data and the rare slot paths are out of the inline memory paths of `run_ops` (`docs/decisions.md` "Interpreter
-  round 14"): 17 to 11 address pairs spilled on every entry of the loop.
-- `AddrOf` (frame, up the static chain, fixed spaces) and `FCmp` are ops of the fast loop instead of generic steps:
-  `sc5_fifo_repack` -4.5 percent of instructions.
+Core 15 (core 8 within 1 percent of these ratios), `--tier=interp`, `tools/bench/designs` and `tools/realbench` (windows of
+the long tests: 100 to 300 us of simulated time), `perf stat` user instructions and cycles in G, min and median of 7
+interleaved runs, main at f4f1512e against the three commits; the cycles ratio is the median:
+
+| design | instructions | cycles | ratio |
+|---|---|---|---:|
+| `poc_arith_addw` | 45.94 / 43.38 | 12.91 / 11.86 | 0.919 |
+| `sc5_fifo_repack` | 64.14 / 60.41 | 19.17 / 17.73 | 0.925 |
+| `neorv32_single_min` | 97.20 / 94.68 | 43.43 / 42.10 | 0.969 |
+| `fletcher_bufferwriter_512` | 46.92 / 46.31 | 19.11 / 18.69 | 0.978 |
+| `fletcher_bufferreader` | 8.76 / 8.61 | 3.27 / 3.16 | 0.967 |
+| `poc_cache_cpu` | 26.61 / 25.83 | 8.64 / 8.44 | 0.977 |
+| `poc_stat_histogram` | 40.84 / 40.15 | 9.84 / 9.80 | 0.996 |
+| `hdlm_lfsr` | 1.63 / 1.61 | 0.50 / 0.49 | 0.996 |
+| `rtl_fan` (4000 near-idle processes) | 14.14 / 13.72 | 4.67 / 4.54 | 0.973 |
+| `rtl_ff` | 11.87 / 11.65 | 3.63 / 3.40 | 0.937 |
+| `rtl_lfsr`, `lfsr64`, `lfsr64_xor`, `rtl_chain` | -1.3 to -2.1 % | | 0.97 to 0.99 |
+| `ieee_heavy` | 1.84 / 1.80 | 0.42 / 0.39 | 0.923 |
+| `protected_queue`, `protected_scoreboard`, `report_heavy`, `strings_heavy`, `rtl_bus`, `rtl_ram` | -0.6 to -1.6 % | | 0.97 to 1.00 |
+| `access_heavy` (40 ms) | 0.77 / 0.76 | 0.19 / 0.20 | 1.023 |
+
+Geometric mean over the 22 designs: instructions 0.980, cycles 0.9735 (core 15) and 0.972 (core 8). `--tier=llvm` and
+`--tier=auto` run `poc_arith_addw` 2 percent fewer cycles, nothing slower. Checked: `cargo test --workspace`, the
+differential corpus (451/451) on `yavs-interp`, `yavs-auto` and `yavs-llvm` at 1 and 4 threads.
+
+What the round learned about the loop (all in `docs/decisions.md`): the entry cost is the compiler hoisting addresses out
+of the loop, not the work of the entry; a copy of the loop for functions of simple ops (const-generic guards, 63 arms
+out, entry 105 to 70 instructions) gains 5 percent on near-idle processes and nothing on a realistic design; outlining
+more (memory access, vector growth, the frame push) costs more calls than it saves; and the cycles of one design move by
+up to 20 percent with the alignment of the same code (#576), so only the geometric mean over many designs and two cores
+means anything. Ranking afterwards (mean share of cycles over the 22 designs): `run_ops` 50 percent (its entry about a
+fifth of that on the small-process designs), the kernel's `finish_direct`, `run_batch`, `cycle`, `commit_out` and the
+resolver 9 percent together, `run_quick` and `Process::run` 3 percent (51 and 22 instructions per activation of a
+near-idle process), `cat_words`/`cat_block` 1.5, the `numeric_std` natives 2.3, `lcopy` 0.8, `subtype_check` 0.7.
+
+Idea of the reference simulator used (read for the design, no code): it folds the generics of an instance into its code at
+elaboration, so the slice bounds and signal references of an instance are constants; the memoisation computes the same
+facts once per instance in the shared code, and now also for the references. Its interpreter keeps its hot state in a small
+struct on the stack and the registers in a stack array, so a call stores a handful of words; yavs's machine is addressed
+field by field, which is what the entry cost above comes from.

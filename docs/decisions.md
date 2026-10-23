@@ -4885,7 +4885,7 @@ window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
 - The speed of the loop depends on the layout of the code: the same instructions, built with 64-byte aligned functions
   (`-C llvm-args=-align-all-functions=6`), run `calls` 19 to 33 percent, `compute_loop` 10 percent and the histogram
   testbench 6 percent slower. Changes to the loop are judged by instructions and by the geometric mean over many designs
-  on both cores, never by one design (`tools/bench`, `tools/realbench`).
+  on both cores, never by one design (`tools/bench`, `tools/realbench`; #576).
 - Idea from the reference simulator (read for the design, no code taken): its interpreter keeps the hot state in a small
   struct on the stack and the registers in a stack array, so entering a function stores a handful of words; the shared
   interpreter state of yavs lives in the machine, which the compiler addresses field by field.

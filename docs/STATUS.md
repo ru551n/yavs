@@ -137,6 +137,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - `x'subtype(value)` (and `'element`, `'base`) is a type conversion (9.3.6; `ieee9`, first suite, `issue2097`, second suite).
 - The function form of `file_open` returned no value (internal error), and `file_position (f, FILE_ORIGIN_END)` was negative (a NATURAL error); it is the distance to the end now (`file12`, first suite).
 - `T'VALUE` of an array type (2019, `value2`, `value4`) is E2001 (not implemented) instead of an internal error; `T'VALUE` of composites is still missing.
+- An aggregate target with parts of a signal parameter (`issue3030`) is E2001 (not implemented) instead of an internal error.
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

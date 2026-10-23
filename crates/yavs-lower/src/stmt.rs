@@ -1467,9 +1467,24 @@ impl Fx<'_, '_> {
     pub(crate) fn driver_of(&mut self, lsp: &Lsp) -> R<u32> {
         match self.driver_index(lsp) {
             Some(k) => Ok(self.driver_base.get(k).copied().unwrap_or(k as u32)),
-            None => Err(self
-                .cx
-                .ice(lsp.span, "signal target without a driver of the process")),
+            None => {
+                // The plain assignment to a signal parameter takes the caller's driver slot
+                // (`drive`); the leaves of an aggregate target do not yet.
+                let param = self.cx.root_decl(self.db, lsp.root).is_some_and(|d| {
+                    matches!(
+                        self.cx.objs.get(&d),
+                        Some(Obj::SignalRef { .. } | Obj::RecSignal(Some(_)))
+                    )
+                });
+                if param {
+                    return Err(self
+                        .cx
+                        .unsupported(lsp.span, "aggregate targets with signal parameters"));
+                }
+                Err(self
+                    .cx
+                    .ice(lsp.span, "signal target without a driver of the process"))
+            }
         }
     }
 

@@ -1691,3 +1691,35 @@ fn composite_value_attribute_is_not_an_ice() {
     assert!(err.contains("E2001"), "{err}");
     assert!(!err.contains("E9999"), "{err}");
 }
+
+/// An aggregate target made of fields of a signal parameter is not lowered yet: an explicit
+/// E2001, not an internal error (the second reference suite's `issue3030`).
+#[test]
+fn aggregate_target_of_signal_parameter_is_not_an_ice() {
+    let dir = tempdir("agg_target_param");
+    let lib = format!("--work=work:{}/lib", dir.display());
+    let src = dir.join("top.vhd");
+    std::fs::write(
+        &src,
+        "entity top is end entity;\n\
+         architecture a of top is\n\
+           type rec_t is record x : bit_vector(0 to 1); y : bit_vector(0 to 1); end record;\n\
+           procedure split (signal bv : in bit_vector; signal r : out rec_t) is\n\
+           begin\n\
+             (r.x, r.y) <= bv;\n\
+           end procedure;\n\
+           signal s : rec_t;\n\
+           signal b : bit_vector(0 to 3) := \"1001\";\n\
+         begin\n\
+           process begin split(b, s); wait; end process;\n\
+         end architecture;\n",
+    )
+    .expect("write");
+    let o = yavs_cmd(&["analyze", "--std=2008", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = yavs_cmd(&["elab", "--std=2008", &lib, "top"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("E2001"), "{err}");
+    assert!(!err.contains("E9999"), "{err}");
+}

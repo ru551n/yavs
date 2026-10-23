@@ -744,6 +744,23 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   does too. A declared property is used as the whole property of `assert`/`assume`
   (`assert p(a, b) @clk report r;`), a declared sequence in `cover`, as an operand of a suffix
   implication, or inside sequences. A declaration is visible in its design unit.
+- **Temporal PSL properties in the checker subset (agent, 2026-10-23, #445, L131):** `next_a`,
+  `next_e`, `next_event`, `next_event_a`, `next_event_e`, `until`, `until_`, `before`, `before_`,
+  `sync_abort`, `<->`, `iff`, `and`/`or` of properties, nested `next` and `always`, and any of them
+  as the right side of `|->`/`|=>` (`parser/psl_prop.rs`). A directive that has one of these words,
+  or that the simple parsers cannot read, goes to this parser. The property becomes terms (formula
+  progression over finite traces, weak: an obligation open at the end of the run is no failure);
+  at parse time every term reachable over the values of the booleans it tests is enumerated and
+  the process keeps one variable per term (at most 64 terms, 6 booleans per term, 4096 steps, else
+  the directive is skipped with `W0004`). Conjunctions are separate obligations: each conjunct
+  that fails is reported at its own tick, and the failures of all starts at one tick are one
+  report, as in the second reference simulator (`next_a[1 to 3] b` with `b` never true fails at
+  three ticks). `next_event(c)(p)` counts the current cycle (the second reference simulator).
+  `until` stops at its first failure (one report); the second reference simulator goes on
+  reporting. Not run, skipped with `W0004`: the strong forms (`eventually!`, `next!`, `until!`,
+  `before!`, `next_a!`, `{s}!`), which need a check when the run ends, and `abort`/`async_abort`,
+  which the LRM defines as reacting between clock ticks. Catalogue row `psl-temporal-operators`;
+  `tests/corpus/psl/psl_temporal{,_ext}.vhd`.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993

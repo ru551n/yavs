@@ -262,7 +262,7 @@ impl Parser<'_> {
     }
 
     /// A braced sequence, a named one or a `sequence` formal, with repetition operators.
-    fn sere_primary(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
+    pub(super) fn sere_primary(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
         if self.at(Tok::LBrace) {
             return self.sere_braced(leaves);
         }
@@ -354,7 +354,7 @@ impl Parser<'_> {
     }
 
     /// A boolean expression. A `[` ends it: it opens a repetition, not a signature.
-    fn sere_leaf(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
+    pub(super) fn sere_leaf(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
         let was = std::mem::replace(&mut self.psl_no_sig, true);
         let e = self.psl_expr();
         self.psl_no_sig = was;
@@ -420,23 +420,23 @@ impl Parser<'_> {
 }
 
 /// A literal condition: leaf number and polarity.
-type Lit = (usize, bool);
+pub(super) type Lit = (usize, bool);
 
 /// A set of automaton positions with its connections (Glushkov): a fragment of the
 /// automaton the positions of which live in `Nfa::conds`.
 #[derive(Clone, Default)]
-struct Frag {
-    pos: Vec<usize>,
-    first: Vec<usize>,
-    last: Vec<usize>,
-    follow: Vec<(usize, usize)>,
-    nullable: bool,
+pub(super) struct Frag {
+    pub(super) pos: Vec<usize>,
+    pub(super) first: Vec<usize>,
+    pub(super) last: Vec<usize>,
+    pub(super) follow: Vec<(usize, usize)>,
+    pub(super) nullable: bool,
 }
 
 /// The position automaton: `conds[p]` is what the tick that consumes position `p` must satisfy.
 #[derive(Default)]
-struct Nfa {
-    conds: Vec<Vec<Lit>>,
+pub(super) struct Nfa {
+    pub(super) conds: Vec<Vec<Lit>>,
 }
 
 fn union(a: &[usize], b: &[usize]) -> Vec<usize> {
@@ -755,7 +755,7 @@ impl Nfa {
 
     /// The sequence with only the positions that lie on a path from a first to a last one:
     /// a dead end would keep an obligation alive that can no longer match.
-    fn trimmed(&mut self, s: &Sere) -> PResult<Frag> {
+    pub(super) fn trimmed(&mut self, s: &Sere) -> PResult<Frag> {
         let mut f = self.build(s)?;
         let mut live: Vec<usize> = f.first.clone();
         let mut i = 0;
@@ -812,11 +812,11 @@ fn union_pairs(a: &[(usize, usize)], b: &[(usize, usize)]) -> Vec<(usize, usize)
 // Code generation.
 
 /// `\psl <what> <id>\`
-fn vname(what: &str, id: usize) -> String {
+pub(super) fn vname(what: &str, id: usize) -> String {
     format!("\\psl {what} {id}\\")
 }
 
-fn not(g: &Gen, e: Expr) -> Expr {
+pub(super) fn not(g: &Gen, e: Expr) -> Expr {
     g.expr(ExprKind::Unary {
         op: UnaryOp::Not,
         operand: Box::new(g.paren(e)),
@@ -824,7 +824,7 @@ fn not(g: &Gen, e: Expr) -> Expr {
 }
 
 /// `a or b or ..`, `false` for none.
-fn any_of(g: &Gen, mut v: Vec<Expr>) -> Expr {
+pub(super) fn any_of(g: &Gen, mut v: Vec<Expr>) -> Expr {
     if v.is_empty() {
         return g.var("false");
     }
@@ -836,7 +836,7 @@ fn any_of(g: &Gen, mut v: Vec<Expr>) -> Expr {
 }
 
 /// `a and b and ..`, `true` for none.
-fn all_of(g: &Gen, mut v: Vec<Expr>) -> Expr {
+pub(super) fn all_of(g: &Gen, mut v: Vec<Expr>) -> Expr {
     if v.is_empty() {
         return g.var("true");
     }
@@ -848,7 +848,7 @@ fn all_of(g: &Gen, mut v: Vec<Expr>) -> Expr {
 }
 
 /// The conjunction of literals over the leaf variables.
-fn cond_expr(g: &Gen, cond: &[Lit]) -> Expr {
+pub(super) fn cond_expr(g: &Gen, cond: &[Lit]) -> Expr {
     let lits = cond
         .iter()
         .map(|&(k, pol)| {
@@ -860,7 +860,7 @@ fn cond_expr(g: &Gen, cond: &[Lit]) -> Expr {
 }
 
 /// Declare boolean variables.
-fn bools(g: &mut Gen, names: &[String]) {
+pub(super) fn bools(g: &mut Gen, names: &[String]) {
     let t = g.simple_subtype("boolean");
     let no = g.var("false");
     g.decl(names, t, Some(no));
@@ -868,7 +868,7 @@ fn bools(g: &mut Gen, names: &[String]) {
 
 /// The automaton of a sequence as process code: `stmts` set the position variables for this
 /// tick and `done` to whether a match ends now. `start` says whether a match may begin now.
-fn trigger(
+pub(super) fn trigger(
     g: &mut Gen,
     nfa: &Nfa,
     f: &Frag,
@@ -1173,7 +1173,12 @@ fn is_star0(s: &Sere) -> bool {
 
 /// `if check then assert false report .. severity ..; end if;` with the defaults of a failed
 /// assertion.
-fn fail_stmt(g: &Gen, check: Expr, report: Option<Expr>, severity: Option<Expr>) -> SeqStmt {
+pub(super) fn fail_stmt(
+    g: &Gen,
+    check: Expr,
+    report: Option<Expr>,
+    severity: Option<Expr>,
+) -> SeqStmt {
     let report = report.unwrap_or_else(|| {
         g.expr(ExprKind::Literal(Literal {
             kind: LiteralKind::String(crate::Symbol::intern("PSL assertion failed")),

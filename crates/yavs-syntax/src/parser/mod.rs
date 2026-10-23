@@ -10,6 +10,7 @@ mod decl;
 mod expr;
 mod psl;
 mod psl_named;
+mod psl_prop;
 mod psl_seq;
 mod stmt;
 mod unit;
@@ -310,7 +311,12 @@ impl<'a> Parser<'a> {
             let t = self.toks[i];
             match t.kind {
                 Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
-                Tok::LBrace | Tok::Imply | Tok::Kw(Kw::Next | Kw::Strong) => return true,
+                Tok::LBrace
+                | Tok::Imply
+                | Tok::Equiv
+                | Tok::Kw(Kw::Next | Kw::Strong | Kw::Until) => {
+                    return true;
+                }
                 Tok::Ident => {
                     if !(self.psl_names.is_empty() && self.psl_decls.is_empty()) {
                         let key = self.make_ident(t).key;
@@ -320,8 +326,20 @@ impl<'a> Parser<'a> {
                         }
                     }
                     let w = self.text(t).to_ascii_lowercase();
-                    if matches!(w.as_str(), "always" | "never" | "eventually" | "forall")
-                        || w.starts_with("next_")
+                    if matches!(
+                        w.as_str(),
+                        "always"
+                            | "never"
+                            | "eventually"
+                            | "forall"
+                            | "iff"
+                            | "before"
+                            | "before_"
+                            | "until_"
+                            | "abort"
+                            | "sync_abort"
+                            | "async_abort"
+                    ) || w.starts_with("next_")
                     {
                         let alone = i == self.pos + 1
                             && matches!(

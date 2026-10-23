@@ -19,6 +19,7 @@
 //! restores the position and drops its diagnostics.
 
 use super::psl_named::DeclKind;
+use super::psl_prop::{TProp, temporal_checker};
 use super::psl_seq::{SeqProp, seq_checker};
 use super::{PResult, Parser, Recover};
 use crate::Symbol;
@@ -62,6 +63,7 @@ const MAX_NEXT: u32 = 256;
 enum Parsed {
     Simple(Prop),
     Seq(SeqProp),
+    Temporal(TProp),
 }
 
 pub(super) enum Prop {
@@ -75,15 +77,16 @@ pub(super) enum Prop {
     Cover(Expr),
 }
 
-type Save = (usize, usize, Option<u32>);
+type Save = (usize, usize, Option<u32>, u64);
 
 impl Parser<'_> {
     fn psl_save(&self) -> Save {
-        (self.pos, self.diags.len(), self.last_error)
+        (self.pos, self.diags.len(), self.last_error, self.fuel)
     }
 
-    fn psl_restore(&mut self, (pos, n, last): Save) {
+    fn psl_restore(&mut self, (pos, n, last, fuel): Save) {
         self.pos = pos;
+        self.fuel = fuel;
         self.diags.truncate(n);
         self.last_error = last;
     }
@@ -123,16 +126,17 @@ impl Parser<'_> {
     /// process, or `None`, with nothing consumed or reported, outside the subset.
     pub(super) fn psl_directive(&mut self) -> Option<ConcStmtKind> {
         let save = self.psl_save();
-        match self.psl_directive_inner() {
-            Ok(p) if self.diags.len() == save.1 => Some(ConcStmtKind::Process(p)),
-            _ => {
-                self.psl_restore(save);
-                None
+        // The simple parsers first; the temporal one takes what they do not.
+        for temporal in [false, true] {
+            match self.psl_directive_inner(temporal) {
+                Ok(p) if self.diags.len() == save.1 => return Some(ConcStmtKind::Process(p)),
+                _ => self.psl_restore(save),
             }
         }
+        None
     }
 
-    fn psl_directive_inner(&mut self) -> PResult<ProcessStmt> {
+    fn psl_directive_inner(&mut self, force_temporal: bool) -> PResult<ProcessStmt> {
         self.psl_args.clear();
         self.psl_expansions = 0;
         self.psl_env.clear();
@@ -145,16 +149,19 @@ impl Parser<'_> {
             self.psl_whole_property()
         };
         let seq = self.psl_at_sequence_from(1);
-        if named.is_none() && self.psl_foreign_range(self.pos + 1, self.psl_stmt_end(), seq) {
+        let end = self.psl_stmt_end();
+        let temporal = !cover && (force_temporal || self.psl_has_temporal(self.pos + 1, end));
+        if named.is_none() && self.psl_foreign_range(self.pos + 1, end, seq, temporal) {
             return Err(Recover);
         }
         self.bump();
         let mut parsed = match named {
             Some(d) => self.psl_expand(d, |p| {
                 let seq = p.psl_at_sequence_from(0);
-                p.psl_parse_prop(false, seq)
+                let temporal = force_temporal || p.psl_has_temporal(p.pos, p.psl_end);
+                p.psl_parse_prop(false, seq, temporal)
             })?,
-            None => self.psl_parse_prop(cover, seq)?,
+            None => self.psl_parse_prop(cover, seq, temporal)?,
         };
         let mut bi = Gen::new(self.span_from(start));
         match &mut parsed {
@@ -175,6 +182,14 @@ impl Parser<'_> {
                     bi.need_first();
                 }
             }
+            Parsed::Temporal(tp) => {
+                for e in &mut tp.leaves.exprs {
+                    self.psl_builtins(e, &mut bi)?;
+                }
+                if tp.needs_first() {
+                    bi.need_first();
+                }
+            }
         }
         self.psl_arg_stmts(&mut bi);
         bi.finish();
@@ -183,13 +198,17 @@ impl Parser<'_> {
         Ok(match parsed {
             Parsed::Simple(prop) => checker(prop, clock, report, severity, bi, span),
             Parsed::Seq(sp) => seq_checker(sp, clock, report, severity, bi)?,
+            Parsed::Temporal(tp) => temporal_checker(tp, clock, report, severity, bi)?,
         })
     }
 
     /// The property at the current token: the simple forms, or one over sequences
     /// (`psl_seq.rs`; a sequence of one boolean, and `{a} |-> b`, `{a} |=> b`, take the
     /// cheaper simple form).
-    fn psl_parse_prop(&mut self, cover: bool, seq: bool) -> PResult<Parsed> {
+    fn psl_parse_prop(&mut self, cover: bool, seq: bool, temporal: bool) -> PResult<Parsed> {
+        if temporal {
+            return Ok(Parsed::Temporal(self.psl_temporal_prop()?));
+        }
         if seq {
             return Ok(match self.psl_seq_prop(cover)?.into_simple() {
                 Ok(p) => Parsed::Simple(p),
@@ -271,7 +290,13 @@ impl Parser<'_> {
 
     /// Do the tokens `from..to` name a PSL built-in, operator word (other than a leading
     /// `always`/`never`) or skipped declaration? `seq`: `within` and `inf` are fine.
-    pub(super) fn psl_foreign_range(&self, from: usize, to: usize, seq: bool) -> bool {
+    pub(super) fn psl_foreign_range(
+        &self,
+        from: usize,
+        to: usize,
+        seq: bool,
+        temporal: bool,
+    ) -> bool {
         for i in from..to.min(self.eof_index()) {
             let t = self.toks[i];
             if t.kind != Tok::Ident {
@@ -283,10 +308,16 @@ impl Parser<'_> {
             if (call && BUILTINS.contains(&w.as_str()))
                 || (!lead
                     && OPERATORS.contains(&w.as_str())
-                    && !(seq && matches!(w.as_str(), "within" | "inf")))
-                || w.starts_with("next_")
-                || w.starts_with("before")
-                || w.starts_with("until")
+                    && !(seq && matches!(w.as_str(), "within" | "inf"))
+                    && !(temporal
+                        && matches!(
+                            w.as_str(),
+                            "always" | "never" | "sync_abort" | "within" | "inf"
+                        )))
+                || (!temporal
+                    && (w.starts_with("next_")
+                        || w.starts_with("before")
+                        || w.starts_with("until")))
                 || self.psl_names.contains(&self.make_ident(t).key)
             {
                 return true;

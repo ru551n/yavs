@@ -1,0 +1,1 @@
+PSL properties with `next_a`, `next_e`, `next_event`, `until`, `until_`, `before`, `before_`, `sync_abort`, `<->`, nested `next` and `always`, and a property after `|->` or `|=>` are checked at the clock like the simpler directives (weak forms only).

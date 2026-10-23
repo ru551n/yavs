@@ -1019,13 +1019,61 @@ fn psl_sequences_become_checker_processes() {
     // Outside the sequence forms: skipped, one warning.
     for f in [
         "cover {a; b}!;",
-        "assert always {a; b} |-> c until d;",
+        "assert always {a; b} |-> c until! d;",
         "assert always {{a} | {b} && {c}};",
         "cover {a[*70]};",
         "cover {{a[*60]}[*60]};",
     ] {
         let src =
             format!("architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n{f}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
+    }
+}
+
+#[test]
+fn psl_temporal_properties() {
+    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n";
+    for f in [
+        "assert always (a -> next_a[1 to 3] (b));",
+        "assert always (a -> next_e[2 to 4] (b = '1')) report \"x\";",
+        "assert always (a -> next_event(c)(b));",
+        "assert always (a -> next_event(c)[2](b));",
+        "assert always (a -> next_event_a(c)[1 to 3](b));",
+        "assert always (a -> next_event_e(c)[1 to 3](b));",
+        "assert always (a -> (b until c));",
+        "assert always (a -> (b until_ c));",
+        "assert always (a -> (b before c));",
+        "assert always (a -> (b before_ c));",
+        "assert always (a <-> b);",
+        "assert always (a iff b);",
+        "assert always ((a -> next b) and (a -> next[2] (c)));",
+        "assert always ((a -> next b) or (a -> next[2] (c)));",
+        "assert always ((next[2] (b)) sync_abort c);",
+        "assert (always (a -> next b)) sync_abort c;",
+        "assert always {a; b} |=> (c until d);",
+        "assert always {a} |-> next_e[1 to 3] (b);",
+        "assert (a -> next_a[1 to 2] (b));",
+        "assume always (a -> next (b -> next[3] (c)));",
+        "l: assert always (a -> next (always (b -> next c))) report \"x\" severity warning;",
+    ] {
+        let src = format!("{pre}{f}\nend;");
+        let c = checkers(&src);
+        assert_eq!(c.len(), 1, "{f}");
+    }
+    // Strong operators, asynchronous abort and what the checker cannot hold: skipped.
+    for f in [
+        "assert always (a -> eventually! b);",
+        "assert always (a -> next! b);",
+        "assert always (a -> (b until! c));",
+        "assert always (a -> next_a![1 to 3] (b));",
+        "assert always (a -> (b before! c));",
+        "assert always ((a -> next b) abort c);",
+        "assert always ((a -> next b) async_abort c);",
+        "assert always (a -> next_a[1 to 99] (b));",
+        "assert always ((a until b) -> c);",
+        "assert always (a -> next_event(c)[0](b));",
+    ] {
+        let src = format!("{pre}{f}\nend;");
         assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
     }
 }
@@ -1076,7 +1124,6 @@ fn psl_outside_the_subset_is_skipped() {
     for f in [
         "assert always p;",
         "assert always a -> next_e[1 to 2] b;",
-        "assert always a until b;",
         "assert always (a -> b) abort rst;",
         "assert always a -> next[300] b;",
         "assert always a -> next a -> next b;",

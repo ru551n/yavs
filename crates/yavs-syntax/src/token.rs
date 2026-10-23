@@ -124,6 +124,8 @@ pub enum Tok {
     Arrow,
     /// `->`, PSL implication.
     Imply,
+    /// `<->`, PSL equivalence.
+    Equiv,
     /// `**`
     Pow,
     /// `:=`
@@ -201,6 +203,7 @@ impl Tok {
             Tok::Caret => "^",
             Tok::Arrow => "=>",
             Tok::Imply => "->",
+            Tok::Equiv => "<->",
             Tok::Pow => "**",
             Tok::Assign => ":=",
             Tok::Ne => "/=",

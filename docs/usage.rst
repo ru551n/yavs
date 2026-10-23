@@ -414,6 +414,22 @@ side ends (``|->``) or the tick after (``|=>``): it fails at the tick where it c
 match. Without ``always`` a directive starts at the first clock tick only. One directive may
 test at most 6 different conditions on its right side; a longer one is skipped with ``W0004``.
 
+Properties may also use ``next_a``, ``next_e``, ``next_event``, ``next_event_a``, ``next_event_e``
+(``next_event(c)(p)`` counts the current cycle), ``until``, ``until_``, ``before``, ``before_``,
+``sync_abort``, ``<->`` and ``iff``, ``and`` and ``or`` of properties, nested ``next`` and
+``always``, and a property on the right of ``|->`` and ``|=>``:
+
+.. code-block:: text
+
+   p10: assert always (req -> next_e[1 to 4] (ack = '1'));
+   p11: assert always {start} |=> (busy until done);
+
+These are weak: an obligation still open when the run ends is not a failure. A failure is
+reported at the tick where the obligation can no longer be met, once per tick however many
+starts fail; the parts of a conjunction (``next_a``) fail separately. The strong forms
+(``eventually!``, ``next!``, ``until!``, ``before!``, a sequence followed by ``!``) and ``abort``
+and ``async_abort`` are skipped with ``W0004``.
+
 Sequences and properties can be named, with ``boolean``, ``const`` and ``sequence`` formals,
 and used where a sequence or a whole property is expected:
 
@@ -424,8 +440,7 @@ and used where a sequence or a whole property is expected:
    c3: cover handshake(req = '1', ack = '1');
    p9: assert ack_follows(req = '1', ack = '1');
 
-Everything else (other ``property`` and ``sequence`` declarations, other operators such as ``until``
-and ``eventually!``, the ``next`` and ``ended`` functions, directives without a clock,
+Everything else (other ``property`` and ``sequence`` declarations, other operators such as ``eventually!``, the ``next`` and ``ended`` functions, directives without a clock,
 ``restrict``, ``fairness`` and verification units) is skipped with warning ``W0004``, once per
 design unit; the rest of the design runs as usual.
 

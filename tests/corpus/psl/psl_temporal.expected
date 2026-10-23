@@ -1,0 +1,78 @@
+exit	1
+diag	error	15000000	0	:psl_temporal:iff1	iff
+diag	error	35000000	0	:psl_temporal:iff1	iff
+diag	error	35000000	0	:psl_temporal:suf4	suffix before
+diag	error	45000000	0	:psl_temporal:nexta	next_a
+diag	error	45000000	0	:psl_temporal:nev1	next_event
+diag	error	45000000	0	:psl_temporal:nev2	next_event[2]
+diag	error	45000000	0	:psl_temporal:neva	next_event_a
+diag	error	45000000	0	:psl_temporal:bef	before
+diag	error	45000000	0	:psl_temporal:iff1	iff
+diag	error	45000000	0	:psl_temporal:until1	until
+diag	error	45000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	45000000	0	:psl_temporal:suf5	suffix next_event
+diag	error	55000000	0	:psl_temporal:iff1	iff
+diag	error	55000000	0	:psl_temporal:nextnx	nested next
+diag	error	55000000	0	:psl_temporal:suf1	suffix next
+diag	error	65000000	0	:psl_temporal:nexta	next_a
+diag	error	65000000	0	:psl_temporal:nev2	next_event[2]
+diag	error	65000000	0	:psl_temporal:neva	next_event_a
+diag	error	65000000	0	:psl_temporal:neve	next_event_e
+diag	error	65000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	65000000	0	:psl_temporal:suf5	suffix next_event
+diag	error	75000000	0	:psl_temporal:nexta	next_a
+diag	error	75000000	0	:psl_temporal:iff1	iff
+diag	error	75000000	0	:psl_temporal:nextnx	nested next
+diag	error	85000000	0	:psl_temporal:bef	before
+diag	error	85000000	0	:psl_temporal:iff1	iff
+diag	error	95000000	0	:psl_temporal:andp	and
+diag	error	95000000	0	:psl_temporal:suf6	suffix sequence
+diag	error	105000000	0	:psl_temporal:nexta	next_a
+diag	error	105000000	0	:psl_temporal:nev1	next_event
+diag	error	105000000	0	:psl_temporal:nev2	next_event[2]
+diag	error	105000000	0	:psl_temporal:neva	next_event_a
+diag	error	105000000	0	:psl_temporal:bef	before
+diag	error	105000000	0	:psl_temporal:iff1	iff
+diag	error	105000000	0	:psl_temporal:until1	until
+diag	error	105000000	0	:psl_temporal:andp	and
+diag	error	105000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	105000000	0	:psl_temporal:suf5	suffix next_event
+diag	error	105000000	0	:psl_temporal:suf6	suffix sequence
+diag	error	115000000	0	:psl_temporal:nexta	next_a
+diag	error	115000000	0	:psl_temporal:iff1	iff
+diag	error	115000000	0	:psl_temporal:andp	and
+diag	error	115000000	0	:psl_temporal:suf1	suffix next
+diag	error	115000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	115000000	0	:psl_temporal:suf6	suffix sequence
+diag	error	125000000	0	:psl_temporal:iff1	iff
+diag	error	125000000	0	:psl_temporal:andp	and
+diag	error	135000000	0	:psl_temporal:nexta	next_a
+diag	error	135000000	0	:psl_temporal:nev1	next_event
+diag	error	135000000	0	:psl_temporal:nev2	next_event[2]
+diag	error	135000000	0	:psl_temporal:neva	next_event_a
+diag	error	135000000	0	:psl_temporal:neve	next_event_e
+diag	error	135000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	135000000	0	:psl_temporal:suf5	suffix next_event
+diag	error	145000000	0	:psl_temporal:nextnx	nested next
+diag	error	155000000	0	:psl_temporal:nexta	next_a
+diag	error	155000000	0	:psl_temporal:nev1	next_event
+diag	error	155000000	0	:psl_temporal:nev2	next_event[2]
+diag	error	155000000	0	:psl_temporal:neva	next_event_a
+diag	error	155000000	0	:psl_temporal:neve	next_event_e
+diag	error	155000000	0	:psl_temporal:bef	before
+diag	error	155000000	0	:psl_temporal:iff1	iff
+diag	error	155000000	0	:psl_temporal:until1	until
+diag	error	155000000	0	:psl_temporal:andp	and
+diag	error	155000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	155000000	0	:psl_temporal:suf5	suffix next_event
+diag	error	155000000	0	:psl_temporal:suf6	suffix sequence
+diag	error	165000000	0	:psl_temporal:iff1	iff
+diag	error	165000000	0	:psl_temporal:suf4	suffix before
+diag	error	175000000	0	:psl_temporal:nexta	next_a
+diag	error	175000000	0	:psl_temporal:andp	and
+diag	error	175000000	0	:psl_temporal:suf2	suffix next_a
+diag	error	175000000	0	:psl_temporal:suf6	suffix sequence
+diag	error	185000000	0	:psl_temporal:nexta	next_a
+diag	error	185000000	0	:psl_temporal:nextnx	nested next
+diag	error	195000000	0	:psl_temporal:suf1	suffix next
+diag	error	195000000	0	:psl_temporal:suf3	suffix next_e

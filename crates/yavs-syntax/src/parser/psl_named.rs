@@ -134,7 +134,9 @@ impl Parser<'_> {
             self.pos += 1;
         }
         let end = self.pos;
-        if end == start || self.psl_foreign_range(start, end, true) {
+        if end == start
+            || self.psl_foreign_range(start, end, true, self.psl_has_temporal(start, end))
+        {
             return false;
         }
         self.bump();

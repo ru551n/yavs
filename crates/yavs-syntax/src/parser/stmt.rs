@@ -679,6 +679,7 @@ impl Parser<'_> {
                     return Ok(None);
                 }
             },
+            Tok::Kw(Kw::Default) if self.psl_default_clock() => return Ok(None),
             t if is_psl_start(t) => {
                 if !self.psl_decl() {
                     if self.at_kw(Kw::Property) || self.at_kw(Kw::Sequence) {

@@ -4981,6 +4981,40 @@ the designs and tiny tables is not in the repository: the stock `--ref` mode and
 Older figures below were measured on the earlier Intel host with the elaboration + run basis and an interpreter column that is compared with
 sim1; they are kept as history, not as targets.
 
+### VHDL-1993 mode, 2026-10-23 (`--std=93`; #629; design `docs/design/vhdl-93.md`)
+
+`--std=93` (alias `1993`) selects the 1993 language and the 1993 packages (`lib/std/1993`, `lib/ieee/1993`): `std_logic_vector` is a type of its own, the 1995 `numeric_std`
+and `numeric_bit`, the Synopsys `std_logic_textio`, no `env`, none of the 2008 predefined names (`to_string`, `maximum`, `integer_vector`, ...), the 2008 reserved words are
+identifiers, shared variables of any type are legal, `E0011` for the 2008 statements. Mixing follows the 2008/2019 rule (newest standard of the closure; a 93 file keeps its own
+parsing and gates). `--std=87` and `02` are not added. Not enforced: reading an `out` port and the other 2008 relaxations (`docs/design/vhdl-93.md` section 5).
+
+- **Corpora** (yavs, at the commit that added them): `grlib-1993` 454 of 454 (sim1 and sim2 also accept all 454; GRLIB's own `axi4mux.vhd` and `axi4mem.vhd` are excluded as errors of GRLIB); `vests-1993` (the compliant tests of the VESTs 1993 suite) 1921 of 1939 (sim1 accepts all 1939); `yavs-lib-1993` 28 of 28. The 18 vests failures are yavs bugs that
+  also fail at 2008, each with an issue: #639 (entity and architecture names as expanded-name prefixes, 5 files), #640 (a type named `work`), #642 (attributes through an alias,
+  3 files), #643 (access subtype with an index constraint), #644 (disconnection specification of a port), #645 (attribute specification of a statement label in a process),
+  #646 (range attributes with a dimension as a type definition or block configuration index, 6 files). Also found: #638 (a user attribute of a constrained array subtype is not
+  converted to the subtype) and #641 (a guarded assignment in a block without a guard expression is an ICE). All 32 other manifests (2008 and 2019) are unchanged against their
+  expected lists, and the differential corpus (`tools/difftest`, 499 cases including the 6 new `std93/` ones) passes.
+- **Running the compliant vests tests** (1623 billowitch files, top = the last entity of the file, `--stop-time=1ms`, analysed and run by yavs and sim1 on their own): 1459 print
+  PASSED on both and 9 print FAILED on both (not looked at); the other 155 are analysis or run failures of yavs that are the bugs above, tests that need input files or a
+  configuration as top (my driver runs the entity), or tests sim1 rejects or runs without a verdict line.
+- **GRLIB**: the unmodified `designs/leon3mp` testbench runs on yavs at `--std=93 --relaxed` to `Test passed, halting with IU error mode` at the same point as sim1; the three
+  elaboration banners of `irqmp`, `apbuart1` and `ahbuart7` come out in another order (time-zero reports of different processes, `ignore=order` in the differential harness).
+  The same banners come out in the same order on sim2 (`--std=93c --ieee=synopsys -fexplicit`, stdout byte-identical to yavs, 53 lines), so sim1 is the odd one out; apart from
+  that order the output of sim1 and yavs is identical (the system test prints the same lines and halts at the same point).
+- **Timing** (`tools/realbench/run.py`, test `grlib_leon3mp`, `tools/build-bench.sh --features llvm`, `--tier=auto`, medians of 2, one process on core 14, host load average about 12;
+  NOT a baseline: the core was picked by the agent, the host was busy). Run = sim1 elaboration plus run against yavs run including its code generation. Wall seconds:
+
+| basis | sim1 | yavs auto | ratio | instruction ratio |
+|---|---:|---:|---:|---:|
+| run warm | 13.91 | 143.24 | 10.29 | 10.73 |
+| run cold (empty compilation cache) | 13.91 | 132.72 | 9.54 | 11.03 |
+| analysis of the 453 files (before #604 was fixed), one call each, cold / warm | 7.22 / 6.60 | 2.73 / 1.12 | 0.38 / 0.17 | 0.47 / 0.13 |
+| elaboration alone, cold / warm | 0.34 / 0.33 | 0.18 / 0.21 | 0.55 / 0.64 | 0.68 / 0.80 |
+| total (analysis + run), cold / warm | 21.13 / 20.51 | 135.45 / 144.36 | 6.4 / 7.0 | |
+
+  The `codegen` cells fail (`--tier=llvm` to time 0 exceeds the 300 s limit: #630). The run is the cost, as in the adjusted 2008 copy above: the integer unit's process stays
+  interpreted under `auto` (#630).
+
 ### GRLIB (LEON3) in the corpora and the real-world suite, 2026-10-23 (`grlib-2008`, `grlib_leon3mp`; #604, #629, #630, #628)
 
 GRLIB 2026.3 build 4301 (Gaisler IP library, GPL-2.0, official tarball sha256 `0978edc1...2f2`) is fetched by `tools/fetch-corpus.sh` at the tagged
@@ -4993,8 +5027,8 @@ commit of a git mirror that is file-identical to the tarball (sparse: `lib/`, `b
   (LRM 12.3), rejected by every tool; the processor core (`iu3` through `sparc_disas`), the bus controller and the simulation models depend on them.
 - **VHDL-93**: with GRLIB's own flags the unmodified tree works on both references: sim1 (`--std=93 --relaxed`) analyses 454 of 456 library files (two are
   errors in GRLIB: `axi4mux.vhd`, `axi4mem.vhd`), elaborates and runs `leon3mp` to `Test passed` at 1060873 ns in 13 s; sim2 (`--std=93c --ieee=synopsys`) in 35 s CPU.
-  yavs has no 1993 mode, so `grlib_leon3mp` is `excluded` in `tools/realbench/tests.toml` (stop time 1060500 ns, just before the template's own end-of-test failure
-  assertion). The way forward is a user decision (#629): a 93 mode, a fetch-time adjustment of the two packages, or analysis corpus only.
+  yavs had no 1993 mode then, so `grlib_leon3mp` was `excluded`; since the VHDL-1993 mode (next section, #629) it runs unmodified at `--std=93` (stop time 1060500 ns, just before
+  the template's own end-of-test failure assertion).
 - **Candidates**: `leon3-minimal` (with `-gfabtech=0 -gmemtech=0 -gpadtech=0 -gclktech=0`) runs to `Test passed` on sim1 and starts the same system test on yavs (not run to the end), but it ends in the
   same delta cycle as its failure assertion, so the harness would need an expected-failure end; `noelv-generic` needs 140 s on sim1 for 145 us. Not added.
 - **Bugs found**: #604 (parser nesting cap), #628 (a constant and a subprogram `flush` from `std.textio` are not hidden: LRM 12.4; sim2 rejects `sparc_disas.vhd`

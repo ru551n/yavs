@@ -415,7 +415,7 @@ if __name__ == "__main__":
         srcs, files, excl, note = r[:4]
         fl = FLAGS.get(c, {"sim1": [], "yavs": []})
         if c in SPECS:
-            fl = dict({"sim1": [], "yavs": []}, **SPECS[c].get("flags", {}))
+            fl = dict({"sim1": [], "yavs": []}, **SPECS[c].get(f"flags-{s}", SPECS[c].get("flags", {})))
         if a.validate and c in SPECS:
             acc, rej, log = validate(n, s, [f for f in files], r[4]["base"], fl)
             save_rejects(n, rej, log)

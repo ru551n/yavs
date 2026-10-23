@@ -1,0 +1,7 @@
+{
+ "log": [],
+ "rejects": {
+  "lib/gaisler/axi/axi4mux.vhd": "round 1: rejected by the reference tools: sim1: ** Error: no visible declaration for CUSTOMOUT; sim2: axi4mux.vhd:184:5:error: no declaration for \"customout\"",
+  "lib/gaisler/sim/axi4mem.vhd": "round 1: rejected by the reference tools: sim1: ** Error: design unit AT_AXI4_MST_PKG not found in library GRLIB; sim2: axi4mem.vhd:34:11:error: unit \"at_axi4_mst_pkg\" not found in library \"grlib\""
+ }
+}

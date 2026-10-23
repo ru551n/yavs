@@ -112,6 +112,11 @@ and gives each library a legal identifier as its name.
 | `psl-assume` | PSL `assume always` directive | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | REJECT | OK | accepted, checked like `assert` (permissive, as sim2) | agent (#226, decisions.md "Parser") |
 | `psl-explicit-clock` | PSL directive clocked with `@rising_edge(clk)`, no default clock | 2008 clause 17 (PSL by reference) | LRM ambiguity | REJECT | OK | REJECT | REJECT | OK | accepted after the property (permissive, as sim2); sim1 also crashes on `(always p) @c` with a default clock | agent (#226, decisions.md "Parser") |
 | `synopsys-arith-package` | `use ieee.std_logic_arith.all` and `std_logic_unsigned` (non-standard packages) | none (not IEEE packages) | library availability | OK | REJECT | OK | OK | OK | shipped: the original vendor arithmetic packages are built into `ieee`, unmodified, with no flag | user, 2026-10-19 (#117) |
+| `v93-delimited-comment` | `/* ... */` in a VHDL-1993 file | 1993 13.8 | LRM clear | OK (warns that delimited comments are 2008) | REJECT | not run | not run | REJECT | reject: in 1993 `/` and `*` are delimiters, not a comment (sim1 is lenient) | agent, 2026-10-23 (#629, L135) |
+| `v93-elsif-generate` | `elsif` in an if generate statement of a VHDL-1993 file | 1993 9.7 | LRM clear | REJECT | OK | not run | not run | REJECT (`E0011`) | reject: not in the 1993 grammar (sim2 is lenient) | agent, 2026-10-23 (#629, L135) |
+| `v93-reserved-2008-word` | `default`, `context`, `force` as signal names in a VHDL-1993 file | 1993 13.9 | LRM clear | OK (warns) | OK | not run | not run | OK | accept: not reserved before 2008 | agent, 2026-10-23 (#629) |
+| `v93-explicit-implicit-homograph` | `a = b` on `std_logic_vector` with `std_logic_1164` and `std_logic_unsigned` both used, in a VHDL-1993 file | 1993 10.4 | LRM ambiguity | REJECT (accepted with `--relaxed`) | REJECT (accepted with `-fexplicit`) | not run | not run | OK | accept (permissive, rule 15): the explicit declaration hides the implicit one as in 2008; GRLIB relies on it | agent, 2026-10-23 (#629, L134) |
+| `v93-out-port-read` | reading an `out` port in a VHDL-1993 file | 1993 4.3.2 | LRM clear | REJECT | REJECT | not run | not run | OK | not enforced: a gap, valid 1993 code never reads one (L136) | agent, 2026-10-23 (#629) |
 
 ## Sem
 

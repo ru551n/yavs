@@ -7,7 +7,8 @@ test benches. The candidate list is ordered with the regex dependency scan (gen_
 Validation (`gen_manifests.py --validate NAME...`): every candidate is analyzed in order, one file per call, by
 sim1 and by sim2 (2008) or sim1 and sim3 (2019). A file the tools reject is dropped with the first error line as
 reason, the chain is re-run until it is clean, and the drops are recorded in rejects/<name>.json (which the
-generator reads, so the checked-in manifests are reproducible). Where sim1 and sim2 disagree, sim3 decides.
+generator reads, so the checked-in manifests are reproducible). Where sim1 and sim2 disagree, sim3 decides (1993 has no
+third reference: the file is dropped).
 The commands come from tools/sims.local.conf (keys gen_cmd, gen_setup, gen_licence; see tools/AGENTS.md).
 """
 import fnmatch, json, os, re, shlex, shutil, subprocess, sys
@@ -25,7 +26,7 @@ WRAP = ["timeout", "300", "systemd-run", "--user", "--scope", "-q", "-p", "Memor
 # never printed or written down.
 LICENCE_FAIL = re.compile(r"Unable to checkout|Unable to find the license|Invalid license environment|lmgrd|FlexNet", re.I)
 WORK = Path("~/.cache/rsim-corpus2").expanduser()
-STD2 = {"2008": "08", "2019": "19"}
+STD2 = {"1993": "93c", "2008": "08", "2019": "19"}
 
 
 def licence_env():
@@ -87,7 +88,7 @@ def chain(tool, std, files, base, wd, flags):
 
 def validate(name, std, files, base, flags):
     """Returns (accepted files, {path: reason}, log lines)."""
-    second = "sim2" if std == "2008" else "sim3"
+    second = "sim2" if std in ("1993", "2008") else "sim3"
     rej, log = {}, []
     cur = list(files)
     for it in range(12):
@@ -114,6 +115,10 @@ def validate(name, std, files, base, flags):
                     log.append(f"kept {f[2]}: sim1={'ok' if oa else 'FAIL'} sim3={'ok' if ob else 'FAIL'} ({why})")
             elif oa == ob:
                 ok, verdict = False, "rejected by the reference tools: "
+            elif std == "1993":  # no third reference at 1993: a file the two disagree on is dropped
+                ok = False
+                verdict = f"sim1 and sim2 disagree (sim1={'ok' if oa else 'FAIL'}, sim2={'ok' if ob else 'FAIL'}), no third reference at 1993: "
+                log.append(f"disagree {f[2]}: sim1={'ok' if oa else 'FAIL'} sim2={'ok' if ob else 'FAIL'} ({why})")
             else:  # sim1 and sim2 disagree: sim3 decides
                 if third is None:
                     third = chain("sim3", std, cur, base, wd, flags.get("sim3", []))
@@ -231,7 +236,7 @@ def gen_ext(name, std, G):
                     tbs.append({"lib": lib, "source": sid, "path": rel, "top": e, "vunit": vu})
     ex = {"testbenches": dict(spec.get("tbinfo", {}), bench=tbs) if tbs else None, "base": base,
           "spec": spec, "prefix_n": len(pre)}
-    return srcs, allf, excl, spec["note"].replace("STD", std), ex
+    return srcs, allf, excl, spec.get(f"note-{std}", spec["note"]).replace("STD", std), ex
 
 
 def grlib_files(root):
@@ -326,14 +331,26 @@ SPECS = {
         tbinfo=dict(runner="the sim2 script: sim2 -m neorv32_tb; sim2 -r neorv32_tb --stop-time=10ms --ieee-asserts=disable --assert-level=error (boot ROM runs a program; UART output is the result)",
                     passes="no assertion of severity error or worse within 10 ms of simulated time; the bench prints the UART output of the running program, the default image is the bootloader")),
     "grlib": dict(
-        stds=("2008",), lister=grlib_files,
+        stds=("2008", "1993"), lister=grlib_files,
         flags={"sim1": ["--relaxed"], "sim2": ["-frelaxed-rules", "-fsynopsys"], "yavs": ["--relaxed"]},
+        **{"flags-1993": {"sim1": ["--relaxed"], "sim2": ["-frelaxed-rules", "-fsynopsys", "-fexplicit"], "yavs": ["--relaxed"]},
+           "note-1993": "order: GRLIB's script generator for designs/leon3mp (TECHLIBS=inferred, its LIBSKIP/DIRSKIP), library per file as it names it; VHDL STD, the standard of GRLIB's own files (its scripts pass the 93 flags)",
+           "mdnote-1993": "GRLIB is VHDL-93 code; this is the manifest at VHDL-1993, where `std_logic_vector` is a type of its own and the paired overloads of `stdio` and `testlib` are legal. The sim2 flags are GRLIB's own (`-fexplicit`, the synopsys library switch)."},
         note="order: GRLIB's script generator for designs/leon3mp (TECHLIBS=inferred, its LIBSKIP/DIRSKIP), library per file as it names it; VHDL STD, which GRLIB itself does not use (its files are VHDL-93 and its scripts pass the 93 flags)",
         sources={"grlib": ("tools/fetch-corpus.sh (source grlib)", "020f83888d67e140bdca248f51fcc783fd8f99a0", "GPL-2.0-only",
                            "GRLIB 2026.3 build 4301 (Gaisler IP library, LEON3 and NOEL-V); sparse: lib/, bin/, the leon3mp, leon3-minimal and noelv-generic templates")},
         mdnote="GRLIB is VHDL-93 code (its scripts pass the 93 flags to every tool; `stdio.vhd` and `testlib.vhd` are marked `vhdlstd=93` in its file lists). Under 2008 `std_logic_vector` is a subtype of `std_ulogic_vector`, so the paired overloads of those two packages are homographs and every reference rejects them; the files that use them (the processor core, the bus controller, the simulation models) drop out as cascades. What is listed is the rest.",
         tbinfo=dict(runner="designs/leon3mp (testbench.vhd, own files not in this list): the template's own simulation targets",
                     passes="the self test in ram.srec prints 'Test passed' on the UART and halts the processor, which the bench reports as a failure assertion")),
+    "vests": dict(
+        stds=("1993",),
+        note="order: regex dependency scan; library work, every file of the compliant directories; VHDL STD",
+        sources={"vests": ("https://github.com/nickg/vests", "f23a8cd103dd00ba58c1de434aea72a29efcd514", "GPL-2.0-only",
+                           "VHDL Experimental Suite of Tests (University of Cincinnati) for 1076-1993: the compliant tests of the billowitch, ashenden and clifton-labs groups")},
+        src=[("vests", "vhdl-93/billowitch/compliant/*.vhd", "work"), ("vests", "vhdl-93/ashenden/compliant/*.vhd", "work"),
+             ("vests", "vhdl-93/clifton-labs/compliant/*.vhd", "work")],
+        tb=[],
+        mdnote="The tests are small self-checking benches written for the 1993 standard; the non-compliant and disputed directories are not part of this list. Many are standalone, the Ashenden ones share packages and entities."),
     "neotrng": dict(
         stds=("2008",),
         note="order: regex dependency scan; VHDL STD",
@@ -459,14 +476,14 @@ def notes(name, std, nfiles, nprefix):
          f"Every manifest entry analyzed in order into `~/.cache/rsim-corpora/sim1-{name}` with `tools/corpus/run.py {name} --tool sim1 --bless` "
          f"(one file per call, `--std={std}`, each call under `timeout 300 systemd-run --user --scope -q -p MemoryMax=2G`).", "",
          f"- Files: {nfiles}; accepted by sim1: {nacc}; rejected by sim1: {nfiles - nacc}. The manifest lists only files the reference tools accept "
-         f"({'sim1 and sim2, sim3 as tiebreaker' if std == '2008' else 'sim1, sim3 as second witness'}); the rest are under Excluded.",
+         f"({'sim1 and sim2, sim3 as tiebreaker' if std == '2008' else 'sim1 and sim2; a file they disagree on is dropped' if std == '1993' else 'sim1, sim3 as second witness'}); the rest are under Excluded.",
          f"- Flags needed: {', '.join(spec.get('flags', {}).get('sim1', [])) or 'none'}."]
     if nprefix:
         L.append(f"- The first {nprefix} entries are the {' + '.join(spec['prefix'])}-{std} library files the test benches need (the test runner library and a verification library); the project's own files follow.")
     src = spec["sources"]
     L.append("- Licenses: " + "; ".join(f"{k}: {v[2]}" for k, v in src.items()) + ".")
-    if spec.get("mdnote"):
-        L += ["", spec["mdnote"]]
+    if spec.get(f"mdnote-{std}", spec.get("mdnote")):
+        L += ["", spec.get(f"mdnote-{std}", spec.get("mdnote"))]
     if rej:
         first = [(k, v) for k, v in rej.items() if v.startswith("round 1:")]
         casc = len(rej) - len(first)

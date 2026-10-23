@@ -614,6 +614,9 @@ fn manifest_is_never_torn() {
                 }
                 reads += 1;
             }
+            // The writer is done: what the last read says is the index on disk (#635).
+            let m = lib.read().expect("manifest never torn");
+            assert_eq!(m.len(), 300, "a read cached the index from before a write");
             reads
         });
         for i in 1..300 {

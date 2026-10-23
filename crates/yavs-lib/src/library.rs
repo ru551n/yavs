@@ -350,9 +350,12 @@ impl Session {
         if st.disk_text.as_deref() == Some(itext.as_str()) {
             return Ok(());
         }
-        // What `read` parsed (of this or another name of the directory) is the old index from here on.
+        // What `read` parsed (of this or another name of the directory) is the old index from here on:
+        // bumped before the rename (so a parse of the old file made now is stale) and after it (so no
+        // parse of the old file made in between stays current under the new value, #635).
         WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let r = write_new(&mp, &itext);
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Err(e) = r {
             // The in-memory index has the file now; the next record must start from the disk.
             st.manifest = None;

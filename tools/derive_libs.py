@@ -45,7 +45,8 @@ def drop_line(s, pat):
 # ---- std 2019: only the implementation_defined ranges are made concrete -------
 std19 = rd("std/standard.vhdl")
 for name, rng in (
-    ("INTEGER", "-9223372036854775807 to 9223372036854775807"),
+    # -2^63 is INTEGER'low (the full i64 range, as the reference simulator; #601).
+    ("INTEGER", "-9223372036854775808 to 9223372036854775807"),
     ("REAL", "-1.7976931348623157e308 to 1.7976931348623157e308"),
     # -2^63 fs is TIME'low (the full i64 range, as the reference simulator).
     ("TIME", "-9223372036854775808 to 9223372036854775807"),
@@ -76,7 +77,7 @@ s = drop_block(s, r"  type RANGE_DIRECTION is \(", r"  type BOOLEAN is")
 s = drop_line(s, r"    READ_WRITE_MODE,")
 s = drop_block(s, r"  type FILE_OPEN_STATE is \(", r"  -- The 'FOREIGN attribute")
 s = s.replace(  # 1076-2008 INTEGER is 32 bit
-    "type INTEGER is range -9223372036854775807 to 9223372036854775807",
+    "type INTEGER is range -9223372036854775808 to 9223372036854775807",
     "type INTEGER is range -2147483648 to 2147483647",
 )
 wr("std/2008/standard.vhdl", s)

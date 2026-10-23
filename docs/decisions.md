@@ -5600,3 +5600,11 @@ instance by pointer, which is what our one function per process of a design unit
   generic map only constrains the actual instance (`E1503`). Not implemented: instantiating it
   implicitly, as sim2 does.
 
+## 2019 `INTEGER` is the full 64-bit range (lib/std, #601, 2026-10-23)
+
+- **`INTEGER'LOW` under `--std=2019` is -9223372036854775808** (agent, on the maintainer's instruction to fix #601). The 2019
+  `STANDARD` had the symmetric range -(2^63-1) to 2^63-1, which the LRM demands as a minimum; the LRM allows any range that
+  contains it, 2008 `INTEGER` already has the extra negative value (-2^31), `TIME` has -2^63 fs, and the reference simulator
+  that runs 2019 as 64-bit has -2^63. The other reference stays at 32 bits (`integer-low-2019`). The edit is in
+  `tools/derive_libs.py` and `lib/std/2019/standard.vhdl` (`lib/SOURCES.md`); arithmetic is checked as before, so
+  `integer'low - 1` and `abs integer'low` are `E3009`.

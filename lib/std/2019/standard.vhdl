@@ -238,7 +238,7 @@ package STANDARD is
   -- end record;
 
   -- Predefined numeric types:
-  type INTEGER is range -9223372036854775807 to 9223372036854775807;
+  type INTEGER is range -9223372036854775808 to 9223372036854775807;
   -- The predefined operations for this type are as follows:
   -- function "**"(anonymous: universal_integer; anonymous: INTEGER) return universal_integer;
   -- function "**"(anonymous: universal_real; anonymous: INTEGER) return universal_real;

@@ -41,6 +41,7 @@ const PASS: &[&str] = &[
     "composite/record_subtype_others",
     "composite/others_element_attr",
     "composite/case_aggregate_choice",
+    "composite/subtype_attr_conversion",
     "composite/others_unconstrained_target",
     "sigassign/slice_param_range",
     "composite/static_slice_choice",

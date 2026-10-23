@@ -836,11 +836,13 @@ impl Db {
         prefix: &ast::Name,
         args: &[ast::AssocElem],
     ) -> CandSet {
-        if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind {
+        if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind
+            && !is_subtype_attr(attr)
+        {
             return self.attr_cands(scope, p, *attr, args);
         }
         if let Some(st) = self.quiet_type_mark(scope, prefix) {
-            // Type conversion (9.3.6).
+            // Type conversion (9.3.6), also to `x'subtype`.
             return CandSet::Types(smallvec::smallvec![Interp::new(self.base(st), Via::Other)]);
         }
         let slice = self.is_slice_arg(scope, args);
@@ -1185,7 +1187,9 @@ impl Db {
                 self.build_attr(scope, prefix, *attr, &[], i, span)
             }
             (ast::NameKind::Apply { prefix, args }, _) => {
-                if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind {
+                if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind
+                    && !is_subtype_attr(attr)
+                {
                     return self.build_attr(scope, p, *attr, args, i, span);
                 }
                 if let Some(st) = self.quiet_type_mark(scope, prefix) {
@@ -3025,4 +3029,9 @@ pub(crate) fn assoc_map(
         }
     }
     Ok(map)
+}
+
+/// `x'subtype`, `x'element` and `t'base` denote subtypes, so applying them is a type conversion.
+fn is_subtype_attr(attr: &ast::Ident) -> bool {
+    matches!(attr.key.as_str(), "subtype" | "element" | "base")
 }

@@ -184,7 +184,7 @@ impl<'a> Fx<'a, '_> {
         let e = &db.exprs[id];
         let span = e.span;
         if let Some(c) = e.value {
-            let v = self.konst(&db.consts[c], e.subtype, span)?;
+            let v = self.konst_checked(&db.consts[c], e.subtype, span)?;
             // A folded constant keeps the bounds of its subtype, element bounds too, not those
             // of its initialiser's literals (LRM 6.4.2.2): `'element'left` of it, or of a
             // parameter it is passed to, reads them.
@@ -196,7 +196,7 @@ impl<'a> Fx<'a, '_> {
             return Ok(v);
         }
         match &e.kind {
-            ExprKind::Const(c) => self.konst(&db.consts[*c], e.subtype, span),
+            ExprKind::Const(c) => self.konst_checked(&db.consts[*c], e.subtype, span),
             ExprKind::Obj(d) => self.read_obj(*d, span),
             ExprKind::Call {
                 callee,
@@ -272,6 +272,21 @@ impl<'a> Fx<'a, '_> {
     }
 
     // ---- constants ----
+
+    /// `konst`, and an integer literal typed by a subtype whose range it lies outside of (a
+    /// universal literal converted to `INTEGER`, LRM 9.3.6) fails when evaluated.
+    fn konst_checked(&mut self, v: &ConstValue, st: SubtypeId, span: Span) -> R<V> {
+        let r = self.konst(v, st, span)?;
+        if let (ConstValue::Int(i), V::S(reg), Some((l, d, h))) = (v, r, self.db.static_bounds(st))
+            && let (Some(l), Some(h)) = (l.as_int(), h.as_int())
+        {
+            let (lo, hi) = if d == Direction::To { (l, h) } else { (h, l) };
+            if lo <= hi && (*i < lo || *i > hi) {
+                self.check_scalar(reg, None, st, "", span)?;
+            }
+        }
+        Ok(r)
+    }
 
     pub fn konst(&mut self, v: &ConstValue, st: SubtypeId, span: Span) -> R<V> {
         if let Some(c) = ty::cell(v) {

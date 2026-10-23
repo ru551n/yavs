@@ -6238,6 +6238,15 @@ Four commits (`docs/decisions.md` "Interpreter round 15", "The activation state 
 - **#583**: a process that never suspends polls `Ctx::stop_requested` at its jumps back (stepped `Br`), outside the dispatch
   loop: the first Ctrl-C with `--wave` ends it. Free by construction (instructions identical on 6 designs).
 
+All four commits together, `tools/bench` designs and `tools/realbench` windows, main at ed0caf0c against 5247726d, aligned
+bench builds (`tools/build-bench.sh`), cores 4 and 5 on a quiet host, `perf stat`, median of 3 after two untimed runs:
+geometric mean over the 24 designs instructions 0.952, cycles 1.014 (best of 3: 1.004; core 4 1.007, core 5 1.021).
+Per design instructions: `poc_stat_histogram` 0.601 (cycles 0.67), `protected_queue` 0.951, `calls` 0.912, `compute_loop`
+0.936, `sc5_fifo_repack` 0.966, the rest 0.97 to 1.00. Cycles do not follow the instructions of the census fix: `calls` and
+`compute_loop` run 3 to 10 percent more cycles for 9 and 6 percent fewer instructions (the code layout of the large
+function, #576), `rtl_fan` 0.85 on core 4 and 1.01 on core 5. The three cache lines are the one change whose evidence
+is in miss counts, not cycles.
+
 Entry cost of `run_ops` (the task of the round): the disassembly shows 80 instructions before the first op of which 24
 are hoisted addresses, 8 the zeroing of the eight saved callers and 14 spilled parameters; in a design of 4000 near-idle
 processes 245 of 686 instructions per activation are outside the loop (`InterpProcess::run`, `run_quick`), a third of

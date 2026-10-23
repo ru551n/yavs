@@ -129,5 +129,5 @@ test runner passes each file's own standard and projects mix them freely.
 
 ## 6. Results
 
-See `docs/STATUS.md` "VHDL-1993 mode": `grlib-1993` 454 of 454, `vests-1993` 1921 of 1939 (the failures are bugs that also exist at
-2008, #639 to #646), `grlib_leon3mp` runs unmodified.
+See `docs/STATUS.md` "VHDL-1993 mode": `grlib-1993` 454 of 454, `vests-1993` 1936 of 1939 (the three failures are bugs that also exist at
+2008: #643, #657, #658), `grlib_leon3mp` runs unmodified.

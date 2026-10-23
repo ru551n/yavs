@@ -356,6 +356,62 @@ fn slots_of_mut<'a>(
     }
 }
 
+/// What an element loop does (`Machine::loop_plan`).
+enum LoopPlan {
+    /// The elements of the first stream copied to the second.
+    Copy(LoopStream, LoopStream),
+    /// The elements set to a code.
+    Fill(LoopStream, u8),
+}
+
+/// The elements `e0 + step * n` of the logic vector at `base`.
+#[derive(Clone, Copy)]
+struct LoopStream {
+    base: u64,
+    e0: i64,
+    step: i64,
+}
+
+/// The position of the affine index `x` (value at iteration 0, change per iteration) in the
+/// dimension with bounds and direction `d`, affine too, when the index stays in range up to
+/// iteration `last`.
+fn loop_pos(d: (i64, i64, u64), x: (i64, i64), last: i64) -> Option<(i64, i64)> {
+    let (l, r, dir) = d;
+    let e1 = x.0.checked_add(x.1.checked_mul(last)?)?;
+    let (lo, hi, c0, c1) = match dir {
+        0 => (l, r, x.0.checked_sub(l)?, x.1),
+        1 => (r, l, l.checked_sub(x.0)?, x.1.checked_neg()?),
+        _ => return None,
+    };
+    (lo <= x.0 && x.0 <= hi && lo <= e1 && e1 <= hi).then_some((c0, c1))
+}
+
+/// The std_ulogic code of element `e` of the logic vector at byte `off` of `m` (`lget`).
+#[inline(always)]
+fn lget_in(m: &[u8], off: usize, e: u64) -> Option<u8> {
+    let b = m.get(off + (e / 64) as usize * 32..)?.first_chunk::<32>()?;
+    let s = e % 64;
+    Some((0..4).fold(0u8, |c, p| c | ((plane_word(b, p) >> s & 1) as u8) << p))
+}
+
+/// Set element `e` of the logic vector at byte `off` of `m` to `code` (`lset`); false when the
+/// planes are not there.
+#[inline(always)]
+fn lset_in(m: &mut [u8], off: usize, e: u64, code: u8) -> bool {
+    let Some(b) = m
+        .get_mut(off + (e / 64) as usize * 32..)
+        .and_then(|b| b.first_chunk_mut::<32>())
+    else {
+        return false;
+    };
+    let s = e % 64;
+    for p in 0..4 {
+        let w = plane_word(b, p) & !(1 << s) | u64::from(code >> p & 1) << s;
+        b[p * 8..p * 8 + 8].copy_from_slice(&w.to_le_bytes());
+    }
+    true
+}
+
 /// What a search loop (`pre::SCAN`) is made of.
 struct ScanLoop {
     dope: u64,
@@ -4979,6 +5035,18 @@ impl Machine {
                     k += 1;
                 }
                 Op::Br { to } => go!(to),
+                Op::Loop { id, to } => {
+                    // Iterations the kernel may run before the loop goes back to counting.
+                    let mut limit = i64::MAX as u64;
+                    if (TIER && !native) || watch {
+                        limit = limit.min(u64::from(recheck.saturating_sub(1)));
+                    }
+                    let n = t!(self.op_loop(code, top, id, limit));
+                    if n > 0 && ((TIER && !native) || watch) {
+                        recheck -= (n as u32).min(recheck - 1);
+                    }
+                    go!(to);
+                }
                 Op::BrBody { to, block } => {
                     if self.pause == Some(BlockId(block)) && self.frames.len() == 1 {
                         // Stopped before the jump, which runs again on resumption.
@@ -6053,6 +6121,396 @@ impl Machine {
             self.regs[soff as usize],
             self.regs[n as usize],
         )
+    }
+
+    /// The iterations of an element loop (`pre::ElemLoop`) but the last, at its entry: when the
+    /// loop counts by 1 or -1 to its bound and every position, index and element of those
+    /// iterations is in range, they are done here (a copy of the elements or a fill) and the
+    /// loop variable is set to where the generic ops go on; anything else leaves the loop to
+    /// them from its first iteration, which then fail where and as they would have. Returns the
+    /// iterations done, at most `limit`.
+    #[inline(never)]
+    fn op_loop(&mut self, code: &pre::Code, top: usize, id: u32, limit: u64) -> R<u64> {
+        let lp = code
+            .loops
+            .get(id as usize)
+            .ok_or_else(|| ice_f!("no element loop {id}"))?;
+        let i0 = self.regs[lp.ind as usize] as i64;
+        let bound = self.regs[lp.bound as usize] as i64;
+        let delta = match lp.delta {
+            pre::Delta::K(d) => d,
+            pre::Delta::R(r) => self.regs[r as usize] as i64,
+        };
+        // The iterations that go round again, counted from the compare's outcomes: those with
+        // the variable on the near side of the bound, then the one at the bound if that goes
+        // round, and none if the far side does (the loop would run until it fails).
+        let (near, far) = match delta {
+            1 => (0b001, 0b100),
+            -1 => (0b100, 0b001),
+            _ => return Ok(0),
+        };
+        let x0 = if lp.after {
+            i0.checked_add(delta)
+        } else {
+            Some(i0)
+        };
+        let dist = x0
+            .and_then(|x| bound.checked_sub(x))
+            .and_then(|d| d.checked_mul(delta));
+        let again = match dist {
+            Some(d) if d >= 0 => {
+                if lp.cmask & near == 0 {
+                    0
+                } else if lp.cmask & 0b010 == 0 {
+                    d
+                } else if lp.cmask & far != 0 {
+                    return Ok(0);
+                } else {
+                    d.saturating_add(1)
+                }
+            }
+            Some(_) if lp.cmask & far == 0 => 0,
+            _ => return Ok(0),
+        };
+        let m = again.min(limit.min(i64::MAX as u64) as i64);
+        if m < 2 {
+            return Ok(0);
+        }
+        let Some(plan) = self.loop_plan(lp, top, i0, delta, m) else {
+            if code.trace {
+                eprintln!("element loop {id}: no plan for {m} iterations");
+            }
+            return Ok(0);
+        };
+        let done = self.loop_exec(&plan, m)?;
+        if code.trace {
+            eprintln!("element loop {id}: {done} of {m} iterations at once");
+        }
+        if done > 0 {
+            self.regs[lp.ind as usize] = i0.wrapping_add(delta * done) as u64;
+        }
+        Ok(done as u64)
+    }
+
+    /// Evaluate the steps of `lp` for iterations `0..m` (each value affine in the iteration
+    /// number) and check every position, atom and element range at both ends; `None` when
+    /// anything is not as the generic ops would find it.
+    fn loop_plan(
+        &self,
+        lp: &pre::ElemLoop,
+        top: usize,
+        i0: i64,
+        delta: i64,
+        m: i64,
+    ) -> Option<LoopPlan> {
+        use pre::{LStep as S, V};
+        let last = m - 1;
+        // (value at iteration 0, change per iteration): the value at `last` fits i64 too.
+        let fit = |c0: Option<i64>, c1: Option<i64>| -> Option<(i64, i64)> {
+            let (c0, c1) = (c0?, c1?);
+            c0.checked_add(c1.checked_mul(last)?)?;
+            Some((c0, c1))
+        };
+        let atom = |a: (i64, i64)| -> Option<(i64, i64)> {
+            (aff_ok(a.0) && aff_ok(a.0.checked_add(a.1.checked_mul(last)?)?)).then_some(a)
+        };
+        let mut val = [(0i64, 0i64); pre::LOOP_STEPS];
+        let mut plan = None;
+        let mut gets: Option<(u64, (i64, i64))> = None;
+        // The memory the steps read besides the vectors: (space, object, first byte, end).
+        let mut loads = [(0u8, 0u32, 0u64, 0u64); pre::LOOP_LOADS];
+        let mut nloads = 0;
+        for (j, st) in lp.steps.iter().enumerate() {
+            let get = |v: V, val: &[(i64, i64); pre::LOOP_STEPS]| match v {
+                V::Inv(r) => (self.regs[r as usize] as i64, 0),
+                V::Ind => (i0, delta),
+                V::Slot(s) => val[s as usize],
+            };
+            let r = match *st {
+                S::Mov(v) => get(v, &val),
+                S::K(k) => (k, 0),
+                S::Bin(op, a, b, bound) => {
+                    let (x, y) = (get(a, &val), get(b, &val));
+                    let r = match op {
+                        IntOp::Add => fit(x.0.checked_add(y.0), x.1.checked_add(y.1))?,
+                        IntOp::Sub => fit(x.0.checked_sub(y.0), x.1.checked_sub(y.1))?,
+                        _ => {
+                            // One of them does not change.
+                            let (k, v) = if x.1 == 0 { (x.0, y) } else { (y.0, x) };
+                            fit(k.checked_mul(v.0), k.checked_mul(v.1))?
+                        }
+                    };
+                    let (lo, hi) = match bound {
+                        pre::Bound::None => (i64::MIN, i64::MAX),
+                        pre::Bound::K(l, h) => (i64::from(l), i64::from(h)),
+                        pre::Bound::R(l, h) => {
+                            (self.regs[l as usize] as i64, self.regs[h as usize] as i64)
+                        }
+                    };
+                    let end = r.0 + r.1 * last;
+                    if !(lo <= r.0 && r.0 <= hi && lo <= end && end <= hi) {
+                        return None;
+                    }
+                    r
+                }
+                // The atoms are within 2^30, the coefficients within 2^15 and 2^31.
+                S::Lin1(a, ca, c0) => {
+                    let x = atom(get(a, &val))?;
+                    (c0 + ca * x.0, ca * x.1)
+                }
+                S::Lin2(a, b, ca, cb, c0) => {
+                    let (x, y) = (atom(get(a, &val))?, atom(get(b, &val))?);
+                    (c0 + ca * x.0 + cb * y.0, ca * x.1 + cb * y.1)
+                }
+                S::Pos { dope, dim, idx } => {
+                    let x = get(idx, &val);
+                    let d = self.dim_of(get(dope, &val).0 as u64, u64::from(dim)).ok()?;
+                    loop_pos(d, x, last)?
+                }
+                S::PosL { dope, idx } => {
+                    let x = get(idx, &val);
+                    let d = self.dim_of(get(dope, &val).0 as u64, 0).ok()?;
+                    yavs_ir::dim_len(d.0, d.1, d.2 == 1).filter(|&n| n <= i64::MAX as u64)?;
+                    loop_pos(d, x, last)?
+                }
+                S::Len { dope, dim } => {
+                    (self.dope_len(get(dope, &val).0 as u64, dim).ok()? as i64, 0)
+                }
+                S::Ld(base, off, w) => {
+                    let a = add_addr(get(base, &val).0 as u64, u64::from(off)).ok()?;
+                    let v = self.load(a, w).ok()?;
+                    let (sp, idx, o) = split(a);
+                    loads[nloads] = (sp, idx, o, o + u64::from(w.bytes()));
+                    nloads += 1;
+                    (v as i64, 0)
+                }
+                S::LdSlot(off, w) => {
+                    let a = mk_addr(FRAME, top as u32, u64::from(off)).ok()?;
+                    let v = self.load(a, w).ok()?;
+                    loads[nloads] = (
+                        FRAME,
+                        top as u32,
+                        u64::from(off),
+                        u64::from(off + w.bytes()),
+                    );
+                    nloads += 1;
+                    (v as i64, 0)
+                }
+                S::Addr(base, off) => (
+                    add_addr(get(base, &val).0 as u64, u64::from(off)).ok()? as i64,
+                    0,
+                ),
+                S::Cmp(m, a, b) => (
+                    i64::from(pre::cmp_holds(m, get(a, &val).0, get(b, &val).0)),
+                    0,
+                ),
+                S::Sel(c, a, b) => {
+                    if get(c, &val).0 != 0 {
+                        get(a, &val)
+                    } else {
+                        get(b, &val)
+                    }
+                }
+                S::Get { base, idx } => {
+                    let (b, x) = (get(base, &val), get(idx, &val));
+                    if b.1 != 0 {
+                        return None;
+                    }
+                    gets = Some((b.0 as u64, x));
+                    (0, 0)
+                }
+                S::Set { base, idx, v } => {
+                    let (b, x) = (get(base, &val), get(idx, &val));
+                    if b.1 != 0 {
+                        return None;
+                    }
+                    let dst = self.loop_stream(b.0 as u64, x, last, true)?;
+                    // Nothing it read is among the elements it writes.
+                    let (dsp, didx, doff) = split(dst.base);
+                    let e1 = dst.e0 + dst.step * last;
+                    let (lo, hi) = (
+                        doff + dst.e0.min(e1) as u64 / 64 * 32,
+                        doff + dst.e0.max(e1) as u64 / 64 * 32 + 32,
+                    );
+                    if loads[..nloads]
+                        .iter()
+                        .any(|&(sp, idx, a, z)| (sp, idx) == (dsp, didx) && a < hi && lo < z)
+                    {
+                        return None;
+                    }
+                    plan = Some(match (v, gets) {
+                        (V::Slot(_), Some((sb, sx))) => {
+                            LoopPlan::Copy(self.loop_stream(sb, sx, last, false)?, dst)
+                        }
+                        (V::Inv(r), _) => {
+                            let code = self.regs[r as usize];
+                            if code > 8 {
+                                return None;
+                            }
+                            LoopPlan::Fill(dst, code as u8)
+                        }
+                        _ => return None,
+                    });
+                    (0, 0)
+                }
+            };
+            val[j] = r;
+        }
+        plan
+    }
+
+    /// The elements `e0 + step * n` of the logic vector at `base`, `n` up to `last`: all in
+    /// memory of the common spaces (for writing, those that may be written).
+    fn loop_stream(&self, base: u64, e: (i64, i64), last: i64, write: bool) -> Option<LoopStream> {
+        let e1 = e.0.checked_add(e.1.checked_mul(last)?)?;
+        if e.0 < 0 || e1 < 0 {
+            return None;
+        }
+        let (sp, idx, off) = split(base);
+        if write && !matches!(sp, FRAME | TEMP | HEAP | SHARED_HEAP | SHARED) {
+            return None;
+        }
+        let mem = self.mem_fast(sp, idx)?;
+        let end = off.checked_add(e.0.max(e1) as u64 / 64 * 32 + 32)?;
+        (end <= mem.len() as u64).then_some(LoopStream {
+            base,
+            e0: e.0,
+            step: e.1,
+        })
+    }
+
+    /// Run the iterations `plan` stands for (`m` of them); returns how many were done.
+    fn loop_exec(&mut self, plan: &LoopPlan, m: i64) -> R<i64> {
+        match *plan {
+            LoopPlan::Fill(d, code) => {
+                let at = |n: i64| d.e0 + d.step * n;
+                if d.step.abs() <= 1 {
+                    // One run of elements.
+                    let lo = at(0).min(at(m - 1));
+                    let n = if d.step == 0 { 1 } else { m };
+                    self.lfill(d.base, lo as u64, n as u64, u64::from(code))?;
+                    return Ok(m);
+                }
+                let (sp, idx, off) = split(d.base);
+                let Some(mem) = self.mem_mut_fast(sp, idx) else {
+                    return Ok(0);
+                };
+                for n in 0..m {
+                    if !lset_in(mem, off as usize, at(n) as u64, code) {
+                        return Ok(n);
+                    }
+                }
+                Ok(m)
+            }
+            LoopPlan::Copy(s, d) => {
+                let (ssp, sidx, soff) = split(s.base);
+                let (dsp, didx, doff) = split(d.base);
+                let same = (ssp, sidx) == (dsp, didx);
+                let span = |x: &LoopStream, off: u64| {
+                    let (a, b) = (x.e0, x.e0 + x.step * (m - 1));
+                    let (lo, hi) = (a.min(b) as u64, a.max(b) as u64);
+                    (off + lo / 64 * 32, off + hi / 64 * 32 + 32)
+                };
+                let (sr, dr) = (span(&s, soff), span(&d, doff));
+                let apart = !same || sr.1 <= dr.0 || dr.1 <= sr.0;
+                if s.step == d.step && s.step.abs() == 1 && apart {
+                    // The same run of elements, in the same order: a copy of planes.
+                    let (sa, da) = if s.step == 1 {
+                        (s.e0, d.e0)
+                    } else {
+                        (s.e0 - (m - 1), d.e0 - (m - 1))
+                    };
+                    if self
+                        .copy_in_block(d.base, da as u64, s.base, sa as u64, m as u64)
+                        .is_none()
+                    {
+                        self.lcopy(d.base, da as u64, s.base, sa as u64, m as u64)?;
+                    }
+                    return Ok(m);
+                }
+                let (es, ed) = (|n: i64| s.e0 + s.step * n, |n: i64| d.e0 + d.step * n);
+                if same {
+                    let Some(mem) = self.mem_mut_fast(dsp, didx) else {
+                        return Ok(0);
+                    };
+                    for n in 0..m {
+                        let Some(c) = lget_in(mem, soff as usize, es(n) as u64) else {
+                            return Ok(n);
+                        };
+                        if c > 8 || !lset_in(mem, doff as usize, ed(n) as u64, c) {
+                            return Ok(n);
+                        }
+                    }
+                    return Ok(m);
+                }
+                // Different objects: a run of codes read, then written.
+                let mut buf = [0u8; 64];
+                let mut n = 0;
+                while n < m {
+                    let c = (m - n).min(64);
+                    let Some(sm) = self.mem_fast(ssp, sidx) else {
+                        return Ok(n);
+                    };
+                    let mut got = 0;
+                    while got < c {
+                        match lget_in(sm, soff as usize, es(n + got) as u64) {
+                            Some(x) if x <= 8 => buf[got as usize] = x,
+                            _ => break,
+                        }
+                        got += 1;
+                    }
+                    let Some(dm) = self.mem_mut_fast(dsp, didx) else {
+                        return Ok(n);
+                    };
+                    for j in 0..got {
+                        if !lset_in(dm, doff as usize, ed(n + j) as u64, buf[j as usize]) {
+                            return Ok(n + j);
+                        }
+                    }
+                    n += got;
+                    if got < c {
+                        return Ok(n);
+                    }
+                }
+                Ok(m)
+            }
+        }
+    }
+
+    /// `n` elements from element `se` of the logic vector at `s` to element `de` of the one at
+    /// `d`, when each run lies inside one block of planes and the two are not the same bytes
+    /// (the caller checked): the planes of the run moved as words. `None` leaves it to `lcopy`.
+    #[inline(always)]
+    fn copy_in_block(&mut self, d: u64, de: u64, s: u64, se: u64, n: u64) -> Option<()> {
+        if n > 64 || se % 64 + n > 64 || de % 64 + n > 64 {
+            return None;
+        }
+        let mask = if n == 64 { !0 } else { (1u64 << n) - 1 };
+        let (ssp, sidx, soff) = split(s);
+        let sb = soff as usize + (se / 64) as usize * 32;
+        let b = self.mem_fast(ssp, sidx)?.get(sb..sb + 32)?;
+        let w: [u64; 4] = std::array::from_fn(|p| plane_word(b, p) >> (se % 64) & mask);
+        let (dsp, didx, doff) = split(d);
+        let db = doff as usize + (de / 64) as usize * 32;
+        let sh = de % 64;
+        let b = self.mem_mut_fast(dsp, didx)?.get_mut(db..db + 32)?;
+        for (p, w) in w.iter().enumerate() {
+            let v = plane_word(b, p) & !(mask << sh) | w << sh;
+            b[p * 8..p * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        Some(())
+    }
+
+    /// The object of the spaces that may be written all the time, without error paths.
+    #[inline(always)]
+    fn mem_mut_fast(&mut self, sp: u8, idx: u32) -> Option<&mut [u8]> {
+        match sp {
+            FRAME => self.fslots_mut(idx as usize),
+            TEMP => Some(&mut self.temp),
+            HEAP => self.heap.data_mut(idx),
+            SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
+            _ => None,
+        }
     }
 
     /// The iterations of a search loop (`pre::SCAN`) while neither exit is taken: the position

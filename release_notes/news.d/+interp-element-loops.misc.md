@@ -1,0 +1,1 @@
+Loops that copy or fill the elements of `std_logic_vector`s and other logic arrays (type conversions, row and column extraction of matrices, shifts, reversals) run in one step per loop when all their indices are in range, instead of eight to nine interpreter operations per element; a loop that leaves the vector fails at the same iteration with the same message as before.

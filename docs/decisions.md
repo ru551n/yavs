@@ -5204,6 +5204,42 @@ window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
   struct on the stack and the registers in a stack array, so entering a function stores a handful of words; the shared
   interpreter state of yavs lives in the machine, which the compiler addresses field by field.
 
+## Interpreter round 15: element loops (yavs-interp, #520, 2026-10-23)
+
+`poc_stat_histogram` spent 95 percent of its time in two functions (`get_row`, `to_slm`) whose loops copy the
+elements of logic vectors one by one: 8 to 9 interpreter operations per element (a position, two linear forms, `LGet`,
+two more, `LSet`, the compare, the step and the jump), about 500 instructions per element. Decisions:
+
+- **An element loop is entered once and runs all its iterations but the last at once** (`pre::elem_loops`,
+  `Machine::op_loop`). The recognised loop has a body of linear index arithmetic (`Pos`, `Aff*`, `Bin`, `BinRange` of
+  add, subtract and multiply, `DopeLen`, loads of the bounds and of the process variable's slots, `Cmp`/`Select` on
+  values the loop does not change) with one `LGet` and the `LSet` of it (a copy) or one `LSet` of a code the loop
+  does not change (a fill), and a latch that counts the loop variable by 1 or -1 against a bound (the compare fused
+  with the step, the step before or after the compare, either edge going round again). Every value of such a body is
+  affine in the iteration number, so one evaluation of the body's steps at the entry (value at iteration 0, change per
+  iteration) gives every index of every iteration; the positions, the atoms of the linear forms (within 2^30 as the
+  `Aff` ops require), the bounds of `BinRange` and the elements' memory are checked at the first and last iteration
+  (affine, so everything between is in range).
+- **Failures stay identical because the kernel never fails.** If any check does not hold, nothing is done and the
+  generic ops run the loop from its first iteration, so a bounds error comes at the iteration, with the message and
+  the earlier writes, it always did. If they hold, the kernel does the iterations that go round again, and the loop
+  variable is set to where the generic ops go on: they run the last iteration (the one that leaves the loop) from the
+  loop head, so every register, the exit and the compare's result are exactly theirs and nothing has to be written
+  back. A code in memory above 8 (never made by the interpreter) stops the kernel at that element for the generic
+  ops to report. With a tier set, the iterations are capped by the loop-count budget of the watching loop as the
+  search loops are.
+- **The entry is a new op placed after the end of the code** (`Op::Loop`), and every branch to the loop head from
+  outside the loop is sent to it (the entry is often a compare that falls through to the head, not a jump). It goes on at
+  the head when the kernel did nothing. A loop entered by falling through, or through a `Case`, stays generic.
+- **The copy of a run of elements in the same order** (both indices count the same way) is a copy of planes (inside
+  one block of planes words, else `lcopy`) when the two runs are in different objects or do not touch; a copy within
+  one object that overlaps (a shift: `v(i + 1) := v(i)`) or in opposite directions is an element loop that reads and
+  writes in order, so the sequential result is the plain loop's. A fill of a run is `lfill`.
+- **Not done, measured or judged:** more than one `LGet`/`LSet` in a body, a body with the loop variable stored in a
+  variable (`j := j + 1`) or an element kept in a variable (the value carried to the next iteration), loops over
+  integer arrays (`Index` with loads and stores): none of them is among the hot loops of the benchmark designs and
+  testbenches counted (`YAVS_DUMPIR=1` says why a loop is not one: "is not an element loop: op N").
+
 ## Huge pages for the heap (yavs-cache `map.rs`, yavs CLI `main`, #556; user decision 2026-10-22: in-process, no re-exec)
 
 A cold elaboration of `osvvm_axis_random` took 8 270 page faults (a fifth of its CPU time, mostly in the kernel) because

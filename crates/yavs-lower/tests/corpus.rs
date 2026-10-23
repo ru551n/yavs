@@ -196,6 +196,7 @@ const PASS: &[&str] = &[
     "hierarchy/label_path_name",
     "hierarchy/component_binding",
     "hierarchy/config_block_component",
+    "hierarchy/config_generate_range_name",
     "hierarchy/package_body_item_name",
     "hierarchy/package_subprogram_param_names",
     "hierarchy/port_actual_generic_bounds",

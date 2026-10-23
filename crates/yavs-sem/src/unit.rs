@@ -638,7 +638,10 @@ impl Db {
         let DeclKind::Unit(u) = self.decls[self.entity(d)].kind else {
             return None;
         };
-        if !matches!(self.units[u].kind, UnitKind::Entity | UnitKind::Architecture) {
+        if !matches!(
+            self.units[u].kind,
+            UnitKind::Entity | UnitKind::Architecture
+        ) {
             return None;
         }
         let region = self.units[u].scope;

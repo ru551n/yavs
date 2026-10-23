@@ -1,5 +1,5 @@
 # tools/corpus/run.py expected results for vests-1993 (yavs); one line per manifest entry, in order
-# Known yavs failures (each has an issue; the reference simulators accept them): tc400 #657; tc2565 #658; tc537 #643; tc3182 tc3183 tc852 tc853 tc854 tc856 #646.
+# Known yavs failures (each has an issue; the reference simulators accept them): tc400 #657; tc2565 #658; tc537 #643.
 PASS work vests/vhdl-93/billowitch/compliant/tc1.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc10.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc100.vhd
@@ -1080,8 +1080,8 @@ PASS work vests/vhdl-93/billowitch/compliant/tc3179.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc318.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc3180.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc3181.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc3182.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc3183.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc3182.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc3183.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc3184.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc3185.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc3186.vhd
@@ -1502,11 +1502,11 @@ PASS work vests/vhdl-93/billowitch/compliant/tc844.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc846.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc849.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc850.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc852.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc853.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc854.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc852.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc853.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc854.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc855.vhd
-FAIL work vests/vhdl-93/billowitch/compliant/tc856.vhd
+PASS work vests/vhdl-93/billowitch/compliant/tc856.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc857.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc858.vhd
 PASS work vests/vhdl-93/billowitch/compliant/tc859.vhd

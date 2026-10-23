@@ -2275,11 +2275,22 @@ impl Db {
             StmtKind::ForGenerate {
                 param, scope: s, ..
             } => {
-                let s = *s;
+                let (s, param) = (*s, *param);
                 let select = match arg {
                     None => None,
+                    // `for g(r'range)` and `for g(subtype_name)`: a discrete range written as a
+                    // name (1.3.1), not an index value.
+                    Some(ast::Actual::Expr(e)) if matches!(&e.kind, ast::ExprKind::Name(n) if self.is_range_name(scope, n)) =>
+                    {
+                        let ast::ExprKind::Name(n) = &e.kind else {
+                            unreachable!("checked above");
+                        };
+                        let st = self.formal_subtype(param).unwrap_or(self.poison.subtype);
+                        let base = self.base(st);
+                        Some(GenSelect::Range(self.range_name(scope, n, base)?))
+                    }
                     Some(ast::Actual::Expr(e)) => {
-                        let st = self.formal_subtype(*param).unwrap_or(self.poison.subtype);
+                        let st = self.formal_subtype(param).unwrap_or(self.poison.subtype);
                         let id = self.expr_in_subtype(scope, e, st);
                         if self.is_poison_expr(id) {
                             return Err(Reported);
@@ -2287,13 +2298,13 @@ impl Db {
                         Some(GenSelect::Index(id))
                     }
                     Some(ast::Actual::Range(r)) => {
-                        let st = self.formal_subtype(*param).unwrap_or(self.poison.subtype);
+                        let st = self.formal_subtype(param).unwrap_or(self.poison.subtype);
                         let base = self.base(st);
                         Some(GenSelect::Range(self.range(scope, r, base)?))
                     }
                     Some(ast::Actual::Subtype(si)) => {
                         // `for g(natural range 1 to 3)`: the loop parameter's type, constrained.
-                        let want = self.formal_subtype(*param).map(|p| self.base(p));
+                        let want = self.formal_subtype(param).map(|p| self.base(p));
                         let st = self.subtype_indication(scope, si)?;
                         let t = self.base(st);
                         if let Some(w) = want
@@ -2380,6 +2391,22 @@ impl Db {
             items,
             span: b.span,
         })
+    }
+
+    /// Whether `n` is a range attribute (`a'range`, `t'reverse_range(2)`) or a type mark.
+    fn is_range_name(&mut self, scope: ScopeId, n: &ast::Name) -> bool {
+        let attr = match &n.kind {
+            ast::NameKind::Attribute { attr, .. } => Some(attr),
+            ast::NameKind::Apply { prefix, .. } => match &prefix.kind {
+                ast::NameKind::Attribute { attr, .. } => Some(attr),
+                _ => None,
+            },
+            _ => None,
+        };
+        match attr {
+            Some(a) => matches!(a.key.as_str(), "range" | "reverse_range"),
+            None => self.quiet_type_mark(scope, n).is_some(),
+        }
     }
 
     fn not_block(&mut self, span: Span, named_in: ScopeId) -> Reported {

@@ -693,29 +693,78 @@ impl Db {
         phys: Option<&ast::PhysicalTypeDef>,
         span: Span,
     ) -> Result<TypeId, Reported> {
-        let ast::Range::Simple { left, dir, right } = r else {
-            return Err(self.unsupported(span, "a range attribute as a type definition", "S3"));
-        };
-        let before = self.error_count();
-        let l = self.static_expr(scope, left, Expected::Any);
-        let rr = self.static_expr(scope, right, Expected::Any);
-        let (lv, rv) = match (self.value(l).cloned(), self.value(rr).cloned()) {
-            (Some(a), Some(b)) => (a, b),
-            // Already reported (an overflow, a division by zero): no follow-on `E1410`.
-            _ if self.error_count() > before => return Err(Reported),
-            _ => {
-                for (e, ast) in [(l, left), (rr, right)] {
-                    if self.value(e).is_none() && !self.is_poison_expr(e) {
-                        self.report(
-                            Diagnostic::error(
-                                diag::NOT_STATIC,
-                                "the bound of a type definition must be locally static",
-                            )
-                            .with_primary(ast.span, "not locally static"),
-                        );
+        let (l, rr, dir, lv, rv, bounds_span) = match r {
+            ast::Range::Simple { left, dir, right } => {
+                let before = self.error_count();
+                let l = self.static_expr(scope, left, Expected::Any);
+                let rr = self.static_expr(scope, right, Expected::Any);
+                let (lv, rv) = match (self.value(l).cloned(), self.value(rr).cloned()) {
+                    (Some(a), Some(b)) => (a, b),
+                    // Already reported (an overflow, a division by zero): no follow-on `E1410`.
+                    _ if self.error_count() > before => return Err(Reported),
+                    _ => {
+                        for (e, ast) in [(l, left), (rr, right)] {
+                            if self.value(e).is_none() && !self.is_poison_expr(e) {
+                                self.report(
+                                    Diagnostic::error(
+                                        diag::NOT_STATIC,
+                                        "the bound of a type definition must be locally static",
+                                    )
+                                    .with_primary(ast.span, "not locally static"),
+                                );
+                            }
+                        }
+                        return Err(Reported);
                     }
+                };
+                (l, rr, *dir, lv, rv, left.span.to(right.span))
+            }
+            // `range t'range(2)`: the bounds are the folded range of an array dimension or of
+            // a scalar subtype, as locally static integers (3.1.2, 5.2.1).
+            ast::Range::Name(n) => {
+                let Some(res) = self.range_attr(scope, n) else {
+                    return Err(self.unsupported(
+                        span,
+                        "a type mark as a type definition's range",
+                        "S3",
+                    ));
+                };
+                let (rc, t) = res?;
+                let Some(sr) = crate::expr::aggregate::range_value(self, &rc) else {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::NOT_STATIC,
+                            "the bound of a type definition must be locally static",
+                        )
+                        .with_primary(n.span, "not locally static"),
+                    ));
+                };
+                if !matches!(
+                    self.types[t].kind,
+                    TypeKind::Integer | TypeKind::UniversalInteger
+                ) || phys.is_some()
+                {
+                    return Err(self.error(
+                        Diagnostic::error(
+                            diag::BAD_TYPE_DECL,
+                            "the range of an integer type definition must be of an integer type",
+                        )
+                        .with_primary(n.span, "not an integer range"),
+                    ));
                 }
-                return Err(Reported);
+                let uint = self.well_known.universal_integer.unwrap_or(self.poison.ty);
+                let mk = |db: &mut Db, v: i64| {
+                    crate::expr::literal::const_expr(db, n.span, uint, Some(ConstValue::Int(v)))
+                };
+                let (l, rr) = (mk(self, sr.left), mk(self, sr.right));
+                (
+                    l,
+                    rr,
+                    sr.dir,
+                    ConstValue::Int(sr.left),
+                    ConstValue::Int(sr.right),
+                    n.span,
+                )
             }
         };
         let kind = match (&lv, &rv, phys) {
@@ -730,10 +779,7 @@ impl Db {
                         diag::BAD_TYPE_DECL,
                         "the bounds must both be integer or both be floating point",
                     )
-                    .with_primary(
-                        left.span.to(right.span),
-                        "bounds of different or unsuitable types",
-                    )
+                    .with_primary(bounds_span, "bounds of different or unsuitable types")
                     .with_help(if phys.is_some() {
                         "physical type bounds are integers"
                     } else {
@@ -772,7 +818,7 @@ impl Db {
         let rc = conv(self, rr, rv.clone());
         let range = Constraint::Range(RangeC::Explicit {
             left: lc,
-            dir: *dir,
+            dir,
             right: rc,
         });
         self.subtypes.push(SubtypeDef {
@@ -996,7 +1042,7 @@ impl Db {
                     prefix: AttrPrefix::Subtype(st),
                     ..
                 },
-            ) if !matches!(n.kind, ast::NameKind::Attribute { .. }) => *st,
+            ) if !is_attribute_name(n) => *st,
             (
                 ast::DiscreteRange::Subtype(_),
                 RangeC::Attr {
@@ -2323,6 +2369,18 @@ fn range_span(r: &ast::Range) -> Span {
 }
 
 /// The `range` keyword before `r`, else `r` itself (the AST keeps no keyword span).
+/// `a'range`, `a'reverse_range` or the form with a dimension, `a'range(2)`: a range
+/// attribute name, not a type mark.
+fn is_attribute_name(n: &ast::Name) -> bool {
+    match &n.kind {
+        ast::NameKind::Attribute { .. } => true,
+        ast::NameKind::Apply { prefix, .. } => {
+            matches!(prefix.kind, ast::NameKind::Attribute { .. })
+        }
+        _ => false,
+    }
+}
+
 fn range_kw_span(db: &Db, r: &ast::Range) -> Span {
     let sp = range_span(r);
     let b = db.sources.get(sp.file).bytes();

@@ -2686,6 +2686,8 @@ impl Db {
         let subtype =
             attr::spec_subtype(self, self.attr_values[v].attr).unwrap_or(self.exprs[value].subtype);
         let (stat, folded) = (self.exprs[value].stat, self.exprs[value].value);
+        // The value takes the attribute's subtype, bounds included (7.2, #638).
+        let folded = folded.and_then(|c| self.rebound(c, subtype));
         self.add_expr(Expr {
             kind: ExprKind::AttrValue { spec: v },
             subtype,

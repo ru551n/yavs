@@ -270,7 +270,18 @@ impl<'a> Fx<'a, '_> {
             // The value of a user-defined attribute is its specification's expression.
             ExprKind::AttrValue { spec } => {
                 let v = db.attr_values[*spec].value;
-                self.expr(v)
+                let val = self.expr(v)?;
+                // The value takes the attribute's subtype (implicit subtype conversion): a
+                // string literal given to `string (3 downto 1)` has those bounds (#638).
+                if let V::A(data, vd) = val
+                    && let Some(want) = self.desc_of(e.subtype, Some(vd), span)?
+                {
+                    let t = db.base(e.subtype);
+                    let tid = self.ty(t, span)?;
+                    self.check_desc(t, tid, vd, want, "attribute value", span)?;
+                    return Ok(V::A(data, want));
+                }
+                Ok(val)
             }
             ExprKind::Open | ExprKind::Error => {
                 Err(self.cx.ice(span, "open or poisoned expression"))

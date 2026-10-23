@@ -33,6 +33,7 @@ enum ParamKind {
     Boolean,
     Const,
     Sequence,
+    Property,
 }
 
 /// A declared sequence or property: the tokens `body.0..body.1` are its body (up to, not
@@ -58,6 +59,8 @@ pub(super) enum Binding {
     Const(u32),
     /// The tokens of the actual and the environment of the use that wrote them.
     Sequence(usize, usize, Env),
+    /// The same for a `property` formal.
+    Property(usize, usize, Env),
 }
 
 pub(super) type Env = Vec<(Symbol, Binding)>;
@@ -161,6 +164,7 @@ impl Parser<'_> {
             Some("boolean") => Some(ParamKind::Boolean),
             Some("const") => Some(ParamKind::Const),
             None if self.nth(i) == Tok::Kw(Kw::Sequence) => Some(ParamKind::Sequence),
+            None if self.nth(i) == Tok::Kw(Kw::Property) => Some(ParamKind::Property),
             _ => None,
         }
     }
@@ -208,7 +212,7 @@ impl Parser<'_> {
             match b {
                 Binding::Boolean(v) => k.push_str(&format!("{}={v};", n.as_str())),
                 Binding::Const(c) => k.push_str(&format!("{}={c};", n.as_str())),
-                Binding::Sequence(..) => {}
+                Binding::Sequence(..) | Binding::Property(..) => {}
             }
         }
         k
@@ -278,8 +282,9 @@ impl Parser<'_> {
                 }
                 ParamKind::Const => Binding::Const(self.psl_count()?),
                 ParamKind::Sequence => Binding::Sequence(start, end, self.psl_env.clone()),
+                ParamKind::Property => Binding::Property(start, end, self.psl_env.clone()),
             };
-            if kind != ParamKind::Sequence && self.pos != end {
+            if !matches!(kind, ParamKind::Sequence | ParamKind::Property) && self.pos != end {
                 return Err(Recover);
             }
             env.push((name, bound));
@@ -313,6 +318,33 @@ impl Parser<'_> {
         let r = self
             .nested(|p| p.sere_concat(leaves))
             .and_then(|s| if self.pos == end { Ok(s) } else { Err(Recover) });
+        self.psl_env = outer;
+        self.psl_end = outer_end;
+        self.pos = after;
+        r.map(Some)
+    }
+
+    pub(super) fn psl_formal_is_property(&self, i: usize) -> bool {
+        matches!(self.psl_formal_at(i), Some(Binding::Property(..)))
+    }
+
+    /// The property a `property` formal stands for, parsed by `parse` where it is used
+    /// (current token), with the environment of the use that bound it.
+    pub(super) fn psl_formal_property<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> PResult<T>,
+    ) -> PResult<Option<T>> {
+        let Some(Binding::Property(start, end, env)) = self.psl_formal_at(0).cloned() else {
+            return Ok(None);
+        };
+        self.bump();
+        let after = self.pos;
+        let outer = std::mem::replace(&mut self.psl_env, env);
+        let outer_end = std::mem::replace(&mut self.psl_end, end);
+        self.pos = start;
+        let r = self
+            .nested(parse)
+            .and_then(|p| if self.pos == end { Ok(p) } else { Err(Recover) });
         self.psl_env = outer;
         self.psl_end = outer_end;
         self.pos = after;
@@ -373,7 +405,7 @@ impl Parser<'_> {
                     *e = match b {
                         Binding::Boolean(var) => g.var(var),
                         Binding::Const(v) => g.int(&v.to_string()),
-                        Binding::Sequence(..) => return Err(Recover),
+                        Binding::Sequence(..) | Binding::Property(..) => return Err(Recover),
                     };
                     return Ok(());
                 }

@@ -862,7 +862,7 @@ fn psl_is_skipped_with_one_warning_per_unit() {
     let forms = [
         "property p is always (a -> eventually! b);",
         "sequence s (bit x) is {x; b[*2]; c};",
-        "property q (property r) is always {r; r} |=> r;",
+        "property q (numeric r) is always {r = 1; r = 1} |=> r = 2;",
         "assert always (a -> next[1](b));",
         "assert never {a; b};",
         "l: assume always a;",
@@ -1090,6 +1090,8 @@ fn psl_named_sequences_and_properties() {
         property p1 is always (a -> next b);
         property p2 (boolean x, y) is always (x -> next y);
         property p3 is always (s1 |=> c);
+        property p4 (property q) is always (a -> next q);
+        property p5 (property q, sequence s) is always (s |=> q);
         c1: cover s1;
         c2: cover s2(a, b);
         c3: cover s3(a, 2);
@@ -1098,15 +1100,18 @@ fn psl_named_sequences_and_properties() {
         c6: assert p2(a = '1', b) report \"x\";
         c7: assert p3 @falling_edge(clk);
         c8: assert always s1 |=> c;
+        c9: assert p4(b);
+        c10: assert p4((c until d));
+        c11: assert p5(next_e[1 to 2] (b), {{a; b}});
         end;"
     );
     let c = checkers(&src);
-    assert_eq!(c.len(), 8, "{c:?}");
+    assert_eq!(c.len(), 11, "{c:?}");
     // Not supported, so skipped with one warning: property and typed formals, a wrong
     // number of actuals, a recursive sequence, a declaration with an operator the subset
     // does not run, a built-in on a formal.
     for (decl, uses) in [
-        ("property p (property q) is always q;", "assert p(a);"),
+        ("property p (property q) is always q;", "assert p(a, b);"),
         ("sequence s (bit x) is {x; x};", "cover s(a);"),
         ("sequence s (boolean x) is {x; x};", "cover s(a, b);"),
         ("sequence s is {a; s};", "cover s;"),

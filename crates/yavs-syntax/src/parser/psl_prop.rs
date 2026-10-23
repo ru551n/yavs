@@ -237,6 +237,7 @@ impl Parser<'_> {
                     ) || w.starts_with("next_")
                         || w.starts_with("before")
                         || self.psl_decls.iter().any(|d| d.is(self.make_ident(t).key))
+                        || self.psl_formal_is_property(i - self.pos)
                     {
                         return true;
                     }
@@ -264,6 +265,9 @@ impl Parser<'_> {
     }
 
     fn tp_unary_inner(&mut self, lv: &mut Leaves) -> PResult<Pt> {
+        if let Some(p) = self.psl_formal_property(|s| s.tp_prop(lv))? {
+            return Ok(p);
+        }
         if self.at_kw(Kw::Next) {
             self.bump();
             if self.at(Tok::Bar) {

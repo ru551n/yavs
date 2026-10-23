@@ -736,9 +736,9 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   used. A declaration is remembered as the range of its body tokens and a use parses that range
   again with the formals bound (`parser/psl_named.rs`), so nothing is copied. Formals: `boolean`
   (the actual is evaluated at each clock tick into a process variable the body's name is renamed
-  to), `const` (a number: a count, or a literal in an expression) and `sequence` (the actual's
-  tokens, parsed where the formal is used). A `property` formal, a typed formal (`bit`,
-  `numeric`, ...), a built-in function on a formal, a use before the declaration, the wrong
+  to), `const` (a number: a count, or a literal in an expression), and `sequence` and `property`
+  (the actual's tokens, parsed where the formal is used). A typed formal (`bit`, `numeric`, ...),
+  a built-in function on a formal, a use before the declaration, the wrong
   number of actuals, a recursive declaration, and more than 200 expansions in one directive skip
   the directive with `W0004`; a declared name outside a sequence or whole-property position
   does too. A declared property is used as the whole property of `assert`/`assume`

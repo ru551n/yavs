@@ -430,7 +430,7 @@ starts fail; the parts of a conjunction (``next_a``) fail separately. The strong
 (``eventually!``, ``next!``, ``until!``, ``before!``, a sequence followed by ``!``) and ``abort``
 and ``async_abort`` are skipped with ``W0004``.
 
-Sequences and properties can be named, with ``boolean``, ``const`` and ``sequence`` formals,
+Sequences and properties can be named, with ``boolean``, ``const``, ``sequence`` and ``property`` formals,
 and used where a sequence or a whole property is expected:
 
 .. code-block:: text

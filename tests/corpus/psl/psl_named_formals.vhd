@@ -1,7 +1,7 @@
 -- difftest: top=psl_named_formals std=2008 ref=hand exit=1 ignore=path,order
 -- ref=hand: no reference simulator takes `const` or `sequence` formals; the result is that of
 -- the same directives written out, which both run (IEEE 1850 6.5.2). A sequence used for two
--- formals, a formal handed on to another declaration, and a count from a formal.
+-- formals, a formal handed on to another declaration, a count from a formal and property formals.
 library ieee;
 use ieee.std_logic_1164.all;
 entity psl_named_formals is end;
@@ -33,6 +33,8 @@ begin
   sequence twice (sequence p) is both(p, p);
   sequence upto (boolean x; const lo, hi) is {x[*lo to hi]; b = '1'};
   property then_y (sequence p, boolean y) is always (p |=> y);
+  property whole (property q) is always q;
+  property within_next (property q, boolean x) is always (x -> next q);
 
   c1: cover rep(a = '1', 2) report "rep 2";
   c2: cover rep(b = '1', 1) report "rep 1";
@@ -41,4 +43,7 @@ begin
   c5: cover upto(a = '1', 1, 3) report "upto";
   c6: cover {both(a = '1', b = '1'); c = '1'} report "nested both";
   p1: assert then_y({a = '1'; b = '1'}, c = '1') report "after";
+  p2: assert whole(a = '1' -> next[2] (c = '1')) report "whole";
+  p3: assert whole({a = '1'; b = '1'} |=> next_e[1 to 2] (c = '1')) report "property formal";
+  p4: assert within_next((b = '1' until c = '1'), a = '1') report "nested formals";
 end;

@@ -37,6 +37,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn rev(s: &str) -> LangRev {
     match s {
+        "1993" => LangRev::Vhdl1993,
         "2019" => LangRev::Vhdl2019,
         _ => LangRev::Vhdl2008,
     }

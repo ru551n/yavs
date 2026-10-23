@@ -2084,6 +2084,7 @@ impl Db {
             return Err(Reported);
         }
         self.check_linkage_reads(id, true)?;
+        self.not_read(id);
         Ok(id)
     }
 

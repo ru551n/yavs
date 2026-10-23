@@ -643,6 +643,13 @@ impl Db {
                 self.inst_types.extend(parts);
             }
             if let Some(actual) = actual {
+                // The actual of an `out` or `linkage` formal is written, not read.
+                if matches!(
+                    &self.decls[f].kind,
+                    DeclKind::Object(o) if matches!(o.mode, Some(Mode::Out | Mode::Linkage))
+                ) {
+                    self.not_read_actual(&actual);
+                }
                 args.push(Arg {
                     formal: k as u16,
                     actual,
@@ -1568,6 +1575,8 @@ impl Db {
                 )));
                 continue;
             };
+            // The formal designator names the formal, it reads nothing.
+            self.not_read(fe);
             let Some((root, steps, stat, cut)) = self.lsp_parts(fe) else {
                 errs.keep::<()>(Err(self.ice(span, "formal sub-element without a prefix")));
                 continue;
@@ -1984,6 +1993,11 @@ impl Db {
             Some(m) => errs.keep(self.assoc_list(cscope, &ep, m, b.span)),
             None => errs.keep(self.default_map(&locals_p, &ep, e, &types, at)),
         };
+        // A binding indication connects the component's ports to the entity's, it reads no
+        // value (LRM 1993 4.3.2): an `out` port of the component is no read there.
+        for a in generic_map.iter().chain(&port_map).flat_map(|m| m.iter()) {
+            self.not_read_actual(&a.actual);
+        }
         let generic_map = match (generic_map, &port_map) {
             (Some(g), Some(p)) => errs.keep(self.with_hidden_args(&eg, &ep, g, p, b.span)),
             _ => None,

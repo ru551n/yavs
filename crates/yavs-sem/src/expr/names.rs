@@ -1486,13 +1486,23 @@ impl Db {
             _ => return self.poison_expr(),
         };
         let value = value.and_then(|c| self.rebound(c, subtype));
-        self.add_expr(Expr {
+        let id = self.add_expr(Expr {
             kind: ExprKind::Obj(d),
             subtype,
             span,
             stat,
             value,
-        })
+        });
+        // A reference to an `out` port or parameter is a read unless a write context says
+        // otherwise (LRM 1993 4.3.2; `Db::not_read`).
+        if matches!(&self.decls[d].kind, DeclKind::Object(o) if o.mode == Some(crate::hir::Mode::Out))
+            && self
+                .cur()
+                .is_some_and(|c| c.file_rev == crate::LangRev::Vhdl1993)
+        {
+            self.out_reads.push(id);
+        }
+        id
     }
 
     /// Folded value `c` seen through constrained subtype `st`: the bounds of `st`, not those of
@@ -1695,6 +1705,9 @@ impl Db {
                 },
                 Slot::None => Actual::Default,
             };
+            if classes[k].1 == crate::hir::Mode::Out {
+                self.not_read_actual(&actual);
+            }
             hargs.push(Arg {
                 formal: k as u16,
                 actual,
@@ -1946,7 +1959,11 @@ impl Db {
         });
         let fe = match fe {
             Ok(fe) if self.is_poison_expr(fe) => return None,
-            Ok(fe) => fe,
+            Ok(fe) => {
+                // The formal part names the formal, it reads nothing.
+                self.not_read(fe);
+                fe
+            }
             Err(true) => return None,
             Err(false) => {
                 let tn = self.type_name(want);
@@ -2277,6 +2294,9 @@ impl Db {
             }
             Via::AttrOf(t) => {
                 let p = self.resolve_prefix(scope, prefix, t);
+                if !a.reads_value() {
+                    self.not_read(p);
+                }
                 // 4.2.2.2: of a formal signal parameter these attributes are not allowed;
                 // of another signal they are, and the implicit signal lives outside the
                 // subprogram (sim2, sim3).

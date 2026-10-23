@@ -73,7 +73,7 @@ operators gives the same results with the derived and the 1995 text.
 |---|---|---|---|---|---|
 | S1 | Reserved words | `assume assume_guarantee context cover default fairness force parameter property protected release restrict restrict_guarantee sequence strong vmode vprop vunit` are identifiers (1993 13.9; 2008 15.10); `view`/`private` already 2019-only | warns `X is a reserved word in VHDL-2008` and accepts | accepts | `token.rs` |
 | S2 | Shared variables | any type: `shared variable v : integer;` is legal (1993 4.3.1.3). 2008 6.4.2.4 requires a protected type | accepts | accepts | no `E1904`/`W1904` in a 93 file |
-| S3 | Reading an `out` port | error (1993 4.3.2) | `cannot read output port` | `port cannot be read` | **not enforced** (valid 1993 code never reads one; permissive) |
+| S3 | Reading an `out` port or parameter | error (1993 4.3.2) | `cannot read output port` | `port cannot be read` | `E1360` in a 93 file (L138); the attributes that read the value count as reads |
 | S4 | `process (all)` | not 1993 | error | error | `E0011` |
 | S5 | Conditional and selected assignments in a process; conditional variable assignment | not 1993 | error | error | `E0011` |
 | S6 | `elsif`/`else`, `case` generate | not 1993 | error | sim2 accepts | `E0011` |
@@ -124,7 +124,7 @@ test runner passes each file's own standard and projects mix them freely.
 - `E1007` for 2008 *items* of a package a 93 file names in a 2008 design (units are checked,
   items such as `to_string` of `std_logic_1164` are not).
 - A native fast path for the 1995 `numeric_std` `std_logic_vector` forms beyond the shared keys.
-- Enforcement of S3 and S13 (2008 relaxations).
+- Enforcement of S13 (2008 relaxations).
 - `--std=87`, `--std=02`.
 
 ## 6. Results

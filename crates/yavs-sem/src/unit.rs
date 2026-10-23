@@ -86,7 +86,13 @@ impl Db {
             std::mem::take(&mut self.name_memo),
             std::mem::take(&mut self.ext_memo),
         );
+        let outer_reads = std::mem::take(&mut self.out_reads);
         let r = self.unit_body(unit, &ast);
+        // After another error the references an aborted statement left are no evidence (8.2).
+        if r.is_ok() && self.error_count() == before {
+            self.report_out_reads();
+        }
+        self.out_reads = outer_reads;
         (self.memo, self.name_memo, self.ext_memo) = memos;
         self.stack.pop();
         let ok = r.is_ok() && self.error_count() == before;

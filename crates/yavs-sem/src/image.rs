@@ -95,6 +95,7 @@ impl Db {
             ("errors", self.error_count()),
             ("stack", self.stack.len()),
             ("pending label attributes", self.pending_label_attrs.len()),
+            ("pending out reads", self.out_reads.len()),
             ("pending instance checks", self.pending_inst_checks.len()),
             ("pending groups", self.pending_groups.len()),
             ("pending implicit operations", self.pending_implicit.len()),

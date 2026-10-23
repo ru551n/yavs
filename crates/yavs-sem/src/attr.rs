@@ -80,6 +80,25 @@ pub enum PredefAttr {
 }
 
 impl PredefAttr {
+    /// Whether the attribute reads the value of its signal prefix (LRM 1993 4.3.2: an `out` port
+    /// is not a legal prefix of these). The others (`'range`, `'length`, `'driving_value`,
+    /// `'simple_name`, ...) do not.
+    pub fn reads_value(self) -> bool {
+        use PredefAttr::*;
+        matches!(
+            self,
+            Event
+                | Active
+                | LastEvent
+                | LastActive
+                | LastValue
+                | Delayed
+                | Stable
+                | Quiet
+                | Transaction
+        )
+    }
+
     /// Look up by folded name.
     pub fn from_key(key: Symbol) -> Option<Self> {
         TABLE

@@ -1799,6 +1799,7 @@ impl Db {
                 ));
             };
             let p = self.resolve_prefix(scope, prefix, *t);
+            self.not_read(p);
             (AttrPrefix::Expr(p), *t)
         };
         let index = match &self.types[t].kind {
@@ -1938,6 +1939,7 @@ impl Db {
                 ));
             };
             let e = self.resolve_prefix(scope, prefix, *t);
+            self.not_read(e);
             self.runtime_subtype(e, attr.span)
         } else {
             return Err(self.error(

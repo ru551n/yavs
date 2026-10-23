@@ -90,6 +90,86 @@ impl Db {
         Ok(())
     }
 
+    /// The object `e` names is not read by its context (an assignment target, the actual of
+    /// an `out` formal, the prefix of an attribute that does not read the value, an alias
+    /// target): the reference to an `out` port or parameter at its root is not a read
+    /// (LRM 1993 4.3.2). The indices of an indexed target and the arguments of a call stay
+    /// reads.
+    pub(crate) fn not_read(&mut self, e: ExprId) {
+        if self.out_reads.is_empty() {
+            return;
+        }
+        let mut x = e;
+        loop {
+            match &self.exprs[x].kind {
+                ExprKind::Index { prefix, .. }
+                | ExprKind::Slice { prefix, .. }
+                | ExprKind::Field { prefix, .. } => x = *prefix,
+                // `conv(port)` as the actual of an `out` formal converts the formal's value.
+                ExprKind::Conv { operand, .. }
+                | ExprKind::Qualified { operand, .. }
+                | ExprKind::ImplicitConv { operand } => x = *operand,
+                ExprKind::Call { args, .. } if args.len() == 1 => match args[0].actual {
+                    Actual::Expr(a) => x = a,
+                    _ => break,
+                },
+                ExprKind::Aggregate { assocs, .. } => {
+                    let parts: smallvec::SmallVec<[ExprId; 4]> =
+                        assocs.iter().map(|a| a.value).collect();
+                    for p in parts {
+                        self.not_read(p);
+                    }
+                    return;
+                }
+                _ => break,
+            }
+        }
+        self.out_reads.retain(|&p| p != x);
+    }
+
+    /// `not_read` for the actual of an `out` formal in a call or a map.
+    pub(crate) fn not_read_actual(&mut self, a: &Actual) {
+        if self.out_reads.is_empty() {
+            return;
+        }
+        match a {
+            Actual::Expr(x) | Actual::Converted { actual: x, .. } => self.not_read(*x),
+            Actual::Individual(parts) => {
+                let xs: smallvec::SmallVec<[ExprId; 4]> = parts.iter().map(|p| p.1).collect();
+                for x in xs {
+                    self.not_read(x);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `E1360`: what is left of `out_reads` at the end of a unit are reads of `out` ports and
+    /// parameters in a VHDL-1993 file (LRM 1993 4.3.2: the value of an `out` interface object
+    /// cannot be read; VHDL-2008 6.5.2 lifted the rule).
+    pub(crate) fn report_out_reads(&mut self) {
+        for x in std::mem::take(&mut self.out_reads) {
+            let ExprKind::Obj(d) = self.exprs[x].kind else {
+                continue;
+            };
+            let what = match &self.decls[d].kind {
+                crate::decl::DeclKind::Object(o) if o.role == crate::decl::ObjRole::Port => "port",
+                _ => "parameter",
+            };
+            let name = self.decls[d].name;
+            self.report(
+                Diagnostic::error(
+                    diag::CLASS_MISUSE,
+                    format!("cannot read {what} `{name}` of mode `out`"),
+                )
+                .with_primary(self.exprs[x].span, "read here")
+                .with_secondary(self.decls[d].span, "declared with mode `out` here")
+                .with_note("VHDL-1993 does not allow the value of an `out` interface object to be read (LRM 1993 4.3.2); VHDL-2008 does")
+                .with_help("declare it `inout` or `buffer`, read a separate signal or variable, or analyze the file as VHDL-2008"),
+            );
+        }
+    }
+
     /// Resolve a complete context for a target of subtype `st` (assignment
     /// targets, return values, initial values): an aggregate with `others` at
     /// the top takes its bounds from `st` (9.3.3.3).

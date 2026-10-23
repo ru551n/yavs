@@ -418,6 +418,8 @@ impl Db {
                 ));
             }
         }
+        // An alias does not read its target (a read through the alias is not tracked, L138).
+        self.not_read(target);
         Ok(self.decls.push(Decl {
             name: Designator::Ident(*id),
             kind: DeclKind::Alias(Alias::Object { target, subtype }),

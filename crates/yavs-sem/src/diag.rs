@@ -81,7 +81,7 @@ codes! {
     NOT_BOOLEAN = "E1340", "A condition must be BOOLEAN, or of a type with a visible `??` operator.";
     AMBIGUOUS_CONDITION = "E1341", "More than one `??` operator applies to this condition.";
     BAD_CONVERSION = "E1350", "A type conversion is only legal between closely related types.";
-    CLASS_MISUSE = "E1360", "The object's class or mode does not allow this use (assigning an `in` port, reading a `linkage` port, a variable assignment to a signal, ...).";
+    CLASS_MISUSE = "E1360", "The object's class or mode does not allow this use (assigning an `in` port, reading a `linkage` port, reading an `out` port or parameter in a VHDL-1993 file, a variable assignment to a signal, ...).";
     NOT_AN_OBJECT = "E1361", "The name does not denote an object or value here.";
     FORCE_RESOLVED_MEMBER = "E1362", "The target of a force or release assignment is a member (an element, slice or field) of a signal whose composite subtype is resolved as a whole (LRM 10.5.2.1); force or release the whole composite signal.";
     // E14xx static evaluation

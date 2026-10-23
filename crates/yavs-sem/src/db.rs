@@ -132,6 +132,11 @@ pub struct Db {
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
     #[serde(skip)]
     pub(crate) pending_label_attrs: Vec<crate::attr::PendingLabel>,
+    /// References in a VHDL-1993 file to an `out` port or parameter of the unit being analyzed
+    /// that no write context has claimed yet; the rest are reads, `E1360` at the end of the
+    /// unit (LRM 1993 4.3.2, `Db::not_read`, `Db::report_out_reads`).
+    #[serde(skip)]
+    pub(crate) out_reads: Vec<ExprId>,
     /// Package instances in a process or subprogram whose generic's body is not declared yet
     /// (instance, region, span): `E1237` is checked when the body arrives.
     #[serde(skip)]
@@ -586,6 +591,7 @@ impl Db {
             time_units: Vec::new(),
             attr_closed: Default::default(),
             pending_label_attrs: Vec::new(),
+            out_reads: Vec::new(),
             pending_inst_checks: Vec::new(),
             pending_groups: Vec::new(),
             well_known: WellKnown::default(),

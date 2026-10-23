@@ -506,16 +506,13 @@ impl<'a> Fx<'a, '_> {
                     self.capture_free(d, o.subtype, span)?;
                     self.read_obj(d, span)
                 }
-                // A protected shared variable of an enclosing region: a slot holding the
-                // handle of its object, created and filled in by the elaborator.
+                // A shared variable of an enclosing region: a slot holding the handle of its
+                // object (protected) or the address of its slot (`--relaxed`), created and
+                // filled in by the elaborator.
                 DeclKind::Object(o)
                     if self.cx.capture_free
                         && self.cx.capture_vars
                         && o.class == yavs_sem::decl::ObjClass::SharedVariable
-                        && matches!(
-                            db.types[db.base(o.subtype)].kind,
-                            yavs_sem::types::TypeKind::Protected { .. }
-                        )
                         && matches!(
                             db.scopes[decl.scope].kind,
                             yavs_sem::scope::ScopeKind::Entity
@@ -524,16 +521,23 @@ impl<'a> Fx<'a, '_> {
                                 | yavs_sem::scope::ScopeKind::Generate
                         ) =>
                 {
-                    let t = self.ty(db.base(o.subtype), span)?;
                     let off = self.cx.inst_alloc(8);
-                    self.cx.objs.insert(
-                        d,
-                        Obj::Scalar {
+                    let (obj, t) = if matches!(
+                        db.types[db.base(o.subtype)].kind,
+                        yavs_sem::types::TypeKind::Protected { .. }
+                    ) {
+                        let t = self.ty(db.base(o.subtype), span)?;
+                        let obj = Obj::Scalar {
                             space: Space::Inst,
                             off,
                             w: Width::B8,
-                        },
-                    );
+                        };
+                        (obj, t)
+                    } else {
+                        let (shape, t) = self.shared_shape(d, db.base(o.subtype), span)?;
+                        (shape.obj(Space::Region(off), 0), t)
+                    };
+                    self.cx.objs.insert(d, obj);
                     self.cx.free_objs.push(crate::FreeObj {
                         decl: d,
                         ty: t,

@@ -378,6 +378,7 @@ const PASS: &[&str] = &[
     "shared/access_vars",
     "shared/pkg_vars",
     "shared/region_vars",
+    "shared/elab_call",
     "sigassign/assign_inertial",
     "sigassign/assign_reject",
     "sigassign/assign_transport",

@@ -240,6 +240,37 @@ impl Fx<'_, '_> {
         Ok(Some(V::S(dst)))
     }
 
+    /// The slot of non-protected shared variable `d` (`--relaxed`, W1904) of type `t`, created in
+    /// the shared heap and initialised: its shape and the address of the slot.
+    pub fn new_shared_slot(
+        &mut self,
+        d: DeclId,
+        t: TypeId,
+        name: &str,
+        span: Span,
+    ) -> R<(crate::VarShape, Reg)> {
+        let (shape, tid) = self.shared_shape(d, t, span)?;
+        let buf = self.alloc_n(shape.size());
+        let size = self.int(i64::from(shape.size()));
+        let h = self.reg(yavs_ir::RegTy::Handle);
+        self.emit(yavs_ir::Inst::New {
+            dst: h,
+            ty: tid,
+            init: buf,
+            size,
+            shared: true,
+        });
+        let what = self.msg(name, yavs_ir::Dir::To);
+        let p = self.reg(yavs_ir::RegTy::Ptr);
+        self.emit(yavs_ir::Inst::Deref {
+            dst: p,
+            handle: h,
+            what,
+        });
+        self.var_init(d, shape, p, true)?;
+        Ok((shape, p))
+    }
+
     /// A new protected object of type `t`: its state initialised from the variables'
     /// declarations, in the shared heap for a shared variable. The initialisers' allocators
     /// follow a shared object there because the elaborator runs them with the shared state
@@ -476,25 +507,7 @@ pub(crate) fn shared_var(
         // returns its address; names of it reach it through the cell (`Space::Region`).
         let mut obj = None;
         let f = crate::func::thunk(db, pb, cx, &name, span, |fx| {
-            let (shape, tid) = fx.shared_shape(d, t, span)?;
-            let buf = fx.alloc_n(shape.size());
-            let size = fx.int(i64::from(shape.size()));
-            let h = fx.reg(yavs_ir::RegTy::Handle);
-            fx.emit(yavs_ir::Inst::New {
-                dst: h,
-                ty: tid,
-                init: buf,
-                size,
-                shared: true,
-            });
-            let what = fx.msg(&name, yavs_ir::Dir::To);
-            let p = fx.reg(yavs_ir::RegTy::Ptr);
-            fx.emit(yavs_ir::Inst::Deref {
-                dst: p,
-                handle: h,
-                what,
-            });
-            fx.var_init(d, shape, p, true)?;
+            let (shape, p) = fx.new_shared_slot(d, t, &name, span)?;
             obj = Some(shape.obj(Space::Region(off), 0));
             Ok(p)
         })?;

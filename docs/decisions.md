@@ -1307,8 +1307,11 @@ a note and a help suggesting an access type, as the reference simulators reject 
   objects it read by declaration (`FillItem`), not as bytes, since any lowering lays them
   out. Functions lowered this way read instance data laid out for the call: they are given up
   (`forget_free_objects`) before the design is lowered, which lowers them again for the
-  architecture. Such a lowering is never read from or stored in the stage cache. Not covered:
-  a non-protected (`--relaxed`) shared variable of a region, which stays `E2106` (#524).
+  architecture. Such a lowering is never read from or stored in the stage cache. A
+  non-protected (`--relaxed`) shared variable of a region is captured the same way (#524): the
+  cell holds the address of its slot in the shared heap (`Space::Region`, shape from
+  `shared_shape`), and the creation thunk (`Fx::new_shared_slot`, shared with the lowering of
+  the region's own declaration) returns that address instead of a handle.
 - **Signal initial values that read signals (#559, L117):** the initial value of a signal may read an `in` port or a signal declared before it (e.g. `signal r : std_logic := port_in;`, a registered input in a debounce or synchroniser). The value is the declared initial value of the signal; an `in` formal starts with its actual's (`Elab::edges`), so a port reads as its actual's initial value, through any chain of ports. The same holds for a constant of a region that reads a signal (#453): it is folded where its declaration is elaborated, with `sig_init` set. Only then (`Model::sig_init`): a port actual, constant or generic that reads a signal is still not static (`E2106`, or the equivalent process for an expression actual). One reference accepts, one rejects at analysis; LRM unclear, so permissive.
 
 ## Runtime: default exit severity (user, 2026-10-18)

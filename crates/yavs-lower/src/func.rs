@@ -1522,8 +1522,8 @@ pub(crate) fn thunk(
     v.map(|_| id)
 }
 
-/// The thunk that creates the object of protected shared variable `d` in the shared heap and
-/// returns its handle (`Lowerer::region_var_init`).
+/// The thunk that creates the object of shared variable `d` in the shared heap and
+/// returns its handle (protected) or the address of its slot (`Lowerer::region_var_init`).
 pub(crate) fn region_var_init(
     db: &Db,
     pb: &mut ProgramBuilder,
@@ -1535,7 +1535,17 @@ pub(crate) fn region_var_init(
         return Err(cx.ice(decl.span, "not an object"));
     };
     let (t, span, name) = (db.base(o.subtype), decl.span, decl.name.to_string());
-    thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))
+    let protected = matches!(
+        db.types[t].kind,
+        yavs_sem::types::TypeKind::Protected { .. }
+    );
+    thunk(db, pb, cx, &name, span, |fx| {
+        if protected {
+            fx.prot_new(t, true, span)
+        } else {
+            Ok(fx.new_shared_slot(d, t, &name, span)?.1)
+        }
+    })
 }
 
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {

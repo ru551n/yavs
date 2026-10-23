@@ -118,14 +118,14 @@ pub enum NoCopy {
 }
 
 /// The growth cap: the optimised IR of all copies stays within this percent of the shared
-/// process code (`YAVS_SPEC_CAP`, default 150, 0: no cap).
+/// process code (`YAVS_SPEC_CAP`, default 250, 0: no cap).
 pub fn cap_percent() -> u64 {
     static CAP: OnceLock<u64> = OnceLock::new();
     *CAP.get_or_init(|| {
         std::env::var("YAVS_SPEC_CAP")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(150)
+            .unwrap_or(250)
     })
 }
 

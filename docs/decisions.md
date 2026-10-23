@@ -6035,7 +6035,7 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
 - **Decision (user, 2026-10-23: start per-instance specialisation now; reason 3 of the compiled-versus-interpreted gap):**
   option (a) of `docs/design/specialisation.md`: a process runs a copy of its code specialised to its instance's frozen data,
   one copy per distinct (process, data), as a yavs IR pass so every backend sees the folded code. The study's recommended
-  defaults stand (lazy, `for` generate parameters not folded, growth cap 1.5, shared code under `--dap`, `--cov` and `--vhpi`
+  defaults stand (lazy, `for` generate parameters not folded, growth cap 1.5 (2.5 since 2026-10-24), shared code under `--dap`, `--cov` and `--vhpi`
   variable access, a stage cache kind, copies compiled by the existing tier policy). Reported as the answers to its section 9.
 - **Lazy means a switch at a suspension after `YAVS_SPEC_AFTER` (1024) activations**, not "optimise on first use": every
   process runs once in initialisation, so the first use of a copy is at time 0 (the prototype's +1 G instructions in the
@@ -6052,9 +6052,10 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
 - **A copy folds reads of instance data into integer registers only** (a pointer or handle register keeps its load, the roots
   rule), never the bytes of a `for` generate's parameter (so the iterations of a generate share a copy), and runs through the
   existing pipeline (inlining, memo, layout slots), so the memo machinery that stays for what cannot fold is still there.
-- **Growth cap 1.5 times** the optimised IR of the shared process functions that ran; a copy over it is refused
-  (`spec_capped`). It binds on `poc_arith_addw` (312 candidate copies of 40 functions, 3.5 times the shared IR; 147 allowed)
-  and costs 0.5 percent of the gain there (see the table); no other measured design reaches it.
+- **Growth cap 2.5 times** (user, 2026-10-24; 1.5 at first) the optimised IR of the shared process functions that ran; a copy
+  over it is refused (`spec_capped`). At 1.5 it bound on `poc_arith_addw` (312 candidate copies of 40 functions, 3.5 times the
+  shared IR; 147 allowed, 0.5 percent of the gain) and on `sc5_fifo_repack` (4.3 points); at 2.5 only `poc_arith_addw` is capped (244 of 312, within 0.1 percent of no cap) and `sc5_fifo_repack` interprets
+  48.63 -> 46.12 G (-20.0 percent against no copies), peak RSS +2 MB there and within 1 MB elsewhere, initialisation equal.
 - **Shared code is kept** with `--dap` (`keep_variables`), `--vhpi` and `--wave-variables` (`external_variables`), with coverage
   counters, under `--tier=llvm`, with `YAVS_NO_IROPT`, for serial processes and for processes with several waits; the
   stage cache holds copies only where optimised copies are portable (`copies_are_portable`).
@@ -6075,7 +6076,7 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   designs (`poc_arith_addw`, `sc5_fifo_repack`: 0.5 and 4.3 points of gain). The interpreter rule (instructions down, cycles not worse in
   the geometric mean) holds on `interp`: instructions 0.96 over ten realbench tests, interleaved cycle medians -2.5 to -10 % where measured;
   under `auto` the instructions are 0.98 and the two exceptions are filed.
-- **Open** (reported, not decided): the tier policy for processes that run copies (#661); the cap (2.5 would take the 4.3 points back on `sc5_fifo_repack` for 2.5 times the process IR); processes
+- **Open** (reported, not decided): the tier policy for processes that run copies (#661); (the cap is 2.5 since 2026-10-24); processes
   with several wait statements stay shared (a mapping of the resume point by statement would admit them); loads of pointer-typed instance
   data (array generics, descriptors) are not folded; copy ids depend on the order of the switches, so with `--threads` above 1 the compiled-code
   cache keys of copies (which name the function id) can differ between runs; designs whose lowering is not cached (`ir` entry) re-optimise

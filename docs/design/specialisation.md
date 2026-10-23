@@ -346,9 +346,10 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   the hot paths changed (`Program::func` is byte for byte what it was; the instruction count of a
   design with copies off is within 0.1 percent of before). A design that runs out of slots keeps
   the rest shared (`spec_full`). Slots are never stored with a program.
-- **Growth cap 1.5 times** the optimised IR of the shared process functions that ran
-  (`YAVS_SPEC_CAP` percent, 0: none); a copy that would go over is refused and its process stays
-  shared (`spec_capped`). It binds on generate-heavy designs of small units (section 12).
+- **Growth cap 2.5 times** (user, 2026-10-24; 1.5 times at first) the optimised IR of the shared process
+  functions that ran (`YAVS_SPEC_CAP` percent, 0: none); a copy that would go over is refused and its
+  process stays shared (`spec_capped`). It bound on two designs at 1.5 and binds on one of the realbench
+  set at 2.5 (`poc_arith_addw`: 244 of 312 candidates; section 12, "The cap raised").
 - **Shared code is kept** under `--dap` and anything that keeps variables (`keep_variables`), with
   `--vhpi` and `--wave-variables` (`external_variables`), with coverage counters (functions with
   `HAS_COVER`), under `--tier=llvm` (the whole program is compiled before a copy exists),
@@ -437,3 +438,17 @@ step and made `hdlm_lfsr` better than main in the interleaved run (30.46 against
   cached (`fletcher_bufferwriter_512`, `hdlm_lfsr`: no `ir` entry) store none and optimise their copies in every run (0.7 M instructions
   each, 50 M of 100 G for fletcher). A warm run reads the copies of the earlier runs instead of optimising them (`spec_loaded` =
   `spec_copies`, `spec_fresh` = 0; `tests/spec.rs`).
+
+### The cap raised from 1.5 to 2.5 (2026-10-24, user decision)
+
+Bench builds with `llvm` (`tools/build-bench.sh`), `tools/realbench/run.py --compare` of main at cf32383b and the same with
+the default cap changed, core 9, medians of 3, user instructions of the whole process tree in G (exact); RSS is the peak of the
+whole tree in MB. The cap binds only on `poc_arith_addw` now (244 copies of 312 candidates, 68 refused; 8722 shared and 21766 copy IR
+instructions; its interpreter run 331.2 G against 331.5 G with no cap at all). Interpreter: `sc5_fifo_repack` 48.63 / 46.12 (-5.2 %,
+i.e. -20.0 % against 57.64 without copies; with no cap at all it was 46.6), `poc_arith_addw` 331.80 / 330.70 (-0.3 %, -11.3 % against
+none), the other eight within +-0.3 % (`olo_fix_cordic_rot` +1.1 % is the noise of its 3.7 G). Peak RSS (interp): `sc5_fifo_repack`
+21 / 23 MB, every other test within 1 MB. Initialisation (`--stop-time=0fs`, warm, instructions): equal within 0.5 % on nine tests
+(`neorv32_single_min` 1410 / 1417 M, the extra slots); `fletcher_bufferwriter_512` 492 / 532 M, which is not the slots (the same with
+`YAVS_NO_SPEC=1`, with `YAVS_SPEC_CAP=150`, and in every later build; deterministic per binary, not understood, 0.04 % of the run).
+Under `--tier=auto` the instructions depend on what the tier compiled when, so they move with the policy and not with the cap
+(`poc_arith_addw` warm 285.1 / 259.2, `sc5_fifo_repack` warm 43.2 / 47.2: #661).

@@ -6488,7 +6488,7 @@ return cost about 50 instructions of 337).
 Six commits (`docs/decisions.md` "Specialised copies of processes", `docs/design/specialisation.md` sections 11 and 12): a process of
 an instance with generics and constants switches, once it has run 1024 activations, to a copy of its code optimised for its instance's
 frozen data (the optimiser folds the data's integer reads: lengths, slice positions, allocation sizes, checks, arms of `if generic then`).
-Equal data share a copy, the parameters of `for` generates are not folded, the copies' optimised IR is capped at 1.5 times the shared
+Equal data share a copy, the parameters of `for` generates are not folded, the copies' optimised IR is capped at 2.5 times (1.5 until 2026-10-24) the shared
 process IR, they are kept in the compilation cache (kind `spec`), and the tiers see them as ordinary functions. Shared code under
 `--dap`, `--vhpi`, wave variables, coverage, `--tier=llvm`, serial processes and processes with several waits.
 

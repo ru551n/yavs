@@ -79,7 +79,7 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 
 ## 4. Invariants and pitfalls
 
-- Build both binaries from `--release` with the same features; compare binaries built the same way.
+- Build both binaries with `tools/build-bench.sh` (release plus 64-byte aligned functions, #576; same features for both, own `CARGO_TARGET_DIR`); a plain release build moves some designs by 3 to 33 percent in cycles with identical instructions when unrelated code moves. Release builds and CI artefacts stay unaligned.
   Other agents load the host: for a decision, repeat with `--runs 5` and look at CPU, not wall.
 - The external benchmarks need the corpora (`tools/fetch-corpus.sh`, `YAVS_CORPUS`); the first run per binary
   analyzes the libraries (minutes) and caches them. A benchmark that cannot be prepared is skipped with the
@@ -91,7 +91,7 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 ## 5. How to work here
 
 ```sh
-cargo build --release -p yavs
+tools/build-bench.sh                                                          # release + aligned functions (#576)
 python3 -I tools/bench/run.py --list
 python3 -I tools/bench/run.py target/release/yavs --group internal                      # one binary
 python3 -I tools/bench/run.py --compare /path/to/yavs-before target/release/yavs --runs 5   # A/B, all benchmarks
@@ -110,6 +110,7 @@ BENCH_SIM1=<template-name> python3 -I tools/bench/run.py --compare A B --group i
 
 Method (the same for every number quoted in `STATUS.md`):
 
+- Binaries under test come from `tools/build-bench.sh` (`RUSTFLAGS="-C llvm-args=-align-all-functions=6" cargo build --release -p yavs`; Cargo profiles cannot set `llvm-args`, so it is a flag, not a profile). Check with `nm -n --defined-only BIN | awk '$2~/[tT]/' | head`: function starts are multiples of 0x40. A release binary is not comparable with an aligned one.
 - Pin every timed run, of every tool, to the performance cores of the host (`--cores`, default read from the CPU topology;
   on a hybrid host pass a subset when other agents use some of them). Run builds, analysis and test suites elsewhere
   (`taskset -c <efficiency cores> cargo ...`) so they do not disturb the timings. Say which cores were used.

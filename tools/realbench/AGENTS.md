@@ -43,6 +43,7 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
 
 ## 4. Invariants and pitfalls
 
+- Time only binaries from `tools/build-bench.sh` (64-byte aligned functions, #576); a plain release build shifts the cycles of single tests by up to 30 percent with identical instructions when unrelated code moves. Use the same build for both sides of `--compare`.
 - Never put a tool name, path or licence value into `tests.toml`, the results or this file; labels only.
 - `tests.toml` changes invalidate earlier result files: say so in the commit. Pick generics as the project's own test setup does
   (its Python or script), not at random; the defaults of a testbench are often invalid combinations.
@@ -58,7 +59,7 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
 ## 5. How to work here
 
 ```sh
-cargo build --release -p yavs --features llvm
+tools/build-bench.sh --features llvm      # release + 64-byte aligned functions (#576), never a plain release build
 cp ~/.cache/yavs-agents/sims.local.conf tools/sims.local.conf       # untracked
 python3 -I tools/realbench/run.py --list
 python3 -I tools/realbench/run.py --self-test

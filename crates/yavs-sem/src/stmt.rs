@@ -2075,7 +2075,8 @@ impl Db {
         let ty = self.base(st);
         check_case_subject(self, st, self.exprs[subject].span)?;
         check_case_others(self, alts)?;
-        let mut r = ChoiceResolver(scope);
+        // An aggregate choice takes the case expression's subtype (9.3.3.3).
+        let mut r = ChoiceResolver(scope, st);
         let mut errs = Errs::default();
         let mut resolved = Vec::with_capacity(alts.len());
         for a in alts {
@@ -2157,13 +2158,14 @@ impl Db {
 }
 
 /// Case choices resolved in the statement's region (aggregate.rs's resolver interface).
-struct ChoiceResolver(ScopeId);
+struct ChoiceResolver(ScopeId, SubtypeId);
 
 impl crate::expr::aggregate::AggResolver for ChoiceResolver {
     fn cands(&mut self, db: &mut Db, e: &ast::Expr) -> crate::expr::CandSet {
         db.cands(self.0, e)
     }
     fn resolve(&mut self, db: &mut Db, e: &ast::Expr, exp: Expected) -> Result<ExprId, Reported> {
+        db.context_subtype = Some(self.1);
         let id = db.static_expr(self.0, e, exp);
         if db.is_poison_expr(id) {
             Err(Reported)

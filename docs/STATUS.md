@@ -132,6 +132,7 @@ identical output at `--threads 1` and `--threads 4`.
 
 Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - `x'element` of an array formal with open element bounds as the target of an `others` aggregate (`issue3204`, second suite): the aggregate takes the actual's element bounds.
+- An aggregate with `others` as a case choice takes the case expression's subtype (9.3.3.3; `issue1360`, second suite).
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

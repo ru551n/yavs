@@ -148,7 +148,9 @@ impl Db {
         self.stmt_owners.push(owner);
         let body = self.seq_list(&mut cx, stmts);
         self.stmt_owners.pop();
+        let unresolved = crate::attr::unresolved_labels(self, scope);
         let body = body?;
+        unresolved?;
         if let SubprogramKind::Function { pure: true } = kind {
             self.check_purity(decl, scope, &body);
         }
@@ -1853,6 +1855,7 @@ impl Db {
         };
         let body = errs.keep(self.seq_list(&mut cx, &p.stmts));
         self.stmt_owners.pop();
+        errs.keep(crate::attr::unresolved_labels(self, pscope));
         errs.finish(())?;
         let body = body.expect("no error means a body");
         if let Some(sp) = sens_span {

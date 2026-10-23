@@ -1399,14 +1399,17 @@ fn arch_entity(db: &Db, scope: ScopeId) -> Option<ScopeId> {
         .filter(|&e| db.scopes[e].kind == ScopeKind::Entity)
 }
 
-/// Regions whose concurrent statement part follows the declarative part
-/// and ends with [`unresolved_labels`].
-// ponytail: labels of sequential statements (a process decorating its loop)
-// are still E1100; defer them too once a design needs it.
+/// Regions whose statement part (concurrent, or sequential for a process or subprogram body)
+/// follows the declarative part and ends with [`unresolved_labels`].
 pub(crate) fn has_conc_stmts(db: &Db, scope: ScopeId) -> bool {
     matches!(
         db.scopes[scope].kind,
-        ScopeKind::Entity | ScopeKind::Architecture | ScopeKind::Block | ScopeKind::Generate
+        ScopeKind::Entity
+            | ScopeKind::Architecture
+            | ScopeKind::Block
+            | ScopeKind::Generate
+            | ScopeKind::Process
+            | ScopeKind::Subprogram
     )
 }
 

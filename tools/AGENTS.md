@@ -8,7 +8,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 
 - Developer and CI scripts around the Rust workspace: fetching external corpora, deriving and
   checking the vendored IEEE libraries, generating `lib/NATIVE.md`, reference simulator runs, the
-  rename sweep, the analysis corpus runner and the differential test harness.
+  analysis corpus runner and the differential test harness.
 - Not part of any crate; nothing here is built by cargo. Python is stdlib only (run with
   `python3 -I`), shell is bash or POSIX sh.
 - Inputs are external checkouts in a cache directory, never repository content (root rule 7).
@@ -22,7 +22,6 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
 | `check-sim1.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
-| `rename-yavs.sh` | Idempotent rsim to yavs sweep for worktrees that still carry the old name |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
 | `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |

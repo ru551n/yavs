@@ -17,7 +17,7 @@
 - **Choice:** the project is yavs, "Yet Another VHDL Simulator". Crates are `yavs-*`, the
   binary is `yavs`, environment variables are `YAVS_*` (the external test runner: `VUNIT_YAVS_PATH`), native symbols
   start with `yavs.`, and library directories hold `yavs-lib.toml` and `_YAVS_LIB`.
-- **How:** one mechanical sweep, `tools/rename-yavs.sh` (idempotent; other worktrees run it on
+- **How:** one mechanical sweep (the script, `tools/rename-yavs.sh`, was removed after the rename; see git history; other worktrees ran it on
   their own changes). The GitHub repository is `ru551n/yavs` (the old URL redirects).
 - **Kept:** the `~/.cache/rsim-*` scratch directory names and the `~/git/rsim` checkout (both exist
   on disk), the test runner integration branch names, and the vendored `lib/std` and `lib/ieee` files, which keep their old

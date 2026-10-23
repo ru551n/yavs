@@ -161,7 +161,7 @@ def record_driver(t, Y, key):
         runs = [runs[t["nth"]]]  # a testbench the driver runs for several generic sets: the nth
     if len(runs) != 1:
         raise Fail(f"{t['name']}: the driver recorded {len(runs)} runs matching `{t['pick']}`, expected 1 (or give `nth`)")
-    libs, gens, flags, top, stop = {}, [], [], None, ""
+    libs, gens, flags, top, stop, severity = {}, [], [], None, "", ""
     for a in runs[0]["argv"][1:]:
         if a.startswith(("--work=", "--map=")):
             n, _, pth = a.split("=", 1)[1].partition(":")
@@ -170,6 +170,8 @@ def record_driver(t, Y, key):
                 flags.append(n)
         elif a.startswith("--stop-time="):
             stop = a.split("=", 1)[1]
+        elif a.startswith("--exit-severity="):
+            severity = a.split("=", 1)[1]
         elif a.startswith("-g"):
             gens.append(a[2:])
         elif a == "--relaxed":
@@ -181,7 +183,7 @@ def record_driver(t, Y, key):
         else:
             top = a
     toplib = next(f for f in flags if not f.startswith("-"))
-    return [r for r in recs if r["argv"][0] == "analyze"], dict(top=top, toplib=toplib, relaxed="--relaxed" in flags, generics=gens, stop=stop), libs
+    return [r for r in recs if r["argv"][0] == "analyze"], dict(top=top, toplib=toplib, relaxed="--relaxed" in flags, generics=gens, stop=stop, severity=severity), libs
 
 
 def sh(argv, cwd=None, wrap=True, timeout=1800):
@@ -354,6 +356,7 @@ def yavs_script(Y, t, w, tier, sub="run", stop=None):
         a += [f"--tier={tier}"]
         stop = stop or t["stop"]
         a += [f"--stop-time={stop}"] if stop else []
+        a += [f"--exit-severity={t['severity']}"] if t.get("severity") else []
     a += [t["top"]] + gen_args(t, w)
     return f"cd {shlex.quote(str(w))} && " + " ".join(shlex.quote(x) for x in a)
 

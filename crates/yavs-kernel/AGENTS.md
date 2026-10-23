@@ -152,6 +152,11 @@ cargo run --release -p yavs-kernel --example bench -- 10000 0
 python3 tools/difftest/difftest.py --candidate yavs  # end to end, threads 1 and 4 (tools/difftest)
 ```
 
+- Exact instruction counts (a kernel change of tens of instructions per clock edge): `tools/stepcount`, a ptrace
+  single-stepper with per-function and per-line tables on a `tools/build-bench.sh` build. The kernel alone per
+  edge: `tools/build-bench.sh -p yavs-kernel --example clk`, then `python3 -I tools/stepcount/stepcount.py --from
+  '<yavs_kernel::kernel::SimControl>::run_until' --per 5000 --lines 25 $CARGO_TARGET_DIR/release/examples/clk 1 20`
+  (5000 edges; about 940 instructions each at round 17). Windows of a real design: `tools/stepcount/AGENTS.md`.
 - Add a scenario test with hand-written processes (`tests/common/mod.rs` helpers); a
   thread-sensitive change also gets a case in `tests/determinism.rs`.
 - Codes owned: `E3000`-`E3099` (`ErrorKind::code`: E3001 time overflow, E3002 delta limit (with its `LoopCause`), E3003

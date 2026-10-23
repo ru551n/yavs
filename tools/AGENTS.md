@@ -2,7 +2,7 @@
 
 Read the root `AGENTS.md` first. This file is for an agent about to change or run a script under
 `tools/`. Subdirectories have their own guides: `tools/corpus/AGENTS.md` (analysis corpora) and
-`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`.
+`tools/difftest/AGENTS.md` (differential simulation corpus), `tools/suites/AGENTS.md`, `tools/bench/AGENTS.md` and `tools/realbench/AGENTS.md`, `tools/stepcount/AGENTS.md`.
 
 ## 1. Purpose and boundaries
 
@@ -28,6 +28,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `vhpi-conformance/` | VHPI plugin traces on yavs and the reference simulator, diffed (`tools/vhpi-conformance/AGENTS.md`) |
 | `bench/` | Shared performance benchmarks: phase timings, A/B comparison, JSON results (`tools/bench/AGENTS.md`) |
 | `realbench/` | Real-world performance suite: about 30 testbenches of real projects, timed against the reference and between two binaries (`tools/realbench/AGENTS.md`) |
+| `stepcount/` | Exact instruction counts per function and per source line for a window of a run (ptrace single-stepper in C plus a Python report; `tools/stepcount/AGENTS.md`) |
 | `discrepancies/` | Simulator discrepancy runner and verdict table (`tools/discrepancies/AGENTS.md`, catalogue `docs/design/simulator-discrepancies.md`) |
 
 ## 2a. Reference simulator configuration

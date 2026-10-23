@@ -1565,7 +1565,22 @@ impl Db {
         match (target, suffix) {
             (Some((pt, _)), ast::Suffix::Ident(i)) => match self.protected_member(pt, *i, scope) {
                 Err(r) => r,
-                Ok(_) => self.ice(span, "a method found only by protected_member"),
+                // The member exists but is no subprogram: a method whose declaration
+                // failed was reported there (8.2), a private variable is no procedure.
+                Ok(found)
+                    if found.iter().any(|&d| {
+                        matches!(
+                            self.decls[self.entity(d)].kind,
+                            crate::decl::DeclKind::Error
+                        )
+                    }) =>
+                {
+                    crate::Reported
+                }
+                Ok(_) => self.error(
+                    Diagnostic::error(diag::NOT_AN_OBJECT, "this name is not a procedure")
+                        .with_primary(span, "expected a procedure name"),
+                ),
             },
             _ => self.error(
                 Diagnostic::error(diag::NOT_AN_OBJECT, "this name is not a procedure")

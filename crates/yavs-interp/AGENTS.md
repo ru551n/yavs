@@ -153,7 +153,9 @@ YAVS_BIN=target/release/yavs python3 tools/difftest/difftest.py --candidate yavs
   from data. Interpreted ops only (none that run as compiled code: use `--tier=interp`), by
   variant; a generic `Op::Step` is split by the IR instruction it runs (`Step:LEq`), which are the
   candidates for ops of their own. Pairs are consecutive in execution on one thread, jumps and
-  calls included. It takes a mutex per op: about 5 times slower, so it is for choosing, never for
+  calls included. A third table gives the time per op (`ns` from the end of one op's census work to the
+  start of the next, the clock reads subtracted; `Suspend`, `Ret` of a process and the waits include the
+  kernel; a hint for ranking, never a measurement); `YAVS_CENSUS_TOP=N` sets the length of the tables. It takes a mutex per op: about 5 times slower, so it is for choosing, never for
   timing, and use `--threads 1`. Without the feature the cost is zero in release builds.
   ```sh
   cargo build --release -p yavs --features op-census

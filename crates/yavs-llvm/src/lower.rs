@@ -91,6 +91,9 @@ pub(crate) struct Mem {
     objs: [Obj; OBJS],
     /// Entries of `objs` in use, at most (0: none, nothing to forget).
     live: u64,
+    /// Which entries of `objs` are in use: the walks (`retain`, `save_objs`, `begin`) visit only
+    /// those.
+    occ: [u64; OBJS / 64],
     /// The `TierFrame::owner` and `heap_epoch` the objects were found at (`begin`).
     objs_owner: u64,
     objs_epoch: u64,
@@ -197,17 +200,34 @@ struct Obj {
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
 /// object index xor its space (`obj_at`: a private and a shared heap object of the same index
 /// are two objects of one protected-type library function), two objects whose keys agree there
-/// evict each other; ways if a profile shows such conflicts.
-const OBJS: usize = 16;
+/// evict each other. 16 entries missed three heap objects in four on a test runner's queue
+/// code (95 million `Deref` callbacks in a 16 s run, 12 million at 256: objects of the pointer
+/// tables, their data and the queues' buffers), and a walk visits only the entries in use
+/// (`Mem::occ`); ways if a profile shows conflicts again.
+const OBJS: usize = 256;
+const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
-/// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low four
-/// bits of its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4).
-/// The access value of a heap object has the same index in bits 32 to 55 and, as its tag, a
-/// shared flag in bit 57 (`obj_entry` with `handle`: the same key from the handle's high half).
+/// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low bits of
+/// its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4). The
+/// access value of a heap object has the same index in bits 32 to 55 and, as its tag, a shared
+/// flag in bit 57 (`handle_at`, and `obj_entry` in the generated code, which must agree with
+/// both: `obj_keys_agree`).
 #[inline(always)]
 fn obj_at(hi: u64) -> usize {
-    (hi ^ hi >> 26) as usize & (OBJS - 1)
+    (hi ^ (hi >> KEY_SHIFT_ADDR & KEY_FLAG)) as usize & (OBJS - 1)
 }
+
+/// `obj_at` from the high half of an access value (`handle >> 32`).
+#[cfg(test)]
+fn handle_at(hi: u64) -> usize {
+    (hi ^ (hi >> KEY_SHIFT_HANDLE & KEY_FLAG)) as usize & (OBJS - 1)
+}
+
+/// The shared-heap flag of the key, as bit 3: shifted down from bit 29 of an address's high half
+/// and from bit 25 of an access value's.
+const KEY_FLAG: u64 = 8;
+const KEY_SHIFT_ADDR: u32 = 26;
+const KEY_SHIFT_HANDLE: u32 = 22;
 
 const NO_OBJ: Obj = Obj {
     hi: u64::MAX,
@@ -261,6 +281,7 @@ impl Mem {
             fr,
             objs: [NO_OBJ; OBJS],
             live: 0,
+            occ: [0; OBJS / 64],
             objs_owner: 0,
             objs_epoch: 0,
             dirty: false,
@@ -300,12 +321,21 @@ impl Mem {
             });
         }
         if epoch && self.fr.flags & yavs_interp::TIER_STAMPS != 0 {
-            for o in &self.objs {
-                if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
+            for o in self.in_use() {
+                if o.w != 0 && life(o.hi) == Life::Heap {
                     host.wrote(o.hi << 32);
                 }
             }
         }
+    }
+
+    /// The entries of `objs` in use.
+    #[inline]
+    fn in_use(&self) -> impl Iterator<Item = &Obj> {
+        self.occ.iter().enumerate().flat_map(move |(w, &bits)| {
+            let objs = &self.objs;
+            BitIter(bits).map(move |b| &objs[w * 64 + b])
+        })
     }
 
     /// The end of an activation or call: what `begin` checks next time.
@@ -317,8 +347,10 @@ impl Mem {
     /// Enter object `o` at its entry.
     #[inline(always)]
     fn put_obj(&mut self, o: Obj) {
-        let e = &mut self.objs[obj_at(o.hi)];
+        let at = obj_at(o.hi);
+        let e = &mut self.objs[at];
         self.live += u64::from(e.hi == u64::MAX);
+        self.occ[at / 64] |= 1 << (at % 64);
         self.transient |= life(o.hi) == Life::Volatile;
         self.dirty = true;
         *e = o;
@@ -355,8 +387,12 @@ impl Mem {
             return;
         }
         st.words[..16].fill(u64::MAX);
-        let kept = self.objs.iter().filter(|o| o.hi != u64::MAX);
-        for (k, o) in st.words[..16].as_chunks_mut::<4>().0.iter_mut().zip(kept) {
+        for (k, o) in st.words[..16]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.in_use())
+        {
             k.copy_from_slice(&[o.hi, o.ptr as u64, o.len, o.w]);
         }
         st.words[16] = self.fr.heap_epoch;
@@ -376,13 +412,15 @@ impl Mem {
     #[inline]
     fn retain(&mut self, keep: impl Fn(u64) -> bool) {
         let (mut live, mut transient) = (0, false);
-        for o in &mut self.objs {
-            if o.hi != u64::MAX {
+        for w in 0..self.occ.len() {
+            for b in BitIter(self.occ[w]) {
+                let o = &mut self.objs[w * 64 + b];
                 if keep(o.hi) {
                     live += 1;
                     transient |= life(o.hi) == Life::Volatile;
                 } else {
                     *o = NO_OBJ;
+                    self.occ[w] &= !(1 << b);
                     self.dirty = true;
                 }
             }
@@ -413,6 +451,23 @@ impl Mem {
             Life::Heap => heap,
             _ => true,
         });
+    }
+}
+
+/// The positions of the set bits of a word, lowest first.
+struct BitIter(u64);
+
+impl Iterator for BitIter {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        let b = self.0.trailing_zeros() as usize;
+        self.0 &= self.0 - 1;
+        Some(b)
     }
 }
 
@@ -1413,8 +1468,8 @@ fn enter_on(
         mem.load_objs(&st.words);
         // The heap objects it may write count as written in this activation.
         if mem.fr.flags & yavs_interp::TIER_STAMPS != 0 {
-            for o in mem.objs {
-                if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
+            for o in mem.in_use() {
+                if o.w != 0 && life(o.hi) == Life::Heap {
                     host.wrote(o.hi << 32);
                 }
             }
@@ -6681,14 +6736,14 @@ impl Gen {
     unsafe fn obj_entry(&self, c: &Cur, hi: LLVMValueRef, handle: bool) -> LLVMValueRef {
         // SAFETY: integer arithmetic on values of c.f; the entry lies inside `Mem`.
         unsafe {
-            // The low index bits, bit 3 flipped by the shared flag (bit 29 of an address's high half
-            // shifted down by 26; bit 25 of a handle's, isolated).
-            let flag = if handle {
-                let f = LLVMBuildLShr(self.b, hi, self.c64(22), c"".as_ptr());
-                LLVMBuildAnd(self.b, f, self.c64(8), c"".as_ptr())
+            // The key of `obj_at`; the constants are shared with `handle_at` (`obj_keys_agree`).
+            let shift = if handle {
+                KEY_SHIFT_HANDLE
             } else {
-                LLVMBuildLShr(self.b, hi, self.c64(26), c"".as_ptr())
+                KEY_SHIFT_ADDR
             };
+            let flag = LLVMBuildLShr(self.b, hi, self.c64(shift as i64), c"".as_ptr());
+            let flag = LLVMBuildAnd(self.b, flag, self.c64(KEY_FLAG as i64), c"".as_ptr());
             let k = LLVMBuildXor(self.b, hi, flag, c"".as_ptr());
             let k = LLVMBuildAnd(self.b, k, self.c64(OBJS as i64 - 1), c"".as_ptr());
             let off = LLVMBuildMul(self.b, k, self.c64(OBJ_SIZE as i64), c"".as_ptr());
@@ -7212,6 +7267,26 @@ impl Drop for Gen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entry of an object found through its address (`obj_at`) is the entry of its access
+    /// value (`handle_at`, what `obj_entry` builds for a `Deref`), private and shared heaps.
+    #[test]
+    fn obj_keys_agree() {
+        for idx in [
+            0u64, 1, 7, 8, 15, 16, 255, 256, 257, 1000, 65_535, 0xff_ffff,
+        ] {
+            for (space, tag) in [(space::HEAP, 1u64), (space::SHARED_HEAP, 2)] {
+                let addr_hi = u64::from(space) << 29 | idx;
+                let handle_hi = tag << 24 | idx;
+                assert_eq!(obj_at(addr_hi), handle_at(handle_hi), "idx {idx} tag {tag}");
+            }
+            // A private and a shared object of one index get two entries.
+            assert_ne!(
+                obj_at(u64::from(space::HEAP) << 29 | idx),
+                obj_at(u64::from(space::SHARED_HEAP) << 29 | idx)
+            );
+        }
+    }
 
     /// The helper declarations carry the effects `Gen::effects` means (the encoding of
     /// `memory(...)` is LLVM's own, checked here against its printer).

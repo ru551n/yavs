@@ -4305,7 +4305,7 @@ is one module of minutes, and every test case of a suite paid it again. Decision
   of them (each miss a `TierHost::object` call). Under `--tier=auto` a compiled function entered from interpreted code
   paid a frame push, the frame view and its frame-mode code, which steps `NewFrame`, `Cat`, `Fill` and typed
   `TempRoot`: string helpers called often on short strings ran slower compiled.
-- **Object table.** `Mem::objs` is a direct-mapped table of 16 entries (`obj_at`: the low bits of the object index,
+- **Object table.** `Mem::objs` is a direct-mapped table of 16 entries (256 since #520/#493, see "`Mem::objs` with 256 entries"; `obj_at`: the low bits of the object index,
   which are also bits 32 and up of an access value), looked up inline by every access of unknown space in every
   function (one load and compare; then, on a miss, the temporary area in a process and the instance data for a read).
   An entry also holds the access value a `Deref` found it for: a `Deref` of that value is inline (`Gen` compares the
@@ -5292,3 +5292,25 @@ fresh world per binary and tier, warm.
   for it (`_p11` and `_p36`, 25 and 23 of 221 and 210 instructions leaving) are refused by the instance rule instead (made 8
   times), and the main thread's instructions are identical to four digits (373.29 G against 373.27 G). The rule stays as
   it is; the question is open until a design with such a process that passes `cold` exists.
+
+## Compiled code of queue and pointer-table libraries: a table of 256 objects, callees never seen, fat roots in place (yavs-llvm, #493, #520, 2026-10-23)
+
+Found with call counts and `perf` on the window-generator testbench of the real-world suite (`vai_window_gen_interlock`,
+warm `--tier=auto`): 164 million protected-method calls in a 16 s run (the string pointer table's `get` 70 million, `set`
+40 million, `length`, `unsafe_push`, `unsafe_pop` 13 million each), about 290 host instructions and 130 cycles per `get`.
+The profile before this change: 95 million `Deref` callbacks, 38 million `yavs_rt_host`, 36 million object look-ups
+through `TierHost::object` (22 percent of the main thread's instructions in the callbacks), against 12 / 15 / 5 million after.
+
+- **`Mem::objs` has 256 entries (was 16)**, still direct-mapped on the low bits of the object index with the shared flag
+  flipped in at bit 3 (`obj_at`). The pointer tables of the test runner's queues keep one data object per queue next to
+  the tables' own objects, a protected object of each kind and the buffers: 16 entries missed three heap objects in four.
+  32 and 64 entries (also tried before, with "no change" on the microbenchmarks, which have few live objects) are in
+  between: 64 entries 27 million `Deref` callbacks, 256 12 million (remaining misses are objects dropped after a
+  deallocation). `Mem::occ` marks the entries in use and `retain`, `save_objs` and `begin` walk only those, so the
+  bigger table does not make the walks longer; `Mem` grows by 10 KB per simulation thread. The key is computed in three
+  places (`obj_at`, `handle_at`, `Gen::obj_entry` for addresses and for access values); they share the constants
+  `KEY_FLAG`, `KEY_SHIFT_ADDR`, `KEY_SHIFT_HANDLE` and the test `obj_keys_agree` checks the Rust pair. (A key that
+  disagrees between the two sides loses nothing but speed: while changing the size I saw 565 million callbacks and
+  1.5 billion from exactly that.)
+  Tag: LLVM-only (the table is the generator's cache in front of the heap's own look-up; a Cranelift tier would need
+  the same cache or a flat view of the heap slots in `TierFrame`).

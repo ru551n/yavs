@@ -4966,6 +4966,42 @@ and `tiny.py` leave analysis out and have no cold cell (the cold cell and the in
 Older figures below were measured on the earlier Intel host with the elaboration + run basis and an interpreter column that is compared with
 sim1; they are kept as history, not as targets.
 
+### GRLIB (LEON3) in the corpora and the real-world suite, 2026-10-23 (`grlib-2008`, `grlib_leon3mp`; #604, #629, #630, #628)
+
+GRLIB 2026.3 build 4301 (Gaisler IP library, GPL-2.0, official tarball sha256 `0978edc1...2f2`) is fetched by `tools/fetch-corpus.sh` at the tagged
+commit of a git mirror that is file-identical to the tarball (sparse: `lib/`, `bin/`, the `leon3mp`, `leon3-minimal` and `noelv-generic` templates, 29 MB). The CI
+`corpus` job fetches it with the other corpora (same cache key) and runs `grlib-2008` against its expected list.
+
+- **Analysis corpus `grlib-2008`**: the order of GRLIB's own script generator for `designs/leon3mp` with inferred technology (no vendor library), 410 files.
+  sim1 and sim2 accept all 410, yavs 409; `lib/opencores/can/can_top.vhd` fails with E0006 at 32 nested parentheses (#604). 46 of GRLIB's 456 files are
+  excluded: GRLIB is VHDL-93 code and the `std_logic_vector`/`std_ulogic_vector` overload pairs of its `stdio` and `testlib` packages are homographs under 2008
+  (LRM 12.3), rejected by every tool; the processor core (`iu3` through `sparc_disas`), the bus controller and the simulation models depend on them.
+- **VHDL-93**: with GRLIB's own flags the unmodified tree works on both references: sim1 (`--std=93 --relaxed`) analyses 454 of 456 library files (two are
+  errors in GRLIB: `axi4mux.vhd`, `axi4mem.vhd`), elaborates and runs `leon3mp` to `Test passed` at 1060873 ns in 13 s; sim2 (`--std=93c --ieee=synopsys`) in 35 s CPU.
+  yavs has no 1993 mode, so `grlib_leon3mp` is `excluded` in `tools/realbench/tests.toml` (stop time 1060500 ns, just before the template's own end-of-test failure
+  assertion). The way forward is a user decision (#629): a 93 mode, a fetch-time adjustment of the two packages, or analysis corpus only.
+- **Candidates**: `leon3-minimal` (with `-gfabtech=0 -gmemtech=0 -gpadtech=0 -gclktech=0`) runs to `Test passed` on sim1 and starts the same system test on yavs (not run to the end), but it ends in the
+  same delta cycle as its failure assertion, so the harness would need an expected-failure end; `noelv-generic` needs 140 s on sim1 for 145 us. Not added.
+- **Bugs found**: #604 (parser nesting cap), #628 (a constant and a subprogram `flush` from `std.textio` are not hidden: LRM 12.4; sim2 rejects `sparc_disas.vhd`
+  at 2008 for this, sim1 and yavs accept), #630 (the integer unit's `comb` process stays interpreted under `--tier=auto`; `--tier=llvm` needs 82 s CPU of code generation).
+
+Exploratory timing, NOT part of the headline above or its category means. It runs on an adjusted copy, because the test cannot run on the unmodified sources at 2008: in a
+scratch checkout (HEAD at the pinned commit, working tree edited, selected with `YAVS_CORPUS`) all `HRead`/`HWrite`/`Write` procedures of `stdio.vhd` and the
+`std_logic_vector` overloads of `compare` and `check` in `testlib.vhd` were removed (2008 `ieee.std_logic_1164` has the former), and an untracked manifest of all 456 files of
+GRLIB's list replaced `grlib-2008`. The adjusted design gives identical output and end time on sim1 and on yavs at every tier. `--tier=auto` against sim1, wall seconds (medians of
+2, `tools/build-bench.sh --features llvm`, cores 14 and 15 idle but host load average about 28), analysis of all 450 files one call per file:
+
+| basis | sim1 | yavs auto | ratio | instruction ratio |
+|---|---:|---:|---:|---:|
+| total warm (analysis + elaboration + run) | 21.54 | 153.65 | 7.13 | 8.69 |
+| total cold (empty cache, fresh libraries) | 21.97 | 150.82 | 6.86 | 8.88 |
+| analysis warm / cold | 8.61 / 9.04 | 3.41 / 4.31 | 0.40 / 0.48 | 0.58 / 0.69 |
+| elaboration alone warm / cold | 0.38 / 0.38 | 0.24 / 0.21 | 0.63 / 0.55 | 0.79 / 0.67 |
+| elaboration + run warm / cold | 12.93 / 12.93 | 150.24 / 146.51 | 11.62 / 11.33 | 11.25 / 11.46 |
+
+Analysis and elaboration are faster than sim1; the run is the cost (#630). Interpreter (own before/after figure, not compared with sim1): 152.3 s, 1850 G instructions
+for the same run; `--tier=auto` is 150.2 s warm, so it gains nothing here.
+
 ## Real-world performance suite, baseline 2026-10-21, earlier host (`tools/realbench`)
 
 The designs of `tools/bench` were written for the harness and the tuning so far was done on them and on a few library

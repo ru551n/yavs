@@ -3,8 +3,9 @@
 # Fields: name, category, why (what it adds to the mix), source (checkout id, see tools/fetch-corpus.sh) and path (the
 # main file, relative to it), top and toplib (the entity and its library), corpus (analysis-corpus manifests of
 # tools/corpus whose libraries are built first), files (extra files analysed on top: lib, source, path or glob;
-# lib "@module" = the directory after `modules/`), relaxed, generics (-gNAME=VALUE), vunit (true = all test
-# cases, or one test case name), stop (--stop-time), std, ok (regex the output must match). A `driver` test
+# lib "@module" = the directory after `modules/`), data (files {source, path} copied into the working directory of the run),
+# relaxed, generics (-gNAME=VALUE), vunit (true = all test cases, or one test case name), stop (--stop-time), std,
+# ok (regex the output must match), excluded (reason; the test is listed but only runs with --tests or --include-excluded). A `driver` test
 # (driver args and pick) takes its library set and run command from a recorded run of tools/suites.
 # Nothing here is copied from the sources: they are read in place from the corpus cache.
 
@@ -270,6 +271,30 @@ toplib = "neorv32"
 corpus = ["neorv32-2008"]
 generics = ["JTAG_TESTS_EN=false", "DUAL_CORE_EN=false", "TRACE_SIMLOG_EN=false"]
 stop = "300us"
+
+[[test]]
+name = "grlib_leon3mp"
+category = "cpu"
+why = "LEON3 SPARC V8 system (MMU, caches, memory and AHB/APB controllers, SDRAM and SRAM models, UART, timers, interrupt controller) booting from a PROM and running GRLIB's own system test; the memory models read an S-record image with textio at start; VHDL-93 style RTL (record-heavy processor core)"
+source = "grlib"
+path = "designs/leon3mp/testbench.vhd"
+top = "testbench"
+toplib = "work"
+corpus = ["grlib-2008"]
+relaxed = true
+stop = "1060500ns"
+ok = "Test passed"
+data = [
+  { source = "grlib", path = "designs/leon3mp/prom.srec" },
+  { source = "grlib", path = "designs/leon3mp/ram.srec" },
+]
+files = [
+  { lib = "work", source = "grlib", path = "designs/leon3mp/config.vhd" },
+  { lib = "work", source = "grlib", path = "designs/leon3mp/ahbrom.vhd" },
+  { lib = "work", source = "grlib", path = "designs/leon3mp/leon3mp.vhd" },
+  { lib = "work", source = "grlib", path = "designs/leon3mp/testbench.vhd" },
+]
+excluded = "GRLIB is VHDL-93 code: the std_logic_vector and std_ulogic_vector overload pairs of its stdio and testlib packages are homographs under 2008, so the processor core, bus controller and simulation models cannot be analysed at 2008 (decision #629, docs/STATUS.md \"GRLIB\"); the stop time is just before the template's own end-of-test failure assertion at 1060873 ns"
 
 [[test]]
 name = "osvvm_axis_random"

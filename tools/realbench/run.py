@@ -66,6 +66,7 @@ def load_tests(path=HERE / "tests.toml"):
         t.setdefault("relaxed", False)
         t.setdefault("generics", [])
         t.setdefault("files", [])
+        t.setdefault("data", [])
         t.setdefault("stop", "")
         t.setdefault("vunit", False)
         t.setdefault("ok", "")
@@ -95,7 +96,7 @@ def check_sources(tests):
     """Every source checkout a selected test uses must exist, at its pinned commit. Returns {id: commit}."""
     pins, used, bad, got = fetch_pins(), {}, [], {}
     for t in tests:
-        ids = {t["source"]} | {f["source"] for f in t["files"]}
+        ids = {t["source"]} | {f["source"] for f in t["files"] + t["data"]}
         for sid in ids:
             used.setdefault(sid, []).append(t["name"])
         for m in t["corpus"]:
@@ -269,6 +270,8 @@ def make_pristine(t, tool, Y, key, dest):
         return _pristine_driver(t, tool, Y, key, dest)
     copy_corpus_libs(t, tool, Y, key, dest)
     (dest / "out").mkdir()
+    for d in t["data"]:  # files the testbench reads at run time from its working directory (the world)
+        shutil.copy(source_root(d["source"]) / d["path"], dest)
     pending = expand_files(t)
     done, skipped = [], []
     while pending:  # fixed point: retry what failed until a pass makes no progress (files given in dependency order pass at once)
@@ -540,7 +543,7 @@ def corpus_key(t):
 
 
 def ok_run(t, c, w):
-    return not w["rc"] and (c.mode != "run" or not t["ok"] or re.search(t["ok"], w["tail"]))
+    return not w["rc"] and (c.mode != "run" or not t["ok"] or w["ok_match"])
 
 
 def measure_group(t, cells, ctx, cores, runs, instr, scratch):
@@ -550,7 +553,7 @@ def measure_group(t, cells, ctx, cores, runs, instr, scratch):
     bad = {}
     for c in cells:
         for _ in range(c.warmups):
-            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, ref=c.tool != "yavs")
+            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, ref=c.tool != "yavs", ok=t["ok"] or None)
             if not ok_run(t, c, w):
                 bad[c.name] = {"rc": w["rc"], "tail": w["tail"]}
                 break

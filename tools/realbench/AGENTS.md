@@ -51,6 +51,8 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
   them one per simulation (state kept between cases); name one case then (`vunit = "test_name"`).
 - Testbenches that never finish need `stop` (`--stop-time`); the same flag is passed to both tools.
 - Results with a loaded host are noise: check the load average printed at the start and use the instruction ratio when wall differs.
+- `data` files of a test (the GRLIB template reads `prom.srec` and `ram.srec` from its working directory) are copied into the world; the run starts in the world directory.
+- `grlib_leon3mp` is `excluded`: the processor core cannot be analysed at 2008 (VHDL-93-only packages, decision #629; see `tools/corpus/AGENTS.md` and `docs/STATUS.md` "GRLIB"). Its `stop` is just before the template's own end-of-test failure assertion, so the run ends with status 0; the pass check is the text `Test passed` of the on-chip system test, searched in the whole output (`ok` is matched by `bench/run.py timed`, not in its 200 character tail).
 - Excluded testbenches (they fail on yavs or the reference) are listed with the reason in `docs/STATUS.md`
   ("Real-world performance suite, baseline 2026-10-21") and each yavs failure has an issue.
 - Do not read the `codegen` ratio as a code generation ratio against the reference: it divides by the reference's whole elaboration (which contains its code generation). Compare yavs `elab-X` + `codegen-X` with the reference `elab-X` for that.

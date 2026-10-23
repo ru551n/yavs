@@ -239,7 +239,7 @@ impl Db {
         }
     }
 
-    fn is_param(&self, root: ObjRoot) -> bool {
+    pub(crate) fn is_param(&self, root: ObjRoot) -> bool {
         matches!(root, ObjRoot::Decl(d) if matches!(
             &self.decls[d].kind,
             DeclKind::Object(o) if o.role == ObjRole::Param

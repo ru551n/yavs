@@ -2558,8 +2558,9 @@ impl Db {
             return Some("libraries".into());
         }
         let (a, b) = (self.facts(), other.facts());
-        if (a.reads_activity, &a.forces, &a.package_paths)
-            != (b.reads_activity, &b.forces, &b.package_paths)
+        if (a.reads_activity, &a.forces, &a.package_paths, a.history_all)
+            != (b.reads_activity, &b.forces, &b.package_paths, b.history_all)
+            || (&a.history_parts, &a.history_wholes) != (&b.history_parts, &b.history_wholes)
         {
             return Some("facts".into());
         }

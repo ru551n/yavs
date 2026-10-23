@@ -1491,30 +1491,46 @@ impl Db {
         })
     }
 
-    /// Folded array value `c` seen through constrained subtype `st`: the bounds of `st`, not
-    /// those of the initial value (a constant takes its subtype's bounds, LRM 6.4.2.2).
-    /// `None` (not folded) when the bounds of `st` are not static or a length differs, so
-    /// lowering evaluates the constant and its run-time check reports a mismatch.
+    /// Folded value `c` seen through constrained subtype `st`: the bounds of `st`, not those of
+    /// the initial value (a constant takes its subtype's bounds, LRM 6.4.2.2), also for the
+    /// array fields of a record. `None` (not folded) when the bounds of `st` are not static
+    /// or a length differs, so lowering evaluates the constant and its run-time check reports
+    /// a mismatch.
     fn rebound(&mut self, c: ConstId, st: SubtypeId) -> Option<ConstId> {
-        let ConstValue::Array(a) = &self.consts[c] else {
-            return Some(c);
-        };
-        let mut want = Vec::with_capacity(a.bounds.len());
-        for dim in 0..a.bounds.len() {
-            let Some(r) = crate::expr::aggregate::subtype_range(self, st, dim) else {
-                let constrained = matches!(
-                    self.subtypes[st].constraint,
-                    crate::types::Constraint::Array { dims: Some(_), .. }
-                );
-                return (!constrained).then_some(c);
-            };
-            want.push((r.left, r.dir, r.right));
+        let v = self.consts[c].clone();
+        let r = self.rebound_value(&v, st)?;
+        Some(if r == v { c } else { self.add_const(r) })
+    }
+
+    fn rebound_value(&mut self, v: &ConstValue, st: SubtypeId) -> Option<ConstValue> {
+        match v {
+            ConstValue::Array(a) => {
+                let mut want = Vec::with_capacity(a.bounds.len());
+                for dim in 0..a.bounds.len() {
+                    let Some(r) = crate::expr::aggregate::subtype_range(self, st, dim) else {
+                        let constrained = matches!(
+                            self.subtypes[st].constraint,
+                            crate::types::Constraint::Array { dims: Some(_), .. }
+                        );
+                        return (!constrained).then(|| v.clone());
+                    };
+                    want.push((r.left, r.dir, r.right));
+                }
+                if *a.bounds == *want {
+                    return Some(v.clone());
+                }
+                Some(ConstValue::Array(a.with_bounds(&want)?))
+            }
+            ConstValue::Record(vs) => {
+                let mut out = Vec::with_capacity(vs.len());
+                for (i, f) in vs.iter().enumerate() {
+                    let fst = self.field_subtype(st, i as u32);
+                    out.push(self.rebound_value(f, fst)?);
+                }
+                Some(ConstValue::Record(out.into()))
+            }
+            _ => Some(v.clone()),
         }
-        if *a.bounds == *want {
-            return Some(c);
-        }
-        let v = ConstValue::Array(a.with_bounds(&want)?);
-        Some(self.add_const(v))
     }
 
     /// A function call with named or positional association; defaults are `Actual::Default`.

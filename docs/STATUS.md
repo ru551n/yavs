@@ -141,6 +141,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - A concurrent procedure call with mode view parameters is sensitive to the elements the view reads (`view6`, first suite).
 - A deferred constant of a package instance in an architecture read as zero (`genpack16`, first suite); it reads the body's full declaration.
 - An alias with a partly constrained subtype (`alias y : arr(0 to n - 1) is x`, arrays of open arrays) keeps the aliased object's index range (`issue932`, first suite); it has its own index range now.
+- A record constant with open fields kept the bounds of its initial value (`issue1274`, first suite); it has its subtype's field bounds, in analysis (folded values) and in elaboration (called values).
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

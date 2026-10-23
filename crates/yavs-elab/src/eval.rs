@@ -1118,13 +1118,17 @@ impl Model {
         scope: Option<ScopeId>,
         span: Span,
     ) -> R<Val> {
-        let Val::Array(a) = &v else { return Ok(v) };
-        let Some(Shape::Array { dims, .. }) = self.shape(db, st, scope, span)? else {
+        if !matches!(v, Val::Array(_) | Val::Record(_)) {
             return Ok(v);
+        }
+        // A record whose fields have no shape (an access or file field) keeps its bounds.
+        let shape = match (&v, self.shape(db, st, scope, span)) {
+            (_, Ok(Some(sh))) => sh,
+            (Val::Record(_), _) | (_, Ok(None)) => return Ok(v),
+            (_, Err(e)) => return Err(e),
         };
-        let want: Vec<_> = dims.iter().map(|b| (b.left, b.dir, b.right)).collect();
-        match a.with_bounds(&want) {
-            Some(a) => Ok(Val::Array(a)),
+        match rebound(&v, &shape) {
+            Some(v) => Ok(v),
             None => Err(err(
                 codes::NOT_EVALUATED,
                 span,
@@ -1542,6 +1546,24 @@ impl Model {
                 "here",
             )),
         }
+    }
+}
+
+/// `v` under the bounds of `shape` (LRM 5.3.2.2): the arrays at the top and in the fields of
+/// records; `None` when a length differs.
+fn rebound(v: &Val, shape: &Shape) -> Option<Val> {
+    match (v, shape) {
+        (Val::Array(a), Shape::Array { dims, .. }) => {
+            let want: Vec<_> = dims.iter().map(|b| (b.left, b.dir, b.right)).collect();
+            a.with_bounds(&want).map(Val::Array)
+        }
+        (Val::Record(vs), Shape::Record { fields, .. }) if vs.len() == fields.len() => vs
+            .iter()
+            .zip(fields)
+            .map(|(v, (_, s))| rebound(v, s))
+            .collect::<Option<Box<[Val]>>>()
+            .map(Val::Record),
+        _ => Some(v.clone()),
     }
 }
 

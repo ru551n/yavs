@@ -1536,7 +1536,7 @@ fn reads(f: &Func, i: &Inst, mut each: impl FnMut(yavs_ir::Reg)) {
 
 /// Whether register `r` may be read after the instruction at `pc` and before it is written,
 /// on some path (an instruction it cannot follow counts as a read).
-fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
+pub(crate) fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
     let mut seen = vec![false; f.code.len() + 1];
     let mut stack = vec![pc + 1];
     while let Some(mut p) = stack.pop() {

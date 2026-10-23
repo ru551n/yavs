@@ -127,6 +127,8 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 
 - Held heap objects (#626; `ObjRef`, `Known::Heap(Some(_))`, `Cur::objnew`, native frames only): after a `Deref` the generated code has the object's pointer and length as values and every address derived from it (`Index`, `Field`, `Move`) carries its offset; `Gen::host` uses them. Facts are dropped at the first instruction outside `keeps_objects` and at block starts. A new instruction that frees or moves a heap object must stay out of `keeps_objects`; a new way to derive an address from a held one must set `Cur::objnew` or leave the fact to lapse (it does by default).
 
+- Search loops (#578; `yavs_interp::search_loops`, `yavs_rt_scan`, `Mem::span`, `scan_ctl`): at the head of a search loop in a native frame the generated code calls the helper with the loop's registers; `hit` 1 and 2 jump to the loop's exits (`ways` of those blocks is raised, so they take nothing from a predecessor), anything else falls into the generic head. The loop's exit blocks need the registers the loop defines besides the element and index dead (`search_loops` checks). `auto.rs` `fused_search` (#573) can go: the compiled loop is as fast as the interpreter's now.
+
 ## 4. Invariants and pitfalls
 
 - A frame's registers when compiled code enters at any pc: the preloaded `Const`/`ConstF`/`AddrOf` values of `Pre`, zero elsewhere, and the registers holding a `lean` function's parameter slot address are zero too (`Pre::next` skips their `AddrOf`; #566). Never read them: address preloaded frame slots by the known offset (`Known::Frame`, `base_known` in `Gen::func`). A second code generator read the caller's parameter this way. Contract and test: `crates/yavs-interp/AGENTS.md` (`Pre::lean`).

@@ -53,6 +53,7 @@ const FAST_SUBTYPE: u32 = 2;
 const FAST_FAT_ROOT: u32 = 3;
 const FAST_DEREF: u32 = 4;
 const MEMEQ: &str = "yavs_rt_memeq";
+const SCAN: &str = "yavs_rt_scan";
 const CODES: &str = "yavs_rt_codes";
 const PLANES: &str = "yavs_rt_planes";
 const NATIVE: &str = "yavs_rt_native";
@@ -1144,6 +1145,41 @@ unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
 }
 
 impl Mem {
+    /// The object `a` points into, as its start and length, where `find` reaches it (reading),
+    /// and the slots of the native frames between the interpreter's top frame and frame
+    /// `depth` (registered in `nslots`; a closed frame is not there).
+    fn span(&self, a: u64, depth: u64) -> Option<(*const u8, u64)> {
+        let hi = a >> 32;
+        let fr = &self.fr;
+        let (base, len) = if hi == fr.frame_hi {
+            (fr.slots.cast_const(), fr.slots_len)
+        } else if hi == u64::from(space::TEMP) << 29 {
+            (fr.temp.cast_const(), fr.temp_len)
+        } else if hi == u64::from(space::INST) << 29 {
+            (fr.inst, fr.inst_len)
+        } else if hi >> 29 == u64::from(space::FRAME) {
+            let idx = hi & ((1 << 29) - 1);
+            if idx <= fr.frame || idx > depth || self.nslots.is_null() {
+                return None;
+            }
+            // SAFETY: the table has an entry for every frame index up to the depth limit and
+            // the entries of frames above the interpreter's top frame and up to `depth` are those
+            // of live native frames (their entry writes them, closed frames write length 0).
+            let e = unsafe { *self.nslots.add(idx as usize) };
+            if e.len == 0 {
+                return None;
+            }
+            (e.ptr.cast_const(), e.len)
+        } else {
+            let o = &self.objs[obj_at(hi)];
+            if o.hi != hi {
+                return None;
+            }
+            (o.ptr.cast_const(), o.len)
+        };
+        ((a & 0xffff_ffff) <= len).then_some((base, len))
+    }
+
     /// The host pointer to `n` bytes at address `a` plus `extra` where they lie in the frame's
     /// slots, the temporary area, (reading) the instance data or a cached object.
     fn find(&self, a: u64, extra: u64, n: u64, write: bool) -> Option<*mut u8> {
@@ -1191,6 +1227,99 @@ extern "C" fn yavs_rt_host(
     let m = unsafe { &*mem };
     m.find(a, extra, n, write != 0)
         .unwrap_or(std::ptr::null_mut())
+}
+
+/// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out)`: the iterations of a search loop
+/// (`yavs_interp::search_loops`) compiled code is at the head of, as the interpreter runs them
+/// (`yavs_interp::scan_bytes`); `ctl` packs the shape (`scan_ctl`). The descriptor and the array's
+/// object are looked up once; `out` gets the index, the element, the exit taken and the iterations.
+/// Returns the iterations done, 0 where the generic code must go on (memory the table does not
+/// reach, an index outside the bounds): it errs at the same iteration then.
+extern "C" fn yavs_rt_scan(
+    env: *mut c_void,
+    mem: *mut Mem,
+    ctl: u64,
+    dope: u64,
+    base: u64,
+    i0: i64,
+    x: i64,
+    e: i64,
+    delta: i64,
+    out: *mut i64,
+    depth: u64,
+) -> u32 {
+    cb(Cb::Scan);
+    let shape = yavs_interp::ScanShape {
+        stride: (ctl >> 8) as u32,
+        w: match ctl >> 40 & 3 {
+            0 => yavs_ir::Width::B1,
+            1 => yavs_ir::Width::B4,
+            _ => yavs_ir::Width::B8,
+        },
+        m: (ctl >> 42 & 7) as u8,
+        m2: (ctl >> 45 & 7) as u8,
+        idx_left: ctl >> 48 & 1 != 0,
+        delta,
+    };
+    // The object `a` points into, looked up in the object table when it is not in the view.
+    let span = |a: u64| {
+        // SAFETY: as in `yavs_rt_step`.
+        if let Some(s) = unsafe { &*mem }.span(a, depth) {
+            return Some(s);
+        }
+        if yavs_rt_obj(env, mem, a, 0) == 0 {
+            return None;
+        }
+        // SAFETY: as above.
+        unsafe { &*mem }.span(a, depth)
+    };
+    let Some((dp, dlen)) = span(dope) else {
+        return 0;
+    };
+    let at = (dope & 0xffff_ffff) + (ctl & 0xff) * 24;
+    if at + 24 > dlen {
+        return 0;
+    }
+    // SAFETY: the 24 bytes at `dp + at` lie in the descriptor's object (checked).
+    let word =
+        |k: usize| unsafe { std::ptr::read_unaligned(dp.add(at as usize + k * 8).cast::<i64>()) };
+    let dim = (word(0), word(1), word(2) as u64);
+    let Some((bp, blen)) = span(base) else {
+        return 0;
+    };
+    // SAFETY: the object's `blen` bytes at `bp` are what `Mem::find` hands out for reading;
+    // nothing runs between here and the end of the scan that could free them.
+    let bytes = unsafe { std::slice::from_raw_parts(bp, blen as usize) };
+    let from = yavs_interp::ScanFrom {
+        i0,
+        x,
+        e,
+        limit: 1 << 24,
+    };
+    let sc = yavs_interp::scan_bytes(&shape, dim, bytes, base & 0xffff_ffff, from);
+    // SAFETY: `out` is four words of the caller.
+    unsafe {
+        *out = sc.i;
+        *out.add(1) = sc.ch as i64;
+        *out.add(2) = i64::from(sc.hit);
+    }
+    sc.iters
+}
+
+/// The `ctl` word of `yavs_rt_scan` for a search loop.
+fn scan_ctl(l: &yavs_interp::SearchLoop) -> u64 {
+    let s = &l.shape;
+    let w = match s.w {
+        yavs_ir::Width::B1 => 0,
+        yavs_ir::Width::B4 => 1,
+        _ => 2,
+    };
+    u64::from(l.dim)
+        | u64::from(s.stride) << 8
+        | w << 40
+        | u64::from(s.m) << 42
+        | u64::from(s.m2) << 45
+        | u64::from(s.idx_left) << 48
 }
 
 /// `Inst::LayoutOf` of an array whose element layout is fixed (`StaticLayout::Array`): reads
@@ -1741,6 +1870,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DEOPT_SLOTS, yavs_rt_deopt_slots as *const () as usize),
             (DEOPT_END, yavs_rt_deopt_end as *const () as usize),
             (MEMEQ, yavs_rt_memeq as *const () as usize),
+            (SCAN, yavs_rt_scan as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
             (PLANES, yavs_rt_planes as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
@@ -3065,6 +3195,9 @@ struct Gen {
     /// `yavs_rt_memeq(a, b, n) -> i64`.
     memeq_ty: LLVMTypeRef,
     memeq: LLVMValueRef,
+    /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
+    scan_ty: LLVMTypeRef,
+    scan: LLVMValueRef,
     /// `yavs_rt_codes(codes, groups, mask, out)`.
     codes_ty: LLVMTypeRef,
     codes: LLVMValueRef,
@@ -3265,6 +3398,8 @@ impl Gen {
             let deopt_end_ty = LLVMFunctionType(i32, deparams.as_mut_ptr(), 3, 0);
             let mut mparams = [ptr, ptr, i64];
             let memeq_ty = LLVMFunctionType(i64, mparams.as_mut_ptr(), 3, 0);
+            let mut scparams = [ptr, ptr, i64, i64, i64, i64, i64, i64, i64, ptr, i64];
+            let scan_ty = LLVMFunctionType(i32, scparams.as_mut_ptr(), 11, 0);
             let mut cparams = [ptr, i64, i64, ptr];
             let codes_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), cparams.as_mut_ptr(), 4, 0);
             let mut plparams = [ptr, i64, i64, i64, ptr];
@@ -3327,6 +3462,8 @@ impl Gen {
                 deopt_end: add(DEOPT_END, deopt_end_ty),
                 memeq_ty,
                 memeq: add(MEMEQ, memeq_ty),
+                scan_ty,
+                scan: add(SCAN, scan_ty),
                 codes_ty,
                 codes: add(CODES, codes_ty),
                 planes_ty,
@@ -3400,6 +3537,7 @@ impl Gen {
                 self.troot,
                 self.endstmt,
                 self.xstep,
+                self.scan,
             ] {
                 self.attr(f, false, "nounwind", 0);
             }
@@ -4513,6 +4651,23 @@ impl Gen {
                     }
                 }
             }
+            // Search loops (`yavs_interp::search_loops`) of a native frame run through
+            // `yavs_rt_scan` at their head; the helper's exits jump to blocks it skips the way to.
+            let scans: std::collections::HashMap<u32, yavs_interp::SearchLoop> = if native {
+                yavs_interp::search_loops(f)
+                    .into_iter()
+                    .map(|l| (l.head, l))
+                    .collect()
+            } else {
+                Default::default()
+            };
+            for l in scans.values() {
+                for b in [l.found, l.end] {
+                    if let Some(w) = f.blocks.get(b).and_then(|b| ways.get_mut(b.start as usize)) {
+                        *w += 1;
+                    }
+                }
+            }
             let mut open = false;
             let mut prev = None;
             let kinds = std::env::var_os("YAVS_LLVM_KINDS").is_some() && !native;
@@ -4631,6 +4786,47 @@ impl Gen {
                 if ablate(&inst) {
                     self.step(&c, pc, &inst);
                     continue;
+                }
+                if let Some(l) = scans.get(&pc) {
+                    // The iterations that need nothing special run in the helper; what it leaves
+                    // (a fault, a long loop, memory it does not reach) is the generic code below.
+                    let out = self.entry_alloca(&c, 32);
+                    let mut args = [
+                        c.env,
+                        c.mem,
+                        self.c64(scan_ctl(l) as i64),
+                        self.ld(&c, l.dope),
+                        self.ld(&c, l.base),
+                        self.ld(&c, l.idx),
+                        self.ld(&c, l.x),
+                        self.ld(&c, l.e),
+                        self.c64(l.shape.delta),
+                        out,
+                        c.nat.as_ref().map_or(self.c64(0), |n| n.depth),
+                    ];
+                    let iters = LLVMBuildCall2(
+                        self.b,
+                        self.scan_ty,
+                        self.scan,
+                        args.as_mut_ptr(),
+                        11,
+                        c"".as_ptr(),
+                    );
+                    let (done, generic) = (self.block(&c), self.block(&c));
+                    LLVMBuildCondBr(
+                        self.b,
+                        self.icmp(IP::LLVMIntNE, iters, self.c32(0)),
+                        done,
+                        generic,
+                    );
+                    LLVMPositionBuilderAtEnd(self.b, done);
+                    let word = |k: i64| self.load(self.i64, self.gep(out, self.c64(k * 8)));
+                    self.st(&c, l.idx, word(0));
+                    self.st(&c, l.ch, word(1));
+                    let sw = LLVMBuildSwitch(self.b, word(2), generic, 2);
+                    LLVMAddCase(sw, self.c64(1), block_bb(l.found)?);
+                    LLVMAddCase(sw, self.c64(2), block_bb(l.end)?);
+                    LLVMPositionBuilderAtEnd(self.b, generic);
                 }
                 match inst {
                     Inst::Const { dst, v } => self.std(&c, dst, self.c64(v)),

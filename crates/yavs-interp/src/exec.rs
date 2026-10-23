@@ -24,6 +24,7 @@ use yavs_std::arith;
 use crate::debug::{DebugSession, FrameView, ProcState, StepMode, Stop, StopReason};
 use crate::heap::{self, Heap, HeapError};
 use crate::pre::{self, Op};
+use crate::scan::{Scan, ScanFrom, ScanShape};
 use crate::{InstData, NAT_ASK, NAT_CODE, ProcDriver, ProcRoots, Runtime, SharedState};
 
 /// An execution failure before it becomes a `SimError` with a trace.
@@ -424,16 +425,6 @@ struct ScanLoop {
     /// The step's compare has the index as its left operand.
     idx_left: bool,
     delta: i64,
-}
-
-/// Where a search loop stopped: the index and the element last read, which exit (1: the
-/// element compare, 2: the index compare, 0: neither, the generic ops go on) and the
-/// iterations that read an element.
-struct Scan {
-    i: i64,
-    ch: u64,
-    hit: u8,
-    iters: u32,
 }
 
 enum Flow {
@@ -6560,56 +6551,26 @@ impl Machine {
     /// memory out of the common spaces, an overflow): the result says how far it got.
     #[inline(never)]
     fn scan_loop(&self, p: &ScanLoop, i0: i64, x: i64, e: i64, limit: u32) -> Scan {
-        let mut sc = Scan {
+        let none = Scan {
             i: i0,
-            ch: 0,
-            hit: 0,
-            iters: 0,
+            ..Scan::default()
         };
-        let Ok((l, r, dir)) = self.dim_of(p.dope, u64::from(p.dim)) else {
-            return sc;
+        let Ok(dim) = self.dim_of(p.dope, u64::from(p.dim)) else {
+            return none;
         };
         let (sp, sidx, soff) = split(p.base);
         let Some(mem) = self.mem_fast(sp, sidx) else {
-            return sc;
+            return none;
         };
-        let n = p.w.bytes().min(8) as usize;
-        let mut i = i0;
-        while sc.iters < limit {
-            let pos = match dir {
-                0 if l <= i && i <= r => i.wrapping_sub(l) as u64,
-                1 if r <= i && i <= l => l.wrapping_sub(i) as u64,
-                _ => break,
-            };
-            let Some(off) = pos
-                .checked_mul(u64::from(p.stride))
-                .and_then(|d| d.checked_add(soff))
-                .filter(|&o| o <= u64::from(u32::MAX))
-            else {
-                break;
-            };
-            let Some(b) = mem.get(off as usize..off as usize + n) else {
-                break;
-            };
-            sc.ch = cell_w(b, p.w);
-            sc.i = i;
-            sc.iters += 1;
-            if pre::cmp_holds(p.m, sc.ch as i64, x) {
-                sc.hit = 1;
-                break;
-            }
-            let (a2, b2) = if p.idx_left { (i, e) } else { (e, i) };
-            if pre::cmp_holds(p.m2, a2, b2) {
-                sc.hit = 2;
-                break;
-            }
-            match i.checked_add(p.delta) {
-                Some(v) => i = v,
-                None => break,
-            }
-            sc.i = i;
-        }
-        sc
+        let shape = ScanShape {
+            stride: p.stride,
+            w: p.w,
+            m: p.m,
+            m2: p.m2,
+            idx_left: p.idx_left,
+            delta: p.delta,
+        };
+        crate::scan::scan_bytes(&shape, dim, mem, soff, ScanFrom { i0, x, e, limit })
     }
 
     /// Run the compiled code of frame `top` (`func`, `f`) from op `k` (`run_ops`, kept out of
@@ -9345,7 +9306,7 @@ pub(crate) fn cell(b: &[u8]) -> u64 {
 
 /// [`cell`] of `w.bytes()` bytes, `w` known: `B4` sign-extends.
 #[inline(always)]
-fn cell_w(b: &[u8], w: Width) -> u64 {
+pub(crate) fn cell_w(b: &[u8], w: Width) -> u64 {
     // `b` is exactly `min(w.bytes(), 8)` long: fixed sizes compile to plain loads.
     match w {
         Width::B1 => b.first().map_or(0, |&x| u64::from(x)),

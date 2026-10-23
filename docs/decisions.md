@@ -5799,3 +5799,33 @@ to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 
   objects, `inherit` in `Gen::func`; the values defined in the predecessor dominate such a block). The arms of a `Case` of
   a protected method (one block each) found their objects again with a full lookup each; now they are held from the
   `Deref`s before the `Case`. Measured: one protected `get` 397 to 359 instructions, `protected_queue` 6.17 G to 5.88 G.
+
+## Search loops in compiled code: one shared scan (yavs-interp `scan.rs`, yavs-llvm, #578, 2026-10-23)
+
+A compiled loop that reads one array element per iteration (`Pos`, `Index`, `Load`, compare, index step) paid the
+position check and the object lookup at every element: 95 instructions an element in a native frame (a benchmark of a
+100-character search; the interpreter's fused loop about 60), against 14 to 5 the issue measured on real string helpers.
+
+- **`yavs_interp::scan_bytes` is the one implementation** (tag: shared; the interpreter's `Machine::scan_loop` and the
+  LLVM helper both call it; a second code generator calls the same function): the iterations of a search loop while neither
+  exit is taken, over the descriptor's `(left, right, direction)` and the bytes of the object, stopping at anything the
+  generic code should handle (an index outside the range, bytes outside the object, an overflow, a zero stride) so errors
+  come at the same iteration as before. The position is kept as a count from the end of the range, so the range test is
+  one unsigned compare and the offset a multiply-add; loops of their own for byte, 4-byte and 8-byte elements and for `=`
+  and `/=` against the element; byte elements at stride 1 searched by `=` with `=` on the index and steps of one are a
+  slice search (`window`: the iterations are a window of the object bounded by the range, the object, the limit and the
+  index `e`, searched in one go). The unit test `scan_bytes_matches_the_generic_loop` compares 400 thousand random shapes,
+  ranges, bytes and limits with the iteration-by-iteration loop (half of them the byte-search shape).
+- **`yavs_interp::search_loops` finds the loop in the IR** (shared): a head block of exactly `Pos`, `Index`, `Load`,
+  `Cmp`, `CondBr`, a block (jump-only blocks skipped, as the interpreter skips a `Br`) with the compare of the index and
+  the exit, and a block `i := i +- constant` and the jump back, with the registers the iterations define besides the element
+  and the index dead at both exits.
+- **Compiled code calls `yavs_rt_scan`** at the head of such a loop in a native frame (LLVM-only glue: the descriptor and the
+  array's object are looked up once, `Mem::span`); what it leaves (`hit` 0) is the generic code of the head, so a fault is
+  the interpreter's at the same iteration. Frame-mode code (processes) keeps the generic loop. Test:
+  `search_loops_match_the_interpreter` (both directions and steps, found, ended, outside the descriptor, outside the array).
+- **Numbers** (instructions of the main thread, a 100-element search called 400 thousand times through a native frame):
+  compiled generic loop 3.83 G, with the helper 0.43 G; interpreter 2.69 G before, 0.65 G after. Policy: the
+  `--tier=auto` rule `fused_search` (#573) existed because the compiled loop was twice as slow as the interpreter's; with
+  the helper a native-frame search loop is as fast, so the rule can go (the policy is `auto.rs`'s owner's to change, #572).
+

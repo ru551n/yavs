@@ -750,7 +750,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   implication, or inside sequences. A declaration is visible in its design unit.
 - **Temporal PSL properties in the checker subset (agent, 2026-10-23, #445, L133):** `next_a`,
   `next_e`, `next_event`, `next_event_a`, `next_event_e`, `until`, `until_`, `before`, `before_`,
-  `sync_abort`, `<->`, `iff`, `and`/`or` of properties, nested `next` and `always`, and any of them
+  `sync_abort`, `abort`, `async_abort`, `<->`, `iff`, `and`/`or` of properties, nested `next` and `always`, and any of them
   as the right side of `|->`/`|=>` (`parser/psl_prop.rs`). A directive that has one of these words,
   or that the simple parsers cannot read, goes to this parser. The property becomes terms (formula
   progression over finite traces, weak: an obligation open at the end of the run is no failure);
@@ -762,8 +762,11 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   three ticks). `next_event(c)(p)` counts the current cycle (the second reference simulator).
   `until` stops at its first failure (one report); the second reference simulator goes on
   reporting. Not run, skipped with `W0004`: the strong forms (`eventually!`, `next!`, `until!`,
-  `before!`, `next_a!`, `{s}!`), which need a check when the run ends, and `abort`/`async_abort`,
-  which the LRM defines as reacting between clock ticks. Catalogue row `psl-temporal-operators`;
+  `before!`, `next_a!`, `{s}!`), which need a check when the run ends (user, 2026-10-23: they
+  stay skipped). `abort` and `async_abort` run exactly as `sync_abort` (user, 2026-10-23, a
+  deliberate deviation from the LRM, whose abort is asynchronous and reacts between clock
+  ticks; both reference simulators run both words synchronously). Catalogue rows
+  `psl-temporal-operators` and `psl-abort`; `tests/corpus/psl/psl_abort.vhd`,
   `tests/corpus/psl/psl_temporal{,_ext}.vhd`.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`

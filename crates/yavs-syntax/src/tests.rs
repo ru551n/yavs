@@ -872,7 +872,7 @@ fn psl_is_skipped_with_one_warning_per_unit() {
         "restrict_guarantee {a};",
         "fairness a;",
         "assert always a report \"x\" severity error;",
-        "one: assert (always (a -> next [2] (b))) async_abort areset;",
+        "one: assert (always (a -> next [2] (b))) until! areset;",
         "assert always (a -> next (not a or (b before_ a)));",
         "assert {a; b} |-> {c};",
         "assert eventually! a;",
@@ -1065,6 +1065,9 @@ fn psl_temporal_properties() {
         "assert always ((a -> next b) or (a -> next[2] (c)));",
         "assert always ((next[2] (b)) sync_abort c);",
         "assert (always (a -> next b)) sync_abort c;",
+        "assert always ((a -> next b) abort c);",
+        "assert always ((a -> next b) async_abort c);",
+        "assert (always (a -> next b)) abort c;",
         "assert always {a; b} |=> (c until d);",
         "assert always {a} |-> next_e[1 to 3] (b);",
         "assert (a -> next_a[1 to 2] (b));",
@@ -1075,15 +1078,13 @@ fn psl_temporal_properties() {
         let c = checkers(&src);
         assert_eq!(c.len(), 1, "{f}");
     }
-    // Strong operators, asynchronous abort and what the checker cannot hold: skipped.
+    // Strong operators and what the checker cannot hold: skipped.
     for f in [
         "assert always (a -> eventually! b);",
         "assert always (a -> next! b);",
         "assert always (a -> (b until! c));",
         "assert always (a -> next_a![1 to 3] (b));",
         "assert always (a -> (b before! c));",
-        "assert always ((a -> next b) abort c);",
-        "assert always ((a -> next b) async_abort c);",
         "assert always (a -> next_a[1 to 99] (b));",
         "assert always ((a until b) -> c);",
         "assert always (a -> next_event(c)[0](b));",
@@ -1152,7 +1153,7 @@ fn psl_outside_the_subset_is_skipped() {
     for f in [
         "assert always p;",
         "assert always a -> next_e[1 to 2] b;",
-        "assert always (a -> b) abort rst;",
+        "assert always (a -> b) until! rst;",
         "assert always a -> next[300] b;",
         "assert always a -> next a -> next b;",
         "assert eventually! a;",

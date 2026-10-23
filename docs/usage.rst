@@ -418,7 +418,7 @@ test at most 6 different conditions on its right side; a longer one is skipped w
 
 Properties may also use ``next_a``, ``next_e``, ``next_event``, ``next_event_a``, ``next_event_e``
 (``next_event(c)(p)`` counts the current cycle), ``until``, ``until_``, ``before``, ``before_``,
-``sync_abort``, ``<->`` and ``iff``, ``and`` and ``or`` of properties, nested ``next`` and
+``sync_abort``, ``abort``, ``async_abort``, ``<->`` and ``iff``, ``and`` and ``or`` of properties, nested ``next`` and
 ``always``, and a property on the right of ``|->`` and ``|=>``:
 
 .. code-block:: text
@@ -429,8 +429,9 @@ Properties may also use ``next_a``, ``next_e``, ``next_event``, ``next_event_a``
 These are weak: an obligation still open when the run ends is not a failure. A failure is
 reported at the tick where the obligation can no longer be met, once per tick however many
 starts fail; the parts of a conjunction (``next_a``) fail separately. The strong forms
-(``eventually!``, ``next!``, ``until!``, ``before!``, a sequence followed by ``!``) and ``abort``
-and ``async_abort`` are skipped with ``W0004``.
+(``eventually!``, ``next!``, ``until!``, ``before!``, a sequence followed by ``!``) are skipped
+with ``W0004``. ``abort`` and ``async_abort`` are checked at the clock tick like ``sync_abort``,
+not between ticks as the PSL standard defines the asynchronous abort.
 
 Sequences and properties can be named, with ``boolean``, ``const``, ``sequence`` and ``property`` formals,
 and used where a sequence or a whole property is expected:

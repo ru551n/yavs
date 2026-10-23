@@ -2,8 +2,8 @@
 -- ref=hand: neither reference simulator runs these forms as the LRM defines them (the first stops
 -- on or mishandles them, the second has no sync_abort and keeps failing after an until fails);
 -- the expected output is the LRM result, derived from the weak finite-trace semantics and
--- checked against an independent evaluator of it. sync_abort inside and outside always,
--- overlapping until and before, a property on the left of until, nested always, next_a over a
+-- checked against an independent evaluator of it. sync_abort (abort and async_abort run
+-- the same) inside and outside always, overlapping until and before, a property on the left of until, nested always, next_a over a
 -- property, `or` of properties and next_event_e (IEEE 1850 6.2.1.3 to 6.2.1.7).
 library ieee;
 use ieee.std_logic_1164.all;
@@ -33,6 +33,8 @@ begin
 
   sabort_in: assert always ((c = '1') -> ((next[2] (b = '1')) sync_abort (a = '1' and b = '1'))) report "sabort_in";
   sabort_out: assert ((always (c = '1' -> next[2] (b = '1'))) sync_abort (a = '1' and b = '1')) report "sabort_out";
+  abort_out: assert ((always (c = '1' -> next[2] (b = '1'))) abort (a = '1' and b = '1')) report "abort_out";
+  aabort_out: assert ((always (c = '1' -> next[2] (b = '1'))) async_abort (a = '1' and b = '1')) report "aabort_out";
   sabort_a: assert always (c = '1' -> ((next_a[1 to 3] (b = '1')) sync_abort (a = '1' and b = '1'))) report "sabort_a";
   no_abort: assert always (c = '1' -> next[2] (b = '1')) report "no_abort";
   until_ov: assert always (a = '1' -> ((c = '1') until_ (b = '1'))) report "until_ov";

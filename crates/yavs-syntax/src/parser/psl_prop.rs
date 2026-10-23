@@ -17,8 +17,8 @@
 //! tick's values, and a step to `false` is a failure. Terms in the same state merge, so a
 //! failure is reported once per tick however many starts fail.
 //!
-//! Strong operators (`eventually!`, `until!`, `next!`) and `abort`/`async_abort` stay outside:
-//! the first need a check when the run ends and the second reacts between clock ticks.
+//! Strong operators (`eventually!`, `until!`, `next!`) stay outside: they need a check when the
+//! run ends. `abort` and `async_abort` are checked at the tick like `sync_abort` (lrm-checks.md L133).
 
 use super::psl::Gen;
 use super::psl_seq::{
@@ -71,6 +71,13 @@ pub(super) enum Pt {
     },
 }
 
+/// `abort` and `async_abort` run like `sync_abort`: the reference simulators check the abort
+/// condition at the clock tick only, and the LRM's asynchronous abort has no place in a
+/// clocked checker process.
+fn is_abort(w: &str) -> bool {
+    matches!(w, "abort" | "async_abort" | "sync_abort")
+}
+
 pub(super) struct TProp {
     pub pt: Pt,
     pub leaves: Leaves,
@@ -100,7 +107,7 @@ impl Parser<'_> {
                     w.starts_with("next_")
                         || w.starts_with("before")
                         || w == "until_"
-                        || w == "sync_abort"
+                        || is_abort(&w)
                         || w == "iff"
                 }
                 _ => false,
@@ -141,7 +148,7 @@ impl Parser<'_> {
 
     fn tp_abort(&mut self, lv: &mut Leaves) -> PResult<Pt> {
         let mut p = self.tp_until(lv)?;
-        while self.tp_word().as_deref() == Some("sync_abort") {
+        while self.tp_word().as_deref().is_some_and(is_abort) {
             self.bump();
             let b = self.tp_bool(lv)?;
             p = Pt::SyncAbort(Box::new(p), b);
@@ -233,10 +240,9 @@ impl Parser<'_> {
                 }
                 Tok::Ident => {
                     let w = self.text(t).to_ascii_lowercase();
-                    if matches!(
-                        w.as_str(),
-                        "always" | "never" | "iff" | "until_" | "sync_abort"
-                    ) || w.starts_with("next_")
+                    if matches!(w.as_str(), "always" | "never" | "iff" | "until_")
+                        || is_abort(&w)
+                        || w.starts_with("next_")
                         || w.starts_with("before")
                         || self.psl_decls.iter().any(|d| d.is(self.make_ident(t).key))
                         || self.psl_formal_is_property(i - self.pos)

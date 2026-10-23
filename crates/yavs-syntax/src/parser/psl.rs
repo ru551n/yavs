@@ -312,7 +312,13 @@ impl Parser<'_> {
                     && !(temporal
                         && matches!(
                             w.as_str(),
-                            "always" | "never" | "sync_abort" | "within" | "inf"
+                            "always"
+                                | "never"
+                                | "sync_abort"
+                                | "abort"
+                                | "async_abort"
+                                | "within"
+                                | "inf"
                         )))
                 || (!temporal
                     && (w.starts_with("next_")

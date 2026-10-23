@@ -29,7 +29,7 @@ bit-planes per 64 elements. Question: would compiling logic operations on the as
    code is 9 to 39 percent of the cycles of a run (section 5.4). The code of compiled RTL is
    scaffolding (addresses, descriptors, layouts, checks, exits, host calls), not value
    representation: a two-state representation cannot remove it.
-4. Correctness is cheap to keep: difftest 451 of 451 on the interpreter, `--tier=llvm` and
+4. Correctness is cheap to keep: difftest 451 of 451 (471 of 471 after the last rebase, on `--tier=llvm` in shadow mode, `--tier=auto` and the interpreter) on the interpreter, `--tier=llvm` and
    `--tier=auto --tier-heat=1,0,0`, with the speculation on, in shadow mode (every passing guard
    compares the two-state planes with the general read and ends the run with status 70 on any
    difference) and with `--threads 4`; a test with all nine values at every position

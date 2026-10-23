@@ -146,6 +146,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - `p.st` (the label of the enclosing process or block as prefix) as a type mark and a loop range (`issue713`, second suite); `issue543` passes with the attribute index above.
 - `s => "not"(a)` in a port map is an expression actual: a call of a predefined operator has no body to convert with, so it is not read as a conversion function (`bug0134`, second suite).
 - `process (all)` is sensitive to the signals read by the subprograms declared in the process (`bug0129`, second suite).
+- `issue1267` (first suite) leaves the pass list: its `case` runs an 8-bit choice list against a 16-bit expression and relies on the `others` branch; the length check of #463 (LRM 10.9) makes that a run-time error, as the first reference simulator does elsewhere (`bounds` tests).
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

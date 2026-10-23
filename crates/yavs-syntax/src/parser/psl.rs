@@ -115,12 +115,15 @@ impl Parser<'_> {
     }
 
     /// Is the construct at the current token meaningful to formal tools only (`restrict`,
-    /// `fairness`, `strong fairness`, or a directive that calls `nondet`/`nondet_vector`)?
+    /// `restrict_guarantee`, `assume_guarantee`, `fairness`, `strong fairness`, or a directive
+    /// that calls `nondet`/`nondet_vector`)?
     /// Simulation has nothing to run for it, so it is skipped without `W0004`.
     pub(super) fn psl_formal_only(&self) -> bool {
         let k = self.toks[self.pos].kind;
-        if matches!(k, Tok::Kw(Kw::Restrict | Kw::Fairness))
-            || (k == Tok::Kw(Kw::Strong) && self.toks[self.pos + 1].kind == Tok::Kw(Kw::Fairness))
+        if matches!(
+            k,
+            Tok::Kw(Kw::Restrict | Kw::RestrictGuarantee | Kw::AssumeGuarantee | Kw::Fairness)
+        ) || (k == Tok::Kw(Kw::Strong) && self.toks[self.pos + 1].kind == Tok::Kw(Kw::Fairness))
         {
             return true;
         }

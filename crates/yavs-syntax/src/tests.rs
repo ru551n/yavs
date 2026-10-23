@@ -861,6 +861,8 @@ fn psl_formal_only_directives_are_skipped_silently() {
     // Nothing to run in simulation: no W0004, and the rest of the unit still parses.
     for f in [
         "restrict {a[*]; b};",
+        "restrict_guarantee {a};",
+        "assume_guarantee always a;",
         "l: restrict {a; b}[*];",
         "fairness a;",
         "strong fairness a, b;",
@@ -894,8 +896,6 @@ fn psl_is_skipped_with_one_warning_per_unit() {
         "assert never {a; b};",
         "l: assume always a;",
         "cover {a; b};",
-        "assume_guarantee always a;",
-        "restrict_guarantee {a};",
         "assert always a report \"x\" severity error;",
         "one: assert (always (a -> next [2] (b))) until! areset;",
         "assert always (a -> next (not a or (b before_ a)));",

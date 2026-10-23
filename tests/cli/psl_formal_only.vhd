@@ -8,6 +8,8 @@ architecture rtl of psl_formal_only is
 begin
   default clock is rising_edge(clk);
   r1: restrict {a = '0'; a = '1'};
+  r2: restrict_guarantee {a = '0'; a = '1'};
+  g1: assume_guarantee always (a = '0');
   f1: fairness (a = '1');
   f2: strong fairness (a = '1'), (b = '0');
   n1: assume always (a = '0' or nondet(0, 1) = 0);

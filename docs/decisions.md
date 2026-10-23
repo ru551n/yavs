@@ -769,10 +769,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   `psl-temporal-operators` and `psl-abort`; `tests/corpus/psl/psl_abort.vhd`,
   `tests/corpus/psl/psl_temporal{,_ext}.vhd`.
 - **Formal-only PSL is skipped without `W0004`** (user, 2026-10-23, #445): `restrict`,
-  `fairness`, `strong fairness` and any directive that calls `nondet` or `nondet_vector` have
+  `restrict_guarantee`, `assume_guarantee`, `fairness`, `strong fairness` and any directive that calls `nondet` or `nondet_vector` have
   nothing to check in a simulation, so the parser skips them silently (`psl_formal_only` in
   `parser/psl.rs`; the skip is the one of an unsupported directive, only the warning is left
-  out). `restrict_guarantee`, `assume_guarantee`, the strong operators and the verification
+  out). The strong operators and the verification
   units (`vunit`, `vmode`, `vprop`) stay skipped with `W0004`. Test `tests/cli/psl_formal_only`
   and the unit test `psl_formal_only_directives_are_skipped_silently`.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential

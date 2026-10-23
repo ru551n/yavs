@@ -445,7 +445,7 @@ and used where a sequence or a whole property is expected:
 
 Everything else (other ``property`` and ``sequence`` declarations, other operators such as ``eventually!``, the ``next`` and ``ended`` functions, directives without a clock
 and verification units) is skipped with warning ``W0004``, once per design unit; the rest of
-the design runs as usual. ``restrict``, ``fairness``, ``strong fairness`` and directives that
+the design runs as usual. ``restrict``, ``restrict_guarantee``, ``assume_guarantee``, ``fairness``, ``strong fairness`` and directives that
 call ``nondet`` or ``nondet_vector`` are for formal tools only: they are skipped without a
 warning, as they have nothing to check in a simulation.
 

@@ -3075,6 +3075,7 @@ impl SimControl {
                                 && s.result.is_ok()
                             {
                                 st.again = false;
+                                st.matched = 0;
                                 meta.ready = false;
                                 meta.resumed = true;
                                 self.serial_ran |= meta.flags.serial;
@@ -3169,6 +3170,7 @@ impl SimControl {
             return self.commit_rest(late, pids, false, false);
         }
         st.again = false;
+        st.matched = 0;
         meta.ready = false;
         meta.resumed = true;
         self.serial_ran |= meta.flags.serial;
@@ -3263,6 +3265,7 @@ impl SimControl {
                 && slot.result.is_ok()
             {
                 st.again = false;
+                st.matched = 0;
                 for &(t, d) in st.scheduled.iter() {
                     self.queue.push(self.now, t, Entry::Driver(d.0));
                 }
@@ -3310,6 +3313,14 @@ impl SimControl {
             }
             // The same wait as the last run, without a timeout: the waiters of the last run
             // stay (resident, `ProcMeta::perm`), or become so now.
+            // A wait that ended after naming a part of the last one again: that part first.
+            if st.matched != 0 && !st.again {
+                let k = st.matched as usize;
+                let mut all = st.sens_prev[..k].to_vec();
+                all.append(&mut st.sens);
+                st.sens = all;
+            }
+            st.matched = 0;
             let mut again = std::mem::take(&mut st.again);
             if again && (timed || !st.sens.is_empty()) {
                 // More was added to the wait (`Ctx::wait_on_again`): the last wait's ranges

@@ -978,6 +978,46 @@ impl Signal {
         self.codes.len()
     }
 
+    /// The cycle number of the last event of each element (`event_in`) of a signal of at most 64
+    /// elements, which compiled code compares with the current cycle for `'event` (a wider signal
+    /// also keeps event records per block). The address stays for the whole simulation; the
+    /// numbers change only while no process runs.
+    pub fn event_view(&self) -> Option<*const u64> {
+        (self.ty.len <= 64).then(|| self.stamps.as_ptr())
+    }
+
+    /// The plane blocks of the current value of a logic signal and its number of elements, for
+    /// reads of compiled code (four words per block, element `e` in bit `e % 64` of block
+    /// `e / 64`). The address stays for the whole simulation; the bits change only while no
+    /// process runs.
+    pub fn planes_view(&self) -> Option<(*const Block, usize)> {
+        match &self.cur {
+            Buf::Planes { len, b } if !b.is_empty() => Some((b.as_ptr(), *len)),
+            _ => None,
+        }
+    }
+
+    /// The bytes of the current value of a signal of enumeration, integer, boolean or real
+    /// elements, the size of an element and the number of elements (address and bytes as for
+    /// `planes_view`).
+    pub fn bytes_view(&self) -> Option<(*const u8, usize, usize)> {
+        match &self.cur {
+            Buf::Bytes { es, data } if *es > 0 => Some((data.as_ptr(), *es, data.len() / *es)),
+            _ => None,
+        }
+    }
+
+    /// The plane block of `last_value` of a logic signal of at most 64 elements that keeps its
+    /// codes, for `rising_edge` of compiled code (the address as for `event_view`).
+    pub fn last_view(&self) -> Option<*const Block> {
+        match &self.last_value {
+            Buf::Planes { len, b } if *len <= 64 && !self.codes.is_empty() && !b.is_empty() => {
+                Some(b.as_ptr())
+            }
+            _ => None,
+        }
+    }
+
     /// The code of element `e` of `cur` from `codes`, if the signal keeps them and has the element.
     #[inline(always)]
     pub fn mirrored_code(&self, e: usize) -> Option<u8> {

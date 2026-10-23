@@ -1842,3 +1842,75 @@ fn postponed_processes_run_in_process_order_when_no_other_process_resumes() {
         "{lines:?}"
     );
 }
+
+/// A wait of several ranges named again one by one (`Ctx::wait_on_again`, falling back to
+/// `wait_on`) is the wait of the ranges it names, whatever it names after how many of the last
+/// wait's: a prefix, another order, more, a timeout. The twin of each process names the same
+/// ranges with `wait_on` only; both count the same wakes.
+#[test]
+fn a_wait_of_several_ranges_named_again_is_the_same_wait() {
+    let mut b = Builder::new();
+    let clk = clock(&mut b);
+    let sigs: Vec<SignalId> = (0..3)
+        .map(|i| b.signal(&format!("s{i}"), BYTE, &[0]))
+        .collect();
+    for (i, &s) in sigs.iter().enumerate() {
+        let d = b.driver(s);
+        let period = [7u64, 11, 13][i];
+        b.process(
+            &format!("toggler{i}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                let v = c.value(s)?[0] ^ 1;
+                c.assign(d, None, &[(ns(period), &[v])], DelayMode::INERTIAL)?;
+                c.wait_for(ns(period))
+            }),
+        );
+    }
+    // What each activation waits on: indices into [clk, s0, s1, s2], and a timeout.
+    let plan: [(&[usize], bool); 8] = [
+        (&[0, 1, 2, 3], false),
+        (&[0, 1, 2, 3], false),
+        (&[0, 1], false),
+        (&[0, 1, 2, 3], false),
+        (&[1, 0, 2], false),
+        (&[0, 1, 2, 3, 0], false),
+        (&[0, 1, 2], true),
+        (&[0, 1, 2, 3], false),
+    ];
+    let all = [clk, sigs[0], sigs[1], sigs[2]];
+    let counts: Vec<SignalId> = (0..2)
+        .map(|i| b.signal(&format!("n{i}"), SignalType::bytes(4, 1), &[0; 4]))
+        .collect();
+    for (i, &n) in counts.iter().enumerate() {
+        let d = b.driver(n);
+        let mut k = 0usize;
+        b.process(
+            &format!("waiter{i}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                c.drive(d, &(u32_of(c.value(n)?) + 1).to_le_bytes())?;
+                let (set, timed) = plan[k % plan.len()];
+                k += 1;
+                for &x in set {
+                    let r = Range::new(0, 1);
+                    // The twin (i = 1) never asks.
+                    if i == 1 || !c.wait_on_again(all[x], r) {
+                        c.wait_on(all[x])?;
+                    }
+                }
+                if timed {
+                    c.wait_for(ns(5))?;
+                }
+                Ok(())
+            }),
+        );
+    }
+    let (mut sim, _) = build(b, Config::default());
+    assert_eq!(sim.run_until(ns(5000)).unwrap(), RunStatus::Paused);
+    let n: Vec<u32> = counts.iter().map(|&s| u32_of(&v(&sim, s))).collect();
+    assert_eq!(n[0], n[1], "{n:?}");
+    assert!(n[0] > 100, "{n:?}");
+}

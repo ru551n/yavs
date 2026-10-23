@@ -284,6 +284,10 @@ pub(crate) struct ProcState {
     /// The coming wait is exactly the one `sens_prev` holds (`Ctx::wait_on_again`): `sens`
     /// stays empty and the commit takes it from `sens_prev`.
     pub again: bool,
+    /// The leading ranges of `sens_prev` this wait named again so far with `sens` empty
+    /// (`Ctx::wait_on_again`); all of them when `again`. The commit takes a part from
+    /// `sens_prev` ahead of the ranges named after it.
+    pub matched: u32,
     pub deadline: Option<Time>,
     pub timed_out: bool,
     /// Times of transactions scheduled during this run.
@@ -554,6 +558,34 @@ impl Ctx<'_> {
     pub fn code_view(&self, s: SignalId) -> Option<(*const u8, usize)> {
         let sig = self.sh.signals.get(s.0 as usize)?;
         sig.codes_view()
+    }
+
+    /// The event stamps of signal `s` (`Signal::event_view`) for `'event` and `rising_edge` of
+    /// compiled code.
+    pub fn event_view(&self, s: SignalId) -> Option<*const u64> {
+        self.sh.signals.get(s.0 as usize)?.event_view()
+    }
+
+    /// The plane blocks of the current value of signal `s` and its element count
+    /// (`Signal::planes_view`).
+    pub fn planes_view(&self, s: SignalId) -> Option<(*const yavs_logic::Block, usize)> {
+        self.sh.signals.get(s.0 as usize)?.planes_view()
+    }
+
+    /// The bytes of the current value of signal `s`, the element size and the element count
+    /// (`Signal::bytes_view`).
+    pub fn bytes_view(&self, s: SignalId) -> Option<(*const u8, usize, usize)> {
+        self.sh.signals.get(s.0 as usize)?.bytes_view()
+    }
+
+    /// The plane block of the `'last_value` of signal `s` (`Signal::last_view`).
+    pub fn last_view(&self, s: SignalId) -> Option<*const yavs_logic::Block> {
+        self.sh.signals.get(s.0 as usize)?.last_view()
+    }
+
+    /// The number of the current simulation cycle (an event stamp equal to it is an event now).
+    pub fn cycle(&self) -> u64 {
+        self.sh.cycle
     }
 
     /// The bytes of `code_view(s)` that may be read (`Signal::codes_cap`), 0 without codes.
@@ -939,6 +971,14 @@ impl Ctx<'_> {
     #[inline]
     pub fn assign_code_now(&mut self, d: DriverId, r: Range, code: u8) -> bool {
         self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
+    }
+
+    /// `assign_bytes` of one element with zero delay (transport or inertial without rejection):
+    /// true when the usual fast case took it, false (nothing done) where `assign_bytes` must
+    /// run, which also produces every error.
+    #[inline]
+    pub fn assign_bytes_now(&mut self, d: DriverId, r: Range, bytes: &[u8]) -> bool {
+        self.assign_bytes_fast(d, Some(r), Time::ZERO, bytes, DelayMode::Transport)
     }
 
     /// `assign_blocks` of at most 64 elements given as their four planes to `r` (the whole driver
@@ -1416,6 +1456,14 @@ impl Ctx<'_> {
     pub fn wait_on(&mut self, r: impl Into<SigRef>) -> Result<(), SimError> {
         let r = r.into();
         let range = self.sig(r)?.1;
+        // What was named again before is in `sens` now, ahead of this range.
+        if self.st.matched != 0 {
+            let st = &mut *self.st;
+            st.sens
+                .extend_from_slice(&st.sens_prev[..st.matched as usize]);
+            st.matched = 0;
+            st.again = false;
+        }
         // Most waits name one signal: no room for four (the list becomes the previous one).
         if self.st.sens.capacity() == 0 {
             self.st.sens.reserve_exact(1);
@@ -1424,18 +1472,21 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    /// `wait_on` of one range, when the last wait was on exactly that range, with no timeout,
-    /// and nothing was added to this one: the commit keeps the registered waiter and `sens`
-    /// stays empty. `false` (nothing done) otherwise; the caller then uses `wait_on`.
+    /// `wait_on` of one range, when it is the next of the ranges the last wait named, in the
+    /// same order, with no timeout, and nothing was added to this one: the commit keeps the
+    /// registered waiters and `sens` stays empty (a wait that ends after a part of them takes
+    /// that part from the last one). `false` (nothing done) otherwise; the caller then uses
+    /// `wait_on`.
     #[inline(always)]
     pub fn wait_on_again(&mut self, signal: SignalId, range: Range) -> bool {
         let st = &mut *self.st;
         if st.sens.is_empty()
             && st.deadline.is_none()
-            && let [prev] = &st.sens_prev[..]
-            && *prev == (signal, range)
+            && let Some(next) = st.sens_prev.get(st.matched as usize)
+            && *next == (signal, range)
         {
-            st.again = true;
+            st.matched += 1;
+            st.again = st.matched as usize == st.sens_prev.len();
             return true;
         }
         false
@@ -1443,13 +1494,14 @@ impl Ctx<'_> {
 
     /// The same wait as the last one (its sensitivity, no timeout), when that one had no
     /// timeout and nothing was added to this one: the commit keeps the registered waiters, as
-    /// `wait_on_again` does for one range. `false` (nothing done) otherwise; the caller then
-    /// names the wait with `wait_on`.
+    /// `wait_on_again` does. `false` (nothing done) otherwise; the caller then names the wait
+    /// with `wait_on`.
     #[inline(always)]
     pub fn wait_same(&mut self) -> bool {
         let st = &mut *self.st;
         if st.sens.is_empty() && st.deadline.is_none() && !st.sens_prev.is_empty() {
             st.again = true;
+            st.matched = st.sens_prev.len() as u32;
             return true;
         }
         false

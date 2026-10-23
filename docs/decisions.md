@@ -5240,6 +5240,26 @@ two more, `LSet`, the compare, the step and the jump), about 500 instructions pe
   integer arrays (`Index` with loads and stores): none of them is among the hot loops of the benchmark designs and
   testbenches counted (`YAVS_DUMPIR=1` says why a loop is not one: "is not an element loop: op N").
 
+## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
+
+The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that
+had to end cleanly (the first Ctrl-C with `--wave`, which finishes the file) inside one activation for ever. Decisions
+(user, 2026-10-23: only if it costs nothing measurable):
+
+- **Only a process whose function has no suspension** (`FuncKind::Process` without `MAY_SUSPEND`) gets the check, and only
+  on its jumps back: they are `Op::Step`s of the IR `Br` (`pre::Code::new`), and `Machine::step_out`, which already runs
+  out of line for every stepped instruction, answers a `Br` with `Flow::Suspend` when `Ctx::stop_requested` (one relaxed
+  load of the kernel's flag word, which `Shared` now carries). The activation ends as a `wait;` would, the process never
+  runs again and the kernel ends the run at the end of the cycle. No op, arm or loop of the dispatch loop changed: an
+  attempt with a check in the `Br` and `BrBody` arms moved the instructions of unrelated designs by +1 to +9 percent
+  (`calls` +8.8, `compute_loop` +6.8, `protected_queue` +4.7: one more arm moves the loop's register allocation, as
+  `docs/decisions.md` "The shape of the interpreter's op loop" found), so the check lives outside it.
+- **Not covered:** a loop without a wait inside a process that does wait, loops in compiled code and under the debugger,
+  and `SIGUSR1` (the hang report reads kernel state that an activation in progress holds) and pause (the process
+  would have to be resumable at the jump back, which needs its resume point exposed). Each needs a poll in the loops of
+  every process or kernel support, which is not free on the dispatch loop (a check at every jump back is a load, a compare and a
+  branch on the hottest path).
+
 ## Huge pages for the heap (yavs-cache `map.rs`, yavs CLI `main`, #556; user decision 2026-10-22: in-process, no re-exec)
 
 A cold elaboration of `osvvm_axis_random` took 8 270 page faults (a fifth of its CPU time, mostly in the kernel) because

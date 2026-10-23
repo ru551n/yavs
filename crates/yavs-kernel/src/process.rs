@@ -356,6 +356,8 @@ pub(crate) struct Shared<'a> {
     pub names: &'a [String],
     /// Where a live process (`Ctx::live`) writes its reports.
     pub live: Option<&'a dyn LiveSink>,
+    /// `Interrupt` of the simulation (`Ctx::stop_requested`).
+    pub interrupt: &'a std::sync::atomic::AtomicU8,
 }
 
 /// What a running process sees: current-cycle signal values, its own drivers and its own
@@ -386,6 +388,12 @@ impl Ctx<'_> {
 
     pub fn process(&self) -> ProcId {
         self.pid
+    }
+
+    /// `Interrupt::stop` was called (Ctrl-C): a process that never suspends polls it at the
+    /// jump back of its loop, because the kernel only looks between cycles.
+    pub fn stop_requested(&self) -> bool {
+        crate::kernel::Interrupt::stopped(self.sh.interrupt)
     }
 
     /// An error with this process, time and delta attached. The interpreter adds its call

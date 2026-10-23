@@ -4029,6 +4029,17 @@ impl Code {
         superops(&mut ops, &at, f, known, &uses);
         static_waits(prog, f, &mut ops, &at, &entry);
         let loops = elem_loops(&mut ops, &mut at);
+        // A process that never suspends polls for a stop request at every jump back: the jump
+        // is stepped (`Machine::step_out`), so no other function pays for the check.
+        if f.kind == yavs_ir::FuncKind::Process && !f.flags.contains(FuncFlags::MAY_SUSPEND) {
+            for (k, op) in ops.iter_mut().enumerate() {
+                if let Op::Br { to } | Op::BrBody { to, .. } = *op
+                    && (to as usize) <= k
+                {
+                    *op = Op::Step(at[k]);
+                }
+            }
+        }
         let first = entry.first().copied().unwrap_or(NONE);
         // Debug aid next to the IR dump of `YAVS_DUMPIR`.
         if std::env::var_os("YAVS_DUMPIR").is_some() {

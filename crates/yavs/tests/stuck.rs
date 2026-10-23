@@ -233,3 +233,45 @@ fn sigusr1_prints_a_report_and_the_run_goes_on() {
     assert!(text.contains(":stuck_signal:go"), "{text}");
     let _ = std::fs::remove_dir_all(&t);
 }
+
+/// With a wave file the first SIGINT only asks the kernel to stop, which it does between
+/// cycles; a process that never suspends polls the request at its jump back, so the run ends.
+#[cfg(unix)]
+#[test]
+fn sigint_ends_a_process_that_never_suspends() {
+    let t = tmp("sigint");
+    let lib = format!("--work=work:{}/lib", t.display());
+    let wave = format!("--wave={}/o.fst", t.display());
+    assert!(
+        yavs(&["analyze", "--std=2008", &lib, "stuck_spin.vhd"])
+            .status
+            .success()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["--color", "never", "run", &lib, &wave, "stuck_spin"])
+        .current_dir(dir())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn");
+    // Give the run time to start the process.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(child.try_wait().expect("wait").is_none(), "ended by itself");
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while child.try_wait().expect("wait").is_none() {
+        if std::time::Instant::now() > deadline {
+            child.kill().expect("kill");
+            let _ = child.wait();
+            panic!("the run did not end after SIGINT");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = std::fs::remove_dir_all(&t);
+}

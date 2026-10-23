@@ -238,6 +238,9 @@ impl SigView<'_> {
     }
 }
 
+/// The interrupt flags of an observer's process context: observers run between cycles.
+static NO_INTERRUPT: AtomicU8 = AtomicU8::new(0);
+
 /// What an observer may do from a callback: read signals, queue forces and deposits
 /// (applied in the next cycle), schedule transactions on drivers, schedule wake-ups and end
 /// the simulation.
@@ -360,6 +363,7 @@ impl Hook<'_> {
             drivers: self.drivers,
             names: self.names,
             live: None,
+            interrupt: &NO_INTERRUPT,
         };
         // Observers run between phases: no process holds its slot.
         let mut slot = lock(&self.slots[owner.0 as usize]);
@@ -481,6 +485,11 @@ impl Interrupt {
 
     pub fn stop(&self) {
         self.0.fetch_or(Self::STOP, Ordering::AcqRel);
+    }
+
+    /// Whether `stop` was called (checked inside a process that never suspends, `Ctx::stop_requested`).
+    pub(crate) fn stopped(flags: &AtomicU8) -> bool {
+        flags.load(Ordering::Relaxed) & Self::STOP != 0
     }
 }
 
@@ -2959,6 +2968,7 @@ impl SimControl {
                 drivers: &self.drivers,
                 names: &self.names,
                 live: self.live_sink.as_deref(),
+                interrupt: &self.interrupt.0,
             };
             // Reports go straight to the output when the commit order is the order they are
             // made in: no shuffled run, and (below) nothing earlier in the batch to write.
@@ -3131,6 +3141,7 @@ impl SimControl {
             drivers: &self.drivers,
             names: &self.names,
             live: self.live_sink.as_deref(),
+            interrupt: &self.interrupt.0,
         };
         let s = slot_mut(&mut self.slots[p as usize]);
         resumption(&self.procs, p, &mut s.st);

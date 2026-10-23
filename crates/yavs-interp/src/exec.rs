@@ -3312,6 +3312,15 @@ impl Machine {
         inst: Inst,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
+        // The jump back of a process that never suspends: a stop request (Ctrl-C) ends the
+        // activation as a `wait;` would (`pre::Code::new` steps those jumps).
+        if let Inst::Br { .. } = inst
+            && ctx.as_deref().is_some_and(|c| c.stop_requested())
+            && f.kind == FuncKind::Process
+            && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+        {
+            return Ok(Flow::Suspend);
+        }
         self.step(prog, f, inst, ctx)
     }
 

@@ -6109,3 +6109,60 @@ The implicit GUARD signal starts as the guard condition on the initial values (`
 `delta/guard_initial_value`. Open (#464): GUARD still changes a delta after the condition's
 signals, where the references update it in the same cycle (needs a kernel update-phase
 evaluation of the condition).
+
+## Guarded record signals (#595, 2026-10-23)
+
+A `bus` or `register` record signal whose subtype has a record resolution function elaborates
+(`E3010 guarded signal p.a must be resolved` came from guarding the leaves before the
+composite groups joined them) and simulates: the kernel resolves a guarded group over its
+connected sources (`SimControl::resolve_group`), a false GUARD (`guarded_assign`) and a `null`
+waveform element (`drive_record`) disconnect every leaf. Corpus `resolution/guarded_record`
+(`ref=hand`, sim1 does not disconnect at initialisation), `resolution/guarded_record_rec2` (the
+reproducer), `sigassign/null_record`; kernel test `guarded_composite_disconnects_as_a_unit`;
+discrepancy `null-record-signal`.
+
+## llvm: the window generator against the reference, round 1 (#493, #520, 2026-10-23)
+
+Decisions: docs/decisions.md "Compiled code of queue and pointer-table libraries". Where the time of `vai_window_gen_interlock`
+(`--tier=auto`, warm) went, by counting: 164 million protected-method calls in 16 s (string pointer table `get` 70 M, `set`
+40 M, `length`, `unsafe_push`, `unsafe_pop` 13 M each; about 290 host instructions and 130 cycles per `get`), 46 percent of the
+main thread's instructions in compiled code, 22 percent in `run_ops`, and before this change 22 percent in object look-up
+callbacks (95 M `Deref`, 38 M `yavs_rt_host`, 36 M `TierHost::object`). Changes: a table of 256 compiled-code objects (was 16),
+callees never seen running left out of a compile, the fat-pair `TempRoot` tested in place.
+
+Window generator, `tools/realbench` world, interleaved runs on core 1 (cores 0/1 are the only timing cores of this task and
+the host was loaded: 9 to 37 load average, the reference simulator ran 7 to 8 s instead of 3.9 s, so read the instruction
+and cycle columns and the ratios, not the seconds). Main-thread `perf stat --no-inherit`, median of 7, G; base is
+origin/main at 65b7f573, now the three changes together:
+
+| cell | base wall / cycles / instructions | now | ratio (cycles, instructions) |
+|---|---|---|---|
+| auto warm | 23.0 s / 107.9 / 245.8 | 20.7 s / 97.5 / 213.8 | 0.90, 0.87 |
+| auto cold | 29.6 s / 135.4 / 280.4 | 23.5 s / 108.9 / 255.6 | 0.80, 0.91 |
+
+The reference simulator on the same host and day: 72.8 G instructions (the run: `realbench --ref`, core 1, 5 runs), so the
+instruction ratio of `--tier=auto` to the reference simulator is 3.06 warm (3.64 before) and 4.23 cold (4.71 before); wall
+7.01 s reference, 26.05 s before and 24.71 s after warm, 26.30 s before and 27.22 s after cold in that loaded run (cold has a
+spread of 15 percent between runs of one binary). Single changes, `--tier=auto` warm, 5 to 7 interleaved runs, instructions
+(cycles are noisy: an SMT sibling of the timing core runs other agents' builds): table of 256 entries 245.7 to 211.6 G (-14
+percent; 64 entries 242.5), callees left out 219.3 to 219.3 warm (cold 259.3 to 254.7 and cycles 100.6 to 91.1), fat roots
+219.3 to 217.4.
+
+Breadth (`tools/realbench --compare`, 18 tests, interp, auto warm and cold, 5 runs, cores 0 and 1): the geometric mean of the
+instruction ratio is 1.00 for the interpreter, and for `--tier=auto` 0.97 for the two rtl-datapath tests (window generator
+0.94) and 1.00 for the other categories; `uvvm_util_rand`, `uvvm_axistream_vvc` and `uvvm_sb_slv` showed ratios up to 1.7
+in single comparisons but their main-thread instructions differ by up to 40 percent between runs of one binary (the
+instruction count of a short `--tier=auto` run depends on when the compile thread finishes), and in repeated A/B pairs of
+9 to 21 runs there is no difference beyond that spread. Counters: `cargo test -p yavs --features llvm --test perf` passes; the
+fat-root callbacks of `llvm_sigread` went from 54 to 1 (bound lowered).
+
+Open (not done), in the order of expected gain on this test: native-frame call overhead of the accessors (prologue of 35
+instructions, registration of the frame's slots, spill stores at each call site; 65 of about 290 instructions of a `get`) and
+the dependent chain of 8 object look-ups per `get` (each hash, entry load, compare, bounds); the frame-mode part of loop
+functions compiled only when needed (upper bound under 2 percent of a cold run: 9.4 percent of its compile time);
+`LogicOp`/`LFill` of numeric_std vectors stepped on native frames (9.5 M steps, about 3 percent); big clocked processes
+(`window_hold_check`: 23 of 211 instructions leave the compiled code, `walk_control` 4373 IR instructions) stay interpreted.
+Idea of the reference simulator used (read for the design, no code): an access value there is a plain pointer, a dereference
+a null test and a load, and a protected object is a context pointer passed to an ordinary call; yavs's generational handles
+(design rule 6) make every dereference a table look-up, which the larger table makes a hit instead of a callback but does not
+make a load.

@@ -114,7 +114,7 @@ files declared in an architecture (#466), binding indication actuals see the nam
 (#468), IEEE function calls and slices locally static (#470, L109), a package body naming an item of
 its package (#471), a block configuration seeing the components of its block (#473), a port actual
 whose context subtype names the instance's generics (#475) and 2019 record conversion (#476). Still
-open in the first suite (102 tests): PSL beyond the subset (about 25), mirror identity in reflection
+open in the first suite (102 tests): PSL beyond the subset (psl11, strong operators; 21 of its 24 PSL tests pass), mirror identity in reflection
 (4), guarded assignments (6, #373, #352), `T'value` of composites (2019, 4), `'driving` of
 sub-elements and ports (3), aggregate targets that mix scalars and arrays (2), VHDL-93 code that
 declares `integer_vector` or `boolean_vector` read as 2008 (4), external name subtype checks (ename5,
@@ -147,6 +147,7 @@ Correctness fixes found by reviewing the non-pass entries (2026-10-23):
 - `s => "not"(a)` in a port map is an expression actual: a call of a predefined operator has no body to convert with, so it is not read as a conversion function (`bug0134`, second suite).
 - `process (all)` is sensitive to the signals read by the subprograms declared in the process (`bug0129`, second suite).
 - `issue1267` (first suite) leaves the pass list: its `case` runs an 8-bit choice list against a 16-bit expression and relies on the `others` branch; the length check of #463 (LRM 10.9) makes that a run-time error, as the first reference simulator does elsewhere (`bounds` tests).
+- PSL sequences, named sequences and properties and weak temporal properties run (#445): of the first suite's 24 PSL tests 21 pass, `psl11` fails on `eventually!` and two are not run by the harness, and `issue1347`, `issue1708`, `issue3134`, `ticket18` and `ticket92` of the second suite join the pass list; `issue2157` leaves it (its `a and b = x"4"` mixes a `std_logic` and a `boolean` operand, which the first reference simulator rejects as well).
 
 Regression guard 2026-10-19 (b9dcddb6): the pass lists check green with `--oracle --check` (813 first-suite and 382 second-suite tests pass), the differential corpus passes 349/349 at 1 thread, 4 threads and 4 shuffled threads, all analysis corpora match their expected lists and the discrepancy catalogue checks green.
 

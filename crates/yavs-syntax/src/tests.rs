@@ -897,8 +897,16 @@ fn psl_is_skipped_with_one_warning_per_unit() {
     // Two units, two warnings.
     let src = "vunit v (e) { assert always a; }\nvmode m (e) { assume always {a; b}; }\nvprop p (e) { }\nentity e is end;";
     assert_eq!(psl_warnings(src), ["W0004", "W0004", "W0004"]);
-    // A plain VHDL assertion is not PSL, even on a signal named `always`.
+    // A plain VHDL assertion is not PSL, even on a signal named `always`, `abort` or `before`.
     assert!(psl_warnings(&conc("assert always;\nassert a report \"x\";")).is_empty());
+    for f in [
+        "assert abort = '0' report \"x\";",
+        "assert before report \"x\";",
+        "assert (x = until_) report \"x\";",
+        "assert iff or x report \"x\";",
+    ] {
+        assert!(psl_warnings(&conc(f)).is_empty(), "{f}");
+    }
 }
 
 #[test]
@@ -1083,6 +1091,14 @@ fn psl_temporal_properties() {
         let src = format!("{pre}{f}\nend;");
         assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
     }
+}
+
+#[test]
+fn psl_default_clock_as_statement() {
+    // The clock may be declared among the concurrent statements too.
+    let src =
+        "architecture a of e is\nbegin\ndefault clock is rising_edge(clk);\nassert always a;\nend;";
+    assert_eq!(checkers(src).len(), 1);
 }
 
 #[test]

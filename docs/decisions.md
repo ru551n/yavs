@@ -731,6 +731,10 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   Not in this step: `ended`, strong sequences (`{s}!`), `eventually!`, `until`, `before`, `abort`,
   `next_e` and relatives, named sequences/properties, local variables, `forall`, units. Catalogue
   rows `psl-sere-*`; `tests/corpus/psl/psl_sequences{,_ops}.vhd`.
+- **`default clock` among the concurrent statements (agent, 2026-10-23, #445):** accepted like the
+  declaration in the declarative part, and it holds for the directives after it in the same
+  region. Permissive (the LRM places it with the declarations): the first reference simulator's
+  own PSL regression tests write it after `begin`.
 - **Named PSL sequences and properties (agent, 2026-10-23, #445):** `sequence s [(formals)] is
   body;` and `property p [(formals)] is body;` in a declarative part or as a statement run when
   used. A declaration is remembered as the range of its body tokens and a use parses that range

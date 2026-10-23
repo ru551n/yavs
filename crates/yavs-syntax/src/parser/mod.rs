@@ -329,20 +329,51 @@ impl<'a> Parser<'a> {
                         }
                     }
                     let w = self.text(t).to_ascii_lowercase();
-                    if matches!(
+                    // Operators between two operands (`a before b`): a signal that has such a
+                    // name, as in `assert abort = '0'`, is not one.
+                    let ends = |k: Tok| {
+                        matches!(
+                            k,
+                            Tok::Ident
+                                | Tok::ExtIdent
+                                | Tok::RParen
+                                | Tok::RBracket
+                                | Tok::RBrace
+                                | Tok::Abstract
+                                | Tok::Char
+                                | Tok::Str
+                                | Tok::BitStr
+                        )
+                    };
+                    let starts = |k: Tok| {
+                        matches!(
+                            k,
+                            Tok::Ident
+                                | Tok::ExtIdent
+                                | Tok::LParen
+                                | Tok::LBrace
+                                | Tok::Abstract
+                                | Tok::Char
+                                | Tok::Str
+                                | Tok::BitStr
+                                | Tok::Kw(Kw::Not)
+                        )
+                    };
+                    let infix = matches!(
                         w.as_str(),
-                        "always"
-                            | "never"
-                            | "eventually"
-                            | "forall"
-                            | "iff"
+                        "iff"
                             | "before"
                             | "before_"
                             | "until_"
                             | "abort"
                             | "sync_abort"
                             | "async_abort"
-                    ) || w.starts_with("next_")
+                    ) && i > self.pos + 1
+                        && ends(self.toks[i - 1].kind)
+                        && starts(self.toks[i + 1].kind);
+                    if infix
+                        || matches!(w.as_str(), "always" | "never" | "eventually" | "forall")
+                        || w.starts_with("next_")
                     {
                         let alone = i == self.pos + 1
                             && matches!(

@@ -143,6 +143,9 @@ pub(crate) struct Elab<'d> {
     /// Implicit aliases of external names used in processes, by region: bound once the
     /// whole hierarchy is elaborated (#93).
     pending: Vec<(ScopeId, DeclId)>,
+    /// `idle_reads` of a process statement (the same for every instance of it): the signals
+    /// read, or `None` where the process is not pure.
+    idle_cache: HashMap<StmtId, Option<Vec<Lsp>>>,
     /// Processes whose drivers are rooted at external names: their drivers are elaborated
     /// once the whole hierarchy is (#93).
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
@@ -504,6 +507,7 @@ pub(crate) fn elaborate(
         cfg: cfg.clone(),
         stmt: None,
         pending: Vec::new(),
+        idle_cache: HashMap::new(),
         deferred: Vec::new(),
         pkg_uses,
         units_seen: 0,
@@ -1849,6 +1853,10 @@ impl Elab<'_> {
                         span,
                     };
                     self.process_refs(b, st, name, false, vec![(o, Vec::new(), span)])?;
+                    let reads = self.guard_reads(b, g);
+                    if let Some(p) = self.procs.last_mut() {
+                        p.guard = reads;
+                    }
                 }
                 let mut c = 0;
                 self.stmts(b, &body, bcfg.as_ref(), &mut c, depth)
@@ -2521,9 +2529,11 @@ impl Elab<'_> {
         }
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
+        let idle = trigger.and_then(|_| self.idle_reads(s, st));
         let copy = self.copy_source(s, st);
         let toggle = self.toggle_source(s, st);
         if let Some(p) = self.procs.last_mut() {
+            p.idle = idle;
             p.trigger = trigger;
             p.copy = copy;
             p.toggle = toggle;
@@ -2708,6 +2718,153 @@ impl Elab<'_> {
             legacy,
             reset,
         })
+    }
+
+    /// The signal parts the condition of the guard `g` of block `b` reads; `None` when one of
+    /// them cannot be resolved here (the `_guard` process then wakes as any process).
+    fn guard_reads(&mut self, b: ScopeId, g: DeclId) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+        let db: &Db = self.db;
+        let DeclKind::Object(o) = &db.decls[g].kind else {
+            return None;
+        };
+        let cond = o.default?;
+        let mut lsps = Vec::new();
+        db.reads(cond, &mut lsps);
+        let mut out = Vec::new();
+        for l in lsps {
+            let (o, sels) = self.m.lsp_ref(db, &l, b).ok()?;
+            for (leaf, r) in self.m.nets.select(o, &sels).ok()?.0 {
+                if !out.contains(&(leaf, r)) {
+                    out.push((leaf, r));
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// The signal parts a clocked process (one with an edge trigger) reads, when an activation
+    /// of it is a function of those and constants alone (`Db::pure_clocked_reads`); the edge test
+    /// itself is not one of them. Shapes: `process (c) begin if <edge> then B end if; end process;`
+    /// (also behind a reset branch `if R then A elsif <edge> then B`) and
+    /// `process begin wait until <edge>; B end process;`.
+    fn idle_reads(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+        let db: &Db = self.db;
+        let StmtKind::Process {
+            sensitivity,
+            body,
+            scope,
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let (mut conds, stmts, edge): (Vec<ExprId>, Vec<StmtId>, ExprId) =
+            match (sensitivity, &body[..]) {
+                (Sensitivity::List(_), [only]) => {
+                    let StmtKind::If {
+                        branches,
+                        else_: None,
+                    } = &db.stmts[*only].kind
+                    else {
+                        return None;
+                    };
+                    match &branches[..] {
+                        [(c, b)] => (Vec::new(), b.to_vec(), *c),
+                        [(r, a), (c, b)] => {
+                            (vec![*r], a.iter().chain(b.iter()).copied().collect(), *c)
+                        }
+                        _ => return None,
+                    }
+                }
+                (Sensitivity::None, [w, rest @ ..]) => {
+                    let StmtKind::Wait {
+                        until: Some(c),
+                        timeout: None,
+                        ..
+                    } = &db.stmts[*w].kind
+                    else {
+                        return None;
+                    };
+                    (Vec::new(), rest.to_vec(), *c)
+                }
+                _ => return None,
+            };
+        let lsps = match self.idle_cache.get(&st) {
+            Some(c) => c.clone()?,
+            None => {
+                // What the edge test also reads (`rising_edge(c) and en = '1'`).
+                let r = self.edge_extras(edge).and_then(|ex| {
+                    conds.extend(ex);
+                    self.db.pure_clocked_reads(*scope, &conds, &stmts)
+                });
+                self.idle_cache.insert(st, r.clone());
+                r?
+            }
+        };
+        let mut out = Vec::new();
+        for l in lsps {
+            let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
+            for (leaf, r) in self.m.nets.select(o, &sels).ok()?.0 {
+                if !out.contains(&(leaf, r)) {
+                    out.push((leaf, r));
+                }
+            }
+        }
+        Some(out)
+    }
+
+    /// The operands of a clock-edge condition besides the edge: none for `rising_edge(c)` and
+    /// `c'event and c = '1'` (or the level of a `wait until`), the other operands of an `and`.
+    fn edge_extras(&self, cond: ExprId) -> Option<Vec<ExprId>> {
+        let db: &Db = &*self.db;
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[cond].kind
+        else {
+            return None;
+        };
+        let decl = &db.decls[*callee];
+        if !decl.implicit {
+            return Some(Vec::new());
+        }
+        if matches!(decl.name.key().as_str(), "rising_edge" | "falling_edge") {
+            return Some(Vec::new());
+        }
+        let [
+            Arg {
+                actual: Actual::Expr(a),
+                ..
+            },
+            Arg {
+                actual: Actual::Expr(b),
+                ..
+            },
+        ] = &args[..]
+        else {
+            // The level of a `wait until c = '1'`.
+            return self.level_of(cond).map(|_| Vec::new());
+        };
+        if decl.name.key().as_str() == "\"and\"" {
+            if self.legacy_of(*a, *b).is_some() {
+                return Some(Vec::new());
+            }
+            if let Some(mut ex) = self.edge_extras(*a) {
+                ex.push(*b);
+                return Some(ex);
+            }
+            if self.safe_operand(*a)
+                && let Some(mut ex) = self.edge_extras(*b)
+            {
+                ex.push(*a);
+                return Some(ex);
+            }
+            return None;
+        }
+        // `c = '1'` of a `wait until`.
+        self.level_of(cond).map(|_| Vec::new())
     }
 
     /// A concurrent `x <= not x after T;` (a clock generator, not postponed or guarded, no
@@ -3144,6 +3301,8 @@ impl Elab<'_> {
             trigger: None,
             copy: None,
             toggle: None,
+            idle: None,
+            guard: None,
         });
         ProcIdx(self.procs.len() as u32 - 1)
     }

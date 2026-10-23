@@ -57,6 +57,11 @@ struct ProcDecl {
     process: Box<dyn Process>,
     drivers: Vec<DriverId>,
     trigger: Option<EdgeTrigger>,
+    /// The signal parts a clocked process reads, when an activation is a function of them alone
+    /// (`Builder::idle_skip`).
+    idle: Option<Vec<(SignalId, Range)>>,
+    /// The signal parts the condition of a guarded block reads (`Builder::guard_process`).
+    guard: Option<Vec<(SignalId, Range)>>,
 }
 
 /// The one condition under which an event resumes a process to any effect: the process is
@@ -172,7 +177,7 @@ impl Builder {
     /// bit-planes; `f` sees whole composite values (see [`Resolver`](crate::Resolver)). A
     /// signal may be split into several groups, but its groups must cover it; every part must
     /// get the same sources, each covering the part, in the same order (checked by `build`),
-    /// and all must have the same guard kind (`guard` after this call).
+    /// and none may be guarded.
     pub fn resolved_composite<R: Into<SigRef> + Copy>(&mut self, parts: &[R], f: crate::Resolver) {
         let g = self.groups.len() as u32;
         if parts.is_empty() {
@@ -356,6 +361,8 @@ impl Builder {
             process,
             drivers: drivers.to_vec(),
             trigger: None,
+            idle: None,
+            guard: None,
         });
         pid
     }
@@ -371,6 +378,31 @@ impl Builder {
         match self.procs.get_mut(p.0 as usize) {
             Some(d) if ok => d.trigger = Some(t),
             _ => self.usage(format!("edge trigger {t:?} on process {}", p.0)),
+        }
+    }
+
+    /// Process `p`, which has an edge trigger, does nothing but assign signals without delay
+    /// as a function of `reads` (and constants) when it runs. The kernel may then leave it
+    /// suspended at an edge when none of those had an event since its last activation
+    /// (`Config::idle_skip`); the caller guarantees the shape (`Db::pure_clocked_reads`).
+    pub fn idle_skip(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
+        match self.procs.get_mut(p.0 as usize) {
+            Some(d) if d.trigger.is_some() => d.idle = Some(reads.to_vec()),
+            _ => self.usage(format!(
+                "idle skip of process {} without an edge trigger",
+                p.0
+            )),
+        }
+    }
+
+    /// Process `p` is the `_guard` process of a guarded block: `GUARD <= condition`, then a wait on
+    /// the condition's signals `reads`. The kernel runs it in the update phase of the cycle in
+    /// which one of them has an event, so GUARD changes in that cycle (LRM 11.2), instead of
+    /// waking it like a process (GUARD would change a delta later).
+    pub fn guard_process(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
+        match self.procs.get_mut(p.0 as usize) {
+            Some(d) => d.guard = Some(reads.to_vec()),
+            None => self.usage(format!("guard process {} does not exist", p.0)),
         }
     }
 
@@ -555,6 +587,8 @@ impl Builder {
         let mut slots = Vec::with_capacity(self.procs.len());
         let mut procs = Vec::with_capacity(self.procs.len());
         let mut names = Vec::with_capacity(self.procs.len());
+        let mut idles = Vec::with_capacity(self.procs.len());
+        let mut guards = Vec::with_capacity(self.procs.len());
         for p in self.procs {
             let st = ProcState {
                 waveforms: p.drivers.iter().map(|_| Waveform::default()).collect(),
@@ -573,6 +607,8 @@ impl Builder {
             }));
             let depth = p.name.trim_matches(':').matches(':').count() as u32;
             names.push(p.name);
+            idles.push(p.idle);
+            guards.push(p.guard);
             procs.push(ProcMeta {
                 depth,
                 flags: p.flags,
@@ -583,6 +619,13 @@ impl Builder {
                 trigger: p.trigger,
                 perm: 0,
                 tid: 0,
+                idle_ok: false,
+                idle_win: 0,
+                idle_hits: 0,
+                idle_static: false,
+                armed: true,
+                idle_state: 0,
+                shadow: false,
             });
         }
         SimControl::new(
@@ -595,6 +638,8 @@ impl Builder {
             slots,
             procs,
             names,
+            idles,
+            guards,
         )
     }
 }
@@ -678,14 +723,14 @@ impl Builder {
             let want = owners(l0, r0);
             for &(l, r) in &g.parts {
                 let s = &self.signals[l as usize];
-                let bad = s.guard != lead.guard
+                let bad = s.guard.is_some()
                     || s.level != lead.level
                     || want.is_none()
                     || owners(l, r) != want;
                 if bad {
                     return Err(format!(
                         "resolved composite {}: leaf {} does not share the sources of the \
-                         composite (or has another guard kind; a partly driven composite is not implemented)",
+                         composite (a guarded or partly driven composite is not implemented)",
                         lead.name, s.name
                     ));
                 }

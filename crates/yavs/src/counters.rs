@@ -38,6 +38,7 @@ pub fn report(s: yavs_kernel::Stats) {
         ("process_runs", s.process_runs),
         ("single_runs", s.single_runs),
         ("wakes", s.wakes),
+        ("idle_skips", s.idle_skips),
         ("events", s.events),
         ("update_fast", s.update_fast),
         ("update_timed", s.update_timed),

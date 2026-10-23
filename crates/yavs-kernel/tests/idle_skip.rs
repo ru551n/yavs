@@ -1,0 +1,226 @@
+//! Idle skip (`Builder::idle_skip`): a clocked process that depends on nothing but signals is left
+//! suspended at an edge when none of them had an event since its last activation. The run is the
+//! same with the skip, without it, and with it checked (`Config::idle_check`); the skip happens.
+
+mod common;
+
+use common::*;
+use yavs_kernel::*;
+use yavs_logic::StdULogic;
+
+const NONE: ProcFlags = ProcFlags {
+    postponed: false,
+    serial: false,
+    several_waits: false,
+    concurrent_call: false,
+};
+
+#[derive(Clone, Copy, PartialEq)]
+enum Skip {
+    Off,
+    On,
+    Check,
+}
+
+fn logic(b: &mut Builder, name: &str, v: StdULogic) -> SignalId {
+    b.signal(name, SignalType::logic(1), &LogicVec::new(1, v))
+}
+
+/// Nine elements, element 0 in use: a signal with a waiter list per element (`wake_sole`).
+fn wide(b: &mut Builder, name: &str, v: StdULogic) -> SignalId {
+    b.signal(name, SignalType::logic(9), &LogicVec::new(9, v))
+}
+
+/// A clock, an input `d` that changes every `every` edges, an enable `en` that is high from edge 10
+/// to edge 30, and two registers: `q <= d` and `qe <= d` when `en = '1'`. Returns the value changes
+/// and phases of a run to 400 ns, with `ops` applied at the given times, and the statistics.
+fn run(skip: Skip, every: u64, ops: &[(u64, &str)], values: bool) -> (Vec<String>, Stats) {
+    let mut b = Builder::new();
+    let clk = logic(&mut b, "clk", StdULogic::Zero);
+    let dclk = b.driver(clk);
+    b.process_boxed(
+        "clkgen",
+        NONE,
+        &[dclk],
+        Box::new(ToggleProcess::new(
+            clk,
+            0,
+            dclk,
+            Time::ns(5),
+            DelayMode::INERTIAL,
+        )),
+    );
+    let (d, en) = (
+        wide(&mut b, "d", StdULogic::Zero),
+        wide(&mut b, "en", StdULogic::Zero),
+    );
+    let (q, qe) = (
+        logic(&mut b, "q", StdULogic::Zero),
+        logic(&mut b, "qe", StdULogic::Zero),
+    );
+    let (dd, den, dq, dqe) = (b.driver(d), b.driver(en), b.driver(q), b.driver(qe));
+    // The testbench: on every rising edge it counts, and sets `d` and `en`.
+    let zero1 = Range::new(0, 1);
+    let mut n = 0u64;
+    b.process(
+        "stim",
+        NONE,
+        &[dd, den],
+        p(move |c| {
+            if c.event(clk)? && c.elem_code(clk, 0)? == StdULogic::One as u8 {
+                n += 1;
+                if n.is_multiple_of(every) {
+                    let v = StdULogic::from_bool(c.elem_code(d, 0)? != StdULogic::One as u8);
+                    c.assign_code(dd, Some(zero1), Time::ZERO, v as u8, DelayMode::INERTIAL)?;
+                }
+                if n == 10 || n == 30 {
+                    let v = StdULogic::from_bool(n == 10);
+                    c.assign_code(den, Some(zero1), Time::ZERO, v as u8, DelayMode::INERTIAL)?;
+                }
+            }
+            c.wait_on(clk)
+        }),
+    );
+    let one = Range::new(0, 1);
+    // A process that only waits for `d` and `en`: their changes wake it at once
+    // (`wake_sole`), which must arm the readers too.
+    for sig in [d, en] {
+        b.process(
+            "watch",
+            NONE,
+            &[],
+            p(move |c| {
+                if !c.wait_same() {
+                    c.wait_on(sig.slice(0, 1))?;
+                }
+                Ok(())
+            }),
+        );
+    }
+    let reg = |gate: bool| {
+        p(move |c| {
+            if gate {
+                if c.elem_code(en, 0)? == StdULogic::One as u8 {
+                    let v = c.elem_code(d, 0)?;
+                    c.assign_code_now(dqe, one, v);
+                }
+            } else {
+                let v = c.elem_code(d, 0)?;
+                c.assign_code_now(dq, one, v);
+            }
+            if !c.wait_on_again(clk, one) {
+                c.wait_on(clk)?;
+            }
+            Ok(())
+        })
+    };
+    let edge = EdgeTrigger {
+        signal: clk,
+        elem: 0,
+        rising: true,
+        legacy: false,
+        reset: None,
+    };
+    let p1 = b.process("reg", NONE, &[dq], reg(false));
+    let p2 = b.process("reg_en", NONE, &[dqe], reg(true));
+    for (pid, reads) in [(p1, vec![(d, one)]), (p2, vec![(en, one), (d, one)])] {
+        b.edge_trigger(pid, edge);
+        b.idle_skip(pid, &reads);
+    }
+    let mut sim = b
+        .build(Config {
+            skip_unchanged: true,
+            idle_skip: skip != Skip::Off,
+            idle_check: skip == Skip::Check,
+            ..Config::default()
+        })
+        .unwrap();
+    let t = Trace {
+        phases: true,
+        ..Trace::default()
+    };
+    if values {
+        sim.subscribe(Box::new(t.clone()));
+    } else {
+        sim.subscribe(Box::new(Cycles {
+            lines: t.clone(),
+            q,
+            qe,
+        }));
+    }
+    for &(time, op) in ops {
+        sim.run_until(ns(time)).unwrap();
+        match op {
+            // The value the register's process drives is replaced from outside.
+            "deposit_q" | "deposit_qe" => {
+                let s = if op == "deposit_q" { q } else { qe };
+                let now = sim.view(s).unwrap().code(0);
+                let flipped = StdULogic::from_bool(now != StdULogic::One as u8);
+                sim.deposit(s, &LogicVec::new(1, flipped)).unwrap();
+            }
+            _ => unreachable!(),
+        }
+    }
+    sim.run_until(ns(400)).unwrap();
+    (t.take(), sim.stats())
+}
+
+/// Records the registers at every cycle and wants no value changes: a change of `d` or `en`
+/// wakes the watchers at once (`wake_sole`).
+struct Cycles {
+    lines: Trace,
+    q: SignalId,
+    qe: SignalId,
+}
+
+impl Observer for Cycles {
+    fn wants_value_changes(&self) -> bool {
+        false
+    }
+    fn wants_phase(&self, p: Phase) -> bool {
+        p == Phase::NextCycle
+    }
+    fn phase(&mut self, h: &mut Hook<'_>, _p: Phase) {
+        let (q, qe) = (
+            h.view(self.q).unwrap().code(0),
+            h.view(self.qe).unwrap().code(0),
+        );
+        self.lines
+            .lines
+            .lock()
+            .unwrap()
+            .push(format!("{} +{} q={q} qe={qe}", h.now(), h.delta()));
+    }
+}
+
+fn same(every: u64, ops: &[(u64, &str)]) {
+    for values in [true, false] {
+        let (off, st_off) = run(Skip::Off, every, ops, values);
+        let (on, st_on) = run(Skip::On, every, ops, values);
+        let (check, st_check) = run(Skip::Check, every, ops, values);
+        assert_eq!(off, on);
+        assert_eq!(off, check);
+        assert_eq!(st_off.idle_skips, 0);
+        assert!(st_on.idle_skips > 0, "the skip never fired");
+        assert_eq!(st_on.idle_skips, st_check.idle_skips);
+    }
+}
+
+#[test]
+fn registers_with_quiet_inputs_are_skipped() {
+    same(8, &[]);
+    same(3, &[]);
+    same(1000, &[]);
+}
+
+#[test]
+fn a_deposit_on_an_output_is_restored_at_the_next_edge() {
+    same(
+        1000,
+        &[(103, "deposit_q"), (217, "deposit_qe"), (251, "deposit_q")],
+    );
+    same(
+        8,
+        &[(103, "deposit_q"), (217, "deposit_qe"), (251, "deposit_q")],
+    );
+}

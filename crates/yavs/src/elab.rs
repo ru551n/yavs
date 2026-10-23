@@ -833,6 +833,7 @@ pub fn run(
         }
     }
     let observed_free = a.cov.is_none() && a.dap.is_none() && a.vhpi.is_empty();
+    let idle_mode = std::env::var("YAVS_IDLE_SKIP").unwrap_or_default();
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),
         shuffle: a.shuffle,
@@ -848,6 +849,10 @@ pub fn run(
         // a debugger stepping through it, and foreign callbacks.
         edge_triggers: observed_free,
         skip_unchanged: observed_free && !db.facts().reads_activity,
+        // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
+        // `check` runs the ones the kernel would skip and fails when one does something else.
+        idle_skip: idle_mode != "off",
+        idle_check: idle_mode == "check",
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));

@@ -176,6 +176,15 @@ pub struct ProcInst {
     /// A concurrent `x <= not x after T;` on one scalar element with `T` known now
     /// (`Walker::toggle_source`): the kernel runs it itself (`yavs_kernel::ToggleProcess`, #440).
     pub toggle: Option<ProcToggle>,
+    /// A clocked process (it has a `trigger`) whose activation is a function of the signals
+    /// listed here and constants alone (`Db::pure_clocked_reads`): the kernel may skip an
+    /// activation when none of them had an event since the last one
+    /// (`yavs_kernel::Builder::idle_skip`).
+    pub idle: Option<Vec<(LeafId, yavs_kernel::Range)>>,
+    /// The `_guard` process of a guarded block: the signal parts its condition reads. The kernel
+    /// runs it in the update phase of the cycle in which one of them has an event, so GUARD
+    /// changes in that cycle (LRM 11.2; `yavs_kernel::Builder::guard_process`).
+    pub guard: Option<Vec<(LeafId, yavs_kernel::Range)>>,
 }
 
 /// The clock generator `x <= not x after T;` of [`ProcInst::toggle`].

@@ -1474,19 +1474,10 @@ which tools/difftest parses.
   `Inst::Drive` of one element, a null element an `Inst::Disconnect` at its own time (the
   explicit `after`, 0 fs without one; the disconnection specification time belongs to the
   GUARD of a guarded concurrent assignment only). Still `E2001`: a null in an aggregate target
-  or a signal parameter, a pulse rejection limit with a null first element. sim1 loses the value before and the null itself in some
+  or a signal parameter, a pulse rejection limit with a null first element, and in a record
+  signal (blocked by #595). sim1 loses the value before and the null itself in some
   multi-element forms and sim2 cannot run them: the corpus case `sigassign/null_waveform_mixed`
   is `ref=hand`, `tests/discrepancies/null-waveform-in-waveform`.
-- **Guarded record signals** (LRM 4.6, 6.4.2.3, #595): a record (or array) subtype with a
-  resolution function is resolved as a whole, so the guard (`bus`/`register`) belongs to the
-  composite and its leaves need no resolution of their own. `yavs-elab` marks the leaves guarded
-  after it joins them into groups (the kernel check looked at each leaf before), and the kernel
-  resolves a guarded group over its connected sources only (a source is connected while some
-  element of it is). A null on a record signal or a false GUARD disconnects every leaf's
-  driver (`yavs-lower` `drive_record`, `guarded_assign`). sim1 does not disconnect a guarded
-  driver at initialisation (as for `resolution/bus_guarded`), so `resolution/guarded_record` is
-  `ref=hand`; sim2 agrees with it, and cannot run a null on a record
-  (`tests/discrepancies/null-record-signal`).
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for
@@ -3944,6 +3935,69 @@ the native process first, then the edge path itself.
   `fletcher_bufferwriter_512` 0.915 / 0.938, `sc5_timestamp` 0.918 / 0.933, `poc_cache_cpu` 0.990 / 0.963,
   `sc5_fifo_repack` 0.999 / 0.967, `fletcher_bufferreader` 0.991 / 1.005, `hdlm_lfsr` 0.989, the rest 1.000 within 0.1%.
   A bare clock edge (`examples/clk.rs`, kernel alone): 1300 to 912 instructions.
+
+## Kernel round 16: idle activations of pure clocked processes (yavs-sem, yavs-elab, yavs-kernel, #440, 2026-10-23)
+
+User decision 2026-10-23 (the study of another simulator's idea: skip a clocked process whose inputs had no event since its last
+run). Measured first: a clocked activation assigned nothing, or the value the signal had, in 75% of neorv32's 17 M resident
+activations, 41% of `fletcher_bufferreader`'s, 22% of the writer's, 63% of `poc_cache_cpu`'s.
+
+- **Which processes** (`Db::pure_clocked_reads`, `Walker::idle_reads`): a process with an edge trigger of the shapes
+  `process (c) begin if <edge> then B end if; end process;` (also `if R then A elsif <edge> then B`) and
+  `process begin wait until <edge>; B end process;`, whose declarative region has no variable or file, whose statements are
+  signal assignments without delay (also conditional), `if`, `case`, `for` loops, `next`, `exit` and `null`, and whose
+  expressions have constants, signals (not implicit ones or GUARD), predefined operators, conversions and pure functions of
+  packages without a signal parameter: an activation is then a function of the signals it reads and of constants. What the
+  edge test also reads (`rising_edge(c) and en = '1'`) is read too. The signals read are whole objects and record fields
+  (an index or a slice is not worked out per instance: the process is armed by a change anywhere in the array); the
+  analysis is made once per process statement (`idle_cache`).
+- **Arming** (`SimControl::arm_readers`, `readers`): the clocked processes that read a signal are armed when it has an event
+  (the cycle's changed signals, and `wake_sole`, which hides a change from them), and by a deposit on a signal they drive (the
+  value a deposit leaves is not what they assigned). A process that runs is disarmed at the end of its plain activation
+  (`note_idle`), which also records whether it assigned anything (`idle_state` 1 or 2). A process that is woken
+  (`idle_filter`, before the batch) with `!armed`, a resident waiter and a recorded state stays suspended.
+- **Why it is the same run.** The activation would do what the last one did: same values to the same drivers. On a signal that
+  allows skipping (`skip_ok`, so every signal the process drives must; `Config::skip_unchanged`, `edge_triggers`) that queues
+  nothing and changes nothing, except the delta cycle an assignment of an unchanged value makes
+  (`empty_delta`): the skip makes it when the last activation assigned (`idle_state` 2). Forces and releases do not change
+  what the driver holds; a deposit arms. `Config::idle_check` (`YAVS_IDLE_SKIP=check`) runs the activations it would skip and
+  fails (an internal error naming the process) when one assigns a value that is not the signal's current one (the net value
+  of its entries: a field set after `r <= r_next` counts once) or assigns after a quiet one. Under it the whole corpus
+  (452), the real-world suite, OSVVM and UVVM runs are the same. `YAVS_IDLE_SKIP=off` runs every activation.
+  `tests/idle_skip.rs` (the run with the skip, without it and checked: same changes and phases, deltas included; mutations of
+  the arming, the deposit and the delta were each caught), `perf.rs` `idle_regs` (a floor on `idle_skips`) and
+  `idle_skip_changes_nothing` (all spellings of the edge).
+- **Tracking pays or stops** (`IDLE_WINDOW`): a tracked activation costs ~40 instructions and a skip saves ~1000, so a process
+  skipped in fewer than 1 of 32 of its activations over a window of 128 stops being tracked (`idle_ok` false), and with
+  the last of them the arming and filtering stop (`idle_active`); every 65536 cycles they are tracked again
+  (`idle_reprobe`). Without that the 4096 always-changing registers of `rtl_ff` paid 5%.
+- **Only the serial path** records the state: a batch run in the pool (threads > 1, 64 or more processes) commits through
+  `commit_rest`, which forgets it. The same run either way; only `idle_skips` and `process_runs` depend on the threads.
+- **Not covered**: processes with variables (`hdlm_lfsr`, most testbenches), calls of user subprograms, `report`, `assert`,
+  delayed assignments, `wait` anywhere but first, postponed processes.
+- **Measured** (aligned bench builds, same commit with the skip off and on; instructions, then `perf stat` cycles, minimum of 3
+  to 5 alternating runs on cores 10 and 11): `neorv32_single_min` 0.745 / 0.689 (8.3 M of 18.1 M activations skipped),
+  `fletcher_bufferreader` 0.80 / 0.82, `fletcher_bufferwriter_512` 0.97 / 0.96, `sc5_fifo_repack` 0.96 / 0.96, `poc_cache_cpu` 1.00 /
+  0.99, `sc5_timestamp` 1.01 / 1.00, `rtl_ff` 1.006 / 1.007, `rtl_lfsr` 1.002 / 1.000.
+
+## GUARD changes in the cycle of its condition (yavs-kernel, yavs-elab, #464, 2026-10-23)
+
+LRM 11.2 and 14.7.5: the implicit GUARD signal is updated in the cycle where a signal of its condition has an event. The
+`_guard` process of a block drove it with a zero-delay assignment, which matures a delta later (the references report
+`guard=false` once, in the cycle of the event; yavs reported `guard=true` then `false` a delta later).
+
+- **The kernel runs the guard process in the update phase** (`Builder::guard_process`, `SimControl::run_guards`): the elaborator
+  gives the `_guard` process of a block the signal parts its condition reads (`Walker::guard_reads`: the sem `reads` of the
+  condition, resolved like any name; when one cannot be resolved the process stays a normal one). Its `ProcMeta::ready` stays true,
+  so no wake queues it. In `cycle`, right after the update, the guards whose condition signals are in `changed_sigs` run as a
+  batch (`run_batch`, so its waits are registered as before), `finish_direct` makes GUARD's event, and the loop looks at the
+  new changes for the guards that read another GUARD (nested blocks). The notification of observers, the wake of GUARD's
+  waiters and the processes of the cycle come after it: they see the new GUARD in the delta of the event. A GUARD with guard
+  readers is not woken through `wake_sole`, which would hide its change. Designs without a guarded block pay one test of an empty
+  list per cycle.
+- `tests/corpus/delta/guard_same_cycle.vhd` (nested blocks, a guarded assignment and a process on the guard; reference
+  output), `crates/yavs-kernel/tests/guard.rs` (the guards as processes and as kernel guards: the same values, the change in
+  the delta of the event instead of one or two later). `delta/guard_initial_value` (f60def5e) is the other half.
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

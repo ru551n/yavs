@@ -3874,6 +3874,16 @@ Checks on the pushed range: `cargo fmt`, `cargo clippy --workspace --all-targets
 `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled, and `--tier=auto` with `--no-collapse-ports`; UVVM suite 102 pass,
 9 fail, 26 skip as before; OSVVM `.pro` 314 of 314 under 2008 and 2019.
 
+### Idle activations of pure clocked processes, GUARD in the update phase (#440, #464, 2026-10-23)
+
+(`docs/decisions.md` "Kernel round 16", "GUARD changes in the cycle of its condition".) A clocked process whose activation is a
+function of signals and constants (no variable, call, report or delayed assignment) stays suspended at an edge when none of the
+signals it reads had an event since its last activation; `YAVS_IDLE_SKIP=check` runs the activations it would skip and compares,
+`off` runs them all. Instructions / cycles with the skip on against off (aligned bench builds, cores 10 and 11): `neorv32_single_min`
+0.745 / 0.689, `fletcher_bufferreader` 0.80 / 0.82, `fletcher_bufferwriter_512` 0.97 / 0.96, `sc5_fifo_repack` 0.96 / 0.96, the head-to-head designs
+1.00 (processes that always change stop being tracked after 128 activations). GUARD changes in the cycle of the event on a
+signal of its condition (the guard process runs in the update phase); #464 is closed.
+
 ### Kernel round 15: edge spellings, clock generators that re-arm, wide buses and CPU clocks (#440, 2026-10-23)
 
 (`docs/decisions.md` "Kernel round 15".) (1) Every spelling of a clock edge gets the edge trigger: `wait until clk = '1'`,
@@ -6054,7 +6064,7 @@ transport, a null as `Inst::Disconnect` at its own time. No IR, interpreter or k
 Corpus `sigassign/null_waveform` (reference output) and `sigassign/null_waveform_mixed`
 (`ref=hand`: sim1 loses a value before a null and a null in the middle of a waveform, sim2 cannot
 run a null among elements; `tests/discrepancies/null-waveform-in-waveform`). Still `E2001`: null in
-aggregate targets and signal parameters (record signals: #595, below).
+record signals (blocked by #595), aggregate targets and signal parameters.
 
 ## GUARD initial value (#464, 2026-10-23)
 
@@ -6063,14 +6073,3 @@ The implicit GUARD signal starts as the guard condition on the initial values (`
 `delta/guard_initial_value`. Open (#464): GUARD still changes a delta after the condition's
 signals, where the references update it in the same cycle (needs a kernel update-phase
 evaluation of the condition).
-
-## Guarded record signals (#595, 2026-10-23)
-
-A `bus` or `register` record signal whose subtype has a record resolution function elaborates
-(`E3010 guarded signal p.a must be resolved` came from guarding the leaves before the
-composite groups joined them) and simulates: the kernel resolves a guarded group over its
-connected sources (`SimControl::resolve_group`), a false GUARD (`guarded_assign`) and a `null`
-waveform element (`drive_record`) disconnect every leaf. Corpus `resolution/guarded_record`
-(`ref=hand`, sim1 does not disconnect at initialisation), `resolution/guarded_record_rec2` (the
-reproducer), `sigassign/null_record`; kernel test `guarded_composite_disconnects_as_a_unit`;
-discrepancy `null-record-signal`.

@@ -66,6 +66,18 @@ fn yavs(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Run {
 /// Analyze `src` as `design.vhd` into `dir/lib` and run `design` under `--tier=<tier>` (`more`
 /// after `--threads 1`).
 fn run_design(dir: &Path, design: &str, src: &str, tier: &str, more: &[&str]) -> Run {
+    run_design_env(dir, design, src, tier, more, &[])
+}
+
+/// `run_design` with environment variables set for the run.
+fn run_design_env(
+    dir: &Path,
+    design: &str,
+    src: &str,
+    tier: &str,
+    more: &[&str],
+    env: &[(&str, &str)],
+) -> Run {
     std::fs::write(dir.join(format!("{design}.vhd")), src).expect("write");
     let work = format!("work:{}", dir.join("lib").display());
     let a = yavs(
@@ -86,7 +98,7 @@ fn run_design(dir: &Path, design: &str, src: &str, tier: &str, more: &[&str]) ->
     ];
     args.extend_from_slice(more);
     args.push(design);
-    yavs(dir, &[], &args)
+    yavs(dir, env, &args)
 }
 
 /// What a bound violation says; `how` names where the counter comes from.
@@ -376,6 +388,51 @@ case!(
         ("ops", Max(1822)),
     ]
 );
+
+case!(
+    idle_regs,
+    "q=42,28,70,0,70,44 b='1''1'",
+    &[],
+    [
+        ("process_runs", Max(3100)),
+        ("idle_skips", Min(4050)),
+        ("ops", Max(34700)),
+    ]
+);
+
+/// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
+/// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
+#[test]
+fn idle_skip_changes_nothing() {
+    let d = tempdir("idle_equal");
+    let src = include_str!("perf/idle_regs.vhd");
+    let run = |mode: &str| {
+        run_design_env(
+            &d,
+            "idle_regs",
+            src,
+            "interp",
+            &[],
+            &[("YAVS_IDLE_SKIP", mode)],
+        )
+    };
+    let (off, on, check) = (run("off"), run("on"), run("check"));
+    assert_eq!(
+        (off.code, on.code, check.code),
+        (0, 0, 0),
+        "{}",
+        check.all()
+    );
+    assert_eq!(off.stdout, on.stdout);
+    assert_eq!(off.stdout, check.stdout);
+    assert_eq!(off.counters["idle_skips"], 0);
+    assert!(
+        on.counters["idle_skips"] > 4000,
+        "the skip did not fire: {:?}",
+        on.counters
+    );
+    assert_eq!(on.counters["idle_skips"], check.counters["idle_skips"]);
+}
 
 /// The third run of a design in one library (the first notes the closure, the second stores, the
 /// third hits the cache).

@@ -95,6 +95,9 @@ impl Elaborated {
                 }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
+            if let Some(g) = leaf.guard {
+                b.guard(id, g, leaf.disconnect);
+            }
         }
         // Composites resolved as a whole (#193): one group per instance, one resolver each.
         for w in &self.nets.wholes {
@@ -110,12 +113,6 @@ impl Elaborated {
                     .map(|&(l, r)| yavs_kernel::SignalId(l.0).slice(r.offset, r.len))
                     .collect();
                 b.resolved_composite(&parts, f.clone());
-            }
-        }
-        // After the groups: a leaf of a composite resolved as a whole is resolved by them.
-        for (i, leaf) in self.nets.leaves.iter().enumerate() {
-            if let Some(g) = leaf.guard {
-                b.guard(yavs_kernel::SignalId(i as u32), g, leaf.disconnect);
             }
         }
         let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| {
@@ -199,6 +196,13 @@ impl Elaborated {
                 &ds,
                 proc,
             );
+            if let Some(reads) = &p.guard {
+                let r: Vec<_> = reads
+                    .iter()
+                    .map(|&(l, r)| (yavs_kernel::SignalId(l.0), r))
+                    .collect();
+                b.guard_process(pid, &r);
+            }
             if let Some(t) = p.trigger.filter(|t| !t.wait || !proc_waits) {
                 b.edge_trigger(
                     pid,
@@ -210,6 +214,14 @@ impl Elaborated {
                         reset: t.reset.map(|(l, e, c)| (yavs_kernel::SignalId(l.0), e, c)),
                     },
                 );
+                // A pure clocked process: the kernel may skip an edge no input had an event for.
+                if let Some(reads) = &p.idle {
+                    let r: Vec<_> = reads
+                        .iter()
+                        .map(|&(l, r)| (yavs_kernel::SignalId(l.0), r))
+                        .collect();
+                    b.idle_skip(pid, &r);
+                }
             }
         }
         // The processes of foreign architectures' models: drivers only (#330).

@@ -29,7 +29,7 @@ pub fn llvm_compiled(inline: usize, interpreted: usize, native_frames: usize) {
 }
 
 /// Print the counters when `YAVS_COUNTERS` is set; `s` is the kernel's.
-pub fn report(s: yavs_kernel::Stats) {
+pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     if std::env::var_os("YAVS_COUNTERS").is_none() {
         return;
     }
@@ -60,6 +60,18 @@ pub fn report(s: yavs_kernel::Stats) {
         let before = OPS_BEFORE.load(std::sync::atomic::Ordering::Relaxed);
         rows.push(("ops_elab", before));
         rows.push(("ops", n - before));
+    }
+    if let Some(rt) = rt {
+        let c = rt.prog.copy_stats();
+        rows.push(("spec_planned", c.planned));
+        rows.push(("spec_copies", c.copies as u64));
+        rows.push(("spec_switched", c.switched));
+        rows.push(("spec_fresh", c.fresh as u64));
+        rows.push(("spec_loaded", c.loaded as u64));
+        rows.push(("spec_capped", c.capped));
+        rows.push(("spec_full", c.full));
+        rows.push(("spec_shared_ir", c.shared_ir));
+        rows.push(("spec_copy_ir", c.copy_ir));
     }
     #[cfg(feature = "llvm")]
     {

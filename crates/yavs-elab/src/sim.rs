@@ -107,6 +107,9 @@ struct LoweringKey {
     part: Vec<u8>,
 }
 
+/// The most specialised copies of processes one design may have (`Program::reserve_copies`).
+const MAX_COPIES: usize = 4096;
+
 /// The constant bytes up to which a lowering is stored: reading a big constant pool back costs
 /// more than lowering the design again (`Lowerer::image` has the same limit).
 const LOWERING_MAX_CONSTS: usize = yavs_lower::IMAGE_MAX_CONSTS;
@@ -133,6 +136,22 @@ impl LoweringKey {
             })
             .sum();
         consts <= LOWERING_MAX_CONSTS
+    }
+
+    /// The specialised copies of processes stored for this lowering (kind `spec`, one entry for
+    /// all of them, `CopyBlob`).
+    fn get_copies(&self) -> Vec<yavs_ir::CopyBlob> {
+        let Some(bytes) = self.cache.get(&self.extent, "spec", &self.part) else {
+            return Vec::new();
+        };
+        yavs_diag::sharing(&bytes, || postcard::from_bytes(&bytes).ok()).unwrap_or_default()
+    }
+
+    /// Store the copies `program` made and the stored ones it did not use.
+    fn put_copies(&self, program: &yavs_ir::Program) {
+        if let Ok(bytes) = postcard::to_stdvec(&program.export_copies()) {
+            self.cache.put(&self.extent, "spec", &self.part, &bytes);
+        }
     }
 
     /// Store `program` (verified) and `rest` with the optimised copies `program` holds; returns
@@ -418,6 +437,32 @@ impl Elaborated {
             }
         }
         let sources = yavs_interp::Sources::of(&program, &db.sources);
+        // Slots for the specialised copies the processes may switch to while the simulation runs
+        // (one per instance of a process that can have copies at most); the runtime's tables are
+        // made for them.
+        let mut program = program;
+        let mut may: HashMap<_, bool> = HashMap::new();
+        let mut instances = 0;
+        for p in self.procs.iter().filter(|p| p.actual.is_none()) {
+            let i = self.instance_of(p.scope);
+            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+                continue;
+            };
+            instances += usize::from(*may.entry((arch, p.stmt)).or_insert_with(|| {
+                units.get(&arch).is_some_and(|u: &UnitIr| {
+                    u.processes
+                        .iter()
+                        .find(|x| x.actual.is_none() && x.stmt == p.stmt)
+                        .is_some_and(|x| program.specialisable(x.func))
+                })
+            }));
+        }
+        program.reserve_copies(instances.min(MAX_COPIES));
+        // The copies of processes earlier runs of this lowering made, read when the first is.
+        if let Some(l) = &learn {
+            let key = l.key.clone();
+            program.set_copy_loader(Box::new(move || key.get_copies()));
+        }
         self.ir = Some(Ir {
             sources,
             revision: crate::pkgcall::revision_of(db),
@@ -646,6 +691,9 @@ impl Elaborated {
             lib.learn(made);
         }
         let Some(l) = &mut ir.learn else { return };
+        if ir.program.fresh_copies() > 0 {
+            l.key.put_copies(&ir.program);
+        }
         if ir.program.optimized_count() > l.stored {
             l.stored = l.key.put(&ir.program, &l.rest);
         }
@@ -1112,6 +1160,18 @@ impl Elaborated {
             Ok((f, serial))
         };
         let mut proc_index: HashMap<_, HashMap<_, usize>> = HashMap::new();
+        // The parameters of `for` generates are not folded into a process's copy (so the
+        // iterations of a generate share one): their bytes in the instance data of each unit.
+        let gen_params: std::collections::HashSet<yavs_sem::DeclId> = self
+            .hier
+            .scopes
+            .iter()
+            .filter_map(|s| match s.kind {
+                ScopeKind::ForGenerate { param, .. } => Some(param),
+                _ => None,
+            })
+            .collect();
+        let mut holes_of: HashMap<_, Arc<[(u32, u32)]>> = HashMap::new();
         let mut s = self.build_res(
             cfg,
             |p, ds| {
@@ -1174,13 +1234,30 @@ impl Elaborated {
                     });
                 }
                 let serial = ir.program.is_serial(pir.func);
-                let proc = InterpProcess::new(
+                let mut proc = InterpProcess::new(
                     rt.clone(),
                     pir.func,
                     inst,
                     drivers,
                     serial.then(|| shared.clone()),
                 )?;
+                if !serial {
+                    let holes = match holes_of.get(&arch) {
+                        Some(h) => h.clone(),
+                        None => {
+                            let mut holes = Vec::new();
+                            for v in u.values.iter().filter(|v| gen_params.contains(&v.decl)) {
+                                let n = rt.prog.types.get(v.ty).and_then(|t| t.scalar_size());
+                                let n = n.ok_or_else(|| {
+                                    sim_err("a generate parameter is not a scalar".into())
+                                })?;
+                                holes.push((v.off, n as u32));
+                            }
+                            holes_of.entry(arch).or_insert(holes.into()).clone()
+                        }
+                    };
+                    proc.specialise_later(holes);
+                }
                 Ok(Box::new(attach(proc, p)))
             },
             res,

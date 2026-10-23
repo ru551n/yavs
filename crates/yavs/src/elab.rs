@@ -1082,7 +1082,7 @@ pub fn run(
             .map(|err| (file.clone().unwrap_or_default(), err));
     }
     crate::timing::report();
-    crate::counters::report(sim.stats());
+    crate::counters::report(sim.stats(), rt.as_deref());
     yavs_interp::census_dump(40);
     if signalled.load(Ordering::SeqCst) {
         if let Some((path, err)) = profile_error {

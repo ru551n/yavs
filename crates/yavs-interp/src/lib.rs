@@ -1006,6 +1006,30 @@ fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
     s
 }
 
+/// The activation at which a process that may have a copy specialised to its instance data
+/// switches to it (`InterpProcess::specialise_later`): `YAVS_SPEC_AFTER`, at least 2 (the first
+/// activation runs the declarative part).
+pub fn spec_after() -> u64 {
+    static AFTER: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *AFTER.get_or_init(|| {
+        std::env::var("YAVS_SPEC_AFTER")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(SPEC_AFTER)
+            .max(2)
+    })
+}
+
+/// Whether `YAVS_SPEC_AFTER` is set: a test run in which processes switch to copies whatever the
+/// tier has compiled (`Machine::specialise`).
+pub fn spec_forced() -> bool {
+    std::env::var_os("YAVS_SPEC_AFTER").is_some()
+}
+
+/// Activations of a process before it switches to its copy: the optimiser spends about 0.7
+/// million instructions on a copy, which an activation saves a few tens of (docs/design/specialisation.md).
+const SPEC_AFTER: u64 = 1024;
+
 fn usage(m: String) -> SimError {
     SimError::new(ErrorKind::Usage(m))
 }
@@ -1331,6 +1355,17 @@ impl InterpProcess {
         })
     }
 
+    /// Let the process switch to a copy of its function specialised to its instance data
+    /// (`Program::copy_of`) once it has run [`spec_after`] activations; `holes` are the byte
+    /// ranges of the data (offset, length) that hold the parameters of `for` generates, which
+    /// the copy does not fold (iterations of a generate share a copy). A process the copy
+    /// cannot stand in for stays as it is.
+    pub fn specialise_later(&mut self, holes: Arc<[(u32, u32)]>) {
+        if self.shared.is_none() {
+            self.m.specialise_at(spec_after(), holes);
+        }
+    }
+
     /// Attach a debug session (ir.md 3.4); `name` appears in the session's process table.
     pub fn with_debug(mut self, session: Arc<DebugSession>, name: &str) -> InterpProcess {
         let i = session.register(name);
@@ -1606,7 +1641,7 @@ impl Process for InterpProcess {
     }
 
     fn entry_func(&self) -> Option<u32> {
-        Some(self.m.entry.0)
+        Some(self.m.rt.prog.base_of(self.m.entry).0)
     }
 
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -1618,6 +1653,9 @@ impl Process for InterpProcess {
         if self.m.hot {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
+            if self.m.execs == self.m.spec_at {
+                self.m.specialise();
+            }
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));
             }

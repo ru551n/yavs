@@ -435,6 +435,35 @@ case!(
     ]
 );
 
+/// Processes of instances with their own generics switch to copies specialised to their instance
+/// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
+/// processes (the iterations of a generate and the instances with equal generics share one).
+#[test]
+fn spec_copies() {
+    let d = tempdir("spec_copies");
+    let src = include_str!("perf/spec_copies.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_copies", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    assert_eq!(shared.counters["spec_switched"], 0);
+    check_bounds(
+        "spec_copies",
+        &copies,
+        &[
+            ("spec_copies", Max(3)),
+            ("spec_switched", Min(6)),
+            ("spec_capped", Max(0)),
+            ("spec_full", Max(0)),
+            ("ops", Max(33700)),
+        ],
+    );
+}
+
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
 #[test]

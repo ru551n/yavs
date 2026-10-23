@@ -126,7 +126,7 @@ impl Sampler {
         // Source place of a function: its earliest statement in the file of its first one.
         let place = |f: u32| -> Option<(String, usize)> {
             let prog = &rt?.prog;
-            let func = prog.funcs.get(FuncId(f))?.full();
+            let func = prog.raw(FuncId(f))?;
             let spans: Vec<_> = func
                 .loc
                 .iter()
@@ -158,7 +158,7 @@ impl Sampler {
         };
         let pct = |n: u64| 100.0 * n as f64 / t.ticks.max(1) as f64;
         let name_of = |f: u32| {
-            rt.and_then(|r| r.prog.funcs.get(FuncId(f)))
+            rt.and_then(|r| r.prog.raw(FuncId(f)))
                 .map_or_else(|| format!("#{f}"), |f| f.name.clone())
         };
         let at = |p: &Option<(String, usize)>| {

@@ -571,6 +571,11 @@ pub(crate) struct Machine {
     resident_bytes: usize,
     /// The fault of the last `run_quick`.
     quick_fault: Option<Fault>,
+    /// The process may switch to a copy specialised to its instance data (`specialise`): the
+    /// parameters of `for` generates in its data, which the copy does not fold.
+    spec: Option<Arc<[(u32, u32)]>>,
+    /// The activation (`execs`) at which `InterpProcess::run` tries the switch.
+    pub(crate) spec_at: u64,
 }
 
 /// Registers of a process's root frame up to which it keeps its working vectors
@@ -981,6 +986,8 @@ impl Machine {
             resident_bytes: 0,
             root_process: false,
             quick_fault: None,
+            spec: None,
+            spec_at: u64::MAX,
             hot: false,
             execs: 0,
         }
@@ -1074,6 +1081,8 @@ impl Machine {
     }
 
     pub(crate) fn attach(&mut self, session: Arc<DebugSession>, index: usize) {
+        self.spec = None;
+        self.spec_at = u64::MAX;
         self.dbg = Some(Box::new(Dbg {
             session,
             index,
@@ -1264,6 +1273,109 @@ impl Machine {
             self.exec::<true>(&mut ctx, base)
         } else {
             self.exec::<false>(&mut ctx, base)
+        }
+    }
+
+    /// Ask to switch to a copy of the entry function specialised to this machine's instance
+    /// data (`Program::copy_of`) at activation `at` (`holes`: the parameters of `for` generates
+    /// in the data, which the copy reads like the shared code). The process must be one a copy
+    /// can stand in for (`Program::specialisable`) and run without a debugger.
+    pub(crate) fn specialise_at(&mut self, at: u64, holes: Arc<[(u32, u32)]>) {
+        if self.dbg.is_none() && self.rt.prog.specialisable(self.entry) {
+            self.rt.prog.note_planned();
+            self.spec = Some(holes);
+            self.spec_at = at;
+        }
+    }
+
+    /// The switch to the copy, tried once, between two activations: the process waits at its
+    /// one wait statement in its root frame. The copy keeps the variables where the lowered
+    /// code put them and resumes after its own wait; what the shared code kept behind the
+    /// lowered frame (memo flags and values, layout slots) is dropped, and the registers are
+    /// those of the copy. The process stays on the shared code when a compiled version of it
+    /// exists (the tier decides what to compile) or the copy cannot be had.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn specialise(&mut self) {
+        let Some(holes) = self.spec.take() else {
+            return;
+        };
+        self.spec_at = u64::MAX;
+        let rt = self.rt.clone();
+        let prog = &rt.prog;
+        let base = self.entry;
+        if self.frames.len() != 1 || self.dbg.is_some() || self.pause.is_some() || self.sh.is_some()
+        {
+            return;
+        }
+        // The shared code is compiled already: a copy would run interpreted until the tier
+        // compiled it. (A function the tier is asked to compile on entry, `NAT_ASK`, is not:
+        // the copy has the flag as well, `Runtime::set_eager`.)
+        if !crate::spec_forced()
+            && rt
+                .native
+                .func
+                .get(base.0 as usize)
+                .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CODE != 0)
+        {
+            return;
+        }
+        let Ok(id) = prog.copy_of(base, &self.inst.data, &holes) else {
+            return;
+        };
+        let (Some(old), Some(new), Some(raw)) = (prog.func(base), prog.func(id), prog.raw(base))
+        else {
+            return;
+        };
+        // The wait the process stands after, and the copy's: one wait statement each.
+        let pc = self.frames[0].pc as usize;
+        let waits_at = |f: &Func, pc: usize| {
+            pc.checked_sub(1)
+                .and_then(|p| f.code.get(p))
+                .is_some_and(|i| matches!(i, Inst::Suspend { .. }))
+        };
+        let Some(&at) = new.resume.first() else {
+            return;
+        };
+        if !waits_at(old, pc) || !waits_at(new, at as usize) || new.frame < raw.frame {
+            return;
+        }
+        let Some(pre) = rt.pre(id, new) else {
+            return;
+        };
+        let keep = raw.frame as usize;
+        if self.root.len() > keep {
+            self.root[keep..].fill(0);
+        }
+        self.root.resize(pre.slots as usize, 0);
+        let fr = &mut self.frames[0];
+        (fr.func, fr.pc, fr.slen) = (id, at, pre.slots);
+        self.entry = id;
+        prog.note_switch();
+        self.tier_state = None;
+        // A resident process holds registers filled for the shared code: fill the copy's, and
+        // stay resident if they fit. A released one gets the copy's from `borrow_fill`, its
+        // scratch being keyed by function.
+        if !self.released {
+            self.regs.v.clear();
+            let _ = pre.fill(&mut self.regs.v, 0);
+            if self.resident {
+                let bytes = self.regs.v.len() * 8 + RESIDENT_TEMP;
+                let old = self.resident_bytes;
+                let fits = self.regs.v.len() <= RESIDENT_REGS
+                    && RESIDENT_USED
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |u| {
+                            let n = u.saturating_sub(old) + bytes;
+                            (n <= RESIDENT_BUDGET).then_some(n)
+                        })
+                        .is_ok();
+                if fits {
+                    self.resident_bytes = bytes;
+                } else {
+                    RESIDENT_USED.fetch_sub(old, Ordering::Relaxed);
+                    (self.resident, self.resident_bytes) = (false, 0);
+                }
+            }
         }
     }
 

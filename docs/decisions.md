@@ -5860,3 +5860,7 @@ position check and the object lookup at every element: 95 instructions an elemen
   `--tier=auto` rule `fused_search` (#573) existed because the compiled loop was twice as slow as the interpreter's; with
   the helper a native-frame search loop is as fast, so the rule can go (the policy is `auto.rs`'s owner's to change, #572).
 
+- **A `Deref` hit is one compare** (`Obj::h`, `NO_H`): an entry that has an access value is writable (`yavs_rt_obj` keeps the write
+  permission of the entry it replaces for the same object) and no entry holds the null handle's value (the sentinel for "none" is
+  1, not 0), so the load of the write flag and the test of the handle are gone: five instructions less per `Deref`, one protected
+  `get` 359 to 337.

@@ -187,8 +187,10 @@ fn nslots_grow(depth: usize) -> *mut NSlot {
 }
 
 /// An object in `Mem::objs`: the high half of its addresses (`u64::MAX`: none), start,
-/// length, whether it was found for writing, and the access value a `Deref` found it for (0:
-/// none; its address is `hi << 32`).
+/// length, whether it was found for writing, and the access value a `Deref` found it for
+/// (`NO_H`: none; its address is `hi << 32`). An entry with an access value is writable
+/// (`yavs_rt_obj` keeps the permission of an entry it replaces for the same object), so a
+/// `Deref` needs one compare.
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Obj {
@@ -231,12 +233,16 @@ const KEY_FLAG: u64 = 8;
 const KEY_SHIFT_ADDR: u32 = 26;
 const KEY_SHIFT_HANDLE: u32 = 22;
 
+/// The access value of an entry no `Deref` found: no handle (not null either: a null handle
+/// must miss).
+const NO_H: u64 = 1;
+
 const NO_OBJ: Obj = Obj {
     hi: u64::MAX,
     ptr: std::ptr::null_mut(),
     len: 0,
     w: 0,
-    h: 0,
+    h: NO_H,
 };
 
 const MEM_SLOTS: u64 = std::mem::offset_of!(Mem, fr.slots) as u64;
@@ -378,7 +384,7 @@ impl Mem {
                     ptr: k[1] as *mut u8,
                     len: k[2],
                     w: k[3],
-                    h: 0,
+                    h: NO_H,
                 });
             }
         }
@@ -1529,12 +1535,16 @@ fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32) -> u32 {
             // The same object found before (by a `Deref`, for the other direction) keeps the
             // access value it was found for.
             let e = &mem.objs[obj_at(hi)];
-            let h = if e.hi == hi { e.h } else { 0 };
+            let (h, w) = if e.hi == hi {
+                (e.h, e.w | u64::from(write))
+            } else {
+                (NO_H, u64::from(write))
+            };
             mem.put_obj(Obj {
                 hi,
                 ptr: p,
                 len: len as u64,
-                w: u64::from(write),
+                w,
                 h,
             });
             1
@@ -5715,24 +5725,13 @@ impl Gen {
                             true,
                         );
                         let eh = self.load(self.i64, self.gep(e, self.c64(OBJ_H as i64)));
-                        let mut hit = LLVMBuildAnd(
-                            self.b,
-                            self.icmp(IP::LLVMIntEQ, eh, h),
-                            self.icmp(IP::LLVMIntNE, h, self.c64(0)),
-                            c"".as_ptr(),
-                        );
+                        // An entry with an access value is writable, and a null handle is no
+                        // entry's value (`NO_H`).
+                        let hit = self.icmp(IP::LLVMIntEQ, eh, h);
                         let miss = self.block(&c);
                         if c.nat.is_some() {
                             // The object stays in hand for the instructions that follow
-                            // (`ObjRef`): writable, so the entry must be (an entry found for
-                            // reading keeps its access value).
-                            let w = self.load(self.i64, self.gep(e, self.c64(OBJ_W as i64)));
-                            hit = LLVMBuildAnd(
-                                self.b,
-                                hit,
-                                self.icmp(IP::LLVMIntNE, w, self.c64(0)),
-                                c"".as_ptr(),
-                            );
+                            // (`ObjRef`).
                             LLVMBuildCondBr(self.b, hit, join, miss);
                             LLVMPositionBuilderAtEnd(self.b, miss);
                             // The callback enters the object at `e`, writable, for `h`; a native

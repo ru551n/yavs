@@ -3336,12 +3336,30 @@ impl SimControl {
             let meta = &mut self.procs[p as usize];
             meta.ready = false;
             meta.resumed |= !init;
-            meta.idle_state = 0;
-            meta.shadow = false;
             self.serial_ran |= meta.flags.serial;
             let (generation, trigger, tid) = (meta.generation, meta.trigger, meta.tid);
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
+            // A plain activation (below) of a clocked process the idle skip tracks: record what
+            // it did, as the batch loop does, before the commit takes its lists.
+            if meta.idle_ok
+                && !init
+                && !postponed
+                && st.again
+                && meta.perm != 0
+                && st.sens.is_empty()
+                && st.deadline.is_none()
+                && st.effects.is_empty()
+                && slot.result.is_ok()
+            {
+                if note_idle(meta, &self.signals, &self.names[p as usize], st) {
+                    self.idle_live -= 1;
+                    self.idle_active = self.idle_live != 0;
+                }
+            } else {
+                meta.idle_state = 0;
+                meta.shadow = false;
+            }
             // The usual clocked process: it waited again on the range its resident waiter
             // already covers (`Ctx::wait_on_again`) and did nothing but schedule drivers.
             if st.again

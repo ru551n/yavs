@@ -35,6 +35,19 @@ fn wide(b: &mut Builder, name: &str, v: StdULogic) -> SignalId {
 /// to edge 30, and two registers: `q <= d` and `qe <= d` when `en = '1'`. Returns the value changes
 /// and phases of a run to 400 ns, with `ops` applied at the given times, and the statistics.
 fn run(skip: Skip, every: u64, ops: &[(u64, &str)], values: bool) -> (Vec<String>, Stats) {
+    run_in(skip, every, ops, values, 1, 0)
+}
+
+/// `run` with `threads` and `extra` more registers `q <= d` (a batch of 32 or more processes
+/// runs in the pool when there are threads).
+fn run_in(
+    skip: Skip,
+    every: u64,
+    ops: &[(u64, &str)],
+    values: bool,
+    threads: usize,
+    extra: usize,
+) -> (Vec<String>, Stats) {
     let mut b = Builder::new();
     let clk = logic(&mut b, "clk", StdULogic::Zero);
     let dclk = b.driver(clk);
@@ -123,7 +136,26 @@ fn run(skip: Skip, every: u64, ops: &[(u64, &str)], values: bool) -> (Vec<String
     };
     let p1 = b.process("reg", NONE, &[dq], reg(false));
     let p2 = b.process("reg_en", NONE, &[dqe], reg(true));
-    for (pid, reads) in [(p1, vec![(d, one)]), (p2, vec![(en, one), (d, one)])] {
+    let mut regs = vec![(p1, vec![(d, one)]), (p2, vec![(en, one), (d, one)])];
+    for k in 0..extra {
+        let qk = logic(&mut b, &format!("q{k}"), StdULogic::Zero);
+        let dk = b.driver(qk);
+        let pk = b.process(
+            &format!("reg{k}"),
+            NONE,
+            &[dk],
+            p(move |c| {
+                let v = c.elem_code(d, 0)?;
+                c.assign_code_now(dk, one, v);
+                if !c.wait_on_again(clk, one) {
+                    c.wait_on(clk)?;
+                }
+                Ok(())
+            }),
+        );
+        regs.push((pk, vec![(d, one)]));
+    }
+    for (pid, reads) in regs {
         b.edge_trigger(pid, edge);
         b.idle_skip(pid, &reads);
     }
@@ -132,6 +164,7 @@ fn run(skip: Skip, every: u64, ops: &[(u64, &str)], values: bool) -> (Vec<String
             skip_unchanged: true,
             idle_skip: skip != Skip::Off,
             idle_check: skip == Skip::Check,
+            threads,
             ..Config::default()
         })
         .unwrap();
@@ -223,4 +256,23 @@ fn a_deposit_on_an_output_is_restored_at_the_next_edge() {
         8,
         &[(103, "deposit_q"), (217, "deposit_qe"), (251, "deposit_q")],
     );
+}
+
+/// A batch large enough for the pool: the activations are recorded as in the serial run, so the
+/// run and the skips are the same at any thread count.
+#[test]
+fn skips_in_the_pool_are_those_of_the_serial_run() {
+    for every in [3, 8, 1000] {
+        let (serial, st1) = run_in(Skip::On, every, &[], true, 1, 40);
+        let (pooled, st4) = run_in(Skip::On, every, &[], true, 4, 40);
+        let (check, stc) = run_in(Skip::Check, every, &[], true, 4, 40);
+        let (off, _) = run_in(Skip::Off, every, &[], true, 4, 40);
+        assert_eq!(serial, pooled);
+        assert_eq!(serial, check);
+        assert_eq!(serial, off);
+        assert!(st1.idle_skips > 100, "the skip hardly fired");
+        assert_eq!(st1.idle_skips, st4.idle_skips);
+        assert_eq!(st1.idle_skips, stc.idle_skips);
+        assert_eq!(st1.process_runs, st4.process_runs);
+    }
 }

@@ -13,6 +13,7 @@ use yavs_ir::Inst;
 static OPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One op about to execute; `insts` is the function's IR, which a generic `Op::Step` names.
+#[cfg_attr(not(any(debug_assertions, feature = "op-census")), allow(dead_code))]
 #[inline(always)]
 pub(crate) fn tick(op: &Op, insts: &[Inst]) {
     let _ = (op, insts);

@@ -55,7 +55,6 @@ const FAST_DEREF: u32 = 4;
 const MEMEQ: &str = "yavs_rt_memeq";
 const CODES: &str = "yavs_rt_codes";
 const SPEC_BAIL: &str = "yavs_rt_spec_bail";
-const SPEC_CODES01: &str = "yavs_rt_spec_codes01";
 const SPEC_MISMATCH: &str = "yavs_rt_spec_mismatch";
 const NATIVE: &str = "yavs_rt_native";
 const TROOT: &str = "yavs_rt_troot";
@@ -965,30 +964,6 @@ extern "C" fn yavs_rt_spec_bail(func: u32, kind: u32) {
     yavs_interp::spec01::bail(func, kind as usize);
 }
 
-/// `yavs_rt_codes` for two-state code: 1 and the planes `[bits, mask, 0, 0]` when every one of
-/// the `groups` groups of eight codes is `'0'` or `'1'` in the first `mask` elements, else 0.
-extern "C" fn yavs_rt_spec_codes01(codes: *const u8, groups: u64, mask: u64, out: *mut u64) -> u64 {
-    let mut bits = 0u64;
-    for j in 0..groups as usize {
-        // SAFETY: the caller checked `groups * 8` readable bytes at `codes`.
-        let w = unsafe { std::ptr::read_unaligned(codes.add(8 * j).cast::<u64>()) };
-        let m = (mask >> (8 * j)) & 0xff;
-        let m8 = (0..8).fold(0u64, |a, k| a | (m >> k & 1) * (0xffu64 << (8 * k)));
-        if (w & 0xfefe_fefe_fefe_fefe ^ 0x0202_0202_0202_0202) & m8 != 0 {
-            return 0;
-        }
-        bits |= ((w & 0x0101_0101_0101_0101).wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * j);
-    }
-    // SAFETY: the caller checked 32 writable bytes at `out`.
-    unsafe {
-        std::ptr::write_unaligned(out, bits & mask);
-        std::ptr::write_unaligned(out.add(1), mask);
-        std::ptr::write_unaligned(out.add(2), 0);
-        std::ptr::write_unaligned(out.add(3), 0);
-    }
-    1
-}
-
 /// Shadow mode found the two-state result of function `func` at `pc` unlike the general one.
 extern "C" fn yavs_rt_spec_mismatch(func: u32, pc: u32) {
     eprintln!(
@@ -1345,7 +1320,7 @@ impl Tier for LlvmTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        yavs_interp::spec01::gate(func.0, || {
+        yavs_interp::spec01::gate(func.0, false, || {
             enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), None)
         })
     }
@@ -1359,7 +1334,7 @@ impl Tier for LlvmTier {
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        yavs_interp::spec01::gate(func.0, || {
+        yavs_interp::spec01::gate(func.0, true, || {
             enter(
                 f,
                 nregs,
@@ -1639,7 +1614,6 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (MEMEQ, yavs_rt_memeq as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
             (SPEC_BAIL, yavs_rt_spec_bail as *const () as usize),
-            (SPEC_CODES01, yavs_rt_spec_codes01 as *const () as usize),
             (SPEC_MISMATCH, yavs_rt_spec_mismatch as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
@@ -1960,12 +1934,23 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         perf_map(&syms);
     }
     if std::env::var_os("YAVS_LLVM_KINDS").is_some() {
-        let mut v = KIND_STATS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        v.sort_by(|a, b| b.2.cmp(&a.2));
+        let mut v = KIND_STATS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        v.sort_by_key(|e| std::cmp::Reverse(e.2));
         let tot: usize = v.iter().map(|e| e.2).sum();
         eprintln!("kinds: total llvm insts (pre-opt, frame mode) {tot}");
+        eprintln!(
+            "kinds: two-state SigRead sites {}",
+            SPEC_SITES.load(std::sync::atomic::Ordering::Relaxed)
+        );
         for (k, ir, l) in v.iter().take(40) {
-            eprintln!("kinds: {k:20} ir={ir:8} llvm={l:9} per={:.1} share={:.1}%", *l as f64 / (*ir).max(1) as f64, 100.0 * *l as f64 / tot as f64);
+            eprintln!(
+                "kinds: {k:20} ir={ir:8} llvm={l:9} per={:.1} share={:.1}%",
+                *l as f64 / (*ir).max(1) as f64,
+                100.0 * *l as f64 / tot as f64
+            );
         }
     }
     let mut kinds = std::collections::HashMap::new();
@@ -2079,8 +2064,9 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
     }
 }
 
-
 /// Debug aid (`YAVS_LLVM_KINDS=1`): LLVM instructions generated per IR instruction kind.
+pub(crate) static SPEC_SITES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 pub(crate) static KIND_STATS: Mutex<Vec<(String, usize, usize)>> = Mutex::new(Vec::new());
 
 /// Debug aid (`YAVS_LLVM_ABLATE=Kind,Kind`): those kinds are stepped by the interpreter, to
@@ -2098,7 +2084,11 @@ fn ablate(i: &Inst) -> bool {
 fn kind_name(i: &Inst) -> String {
     let d = format!("{i:?}");
     let k = d.split([' ', '{', '(']).next().unwrap_or("").to_string();
-    if let Inst::CallNative { .. } = i { "CallNative".into() } else { k }
+    if let Inst::CallNative { .. } = i {
+        "CallNative".into()
+    } else {
+        k
+    }
 }
 
 unsafe fn fn_count(f: LLVMValueRef) -> usize {
@@ -2119,7 +2109,9 @@ unsafe fn fn_count(f: LLVMValueRef) -> usize {
 }
 
 fn kind_add(k: String, ir: usize, llvm: usize) {
-    let mut v = KIND_STATS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut v = KIND_STATS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(e) = v.iter_mut().find(|e| e.0 == k) {
         e.1 += ir;
         e.2 += llvm;
@@ -5492,6 +5484,30 @@ impl Gen {
         true
     }
 
+    /// The `left` (1 to 8) code bytes at `base + at` as the low bytes of a word, reading nothing
+    /// beyond them.
+    unsafe fn codes_word(&self, base: LLVMValueRef, at: i64, left: u64) -> LLVMValueRef {
+        // SAFETY: loads of `left` bytes the caller checked are readable.
+        unsafe {
+            if left >= 8 {
+                return self.load(self.i64, self.gep(base, self.c64(at)));
+            }
+            let mut w = self.c64(0);
+            let mut done = 0u64;
+            let i16 = LLVMInt16TypeInContext(self.ctx);
+            for (bytes, ty) in [(4u64, self.i32), (2, i16), (1, self.i8)] {
+                if left & bytes != 0 {
+                    let v = self.load(ty, self.gep(base, self.c64(at + done as i64)));
+                    let v = LLVMBuildZExt(self.b, v, self.i64, c"".as_ptr());
+                    let v = LLVMBuildShl(self.b, v, self.c64(8 * done as i64), c"".as_ptr());
+                    w = LLVMBuildOr(self.b, w, v, c"".as_ptr());
+                    done += bytes;
+                }
+            }
+            w
+        }
+    }
+
     /// A cold block that leaves for the interpreter at `pc` as a two-state bail of `kind`
     /// (`yavs_interp::spec01::bail`).
     unsafe fn spec_bail(&self, c: &Cur, pc: u32, kind: u32) -> LLVMBasicBlockRef {
@@ -5513,73 +5529,49 @@ impl Gen {
         }
     }
 
-    /// `Inst::SigRead` of a plain reference to a logic signal that keeps its codes, on the
+    /// `Inst::SigRead` of 1 to 64 elements of a logic signal that keeps its codes, on the
     /// assumption that every element is `'0'` or `'1'` (speculative two-state code, mode of
     /// `c.spec`): the planes are `[bits, mask, 0, 0]`, built from the code bytes in place with
-    /// one test for the lot. Any other case, and a signal compiled code does not read in place,
-    /// leaves for the interpreter at `pc` (no step and no join: the stored planes are known to
-    /// the optimiser downstream). `false`: not that case, nothing generated.
+    /// one test for the lot; a code that is neither leaves for the interpreter at `pc` (a bail).
+    /// A signal compiled code does not read in place (structural) takes the general read and
+    /// joins, or with `YAVS_SPEC01_STRUCT=exit` leaves too, which lets the optimiser see the
+    /// stored planes downstream. `false`: not that case, nothing generated.
     unsafe fn sig_read_spec(&self, c: &Cur, pc: u32, inst: &Inst, dst: Reg, sig: Reg) -> bool {
         use yavs_interp::spec01::Mode;
         let Some((mode, _)) = c.spec else {
             return false;
         };
-        let l = self.kint(c, Reg(sig.0 + 1));
-        if l.is_some_and(|l| !(1..=64).contains(&l)) {
+        // A length only known at run time may be over 64 (the general read): not speculated.
+        let Some(l) = self
+            .kint(c, Reg(sig.0 + 1))
+            .filter(|l| (1..=64).contains(l))
+        else {
             return false;
-        }
-        // SAFETY: see `sig_entry` and `sig_read_block`; every failing guard leaves.
+        };
+        // SAFETY: see `sig_entry` and `sig_read_block`; every failing guard leaves or joins.
         unsafe {
-            let structural = self.spec_bail(c, pc, 1);
-            let (ent, off) = self.sig_entry(c, sig, l, structural);
-            let lv = match l {
-                Some(l) => self.c64(l),
-                None => {
-                    let r = self.ld(c, Reg(sig.0 + 1));
-                    self.guard(
-                        c,
-                        self.icmp(IP::LLVMIntULT, LLVMBuildSub(self.b, r, self.c64(1), c"".as_ptr()), self.c64(64)),
-                        structural,
-                    );
-                    r
-                }
+            let exit_struct = std::env::var("YAVS_SPEC01_STRUCT").is_ok_and(|v| v == "exit");
+            let (s_sig, s_range, s_addr, join) = if exit_struct {
+                (
+                    self.spec_bail(c, pc, 1),
+                    self.spec_bail(c, pc, 2),
+                    self.spec_bail(c, pc, 3),
+                    None,
+                )
+            } else {
+                let (slow, join) = self.slow_signal(c, pc, 0);
+                (slow, slow, slow, Some(join))
             };
+            let (ent, off) = self.sig_entry(c, sig, Some(l), s_sig);
             let tl = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
-            let used = LLVMBuildAdd(self.b, off, lv, c"".as_ptr());
-            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), structural);
-            let groups = match l {
-                Some(l) => self.c64((l as u64).div_ceil(8) as i64),
-                None => LLVMBuildLShr(
-                    self.b,
-                    LLVMBuildAdd(self.b, lv, self.c64(7), c"".as_ptr()),
-                    self.c64(3),
-                    c"".as_ptr(),
-                ),
-            };
-            let end = LLVMBuildAdd(
-                self.b,
-                off,
-                LLVMBuildShl(self.b, groups, self.c64(3), c"".as_ptr()),
-                c"".as_ptr(),
-            );
-            let cap = self.load(self.i64, self.gep(ent, self.c64(SIG_CAP)));
-            self.guard(c, self.icmp(IP::LLVMIntULE, end, cap), structural);
+            let used = LLVMBuildAdd(self.b, off, self.c64(l), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), s_range);
             let codes = self.tag(
                 self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
                 AA_CODES,
             );
             let base = self.gep(codes, off);
-            // The low `l` bits (all ones for 64; a shift by 64 is poison).
-            let mask = match l {
-                Some(l) if l == 64 => self.c64(-1),
-                Some(l) => self.c64(((1u64 << l) - 1) as i64),
-                None => LLVMBuildLShr(
-                    self.b,
-                    self.c64(-1),
-                    LLVMBuildSub(self.b, self.c64(64), lv, c"".as_ptr()),
-                    c"".as_ptr(),
-                ),
-            };
+            let mask = if l == 64 { !0u64 } else { (1u64 << l) - 1 };
             let pd = self.host(
                 c,
                 self.ld(c, dst),
@@ -5587,51 +5579,50 @@ impl Gen {
                 self.c64(0),
                 self.c64(32),
                 true,
-                structural,
+                s_addr,
             );
-            let mut bits = self.c64(0);
-            if let Some(l) = l {
-                // Known length: bytes of the groups, the tail group masked to its elements.
-                let spread = self.c64(0x0102_0408_1020_4080);
-                let mut bad = self.c64(0);
-                for j in 0..(l as u64).div_ceil(8) {
-                    let w = self.load(self.i64, self.gep(base, self.c64(8 * j as i64)));
-                    let left = l as u64 - 8 * j;
-                    let m8: u64 = if left >= 8 { !0 } else { (1u64 << (8 * left)) - 1 };
-                    let v = LLVMBuildAnd(self.b, w, self.c64(0xfefe_fefe_fefe_fefeu64 as i64), c"".as_ptr());
-                    let v = LLVMBuildXor(self.b, v, self.c64(0x0202_0202_0202_0202), c"".as_ptr());
-                    let v = LLVMBuildAnd(self.b, v, self.c64(m8 as i64), c"".as_ptr());
-                    bad = LLVMBuildOr(self.b, bad, v, c"".as_ptr());
-                    let b0 = LLVMBuildAnd(self.b, w, self.c64(0x0101_0101_0101_0101), c"".as_ptr());
-                    let b0 = LLVMBuildMul(self.b, b0, spread, c"".as_ptr());
-                    let b0 = LLVMBuildLShr(self.b, b0, self.c64(56), c"".as_ptr());
-                    let b0 = LLVMBuildShl(self.b, b0, self.c64(8 * j as i64), c"".as_ptr());
-                    bits = LLVMBuildOr(self.b, bits, b0, c"".as_ptr());
-                }
-                if mode != Mode::Oracle {
-                    let ok = self.icmp(IP::LLVMIntEQ, bad, self.c64(0));
-                    self.guard(c, ok, self.spec_bail(c, pc, 0));
-                }
-                bits = LLVMBuildAnd(self.b, bits, mask, c"".as_ptr());
-            } else {
-                // Run-time length: the pure helper checks and builds, 0 for a non-01 code.
-                let mut ps = [self.ptr, self.i64, self.i64, self.ptr];
-                let ty = LLVMFunctionType(self.i64, ps.as_mut_ptr(), 4, 0);
-                let f = self.declare(SPEC_CODES01, ty);
-                self.attr(f, false, "nounwind", 0);
-                let mut args = [base, groups, mask, pd];
-                let ok = LLVMBuildCall2(self.b, ty, f, args.as_mut_ptr(), 4, c"".as_ptr());
-                let ok = self.icmp(IP::LLVMIntNE, ok, self.c64(0));
+            // The bytes of the groups, the last one read byte-exactly and masked to its elements.
+            let spread = self.c64(0x0102_0408_1020_4080);
+            let (mut bits, mut bad) = (self.c64(0), self.c64(0));
+            for j in 0..(l as u64).div_ceil(8) {
+                let left = l as u64 - 8 * j;
+                let w = self.codes_word(base, 8 * j as i64, left);
+                let m8: u64 = if left >= 8 {
+                    !0
+                } else {
+                    (1u64 << (8 * left)) - 1
+                };
+                let v = LLVMBuildAnd(
+                    self.b,
+                    w,
+                    self.c64(0xfefe_fefe_fefe_fefeu64 as i64),
+                    c"".as_ptr(),
+                );
+                let v = LLVMBuildXor(self.b, v, self.c64(0x0202_0202_0202_0202), c"".as_ptr());
+                let v = LLVMBuildAnd(self.b, v, self.c64(m8 as i64), c"".as_ptr());
+                bad = LLVMBuildOr(self.b, bad, v, c"".as_ptr());
+                let b0 = LLVMBuildAnd(self.b, w, self.c64(0x0101_0101_0101_0101), c"".as_ptr());
+                let b0 = LLVMBuildMul(self.b, b0, spread, c"".as_ptr());
+                let b0 = LLVMBuildLShr(self.b, b0, self.c64(56), c"".as_ptr());
+                let b0 = LLVMBuildShl(self.b, b0, self.c64(8 * j as i64), c"".as_ptr());
+                bits = LLVMBuildOr(self.b, bits, b0, c"".as_ptr());
+            }
+            if mode != Mode::Oracle {
+                let ok = self.icmp(IP::LLVMIntEQ, bad, self.c64(0));
                 self.guard(c, ok, self.spec_bail(c, pc, 0));
-                // The helper stored the planes.
-                return self.sig_read_spec_done(c, pc, inst, dst, pd, [None; 4], structural, mode);
             }
-            let planes = [Some(bits), Some(mask), Some(self.c64(0)), Some(self.c64(0))];
+            let bits = LLVMBuildAnd(self.b, bits, self.c64(mask as i64), c"".as_ptr());
+            let planes = [bits, self.c64(mask as i64), self.c64(0), self.c64(0)];
             for (p, v) in planes.iter().enumerate() {
-                self.store(v.unwrap_or(self.c64(0)), self.gep(pd, self.c64(8 * p as i64)));
+                self.store(*v, self.gep(pd, self.c64(8 * p as i64)));
             }
-            self.sig_read_spec_done(c, pc, inst, dst, pd, planes, structural, mode)
+            SPEC_SITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.sig_read_spec_done(c, pc, inst, dst, pd, planes, s_addr, mode);
+            if let Some(j) = join {
+                self.join(c, j);
+            }
         }
+        true
     }
 
     /// Shadow mode of `sig_read_spec`: the interpreter reads the signal again into the same
@@ -5644,21 +5635,17 @@ impl Gen {
         _inst: &Inst,
         dst: Reg,
         pd: LLVMValueRef,
-        planes: [Option<LLVMValueRef>; 4],
+        planes: [LLVMValueRef; 4],
         structural: LLVMBasicBlockRef,
         mode: yavs_interp::spec01::Mode,
-    ) -> bool {
+    ) {
         if mode != yavs_interp::spec01::Mode::Shadow {
-            return true;
+            return;
         }
         // SAFETY: as `sig_read_spec`.
         unsafe {
-            let mine: Vec<LLVMValueRef> = (0..4)
-                .map(|p| match planes[p] {
-                    Some(v) => v,
-                    None => self.load(self.i64, self.gep(pd, self.c64(8 * p as i64))),
-                })
-                .collect();
+            let mine = planes;
+            let _ = pd;
             self.signal(c, pc, 0);
             let pd2 = self.host(
                 c,
@@ -5672,7 +5659,12 @@ impl Gen {
             let mut diff = self.c64(0);
             for (p, m) in mine.iter().enumerate() {
                 let g = self.load(self.i64, self.gep(pd2, self.c64(8 * p as i64)));
-                diff = LLVMBuildOr(self.b, diff, LLVMBuildXor(self.b, g, *m, c"".as_ptr()), c"".as_ptr());
+                diff = LLVMBuildOr(
+                    self.b,
+                    diff,
+                    LLVMBuildXor(self.b, g, *m, c"".as_ptr()),
+                    c"".as_ptr(),
+                );
             }
             let ok = self.icmp(IP::LLVMIntEQ, diff, self.c64(0));
             let bad = self.block(c);
@@ -5688,7 +5680,6 @@ impl Gen {
             LLVMBuildUnreachable(self.b);
             LLVMPositionBuilderAtEnd(self.b, go);
         }
-        true
     }
 
     /// `Inst::SigRead` of a plain reference whose count (`sig + 1`) is only known at run time, to

@@ -179,3 +179,7 @@ cargo run --release -p yavs-llvm --features llvm --example measure -- <stmts> [O
   operators and the numeric vector natives stepped), #339 signals and waits (direct calls for
   single-range reads, drives and waits; multi-part references, forces and `WaitAt` stepped), #340 heap (`Deref` through a helper, `New` and `Free` stepped), #341 real
   conversions and powers; #432 compile and step cost. Epic: #144 (M6).
+
+## Spike: speculative two-state `SigRead` (branch `spike/2state`)
+
+`YAVS_SPEC01=on|shadow|oracle` makes `Gen::sig_read_spec` build the planes of a `SigRead` of 1 to 64 elements of a process from the signal's code bytes on the assumption of `'0'`/`'1'`, with a bail to the interpreter and a per-function back-off (`yavs_interp::spec01`). `YAVS_LLVM_KINDS=1` prints LLVM instructions per IR kind, `YAVS_LLVM_ABLATE=Kind,Kind` steps those kinds. Measured gain is small and nothing is decided: `docs/design/two-state.md`.

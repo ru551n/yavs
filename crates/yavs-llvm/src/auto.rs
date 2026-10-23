@@ -1598,7 +1598,7 @@ impl Tier for AutoTier {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
         // `AtomicUsize` has the layout of `usize`: compiled code loads the entries atomically.
-        yavs_interp::spec01::gate(func.0, || {
+        yavs_interp::spec01::gate(func.0, false, || {
             enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast(), None)
         })
     }
@@ -1612,7 +1612,7 @@ impl Tier for AutoTier {
     ) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
-        yavs_interp::spec01::gate(func.0, || {
+        yavs_interp::spec01::gate(func.0, true, || {
             enter(
                 f,
                 nregs,

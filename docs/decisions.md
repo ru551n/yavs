@@ -748,7 +748,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   does too. A declared property is used as the whole property of `assert`/`assume`
   (`assert p(a, b) @clk report r;`), a declared sequence in `cover`, as an operand of a suffix
   implication, or inside sequences. A declaration is visible in its design unit.
-- **Temporal PSL properties in the checker subset (agent, 2026-10-23, #445, L131):** `next_a`,
+- **Temporal PSL properties in the checker subset (agent, 2026-10-23, #445, L133):** `next_a`,
   `next_e`, `next_event`, `next_event_a`, `next_event_e`, `until`, `until_`, `before`, `before_`,
   `sync_abort`, `<->`, `iff`, `and`/`or` of properties, nested `next` and `always`, and any of them
   as the right side of `|->`/`|=>` (`parser/psl_prop.rs`). A directive that has one of these words,

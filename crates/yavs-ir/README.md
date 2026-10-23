@@ -82,6 +82,11 @@ textual dump.
   `(refl, is_value, v, ranges)`, `ranges` the run-time bounds of reachable scalar subtypes with
   a non-static range or 0 (yavs-interp `reflect.rs`).
 
+- Specialised copies of processes (#651, `src/copies.rs`, `docs/design/specialisation.md`): `Func::spare`
+  (an empty slot at the end of `Program::funcs`, never stored; a producer that builds `Func`s by hand sets
+  `spare: false`), `Program::reserve_copies`, `copy_of`, `base_of`, `raw`, `specialisable`, `copy_stats`,
+  `export_copies`/`set_copy_loader` (the stage cache), `opt::specialise_on`. Code that walks `Program::funcs`
+  skips `spare` functions (the verifier, the dump and the exporters do).
 - `ForeignArg` gained `Array { ty, lengths, copy_back }`, `Record { ty, copy_back }` and
   `Access` (still `Copy`); an exhaustive `match` on it needs the new arms.
 - `Bindings` gained `revision` and `resolution` (and implements `Default` by hand).

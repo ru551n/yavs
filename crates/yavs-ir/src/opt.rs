@@ -136,6 +136,22 @@ pub(crate) fn external() -> bool {
     EXTERNAL_VARS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// May processes get copies specialised to their instance data (`copies.rs`)? Not with the
+/// pass off, nor while a debugger keeps variables in their slots, nor when a plugin or the
+/// waveform recorder reads or writes process variables, nor under `--tier=llvm`, which compiles
+/// the program before any copy exists, nor with `YAVS_NO_SPEC` (differential testing).
+pub fn specialise_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_SPEC")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    }) && enabled()
+        && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+        && !external()
+        && !compiled()
+}
+
 /// Whether an optimised copy made now is the one every run makes: the pass is on and no debugger
 /// keeps variables in their slots ([`keep_variables`]) and the program is not compiled ([`compiled_tier`]). Only such copies are stored and used again
 /// (`Program::export_optimized`).
@@ -246,7 +262,15 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 /// Reads only what lowering produced of other functions (flags, kinds, types), so the result
 /// does not depend on which function was optimised first.
 pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
-    let mut f = optimize_body(prog, id)?;
+    optimize_func_with(prog, id, None)
+}
+
+fn optimize_func_with(
+    prog: &Program,
+    id: FuncId,
+    inst: Option<InstView<'_>>,
+) -> Option<Box<crate::Func>> {
+    let mut f = optimize_body_with(prog, id, inst)?;
     if inline::run(prog, id, &mut f, 1) {
         // The inlined bodies are code of this function now: what is known at the call decides
         // their branches and repeated reads are shared.
@@ -273,6 +297,21 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     Some(f)
 }
 
+/// The instance data a copy is made for and the byte ranges of it (offset, length) that are not
+/// folded.
+type InstView<'a> = (&'a [u8], &'a [(u32, u32)]);
+
+/// The copy of process `id` for the instance data `data` (`holes` are not folded): the
+/// function optimised as [`optimize_func`] does, with reads of the data folded.
+pub(crate) fn optimize_copy(
+    prog: &Program,
+    id: FuncId,
+    data: &[u8],
+    holes: &[(u32, u32)],
+) -> Option<Box<crate::Func>> {
+    optimize_func_with(prog, id, Some((data, holes)))
+}
+
 /// Is a debugger keeping the variables of subprograms in their slots?
 fn keep_variables_on() -> bool {
     KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
@@ -280,6 +319,14 @@ fn keep_variables_on() -> bool {
 
 /// The function optimised, without inlining: the copy [`optimize_func`] starts from.
 pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
+    optimize_body_with(prog, id, None)
+}
+
+fn optimize_body_with(
+    prog: &Program,
+    id: FuncId,
+    inst: Option<InstView<'_>>,
+) -> Option<Box<crate::Func>> {
     if !enabled() {
         return None;
     }
@@ -300,6 +347,7 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
         raw.nested,
         &mut layouts,
     );
+    o.inst = inst;
     o.run();
     let mut loc = raw.loc.clone();
     let blocks = o.changed.then(|| o.compact(&mut loc, None));
@@ -741,6 +789,10 @@ enum Step {
 struct Opt<'a> {
     prog: &'a Program,
     f: &'a crate::Func,
+    /// A copy specialised to one instance (`copies.rs`): the frozen instance data it is for and
+    /// the byte ranges of it that are not to be folded; reads of the data fold like reads of
+    /// the constant pool.
+    inst: Option<InstView<'a>>,
     code: Vec<Inst>,
     operands: Vec<Reg>,
     blocks: Vec<(u32, u32)>,
@@ -829,6 +881,7 @@ impl<'a> Opt<'a> {
         Opt {
             prog,
             f,
+            inst: None,
             code,
             operands,
             blocks: f.blocks.values().iter().map(|b| (b.start, b.end)).collect(),
@@ -2632,6 +2685,19 @@ impl<'a> Opt<'a> {
 
     /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded).
     fn const_read(&self, a: Opn, out: &mut [u8]) -> bool {
+        if let (Opn::A(AddrSpace::Inst, o), Some((data, holes))) = (a, self.inst) {
+            let (o, n) = (o as usize, out.len());
+            if holes
+                .iter()
+                .any(|&(h, z)| (h as usize) < o + n && o < (h + z) as usize)
+            {
+                return false;
+            }
+            return data.get(o..o + n).is_some_and(|b| {
+                out.copy_from_slice(b);
+                true
+            });
+        }
         let Opn::A(AddrSpace::Const(c), o) = a else {
             return false;
         };
@@ -2893,7 +2959,12 @@ impl<'a> Opt<'a> {
                 }
                 let n = w.bytes() as usize;
                 let mut x = [0u8; 8];
-                if self.const_read(a, &mut x[..n]) {
+                // (Instance data folds into integer registers only: a pointer or a handle
+                // register keeps its load, the collector's roots rule.)
+                let folds = self.inst.is_none()
+                    || !matches!(a, Opn::A(AddrSpace::Inst, _))
+                    || self.rty(dst) == Some(RegTy::I64);
+                if folds && self.const_read(a, &mut x[..n]) {
                     // A 4-byte load sign-extends (narrow integer elements, #415).
                     let v = if n == 4 {
                         i64::from(i32::from_le_bytes([x[0], x[1], x[2], x[3]]))

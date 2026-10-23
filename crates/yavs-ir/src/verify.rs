@@ -42,10 +42,8 @@ impl std::error::Error for VerifyError {}
 /// Verify `prog`, its functions from id `first` on.
 pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
     let mut errs = Vec::new();
-    for (id, _) in prog.funcs.iter().skip(first) {
-        if let Some(f) = prog.funcs.get(id) {
-            verify_func(prog, id, f.full(), &mut errs);
-        }
+    for (id, f) in prog.funcs.iter().skip(first).filter(|(_, f)| !f.spare) {
+        verify_func(prog, id, f.full(), &mut errs);
     }
     for (id, t) in prog.cases.iter() {
         let sorted = t.arms.windows(2).all(|w| w[0].1 < w[1].0);

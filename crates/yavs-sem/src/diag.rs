@@ -121,7 +121,7 @@ codes! {
     BINDING_MISMATCH = "E1703", "A port or generic of the component has no match in the bound entity.";
     NO_ENTITY_BOUND = "E1704", "The binding names no entity where one is needed: a configuration specification without an entity aspect, maps without a primary binding, or a block configuration of an instance with no entity.";
     // E18xx statements, processes, drivers
-    BAD_WAIT = "E1801", "`wait` is not allowed in a process with a sensitivity list or in a function.";
+    BAD_WAIT = "E1801", "`wait` is not allowed in a process with a sensitivity list or in a function, nor in a procedure that such a process calls, directly or through other procedures (10.2, 11.3); decided at analysis for procedures whose body is in the same design unit, otherwise when the `wait` executes.";
     BAD_RETURN = "E1802", "`return` is only allowed in a subprogram, with a value exactly in functions.";
     SENSITIVITY_NOT_STATIC = "E1803", "A name in a sensitivity list or `wait on` clause must be a static signal name: every index and slice in it must be static.";
     DRIVER_OUTSIDE_PROCESS = "E1810", "A subprogram declared outside a process drives a signal that is not one of its parameters.";

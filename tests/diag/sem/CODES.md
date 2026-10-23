@@ -119,7 +119,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1702 | rebinding | 8.1 |
 | E1703 | component/entity port or generic mismatch | 8.1 |
 | E1704 | binding without an entity where one is needed | 8.1 |
-| E1801 | `wait` misplaced | 8.1 |
+| E1801 | `wait` misplaced, or a call of a procedure that waits from a process with a sensitivity list | 8.1, 10.2, 11.3 |
 | E1802 | `return` misplaced | 8.1 |
 | E1810 | signal driven from outside a process | 8.1 |
 | E1811 | `next`/`exit` misplaced or unknown label | 8.1 |

@@ -16,6 +16,7 @@
 // `analyze_conc_stmts` is called from unit.rs once architectures land.
 #![allow(dead_code)]
 
+use rustc_hash::FxHashSet;
 use yavs_diag::{Diagnostic, Span};
 use yavs_syntax::Symbol;
 use yavs_syntax::ast::{self, ForceMode, Ident};
@@ -579,6 +580,74 @@ impl Db {
             d = d.with_secondary(sp, m);
         }
         Err(self.error(d))
+    }
+
+    /// 10.2, 11.3: a procedure called by a process with a sensitivity list, directly or through
+    /// other procedures, shall not contain a `wait`. Decided for procedures whose body is in the
+    /// unit being analysed; others (another unit, a protected method, an instance) are caught
+    /// when the `wait` executes (#597).
+    fn check_calls_wait(&mut self, body: &[StmtId], sens: Span) -> Result<(), Reported> {
+        let mut bad = Vec::new();
+        self.calls_wait(body, &mut bad);
+        let failed = !bad.is_empty();
+        for (call, wait) in bad {
+            let name = self.decls[call.0].name;
+            let d = Diagnostic::error(
+                diag::BAD_WAIT,
+                format!("procedure `{name}` contains a `wait` and is called by a process with a sensitivity list"),
+            )
+            .with_primary(call.1, "called here")
+            .with_secondary(wait, "the `wait`")
+            .with_secondary(sens, "the sensitivity list");
+            self.error(d);
+        }
+        if failed { Err(Reported) } else { Ok(()) }
+    }
+
+    /// The calls in `body` (nested statements included) of procedures that wait, as
+    /// `((callee, call span), span of a wait)`.
+    fn calls_wait(&self, body: &[StmtId], out: &mut Vec<((DeclId, Span), Span)>) {
+        for &s in body {
+            if let StmtKind::ProcCall(c) = &self.stmts[s].kind
+                && let Some(w) = self.waits_in(self.entity(c.callee), &mut FxHashSet::default())
+            {
+                out.push(((c.callee, self.stmts[s].span), w));
+            }
+            self.calls_wait(&self.stmt_children(s), out);
+        }
+    }
+
+    /// A `wait` in procedure `d` or in a procedure it calls, if its body is in the unit being
+    /// analysed.
+    fn waits_in(&self, d: DeclId, seen: &mut FxHashSet<DeclId>) -> Option<Span> {
+        let crate::decl::Body::Hir { scope, stmts } = &self.decls[d].kind.subprogram()?.body else {
+            return None;
+        };
+        let unit = self.cur()?.unit;
+        let mut s = Some(*scope);
+        while let Some(x) = s {
+            if x == self.units[unit].scope {
+                break;
+            }
+            s = self.scopes[x].parent;
+        }
+        if s.is_none() || !seen.insert(d) {
+            return None;
+        }
+        let mut stack = stmts.to_vec();
+        while let Some(s) = stack.pop() {
+            match &self.stmts[s].kind {
+                StmtKind::Wait { .. } => return Some(self.stmts[s].span),
+                StmtKind::ProcCall(c) => {
+                    if let Some(w) = self.waits_in(self.entity(c.callee), seen) {
+                        return Some(w);
+                    }
+                }
+                _ => {}
+            }
+            stack.extend(self.stmt_children(s));
+        }
+        None
     }
 
     fn loop_target(
@@ -1786,6 +1855,9 @@ impl Db {
         self.stmt_owners.pop();
         errs.finish(())?;
         let body = body.expect("no error means a body");
+        if let Some(sp) = sens_span {
+            self.check_calls_wait(&body, sp)?;
+        }
         let all = matches!(sensitivity, Sensitivity::All);
         let info = self.process_info(pscope, &body, all);
         self.check_passive(passive, &info)?;

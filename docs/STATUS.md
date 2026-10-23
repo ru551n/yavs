@@ -2406,6 +2406,10 @@ An installed binary finds `lib/` next to itself (#43).
   generic package and instantiated, in a library and in a declarative part, and runs:
   `tests/diag/sem/unit/package_generic_map_*`, difftest `generics/package_generic_map`, catalogue
   `package-generic-map`; its package body is `E9999`.
+- A call of a procedure that waits (directly or through other procedures) from a process with a
+  sensitivity list is `E1801` at analysis when the bodies are in the process's design unit (#597,
+  L129): `tests/diag/sem/expr/wait_in_procedure_called_by_*`; across units it stays a run-time error
+  (corpus `process/wait_in_sensitivity_proc`, catalogue `wait-in-procedure-of-sensitivity-list-process-package`).
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

@@ -94,6 +94,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0123",
         "`yavs cache clean` could not remove a compilation cache entry of a library directory (permissions, or the directory is in use by a read-only mount). Entries are only ever an optimisation: the next run analyzes from source.",
     ),
+    (
+        "E0124",
+        "`yavs run --profile=FILE` could not write the profile file (missing directory, permissions, full disk). The tables on standard error are printed anyway; the run exits at least 1.",
+    ),
     // yavs-wave
     (
         "E0801",

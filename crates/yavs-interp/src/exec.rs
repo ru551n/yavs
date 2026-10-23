@@ -236,11 +236,12 @@ const WATCH: u32 = 128;
 /// its thread-local access cost `run_ops::<false, true>` 4 percent of cycles on neorv32 (#521).
 #[cold]
 #[inline(never)]
-fn watch_tick(rt: &Runtime, func: FuncId) -> bool {
+fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
         Ordering::Relaxed,
     );
+    crate::pc_slot().store(u64::from(func.0) << 32 | u64::from(pc), Ordering::Relaxed);
     rt.native
         .func
         .get(func.0 as usize)
@@ -4156,7 +4157,7 @@ impl Machine {
                     recheck -= 1;
                     if recheck == 0 {
                         recheck = WATCH;
-                        if watch_tick(rt, func) {
+                        if watch_tick(rt, func, code.at.get(k).copied().unwrap_or(0)) {
                             self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                             return Ok(Flow::Retier);
                         }

@@ -8,12 +8,14 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+serde_json = "1"
 yavs-cache = { path = "../yavs-cache" }
 yavs-cov = { path = "../yavs-cov" }
 yavs-diag.workspace = true
 yavs-dap = { path = "../yavs-dap" }
 yavs-elab = { path = "../yavs-elab" }
 yavs-interp = { path = "../yavs-interp" }
+yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-lib = { path = "../yavs-lib" }
 yavs-sem = { path = "../yavs-sem" }

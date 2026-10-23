@@ -870,9 +870,17 @@ pub(crate) const NAT_CALL: u8 = 4;
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
 /// slot per thread that ever ran the fast loop with a tier set, never freed (8 bytes).
-static SLOTS: Mutex<Vec<&'static std::sync::atomic::AtomicU64>> = Mutex::new(Vec::new());
+static SLOTS: Mutex<
+    Vec<(
+        &'static std::sync::atomic::AtomicU64,
+        &'static std::sync::atomic::AtomicU64,
+    )>,
+> = Mutex::new(Vec::new());
 
 thread_local! {
+    /// Where the watching loop was at its last look: `function << 32 | IR pc` (`pc_slot`).
+    static PC_SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
+        const { std::cell::Cell::new(None) };
     // Const-initialised: an access is one thread-local load and a predictable null test (a lazy
     // `thread_local!` with an initialiser costs a call per access, on every activation, #480).
     static SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
@@ -888,15 +896,26 @@ pub(crate) fn slot() -> &'static std::sync::atomic::AtomicU64 {
     }
 }
 
+/// This thread's `pc` slot; `slot()` made it.
+#[inline(always)]
+pub(crate) fn pc_slot() -> &'static std::sync::atomic::AtomicU64 {
+    PC_SLOT.get().unwrap_or_else(|| {
+        slot();
+        PC_SLOT.get().expect("pc slot")
+    })
+}
+
 #[cold]
 #[inline(never)]
 fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
     let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
+    let pc: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
     SLOTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(s);
+        .push((s, pc));
     SLOT.set(Some(s));
+    PC_SLOT.set(Some(pc));
     s
 }
 
@@ -1104,7 +1123,7 @@ impl Runtime {
     pub fn sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
         let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
-            for s in SLOTS
+            for (s, _) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
@@ -1117,6 +1136,25 @@ impl Runtime {
                         .get(func as usize)
                         .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
                     out.push((FuncId(func), compiled));
+                }
+            }
+        }
+    }
+
+    /// For the profiler (`yavs run --profile`): appends the function and IR pc each simulation
+    /// thread's watching interpreter loop last looked at, while it still runs that function. Only
+    /// interpreted code reports one, every `WATCH` loop iterations or calls.
+    pub fn line_sampler(&self) -> impl Fn(&mut Vec<(FuncId, u32)>) + Send + 'static {
+        let id = u64::from(self.id);
+        move |out| {
+            for (s, pc) in SLOTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+            {
+                let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
+                if v >> 32 == id && at >> 32 == v & 0xffff_ffff {
+                    out.push((FuncId(v as u32), at as u32));
                 }
             }
         }
@@ -1486,6 +1524,10 @@ impl Process for InterpProcess {
         p.func(self.m.entry)
             .is_some_and(|f| f.flags.contains(yavs_ir::FuncFlags::IMPLICIT))
             && !p.single_suspend(self.m.entry)
+    }
+
+    fn entry_func(&self) -> Option<u32> {
+        Some(self.m.entry.0)
     }
 
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {

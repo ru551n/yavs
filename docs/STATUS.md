@@ -5966,3 +5966,16 @@ wave variable reads, compiled-code callbacks) against ceilings/floors; see root 
 section 5). Sensitivity checked by turning optimisations off (`YAVS_NO_MEMO`, `YAVS_NO_IROPT`,
 `YAVS_NO_INLINE`, `YAVS_NO_NATIVE_IEEE`) and by `--cov` (edge triggers off): the matching designs fail
 with the counter named.
+
+## Sampling profiler, `yavs run --profile[=FILE]` (#580, 2026-10-23)
+
+`--profile` prints the busiest processes (instance path, file:line), instances, subprograms and interpreted source lines to stderr
+and writes all rows as JSON with `=FILE` (`docs/cli-contract.md` 5, `docs/decisions.md` "Sampling profiler"). Tests:
+`crates/yavs/tests/profile.rs` (hot process and the loop line named, stdout unchanged at `--tier=interp`, default and `--threads=2`;
+E0124; `--dap`), and `--profile` in the VHPI variables test (the wrapper keeps `as_any`). Overhead, `tools/bench` h2h designs, core 14,
+7 runs, bench builds with the `llvm` feature (A = main before, B = this change):
+
+- Off (B/A total CPU, geometric mean of the 11 designs): 0.992; every design 0.90 to 1.04 (`rtl_chain` 1.04: its instruction count
+  is the same, cycles move with code layout, #574). Realbench `run` phase (core 15, 5 runs, `--tier=interp` and `auto`; the first 3 tests of a planned 8, the run was stopped for time): `hdlm_fifo_sync` and `olo_base_cam` 1.0, `poc_arith_addw` (23 s) 0.94 to 1.0, all within noise.
+- On (B with `--profile` / B without, geometric mean of total CPU, two rounds): 1.03 with `--tier=interp`, 1.015 with
+  `--tier=auto`; short designs show the fixed cost of the report (a few ms: resolving lines reads the source files).

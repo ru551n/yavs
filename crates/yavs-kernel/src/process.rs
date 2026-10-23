@@ -56,6 +56,12 @@ pub trait Process: Send {
         false
     }
 
+    /// The function an interpreted process starts in (an IR `FuncId`), for the profiler's
+    /// source lines.
+    fn entry_func(&self) -> Option<u32> {
+        None
+    }
+
     /// The process as `Any`, so an observer that knows its implementation can reach its
     /// state while it is suspended (`Hook::with_process`: VHPI reads and writes variables).
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {

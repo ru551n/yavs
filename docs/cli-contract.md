@@ -387,6 +387,29 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   whole process (all threads) in 10 ms steps and `n/a` where the platform does not tell (read
   from `/proc` on Linux). Off by default and then free. Standard output and exit status do not
   change; a run that fails before the simulation starts prints nothing.
+- `--profile[=FILE]` (`run` only, `=` form required): a sampling profiler. A thread samples the
+  run 1000 times a second and, when the simulation ends (any outcome after elaboration; not
+  after Ctrl-C, use `--stop-time`), prints five blocks to standard error, each line starting
+  `profile: `: a summary (samples, seconds, share in processes and in the kernel between them),
+  `processes` (instance path of the process, source file and line of its first statement),
+  `instances` (the processes of each instance path together), `subprograms` (name, file and line of
+  the first statement, samples in the interpreter and in compiled code) and `lines`
+  (file:line and the subprogram that owns the statement, interpreted code only); the 20
+  busiest rows of each. With FILE the same tables, all rows, are also written there as JSON
+  (`hz`, `seconds`, `samples`, `kernel_samples`, `processes[]` with `path`, `file`, `line`,
+  `samples` and `subprograms[]`, `instances[]`, `subprograms[]` with `interpreted_samples` and
+  `compiled_samples`, `lines[]` with `file`, `line`, `subprogram`, `samples`); a file that
+  cannot be written is `E0124` and the exit status at least 1. Standard output and the exit
+  status are those of a run without the option. A sample counts every simulation thread that
+  runs a process, so with `--threads N` the shares can add up to more than 100 percent. The
+  interpreter publishes the subprogram and statement it is in every 128 loop iterations or
+  calls (the subprogram exactly at every call with `--tier=llvm` or `auto`), so short
+  activations may show none, a statement is where the interpreter last looked, and compiled
+  code has no `lines` rows. A small subprogram the optimiser inlined counts as its caller in
+  `subprograms`, but its statements are `lines` of their own function. The sampler is a thread
+  that sleeps between samples: no signal or timer is used. Time in plugin callbacks (`--vhpi`) is
+  in the kernel share. Not implemented with `--dap` (`E9999`, exit 2). Off by default and
+  then free: no process is wrapped and no thread exists.
 - `--load=LIB` (repeatable): load a shared library for VHPIDIRECT foreign
   subprograms. A bare name goes to the OS library search path, a path must exist.
   Every foreign subprogram the design calls is bound before the simulation starts:

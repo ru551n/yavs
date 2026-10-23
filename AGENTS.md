@@ -195,7 +195,11 @@ python3 tools/difftest/difftest.py --candidate sim1   # differential corpus (see
 python3 tools/discrepancies/run.py --check           # simulator discrepancy catalogue (docs/design/simulator-discrepancies.md)
 cargo test -p yavs-llvm --features llvm              # LLVM tier (needs LLVM 21)
 cargo run -p yavs -- analyze --std=2008 --work=work:out/work file.vhd
+yavs run --profile[=out.json] --work=work:W top      # first tool for "where does a long run spend its time": busiest processes, instances, subprograms with file:line (stderr; JSON with FILE)
 ```
+
+For a performance question about a long run, start with `--profile` (VHDL-level: which process, which line), then `perf` on a
+`tools/build-bench.sh` build (machine-level) for the cause inside that process.
 
 AArch64 under qemu and Windows under Wine: see the commands in `docs/STATUS.md` ("ffi").
 

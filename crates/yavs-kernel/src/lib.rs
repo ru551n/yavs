@@ -9,6 +9,7 @@ pub mod callout;
 mod error;
 mod kernel;
 mod process;
+pub mod profile;
 mod signal;
 mod time;
 mod value;

@@ -11,6 +11,7 @@ mod cov;
 mod elab;
 mod explain;
 mod gui;
+mod profile;
 mod stdout;
 mod stuck;
 mod timing;

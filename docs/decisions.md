@@ -4971,3 +4971,23 @@ see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyon
 - **Process places** in diagnostics are the first statement of the body (`ProcTable`, built before
   the elaborated model is freed); the place of the wait statement a process is suspended at
   would need the interpreter to expose its resume point and is not reported.
+## Sampling profiler: `yavs run --profile[=FILE]` (yavs CLI, yavs-kernel `profile.rs`, yavs-interp, #580, 2026-10-23)
+
+- **Decision**: a thread of the CLI samples 1000 times a second and tallies (a) the process each simulation thread runs, (b) the
+  subprogram the interpreter or compiled code is in (`Runtime::sampler`, the slot the tier-up sampler already reads) and (c) the IR pc
+  at which the interpreter's watching loop last looked (`Runtime::line_sampler`), resolved through the optimised function's statement
+  table to file, line and the owning (possibly inlined) subprogram. Tables on stderr, all rows as JSON with FILE; stdout and exit status
+  unchanged. Rationale: "which process, which line" was only answerable with a machine-level profiler; this is the first tool, `perf`
+  the second.
+- **Zero cost off**: a process is wrapped (`Profile::wrap`, one relaxed store of its number before `Process::run` and 0 after) only when
+  a profile is installed (`Profile::install`, a global read once per kernel build). A `Config` field was tried first and moved the layout
+  of the hot `SimControl`: a long delta chain (`rtl_chain`) ran 7% more cycles with identical instructions (#574-style layout effect).
+  With `--tier=interp` a tier with no compiled code is installed so that the interpreter publishes its function; the only new work
+  with the option off is the pc store in `watch_tick`, which runs once per 128 loop iterations or calls and only in a tier-less or
+  tier-waiting run.
+- **Limits, by design**: lines exist for interpreted code only (compiled code has no per-statement store, and one would cost every
+  statement); the pc is where the interpreter last looked (every 128 events), not an exact sample; processes and subprograms are
+  separate tables (a sample cannot read both atomically), paired in the JSON only when exactly one thread runs one process; Ctrl-C
+  prints nothing (use `--stop-time`); `--dap` is `E9999` (a stop would be sampled as time in the stopped process). No signal or timer is
+  used, so it cannot clash with a signal-driven report.
+- **Cost on** (tools/bench h2h designs, one performance core, geometric mean of total CPU, B with the option / B without): 1.03 with `--tier=interp`, 1.015 with `--tier=auto` (worst design 1.10, `rtl_fan`: many tiny activations)..

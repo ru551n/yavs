@@ -103,6 +103,11 @@ pub struct RunArgs {
     /// standard error when the simulation ends.
     #[arg(long)]
     time_report: bool,
+    /// Sample where the simulation spends its time and print the busiest processes, instances
+    /// and subprograms to standard error when the run ends; with FILE also write them as
+    /// JSON.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true)]
+    profile: Option<Option<String>>,
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
@@ -769,6 +774,10 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     if a.dap.is_some() {
+        if a.profile.is_some() {
+            out.emit(&none, &unsupported("`--profile` together with `--dap`"));
+            return out.finish(2);
+        }
         if a.cov.is_some() {
             out.emit(&none, &unsupported("`--cov` together with `--dap` (M8)"));
             return out.finish(2);
@@ -836,6 +845,10 @@ pub fn run(
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));
     }
+    let cfg_profile = a
+        .profile
+        .is_some()
+        .then(yavs_kernel::profile::Profile::install);
     let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do
     let stop = match &a.stop_time {
         None => yavs_kernel::Time::MAX,
@@ -911,6 +924,12 @@ pub fn run(
             return out.finish(code);
         }
     };
+    if cfg_profile.is_some()
+        && a.tier() == TierArg::Interp
+        && let Some(b) = &built
+    {
+        crate::profile::watch_interpreter(&b.rt);
+    }
     // Only the design writes to standard output: no plugin, no foreign code.
     let foreign =
         e.ir.as_ref()
@@ -972,6 +991,13 @@ pub fn run(
     }
     crate::timing::mark("init");
     crate::counters::start();
+    let sampler = cfg_profile.map(|p| {
+        crate::profile::Sampler::start(
+            p,
+            rt.as_ref().map(|rt| rt.sampler()),
+            rt.as_ref().map(|rt| rt.line_sampler()),
+        )
+    });
     if let Err(d) = crate::stuck::on_signal(sim.interrupt()) {
         out.emit(&none, &d);
     }
@@ -1002,6 +1028,13 @@ pub fn run(
     };
     crate::timing::mark("simulate");
     crate::stdout::flush();
+    let mut profile_error = None;
+    if let (Some(s), Some(file)) = (sampler, &a.profile) {
+        profile_error = s
+            .finish(rt.as_deref(), &db.sources, file.as_deref())
+            .err()
+            .map(|err| (file.clone().unwrap_or_default(), err));
+    }
     crate::timing::report();
     crate::counters::report(sim.stats());
     yavs_interp::census_dump(40);
@@ -1044,6 +1077,14 @@ pub fn run(
     let _ = o.flush();
     drop(o);
     let mut code = code;
+    if let Some((path, err)) = profile_error {
+        out.emit(
+            &none,
+            &Diagnostic::error("E0124", format!("cannot write the profile `{path}`"))
+                .with_note(err.to_string()),
+        );
+        code = code.max(1);
+    }
     if let Some((path, rec)) = recorder
         && let Err(err) = rec.finish(&sim)
     {

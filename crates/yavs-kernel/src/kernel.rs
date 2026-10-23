@@ -857,10 +857,17 @@ impl SimControl {
         ports: Vec<PortEdge>,
         implicits: Vec<Implicit>,
         groups: Vec<Group>,
-        slots: Vec<Mutex<Slot>>,
+        mut slots: Vec<Mutex<Slot>>,
         mut procs: Vec<ProcMeta>,
         names: Vec<String>,
     ) -> Result<SimControl, SimError> {
+        if let Some(pr) = crate::profile::installed() {
+            for (s, name) in slots.iter_mut().zip(&names) {
+                let s = slot_mut(s);
+                let inner = std::mem::replace(&mut s.process, Box::new(|_: &mut Ctx<'_>| Ok(())));
+                s.process = pr.wrap(name, inner);
+            }
+        }
         let mut triggers = Vec::new();
         let mut ids = std::collections::HashMap::new();
         for m in &mut procs {

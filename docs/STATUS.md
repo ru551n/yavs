@@ -5990,7 +5990,7 @@ with the counter named.
 `--profile` prints the busiest processes (instance path, file:line), instances, subprograms and interpreted source lines to stderr
 and writes all rows as JSON with `=FILE` (`docs/cli-contract.md` 5, `docs/decisions.md` "Sampling profiler"). Tests:
 `crates/yavs/tests/profile.rs` (hot process and the loop line named, stdout unchanged at `--tier=interp`, default and `--threads=2`;
-E0124; `--dap`), and `--profile` in the VHPI variables test (the wrapper keeps `as_any`). Overhead, `tools/bench` h2h designs, core 14,
+E0124; `--dap` is E0125; Ctrl-C prints the profile so far, #587), and `--profile` in the VHPI variables test (the wrapper keeps `as_any`). Overhead, `tools/bench` h2h designs, core 14,
 7 runs, bench builds with the `llvm` feature (A = main before, B = this change):
 
 - Off (B/A total CPU, geometric mean of the 11 designs): 0.992; every design 0.90 to 1.04 (`rtl_chain` 1.04: its instruction count

@@ -775,7 +775,14 @@ pub fn run(
     };
     if a.dap.is_some() {
         if a.profile.is_some() {
-            out.emit(&none, &unsupported("`--profile` together with `--dap`"));
+            out.emit(
+                &none,
+                &Diagnostic::error("E0125", "`--profile` cannot be combined with `--dap`")
+                    .with_note(
+                        "a stop at a breakpoint would be sampled as time in the stopped process",
+                    )
+                    .with_help("profile a run without `--dap`"),
+            );
             return out.finish(2);
         }
         if a.cov.is_some() {
@@ -978,7 +985,21 @@ pub fn run(
     };
     // Ctrl-C or SIGTERM without a recorder ends the run at once: write out the reports that
     // wait in the output buffer first.
-    if recorder.is_none() && crate::stdout::is_on() {
+    // With `--profile` the first signal instead stops the run between cycles so that the
+    // profile of the time so far is printed; the exit status stays 130.
+    let signalled = Arc::new(AtomicBool::new(false));
+    if recorder.is_none() && cfg_profile.is_some() {
+        let (stop, flag) = (sim.interrupt(), signalled.clone());
+        let _ = yavs_wave::interrupt::install_with(
+            move || {
+                flag.store(true, Ordering::SeqCst);
+                stop.stop();
+            },
+            || {
+                crate::stdout::flush();
+            },
+        );
+    } else if recorder.is_none() && crate::stdout::is_on() {
         let _ = yavs_wave::interrupt::install(|| {
             crate::stdout::flush();
             std::process::exit(130);
@@ -1038,6 +1059,16 @@ pub fn run(
     crate::timing::report();
     crate::counters::report(sim.stats());
     yavs_interp::census_dump(40);
+    if signalled.load(Ordering::SeqCst) {
+        if let Some((path, err)) = profile_error {
+            out.emit(
+                &none,
+                &Diagnostic::error("E0124", format!("cannot write the profile `{path}`"))
+                    .with_note(err.to_string()),
+            );
+        }
+        return out.finish(130);
+    }
     let mut o = std::io::stdout().lock();
     let code = match r {
         Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {

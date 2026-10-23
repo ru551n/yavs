@@ -50,13 +50,13 @@ otherwise.
   samples a second and, when the run ends, prints the busiest processes (instance path, source
   file and line), instances, subprograms and source lines to standard error, for example
   ``profile:   93.2     2280  :top:dut:hot (dut.vhd:15)``. Give a file name to also get all rows
-  as JSON. Use ``--stop-time`` to end a run you would otherwise interrupt: nothing is printed
-  after Ctrl-C. The output of the design is unchanged and the run is slowed by by about 2 to 3 percent.
+  as JSON. Press Ctrl-C to stop a long run: the profile of the time so far is printed (and
+  written) and the exit status is 130. The output of the design is unchanged and the run is slowed by by about 2 to 3 percent.
   Source lines are known for interpreted code only (``--tier=interp``, or code that
   ``--tier=auto`` has not compiled yet); a small subprogram is inlined into its caller and
   counts as the caller in the subprogram table. With ``--threads N`` a sample counts every
   thread that runs a process, so shares can add up to more than 100 percent. ``--profile``
-  cannot be combined with ``--dap``.
+  cannot be combined with ``--dap`` (``E0125``).
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
 * ``--max-deltas N`` sets how many delta cycles may run at one simulated time (default 10000)

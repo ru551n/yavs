@@ -5054,6 +5054,6 @@ see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyon
 - **Limits, by design**: lines exist for interpreted code only (compiled code has no per-statement store, and one would cost every
   statement); the pc is where the interpreter last looked (every 128 events), not an exact sample; processes and subprograms are
   separate tables (a sample cannot read both atomically), paired in the JSON only when exactly one thread runs one process; Ctrl-C
-  prints nothing (use `--stop-time`); `--dap` is `E9999` (a stop would be sampled as time in the stopped process). No signal or timer is
+  prints the profile so far on the first Ctrl-C/SIGTERM (user, 2026-10-23, #587); `--dap` is `E0125` (a stop would be sampled as time in the stopped process). No signal or timer is
   used, so it cannot clash with a signal-driven report.
 - **Cost on** (tools/bench h2h designs, one performance core, geometric mean of total CPU, B with the option / B without): 1.03 with `--tier=interp`, 1.015 with `--tier=auto` (worst design 1.10, `rtl_fan`: many tiny activations)..

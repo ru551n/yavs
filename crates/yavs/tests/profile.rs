@@ -111,5 +111,53 @@ fn not_with_dap() {
     let o = run(&t, &["--profile", "--dap=stdio"]);
     assert_eq!(o.status.code(), Some(2));
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("`--profile` together with `--dap`"), "{err}");
+    assert!(err.contains("E0125"), "{err}");
+    assert!(!err.contains("E9999"), "{err}");
+}
+
+/// Ctrl-C prints and writes the profile of the run so far; the exit status stays 130.
+#[cfg(unix)]
+#[test]
+fn sigint_prints_the_profile_so_far() {
+    use std::io::Read;
+    use std::process::Stdio;
+    let t = setup("profile-sigint");
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/profile_forever.vhd"),
+        t.join("profile_forever.vhd"),
+    )
+    .expect("copy");
+    let a = yavs(&t, &["analyze", "--work=work:lib", "profile_forever.vhd"]);
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    // No stop time: the design runs until interrupted.
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--work=work:lib",
+            "profile_forever",
+        ])
+        .arg("--profile=p.json")
+        .current_dir(&t)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let pid = c.id().to_string();
+    let k = Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .expect("kill");
+    assert!(k.success());
+    let mut err = String::new();
+    c.stderr.take().unwrap().read_to_string(&mut err).unwrap();
+    let st = c.wait().unwrap();
+    assert_eq!(st.code(), Some(130), "{err}");
+    assert!(err.contains("profile: processes"), "{err}");
+    let j: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(t.join("p.json")).expect("file"))
+            .expect("json");
+    assert!(j["samples"].as_u64() > Some(0));
 }

@@ -388,8 +388,11 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   from `/proc` on Linux). Off by default and then free. Standard output and exit status do not
   change; a run that fails before the simulation starts prints nothing.
 - `--profile[=FILE]` (`run` only, `=` form required): a sampling profiler. A thread samples the
-  run 1000 times a second and, when the simulation ends (any outcome after elaboration; not
-  after Ctrl-C, use `--stop-time`), prints five blocks to standard error, each line starting
+  run 1000 times a second and, when the simulation ends (any outcome after elaboration, and
+  Ctrl-C or SIGTERM: the first signal stops the run between cycles, the profile of the time so
+  far is printed and written, and the exit status is 130 as without `--profile`; a second
+  signal exits at once without a profile; Unix, on Windows Ctrl-C is handled the same way by
+  the console handler but is untested), prints five blocks to standard error, each line starting
   `profile: `: a summary (samples, seconds, share in processes and in the kernel between them),
   `processes` (instance path of the process, source file and line of its first statement),
   `instances` (the processes of each instance path together), `subprograms` (name, file and line of
@@ -408,7 +411,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   code has no `lines` rows. A small subprogram the optimiser inlined counts as its caller in
   `subprograms`, but its statements are `lines` of their own function. The sampler is a thread
   that sleeps between samples: no signal or timer is used. Time in plugin callbacks (`--vhpi`) is
-  in the kernel share. Not implemented with `--dap` (`E9999`, exit 2). Off by default and
+  in the kernel share. With `--dap` it is `E0125` (exit 2). Off by default and
   then free: no process is wrapped and no thread exists.
 - `--load=LIB` (repeatable): load a shared library for VHPIDIRECT foreign
   subprograms. A bare name goes to the OS library search path, a path must exist.

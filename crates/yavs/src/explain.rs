@@ -98,6 +98,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "E0124",
         "`yavs run --profile=FILE` could not write the profile file (missing directory, permissions, full disk). The tables on standard error are printed anyway; the run exits at least 1.",
     ),
+    (
+        "E0125",
+        "`yavs run --profile` was combined with `--dap`. The profiler samples which process is running; a stop at a breakpoint would be counted as time in the stopped process. Profile a run without `--dap`. Exit status 2.",
+    ),
     // yavs-wave
     (
         "E0801",

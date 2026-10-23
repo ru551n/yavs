@@ -16,8 +16,8 @@ mod value;
 pub use builder::{Builder, Converter, EdgeTrigger, PortConv, PortMode, ProcFlags};
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
-    Config, EndReason, Hook, Interrupt, Observer, Phase, Report, RunStatus, SigView, SimControl,
-    Stats, WakeId,
+    Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer, Phase, ProcWait,
+    Report, RunStatus, SigView, SimControl, Stats, StuckProc, StuckReport, StuckSignal, WakeId,
 };
 pub use process::{CopyProcess, Ctx, LiveSink, ProcId, Process, Severity, ToggleProcess};
 pub use signal::{

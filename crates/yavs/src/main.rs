@@ -12,6 +12,7 @@ mod elab;
 mod explain;
 mod gui;
 mod stdout;
+mod stuck;
 mod timing;
 
 use clap::{Parser, Subcommand, ValueEnum};

@@ -172,6 +172,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W0115",
         "A signal or port has more `bit`/`std_ulogic` scalars than `--cov-toggle-max` (default 65536), so its toggles are not counted. Raise the limit to count them; large memories are usually left out on purpose.",
     ),
+    (
+        "W0116",
+        "The SIGUSR1 handler that prints a hang report of a running simulation could not be installed (the note gives the operating system error). The run goes on without it; `--hang-report` is not affected.",
+    ),
     // yavs-vhpi
     (
         "E0901",
@@ -318,7 +322,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E3002",
-        "More delta cycles than the limit ran at one simulated time, usually a zero-delay feedback loop. The note lists the processes that ran in the last delta.",
+        "More delta cycles than the limit ran at one simulated time, usually a zero-delay feedback loop. The labels and the note name the processes of the loop and the signals through which they wake each other: two processes (or concurrent assignments) that assign each other's inputs with no delay, a process that waits only on a signal it assigns, a combinational loop through concurrent statements, or a process that waits for 0 ns in a loop. `--max-deltas=N` raises the limit (default 10000) for a design that needs more deltas at one time.",
     ),
     (
         "E3003",
@@ -342,6 +346,15 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "E3010",
         "The model, the simulation configuration or a control request is invalid.",
+    ),
+    // yavs-kernel run-time reports (W3101, W3102 are warnings of `yavs run`)
+    (
+        "W3101",
+        "A report of a simulation that did not finish, printed with `--hang-report` when the run ends at `--stop-time` without `stop` or `finish` or runs out of events with a process still waiting, and on SIGUSR1 (Unix) for a running simulation. It gives the time and delta, how many processes wait for a timeout, for signals that can still change, or for signals nothing can change any more, then names the processes that can never run again with what they wait for, and for each such signal its value, its last event and the processes that drive it (\"it has no driver\" is the usual cause). A signal that an edge-triggered process waits on, that had an event and that nothing can change any more is reported as a clock that stopped. `--hang-report=MAX` lists at most MAX processes per part (default 30).",
+    ),
+    (
+        "W3102",
+        "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
     // every stage
     (

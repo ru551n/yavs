@@ -20,12 +20,14 @@
 //! | `E0700`-`E0799`, `W0700`-`W0799` | `yavs-dap`: the Debug Adapter Protocol server (E0701, E0702 in use) |
 //! | `E0900`-`E0999`, `W0900`-`W0999` | `yavs-vhpi` (E0901, E0902, W0903, W0904, E0905 in use) |
 //! | `E3000`-`E3099` | `yavs-kernel`: simulation runtime errors, one per `ErrorKind` (`yavs_kernel::ErrorKind::code`) |
+//! | `W3100`-`W3199` | run-time warnings of `yavs run` about a stuck or hung simulation (`yavs_elab::stuck`: W3101 hang report, W3102 process that never suspends) |
 //! | `L0000`-`L0099` | `yavs-lib`: library manifests and closure queries |
 //! | `E2000`-`E2099` | `yavs-lower`: HIR to IR lowering (E2001 not lowered yet) |
 //! | `E9999` | internal compiler error in any stage ("this is a bug in yavs") |
 //!
 //! A code is never reused for a different meaning. An empty code is only for
-//! summary lines such as "aborting due to 2 previous errors".
+//! summary lines such as "aborting due to 2 previous errors" and the informational note
+//! that gives the seed of a shuffled run.
 
 mod shared;
 

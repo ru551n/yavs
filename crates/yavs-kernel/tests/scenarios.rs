@@ -478,7 +478,12 @@ fn zero_delay_oscillation_hits_delta_limit() {
         err.kind,
         ErrorKind::DeltaLimit {
             limit: 100,
-            processes: vec!["osc".into()]
+            processes: vec!["osc".into()],
+            cause: yavs_kernel::LoopCause::Cycle(vec![yavs_kernel::LoopLink {
+                process: ProcId(0),
+                name: "osc".into(),
+                signal: "s".into(),
+            }]),
         }
     );
     assert_eq!(
@@ -487,6 +492,58 @@ fn zero_delay_oscillation_hits_delta_limit() {
     );
     assert_eq!(err.exit_status(), 1);
     assert_eq!(sim.run_until(ns(1)).unwrap_err(), err);
+}
+
+/// Two processes that wake each other: the loop names both and the signals between them, and
+/// the stuck report of the end state is the same at any time.
+#[test]
+fn delta_limit_names_the_loop() {
+    let mut b = Builder::new();
+    let (x, y) = (b.signal("x", BYTE, &[0]), b.signal("y", BYTE, &[0]));
+    let (dx, dy) = (b.driver(x), b.driver(y));
+    b.process(
+        "p",
+        NONE,
+        &[dx],
+        p(move |c| {
+            c.drive(dx, &[c.value(y)?[0] ^ 1])?;
+            c.wait_on(y)?;
+            Ok(())
+        }),
+    );
+    b.process(
+        "q",
+        NONE,
+        &[dy],
+        p(move |c| {
+            c.drive(dy, &[c.value(x)?[0]])?;
+            c.wait_on(x)?;
+            Ok(())
+        }),
+    );
+    let cfg = Config {
+        max_deltas: 50,
+        ..Config::default()
+    };
+    let (mut sim, _) = build(b, cfg);
+    let err = sim.run_until(ns(1)).unwrap_err();
+    let ErrorKind::DeltaLimit { cause, .. } = &err.kind else {
+        panic!("{err}")
+    };
+    let link = |i, n: &str, s: &str| yavs_kernel::LoopLink {
+        process: ProcId(i),
+        name: n.into(),
+        signal: s.into(),
+    };
+    let yavs_kernel::LoopCause::Cycle(l) = cause else {
+        panic!("{cause:?}")
+    };
+    // Either process may be the one that ran last; the loop is the same.
+    assert!(
+        *l == [link(0, "p", "x"), link(1, "q", "y")]
+            || *l == [link(1, "q", "y"), link(0, "p", "x")],
+        "{l:?}"
+    );
 }
 
 #[test]

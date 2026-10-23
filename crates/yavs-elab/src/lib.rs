@@ -16,6 +16,7 @@ mod hier;
 pub mod libstage;
 mod pkgcall;
 mod sim;
+mod stuck;
 mod value;
 mod walk;
 mod whole;
@@ -30,6 +31,7 @@ pub use hier::{
     ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
 pub use sim::{Built, Ir};
+pub use stuck::{ProcTable, StuckWhy};
 /// Values in IR memory and back (VHPI variables, #309).
 pub use value::{CellKind, DataLeaf, decode as ir_decode, encode as ir_encode, leaf_locs};
 pub use walk::{load_bodies, load_bodies_in};

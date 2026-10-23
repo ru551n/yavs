@@ -106,6 +106,15 @@ pub struct RunArgs {
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
+    /// Print what every waiting process waits for when the run ends at `--stop-time` without
+    /// `stop` or `finish`, or runs out of events with a process still waiting for a signal; at
+    /// most MAX processes are listed per part (default 30). `kill -USR1 PID` prints the same
+    /// report of a running simulation (Unix, always available).
+    #[arg(long, value_name = "MAX", num_args = 0..=1, require_equals = true, default_missing_value = "30")]
+    hang_report: Option<usize>,
+    /// Most delta cycles at one simulated time before the run fails with E3002.
+    #[arg(long, value_name = "N", default_value = "10000", value_parser = parse_max_deltas)]
+    max_deltas: u32,
     /// Time resolution limit (`std.env.resolution_limit`, TIME values in reflection).
     #[arg(long, value_enum, default_value = "fs")]
     resolution: ResolutionArg,
@@ -204,6 +213,14 @@ fn parse_size(s: &str) -> Result<u64, String> {
         Some(0) => Err("the threshold must be at least 1 byte".into()),
         Some(b) => Ok(b),
         None => Err(format!("`{s}` is too large")),
+    }
+}
+
+fn parse_max_deltas(s: &str) -> Result<u32, String> {
+    match s.trim().parse::<u32>() {
+        Ok(0) => Err("the limit must be at least 1".into()),
+        Ok(n) => Ok(n),
+        Err(e) => Err(format!("`{s}` is not a number of delta cycles: {e}")),
     }
 }
 
@@ -803,6 +820,7 @@ pub fn run(
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),
         shuffle: a.shuffle,
+        max_deltas: a.max_deltas,
         resolution,
         stop_severity: match a.exit_severity.unwrap_or(SeverityArg::Failure) {
             SeverityArg::Note => yavs_kernel::Severity::Note,
@@ -816,6 +834,9 @@ pub fn run(
         skip_unchanged: observed_free && !db.facts().reads_activity,
         ..Default::default()
     };
+    if let Some(seed) = a.shuffle {
+        out.emit(&none, &shuffle_note(seed));
+    }
     let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do
     let stop = match &a.stop_time {
         None => yavs_kernel::Time::MAX,
@@ -877,6 +898,11 @@ pub fn run(
             return out.finish(if err.exit_status() == 101 { 3 } else { 2 });
         }
     };
+    // Where the processes are, for the diagnostics of a stuck run; read before the model is freed.
+    let procs = e.proc_table();
+    for w in e.no_wait_warnings(&procs) {
+        out.emit(&db.sources, &w);
+    }
     // Held to the end of the run: `end` or a drop ends tier-up.
     let tier_up = match use_tier(built.as_ref().map(|b| &*b.rt), &a) {
         Ok(g) => g,
@@ -947,7 +973,34 @@ pub fn run(
     }
     crate::timing::mark("init");
     crate::counters::start();
-    let r = sim.run_until(stop);
+    if let Err(d) = crate::stuck::on_signal(sim.interrupt()) {
+        out.emit(&none, &d);
+    }
+    let max = a.hang_report.unwrap_or(30);
+    let r = loop {
+        let r = sim.run_until(stop);
+        if matches!(r, Ok(RunStatus::Paused)) && crate::stuck::take_request() {
+            let report = sim.stuck_report();
+            let d = e.stuck_diagnostic(&report, yavs_elab::StuckWhy::Requested, &procs, max);
+            out.emit(&db.sources, &with_seed(d, a.shuffle));
+            continue;
+        }
+        if a.hang_report.is_some() {
+            let why = match &r {
+                Ok(RunStatus::Paused) => Some(yavs_elab::StuckWhy::StopTime(stop)),
+                Ok(RunStatus::Ended(EndReason::Idle)) => Some(yavs_elab::StuckWhy::Idle),
+                _ => None,
+            };
+            if let Some(why) = why {
+                let report = sim.stuck_report();
+                if why != yavs_elab::StuckWhy::Idle || crate::stuck::idle_is_stuck(&report) {
+                    let d = e.stuck_diagnostic(&report, why, &procs, max);
+                    out.emit(&db.sources, &with_seed(d, a.shuffle));
+                }
+            }
+        }
+        break r;
+    };
     crate::timing::mark("simulate");
     crate::stdout::flush();
     crate::timing::report();
@@ -984,7 +1037,8 @@ pub fn run(
         Ok(_) => 0,
         Err(err) => {
             let _ = o.flush();
-            out.emit(&db.sources, &e.runtime_diagnostic(&err));
+            let d = e.runtime_diagnostic_in(&err, &procs);
+            out.emit(&db.sources, &with_seed(d, a.shuffle));
             if err.exit_status() == 101 { 3 } else { 1 }
         }
     };
@@ -1072,6 +1126,25 @@ pub fn run(
         std::mem::forget((sim, built, rt, e, db));
     }
     done
+}
+
+/// The seed of a shuffled run, once at the start and again in a diagnostic that ends or
+/// explains a run, so a failure found in a long log can be replayed.
+fn shuffle_note(seed: u64) -> Diagnostic {
+    Diagnostic::new(
+        yavs_diag::Severity::Note,
+        "",
+        format!("process order is shuffled with seed {seed}; replay it with `--shuffle={seed}`"),
+    )
+}
+
+fn with_seed(d: Diagnostic, shuffle: Option<u64>) -> Diagnostic {
+    match shuffle {
+        Some(s) => d.with_note(format!(
+            "process order was shuffled with seed {s}; replay it with `--shuffle={s}`"
+        )),
+        None => d,
+    }
 }
 
 fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {

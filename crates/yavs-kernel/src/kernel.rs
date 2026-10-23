@@ -22,6 +22,9 @@ use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
 
+mod hang;
+pub use hang::{DeadClock, LoopCause, LoopLink, ProcWait, StuckProc, StuckReport, StuckSignal};
+
 /// Smallest batch of ready processes handed to the thread pool.
 const PAR_BATCH: usize = 32;
 
@@ -1510,9 +1513,11 @@ impl SimControl {
                     .iter()
                     .map(|&p| self.names[p as usize].clone())
                     .collect();
+                let cause = self.loop_cause();
                 return Err(self.err(ErrorKind::DeltaLimit {
                     limit: self.cfg.max_deltas,
                     processes,
+                    cause,
                 }));
             }
             self.delta += 1;

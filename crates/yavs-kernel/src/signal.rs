@@ -263,6 +263,12 @@ impl Waiters {
         }
     }
 
+    /// Every waiter in every list (a waiter in several chunk lists comes up once per list); for
+    /// the hang report, which is cold.
+    pub fn iter(&self) -> impl Iterator<Item = &Waiter> {
+        self.lists.iter().flat_map(|(l, _)| l.iter())
+    }
+
     /// No process has ever waited on the signal.
     #[inline(always)]
     pub fn is_unwatched(&self) -> bool {

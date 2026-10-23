@@ -1,0 +1,13 @@
+error[E3002]: delta cycle limit 50 exceeded; active processes: :stuck_self:p
+ --> $DIR/stuck_self.vhd:8:5
+  |
+8 |     a <= not a;
+  |     ^^^^^^^^^^^ `:stuck_self:p` assigns :stuck_self:a, which wakes `:stuck_self:p`
+  |
+  = note: at 0 fs, delta 50
+  = note: process `:stuck_self:p` waits on :stuck_self:a, which it assigns itself with no delay, so each assignment wakes it again
+  = help: break the loop: give an assignment on it a delay (`after 1 ns`), or let the processes wait on a clock instead of on each other's outputs
+  = help: if the design needs more delta cycles at one time, raise the limit with `--max-deltas=N`
+
+error: aborting due to 1 previous error
+

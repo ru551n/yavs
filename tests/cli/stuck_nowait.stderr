@@ -1,0 +1,9 @@
+warning[W3102]: process :stuck_nowait:p has no wait statement and no sensitivity list
+ --> $DIR/stuck_nowait.vhd:7:5
+  |
+7 |     report "once";
+  |     ^^^^^^^^^^^^^^ this process never suspends
+  |
+  = note: a process runs from its first statement to its last and starts again; without a wait it never gives control back, so simulation time cannot advance (only `stop` or `finish` can end the run)
+  = help: add a `wait for ...;` or `wait on ...;` at the end, or a sensitivity list; a process that should run once ends with `wait;`
+

@@ -1,0 +1,13 @@
+error[E3002]: delta cycle limit 10000 exceeded; active processes: :stuck_comb:_p0
+ --> $DIR/stuck_comb.vhd:6:3
+  |
+6 |   a <= not a;
+  |   ^^^^^^^^^^^ `:stuck_comb:_p0` assigns :stuck_comb:a, which wakes `:stuck_comb:_p0`
+  |
+  = note: at 0 fs, delta 10000
+  = note: the concurrent statement `:stuck_comb:_p0` is sensitive to :stuck_comb:a and assigns it with no delay: a combinational loop
+  = help: break the loop: give an assignment on it a delay (`after 1 ns`), or let the processes wait on a clock instead of on each other's outputs
+  = help: if the design needs more delta cycles at one time, raise the limit with `--max-deltas=N`
+
+error: aborting due to 1 previous error
+

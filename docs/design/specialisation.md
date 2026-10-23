@@ -17,10 +17,12 @@ were done on cores 16 to 23. The sim1 numbers are its elaboration plus run, same
 1. Instance constants are a real but small part of the gap. Specialising the process bodies per
    instance (the prototype below) removes 3 to 13 percent of the instructions of the five
    designs measured (0 percent where the run is initialisation-bound), in the interpreter and in
-   compiled code alike. sim1 executes 2.5 to 4.8 times fewer instructions than the yavs
-   interpreter on four of the five designs (on `osvvm_axis_random` it executes more, 7.6 G
-   against 4.0 G). The rest is the kernel (44 percent of the instructions of
-   `fletcher_bufferwriter_512`), interpretation and the size of the compiled code (#532).
+   compiled code alike. Against sim1 (elaboration plus run, instructions of the whole process
+   tree) the `--tier=auto` runs execute, warm, 4.4 times (poc_arith_addw), 4.8 times
+   (fletcher_bufferwriter_512) and 2.1 times (hdlm_lfsr) the instructions; the copies bring that
+   to 4.0, 4.5 and 2.0 (table in section 6). The rest of the gap is the kernel (44 percent of the
+   instructions of `fletcher_bufferwriter_512`), interpretation and the size of the compiled code
+   (#532).
 2. Where widths come from generics, the effect on compiled code is larger than the instruction
    count suggests: in `poc_arith_addw` under `--tier=llvm` the work done by host callbacks for
    instructions the compiled code cannot lower inline (`Cat`, `LayoutOf`, `SigRead` of run-time
@@ -85,8 +87,8 @@ code), and it can be lazy.
 | Measured gain, interpreter | poc_arith_addw -12.6%, fletcher_bw_512 -7.2%, hdlm_lfsr -3.0%, neorv32_single_min -3.3% (300 us; -4.4% of the run phase), osvvm_axis_random 0% | 0 | 0 | 0 |
 | Measured gain, compiled (`--tier=llvm`, run phase) | poc -12.7%, fletcher -5.3%, neorv32 -3.4% | same as the compiled column of (a) for the processes that get compiled; estimated 0 to 8% of the whole run under `--tier=auto` (auto compiles little of the RTL) | estimated 0 to 2% beyond memo (loads hoisted; no folding of `Alloc`, `Cat`, branches) | (a) plus the compiled-code effects below |
 | `--tier=auto` whole run | poc -8.4%, fletcher -7.2%, hdlm_lfsr -6.3% | | | |
-| Compile time | none extra in the interpreter; eager optimisation costs 0.7 M instructions per copy (neorv32: init 1.38 G to 2.3 G); lazy: only for processes that activate | LLVM per distinct copy; same per-IR-instruction cost as today | none | 14 to 17 s of LLVM for 815 k IR instructions of neorv32 today (#532), times the growth of section 5; Cranelift would cut it, not remove it |
-| Cache and memory | content-addressed optimised copies in the stage cache; peak memory +50 percent at 3290 process instances in the prototype (eager, one raw clone per instance; a real version needs one entry per distinct copy) | objects keyed by LLVM IR already dedupe equal copies | none | object size grows with section 5's factor (27 MB for neorv32 today) |
+| Compile time | none extra in the interpreter; eager optimisation costs 0.7 M instructions per copy (neorv32: init 1.38 G to 2.3 G); lazy: only for processes that activate | LLVM per distinct copy; same per-IR-instruction cost as today | none | 815 k IR instructions of neorv32 today (#532; `--tier=llvm` cold 125 G instructions against 34 G warm for 60 us), times the growth of section 5; Cranelift would cut it, not remove it |
+| Cache and memory | content-addressed optimised copies in the stage cache; peak memory +50 percent at 3290 process instances in the prototype (an upper bound: eager, one raw clone per instance, and `with_spares` clones the whole `Program`; a real version needs one entry per distinct copy) | objects keyed by LLVM IR already dedupe equal copies | none | object size grows with section 5's factor (27 MB for neorv32 today) |
 | Complexity | medium: a function table that grows after the runtime exists (Runtime per-function tables, `Pre`, native flags, sampler slots are sized once), cache key, policy | medium: auto policy per copy; the compile unit and the process-to-copy map | low | high, and blocked by compiled-code size (#532) |
 | `--dap`, `--vhpi`, `--cov`, waves | Debugger breakpoints map a statement to a pc of the base function: keep shared code (memo is already off for a debugger). Coverage is static items plus per-instance `cov_base`, safe but keep shared to keep dead arms countable. `--vhpi` variables and `--wave-variables` use `external_variables` private copies: same rule. | same | none | whole-design compile is incompatible with a debugger session as it is today |
 | Cranelift fit | good: the folding is in the yavs IR, backend-neutral; Cranelift's mid-end does little constant propagation across our idioms, so it needs the IR already folded | good if the copies are IR-level, poor if the constants are baked into LLVM IR with guards | poor: depends on LLVM `invariant.load` | best fit with a fast backend: more compiling becomes affordable; still needs the compact-code work |
@@ -165,8 +167,10 @@ Branch `spike/spec`, env-gated, off by default (`YAVS_SPEC=1`: key is the whole 
   left shared.
 
 Not done in the prototype: the lazy and cached version, subprograms, anything under a debugger.
-Output of every run compared byte for byte with the shared code: identical (interpreter, llvm
-tier, five designs).
+Output compared byte for byte with the shared code: identical for the interpreter on all five
+designs (modes 1 and 2 for `poc_arith_addw` and `neorv32_single_min`, mode 2 for the others) and
+for `--tier=llvm` on `poc_arith_addw` and `fletcher_bufferwriter_512` (both modes on poc,
+mode 2 on fletcher; neorv32 mode 1). Not run: any copy under `--dap`, `--cov`, `--vhpi`, waves.
 
 ### Instruction counts (G, warm, whole process, includes initialisation)
 
@@ -178,16 +182,37 @@ tier, five designs).
 | neorv32_single_min, 300 us | 94.7 | 91.4 | 91.5 | | | | |
 | neorv32_single_min, 60 us | 20.0 | 20.35 | 20.17 | 34.4 | 58.1 (note) | | |
 | osvvm_axis_random | 3.97 | 3.98 | 3.98 | | | | |
-| sim1, elaboration plus run | poc 89.6, fletcher_bw_512 26.5, hdlm_lfsr 17.4, neorv32 300 us 38.4, osvvm 7.6 | | | | | | |
+
+`--tier=auto`, warm and cold (fresh world copy without compilation cache, which includes the
+compile thread), against sim1's elaboration plus run (rule 23: sim1 ratios are given for the auto
+tier only; the interpreter is judged by its own before/after):
+
+| design | sim1 | auto warm shared | warm copies (2) | ratio to sim1 | auto cold shared | cold copies (2) | ratio to sim1 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| poc_arith_addw | 89.6 | 392.7 | 359.8 | 4.38 to 4.02 | 417.1 | 370.1 | 4.66 to 4.13 |
+| fletcher_bufferwriter_512 | 26.5 | 128.3 | 119.1 | 4.84 to 4.49 | 128.4 | 119.2 | 4.85 to 4.50 |
+| hdlm_lfsr | 17.4 | 37.2 | 34.9 | 2.14 to 2.01 | 40.1 | 37.6 | 2.30 to 2.16 |
+| neorv32_single_min, 300 us | 38.4 | | | | 97.6 | 93.5 | 2.54 to 2.43 |
+
+(Instructions in G, `perf stat` of the whole process tree. Two cold runs each, they agree to
+0.1 percent, except neorv32 with one.) The copies also lower the cold compile part: poc cold
+minus warm is 24 G shared against 10 G with copies.
+
+IPC (same core, back to back, 300 us neorv32, interpreter, noisy host, two pairs): shared 1.45 and
+1.42, copies (2) 1.45 and 1.45, so the cycles follow the instructions (-3.5 percent); the 60 us
+runs (start-up phase) have IPC 2.4 for both. Auto cold cycles: neorv32 65.7 G against 65.2 G,
+poc 130.9 G against 110.7 G in the first pair but 172 G against 210 G in the second (the host was
+shared; instruction counts are the usable figure).
 
 Initialisation is part of the totals. Run-phase figures (llvm, warm minus a `--stop-time=0fs`
 run): poc 354.8 to 309.9 (-12.7%), fletcher 135.2 to 128.0 (-5.3%), neorv32 (60 us) 18.1 to 17.5
 (-3.4%). Initialisation of the prototype is higher because every copy is optimised eagerly:
 neorv32_single_min interp 1.38 G to 2.33 G (gen-neutral) or 2.63 G (all); a lazy version pays only
-for processes that activate. The llvm initialisation in the table (note) is an artefact: the
+for processes that activate. The llvm initialisation behind the 58.1 (note) is a spike artefact: the
 spike leaves one unused raw clone per process instance and `--tier=llvm` compiles every function,
-so object size and link time are not representative; code size is better judged by the IR counts
-of section 5.
+so object size, link time and cold llvm totals are not representative (they are not used for
+conclusions below); code size is judged by the IR counts of section 5 and compile cost by the
+`--tier=auto` cold runs above.
 
 The interpreter figures are the clean ones. Where the speed-up is: the shared process executes the
 memo flag test, the slot loads, run-time `Alloc` sizes and lengths, the checks on them, and
@@ -210,10 +235,10 @@ bytes to 0).
 
 - Compile time (rule 23, total wall including compile): copies are keyed by content, so a second
   run and equal instances cost nothing; the first run pays LLVM per distinct copy in proportion to
-  its IR, about the growth of section 5. A cold `--tier=llvm` run of fletcher went from 186.5 G to
-  213.9 G instructions (+15 percent, with the spike's unused clones also compiled, so an upper
-  bound) with the run-phase saving of 7 G not enough to repay it in this run, while
-  `poc_arith_addw` went from 389.6 G to 363.8 G (the saving is larger than the compile). With `--tier=auto` only hot copies compile, so the policy (`RTL_INSTANCES`,
+  its IR, about the growth of section 5. Measured with `--tier=auto` and an empty cache (above): the copies
+  are cheaper in total than the shared code on all four designs (-4 to -11 percent), and on
+  `poc_arith_addw` the compile part itself falls from 24 G to 10 G instructions. (`--tier=llvm`
+  cold numbers are not usable, see section 6.) With `--tier=auto` only hot copies compile, so the policy (`RTL_INSTANCES`,
   `RTL_SHARE`, payback) must count by the base function: sixteen instances with different data
   must not look like sixteen cold functions.
 - Optimiser time: 0.7 M host instructions per copy (neorv32: +0.95 to +1.25 G over 1058 to 1723
@@ -248,9 +273,13 @@ bytes to 0).
    worse cycles, and (d) multiplies the compile cost and the object size. Revisit after #532 and
    the backend decision, when a Cranelift backend makes whole-design compiling cheap.
 5. Expected result for the user's goal: 3 to 13 percent fewer instructions on RTL with generic
-   widths, up to 30 percent fewer host callbacks of compiled code, no change for single-instance
-   library testbenches. This does not close the 2.5 to 4.8 times instruction gap to sim1; the
-   larger shares are the kernel and interpretation.
+   widths (cold and warm, `--tier=auto` included), up to 30 percent fewer host callbacks of
+   compiled code, no change for single-instance library testbenches. Against sim1 the `--tier=auto`
+   ratio improves by 6 to 8 percent (poc 4.4 to 4.0 warm, fletcher 4.8 to 4.5, neorv32 2.5 to
+   2.4 cold); it does not close the gap, whose larger shares are the kernel and interpretation.
+   Caution on IPC: the instruction savings carried over to cycles in the one clean pair measured
+   (neorv32, interpreter, same IPC); compiled code with more distinct bodies could lose IPC to
+   code footprint (#532), which the compiled runs here did not isolate.
 
 ## 9. Questions for the user
 

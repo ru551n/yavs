@@ -5330,3 +5330,6 @@ through `TierHost::object` (22 percent of the main thread's instructions in the 
   trace the second compile of the functions with a loop is 9.4 percent of all compile time (357 of 3801 ms), so the
   upper bound of the gain is under 2 percent of the run, against the risk that a call in flight when the native code
   appears has no frame-mode loop to swap in.
+- **A `TempRoot` of a fat pair reads both words in place** (`Gen::host` of 16 bytes, then the heap tags test of the two
+  words) and calls `yavs_rt_fast` (`FAST_FAT_ROOT`) only where they cannot be reached inline: 22 million callbacks in the
+  window generator, 1 percent of its instructions. LLVM-only.

@@ -4405,7 +4405,35 @@ impl Gen {
                         } else {
                             slow
                         };
-                        self.fast_op(&c, FAST_FAT_ROOT, 0, self.ld(&c, addr), self.c64(0), miss);
+                        // Both words read in place (a pair in a frame, the temporary area or an
+                        // object found before); `yavs_rt_fast` where they cannot be.
+                        let a = self.ld(&c, addr);
+                        let p = self.host(
+                            &c,
+                            a,
+                            self.known_addr(&c, addr),
+                            self.c64(0),
+                            self.c64(16),
+                            false,
+                            miss,
+                        );
+                        let in_heap = |w: LLVMValueRef| {
+                            let sp = LLVMBuildLShr(self.b, w, self.c64(61), c"".as_ptr());
+                            self.or(
+                                self.icmp(IP::LLVMIntEQ, sp, self.c64(i64::from(space::HEAP))),
+                                self.icmp(
+                                    IP::LLVMIntEQ,
+                                    sp,
+                                    self.c64(i64::from(space::SHARED_HEAP)),
+                                ),
+                            )
+                        };
+                        let (w0, w1) = (
+                            self.load(self.i64, p),
+                            self.load(self.i64, self.gep(p, self.c64(8))),
+                        );
+                        let heap = self.or(in_heap(w0), in_heap(w1));
+                        self.guard(&c, LLVMBuildNot(self.b, heap, c"".as_ptr()), miss);
                         self.join(&c, join);
                     }
                     Inst::Stmt => {

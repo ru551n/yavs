@@ -513,6 +513,7 @@ impl Fx<'_, '_> {
             dst: l,
             ty: tid,
             desc,
+            cache: None,
         });
         l
     }

@@ -509,11 +509,17 @@ pub enum Inst {
         dim: u8,
     },
     /// Layout of `ty` constrained by the descriptor at `desc`, written to temporary memory as
-    /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays).
+    /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays). With
+    /// `cache`, a process's frame bytes at that offset keep the last layout of `ty` (the
+    /// optimiser's `layout_cache`): a word that is 0 until a layout is kept, then 1, a copy of
+    /// the descriptor bytes and the layout words. A descriptor equal to the copy makes the result
+    /// the address of the kept words in the frame, which no statement ends; the interpreter may
+    /// leave the bytes alone, a tier that keeps them checks the descriptor each time.
     LayoutOf {
         dst: Reg,
         ty: TyId,
         desc: Reg,
+        cache: Option<u32>,
     },
     /// Per-dimension length check of the value descriptor `dope` against the target `want`.
     SubtypeCheck {

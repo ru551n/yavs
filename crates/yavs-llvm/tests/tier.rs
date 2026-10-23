@@ -2239,6 +2239,7 @@ fn frame_mode_ops() -> (Program, FuncId) {
         dst: lay,
         ty: arr,
         desc,
+        cache: None,
     });
     let size = load(&mut fb, lay, Width::B8);
     let sixteen_k = fb.int(16);

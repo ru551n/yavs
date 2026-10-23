@@ -1077,6 +1077,9 @@ pub fn run(
     crate::timing::report();
     crate::counters::report(sim.stats());
     yavs_interp::census_dump(40);
+    for (k, n) in yavs_interp::tier_census() {
+        eprintln!("tier-census: {n} {k}");
+    }
     if signalled.load(Ordering::SeqCst) {
         if let Some((path, err)) = profile_error {
             out.emit(

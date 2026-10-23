@@ -36,6 +36,7 @@
 
 mod cfg;
 mod inline;
+mod layout_cache;
 mod licm;
 mod live;
 mod memo;
@@ -317,6 +318,11 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     }
     if memo_enabled() {
         memo::run(prog, &mut f);
+        // Frame bytes only a compiled tier uses: a design of thousands of process instances
+        // would pay them in every run (`--tier=auto` leaves such processes interpreted).
+        if compiled() {
+            layout_cache::run(prog, &mut f);
+        }
     }
     renumber(prog, &mut f);
     crate::build::number_func(&mut f, |c| {
@@ -2963,7 +2969,7 @@ impl<'a> Opt<'a> {
                     }
                 }
             }
-            Inst::LayoutOf { dst, ty, desc } => {
+            Inst::LayoutOf { dst, ty, desc, .. } => {
                 if self.single(dst)
                     && let Some(w) = self.known_layout(ty, desc)
                 {

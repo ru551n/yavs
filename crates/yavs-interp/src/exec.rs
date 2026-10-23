@@ -6884,6 +6884,7 @@ impl Machine {
         tf.heap_epoch = m.heap_epochs();
         tf.flags = m.tier_flags();
         tf.owner = m.owner;
+        tf.cycle = c.cycle();
         match c.known_edge() {
             Some((s, e, up)) => {
                 tf.known_sig = u64::from(s.0);
@@ -7930,7 +7931,7 @@ impl Machine {
                 let n = self.dope_len(self.r(dope), dim)?;
                 self.set(dst, n);
             }
-            Inst::LayoutOf { dst, ty, desc } => {
+            Inst::LayoutOf { dst, ty, desc, .. } => {
                 let a = self.layout_of(prog, ty, self.r(desc))?;
                 self.set(dst, a);
             }
@@ -8497,6 +8498,24 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 .iter()
                 .map(|s| {
                     let view = c.code_view(s.signal).filter(|_| s.ty.elem == Elem::Logic);
+                    let stamps = c.event_view(s.signal).map_or(0, |p| p as u64);
+                    let last = c
+                        .last_view(s.signal)
+                        .filter(|_| view.is_some())
+                        .map_or(0, |p| p as u64);
+                    let (planes, mut plen) = c
+                        .planes_view(s.signal)
+                        .filter(|_| s.ty.elem == Elem::Logic)
+                        .map_or((0, 0), |(p, n)| {
+                            (p as u64, n.saturating_sub(s.off as usize) as u64)
+                        });
+                    let (bytes, es) = match (s.ty.elem, c.bytes_view(s.signal)) {
+                        (Elem::Bytes(w), Some((p, es, n))) if es == w as usize => {
+                            plen = n.saturating_sub(s.off as usize) as u64;
+                            (p as u64, es as u64)
+                        }
+                        _ => (0, 0),
+                    };
                     let (codes, len, cap) = match view {
                         // The instance signal's own elements start at `s.off`.
                         Some((p, n)) if (s.off as usize) < n => (
@@ -8512,12 +8531,19 @@ impl crate::TierHost for Host<'_, '_, '_> {
                         signal: u64::from(s.signal.0),
                         off: u64::from(s.off),
                         cap,
+                        stamps,
+                        last,
+                        planes,
+                        plen,
+                        bytes,
+                        es,
                     }
                 })
                 .collect();
         }
         tf.sigtab = m.tier_sigs.as_ptr();
         tf.sigtab_len = m.tier_sigs.len() as u64;
+        tf.cycle = c.cycle();
         match c.known_edge() {
             Some((s, e, up)) => {
                 tf.known_sig = u64::from(s.0);
@@ -8538,6 +8564,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
     fn step(&mut self, tf: &mut crate::TierFrame, at: u32) -> crate::Stepped {
         use crate::Stepped;
         let (m, f) = (&mut *self.m, self.f);
+        crate::tier_census::note("step", &f.name, at, f.code.get(at as usize));
         m.top().pc = at;
         let r = match f.code.get(at as usize) {
             // As the fast loop calls (`Op::Call`).
@@ -8648,6 +8675,12 @@ impl crate::TierHost for Host<'_, '_, '_> {
         inertial: bool,
     ) -> crate::Stepped {
         let m = &mut *self.m;
+        crate::tier_census::note(
+            "drive_block",
+            &self.f.name,
+            at,
+            self.f.code.get(at as usize),
+        );
         let r = (|| -> R<bool> {
             if target[0] >> 32 == MULTI {
                 return Ok(false);
@@ -8694,6 +8727,54 @@ impl crate::TierHost for Host<'_, '_, '_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn drive_wide(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        at: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> crate::Stepped {
+        let m = &mut *self.m;
+        crate::tier_census::note("drive_wide", &self.f.name, at, self.f.code.get(at as usize));
+        let r = (|| -> R<bool> {
+            if target[0] >> 32 == MULTI {
+                return Ok(false);
+            }
+            let d = m.driver(driver)?;
+            let (sr, ty) = m.sigref_words(target[0], target[1])?;
+            let n = sr.range.map_or(0, |r| r.len);
+            if ty.elem != Elem::Logic
+                || n <= 64
+                || planes.len() as u64 != u64::from(n).div_ceil(64) * 32
+            {
+                return Ok(false);
+            }
+            let t = to_time(delay)?;
+            let mode = if inertial {
+                DelayMode::INERTIAL
+            } else {
+                DelayMode::Transport
+            };
+            let Some(c) = self.ctx.as_deref_mut() else {
+                return rt_err_s!("signal or wait operation during elaboration");
+            };
+            c.assign_blocks(d.id, sr.range, t, planes, mode)?;
+            Ok(true)
+        })();
+        match r {
+            Ok(true) => crate::Stepped::Next,
+            Ok(false) => self.signal(tf, at, 0),
+            Err(e) => {
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
+    }
+
     fn wrote(&mut self, addr: u64) {
         let (sp, idx, _) = split(addr);
         if sp == HEAP {
@@ -8707,7 +8788,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn drive_now(&mut self, driver: u32, target: [u64; 2], delay: i64, block: [u64; 4]) -> bool {
         let m = &*self.m;
-        if delay != 0 || target[1] != 1 || target[0] >> 32 == MULTI {
+        if delay != 0 || target[1] == 0 || target[1] > 64 || target[0] >> 32 == MULTI {
             return false;
         }
         let (Some(d), Some(s), Some(c)) = (
@@ -8717,12 +8798,22 @@ impl crate::TierHost for Host<'_, '_, '_> {
         ) else {
             return false;
         };
+        let r = yavs_kernel::Range::new(s.off + target[0] as u32, target[1] as u32);
+        // One scalar of at most 8 bytes: the first bytes of the cell.
+        if let Elem::Bytes(es) = s.ty.elem {
+            return target[1] == 1
+                && es <= 8
+                && c.assign_bytes_now(d.id, r, &block[0].to_le_bytes()[..es as usize]);
+        }
         if s.ty.elem != Elem::Logic {
             return false;
         }
-        let code = (block[0] & 1) | (block[1] & 1) << 1 | (block[2] & 1) << 2 | (block[3] & 1) << 3;
-        let r = yavs_kernel::Range::new(s.off + target[0] as u32, 1);
-        c.assign_code_now(d.id, r, code as u8)
+        if target[1] == 1 {
+            let code =
+                (block[0] & 1) | (block[1] & 1) << 1 | (block[2] & 1) << 2 | (block[3] & 1) << 3;
+            return c.assign_code_now(d.id, r, code as u8);
+        }
+        c.assign_planes_now(d.id, Some(r), block)
     }
 
     fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {
@@ -8745,12 +8836,14 @@ impl crate::TierHost for Host<'_, '_, '_> {
     fn wait_same(&mut self, pc: u32) -> bool {
         let m = &mut *self.m;
         if m.dbg.is_some() || !m.root_process || m.frames.len() != 1 {
+            crate::tier_census::note("wait_same refused (frame)", &self.f.name, pc, None);
             return false;
         }
         let Some(c) = self.ctx.as_deref_mut() else {
             return false;
         };
         if !c.wait_same() {
+            crate::tier_census::note("wait_same refused (kernel)", &self.f.name, pc, None);
             return false;
         }
         m.frames[0].pc = pc;
@@ -8783,6 +8876,12 @@ impl crate::TierHost for Host<'_, '_, '_> {
         sig: [u64; 2],
     ) -> crate::Stepped {
         let m = &mut *self.m;
+        crate::tier_census::note(
+            "wait_suspend",
+            &self.f.name,
+            at,
+            self.f.code.get(at as usize),
+        );
         if sig[0] >> 32 == MULTI || m.dbg.is_some() {
             return self.signal(tf, at, 0);
         }
@@ -8805,6 +8904,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
 
     fn signal(&mut self, tf: &mut crate::TierFrame, at: u32, edge: u32) -> crate::Stepped {
         let (m, f) = (&mut *self.m, self.f);
+        crate::tier_census::note("signal", &f.name, at, f.code.get(at as usize));
         let r = match f.code.get(at as usize) {
             Some(&Inst::SigReadScalar { dst, sig }) => {
                 m.sig_read_scalar(sig, self.ctx).map(|v| m.set(dst, v))

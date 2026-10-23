@@ -323,6 +323,9 @@ fn check_inst(
         {
             err(format!("missing type {ty}"))
         }
+        Inst::LayoutOf {
+            cache: Some(at), ..
+        } if at >= f.frame => err(format!("layout cache {at} beyond the frame")),
         Inst::Case { table, .. } => match prog.cases.get(table) {
             None => err(format!("missing case table {table}")),
             Some(t) => {

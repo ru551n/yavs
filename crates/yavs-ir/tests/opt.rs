@@ -1103,6 +1103,7 @@ fn the_size_of_a_layout_of_known_length_is_a_constant() {
         dst: l,
         ty: arr,
         desc: d,
+        cache: None,
     });
     let size = fb.reg(RegTy::I64);
     fb.emit(Inst::Load {
@@ -1174,7 +1175,12 @@ fn the_words_of_a_record_layout_and_the_stride_of_an_array_of_them_are_constants
     let (d_rec, d_arr) = (ptr(&mut fb, 0), ptr(&mut fb, 8));
     let word = |fb: &mut FuncBuilder<'_>, ty: TyId, desc: Reg, off: i64| {
         let l = fb.reg(RegTy::Ptr);
-        fb.emit(Inst::LayoutOf { dst: l, ty, desc });
+        fb.emit(Inst::LayoutOf {
+            dst: l,
+            ty,
+            desc,
+            cache: None,
+        });
         let at = fb.reg(RegTy::Ptr);
         let o = fb.int(off);
         fb.emit(Inst::Index {

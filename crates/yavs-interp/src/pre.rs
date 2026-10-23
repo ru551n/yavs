@@ -1889,15 +1889,13 @@ fn peephole(
 /// holds is this one unless the process just started. Skipping the instructions changes
 /// nothing else: they write registers only, and no register is live across a suspension.
 fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u32]) {
-    let Some(k) = ops.iter().position(|o| matches!(o, Op::Suspend)) else {
-        return;
-    };
     let Some((st, s)) = static_wait(prog, f) else {
         return;
     };
-    if at.get(k).is_none_or(|&p| p as usize != s) {
+    let Some(k) = (0..ops.len()).find(|&k| matches!(ops[k], Op::Suspend) && at[k] as usize == s)
+    else {
         return;
-    }
+    };
     if let Some(&k0) = entry.get(st)
         && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
     {
@@ -1907,6 +1905,10 @@ fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u
 
 /// The wait of `f` that names the same signals at every activation (`static_waits`): the IR pc
 /// of the `Stmt` that starts it and of its `Suspend`. Compiled code takes the same short cut.
+/// A process with a sensitivity list may have several suspension points (the lowering makes the
+/// first wait of a list that names array elements or slices a copy that also keeps the
+/// references for the later ones): they all wait for the same list, so the one that qualifies
+/// stands for them.
 pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
     let calls = |i: &Inst| match *i {
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
@@ -1915,54 +1917,50 @@ pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
         Inst::CallIndirect { .. } => true,
         _ => false,
     };
-    let one = f.resume.len() == 1
-        && f.code
-            .iter()
-            .filter(|i| matches!(i, Inst::Suspend { .. }))
-            .count()
-            == 1
-        && (f.flags.contains(FuncFlags::SENS_LIST) || !f.code.iter().any(calls));
-    if !one {
+    let suspends: Vec<usize> = (0..f.code.len())
+        .filter(|&p| matches!(f.code[p], Inst::Suspend { .. }))
+        .collect();
+    let sens = f.flags.contains(FuncFlags::SENS_LIST);
+    let one = suspends.len() == 1 && f.resume.len() == 1 && (sens || !f.code.iter().any(calls));
+    if !(one || sens && !suspends.is_empty()) {
         return None;
     }
-    let s = f
-        .code
-        .iter()
-        .position(|i| matches!(i, Inst::Suspend { .. }))?;
-    let st = (0..s).rev().find(|&p| {
-        !matches!(
-            f.code[p],
-            Inst::Const { .. }
-                | Inst::ConstF { .. }
-                | Inst::AddrOf { .. }
-                | Inst::DopeLen { .. }
-                | Inst::Pos { .. }
-                | Inst::SlicePos { .. }
-                | Inst::Index { .. }
-                | Inst::Field { .. }
-                | Inst::Bin { .. }
-                | Inst::BinRange { .. }
-                | Inst::Un { .. }
-                | Inst::Cmp { .. }
-                | Inst::Bool { .. }
-                | Inst::Select { .. }
-                | Inst::Load { .. }
-                | Inst::Alloc { .. }
-                | Inst::MakeDope { .. }
-                | Inst::LayoutOf { .. }
-                | Inst::SigVal { .. }
-                | Inst::SigSlice { .. }
-                | Inst::WaitOn { .. }
-        )
-    })?;
-    let waits = f.code[st + 1..s]
-        .iter()
-        .filter(|i| matches!(i, Inst::WaitOn { .. }))
-        .count();
-    (matches!(f.code[st], Inst::Stmt)
-        && waits >= 2
-        && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
-    .then_some((st, s))
+    suspends.into_iter().find_map(|s| {
+        let st = (0..s).rev().find(|&p| {
+            !matches!(
+                f.code[p],
+                Inst::Const { .. }
+                    | Inst::ConstF { .. }
+                    | Inst::AddrOf { .. }
+                    | Inst::DopeLen { .. }
+                    | Inst::Pos { .. }
+                    | Inst::SlicePos { .. }
+                    | Inst::Index { .. }
+                    | Inst::Field { .. }
+                    | Inst::Bin { .. }
+                    | Inst::BinRange { .. }
+                    | Inst::Un { .. }
+                    | Inst::Cmp { .. }
+                    | Inst::Bool { .. }
+                    | Inst::Select { .. }
+                    | Inst::Load { .. }
+                    | Inst::Alloc { .. }
+                    | Inst::MakeDope { .. }
+                    | Inst::LayoutOf { .. }
+                    | Inst::SigVal { .. }
+                    | Inst::SigSlice { .. }
+                    | Inst::WaitOn { .. }
+            )
+        })?;
+        let waits = f.code[st + 1..s]
+            .iter()
+            .filter(|i| matches!(i, Inst::WaitOn { .. }))
+            .count();
+        (matches!(f.code[st], Inst::Stmt)
+            && waits >= 2
+            && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
+        .then_some((st, s))
+    })
 }
 
 /// Where an operand of an element loop comes from: a register the loop does not write, the
@@ -3632,7 +3630,7 @@ impl Code {
                     hi: hi.0,
                     what,
                 },
-                Inst::LayoutOf { dst, ty, desc } => {
+                Inst::LayoutOf { dst, ty, desc, .. } => {
                     let word = |d: yavs_ir::Reg, k: u32| Op::LayoutWord {
                         dst: d.0,
                         ty: ty.0,

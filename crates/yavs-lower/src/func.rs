@@ -863,6 +863,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             dst: l,
             ty: tid,
             desc: dope,
+            cache: None,
         });
         let size = self.load(l, Width::B8, RegTy::I64);
         // A record layout has its field offsets where an array has its element count (and may

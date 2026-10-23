@@ -28,6 +28,7 @@ mod reflect;
 mod roots;
 mod state;
 mod textio;
+mod tier_census;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,7 @@ pub use ieee::{code_table, edge_native};
 pub use pre::static_wait;
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
+pub use tier_census::report as tier_census;
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
 pub use yavs_ir::opt::{
     compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables,
@@ -568,6 +570,20 @@ pub trait TierHost {
         inertial: bool,
     ) -> Stepped;
 
+    /// `drive_block` for a target of more than 64 logic elements: `planes` are the plane blocks
+    /// of the waveform element (32 bytes per 64 elements, as `Ctx::read_into` makes them).
+    #[allow(clippy::too_many_arguments)]
+    fn drive_wide(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> Stepped;
+
     /// The `WaitOn` at `pc` of the single-range signal reference `sig` (its two registers)
     /// and the `Suspend` after it, as `signal` runs them.
     fn wait_suspend(&mut self, fr: &mut TierFrame, pc: u32, sig: [u64; 2]) -> Stepped;
@@ -701,6 +717,8 @@ pub struct TierFrame {
     pub known_sig: u64,
     pub known_elem: u64,
     pub known_up: u64,
+    /// The number of the current simulation cycle (`TierSig::stamps` equal to it: an event).
+    pub cycle: u64,
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
     /// native frames stay below it.
     pub max_depth: u64,
@@ -743,6 +761,22 @@ pub struct TierSig {
     /// The bytes that may be read from `codes` (`len`, rounded up to whole plane blocks, minus
     /// the instance signal's start): the groups of eight codes around the last element.
     pub cap: u64,
+    /// For `'event` and `rising_edge` of a signal of at most 64 elements: the cycle number of
+    /// the last event of each kernel element (0: not offered, ask [`TierHost::signal`]) and, for
+    /// a logic signal that keeps its codes, the plane block of the `'last_value`, the bit of
+    /// element `e` of plane `k` being bit `k` of its code.
+    pub stamps: u64,
+    pub last: u64,
+    /// The plane blocks of the kernel signal's current value (0: not offered), and the number of
+    /// elements from the instance signal's own first element to the end of the kernel signal.
+    /// A signal without codes (wide or a bus of many sources) is read from them.
+    pub planes: u64,
+    pub plen: u64,
+    /// For a signal of enumeration, integer, boolean or real elements: the bytes of its current
+    /// value (0: not offered) and the size of an element; `plen` counts its elements as for the
+    /// planes. A four-byte element reads sign-extended, the others zero-extended.
+    pub bytes: u64,
+    pub es: u64,
 }
 
 impl Default for TierFrame {
@@ -769,6 +803,7 @@ impl Default for TierFrame {
             known_sig: u64::MAX,
             known_elem: 0,
             known_up: 0,
+            cycle: 0,
             max_depth: 0,
             heap_epoch: 0,
             owner: 0,

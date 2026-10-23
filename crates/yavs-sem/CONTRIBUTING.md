@@ -242,10 +242,8 @@ From cli (`yavs analyze`):
 - **loader.rs** a `--map`ped library without `yavs-lib.toml` is an empty library (cli-contract
   section 3), but loading it reports `L0001 library not found`. Request: treat a missing manifest
   as an empty library, so the use is `E1002`/`E1004` (unit not found), not `L0001`.
-- **std/ieee as work**: `tools/corpus/yavs-lib-*` analyzes lib/std and lib/ieee themselves with
-  `--work=std:...`, which the CLI rejects (E0102, contract: yavs resolves them). The stdlib corpus
-  needs a bootstrap mode from the sem owners (a `Db` mode that analyzes std.standard as work)
-  before the CLI can offer one.
+- **std/ieee as work**: done (#22): `yavs analyze --bootstrap` allows `std`/`ieee` as `--work`/`--map`
+  (cli-contract section 3), which `tools/corpus/yavs-lib-*` uses.
 
 ## Units (unit.rs, unit/binding.rs)
 

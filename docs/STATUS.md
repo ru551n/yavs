@@ -2197,9 +2197,10 @@ one (`yavs_wave::interrupt::start`). Tiny run (`array_attrs`, stdout a pipe, ben
 runs): 7.76 M to 7.54 M instructions, 10.96 M to 10.59 M cycles (-3.4%); with the `llvm` feature 8.08 M to 7.82 M and 10.25 M
 to 9.81 M (-4.3%); a warm `analyze` 1 to 2% fewer instructions, cycles level. Packed relative relocations
 (`-z pack-relative-relocs`) do not help (cycles +1 to 3%, 12 000 more instructions in `--version`) and cannot be linked by the
-release toolchain (zig 0.14.1, x86_64 and aarch64 at glibc 2.17); release line tables are not loaded and change nothing at
-run time (they are 17.6 MB of the 24.9 MB gzipped executable). `docs/decisions.md` "Release executable: no packed
-relocations, line tables stay; one signal thread".
+release toolchain (zig 0.14.1, x86_64 and aarch64 at glibc 2.17); release line tables were not loaded and changed nothing at
+run time (they were 17.6 MB of the 24.9 MB gzipped executable); the user dropped them from release builds on 2026-10-23
+(`debug = false`, `.symtab` stays; bench builds keep them). `docs/decisions.md` "Release executable: no packed
+relocations, no line tables; one signal thread".
 
 ### floor of a run: the lowered design is cached (#479)
 

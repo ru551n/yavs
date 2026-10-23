@@ -27,4 +27,6 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 
 [profile.release]
-debug = "line-tables-only"
+# No line tables in release artefacts (docs/decisions.md, #600); `.symtab` stays. tools/build-bench.sh adds them
+# back for profiling builds: set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only on any other release build.
+debug = false

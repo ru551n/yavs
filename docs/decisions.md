@@ -4968,9 +4968,9 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   stack overflow report and needs the exit status as a number. The two helper threads that start with every piped run
   (the output flusher and the Ctrl-C handler) cost 6% together; starting them late needs a time source that does not
   depend on interpreted activity (the two threads were merged into one with the SIGUSR1 thread: "Release executable: no packed
-relocations, line tables stay; one signal thread", #562).
+relocations, no line tables; one signal thread", #562).
 
-## Release executable: no packed relocations, line tables stay; one signal thread (#600, #562, 2026-10-23)
+## Release executable: no packed relocations, no line tables; one signal thread (#600, #562, 2026-10-23)
 
 - **Packed relative relocations (`-C link-arg=-Wl,-z,pack-relative-relocs`, DT_RELR) are not used** (user, 2026-10-23: PIE
   stays, this option was to be measured). Measured on a release build of main (bench build, GNU ld 2.46, glibc 2.43, pinned
@@ -4983,13 +4983,13 @@ relocations, line tables stay; one signal thread", #562).
   with a hello-world crate, `cargo zigbuild --target x86_64-unknown-linux-gnu.2.17` and `aarch64-unknown-linux-gnu.2.17`, the
   same flag as in the release job; DT_RELR is an ELF feature, the Windows archive is not concerned), and DT_RELR needs a glibc 2.36 loader
   (GNU ld marks the executable with `GLIBC_ABI_DT_RELR`), against the 2.17 baseline of the archives.
-- **Line tables in release builds stay** (`profile.release.debug = "line-tables-only"`). They are not loaded: an executable
-  with the debug sections stripped runs the same (cycles 0.99 to 1.01 of the original, instructions within 0.5%, same page
-  faults); a fully stripped one (also without `.symtab`, not a line-table question) was 2% faster in a tiny run in
-  all four batches (0.98, 0.98, 0.99, 0.98 of the cycles; within the spread of a run, consistent in sign), which is not
-  landed: it costs the names in `perf` and `gdb` on a downloaded binary. A question for the maintainer. The artefacts need no backtrace: both panic hooks are silent (`main.rs`, `analyze.rs`), an internal error is a
-  diagnostic. What line tables cost is download size: the Linux executable gzips to 24.9 MB with them and 7.3 MB without
-  (`strip-debug`). Left to the maintainer: dropping them is a size decision, not a speed one.
+- **Release builds have no line tables** (`profile.release.debug = false`; user, 2026-10-23, supersedes "line tables stay"
+  of the same day). They were never loaded: an executable with the debug sections stripped runs the same (cycles 0.99 to 1.01
+  of the original, instructions within 0.5%, same page faults). What they cost is download size: the Linux executable gzips
+  to 24.9 MB with them and 7.3 MB without. `.symtab` stays (cargo strips only the debug sections), so `perf` and `gdb` still
+  name functions on a downloaded binary. The artefacts need no backtrace: both panic hooks are silent (`main.rs`,
+  `analyze.rs`), an internal error is a diagnostic. For lines, profiling and benchmark builds add them with
+  `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`; `tools/build-bench.sh` sets that by default (line tables change no code).
 - **One thread serves Ctrl-C/SIGTERM, SIGUSR1 and the output flusher** (`yavs_wave::interrupt::Handlers`, started once by
   `yavs run` just before the simulation, #562; user, 2026-10-23: merge, no semantic change, no new unsafe). A run used to
   start three threads for them (the `ctrlc` crate's, `stdout-flush`, `yavs-sigusr1`; the first two cost 6.7% of a tiny run).

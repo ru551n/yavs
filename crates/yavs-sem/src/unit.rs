@@ -308,25 +308,31 @@ impl Db {
     ) -> Result<(), Reported> {
         let std_lib = self.library(ident("std", Span::default()))?;
         let lib = self.units[unit].lib;
-        let std_decl = self.libs[std_lib].decl;
-        self.scopes[context]
-            .names
-            .entry(Symbol::intern("std"))
-            .or_default()
-            .push(std_decl);
-        let work = self.decls.push(Decl {
-            name: Designator::Ident(ident("work", Span::default())),
-            kind: DeclKind::Library(lib),
-            scope: context,
-            span: Span::default(),
-            implicit: true,
-            since: LangRev::Vhdl1993,
-        });
-        self.scopes[context]
-            .names
-            .entry(Symbol::intern("work"))
-            .or_default()
-            .push(work);
+        // A secondary unit sits inside its primary's region, which sees the same implicit
+        // names through its own context: declared again here they would hide what the
+        // primary declares under the name `work` or `std` (12.3, #640).
+        let secondary = self.scopes[context].parent.is_some();
+        if !secondary {
+            let std_decl = self.libs[std_lib].decl;
+            self.scopes[context]
+                .names
+                .entry(Symbol::intern("std"))
+                .or_default()
+                .push(std_decl);
+            let work = self.decls.push(Decl {
+                name: Designator::Ident(ident("work", Span::default())),
+                kind: DeclKind::Library(lib),
+                scope: context,
+                span: Span::default(),
+                implicit: true,
+                since: LangRev::Vhdl1993,
+            });
+            self.scopes[context]
+                .names
+                .entry(Symbol::intern("work"))
+                .or_default()
+                .push(work);
+        }
         if !self.is_std_standard(unit) {
             let standard = self.load_unit(
                 std_lib,
@@ -334,8 +340,10 @@ impl Db {
                 Some(span),
             )?;
             self.units[unit].deps.push(standard);
-            let s = self.units[standard].scope;
-            self.scopes[context].uses.push(UseItem::All(s));
+            if !secondary {
+                let s = self.units[standard].scope;
+                self.scopes[context].uses.push(UseItem::All(s));
+            }
         }
         Ok(())
     }

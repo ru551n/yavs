@@ -52,7 +52,7 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pre::static_wait;
+pub use pre::{ScalarDrive, scalar_drives, static_wait};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 pub use tier_census::report as tier_census;
@@ -533,6 +533,29 @@ pub trait TierHost {
         let _ = (driver, target, delay, block);
         false
     }
+
+    /// The scalar logic assignment of a [`ScalarDrive`] for a zero delay, when the kernel takes
+    /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
+    /// caller uses `drive_bit`.
+    fn drive_bit_now(&mut self, driver: u32, target: [u64; 2], code: u64) -> bool {
+        let _ = (driver, target, code);
+        false
+    }
+
+    /// The scalar logic assignment of a [`ScalarDrive`] whose `Drive` is at `pc`, with the delay
+    /// (femtoseconds) and the logic `code` the compiled code computed: what the five
+    /// instructions it did not run would have done, in every case.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_bit(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        code: u64,
+        inertial: bool,
+    ) -> Stepped;
 
     /// `WaitOn` of the signal reference `sig` (its two words) for compiled code that waits on
     /// more signals after it: `true` when the kernel took it as the same registration as at the

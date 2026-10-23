@@ -5862,6 +5862,18 @@ to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 
   761 `O2` modules of `neorv32_single_min` unchanged (codegen 12.79 s against 12.81 s). `--tier=llvm` compiles
   its large module with the unoptimised code generator, which has no block placement: unchanged. Shared:
   nothing (a second generator lays out its own blocks); the idea carries over (cold exits last).
+- **A scalar logic assignment is one step in compiled code, at the sites the interpreter fuses** (S for the sites, L for the
+  call; `yavs_interp::scalar_drives`, `TierHost::drive_bit_now`/`drive_bit`, `yavs_rt_drive_bit`, `Gen::drive_bit`): the
+  lowering makes a waveform for every `sig <= v` (`Alloc` 40 bytes, `Store` the time, `Index`, `LSet`, `Drive`), the
+  interpreter's predecoder runs the five as `Op::LSetDrive` and compiled code made the waveform, wrote the four
+  planes and read them back in `yavs_rt_drive` (about 115 instructions, with the zeroing, the bounds checks and the
+  flush of the live registers). `scalar_drives(prog, f)` returns the sites from the predecoder itself (so the interpreter,
+  which continues where compiled code leaves, never sees a half-made waveform), the generator skips the four
+  instructions and calls `yavs_rt_drive_bit(delay, code)` at the `Drive`; the host takes the kernel's fastest path for a
+  zero delay (`assign_code_now`), else `assign_code` with the delay, else (several parts, not a logic scalar, a bad code)
+  makes the waveform from the values and steps the instructions (`Host::drive_bit_replay`). The call is `quiet`: the live
+  registers are written back only if it fails. `rtl_ff` 10.16 G to 9.06 G instructions, `rtl_chain` 3.48 G to 3.25 G
+  (interpreter 3.20 G). Test: `crates/yavs/tests/compiled_drives.rs` (every shape of assignment, three tier settings).
 
 ## Search loops in compiled code: one shared scan (yavs-interp `scan.rs`, yavs-llvm, #578, 2026-10-23)
 

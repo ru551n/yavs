@@ -1978,6 +1978,88 @@ pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> 
         .collect()
 }
 
+/// A scalar logic assignment the predecoder runs as one op (`Op::LSetDrive`): the `Alloc`,
+/// `Store` and `Index` that make the waveform, the `LSet` of its element and the one-element
+/// `Drive` of it, which nothing else reads. A tier that runs the same pattern as one step
+/// leaves the first four alone and does the assignment at the `Drive`; it must use exactly
+/// these sites, because the interpreter, which continues where compiled code leaves, does not
+/// define the waveform's registers either.
+#[derive(Clone, Copy, Debug)]
+pub struct ScalarDrive {
+    /// The IR pcs, in order: `Alloc`, `Store`, `Index`, `LSet`, `Drive`.
+    pub alloc: u32,
+    pub store: u32,
+    pub index: u32,
+    pub lset: u32,
+    pub drive: u32,
+    pub driver: u32,
+    /// The signal reference (two registers) the `Drive` names.
+    pub target: yavs_ir::Reg,
+    /// The register holding the delay in femtoseconds (the waveform element's time).
+    pub time: yavs_ir::Reg,
+    /// The register holding the logic code.
+    pub value: yavs_ir::Reg,
+    pub inertial: bool,
+}
+
+/// The scalar logic assignments of `f` that the interpreter's predecoder fuses (`ScalarDrive`).
+pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
+    let pre = Pre::new(f, prog);
+    let mut out = Vec::new();
+    for (k, op) in pre.code.ops.iter().enumerate() {
+        let Op::LSetDrive {
+            v,
+            driver,
+            target,
+            time,
+            size: _,
+            w,
+            e,
+            inertial,
+        } = *op
+        else {
+            continue;
+        };
+        let lset = pre.code.at[k] as usize;
+        let find =
+            |from: usize, hit: &dyn Fn(&Inst) -> bool| (0..from).rev().find(|&p| hit(&f.code[p]));
+        let (Some(alloc), Some(store), Some(index)) = (
+            find(
+                lset,
+                &|i| matches!(i, Inst::Alloc { dst, .. } if dst.0 == u32::from(w)),
+            ),
+            find(
+                lset,
+                &|i| matches!(i, Inst::Store { addr, .. } if addr.0 == u32::from(w)),
+            ),
+            find(
+                lset,
+                &|i| matches!(i, Inst::Index { dst, .. } if dst.0 == u32::from(e)),
+            ),
+        ) else {
+            continue;
+        };
+        let Some(drive) =
+            (lset + 1..f.code.len()).find(|&p| matches!(f.code[p], Inst::Drive { .. }))
+        else {
+            continue;
+        };
+        out.push(ScalarDrive {
+            alloc: alloc as u32,
+            store: store as u32,
+            index: index as u32,
+            lset: lset as u32,
+            drive: drive as u32,
+            driver: u32::from(driver),
+            target: yavs_ir::Reg(u32::from(target)),
+            time: yavs_ir::Reg(u32::from(time)),
+            value: yavs_ir::Reg(v),
+            inertial,
+        });
+    }
+    out
+}
+
 /// Where an operand of an element loop comes from: a register the loop does not write, the
 /// loop variable, or the result of an earlier step of the same iteration.
 #[derive(Clone, Copy, Debug)]

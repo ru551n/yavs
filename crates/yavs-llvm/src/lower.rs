@@ -38,6 +38,7 @@ const STEP: &str = "yavs_rt_step";
 const HOST: &str = "yavs_rt_host";
 const SIGNAL: &str = "yavs_rt_signal";
 const DRIVE: &str = "yavs_rt_drive";
+const DRIVE_BIT: &str = "yavs_rt_drive_bit";
 const WAIT: &str = "yavs_rt_wait";
 const WAIT_ON: &str = "yavs_rt_wait_on";
 const WAIT_SAME: &str = "yavs_rt_wait_same";
@@ -761,6 +762,43 @@ fn yavs_rt_drive_wide(
             delay,
             planes,
             inertial != 0,
+        )
+    }));
+    stepped(envp, mem, pc, r)
+}
+
+/// The scalar logic assignment of a `yavs_interp::ScalarDrive` whose `Drive` is at `pc`: the
+/// kernel's fastest path for a zero delay (`TierHost::drive_bit_now`, no frame view, no result),
+/// else `TierHost::drive_bit`, which does everything the five instructions would have done.
+/// `code` holds the logic code and, in bit 8, whether the assignment is inertial.
+extern "C" fn yavs_rt_drive_bit(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    delay: u64,
+    code: u64,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    let (inertial, code) = (code & 0x100 != 0, code & !0x100);
+    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code) } {
+        return GO;
+    }
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.drive_bit(
+            &mut (*mem).fr,
+            pc,
+            driver,
+            [lo, len],
+            delay as i64,
+            code,
+            inertial,
         )
     }));
     stepped(envp, mem, pc, r)
@@ -1870,6 +1908,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (HOST, yavs_rt_host as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (DRIVE, yavs_rt_drive as *const () as usize),
+            (DRIVE_BIT, yavs_rt_drive_bit as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
             (WAIT_ON, yavs_rt_wait_on as *const () as usize),
             (WAIT_SAME, yavs_rt_wait_same as *const () as usize),
@@ -3217,6 +3256,11 @@ struct Gen {
     /// `yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, inertial) -> u32`.
     drive_ty: LLVMTypeRef,
     drive: LLVMValueRef,
+    /// `yavs_rt_drive_bit(env, regs, mem, pc, driver, lo, len, delay, code) -> u32`: the scalar
+    /// logic assignment of a `yavs_interp::ScalarDrive`, the code in the low byte and bit 8 for
+    /// an inertial one.
+    drive_bit_ty: LLVMTypeRef,
+    drive_bit: LLVMValueRef,
     /// `yavs_rt_wait(env, regs, mem, pc, lo, len) -> u32`, and `yavs_rt_wait_on` of that type.
     wait_ty: LLVMTypeRef,
     wait: LLVMValueRef,
@@ -3424,6 +3468,9 @@ impl Gen {
             let drive_name = CString::new(DRIVE).expect("no NUL");
             let mut dparams = [ptr, ptr, ptr, i32, i32, i64, i64, ptr, i32];
             let drive_ty = LLVMFunctionType(i32, dparams.as_mut_ptr(), 9, 0);
+            let drive_bit_name = CString::new(DRIVE_BIT).expect("no NUL");
+            let mut bparams = [ptr, ptr, ptr, i32, i32, i64, i64, i64, i64];
+            let drive_bit_ty = LLVMFunctionType(i32, bparams.as_mut_ptr(), 9, 0);
             let wait_name = CString::new(WAIT).expect("no NUL");
             let wait_on_name = CString::new(WAIT_ON).expect("no NUL");
             let wait_same_name = CString::new(WAIT_SAME).expect("no NUL");
@@ -3492,6 +3539,8 @@ impl Gen {
                 signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 drive_ty,
                 drive: LLVMAddFunction(module, drive_name.as_ptr(), drive_ty),
+                drive_bit_ty,
+                drive_bit: LLVMAddFunction(module, drive_bit_name.as_ptr(), drive_bit_ty),
                 wait_ty,
                 wait: LLVMAddFunction(module, wait_name.as_ptr(), wait_ty),
                 wait_on: LLVMAddFunction(module, wait_on_name.as_ptr(), wait_ty),
@@ -4292,6 +4341,17 @@ impl Gen {
             } else {
                 Vec::new()
             };
+            // The scalar logic assignments the interpreter runs as one op: the waveform is not
+            // made here either (its instructions are `skipped`, the `Drive` is the step).
+            let scalar_drives = if !native && f.kind == FuncKind::Process {
+                yavs_interp::scalar_drives(prog, f)
+            } else {
+                Vec::new()
+            };
+            let skipped: std::collections::HashSet<u32> = scalar_drives
+                .iter()
+                .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
+                .collect();
             let mut c = Cur {
                 prog,
                 consts: Default::default(),
@@ -4877,6 +4937,12 @@ impl Gen {
                     LLVMPositionBuilderAtEnd(self.b, generic);
                 }
                 match inst {
+                    _ if skipped.contains(&pc) => {}
+                    Inst::Drive { .. }
+                        if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) =>
+                    {
+                        self.drive_bit(&c, pc, d)
+                    }
                     Inst::Const { dst, v } => self.std(&c, dst, self.c64(v)),
                     Inst::ConstF { dst, v } => self.std(&c, dst, self.c64(v.to_bits() as i64)),
                     Inst::Move { dst, src } => self.std(&c, dst, self.ld(&c, src)),
@@ -6963,6 +7029,32 @@ impl Gen {
             ];
             self.call_go(c, self.drive_ty, self.drive, &mut args, false);
             self.join(c, join);
+        }
+    }
+
+    /// The `Drive` of a scalar logic assignment the interpreter fuses (`yavs_interp::ScalarDrive`):
+    /// the waveform is never made, the delay and the code go to the kernel in registers.
+    unsafe fn drive_bit(&self, c: &Cur, pc: u32, s: &yavs_interp::ScalarDrive) {
+        // SAFETY: the arguments match `drive_bit_ty`; well-formed blocks of c.f.
+        unsafe {
+            let code = LLVMBuildOr(
+                self.b,
+                self.ld(c, s.value),
+                self.c64(if s.inertial { 0x100 } else { 0 }),
+                c"".as_ptr(),
+            );
+            let mut args = [
+                c.env,
+                c.regs,
+                c.mem,
+                self.c32(pc),
+                self.c32(s.driver),
+                self.ld(c, s.target),
+                self.ld(c, Reg(s.target.0 + 1)),
+                self.ld(c, s.time),
+                code,
+            ];
+            self.call_go(c, self.drive_bit_ty, self.drive_bit, &mut args, true);
         }
     }
 

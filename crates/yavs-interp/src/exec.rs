@@ -8455,6 +8455,80 @@ impl Host<'_, '_, '_> {
     }
 }
 
+impl Host<'_, '_, '_> {
+    /// The assignment of a fused scalar logic drive (`pre::ScalarDrive`) whose `Drive` is at
+    /// `at`, as the five instructions it stands for would do it: the registers they read get
+    /// the values compiled code computed, the waveform is made, the `LSet` and the `Drive` are
+    /// stepped. Every case the fast path leaves: a reference of several parts, a signal that is
+    /// not a scalar logic one, a code that is no code.
+    #[cold]
+    #[inline(never)]
+    fn drive_bit_replay(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        at: u32,
+        target: [u64; 2],
+        delay: i64,
+        code: u64,
+    ) -> crate::Stepped {
+        let (m, f) = (&mut *self.m, self.f);
+        let at = at as usize;
+        let r = (|| -> R<()> {
+            let Some(&Inst::Drive {
+                target: Some(t),
+                wave,
+                ..
+            }) = f.code.get(at)
+            else {
+                return Err(ice_s!("a fused drive without its Drive"));
+            };
+            let before = |from: usize, hit: &dyn Fn(&Inst) -> bool| {
+                (0..from).rev().find(|&p| hit(&f.code[p]))
+            };
+            let lset = before(at, &|i| matches!(i, Inst::LSet { .. }))
+                .ok_or_else(|| ice_s!("a fused drive without its LSet"))?;
+            let (
+                Inst::LSet { base, v, .. },
+                Some(Inst::Alloc { size, .. }),
+                Some(Inst::Store { src, .. }),
+            ) = (
+                f.code[lset],
+                before(
+                    lset,
+                    &|i| matches!(i, Inst::Alloc { dst, .. } if *dst == wave),
+                )
+                .map(|p| f.code[p]),
+                before(
+                    lset,
+                    &|i| matches!(i, Inst::Store { addr, .. } if *addr == wave),
+                )
+                .map(|p| f.code[p]),
+            )
+            else {
+                return Err(ice_s!("a fused drive without its waveform"));
+            };
+            let u = |x: u32| u16::try_from(x).map_err(|_| ice_s!("a register beyond 65535"));
+            m.regs[t.0 as usize] = target[0];
+            m.regs[t.0 as usize + 1] = target[1];
+            m.regs[src.0 as usize] = delay as u64;
+            m.regs[v.0 as usize] = code;
+            m.waveform_head(u(size.0)?, u(src.0)?, u(wave.0)?, u(base.0)?)?;
+            m.top().pc = lset as u32;
+            m.replay_lset_drive(self.prog, f, lset as u32, m.frames.len() - 1, self.ctx)
+        })();
+        match r {
+            Ok(()) => {
+                m.tier_temp(tf);
+                crate::Stepped::Next
+            }
+            Err(e) => {
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
+    }
+}
+
 impl crate::TierHost for Host<'_, '_, '_> {
     fn view(&mut self, tf: &mut crate::TierFrame) {
         self.m.tier_view(tf);
@@ -8782,6 +8856,70 @@ impl crate::TierHost for Host<'_, '_, '_> {
             return c.assign_code_now(d.id, r, code as u8);
         }
         c.assign_planes_now(d.id, Some(r), block)
+    }
+
+    fn drive_bit_now(&mut self, driver: u32, target: [u64; 2], code: u64) -> bool {
+        if code > 8 || target[1] != 1 || target[0] >> 32 == MULTI {
+            return false;
+        }
+        let m = &*self.m;
+        let (Some(d), Some(s), Some(c)) = (
+            m.drivers.get(driver as usize),
+            m.inst.sigs.get((target[0] >> 32) as usize),
+            self.ctx.as_deref_mut(),
+        ) else {
+            return false;
+        };
+        s.ty.elem == Elem::Logic
+            && c.assign_code_now(
+                d.id,
+                yavs_kernel::Range::new(s.off + target[0] as u32, 1),
+                code as u8,
+            )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drive_bit(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        at: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        code: u64,
+        inertial: bool,
+    ) -> crate::Stepped {
+        crate::tier_census::note("drive_bit", &self.f.name, at, self.f.code.get(at as usize));
+        let r = (|| -> R<bool> {
+            let m = &mut *self.m;
+            if code > 8 || target[0] >> 32 == MULTI {
+                return Ok(false);
+            }
+            let d = m.driver(driver)?;
+            let (sr, ty) = m.sigref_words(target[0], target[1])?;
+            if ty.elem != Elem::Logic || sr.range.map_or(0, |r| r.len) != 1 {
+                return Ok(false);
+            }
+            let t = to_time(delay)?;
+            let mode = if inertial {
+                DelayMode::INERTIAL
+            } else {
+                DelayMode::Transport
+            };
+            let Some(c) = self.ctx.as_deref_mut() else {
+                return rt_err_s!("signal or wait operation during elaboration");
+            };
+            c.assign_code(d.id, sr.range, t, code as u8, mode)?;
+            Ok(true)
+        })();
+        match r {
+            Ok(true) => crate::Stepped::Next,
+            Ok(false) => self.drive_bit_replay(tf, at, target, delay, code),
+            Err(e) => {
+                self.fault = Some(e);
+                crate::Stepped::Fault
+            }
+        }
     }
 
     fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {

@@ -37,6 +37,7 @@ codes! {
     NOT_FULLY_CONSTRAINED = "E1212", "Signals and variables need a fully constrained subtype.";
     BAD_RECORD_CONSTRAINT = "E1213", "A record constraint names an element that does not exist, or names one twice.";
     INDEX_ARITY = "E1214", "An index constraint has a different number of ranges than the array has dimensions.";
+    CONSTRAINT_OUTSIDE = "E1215", "A range or index constraint with static bounds must lie inside the range of its type mark or index subtype (LRM 5.2.1, 5.3.2.2, 6.3); a null range is always compatible.";
     INCOMPLETE = "E1220", "An incomplete type declaration is not completed in the same declarative region, or the incomplete type is used before its full declaration other than as the designated subtype of an access type (LRM 5.4.2).";
     BAD_DESIGNATED = "E1221", "In VHDL-2008 the designated type of an access type may not be a file type or a protected type (LRM 5.4.1); VHDL-2019 allows both.";
     BAD_FILE_ELEMENT = "E1222", "The element type of a file type may not be an access, protected or file type, or contain one.";
@@ -140,7 +141,7 @@ codes! {
     // Warnings
     W_CHANGED_MEANING = "W1008", "The construct means something different under the design's VHDL-2019 std/ieee than under VHDL-2008, for example `integer'high`.";
     W_OVERFLOW = "W1401", "Static arithmetic overflows in a context that does not require the value; the runtime check stays.";
-    W_STATIC_OUTSIDE = "W1403", "A static operand of a qualified expression or type conversion lies outside the subtype it is converted to; the code may be dead, so this is checked again at runtime.";
+    W_STATIC_OUTSIDE = "W1403", "A static operand of a qualified expression or type conversion lies outside the subtype it is converted to, or an array with static bounds converted to an unconstrained array type has bounds outside the target's index subtype; the code may be dead, so this is checked again at runtime.";
     W_STATIC_INDEX = "W1404", "A static index is outside the static range of the array; the code may be dead, so this is checked again at runtime.";
     W_UNUSED_GENERIC = "W1501", "A generic is never used.";
     W_GENERIC_EQ = "W1506", "An instance of a generic with a 2008 `type T` (or 2019 `type T is private`) compares values with the actual type's predefined `=`/`/=` (LRM 6.5.3), while a different user `\"=\"` for the actual type is visible at the instantiation; sim1 would use that one (decision U-6). To use the user operator, declare a formal `function \"=\" (l, r : t) return boolean is <>`.";

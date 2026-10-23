@@ -2103,6 +2103,9 @@ impl Db {
             );
             return self.poison.expr;
         }
+        if !self.is_poison_expr(operand) {
+            self.warn_conversion_bounds(operand, st);
+        }
         let stat = self.exprs[operand].stat;
         let id = self.add_expr(Expr {
             kind: ExprKind::Conv { to: st, operand },
@@ -2118,6 +2121,46 @@ impl Db {
             }
         }
         id
+    }
+
+    /// `W1403` (9.3.6): `operand` has static bounds and converts to the unconstrained array
+    /// subtype `st`, whose index subtypes do not contain them. The result takes the operand's
+    /// bounds, so the conversion fails when it executes; like the scalar case (L51) the code
+    /// may be dead, so it stays a warning and the run-time check fails.
+    fn warn_conversion_bounds(&mut self, operand: ExprId, st: SubtypeId) {
+        use crate::expr::aggregate::subtype_range;
+        let TypeKind::Array { indexes, .. } = &self.types[self.base(st)].kind else {
+            return;
+        };
+        if matches!(
+            &self.subtypes[st].constraint,
+            crate::types::Constraint::Array { dims: Some(_), .. }
+        ) {
+            return;
+        }
+        let os = self.exprs[operand].subtype;
+        for (k, &ix) in indexes.clone().iter().enumerate() {
+            let (Some(r), Some(o)) = (subtype_range(self, os, k), subtype_range(self, ix, 0))
+            else {
+                continue;
+            };
+            if r.is_null() || o.is_null() || (o.contains(r.low()) && o.contains(r.high())) {
+                continue;
+            }
+            let (name, span) = (self.subtype_name(ix), self.exprs[operand].span);
+            self.report(
+                Diagnostic::warning(
+                    diag::W_STATIC_OUTSIDE,
+                    format!("the bounds of the operand are not inside index subtype `{name}` of the target"),
+                )
+                .with_primary(
+                    span,
+                    format!("{} to {} is outside {} to {}", r.low(), r.high(), o.low(), o.high()),
+                )
+                .with_note("the code may never run, so this is checked again at run time (LRM 9.3.6): the result has the operand's bounds, which must belong to the index subtypes of the target"),
+            );
+            return;
+        }
     }
 
     /// 9.3.6: a type is closely related to itself; abstract numeric types to each other;

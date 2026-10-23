@@ -1363,7 +1363,38 @@ impl Db {
     ) -> Result<Constraint, Reported> {
         let base = self.base(mark);
         let existing = self.subtypes[mark].constraint.clone();
-        self.merge_constraint(scope, c, base, &existing)
+        let res = self.merge_constraint(scope, c, base, &existing)?;
+        if let (ast::Constraint::Range(r), Constraint::Range(rc)) = (c, &res) {
+            self.check_compatible(rc, mark, range_span(r), "type mark")?;
+        }
+        Ok(res)
+    }
+
+    /// `E1215`: range `rc` has static bounds and is not null, and a bound lies outside the
+    /// static range of `outer`, the type mark or index subtype it constrains (5.2.1, 5.3.2.2, 6.3).
+    pub(crate) fn check_compatible(
+        &mut self,
+        rc: &RangeC,
+        outer: SubtypeId,
+        span: Span,
+        what: &str,
+    ) -> Result<(), Reported> {
+        use crate::expr::aggregate::{range_value, subtype_range};
+        let (Some(r), Some(o)) = (range_value(self, rc), subtype_range(self, outer, 0)) else {
+            return Ok(());
+        };
+        if r.is_null() || o.is_null() || (o.contains(r.low()) && o.contains(r.high())) {
+            return Ok(());
+        }
+        let name = self.subtype_name(outer);
+        Err(self.error(
+            Diagnostic::error(
+                diag::CONSTRAINT_OUTSIDE,
+                format!("the range is not inside {what} `{name}`"),
+            )
+            .with_primary(span, format!("{} to {} is outside {} to {}", r.low(), r.high(), o.low(), o.high()))
+            .with_note("5.2.1, 5.3.2.2: every bound of a non-null range constraint must belong to the subtype it constrains"),
+        ))
     }
 
     /// Apply constraint `c` to type `t` whose subtype already has `existing`
@@ -1449,7 +1480,13 @@ impl Db {
                         let mut dims = Vec::new();
                         for (r, &i) in rs.iter().zip(idx.iter()) {
                             let it = self.base(i);
-                            dims.push(self.discrete_range(scope, r, Some(it))?.0);
+                            let rc = self.discrete_range(scope, r, Some(it))?.0;
+                            let at = match r {
+                                ast::DiscreteRange::Range(r) => range_span(r),
+                                ast::DiscreteRange::Subtype(si) => si.span,
+                            };
+                            self.check_compatible(&rc, i, at, "index subtype")?;
+                            dims.push(rc);
                         }
                         Some(dims.into_boxed_slice())
                     }

@@ -2479,7 +2479,9 @@ An installed binary finds `lib/` next to itself (#43).
   `process/named_return_scalar_2019`). `return when c;` in procedures runs (#239,
   `process/return_when_2019`).
 - Static folding: checked i64, values checked against the target subtype (`E1403`) and the base
-  range, division/mod by zero and negative exponents, static length mismatch (`E1405`).
+  range, division/mod by zero and negative exponents, static length mismatch (`E1405`), static
+  range and index constraints outside their type mark or index subtype (`E1215`, #465) and
+  array conversions whose bounds leave the target's index subtype (`W1403`, run-time error kept).
 
 ## syntax (`crates/yavs-syntax`, M0)
 

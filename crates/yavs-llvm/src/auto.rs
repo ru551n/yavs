@@ -1404,7 +1404,11 @@ impl Worker {
         let few = rtl(&self.prog, f)
             .then(|| {
                 let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
-                cold(self.native.instances(id), seen, self.total)
+                cold(
+                    self.native.instances(self.prog.base_of(id)),
+                    seen,
+                    self.total,
+                )
             })
             .flatten();
         let short = (sampled && !o2)

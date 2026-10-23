@@ -36,6 +36,8 @@ corpus = []
 llvm = ["dep:yavs-llvm", "yavs-llvm/llvm"]
 # Test builds only: the heap collection stress mode of yavs-interp (crates/yavs-interp/AGENTS.md).
 gc-stress = ["yavs-interp/gc-stress"]
+# Op and adjacent-pair census of the interpreter, printed at the end of `yavs run` (crates/yavs-interp/AGENTS.md).
+op-census = ["yavs-interp/op-census", "yavs-llvm?/op-census"]
 
 [[test]]
 name = "corpus"

@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 mod analyze;
 mod cache;
+mod counters;
 mod cov;
 mod elab;
 mod explain;

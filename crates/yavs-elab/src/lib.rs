@@ -23,6 +23,7 @@ mod whole;
 #[cfg(test)]
 mod tests;
 
+pub use callcache::stats as call_cache_stats;
 pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,

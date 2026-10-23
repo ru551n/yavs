@@ -641,6 +641,11 @@ fn use_tier(
 /// Run the compiled program from now on (`--tier=llvm`).
 #[cfg(feature = "llvm")]
 fn use_llvm(rt: &yavs_interp::Runtime, tier: yavs_llvm::LlvmTier, verbose: bool) {
+    crate::counters::llvm_compiled(
+        tier.inline,
+        tier.interpreted.iter().map(|k| k.1).sum(),
+        tier.native_frames(),
+    );
     if verbose {
         for (f, why) in &tier.notes {
             let name = rt.prog.func(*f).map_or("?", |f| f.name.as_str());
@@ -941,10 +946,13 @@ pub fn run(
         e.release_for_run();
     }
     crate::timing::mark("init");
+    crate::counters::start();
     let r = sim.run_until(stop);
     crate::timing::mark("simulate");
     crate::stdout::flush();
     crate::timing::report();
+    crate::counters::report(sim.stats());
+    yavs_interp::census_dump(40);
     let mut o = std::io::stdout().lock();
     let code = match r {
         Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {

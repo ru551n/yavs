@@ -801,7 +801,11 @@ impl Model {
             && let Some(hit) = self.calls.get(db, k)
         {
             yavs_interp::replay_reports(&hit.reports);
+            crate::callcache::count(true);
             return Ok(hit.val);
+        }
+        if key.is_some() {
+            crate::callcache::count(false);
         }
         match self
             .funcs

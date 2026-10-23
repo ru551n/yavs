@@ -10,6 +10,9 @@ publish.workspace = true
 # Test builds only: collect at every safepoint after an allocation and never reuse a slot,
 # so a missed root shows as an access to a deallocated object (#422, AGENTS.md).
 gc-stress = []
+# Count the ops of the interpreter's dispatch loop and the adjacent executed pairs, and print the
+# table (`census::dump`): the tool for choosing fusions (AGENTS.md). Never a dependency edge.
+op-census = []
 
 [dependencies]
 yavs-diag.workspace = true

@@ -5952,3 +5952,13 @@ elaboration, so the slice bounds and signal references of an instance are consta
 facts once per instance in the shared code, and now also for the references. Its interpreter keeps its hot state in a small
 struct on the stack and the registers in a stack array, so a call stores a handful of words; yavs's machine is addressed
 field by field, which is what the entry cost above comes from.
+
+## Work-counter perf tests and the op census (#579, 2026-10-23)
+
+`crates/yavs/tests/perf.rs`: 22 designs plus the LLVM ones (3, `--features llvm`) check counters of
+work that are exactly repeatable (kernel `Stats`, interpreter `ops`, call-cache and unit-cache hits,
+wave variable reads, compiled-code callbacks) against ceilings/floors; see root `AGENTS.md` section 4.
+`op-census` (cargo feature) prints the op and adjacent-pair tables of a run (`crates/yavs-interp/AGENTS.md`
+section 5). Sensitivity checked by turning optimisations off (`YAVS_NO_MEMO`, `YAVS_NO_IROPT`,
+`YAVS_NO_INLINE`, `YAVS_NO_NATIVE_IEEE`) and by `--cov` (edge triggers off): the matching designs fail
+with the counter named.

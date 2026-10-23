@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yavs_elab::{Built, DataLeaf, Elaborated, ObjKind, ScopeId, Shape, leaf_locs};
@@ -104,6 +105,19 @@ enum Read {
     /// Its process has no frame or has not run since the last read, so no variable of it has
     /// changed.
     Idle,
+}
+
+/// Variables read by the recorder, and variables skipped because their process was found idle
+/// (work counters, `var_reads` and `var_idle_skips` of `YAVS_COUNTERS`).
+static VAR_READS: AtomicU64 = AtomicU64::new(0);
+static VAR_IDLE: AtomicU64 = AtomicU64::new(0);
+
+/// `(variables read, variables skipped as idle)` by this process's recorders so far.
+pub fn var_counts() -> (u64, u64) {
+    (
+        VAR_READS.load(Ordering::Relaxed),
+        VAR_IDLE.load(Ordering::Relaxed),
+    )
 }
 
 const NO_ENTRY: u32 = u32::MAX;
@@ -392,8 +406,10 @@ impl State {
             if let VarAt::Proc { proc, .. } = &self.vars[k].at
                 && Some(*proc) == idle
             {
+                VAR_IDLE.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
+            VAR_READS.fetch_add(1, Ordering::Relaxed);
             match self.read_var(hook, k) {
                 Ok(Read::Changed) => {}
                 Ok(Read::Same) => continue,

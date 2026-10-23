@@ -31,6 +31,7 @@ use yavs_ir::{
     Program, Reg, Width,
 };
 
+use crate::census::{Cb, cb};
 use crate::{Error, Jit, Module, OptLevel};
 
 const STEP: &str = "yavs_rt_step";
@@ -461,6 +462,7 @@ fn stack_here() -> usize {
 /// as `GO` once that returns (`TierHost::ret`); otherwise the frame is the interpreter's
 /// (`TIER_UNWIND`).
 extern "C" fn yavs_rt_step(env: *mut c_void, _regs: *mut u64, mem: *mut Mem, pc: u32) -> u32 {
+    cb(Cb::Step);
     // SAFETY: `env` and `mem` are what `enter` (or this function, for a callee) passed to the
     // compiled function, which is blocked in this call; `regs` points into the register
     // stack, which the compiled code does not touch until we return (it passes it only so
@@ -500,6 +502,7 @@ extern "C" fn yavs_rt_signal(
     pc: u32,
     edge: u32,
 ) -> u32 {
+    cb(Cb::Signal);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -550,6 +553,7 @@ extern "C" fn yavs_rt_deopt(
     link: u64,
     regs: *const u64,
 ) -> *mut u64 {
+    cb(Cb::Deopt);
     // SAFETY: as in `yavs_rt_step`; `regs` holds `nregs` words.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.ndeopt = 1;
@@ -613,6 +617,7 @@ extern "C" fn yavs_rt_drive(
     wave: *const u8,
     inertial: u32,
 ) -> u32 {
+    cb(Cb::Drive);
     // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`.
     let envp = env as *mut Env<'_>;
     let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
@@ -645,6 +650,7 @@ extern "C" fn yavs_rt_wait(
     lo: u64,
     len: u64,
 ) -> u32 {
+    cb(Cb::Wait);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if unsafe { (*envp).host.wait_again(pc, [lo, len]) } {
@@ -668,6 +674,7 @@ extern "C" fn yavs_rt_wait_on(
     lo: u64,
     len: u64,
 ) -> u32 {
+    cb(Cb::WaitOn);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if unsafe { (*envp).host.wait_on_again([lo, len]) } {
@@ -687,6 +694,7 @@ extern "C" fn yavs_rt_wait_same(
     _lo: u64,
     _len: u64,
 ) -> u32 {
+    cb(Cb::WaitSame);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -716,6 +724,7 @@ extern "C" fn yavs_rt_native(
     depth: u64,
     out: *mut u64,
 ) -> u32 {
+    cb(Cb::Native);
     // SAFETY: as in `yavs_rt_step`; `cells` holds `n` words of the caller (an `alloca` of the
     // compiled code), `out` one word.
     let envp = env as *mut Env<'_>;
@@ -770,6 +779,7 @@ extern "C" fn yavs_rt_troot(
     desc: *const u8,
     n: u64,
 ) -> u32 {
+    cb(Cb::Troot);
     // SAFETY: as in `yavs_rt_step`; compiled code checked `n` readable bytes at `desc`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -798,6 +808,7 @@ extern "C" fn yavs_rt_troot(
 /// `TierHost::end_stmt`: the end of a statement of a native frame whose temporaries start at
 /// `base`, while temporaries are recorded for the collector.
 extern "C" fn yavs_rt_endstmt(env: *mut c_void, mem: *mut Mem, base: u64) {
+    cb(Cb::Endstmt);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -831,6 +842,7 @@ extern "C" fn yavs_rt_xstep(
     nout: u32,
     temp_base: u64,
 ) -> u32 {
+    cb(Cb::Xstep);
     // SAFETY: as in `yavs_rt_step`; `ins` holds `nin` words, `outs` `nout`, the index arrays as
     // many `u32`, all of the calling native frame (allocas and constants of compiled code).
     let envp = env as *mut Env<'_>;
@@ -884,6 +896,7 @@ extern "C" fn yavs_rt_lcopy(
     s0: u64,
     n: u64,
 ) {
+    cb(Cb::Lcopy);
     let blocks = |b: &[u8], out: &mut [[u64; 4]]| {
         for (o, c) in out.iter_mut().zip(b.as_chunks::<32>().0) {
             *o = std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j])));
@@ -1021,6 +1034,7 @@ extern "C" fn yavs_rt_host(
     n: u64,
     write: u32,
 ) -> *mut u8 {
+    cb(Cb::Host);
     // SAFETY: as in `yavs_rt_step`.
     let m = unsafe { &*mem };
     if let Some(p) = m.find(a, extra, n, write != 0) {
@@ -1051,6 +1065,7 @@ extern "C" fn yavs_rt_layout(
     el_count: u64,
     logic: u32,
 ) -> u32 {
+    cb(Cb::Layout);
     let p = yavs_rt_host(env, mem, desc, 0, u64::from(dims) * 24, 0);
     if p.is_null() {
         return 0;
@@ -1137,6 +1152,7 @@ extern "C" fn yavs_rt_fast(
     a: u64,
     b: u64,
 ) -> u32 {
+    cb(Cb::Fast);
     match op {
         FAST_ALLOC => {
             // SAFETY: as in `yavs_rt_step`.

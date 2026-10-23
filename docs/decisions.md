@@ -4932,3 +4932,15 @@ at process start only, so the binary would have had to re-exec itself. Decisions
 Measured with `tools/realbench` `--compare` (41 tests, all phases, cold and warm, interleaved, cores 6 and 7, `perf stat`
 instructions, cycles and page faults as medians of every timed run, 2 to 5 runs) and the `tools/bench` h2h designs (9 runs):
 see docs/STATUS.md "Huge pages for the heap". No test or phase gets slower beyond noise.
+
+## Work-counter perf tests, op census (yavs, yavs-interp, yavs-kernel, #579, 2026-10-23)
+
+- **Decision**: perf regressions are guarded in `cargo test` by counters of work that do not depend on the
+  host (`crates/yavs/tests/perf.rs`, `YAVS_COUNTERS=1`), each with a ceiling (a floor where fewer is the
+  regression); timing stays for measurement (#576 shows it is noisy). Counters pin the slow path a fast path
+  avoids (update path, quick/direct commits, callbacks of compiled code, cache hits) and the interpreter ops
+  executed. Why: the perf rounds of #440, #520, #523, #541 and #565 had nothing but `perf stat` behind them.
+- **Cost**: kernel counters are plain adds once per cycle or on a slow path; `ops` and `cb_*` exist in debug
+  builds and with `op-census` only, so release builds (the benchmarked ones) pay nothing.
+- **Census**: `op-census` (off by default) counts executed ops and adjacent pairs at the dispatch loop to choose
+  fusions from data (idea from a study of another simulator's opcode census).

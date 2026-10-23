@@ -4293,6 +4293,7 @@ impl Machine {
         }
         enter!();
         loop {
+            crate::census::tick(&ops[k], &f.code);
             match ops[k] {
                 Op::Step(pc) => {
                     let inst = *f

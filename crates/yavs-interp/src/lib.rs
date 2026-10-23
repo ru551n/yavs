@@ -13,6 +13,7 @@
 //! `StmtId`s, innermost first. Broken invariants are `ErrorKind::Internal`.
 
 mod binfile;
+mod census;
 mod debug;
 mod env;
 mod exec;
@@ -40,6 +41,7 @@ use yavs_kernel::{
 use yavs_std::arith::TimeResolution;
 use yavs_std::types::Revision;
 
+pub use census::{dump as census_dump, ops_executed};
 pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,

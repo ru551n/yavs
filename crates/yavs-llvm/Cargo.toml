@@ -13,6 +13,8 @@ llvm = ["dep:llvm-sys", "dep:yavs-interp", "dep:yavs-ir", "dep:libloading", "dep
 # The interpreter's collect-at-every-safepoint build for the unit tests:
 # cargo test -p yavs-llvm --features llvm,gc-stress
 gc-stress = ["yavs-interp/gc-stress"]
+# Count the callbacks of compiled code in release builds too (always counted in debug builds).
+op-census = ["yavs-interp?/op-census"]
 
 [dependencies]
 # Pinned to LLVM 21.1 (design rule 5). Dynamic linking keeps link memory low;

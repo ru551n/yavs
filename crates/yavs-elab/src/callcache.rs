@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use yavs_sem::{Db, DeclId, StageCache};
 
@@ -17,6 +18,19 @@ const MAX_CALLS: usize = 8192;
 const MAX_BYTES: usize = 4 << 20;
 /// A bigger result is not worth its bytes.
 const MAX_RESULT: usize = 64 << 10;
+
+static HITS: AtomicU64 = AtomicU64::new(0);
+static RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// Elaboration-time calls of this process answered from the cache, and calls that ran the
+/// interpreter although they had a key (work counters, `YAVS_COUNTERS`).
+pub fn stats() -> (u64, u64) {
+    (HITS.load(Ordering::Relaxed), RUNS.load(Ordering::Relaxed))
+}
+
+pub(crate) fn count(hit: bool) {
+    (if hit { &HITS } else { &RUNS }).fetch_add(1, Ordering::Relaxed);
+}
 
 /// A call's outcome: the value and the reports it made (printed again on a hit).
 #[derive(serde::Serialize, serde::Deserialize, Clone)]

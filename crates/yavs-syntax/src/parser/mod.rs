@@ -9,6 +9,7 @@
 mod decl;
 mod expr;
 mod psl;
+mod psl_named;
 mod psl_seq;
 mod stmt;
 mod unit;
@@ -51,6 +52,17 @@ pub(crate) struct Parser<'a> {
     psl_names: Vec<Symbol>,
     /// Reading a boolean of a PSL sequence: a `[` opens a repetition, not a signature.
     psl_no_sig: bool,
+    /// The PSL sequences and properties declared so far in this design unit.
+    psl_decls: Vec<psl_named::PslDecl>,
+    /// The formals of the named sequence or property being expanded.
+    psl_env: psl_named::Env,
+    /// Token index where the body being expanded ends: a `;` there ends a sequence.
+    psl_end: usize,
+    /// Boolean actuals of the expansions in this directive.
+    psl_args: psl_named::Args,
+    /// Expansions in this directive, and the number of the latest.
+    psl_expansions: u32,
+    psl_scope: u32,
     /// Lists under construction, one stack per element type: a list parser pushes its
     /// elements here and moves them into a vector of exactly their number, so no
     /// list grows (and copies its large elements) by doubling.
@@ -94,6 +106,12 @@ pub(crate) fn parse(
         psl_clock: None,
         psl_names: Vec::new(),
         psl_no_sig: false,
+        psl_decls: Vec::new(),
+        psl_env: Vec::new(),
+        psl_end: usize::MAX,
+        psl_args: Vec::new(),
+        psl_expansions: 0,
+        psl_scope: 0,
         sc: Scratch::default(),
     };
     p.design_file()
@@ -294,10 +312,12 @@ impl<'a> Parser<'a> {
                 Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
                 Tok::LBrace | Tok::Imply | Tok::Kw(Kw::Next | Kw::Strong) => return true,
                 Tok::Ident => {
-                    if !self.psl_names.is_empty()
-                        && self.psl_names.contains(&self.make_ident(t).key)
-                    {
-                        return true;
+                    if !(self.psl_names.is_empty() && self.psl_decls.is_empty()) {
+                        let key = self.make_ident(t).key;
+                        if self.psl_names.contains(&key) || self.psl_decls.iter().any(|d| d.is(key))
+                        {
+                            return true;
+                        }
                     }
                     let w = self.text(t).to_ascii_lowercase();
                     if matches!(w.as_str(), "always" | "never" | "eventually" | "forall")

@@ -18,6 +18,7 @@
 //! alike and merge.
 
 use super::psl::{Gen, Prop};
+use super::psl_named::DeclKind;
 use super::{PResult, Parser, Recover};
 use crate::ast::*;
 use crate::token::{Kw, Tok};
@@ -133,38 +134,45 @@ impl SeqProp {
 }
 
 impl Parser<'_> {
-    /// Does the property of the directive at the current token (after `assert`, `assume` or
-    /// `cover`) start with a sequence, possibly behind `always`, `never` or parentheses?
-    pub(super) fn psl_at_sequence(&self) -> bool {
-        let mut i = 1;
+    /// Does the property that starts `i` tokens ahead (`i` is 1 after the keyword of a
+    /// directive, 0 in the body of a declared property) start with a sequence, possibly
+    /// behind `always`, `never` or parentheses?
+    pub(super) fn psl_at_sequence_from(&self, mut i: usize) -> bool {
         loop {
             match self.nth(i) {
                 Tok::LParen => i += 1,
                 Tok::Ident if matches!(self.psl_word(i).as_deref(), Some("always" | "never")) => {
                     i += 1
                 }
-                Tok::LBrace => return true,
-                _ => return false,
+                _ => return self.psl_sequence_at(i),
             }
         }
+    }
+
+    /// Is the token `i` ahead the start of a sequence: a brace, the name of a declared
+    /// sequence or a sequence formal?
+    pub(super) fn psl_sequence_at(&self, i: usize) -> bool {
+        self.nth(i) == Tok::LBrace
+            || self.psl_named_at(i, DeclKind::Sequence).is_some()
+            || self.psl_formal_is_sequence(i)
     }
 
     /// The property of a directive whose property starts with a sequence.
     pub(super) fn psl_seq_prop(&mut self, cover: bool) -> PResult<SeqProp> {
         let mut leaves = Leaves::default();
-        let paren = self.at(Tok::LParen) && self.nth(1) != Tok::LBrace;
+        let paren = self.at(Tok::LParen) && !self.psl_sequence_at(1);
         if paren {
             self.bump();
         }
         let kind = if cover {
-            let s = self.sere_braced(&mut leaves)?;
+            let s = self.sere_primary(&mut leaves)?;
             SeqKind::Cover(s)
         } else {
             let word = self.psl_word(0);
             match word.as_deref() {
                 Some("never") => {
                     self.bump();
-                    SeqKind::Never(self.sere_braced(&mut leaves)?)
+                    SeqKind::Never(self.sere_primary(&mut leaves)?)
                 }
                 Some("always") => {
                     self.bump();
@@ -181,11 +189,11 @@ impl Parser<'_> {
 
     /// `{l} |-> r`, `{l} |=> r` or `{r}`.
     fn psl_suffix(&mut self, always: bool, leaves: &mut Leaves) -> PResult<SeqKind> {
-        let paren = self.at(Tok::LParen) && self.nth(1) == Tok::LBrace;
+        let paren = self.at(Tok::LParen) && self.psl_sequence_at(1);
         if paren {
             self.bump();
         }
-        let first = self.sere_braced(leaves)?;
+        let first = self.sere_primary(leaves)?;
         let kind = if self.at(Tok::Bar) && matches!(self.nth(1), Tok::Imply | Tok::Arrow) {
             self.bump();
             let overlap = self.bump().kind == Tok::Imply;
@@ -222,8 +230,8 @@ impl Parser<'_> {
                 self.expect(Tok::RBracket)?;
             }
         }
-        let body = if self.at(Tok::LBrace) {
-            self.sere_braced(leaves)?
+        let body = if self.psl_sequence_at(0) {
+            self.sere_primary(leaves)?
         } else {
             self.sere_leaf(leaves)?
         };
@@ -253,6 +261,21 @@ impl Parser<'_> {
         leaves.add(e, "true".to_string())
     }
 
+    /// A braced sequence, a named one or a `sequence` formal, with repetition operators.
+    fn sere_primary(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
+        if self.at(Tok::LBrace) {
+            return self.sere_braced(leaves);
+        }
+        if let Some(s) = self.psl_formal_sequence(leaves)? {
+            return self.sere_postfix(s, leaves);
+        }
+        if let Some(d) = self.psl_named(DeclKind::Sequence) {
+            let s = self.psl_expand(d, |p| p.sere_concat(leaves))?;
+            return self.sere_postfix(s, leaves);
+        }
+        Err(Recover)
+    }
+
     /// `{ sere }`, possibly followed by repetition operators.
     fn sere_braced(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
         self.expect(Tok::LBrace)?;
@@ -262,9 +285,9 @@ impl Parser<'_> {
     }
 
     /// `a ; b ; c`
-    fn sere_concat(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
+    pub(super) fn sere_concat(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
         let mut parts = vec![self.sere_fuse(leaves)?];
-        while self.eat(Tok::Semi) {
+        while self.pos < self.psl_end && self.eat(Tok::Semi) {
             parts.push(self.sere_fuse(leaves)?);
         }
         Ok(if parts.len() == 1 {
@@ -323,8 +346,8 @@ impl Parser<'_> {
 
     /// A braced sequence or a boolean, with repetition operators.
     fn sere_item(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
-        if self.at(Tok::LBrace) {
-            return self.sere_braced(leaves);
+        if self.psl_sequence_at(0) {
+            return self.sere_primary(leaves);
         }
         let leaf = self.sere_leaf(leaves)?;
         self.sere_postfix(leaf, leaves)
@@ -333,7 +356,7 @@ impl Parser<'_> {
     /// A boolean expression. A `[` ends it: it opens a repetition, not a signature.
     fn sere_leaf(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
         let was = std::mem::replace(&mut self.psl_no_sig, true);
-        let e = self.expr();
+        let e = self.psl_expr();
         self.psl_no_sig = was;
         let e = e?;
         let text = self
@@ -343,7 +366,9 @@ impl Parser<'_> {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        Ok(leaves.add(e, text))
+        // The same text means another boolean where a formal stands for another actual.
+        let key = format!("{text}#{}", self.psl_env_key());
+        Ok(leaves.add(e, key))
     }
 
     /// `[*]`, `[*n]`, `[*m to n]`, `[+]`, `[=n]`, `[->n]` after an item.
@@ -387,12 +412,7 @@ impl Parser<'_> {
     }
 
     fn sere_count(&mut self) -> PResult<u32> {
-        if self.peek() != Tok::Abstract {
-            return Err(Recover);
-        }
-        let t = self.bump();
-        self.text(t)
-            .parse::<u32>()
+        self.psl_count()
             .ok()
             .filter(|&n| n <= MAX_COUNT)
             .ok_or(Recover)

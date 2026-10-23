@@ -18,7 +18,8 @@
 //! values at the clock event (`builtins`, below). Anything else is left to the skip with `W0004`: an attempt that does not fit the subset
 //! restores the position and drops its diagnostics.
 
-use super::psl_seq::seq_checker;
+use super::psl_named::DeclKind;
+use super::psl_seq::{SeqProp, seq_checker};
 use super::{PResult, Parser, Recover};
 use crate::Symbol;
 use crate::ast::*;
@@ -57,6 +58,11 @@ const OPERATORS: &[&str] = &[
 /// Most cycles a `next[n]` may look ahead.
 // ponytail: one variable per cycle; a counter queue if longer windows are ever needed.
 const MAX_NEXT: u32 = 256;
+
+enum Parsed {
+    Simple(Prop),
+    Seq(SeqProp),
+}
 
 pub(super) enum Prop {
     /// `always b`
@@ -127,77 +133,110 @@ impl Parser<'_> {
     }
 
     fn psl_directive_inner(&mut self) -> PResult<ProcessStmt> {
-        let seq = self.psl_at_sequence();
-        if self.psl_foreign(seq) {
+        self.psl_args.clear();
+        self.psl_expansions = 0;
+        self.psl_env.clear();
+        self.psl_end = usize::MAX;
+        let start = self.span();
+        let cover = self.at_kw(Kw::Cover);
+        let named = if cover {
+            None
+        } else {
+            self.psl_whole_property()
+        };
+        let seq = self.psl_at_sequence_from(1);
+        if named.is_none() && self.psl_foreign_range(self.pos + 1, self.psl_stmt_end(), seq) {
             return Err(Recover);
         }
-        let start = self.span();
-        if seq {
-            return self.psl_seq_directive(start);
+        self.bump();
+        let mut parsed = match named {
+            Some(d) => self.psl_expand(d, |p| {
+                let seq = p.psl_at_sequence_from(0);
+                p.psl_parse_prop(false, seq)
+            })?,
+            None => self.psl_parse_prop(cover, seq)?,
+        };
+        let mut bi = Gen::new(self.span_from(start));
+        match &mut parsed {
+            Parsed::Simple(prop) => match prop {
+                Prop::Always(b) | Prop::Never(b) | Prop::Cover(b) => {
+                    self.psl_builtins(b, &mut bi)?
+                }
+                Prop::Imply(a, _, b) => {
+                    self.psl_builtins(a, &mut bi)?;
+                    self.psl_builtins(b, &mut bi)?;
+                }
+            },
+            Parsed::Seq(sp) => {
+                for e in &mut sp.leaves.exprs {
+                    self.psl_builtins(e, &mut bi)?;
+                }
+                if sp.needs_first() {
+                    bi.need_first();
+                }
+            }
         }
-        let mut prop = if self.bump().kind == Tok::Kw(Kw::Cover) {
+        self.psl_arg_stmts(&mut bi);
+        bi.finish();
+        let (clock, report, severity) = self.psl_tail()?;
+        let span = self.span_from(start);
+        Ok(match parsed {
+            Parsed::Simple(prop) => checker(prop, clock, report, severity, bi, span),
+            Parsed::Seq(sp) => seq_checker(sp, clock, report, severity, bi)?,
+        })
+    }
+
+    /// The property at the current token: the simple forms, or one over sequences
+    /// (`psl_seq.rs`; a sequence of one boolean, and `{a} |-> b`, `{a} |=> b`, take the
+    /// cheaper simple form).
+    fn psl_parse_prop(&mut self, cover: bool, seq: bool) -> PResult<Parsed> {
+        if seq {
+            return Ok(match self.psl_seq_prop(cover)?.into_simple() {
+                Ok(p) => Parsed::Simple(p),
+                Err(p) => Parsed::Seq(p),
+            });
+        }
+        Ok(Parsed::Simple(if cover {
             let brace = self.eat(Tok::LBrace);
-            let b = self.expr()?;
+            let b = self.psl_expr()?;
             if brace {
                 self.expect(Tok::RBrace)?;
             }
             Prop::Cover(b)
         } else {
             self.psl_top()?
-        };
-        let mut bi = Gen::new(self.span_from(start));
-        match &mut prop {
-            Prop::Always(b) | Prop::Never(b) | Prop::Cover(b) => self.psl_builtins(b, &mut bi)?,
-            Prop::Imply(a, _, b) => {
-                self.psl_builtins(a, &mut bi)?;
-                self.psl_builtins(b, &mut bi)?;
-            }
-        }
-        bi.finish();
-        let (clock, report, severity) = self.psl_tail()?;
-        Ok(checker(
-            prop,
-            clock,
-            report,
-            severity,
-            bi,
-            self.span_from(start),
-        ))
+        }))
     }
 
-    /// A directive over sequences, from its keyword on (`psl_seq.rs`). A sequence of one
-    /// boolean, and `{a} |-> b`, `{a} |=> b`, take the cheaper form of the simple subset.
-    fn psl_seq_directive(&mut self, start: Span) -> PResult<ProcessStmt> {
-        let cover = self.bump().kind == Tok::Kw(Kw::Cover);
-        let prop = self.psl_seq_prop(cover)?;
-        let mut bi = Gen::new(self.span_from(start));
-        let mut prop = match prop.into_simple() {
-            Ok(mut simple) => {
-                match &mut simple {
-                    Prop::Always(b) | Prop::Never(b) | Prop::Cover(b) => {
-                        self.psl_builtins(b, &mut bi)?
-                    }
-                    Prop::Imply(a, _, b) => {
-                        self.psl_builtins(a, &mut bi)?;
-                        self.psl_builtins(b, &mut bi)?;
-                    }
-                }
-                bi.finish();
-                let (clock, report, severity) = self.psl_tail()?;
-                let span = self.span_from(start);
-                return Ok(checker(simple, clock, report, severity, bi, span));
+    /// The declared property that makes up the whole property of the directive at the
+    /// current token (`assert p;`, `assume p(a, b) @clk;`).
+    fn psl_whole_property(&self) -> Option<usize> {
+        let d = self.psl_named_at(1, DeclKind::Property)?;
+        let mut j = (self.pos + 2).min(self.eof_index());
+        if self.toks[j].kind == Tok::LParen {
+            j = self.after_matching_paren(j).min(self.eof_index());
+        }
+        matches!(
+            self.toks[j].kind,
+            Tok::At | Tok::Semi | Tok::Kw(Kw::Report | Kw::Severity)
+        )
+        .then_some(d)
+    }
+
+    /// Index of the `;` that ends the statement at the current token.
+    fn psl_stmt_end(&self) -> usize {
+        let mut depth = 0u32;
+        let mut i = self.pos;
+        while i < self.eof_index() {
+            match self.toks[i].kind {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+                Tok::Semi if depth == 0 => return i,
+                _ => {}
             }
-            Err(p) => p,
-        };
-        for e in &mut prop.leaves.exprs {
-            self.psl_builtins(e, &mut bi)?;
+            i += 1;
         }
-        if prop.needs_first() {
-            bi.need_first();
-        }
-        bi.finish();
-        let (clock, report, severity) = self.psl_tail()?;
-        seq_checker(prop, clock, report, severity, bi)
+        i
     }
 
     /// `[@ clock] [report r] [severity s] ;` after a property.
@@ -230,38 +269,28 @@ impl Parser<'_> {
         c
     }
 
-    /// Does the directive name a PSL built-in, operator word (other than its leading
-    /// `always`/`never`) or skipped declaration?
-    fn psl_foreign(&self, seq: bool) -> bool {
-        let mut depth = 0u32;
-        let mut i = self.pos + 1;
-        while i < self.eof_index() {
+    /// Do the tokens `from..to` name a PSL built-in, operator word (other than a leading
+    /// `always`/`never`) or skipped declaration? `seq`: `within` and `inf` are fine.
+    pub(super) fn psl_foreign_range(&self, from: usize, to: usize, seq: bool) -> bool {
+        for i in from..to.min(self.eof_index()) {
             let t = self.toks[i];
-            match t.kind {
-                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
-                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
-                Tok::Semi if depth == 0 => return false,
-                Tok::Ident => {
-                    let w = self.text(t).to_ascii_lowercase();
-                    let call = self.toks[i + 1].kind == Tok::LParen;
-                    let directive = |k: Tok| matches!(k, Tok::Kw(Kw::Assert | Kw::Assume));
-                    let lead = directive(self.toks[i - 1].kind)
-                        || self.toks[i - 1].kind == Tok::LParen && directive(self.toks[i - 2].kind);
-                    if (call && BUILTINS.contains(&w.as_str()))
-                        || (!lead
-                            && OPERATORS.contains(&w.as_str())
-                            && !(seq && matches!(w.as_str(), "within" | "inf")))
-                        || w.starts_with("next_")
-                        || w.starts_with("before")
-                        || w.starts_with("until")
-                        || self.psl_names.contains(&self.make_ident(t).key)
-                    {
-                        return true;
-                    }
-                }
-                _ => {}
+            if t.kind != Tok::Ident {
+                continue;
             }
-            i += 1;
+            let w = self.text(t).to_ascii_lowercase();
+            let call = self.toks[i + 1].kind == Tok::LParen;
+            let lead = i == from || (i == from + 1 && self.toks[from].kind == Tok::LParen);
+            if (call && BUILTINS.contains(&w.as_str()))
+                || (!lead
+                    && OPERATORS.contains(&w.as_str())
+                    && !(seq && matches!(w.as_str(), "within" | "inf")))
+                || w.starts_with("next_")
+                || w.starts_with("before")
+                || w.starts_with("until")
+                || self.psl_names.contains(&self.make_ident(t).key)
+            {
+                return true;
+            }
         }
         false
     }
@@ -289,7 +318,7 @@ impl Parser<'_> {
             }
             Some("never") => {
                 self.bump();
-                Ok(Prop::Never(self.expr()?))
+                Ok(Prop::Never(self.psl_expr()?))
             }
             _ => Err(Recover),
         }
@@ -303,7 +332,7 @@ impl Parser<'_> {
             self.expect(Tok::RParen)?;
             return Ok(p);
         }
-        let a = self.expr()?;
+        let a = self.psl_expr()?;
         if !self.eat(Tok::Imply) {
             return Ok(Prop::Always(a));
         }
@@ -311,20 +340,15 @@ impl Parser<'_> {
         if self.eat_kw(Kw::Next) {
             n = 1;
             if self.eat(Tok::LBracket) {
-                if self.peek() != Tok::Abstract {
-                    return Err(Recover);
-                }
-                let t = self.bump();
                 n = self
-                    .text(t)
-                    .parse::<u32>()
+                    .psl_count()
                     .ok()
                     .filter(|&n| n <= MAX_NEXT)
                     .ok_or(Recover)?;
                 self.expect(Tok::RBracket)?;
             }
         }
-        Ok(Prop::Imply(a, n, self.expr()?))
+        Ok(Prop::Imply(a, n, self.psl_expr()?))
     }
 
     /// Is there a `->` directly inside the parentheses that open at the current token?
@@ -860,6 +884,11 @@ impl Parser<'_> {
     /// The expression that starts at byte offset `start`, parsed again (the tree is not
     /// `Clone`).
     fn psl_reparse_at(&mut self, start: u32) -> PResult<Expr> {
+        // ponytail: a built-in on a formal of a named sequence or property would need the
+        // environment of its expansion; such directives are skipped.
+        if self.psl_expansions > 0 {
+            return Err(Recover);
+        }
         let i = self.toks.partition_point(|t| t.start < start);
         if self.toks.get(i).is_none_or(|t| t.start != start) {
             return Err(Recover);

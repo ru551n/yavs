@@ -345,6 +345,8 @@ const PASS: &[&str] = &[
     "psl/psl_hdl_exprs",
     "psl/psl_sequences",
     "psl/psl_sequences_ops",
+    "psl/psl_named",
+    "psl/psl_named_formals",
     "generics/anonymous_ports_2019_hand",
     "report/assert_user_message",
     "report/concurrent_assert",

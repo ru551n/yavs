@@ -55,6 +55,7 @@ impl Parser<'_> {
         let start = self.span();
         self.psl_warned = false;
         self.psl_clock = None;
+        self.psl_decls.clear();
         let mut context = Vec::new();
         loop {
             match self.peek() {

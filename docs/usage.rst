@@ -414,7 +414,17 @@ side ends (``|->``) or the tick after (``|=>``): it fails at the tick where it c
 match. Without ``always`` a directive starts at the first clock tick only. One directive may
 test at most 6 different conditions on its right side; a longer one is skipped with ``W0004``.
 
-Everything else (``property`` and ``sequence`` declarations, other operators such as ``until``
+Sequences and properties can be named, with ``boolean``, ``const`` and ``sequence`` formals,
+and used where a sequence or a whole property is expected:
+
+.. code-block:: text
+
+   sequence handshake (boolean r, a) is {r; a};
+   property ack_follows (boolean r, a) is always (r -> next a);
+   c3: cover handshake(req = '1', ack = '1');
+   p9: assert ack_follows(req = '1', ack = '1');
+
+Everything else (other ``property`` and ``sequence`` declarations, other operators such as ``until``
 and ``eventually!``, the ``next`` and ``ended`` functions, directives without a clock,
 ``restrict``, ``fairness`` and verification units) is skipped with warning ``W0004``, once per
 design unit; the rest of the design runs as usual.

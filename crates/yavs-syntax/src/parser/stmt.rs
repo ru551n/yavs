@@ -680,7 +680,12 @@ impl Parser<'_> {
                 }
             },
             t if is_psl_start(t) => {
-                self.psl_skip();
+                if !self.psl_decl() {
+                    if self.at_kw(Kw::Property) || self.at_kw(Kw::Sequence) {
+                        self.psl_skipped_name();
+                    }
+                    self.psl_skip();
+                }
                 return Ok(None);
             }
             _ => {

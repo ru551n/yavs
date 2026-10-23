@@ -158,8 +158,12 @@ impl Parser<'_> {
             Tok::Kw(Kw::Default) if self.psl_default_clock() => return Ok(None),
             Tok::Kw(Kw::Property | Kw::Sequence | Kw::Default) => {
                 // PSL `property`, `sequence`, other `default` forms.
-                self.psl_skipped_name();
-                self.psl_skip();
+                if !self.psl_decl() {
+                    if self.at_kw(Kw::Property) || self.at_kw(Kw::Sequence) {
+                        self.psl_skipped_name();
+                    }
+                    self.psl_skip();
+                }
                 return Ok(None);
             }
             _ => return Err(self.expected("a declaration")),

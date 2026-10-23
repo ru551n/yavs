@@ -731,6 +731,19 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   Not in this step: `ended`, strong sequences (`{s}!`), `eventually!`, `until`, `before`, `abort`,
   `next_e` and relatives, named sequences/properties, local variables, `forall`, units. Catalogue
   rows `psl-sere-*`; `tests/corpus/psl/psl_sequences{,_ops}.vhd`.
+- **Named PSL sequences and properties (agent, 2026-10-23, #445):** `sequence s [(formals)] is
+  body;` and `property p [(formals)] is body;` in a declarative part or as a statement run when
+  used. A declaration is remembered as the range of its body tokens and a use parses that range
+  again with the formals bound (`parser/psl_named.rs`), so nothing is copied. Formals: `boolean`
+  (the actual is evaluated at each clock tick into a process variable the body's name is renamed
+  to), `const` (a number: a count, or a literal in an expression) and `sequence` (the actual's
+  tokens, parsed where the formal is used). A `property` formal, a typed formal (`bit`,
+  `numeric`, ...), a built-in function on a formal, a use before the declaration, the wrong
+  number of actuals, a recursive declaration, and more than 200 expansions in one directive skip
+  the directive with `W0004`; a declared name outside a sequence or whole-property position
+  does too. A declared property is used as the whole property of `assert`/`assume`
+  (`assert p(a, b) @clk report r;`), a declared sequence in `cover`, as an operand of a suffix
+  implication, or inside sequences. A declaration is visible in its design unit.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993

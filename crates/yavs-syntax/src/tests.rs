@@ -860,9 +860,9 @@ fn psl_warnings(src: &str) -> Vec<String> {
 fn psl_is_skipped_with_one_warning_per_unit() {
     // Every PSL form is skipped and the rest of the file still parses.
     let forms = [
-        "property p is always (a -> next b);",
-        "sequence s is {a; b[*2]; c};",
-        "property q (boolean x) is always {x; x} |=> x;",
+        "property p is always (a -> eventually! b);",
+        "sequence s (bit x) is {x; b[*2]; c};",
+        "property q (property r) is always {r; r} |=> r;",
         "assert always (a -> next[1](b));",
         "assert never {a; b};",
         "l: assume always a;",
@@ -1031,11 +1031,50 @@ fn psl_sequences_become_checker_processes() {
 }
 
 #[test]
+fn psl_named_sequences_and_properties() {
+    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n";
+    // Declarations produce nothing; every use is one checker process.
+    let src = format!(
+        "{pre}sequence s1 is {{a; b}};
+        sequence s2 (boolean x, y) is {{x; y[*2]}};
+        sequence s3 (boolean x; const n) is {{x[*n]; s1}};
+        sequence s4 (sequence p) is {{p; p}};
+        property p1 is always (a -> next b);
+        property p2 (boolean x, y) is always (x -> next y);
+        property p3 is always (s1 |=> c);
+        c1: cover s1;
+        c2: cover s2(a, b);
+        c3: cover s3(a, 2);
+        c4: cover {{s4({{a; b}}); c}};
+        c5: assert p1;
+        c6: assert p2(a = '1', b) report \"x\";
+        c7: assert p3 @falling_edge(clk);
+        c8: assert always s1 |=> c;
+        end;"
+    );
+    let c = checkers(&src);
+    assert_eq!(c.len(), 8, "{c:?}");
+    // Not supported, so skipped with one warning: property and typed formals, a wrong
+    // number of actuals, a recursive sequence, a declaration with an operator the subset
+    // does not run, a built-in on a formal.
+    for (decl, uses) in [
+        ("property p (property q) is always q;", "assert p(a);"),
+        ("sequence s (bit x) is {x; x};", "cover s(a);"),
+        ("sequence s (boolean x) is {x; x};", "cover s(a, b);"),
+        ("sequence s is {a; s};", "cover s;"),
+        ("property p is always (a -> eventually! b);", "assert p;"),
+        ("sequence s (boolean x) is {rose(x); b};", "cover s(a);"),
+    ] {
+        let src = format!("{pre}{decl}\n{uses}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{decl} {uses}");
+    }
+}
+
+#[test]
 fn psl_outside_the_subset_is_skipped() {
     let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nproperty p is always a;\nbegin\n";
     for f in [
         "assert always p;",
-        "assert always rose(a);",
         "assert always a -> next_e[1 to 2] b;",
         "assert always a until b;",
         "assert always (a -> b) abort rst;",

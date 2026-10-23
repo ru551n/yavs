@@ -248,7 +248,7 @@ impl Manifest {
     }
 
     pub(crate) fn to_text(&self) -> String {
-        toml::to_string(self).expect("manifest serializes")
+        write_text(self).unwrap_or_else(|| toml::to_string(self).expect("manifest serializes"))
     }
 
     /// Replace everything `path` defined with `units`; the file moves to the end.
@@ -292,6 +292,89 @@ impl Manifest {
 
     pub fn file(&self, path: &std::path::Path) -> Option<&FileEntry> {
         self.files.iter().find(|f| f.path == path)
+    }
+}
+
+/// The text `toml::to_string` gives for `m`, written directly (the serializer took a tenth of the
+/// time of an `analyze` of one file into a library of a few hundred units, which rewrites the
+/// manifest every time). `None` when a string needs an escape or a literal string (a quote, a
+/// backslash, a control character or a non-ASCII letter): the caller then asks `toml`.
+fn write_text(m: &Manifest) -> Option<String> {
+    fn plain(v: &str) -> Option<&str> {
+        v.bytes()
+            .all(|b| (b' '..0x7f).contains(&b) && b != b'"' && b != b'\\')
+            .then_some(v)
+    }
+    // `key = "value"` lines: pushed piece by piece (the formatting machinery is the slow part).
+    fn line(o: &mut String, key: &str, v: &str) -> Option<()> {
+        o.push_str(key);
+        o.push_str(" = \"");
+        o.push_str(plain(v)?);
+        o.push_str("\"\n");
+        Some(())
+    }
+    fn num(o: &mut String, key: &str, v: impl std::fmt::Display) {
+        use std::fmt::Write;
+        o.push_str(key);
+        o.push_str(" = ");
+        let _ = writeln!(o, "{v}");
+    }
+    let mut o = String::with_capacity(m.files.len() * 600 + 64);
+    num(&mut o, "format", m.format);
+    line(&mut o, "name", &m.name)?;
+    if m.files.is_empty() {
+        o.push_str("file = []\n");
+    }
+    for f in &m.files {
+        o.push_str("\n[[file]]\n");
+        line(&mut o, "path", f.path.to_str()?)?;
+        line(&mut o, "hash", &f.hash)?;
+        line(&mut o, "std", &f.std)?;
+        if let Some(n) = f.size {
+            num(&mut o, "size", n);
+        }
+        if let Some(n) = f.mtime_ns {
+            num(&mut o, "mtime_ns", n);
+        }
+        if f.partial {
+            o.push_str("partial = true\n");
+        }
+        if f.units.is_empty() {
+            o.push_str("unit = []\n");
+        }
+        for u in &f.units {
+            o.push_str("\n[[file.unit]]\n");
+            line(&mut o, "kind", kind_text(u.kind))?;
+            line(&mut o, "name", &u.name)?;
+            line(&mut o, "key", &u.key)?;
+            if let Some(p) = &u.primary {
+                line(&mut o, "primary", p)?;
+            }
+            line(&mut o, "std", &u.std)?;
+            if u.depends_on.is_empty() {
+                o.push_str("depends_on = []\n");
+            }
+            for d in &u.depends_on {
+                o.push_str("\n[[file.unit.depends_on]]\n");
+                line(&mut o, "library", &d.library)?;
+                line(&mut o, "kind", kind_text(d.kind))?;
+                line(&mut o, "key", &d.key)?;
+            }
+        }
+    }
+    Some(o)
+}
+
+/// The name `UnitKind` has in the text (`rename_all = "snake_case"`).
+fn kind_text(k: UnitKind) -> &'static str {
+    match k {
+        UnitKind::Entity => "entity",
+        UnitKind::Architecture => "architecture",
+        UnitKind::Package => "package",
+        UnitKind::PackageBody => "package_body",
+        UnitKind::PackageInstance => "package_instance",
+        UnitKind::Configuration => "configuration",
+        UnitKind::Context => "context",
     }
 }
 
@@ -419,7 +502,10 @@ fn parse_written(text: &str) -> Option<Manifest> {
             }
             _ if line.starts_with('[') => return None,
             _ => {
-                let (k, v) = line.split_once(" = ")?;
+                // Keys are single words: the first space ends the key (a search for " = " builds a
+                // substring searcher for every line).
+                let sp = line.bytes().position(|b| b == b' ')?;
+                let (k, v) = (&line[..sp], line[sp..].strip_prefix(" = ")?);
                 match (&at, k) {
                     (At::Top, "format") => num(&mut format, v)?,
                     (At::Top, "name") => set(&mut name, v)?,
@@ -545,6 +631,10 @@ mod tests {
         let text = m.to_text();
         assert_eq!(parse_written(&text), Some(by_toml(&text)));
         assert!(parse_written(&text).unwrap().files[0].partial);
+        assert_eq!(
+            write_text(&m).as_deref(),
+            Some(toml::to_string(&m).unwrap().as_str())
+        );
         m.replace_file(
             "/x/a.vhd".into(),
             "sha256:ab".into(),
@@ -553,6 +643,67 @@ mod tests {
             vec![UnitRecord::new(UnitKind::Package, "Pkg_A", "2008")],
         );
         assert!(m.files.iter().all(|f| !f.partial));
+    }
+
+    #[test]
+    fn written_text_is_the_toml_text() {
+        let mut m = sample("/x/a.vhd");
+        assert_eq!(
+            write_text(&m).as_deref(),
+            Some(toml::to_string(&m).unwrap().as_str())
+        );
+        // A file without units, a unit without dependencies, an entity with a primary.
+        m.replace_file(
+            "/x/c.vhd".into(),
+            "sha256:ef".into(),
+            None,
+            "2008".into(),
+            vec![],
+        );
+        m.replace_file(
+            "/x/d.vhd".into(),
+            "sha256:01".into(),
+            None,
+            "2008".into(),
+            vec![
+                UnitRecord::package_body("P", "2008"),
+                UnitRecord::new(UnitKind::Configuration, "c", "2008"),
+            ],
+        );
+        assert_eq!(
+            write_text(&m).as_deref(),
+            Some(toml::to_string(&m).unwrap().as_str())
+        );
+        let empty = Manifest::new("empty");
+        assert_eq!(
+            write_text(&empty).as_deref(),
+            Some(toml::to_string(&empty).unwrap().as_str())
+        );
+        let odd = sample("/x/it's #1 [a] = b.vhd");
+        assert_eq!(
+            write_text(&odd).as_deref(),
+            Some(toml::to_string(&odd).unwrap().as_str())
+        );
+        // What needs an escape is left to toml.
+        assert_eq!(write_text(&sample("/x/a\"b.vhd")), None);
+        assert_eq!(write_text(&sample("C:\\x\\a.vhd")), None);
+        assert_eq!(write_text(&sample("/x/\u{e9}.vhd")), None);
+        for k in [
+            UnitKind::Entity,
+            UnitKind::Architecture,
+            UnitKind::Package,
+            UnitKind::PackageBody,
+            UnitKind::PackageInstance,
+            UnitKind::Configuration,
+            UnitKind::Context,
+        ] {
+            assert_eq!(
+                format!("\"{}\"", kind_text(k)),
+                toml::Value::try_from(k)
+                    .map(|v| v.to_string())
+                    .unwrap_or_default()
+            );
+        }
     }
 
     #[test]

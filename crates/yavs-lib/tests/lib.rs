@@ -521,6 +521,46 @@ fn session_records_every_file_as_it_goes() {
     assert_eq!(m.files.last().unwrap().hash, hash_content(b"a2"));
 }
 
+/// A read under the session's own lock is parsed once and shared with the session, and it never
+/// shows the manifest from before a record (the reader that parsed it and the writer are one
+/// process).
+#[test]
+fn read_in_a_session_sees_every_record() {
+    let (t, _, work, _) = setup();
+    let session = work.session().unwrap();
+    for i in 0..4 {
+        let (name, text) = (format!("g{i}"), format!("text {i}"));
+        let p = t.path().join(format!("{name}.vhd"));
+        std::fs::write(&p, &text).unwrap();
+        // Read first (the analyzer's lookups), then record: the record starts from that parse.
+        let before = work.read().map(|m| m.files.len()).unwrap_or(0);
+        assert_eq!(before, i);
+        session
+            .record(STD, &p, &hash_content(text.as_bytes()), vec![pkg(&name)])
+            .unwrap();
+        let again = work.read().unwrap();
+        assert_eq!(again.files.len(), i + 1);
+        assert_eq!(again.files.last().unwrap().path, p);
+        assert_eq!(work.read().unwrap(), again);
+    }
+    // The same directory under another name (another `Library` value) sees every record too.
+    let alias = Library::new("alias", &work.dir);
+    assert_eq!(alias.read().unwrap().files.len(), 4);
+    let (name, text) = ("g4", "text 4");
+    let p = t.path().join("g4.vhd");
+    std::fs::write(&p, text).unwrap();
+    session
+        .record(STD, &p, &hash_content(text.as_bytes()), vec![pkg(name)])
+        .unwrap();
+    assert_eq!(alias.read().unwrap().files.len(), 5);
+    drop(session);
+    // Another process-like reader after the session sees the file as written.
+    assert_eq!(
+        Library::new("work", &work.dir).read().unwrap().files.len(),
+        5
+    );
+}
+
 /// A reader polling the manifest file while a session records files sees a whole manifest every
 /// time (the old one or the new one, never a torn one), and the count never goes back (#561).
 #[test]

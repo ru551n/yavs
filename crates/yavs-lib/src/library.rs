@@ -11,6 +11,21 @@ const LOCK_NOTE_AFTER: Duration = Duration::from_secs(3);
 /// The manifest name from before the project was renamed to yavs; never read.
 const OLD_MANIFEST_FILE: &str = "rsim-lib.toml"; // rename: keep
 
+/// Why a parsed manifest is still the manifest on disk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fresh {
+    /// The file has this size and time and was old enough to trust.
+    Stamp(Stamp),
+    /// Parsed under the process's own lock when `WRITES` had this value.
+    Held(u64),
+}
+
+/// The manifest [`Library::read`] parsed last, with why it is still current.
+type Parsed = Option<(Fresh, Arc<Manifest>)>;
+
+/// Manifests written by sessions of this process (a parse under the lock is stale after one).
+static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A library directory (`<dir>/yavs-lib.toml` + `<dir>/_YAVS_LIB`).
 #[derive(Clone, Debug)]
 pub struct Library {
@@ -18,7 +33,9 @@ pub struct Library {
     pub dir: PathBuf,
     /// The manifest as last parsed by [`Library::read`], with the stamp of the file it came from
     /// (shared by clones): a run reads each library twice, once for the closure, once for analysis.
-    parsed: Arc<Mutex<Option<(Stamp, Manifest)>>>,
+    /// Parsed while this process held the library's lock: valid until any [`Session`] of the
+    /// process writes a manifest (`WRITES`; nobody else can write while the lock is held).
+    parsed: Arc<Mutex<Parsed>>,
 }
 
 impl Library {
@@ -86,7 +103,7 @@ impl Library {
 
     /// Read the manifest under a shared lock held only for the read. Never writes
     /// to the library directory, and works on read-only libraries.
-    pub fn read(&self) -> Result<Manifest> {
+    pub fn read(&self) -> Result<Arc<Manifest>> {
         let lock_path = self.dir.join(LOCK_FILE);
         let held = std::path::absolute(&self.dir).is_ok_and(|k| HELD.lock().unwrap().contains(&k));
         let opened = if held {
@@ -111,11 +128,19 @@ impl Library {
         };
         let p = self.manifest_path();
         // A manifest unmodified for two seconds that still has the size and time of the parsed one
-        // is the same manifest (the library lock is held, so no writer is replacing it).
-        let stamp = Stamp::of(&p);
-        if let Some(st) = stamp
+        // is the same manifest (the library lock is held, so no writer is replacing it). One parsed
+        // while this process held the lock is the same manifest too: a batch of `analyze` rewrites
+        // it after every file, which is never two seconds old.
+        let fresh = if held {
+            Some(Fresh::Held(
+                WRITES.load(std::sync::atomic::Ordering::SeqCst),
+            ))
+        } else {
+            Stamp::of(&p).map(Fresh::Stamp)
+        };
+        if let Some(f) = fresh
             && let Some((s, m)) = &*self.parsed.lock().unwrap()
-            && *s == st
+            && *s == f
         {
             return Ok(m.clone());
         }
@@ -134,9 +159,9 @@ impl Library {
                 io("L0002", "read", &p, &e)
             }
         })?;
-        let m = Manifest::parse(&text, &p)?;
-        if let Some(st) = stamp {
-            *self.parsed.lock().unwrap() = Some((st, m.clone()));
+        let m = Arc::new(Manifest::parse(&text, &p)?);
+        if let Some(f) = fresh {
+            *self.parsed.lock().unwrap() = Some((f, m.clone()));
         }
         Ok(m)
     }
@@ -179,6 +204,8 @@ impl Library {
             .map_err(|e| io("L0011", "lock", &lock_path, &e))?;
         let key = std::path::absolute(&self.dir).unwrap_or_else(|_| self.dir.clone());
         HELD.lock().unwrap().push(key.clone());
+        // Parsed before the lock was ours: another process may have written since.
+        *self.parsed.lock().unwrap() = None;
         Ok(Session {
             lib: self.clone(),
             _lock: lock,
@@ -243,8 +270,17 @@ impl Session {
         let mp = self.lib.manifest_path();
         let mut st = self.state.lock().unwrap();
         if st.manifest.is_none() {
+            // The manifest `read` parsed under this lock, if it did (once, not twice per call).
+            let held = self.lib.parsed.lock().unwrap().take();
             let (m, text) = match fs::read_to_string(&mp) {
-                Ok(t) => (Manifest::parse(&t, &mp)?, Some(t)),
+                Ok(t) => match held {
+                    Some((Fresh::Held(g), m))
+                        if g == WRITES.load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        (Arc::unwrap_or_clone(m), Some(t))
+                    }
+                    _ => (Manifest::parse(&t, &mp)?, Some(t)),
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     self.lib.reject_old_manifest()?;
                     (Manifest::new(&self.lib.name), None)
@@ -263,6 +299,8 @@ impl Session {
         if st.disk_text.as_deref() == Some(text.as_str()) {
             return Ok(());
         }
+        // What `read` parsed (of this or another name of the directory) is the old manifest from here on.
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let tmp = self
             .lib
             .dir

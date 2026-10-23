@@ -61,7 +61,7 @@ type Node = (String, UnitKind, String); // library, kind, key
 
 struct Ctx<'a> {
     libs: &'a Libraries,
-    manifests: HashMap<String, Manifest>,
+    manifests: HashMap<String, std::sync::Arc<Manifest>>,
 }
 
 impl Ctx<'_> {

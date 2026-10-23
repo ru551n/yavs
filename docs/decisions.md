@@ -4506,6 +4506,29 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   is never registered this way: its record lists only the units that remain, and analysing just those met the other
   file's unit instead of the file's own (#577). **A first `elab`/`run`**
   replays the closure's units the same way (`Db::analyze_file_hashed` with the closure's hashes).
+- **A file analysed again is registered, not loaded, when nothing could differ** (`Db::warm_records`,
+  `Db::analyze_file_lazy`, #581; only `yavs analyze`, never `elab`/`run`, never with `YAVS_UNIT_CHECK`). The
+  manifest of a library holds the records of the file (kind, names, standard, dependencies) from the call that
+  analysed it; a replay of its units gave the same records back after loading the whole closure of the file
+  (85 units and 2 MB for an Open Logic testbench). Now the call plans the replay (the entries of the units and
+  of everything they load, their full keys, the answers to the library questions) and takes the records from the
+  manifest when (1) every unit of the file has an entry that holds, (2) no entry in the plan reports anything
+  (no diagnostic of a unit or a file step: a warning of a dependency is printed by each file that loads it,
+  as an analysis from source prints it, so such a file still replays) and (3) the entry's `Head::record`, a hash
+  of the unit's manifest record made when the entry was written, equals that of the record the manifest holds
+  (a record written by another build is never trusted; `FORMAT` is 3). The units stay `NotLoaded`; a later file
+  of the same call that needs one loads it the usual way. Output, exit status and the manifest are those of the
+  replay (checked over the 41 realbench selections: records, order and stderr of every call identical).
+  Idea from the reference simulator: a unit names what it depends on with a checksum, so that whether a
+  dependency changed is answered without loading it; ours checks the full key chain of the entries and still
+  loads what a later file needs.
+- **Manifest handling per call** (`yavs-lib`, #581): the manifest `Library::read` parses under the session's
+  own lock is shared with the session (parsed once, not by the analyzer and again by the session; a parse is
+  stale after any session of the process wrote, `WRITES`), `Manifest::to_text` writes the text directly
+  (byte-identical to the `toml` text, `toml` renders anything that needs an escape) and `parse_written` splits
+  a line at the first space. `analyze` checks that the body of a std/ieee package it loaded has an entry by the
+  file's presence (`UnitStore::has`) instead of reading and decoding it, and forgets its session at exit
+  instead of freeing the manifest.
 - **Found on the way:** a generic instance cloned the formal types of an instance in a hash set's order,
   which differs per process (two analyses of the same files gave different ids); `Remap::formal_firsts` is
   ordered now. The default span (`Span::default()`, file 0 meaning no file) is written as such inside an

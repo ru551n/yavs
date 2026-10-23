@@ -56,7 +56,7 @@ use crate::{LangRev, UnitStore};
 pub type Hash = [u8; 32];
 
 /// The layout of entries; part of every identity.
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 /// Entries of `Db::new` (index 0 of these arenas): the same in every session.
 const BASE: [u32; KINDS] = [0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];
@@ -169,9 +169,31 @@ struct Head {
     address: Hash,
     full: Hash,
     kind: UnitKind,
+    /// [`record_hash`] of the unit's manifest record: a file analysed again whose manifest says the
+    /// same is not read at all (`Db::warm_records`).
+    record: u128,
     owners: Vec<Owner>,
     steps: Vec<PStep>,
     queries: Vec<(Query, Answer)>,
+}
+
+impl Head {
+    /// Reading the entry reports nothing: no diagnostic of the unit or of the files it registers.
+    fn quiet(&self) -> bool {
+        self.steps.iter().all(|s| {
+            !matches!(
+                s,
+                PStep::Seg { diags: 1.., .. } | PStep::File { diags: 1.., .. }
+            )
+        })
+    }
+}
+
+/// A hash of what the manifest records of a unit (its kind, names, standard and dependencies).
+fn record_hash(r: &yavs_lib::UnitRecord) -> u128 {
+    let b = postcard::to_stdvec(r)
+        .unwrap_or_else(|e| panic!("internal error: cannot write a record: {e}"));
+    twox_hash::XxHash3_128::oneshot(&b)
 }
 
 /// A step of a unit being analysed from source.
@@ -1073,11 +1095,13 @@ impl Db {
         if let Err(e) = r {
             return (Err(e.clone()), Err(e));
         }
+        let u = self.loads[f.serial as usize].unit.expect("done");
         let head = Head {
             format: FORMAT,
             address,
             full,
-            kind: self.units[self.loads[f.serial as usize].unit.expect("done")].kind,
+            kind: self.units[u].kind,
+            record: record_hash(&self.unit_record(u)),
             owners: Vec::new(),
             steps,
             queries: f.queries.clone(),
@@ -1415,6 +1439,16 @@ impl Db {
         self.entry_at(lib, key, &path, &hash, rev)
     }
 
+    /// Whether the unit has an entry, without reading it.
+    fn entry_exists(&self, lib: LibId, key: UnitKey) -> bool {
+        let Some((path, _)) = self.locate(lib, key) else {
+            return false;
+        };
+        let name = self.libs[lib].name.key;
+        self.store()
+            .is_some_and(|s| s.has(name.as_str(), &self.identity(name, key, &path)))
+    }
+
     fn entry_at(
         &self,
         lib: LibId,
@@ -1491,6 +1525,59 @@ impl Db {
             }
         }
         stub
+    }
+
+    /// The manifest records of the units `keys` of file `path` (registered by `warm_file`) when
+    /// reading them back would change and report nothing: every unit has an entry that holds,
+    /// the entries of everything they load hold too, none of them has a diagnostic, and the
+    /// manifest records the unit as it was when its entry was made. `yavs analyze` of such a
+    /// file then loads none of it (a file that depends on 80 units no longer replays them to get
+    /// back what the manifest says); a later file of the call loads a unit it needs the usual way.
+    pub(crate) fn warm_records(
+        &self,
+        lib: LibId,
+        path: &Path,
+        keys: &[UnitKey],
+    ) -> Option<Vec<yavs_lib::UnitRecord>> {
+        let LibSource::Manifest(m) = &self.libs[lib].source else {
+            return None;
+        };
+        let fe = m.file(&std::path::absolute(path).ok()?)?;
+        if fe.units.len() != keys.len() {
+            return None;
+        }
+        let name = self.libs[lib].name.key;
+        let mut p = Plan {
+            lens: self.lens(),
+            sources: self.sources.len() as u32,
+            serials: self.loads.len() as u32,
+            units: Default::default(),
+            libs: Default::default(),
+            files: Default::default(),
+            entries: Default::default(),
+            srcs: Default::default(),
+        };
+        for (&k, rec) in keys.iter().zip(&fe.units) {
+            let e = self.entry_for(lib, k).ok()?;
+            if e.head.record != record_hash(rec) {
+                return None;
+            }
+            if p.units.contains_key(&(name, k)) {
+                continue;
+            }
+            self.plan(&mut p, name, k, e).ok()?;
+        }
+        if !p.units.values().all(|u| u.entry.head.quiet()) {
+            return None;
+        }
+        if let Some(s) = self.store() {
+            s.note(&format!(
+                "verified {name}.{} ({} units)",
+                key_text(keys[0]),
+                p.units.len()
+            ));
+        }
+        Some(fe.units.clone())
     }
 
     /// Plan the replay of `(lib, key)` from `entry` on top of `p`.
@@ -2164,7 +2251,7 @@ impl Db {
                 if self.units[*u].kind != UnitKind::Package
                     || lib.units.contains_key(&body)
                     || self.locate(lid, body).is_none()
-                    || self.entry_for(lid, body).is_ok()
+                    || self.entry_exists(lid, body)
                 {
                     continue;
                 }

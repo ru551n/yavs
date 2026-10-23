@@ -95,6 +95,10 @@ pub struct Options {
 /// silent.
 pub trait UnitStore: Send + Sync + std::fmt::Debug {
     fn get(&self, lib: &str, identity: &[u8; 32]) -> Option<yavs_diag::Buffer>;
+    /// Whether an entry is there, without reading it (its content is not checked).
+    fn has(&self, lib: &str, identity: &[u8; 32]) -> bool {
+        self.get(lib, identity).is_some()
+    }
     fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]);
     /// Whether units analysed from source are written (`yavs analyze`; never `yavs run`).
     fn writable(&self) -> bool;

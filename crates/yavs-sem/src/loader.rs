@@ -82,11 +82,11 @@ mod source_tag {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibSource, D::Error> {
         Ok(match <u8 as serde::Deserialize>::deserialize(d)? {
-            0 => LibSource::Manifest(yavs_lib::Manifest {
+            0 => LibSource::Manifest(std::sync::Arc::new(yavs_lib::Manifest {
                 format: 0,
                 name: String::new(),
                 files: Vec::new(),
-            }),
+            })),
             1 => LibSource::StdDir(std::path::PathBuf::new()),
             2 => LibSource::Files,
             _ => return Err(serde::de::Error::custom("bad library source tag")),
@@ -96,7 +96,7 @@ mod source_tag {
 
 pub enum LibSource {
     /// A library directory with `yavs-lib.toml`.
-    Manifest(Manifest),
+    Manifest(std::sync::Arc<Manifest>),
     /// The vendored `lib/<name>/<rev>` tree: package `p` is in `p.vhdl`, its
     /// body in `p-body.vhdl`.
     // ponytail: file-name convention instead of an index of the tree; add an
@@ -629,6 +629,31 @@ impl Db {
         rev: LangRev,
         hash: Option<&str>,
     ) -> Result<Vec<UnitRecord>, Reported> {
+        self.analyze_file_with(work, path, rev, hash, false)
+    }
+
+    /// [`Db::analyze_file_hashed`] for a caller that wants the records only (`yavs analyze`): a
+    /// file whose units all have entries that hold and report nothing, and which the manifest
+    /// records as they were, is registered but not loaded (`Db::warm_records`). The units load
+    /// when a later file needs them.
+    pub fn analyze_file_lazy(
+        &mut self,
+        work: &str,
+        path: &Path,
+        rev: LangRev,
+        hash: Option<&str>,
+    ) -> Result<Vec<UnitRecord>, Reported> {
+        self.analyze_file_with(work, path, rev, hash, true)
+    }
+
+    fn analyze_file_with(
+        &mut self,
+        work: &str,
+        path: &Path,
+        rev: LangRev,
+        hash: Option<&str>,
+        lazy: bool,
+    ) -> Result<Vec<UnitRecord>, Reported> {
         let name = ident(work);
         let lib =
             if self.opts.libraries.get(work).is_some() || self.lib_by_key.contains_key(&name.key) {
@@ -660,6 +685,9 @@ impl Db {
                     rev,
                 },
             );
+        }
+        if lazy && let Some(records) = self.warm_records(lib, path, &keys) {
+            return Ok(records);
         }
         let before = self.error_count();
         let mut ids = Vec::new();

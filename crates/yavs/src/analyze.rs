@@ -252,7 +252,12 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             let stamp = yavs_lib::Stamp::of(file);
             let hash = std::fs::read(file).map(|b| yavs_lib::hash_content(&b));
             let before = out.errors;
-            let r = db.analyze_file_hashed(work, file, rev, hash.as_deref().ok());
+            let h = hash.as_deref().ok();
+            let r = if shadow.is_some() {
+                db.analyze_file_hashed(work, file, rev, h)
+            } else {
+                db.analyze_file_lazy(work, file, rev, h)
+            };
             if let Some(sh) = shadow.as_mut() {
                 let r2 = sh.analyze_file(work, file, rev);
                 if r.is_ok() != r2.is_ok() {
@@ -322,6 +327,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         note_batch(&a.files, i, &done.borrow());
         return out.finish(1);
     }
+    // The process exits now: the lock goes with it, and freeing the session's copy of the manifest
+    // (thousands of small strings) is pure cost, as for the database.
+    std::mem::forget(session);
     out.finish(0)
 }
 

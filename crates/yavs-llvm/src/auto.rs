@@ -521,6 +521,15 @@ const NATIVE_BUDGET: u64 = 16;
 /// An `rtl` process gets this many times the budget (its compiled code is a tenth faster).
 const RTL_BUDGET: u64 = 16;
 
+/// Whether a callee that was seen running for `seen` microseconds and has `size` IR instructions is
+/// left out of the compile of its caller: with a budget (the sampled times mean something),
+/// never seen and not small. Compiling the closure of calls of a function brought every
+/// error-reporting helper along, a fifth of the compile time of the window generator, and
+/// priced `pop` out of the budget for seconds (#493).
+fn left_out(budget: u32, seen: u64, size: usize) -> bool {
+    budget != 0 && seen == 0 && size > UNSEEN_MIN
+}
+
 /// Whether compiling for `cost` more microseconds keeps the compile time spent within `budget`
 /// percent (`factor` times that) of the `total` microseconds the sampler saw running; budget 0
 /// is no limit.
@@ -640,6 +649,10 @@ const PAYBACK_COMPUTE: u64 = 2;
 /// so it is compiled once seen for twice its compile time (four times before #572).
 const PAYBACK_NATIVE: u64 = 2;
 
+/// A callee of a hot function that was never seen running and has more IR instructions than this
+/// is left out of the compile (`left_out`).
+const UNSEEN_MIN: usize = 32;
+
 /// Callees compiled with a hot function (`Worker::tree`): at most this many IR instructions
 /// each and in all.
 const CALLEE_MAX: usize = 200;
@@ -698,6 +711,9 @@ struct Worker {
     seen: usize,
     /// Per function: `pick` said once that the budget refused it.
     told: Vec<bool>,
+    /// Per function: `tree` left it out of a compile as a callee (`unseen`); the native-frame code
+    /// of a caller is published without it (`publish`).
+    left: Vec<std::cell::Cell<bool>>,
     /// Per function: looked up in the compilation cache already (`probe`).
     probed: Vec<bool>,
     /// A `probe` is running: a failure is no note and leaves the function to compile later.
@@ -833,6 +849,19 @@ impl Worker {
         }
     }
 
+    /// Whether callee `i` of a candidate is left out of its compile: never seen running (the
+    /// error paths of a library function), so a call to it is rare and leaves the compiled code
+    /// when it happens, and it compiles by itself once it gets hot.
+    fn unseen(&self, i: FuncId) -> bool {
+        let k = i.0 as usize;
+        let size = self.prog.func(i).map_or(0, |f| f.code.len());
+        let out = left_out(self.heat.budget, self.time[k][0] + self.time[k][1], size);
+        if out {
+            self.left[k].set(true);
+        }
+        out
+    }
+
     /// `root` and the functions it calls that compile with it: a call from compiled code to
     /// one that is not leaves the compiled code (`TIER_UNWIND`). A function that runs on native
     /// frames brings every function it calls on native frames, compiled for those frames only,
@@ -845,7 +874,7 @@ impl Worker {
             let todo: Vec<FuncId> = nc
                 .iter()
                 .copied()
-                .filter(|&i| i != root && self.nat[i.0 as usize].0 == 0)
+                .filter(|&i| i != root && self.nat[i.0 as usize].0 == 0 && !self.unseen(i))
                 .collect();
             let total = size(root) + todo.iter().map(|&i| size(i)).sum::<usize>();
             if total <= NATIVE_MAX {
@@ -884,6 +913,7 @@ impl Worker {
                 };
                 if !ids.contains(func)
                     && !self.done[func.0 as usize][0]
+                    && !self.unseen(*func)
                     && g.kind != FuncKind::Elab
                     && g.code.len() <= CALLEE_MAX
                     && total + g.code.len() <= TREE_MAX
@@ -896,6 +926,7 @@ impl Worker {
                     && g.code.len() <= CALLEE_MAX
                     && total + g.code.len() <= TREE_MAX
                     && self.nset(*func).contains(func)
+                    && !self.unseen(*func)
                 {
                     // Compiled for the interpreter's calls (frame-mode code only): its
                     // native-frame code, for the calls of this function.
@@ -938,7 +969,7 @@ impl Worker {
             let ready = self
                 .nset(FuncId(k as u32))
                 .iter()
-                .all(|c| self.nat[c.0 as usize].0 != 0);
+                .all(|c| self.nat[c.0 as usize].0 != 0 || self.left[c.0 as usize].get());
             if ready {
                 self.ntab[k].store(addr, Ordering::Release);
                 self.nat[k].1 = true;
@@ -1001,14 +1032,24 @@ impl Worker {
                         (self.note)(id, self.opt, Err(why));
                     }
                     if let Some(tr) = &self.trace {
+                        let mut big: Vec<(usize, &str)> = trees[k]
+                            .iter()
+                            .filter_map(|&(i, _)| self.prog.func(i))
+                            .map(|f| (f.code.len(), f.name.as_str()))
+                            .collect();
+                        big.sort_by_key(|b| std::cmp::Reverse(b.0));
                         tr.line(format!(
-                            "refused f{} `{}`, cost {} us, seen {} us, fits at {at} of {} us seen, spent {}",
+                            "refused f{} `{}`, cost {} us, seen {} us, fits at {at} of {} us seen, spent {}; \
+                             {} functions of {} IR, the biggest {:?}",
                             id.0,
                             self.prog.func(id).map_or("?", |f| f.name.as_str()),
                             prices[k].0,
                             self.time[id.0 as usize][0],
                             self.total,
-                            self.spent
+                            self.spent,
+                            big.len(),
+                            big.iter().map(|b| b.0).sum::<usize>(),
+                            &big[..big.len().min(4)]
                         ));
                     }
                 }
@@ -1315,6 +1356,7 @@ impl AutoTier {
             seen: 0,
             probed: vec![false; nfuncs],
             told: vec![false; nfuncs],
+            left: vec![Default::default(); nfuncs],
             probing: false,
             warned: false,
             loaded: false,
@@ -1944,6 +1986,15 @@ mod tests {
         assert!(!within_budget(2, 1, 0, cost, 1_500_000));
         assert!(within_budget(2, 1, 0, cost, 9_000_000));
         assert!(within_budget(0, 1, 0, cost, 0));
+    }
+
+    /// Only a callee that was never seen running, with a budget, and not small is left out.
+    #[test]
+    fn an_unseen_big_callee_is_left_out() {
+        assert!(left_out(2, 0, UNSEEN_MIN + 1));
+        assert!(!left_out(2, 0, UNSEEN_MIN));
+        assert!(!left_out(2, 1, 500));
+        assert!(!left_out(0, 0, 500));
     }
 
     /// A candidate the budget has no room for must not hold up a cheaper one behind it (#572):

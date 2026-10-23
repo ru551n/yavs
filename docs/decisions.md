@@ -5314,3 +5314,19 @@ through `TierHost::object` (22 percent of the main thread's instructions in the 
   1.5 billion from exactly that.)
   Tag: LLVM-only (the table is the generator's cache in front of the heap's own look-up; a Cranelift tier would need
   the same cache or a flat view of the heap slots in `TierFrame`).
+- **A callee of a hot function that was never seen running is left out of its compile** (`left_out`, `Worker::unseen`,
+  `Worker::left`; with a budget, more than `UNSEEN_MIN` = 32 IR instructions). `Worker::tree` brought the whole closure
+  of native callees along (and the callees of a process), so a 27-instruction `pop` priced at 330 to 490 ms because its
+  closure held the string splitting and counting helpers of the error messages (`split`, `count`, `resize`,
+  `check_external`, 170 to 200 IR instructions each, never executed): a fifth of the compile time, and the budget (which
+  binds in the first seconds of a cold run, 31 percent of the sampled time at 3.4 s) went to code that never ran. The
+  compiled caller's native-frame code is published without them (`publish`); a call to one leaves the native frame to
+  the interpreter, as a missing callee always did, and the callee compiles on its own once it is hot. The assumption
+  is that a callee not sampled while its caller was seen for twice its compile time is called rarely from now on; if it
+  is not, each call costs one materialisation until the callee's own threshold. Not applied without a budget (eager
+  tiers, where nothing is sampled). `YAVS_AUTO_TRACE=1` refusals now name the number and size of the functions of the
+  tree and the biggest four. Tag: shared (the policy is independent of the code generator).
+- **Not done: the frame-mode part of a loop function compiled only when needed** (open question (b) of #520): in the cold
+  trace the second compile of the functions with a loop is 9.4 percent of all compile time (357 of 3801 ms), so the
+  upper bound of the gain is under 2 percent of the run, against the risk that a call in flight when the native code
+  appears has no frame-mode loop to swap in.

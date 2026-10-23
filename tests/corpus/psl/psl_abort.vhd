@@ -1,7 +1,7 @@
 -- difftest: top=psl_abort std=2008 exit=1 ignore=path,order
 -- abort and async_abort run like sync_abort: the abort condition is checked at the clock
--- tick, and a start whose condition holds is dropped (the reference simulators do the same;
--- the LRM defines abort as asynchronous, see lrm-checks L133). All forms sit inside always,
+-- tick, and a start whose condition holds is dropped (the LRM defines abort as asynchronous and
+-- the references abort between ticks too; no condition here changes between ticks, #636, L133). All forms sit inside always,
 -- where the first reference simulator agrees with the PSL definition by prefix.
 library ieee;
 use ieee.std_logic_1164.all;

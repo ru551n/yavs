@@ -765,7 +765,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   `before!`, `next_a!`, `{s}!`), which need a check when the run ends (user, 2026-10-23: they
   stay skipped). `abort` and `async_abort` run exactly as `sync_abort` (user, 2026-10-23, a
   deliberate deviation from the LRM, whose abort is asynchronous and reacts between clock
-  ticks; both reference simulators run both words synchronously). Catalogue rows
+  ticks; the reference simulators do abort asynchronously for a condition that changes between ticks, which the decision had not assumed, see #636). Catalogue rows
   `psl-temporal-operators` and `psl-abort`; `tests/corpus/psl/psl_abort.vhd`,
   `tests/corpus/psl/psl_temporal{,_ext}.vhd`.
 - **Formal-only PSL is skipped without `W0004`** (user, 2026-10-23, #445): `restrict`,

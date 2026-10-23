@@ -71,9 +71,8 @@ pub(super) enum Pt {
     },
 }
 
-/// `abort` and `async_abort` run like `sync_abort`: the reference simulators check the abort
-/// condition at the clock tick only, and the LRM's asynchronous abort has no place in a
-/// clocked checker process.
+/// `abort` and `async_abort` run like `sync_abort`: the condition is checked at the clock tick
+/// only (user decision; the LRM and the references abort between ticks, #636).
 fn is_abort(w: &str) -> bool {
     matches!(w, "abort" | "async_abort" | "sync_abort")
 }

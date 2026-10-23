@@ -6388,3 +6388,39 @@ length 1.029 / 0.932, `rtl_lfsr` 0.797 / 0.763, `hdlm_lfsr`, `vai_window_gen_int
 `poc_cache_cpu`, `fletcher_bufferwriter_512` and the other benchmark designs level; table and method in docs/decisions.md ("the
 callback count sees what leaves compiled code"). Open: functions and processes that loop are not measured (#652); `fused_search`
 stays (the scan helper of #578 is not enough: `uvvm_sb_slv` 1.22 without it).
+
+## llvm: compiled protected-method accessors and search loops (#626, #578, 2026-10-23)
+
+Bench builds (`tools/build-bench.sh --features llvm`), one performance core (core 14, CCD1), median of 5, main-thread
+`perf stat` (`--no-inherit`). `protected_queue` (`tools/bench`) with `--tier=llvm` and the `LEAN` pipeline (the code
+`--tier=auto` makes, no inlining; deterministic), each row on top of the one above:
+
+| Change (tag) | instructions (G) | cycles (G) |
+|---|---:|---:|
+| main before | 8.78 | 2.55 |
+| closed native frames are not registered, their slots stay in registers (LLVM-only) | 8.15 | 2.40 |
+| a `Deref`ed object stays in hand, one-test `Index` guard, cheaper `Pos` (LLVM-only) | 6.44 | 1.53 |
+| blocks with one predecessor keep the held objects (LLVM-only) | 5.88 | 1.38 |
+| a `Deref` hit is one compare (LLVM-only) | 5.62 | 1.41 |
+| the interpreter's top frame found inline by native frames (LLVM-only) | 5.62 | 1.39 |
+
+One protected `get` of a pointer table (micro design, 1 million calls, instructions per call including the loop): 594, 555,
+397, 359, 337. The accessor itself (the native function) went from 449 to 231 instructions (`gdb` trace).
+`protected_queue`, `--tier=auto` warm: 9.26 to 6.20 G instructions, 2.65 to 1.48 G cycles (-44 percent); the interpreter is
+unchanged (28.4 G). The window generator (`vai_window_gen_interlock`, `--tier=auto` warm): 230.5 to 187.6 G instructions, 74.5
+to 59.5 G cycles (-20 percent); against the reference simulator (wall, 5 runs): 3.49x to 1.96x warm, 3.94x to 2.32x cold
+(instructions 3.43x to 2.76x warm). Host callbacks of the window generator (`cb_*`, `op-census` build): `cb_host` 43.5 M to
+5.3 M, `cb_fast` 13.7 M (6.8 M with a 1024-entry object table, not kept).
+All 42 tests of the real-world suite (`tools/realbench`, interp and auto): wall geomean 0.98 and 0.98, instructions 1.00 and
+0.99; no test slower beyond the run-to-run spread.
+
+Search loops (#578): a 100-element byte search called 400 thousand times through a native frame: compiled 887 to 143 M
+cycles (4.15 to 0.45 G instructions), interpreter 518 to 170 M cycles (2.79 to 0.65 G). With the helper the compiled loop is
+as fast as the interpreter's, but `uvvm_sb_slv` is still slower with the policy rule `fused_search` off (1.05 to 1.2 of the
+interpreter's cycles, +10 to +28 percent instructions): the compiled `pos_of_leftmost` calls the interpreted `bitvis_assert`
+twice per call, 111 thousand `Call`s through `yavs_rt_step` (`YAVS_COUNTERS=pc`), because that callee is left out of the
+compile as never seen (`UNSEEN_MIN`) and compiled 340 ms later. The rule stays.
+
+Not done: a flat heap-slot view in `TierFrame` (the remaining four `Deref`s of an accessor are 88 of its 231 instructions;
+a flat view would take about 10 of the 22 each and the miss callbacks), inlining accessors across modules (a call and a
+return cost about 50 instructions of 337).

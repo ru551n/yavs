@@ -4514,7 +4514,7 @@ impl Machine {
             // Compiled out of a release build: even an empty call moved the loop's code (+9 percent of
             // the instructions of `calls`).
             #[cfg(any(debug_assertions, feature = "op-census"))]
-            crate::census::tick(&ops[k], &f.code);
+            crate::census::tick(ops, k, &f.code);
             match ops[k] {
                 Op::Step(pc) => {
                     let inst = *f

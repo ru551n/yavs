@@ -155,7 +155,7 @@ YAVS_BIN=target/release/yavs python3 tools/difftest/difftest.py --candidate yavs
   candidates for ops of their own. Pairs are consecutive in execution on one thread, jumps and
   calls included. A third table gives the time per op (`ns` from the end of one op's census work to the
   start of the next, the clock reads subtracted; `Suspend`, `Ret` of a process and the waits include the
-  kernel; a hint for ranking, never a measurement); `YAVS_CENSUS_TOP=N` sets the length of the tables. It takes a mutex per op: about 5 times slower, so it is for choosing, never for
+  kernel; a hint for ranking, never a measurement); a table of the pairs where the second op follows the first in the code (`falls`: the ones a fusion can take; the pairs table also counts jumps); `YAVS_CENSUS_TOP=N` sets the length of the tables. It takes a mutex per op: about 5 times slower, so it is for choosing, never for
   timing, and use `--threads 1`. Without the feature the cost is zero in release builds.
   ```sh
   cargo build --release -p yavs --features op-census

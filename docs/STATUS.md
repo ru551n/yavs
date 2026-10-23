@@ -6169,3 +6169,37 @@ Idea of the reference simulator used (read for the design, no code): an access v
 a null test and a load, and a protected object is a context pointer passed to an ordinary call; yavs's generational handles
 (a design rule of docs/plan.md) make every dereference a table look-up, which the larger table makes a hit instead of a callback but does not
 make a load.
+
+## Interpreter round 15: element loops, the activation state in three lines, a poll for hung processes (#520, #583, #579, 2026-10-23)
+
+Four commits (`docs/decisions.md` "Interpreter round 15", "The activation state of a process in three cache lines",
+"A process that never suspends polls"):
+
+- **Element loops**: loops that copy or fill the elements of logic vectors (conversions, row extraction, shifts,
+  reversals) run all iterations but the last at once when every index is in range (`pre::elem_loops`,
+  `Machine::op_loop`); the generic ops run the last one, or the whole loop when a check fails, so failures stay at the same
+  iteration. `poc_stat_histogram` (95 percent of its time in two such loops): instructions 40.15 G to 25.12 G (0.626),
+  cycles 0.63 to 0.73. Over the 24 designs of `tools/bench` and `tools/realbench` (cores 4 and 5, 5 runs after two untimed
+  runs, main at 65b7f573 against the commit): geometric mean of instructions 0.981, cycles 0.985 (0.964 on core 5 and
+  1.006 on core 4: the host was loaded; every other design within 0.5 percent of instructions, `poc_cache_cpu` +0.4
+  and `fletcher_bufferreader` +0.8 for loops too short to run at once). Checked: `cargo test --workspace`, the differential
+  corpus (451/451) on `yavs-interp` at 1 and 4 threads, `yavs-llvm` and `yavs-auto`, `gc-stress` unit tests of
+  `yavs-interp` and `yavs-llvm`, 5500 generated programs of loop shapes (directions, strides, overlaps, indices out of
+  range, 1 to 200 elements) against the build without the loops: identical output and errors.
+- **The op census hook** (`census::tick`, #579) in the dispatch loop was an empty call in release builds that moved the
+  loop's code generation: instructions of `calls` +8.8 percent, `compute_loop` +6.7, `protected_queue` +4.7, neorv32
+  +1.4 against the commit before it. It is cfg'd out now: `calls` 0.920, `compute_loop` 0.937, `protected_queue` 0.955,
+  `rtl_fan` 0.983, neorv32 0.987 of the instructions of the commit with it. Any change inside `run_ops` moves other designs
+  by percents (a poll in the `Br` arm did the same), so measure instructions of five designs after every edit of it.
+- **Three cache lines**: `Machine` ordered by use (`repr(C, align(64))`): `rtl_fan` L1 data misses 597 M to 516 M, cycles
+  0.85 to 0.91; others unchanged.
+- **#583**: a process that never suspends polls `Ctx::stop_requested` at its jumps back (stepped `Br`), outside the dispatch
+  loop: the first Ctrl-C with `--wave` ends it. Free by construction (instructions identical on 6 designs).
+
+Entry cost of `run_ops` (the task of the round): the disassembly shows 80 instructions before the first op of which 24
+are hoisted addresses, 8 the zeroing of the eight saved callers and 14 spilled parameters; in a design of 4000 near-idle
+processes 245 of 686 instructions per activation are outside the loop (`InterpProcess::run`, `run_quick`), a third of
+their cycles waiting for lines of the process. Tried and not kept: `k` in a register through a by-value closure (+1 to
++7.6 percent of instructions: the compiler lays the large function out differently, as in round 14). The ranking of
+`Op` pairs from the census (`SigVal->SigVal`, `SigRead1->CmpBr`, `WaveBuf->LCopy->Drive`) is open: an arm added to
+`run_ops` has to pay for itself against that layout effect.

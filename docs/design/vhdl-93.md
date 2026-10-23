@@ -100,8 +100,10 @@ operators gives the same results with the derived and the 1995 text.
 
 Both reference simulators refuse to mix standards in one library or elaboration ("depends on 1993
 version of STD.STANDARD but conflicting 2008 version has been loaded" for sim1). yavs keeps its
-existing rule instead of refusing. Open question for the user: whether a mixed project should
-refuse (fail early) or, as implemented, elaborate with the newest libraries.
+existing rule instead of refusing: a mixed design elaborates with the newest packages (user
+decision, 2026-10-23; the same rule as for 2008 with 2019). This is deliberate, not a gap: the
+test runner passes each file's own standard and projects mix them freely.
+`crates/yavs/tests/vhdl93.rs` (`a_93_file_in_a_2008_design_is_checked_as_93`) pins the behaviour.
 
 ## 4. Implementation plan
 

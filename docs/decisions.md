@@ -872,7 +872,7 @@ difference, is `docs/design/vhdl-93.md`.
 - **Mixing** follows the 2008/2019 rule: design revision = the newest standard in the closure, each file keeps its own revision for
   parsing and gates. A 93 file in a 2008 design sees the 2008 packages (so overloads on both vector types are homographs there) and
   does not see what 2008 added (`E1007` for `to_string`, a 2008-only unit). The reference simulators refuse to mix standards;
-  yavs keeps one rule for all revisions. User question: refuse instead?
+  yavs keeps one rule for all revisions and never refuses a mixed design (user, 2026-10-23).
 - **Shared variables** of non-protected types are legal in a 93 file (no `E1904`/`W1904`).
 - **Homographs**: an explicit declaration hides an implicit one of a use clause in every mode (the references need `--relaxed` /
   `-fexplicit` for this at 1993; GRLIB passes both).

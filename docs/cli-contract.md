@@ -104,7 +104,10 @@ directly (`docs/design/vhdl-93.md`).
   that revision is warning `W1008` (once per construct; `-Werror=W1008`
   escalates it). A 1993 file in a 2008 or 2019 design sees that design's packages, so 1993 code
   that overloads on both `std_logic_vector` and `std_ulogic_vector` fails with the usual
-  homograph error there. See `docs/design/sem.md` section 0.1.
+  homograph error there. Mixing is never refused: yavs elaborates a design of 1993 and 2008 (or 2019)
+  files with the newest packages, where the reference simulators refuse to mix standards in one
+  library or elaboration (user decision, 2026-10-23). See `docs/design/vhdl-93.md` section 3.3 and
+  `docs/design/sem.md` section 0.1.
 
 ## 3. Libraries
 

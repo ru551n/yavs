@@ -6639,3 +6639,66 @@ one process on a loaded host). L: LLVM only; S: also a second code generator.
   large processes `--tier=auto` compiles needs the code to get cheaper first (callbacks per record leaf, the address resolution of
   every memory access, spills), not the compile.
 
+## `--tier=auto`: callees with their caller, `band_wait` 0.25 s, trials of looping processes; `fused_search` stays (yavs-llvm, yavs-interp, #652, #573, 2026-10-24)
+
+Policy owner's change, three parts. Measured with benchmark builds (`tools/build-bench.sh --features llvm`, both sides the same
+flags, built from the same main), main-thread `perf stat --no-inherit`, medians of 5 to 9 interleaved runs, one core of CCD1 per
+run. The host was loaded by other agents while these ran (load average 20 to 30): cycles of the same binary moved by up to 10 to 25
+percent between invocations, so the instruction counts are the reliable column and cycles are read only where they agree.
+
+- **`band_wait` is 0.25 s (`BAND_WAIT`, user decision 2026-10-23; was 1 s).** A clocked process outside `RTL_BAND` (160 to 300
+  IR instructions) is compiled and tried once it was seen interpreted for a quarter of a second. Gain on runs of 0.4 s and
+  more (auto against interp of the same build, instructions; main before this change / after; warm, cold in brackets):
+  `rtl_ff` itself (136 IR, 0.7 s) 1.041 / 0.922 (1.040 / 0.893), a 351 IR variant of `rtl_ff` (12 xor terms, 1.2 s) 1.040 / 0.784
+  (0.853 / 0.766), a 535 IR variant (1.7 s) 1.040 / 0.687 (0.729 / 0.661), `lfsr64` at ten times its length (2 s) 0.950 / 0.909,
+  `rtl_ff` at five times its length 0.855 / 0.802. Cycles agree where the host load allowed a reading (`rtl_ff` 1.035 / 0.938,
+  `ffv20` 1.033 / 0.792, wall 0.84 to 0.92 of the old build). Cost of a
+  trial that loses: the compile thread's compile (2 to 90 ms) and the windows with the slower of the two codes, 100 to 350 ms in
+  all and at most 10 percent slower than the interpreter for the part of the run they last, so below 1 percent of any run long
+  enough to reach the trial. No clocked h2h design lost its trial in these runs (compiled clocked code gained in every variant
+  tried), so the cost of a taken-back clocked process was not measured again here. Short runs (`rtl_chain`, `rtl_fan`, `rtl_bus`, `rtl_ram`, `lfsr64`,
+  `lfsr64_xor`, 0.09 to 0.8 s, cold and warm): instructions equal to 0.5 percent, wall within the spread (a 15-run check of the
+  two shortest cold: 0.388 and 0.184 s on both sides). The lower end of `RTL_BAND` (160) has no reason left after the compiled
+  clocked code of #634 (cg634's synthetic crossover: 144 IR gains); it is left as it is, the wait is what the user asked to change.
+- **A callee that every call of its caller makes is compiled with the caller (`must_calls`, `Worker::hot`).** `Worker::tree`
+  left out a callee never seen running (`UNSEEN_MIN`, a70c7a14), which is right for error paths but wrong for a small callee on the
+  caller's main path: it is as hot as the caller, but the sampler cannot see it (it is short, and the caller's time covers it), and
+  compiled code that calls an interpreted function steps out of its native frame for each call. `uvvm_sb_slv` with `fused_search`
+  off: the compiled `pos_of_leftmost` called the interpreted `bitvis_assert` twice per call through `yavs_rt_step` (`cb_step.Call`
+  at pc 34 and 42, 168 in the sampled window and 111 k over the run), and the callee compiled 340 ms later. Now the callees of
+  at most `CALLEE_MAX` IR instructions that every path from the entry to a `Ret` (a `Suspend` for a process) passes, transitively,
+  count as seen (`must_calls`: a call is on every path when removing the instructions that make it leaves no path to an exit; a
+  function of over 4000 IR instructions is not searched). Effect on the realbench set (final interleaved run, auto
+  against interp, instructions, warm): equal within 1 percent on all nine testbenches of the short set; `vai_window_gen_interlock`
+  0.379 / 0.374 and `poc_arith_addw` 0.799 / 0.788 (warm, 5 runs). Builds made earlier in the work showed `uvvm_util_rand` 1.069 / 1.008 and
+  `poc_cache_cpu` 1.012 / 0.972 from this change; the final run did not reproduce them (1.068 / 1.068, 1.016 / 1.018): which
+  functions are compiled before the run ends varies with the compile thread's timing, so claim nothing from them.
+- **`fused_search` stays.** With the rule off and the callee fix `uvvm_sb_slv` ran 1.05 to 1.12 times the interpreter's cycles
+  (instructions 1.12; without the fix 1.12 to 1.19 and 1.19 to 1.25), a gain over the 1.22 of 7751ab51 but not level: the
+  compiled `pos_of_leftmost` gains 1.2 to 1.25 times in the entry trial when its windows are measured, yet the run does not
+  (the loops run in `yavs_rt_scan` either way, and the function's own cost is a small part of the 111 k calls of its whole
+  statement path, `cb_native` 0.94 M and `cb_xstep` 0.2 M callbacks in the rest of its callers). Its entry trial is also erratic
+  there (verdicts 0.2 to 1.26 from the same code, a burst of the testbench in one window), so no trial could be trusted to take
+  it back. With the rule on: 1.00 to 1.03, as before. Not removed; the gap is the decision's evidence if the next change to
+  the search helper makes the compiled function level.
+- **A process that loops is measured by its activations; a function is not (#652).** `NativeFlags::count_on(func)` makes the
+  interpreter count the activations of the process function `func` (`run_quick`: one relaxed load per activation while a tier is
+  set, nothing without a tier, no change in the work counters `ops` and `cb_*`). `Worker::trial` now also runs for a process that
+  is not `rtl` (it loops between its waits, or is too long): the clocked processes by the kernel's process runs as before
+  (`BY_RUNS`), the others by their activations per CPU second (`BY_ENTRIES`). Activations come in bursts: windows of the same
+  code differed by 10 to 25 percent, so this trial takes all three pairs of windows before deciding and takes the code back only
+  below 0.95. Verdicts in the runs: `_p8` of `poc_arith_addw` kept (1.05, the case of #596), `procChecker` of the same design and
+  `bus_process`, `check_axi_stream` of the window generator not measurable (too few activations in a window of 250 ms: kept).
+  **Functions stay on the static rules.** A trial of function entries was built (the interpreter counted `Op::Call`/`CallProt`)
+  and tried on the window generator, `uvvm_util_rand` and `sc5_fifo_repack`: (1) a function is mostly called from compiled
+  callers, which the interpreter's count does not see, and taking its native code away for the interpreter's window (as for a
+  process) makes each of their calls materialise a frame: the window generator's trial of `get` cost 3 percent of its
+  instructions and a trial that kept the callers' native code instead measured only the interpreter's callers; (2) the entries
+  of one function vary with the phase of the run (`get`: 1.5 M a second early, 50 k late), and a trial in a late window took it
+  back at 0.93 and doubled the run's instructions (385 G against 186 G); (3) the entry trial is erratic where it was wanted
+  (`pos_of_leftmost`: verdicts 0.2 to 1.26 from the same code). Where the static rules mislead for a function, the fix is the
+  rule (#573, the callee fix above), not a measurement of one function.
+- **Checks.** Unit tests `calls_on_every_path_are_must_calls`, `a_trial_of_entries_takes_three_pairs`, `a_trial_decides_on_the_progress_ratio`,
+  the band test (0.25 s), `activations_of_a_process_are_counted_while_a_trial_asks` (`yavs-interp/tests/sim.rs`); workspace tests, the
+  `llvm` crate tests, the perf work-counter tests with and without `llvm`, and the 502-test differential corpus under
+  `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` green.

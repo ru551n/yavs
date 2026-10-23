@@ -1452,6 +1452,9 @@ impl Machine {
         let r = match rt.tier.get() {
             Some(tier) if self.tiered(&rt) => {
                 let slot = crate::slot();
+                if let Some(fr) = self.frames.first() {
+                    rt.native.activated(fr.func);
+                }
                 if let Some(q) = self.run_compiled(&rt, &**tier, slot, ctx) {
                     // Nothing interpreted on this thread until the next run.
                     slot.store(0, Ordering::Relaxed);
@@ -1464,6 +1467,9 @@ impl Machine {
             }
             Some(_) => {
                 let slot = crate::slot();
+                if let Some(fr) = self.frames.first() {
+                    rt.native.activated(fr.func);
+                }
                 let r = self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0);
                 slot.store(0, Ordering::Relaxed);
                 r

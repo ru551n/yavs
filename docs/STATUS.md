@@ -6501,12 +6501,12 @@ measured reason left. The interpreter's own cost steps up 2.7 times between 32 a
 The callback count of the policy now takes the signal reads, `'event`, the clock-edge tests, the wait that ends an activation and
 direct calls as staying in compiled code (`lower::leaves`); a clocked process is compiled at the final level at once and measured
 after the swap (process runs per CPU second with the compiled code and with the interpreter, in turn), and the code is taken back
-when the run did not progress at least 1.05 times as fast. The size band of #575 became a wait of a second for bodies outside it.
+when the run did not progress at least 1.05 times as fast. The size band of #575 became a wait for bodies outside it (a second; a quarter of a second since #652).
 Results on core 11 (cycles against `--tier=interp`, before / after): `sc5_fifo_repack` 1.013 / 0.778, `rtl_ff` at five times its
 length 1.029 / 0.932, `rtl_lfsr` 0.797 / 0.763, `hdlm_lfsr`, `vai_window_gen_interlock`, `poc_arith_addw`, `neorv32_single_min`,
 `poc_cache_cpu`, `fletcher_bufferwriter_512` and the other benchmark designs level; table and method in docs/decisions.md ("the
-callback count sees what leaves compiled code"). Open: functions and processes that loop are not measured (#652); `fused_search`
-stays (the scan helper of #578 is not enough: `uvvm_sb_slv` 1.22 without it).
+callback count sees what leaves compiled code"). Processes that loop are measured by their activations since #652 (functions stay on the static rules); `fused_search`
+stays (the scan helper of #578 is not enough: `uvvm_sb_slv` 1.05 to 1.12 without it, after the callee fix).
 
 ## llvm: compiled protected-method accessors and search loops (#626, #578, 2026-10-23)
 
@@ -6843,3 +6843,12 @@ interpreter run, before / after (bench builds, user instructions of the process 
 (0.917), `neorv32_single_cache` 46.27 / 43.25 (0.935), `neorv32_dual_full` 37.42 / 35.40 (0.946), `osvvm_axis_random` 3.82 / 3.62
 (0.948), `osvvm_axi4_random` 7.54 / 7.38 (0.979), `fletcher_bufferreader` 0.996; every other real-world design within 0.6%
 (`poc_cache_cpu` 1.004: the guard tests of its registers cost a little where nothing is saved), the 11 head-to-head designs 1.000.
+## `--tier=auto`: callees with their caller, band wait 0.25 s, trials of looping processes (#652, 2026-10-24)
+
+A callee that every call of a hot function makes is compiled with it (`must_calls`); a clocked process outside the 160 to 300
+band is compiled after a quarter of a second of interpreted time (was a second); processes that loop are measured after the swap by their activations (functions are not: compiled callers and phases of the run make the count mislead).
+Warm, instructions of auto against interp, main before / after: `rtl_ff` 1.041 / 0.922, 351 and 535 IR variants of `rtl_ff`
+1.040 / 0.784 and 0.687, `lfsr64` at ten times its length 0.950 / 0.909, `rtl_ff` at five times 0.855 / 0.802,
+`sc5_fifo_repack` 1.019 / 0.951; the window generator, `poc_arith_addw` and the other designs of the short set equal.
+`fused_search` stays: `uvvm_sb_slv` without it 1.05 to 1.12 of the interpreter's cycles (1.22 before). Table, method and the
+evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, trials of looping processes").

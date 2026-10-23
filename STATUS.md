@@ -4747,7 +4747,7 @@ every file of the compile order (one tool call per file, never batched) plus ela
 elaboration plus run. Cold = empty compilation cache and fresh libraries; warm = cache present. Interpreter times are only compared with
 earlier interpreter times, never with sim1. Ratios are yavs / sim1, below 1 means yavs is faster.
 
-Method: origin/main at `65b7f573`, release build with the `llvm` feature, `--threads 1`, all 41 tests, 5 timed runs per cell (medians, cells
+Method: origin/main at `65b7f573`, release build with the `llvm` feature, all 41 tests, 5 timed runs per cell (medians, cells
 interleaved, order swapped every round), every timed run pinned to one of the physical cores 8 to 15 of a Ryzen 9 7950X3D (one CCD; eight tests
 at a time, the yavs and sim1 cells of a test on the same core), builds on cores 16 to 31, host load average 8 to 20 from other agents. Wall time
 comes in steps of 10 ms. The library part of the analysis is measured once per corpus selection and shared by its tests. This host is not
@@ -4854,7 +4854,6 @@ ten designs both run: warm 0.73, cold 0.87.
 | compute_h2h | 8 | 3.41s | 179.0 | 0.05 | 0.05-0.06 | 3.45s | 435.8 | 0.13 | 1.63s |
 | rtl_lfsr | 9 | 381.7 | 649.9 | 1.70 | 1.67-1.80 | 374.2 | 686.4 | 1.83 | 783.7 |
 | xor_sig | 9 | - | 1.73s | - | - | - | 1.76s | - | 1.76s |
-  ERR {'sim1-cold': "rc 97: NDARD\n        > lib/std.08/standard.vhd:25\n    = Note: visible declaration of '1' as CHARACTER from STD.STANDARD\n        > lib/std.08/standard.vhd:35\n", 'sim1-warm': "rc 97: NDARD\n        > lib/std.08/standard.vhd:25\n    = Note: visible declaration of '1' as CHARACTER from STD.STANDARD\n        > lib/std.08/standard.vhd:35\n"}
 | rtl_chain | 10 | 169.8 | 208.1 | 1.23 | 1.11-1.30 | 174.7 | 216.9 | 1.24 | 212.1 |
 | xor_types | 10 | 966.7 | 823.0 | 0.85 | 0.74-0.90 | 991.9 | 858.2 | 0.87 | 840.9 |
 | rtl_fan | 11 | 1.07s | 972.3 | 0.91 | 0.89-0.95 | 1.06s | 959.9 | 0.91 | 944.0 |

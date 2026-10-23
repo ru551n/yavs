@@ -2052,6 +2052,9 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
             syms.iter().map(|(a, n, s)| (*a, *n, s.as_str())).collect();
         perf_map(&syms);
     }
+    if std::env::var_os("YAVS_LLVM_KINDS").is_some() {
+        kind_report();
+    }
     let mut kinds = std::collections::HashMap::new();
     let mut inline = 0;
     for (id, f) in prog
@@ -2191,6 +2194,77 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::CondBr { c, .. } => vec![c],
         Inst::Case { v, .. } => vec![v],
         _ => vec![],
+    }
+}
+
+/// Measuring aid (`YAVS_LLVM_KINDS=1`): LLVM instructions generated per IR instruction kind,
+/// printed by `--tier=llvm` after the whole-program compile (frame-mode code, before the passes).
+static KIND_STATS: Mutex<Vec<(String, usize, usize)>> = Mutex::new(Vec::new());
+
+/// Measuring aid (`YAVS_LLVM_ABLATE=Kind,Kind`): those IR kinds are stepped by the interpreter
+/// instead of compiled, to measure how much code the generator spends on them. Only for kinds
+/// that have a step path (not control flow).
+fn ablate(i: &Inst) -> bool {
+    static SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| {
+        std::env::var("YAVS_LLVM_ABLATE")
+            .map(|v| v.split(',').map(str::to_string).collect())
+            .unwrap_or_default()
+    });
+    !set.is_empty() && set.contains(&kind_name(i))
+}
+
+/// The variant name of `i` (`CallNative` for every native call).
+fn kind_name(i: &Inst) -> String {
+    let d = format!("{i:?}");
+    d.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
+/// The LLVM instructions in `f`.
+// ponytail: a walk per IR instruction, quadratic in a function's size; fine for a measuring aid.
+unsafe fn fn_count(f: LLVMValueRef) -> usize {
+    let mut n = 0;
+    // SAFETY: plain iteration over a live function.
+    unsafe {
+        let mut bb = LLVMGetFirstBasicBlock(f);
+        while !bb.is_null() {
+            let mut i = LLVMGetFirstInstruction(bb);
+            while !i.is_null() {
+                n += 1;
+                i = LLVMGetNextInstruction(i);
+            }
+            bb = LLVMGetNextBasicBlock(bb);
+        }
+    }
+    n
+}
+
+fn kind_add(k: String, ir: usize, llvm: usize) {
+    let mut v = KIND_STATS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(e) = v.iter_mut().find(|e| e.0 == k) {
+        e.1 += ir;
+        e.2 += llvm;
+    } else {
+        v.push((k, ir, llvm));
+    }
+}
+
+fn kind_report() {
+    let mut v = KIND_STATS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    v.sort_by_key(|e| std::cmp::Reverse(e.2));
+    let tot: usize = v.iter().map(|e| e.2).sum();
+    eprintln!("kinds: total llvm insts (pre-opt, frame mode) {tot}");
+    for (k, ir, l) in v.iter().take(40) {
+        eprintln!(
+            "kinds: {k:20} ir={ir:8} llvm={l:9} per={:.1} share={:.1}%",
+            *l as f64 / (*ir).max(1) as f64,
+            100.0 * *l as f64 / tot.max(1) as f64
+        );
     }
 }
 
@@ -4277,8 +4351,17 @@ impl Gen {
             };
             let mut open = false;
             let mut prev = None;
+            let kinds = std::env::var_os("YAVS_LLVM_KINDS").is_some() && !native;
+            let mut kmark: Option<(String, usize)> = None;
             for (i, &inst) in f.code.iter().enumerate() {
                 let pc = i as u32;
+                if kinds {
+                    let now = fn_count(fv);
+                    if let Some((k, was)) = kmark.take() {
+                        kind_add(k, 1, now - was);
+                    }
+                    kmark = Some((kind_name(&inst), now));
+                }
                 if let Some(p) = prev.replace(inst) {
                     track(&mut c.known.borrow_mut(), &c.fixed, &p);
                     // What the previous instruction defined and did not defer is in the frame.
@@ -4338,6 +4421,10 @@ impl Gen {
                         }
                     }
                     open = false;
+                    continue;
+                }
+                if ablate(&inst) {
+                    self.step(&c, pc, &inst);
                     continue;
                 }
                 match inst {
@@ -5549,6 +5636,15 @@ impl Gen {
                 // Falling off the end: the interpreter reports it.
                 self.leave(&c, self.c32(n as u32));
             }
+            let kend = if kinds {
+                let now = fn_count(fv);
+                if let Some((k, was)) = kmark.take() {
+                    kind_add(k, 1, now - was);
+                }
+                now
+            } else {
+                0
+            };
             if let Some(nat) = &c.nat {
                 // Materialisation: record the registers, slots, pc and temporary base, and
                 // return with `Mem::ndeopt` set.
@@ -5597,6 +5693,9 @@ impl Gen {
                         LLVMInstructionEraseFromParent(phi);
                     }
                 }
+            }
+            if kinds {
+                kind_add("<tail>".into(), 0, fn_count(fv) - kend);
             }
             debug_assert!(c.joins.borrow().is_empty(), "a slow path was not joined");
             if LLVMVerifyFunction(fv, LLVMVerifierFailureAction::LLVMReturnStatusAction) != 0 {

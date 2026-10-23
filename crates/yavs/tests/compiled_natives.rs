@@ -236,6 +236,36 @@ fn scalar_and_wide_signal_reads_in_compiled_code_match_the_interpreter() {
     }
 }
 
+/// The measuring aids of the compiled tier: `YAVS_LLVM_KINDS` prints the LLVM instructions per
+/// IR kind, and `YAVS_LLVM_ABLATE` has the interpreter step a kind, which then shows in the
+/// host-call counters, with the same output.
+#[test]
+fn llvm_measuring_aids() {
+    let dir = tempdir("compiled_aids");
+    std::fs::write(dir.join("k.vhd"), KINDS).expect("write");
+    let a = yavs(&dir, &["analyze", "--work=work:work", "k.vhd"]);
+    assert!(a.status.success(), "{a:?}");
+    let go = |tier: &str, env: &[(&str, &str)]| {
+        Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["run", "--work=work:work", &format!("--tier={tier}"), "k"])
+            .env("YAVS_COUNTERS", "kinds")
+            .envs(env.iter().copied())
+            .current_dir(&dir)
+            .output()
+            .expect("run yavs")
+    };
+    let want = go("interp", &[]);
+    let kinds = go("llvm", &[("YAVS_LLVM_KINDS", "1")]);
+    let err = String::from_utf8_lossy(&kinds.stderr);
+    assert!(err.contains("kinds: total llvm insts"), "{err}");
+    assert!(err.contains("kinds: SigReadScalar"), "{err}");
+    assert_eq!(kinds.stdout, want.stdout);
+    let ablated = go("llvm", &[("YAVS_LLVM_ABLATE", "SigReadScalar")]);
+    assert_eq!(ablated.stdout, want.stdout);
+    let err = String::from_utf8_lossy(&ablated.stderr);
+    assert!(err.contains(".SigReadScalar="), "{err}");
+}
+
 /// Equality of logic vectors of every length class, with metavalues in them.
 const COMPARES: &str = r#"library ieee;
 use ieee.std_logic_1164.all;

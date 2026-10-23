@@ -6,8 +6,8 @@ architecture t of psl_run is
 begin
   clk <= not clk after 1 ns when now < 10 ns;
   -- Outside the subset, skipped with W0004.
-  -- psl assert always {clk; ok};
-  cover {clk; ok};
+  -- psl assert always ok until clk;
+  assert eventually! ok;
   -- In the subset: checked on every rising edge of clk.
   assert always ok -> next ok;
   -- psl hit: cover {ok = '0'}

@@ -392,8 +392,30 @@ its ``report`` text, as a note, every time it is hit, and nothing without one. A
 comment holds one statement, which may continue on the comment lines below it up to its ``;``.
 Without ``--psl`` such comments are comments; pass the option to ``analyze``, ``elab`` and ``run``.
 
-Everything else (``property`` and ``sequence`` declarations, sequences such as
-``{a; b}``, other operators, built-in functions such as ``rose``, directives without a clock,
+Built-in functions ``prev``, ``stable``, ``rose``, ``fell``, ``isunknown``, ``countones``,
+``onehot`` and ``onehot0`` work inside the conditions.
+
+Sequences in braces run in ``cover``, in ``assert never``, and on either side of ``|->`` and
+``|=>``:
+
+.. code-block:: text
+
+   c2: cover {req; busy[*2 to 4]; done} report "transfer";
+   p6: assert never {valid; not ready[*3]};
+   p7: assert always {start; req} |=> {busy[*1 to 3]; ack};
+   p8: assert always {write} |-> next[2] ready;
+
+A sequence has concatenation ``;``, fusion ``:``, alternation ``|``, ``&&`` (both match and end
+together), ``&``, ``within``, and ``[*]``, ``[+]``, ``[*n]``, ``[*m to n]``, ``[*m to inf]``,
+``[=n]`` and ``[->n]`` repetition; ``|``, ``&``, ``&&`` and ``within`` need braces when mixed.
+A ``cover`` hit and a failing ``never`` are reported at the tick where a match ends. The right
+side of ``|->`` and ``|=>`` is a boolean or a sequence that must match from the tick the left
+side ends (``|->``) or the tick after (``|=>``): it fails at the tick where it can no longer
+match. Without ``always`` a directive starts at the first clock tick only. One directive may
+test at most 6 different conditions on its right side; a longer one is skipped with ``W0004``.
+
+Everything else (``property`` and ``sequence`` declarations, other operators such as ``until``
+and ``eventually!``, the ``next`` and ``ended`` functions, directives without a clock,
 ``restrict``, ``fairness`` and verification units) is skipped with warning ``W0004``, once per
 design unit; the rest of the design runs as usual.
 

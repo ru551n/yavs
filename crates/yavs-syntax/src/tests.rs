@@ -985,6 +985,52 @@ fn psl_subset_becomes_checker_processes() {
 }
 
 #[test]
+fn psl_sequences_become_checker_processes() {
+    // Every form is one checker process and no warning.
+    let forms = [
+        "cover {a; b};",
+        "cover {a; b[*2 to 3]; c[+]} report \"x\";",
+        "cover {a[->2]; b[=1]; c[*]};",
+        "cover {a : b};",
+        "cover {{a; b} : {b; c}};",
+        "cover {{a; b} | {c}};",
+        "cover {{a; b} && {c; c}};",
+        "cover {{a; b} & {c[*3]}};",
+        "cover {b within {a; c; a}};",
+        "cover {{a; b}[*2]};",
+        "cover {a[*0 to 2]; b};",
+        "assert never {a; b};",
+        "assert always {a; b} |-> c;",
+        "assert always {a; b} |=> {c; a};",
+        "assert always {a} |=> next[2] b;",
+        "assert always {a; b};",
+        "assert {a; b} |-> {c};",
+        "assert (always {a} |=> {b[*1 to 2]; c});",
+        "assert always ({a; b} |-> c) @falling_edge(clk);",
+        "l: assume always {a} |-> {b} report \"r\" severity warning;",
+        "cover {rose(a); stable(b)};",
+    ];
+    for f in forms {
+        let src =
+            format!("architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n{f}\nend;");
+        let c = checkers(&src);
+        assert_eq!(c.len(), 1, "{f}");
+    }
+    // Outside the sequence forms: skipped, one warning.
+    for f in [
+        "cover {a; b}!;",
+        "assert always {a; b} |-> c until d;",
+        "assert always {{a} | {b} && {c}};",
+        "cover {a[*70]};",
+        "cover {{a[*60]}[*60]};",
+    ] {
+        let src =
+            format!("architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n{f}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
+    }
+}
+
+#[test]
 fn psl_outside_the_subset_is_skipped() {
     let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nproperty p is always a;\nbegin\n";
     for f in [
@@ -996,14 +1042,14 @@ fn psl_outside_the_subset_is_skipped() {
         "assert always a -> next[300] b;",
         "assert always a -> next a -> next b;",
         "assert eventually! a;",
-        "cover {a; b};",
-        "-- psl assert always {a; b};",
+        "cover {a; b}!;",
     ] {
         let src = format!("{pre}{f}\nend;");
         assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
     }
     // A directive that only names a skipped property is skipped too (#593).
-    let src = "architecture a of e is\nproperty p0 is always a;\nbegin\nl: assert p0 report \"x\";\nend;";
+    let src =
+        "architecture a of e is\nproperty p0 is always a;\nbegin\nl: assert p0 report \"x\";\nend;";
     assert_eq!(psl_warnings(src), ["W0004"]);
     // Without a clock: skipped.
     assert_eq!(psl_warnings(&conc("assert always a;")), ["W0004"]);

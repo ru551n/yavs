@@ -27,6 +27,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/parser/mod.rs` | `Parser`, `PResult`/`Recover`, resync, `MAX_DEPTH = 64`, fuel counter |
 | `src/parser/unit.rs`, `decl.rs`, `stmt.rs`, `expr.rs` | Design units, declarations, statements, expressions and names |
 | `src/parser/psl.rs` | The PSL subset: `default clock`, directives to checker processes (#226), built-in function calls to process variables (#445) |
+| `src/parser/psl_seq.rs` | PSL sequences: SERE parser, position automaton (Glushkov), deterministic obligations, checker process generation (#445) |
 | `src/ast.rs` | The tree: `DesignFile`, `DesignUnit`, `LibraryUnit`, `Decl`, `SeqStmt`, `ConcStmt`, `Expr`, `Name`/`NameKind::Apply`, `Range::Name`, `Ident` (`text`, `key`, `span`) |
 | `src/tests.rs` | Unit tests (about 1,000 lines) |
 
@@ -47,6 +48,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | A type mark takes no parentheses except the dimension of 2019 `A'INDEX(n)` (`NameKind::Apply` on the attribute) | The index subtype is scalar, so no index constraint can follow; #174 | `src/parser/expr.rs` `type_mark` |
 | PSL outside the subset is skipped with one `W0004` per design unit (`E0005` retired, never reuse); the skip ends at the `;` outside `()`, `[]`, `{}` (`sync`), a `vunit`/`vmode`/`vprop` at its closing `}`; a concurrent `assert`/`cover` counts as PSL by its first property token (`at_psl_directive`) | User decision 2026-10-18: do not fail designs that merely carry assertions yavs cannot run | `docs/decisions.md` "Parser", #138 |
 | The PSL subset (`default clock`, `assert`/`assume` `always`/`never`/`->`/`next[n]`, `cover`, `@` clocks) becomes an implicit checker process in the tree (`parser/psl.rs`); an attempt that does not fit restores the position and drops its diagnostics, then the skip runs; `-- psl` comment pragmas are lexed as tokens only with `Options::psl` (`--psl`; user, 2026-10-19) (`lexer.rs` `comment`, `is_pragma`); `->` is one token (`Tok::Imply`) | Nothing new in sem, lowering or the kernel; deterministic at any thread count | `docs/decisions.md` "Parser", #226 |
+| PSL sequences (`{a; b[*2]}`, fusion, alternation, `&&`, `&`, `within`, `[=n]`, `[->n]`, suffix implication) become a position automaton in process variables (`parser/psl_seq.rs`): the antecedent and `cover`/`never` use the union of the matches in progress, the right side of an implication a determinised obligation (at most 6 booleans, 64 states); a boolean needs `Parser::psl_no_sig` so that `[` ends it instead of opening a signature; limits skip the directive with `W0004` | Exact failure per start without kernel changes | `docs/decisions.md` "Parser", L123, #445 |
 | No VHDL-93 mode: 93 code using 2008 reserved words is an expected corpus failure | Plan scope | `docs/decisions.md` "Parser", corpus lists |
 
 Module-local decisions go in this section in the same commit; LRM readings go to

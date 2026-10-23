@@ -1,0 +1,116 @@
+exit	1
+diag	error	5000000	0	-	always seq
+diag	error	15000000	0	-	imp seq overlap
+diag	error	15000000	0	-	first only
+diag	note	25000000	0	-	cat2
+diag	note	25000000	0	-	fuse1
+diag	note	25000000	0	-	rep2
+diag	note	25000000	0	-	reprng
+diag	note	25000000	0	-	star
+diag	note	25000000	0	-	plus
+diag	note	25000000	0	-	goto1
+diag	error	25000000	0	-	never ab
+diag	note	35000000	0	-	cat2
+diag	note	35000000	0	-	cat3
+diag	note	35000000	0	-	fuse2
+diag	note	35000000	0	-	alt
+diag	note	35000000	0	-	reprng
+diag	note	35000000	0	-	star
+diag	note	35000000	0	-	plus
+diag	note	35000000	0	-	goto2
+diag	error	35000000	0	-	never ab
+diag	error	35000000	0	-	never aab
+diag	error	35000000	0	-	imp overlap
+diag	error	35000000	0	-	always seq
+diag	note	45000000	0	-	cat3
+diag	note	45000000	0	-	fuse2
+diag	note	45000000	0	-	alt
+diag	note	45000000	0	-	goto1
+diag	error	45000000	0	-	imp seq overlap
+diag	error	45000000	0	-	imp rhs rep
+diag	note	55000000	0	-	cat2
+diag	note	55000000	0	-	reprng
+diag	note	55000000	0	-	star
+diag	note	55000000	0	-	plus
+diag	note	55000000	0	-	goto2
+diag	note	55000000	0	-	seqrep
+diag	error	55000000	0	-	never ab
+diag	error	55000000	0	-	always seq
+diag	note	65000000	0	-	cat3
+diag	note	65000000	0	-	fuse2
+diag	note	65000000	0	-	alt
+diag	error	65000000	0	-	imp rhs rep
+diag	error	65000000	0	-	always seq
+diag	note	75000000	0	-	goto1
+diag	error	75000000	0	-	imp seq overlap
+diag	note	85000000	0	-	cat2
+diag	note	85000000	0	-	alt
+diag	note	85000000	0	-	reprng
+diag	note	85000000	0	-	star
+diag	note	85000000	0	-	plus
+diag	note	85000000	0	-	goto2
+diag	error	85000000	0	-	never ab
+diag	error	85000000	0	-	imp overlap
+diag	error	85000000	0	-	always seq
+diag	note	95000000	0	-	fuse1
+diag	note	95000000	0	-	star
+diag	note	95000000	0	-	goto1
+diag	error	95000000	0	-	imp next
+diag	error	95000000	0	-	imp seq
+diag	note	105000000	0	-	alt
+diag	note	105000000	0	-	rep2
+diag	note	105000000	0	-	goto1
+diag	error	105000000	0	-	imp seq
+diag	error	105000000	0	-	imp seq overlap
+diag	error	105000000	0	-	imp rhs rep
+diag	error	105000000	0	-	imp rhs nullable range
+diag	error	105000000	0	-	always seq
+diag	note	115000000	0	-	rep2
+diag	note	115000000	0	-	goto1
+diag	error	115000000	0	-	imp seq
+diag	error	115000000	0	-	imp seq overlap
+diag	error	115000000	0	-	imp rep
+diag	error	115000000	0	-	imp rhs rep
+diag	error	115000000	0	-	imp rhs nullable range
+diag	error	115000000	0	-	always seq
+diag	note	125000000	0	-	cat2
+diag	note	125000000	0	-	reprng
+diag	note	125000000	0	-	star
+diag	note	125000000	0	-	plus
+diag	note	125000000	0	-	goto2
+diag	error	125000000	0	-	never ab
+diag	error	125000000	0	-	never aab
+diag	error	125000000	0	-	always seq
+diag	note	135000000	0	-	cat3
+diag	note	135000000	0	-	fuse2
+diag	note	135000000	0	-	alt
+diag	error	135000000	0	-	imp rhs rep
+diag	error	135000000	0	-	always seq
+diag	note	145000000	0	-	fuse1
+diag	note	145000000	0	-	star
+diag	note	145000000	0	-	goto1
+diag	note	155000000	0	-	alt
+diag	note	155000000	0	-	rep2
+diag	note	155000000	0	-	goto1
+diag	error	155000000	0	-	imp seq
+diag	error	155000000	0	-	imp seq overlap
+diag	error	155000000	0	-	imp rhs rep
+diag	error	155000000	0	-	imp rhs nullable range
+diag	error	155000000	0	-	always seq
+diag	note	165000000	0	-	cat2
+diag	note	165000000	0	-	alt
+diag	note	165000000	0	-	reprng
+diag	note	165000000	0	-	star
+diag	note	165000000	0	-	plus
+diag	note	165000000	0	-	goto2
+diag	note	165000000	0	-	both
+diag	error	165000000	0	-	never ab
+diag	error	165000000	0	-	never aab
+diag	error	165000000	0	-	imp overlap
+diag	error	165000000	0	-	always seq
+diag	error	175000000	0	-	imp next
+diag	error	175000000	0	-	imp seq
+diag	error	175000000	0	-	imp rhs rep
+diag	error	175000000	0	-	always seq
+diag	error	185000000	0	-	always seq
+diag	error	195000000	0	-	always seq

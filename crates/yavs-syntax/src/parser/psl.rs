@@ -18,6 +18,7 @@
 //! values at the clock event (`builtins`, below). Anything else is left to the skip with `W0004`: an attempt that does not fit the subset
 //! restores the position and drops its diagnostics.
 
+use super::psl_seq::seq_checker;
 use super::{PResult, Parser, Recover};
 use crate::Symbol;
 use crate::ast::*;
@@ -57,7 +58,7 @@ const OPERATORS: &[&str] = &[
 // ponytail: one variable per cycle; a counter queue if longer windows are ever needed.
 const MAX_NEXT: u32 = 256;
 
-enum Prop {
+pub(super) enum Prop {
     /// `always b`
     Always(Expr),
     /// `never b`
@@ -126,10 +127,14 @@ impl Parser<'_> {
     }
 
     fn psl_directive_inner(&mut self) -> PResult<ProcessStmt> {
-        if self.psl_foreign() {
+        let seq = self.psl_at_sequence();
+        if self.psl_foreign(seq) {
             return Err(Recover);
         }
         let start = self.span();
+        if seq {
+            return self.psl_seq_directive(start);
+        }
         let mut prop = if self.bump().kind == Tok::Kw(Kw::Cover) {
             let brace = self.eat(Tok::LBrace);
             let b = self.expr()?;
@@ -149,16 +154,55 @@ impl Parser<'_> {
             }
         }
         bi.finish();
-        let clock = if self.eat(Tok::At) {
-            self.expr()?
-        } else {
-            let from = self.psl_clock.ok_or(Recover)?;
-            let back = self.pos;
-            self.pos = from;
-            let c = self.expr();
-            self.pos = back;
-            c?
+        let (clock, report, severity) = self.psl_tail()?;
+        Ok(checker(
+            prop,
+            clock,
+            report,
+            severity,
+            bi,
+            self.span_from(start),
+        ))
+    }
+
+    /// A directive over sequences, from its keyword on (`psl_seq.rs`). A sequence of one
+    /// boolean, and `{a} |-> b`, `{a} |=> b`, take the cheaper form of the simple subset.
+    fn psl_seq_directive(&mut self, start: Span) -> PResult<ProcessStmt> {
+        let cover = self.bump().kind == Tok::Kw(Kw::Cover);
+        let prop = self.psl_seq_prop(cover)?;
+        let mut bi = Gen::new(self.span_from(start));
+        let mut prop = match prop.into_simple() {
+            Ok(mut simple) => {
+                match &mut simple {
+                    Prop::Always(b) | Prop::Never(b) | Prop::Cover(b) => {
+                        self.psl_builtins(b, &mut bi)?
+                    }
+                    Prop::Imply(a, _, b) => {
+                        self.psl_builtins(a, &mut bi)?;
+                        self.psl_builtins(b, &mut bi)?;
+                    }
+                }
+                bi.finish();
+                let (clock, report, severity) = self.psl_tail()?;
+                let span = self.span_from(start);
+                return Ok(checker(simple, clock, report, severity, bi, span));
+            }
+            Err(p) => p,
         };
+        for e in &mut prop.leaves.exprs {
+            self.psl_builtins(e, &mut bi)?;
+        }
+        if prop.needs_first() {
+            bi.need_first();
+        }
+        bi.finish();
+        let (clock, report, severity) = self.psl_tail()?;
+        seq_checker(prop, clock, report, severity, bi)
+    }
+
+    /// `[@ clock] [report r] [severity s] ;` after a property.
+    fn psl_tail(&mut self) -> PResult<(Expr, Option<Expr>, Option<Expr>)> {
+        let clock = self.psl_clock_expr()?;
         let report = if self.eat_kw(Kw::Report) {
             Some(self.expr()?)
         } else {
@@ -170,19 +214,25 @@ impl Parser<'_> {
             None
         };
         self.expect(Tok::Semi)?;
-        Ok(checker(
-            prop,
-            clock,
-            report,
-            severity,
-            bi,
-            self.span_from(start),
-        ))
+        Ok((clock, report, severity))
+    }
+
+    /// The `@` clock after a property, or the default clock.
+    fn psl_clock_expr(&mut self) -> PResult<Expr> {
+        if self.eat(Tok::At) {
+            return self.expr();
+        }
+        let from = self.psl_clock.ok_or(Recover)?;
+        let back = self.pos;
+        self.pos = from;
+        let c = self.expr();
+        self.pos = back;
+        c
     }
 
     /// Does the directive name a PSL built-in, operator word (other than its leading
     /// `always`/`never`) or skipped declaration?
-    fn psl_foreign(&self) -> bool {
+    fn psl_foreign(&self, seq: bool) -> bool {
         let mut depth = 0u32;
         let mut i = self.pos + 1;
         while i < self.eof_index() {
@@ -198,7 +248,9 @@ impl Parser<'_> {
                     let lead = directive(self.toks[i - 1].kind)
                         || self.toks[i - 1].kind == Tok::LParen && directive(self.toks[i - 2].kind);
                     if (call && BUILTINS.contains(&w.as_str()))
-                        || (!lead && OPERATORS.contains(&w.as_str()))
+                        || (!lead
+                            && OPERATORS.contains(&w.as_str())
+                            && !(seq && matches!(w.as_str(), "within" | "inf")))
                         || w.starts_with("next_")
                         || w.starts_with("before")
                         || w.starts_with("until")
@@ -215,7 +267,7 @@ impl Parser<'_> {
     }
 
     /// The lowercase text of the identifier `n` tokens ahead.
-    fn psl_word(&self, n: usize) -> Option<String> {
+    pub(super) fn psl_word(&self, n: usize) -> Option<String> {
         (self.nth(n) == Tok::Ident).then(|| {
             self.text(self.toks[(self.pos + n).min(self.eof_index())])
                 .to_ascii_lowercase()
@@ -420,18 +472,18 @@ fn checker(
 
 /// The variables and statements the built-in calls of one directive need: `decls` go in the
 /// process, `pre` runs after the clock event and before the check, `post` after it.
-struct Gen {
-    span: Span,
+pub(super) struct Gen {
+    pub(super) span: Span,
     n: u32,
     /// A `first` flag is needed (`prev` of the first tick is the value itself).
     first: bool,
-    decls: Vec<Decl>,
-    pre: Vec<SeqStmt>,
-    post: Vec<SeqStmt>,
+    pub(super) decls: Vec<Decl>,
+    pub(super) pre: Vec<SeqStmt>,
+    pub(super) post: Vec<SeqStmt>,
 }
 
 impl Gen {
-    fn new(span: Span) -> Self {
+    pub(super) fn new(span: Span) -> Self {
         Gen {
             span,
             n: 0,
@@ -442,7 +494,7 @@ impl Gen {
         }
     }
 
-    fn ident(&self, s: &str) -> Ident {
+    pub(super) fn ident(&self, s: &str) -> Ident {
         Ident {
             text: Symbol::intern(s),
             key: Symbol::intern(s),
@@ -450,36 +502,36 @@ impl Gen {
         }
     }
 
-    fn name(&self, kind: NameKind) -> Name {
+    pub(super) fn name(&self, kind: NameKind) -> Name {
         Name {
             kind,
             span: self.span,
         }
     }
 
-    fn var(&self, s: &str) -> Expr {
+    pub(super) fn var(&self, s: &str) -> Expr {
         self.expr(ExprKind::Name(self.name(NameKind::Simple(self.ident(s)))))
     }
 
-    fn expr(&self, kind: ExprKind) -> Expr {
+    pub(super) fn expr(&self, kind: ExprKind) -> Expr {
         Expr {
             kind,
             span: self.span,
         }
     }
 
-    fn int(&self, v: &str) -> Expr {
+    pub(super) fn int(&self, v: &str) -> Expr {
         self.expr(ExprKind::Literal(Literal {
             kind: LiteralKind::Abstract(Symbol::intern(v)),
             span: self.span,
         }))
     }
 
-    fn paren(&self, e: Expr) -> Expr {
+    pub(super) fn paren(&self, e: Expr) -> Expr {
         self.expr(ExprKind::Paren(Box::new(e)))
     }
 
-    fn bin(&self, op: BinaryOp, left: Expr, right: Expr) -> Expr {
+    pub(super) fn bin(&self, op: BinaryOp, left: Expr, right: Expr) -> Expr {
         self.expr(ExprKind::Binary {
             op,
             left: Box::new(left),
@@ -487,7 +539,7 @@ impl Gen {
         })
     }
 
-    fn stmt(&self, kind: SeqStmtKind) -> SeqStmt {
+    pub(super) fn stmt(&self, kind: SeqStmtKind) -> SeqStmt {
         SeqStmt {
             label: None,
             kind,
@@ -495,14 +547,14 @@ impl Gen {
         }
     }
 
-    fn assign(&self, target: &str, value: Expr) -> SeqStmt {
+    pub(super) fn assign(&self, target: &str, value: Expr) -> SeqStmt {
         self.stmt(SeqStmtKind::VariableAssign {
             target: self.var(target),
             rhs: Rhs::Simple(value),
         })
     }
 
-    fn when(&self, cond: Expr, then: Vec<SeqStmt>) -> SeqStmt {
+    pub(super) fn when(&self, cond: Expr, then: Vec<SeqStmt>) -> SeqStmt {
         self.stmt(SeqStmtKind::If {
             branches: vec![(cond, then)],
             else_: None,
@@ -511,7 +563,12 @@ impl Gen {
     }
 
     /// `variable <names> : <subtype> [:= default];`
-    fn decl(&mut self, names: &[String], subtype: SubtypeIndication, default: Option<Expr>) {
+    pub(super) fn decl(
+        &mut self,
+        names: &[String],
+        subtype: SubtypeIndication,
+        default: Option<Expr>,
+    ) {
         self.decls.push(Decl::Object(ObjectDecl {
             class: ObjectClass::Variable,
             names: names.iter().map(|n| self.ident(n)).collect(),
@@ -523,7 +580,7 @@ impl Gen {
         }));
     }
 
-    fn subtype(&self, mark: Name) -> SubtypeIndication {
+    pub(super) fn subtype(&self, mark: Name) -> SubtypeIndication {
         SubtypeIndication {
             resolution: None,
             type_mark: mark,
@@ -532,12 +589,12 @@ impl Gen {
         }
     }
 
-    fn simple_subtype(&self, s: &str) -> SubtypeIndication {
+    pub(super) fn simple_subtype(&self, s: &str) -> SubtypeIndication {
         self.subtype(self.name(NameKind::Simple(self.ident(s))))
     }
 
     /// `x'attr` of a name.
-    fn attr(&self, x: Name, attr: &str) -> Name {
+    pub(super) fn attr(&self, x: Name, attr: &str) -> Name {
         self.name(NameKind::Attribute {
             prefix: Box::new(x),
             attr: self.ident(attr),
@@ -545,7 +602,7 @@ impl Gen {
     }
 
     /// `\psl first\`, declared on first use: `true` until the first tick has passed.
-    fn need_first(&mut self) {
+    pub(super) fn need_first(&mut self) {
         if !self.first {
             self.first = true;
             let boolean = self.simple_subtype("boolean");
@@ -555,7 +612,7 @@ impl Gen {
     }
 
     /// The last statement of `post`.
-    fn finish(&mut self) {
+    pub(super) fn finish(&mut self) {
         if self.first {
             let no = self.var("false");
             self.post.push(self.assign("\\psl first\\", no));

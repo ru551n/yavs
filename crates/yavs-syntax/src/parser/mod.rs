@@ -9,6 +9,7 @@
 mod decl;
 mod expr;
 mod psl;
+mod psl_seq;
 mod stmt;
 mod unit;
 
@@ -48,6 +49,8 @@ pub(crate) struct Parser<'a> {
     psl_clock: Option<usize>,
     /// Keys of the PSL `property` and `sequence` declarations skipped so far.
     psl_names: Vec<Symbol>,
+    /// Reading a boolean of a PSL sequence: a `[` opens a repetition, not a signature.
+    psl_no_sig: bool,
     /// Lists under construction, one stack per element type: a list parser pushes its
     /// elements here and moves them into a vector of exactly their number, so no
     /// list grows (and copies its large elements) by doubling.
@@ -90,6 +93,7 @@ pub(crate) fn parse(
         psl_warned: false,
         psl_clock: None,
         psl_names: Vec::new(),
+        psl_no_sig: false,
         sc: Scratch::default(),
     };
     p.design_file()
@@ -268,10 +272,10 @@ impl<'a> Parser<'a> {
                 )
                 .with_primary(span, "PSL starts here")
                 .with_note(
-                    "yavs runs only clocked `assert`/`assume` with `always`, `never`, `->` \
-                         and `next[n]` on booleans, and `cover` of a boolean; other PSL \
-                         declarations, directives and verification units are ignored, so their \
-                         properties are not checked",
+                    "yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, \
+                         `next[n]`, `|->` and `|=>` over booleans and braced sequences, and \
+                         `cover` of a boolean or a sequence; other PSL declarations, directives \
+                         and verification units are ignored, so their properties are not checked",
                 ),
             );
         }
@@ -290,7 +294,8 @@ impl<'a> Parser<'a> {
                 Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
                 Tok::LBrace | Tok::Imply | Tok::Kw(Kw::Next | Kw::Strong) => return true,
                 Tok::Ident => {
-                    if !self.psl_names.is_empty() && self.psl_names.contains(&self.make_ident(t).key)
+                    if !self.psl_names.is_empty()
+                        && self.psl_names.contains(&self.make_ident(t).key)
                     {
                         return true;
                     }

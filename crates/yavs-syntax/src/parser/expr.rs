@@ -604,7 +604,7 @@ impl Parser<'_> {
                     };
                 }
                 Tok::Tick if self.nth(1) != Tok::LParen => n = self.attribute(n)?,
-                Tok::LBracket => n = self.signature_suffix(n)?,
+                Tok::LBracket if !self.psl_no_sig => n = self.signature_suffix(n)?,
                 _ => return Ok(n),
             }
         }

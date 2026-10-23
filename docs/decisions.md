@@ -685,7 +685,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   fails only when `b` is true (`'X'` passes). Defaults: severity `error`, message `PSL assertion
   failed` (the first reference simulator's text); a `cover` prints its `report` text as a note on
   every hit and nothing without one (both references). A directive that does not fit (no clock,
-  SEREs, other operators, a PSL built-in call other than the ones below (`ended`, `nondet`, `nondet_vector`, `next`), a name of a skipped `property`/
+  other operators, a PSL built-in call other than the ones below (`ended`, `nondet`, `nondet_vector`, `next`), a name of a skipped `property`/
   `sequence`, anything left after the property) is parsed again as before and skipped with
   `W0004`; the attempt's diagnostics are dropped. `-- psl` comments are read only with the option
   `--psl` (`parse`, `analyze`, `elab`, `run`; user, 2026-10-19, as the references need one; the
@@ -708,6 +708,29 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   `isunknown` a std_logic-based argument and `prev(x, n)` a literal `n` of at most 256; any other
   argument skips the directive with `W0004` as before. `ended`, `nondet`, `nondet_vector` and the
   `next` function stay skipped. Catalogue row `psl-edge-unknown-value`.
+- **PSL sequences in the checker subset (agent, 2026-10-23, #445, L123):** braced sequences (SEREs)
+  run in `cover {s}`, `assert never {s}`, `assert [always] {s}`, `assert [always] {l} |-> r` and
+  `{l} |=> r` (`r` a boolean, `{s}`, or either behind `next`/`next[n]`), also with `assume` and in
+  parentheses. Operators: `;`, `:` (fusion), `|`, `&&`, `&`, `within`, `[*]`, `[+]`, `[*n]`,
+  `[*m to n]`, `[*m to inf]`, `[=n]` and `[->n]` (with ranges) on booleans; mixing `|`, `&`, `&&`
+  and `within` at one level needs braces (the LRM precedence table was not at hand). The parser
+  (`parser/psl_seq.rs`) turns a sequence into a position automaton: one boolean process variable
+  per position of the sequence (copies for a count), updated at each clock event, so the output
+  is the same at any thread count and nothing changes in sem, lowering or the kernel. The left
+  side of `|->`/`|=>`, `cover` and `never` ask "does a match end now", which the union of the
+  matches in progress answers. The right side is an obligation that fails when no match is left:
+  it is made deterministic at parse time (subset construction over the minterms of its booleans;
+  at most 6 distinct booleans, 64 states, 256 positions, counts up to 64, else the directive is
+  skipped with `W0004`) and the process keeps one variable per state, so the failure of one start
+  is told from the others alive. A failed obligation reports at the tick where it can no longer
+  match, once per tick however many starts fail. A boolean used twice is evaluated once per tick.
+  Without `always` the directive starts at the first clock tick only. A sequence of one boolean,
+  and `{a} |-> b`, `{a} |=> b`, keep the cheaper process of the simple subset. Empty matches (a
+  sequence that can match the empty word) are ignored, except that a right side that is a star
+  from zero (`{b[*]}`) holds at once, as in both references. Fusion needs non-empty operands.
+  Not in this step: `ended`, strong sequences (`{s}!`), `eventually!`, `until`, `before`, `abort`,
+  `next_e` and relatives, named sequences/properties, local variables, `forall`, units. Catalogue
+  rows `psl-sere-*`; `tests/corpus/psl/psl_sequences{,_ops}.vhd`.
 - **Corpus lists** live in `tests/parse-corpus/` (`tests/corpus/` is the differential
   simulation corpus). The reference simulator `test/regress` files tagged `2019` in `testlist.txt`, and `test/parse`
   files whose test sets `STD_19`, are parsed as 2019; everything else as 2008 (yavs has no 1993

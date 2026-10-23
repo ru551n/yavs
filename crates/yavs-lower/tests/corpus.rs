@@ -328,6 +328,8 @@ const PASS: &[&str] = &[
     "psl/psl_pragma",
     "psl/psl_subset",
     "psl/psl_hdl_exprs",
+    "psl/psl_sequences",
+    "psl/psl_sequences_ops",
     "generics/anonymous_ports_2019_hand",
     "report/assert_user_message",
     "report/concurrent_assert",
@@ -630,8 +632,9 @@ fn fatalmsg_mask(text: &str) -> String {
     out
 }
 
-/// Sorts each run of `diag` events of one time and delta stably by process path.
-fn order_mask(text: &str) -> String {
+/// Sorts each run of `diag` events of one time and delta stably by process path, or by text
+/// when the path is ignored too (`by_text`, run after `path_mask`).
+fn order_mask(text: &str, by_text: bool) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let key = |l: &str| {
         let f: Vec<&str> = l.split('\t').collect();
@@ -646,7 +649,7 @@ fn order_mask(text: &str) -> String {
             j += 1;
         }
         let mut run = lines[i..j].to_vec();
-        run.sort_by_key(|l| l.split('\t').nth(4).unwrap_or(""));
+        run.sort_by_key(|l| l.split('\t').nth(if by_text { 5 } else { 4 }).unwrap_or(""));
         for l in run {
             out.push_str(l);
             out.push('\n');
@@ -692,14 +695,15 @@ fn corpus_groups() {
                         .any(|v| v.split(',').any(|f| f == field))
                 })
             };
-            if ignores("order") {
-                expected = order_mask(&expected);
-                got = got.map(|o| order_mask(&o));
-            }
             // `ignore=path`: the process path of `diag` events is not compared.
             if ignores("path") {
                 expected = path_mask(&expected);
                 got = got.map(|o| path_mask(&o));
+            }
+            if ignores("order") {
+                let by_text = ignores("path");
+                expected = order_mask(&expected, by_text);
+                got = got.map(|o| order_mask(&o, by_text));
             }
             // `ignore=fatalmsg`: the text of a fatal run-time error is not compared.
             if ignores("fatalmsg") {

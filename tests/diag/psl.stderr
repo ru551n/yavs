@@ -1,10 +1,10 @@
 warning[W0004]: PSL outside the supported subset is skipped
  --> psl.vhd:6:3
   |
-6 |   cover {req; ack};
-  |   ^^^^^ PSL starts here
+6 |   assert eventually! req;
+  |   ^^^^^^ PSL starts here
   |
-  = note: yavs runs only clocked `assert`/`assume` with `always`, `never`, `->` and `next[n]` on booleans, and `cover` of a boolean; other PSL declarations, directives and verification units are ignored, so their properties are not checked
+  = note: yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, `next[n]`, `|->` and `|=>` over booleans and braced sequences, and `cover` of a boolean or a sequence; other PSL declarations, directives and verification units are ignored, so their properties are not checked
 
 warning[W0004]: PSL outside the supported subset is skipped
   --> psl.vhd:10:1
@@ -12,5 +12,5 @@ warning[W0004]: PSL outside the supported subset is skipped
 10 | vunit check (e) {
    | ^^^^^ PSL starts here
    |
-   = note: yavs runs only clocked `assert`/`assume` with `always`, `never`, `->` and `next[n]` on booleans, and `cover` of a boolean; other PSL declarations, directives and verification units are ignored, so their properties are not checked
+   = note: yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, `next[n]`, `|->` and `|=>` over booleans and braced sequences, and `cover` of a boolean or a sequence; other PSL declarations, directives and verification units are ignored, so their properties are not checked
 

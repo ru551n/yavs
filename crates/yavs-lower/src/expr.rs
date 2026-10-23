@@ -410,6 +410,15 @@ impl<'a> Fx<'a, '_> {
     fn read_obj(&mut self, d: DeclId, span: Span) -> R<V> {
         let db = self.db;
         let decl = &db.decls[d];
+        // A deferred constant of a package instance has a slot of its own that nothing fills:
+        // its value is the full declaration's (LRM 4.8).
+        if let DeclKind::Object(o) = &decl.kind
+            && o.role == yavs_sem::decl::ObjRole::Deferred
+            && o.class == yavs_sem::decl::ObjClass::Constant
+            && let Some(c) = self.deferred_completion(d)
+        {
+            return self.read_obj(c, span);
+        }
         let obj = self.cx.objs.get(&d).copied();
         if self.cx.capture_free
             && obj.is_some()
@@ -5282,6 +5291,29 @@ fn cmp_op(f: Family) -> CmpOp {
 pub fn deferred_completion(db: &Db, d: DeclId) -> Option<DeclId> {
     let decl = &db.decls[d];
     let key = decl.name.key();
+    let full = |scope, d| {
+        db.scopes[scope]
+            .names
+            .get(&key)?
+            .iter()
+            .copied()
+            .find(|&c| {
+                c != d
+                    && matches!(&db.decls[c].kind, DeclKind::Object(o)
+                if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some())
+            })
+    };
+    // An instance of a generic package holds a copy of the body's declarations in its body
+    // region (cloned when the body is first needed).
+    if let Some(body) = db
+        .insts
+        .iter()
+        .find_map(|(_, i)| (i.scope == decl.scope).then(|| i.body.get().copied()))
+        .flatten()
+        && let Some(c) = full(body, d)
+    {
+        return Some(c);
+    }
     db.units.iter().find_map(|(_, u)| {
         let UnitHir::PackageBody { package } = u.hir else {
             return None;

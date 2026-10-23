@@ -5562,6 +5562,89 @@ temporary and instance tests, and the object table key separates private and sha
 raised, the code `--tier=auto` compiles at `O2`) [1.33 s], 2 million accessor calls 0.114 s to 0.074 s [0.221 s].
 
 
+## llvm: `--tier=auto` compile policy (#572, #520, #493, 2026-10-23)
+
+Decisions: docs/decisions.md "`--tier=auto` compile policy". In short: `Worker::pick` compiles the hottest candidate per
+cost that the budget has room for (it used to stop at the best one and wait for it, holding up every other), a function
+the interpreter calls on a native frame is compiled after twice its compile time seen (was four times) and gets 16
+times the budget (was 8), and `YAVS_AUTO_TRACE=1` prints the compile thread's timeline. Where the time of the window
+generator goes: warm `--tier=auto` (16.2 s) is already faster than the whole program compiled at `O2` by
+`--tier=llvm` (17.0 s of run after 1.8 s of load and link, measured before #565) and a warm run that compiles everything
+hot at once (payback 1, budgets of a thousand) is no faster (16.4 s against 16.0 s, same build), so the remaining distance to the reference simulator (3.9 s) is compiled-code quality and the
+20 percent of the sampled time in big processes whose compiled code is not faster, not the tier-up policy; the gap between cold
+and warm is the wait for evidence (a function has to be seen interpreted for twice its compile time, seconds for a 3 percent
+function), not the queue (10 to 100 ms from candidate to compiled) or the compile.
+
+Method (tools outside the repository, as `tools/realbench/AGENTS.md` describes the world): a fresh world per binary and tier,
+warm = two untimed runs then the timed ones, cold = a copy of the pristine world per run; `perf stat --no-inherit` on the
+exec'd `yavs`, so main-thread only (the compile thread's work is not in it; its CPU is the difference between total user
+time and wall); median of 5, interleaved, order swapped every round; window generator on core 13, the rest on core 14.
+Each cell is wall s / main-thread cycles G / main-thread instructions G; "main" is 311f78b7, "now" this change:
+
+| test | interp warm | auto warm, main | auto warm, now | interp cold | auto cold, main | auto cold, now |
+|---|---:|---:|---:|---:|---:|---:|
+| `vai_window_gen_interlock` | 29.1 / 144.1 / 501.5 | 16.4 / 80.9 / 259.8 | 16.2 / 80.7 / 251.5 | 29.3 / 145.6 / 503.2 | 19.0 / 94.5 / 308.8 | 18.3 / 90.7 / 298.0 |
+| `poc_stat_histogram` | 1.92 / 9.45 / 40.8 | 0.75 / 3.65 / 17.4 | 0.75 / 3.66 / 17.4 | 1.94 / 9.53 / 41.0 | 1.10 / 5.37 / 23.9 | 1.10 / 5.32 / 23.8 |
+| `hdlm_lfsr` | 3.70 / 18.26 / 67.6 | 2.10 / 10.31 / 37.1 | 2.11 / 10.38 / 37.1 | 3.74 / 18.43 / 68.0 | 2.30 / 11.31 / 40.5 | 2.31 / 11.30 / 40.3 |
+| `uvvm_sb_slv` | 0.82 / 3.96 / 13.6 | 0.89 / 4.34 / 15.3 | 0.88 / 4.24 / 15.3 | 0.90 / 4.36 / 14.6 | 0.98 / 4.69 / 15.7 | 0.96 / 4.61 / 15.8 |
+| `uvvm_util_rand` | 0.93 / 4.49 / 15.0 | 0.95 / 4.60 / 15.0 | 0.92 / 4.49 / 15.0 | 1.03 / 4.96 / 16.2 | 1.08 / 5.14 / 16.3 | 1.06 / 5.08 / 16.3 |
+| `uvvm_axistream_vvc` | 3.58 / 17.04 / 51.1 | 3.52 / 16.83 / 49.1 | 3.53 / 16.72 / 49.2 | 3.58 / 17.43 / 52.1 | 3.80 / 18.56 / 54.7 | 3.82 / 18.60 / 54.6 |
+| `uvvm_func_cov` | 0.20 / 0.86 / 3.1 | 0.21 / 0.91 / 3.1 | 0.20 / 0.88 / 3.1 | 0.32 / 1.38 / 4.3 | 0.32 / 1.33 / 4.1 | 0.32 / 1.31 / 4.1 |
+| `osvvm_axi4_random` | 0.60 / 2.86 / 8.0 | 0.61 / 2.89 / 8.0 | 0.61 / 2.88 / 8.0 | 0.74 / 3.46 / 9.2 | 0.74 / 3.48 / 9.2 | 0.74 / 3.47 / 9.2 |
+| `osvvm_axis_random` | 0.28 / 1.26 / 4.0 | 0.29 / 1.32 / 4.0 | 0.28 / 1.28 / 4.0 | 0.38 / 1.71 / 5.0 | 0.40 / 1.75 / 4.9 | 0.39 / 1.71 / 4.9 |
+| `hdlm_axis_bfm` | 0.06 / 0.20 / 0.5 | 0.07 / 0.20 / 0.4 | 0.07 / 0.20 / 0.4 | 0.11 / 0.39 / 0.9 | 0.12 / 0.39 / 0.9 | 0.12 / 0.39 / 0.9 |
+| `uvvm_methods_log` | 0.02 / 0.02 / 0.1 | 0.02 / 0.02 / 0.1 | 0.02 / 0.02 / 0.1 | 0.04 / 0.13 / 0.3 | 0.05 / 0.13 / 0.3 | 0.05 / 0.13 / 0.3 |
+| `poc_cache_cpu` | 1.76 / 8.63 / 26.6 | 1.80 / 8.83 / 26.9 | 1.77 / 8.66 / 26.9 | 1.81 / 8.86 / 27.1 | 1.85 / 9.04 / 27.4 | 1.82 / 8.91 / 27.4 |
+| `sc5_fifo_repack` | 3.75 / 18.72 / 64.1 | 3.67 / 18.25 / 62.1 | 3.62 / 17.97 / 62.1 | 3.71 / 18.40 / 64.3 | 3.88 / 19.11 / 64.4 | 3.75 / 18.58 / 64.1 |
+| `fletcher_bufferreader` | 4.14 / 20.57 / 55.5 | 4.14 / 20.54 / 55.9 | 4.11 / 20.34 / 55.9 | 4.13 / 20.52 / 55.4 | 4.11 / 20.35 / 55.8 | 4.10 / 20.31 / 55.8 |
+| `rtl_ff` | 0.69 / 3.33 / 11.9 | 0.73 / 3.52 / 12.3 | 0.73 / 3.53 / 12.3 | 0.68 / 3.32 / 11.9 | 0.74 / 3.53 / 12.3 | 0.74 / 3.56 / 12.3 |
+| `rtl_lfsr` | 0.39 / 1.86 / 6.6 | 0.34 / 1.60 / 5.8 | 0.33 / 1.59 / 5.8 | 0.39 / 1.88 / 6.7 | 0.35 / 1.69 / 6.0 | 0.36 / 1.70 / 5.9 |
+| `rtl_chain` | 0.20 / 0.92 / 3.2 | 0.20 / 0.91 / 3.3 | 0.19 / 0.91 / 3.3 | 0.20 / 0.93 / 3.2 | 0.20 / 0.92 / 3.3 | 0.20 / 0.92 / 3.3 |
+| `rtl_fan` | 0.92 / 4.52 / 14.1 | 0.96 / 4.70 / 15.0 | 0.96 / 4.71 / 15.0 | 0.94 / 4.60 / 14.2 | 0.95 / 4.72 / 15.1 | 0.96 / 4.73 / 15.1 |
+| `rtl_bus` | 0.21 / 0.98 / 3.8 | 0.21 / 0.99 / 3.8 | 0.21 / 1.00 / 3.8 | 0.21 / 1.00 / 3.8 | 0.21 / 1.00 / 3.8 | 0.21 / 1.01 / 3.8 |
+| `rtl_ram` | 0.09 / 0.34 / 0.6 | 0.09 / 0.34 / 0.6 | 0.09 / 0.34 / 0.6 | 0.10 / 0.35 / 0.6 | 0.10 / 0.35 / 0.7 | 0.10 / 0.35 / 0.7 |
+| `lfsr64_xor` | 0.08 / 0.36 / 1.5 | 0.09 / 0.38 / 1.5 | 0.09 / 0.38 / 1.5 | 0.09 / 0.37 / 1.5 | 0.09 / 0.38 / 1.5 | 0.09 / 0.38 / 1.5 |
+| `lfsr64` | 0.18 / 0.84 / 3.4 | 0.19 / 0.88 / 3.4 | 0.19 / 0.89 / 3.4 | 0.18 / 0.87 / 3.4 | 0.20 / 0.92 / 3.5 | 0.20 / 0.94 / 3.6 |
+| `compute_h2h` | 1.45 / 7.25 / 27.3 | 0.16 / 0.76 / 2.8 | 0.16 / 0.77 / 2.8 | 1.45 / 7.29 / 27.3 | 0.42 / 2.03 / 7.5 | 0.42 / 2.03 / 7.5 |
+| `protected_queue` | 1.38 / 6.90 / 28.8 | 0.53 / 2.59 / 9.5 | 0.51 / 2.51 / 9.0 | 1.38 / 6.87 / 28.8 | 1.21 / 6.05 / 24.0 | 0.94 / 4.67 / 17.8 |
+
+Against the reference simulator (`tools/realbench`, `--tiers interp,auto,auto-cold`, run phase, cores 13 and 14, median
+of the runs it chooses; wall seconds, ratio to the reference in brackets):
+
+| test | reference | interp | auto | auto-cold |
+|---|---:|---:|---:|---:|
+| `vai_window_gen_interlock` | 3.89 | 29.83 (7.67) | 15.78 (4.06) | 18.13 (4.66) |
+| `poc_stat_histogram` | 0.32 | 1.93 (6.03) | 0.74 (2.31) | 1.07 (3.34) |
+| `hdlm_lfsr` | 1.06 | 3.74 (3.53) | 2.15 (2.03) | 2.36 (2.23) |
+| `sc5_fifo_repack` | 0.84 | 3.79 (4.51) | 3.65 (4.35) | 3.81 (4.54) |
+| `fletcher_bufferreader` | 1.06 | 4.13 (3.90) | 4.13 (3.90) | 4.13 (3.90) |
+| `neorv32_single_min` | 3.33 | 8.86 (2.66) | 8.84 (2.65) | 9.19 (2.76) |
+| `poc_cache_cpu` | 0.78 | 1.74 (2.23) | 1.77 (2.27) | 1.83 (2.35) |
+| `uvvm_axistream_vvc` | 3.51 | 3.75 (1.07) | 3.77 (1.07) | 3.90 (1.11) |
+| `uvvm_sb_slv` | 0.91 | 0.82 (0.90) | 0.85 (0.93) | 0.96 (1.05) |
+| `uvvm_util_rand` | 1.10 | 0.90 (0.82) | 0.89 (0.81) | 1.05 (0.95) |
+| `osvvm_axi4_random` | 1.14 | 0.59 (0.52) | 0.59 (0.52) | 0.73 (0.64) |
+| `osvvm_axis_random` | 0.86 | 0.28 (0.33) | 0.28 (0.33) | 0.40 (0.47) |
+| `uvvm_func_cov` | 0.76 | 0.19 (0.25) | 0.19 (0.25) | 0.31 (0.41) |
+
+The cold column of the short tests is the cost of an empty compilation cache for every tier alike (analysed units and
+call results are rebuilt: `uvvm_func_cov` 0.19 s warm, 0.31 s cold under the interpreter too). Geometric mean of the wall
+ratios over the 13: interpreter 1.63, auto 1.38, auto-cold 1.62.
+
+What the measurements show and what is left:
+
+- `protected_queue` (the queue push and pop of #493) cold 1.21 s to 0.94 s, the window generator cold 19.2 s to 17.4 s
+  (-9 percent main-thread instructions); everything else is level with main.
+- `--tier=auto` is not within noise of the interpreter on `rtl_fan` (+5 percent cycles, nothing compiled: #544),
+  `rtl_ff` (+5 percent, +3 percent of it the compiled process: #575), `lfsr64` (+3 percent) and `uvvm_sb_slv` (+5 to
+  +12 percent, four compiled string helpers: #573), warm and cold alike; the same on main.
+- The closure of a native-callable function compiles callees nobody has seen (a fifth of the compile time on the window
+  generator) and the function waits for them (`pop`: 2.5 s to 7.4 s from candidate to compiled); a never-seen callee at
+  `Fast` would cost a seventh. Not built: the first level of a function is the same code as the last, so a cheaper
+  first level would need an upgrade the sampler cannot trigger (decisions.md).
+- Not measured: more than one compile thread; the tiny-test corpus (`tools/bench/tiny.py`), where nothing compiles and
+  the policy has no effect.
+
 ## Slice positions, memoised descriptors, static waits over slices (#520, 2026-10-22)
 
 Three changes in the interpreter's cost of RTL processes with generic widths (`docs/decisions.md` "Slice positions,
@@ -5652,3 +5735,7 @@ more than 64 elements.
 
 - Package data and the rare slot paths are out of the inline memory paths of `run_ops` (`docs/decisions.md` "Interpreter
   round 14"): 17 to 11 address pairs spilled on every entry of the loop.
+
+What is left in `poc_arith_addw` (89 M `signal` calls: vector `SigRead` and `Cat` of generic widths, whose lengths are
+instance constants the generator does not know) and the shape of the rest of the gap to the interpreter on clocked RTL
+(code size and cache misses, not exits) are in the issue comments of #565 and #532.

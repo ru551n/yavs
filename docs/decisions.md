@@ -4660,6 +4660,79 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   (the output flusher and the Ctrl-C handler) cost 6% together; starting them late needs a time source that does not
   depend on interpreted activity.
 
+## `--tier=auto` compile policy: no candidate holds up another, natively called functions repay after twice their compile time (yavs-llvm, #572, #520, #493, 2026-10-23)
+
+Found with `YAVS_AUTO_TRACE=1` (new, below) on the window-generator testbench of the real-world suite, cold cache: its hot
+library accessors were compiled seconds after they were hot, and between 11 s and 17 s of the run nothing was compiled
+at all.
+
+- **`Worker::pick` takes the hottest candidate per compile cost that the budget has room for, and a candidate without
+  room waits alone.** It took the best candidate by sampled time per cost and, when the budget had no room for it, set
+  `pick_at` and returned nothing until the sampled time had grown enough for that one: every cheaper candidate behind it
+  waited too. The one refused on the window generator was a protected-method `pop` whose closure of native callees costs
+  400 to 480 ms to compile; the compile thread was idle from 11.4 s to 17.2 s of the run with cheaper hot candidates
+  waiting (the verbose note said "possible after 4 s of the run seen" for functions that were ready long before). Now
+  every candidate is priced (`tree` cost, `factor`), the first
+  in heat order that fits is compiled (`first_fit`), and `pick_at` is the earliest time any refused one fits (reset when
+  a new candidate arrives). A candidate that compiled as a callee of another (`done`, native code) is dropped.
+- **A function the interpreter calls on a native frame is compiled once it was seen interpreted for twice its compile
+  time (`PAYBACK_NATIVE`, was `PAYBACK`, 4), and gets 16 times the budget (`NATIVE_BUDGET`, was 8).** Their compiled code
+  runs two to three times faster than the interpreter (#510), the same reasoning as the compute loop's `PAYBACK_COMPUTE`.
+  The sampled times of all functions add up to at most the sampled time of the run, so a payback of 2 bounds the compile
+  time of this class to half of it and the budget (32 percent) is the cap that binds first; at eight times the budget the
+  window generator waited for room for its accessors early in the run. A payback of 1 and a budget of 32 gave no more (window generator, cold, 5 runs each).
+- **`YAVS_AUTO_TRACE=1` prints the compile thread's timeline on stderr** (a tuning aid like `YAVS_LLVM_TIMES`): per
+  compile its time into the run, level, compile time, how long ago the function was first seen and became a candidate, its
+  sampled times and the budget spent; per refusal what it needs and when it fits; at the end the 40 most sampled
+  functions. It showed that the wait for the payback rule (hundreds of ms to seconds, the function has to be seen) is
+  what separates a cold run from a warm one, not the queue or the compile (10 to 100 ms from candidate to compiled).
+- Measured (window generator, `tools/realbench` world, a fresh world per cell, cold = a copy of the pristine world per
+  run, pinned to core 13, median of 7, main-thread wall / cycles / instructions from `perf stat --no-inherit`, one binary
+  with the settings as environment switches, main at 311f78b7): before 19.2 s / 96.5 G / 320.9 G; the pick change alone
+  18.6 s / 94.0 G / 310.2 G (-3 percent); with `PAYBACK_NATIVE` 2 at the old budget (8) the same, 309.9 G; with both
+  (this change) 17.4 s / 87.8 G / 293.5 G (-9 percent, total CPU 20.8 s against 20.7 s). The payback alone does nothing
+  because the old budget (16 percent of the sampled time) is what the earlier compile of the class runs into. A second
+  batch of 5 gave 318.2 / 299.3 / 307.2 / 298.3 G for old, payback 2 (budget 8), budget 16 (payback 4), both:
+  batches differ by up to 3 percent, so only the sum is solid. Warm (the cache holds everything): 16.4 s / 259.8 G to
+  16.2 s / 251.5 G; the interpreter 29.1 s / 501 G. The queue microbenchmark (`protected_queue`, #493), cold: 1.21 s /
+  24.0 G to 0.94 s / 17.8 G (-26 percent instructions; warm 0.53 s to 0.51 s). With the compiled code of before #565 the
+  pick change alone gave -12 percent instructions cold on the window generator (340.5 G to 298.8 G): slower compiled
+  code makes a late compile cost more. Everything else measured is level with main (12 library and design tests, 9
+  head-to-head designs, within 2 percent either way, STATUS.md), which is not level with the interpreter on four of them:
+  `rtl_fan` (nothing compiles; +5 percent cycles, the 45 instructions per activation of the watching loop, #544),
+  `rtl_ff` (+5 percent; its process compiles and gains nothing now, +3 percent against not compiling it: #575),
+  `lfsr64` (+3 percent, level with not compiling it, #575) and `uvvm_sb_slv` (#573).
+- **Tried and not built (window generator, same method):**
+  - *A cheaper first level (`OptLevel::Fast`) for functions that are not loops* (open question (a) of #520), with no
+    upgrade to O2 (`AutoTier::start` upgrades only when the first level is below O2): every function at `Fast` made the
+    warm run 21.1 s against 17.0 s (+24 percent). The code is slower and
+    an upgrade has little to trigger on: a function called from compiled code is called natively, so the sampler
+    attributes its time to the compiled caller and never sees it interpreted or compiled (reasoning, not measured here;
+    it is why the previous try, 25 s against 20 s, never upgraded). And a cheaper first level does not shorten the wait:
+    compile is 10 to 100 ms from candidate to compiled, the payback wait hundreds of ms to seconds.
+  - *Lower payback for other functions* (2, 1): +3 percent instructions cold; *payback 1 for native*: the same as 2.
+  - *A budget per class of function* (compute, clocked process, native, plain: each spends its own part): +3 percent,
+    noise; *a fixed grant on top of the budget*: no effect on any test; *payback 1 and a budget of 1000 times* in a
+    warm run (compile everything hot): 16.4 s against 16.0 s, no faster: the 20 percent of the run still interpreted is
+    big processes whose compiled code leaves the code too often to be faster.
+  - *`-regalloc=basic`* (a quarter cheaper compile in `YAVS_LLVM_TIMES`): the compiled code is 9 percent slower;
+    *`-fast-isel`*: 4 percent slower code; the `CALLBACKS` rule off: nothing more compiles in `neorv32` (the instance and
+    share rules refuse the same processes).
+  - *Parallel compile threads*: not tried (one thread is the design of #125; the compile thread is busy 15 to 35 percent
+    of a run).
+- Open: the closure of a native-callable function (`Worker::tree`) compiles callees nobody has seen (a fifth of the
+  compile time on the window generator: the logging and string helpers behind `pop`) and the function is published only
+  once all exist; at `Fast` they would cost a seventh. The frame-mode code of a function with a loop is compiled with its
+  native-frame code (a second module, 60 percent of the first's cost) although the interpreter needs it only to enter the
+  loop again after a native frame was materialised inside it. `uvvm_sb_slv` compiles four small string helpers that run slower compiled than interpreted (+5 to
+  +12 percent of the main thread's instructions, +22 percent when one of two is left out): #573.
+- Idea from the reference simulator (sim1; read for its design, no code taken): it tiers a function up when its own
+  entry counter reaches a threshold (100 by default) and hands the compile to a pool of worker threads, each function an
+  independent task, with no budget; a candidate never waits for another. The first half is what `pick` now does for
+  candidates the budget refuses; yavs keeps its sampled time (no cost per entry), the payback rule and the CPU budget,
+  because its compile thread competes with the simulation on a loaded host and compiled code of testbench functions
+  gains little unless it repays.
+
 ## Compiled memory access: heap addresses are known, objects of different spaces do not share an entry (yavs-llvm, #554, 2026-10-22)
 
 - **A register defined by `Deref`, and every `Index`/`Move` of it, is a known heap address** (`Known::Heap`, the

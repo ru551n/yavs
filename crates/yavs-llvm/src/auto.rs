@@ -461,8 +461,10 @@ const COMPUTE_BUDGET: u64 = 50;
 
 /// A function the interpreter calls on a native frame (`called_natively`) gets this many times
 /// the budget: its compiled code runs about two to three times faster than the interpreter
-/// (`Tier::call`, the object table; #510), so the payback rule limits it.
-const NATIVE_BUDGET: u64 = 8;
+/// (`Tier::call`, the object table; #510), so the payback rule limits it. Sixteen times is
+/// 32 percent of the sampled time: with `PAYBACK_NATIVE` at 2 the former eight (16 percent) was
+/// what the class ran into in the first seconds of a cold run (#572).
+const NATIVE_BUDGET: u64 = 16;
 
 /// An `rtl` process gets this many times the budget (its compiled code is a tenth faster).
 const RTL_BUDGET: u64 = 16;
@@ -472,6 +474,30 @@ const RTL_BUDGET: u64 = 16;
 /// is no limit.
 fn within_budget(budget: u32, factor: u64, spent: u64, cost: u64, total: u64) -> bool {
     budget == 0 || (spent + cost) * 100 <= total * u64::from(budget) * factor
+}
+
+/// The first of the candidates, given as `(compile cost, factor)` in the order to try them, that
+/// fits the budget: its position. Else, per candidate, the sampled time at which it will (the
+/// budget grows with the run).
+fn first_fit(
+    prices: &[(u64, u64)],
+    budget: u32,
+    spent: u64,
+    total: u64,
+) -> Result<usize, Vec<u64>> {
+    if let Some(k) = prices
+        .iter()
+        .position(|&(cost, factor)| within_budget(budget, factor, spent, cost, total))
+    {
+        return Ok(k);
+    }
+    Err(prices
+        .iter()
+        .map(|&(cost, factor)| {
+            let per = u64::from(budget).saturating_mul(factor).max(1);
+            (spent + cost).saturating_mul(100) / per
+        })
+        .collect())
 }
 
 /// See `Heat::o2_threshold`.
@@ -558,6 +584,10 @@ const START_AFTER: Duration = Duration::from_millis(5);
 /// it has repaid it (`Worker::threshold`).
 const PAYBACK_COMPUTE: u64 = 2;
 
+/// A function the interpreter calls on a native frame runs two to three times faster compiled,
+/// so it is compiled once seen for twice its compile time (four times before #572).
+const PAYBACK_NATIVE: u64 = 2;
+
 /// Callees compiled with a hot function (`Worker::tree`): at most this many IR instructions
 /// each and in all.
 const CALLEE_MAX: usize = 200;
@@ -627,6 +657,32 @@ struct Worker {
     /// The functions the compilation cache has compiled code of (`objcache::compiled_list`):
     /// the others are not looked up.
     listed: std::collections::HashSet<(String, u32)>,
+    trace: Option<Trace>,
+}
+
+/// `YAVS_AUTO_TRACE=1`, a tuning aid: the compile thread's timeline on stderr (a line per compile
+/// and per refusal, the most sampled functions at the end).
+struct Trace {
+    t0: std::time::Instant,
+    /// Per function, the milliseconds into the run it was first seen interpreted and became a
+    /// candidate.
+    first: std::collections::HashMap<FuncId, u128>,
+    cand: std::collections::HashMap<FuncId, u128>,
+}
+
+impl Trace {
+    fn ms(&self) -> u128 {
+        self.t0.elapsed().as_millis()
+    }
+
+    fn line(&self, what: String) {
+        eprintln!("trace {:>8} ms: {what}", self.ms());
+    }
+
+    /// Milliseconds since `at[id]`, -1 if never.
+    fn since(&self, at: &std::collections::HashMap<FuncId, u128>, id: FuncId) -> i128 {
+        at.get(&id).map_or(-1, |&c| self.ms() as i128 - c as i128)
+    }
 }
 
 impl Worker {
@@ -718,6 +774,8 @@ impl Worker {
             at
         } else if self.is_compute(id) {
             at.max(PAYBACK_COMPUTE * self.cost(f))
+        } else if self.natively(id) {
+            at.max(PAYBACK_NATIVE * self.cost(f))
         } else {
             at.max(PAYBACK * self.cost(f))
         }
@@ -840,45 +898,71 @@ impl Worker {
         }
     }
 
-    /// The function to compile next and what goes with it, if the budget has room for it.
+    /// The function to compile next and what goes with it: the hottest relative to its cost
+    /// among the candidates the budget has room for (`first_fit`). One that has none waits for
+    /// the sampled time it fits at (`pick_at`) without holding up the others (#572).
     fn pick(&mut self, cands: &mut Vec<FuncId>) -> Option<Vec<(FuncId, Part)>> {
-        // ponytail: a cheaper candidate that came later waits for the one refused last too.
-        if self.total < self.pick_at {
+        // A function whose frame-mode code compiled in the meantime (as the callee of another
+        // candidate) needs no pick; one with native-frame code only may still need its other part.
+        cands.retain(|c| !self.done[c.0 as usize][0]);
+        if self.total < self.pick_at || cands.is_empty() {
             return None;
         }
-        // The hottest relative to its cost first.
-        let best = (0..cands.len()).max_by_key(|&i| {
-            let id = cands[i];
-            let f = self.prog.func(id);
-            self.time[id.0 as usize][0] * 1000 / f.map_or(1, |f| self.cost(f).max(1))
-        })?;
-        let id = cands[best];
-        let ids = self.tree(id);
-        let cost: u64 = ids
-            .iter()
-            .filter_map(|&(i, _)| self.prog.func(i))
-            .map(|f| self.cost(f))
-            .sum::<u64>()
-            + self.load_cost();
-        let factor = self.factor(id);
-        if !within_budget(self.heat.budget, factor, self.spent, cost, self.total) {
-            let per = u64::from(self.heat.budget).saturating_mul(factor).max(1);
-            self.pick_at = (self.spent + cost).saturating_mul(100) / per;
-            // Said once per function (`--verbose`), so a hot function that never compiles says why.
-            if let Some(t) = self.told.get_mut(id.0 as usize)
-                && !std::mem::replace(t, true)
-            {
-                let why = format!(
-                    "the compile budget has no room for it yet (about {cost} us of compiling, \
-                     possible after {} us of the run seen)",
-                    self.pick_at
-                );
-                (self.note)(id, self.opt, Err(why));
+        let heat = |w: &Self, id: FuncId| {
+            let cost = w.prog.func(id).map_or(1, |f| w.cost(f).max(1));
+            w.time[id.0 as usize][0] * 1000 / cost
+        };
+        let mut order: Vec<usize> = (0..cands.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(heat(self, cands[i])));
+        let mut trees = Vec::new();
+        let mut prices = Vec::new();
+        for &i in &order {
+            let ids = self.tree(cands[i]);
+            let cost: u64 = ids
+                .iter()
+                .filter_map(|&(i, _)| self.prog.func(i))
+                .map(|f| self.cost(f))
+                .sum::<u64>()
+                + self.load_cost();
+            prices.push((cost, self.factor(cands[i])));
+            trees.push(ids);
+        }
+        match first_fit(&prices, self.heat.budget, self.spent, self.total) {
+            Ok(k) => {
+                cands.swap_remove(order[k]);
+                Some(trees.swap_remove(k))
             }
-            return None;
+            Err(waits) => {
+                self.pick_at = waits.iter().copied().min().unwrap_or(0);
+                for (k, at) in waits.into_iter().enumerate() {
+                    let id = cands[order[k]];
+                    // Said once per function (`--verbose`), so a hot function that never compiles
+                    // says why.
+                    if let Some(t) = self.told.get_mut(id.0 as usize)
+                        && !std::mem::replace(t, true)
+                    {
+                        let why = format!(
+                            "the compile budget has no room for it yet (about {} us of compiling, \
+                             possible after {at} us of the run seen)",
+                            prices[k].0
+                        );
+                        (self.note)(id, self.opt, Err(why));
+                    }
+                    if let Some(tr) = &self.trace {
+                        tr.line(format!(
+                            "refused f{} `{}`, cost {} us, seen {} us, fits at {at} of {} us seen, spent {}",
+                            id.0,
+                            self.prog.func(id).map_or("?", |f| f.name.as_str()),
+                            prices[k].0,
+                            self.time[id.0 as usize][0],
+                            self.total,
+                            self.spent
+                        ));
+                    }
+                }
+                None
+            }
         }
-        cands.swap_remove(best);
-        Some(ids)
     }
 
     /// Whether `id` (interpreted, seen for `seen` microseconds) should be looked up in the
@@ -1062,6 +1146,22 @@ impl Worker {
                     let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
                     self.us_per_instr = (self.us_per_instr + per) / 2.0;
                 }
+                if let Some(tr) = &self.trace {
+                    let seen = self.time.get(id.0 as usize).map_or([0, 0], |t| *t);
+                    tr.line(format!(
+                        "{id} compiled `{}` ({} IR) {level:?} in {} us, first seen {} ms and candidate {} ms ago, \
+                         seen {}/{} us, spent {} of {} us",
+                        f.name,
+                        f.code.len(),
+                        took.as_micros(),
+                        tr.since(&tr.first, id),
+                        tr.since(&tr.cand, id),
+                        seen[0],
+                        seen[1],
+                        self.spent,
+                        self.total
+                    ));
+                }
                 let key = (f.name.clone(), f.code.len() as u32);
                 if !hit && crate::objcache::enabled() && self.listed.insert(key) {
                     crate::objcache::add_compiled(&f.name, f.code.len() as u32);
@@ -1165,6 +1265,11 @@ impl AutoTier {
             warned: false,
             loaded: false,
             listed: Default::default(),
+            trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
+                t0: std::time::Instant::now(),
+                first: Default::default(),
+                cand: Default::default(),
+            }),
         };
         let worker = std::thread::Builder::new()
             .name("yavs-tier-up".into())
@@ -1210,6 +1315,13 @@ impl AutoTier {
                                 };
                                 let t = &mut t[usize::from(compiled)];
                                 let was = *t;
+                                if was == 0
+                                    && !compiled
+                                    && let Some(tr) = &mut w.trace
+                                {
+                                    let now = tr.ms();
+                                    tr.first.entry(id).or_insert(now);
+                                }
                                 *t += dt;
                                 w.total += dt;
                                 let (now, at) = (*t, w.threshold(id, compiled));
@@ -1219,6 +1331,11 @@ impl AutoTier {
                                 if was < at && now >= at {
                                     if !compiled {
                                         cands.push(id);
+                                        w.pick_at = 0;
+                                        if let Some(tr) = &mut w.trace {
+                                            let now = tr.ms();
+                                            tr.cand.insert(id, now);
+                                        }
                                     } else if upgrade
                                         || w.prog.func(id).is_some_and(|f| rtl(&w.prog, f))
                                     {
@@ -1279,6 +1396,25 @@ impl AutoTier {
                     if sh.halt.load(Ordering::SeqCst) {
                         break;
                     }
+                }
+                if let Some(tr) = &w.trace {
+                    let mut v: Vec<usize> = (0..w.time.len()).collect();
+                    v.sort_by_key(|&k| std::cmp::Reverse(w.time[k][0] + w.time[k][1]));
+                    for &k in v.iter().take(40) {
+                        if let Some(f) = w.prog.func(FuncId(k as u32)) {
+                            tr.line(format!(
+                                "seen f{k} `{}` ({} IR): interpreted {} us, compiled {} us",
+                                f.name,
+                                f.code.len(),
+                                w.time[k][0],
+                                w.time[k][1],
+                            ));
+                        }
+                    }
+                    tr.line(format!(
+                        "sampled {} us, compiled for {} us",
+                        w.total, w.spent
+                    ));
                 }
                 *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
                     .jit
@@ -1481,7 +1617,10 @@ impl Tier for AutoTier {
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPUTE_BUDGET, cold, compute, loops, too_many_callbacks, within_budget};
+    use super::{
+        COMPUTE_BUDGET, NATIVE_BUDGET, cold, compute, first_fit, loops, too_many_callbacks,
+        within_budget,
+    };
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
 
@@ -1639,5 +1778,24 @@ mod tests {
         assert!(!within_budget(2, 1, 0, cost, 1_500_000));
         assert!(within_budget(2, 1, 0, cost, 9_000_000));
         assert!(within_budget(0, 1, 0, cost, 0));
+    }
+
+    /// A candidate the budget has no room for must not hold up a cheaper one behind it (#572):
+    /// 32 percent (2 times `NATIVE_BUDGET`) of 200 ms sampled is 64 ms of compiling.
+    #[test]
+    fn a_candidate_without_room_does_not_hold_up_the_next() {
+        let f = NATIVE_BUDGET;
+        let big = (80_000, f);
+        let small = (10_000, f);
+        assert_eq!(first_fit(&[big, small], 2, 0, 200_000), Ok(1));
+        assert_eq!(first_fit(&[small, big], 2, 0, 200_000), Ok(0));
+        // Nothing fits: each says at which sampled time it will, the budget grows with the run.
+        assert_eq!(
+            first_fit(&[big, (70_000, f)], 2, 0, 200_000),
+            Err(vec![250_000, 218_750])
+        );
+        // What was spent counts: 60 ms spent leave no room for 10 ms before 218.75 ms.
+        assert_eq!(first_fit(&[small], 2, 60_000, 200_000), Err(vec![218_750]));
+        assert_eq!(first_fit(&[small], 2, 60_000, 220_000), Ok(0));
     }
 }

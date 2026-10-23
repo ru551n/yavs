@@ -5635,6 +5635,9 @@ What the measurements show and what is left:
 
 - `protected_queue` (the queue push and pop of #493) cold 1.21 s to 0.94 s, the window generator cold 19.2 s to 17.4 s
   (-9 percent main-thread instructions); everything else is level with main.
+  Measured again on the pushed commit against its parent (main at 566a6e08, same method, 5 runs): window generator warm
+  15.8 s to 15.4 s, cold 19.1 s to 17.1 s (main-thread instructions 336.5 G to 285.0 G); `protected_queue` warm 0.54 s to
+  0.51 s, cold 1.29 s to 0.93 s.
 - `--tier=auto` is not within noise of the interpreter on `rtl_fan` (+5 percent cycles, nothing compiled: #544),
   `rtl_ff` (+5 percent, +3 percent of it the compiled process: #575), `lfsr64` (+3 percent) and `uvvm_sb_slv` (+5 to
   +12 percent, four compiled string helpers: #573), warm and cold alike; the same on main.

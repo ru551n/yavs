@@ -203,6 +203,17 @@ enum Known {
 /// Bit of `PosIndexLoadCmpBr::dim`: the op heads a search loop (see there).
 pub(crate) const SCAN: u8 = 0x80;
 
+/// `Inst::AddrOf` of a fixed object: the address as a constant.
+fn const_addr(dst: yavs_ir::Reg, space: u8, idx: u32, off: u32, pc: usize) -> Op {
+    match mk_addr(space, idx, u64::from(off)) {
+        Ok(v) => Op::Const {
+            dst: dst.0,
+            v: v as i64,
+        },
+        Err(_) => Op::Step(pc as u32),
+    }
+}
+
 /// One predecoded operation (`Code`). Registers are `u32` indices into the frame's
 /// registers, jump targets op indices. Widths are never `Width::Sig` (those go to `Step`).
 #[derive(Clone, Copy, Debug)]
@@ -377,6 +388,8 @@ pub(crate) enum Op {
         what: CheckMsgId,
         dim: u8,
     },
+    /// `Inst::SlicePos` at this pc.
+    SlicePos(u32),
     Bin {
         op: IntOp,
         dst: u32,
@@ -627,7 +640,7 @@ pub(crate) enum Op {
     /// `Stmt` before it too (the op stands in its place and goes on as the next one).
     EdgeBr {
         dst: u32,
-        rising: bool,
+        kind: yavs_ir::EdgeKind,
         stmt: bool,
         sig: u32,
         offset: u32,
@@ -732,6 +745,12 @@ pub(crate) enum Op {
     Br {
         to: u32,
     },
+    /// The entry `Br` to the head `to` of an element loop (`Code::loops[id]`, `elem_loops`): the
+    /// iterations but the last may run at once (`Machine::op_loop`), then the jump.
+    Loop {
+        id: u32,
+        to: u32,
+    },
     CondBr {
         c: u32,
         t: u32,
@@ -761,6 +780,24 @@ pub(crate) enum Op {
     Const {
         dst: u32,
         v: i64,
+    },
+    /// `Inst::FCmp`.
+    FCmp {
+        op: yavs_ir::CmpOp,
+        dst: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `Inst::AddrOf` of the frame, defined more than once in the function.
+    AddrFrame {
+        dst: u32,
+        off: u32,
+    },
+    /// `Inst::AddrOf` of a frame `depth` static links up, defined more than once.
+    AddrUp {
+        dst: u32,
+        depth: u8,
+        off: u32,
     },
     Deref {
         dst: u32,
@@ -870,12 +907,13 @@ pub(crate) enum Op {
         sig: u32,
         off: u32,
     },
-    /// `SigVal` of one element and `rising_edge` / `falling_edge` of it.
+    /// `SigVal` of one element and the clock-edge test of it (`Inst::Edge`, or the
+    /// `rising_edge` / `falling_edge` native).
     EdgeSig {
         dst: u32,
         sig: u32,
         offset: u32,
-        rising: bool,
+        kind: yavs_ir::EdgeKind,
     },
     /// `SigVal` of one element and the `WaitOn` of it.
     WaitSig {
@@ -954,6 +992,10 @@ pub(crate) struct Code {
     pub aff: Vec<(u32, u32, u32)>,
     /// The `Case` tables of the `Op::Case`s, with op indices as targets.
     pub cases: Vec<CaseOps>,
+    /// The element loops that `Op::Loop` enters.
+    pub loops: Vec<ElemLoop>,
+    /// `YAVS_DUMPIR` is set: `Machine::op_loop` says what each entry did.
+    pub trace: bool,
     /// The op a call goes on at when it has written `Pre::pro` itself: after the ops that
     /// only load parameters (`NONE`: there are none).
     pub skip: u32,
@@ -1090,9 +1132,10 @@ enum NativeOp {
     Not {
         a: yavs_ir::Reg,
     },
-    /// `rising_edge` / `falling_edge` of the signal reference in register `sig`.
+    /// The clock-edge test `kind` of the signal reference in register `sig`: `Inst::Edge`, or
+    /// the `rising_edge` / `falling_edge` native.
     Edge {
-        rising: bool,
+        kind: yavs_ir::EdgeKind,
         sig: yavs_ir::Reg,
     },
 }
@@ -1160,7 +1203,12 @@ fn native_op(
         }),
         (Ie::Not, [a]) if scalar(a) => Some(NativeOp::Not { a: *a }),
         (Ie::Edge(rising), [r]) if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) => {
-            Some(NativeOp::Edge { rising, sig: *r })
+            let kind = if rising {
+                yavs_ir::EdgeKind::Rising
+            } else {
+                yavs_ir::EdgeKind::Falling
+            };
+            Some(NativeOp::Edge { kind, sig: *r })
         }
         _ => None,
     }
@@ -1488,7 +1536,7 @@ fn reads(f: &Func, i: &Inst, mut each: impl FnMut(yavs_ir::Reg)) {
 
 /// Whether register `r` may be read after the instruction at `pc` and before it is written,
 /// on some path (an instruction it cannot follow counts as a read).
-fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
+pub(crate) fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
     let mut seen = vec![false; f.code.len() + 1];
     let mut stack = vec![pc + 1];
     while let Some(mut p) = stack.pop() {
@@ -1682,7 +1730,7 @@ fn peephole(
                             && !(from + 3..to).any(|p| {
                                 let mut def = false;
                                 f.code[p].visit(&mut |r, role, _| {
-                                    def |= role == Role::Def && r.0 == time
+                                    def |= role == Role::Def && (r.0 == time || r.0 == size)
                                 });
                                 def
                             });
@@ -1848,25 +1896,28 @@ fn peephole(
 /// holds is this one unless the process just started. Skipping the instructions changes
 /// nothing else: they write registers only, and no register is live across a suspension.
 fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u32]) {
-    let Some(k) = ops.iter().position(|o| matches!(o, Op::Suspend)) else {
-        return;
-    };
-    let Some((st, s)) = static_wait(prog, f) else {
-        return;
-    };
-    if at.get(k).is_none_or(|&p| p as usize != s) {
-        return;
-    }
-    if let Some(&k0) = entry.get(st)
-        && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
-    {
-        *o = Op::WaitStatic { to: k as u32 };
+    for (st, s) in static_wait(prog, f, 2) {
+        let Some(k) =
+            (0..ops.len()).find(|&k| matches!(ops[k], Op::Suspend) && at[k] as usize == s)
+        else {
+            continue;
+        };
+        if let Some(&k0) = entry.get(st)
+            && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
+        {
+            *o = Op::WaitStatic { to: k as u32 };
+        }
     }
 }
 
-/// The wait of `f` that names the same signals at every activation (`static_waits`): the IR pc
-/// of the `Stmt` that starts it and of its `Suspend`. Compiled code takes the same short cut.
-pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
+/// The waits of `f` (at least `min` `WaitOn`s each) that name the same signals at every
+/// activation (`static_waits`): the IR pc of the `Stmt` that starts each and of its `Suspend`.
+/// Compiled code takes the same short cut (with `min` 1: the call it saves is more than the
+/// interpreter's fused wait). A process with a sensitivity list may have several suspension
+/// points (the lowering makes the first wait of a list that names array elements or slices a copy
+/// that also keeps the references for the later ones, and the activations after the first run the
+/// later copy): they all wait for the same list, so every one that qualifies short-cuts.
+pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> {
     let calls = |i: &Inst| match *i {
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
             .func(func)
@@ -1874,46 +1925,772 @@ pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
         Inst::CallIndirect { .. } => true,
         _ => false,
     };
-    let one = f.resume.len() == 1
-        && f.code
-            .iter()
-            .filter(|i| matches!(i, Inst::Suspend { .. }))
-            .count()
-            == 1
-        && (f.flags.contains(FuncFlags::SENS_LIST) || !f.code.iter().any(calls));
-    if !one {
-        return None;
+    let suspends: Vec<usize> = (0..f.code.len())
+        .filter(|&p| matches!(f.code[p], Inst::Suspend { .. }))
+        .collect();
+    let sens = f.flags.contains(FuncFlags::SENS_LIST);
+    // Lazily: asking whether a callee may suspend decodes its body.
+    let quiet = || !f.code.iter().any(calls);
+    let one = suspends.len() == 1 && f.resume.len() == 1 && (sens || quiet());
+    // The concurrent statement's process waits on its one list too (no call suspends).
+    let same = sens || f.flags.contains(FuncFlags::IMPLICIT) && quiet();
+    if !(one || same && !suspends.is_empty()) {
+        return Vec::new();
     }
-    let s = f
-        .code
+    suspends
+        .into_iter()
+        .filter_map(|s| {
+            let st = (0..s).rev().find(|&p| {
+                !matches!(
+                    f.code[p],
+                    Inst::Const { .. }
+                        | Inst::ConstF { .. }
+                        | Inst::AddrOf { .. }
+                        | Inst::DopeLen { .. }
+                        | Inst::Pos { .. }
+                        | Inst::SlicePos { .. }
+                        | Inst::Index { .. }
+                        | Inst::Field { .. }
+                        | Inst::Bin { .. }
+                        | Inst::BinRange { .. }
+                        | Inst::Un { .. }
+                        | Inst::Cmp { .. }
+                        | Inst::Bool { .. }
+                        | Inst::Select { .. }
+                        | Inst::Load { .. }
+                        | Inst::Alloc { .. }
+                        | Inst::MakeDope { .. }
+                        | Inst::LayoutOf { .. }
+                        | Inst::SigVal { .. }
+                        | Inst::SigSlice { .. }
+                        | Inst::WaitOn { .. }
+                )
+            })?;
+            let waits = f.code[st + 1..s]
+                .iter()
+                .filter(|i| matches!(i, Inst::WaitOn { .. }))
+                .count();
+            (matches!(f.code[st], Inst::Stmt)
+                && waits >= min
+                && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
+            .then_some((st, s))
+        })
+        .collect()
+}
+
+/// A scalar logic assignment the predecoder runs as one op (`Op::LSetDrive`): the `Alloc`,
+/// `Store` and `Index` that make the waveform, the `LSet` of its element and the one-element
+/// `Drive` of it, which nothing else reads. A tier that runs the same pattern as one step
+/// leaves the first four alone and does the assignment at the `Drive`; it must use exactly
+/// these sites, because the interpreter, which continues where compiled code leaves, does not
+/// define the waveform's registers either.
+#[derive(Clone, Copy, Debug)]
+pub struct ScalarDrive {
+    /// The IR pcs, in order: `Alloc`, `Store`, `Index`, `LSet`, `Drive`.
+    pub alloc: u32,
+    pub store: u32,
+    pub index: u32,
+    pub lset: u32,
+    pub drive: u32,
+    pub driver: u32,
+    /// The signal reference (two registers) the `Drive` names.
+    pub target: yavs_ir::Reg,
+    /// The register holding the delay in femtoseconds (the waveform element's time).
+    pub time: yavs_ir::Reg,
+    /// The register holding the logic code.
+    pub value: yavs_ir::Reg,
+    pub inertial: bool,
+}
+
+/// The scalar logic assignments of `f` that the interpreter's predecoder fuses (`ScalarDrive`).
+pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
+    let pre = Pre::new(f, prog);
+    let mut out = Vec::new();
+    for (k, op) in pre.code.ops.iter().enumerate() {
+        let Op::LSetDrive {
+            v,
+            driver,
+            target,
+            time,
+            size: _,
+            w,
+            e,
+            inertial,
+        } = *op
+        else {
+            continue;
+        };
+        let lset = pre.code.at[k] as usize;
+        let find =
+            |from: usize, hit: &dyn Fn(&Inst) -> bool| (0..from).rev().find(|&p| hit(&f.code[p]));
+        let (Some(alloc), Some(store), Some(index)) = (
+            find(
+                lset,
+                &|i| matches!(i, Inst::Alloc { dst, .. } if dst.0 == u32::from(w)),
+            ),
+            find(
+                lset,
+                &|i| matches!(i, Inst::Store { addr, .. } if addr.0 == u32::from(w)),
+            ),
+            find(
+                lset,
+                &|i| matches!(i, Inst::Index { dst, .. } if dst.0 == u32::from(e)),
+            ),
+        ) else {
+            continue;
+        };
+        let Some(drive) =
+            (lset + 1..f.code.len()).find(|&p| matches!(f.code[p], Inst::Drive { .. }))
+        else {
+            continue;
+        };
+        out.push(ScalarDrive {
+            alloc: alloc as u32,
+            store: store as u32,
+            index: index as u32,
+            lset: lset as u32,
+            drive: drive as u32,
+            driver: u32::from(driver),
+            target: yavs_ir::Reg(u32::from(target)),
+            time: yavs_ir::Reg(u32::from(time)),
+            value: yavs_ir::Reg(v),
+            inertial,
+        });
+    }
+    out
+}
+
+/// Where an operand of an element loop comes from: a register the loop does not write, the
+/// loop variable, or the result of an earlier step of the same iteration.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum V {
+    Inv(u32),
+    Ind,
+    Slot(u8),
+}
+
+/// The step of the loop variable: a constant of the latch or the register of the `Bin` after it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Delta {
+    K(i64),
+    R(u32),
+}
+
+/// The range a `BinRange` result must lie in: constants, or registers the loop does not write.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Bound {
+    None,
+    K(i32, i32),
+    R(u32, u32),
+}
+
+/// One instruction of an element loop's body. Every value is affine in the iteration number, so
+/// `Machine::loop_plan` evaluates each as a pair (value at 0, change per iteration).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LStep {
+    Mov(V),
+    K(i64),
+    /// `Bin`, `BinRange`, `BinRangeK` of an add, subtract or multiply (then one operand does not
+    /// change with the iteration).
+    Bin(IntOp, V, V, Bound),
+    /// `c0 + ca * a`, `c0 + ca * a + cb * b` with atoms within 2^30 (`Aff1`, `Aff2`).
+    Lin1(V, i64, i64),
+    Lin2(V, V, i64, i64, i64),
+    /// `Inst::Pos`: the position of an index in dimension `dim` of the descriptor in register `dope`.
+    Pos {
+        dope: V,
+        dim: u8,
+        idx: V,
+    },
+    /// `pos_len`'s position: first dimension, a length that fits 63 bits.
+    PosL {
+        dope: V,
+        idx: V,
+    },
+    /// `DopeLen` of dimension `dim`.
+    Len {
+        dope: V,
+        dim: u8,
+    },
+    /// `Load` / `LoadOff`: `w` bytes at `base + off`; the loop must not write them.
+    Ld(V, u32, Width),
+    /// `LoadSlot`: `w` bytes at `off` of the frame's slots.
+    LdSlot(u32, Width),
+    /// `IndexImm`: the address `off` bytes on.
+    Addr(V, u32),
+    /// `Cmp` of two numbers the loop does not change (`cmp_mask`).
+    Cmp(u8, V, V),
+    /// `Select` (and `CmpSelect`, with a `Cmp` before it): `c ? a : b`, `c` not changing.
+    Sel(V, V, V),
+    /// `LGet`: the code of element `idx` of the logic vector at `base`.
+    Get {
+        base: V,
+        idx: V,
+    },
+    /// `LSet`: `v` is the slot of the `Get` (a copy) or a register holding a code (a fill).
+    Set {
+        base: V,
+        idx: V,
+        v: V,
+    },
+}
+
+/// A loop over the elements of logic vectors (#520): a body of affine index arithmetic with
+/// one `LGet` and the `LSet` of it, or one `LSet` of a register the loop does not write, and a
+/// latch that counts the loop variable by 1 or -1 against a bound it does not change. It is
+/// entered through the `Op::Loop` that every branch to its head from outside leads to
+/// (`elem_loops`); there `Machine::op_loop` runs the iterations that go round again at once,
+/// when every position, index and element of them is in range. The generic ops run the rest
+/// from the head, the iteration that leaves the loop included, so registers, the exit and every
+/// failure are theirs.
+pub(crate) struct ElemLoop {
+    pub ind: u32,
+    pub bound: u32,
+    pub delta: Delta,
+    /// The latch tests the loop variable after the step (the step is the op before the compare).
+    pub after: bool,
+    /// The outcomes of `Ord::cmp` of the loop variable against the bound after which the loop
+    /// goes round again, as a `cmp_mask`.
+    pub cmask: u8,
+    pub steps: Vec<LStep>,
+}
+
+/// Longest body of an element loop, in steps.
+pub(crate) const LOOP_STEPS: usize = 12;
+
+/// Most reads of memory besides the vectors in an element loop.
+pub(crate) const LOOP_LOADS: usize = 4;
+
+/// A `cmp_mask` with its operands exchanged.
+fn swap_mask(m: u8) -> u8 {
+    m & 0b010 | (m & 1) << 2 | m >> 2 & 1
+}
+
+/// The branch targets of an op.
+fn targets_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
+    match op {
+        Op::Br { to }
+        | Op::MoveBr { to, .. }
+        | Op::StoreSlotBr { to, .. }
+        | Op::BrBody { to, .. } => [Some(to), None],
+        Op::CondBr { t, f, .. }
+        | Op::CmpBr { t, f, .. }
+        | Op::MoveCondBr { t, f, .. }
+        | Op::LoadSlot8CmpBr { t, f, .. }
+        | Op::FlagBr { t, f, .. }
+        | Op::EdgeBr { t, f, .. } => [Some(t), Some(f)],
+        _ => [None, None],
+    }
+}
+
+/// The element loops of `ops`: every branch to the head of one from outside it is sent to a new
+/// `Op::Loop` (placed after the end of the code) that goes on at the head.
+fn elem_loops(ops: &mut Vec<Op>, at: &mut Vec<u32>) -> Vec<ElemLoop> {
+    let mut loops: Vec<ElemLoop> = Vec::new();
+    for e in 0..ops.len() {
+        // (head, last op of the loop, variable, bound, step, test after the step, going round
+        // again on these outcomes of the compare) and the end of the body.
+        let mut found = Vec::new();
+        match ops[e] {
+            // The compare fused with the step: the compare, then `i += delta` and the jump back.
+            Op::CmpBrStep {
+                m,
+                delta: d @ (-1 | 1),
+                a,
+                b,
+                dst,
+                src,
+                head,
+                ..
+            } if dst == src && (a == dst) != (b == dst) => {
+                let m = if a == dst { m } else { swap_mask(m) };
+                found.push((
+                    head as usize,
+                    e + 2,
+                    u32::from(dst),
+                    u32::from(if a == dst { b } else { a }),
+                    Delta::K(i64::from(d)),
+                    false,
+                    !m & 0b111,
+                    e,
+                ));
+            }
+            Op::CmpBr { m, a, b, t, f, .. } => {
+                // The step of the variable: the op before the compare (the compare goes back
+                // to the head), or the two ops after it (the compare goes on to them).
+                let step = |i: usize| match ops.get(i) {
+                    Some(&Op::Bin {
+                        op: IntOp::Add,
+                        dst,
+                        a: x,
+                        b: s,
+                    }) if x == dst && s != dst => Some((dst, s)),
+                    _ => None,
+                };
+                let is_var = |v: u32| (a == v) != (b == v);
+                let other = |ind: u32| if a == ind { b } else { a };
+                // The outcomes of the compare of the variable against the bound.
+                let outcomes = |ind: u32, go_on: bool| {
+                    let m = if a == ind { m } else { swap_mask(m) };
+                    if go_on { m } else { !m & 0b111 }
+                };
+                if let Some((ind, s)) = e.checked_sub(1).and_then(step)
+                    && is_var(ind)
+                {
+                    // Step, then compare: either edge back to the head goes round again.
+                    for (head, go_on) in [(t as usize, true), (f as usize, false)] {
+                        if head + 1 < e {
+                            found.push((
+                                head,
+                                e,
+                                ind,
+                                other(ind),
+                                Delta::R(s),
+                                true,
+                                outcomes(ind, go_on),
+                                e - 1,
+                            ));
+                        }
+                    }
+                }
+                if let (Some((ind, s)), Some(&Op::Br { to })) = (step(e + 1), ops.get(e + 2))
+                    && is_var(ind)
+                    && (to as usize) < e
+                    && (f as usize == e + 1) != (t as usize == e + 1)
+                {
+                    // Compare, then step and the jump back: the edge to the step goes round again.
+                    found.push((
+                        to as usize,
+                        e + 2,
+                        ind,
+                        other(ind),
+                        Delta::R(s),
+                        false,
+                        outcomes(ind, t as usize == e + 1),
+                        e,
+                    ));
+                }
+            }
+            _ => {}
+        }
+        for (head, last, ind, bound, delta, after, cmask, end) in found {
+            if head >= end || last >= ops.len() {
+                continue;
+            }
+            let steps = match loop_body(&ops[head..end], ind, bound, delta) {
+                Ok(steps) => steps,
+                Err(i) => {
+                    if std::env::var_os("YAVS_DUMPIR").is_some() {
+                        eprintln!(
+                            "loop of ops {head} to {end} is not an element loop: op {}",
+                            head + i
+                        );
+                    }
+                    continue;
+                }
+            };
+            let id = loops.len() as u32;
+            let to = ops.len() as u32;
+            let mut entered = false;
+            for (p, op) in ops.iter_mut().enumerate() {
+                if p >= head && p <= last {
+                    continue;
+                }
+                for t in targets_mut(op).into_iter().flatten() {
+                    if *t as usize == head {
+                        *t = to;
+                        entered = true;
+                    }
+                }
+            }
+            if entered {
+                let pc = at[head];
+                ops.push(Op::Loop {
+                    id,
+                    to: head as u32,
+                });
+                at.push(pc);
+                loops.push(ElemLoop {
+                    ind,
+                    bound,
+                    delta,
+                    after,
+                    cmask,
+                    steps,
+                });
+                break;
+            }
+        }
+    }
+    loops
+}
+
+/// The steps of a loop body, or `None` when it holds anything else, reads a register before the
+/// iteration writes it (a value carried to the next iteration), writes the loop variable, the
+/// bound or the step, or has a shape the plan cannot do.
+fn loop_body(body: &[Op], ind: u32, bound: u32, delta: Delta) -> Result<Vec<LStep>, usize> {
+    // The registers the body writes.
+    let mut written: Vec<u32> = Vec::new();
+    for op in body {
+        match *op {
+            Op::Pos { dst, .. }
+            | Op::Aff1 { dst, .. }
+            | Op::Aff2 { dst, .. }
+            | Op::AffP { dst, .. }
+            | Op::AffL { dst, .. }
+            | Op::AffPL { dst, .. }
+            | Op::AffPR { dst, .. }
+            | Op::Bin { dst, .. }
+            | Op::BinRange { dst, .. }
+            | Op::BinRangeK { dst, .. }
+            | Op::Move { dst, .. }
+            | Op::Const { dst, .. }
+            | Op::DopeLen { dst, .. }
+            | Op::Load { dst, .. }
+            | Op::LoadOff { dst, .. }
+            | Op::LoadSlot { dst, .. }
+            | Op::LoadSlot8 { dst, .. }
+            | Op::IndexImm { dst, .. }
+            | Op::Cmp { dst, .. }
+            | Op::Select { dst, .. }
+            | Op::CmpSelect { dst, .. }
+            | Op::LGet { dst, .. } => written.push(dst),
+            Op::LoadSlot8x2 { d1, d2, .. } => {
+                written.push(d1);
+                written.push(d2);
+            }
+            Op::LSet { .. } => {}
+            _ => return Err(0),
+        }
+    }
+    let keep = [
+        Some(ind),
+        Some(bound),
+        match delta {
+            Delta::R(r) => Some(r),
+            Delta::K(_) => None,
+        },
+    ];
+    if written.iter().any(|w| keep.contains(&Some(*w))) {
+        return Err(0);
+    }
+    struct Cx {
+        steps: Vec<LStep>,
+        /// Whether each slot changes with the iteration, and whether it is a loaded code.
+        dep: Vec<bool>,
+        data: Vec<bool>,
+        defined: Vec<(u32, u8)>,
+        ind: u32,
+        written: Vec<u32>,
+    }
+    impl Cx {
+        fn rd(&self, r: u32) -> Option<V> {
+            if r == self.ind {
+                Some(V::Ind)
+            } else if let Some(&(_, s)) = self.defined.iter().rev().find(|d| d.0 == r) {
+                Some(V::Slot(s))
+            } else if self.written.contains(&r) {
+                // Written later in the body: the value of the previous iteration.
+                None
+            } else {
+                Some(V::Inv(r))
+            }
+        }
+        fn dep(&self, v: V) -> bool {
+            match v {
+                V::Inv(_) => false,
+                V::Ind => true,
+                V::Slot(s) => self.dep[s as usize],
+            }
+        }
+        fn data(&self, v: V) -> bool {
+            matches!(v, V::Slot(s) if self.data[s as usize])
+        }
+        /// A step whose result is a number (`dep`: it changes with the iteration).
+        fn push(&mut self, st: LStep, dep: bool, dst: Option<u32>) -> Option<V> {
+            if self.steps.len() >= LOOP_STEPS {
+                return None;
+            }
+            let s = self.steps.len() as u8;
+            self.steps.push(st);
+            self.dep.push(dep);
+            self.data.push(false);
+            if let Some(d) = dst {
+                self.defined.push((d, s));
+            }
+            Some(V::Slot(s))
+        }
+        /// `Bin`: an add, subtract or multiply (by something that does not change).
+        fn bin(&mut self, op: IntOp, dst: u32, a: u32, b: u32, bound: Bound) -> Option<()> {
+            let (x, y) = (self.num(self.rd(a)?)?, self.num(self.rd(b)?)?);
+            let dep = self.dep(x) || self.dep(y);
+            if !matches!(op, IntOp::Add | IntOp::Sub | IntOp::Mul)
+                || op == IntOp::Mul && self.dep(x) && self.dep(y)
+            {
+                return None;
+            }
+            self.push(LStep::Bin(op, x, y, bound), dep, Some(dst))?;
+            Some(())
+        }
+        /// An atom of a linear form: a number.
+        fn num(&self, v: V) -> Option<V> {
+            (!self.data(v)).then_some(v)
+        }
+        /// A register the loop does not write.
+        fn inv_reg(&self, r: u32) -> Option<u32> {
+            matches!(self.rd(r)?, V::Inv(_)).then_some(r)
+        }
+        /// A register whose value does not change with the iteration (not a loaded code).
+        fn inv(&self, r: u32) -> Option<V> {
+            let v = self.rd(r)?;
+            (!self.dep(v) && !self.data(v)).then_some(v)
+        }
+    }
+    let mut cx = Cx {
+        steps: Vec::new(),
+        dep: Vec::new(),
+        data: Vec::new(),
+        defined: Vec::new(),
+        ind,
+        written,
+    };
+    let (mut gets, mut sets) = (0, 0);
+    let mut skip = false;
+    let loads = body
         .iter()
-        .position(|i| matches!(i, Inst::Suspend { .. }))?;
-    let st = (0..s).rev().find(|&p| {
-        !matches!(
-            f.code[p],
-            Inst::Const { .. }
-                | Inst::ConstF { .. }
-                | Inst::AddrOf { .. }
-                | Inst::DopeLen { .. }
-                | Inst::Pos { .. }
-                | Inst::Index { .. }
-                | Inst::Field { .. }
-                | Inst::Bin { .. }
-                | Inst::BinRange { .. }
-                | Inst::Load { .. }
-                | Inst::SigVal { .. }
-                | Inst::SigSlice { .. }
-                | Inst::WaitOn { .. }
-        )
-    })?;
-    let waits = f.code[st + 1..s]
+        .map(|o| match o {
+            Op::Load { .. } | Op::LoadOff { .. } | Op::LoadSlot { .. } | Op::LoadSlot8 { .. } => 1,
+            Op::LoadSlot8x2 { .. } => 2,
+            _ => 0,
+        })
+        .sum::<usize>();
+    if loads > LOOP_LOADS {
+        return Err(0);
+    }
+    for (i, op) in body.iter().enumerate() {
+        // The `Select` a `CmpSelect` stands for is not run after it.
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        let ok = (|| -> Option<()> {
+            match *op {
+                Op::Move { dst, src } => {
+                    let v = cx.rd(src)?;
+                    let dep = cx.dep(v);
+                    let data = cx.data(v);
+                    cx.push(LStep::Mov(v), dep, Some(dst))?;
+                    if let Some(d) = cx.data.last_mut() {
+                        *d = data;
+                    }
+                }
+                Op::Const { dst, v } => {
+                    cx.push(LStep::K(v), false, Some(dst))?;
+                }
+                Op::Bin { op, dst, a, b } => cx.bin(op, dst, a, b, Bound::None)?,
+                Op::BinRangeK {
+                    op,
+                    dst,
+                    a,
+                    b,
+                    lo,
+                    hi,
+                } => cx.bin(op, dst, a, b, Bound::K(lo, hi))?,
+                Op::BinRange {
+                    op,
+                    dst,
+                    a,
+                    b,
+                    lo,
+                    hi,
+                } => {
+                    let bound = Bound::R(cx.inv_reg(lo)?, cx.inv_reg(hi)?);
+                    cx.bin(op, dst, a, b, bound)?
+                }
+                Op::Aff1 { dst, a, ca, c0 } => {
+                    let x = cx.num(cx.rd(a)?)?;
+                    let dep = cx.dep(x);
+                    cx.push(LStep::Lin1(x, ca.into(), c0.into()), dep, Some(dst))?;
+                }
+                Op::Aff2 {
+                    dst,
+                    a,
+                    b,
+                    ca,
+                    cb,
+                    c0,
+                } => {
+                    let (x, y) = (cx.num(cx.rd(a)?)?, cx.num(cx.rd(b)?)?);
+                    let dep = cx.dep(x) || cx.dep(y);
+                    cx.push(
+                        LStep::Lin2(x, y, ca.into(), cb.into(), c0.into()),
+                        dep,
+                        Some(dst),
+                    )?;
+                }
+                Op::Pos {
+                    dst,
+                    dope,
+                    idx,
+                    dim,
+                    ..
+                } => {
+                    let dope = cx.inv(dope)?;
+                    let x = cx.num(cx.rd(idx)?)?;
+                    let dep = cx.dep(x);
+                    cx.push(LStep::Pos { dope, dim, idx: x }, dep, Some(dst))?;
+                }
+                Op::DopeLen { dst, dope, dim } => {
+                    let dope = cx.inv(dope)?;
+                    cx.push(LStep::Len { dope, dim }, false, Some(dst))?;
+                }
+                Op::AffP {
+                    dst,
+                    dope,
+                    idx,
+                    cp,
+                    c0,
+                } => {
+                    let dope = cx.inv(dope)?;
+                    let x = cx.num(cx.rd(idx)?)?;
+                    let dep = cx.dep(x);
+                    let p = cx.push(LStep::PosL { dope, idx: x }, dep, None)?;
+                    cx.push(LStep::Lin1(p, cp.into(), c0.into()), dep, Some(dst))?;
+                }
+                Op::AffL { dst, dope, cl, c0 } => {
+                    let dope = cx.inv(dope)?;
+                    let l = cx.push(LStep::Len { dope, dim: 0 }, false, None)?;
+                    cx.push(LStep::Lin1(l, cl.into(), c0.into()), false, Some(dst))?;
+                }
+                Op::AffPL {
+                    dst,
+                    dope,
+                    idx,
+                    cp,
+                    cl,
+                    c0,
+                } => {
+                    let dope = cx.inv(dope)?;
+                    let x = cx.num(cx.rd(idx)?)?;
+                    let dep = cx.dep(x);
+                    let p = cx.push(LStep::PosL { dope, idx: x }, dep, None)?;
+                    let l = cx.push(LStep::Len { dope, dim: 0 }, false, None)?;
+                    cx.push(
+                        LStep::Lin2(p, l, cp.into(), cl.into(), c0.into()),
+                        dep,
+                        Some(dst),
+                    )?;
+                }
+                Op::AffPR {
+                    dst,
+                    dope,
+                    idx,
+                    a,
+                    cp,
+                    ca,
+                    c0,
+                } => {
+                    let dope = cx.inv(dope)?;
+                    let x = cx.num(cx.rd(idx)?)?;
+                    let y = cx.num(cx.rd(a)?)?;
+                    let dep = cx.dep(x) || cx.dep(y);
+                    let p = cx.push(LStep::PosL { dope, idx: x }, cx.dep(x), None)?;
+                    cx.push(
+                        LStep::Lin2(p, y, cp.into(), ca.into(), c0.into()),
+                        dep,
+                        Some(dst),
+                    )?;
+                }
+                Op::Load { dst, addr, w } => {
+                    let a = cx.inv(addr)?;
+                    cx.push(LStep::Ld(a, 0, w), false, Some(dst))?;
+                }
+                Op::LoadOff { dst, base, off, w } => {
+                    let a = cx.inv(base)?;
+                    cx.push(LStep::Ld(a, off, w), false, Some(dst))?;
+                }
+                Op::LoadSlot { dst, off, w } => {
+                    cx.push(LStep::LdSlot(off, w), false, Some(dst))?;
+                }
+                Op::LoadSlot8 { dst, off } => {
+                    cx.push(LStep::LdSlot(off, Width::B8), false, Some(dst))?;
+                }
+                Op::LoadSlot8x2 { d1, o1, d2, o2 } => {
+                    cx.push(LStep::LdSlot(o1, Width::B8), false, Some(d1))?;
+                    cx.push(LStep::LdSlot(o2, Width::B8), false, Some(d2))?;
+                }
+                Op::IndexImm { dst, base, off } => {
+                    let a = cx.inv(base)?;
+                    cx.push(LStep::Addr(a, off), false, Some(dst))?;
+                }
+                Op::Cmp { m, dst, a, b } => {
+                    let (x, y) = (cx.num(cx.rd(a)?)?, cx.num(cx.rd(b)?)?);
+                    if cx.dep(x) || cx.dep(y) {
+                        return None;
+                    }
+                    cx.push(LStep::Cmp(m, x, y), false, Some(dst))?;
+                }
+                Op::Select { dst, c, a, b } => {
+                    let (c, x, y) = (cx.num(cx.rd(c)?)?, cx.num(cx.rd(a)?)?, cx.num(cx.rd(b)?)?);
+                    if cx.dep(c) {
+                        return None;
+                    }
+                    let dep = cx.dep(x) || cx.dep(y);
+                    cx.push(LStep::Sel(c, x, y), dep, Some(dst))?;
+                }
+                Op::CmpSelect { m, dst, a, b, x, y } => {
+                    let (p, q) = (cx.num(cx.rd(a)?)?, cx.num(cx.rd(b)?)?);
+                    let (x, y) = (cx.num(cx.rd(x)?)?, cx.num(cx.rd(y)?)?);
+                    if cx.dep(p) || cx.dep(q) {
+                        return None;
+                    }
+                    let c = cx.push(LStep::Cmp(m, p, q), false, None)?;
+                    let dep = cx.dep(x) || cx.dep(y);
+                    cx.push(LStep::Sel(c, x, y), dep, Some(dst))?;
+                    skip = true;
+                }
+                Op::LGet { dst, base, idx } => {
+                    gets += 1;
+                    let base = cx.inv(base)?;
+                    let x = cx.num(cx.rd(idx)?)?;
+                    let s = cx.push(LStep::Get { base, idx: x }, true, Some(dst))?;
+                    if let V::Slot(s) = s {
+                        cx.data[s as usize] = true;
+                    }
+                }
+                Op::LSet { base, idx, v } => {
+                    sets += 1;
+                    let base = cx.inv(base)?;
+                    let x = cx.num(cx.rd(idx)?)?;
+                    let v = cx.rd(v)?;
+                    // A copy of the loaded code, or a fill with a code that does not change.
+                    if !(cx.data(v) || matches!(v, V::Inv(_))) {
+                        return None;
+                    }
+                    if cx.steps.len() >= LOOP_STEPS {
+                        return None;
+                    }
+                    cx.steps.push(LStep::Set { base, idx: x, v });
+                    cx.dep.push(false);
+                    cx.data.push(false);
+                }
+                _ => return None,
+            }
+            Some(())
+        })();
+        if ok.is_none() {
+            return Err(i);
+        }
+    }
+    // A copy (one `LGet`, one `LSet` of it) or a fill (one `LSet`).
+    let copy = cx
+        .steps
         .iter()
-        .filter(|i| matches!(i, Inst::WaitOn { .. }))
-        .count();
-    (matches!(f.code[st], Inst::Stmt)
-        && waits >= 2
-        && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
-    .then_some((st, s))
+        .any(|s| matches!(s, LStep::Set { v: V::Slot(_), .. }));
+    if sets == 1 && gets == usize::from(copy) {
+        Ok(cx.steps)
+    } else {
+        Err(body.len())
+    }
 }
 
 fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32]) {
@@ -2023,13 +2800,13 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                     dst,
                     sig,
                     offset,
-                    rising,
+                    kind,
                 },
                 Some(&Op::CondBr { c, t, f }),
                 _,
             ) if c == dst => Some(Op::EdgeBr {
                 dst,
-                rising,
+                kind,
                 stmt: false,
                 sig,
                 offset,
@@ -2256,7 +3033,7 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 Op::Stmt,
                 Some(&Op::EdgeBr {
                     dst,
-                    rising,
+                    kind,
                     stmt: false,
                     sig,
                     offset,
@@ -2265,7 +3042,7 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
                 }),
             ) => Some(Op::EdgeBr {
                 dst,
-                rising,
+                kind,
                 stmt: true,
                 sig,
                 offset,
@@ -2520,6 +3297,17 @@ impl Code {
                         dst: dst.0,
                         src: src.0,
                     },
+                },
+                // A signal reference in the frame (a memoised `SigVal`): its two words.
+                Inst::Load {
+                    dst,
+                    addr,
+                    w: Width::Sig,
+                } if let Some(&Known::Frame(off)) = known.get(addr.0 as usize) => Op::LoadSlot8x2 {
+                    d1: dst.0,
+                    o1: off,
+                    d2: dst.0 + 1,
+                    o2: off + 8,
                 },
                 Inst::Load { dst, addr, w } if w != Width::Sig => {
                     match known.get(addr.0 as usize) {
@@ -2939,7 +3727,7 @@ impl Code {
                     hi: hi.0,
                     what,
                 },
-                Inst::LayoutOf { dst, ty, desc } => {
+                Inst::LayoutOf { dst, ty, desc, .. } => {
                     let word = |d: yavs_ir::Reg, k: u32| Op::LayoutWord {
                         dst: d.0,
                         ty: ty.0,
@@ -3025,17 +3813,27 @@ impl Code {
                             sig,
                             offset: offset.0,
                         }),
+                        Some(Inst::Edge {
+                            dst: d,
+                            kind,
+                            sig: r,
+                        }) if one && r == dst => Some(Op::EdgeSig {
+                            dst: d.0,
+                            sig,
+                            offset: offset.0,
+                            kind,
+                        }),
                         Some(Inst::CallNative {
                             native,
                             args,
                             dst: d,
                         }) if one => match (native_op(prog, f, native, args), d) {
-                            (Some(NativeOp::Edge { rising, sig: r }), Some(d)) if r == dst => {
+                            (Some(NativeOp::Edge { kind, sig: r }), Some(d)) if r == dst => {
                                 Some(Op::EdgeSig {
                                     dst: d.0,
                                     sig,
                                     offset: offset.0,
-                                    rising,
+                                    kind,
                                 })
                             }
                             _ => None,
@@ -3055,6 +3853,7 @@ impl Code {
                         },
                     }
                 }
+                Inst::SlicePos { .. } => Op::SlicePos(pc as u32),
                 Inst::DopeLen { dst, dope, dim } => Op::DopeLen {
                     dst: dst.0,
                     dope: dope.0,
@@ -3145,6 +3944,26 @@ impl Code {
                     size: size.0,
                 },
                 Inst::Const { dst, v } => Op::Const { dst: dst.0, v },
+                Inst::FCmp { op, dst, a, b } => Op::FCmp {
+                    op,
+                    dst: dst.0,
+                    a: a.0,
+                    b: b.0,
+                },
+                // The other spaces are numbers (an address the machine cannot make stays a
+                // step, which reports it).
+                Inst::AddrOf { dst, space, off } => match space {
+                    AddrSpace::Frame => Op::AddrFrame { dst: dst.0, off },
+                    AddrSpace::Up(depth) => Op::AddrUp {
+                        dst: dst.0,
+                        depth,
+                        off,
+                    },
+                    AddrSpace::Inst => const_addr(dst, INST, 0, off, pc),
+                    AddrSpace::Pkg(p) => const_addr(dst, PKG, p, off, pc),
+                    AddrSpace::Const(c) => const_addr(dst, CONST, c.0, off, pc),
+                    AddrSpace::Shared => const_addr(dst, SHARED, 0, off, pc),
+                },
                 Inst::ConstF { dst, v } => Op::Const {
                     dst: dst.0,
                     v: v.to_bits() as i64,
@@ -3314,6 +4133,18 @@ impl Code {
         }
         superops(&mut ops, &at, f, known, &uses);
         static_waits(prog, f, &mut ops, &at, &entry);
+        let loops = elem_loops(&mut ops, &mut at);
+        // A process that never suspends polls for a stop request at every jump back: the jump
+        // is stepped (`Machine::step_out`), so no other function pays for the check.
+        if f.kind == yavs_ir::FuncKind::Process && !f.flags.contains(FuncFlags::MAY_SUSPEND) {
+            for (k, op) in ops.iter_mut().enumerate() {
+                if let Op::Br { to } | Op::BrBody { to, .. } = *op
+                    && (to as usize) <= k
+                {
+                    *op = Op::Step(at[k]);
+                }
+            }
+        }
         let first = entry.first().copied().unwrap_or(NONE);
         // Debug aid next to the IR dump of `YAVS_DUMPIR`.
         if std::env::var_os("YAVS_DUMPIR").is_some() {
@@ -3329,7 +4160,94 @@ impl Code {
             first,
             aff,
             cases,
+            loops,
+            trace: std::env::var_os("YAVS_DUMPIR").is_some(),
             skip: NONE,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yavs_diag::{FileId, Span};
+    use yavs_ir::{CmpOp, FuncKind, Mode, ParamClass, ProgramBuilder, RegTy, StmtKind};
+
+    /// `depth(n) = if n = 0 then 0 else depth(n - 1) + 1` (one 8-byte `in` parameter, so
+    /// `lean`); its first instruction takes the address of the parameter's slot.
+    fn depth() -> (Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let depth = pb.declare("depth", FuncKind::Function, None);
+        let mut fb = pb.define(depth);
+        let s = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let at = fb.addr(AddrSpace::Frame, s);
+        let n = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: n,
+            addr: at,
+            w: Width::B8,
+        });
+        let (base, rec) = (fb.block(), fb.block());
+        let (zero, one, c) = (fb.int(0), fb.int(1), fb.reg(RegTy::I64));
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Eq,
+            dst: c,
+            a: n,
+            b: zero,
+        });
+        fb.emit(Inst::CondBr { c, t: base, f: rec });
+        fb.at(base);
+        fb.emit(Inst::Ret { v: Some(zero) });
+        fb.at(rec);
+        let m = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Sub,
+            dst: m,
+            a: n,
+            b: one,
+        });
+        let args = fb.regs(&[m]);
+        let d = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: depth,
+            args,
+            dst: Some(d),
+        });
+        fb.emit(Inst::Bin {
+            op: yavs_ir::IntOp::Add,
+            dst: d,
+            a: d,
+            b: one,
+        });
+        fb.emit(Inst::Ret { v: Some(d) });
+        fb.finish();
+        (pb.finish().unwrap(), depth)
+    }
+
+    /// The contract tiers rely on (#566): the register holding a lean parameter's slot address
+    /// is zero in every frame `fill` makes, yet `next` skips its `AddrOf`, so a tier entering
+    /// at `next` must not read it (the other preloaded registers do hold their values).
+    #[test]
+    fn lean_parameter_address_register_is_unset() {
+        let (prog, id) = depth();
+        let f = prog.func(id).unwrap();
+        let pre = Pre::new(f, &prog);
+        assert!(pre.lean);
+        // `finish` numbers the registers afresh: find the register in the code.
+        let (def, at) = match f.code[0] {
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                off: 0,
+            } => (0, dst),
+            ref i => panic!("{i:?}"),
+        };
+        assert!(pre.next[def] as usize > def, "the AddrOf is skipped");
+        for idx in [0, 1, 7] {
+            let mut stack = vec![99];
+            pre.fill(&mut stack, idx).unwrap();
+            assert_eq!(stack[1 + at.0 as usize], 0, "frame {idx}");
         }
     }
 }

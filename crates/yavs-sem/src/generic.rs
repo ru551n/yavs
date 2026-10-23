@@ -18,7 +18,9 @@
 //! - subtypes and expressions that mention none of the above keep their ids;
 //!   changed expressions lose their folded value and are folded again.
 
-use std::collections::{HashMap, HashSet};
+use crate::tracked::{TrackedMap, TrackedSet};
+use rustc_hash::{FxHashMap, FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use yavs_diag::{Diagnostic, Span};
@@ -91,13 +93,13 @@ pub struct Instance {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericMap {
     /// Formal generic type to actual subtype.
-    pub types: HashMap<TypeId, SubtypeId>,
+    pub types: BTreeMap<TypeId, SubtypeId>,
     /// Formal constant to actual expression.
-    pub consts: HashMap<DeclId, ExprId>,
+    pub consts: BTreeMap<DeclId, ExprId>,
     /// Formal subprogram (and implicit operation of a formal type) to actual subprogram.
-    pub subprograms: HashMap<DeclId, DeclId>,
+    pub subprograms: BTreeMap<DeclId, DeclId>,
     /// Formal package to actual instance.
-    pub packages: HashMap<DeclId, InstId>,
+    pub packages: BTreeMap<DeclId, InstId>,
 }
 
 /// Default of a formal generic subprogram (6.5.6.2).
@@ -132,45 +134,46 @@ mod once_scope {
 /// Generic bookkeeping kept on `Db` (sem.md 5).
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericState {
-    pub(crate) defaults: HashMap<DeclId, SubpDefault>,
+    pub(crate) defaults: TrackedMap<DeclId, SubpDefault>,
     /// The generic list analyzed into a region (a package scope or a subprogram's
     /// parameter region, also the parameter region of a generic subprogram body).
-    pub(crate) lists: HashMap<ScopeId, Box<[DeclId]>>,
+    pub(crate) lists: TrackedMap<ScopeId, Box<[DeclId]>>,
     /// The id remapping of each instance (for its body and for formal packages).
-    pub(crate) maps: HashMap<InstId, Remap>,
+    pub(crate) maps: TrackedMap<InstId, Remap>,
     /// The generic spec the subprogram body being analyzed completes (`prepare_generic_body`).
     pub(crate) reuse: Option<DeclId>,
     /// The anonymous interface types of the parameters of subprograms, which each call binds
     /// to its actuals' types (`implicit_instance`, #283).
-    pub(crate) implicit: HashMap<DeclId, Box<[TypeId]>>,
+    pub(crate) implicit: TrackedMap<DeclId, Box<[TypeId]>>,
     /// The anonymous parameter types of formal subprograms: any type of their class in the
     /// actual's profile, all uses of one type the same (#308).
-    pub(crate) formal_anon: HashMap<DeclId, Box<[TypeId]>>,
+    pub(crate) formal_anon: TrackedMap<DeclId, Box<[TypeId]>>,
     /// Those instances, per region of the call and the actuals' subtypes.
     #[allow(clippy::type_complexity)]
-    pub(crate) implicit_insts: HashMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
+    pub(crate) implicit_insts: TrackedMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
     /// Instances of 2019 calls with a generic map (`call_instance`), per region and call
     /// span; `None` after an error.
-    pub(crate) call_insts: HashMap<(ScopeId, Span), Option<DeclId>>,
+    pub(crate) call_insts: TrackedMap<(ScopeId, Span), Option<DeclId>>,
     /// Instances of generic protected types (`protected_instance`): their body is cloned
     /// from the generic's at elaboration, not written in their region.
-    pub(crate) protected: HashSet<TypeId>,
+    pub(crate) protected: TrackedSet<TypeId>,
     /// Uninstantiated subprograms of headers with a generic map (`header_instance`).
-    pub(crate) header: HashSet<DeclId>,
+    pub(crate) header: TrackedSet<DeclId>,
     /// Generic constants, types and packages of packages and subprograms not yet
     /// looked up (`W1501`; `Db::lookup` removes them).
-    pub(crate) unused: HashSet<DeclId>,
+    pub(crate) unused: TrackedSet<DeclId>,
     /// The actuals a formal package with a generic map requires of its actual instance.
-    pub(crate) wants: HashMap<InstId, Vec<(DeclId, Want)>>,
+    pub(crate) wants: TrackedMap<InstId, Vec<(DeclId, Want)>>,
     /// Design entities cloned per map of generic type, subprogram and package actuals
     /// (`instantiate_entity`): (entity, architecture, actuals) to the clones.
     #[allow(clippy::type_complexity)]
-    pub(crate) entities: HashMap<(UnitId, UnitId, Box<[Option<GenericActual>]>), (UnitId, UnitId)>,
+    pub(crate) entities:
+        TrackedMap<(UnitId, UnitId, Box<[Option<GenericActual>]>), (UnitId, UnitId)>,
     /// Mangled names of those clones (5.3).
-    pub(crate) unit_names: HashMap<UnitId, Symbol>,
+    pub(crate) unit_names: TrackedMap<UnitId, Symbol>,
     /// Components cloned per map of those actuals (`instantiate_component`).
     #[allow(clippy::type_complexity)]
-    pub(crate) components: HashMap<(DeclId, Box<[Option<GenericActual>]>), DeclId>,
+    pub(crate) components: TrackedMap<(DeclId, Box<[Option<GenericActual>]>), DeclId>,
     /// Blocks with generic types, subprograms or packages of the architectures being
     /// analyzed, innermost first (`instantiate_blocks`).
     pub(crate) blocks: Vec<(UnitId, StmtId)>,
@@ -189,14 +192,14 @@ pub(crate) enum Want {
 pub(crate) struct Remap {
     /// Regions whose content is cloned.
     roots: Vec<ScopeId>,
-    decls: HashMap<DeclId, DeclId>,
-    types: HashMap<TypeId, TypeId>,
-    subtypes: HashMap<SubtypeId, SubtypeId>,
-    scopes: HashMap<ScopeId, ScopeId>,
-    exprs: HashMap<ExprId, ExprId>,
-    stmts: HashMap<StmtId, StmtId>,
+    decls: FxHashMap<DeclId, DeclId>,
+    types: FxHashMap<TypeId, TypeId>,
+    subtypes: FxHashMap<SubtypeId, SubtypeId>,
+    scopes: FxHashMap<ScopeId, ScopeId>,
+    exprs: FxHashMap<ExprId, ExprId>,
+    stmts: FxHashMap<StmtId, StmtId>,
     /// Formal constants to actual expressions.
-    consts: HashMap<DeclId, ExprId>,
+    consts: FxHashMap<DeclId, ExprId>,
     /// First subtypes of formal types (a `subtype s is T` inherits the actual's constraint).
     /// Ordered: a hash set writes its elements in another order in every session.
     formal_firsts: std::collections::BTreeSet<SubtypeId>,
@@ -254,7 +257,7 @@ fn formal_key(n: &ast::Name) -> Option<(Symbol, Span)> {
     }
 }
 
-fn actual_span(a: &ast::Actual) -> Span {
+pub(crate) fn actual_span(a: &ast::Actual) -> Span {
     match a {
         ast::Actual::Expr(e) | ast::Actual::Inertial(e) => e.span,
         ast::Actual::Range(r) => match &**r {
@@ -996,6 +999,18 @@ impl Db {
         let d = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
         let s = self.add_scope(ScopeKind::Instance, Some(scope), Some(d));
         let inst = self.package_instance(scope, s, d, p)?;
+        self.declared_instance(scope, d, s, inst, p.name.span)
+    }
+
+    /// Declares package instance `inst` (region `s`) as `d` in `scope`, with the 4.9 checks.
+    pub(crate) fn declared_instance(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        s: ScopeId,
+        inst: InstId,
+        name_span: Span,
+    ) -> Result<(), Reported> {
         self.decls[d].kind = DeclKind::PackageInst(inst);
         self.declare(scope, d);
         let mut objs = self.decls_with_instances(s);
@@ -1004,10 +1019,10 @@ impl Db {
         if self.sequential_owner(scope).is_some() {
             match self.generic_body_scope(inst)? {
                 Some(b) => objs.extend(self.decls_with_instances(b)),
-                None => self.pending_inst_checks.push((inst, scope, p.name.span)),
+                None => self.pending_inst_checks.push((inst, scope, name_span)),
             }
         }
-        self.check_instance_objects(objs, scope, p.name.span)
+        self.check_instance_objects(objs, scope, name_span)
     }
 
     /// `E1237` for the first signal or shared variable among `objs`, the objects of an
@@ -1036,24 +1051,31 @@ impl Db {
         p: &ast::PackageInstance,
     ) -> Result<InstId, Reported> {
         let g = self.generic_package_of(scope, &p.package)?;
+        let assocs = p.generic_map.as_deref().unwrap_or(&[]);
+        self.instantiate_package(scope, inst_scope, site, g, assocs, p.name.span)
+    }
+
+    /// The instance of generic package `g` made in `inst_scope` for `site`, generics mapped
+    /// by `assocs` looked up in `scope`.
+    pub(crate) fn instantiate_package(
+        &mut self,
+        scope: ScopeId,
+        inst_scope: ScopeId,
+        site: DeclId,
+        g: DeclId,
+        assocs: &[ast::AssocElem],
+        name_span: Span,
+    ) -> Result<InstId, Reported> {
         let Some((gscope, formals)) = self.generic_package(g) else {
-            return Err(self.ice(p.span, "generic package without generics"));
+            return Err(self.ice(name_span, "generic package without generics"));
         };
         let what = format!("package `{}`", self.decls[g].name);
-        let assocs = p.generic_map.as_deref().unwrap_or(&[]);
         let (actuals, assoc_ok) = self.associate(scope, &what, &formals, assocs);
         let mut r = Remap::new(gscope, inst_scope);
         let mut map = GenericMap::default();
         let overflow = self.overflow.len();
         let bound = self.bind_formals(
-            scope,
-            inst_scope,
-            p.name.span,
-            gscope,
-            &formals,
-            &actuals,
-            &mut r,
-            &mut map,
+            scope, inst_scope, name_span, gscope, &formals, &actuals, &mut r, &mut map,
         );
         if bound.is_ok() {
             self.fill_scope(&mut r, gscope, inst_scope);
@@ -1528,7 +1550,7 @@ impl Db {
         span: Span,
     ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
         if !self.generic.implicit.contains_key(&e) {
-            return Some((e, HashMap::new()));
+            return Some((e, HashMap::default()));
         }
         let s = self.decls[e].kind.subprogram()?;
         let keys: Vec<Symbol> = s.params.iter().map(|p| p.name.key).collect();
@@ -1558,7 +1580,7 @@ impl Db {
         span: Span,
     ) -> Option<(DeclId, HashMap<usize, ExprId>)> {
         let Some(types) = self.generic.implicit.get(&e).cloned() else {
-            return Some((e, HashMap::new()));
+            return Some((e, HashMap::default()));
         };
         let s = self.decls[e].kind.subprogram()?;
         let params: Vec<(Symbol, TypeId, Option<DeclId>)> = s
@@ -1566,7 +1588,7 @@ impl Db {
             .iter()
             .map(|p| (p.name.key, self.base(p.subtype), p.decl))
             .collect();
-        let mut pre = HashMap::new();
+        let mut pre = HashMap::default();
         let mut bound: Vec<(TypeId, SubtypeId)> = Vec::new();
         for (k, &(_, ft, pdecl)) in params.iter().enumerate() {
             if !types.contains(&ft) {
@@ -1825,7 +1847,7 @@ impl Db {
     ) -> Result<(), Reported> {
         let mut failed = false;
         // Actual spans of formal types, to place `E1504` at the actual that lacks the operation.
-        let mut type_spans: HashMap<TypeId, Span> = HashMap::new();
+        let mut type_spans: HashMap<TypeId, Span> = HashMap::default();
         for (i, &f) in formals.iter().enumerate() {
             let a = actuals[i];
             let ok = match &self.decls[f].kind {
@@ -1870,7 +1892,11 @@ impl Db {
             )
             .with_primary(site, "in this instantiation")
             .with_secondary(self.decls[f].span, "generic declared here")
-            .with_help(format!("add `{name} => ...` to the generic map")),
+            .with_help(if what == "package " {
+                format!("add `{name} => ...` to the generic map, naming an instance of the package (6.5.7.2; a generic map on the formal gives no default)")
+            } else {
+                format!("add `{name} => ...` to the generic map")
+            }),
         )
     }
 
@@ -2681,7 +2707,8 @@ impl Db {
     ) -> Result<InstId, Reported> {
         let i = self.package_actual(scope, f, Some(a), site, &mut Remap::default())?;
         if let Some(m) = self.generic.maps.get(&i) {
-            let pairs: Vec<(TypeId, TypeId)> = m.types.iter().map(|(&o, &c)| (o, c)).collect();
+            let mut pairs: Vec<(TypeId, TypeId)> = m.types.iter().map(|(&o, &c)| (o, c)).collect();
+            pairs.sort();
             for (o, c) in pairs {
                 let st = self.types[c].first_subtype;
                 self.inst_types.push((o, st));
@@ -2897,7 +2924,8 @@ impl Db {
                 x.body = Body::Hir { scope: s, stmts };
             }
         }
-        let tpairs: Vec<(TypeId, TypeId)> = r.types.iter().map(|(a, b)| (*a, *b)).collect();
+        let mut tpairs: Vec<(TypeId, TypeId)> = r.types.iter().map(|(a, b)| (*a, *b)).collect();
+        tpairs.sort();
         for (orig, new) in tpairs {
             if orig == new {
                 continue;
@@ -2943,20 +2971,22 @@ impl Db {
                 new_order.push(n);
             }
         }
-        let mut new_names: HashMap<Symbol, Vec<DeclId>> = HashMap::new();
+        let mut new_names: Vec<(Symbol, Vec<DeclId>)> = Vec::with_capacity(names.len());
         for (k, ds) in names {
-            let v = new_names.entry(k).or_default();
+            let mut v = Vec::with_capacity(ds.len());
             for d in ds {
                 let n = self.r_decl(r, d);
                 if !v.contains(&n) {
                     v.push(n);
                 }
             }
+            new_names.push((k, v));
         }
         let uses: Vec<UseItem> = uses.into_iter().map(|u| self.r_use(r, u)).collect();
         let private_from = self.scopes[from].private_from;
         let s = &mut self.scopes[to];
         s.order.extend(new_order);
+        s.names.reserve(new_names.len());
         for (k, v) in new_names {
             s.names.entry(k).or_default().extend(v);
         }
@@ -3233,7 +3263,7 @@ impl Db {
             formal_firsts: inner.formal_firsts.clone(),
             ..Default::default()
         };
-        fn sorted<K: Copy + Ord, V: Copy>(m: &HashMap<K, V>) -> Vec<(K, V)> {
+        fn sorted<K: Copy + Ord, V: Copy>(m: &FxHashMap<K, V>) -> Vec<(K, V)> {
             let mut v: Vec<_> = m.iter().map(|(&a, &b)| (a, b)).collect();
             v.sort_by_key(|p| p.0);
             v
@@ -4094,6 +4124,7 @@ impl Db {
             S::ConcSignalAssign {
                 postponed,
                 guarded,
+                guard,
                 target,
                 delay,
                 rhs,
@@ -4101,6 +4132,7 @@ impl Db {
             } => S::ConcSignalAssign {
                 postponed: *postponed,
                 guarded: *guarded,
+                guard: guard.map(|g| self.r_decl(r, g)),
                 target: self.r_target(r, target),
                 delay: self.r_delay(r, delay),
                 rhs: self.r_rhs(r, rhs, &mut |db, r, w| db.r_waveform(r, w)),

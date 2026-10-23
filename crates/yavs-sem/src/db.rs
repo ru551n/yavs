@@ -3,6 +3,7 @@
 //! One `Db` per session. Ids are deterministic for a given input because
 //! analysis order is deterministic; they are not stable across inputs.
 
+use crate::tracked::{TrackedMap, TrackedSet};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::PathBuf;
 
@@ -112,25 +113,30 @@ pub struct Db {
     pub externals: Arena<ExternalId, External>,
     pub attr_values: Arena<AttrValueId, AttrValue>,
     /// User attribute values by (entity, attribute name key) (attr.rs).
-    pub attr_index: HashMap<(DeclId, Symbol), AttrValueId>,
+    pub attr_index: TrackedMap<(DeclId, Symbol), AttrValueId>,
     /// 2019 method aliases `alias m is v.m;`: the alias to the object `v` (a private
     /// variable, a shared variable, a variable) whose method it forwards (5.6.2, 6.6.3).
-    pub(crate) forwarding: HashMap<DeclId, DeclId>,
+    pub(crate) forwarding: TrackedMap<DeclId, DeclId>,
     /// Disconnection specifications (7.4): the time expression of each guarded signal that has
     /// one (a guarded signal without an entry disconnects after 0 fs).
-    pub disconnect_times: HashMap<DeclId, ExprId>,
+    pub disconnect_times: TrackedMap<DeclId, ExprId>,
     /// 2019 named return values (`return r of t`, 4.2.1), by the function's parameter region:
     /// the hidden constant whose descriptor is the call's result subtype (M2 passes it after
     /// the parameters) and the subtype `r` it constrains.
-    pub ret_names: HashMap<ScopeId, (DeclId, SubtypeId)>,
+    pub ret_names: TrackedMap<ScopeId, (DeclId, SubtypeId)>,
     /// Every non-zero TIME physical literal or unit name below one second that was analyzed,
     /// for the resolution limit check at elaboration (LRM 5.2.4.2, [`Db::fine_time_units`]).
     pub time_units: Vec<TimeUnitUse>,
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
-    pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
+    pub(crate) attr_closed: TrackedSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
     #[serde(skip)]
     pub(crate) pending_label_attrs: Vec<crate::attr::PendingLabel>,
+    /// References in a VHDL-1993 file to an `out` port or parameter of the unit being analyzed
+    /// that no write context has claimed yet; the rest are reads, `E1360` at the end of the
+    /// unit (LRM 1993 4.3.2, `Db::not_read`, `Db::report_out_reads`).
+    #[serde(skip)]
+    pub(crate) out_reads: Vec<ExprId>,
     /// Package instances in a process or subprogram whose generic's body is not declared yet
     /// (instance, region, span): `E1237` is checked when the body arrives.
     #[serde(skip)]
@@ -151,10 +157,10 @@ pub struct Db {
     pub(crate) stack: Vec<UnitCx>,
     #[allow(dead_code)]
     /// Undeclared names already reported, per (unit, key) (8.2).
-    pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
+    pub(crate) undeclared: TrackedSet<(Option<UnitId>, Symbol)>,
     /// Spans already given `E1007` or `W1008` by rev.rs (once per construct: names are
     /// classified once per resolution pass).
-    pub(crate) rev_reported: HashSet<Span>,
+    pub(crate) rev_reported: TrackedSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
     /// `lookup` results valid while `Db::cache_epoch` is unchanged: (scope, key) -> (revision, epoch, direct hit, result).
     #[serde(skip)]
@@ -177,12 +183,16 @@ pub struct Db {
         HashMap<usize, crate::expr::CandSet>,
     )>,
     /// Units that depend on a failed unit: undeclared names in them are cascades (8.2).
-    pub(crate) tainted: HashSet<UnitId>,
+    pub(crate) tainted: TrackedSet<UnitId>,
     /// The subtype the next complete context's top expression is resolved for
     /// (an object's declared subtype), so an aggregate with `others` knows its
     /// bounds (9.3.3.3). Consumed by `resolve`.
     #[serde(skip)]
     pub(crate) context_subtype: Option<SubtypeId>,
+    /// Under `--relaxed` (R5): the run-time subtype of an unconstrained assignment target
+    /// whose right-hand side is being resolved, so `others` aggregates take its bounds.
+    #[serde(skip)]
+    pub(crate) relaxed_target: Option<SubtypeId>,
     /// `(top AST node address, context subtype)` of the complete context being resolved.
     #[serde(skip)]
     pub(crate) top_context: Option<(usize, SubtypeId)>,
@@ -213,13 +223,13 @@ pub struct Db {
     pub(crate) ext_memo: HashMap<usize, ExprId>,
     /// Implicit aliases of the external names used directly in a statement or an alias
     /// target, made by [`Db::alias_external_uses`] (#93).
-    pub(crate) ext_uses: HashMap<crate::external::ExtOwner, Box<[DeclId]>>,
+    pub(crate) ext_uses: TrackedMap<crate::external::ExtOwner, Box<[DeclId]>>,
     /// The package object each resolved package-path external name denotes, made by
     /// [`Db::bind_package_paths`] (#255).
-    pub(crate) pkg_targets: HashMap<ExternalId, DeclId>,
+    pub(crate) pkg_targets: TrackedMap<ExternalId, DeclId>,
     /// The type mark as written of a parameter (by its object decl) and of a function's
     /// result (by the subprogram decl), for messages in the user's spelling (8.3).
-    pub(crate) written_marks: HashMap<DeclId, Span>,
+    pub(crate) written_marks: TrackedMap<DeclId, Span>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     #[serde(skip)]
@@ -233,16 +243,19 @@ pub struct Db {
     #[serde(skip)]
     pub(crate) stmt_owners: Vec<crate::stmt::Owner>,
     /// Configuration specifications (7.3.1) by the declarative region they are in (unit.rs).
-    pub config_specs: HashMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
+    pub config_specs: TrackedMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
     /// Configuration specifications whose instance labels wait for the statement part.
     #[serde(skip)]
     pub(crate) pending_specs: Vec<crate::unit::PendingSpec>,
     /// 2019 range record types (`R'RECORD`) by scalar base type, made on first use (attr.rs).
-    pub(crate) range_records: HashMap<TypeId, SubtypeId>,
+    pub(crate) range_records: TrackedMap<TypeId, SubtypeId>,
     /// Generic defaults, generic lists and instance remappings (generic.rs).
     pub(crate) generic: crate::generic::GenericState,
     /// Whole-design facts found by [`Db::settle`] (see [`Facts`]).
     pub(crate) facts: Option<Facts>,
+    /// The packages outside std with run-time objects as [`Db::run_time_package_set`] found them
+    /// when the image was made, with the sizes of the arenas they were found in (#426).
+    pub(crate) run_time_pkgs: Option<((usize, usize, usize), Vec<UnitId>)>,
     /// The facts of the units replayed from the analysed-unit cache since the last settle, by
     /// load (their entries are not scanned; `units.rs`).
     #[serde(skip)]
@@ -290,12 +303,16 @@ pub struct TimeUnitUse {
 }
 
 impl Db {
+    /// Declarations, expressions and statements from which [`Db::release_analysis`] frees.
+    const FREE_FROM: usize = 50_000;
+
     /// Free the analysis results (units, declarations, expressions, statements, types, scopes
     /// and the analysis caches), keeping only the source map, for a run that needs nothing
     /// else of the design once it is elaborated and lowered (#409). Nothing may use the
     /// design below the source map afterwards: ids into the arenas dangle. The memory is freed
     /// on a thread of its own: dropping every node one by one took a fifth of a short run.
     pub fn release_analysis(&mut self) {
+        let size = self.decls.len() + self.exprs.len() + self.stmts.len();
         let mut junk: Vec<Box<dyn std::any::Any + Send>> = Vec::new();
         macro_rules! free {
             ($($f:ident),*) => {$(junk.push(Box::new(std::mem::take(&mut self.$f)));)*};
@@ -334,6 +351,12 @@ impl Db {
             lib_by_key,
             generic
         );
+        // A small design stays allocated until the process ends: a thread and the freeing cost
+        // a thirtieth of a tiny run (#426), and the memory is a few megabytes.
+        if size < Self::FREE_FROM {
+            std::mem::forget(junk);
+            return;
+        }
         // A failed spawn drops the closure, and with it the memory, here.
         let _ = std::thread::Builder::new().spawn(move || drop(junk));
     }
@@ -369,6 +392,51 @@ impl Db {
         });
         if !zero && !builtin && fs < 1_000_000_000_000_000 && self.well_known.time == Some(ty) {
             self.time_units.push(TimeUnitUse { span, unit, fs });
+        }
+    }
+
+    pub(crate) fn run_time_key(&self) -> (usize, usize, usize) {
+        (self.units.len(), self.decls.len(), self.exprs.len())
+    }
+
+    /// Packages outside std with objects that exist at run time: signals, shared variables,
+    /// files, or constants sem did not fold (in the declaration or the body), or the aliases of
+    /// external names its subprograms use (#255), in unit order.
+    pub fn run_time_package_set(&self) -> Vec<UnitId> {
+        use crate::decl::{DeclKind, ObjClass};
+        let run_time = |d: DeclId| match &self.decls[d].kind {
+            DeclKind::Object(o) => match o.class {
+                ObjClass::Constant => o.default.is_some_and(|e| self.exprs[e].value.is_none()),
+                _ => true,
+            },
+            _ => self.decl_subprograms(d).into_iter().any(|m| {
+                !self
+                    .external_uses(crate::external::ExtOwner::Sub(m))
+                    .is_empty()
+            }),
+        };
+        self.units
+            .iter()
+            .filter(|(_, u)| self.libs[u.lib].name.key.as_str() != "std")
+            .filter(|&(id, _)| {
+                self.package_regions(id).is_some_and(|rs| {
+                    rs.into_iter()
+                        .any(|s| self.decls_with_instances(s).into_iter().any(run_time))
+                })
+            })
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// [`Db::run_time_package_set`] as stored by [`Db::to_image`], while the design has not
+    /// grown since and has no external name: finding it decodes the declarations of every
+    /// package. With external names the set changes when elaboration binds them (the aliases
+    /// of a subprogram's external names are found without growing the design), so it is found
+    /// again.
+    pub fn stored_run_time_packages(&self) -> Option<&[UnitId]> {
+        match &self.run_time_pkgs {
+            Some((key, p)) if *key == self.run_time_key() && self.externals.is_empty() => Some(p),
+            _ => None,
         }
     }
 
@@ -473,7 +541,7 @@ impl Db {
             scope: root,
             span: Span::default(),
             implicit: true,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         let ty = types.next_id();
         let subtype = subtypes.push(SubtypeDef {
@@ -516,13 +584,14 @@ impl Db {
             views: Arena::new(),
             externals: Arena::new(),
             attr_values: Arena::new(),
-            attr_index: HashMap::default(),
-            forwarding: HashMap::default(),
-            disconnect_times: HashMap::default(),
-            ret_names: HashMap::default(),
+            attr_index: Default::default(),
+            forwarding: Default::default(),
+            disconnect_times: Default::default(),
+            ret_names: Default::default(),
             time_units: Vec::new(),
-            attr_closed: HashSet::default(),
+            attr_closed: Default::default(),
             pending_label_attrs: Vec::new(),
+            out_reads: Vec::new(),
             pending_inst_checks: Vec::new(),
             pending_groups: Vec::new(),
             well_known: WellKnown::default(),
@@ -536,8 +605,8 @@ impl Db {
             lib_by_key: HashMap::default(),
             files: HashMap::default(),
             stack: Vec::new(),
-            undeclared: HashSet::default(),
-            rev_reported: HashSet::default(),
+            undeclared: Default::default(),
+            rev_reported: Default::default(),
             // A library's worth of lookups fills it; sized up front so it does not rehash
             // a dozen times on the way.
             lookup_cache: HashMap::with_capacity_and_hasher(1 << 13, Default::default()),
@@ -554,19 +623,21 @@ impl Db {
             param_anon: Vec::new(),
             anon_reuse: Default::default(),
             ext_memo: HashMap::default(),
-            ext_uses: HashMap::default(),
-            pkg_targets: HashMap::default(),
-            written_marks: HashMap::default(),
+            ext_uses: Default::default(),
+            pkg_targets: Default::default(),
+            written_marks: Default::default(),
             incomplete_ok: false,
             context_subtype: None,
+            relaxed_target: None,
             top_context: None,
-            tainted: HashSet::default(),
+            tainted: Default::default(),
             stmt_owners: Vec::new(),
-            config_specs: HashMap::default(),
-            range_records: HashMap::default(),
+            config_specs: Default::default(),
+            range_records: Default::default(),
             pending_specs: Vec::new(),
             generic: Default::default(),
             facts: None,
+            run_time_pkgs: None,
             unit_facts: Default::default(),
             diags: Vec::new(),
             errors: 0,

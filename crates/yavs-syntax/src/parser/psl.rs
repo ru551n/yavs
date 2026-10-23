@@ -18,6 +18,9 @@
 //! values at the clock event (`builtins`, below). Anything else is left to the skip with `W0004`: an attempt that does not fit the subset
 //! restores the position and drops its diagnostics.
 
+use super::psl_named::DeclKind;
+use super::psl_prop::{TProp, temporal_checker};
+use super::psl_seq::{SeqProp, seq_checker};
 use super::{PResult, Parser, Recover};
 use crate::Symbol;
 use crate::ast::*;
@@ -36,7 +39,8 @@ const HANDLED: &[&str] = &[
     "isunknown",
 ];
 
-/// PSL built-in functions outside the subset: a call of one skips the directive.
+/// PSL built-in functions outside the subset: a call of one skips the directive (`nondet*`
+/// without a warning, `psl_formal_only`).
 const BUILTINS: &[&str] = &["ended", "nondet", "nondet_vector"];
 
 /// PSL operator words the VHDL expression parser would take for names.
@@ -57,7 +61,13 @@ const OPERATORS: &[&str] = &[
 // ponytail: one variable per cycle; a counter queue if longer windows are ever needed.
 const MAX_NEXT: u32 = 256;
 
-enum Prop {
+enum Parsed {
+    Simple(Prop),
+    Seq(SeqProp),
+    Temporal(TProp),
+}
+
+pub(super) enum Prop {
     /// `always b`
     Always(Expr),
     /// `never b`
@@ -68,15 +78,16 @@ enum Prop {
     Cover(Expr),
 }
 
-type Save = (usize, usize, Option<u32>);
+type Save = (usize, usize, Option<u32>, u64);
 
 impl Parser<'_> {
     fn psl_save(&self) -> Save {
-        (self.pos, self.diags.len(), self.last_error)
+        (self.pos, self.diags.len(), self.last_error, self.fuel)
     }
 
-    fn psl_restore(&mut self, (pos, n, last): Save) {
+    fn psl_restore(&mut self, (pos, n, last, fuel): Save) {
         self.pos = pos;
+        self.fuel = fuel;
         self.diags.truncate(n);
         self.last_error = last;
     }
@@ -103,6 +114,38 @@ impl Parser<'_> {
         false
     }
 
+    /// Is the construct at the current token meaningful to formal tools only (`restrict`,
+    /// `restrict_guarantee`, `assume_guarantee`, `fairness`, `strong fairness`, or a directive
+    /// that calls `nondet`/`nondet_vector`)?
+    /// Simulation has nothing to run for it, so it is skipped without `W0004`.
+    pub(super) fn psl_formal_only(&self) -> bool {
+        let k = self.toks[self.pos].kind;
+        if matches!(
+            k,
+            Tok::Kw(Kw::Restrict | Kw::RestrictGuarantee | Kw::AssumeGuarantee | Kw::Fairness)
+        ) || (k == Tok::Kw(Kw::Strong) && self.toks[self.pos + 1].kind == Tok::Kw(Kw::Fairness))
+        {
+            return true;
+        }
+        let mut depth = 0u32;
+        for i in self.pos..self.eof_index() {
+            let t = self.toks[i];
+            match t.kind {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+                Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) if depth == 0 => return false,
+                Tok::Ident if self.toks[i + 1].kind == Tok::LParen => {
+                    let w = self.text(t);
+                    if w.eq_ignore_ascii_case("nondet") || w.eq_ignore_ascii_case("nondet_vector") {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Remember the name of a skipped `property` or `sequence` declaration: a directive naming
     /// it is outside the subset.
     pub(super) fn psl_skipped_name(&mut self) {
@@ -116,49 +159,141 @@ impl Parser<'_> {
     /// process, or `None`, with nothing consumed or reported, outside the subset.
     pub(super) fn psl_directive(&mut self) -> Option<ConcStmtKind> {
         let save = self.psl_save();
-        match self.psl_directive_inner() {
-            Ok(p) if self.diags.len() == save.1 => Some(ConcStmtKind::Process(p)),
-            _ => {
-                self.psl_restore(save);
-                None
+        // The simple parsers first; the temporal one takes what they do not.
+        for temporal in [false, true] {
+            match self.psl_directive_inner(temporal) {
+                Ok(p) if self.diags.len() == save.1 => return Some(ConcStmtKind::Process(p)),
+                _ => self.psl_restore(save),
             }
         }
+        None
     }
 
-    fn psl_directive_inner(&mut self) -> PResult<ProcessStmt> {
-        if self.psl_foreign() {
+    fn psl_directive_inner(&mut self, force_temporal: bool) -> PResult<ProcessStmt> {
+        self.psl_args.clear();
+        self.psl_expansions = 0;
+        self.psl_env.clear();
+        self.psl_end = usize::MAX;
+        let start = self.span();
+        let cover = self.at_kw(Kw::Cover);
+        let named = if cover {
+            None
+        } else {
+            self.psl_whole_property()
+        };
+        let seq = self.psl_at_sequence_from(1);
+        let end = self.psl_stmt_end();
+        let temporal = !cover && (force_temporal || self.psl_has_temporal(self.pos + 1, end));
+        if named.is_none() && self.psl_foreign_range(self.pos + 1, end, seq, temporal) {
             return Err(Recover);
         }
-        let start = self.span();
-        let mut prop = if self.bump().kind == Tok::Kw(Kw::Cover) {
+        self.bump();
+        let mut parsed = match named {
+            Some(d) => self.psl_expand(d, |p| {
+                let seq = p.psl_at_sequence_from(0);
+                let temporal = force_temporal || p.psl_has_temporal(p.pos, p.psl_end);
+                p.psl_parse_prop(false, seq, temporal)
+            })?,
+            None => self.psl_parse_prop(cover, seq, temporal)?,
+        };
+        let mut bi = Gen::new(self.span_from(start));
+        match &mut parsed {
+            Parsed::Simple(prop) => match prop {
+                Prop::Always(b) | Prop::Never(b) | Prop::Cover(b) => {
+                    self.psl_builtins(b, &mut bi)?
+                }
+                Prop::Imply(a, _, b) => {
+                    self.psl_builtins(a, &mut bi)?;
+                    self.psl_builtins(b, &mut bi)?;
+                }
+            },
+            Parsed::Seq(sp) => {
+                for e in &mut sp.leaves.exprs {
+                    self.psl_builtins(e, &mut bi)?;
+                }
+                if sp.needs_first() {
+                    bi.need_first();
+                }
+            }
+            Parsed::Temporal(tp) => {
+                for e in &mut tp.leaves.exprs {
+                    self.psl_builtins(e, &mut bi)?;
+                }
+                if tp.needs_first() {
+                    bi.need_first();
+                }
+            }
+        }
+        self.psl_arg_stmts(&mut bi);
+        bi.finish();
+        let (clock, report, severity) = self.psl_tail()?;
+        let span = self.span_from(start);
+        Ok(match parsed {
+            Parsed::Simple(prop) => checker(prop, clock, report, severity, bi, span),
+            Parsed::Seq(sp) => seq_checker(sp, clock, report, severity, bi)?,
+            Parsed::Temporal(tp) => temporal_checker(tp, clock, report, severity, bi)?,
+        })
+    }
+
+    /// The property at the current token: the simple forms, or one over sequences
+    /// (`psl_seq.rs`; a sequence of one boolean, and `{a} |-> b`, `{a} |=> b`, take the
+    /// cheaper simple form).
+    fn psl_parse_prop(&mut self, cover: bool, seq: bool, temporal: bool) -> PResult<Parsed> {
+        if temporal {
+            return Ok(Parsed::Temporal(self.psl_temporal_prop()?));
+        }
+        if seq {
+            return Ok(match self.psl_seq_prop(cover)?.into_simple() {
+                Ok(p) => Parsed::Simple(p),
+                Err(p) => Parsed::Seq(p),
+            });
+        }
+        Ok(Parsed::Simple(if cover {
             let brace = self.eat(Tok::LBrace);
-            let b = self.expr()?;
+            let b = self.psl_expr()?;
             if brace {
                 self.expect(Tok::RBrace)?;
             }
             Prop::Cover(b)
         } else {
             self.psl_top()?
-        };
-        let mut bi = Gen::new(self.span_from(start));
-        match &mut prop {
-            Prop::Always(b) | Prop::Never(b) | Prop::Cover(b) => self.psl_builtins(b, &mut bi)?,
-            Prop::Imply(a, _, b) => {
-                self.psl_builtins(a, &mut bi)?;
-                self.psl_builtins(b, &mut bi)?;
-            }
+        }))
+    }
+
+    /// The declared property that makes up the whole property of the directive at the
+    /// current token (`assert p;`, `assume p(a, b) @clk;`).
+    fn psl_whole_property(&self) -> Option<usize> {
+        let d = self.psl_named_at(1, DeclKind::Property)?;
+        let mut j = (self.pos + 2).min(self.eof_index());
+        if self.toks[j].kind == Tok::LParen {
+            j = self.after_matching_paren(j).min(self.eof_index());
         }
-        bi.finish();
-        let clock = if self.eat(Tok::At) {
-            self.expr()?
-        } else {
-            let from = self.psl_clock.ok_or(Recover)?;
-            let back = self.pos;
-            self.pos = from;
-            let c = self.expr();
-            self.pos = back;
-            c?
-        };
+        matches!(
+            self.toks[j].kind,
+            Tok::At | Tok::Semi | Tok::Kw(Kw::Report | Kw::Severity)
+        )
+        .then_some(d)
+    }
+
+    /// Index of the `;` that ends the statement at the current token.
+    fn psl_stmt_end(&self) -> usize {
+        let mut depth = 0u32;
+        let mut i = self.pos;
+        while i < self.eof_index() {
+            match self.toks[i].kind {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
+                Tok::Semi if depth == 0 => return i,
+                _ => {}
+            }
+            i += 1;
+        }
+        i
+    }
+
+    /// `[@ clock] [report r] [severity s] ;` after a property.
+    fn psl_tail(&mut self) -> PResult<(Expr, Option<Expr>, Option<Expr>)> {
+        let clock = self.psl_clock_expr()?;
         let report = if self.eat_kw(Kw::Report) {
             Some(self.expr()?)
         } else {
@@ -170,52 +305,68 @@ impl Parser<'_> {
             None
         };
         self.expect(Tok::Semi)?;
-        Ok(checker(
-            prop,
-            clock,
-            report,
-            severity,
-            bi,
-            self.span_from(start),
-        ))
+        Ok((clock, report, severity))
     }
 
-    /// Does the directive name a PSL built-in, operator word (other than its leading
-    /// `always`/`never`) or skipped declaration?
-    fn psl_foreign(&self) -> bool {
-        let mut depth = 0u32;
-        let mut i = self.pos + 1;
-        while i < self.eof_index() {
+    /// The `@` clock after a property, or the default clock.
+    fn psl_clock_expr(&mut self) -> PResult<Expr> {
+        if self.eat(Tok::At) {
+            return self.expr();
+        }
+        let from = self.psl_clock.ok_or(Recover)?;
+        let back = self.pos;
+        self.pos = from;
+        let c = self.expr();
+        self.pos = back;
+        c
+    }
+
+    /// Do the tokens `from..to` name a PSL built-in, operator word (other than a leading
+    /// `always`/`never`) or skipped declaration? `seq`: `within` and `inf` are fine.
+    pub(super) fn psl_foreign_range(
+        &self,
+        from: usize,
+        to: usize,
+        seq: bool,
+        temporal: bool,
+    ) -> bool {
+        for i in from..to.min(self.eof_index()) {
             let t = self.toks[i];
-            match t.kind {
-                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
-                Tok::RParen | Tok::RBracket | Tok::RBrace => depth = depth.saturating_sub(1),
-                Tok::Semi if depth == 0 => return false,
-                Tok::Ident => {
-                    let w = self.text(t).to_ascii_lowercase();
-                    let call = self.toks[i + 1].kind == Tok::LParen;
-                    let directive = |k: Tok| matches!(k, Tok::Kw(Kw::Assert | Kw::Assume));
-                    let lead = directive(self.toks[i - 1].kind)
-                        || self.toks[i - 1].kind == Tok::LParen && directive(self.toks[i - 2].kind);
-                    if (call && BUILTINS.contains(&w.as_str()))
-                        || (!lead && OPERATORS.contains(&w.as_str()))
-                        || w.starts_with("next_")
-                        || w.starts_with("before")
-                        || w.starts_with("until")
-                        || self.psl_names.contains(&self.make_ident(t).key)
-                    {
-                        return true;
-                    }
-                }
-                _ => {}
+            if t.kind != Tok::Ident {
+                continue;
             }
-            i += 1;
+            let w = self.text(t).to_ascii_lowercase();
+            let call = self.toks[i + 1].kind == Tok::LParen;
+            let lead = i == from || (i == from + 1 && self.toks[from].kind == Tok::LParen);
+            if (call && BUILTINS.contains(&w.as_str()))
+                || (!lead
+                    && OPERATORS.contains(&w.as_str())
+                    && !(seq && matches!(w.as_str(), "within" | "inf"))
+                    && !(temporal
+                        && matches!(
+                            w.as_str(),
+                            "always"
+                                | "never"
+                                | "sync_abort"
+                                | "abort"
+                                | "async_abort"
+                                | "within"
+                                | "inf"
+                        )))
+                || (!temporal
+                    && (w.starts_with("next_")
+                        || w.starts_with("before")
+                        || w.starts_with("until")))
+                || self.psl_names.contains(&self.make_ident(t).key)
+            {
+                return true;
+            }
         }
         false
     }
 
     /// The lowercase text of the identifier `n` tokens ahead.
-    fn psl_word(&self, n: usize) -> Option<String> {
+    pub(super) fn psl_word(&self, n: usize) -> Option<String> {
         (self.nth(n) == Tok::Ident).then(|| {
             self.text(self.toks[(self.pos + n).min(self.eof_index())])
                 .to_ascii_lowercase()
@@ -237,7 +388,7 @@ impl Parser<'_> {
             }
             Some("never") => {
                 self.bump();
-                Ok(Prop::Never(self.expr()?))
+                Ok(Prop::Never(self.psl_expr()?))
             }
             _ => Err(Recover),
         }
@@ -251,7 +402,7 @@ impl Parser<'_> {
             self.expect(Tok::RParen)?;
             return Ok(p);
         }
-        let a = self.expr()?;
+        let a = self.psl_expr()?;
         if !self.eat(Tok::Imply) {
             return Ok(Prop::Always(a));
         }
@@ -259,20 +410,15 @@ impl Parser<'_> {
         if self.eat_kw(Kw::Next) {
             n = 1;
             if self.eat(Tok::LBracket) {
-                if self.peek() != Tok::Abstract {
-                    return Err(Recover);
-                }
-                let t = self.bump();
                 n = self
-                    .text(t)
-                    .parse::<u32>()
+                    .psl_count()
                     .ok()
                     .filter(|&n| n <= MAX_NEXT)
                     .ok_or(Recover)?;
                 self.expect(Tok::RBracket)?;
             }
         }
-        Ok(Prop::Imply(a, n, self.expr()?))
+        Ok(Prop::Imply(a, n, self.psl_expr()?))
     }
 
     /// Is there a `->` directly inside the parentheses that open at the current token?
@@ -420,18 +566,18 @@ fn checker(
 
 /// The variables and statements the built-in calls of one directive need: `decls` go in the
 /// process, `pre` runs after the clock event and before the check, `post` after it.
-struct Gen {
-    span: Span,
+pub(super) struct Gen {
+    pub(super) span: Span,
     n: u32,
     /// A `first` flag is needed (`prev` of the first tick is the value itself).
     first: bool,
-    decls: Vec<Decl>,
-    pre: Vec<SeqStmt>,
-    post: Vec<SeqStmt>,
+    pub(super) decls: Vec<Decl>,
+    pub(super) pre: Vec<SeqStmt>,
+    pub(super) post: Vec<SeqStmt>,
 }
 
 impl Gen {
-    fn new(span: Span) -> Self {
+    pub(super) fn new(span: Span) -> Self {
         Gen {
             span,
             n: 0,
@@ -442,7 +588,7 @@ impl Gen {
         }
     }
 
-    fn ident(&self, s: &str) -> Ident {
+    pub(super) fn ident(&self, s: &str) -> Ident {
         Ident {
             text: Symbol::intern(s),
             key: Symbol::intern(s),
@@ -450,36 +596,36 @@ impl Gen {
         }
     }
 
-    fn name(&self, kind: NameKind) -> Name {
+    pub(super) fn name(&self, kind: NameKind) -> Name {
         Name {
             kind,
             span: self.span,
         }
     }
 
-    fn var(&self, s: &str) -> Expr {
+    pub(super) fn var(&self, s: &str) -> Expr {
         self.expr(ExprKind::Name(self.name(NameKind::Simple(self.ident(s)))))
     }
 
-    fn expr(&self, kind: ExprKind) -> Expr {
+    pub(super) fn expr(&self, kind: ExprKind) -> Expr {
         Expr {
             kind,
             span: self.span,
         }
     }
 
-    fn int(&self, v: &str) -> Expr {
+    pub(super) fn int(&self, v: &str) -> Expr {
         self.expr(ExprKind::Literal(Literal {
             kind: LiteralKind::Abstract(Symbol::intern(v)),
             span: self.span,
         }))
     }
 
-    fn paren(&self, e: Expr) -> Expr {
+    pub(super) fn paren(&self, e: Expr) -> Expr {
         self.expr(ExprKind::Paren(Box::new(e)))
     }
 
-    fn bin(&self, op: BinaryOp, left: Expr, right: Expr) -> Expr {
+    pub(super) fn bin(&self, op: BinaryOp, left: Expr, right: Expr) -> Expr {
         self.expr(ExprKind::Binary {
             op,
             left: Box::new(left),
@@ -487,7 +633,7 @@ impl Gen {
         })
     }
 
-    fn stmt(&self, kind: SeqStmtKind) -> SeqStmt {
+    pub(super) fn stmt(&self, kind: SeqStmtKind) -> SeqStmt {
         SeqStmt {
             label: None,
             kind,
@@ -495,14 +641,14 @@ impl Gen {
         }
     }
 
-    fn assign(&self, target: &str, value: Expr) -> SeqStmt {
+    pub(super) fn assign(&self, target: &str, value: Expr) -> SeqStmt {
         self.stmt(SeqStmtKind::VariableAssign {
             target: self.var(target),
             rhs: Rhs::Simple(value),
         })
     }
 
-    fn when(&self, cond: Expr, then: Vec<SeqStmt>) -> SeqStmt {
+    pub(super) fn when(&self, cond: Expr, then: Vec<SeqStmt>) -> SeqStmt {
         self.stmt(SeqStmtKind::If {
             branches: vec![(cond, then)],
             else_: None,
@@ -511,7 +657,12 @@ impl Gen {
     }
 
     /// `variable <names> : <subtype> [:= default];`
-    fn decl(&mut self, names: &[String], subtype: SubtypeIndication, default: Option<Expr>) {
+    pub(super) fn decl(
+        &mut self,
+        names: &[String],
+        subtype: SubtypeIndication,
+        default: Option<Expr>,
+    ) {
         self.decls.push(Decl::Object(ObjectDecl {
             class: ObjectClass::Variable,
             names: names.iter().map(|n| self.ident(n)).collect(),
@@ -523,7 +674,7 @@ impl Gen {
         }));
     }
 
-    fn subtype(&self, mark: Name) -> SubtypeIndication {
+    pub(super) fn subtype(&self, mark: Name) -> SubtypeIndication {
         SubtypeIndication {
             resolution: None,
             type_mark: mark,
@@ -532,12 +683,12 @@ impl Gen {
         }
     }
 
-    fn simple_subtype(&self, s: &str) -> SubtypeIndication {
+    pub(super) fn simple_subtype(&self, s: &str) -> SubtypeIndication {
         self.subtype(self.name(NameKind::Simple(self.ident(s))))
     }
 
     /// `x'attr` of a name.
-    fn attr(&self, x: Name, attr: &str) -> Name {
+    pub(super) fn attr(&self, x: Name, attr: &str) -> Name {
         self.name(NameKind::Attribute {
             prefix: Box::new(x),
             attr: self.ident(attr),
@@ -545,7 +696,7 @@ impl Gen {
     }
 
     /// `\psl first\`, declared on first use: `true` until the first tick has passed.
-    fn need_first(&mut self) {
+    pub(super) fn need_first(&mut self) {
         if !self.first {
             self.first = true;
             let boolean = self.simple_subtype("boolean");
@@ -555,7 +706,7 @@ impl Gen {
     }
 
     /// The last statement of `post`.
-    fn finish(&mut self) {
+    pub(super) fn finish(&mut self) {
         if self.first {
             let no = self.var("false");
             self.post.push(self.assign("\\psl first\\", no));
@@ -803,6 +954,11 @@ impl Parser<'_> {
     /// The expression that starts at byte offset `start`, parsed again (the tree is not
     /// `Clone`).
     fn psl_reparse_at(&mut self, start: u32) -> PResult<Expr> {
+        // ponytail: a built-in on a formal of a named sequence or property would need the
+        // environment of its expansion; such directives are skipped.
+        if self.psl_expansions > 0 {
+            return Err(Recover);
+        }
         let i = self.toks.partition_point(|t| t.start < start);
         if self.toks.get(i).is_none_or(|t| t.start != start) {
             return Err(Recover);

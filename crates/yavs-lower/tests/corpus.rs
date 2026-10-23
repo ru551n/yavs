@@ -21,9 +21,13 @@ const PASS: &[&str] = &[
     "protected/access_method_call_2019",
     "textio/file_in_subprogram",
     "textio/read_failed",
+    "textio/read_bit_vector_white_space",
+    "textio/binary_file_composites",
+    "textio/binary_file_bounds",
     "access/access_string_array",
     "access/gc_random",
     "access/linked_list",
+    "access/allocator_overload",
     "access/null_deref",
     "access/package_alloc",
     "arith/div_zero",
@@ -36,6 +40,17 @@ const PASS: &[&str] = &[
     "composite/sig_array_part",
     "composite/record_conversion_2019",
     "composite/record_subtype_others",
+    "composite/others_element_attr",
+    "composite/case_aggregate_choice",
+    "composite/process_label_subtype",
+    "composite/user_attribute_index",
+    "composite/attribute_value_subtype",
+    "composite/record_constant_element_bounds",
+    "composite/alias_subtype_open_elements",
+    "generics/package_instance_deferred",
+    "generics/package_instance_deferred_call",
+    "composite/subtype_attr_conversion",
+    "composite/others_unconstrained_target",
     "sigassign/slice_param_range",
     "composite/static_slice_choice",
     "composite/narrow_int_storage",
@@ -47,9 +62,13 @@ const PASS: &[&str] = &[
     "composite/loop_invariant_fault_order",
     "composite/loop_invariant_replay",
     "composite/process_loop_invariant",
+    "composite/process_instance_slices",
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/case_slice_choice",
+    "composite/case_length_mismatch",
+    "composite/record_aggregate_field_length",
+    "composite/record_aggregate_field_range",
     "composite/aggregate_target_logic_fields",
     "composite/aggregate_target_matrix",
     "composite/aggregate_target_matrix_cover",
@@ -59,6 +78,7 @@ const PASS: &[&str] = &[
     "composite/aggregate_named_pieces",
     "composite/aggregate_piece_direction",
     "composite/aggregate_open_elements",
+    "composite/aggregate_2d_named_rows",
     "composite/aggregate_fill",
     "composite/periodic_const",
     "composite/element_attr_open",
@@ -102,14 +122,17 @@ const PASS: &[&str] = &[
     "composite/strings_ops",
     "composite/unconstrained_records",
     "composite/record_signal_field_read",
+    "composite/record_signal_vector_read",
     "delta/async_triggers",
     "delta/concurrent_assign",
     "delta/delta_chain",
     "delta/delta_order",
     "delta/event_attrs",
+    "delta/guard_initial_value",
     "delta/signal_update_order",
     "delta/skip_unchanged",
     "env/assert_clear_exit",
+    "env/file_ops_2019",
     "env/assert_count_cycles",
     "env/assert_count",
     "env/call_path",
@@ -131,6 +154,7 @@ const PASS: &[&str] = &[
     "force/force_selected",
     "generics/call_generic_map_2019",
     "generics/call_generic_map_2019_hand",
+    "generics/package_generic_map",
     "generics/case_generate_array",
     "generics/attr_image_value",
     "generics/composite_eval",
@@ -172,12 +196,17 @@ const PASS: &[&str] = &[
     "hierarchy/label_path_name",
     "hierarchy/component_binding",
     "hierarchy/config_block_component",
+    "hierarchy/config_generate_range_name",
     "hierarchy/package_body_item_name",
+    "hierarchy/package_subprogram_param_names",
     "hierarchy/port_actual_generic_bounds",
     "hierarchy/use_library_all",
     "hierarchy/binding_actual_names",
     "hierarchy/config_generate_index",
+    "hierarchy/config_generate_range",
+    "hierarchy/constant_reads_signal",
     "hierarchy/config_port_expr",
+    "hierarchy/port_init_read",
     "hierarchy/out_port_collapse",
     "hierarchy/driving_value_no_driver",
     "hierarchy/use_type_operations",
@@ -203,6 +232,8 @@ const PASS: &[&str] = &[
     "hierarchy/mode_view_param_nested",
     "hierarchy/mode_view_param_procs",
     "hierarchy/mode_view_ports",
+    "hierarchy/mode_view_concurrent_call",
+    "hierarchy/port_operator_call_syntax",
     "hierarchy/mode_view_assoc_array",
     "hierarchy/mode_view_assoc_param",
     "hierarchy/mode_view_assoc_param_deep",
@@ -257,9 +288,11 @@ const PASS: &[&str] = &[
     "ieee/user_reduce_idiom",
     "postponed/postponed_basic",
     "postponed/postponed_wait",
+    "process/all_local_subprogram",
     "process/call_chain",
     "process/call_chain_error",
     "process/call_conversions",
+    "process/call_error_path",
     "process/call_conversions_unconstrained",
     "process/case_if",
     "process/wait_in_sensitivity_proc",
@@ -318,6 +351,14 @@ const PASS: &[&str] = &[
     "psl/psl_clock",
     "psl/psl_pragma",
     "psl/psl_subset",
+    "psl/psl_hdl_exprs",
+    "psl/psl_sequences",
+    "psl/psl_sequences_ops",
+    "psl/psl_named",
+    "psl/psl_named_formals",
+    "psl/psl_temporal",
+    "psl/psl_temporal_ext",
+    "generics/anonymous_ports_2019_hand",
     "report/assert_user_message",
     "report/concurrent_assert",
     "report/error_then_end",
@@ -367,19 +408,30 @@ const PASS: &[&str] = &[
     "scalar/string_attrs",
     "scalar/subtype_range",
     "scalar/subtype_range_compat",
+    "scalar/integer_literal_outside",
     "scalar/time_attrs",
     "scalar/time_bounds",
     "shared/access_vars",
     "shared/pkg_vars",
     "shared/region_vars",
+    "shared/elab_call",
+    "std93/numeric_std_93",
+    "std93/predefined_names",
+    "std93/shared_plain",
+    "std93/slv_overloads",
+    "std93/synopsys_arith_93",
+    "std93/textio_93",
     "sigassign/assign_inertial",
     "sigassign/assign_reject",
     "sigassign/assign_transport",
     "sigassign/concurrent_aggregate_choices",
+    "sigassign/guarded_explicit_guard",
     "sigassign/guarded_unguarded_target",
     "sigassign/implicit_in_process",
     "sigassign/implicit_in_subprogram",
     "sigassign/last_value_whole",
+    "sigassign/null_waveform",
+    "sigassign/null_waveform_mixed",
     "sigassign/out_param_elements",
     "sigassign/plain_copies",
     "sigassign/port_elem_active",
@@ -413,6 +465,7 @@ const GROUPS: &[&str] = &[
     "access",
     "protected",
     "shared",
+    "std93",
     "resolution",
     "force",
     "textio",
@@ -439,6 +492,7 @@ fn header(src: &str) -> (String, LangRev, Time, bool) {
     for kv in line.split_whitespace() {
         match kv.split_once('=') {
             Some(("top", v)) => top = v.to_string(),
+            Some(("std", "1993")) => rev = LangRev::Vhdl1993,
             Some(("std", "2019")) => rev = LangRev::Vhdl2019,
             Some(("stop", v)) => {
                 let ns = v.strip_suffix("ns").expect("stop in ns").parse().unwrap();
@@ -562,9 +616,14 @@ fn simulate(file: &Path) -> Result<String, String> {
                 yavs_kernel::ErrorKind::Runtime(m) => m.clone(),
                 k => k.to_string(),
             };
+            // The reference names the process only for an error inside a subprogram (#506).
+            let path = match (&e.process, e.trace.len() > 1) {
+                (Some((_, p)), true) => p.as_str(),
+                _ => "-",
+            };
             writeln!(
                 out,
-                "diag\tfatal\t{}\t{}\t-\t{}",
+                "diag\tfatal\t{}\t{}\t{path}\t{}",
                 e.time.as_fs(),
                 e.delta,
                 escape(&msg)
@@ -607,8 +666,9 @@ fn fatalmsg_mask(text: &str) -> String {
     out
 }
 
-/// Sorts each run of `diag` events of one time and delta stably by process path.
-fn order_mask(text: &str) -> String {
+/// Sorts each run of `diag` events of one time and delta stably by process path, or by text
+/// when the path is ignored too (`by_text`, run after `path_mask`).
+fn order_mask(text: &str, by_text: bool) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let key = |l: &str| {
         let f: Vec<&str> = l.split('\t').collect();
@@ -623,7 +683,7 @@ fn order_mask(text: &str) -> String {
             j += 1;
         }
         let mut run = lines[i..j].to_vec();
-        run.sort_by_key(|l| l.split('\t').nth(4).unwrap_or(""));
+        run.sort_by_key(|l| l.split('\t').nth(if by_text { 5 } else { 4 }).unwrap_or(""));
         for l in run {
             out.push_str(l);
             out.push('\n');
@@ -669,14 +729,15 @@ fn corpus_groups() {
                         .any(|v| v.split(',').any(|f| f == field))
                 })
             };
-            if ignores("order") {
-                expected = order_mask(&expected);
-                got = got.map(|o| order_mask(&o));
-            }
             // `ignore=path`: the process path of `diag` events is not compared.
             if ignores("path") {
                 expected = path_mask(&expected);
                 got = got.map(|o| path_mask(&o));
+            }
+            if ignores("order") {
+                let by_text = ignores("path");
+                expected = order_mask(&expected, by_text);
+                got = got.map(|o| order_mask(&o, by_text));
             }
             // `ignore=fatalmsg`: the text of a fatal run-time error is not compared.
             if ignores("fatalmsg") {

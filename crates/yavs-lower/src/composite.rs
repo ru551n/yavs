@@ -513,6 +513,7 @@ impl Fx<'_, '_> {
             dst: l,
             ty: tid,
             desc,
+            cache: None,
         });
         l
     }
@@ -1875,7 +1876,13 @@ impl Fx<'_, '_> {
             let (a, fd) = self.field_addr(tid, data, desc, n as u32, span)?;
             if let V::A(_, vd) = v {
                 let fst = self.field_subtype(t, n as u32)?;
-                self.check_desc(db.base(fst), f.ty, vd, fd, "record aggregate element", span)?;
+                let what = match &db.types[t].kind {
+                    TypeKind::Record { elems } => {
+                        format!("field {}", elems[n].name.text.as_str().to_ascii_uppercase())
+                    }
+                    _ => "record aggregate element".to_string(),
+                };
+                self.check_desc(db.base(fst), f.ty, vd, fd, &what, span)?;
             }
             self.store_at(f.ty, a, v, span)?;
         }

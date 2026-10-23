@@ -13,12 +13,15 @@
 //! `StmtId`s, innermost first. Broken invariants are `ErrorKind::Internal`.
 
 mod binfile;
+mod census;
 mod debug;
 mod env;
 mod exec;
 mod foreign;
 mod pre;
+mod scan;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
+pub use scan::{Scan, ScanFrom, ScanShape, SearchLoop, scan_bytes, search_loops};
 mod heap;
 mod ieee;
 mod implicit;
@@ -27,6 +30,7 @@ mod reflect;
 mod roots;
 mod state;
 mod textio;
+mod tier_census;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -40,6 +44,7 @@ use yavs_kernel::{
 use yavs_std::arith::TimeResolution;
 use yavs_std::types::Revision;
 
+pub use census::{dump as census_dump, ops_executed};
 pub use debug::{
     DebugSession, Debugger, FrameView, HitCond, Hits, LineBp, LocalView, ProcState, ProcStatus,
     Resume, SignalBreak, Stop, StopReason, Watches, format_scalar,
@@ -47,13 +52,16 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pre::static_wait;
+pub use pre::{ScalarDrive, scalar_drives, static_wait};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
+pub use tier_census::report as tier_census;
 /// Keep subprogram variables in their frame slots for a debugger (see `yavs_ir::opt`).
 pub use yavs_ir::opt::{
-    compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables,
+    compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables, layout_slots,
 };
+/// How far the simulation has got, in process runs (see `yavs_kernel::progress`).
+pub use yavs_kernel::progress as sim_progress;
 
 use exec::{Fault, Machine, Outcome};
 
@@ -298,6 +306,10 @@ impl Default for Bindings {
 /// and returns at the others (returns, error paths), which the interpreter then executes.
 /// A call `step` made may run on in compiled code without returning to the interpreter
 /// (`TierHost::ret` pops it). The interpreter stays the semantic reference (rule 5).
+///
+/// A frame starts with the preloaded registers of `Pre`; the registers holding the address of a
+/// lean parameter's slot are zero in every frame, though code entered at a later pc has skipped
+/// their definition: never read them (#566).
 pub trait Tier: Send + Sync {
     /// Run `func` from instruction `pc` of the top frame (whose view [`TierHost::view`]
     /// gives) until an instruction the interpreter must execute and return its index, or
@@ -483,7 +495,7 @@ pub trait TierHost {
 
     /// Execute the signal instruction at `pc` of the top frame as `step` does, through the
     /// same interpreter functions without its generic dispatch: `SigReadScalar`, `SigRead`,
-    /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, and (`edge` 1 rising, 2 falling) a `CallNative`
+    /// `Drive`, `DriveSlot`, `WaitOn`, `WaitFor` (each with the `Suspend` after it), `Suspend`, `Edge`, and (`edge` 1 rising, 2 falling) a `CallNative`
     /// of `rising_edge` / `falling_edge` ([`edge_native`]), and the instructions that only
     /// change the temporary area (`TempRoot`, `Stmt` and `NewFrame`: the view's temporary
     /// fields are brought up to date) or only memory and a register (`Deref`, `MemEq`, `Cat`);
@@ -521,6 +533,29 @@ pub trait TierHost {
         let _ = (driver, target, delay, block);
         false
     }
+
+    /// The scalar logic assignment of a [`ScalarDrive`] for a zero delay, when the kernel takes
+    /// it on its fastest path: `true` when done; `false` (nothing done) otherwise, and the
+    /// caller uses `drive_bit`.
+    fn drive_bit_now(&mut self, driver: u32, target: [u64; 2], code: u64) -> bool {
+        let _ = (driver, target, code);
+        false
+    }
+
+    /// The scalar logic assignment of a [`ScalarDrive`] whose `Drive` is at `pc`, with the delay
+    /// (femtoseconds) and the logic `code` the compiled code computed: what the five
+    /// instructions it did not run would have done, in every case.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_bit(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        code: u64,
+        inertial: bool,
+    ) -> Stepped;
 
     /// `WaitOn` of the signal reference `sig` (its two words) for compiled code that waits on
     /// more signals after it: `true` when the kernel took it as the same registration as at the
@@ -562,6 +597,20 @@ pub trait TierHost {
         inertial: bool,
     ) -> Stepped;
 
+    /// `drive_block` for a target of more than 64 logic elements: `planes` are the plane blocks
+    /// of the waveform element (32 bytes per 64 elements, as `Ctx::read_into` makes them).
+    #[allow(clippy::too_many_arguments)]
+    fn drive_wide(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        planes: &[u8],
+        inertial: bool,
+    ) -> Stepped;
+
     /// The `WaitOn` at `pc` of the single-range signal reference `sig` (its two registers)
     /// and the `Suspend` after it, as `signal` runs them.
     fn wait_suspend(&mut self, fr: &mut TierFrame, pc: u32, sig: [u64; 2]) -> Stepped;
@@ -581,6 +630,18 @@ pub trait TierHost {
         cells: &[u64],
         depth: u64,
         slots: &mut Option<Box<dyn NativeSlots>>,
+    ) -> NativeCall;
+
+    /// [`TierHost::native_direct`] for a `CallNative` at `pc` of a frame-mode function (the
+    /// top frame, which has no native frames above it): same results; on [`NativeCall::Stop`]
+    /// the frame's pc is `pc`, as `Tier::run` expects of a suspension. The caller leaves
+    /// registers it holds untouched: the native reads none and writes none.
+    fn native_frame(
+        &mut self,
+        fr: &mut TierFrame,
+        pc: u32,
+        native: u32,
+        cells: &[u64],
     ) -> NativeCall;
 
     /// Instruction `pc` of function `func`, executed for a native frame by the interpreter's own
@@ -678,11 +739,12 @@ pub struct TierFrame {
     /// runs without a kernel (elaboration). Filled once per entry, by [`TierHost::view`].
     pub sigtab: *const TierSig,
     pub sigtab_len: u64,
-    /// The edge the kernel resumed the process for in this activation: the kernel signal
-    /// (`u64::MAX`: none), the element, and 1 for rising, 0 for falling.
-    pub known_sig: u64,
-    pub known_elem: u64,
-    pub known_up: u64,
+    /// The edge the kernel resumed the process for in this activation as one word
+    /// (`yavs_kernel::edge_key` of the kernel signal, the element and the kind, `EdgeKind::code`),
+    /// `u64::MAX`: none.
+    pub known: u64,
+    /// The number of the current simulation cycle (`TierSig::stamps` equal to it: an event).
+    pub cycle: u64,
     /// The call depth limit (`Limits::max_depth`): frame indices compiled code may give its
     /// native frames stay below it.
     pub max_depth: u64,
@@ -722,6 +784,25 @@ pub struct TierSig {
     pub len: u64,
     pub signal: u64,
     pub off: u64,
+    /// The bytes that may be read from `codes` (`len`, rounded up to whole plane blocks, minus
+    /// the instance signal's start): the groups of eight codes around the last element.
+    pub cap: u64,
+    /// For `'event` and `rising_edge` of a signal of at most 64 elements: the cycle number of
+    /// the last event of each kernel element (0: not offered, ask [`TierHost::signal`]) and, for
+    /// a logic signal that keeps its codes, the plane block of the `'last_value`, the bit of
+    /// element `e` of plane `k` being bit `k` of its code.
+    pub stamps: u64,
+    pub last: u64,
+    /// The plane blocks of the kernel signal's current value (0: not offered), and the number of
+    /// elements from the instance signal's own first element to the end of the kernel signal.
+    /// A signal without codes (wide or a bus of many sources) is read from them.
+    pub planes: u64,
+    pub plen: u64,
+    /// For a signal of enumeration, integer, boolean or real elements: the bytes of its current
+    /// value (0: not offered) and the size of an element; `plen` counts its elements as for the
+    /// planes. A four-byte element reads sign-extended, the others zero-extended.
+    pub bytes: u64,
+    pub es: u64,
 }
 
 impl Default for TierFrame {
@@ -745,9 +826,8 @@ impl Default for TierFrame {
             up: [u64::MAX; 2],
             sigtab: std::ptr::null(),
             sigtab_len: 0,
-            known_sig: u64::MAX,
-            known_elem: 0,
-            known_up: 0,
+            known: u64::MAX,
+            cycle: 0,
             max_depth: 0,
             heap_epoch: 0,
             owner: 0,
@@ -785,6 +865,9 @@ pub struct Runtime {
     pub(crate) files: Mutex<Vec<textio::FileSlot>>,
     /// Compiled code, set once before the simulation starts (`set_tier`).
     pub(crate) tier: std::sync::OnceLock<Arc<dyn Tier>>,
+    /// When the tier was set: processes wait this long for it to compile their code before they
+    /// switch to a specialised copy (`Machine::specialise`).
+    pub(crate) tier_at: std::sync::OnceLock<std::time::Instant>,
     /// Calls run again for their side effects (`set_replay`): their reports without a
     /// kernel were printed and counted the first time.
     pub(crate) replay: std::sync::atomic::AtomicBool,
@@ -834,6 +917,30 @@ impl NativeFlags {
             .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CALL != 0)
     }
 
+    /// The tier calls `func` from the interpreter no more (compiled code taken back, `clear`).
+    pub fn clear_call(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_and(!NAT_CALL, Ordering::Release);
+        }
+    }
+
+    /// `func` has no compiled code any more: the interpreter runs it from its next entry (frames
+    /// of the compiled code that are running finish as they are).
+    pub fn clear(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_and(!NAT_CODE, Ordering::Release);
+        }
+        // Nothing compiled any more: the fast loop goes back to the one without the tier's
+        // bookkeeping. Only the thread that calls `set` calls this, so the two do not race.
+        if !self
+            .func
+            .iter()
+            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK) != 0)
+        {
+            self.any.store(false, Ordering::Release);
+        }
+    }
+
     /// `func` has compiled code now.
     pub fn set(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
@@ -853,9 +960,17 @@ pub(crate) const NAT_CALL: u8 = 4;
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
 /// slot per thread that ever ran the fast loop with a tier set, never freed (8 bytes).
-static SLOTS: Mutex<Vec<&'static std::sync::atomic::AtomicU64>> = Mutex::new(Vec::new());
+static SLOTS: Mutex<
+    Vec<(
+        &'static std::sync::atomic::AtomicU64,
+        &'static std::sync::atomic::AtomicU64,
+    )>,
+> = Mutex::new(Vec::new());
 
 thread_local! {
+    /// Where the watching loop was at its last look: `function << 32 | IR pc` (`pc_slot`).
+    static PC_SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
+        const { std::cell::Cell::new(None) };
     // Const-initialised: an access is one thread-local load and a predictable null test (a lazy
     // `thread_local!` with an initialiser costs a call per access, on every activation, #480).
     static SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
@@ -871,17 +986,57 @@ pub(crate) fn slot() -> &'static std::sync::atomic::AtomicU64 {
     }
 }
 
+/// This thread's `pc` slot; `slot()` made it.
+#[inline(always)]
+pub(crate) fn pc_slot() -> &'static std::sync::atomic::AtomicU64 {
+    PC_SLOT.get().unwrap_or_else(|| {
+        slot();
+        PC_SLOT.get().expect("pc slot")
+    })
+}
+
 #[cold]
 #[inline(never)]
 fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
     let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
+    let pc: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
     SLOTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(s);
+        .push((s, pc));
     SLOT.set(Some(s));
+    PC_SLOT.set(Some(pc));
     s
 }
+
+/// The activation at which a process that may have a copy specialised to its instance data
+/// switches to it (`InterpProcess::specialise_later`): `YAVS_SPEC_AFTER`, at least 2 (the first
+/// activation runs the declarative part).
+pub fn spec_after() -> u64 {
+    static AFTER: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *AFTER.get_or_init(|| {
+        std::env::var("YAVS_SPEC_AFTER")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(SPEC_AFTER)
+            .max(2)
+    })
+}
+
+/// Whether `YAVS_SPEC_AFTER` is set: a test run in which processes switch to copies whatever the
+/// tier has compiled (`Machine::specialise`).
+pub fn spec_forced() -> bool {
+    std::env::var_os("YAVS_SPEC_AFTER").is_some()
+}
+
+/// How long after a tier is set a process stays on its shared code (`Machine::specialise`): the
+/// tier needs about 30 ms of samples of a process before it compiles it, and its compile takes
+/// a few more.
+pub(crate) const SPEC_TIER_WAIT: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Activations of a process before it switches to its copy: the optimiser spends about 0.7
+/// million instructions on a copy, which an activation saves a few tens of (docs/design/specialisation.md).
+const SPEC_AFTER: u64 = 1024;
 
 fn usage(m: String) -> SimError {
     SimError::new(ErrorKind::Usage(m))
@@ -943,6 +1098,7 @@ impl Runtime {
             asserts: Default::default(),
             files: Mutex::new(textio::FileSlot::preopened()),
             tier: Default::default(),
+            tier_at: Default::default(),
             replay: Default::default(),
             id: {
                 static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -1072,6 +1228,7 @@ impl Runtime {
                 self.native.set_call(FuncId(i as u32));
             }
         }
+        let _ = self.tier_at.set(std::time::Instant::now());
         self.tier.set(tier).is_ok()
     }
 
@@ -1087,7 +1244,7 @@ impl Runtime {
     pub fn sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
         let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
-            for s in SLOTS
+            for (s, _) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
@@ -1100,6 +1257,25 @@ impl Runtime {
                         .get(func as usize)
                         .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
                     out.push((FuncId(func), compiled));
+                }
+            }
+        }
+    }
+
+    /// For the profiler (`yavs run --profile`): appends the function and IR pc each simulation
+    /// thread's watching interpreter loop last looked at, while it still runs that function. Only
+    /// interpreted code reports one, every `WATCH` loop iterations or calls.
+    pub fn line_sampler(&self) -> impl Fn(&mut Vec<(FuncId, u32)>) + Send + 'static {
+        let id = u64::from(self.id);
+        move |out| {
+            for (s, pc) in SLOTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+            {
+                let (v, at) = (s.load(Ordering::Relaxed), pc.load(Ordering::Relaxed));
+                if v >> 32 == id && at >> 32 == v & 0xffff_ffff {
+                    out.push((FuncId(v as u32), at as u32));
                 }
             }
         }
@@ -1141,15 +1317,9 @@ pub struct InterpProcess {
     m: Machine,
     started: bool,
     done: bool,
-    /// Started, not ended, no shared state and no debugger: `run` goes straight to
-    /// `Machine::run_quick`.
-    hot: bool,
     shared: Option<Arc<Mutex<SharedState>>>,
     /// This process's entry in `SharedState::procs`.
     roots_slot: Option<usize>,
-    /// Bumped whenever the machine runs or a variable is written: unchanged means every
-    /// variable of the process has its last value (the waveform recorder skips it).
-    execs: u64,
 }
 
 impl InterpProcess {
@@ -1190,11 +1360,20 @@ impl InterpProcess {
             m: Machine::new(rt, inst, drivers, func),
             started: false,
             done: false,
-            hot: false,
             shared,
             roots_slot: None,
-            execs: 0,
         })
+    }
+
+    /// Let the process switch to a copy of its function specialised to its instance data
+    /// (`Program::copy_of`) once it has run [`spec_after`] activations; `holes` are the byte
+    /// ranges of the data (offset, length) that hold the parameters of `for` generates, which
+    /// the copy does not fold (iterations of a generate share a copy). A process the copy
+    /// cannot stand in for stays as it is.
+    pub fn specialise_later(&mut self, holes: Arc<[(u32, u32)]>) {
+        if self.shared.is_none() {
+            self.m.specialise_at(spec_after(), holes);
+        }
     }
 
     /// Attach a debug session (ir.md 3.4); `name` appears in the session's process table.
@@ -1243,7 +1422,7 @@ impl InterpProcess {
     /// Writes `v` into variable `name` (see [`InterpProcess::var`]); a composite keeps its
     /// bounds, so `v`'s data must have the size of the current value's.
     pub fn set_var(&mut self, name: &str, v: &CallVal) -> Result<(), String> {
-        self.execs += 1;
+        self.m.execs += 1;
         let (ty, a) = self.var_slot(name)?;
         self.with_sh(|m| write_slot(m, ty, a, v))
     }
@@ -1269,7 +1448,7 @@ impl InterpProcess {
     /// ran) and not ended.
     /// A counter that changes whenever the process has run or had a variable written.
     pub fn execs(&self) -> u64 {
-        self.execs
+        self.m.execs
     }
 
     pub fn has_vars(&self) -> bool {
@@ -1471,15 +1650,22 @@ impl Process for InterpProcess {
             && !p.single_suspend(self.m.entry)
     }
 
+    fn entry_func(&self) -> Option<u32> {
+        Some(self.m.rt.prog.base_of(self.m.entry).0)
+    }
+
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
 
     #[inline]
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        if self.hot {
+        if self.m.hot {
             // Started, running, no shared state, no debugger: the activation of a process.
-            self.execs += 1;
+            self.m.execs += 1;
+            if self.m.execs == self.m.spec_at {
+                self.m.specialise();
+            }
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));
             }
@@ -1507,12 +1693,12 @@ impl InterpProcess {
             }
             exec::Quick::Returned => {
                 self.done = true;
-                self.hot = false;
+                self.m.hot = false;
                 self.m.terminated();
                 Ok(())
             }
             exec::Quick::Fault => {
-                self.hot = false;
+                self.m.hot = false;
                 let e = self.m.take_quick_fault();
                 Err(self.m.error(e, Some(ctx)))
             }
@@ -1537,8 +1723,8 @@ impl InterpProcess {
             return Err(self.m.error(e, Some(ctx)));
         }
         if self.shared.is_none() && self.m.can_run_quick() {
-            self.execs += 1;
-            self.hot = true;
+            self.m.execs += 1;
+            self.m.hot = true;
             return self.run_quick(ctx);
         }
         let r = self.exec(Some(&mut *ctx));
@@ -1563,7 +1749,7 @@ impl InterpProcess {
 impl InterpProcess {
     /// Runs the machine with the shared state locked, until it suspends or returns.
     fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
-        self.execs += 1;
+        self.m.execs += 1;
         let shared = self.shared.clone();
         let mut guard = match &shared {
             Some(s) => Some(

@@ -80,6 +80,25 @@ pub enum PredefAttr {
 }
 
 impl PredefAttr {
+    /// Whether the attribute reads the value of its signal prefix (LRM 1993 4.3.2: an `out` port
+    /// is not a legal prefix of these). The others (`'range`, `'length`, `'driving_value`,
+    /// `'simple_name`, ...) do not.
+    pub fn reads_value(self) -> bool {
+        use PredefAttr::*;
+        matches!(
+            self,
+            Event
+                | Active
+                | LastEvent
+                | LastActive
+                | LastValue
+                | Delayed
+                | Stable
+                | Quiet
+                | Transaction
+        )
+    }
+
     /// Look up by folded name.
     pub fn from_key(key: Symbol) -> Option<Self> {
         TABLE
@@ -250,6 +269,7 @@ pub struct AttrInfo {
     pub since: LangRev,
 }
 
+const V93: LangRev = LangRev::Vhdl1993;
 const V08: LangRev = LangRev::Vhdl2008;
 const V19: LangRev = LangRev::Vhdl2019;
 
@@ -263,46 +283,46 @@ use Form as F;
 /// `'left` and friends: scalar types; arrays (with a dimension); 2019 scalar
 /// objects and range attribute names (LRM 2019 16.2.2, 16.2.6).
 const BOUNDS: &[PrefixRule] = &[
-    p(F::TypeMark, C::Scalar, V08),
-    p(F::TypeMark, C::ConstrainedArray, V08),
-    p(F::Object, C::Array, V08),
+    p(F::TypeMark, C::Scalar, V93),
+    p(F::TypeMark, C::ConstrainedArray, V93),
+    p(F::Object, C::Array, V93),
     p(F::Object, C::Scalar, V19),
     p(F::Range, C::Scalar, V19),
 ];
 /// `'length`: arrays; 2019 discrete types (lrm-checks, sim1 2019).
 const LENGTH: &[PrefixRule] = &[
-    p(F::TypeMark, C::ConstrainedArray, V08),
-    p(F::Object, C::Array, V08),
+    p(F::TypeMark, C::ConstrainedArray, V93),
+    p(F::Object, C::Array, V93),
     p(F::TypeMark, C::Discrete, V19),
 ];
 /// `'range`, `'reverse_range`: arrays; scalar type marks are accepted in
 /// both revisions, as sim1 does (the 2008 text is silent, user policy).
 const RANGES: &[PrefixRule] = &[
-    p(F::TypeMark, C::ConstrainedArray, V08),
-    p(F::Object, C::Array, V08),
-    p(F::TypeMark, C::Scalar, V08),
+    p(F::TypeMark, C::ConstrainedArray, V93),
+    p(F::Object, C::Array, V93),
+    p(F::TypeMark, C::Scalar, V93),
 ];
 const IMAGE: &[PrefixRule] = &[
-    p(F::TypeMark, C::Scalar, V08),
+    p(F::TypeMark, C::Scalar, V93),
     p(F::TypeMark, C::Representable, V19),
     p(F::Object, C::Representable, V19),
 ];
 const VALUE: &[PrefixRule] = &[
-    p(F::TypeMark, C::Scalar, V08),
+    p(F::TypeMark, C::Scalar, V93),
     p(F::TypeMark, C::Representable, V19),
     p(F::Range, C::Scalar, V19),
 ];
 /// `'pos` and friends: discrete or physical types; 2019 objects (LCS-2016-008).
 const POS: &[PrefixRule] = &[
-    p(F::TypeMark, C::DiscreteOrPhysical, V08),
+    p(F::TypeMark, C::DiscreteOrPhysical, V93),
     p(F::Object, C::DiscreteOrPhysical, V19),
 ];
-const ANY_TYPE: &[PrefixRule] = &[p(F::TypeMark, C::Any, V08)];
-const ANY_OBJECT: &[PrefixRule] = &[p(F::Object, C::Any, V08)];
+const ANY_TYPE: &[PrefixRule] = &[p(F::TypeMark, C::Any, V93)];
+const ANY_OBJECT: &[PrefixRule] = &[p(F::Object, C::Any, V93)];
 const ARRAY_TM_OR_OBJ: &[PrefixRule] =
-    &[p(F::TypeMark, C::Array, V08), p(F::Object, C::Array, V08)];
-const SIGNAL: &[PrefixRule] = &[p(F::Signal, C::Any, V08)];
-const NAMED: &[PrefixRule] = &[p(F::NamedEntity, C::Any, V08)];
+    &[p(F::TypeMark, C::Array, V93), p(F::Object, C::Array, V93)];
+const SIGNAL: &[PrefixRule] = &[p(F::Signal, C::Any, V93)];
+const NAMED: &[PrefixRule] = &[p(F::NamedEntity, C::Any, V93)];
 const DESIGNATED: &[PrefixRule] = &[
     p(F::TypeMark, C::AccessOrFile, V19),
     p(F::Object, C::AccessOrFile, V19),
@@ -352,7 +372,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Subtype,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Left,
@@ -362,7 +382,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::IndexValue,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Right,
@@ -372,7 +392,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::IndexValue,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::High,
@@ -382,7 +402,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::IndexValue,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Low,
@@ -392,7 +412,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::IndexValue,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Ascending,
@@ -402,7 +422,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::Boolean,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Length,
@@ -412,7 +432,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::UniversalInteger,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Range,
@@ -422,7 +442,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::Range,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::ReverseRange,
@@ -432,7 +452,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Dim,
         R::Range,
         Stat::OfPrefix,
-        V08,
+        V93,
     ),
     row(
         A::Image,
@@ -442,7 +462,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::PrefixValue,
         R::String,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Value,
@@ -452,7 +472,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::String,
         R::PrefixBase,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Pos,
@@ -462,7 +482,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::PrefixValue,
         R::UniversalInteger,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Val,
@@ -472,7 +492,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::AnyInteger,
         R::PrefixBase,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Succ,
@@ -482,7 +502,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::PrefixValue,
         R::PrefixBase,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Pred,
@@ -492,7 +512,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::PrefixValue,
         R::PrefixBase,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Leftof,
@@ -502,7 +522,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::PrefixValue,
         R::PrefixBase,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Rightof,
@@ -512,7 +532,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::PrefixValue,
         R::PrefixBase,
         Stat::OfPrefixAndArgs,
-        V08,
+        V93,
     ),
     row(
         A::Subtype,
@@ -543,7 +563,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Time,
         R::PrefixSubtype,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::Stable,
@@ -553,7 +573,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Time,
         R::Boolean,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::Quiet,
@@ -563,7 +583,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::Time,
         R::Boolean,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::Transaction,
@@ -573,7 +593,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Bit,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::Event,
@@ -583,7 +603,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Boolean,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::Active,
@@ -593,7 +613,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Boolean,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::LastEvent,
@@ -603,7 +623,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Time,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::LastActive,
@@ -613,7 +633,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Time,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::LastValue,
@@ -623,7 +643,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::PrefixSubtype,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::Driving,
@@ -633,7 +653,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::Boolean,
         Stat::None,
-        V08,
+        V93,
     ),
     row(
         A::DrivingValue,
@@ -643,7 +663,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::PrefixSubtype,
         Stat::None,
-        V08,
+        V93,
     ),
     // 16.2.5 named entities.
     row(
@@ -654,7 +674,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::String,
         Stat::Locally,
-        V08,
+        V93,
     ),
     row(
         A::InstanceName,
@@ -664,7 +684,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::String,
         Stat::Globally,
-        V08,
+        V93,
     ),
     row(
         A::PathName,
@@ -674,7 +694,7 @@ pub static TABLE: &[AttrInfo] = &[
         Param::None,
         R::String,
         Stat::Globally,
-        V08,
+        V93,
     ),
     // 2019.
     row(
@@ -845,10 +865,21 @@ pub fn select(
         return Err(db.error(
             Diagnostic::error(
                 diag::NOT_IN_REVISION,
-                format!("`'{}` of {what} is not available in VHDL-2008", attr.text),
+                format!(
+                    "`'{}` of {what} is not available in {}",
+                    attr.text,
+                    Db::rev_name(rev)
+                ),
             )
-            .with_primary(span, "needs VHDL-2019")
-            .with_note("this file is analyzed as VHDL-2008"),
+            .with_primary(
+                span,
+                if rev < LangRev::Vhdl2008 {
+                    "needs a later VHDL standard"
+                } else {
+                    "needs VHDL-2019"
+                },
+            )
+            .with_note(format!("this file is analyzed as {}", Db::rev_name(rev))),
         ));
     }
     let mut d = Diagnostic::error(
@@ -1001,11 +1032,20 @@ pub fn implicit_signal(
         scope,
         span,
         implicit: true,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     // In the region's order (for M2), never in its names.
     db.scopes[scope].order.push(d);
     Ok(d)
+}
+
+/// Take back the implicit signal `d` just made by [`implicit_signal`]: it is no longer a name of
+/// its region, so the elaborator never creates it (`not s'stable` becomes `s'event`).
+pub fn discard_implicit_signal(db: &mut Db, d: DeclId) {
+    let order = &mut db.scopes[db.decls[d].scope].order;
+    if let Some(i) = order.iter().rposition(|&x| x == d) {
+        order.remove(i);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,7 +1083,7 @@ pub fn declare_attribute(
         scope,
         span,
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     db.declare(scope, d);
     Ok(d)
@@ -1359,14 +1399,17 @@ fn arch_entity(db: &Db, scope: ScopeId) -> Option<ScopeId> {
         .filter(|&e| db.scopes[e].kind == ScopeKind::Entity)
 }
 
-/// Regions whose concurrent statement part follows the declarative part
-/// and ends with [`unresolved_labels`].
-// ponytail: labels of sequential statements (a process decorating its loop)
-// are still E1100; defer them too once a design needs it.
+/// Regions whose statement part (concurrent, or sequential for a process or subprogram body)
+/// follows the declarative part and ends with [`unresolved_labels`].
 pub(crate) fn has_conc_stmts(db: &Db, scope: ScopeId) -> bool {
     matches!(
         db.scopes[scope].kind,
-        ScopeKind::Entity | ScopeKind::Architecture | ScopeKind::Block | ScopeKind::Generate
+        ScopeKind::Entity
+            | ScopeKind::Architecture
+            | ScopeKind::Block
+            | ScopeKind::Generate
+            | ScopeKind::Process
+            | ScopeKind::Subprogram
     )
 }
 

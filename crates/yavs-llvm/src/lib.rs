@@ -15,6 +15,7 @@
 
 #[cfg(feature = "llvm")]
 mod auto;
+mod census;
 #[cfg(feature = "llvm")]
 mod jit;
 #[cfg(feature = "llvm")]
@@ -31,6 +32,7 @@ pub mod spike;
 
 #[cfg(feature = "llvm")]
 pub use auto::{AutoTier, Heat, Note, exit_now};
+pub use census::callback_counts;
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
 #[cfg(feature = "llvm")]

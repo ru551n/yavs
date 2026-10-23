@@ -1,0 +1,1 @@
+Buses of more than 64 bits no longer keep a byte per element beside their planes, and a record signal is read into its vector fields directly, which makes wide-bus designs with record signals run faster.

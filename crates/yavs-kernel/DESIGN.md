@@ -56,7 +56,16 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   `Signal::apply_driver` writes the plane words into the driver and into the signal's driving
   value at once and lists the run in `Signal::fast_dirty`; `finish_signal` then only updates the
   effective value of those runs. Any other vector assignment of a cycle appends its one
-  transaction directly (`Ctx::assign`).
+  transaction directly (`Ctx::assign`). A delayed assignment (`after T`, transport or inertial
+  without a rejection limit) of either shape to an idle driver is the same `quick` or `vquick`
+  with its time `now + T`: with nothing pending there is nothing to preempt. It is queued at that
+  time and matures in the update of that time step. A direct driver takes it only when the run
+  has no direct entry for the driver (those commit at the end of the run, before it).
+- **Byte quick transaction**: one element of at most 8 bytes of a byte signal (`Ctx::assign_bytes`) assigned to
+  an idle driver is `Waveform::bquick` (time, element, size, the bytes). When the driver is the element's only
+  source and the signal has no layer, group, guard or resolution function, `Signal::apply_bquick` writes the
+  driver, driving and effective values, the stamps and `'last_value` when it is applied (`finish_bquick`), as
+  `finish_quick` does for a logic element; otherwise the element goes to the dirty ranges.
 - **Direct transactions**: a driver that is the only source of its elements of a logic signal
   with no port, composite group, guard or resolution function (std_logic resolution of one
   source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).
@@ -83,6 +92,14 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
   applied or the general path computes the driving value from them, and a deposit makes the
   signal `exact` (its commits then write the driver value too). When one element changes and
   one resident process without an edge trigger waits for it, `finish_direct` wakes it at once.
+- **Direct byte transactions**: the same for one element of at most 8 bytes of a byte signal (an enumeration,
+  an integer, a boolean, a real, a time) with no port, group, guard or resolution function whose driver is the
+  element's only source (`DriverInfo::bdirect`). A zero-delay assignment to an idle driver is an `OutB` entry
+  (signal, slot, element, size, bytes) in `ProcState::outb`; the commit (`Signal::commit_bytes`) writes the
+  driving value (the driver value too after a deposit; `lag` as above) and puts the element in `pend_one` or the
+  bit mask; the update finishes it (`finish_pend_bytes`: the driving bytes against the current ones, an event if
+  they differ, the activity stamps unless `inactive`), or takes it to the dirty ranges on a signal with a layer.
+  Unchanged assignments, spilling (`Ctx::spill_out`) and `'driving_value` are as for logic.
 - **Waiting again**: a process whose wait is exactly the one its resident waiter already covers
   (`Ctx::wait_on_again`) leaves its sensitivity list empty and sets `ProcState::again`; the commit keeps
   the registered waiter. If the process names more in the same wait, the commit rebuilds the list as the
@@ -305,6 +322,8 @@ pub trait Process: Send {
 - Runtime errors as `Err(ctx.error(ErrorKind::Runtime(..)))` with the VHDL call stack in `trace`.
 - A plain concurrent copy (`target <= source;` of signal names) needs no process code: the
   elaborator builds the kernel's own `CopyProcess` for it (#529).
+- A clock generator `x <= not x after T;` on one scalar element needs none either: the elaborator
+  evaluates `T` and builds the kernel's own `ToggleProcess` (#440).
 - Elaboration: leaves as `Builder::signal`/`resolved_signal` with `SignalType::logic` for
   `std_ulogic` arrays and `SignalType::bytes` otherwise; uncollapsed ports as `Builder::port`
   with `Converter` closures that call the IR conversion function; `'stable/'quiet/'delayed/

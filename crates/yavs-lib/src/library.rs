@@ -1,6 +1,7 @@
 use crate::Result;
 use crate::error::{debug, err, io, note};
 use crate::manifest::{LOCK_FILE, MANIFEST_FILE, Manifest, Stamp, UnitRecord};
+use crate::record;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,6 +12,21 @@ const LOCK_NOTE_AFTER: Duration = Duration::from_secs(3);
 /// The manifest name from before the project was renamed to yavs; never read.
 const OLD_MANIFEST_FILE: &str = "rsim-lib.toml"; // rename: keep
 
+/// Why a parsed manifest is still the manifest on disk.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fresh {
+    /// The file has this size and time and was old enough to trust.
+    Stamp(Stamp),
+    /// Parsed under the process's own lock when `WRITES` had this value.
+    Held(u64),
+}
+
+/// The manifest [`Library::read`] parsed last, with why it is still current.
+type Parsed = Option<(Fresh, Arc<Manifest>)>;
+
+/// Manifests written by sessions of this process (a parse under the lock is stale after one).
+static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A library directory (`<dir>/yavs-lib.toml` + `<dir>/_YAVS_LIB`).
 #[derive(Clone, Debug)]
 pub struct Library {
@@ -18,7 +34,9 @@ pub struct Library {
     pub dir: PathBuf,
     /// The manifest as last parsed by [`Library::read`], with the stamp of the file it came from
     /// (shared by clones): a run reads each library twice, once for the closure, once for analysis.
-    parsed: Arc<Mutex<Option<(Stamp, Manifest)>>>,
+    /// Parsed while this process held the library's lock: valid until any [`Session`] of the
+    /// process writes a manifest (`WRITES`; nobody else can write while the lock is held).
+    parsed: Arc<Mutex<Parsed>>,
 }
 
 impl Library {
@@ -84,9 +102,9 @@ impl Library {
         }
     }
 
-    /// Read the manifest under a shared lock held only for the read. Never writes
-    /// to the library directory, and works on read-only libraries.
-    pub fn read(&self) -> Result<Manifest> {
+    /// Take the shared lock for a read: the lock file (`None`: this process holds the exclusive
+    /// lock, or the library cannot be locked) and whether this process holds the exclusive lock.
+    fn lock_shared(&self) -> Result<(Option<File>, bool)> {
         let lock_path = self.dir.join(LOCK_FILE);
         let held = std::path::absolute(&self.dir).is_ok_and(|k| HELD.lock().unwrap().contains(&k));
         let opened = if held {
@@ -94,7 +112,7 @@ impl Library {
         } else {
             File::open(&lock_path).map(Some)
         };
-        let _guard = match opened {
+        let guard = match opened {
             Ok(Some(f)) => match self.acquire(&f, false) {
                 Ok(()) => Some(f),
                 Err(e) => return Err(io("L0011", "lock", &lock_path, &e)),
@@ -109,13 +127,43 @@ impl Library {
                 None
             }
         };
+        Ok((guard, held))
+    }
+
+    /// Read the index under a shared lock held only for the read. Never writes
+    /// to the library directory, and works on read-only libraries. The records of its files
+    /// are read later ([`Manifest::records`]); whoever does that holds the lock meanwhile
+    /// ([`Library::read_locked`]).
+    pub fn read(&self) -> Result<Arc<Manifest>> {
+        let (guard, held) = self.lock_shared()?;
+        let m = self.parse_index(held);
+        drop(guard);
+        m
+    }
+
+    /// [`Library::read`] that keeps the shared lock until the returned guard is dropped, so that
+    /// no writer replaces a record while it is read.
+    pub(crate) fn read_locked(&self) -> Result<(Arc<Manifest>, Option<File>)> {
+        let (guard, held) = self.lock_shared()?;
+        Ok((self.parse_index(held)?, guard))
+    }
+
+    fn parse_index(&self, held: bool) -> Result<Arc<Manifest>> {
         let p = self.manifest_path();
         // A manifest unmodified for two seconds that still has the size and time of the parsed one
-        // is the same manifest (the library lock is held, so no writer is replacing it).
-        let stamp = Stamp::of(&p);
-        if let Some(st) = stamp
+        // is the same manifest (the library lock is held, so no writer is replacing it). One parsed
+        // while this process held the lock is the same manifest too: a batch of `analyze` rewrites
+        // it after every file, which is never two seconds old.
+        let fresh = if held {
+            Some(Fresh::Held(
+                WRITES.load(std::sync::atomic::Ordering::SeqCst),
+            ))
+        } else {
+            Stamp::of(&p).map(Fresh::Stamp)
+        };
+        if let Some(f) = fresh
             && let Some((s, m)) = &*self.parsed.lock().unwrap()
-            && *s == st
+            && *s == f
         {
             return Ok(m.clone());
         }
@@ -134,9 +182,9 @@ impl Library {
                 io("L0002", "read", &p, &e)
             }
         })?;
-        let m = Manifest::parse(&text, &p)?;
-        if let Some(st) = stamp {
-            *self.parsed.lock().unwrap() = Some((st, m.clone()));
+        let m = Arc::new(Manifest::parse(&text, &p)?);
+        if let Some(f) = fresh {
+            *self.parsed.lock().unwrap() = Some((f, m.clone()));
         }
         Ok(m)
     }
@@ -179,6 +227,8 @@ impl Library {
             .map_err(|e| io("L0011", "lock", &lock_path, &e))?;
         let key = std::path::absolute(&self.dir).unwrap_or_else(|_| self.dir.clone());
         HELD.lock().unwrap().push(key.clone());
+        // Parsed before the lock was ours: another process may have written since.
+        *self.parsed.lock().unwrap() = None;
         Ok(Session {
             lib: self.clone(),
             _lock: lock,
@@ -200,25 +250,16 @@ pub struct Session {
 }
 
 /// What a session keeps between records: the manifest (nobody else can write it while the
-/// exclusive lock is held, so it is read and parsed once, not once per file) and whether the
-/// last published manifest still has to be synced to disk.
+/// exclusive lock is held, so it is read and parsed once, not once per file) and the text
+/// of the manifest file as last read or written (a record that changes nothing skips the write).
 #[derive(Default)]
 struct SessionState {
     manifest: Option<Manifest>,
-    unsynced: bool,
+    disk_text: Option<String>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Records are renamed into place without a sync each (the rename keeps readers safe;
-        // a sync per file made a batch of 60 files spend most of its time waiting for the disk).
-        // The last manifest is the only one that has to survive a power loss.
-        if self.state.get_mut().is_ok_and(|s| s.unsynced) {
-            let _ = OpenOptions::new()
-                .write(true)
-                .open(self.lib.manifest_path())
-                .and_then(|f| f.sync_all());
-        }
         let mut h = HELD.lock().unwrap();
         if let Some(i) = h.iter().position(|k| *k == self.key) {
             h.remove(i);
@@ -249,35 +290,101 @@ impl Session {
         units: Vec<UnitRecord>,
     ) -> Result<()> {
         let path = std::path::absolute(path).map_err(|e| io("L0002", "resolve", path, &e))?;
+        let Some(path_s) = path.to_str() else {
+            return Err(Box::new(
+                err(
+                    "L0002",
+                    format!("path `{}` is not valid UTF-8", path.display()),
+                )
+                .with_help(
+                    "library files are recorded by path as text; rename the file or its directory",
+                ),
+            ));
+        };
         let mp = self.lib.manifest_path();
         let mut st = self.state.lock().unwrap();
         if st.manifest.is_none() {
-            st.manifest = Some(match fs::read_to_string(&mp) {
-                Ok(t) => Manifest::parse(&t, &mp)?,
+            // The index `read` parsed under this lock, if it did (once, not twice per call).
+            let held = self.lib.parsed.lock().unwrap().take();
+            let (m, text) = match fs::read_to_string(&mp) {
+                Ok(t) => match held {
+                    Some((Fresh::Held(g), m))
+                        if g == WRITES.load(std::sync::atomic::Ordering::SeqCst) =>
+                    {
+                        (Arc::unwrap_or_clone(m), Some(t))
+                    }
+                    _ => (Manifest::parse(&t, &mp)?, Some(t)),
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     self.lib.reject_old_manifest()?;
-                    Manifest::new(&self.lib.name)
+                    (Manifest::new(&self.lib.name, &self.lib.dir), None)
                 }
                 Err(e) => return Err(io("L0002", "read", &mp, &e)),
-            });
+            };
+            st.manifest = Some(m);
+            st.disk_text = text;
+        }
+        // No fsync (user, 2026-10-23, #561): every file is renamed into place, so a reader or a
+        // crash sees each of them whole, old or new; the record goes first, so the index never
+        // names one that is not there, and a power loss may lose the last analyze, which the next
+        // analyze redoes.
+        let m = st.manifest.as_ref().unwrap();
+        let rdir = m.record_dir();
+        let text = record::render(path_s, &units);
+        let digest = record::digest(&text);
+        let rp = rdir.join(record::file_name(digest));
+        let intact = m.record_of(path_s) == Some(digest)
+            && fs::metadata(&rp).is_ok_and(|md| md.len() == text.len() as u64);
+        if !intact && let Err(e) = write_new(&rp, &text) {
+            return Err(io("L0002", "write", &rp, &e));
         }
         let m = st.manifest.as_mut().unwrap();
-        m.replace_file(path, hash.to_string(), stamp, standard.to_string(), units);
-
-        let tmp = self
-            .lib
-            .dir
-            .join(format!("{MANIFEST_FILE}.{}.tmp", std::process::id()));
-        let r = fs::write(&tmp, m.to_text())
-            // std::fs::rename replaces an existing target on Windows too (MOVEFILE_REPLACE_EXISTING).
-            .and_then(|()| fs::rename(&tmp, &mp));
+        let mut dead: Vec<u128> = m
+            .remove_file(path_s)
+            .into_iter()
+            .filter(|&d| d != digest)
+            .collect();
+        dead.extend(m.take_units(&units));
+        m.push_file(path_s, hash, standard, stamp, digest, &units);
+        let itext = m.to_text();
+        if st.disk_text.as_deref() == Some(itext.as_str()) {
+            return Ok(());
+        }
+        // What `read` parsed (of this or another name of the directory) is the old index from here on:
+        // bumped before the rename (so a parse of the old file made now is stale) and after it (so no
+        // parse of the old file made in between stays current under the new value, #635).
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let r = write_new(&mp, &itext);
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Err(e) = r {
-            let _ = fs::remove_file(&tmp);
-            // The in-memory manifest has the file now; the next record must start from the disk.
+            // The in-memory index has the file now; the next record must start from the disk.
             st.manifest = None;
+            st.disk_text = None;
             return Err(io("L0002", "write", &mp, &e));
         }
-        st.unsynced = true;
+        st.disk_text = Some(itext);
+        // Records nothing names any more (the file's earlier one, files that lost every unit).
+        for d in dead {
+            let _ = fs::remove_file(rdir.join(record::file_name(d)));
+        }
         Ok(())
     }
+}
+
+/// Write `text` to a temporary file next to `path` and rename it over `path` (the directory is
+/// made when it is the record directory and missing). `std::fs::rename` replaces an existing
+/// target on Windows too (MOVEFILE_REPLACE_EXISTING).
+fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
+    let name = path.file_name().expect("a file name").to_string_lossy();
+    let tmp = path.with_file_name(format!("{name}.{}.tmp", std::process::id()));
+    let mut r = fs::write(&tmp, text);
+    if r.as_ref()
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        r = fs::create_dir_all(path.parent().expect("a directory"))
+            .and_then(|()| fs::write(&tmp, text));
+    }
+    r.and_then(|()| fs::rename(&tmp, path)).inspect_err(|_| {
+        let _ = fs::remove_file(&tmp);
+    })
 }

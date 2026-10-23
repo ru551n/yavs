@@ -43,6 +43,10 @@ pub struct Program {
     #[serde(skip)]
     #[doc(hidden)]
     pub stored_opt: StoredOpt,
+    /// Specialised copies of processes made while the program runs (`copies.rs`); a copy of the
+    /// program starts without them.
+    #[serde(skip)]
+    pub copies: crate::Copies,
 }
 
 /// An optimised copy of a function, serialised (see [`Program::export_optimized`]).
@@ -91,6 +95,13 @@ impl Program {
         let o = raw
             .opt
             .get_or_init(|| {
+                // A specialised copy (`copies.rs`) is made from a function already verified.
+                if let Some(c) = self.copies.get(f) {
+                    return self.optimize_copy_of(c);
+                }
+                if raw.spare {
+                    return None;
+                }
                 if self.lazy_verify.is_some_and(|from| f.0 >= from) {
                     let mut errs = Vec::new();
                     crate::verify::verify_func(self, f, raw.full(), &mut errs);
@@ -101,8 +112,14 @@ impl Program {
                         errs[0]
                     );
                 }
-                self.stored_copy(f)
-                    .or_else(|| crate::opt::optimize_func(self, f))
+                let o = self
+                    .stored_copy(f)
+                    .or_else(|| crate::opt::optimize_func(self, f));
+                if raw.kind == FuncKind::Process {
+                    self.copies
+                        .shared(o.as_ref().map_or(raw.full().code.len(), |o| o.code.len()));
+                }
+                o
             })
             .as_deref()
             .unwrap_or_else(|| raw.full());
@@ -154,7 +171,7 @@ impl Program {
             .funcs
             .values()
             .iter()
-            .filter(|f| matches!(f.opt.get(), Some(Some(_))))
+            .filter(|f| !f.spare && matches!(f.opt.get(), Some(Some(_))))
             .count();
         made + self.stored_opt.map().len()
     }
@@ -168,7 +185,7 @@ impl Program {
         self.funcs
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
-                Some(Some(o)) if want(id) && !self.private_copy(id) => {
+                Some(Some(o)) if !f.spare && want(id) && !self.private_copy(id) => {
                     postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
                         func: id,
                         bytes: bytes.into(),
@@ -189,7 +206,7 @@ impl Program {
             .funcs
             .iter()
             .filter_map(|(id, f)| match f.opt.get() {
-                Some(Some(o)) if !self.private_copy(id) => {
+                Some(Some(o)) if !f.spare && !self.private_copy(id) => {
                     postcard::to_stdvec(&**o).ok().map(|bytes| OptCopy {
                         func: id,
                         bytes: bytes.into(),
@@ -225,7 +242,7 @@ impl Program {
     /// shared state.
     pub fn is_serial(&self, f: FuncId) -> bool {
         self.funcs
-            .get(f)
+            .get(self.base_of(f))
             .is_some_and(|f| f.flags.contains(FuncFlags::TOUCHES_SHARED))
     }
 
@@ -234,7 +251,7 @@ impl Program {
     /// delta (#252, yavs-kernel DESIGN.md "Parallel evaluation").
     pub fn single_suspend(&self, f: FuncId) -> bool {
         // The lowered code: the optimiser may copy a suspension point (`opt/memo.rs`).
-        self.funcs.get(f).map(Func::full).is_some_and(|f| {
+        self.raw(f).is_some_and(|f| {
             f.resume.len() == 1 && f.code.iter().any(|i| matches!(i, Inst::Suspend { .. }))
         })
     }
@@ -384,6 +401,10 @@ pub struct Func {
     pub defined: bool,
     /// Another function names this one as its parent (its frame can be reached by `Up`).
     pub nested: bool,
+    /// An empty slot reserved for a specialised copy of a process (`Program::reserve_copies`):
+    /// the last functions of a program, never stored.
+    #[serde(skip)]
+    pub spare: bool,
     /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
     /// lowered).
     #[serde(skip)]
@@ -457,8 +478,9 @@ mod funcs {
 
     pub fn serialize<S: Serializer>(v: &IdVec<FuncId, Func>, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::{Error, SerializeSeq};
-        let mut seq = s.serialize_seq(Some(v.len()))?;
-        for f in v.values() {
+        let n = v.values().iter().take_while(|f| !f.spare).count();
+        let mut seq = s.serialize_seq(Some(n))?;
+        for f in &v.values()[..n] {
             let body: yavs_diag::Slice = match &f.lazy {
                 Some(l) => l.src.clone(),
                 None => postcard::to_stdvec(&BodyRef {
@@ -521,6 +543,37 @@ impl Func {
             size: self.size,
             defined: self.defined,
             nested: self.nested,
+            spare: false,
+            opt: Default::default(),
+            lazy: None,
+        }
+    }
+
+    /// An empty function that copies of processes will take the place of.
+    pub(crate) fn spare() -> Func {
+        Func {
+            name: String::new(),
+            kind: FuncKind::Process,
+            mangled: String::new(),
+            parent: None,
+            params: Vec::new(),
+            locals: Vec::new(),
+            frame: 0,
+            roots: Vec::new(),
+            reg_ty: Vec::new(),
+            blocks: IdVec::new(),
+            code: Vec::new(),
+            loc: Vec::new(),
+            operands: Vec::new(),
+            via: Vec::new(),
+            via_nodes: Vec::new(),
+            resume: Vec::new(),
+            flags: FuncFlags::default(),
+            body: None,
+            size: 0,
+            defined: false,
+            nested: false,
+            spare: true,
             opt: Default::default(),
             lazy: None,
         }
@@ -833,7 +886,9 @@ pub enum Dir {
 pub struct CheckMsg {
     pub what: String,
     pub dir: Dir,
-    /// The subtype checked against, as messages name it (`INTEGER`, `PCT`); may be empty.
+    /// The subtype checked against, as messages name it (`INTEGER`, `PCT`); may be empty. For a
+    /// `Length` check it is the lead word of the message instead (`expression length 4 does
+    /// not match case choice length 3`), `value` when empty.
     pub subtype: String,
 }
 

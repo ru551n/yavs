@@ -437,7 +437,7 @@ fn run(rev: Revision, file: &str) -> usize {
     .unwrap();
     let devs = deviations();
     let tag = match rev {
-        Revision::Vhdl2008 => "2008",
+        Revision::Vhdl1993 | Revision::Vhdl2008 => "2008",
         Revision::Vhdl2019 => "2019",
     };
     let mut fails = Vec::new();

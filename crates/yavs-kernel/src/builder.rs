@@ -57,6 +57,11 @@ struct ProcDecl {
     process: Box<dyn Process>,
     drivers: Vec<DriverId>,
     trigger: Option<EdgeTrigger>,
+    /// The signal parts a clocked process reads, when an activation is a function of them alone
+    /// (`Builder::idle_skip`).
+    idle: Option<Vec<(SignalId, Range)>>,
+    /// The signal parts the condition of a guarded block reads (`Builder::guard_process`).
+    guard: Option<Vec<(SignalId, Range)>>,
 }
 
 /// The one condition under which an event resumes a process to any effect: the process is
@@ -356,6 +361,8 @@ impl Builder {
             process,
             drivers: drivers.to_vec(),
             trigger: None,
+            idle: None,
+            guard: None,
         });
         pid
     }
@@ -371,6 +378,31 @@ impl Builder {
         match self.procs.get_mut(p.0 as usize) {
             Some(d) if ok => d.trigger = Some(t),
             _ => self.usage(format!("edge trigger {t:?} on process {}", p.0)),
+        }
+    }
+
+    /// Process `p`, which has an edge trigger, does nothing but assign signals without delay
+    /// as a function of `reads` (and constants) when it runs. The kernel may then leave it
+    /// suspended at an edge when none of those had an event since its last activation
+    /// (`Config::idle_skip`); the caller guarantees the shape (`Db::pure_clocked_reads`).
+    pub fn idle_skip(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
+        match self.procs.get_mut(p.0 as usize) {
+            Some(d) if d.trigger.is_some() => d.idle = Some(reads.to_vec()),
+            _ => self.usage(format!(
+                "idle skip of process {} without an edge trigger",
+                p.0
+            )),
+        }
+    }
+
+    /// Process `p` is the `_guard` process of a guarded block: `GUARD <= condition`, then a wait on
+    /// the condition's signals `reads`. The kernel runs it in the update phase of the cycle in
+    /// which one of them has an event, so GUARD changes in that cycle (LRM 11.2), instead of
+    /// waking it like a process (GUARD would change a delta later).
+    pub fn guard_process(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
+        match self.procs.get_mut(p.0 as usize) {
+            Some(d) => d.guard = Some(reads.to_vec()),
+            None => self.usage(format!("guard process {} does not exist", p.0)),
         }
     }
 
@@ -477,6 +509,7 @@ impl Builder {
                 range,
                 slot: s.drivers.len() as u32,
                 direct: false,
+                bdirect: false,
             });
             add_source(s, range, &mut taken[sig.0 as usize]).map_err(usage)?;
         }
@@ -554,9 +587,19 @@ impl Builder {
         let mut slots = Vec::with_capacity(self.procs.len());
         let mut procs = Vec::with_capacity(self.procs.len());
         let mut names = Vec::with_capacity(self.procs.len());
+        let mut idles = Vec::with_capacity(self.procs.len());
+        let mut guards = Vec::with_capacity(self.procs.len());
         for p in self.procs {
             let st = ProcState {
                 waveforms: p.drivers.iter().map(|_| Waveform::default()).collect(),
+                marks: (p.drivers.len() > crate::process::MARKED_DRIVERS).then(|| {
+                    Box::new(crate::process::Marks {
+                        epoch: 1,
+                        d: vec![0; p.drivers.len()],
+                    })
+                }),
+                known_key: crate::process::NO_EDGE,
+                known: crate::process::NO_EDGE,
                 ..Default::default()
             };
             slots.push(Mutex::new(Slot {
@@ -566,6 +609,8 @@ impl Builder {
             }));
             let depth = p.name.trim_matches(':').matches(':').count() as u32;
             names.push(p.name);
+            idles.push(p.idle);
+            guards.push(p.guard);
             procs.push(ProcMeta {
                 depth,
                 flags: p.flags,
@@ -576,6 +621,13 @@ impl Builder {
                 trigger: p.trigger,
                 perm: 0,
                 tid: 0,
+                idle_ok: false,
+                idle_win: 0,
+                idle_hits: 0,
+                idle_static: false,
+                armed: true,
+                idle_state: 0,
+                shadow: false,
             });
         }
         SimControl::new(
@@ -588,6 +640,8 @@ impl Builder {
             slots,
             procs,
             names,
+            idles,
+            guards,
         )
     }
 }

@@ -1,0 +1,7 @@
+exit	0
+diag	note	2000000	0	:null_waveform:_p0	2 ns '1''1' 10 107
+diag	note	4000000	0	:null_waveform:_p0	4 ns 'Z''1' ZZ 100
+diag	note	6000000	0	:null_waveform:_p0	6 ns 'Z'
+diag	note	8000000	0	:null_waveform:_p0	8 ns 'Z'
+diag	note	10000000	0	:null_waveform:_p0	10 ns '1'
+diag	note	12000000	0	:null_waveform:_p0	12 ns 'Z'

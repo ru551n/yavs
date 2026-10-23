@@ -86,7 +86,13 @@ impl Db {
             std::mem::take(&mut self.name_memo),
             std::mem::take(&mut self.ext_memo),
         );
+        let outer_reads = std::mem::take(&mut self.out_reads);
         let r = self.unit_body(unit, &ast);
+        // After another error the references an aborted statement left are no evidence (8.2).
+        if r.is_ok() && self.error_count() == before {
+            self.report_out_reads();
+        }
+        self.out_reads = outer_reads;
         (self.memo, self.name_memo, self.ext_memo) = memos;
         self.stack.pop();
         let ok = r.is_ok() && self.error_count() == before;
@@ -172,7 +178,7 @@ impl Db {
             scope: context,
             span: name.span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         self.scopes[context].owner = Some(decl);
         self.units[unit].context = context;
@@ -209,14 +215,10 @@ impl Db {
         let scope = self.add_scope(scope_kind, Some(context), Some(decl));
         self.units[unit].scope = scope;
         let hir = match &ast.unit {
+            L::Package(p) if p.generic_map.is_some() => {
+                UnitHir::PackageInst(self.mapped_package(context, scope, decl, p)?)
+            }
             L::Package(p) => {
-                if p.generic_map.is_some() {
-                    return Err(self.unsupported(
-                        p.name.span,
-                        "a package with a generic map",
-                        "S4",
-                    ));
-                }
                 let generics = p.generics.as_ref().map(|g| self.generic_list(scope, g));
                 let is_standard = self.is_std_standard(unit);
                 if is_standard {
@@ -238,6 +240,13 @@ impl Db {
             }
             L::PackageBody(b) => {
                 let package = self.units[unit].deps[0];
+                if matches!(self.units[package].hir, UnitHir::PackageInst(_)) {
+                    return Err(self.unsupported(
+                        b.name.span,
+                        "a package body of a package with a generic map",
+                        "S4",
+                    ));
+                }
                 self.decls_in(scope, &b.decls);
                 let pscope = self.units[package].scope;
                 let _ = self.check_protected_bodies(pscope, b.span);
@@ -299,25 +308,31 @@ impl Db {
     ) -> Result<(), Reported> {
         let std_lib = self.library(ident("std", Span::default()))?;
         let lib = self.units[unit].lib;
-        let std_decl = self.libs[std_lib].decl;
-        self.scopes[context]
-            .names
-            .entry(Symbol::intern("std"))
-            .or_default()
-            .push(std_decl);
-        let work = self.decls.push(Decl {
-            name: Designator::Ident(ident("work", Span::default())),
-            kind: DeclKind::Library(lib),
-            scope: context,
-            span: Span::default(),
-            implicit: true,
-            since: LangRev::Vhdl2008,
-        });
-        self.scopes[context]
-            .names
-            .entry(Symbol::intern("work"))
-            .or_default()
-            .push(work);
+        // A secondary unit sits inside its primary's region, which sees the same implicit
+        // names through its own context: declared again here they would hide what the
+        // primary declares under the name `work` or `std` (12.3, #640).
+        let secondary = self.scopes[context].parent.is_some();
+        if !secondary {
+            let std_decl = self.libs[std_lib].decl;
+            self.scopes[context]
+                .names
+                .entry(Symbol::intern("std"))
+                .or_default()
+                .push(std_decl);
+            let work = self.decls.push(Decl {
+                name: Designator::Ident(ident("work", Span::default())),
+                kind: DeclKind::Library(lib),
+                scope: context,
+                span: Span::default(),
+                implicit: true,
+                since: LangRev::Vhdl1993,
+            });
+            self.scopes[context]
+                .names
+                .entry(Symbol::intern("work"))
+                .or_default()
+                .push(work);
+        }
         if !self.is_std_standard(unit) {
             let standard = self.load_unit(
                 std_lib,
@@ -325,8 +340,10 @@ impl Db {
                 Some(span),
             )?;
             self.units[unit].deps.push(standard);
-            let s = self.units[standard].scope;
-            self.scopes[context].uses.push(UseItem::All(s));
+            if !secondary {
+                let s = self.units[standard].scope;
+                self.scopes[context].uses.push(UseItem::All(s));
+            }
         }
         Ok(())
     }
@@ -372,7 +389,7 @@ impl Db {
                             scope: region,
                             span: n.span,
                             implicit: false,
-                            since: LangRev::Vhdl2008,
+                            since: LangRev::Vhdl1993,
                         });
                         self.declare(region, d);
                     }
@@ -615,10 +632,43 @@ impl Db {
         self.error(d)
     }
 
+    /// The declarative region of the entity or architecture `d` names, when `scope` lies
+    /// inside it: its own declarations can be selected with its name (8.3, #639).
+    pub(crate) fn enclosing_unit_region(&self, scope: ScopeId, d: DeclId) -> Option<ScopeId> {
+        let DeclKind::Unit(u) = self.decls[self.entity(d)].kind else {
+            return None;
+        };
+        if !matches!(
+            self.units[u].kind,
+            UnitKind::Entity | UnitKind::Architecture
+        ) {
+            return None;
+        }
+        let region = self.units[u].scope;
+        let mut cur = Some(scope);
+        while let Some(c) = cur {
+            if c == region {
+                return Some(region);
+            }
+            cur = self.scopes[c].parent;
+        }
+        None
+    }
+
     /// The region a name denotes, for use clauses and expanded names: a library,
     /// a package (loaded on demand) or a package instance.
     pub(crate) fn region_of(&mut self, scope: ScopeId, n: &ast::Name) -> Result<Region, Reported> {
         let d = self.expanded_name_decl(scope, n)?;
+        if let Some(s) = self.enclosing_unit_region(scope, d) {
+            return Ok(Region::Scope(s));
+        }
+        // A label of an enclosing statement names its declarative region (8.3): `p.st` inside
+        // process `p`.
+        if let DeclKind::Label(_) = self.decls[d].kind
+            && let Some((s, true)) = self.construct_region(scope, &[d])
+        {
+            return Ok(Region::Scope(s));
+        }
         match self.decls[d].kind {
             DeclKind::Library(l) => Ok(Region::Library(l)),
             DeclKind::Unit(_)
@@ -766,7 +816,7 @@ impl Db {
                 scope,
                 span: Span::default(),
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             });
             let ty = self.new_type(decl, id, false, kind, Constraint::None, Span::default());
             self.decls[decl].kind = DeclKind::Type(ty);

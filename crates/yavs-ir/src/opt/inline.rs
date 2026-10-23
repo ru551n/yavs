@@ -417,6 +417,7 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::Bool { .. }
         | Inst::Check { .. }
         | Inst::Pos { .. }
+        | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
         | Inst::Deref { .. }
         | Inst::LGet { .. }

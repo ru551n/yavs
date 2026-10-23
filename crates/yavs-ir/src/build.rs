@@ -227,6 +227,7 @@ impl ProgramBuilder {
             size: 0,
             defined: false,
             nested: false,
+            spare: false,
             opt: Default::default(),
             lazy: None,
         });

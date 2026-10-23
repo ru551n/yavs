@@ -130,6 +130,46 @@ pub(crate) enum Buf {
     Planes { len: usize, b: SmallVec<[Block; 1]> },
 }
 
+/// `a == b` for slices of one length; the sizes of integers, enums and reals as word compares
+/// (the generic slice compare is a library call).
+#[inline(always)]
+pub(crate) fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    if let (Ok(x), Ok(y)) = (<[u8; 4]>::try_from(a), <[u8; 4]>::try_from(b)) {
+        return x == y;
+    }
+    if let (Ok(x), Ok(y)) = (<[u8; 8]>::try_from(a), <[u8; 8]>::try_from(b)) {
+        return x == y;
+    }
+    if let (Ok(x), Ok(y)) = (<[u8; 1]>::try_from(a), <[u8; 1]>::try_from(b)) {
+        return x == y;
+    }
+    a == b
+}
+
+/// `dst.copy_from_slice(src)` for the element sizes of byte signals, without the library call
+/// of the generic copy (the lengths are equal).
+#[inline(always)]
+pub(crate) fn put_bytes(dst: &mut [u8], src: &[u8]) {
+    if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 4]>::try_from(&mut *dst),
+        <[u8; 4]>::try_from(src),
+    ) {
+        *d = s;
+    } else if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 1]>::try_from(&mut *dst),
+        <[u8; 1]>::try_from(src),
+    ) {
+        *d = s;
+    } else if let (Ok(d), Ok(s)) = (
+        <&mut [u8; 8]>::try_from(&mut *dst),
+        <[u8; 8]>::try_from(src),
+    ) {
+        *d = s;
+    } else {
+        dst.copy_from_slice(src);
+    }
+}
+
 /// Bits `off .. off + n` (`n <= 64`) of a bitset.
 pub(crate) fn bits(words: &[u64], off: usize, n: usize) -> u64 {
     let (w, s) = (off / 64, off % 64);
@@ -488,7 +528,10 @@ impl Buf {
     pub fn same_as(&self, off: usize, n: usize, v: ValueRef<'_>) -> bool {
         match (self, v) {
             (Buf::Bytes { es, data }, ValueRef::Bytes(d)) => {
-                d.len() == n * es && data.get(off * es..(off + n) * es) == Some(d)
+                d.len() == n * es
+                    && data
+                        .get(off * es..(off + n) * es)
+                        .is_some_and(|a| bytes_eq(a, d))
             }
             (Buf::Planes { len, b }, ValueRef::Logic(l)) => {
                 l.len() == n && off + n <= *len && wide::eq_range(b, off, l.repr().blocks(), 0, n)

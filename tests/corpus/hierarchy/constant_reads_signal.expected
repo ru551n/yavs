@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:constant_reads_signal:u:_p0	leaf 1010 19
+diag	note	0	0	:constant_reads_signal:b:_p0	block 21 21
+diag	note	0	0	:constant_reads_signal:_p0	1010 8 3 11
+diag	note	2000000	0	:constant_reads_signal:_p0	1010 8

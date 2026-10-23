@@ -39,9 +39,11 @@ an id. It runs single-threaded. It owns no files on disk: `yavs-lib` gives it a 
 
 Language revision: see 0.1. The analyzer is one code path with revision gates.
 
-### 0.1 Mixed 2008 and 2019 files (user decision, `docs/plan.md` "Test-runner integration")
+### 0.1 Mixed 1993, 2008 and 2019 files (user decision, `docs/plan.md` "Test-runner integration"; 1993 added by #629)
 
-A project may mix 2008 and 2019 files; `yavs-lib` records the standard per file.
+A project may mix 1993, 2008 and 2019 files; `yavs-lib` records the standard per file.
+`Vhdl1993 < Vhdl2008 < Vhdl2019`. The 1993 rules and what a 93 file sees in a 2008 design are in `docs/design/vhdl-93.md`;
+the baseline of `since` is `Vhdl1993`, and the implicit operations new in 2008 are `since: Vhdl2008`.
 
 | Step | Revision used |
 |---|---|
@@ -789,8 +791,10 @@ Bit-string expansion is type independent in 2008 (15.8), so it is folded once to
   context); legal between closely related types: numeric to numeric, same base type, arrays with
   the same dimensionality, closely related index types and element types (2008 relaxation: element
   types closely related, not identical). Otherwise `E1350`.
-- `new S` / `new T'(e)`: `cands = Class(ANY_ACCESS)`; on resolution, the designated type of the
-  expected access type must match.
+- `new S` / `new T'(e)`: `cands = Alloc(base type of S)` (9.3.7): it fits the access types whose
+  designated base type is that one, so `new integer = new integer` or an overloaded call picks the
+  matching access type (#27); on resolution, the designated subtype of the expected access type
+  is checked as before.
 
 ### 3.8 2008 rule changes to implement (not relaxations)
 
@@ -1265,7 +1269,7 @@ value, delay: Waveform/Option<ExprId>}`, `If`, `Case{matching: bool, choices: Ch
 with `LoopParam(DeclId)`, `Next/Exit{loop: StmtId}`, `Wait{sensitivity: Vec<Lsp>, until, for}`,
 `Return`, `ProcCall(Call)`, `Assert`, `Report`, `Force/Release`, `Null`, 2019 `SequentialBlock`)
 and concurrent (`Process{info: ProcessInfo, decls: ScopeId, body}`, `Block{guard, ports, generics}`,
-`ConcAssign`, `ConcProcCall`, `ConcAssert`, `Instance{target: InstTarget, scope, generic_map, port_map}`
+`ConcAssign{guarded, guard: Option<DeclId>}` (the `GUARD` signal of a guarded assignment: the block's implicit one or a visible signal of that name, 11.6, #641), `ConcProcCall`, `ConcAssert`, `Instance{target: InstTarget, scope, generic_map, port_map}`
 (`scope`: the instance's region, for `Db::default_binding(scope, component)` in elaboration),
 `ForGenerate{param, range}`, `IfGenerate`, `CaseGenerate`). Targets keep their `Lsp` next to the
 `ExprId`. Every statement has a `StmtId`; M2 tags IR instructions with it (plan: statement-location
@@ -1296,15 +1300,15 @@ Sem takes `E1xxx` / `W1xxx`:
 |---|---|---|
 | E10xx | libraries, units, context | E1001 unknown library, E1002 unit not found in library (names where it looked: library path and manifest), E1003 dependency cycle, E1004 secondary unit without primary, E1005 `work` in a context declaration, E1007 declaration or construct not available under the file's or the design's revision (0.1) |
 | E11xx | scopes, visibility | E1100 not declared, E1101 redeclaration (homograph), E1102 use clause conflict, E1103 not visible here (exists but hidden), E1104 prefix of a use clause, context reference or expanded name is not a library, package, package instance or context declaration (a missing suffix in a package is E1100), E1105 private/not in visible part, E1106 end label mismatch |
-| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1223 constant, signal, generic, port or constant/signal parameter of an access or file type, E1224 constant without a value outside a package declaration, E1225 bad resolution function, E1230 missing body, E1232 type, subprogram or package interface in a parameter list (4.2.2.1), E1233 named return value of a type that is not scalar, array or record (2019, 4.2.1), E1236 parameter of mode `buffer` or `linkage` (4.2.2.1), E1237 signal or shared variable in a process or subprogram, also in a package or package instance there (11.3, 4.7) |
-| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1304 named return value without a constrained context subtype (2019, 4.2.1), E1310 formal associated twice, E1311 missing actual, E1312 conversion that does not give a formal that is not fully constrained its bounds (5.3.2.2, F8, #262), E1313 conversion the formal's class or mode does not allow, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, variable assignment to signal) |
+| E12xx | types and subtypes | E1201 not a type, E1210 dimension constrained twice, E1211 constraint on a non-composite/non-scalar, E1212 object needs fully constrained subtype, E1213 bad record constraint, E1214 index constraint arity, E1215 static range or index constraint outside its type mark or index subtype, E1220 incomplete type not completed or used early, E1221 2008 access to file/protected, E1222 illegal file element, E1223 constant, signal, generic, port or constant/signal parameter of an access or file type, E1224 constant without a value outside a package declaration, E1225 bad resolution function, E1230 missing body, E1232 type, subprogram or package interface in a parameter list (4.2.2.1), E1233 named return value of a type that is not scalar, array or record (2019, 4.2.1), E1236 parameter of mode `buffer` or `linkage` (4.2.2.1), E1237 signal or shared variable in a process or subprogram, also in a package or package instance there (11.3, 4.7) |
+| E13xx | expressions, overloading | E1300 type mismatch, E1301 no matching overload, E1302 ambiguous, E1303 illegal operator declaration (not an operator symbol, or wrong arity, LRM 4.5.2), E1304 named return value without a constrained context subtype (2019, 4.2.1), E1310 formal associated twice, E1311 missing actual, E1312 conversion that does not give a formal that is not fully constrained its bounds (5.3.2.2, F8, #262), E1313 conversion the formal's class or mode does not allow, E1320 aggregate type not determined, E1321-E1328 aggregate/choice errors, E1330 character not in type, E1331 bit string loses digits, E1340/E1341 condition, E1350 illegal conversion, E1360 class/mode misuse (assign to `in`, read `linkage`, read an `out` port or parameter in a 1993 file, variable assignment to signal) |
 | E14xx | static evaluation | E1401 overflow, E1402 literal out of range, E1403 static value outside subtype, E1405 static length mismatch, E1410 choice/range not locally static where required |
 | E15xx | generics | E1501 not a generic unit, E1502 missing generic actual, E1503 actual outside generic class, E1504 no/ambiguous `is <>` default, E1505 call of uninstantiated subprogram |
 | E16xx | names, aliases, attributes, signatures | E1601 external name class misuse, E1610 alias of a non-static name, E1611 alias needs a signature, E1620 implicit signal attribute in subprogram, E1621 unknown attribute, E1622 entity class mismatch, E1623 attribute dimension argument out of range for the prefix, E1630 signature matches nothing |
 | E17xx | configurations, binding, components | E1700 instantiated name is not a component, entity or configuration, E1701 label is not an instance of the component, E1702 rebinding, E1703 port/generic mismatch between component and entity, E1704 no entity bound where one is needed |
 | E18xx | statements, processes, drivers | E1801 `wait` in a process with sensitivity list or in a function, E1802 `return` placement, E1803 sensitivity name not static, E1810 signal driven from outside a process, E1811 `next`/`exit` outside loop, E1812 unresolved signal with multiple sources, E1813 entity statement not passive, E1820 case coverage/duplicates, E1830 pure function side effect |
-| E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
-| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1403 a static operand of a qualified expression or type conversion outside its subtype (the runtime check fails), W1404 static index out of range in possibly dead code, W1501 unused generic, W1506 an instance of a 2008 `type T` uses the actual's predefined `=`/`/=` while a different user `"="` for the actual type is visible at the instantiation (U-6; the reference simulator uses the user one), W1703 default binding ambiguity, W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
+| E19xx | protected types, views, 2019 | E1904 shared variable not protected, E1905 illegal use of a protected type (signal, port, `=`), E1907 variable port of a composite of protected types (not supported), E1901 view element missing/duplicate, E1902 view on non-record, E1903 view port mode misuse, E1910 2019 feature in 2008 mode (normally caught by M0) |
+| W1xxx | warnings | W1008 construct means something different under the design revision (0.1), W1401 static overflow where the value is not required (Q5; the runtime check stays), W1403 a static operand of a qualified expression or type conversion outside its subtype, or an array converted to an unconstrained array type with bounds outside the target's index subtype (the runtime check fails), W1404 static index out of range in possibly dead code, W1501 unused generic, W1506 an instance of a 2008 `type T` uses the actual's predefined `=`/`/=` while a different user `"="` for the actual type is visible at the instantiation (U-6; the reference simulator uses the user one), W1703 default binding ambiguity, W1830 R2 relaxation applied (pure function calls something impure), W1904 R1 relaxation applied (shared variable of a non-protected type); one warning code per relaxation (8.4), no shared W1990 |
 
 Codes are `pub const` in `yavs-sem::diag` with an `--explain` text each (one paragraph plus a
 minimal example), checked by a test that every constant has an explain entry.
@@ -1344,6 +1348,7 @@ Each relaxation turns an error into its own warning code; nothing else differs.
 | R2 | pure function reading or calling something impure (4.?/9.4.?) | common in vendor libraries |
 | R3 | dropped: the reference simulator's `--relaxed` does not relax case choices (its list is impure calls and files in pure functions, non-globally-static interface defaults, non-protected shared variables) [L17] | per Q6 |
 | R4 | default binding to an entity in `work` when it is not visible (implementation choice) | none needed if Q4 picks the rule above |
+| R5 | an `others` aggregate assigned to an object of unconstrained subtype (a port, a formal) takes the object's run-time bounds (LRM 9.3.3.3 needs a constrained context; `W1325`) | both reference simulators accept it under their relaxed switch (second suite `issue1191`, `issue2421`); agent, 2026-10-23, confirm | 
 
 Q6 asks the user to confirm the list.
 

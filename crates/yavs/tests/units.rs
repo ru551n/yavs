@@ -184,6 +184,136 @@ fn editing_a_dependency_invalidates_its_dependents() {
     assert!(r.stdout.contains("K=3 M=4 f=12"), "{r:?}");
 }
 
+impl Env {
+    /// The files by absolute path, as integrations pass them (a dependency is found by the path the
+    /// manifest records).
+    fn abs(&self, files: &[&str]) -> Vec<String> {
+        files
+            .iter()
+            .map(|f| self.tmp.join(f).display().to_string())
+            .collect()
+    }
+
+    /// The index of `work` with each record it names in its place, and this directory made
+    /// anonymous (the digests that name the records depend on it).
+    fn manifest(&self) -> String {
+        let dir = self.tmp.join("work");
+        let index = std::fs::read_to_string(dir.join("yavs-lib.toml")).expect("manifest");
+        let mut out = String::new();
+        for line in index.lines() {
+            match line.strip_prefix("record = \"") {
+                Some(d) => {
+                    let name = format!("{}.toml", d.trim_end_matches('"'));
+                    out.push_str("record:\n");
+                    out.push_str(
+                        &std::fs::read_to_string(dir.join("yavs-lib.d").join(name))
+                            .expect("record"),
+                    );
+                }
+                None => {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        // Paths with a backslash (Windows) are escaped in the text.
+        let tmp = self.tmp.display().to_string();
+        out.replace(&tmp.replace('\\', "\\\\"), "T")
+            .replace(&tmp, "T")
+    }
+}
+
+/// A file analysed again whose units have entries that hold, which report nothing and which the
+/// manifest records as they were, is not loaded at all: its dependencies are not replayed to give
+/// back the records the manifest has. What it writes and prints is what a replay writes and prints.
+#[test]
+fn warm_files_are_verified_not_replayed() {
+    let e = Env::new("units_verified");
+    let plain = Env::new("units_verified_plain");
+    let two = e.abs(&["pkg.vhd", "mid.vhd"]);
+    let two: Vec<&str> = two.iter().map(String::as_str).collect();
+    let two_plain = plain.abs(&["pkg.vhd", "mid.vhd"]);
+    let two_plain: Vec<&str> = two_plain.iter().map(String::as_str).collect();
+    let cold = e.analyze(&two, &[]);
+    plain.analyze(&two_plain, &["--no-cache"]);
+    assert_eq!(cold[1].notes("verified work."), 0, "{:?}", cold[1]);
+    let warm = e.analyze(&two, &[]);
+    for (i, f) in ["work.p", "work.m"].iter().enumerate() {
+        assert_eq!(warm[i].notes(&format!("verified {f} ")), 1, "{:?}", warm[i]);
+        assert_eq!(warm[i].notes("hit"), 0, "{:?}", warm[i]);
+        assert_eq!(warm[i].notes("not parsed"), 1, "{:?}", warm[i]);
+        assert_eq!(warm[i].visible().2, "", "{:?}", warm[i]);
+    }
+    // The manifest is the one an analysis from source writes.
+    assert_eq!(e.manifest(), plain.manifest());
+    // One call with both files, and a third that needs what the first two registered: the units
+    // are loaded when a later file needs them, and its warning comes out once.
+    let three = e.abs(&["pkg.vhd", "mid.vhd", "tb.vhd"]);
+    let mut args = vec!["analyze".to_string(), "--work".into(), e.lib("work")];
+    args.extend(three);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let tb_abs = e.abs(&["tb.vhd"]);
+    e.analyze(&[tb_abs[0].as_str()], &[]);
+    let batch = e.yavs(&args);
+    assert_eq!(batch.code, 0, "{batch:?}");
+    assert_eq!(batch.notes("verified work.p "), 1, "{batch:?}");
+    assert_eq!(batch.notes("verified work.m "), 1, "{batch:?}");
+    assert_eq!(batch.notes("hit work.tb ("), 1, "{batch:?}");
+    assert_eq!(batch.stderr.matches("W1404").count(), 1, "{batch:?}");
+    // The check mode analyses without the cache and compares: the same on a warm library.
+    let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+    c.current_dir(&e.tmp)
+        .env_remove("YAVS_STDLIB")
+        .env("YAVS_UNIT_CHECK", "1")
+        .args(["analyze", "--work", &e.lib("work")])
+        .args(&two);
+    assert!(c.status().expect("run").success());
+}
+
+/// Warnings are shown for the files named in the call only (#584): a dependency's warning is not
+/// repeated by the files that use it, with the cache or without. A file whose own units report
+/// something is read back (and prints it); one whose units are quiet is verified even when a
+/// dependency has a warning. An edited dependency is not trusted.
+#[test]
+fn verification_needs_quiet_units_and_unchanged_sources() {
+    let e = Env::new("units_verified_edge");
+    let plain = Env::new("units_verified_edge_plain");
+    let wa = "package wa is\n  shared variable v : time;\nend;\n";
+    let wb = "use work.wa.all;\npackage wb is\n  constant c : integer := 1;\nend;\n";
+    for env in [&e, &plain] {
+        std::fs::write(env.tmp.join("wa.vhd"), wa).expect("write");
+        std::fs::write(env.tmp.join("wb.vhd"), wb).expect("write");
+    }
+    let files = e.abs(&["wa.vhd", "wb.vhd"]);
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let files_plain = plain.abs(&["wa.vhd", "wb.vhd"]);
+    let files_plain: Vec<&str> = files_plain.iter().map(String::as_str).collect();
+    let cold = e.analyze(&files, &["--relaxed"]);
+    let warm = e.analyze(&files, &["--relaxed"]);
+    let reference = plain.analyze(&files_plain, &["--relaxed", "--no-cache"]);
+    let strip = |o: &Out, env: &Env| o.visible().2.replace(&env.tmp.display().to_string(), "T");
+    for (i, shows) in [true, false].into_iter().enumerate() {
+        for o in [&cold[i], &warm[i]] {
+            assert_eq!(o.stderr.contains("W1904"), shows, "{i}: {o:?}");
+            assert_eq!(strip(o, &e), strip(&reference[i], &plain), "{i}");
+        }
+    }
+    assert_eq!(warm[0].notes("verified work."), 0, "{:?}", warm[0]);
+    assert_eq!(warm[1].notes("verified work.wb "), 1, "{:?}", warm[1]);
+    // An edited dependency: the file below it is analysed from source, then verified again.
+    let e = Env::new("units_verified_edit");
+    let all = e.abs(&["pkg.vhd", "mid.vhd"]);
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    e.analyze(&all, &[]);
+    std::fs::write(e.tmp.join("pkg.vhd"), PKG.replace(":= 7", ":= 9")).expect("write");
+    let mid = e.analyze(&all[1..], &[]);
+    assert_eq!(mid[0].notes("verified work."), 0, "{:?}", mid[0]);
+    e.analyze(&all, &[]);
+    let again = e.analyze(&all, &[]);
+    assert_eq!(again[0].notes("verified work.p "), 1, "{:?}", again[0]);
+    assert_eq!(again[1].notes("verified work.m "), 1, "{:?}", again[1]);
+}
+
 #[test]
 fn damaged_entries_are_misses() {
     let e = Env::new("units_damaged");

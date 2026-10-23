@@ -244,6 +244,13 @@ impl Observer for Tap {
         self.last = hook.now().as_fs();
     }
 
+    fn value_changes(&mut self, hook: &mut Hook<'_>, signals: &[u32]) {
+        self.last = hook.now().as_fs();
+        if let Some(s) = self.sub(false).as_mut() {
+            s.rec.value_changes(hook, signals);
+        }
+    }
+
     fn value_change(&mut self, hook: &mut Hook<'_>, signal: KernelId, range: yavs_kernel::Range) {
         self.last = hook.now().as_fs();
         if let Some(s) = self.sub(false).as_mut() {

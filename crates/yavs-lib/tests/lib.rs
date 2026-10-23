@@ -43,15 +43,16 @@ fn reanalyze_replaces_entries() {
     let a = analyze(&work, t.path(), "a.vhd", "a1", vec![pkg("A"), pkg("B")]);
     analyze(&work, t.path(), "b.vhd", "b1", vec![pkg("C")]);
     let m = work.read().unwrap();
-    assert_eq!(m.files.len(), 2);
-    assert_eq!(m.find(UnitKind::Package, "a").unwrap().name, "A");
+    assert_eq!(m.len(), 2);
+    let a_file = m.file(&a).unwrap();
+    assert_eq!(m.records(&a_file).unwrap()[0].name, "A");
     // a.vhd no longer defines B, and moves to the end of the compile order.
     analyze(&work, t.path(), "a.vhd", "a2", vec![pkg("A")]);
     let m = work.read().unwrap();
     assert!(m.find(UnitKind::Package, "b").is_none());
-    assert_eq!(m.files.last().unwrap().path, a);
-    assert_eq!(m.files.last().unwrap().hash, hash_content(b"a2"));
-    assert_eq!(m.files.len(), 2);
+    assert_eq!(m.files().last().unwrap().path, a);
+    assert_eq!(m.files().last().unwrap().hash, hash_content(b"a2"));
+    assert_eq!(m.len(), 2);
 }
 
 #[test]
@@ -360,7 +361,7 @@ fn concurrent_analyze() {
         assert!(k.wait().unwrap().success());
     }
     let m = Library::new("work", t.path().join("lib")).read().unwrap();
-    assert_eq!(m.files.len(), 64, "lost updates");
+    assert_eq!(m.len(), 64, "lost updates");
     assert_eq!(m.units().count(), 64);
     assert!(
         !std::fs::read_dir(t.path().join("lib")).unwrap().any(|e| e
@@ -370,9 +371,17 @@ fn concurrent_analyze() {
             .ends_with(".tmp"))
     );
     // Every recorded hash matches its file.
-    for f in &m.files {
-        assert_eq!(f.hash, hash_content(&std::fs::read(&f.path).unwrap()));
+    for f in m.files() {
+        assert_eq!(f.hash, hash_content(&std::fs::read(f.path).unwrap()));
+        assert_eq!(m.records(&f).unwrap().len(), 1);
     }
+    // One record per file and no leftovers of replaced ones.
+    assert_eq!(
+        std::fs::read_dir(t.path().join("lib").join(yavs_lib::RECORD_DIR))
+            .unwrap()
+            .count(),
+        64
+    );
 }
 
 #[test]
@@ -423,20 +432,34 @@ fn old_name_manifest() {
 fn old_format_manifest() {
     let (t, _, work, _) = setup();
     std::fs::create_dir_all(&work.dir).unwrap();
+    // A library of format 2: the whole manifest in one file, no records.
+    let old = "format = 2\nname = \"work\"\n\n[[file]]\npath = \"/x/a.vhd\"\nhash = \"sha256:ab\"\nstd = \"2008\"\n\n[[file.unit]]\nkind = \"package\"\nname = \"A\"\nkey = \"a\"\nstd = \"2008\"\ndepends_on = []\n";
+    std::fs::write(work.dir.join("yavs-lib.toml"), old).unwrap();
+    assert_eq!(
+        snap(&work.read().unwrap_err(), t.path()),
+        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 2, this yavs reads version 3\n  |\n  = help: delete the library directory `<tmp>/work` and analyze its files again (a library of another format version is not converted)\n"
+    );
+    // Closures fail the same way, and analyzing into it fails early rather than overwriting.
+    let mut libs = Libraries::new();
+    libs.add("work", &work.dir);
+    let e = closure(&libs, &UnitRef::new("work", UnitKind::Package, "a")).unwrap_err();
+    assert!(render(&e, false).contains("L0004"));
+    assert!(
+        work.update_file("2008", &t.path().join("x.vhd"), "h", vec![])
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(work.dir.join("yavs-lib.toml")).unwrap(),
+        old
+    );
+    assert!(!work.dir.join(yavs_lib::RECORD_DIR).exists());
+    // Older still.
     std::fs::write(
         work.dir.join("yavs-lib.toml"),
         "format = 1\nname = \"work\"\nstandard = \"2008\"\n",
     )
     .unwrap();
-    assert_eq!(
-        snap(&work.read().unwrap_err(), t.path()),
-        "error[L0004]: library manifest `<tmp>/work/yavs-lib.toml` has format version 1, this yavs reads version 2\n  |\n  = help: re-analyze the library's files to rewrite the manifest\n"
-    );
-    // Analyzing into it also fails early rather than overwriting.
-    assert!(
-        work.update_file("2008", &t.path().join("x.vhd"), "h", vec![])
-            .is_err()
-    );
+    assert!(render(&work.read().unwrap_err(), false).contains("format version 1"));
 }
 
 /// Set the modification time of `p` to an hour ago.
@@ -508,7 +531,7 @@ fn session_records_every_file_as_it_goes() {
             .record(STD, &p, &hash_content(name.as_bytes()), vec![pkg(name)])
             .unwrap();
         // Each record is published at once, before the session ends.
-        assert_eq!(work.read().unwrap().files.len(), i + 1);
+        assert_eq!(work.read().unwrap().len(), i + 1);
     }
     // Re-recording a file moves it to the end, from the manifest the session kept.
     let a = t.path().join("a.vhd");
@@ -517,6 +540,446 @@ fn session_records_every_file_as_it_goes() {
         .unwrap();
     drop(session);
     let m = work.read().unwrap();
-    assert_eq!(m.files.len(), 3);
-    assert_eq!(m.files.last().unwrap().hash, hash_content(b"a2"));
+    assert_eq!(m.len(), 3);
+    assert_eq!(m.files().last().unwrap().hash, hash_content(b"a2"));
+}
+
+/// A read under the session's own lock is parsed once and shared with the session, and it never
+/// shows the manifest from before a record (the reader that parsed it and the writer are one
+/// process).
+#[test]
+fn read_in_a_session_sees_every_record() {
+    let (t, _, work, _) = setup();
+    let session = work.session().unwrap();
+    for i in 0..4 {
+        let (name, text) = (format!("g{i}"), format!("text {i}"));
+        let p = t.path().join(format!("{name}.vhd"));
+        std::fs::write(&p, &text).unwrap();
+        // Read first (the analyzer's lookups), then record: the record starts from that parse.
+        let before = work.read().map(|m| m.len()).unwrap_or(0);
+        assert_eq!(before, i);
+        session
+            .record(STD, &p, &hash_content(text.as_bytes()), vec![pkg(&name)])
+            .unwrap();
+        let again = work.read().unwrap();
+        assert_eq!(again.len(), i + 1);
+        assert_eq!(again.files().last().unwrap().path, p);
+        let paths =
+            |m: &yavs_lib::Manifest| m.files().map(|f| f.path.to_path_buf()).collect::<Vec<_>>();
+        assert_eq!(paths(&work.read().unwrap()), paths(&again));
+    }
+    // The same directory under another name (another `Library` value) sees every record too.
+    let alias = Library::new("alias", &work.dir);
+    assert_eq!(alias.read().unwrap().len(), 4);
+    let (name, text) = ("g4", "text 4");
+    let p = t.path().join("g4.vhd");
+    std::fs::write(&p, text).unwrap();
+    session
+        .record(STD, &p, &hash_content(text.as_bytes()), vec![pkg(name)])
+        .unwrap();
+    assert_eq!(alias.read().unwrap().len(), 5);
+    drop(session);
+    // Another process-like reader after the session sees the file as written.
+    assert_eq!(Library::new("work", &work.dir).read().unwrap().len(), 5);
+}
+
+/// A reader polling the library while a session records files sees a whole index every time (the
+/// old one or the new one, never a torn one), the count never goes back (#561), and every record
+/// the index names is there (#599).
+#[test]
+fn manifest_is_never_torn() {
+    let (t, _, work, _) = setup();
+    let session = work.session().unwrap();
+    let first = t.path().join("f0.vhd");
+    std::fs::write(&first, "f0").unwrap();
+    session
+        .record(STD, &first, &hash_content(b"f0"), vec![pkg("f0")])
+        .unwrap();
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let seen = std::thread::scope(|s| {
+        let reader = s.spawn(|| {
+            // A library value of its own, so that nothing is shared with the session's reads.
+            let lib = Library::new("work", &work.dir);
+            let (mut last, mut reads) = (1, 0);
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let m = lib.read().expect("manifest never torn");
+                assert!(
+                    m.len() >= last,
+                    "manifest went back from {last} to {} files",
+                    m.len()
+                );
+                last = m.len();
+                for f in m.files() {
+                    m.records(&f).expect("a record the index names is there");
+                }
+                reads += 1;
+            }
+            // The writer is done: what the last read says is the index on disk (#635).
+            let m = lib.read().expect("manifest never torn");
+            assert_eq!(m.len(), 300, "a read cached the index from before a write");
+            reads
+        });
+        for i in 1..300 {
+            let (name, text) = (format!("f{i}"), format!("text {i}"));
+            let p = t.path().join(format!("{name}.vhd"));
+            std::fs::write(&p, &text).unwrap();
+            session
+                .record(STD, &p, &hash_content(text.as_bytes()), vec![pkg(&name)])
+                .unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        reader.join().unwrap()
+    });
+    assert!(seen > 0);
+    drop(session);
+    assert_eq!(work.read().unwrap().len(), 300);
+}
+
+/// Recording what the library already says does not rewrite the index or the record (#561, #599).
+#[cfg(unix)]
+#[test]
+fn unchanged_record_skips_the_rewrite() {
+    use std::os::unix::fs::MetadataExt;
+    let (t, _, work, _) = setup();
+    let p = t.path().join("a.vhd");
+    std::fs::write(&p, "a").unwrap();
+    let h = hash_content(b"a");
+    let session = work.session().unwrap();
+    session.record(STD, &p, &h, vec![pkg("a")]).unwrap();
+    let inos = || {
+        let index = std::fs::metadata(work.dir.join(yavs_lib::MANIFEST_FILE)).unwrap();
+        let records: Vec<_> = record_files(&work)
+            .iter()
+            .map(|r| std::fs::metadata(r).unwrap().ino())
+            .collect();
+        (index.ino(), records)
+    };
+    let before = inos();
+    assert_eq!(before.1.len(), 1);
+    session.record(STD, &p, &h, vec![pkg("a")]).unwrap();
+    assert_eq!(inos(), before, "an identical library was written again");
+    // A changed hash replaces the index and keeps the record (its text is the same).
+    session
+        .record(STD, &p, &hash_content(b"b"), vec![pkg("a")])
+        .unwrap();
+    let after = inos();
+    assert_ne!(after.0, before.0);
+    assert_eq!(after.1, before.1);
+    // Other units make another record and the earlier one is deleted.
+    session
+        .record(STD, &p, &hash_content(b"b"), vec![pkg("a"), pkg("a2")])
+        .unwrap();
+    let after = inos();
+    assert_eq!(after.1.len(), 1);
+    assert_ne!(after.1, before.1);
+}
+
+fn record_files(lib: &Library) -> Vec<PathBuf> {
+    let mut v: Vec<_> = std::fs::read_dir(lib.dir.join(yavs_lib::RECORD_DIR))
+        .map(|d| d.map(|e| e.unwrap().path()).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// A file that lost units to a later file is `partial` (#577): the index lists the rest, a file
+/// that lost all of them is gone with its record, and a dependency on a unit it kept still resolves.
+#[test]
+fn partial_files() {
+    let (t, libs, work, _) = setup();
+    let a = analyze(&work, t.path(), "a.vhd", "a", vec![pkg("A"), pkg("B")]);
+    let top = analyze(
+        &work,
+        t.path(),
+        "top.vhd",
+        "top",
+        vec![pkg("Top").depends("work", UnitKind::Package, "a")],
+    );
+    assert_eq!(record_files(&work).len(), 2);
+    let b = analyze(&work, t.path(), "b.vhd", "b", vec![pkg("B")]);
+    let m = work.read().unwrap();
+    let fa = m.file(&a).unwrap();
+    assert!(fa.partial);
+    assert_eq!(
+        fa.units().map(|u| u.key.to_string()).collect::<Vec<_>>(),
+        ["a"]
+    );
+    assert!(!m.file(&b).unwrap().partial && !m.file(&top).unwrap().partial);
+    assert_eq!(m.find(UnitKind::Package, "b").unwrap().file, b);
+    let c = closure(&libs, &UnitRef::new("work", UnitKind::Package, "top")).unwrap();
+    assert_eq!(
+        c.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+        [a.clone(), top]
+    );
+    // The partial file analyzed again is whole.
+    work.update_file(STD, &a, &hash_content(b"a"), vec![pkg("A"), pkg("B")])
+        .unwrap();
+    let m = work.read().unwrap();
+    assert!(!m.file(&a).unwrap().partial);
+    assert!(m.file(&b).is_none(), "b lost its only unit");
+    assert_eq!(record_files(&work).len(), 2, "the record of b is deleted");
+    assert!(m.file(&a).unwrap().units().count() == 2);
+}
+
+/// The default architecture of an entity is the last one analyzed (LRM 7.3.3), and a file
+/// analyzed again moves to the end of the analysis order.
+#[test]
+fn default_architecture_is_the_last_analyzed() {
+    let (t, libs, work, _) = setup();
+    let ent = |arch: &str| {
+        vec![
+            UnitRecord::new(UnitKind::Entity, "E", STD),
+            UnitRecord::architecture("E", arch, STD),
+        ]
+    };
+    let f1 = analyze(&work, t.path(), "f1.vhd", "f1", ent("one"));
+    let f2 = analyze(
+        &work,
+        t.path(),
+        "f2.vhd",
+        "f2",
+        vec![UnitRecord::architecture("E", "two", STD)],
+    );
+    let top = UnitRef::new("work", UnitKind::Entity, "e");
+    let last = |work: &Library| {
+        work.read()
+            .unwrap()
+            .units()
+            .filter(|u| u.kind == UnitKind::Architecture && u.primary == Some("e"))
+            .last()
+            .map(|u| u.key.to_string())
+    };
+    assert_eq!(last(&work).as_deref(), Some("e/two"));
+    let paths = |libs: &Libraries| -> Vec<PathBuf> {
+        closure(libs, &top)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect()
+    };
+    assert_eq!(paths(&libs), [f1.clone(), f2]);
+    // `f1` analyzed again: its architecture is the newest.
+    work.update_file(STD, &f1, &hash_content(b"f1"), ent("one"))
+        .unwrap();
+    assert_eq!(last(&work).as_deref(), Some("e/one"));
+    assert_eq!(paths(&libs), [f1]);
+}
+
+/// Names that need an escape in the text survive.
+#[test]
+fn odd_strings_round_trip() {
+    let (t, libs, work, _) = setup();
+    let mut ids = Vec::new();
+    let names: &[&str] = if cfg!(unix) {
+        &[
+            "q\"uote.vhd",
+            "back\\slash.vhd",
+            "\u{e9}t\u{e9}.vhd",
+            "tab\there.vhd",
+            "nl\nx.vhd",
+            "a #1 [b] = c.vhd",
+        ]
+    } else {
+        &["\u{e9}t\u{e9}.vhd", "a #1 [b] = c.vhd"]
+    };
+    for (i, name) in names.iter().copied().enumerate() {
+        let unit = format!("\\ext {i}\\");
+        let u = UnitRecord::new(UnitKind::Package, &unit, STD).depends(
+            "work",
+            UnitKind::Package,
+            "\\d\"q\\",
+        );
+        ids.push((analyze_odd(&work, t.path(), name, vec![u]), unit));
+    }
+    let m = work.read().unwrap();
+    for (p, unit) in &ids {
+        let f = m.file(p).unwrap();
+        assert_eq!(f.path, p);
+        let r = m.records(&f).unwrap();
+        assert_eq!(r[0].name, *unit);
+        assert_eq!(r[0].depends_on[0].key, "\\d\"q\\");
+        assert_eq!(
+            m.find(UnitKind::Package, &unit.to_lowercase())
+                .map(|u| u.file),
+            Some(p.as_path())
+        );
+    }
+    // A closure over them (the dependency is missing, which names the escaped unit).
+    let e = closure(&libs, &UnitRef::new("work", UnitKind::Package, &ids[0].1)).unwrap_err();
+    assert!(render(&e, false).contains("L0031"));
+}
+
+fn analyze_odd(lib: &Library, dir: &Path, name: &str, units: Vec<UnitRecord>) -> PathBuf {
+    let p = dir.join(name);
+    // File names with a newline or tab are not valid everywhere; the index is the subject here.
+    lib.update_file(STD, &p, "sha256:00", units).unwrap();
+    p
+}
+
+/// Damage to a record is an error that names it, never a different library.
+#[test]
+fn damaged_and_missing_records() {
+    let (t, libs, work, _) = setup();
+    let a = analyze(
+        &work,
+        t.path(),
+        "a.vhd",
+        "a",
+        vec![pkg("A").depends("work", UnitKind::Package, "b")],
+    );
+    analyze(&work, t.path(), "b.vhd", "b", vec![pkg("B")]);
+    let top = UnitRef::new("work", UnitKind::Package, "a");
+    assert!(closure(&libs, &top).is_ok());
+    let m = work.read().unwrap();
+    let rec = work.dir.join(yavs_lib::RECORD_DIR).join(
+        record_files(&work)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_owned())
+            .next()
+            .unwrap(),
+    );
+    let text = std::fs::read_to_string(&rec).unwrap();
+    // Changed text, same length: the digest differs.
+    std::fs::write(&rec, text.replacen("depends_on", "dependz_on", 1)).unwrap();
+    let broken = |f: &str| {
+        let m = Library::new("work", &work.dir).read().unwrap();
+        let fr = m.file(&t.path().join(f)).unwrap();
+        m.records(&fr)
+    };
+    let errors: Vec<_> = ["a.vhd", "b.vhd"]
+        .iter()
+        .filter_map(|f| broken(f).err())
+        .collect();
+    assert_eq!(errors.len(), 1);
+    let s = snap(&errors[0], t.path());
+    assert!(
+        s.starts_with("error[L0003]: library record `<tmp>/work/yavs-lib.d/"),
+        "{s}"
+    );
+    assert!(
+        s.contains("is damaged (its digest differs)")
+            && s.contains("delete the library directory `<tmp>/work`"),
+        "{s}"
+    );
+    std::fs::remove_file(&rec).unwrap();
+    let e = closure(&libs, &top).unwrap_err();
+    let s = snap(&e, t.path());
+    assert!(
+        s.contains("error[L0003]") && s.contains("is missing"),
+        "{s}"
+    );
+    // The index alone is still readable, and so are the units it knows.
+    assert!(m.find(UnitKind::Package, "a").is_some());
+    assert_eq!(m.file(&a).unwrap().units().count(), 1);
+}
+
+/// A write interrupted after a record and before the index leaves the old library: the index
+/// names the records it knew, and the record nobody names is ignored.
+#[test]
+fn interrupted_write_leaves_the_old_library() {
+    let (t, libs, work, _) = setup();
+    let a = analyze(&work, t.path(), "a.vhd", "a1", vec![pkg("A")]);
+    let copy = tempfile::tempdir().unwrap();
+    let cp = |from: &Path, to: &Path| {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.path().is_file() {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    };
+    cp(&work.dir, &copy.path().join("lib"));
+    cp(
+        &work.dir.join(yavs_lib::RECORD_DIR),
+        &copy.path().join("lib").join(yavs_lib::RECORD_DIR),
+    );
+    // a.vhd is analyzed again with another set of units.
+    std::fs::write(&a, "a2").unwrap();
+    work.update_file(STD, &a, &hash_content(b"a2"), vec![pkg("A"), pkg("A2")])
+        .unwrap();
+    // The crash state: the old index, the old record, and the new record.
+    for r in record_files(&work) {
+        let to = copy
+            .path()
+            .join("lib")
+            .join(yavs_lib::RECORD_DIR)
+            .join(r.file_name().unwrap());
+        if !to.exists() {
+            std::fs::copy(&r, &to).unwrap();
+        }
+    }
+    let mut crashed = Libraries::new();
+    crashed.add("work", copy.path().join("lib"));
+    let c = closure(&crashed, &UnitRef::new("work", UnitKind::Package, "a")).unwrap_err();
+    // (the file on disk has the new text, which the old index did not hash)
+    assert!(render(&c, false).contains("L0034"), "{}", render(&c, false));
+    let m = Library::new("work", copy.path().join("lib"))
+        .read()
+        .unwrap();
+    assert!(m.find(UnitKind::Package, "a2").is_none());
+    assert_eq!(m.records(&m.file(&a).unwrap()).unwrap().len(), 1);
+    // The next analyze in the crashed library repairs it and removes what nothing names.
+    let lib = Library::new("work", copy.path().join("lib"));
+    lib.update_file(STD, &a, &hash_content(b"a2"), vec![pkg("A"), pkg("A2")])
+        .unwrap();
+    assert_eq!(record_files(&lib).len(), 1);
+    assert!(closure(&crashed, &UnitRef::new("work", UnitKind::Package, "a2")).is_ok());
+    drop(libs);
+}
+
+/// Child entry point for `readers_and_writers_in_two_processes`.
+#[test]
+fn rewriter_entry() {
+    let Ok(dir) = std::env::var("YAVS_LIB_TEST_REWRITER") else {
+        return;
+    };
+    let lib = Library::new("work", Path::new(&dir).join("lib"));
+    let top = Path::new(&dir).join("top.vhd");
+    for i in 0..150 {
+        let extra = format!("extra{i}");
+        lib.update_file(
+            STD,
+            &top,
+            &hash_content(b"top"),
+            vec![
+                pkg("Top").depends("work", UnitKind::Package, "base"),
+                pkg(&extra),
+            ],
+        )
+        .unwrap();
+    }
+}
+
+/// A closure never sees a record replaced under it: another process analyzes the same file again
+/// and again while this one resolves it (the shared lock is held for the whole closure).
+#[test]
+fn readers_and_writers_in_two_processes() {
+    let t = tempfile::tempdir().unwrap();
+    let lib = Library::new("work", t.path().join("lib"));
+    let mut libs = Libraries::new();
+    libs.add("work", &lib.dir);
+    analyze(&lib, t.path(), "base.vhd", "base", vec![pkg("Base")]);
+    std::fs::write(t.path().join("top.vhd"), "top").unwrap();
+    lib.update_file(
+        STD,
+        &t.path().join("top.vhd"),
+        &hash_content(b"top"),
+        vec![pkg("Top").depends("work", UnitKind::Package, "base")],
+    )
+    .unwrap();
+    let mut kid = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "rewriter_entry", "--nocapture"])
+        .env("YAVS_LIB_TEST_REWRITER", t.path())
+        .spawn()
+        .unwrap();
+    let top = UnitRef::new("work", UnitKind::Package, "top");
+    let mut n = 0;
+    while kid.try_wait().unwrap().is_none() {
+        let c = closure(&libs, &top).unwrap_or_else(|e| panic!("{}", render(&e, false)));
+        assert_eq!(c.len(), 2);
+        n += 1;
+    }
+    assert!(n > 0);
+    assert_eq!(record_files(&lib).len(), 2);
 }

@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:top_grn:g(0):u:_p0	leaf 0 one
+diag	note	0	0	:top_grn:g(1):u:_p0	leaf 1 one
+diag	note	0	0	:top_grn:g(2):u:_p0	leaf 2 one
+diag	note	0	0	:top_grn:g(3):u:_p0	leaf 3 two
+diag	note	0	0	:top_grn:g(4):u:_p0	leaf 4 two

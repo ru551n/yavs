@@ -1,0 +1,13 @@
+exit	0
+diag	note	0	0	:all_local_subprogram:p	inner reads s1=0 s3=0
+diag	note	0	0	:all_local_subprogram:p	outer reads s2=0
+diag	note	0	0	:all_local_subprogram:p	param x=0
+diag	note	1000000	1	:all_local_subprogram:p	inner reads s1=1 s3=0
+diag	note	1000000	1	:all_local_subprogram:p	outer reads s2=0
+diag	note	1000000	1	:all_local_subprogram:p	param x=0
+diag	note	3000000	1	:all_local_subprogram:p	inner reads s1=1 s3=1
+diag	note	3000000	1	:all_local_subprogram:p	outer reads s2=1
+diag	note	3000000	1	:all_local_subprogram:p	param x=0
+diag	note	4000000	1	:all_local_subprogram:p	inner reads s1=1 s3=1
+diag	note	4000000	1	:all_local_subprogram:p	outer reads s2=1
+diag	note	4000000	1	:all_local_subprogram:p	param x=1

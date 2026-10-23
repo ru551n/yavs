@@ -1,0 +1,32 @@
+exit	1
+diag	note	25000000	0	:psl_named_formals:c5	upto
+diag	note	35000000	0	:psl_named_formals:c1	rep 2
+diag	note	35000000	0	:psl_named_formals:c2	rep 1
+diag	note	35000000	0	:psl_named_formals:c3	both
+diag	note	35000000	0	:psl_named_formals:c5	upto
+diag	note	35000000	0	:psl_named_formals:c6	nested both
+diag	note	45000000	0	:psl_named_formals:c2	rep 1
+diag	note	45000000	0	:psl_named_formals:c3	both
+diag	note	45000000	0	:psl_named_formals:c6	nested both
+diag	note	55000000	0	:psl_named_formals:c4	twice
+diag	note	55000000	0	:psl_named_formals:c5	upto
+diag	note	65000000	0	:psl_named_formals:c2	rep 1
+diag	note	65000000	0	:psl_named_formals:c3	both
+diag	note	65000000	0	:psl_named_formals:c6	nested both
+diag	note	85000000	0	:psl_named_formals:c5	upto
+diag	error	95000000	0	:psl_named_formals:p1	after
+diag	error	95000000	0	:psl_named_formals:p2	whole
+diag	note	105000000	0	:psl_named_formals:c2	rep 1
+diag	error	115000000	0	:psl_named_formals:p2	whole
+diag	error	115000000	0	:psl_named_formals:p4	nested formals
+diag	note	125000000	0	:psl_named_formals:c5	upto
+diag	error	125000000	0	:psl_named_formals:p2	whole
+diag	note	135000000	0	:psl_named_formals:c2	rep 1
+diag	note	135000000	0	:psl_named_formals:c3	both
+diag	note	135000000	0	:psl_named_formals:c6	nested both
+diag	note	155000000	0	:psl_named_formals:c2	rep 1
+diag	note	165000000	0	:psl_named_formals:c1	rep 2
+diag	note	165000000	0	:psl_named_formals:c5	upto
+diag	error	175000000	0	:psl_named_formals:p1	after
+diag	error	175000000	0	:psl_named_formals:p2	whole
+diag	error	195000000	0	:psl_named_formals:p3	property formal

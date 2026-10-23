@@ -1,3 +1,3 @@
 exit	1
 diag	note	0	0	:loop_invariant_fault_order:_p0	first
-diag	fatal	0	0	-	index 7 outside of range 3 downto 0 for array
+diag	fatal	0	0	:loop_invariant_fault_order:_p0	index 7 outside of range 3 downto 0 for array

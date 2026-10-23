@@ -5,7 +5,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 ## 1. Purpose and boundaries
 
 - Lexer, conditional analysis (`` `if `` and other tool directives, evaluated on the token stream)
-  and a hand-written recursive-descent parser for VHDL-2008 and VHDL-2019 into an owned,
+  and a hand-written recursive-descent parser for VHDL-1993, VHDL-2008 and VHDL-2019 into an owned,
   purely syntactic AST with spans.
 - Does not: resolve names, decide what an ambiguous form means (`f(x)` call vs index vs slice vs
   conversion, `label: p;` call vs instance, choices that may be subtypes), type anything, or read
@@ -27,6 +27,9 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | `src/parser/mod.rs` | `Parser`, `PResult`/`Recover`, resync, `MAX_DEPTH = 64`, fuel counter |
 | `src/parser/unit.rs`, `decl.rs`, `stmt.rs`, `expr.rs` | Design units, declarations, statements, expressions and names |
 | `src/parser/psl.rs` | The PSL subset: `default clock`, directives to checker processes (#226), built-in function calls to process variables (#445) |
+| `src/parser/psl_named.rs` | Named PSL sequences and properties: declarations as token ranges, expansion with the formals bound, renaming of boolean formals (#445) |
+| `src/parser/psl_prop.rs` | Temporal PSL properties: parser, terms (formula progression), enumeration of the reachable terms, checker process generation (#445) |
+| `src/parser/psl_seq.rs` | PSL sequences: SERE parser, position automaton (Glushkov), deterministic obligations, checker process generation (#445) |
 | `src/ast.rs` | The tree: `DesignFile`, `DesignUnit`, `LibraryUnit`, `Decl`, `SeqStmt`, `ConcStmt`, `Expr`, `Name`/`NameKind::Apply`, `Range::Name`, `Ident` (`text`, `key`, `span`) |
 | `src/tests.rs` | Unit tests (about 1,000 lines) |
 
@@ -34,7 +37,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 
 | Decision | Why | Source |
 |---|---|---|
-| Own parser, 2008 and 2019 in one grammar, gated by `Std` (`E0004` for 2019 syntax in 2008) | Plan decision | `docs/plan.md` "Decisions made with the user" |
+| Own parser, 2008 and 2019 in one grammar, gated by `Std` (`E0004` for 2019 syntax in 2008, `E0011` for 2008 syntax in 1993, #629) | Plan decision | `docs/plan.md` "Decisions made with the user" |
 | `Ident` keeps original spelling plus folded key; extended identifiers fold to themselves | VHPI `CaseName`, waves, diagnostics | `docs/plan.md` rule 8 |
 | Global interner, leaked strings, per-thread mirror of the table | Symbols valid on runtime threads; a hit or `as_str` takes no lock (#424) | `docs/decisions.md` "Parser" |
 | List parsers (statements, declarations, interface and association lists) push onto a scratch stack in `Parser` and move the elements into an exact-size `Vec`; rare large AST variants (`Actual::Range/Subtype`, `Constraint::Range`, interface type/subprogram/package) are boxed | No doubling of 200 to 400 byte elements, smaller nodes, less copying per parse step | #424 |
@@ -47,6 +50,10 @@ Read the root `AGENTS.md` first. This file is for an agent about to change `crat
 | A type mark takes no parentheses except the dimension of 2019 `A'INDEX(n)` (`NameKind::Apply` on the attribute) | The index subtype is scalar, so no index constraint can follow; #174 | `src/parser/expr.rs` `type_mark` |
 | PSL outside the subset is skipped with one `W0004` per design unit (`E0005` retired, never reuse); the skip ends at the `;` outside `()`, `[]`, `{}` (`sync`), a `vunit`/`vmode`/`vprop` at its closing `}`; a concurrent `assert`/`cover` counts as PSL by its first property token (`at_psl_directive`) | User decision 2026-10-18: do not fail designs that merely carry assertions yavs cannot run | `docs/decisions.md` "Parser", #138 |
 | The PSL subset (`default clock`, `assert`/`assume` `always`/`never`/`->`/`next[n]`, `cover`, `@` clocks) becomes an implicit checker process in the tree (`parser/psl.rs`); an attempt that does not fit restores the position and drops its diagnostics, then the skip runs; `-- psl` comment pragmas are lexed as tokens only with `Options::psl` (`--psl`; user, 2026-10-19) (`lexer.rs` `comment`, `is_pragma`); `->` is one token (`Tok::Imply`) | Nothing new in sem, lowering or the kernel; deterministic at any thread count | `docs/decisions.md` "Parser", #226 |
+| `restrict`, `restrict_guarantee`, `assume_guarantee`, `fairness`, `strong fairness` and a directive that calls `nondet`/`nondet_vector` are skipped without `W0004` (`psl_formal_only`, called by `psl_skip`; `at_psl_directive` takes an `assert` with a `nondet` call as PSL) | Formal-only: nothing to run in simulation | `docs/decisions.md` "Parser", user 2026-10-23, #445 |
+| PSL sequences (`{a; b[*2]}`, fusion, alternation, `&&`, `&`, `within`, `[=n]`, `[->n]`, suffix implication) become a position automaton in process variables (`parser/psl_seq.rs`): the antecedent and `cover`/`never` use the union of the matches in progress, the right side of an implication a determinised obligation (at most 6 booleans, 64 states); a boolean needs `Parser::psl_no_sig` so that `[` ends it instead of opening a signature; limits skip the directive with `W0004` | Exact failure per start without kernel changes | `docs/decisions.md` "Parser", L123, #445 |
+| Named PSL sequences and properties are token ranges expanded by parsing the body again with the formals bound (`parser/psl_named.rs`: `boolean` formals are process variables and a renamed name, `const` a number, `sequence` and `property` the actual's tokens); a built-in on a formal or a typed formal skips the directive with `W0004` | No tree clone; same process shape as the plain directives | `docs/decisions.md` "Parser", #445 |
+| Temporal PSL properties (`next_a`/`next_e`/`next_event*`, `until*`, `before*`, `sync_abort`/`abort`/`async_abort`, `<->`, nested `next`/`always`, a property after `|->`) become terms stepped per tick; the reachable terms are enumerated at parse time, one process variable each (`parser/psl_prop.rs`); strong operators skip the directive with `W0004`; `abort` and `async_abort` run as `sync_abort` (user, 2026-10-23) | Weak finite-trace semantics with no change in sem, lowering or the kernel; the end-of-run check of strong operators has no place in a process | `docs/decisions.md` "Parser", L133, #445 |
 | No VHDL-93 mode: 93 code using 2008 reserved words is an expected corpus failure | Plan scope | `docs/decisions.md` "Parser", corpus lists |
 
 Module-local decisions go in this section in the same commit; LRM readings go to
@@ -55,7 +62,7 @@ Module-local decisions go in this section in the same commit; LRM readings go to
 ## 4. Invariants and pitfalls
 
 - The parser never panics or loops: every list loop must make progress, nesting is capped at 64
-  (`E0006`), and the fuel counter stops a stalled parse. A new loop without progress is a fuzz
+  (`E0006`; one level of parentheses, an aggregate or a call counts once, in `primary`, not in `expr`: a chain of 30 to 60 parenthesised groups is real RTL, #604; the cap is what a 2 MiB debug-build stack parses, and the rest of the pipeline was checked to 60 levels on 2 MiB), and the fuel counter stops a stalled parse. A new loop without progress is a fuzz
   crash waiting to happen (`fuzz/` target `parse`, rule 15).
 - Keep ambiguous forms ambiguous. Resolving them here breaks `yavs-sem`'s name interpretation
   (`docs/design/sem.md` 3.3).
@@ -84,7 +91,7 @@ cargo run -p yavs -- parse --std 2019 --dump-ast f.vhd   # inspect the tree
 - New syntax: a unit test in `src/tests.rs` plus, for an error, a `tests/diag/NAME.vhd` snapshot
   (first line `-- yavs: --std 2019` for 2019). Corpus list changes in `tests/parse-corpus/` must
   be explained in the commit.
-- Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0010, W0001 to
+- Codes owned: `E0001`-`E0099`, `W0001`-`W0099` (`yavs_syntax::codes`: E0001 to E0011, W0001 to
   W0004), plus `E9999` for internal errors.
 
 ## 6. Coordination

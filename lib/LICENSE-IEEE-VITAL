@@ -1,6 +1,6 @@
 IEEE 1076.4 VITAL packages (ieee.vital_timing, ieee.vital_primitives, ieee.vital_memory)
 
-Files: lib/ieee/{2008,2019}/vital_{timing,primitives,memory}{,-body}.vhdl
+Files: lib/ieee/{1993,2008,2019}/vital_{timing,primitives,memory}{,-body}.vhdl
 
 These six package files (VITAL 2000, IEEE Std 1076.4-2000) are Copyright (c) IEEE. They carry
 no explicit licence grant. They are redistributed here unmodified, as other open-source VHDL

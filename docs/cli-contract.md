@@ -82,23 +82,32 @@ The test runner's capability answers for yavs (`SimulatorInterface` hooks):
 
 ## 2. Standards
 
-`--std=2008` or `--std=2019`. Any other value is a usage error (exit 2). The test runner
-raises an error itself for a project containing VHDL-93/2002 files.
+`--std=93` (also `1993`), `--std=2008` or `--std=2019`. Any other value (`87`, `02`, ...) is a
+usage error (exit 2). The test runner raises an error itself for a project containing
+VHDL-93/2002 files, so it never passes `93`; the value is for people and scripts that call yavs
+directly (`docs/design/vhdl-93.md`).
 
-- A project may mix 2008 and 2019 files. `analyze --std=STD` gives the
+- A project may mix 1993, 2008 and 2019 files. `analyze --std=STD` gives the
   standard of that one file (default 2008), and yavs records it per file in the
-  library manifest. The test runner passes each file's own standard.
+  library manifest (`1993`, `2008`, `2019`). The test runner passes each file's own standard.
 - `run`/`elab` re-analyze every file with its recorded standard. Their `--std`
   is optional and the test runner does not pass it: the whole design uses ONE `std`
   and `ieee` revision, the newest standard recorded for any file in the
   design's closure (not the top level unit's standard), and that revision
   selects the run-time semantics of the whole design (e.g. 64-bit `integer`
-  in 2019, plan rule 7). `--std` on `run`/`elab` overrides it. A file using a
+  in 2019, plan rule 7; in a design of 1993 files alone `std_logic_vector` is a type of its own
+  and the 1993 `std_logic_1164`, `numeric_std`, `std.textio` are used). `--std` on `run`/`elab`
+  overrides it. A file using a
   declaration or construct that is not available under that revision fails
   early with `E1007`, naming the file and its recorded standard (exit 2),
   never a silent reinterpretation. A construct whose meaning changes under
   that revision is warning `W1008` (once per construct; `-Werror=W1008`
-  escalates it). See `docs/design/sem.md` section 0.1.
+  escalates it). A 1993 file in a 2008 or 2019 design sees that design's packages, so 1993 code
+  that overloads on both `std_logic_vector` and `std_ulogic_vector` fails with the usual
+  homograph error there. Mixing is never refused: yavs elaborates a design of 1993 and 2008 (or 2019)
+  files with the newest packages, where the reference simulators refuse to mix standards in one
+  library or elaboration (user decision, 2026-10-23). See `docs/design/vhdl-93.md` section 3.3 and
+  `docs/design/sem.md` section 0.1.
 
 ## 3. Libraries
 
@@ -107,6 +116,12 @@ raises an error itself for a project containing VHDL-93/2002 files.
   `--map=NAME:PATH` maps any other library. The test runner passes `--map` for every
   library in the project, including the work library: a `--map` identical to
   `--work` must be accepted.
+- A library directory holds `yavs-lib.toml` (the index: the files in analysis order with their standard,
+  content hash, size and modification time, and the units each defines), `yavs-lib.d/` (one record per source
+  file with the unit names and dependencies, named by a digest of their text), `_YAVS_LIB` (the lock) and
+  `yavs-cache/` (below). Only yavs reads and writes them: the test runner never parses them, and the layout
+  has a `format` number in the index (3). A library written by a yavs with another number is refused with
+  `L0004` naming the directory; delete it and analyze its files again (libraries are not converted).
 - A missing or empty directory is a valid empty library. `analyze` creates the
   directory (and its parents) on first use. The test runner does not run an init command;
   it only creates the parent of the library directory.
@@ -130,16 +145,18 @@ raises an error itself for a project containing VHDL-93/2002 files.
   at the same time (two `run.py` invocations, or a future parallel compile in
   the test runner). yavs does this with automatic library locking like the reference simulator's: each library
   directory has a `_YAVS_LIB` lock file held exclusively by `analyze` while it
-  updates the manifest (written to a temp file, then atomically renamed);
-  `run`/`elab` hold it shared only while reading the manifest. Read-only
+  updates the library (each record and the index are written to a temp file, then atomically
+  renamed, the records first and the index last, so a reader sees the index it read and the records it
+  names, whole); `run`/`elab` hold it shared only while reading the index and the records of the
+  files in the closure. Read-only
   library directories never fail: shared lock via a read-only open, or no lock
   if the file cannot be opened at all. The test runner needs no locking of its own.
 - Edited sources: `run`/`elab` find a file that changed since it was analyzed (`L0034`) by its content
-  hash. When `analyze` recorded a file that had not been modified for two seconds, the manifest also
+  hash. When `analyze` recorded a file that had not been modified for two seconds, the index also
   holds its size and modification time (`size`, `mtime_ns`), and a file that still has both is not
   read and hashed again. So content of the same size written back under the recorded modification
-  time goes unnoticed (as with build tools in general); re-analyze such a file. A manifest without
-  the two fields (an older one, or a file edited right before it was analyzed) is always hashed.
+  time goes unnoticed (as with build tools in general); re-analyze such a file. A file recorded without
+  the two fields (one edited right before it was analyzed) is always hashed.
 
 ### Compilation cache
 
@@ -214,7 +231,7 @@ identical to a run without it, at any `--threads`.
   it was made with (an edit anywhere upstream invalidates everything below it), the yavs build and the
   options (`--std` of the design, `--relaxed`, `--psl`, `--encoding`, `-D`) are the same and the
   libraries answer what they answered then; anything else, a damaged entry included, is a miss and the
-  unit is analysed from source. Diagnostics, warnings included, and results are identical either way.
+  unit is analysed from source. Diagnostics, warnings included, and results are identical either way. `yavs analyze` shows warnings and notes only for the files named in the call (a unit read from the library was reported when its file was analysed, #584; errors are always shown), so a file that uses a unit with a warning does not repeat it, and `-Werror` counts the named files' warnings only.
   Only `analyze` writes entries (under its library session; the units of other libraries and of
   `std`/`ieee` by atomic rename, no lock); `elab` and `run` only read them. A library directory that
   cannot be written is read and never fails. `analyze --no-cache` neither reads nor writes them; `yavs
@@ -233,10 +250,11 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   response file with a file per line, section 0). All files get the same options
   and `--std`. They are analyzed in the given order by one analysis session: each
   file is parsed once and sees the units of the files before it, even before the
-  manifest is read again. The work library's exclusive lock is held for the
-  whole call, and each successful file is recorded (atomic manifest rename) as
-  soon as it is done (visible to readers at once; synced to disk when the call ends), so concurrent calls into the same library serialize per
-  call and never lose each other's files.
+  index is read again. The work library's exclusive lock is held for the
+  whole call, and each successful file is recorded (its record and the index are renamed into place) as
+  soon as it is done (visible to readers at once; they are renamed into place without an fsync, so a power loss may lose the last call's files, which the next `analyze` records again), so concurrent calls into the same library serialize per
+  call and never lose each other's files. A call reads the index and writes the records and the index of its
+  own files, not the whole library.
 - Exit 0: every file was analyzed and recorded in the work library. Warnings go
   to stderr/stdout and do not change the exit code (unless `-Werror`).
 - Exit 1: a file has errors. The call stops at the first failing file (fail
@@ -318,7 +336,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   enum table, integers, reals and time as numbers (an integer with its subtype's name and
   the width its range needs; a generate alternative with a label is scope `label.alt`). Several deltas at one time step
   give one value change (the final value). The file is the same at any
-  `--threads`. Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
+  `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
   `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).
@@ -347,6 +365,32 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
 - `--stop-time=TIME` (e.g. `10ms`), `--threads=N`, `--shuffle`, `--load=LIB`,
   `--vhpi=LIB[:ENTRY]`, `--dap=PORT`: not passed by the test runner, used through
   `yavs.sim_flags` or simulator hooks (a test runner package can add `--load`).
+- Stuck and hung simulations (#582), `run` only, all as diagnostics (code, labels, notes, help; JSON
+  with `--message-format=json`; `yavs --explain CODE`):
+  - `E3002` (delta cycle limit) names the processes and signals of the loop found from the drivers
+    and waits at the time of the error (two processes waking each other, a process waiting only on a
+    signal it assigns, a combinational loop through concurrent statements, `wait for 0 ns;` in a
+    loop), labels their places and says how to raise the limit. `--max-deltas=N` (default 10000, at
+    least 1) sets the limit. Nothing is recorded during the run.
+  - `W3101` is the hang report: time and delta, how many processes wait for a timeout, for signals
+    that can still change, or can never run again; for each of those processes (at most MAX per
+    part) what it waits for, and for each signal that nothing can change its value, its last event
+    and the processes that drive it (`it has no driver`); a clock (a signal an edge-triggered
+    process waits for) that had an event and cannot toggle any more is named. Printed by
+    `--hang-report[=MAX]` (default 30) when the run ends at `--stop-time` without `stop` or `finish`,
+    or runs out of events while a process still waits for a signal (a run whose processes all
+    ended or are at `wait;` is a clean end and prints nothing); the end of a run is silent without
+    the option, because a stop time is the normal end of many testbenches. On Unix, SIGUSR1 prints
+    the same report (headed `simulation status at TIME`) of a running simulation, which then
+    continues; the signal is handled between two delta cycles, so a process that never suspends
+    (`W3102`) cannot be reported. SIGUSR1 is not handled on Windows. The report goes to stderr; a
+    warning does not change the exit status (`-Werror` and `-Wno-W3101` apply).
+  - `W3102`: a process whose body has no wait statement, no sensitivity list and no call of a
+    procedure that waits, printed before time 0. It never gives control back, so time cannot
+    advance (only `stop` or `finish` ends the run).
+  - `--shuffle[=SEED]` (seed 1 without a value) prints `note: process order is shuffled with seed N;
+    replay it with --shuffle=N` on stderr at the start, and the runtime diagnostics of a shuffled
+    run repeat the seed. That is the only run-time randomness; there is no time-based seed.
 - `--no-collapse-ports` (`run` and `elab`): keep every `in` port its own signal. By default the
   formal of an `in` port whose actual is a signal name (a whole signal, record elements, an
   element or a slice), with no conversion and no force or release of the port, is an alias of its actual: no separate signal
@@ -361,6 +405,32 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   whole process (all threads) in 10 ms steps and `n/a` where the platform does not tell (read
   from `/proc` on Linux). Off by default and then free. Standard output and exit status do not
   change; a run that fails before the simulation starts prints nothing.
+- `--profile[=FILE]` (`run` only, `=` form required): a sampling profiler. A thread samples the
+  run 1000 times a second and, when the simulation ends (any outcome after elaboration, and
+  Ctrl-C or SIGTERM: the first signal stops the run between cycles, the profile of the time so
+  far is printed and written, and the exit status is 130 as without `--profile`; a second
+  signal exits at once without a profile; Unix, on Windows Ctrl-C is handled the same way by
+  the console handler but is untested), prints five blocks to standard error, each line starting
+  `profile: `: a summary (samples, seconds, share in processes and in the kernel between them),
+  `processes` (instance path of the process, source file and line of its first statement),
+  `instances` (the processes of each instance path together), `subprograms` (name, file and line of
+  the first statement, samples in the interpreter and in compiled code) and `lines`
+  (file:line and the subprogram that owns the statement, interpreted code only); the 20
+  busiest rows of each. With FILE the same tables, all rows, are also written there as JSON
+  (`hz`, `seconds`, `samples`, `kernel_samples`, `processes[]` with `path`, `file`, `line`,
+  `samples` and `subprograms[]`, `instances[]`, `subprograms[]` with `interpreted_samples` and
+  `compiled_samples`, `lines[]` with `file`, `line`, `subprogram`, `samples`); a file that
+  cannot be written is `E0124` and the exit status at least 1. Standard output and the exit
+  status are those of a run without the option. A sample counts every simulation thread that
+  runs a process, so with `--threads N` the shares can add up to more than 100 percent. The
+  interpreter publishes the subprogram and statement it is in every 128 loop iterations or
+  calls (the subprogram exactly at every call with `--tier=llvm` or `auto`), so short
+  activations may show none, a statement is where the interpreter last looked, and compiled
+  code has no `lines` rows. A small subprogram the optimiser inlined counts as its caller in
+  `subprograms`, but its statements are `lines` of their own function. The sampler is a thread
+  that sleeps between samples: no signal or timer is used. Time in plugin callbacks (`--vhpi`) is
+  in the kernel share. With `--dap` it is `E0125` (exit 2). Off by default and
+  then free: no process is wrapped and no thread exists.
 - `--load=LIB` (repeatable): load a shared library for VHPIDIRECT foreign
   subprograms. A bare name goes to the OS library search path, a path must exist.
   Every foreign subprogram the design calls is bound before the simulation starts:
@@ -576,7 +646,9 @@ prints the same line.
 The test runner sets no yavs environment variables. `YAVS_STDLIB` overrides the std/ieee
 tree (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
-`elab_flags` to both `run` and `elab`, and `run_flags` only to `run`.
+`elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
+from asking for transparent huge pages on its heap at start (Linux with glibc and the system's
+transparent huge pages in `madvise` mode only; on any other system it does nothing).
 
 ## 8. Not covered yet
 

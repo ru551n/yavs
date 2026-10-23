@@ -1,9 +1,9 @@
 //! The LRM 14.7.5 simulation cycle and `SimControl`, the only API that drives simulation.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rayon::prelude::*;
@@ -12,8 +12,8 @@ use smallvec::SmallVec;
 use crate::builder::{PortConv, PortMode, ProcFlags};
 use crate::error::{ErrorKind, SimError};
 use crate::process::{
-    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutV, ProcId, ProcState, Process, Severity,
-    Shared, SignalOp, check_ref, make_op,
+    Ctx, DriverInfo, Effect, LiveSink, OpMode, Out, OutB, OutV, ProcId, ProcState, Process,
+    Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
     DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
@@ -22,8 +22,13 @@ use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
 
+mod hang;
+pub use hang::{DeadClock, LoopCause, LoopLink, ProcWait, StuckProc, StuckReport, StuckSignal};
+
 /// Smallest batch of ready processes handed to the thread pool.
 const PAR_BATCH: usize = 32;
+/// Generators that re-arm themselves in one cycle (clocks that edge together); more resume.
+const SKIP_MAX: usize = 4;
 
 /// Kernel settings.
 #[derive(Clone, Debug)]
@@ -49,6 +54,14 @@ pub struct Config {
     /// `'active` nor `'last_active`, and no observer, coverage run or debugger sees it
     /// (`docs/design/performance.md` R2b).
     pub skip_unchanged: bool,
+    /// Leave a clocked process whose activation depends on nothing but signals suspended at an
+    /// edge when none of them had an event since its last activation (`Builder::idle_skip`;
+    /// needs `skip_unchanged` and `edge_triggers`: the skipped activation would have assigned the
+    /// values it assigned before, which queues no transaction on a signal that allows skipping).
+    pub idle_skip: bool,
+    /// Run the activations `idle_skip` would skip anyway and panic when one does not do what
+    /// the last one did (tests).
+    pub idle_check: bool,
 }
 
 impl Default for Config {
@@ -61,6 +74,8 @@ impl Default for Config {
             stop_severity: Severity::Failure,
             edge_triggers: true,
             skip_unchanged: false,
+            idle_skip: true,
+            idle_check: false,
         }
     }
 }
@@ -142,6 +157,25 @@ pub struct Stats {
     pub process_runs: u64,
     /// Signal events, counted per contiguous run of changed elements.
     pub events: u64,
+    /// Processes made ready (a wake of a process that was not ready already).
+    pub wakes: u64,
+    /// Process runs that took the one-process path of the batch (`run_one`).
+    pub single_runs: u64,
+    /// Update phases by path: the usual delta of one independent signal (or nothing due), the
+    /// single timed entry, and the general worklist. The fast cases are the point of many
+    /// rounds: a design that moves to `update_general` lost one.
+    pub update_fast: u64,
+    pub update_timed: u64,
+    pub update_general: u64,
+    /// Scalar and byte transactions applied as quick transactions (no waveform).
+    pub quick_applied: u64,
+    /// Direct entries committed from process lists: single codes, plane vectors, byte signals.
+    pub direct_codes: u64,
+    pub direct_planes: u64,
+    pub direct_bytes: u64,
+    /// Activations of clocked processes skipped (or, with `Config::idle_check`, checked) because
+    /// none of the signals they read had an event since the last one.
+    pub idle_skips: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -163,6 +197,62 @@ struct Wakes {
     pending: BTreeMap<WakeId, usize>,
     next: u64,
 }
+
+/// A signal range read in place (`Hook::view`).
+pub struct SigView<'a> {
+    buf: &'a crate::value::Buf,
+    off: usize,
+    len: usize,
+}
+
+impl SigView<'_> {
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Element `i` (0 is the first element of the range) as its `std_ulogic` code for logic
+    /// storage, else its first byte.
+    #[inline]
+    pub fn code(&self, i: usize) -> u8 {
+        self.buf.code(self.off + i)
+    }
+
+    /// Elements `first .. first + k` (`k <= 64`) of logic storage as four plane words with
+    /// element `first` in bit 0 (bit `j` of word `p` is bit `p` of the code); `None` for byte
+    /// storage.
+    #[inline]
+    pub fn planes(&self, first: usize, k: usize) -> Option<[u64; 4]> {
+        match self.buf {
+            crate::value::Buf::Planes { b, .. } => {
+                Some(yavs_logic::wide::get_block(b, self.off + first, k))
+            }
+            crate::value::Buf::Bytes { .. } => None,
+        }
+    }
+
+    /// The bytes of the range, for byte storage (`None` for logic storage).
+    pub fn bytes(&self) -> Option<&[u8]> {
+        self.buf.bytes(self.off, self.len)
+    }
+}
+
+/// The process runs the simulation had done when it last started a delta cycle: how far the run
+/// has got, for a reader on another thread (the tier policy compares the progress per second
+/// before and after it swaps compiled code in, `yavs_interp::sim_progress`). One store per cycle,
+/// by the kernel that runs; with several kernels in a process (tests) it is only a hint.
+static PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+/// See [`PROGRESS`].
+pub fn progress() -> u64 {
+    PROGRESS.load(Ordering::Relaxed)
+}
+
+/// The interrupt flags of an observer's process context: observers run between cycles.
+static NO_INTERRUPT: AtomicU8 = AtomicU8::new(0);
 
 /// What an observer may do from a callback: read signals, queue forces and deposits
 /// (applied in the next cycle), schedule transactions on drivers, schedule wake-ups and end
@@ -201,6 +291,21 @@ impl Hook<'_> {
     pub fn value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = check_ref(self.signals, r.into()).map_err(|k| self.err(k))?;
         Ok(s.cur.extract(r.offset as usize, r.len as usize).to_value())
+    }
+
+    /// The ranges of signal `s` that changed in this cycle (`Observer::value_changes`).
+    pub fn changed(&self, s: SignalId) -> &[Range] {
+        self.signals.get(s.0 as usize).map_or(&[], |g| &g.changed)
+    }
+
+    /// The effective value of `r` read in place: no copy, nothing allocated.
+    pub fn view(&self, r: impl Into<SigRef>) -> Result<SigView<'_>, SimError> {
+        let (s, r) = check_ref(self.signals, r.into()).map_err(|k| self.err(k))?;
+        Ok(SigView {
+            buf: &s.cur,
+            off: r.offset as usize,
+            len: r.len as usize,
+        })
     }
 
     /// The name of process `p`, as reports show it.
@@ -271,6 +376,7 @@ impl Hook<'_> {
             drivers: self.drivers,
             names: self.names,
             live: None,
+            interrupt: &NO_INTERRUPT,
         };
         // Observers run between phases: no process holds its slot.
         let mut slot = lock(&self.slots[owner.0 as usize]);
@@ -349,6 +455,19 @@ pub trait Observer: Send {
     fn phase(&mut self, _hook: &mut Hook<'_>, _phase: Phase) {}
     /// Elements `range` of `signal` changed value in this cycle.
     fn value_change(&mut self, _hook: &mut Hook<'_>, _signal: SignalId, _range: Range) {}
+
+    /// All value changes of one cycle at once: the changed signals in id order, each with the
+    /// ranges `Hook::changed` gives. The default calls [`Self::value_change`] for every range;
+    /// an observer that costs per call (a lock, a lookup) overrides it. Observers are called
+    /// one after the other, each with the whole cycle.
+    fn value_changes(&mut self, hook: &mut Hook<'_>, signals: &[u32]) {
+        for &s in signals {
+            for k in 0..hook.changed(SignalId(s)).len() {
+                let r = hook.changed(SignalId(s))[k];
+                self.value_change(hook, SignalId(s), r);
+            }
+        }
+    }
     fn report(&mut self, _hook: &mut Hook<'_>, _report: &Report) {}
     /// A sink for the reports and `OUTPUT` text of processes that run serially: they reach it
     /// as they are made instead of when the process suspends, and this observer's `report`
@@ -380,6 +499,11 @@ impl Interrupt {
     pub fn stop(&self) {
         self.0.fetch_or(Self::STOP, Ordering::AcqRel);
     }
+
+    /// Whether `stop` was called (checked inside a process that never suspends, `Ctx::stop_requested`).
+    pub(crate) fn stopped(flags: &AtomicU8) -> bool {
+        flags.load(Ordering::Relaxed) & Self::STOP != 0
+    }
 }
 
 pub(crate) struct Slot {
@@ -408,6 +532,23 @@ pub(crate) struct ProcMeta {
     pub perm: u64,
     /// 1 + index in `SimControl::triggers` of `trigger` (0: none).
     pub tid: u32,
+    /// An activation can be skipped when `armed` is false (`Builder::idle_skip`, set by
+    /// `SimControl::new` for the processes that qualify).
+    pub idle_ok: bool,
+    /// Tracked activations of an `idle_ok` process in the current window (`IDLE_WINDOW`) and how
+    /// many of them were skipped: with too few skips it is off (`idle_ok` false) until
+    /// `SimControl::idle_reprobe`.
+    pub idle_win: u16,
+    pub idle_hits: u16,
+    /// What `idle_ok` was set to at the start (`idle_reprobe` restores it).
+    pub idle_static: bool,
+    /// A signal the process reads had an event since its last activation.
+    pub armed: bool,
+    /// The last activation: 0 unknown (or not a plain clocked activation), 1 assigned nothing,
+    /// 2 assigned.
+    pub idle_state: u8,
+    /// `Config::idle_check`: this activation would have been skipped.
+    pub shadow: bool,
 }
 
 /// Whether a waiter still stands for its process: a resident one while its process keeps
@@ -466,18 +607,133 @@ pub(crate) struct Implicit {
 /// in `(time, entry)` order.
 #[derive(Default)]
 struct Queue {
-    later: BinaryHeap<Reverse<(Time, Entry)>>,
+    later: TimeHeap,
     /// Entries at the current time, in push order.
     next_delta: Vec<Entry>,
 }
 
+/// A heap item: `Entry` flattened to words. Ordered by `(time, key)`: the key puts drivers
+/// before timeouts before implicit signals, then by index, as `Entry` does; `generation` is the
+/// generation of a timeout (which of two timeouts of one process at one time is live does not
+/// matter to the order).
+#[derive(Clone, Copy)]
+struct Later {
+    time: Time,
+    key: u64,
+    generation: u64,
+}
+
+impl Later {
+    fn entry(self) -> Entry {
+        let id = self.key as u32;
+        match self.key >> 32 {
+            0 => Entry::Driver(id),
+            1 => Entry::Timeout(id, self.generation),
+            _ => Entry::Implicit(id),
+        }
+    }
+}
+
+/// A binary min-heap of `Later`, written out so a push keeps the new item in registers and
+/// writes it field by field: the generic heap took it by pointer and copied it as one wide
+/// load of fields just stored narrower, which cost a store-forwarding stall per push.
+#[derive(Default)]
+struct TimeHeap {
+    v: Vec<Later>,
+}
+
+impl TimeHeap {
+    #[inline(always)]
+    fn push(&mut self, time: Time, key: u64, generation: u64) {
+        let mut i = self.v.len();
+        self.v.push(Later {
+            time,
+            key,
+            generation,
+        });
+        while i > 0 {
+            let parent = (i - 1) / 2;
+            let p = self.v[parent];
+            if (p.time, p.key) <= (time, key) {
+                break;
+            }
+            self.v[i] = p;
+            i = parent;
+        }
+        self.v[i] = Later {
+            time,
+            key,
+            generation,
+        };
+    }
+
+    #[inline(always)]
+    fn peek(&self) -> Option<&Later> {
+        self.v.first()
+    }
+
+    /// The time of the second earliest item (the smaller of the root's children).
+    #[inline(always)]
+    fn second_time(&self) -> Option<Time> {
+        match (self.v.get(1), self.v.get(2)) {
+            (Some(a), Some(b)) => Some(a.time.min(b.time)),
+            (Some(a), None) => Some(a.time),
+            _ => None,
+        }
+    }
+
+    fn pop(&mut self) {
+        let Some(last) = self.v.pop() else { return };
+        let n = self.v.len();
+        if n == 0 {
+            return;
+        }
+        let (time, key) = (last.time, last.key);
+        let mut i = 0;
+        loop {
+            let mut c = 2 * i + 1;
+            if c >= n {
+                break;
+            }
+            if c + 1 < n
+                && (self.v[c + 1].time, self.v[c + 1].key) < (self.v[c].time, self.v[c].key)
+            {
+                c += 1;
+            }
+            if (self.v[c].time, self.v[c].key) >= (time, key) {
+                break;
+            }
+            self.v[i] = self.v[c];
+            i = c;
+        }
+        self.v[i] = last;
+    }
+}
+
 impl Queue {
+    #[inline(always)]
     fn push(&mut self, now: Time, t: Time, e: Entry) {
         if t == now {
             self.next_delta.push(e);
         } else {
-            self.later.push(Reverse((t, e)));
+            match e {
+                Entry::Driver(d) => self.later.push(t, u64::from(d), 0),
+                Entry::Timeout(p, g) => self.later.push(t, 1 << 32 | u64::from(p), g),
+                Entry::Implicit(i) => self.later.push(t, 2 << 32 | u64::from(i), 0),
+            }
         }
+    }
+
+    /// The earliest future entry.
+    #[inline(always)]
+    fn peek(&self) -> Option<(Time, Entry)> {
+        self.later.peek().map(|l| (l.time, l.entry()))
+    }
+
+    /// The time of the earliest future entry.
+    #[inline(always)]
+    fn peek_time(&self) -> Option<Time> {
+        self.later.peek().map(|l| l.time)
     }
 }
 
@@ -486,6 +742,14 @@ enum Entry {
     Driver(u32),
     Timeout(u32, u64),
     Implicit(u32),
+}
+
+/// A clock generator: `x <= not x after T` as `ToggleProcess` runs it.
+struct Toggle {
+    driver: u32,
+    /// `T` in the simulation resolution; positive.
+    period: Time,
+    proc: u32,
 }
 
 /// Worklists of one update phase: signals by port level, implicit signals due, and the
@@ -530,6 +794,7 @@ pub struct SimControl {
     /// signals once the batch is over.
     direct: Vec<Out>,
     directv: Vec<OutV>,
+    directb: Vec<OutB>,
     /// Signals with direct transactions (`commit_out`) for the next update.
     direct_sigs: Vec<u32>,
     ops: Vec<SignalOp>,
@@ -546,6 +811,28 @@ pub struct SimControl {
     clock_batch: Option<Vec<u32>>,
     /// The batch `run_batch` is about to run is known to be in order.
     batch_mono: bool,
+    /// Clock generators (`Process::generator`), and per driver the index of its entry (or
+    /// `u32::MAX`; empty without generators).
+    toggles: Vec<Toggle>,
+    toggle_ix: Vec<u32>,
+    /// The generators whose resumption this cycle's events make unnecessary (`rearm`): the first
+    /// `skip_n` of `skip_wake`.
+    skip_wake: [u32; SKIP_MAX],
+    skip_n: usize,
+    /// The `_guard` processes of guarded blocks (`Builder::guard_process`) and, per signal, the
+    /// ones whose conditions read it. Their `ProcMeta::ready` stays true, so no wake queues them.
+    guard_procs: Vec<u32>,
+    guard_readers: HashMap<u32, SmallVec<[u32; 2]>>,
+    guard_due: Vec<u32>,
+    /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
+    /// readers_start[s + 1]]` (empty without such a process).
+    readers_start: Vec<u32>,
+    readers: Vec<u32>,
+    idle_active: bool,
+    /// Processes with `idle_ok` now: `idle_active` is off when none is left, until `idle_reprobe`.
+    idle_live: u32,
+    /// Some process qualified for the idle skip (`idle_reprobe` has work).
+    idle_live_possible: bool,
     /// `Tn` as the last delta computed it (only a cycle sets it, only `run_until` takes it).
     known_next: Option<Option<Time>>,
     postponed: Vec<u32>,
@@ -652,10 +939,19 @@ impl SimControl {
         ports: Vec<PortEdge>,
         implicits: Vec<Implicit>,
         groups: Vec<Group>,
-        slots: Vec<Mutex<Slot>>,
+        mut slots: Vec<Mutex<Slot>>,
         mut procs: Vec<ProcMeta>,
         names: Vec<String>,
+        idles: Vec<Option<Vec<(SignalId, Range)>>>,
+        guards: Vec<Option<Vec<(SignalId, Range)>>>,
     ) -> Result<SimControl, SimError> {
+        if let Some(pr) = crate::profile::installed() {
+            for (s, name) in slots.iter_mut().zip(&names) {
+                let s = slot_mut(s);
+                let inner = std::mem::replace(&mut s.process, Box::new(|_: &mut Ctx<'_>| Ok(())));
+                s.process = pr.wrap(name, inner);
+            }
+        }
         let mut triggers = Vec::new();
         let mut ids = std::collections::HashMap::new();
         for m in &mut procs {
@@ -716,6 +1012,9 @@ impl SimControl {
                 }
             }
         }
+        for s in &mut signals {
+            s.set_static_plain();
+        }
         let mut drivers = drivers;
         for d in &mut drivers {
             let s = &signals[d.signal.0 as usize];
@@ -727,8 +1026,82 @@ impl SimControl {
                     None | Some(crate::signal::Resolution::StdLogic)
                 )
                 && !s.drivers[d.slot as usize].shared;
+            d.bdirect = independent[d.signal.0 as usize]
+                && matches!(s.ty.elem, Elem::Bytes(es) if es <= 8)
+                && s.guard.is_none()
+                && s.resolution.is_none()
+                && !s.drivers[d.slot as usize].shared;
+        }
+        // Clocked processes that can be left suspended when none of the signals they read had an
+        // event: pure ones (`Builder::idle_skip`) that drive signals allowing skipped assignments.
+        let mut idle_active = false;
+        let mut idle_live = 0u32;
+        let mut readers_of: Vec<Vec<u32>> = Vec::new();
+        if cfg.idle_skip && cfg.skip_unchanged && cfg.edge_triggers {
+            let mut bad = vec![false; procs.len()];
+            for d in &drivers {
+                bad[d.owner.0 as usize] |= !signals[d.signal.0 as usize].skip_ok;
+            }
+            for (p, reads) in idles.iter().enumerate() {
+                let Some(reads) = reads else { continue };
+                let m = &mut procs[p];
+                if bad[p]
+                    || m.trigger.is_none()
+                    || m.flags.postponed
+                    || m.flags.several_waits
+                    || m.flags.serial
+                    || m.flags.concurrent_call
+                {
+                    continue;
+                }
+                if readers_of.is_empty() {
+                    readers_of = vec![Vec::new(); signals.len()];
+                }
+                m.idle_ok = true;
+                m.idle_static = true;
+                idle_active = true;
+                idle_live += 1;
+                for (s, _) in reads {
+                    let l = &mut readers_of[s.0 as usize];
+                    if l.last() != Some(&(p as u32)) {
+                        l.push(p as u32);
+                    }
+                }
+            }
+        }
+        let mut readers_start = Vec::new();
+        let mut readers = Vec::new();
+        if idle_active {
+            for l in &readers_of {
+                readers_start.push(readers.len() as u32);
+                readers.extend_from_slice(l);
+            }
+            readers_start.push(readers.len() as u32);
+        }
+        // The guard processes of guarded blocks, by the signals their conditions read.
+        let mut guard_procs = Vec::new();
+        let mut guard_readers: HashMap<u32, SmallVec<[u32; 2]>> = HashMap::new();
+        for (p, reads) in guards.iter().enumerate() {
+            let Some(reads) = reads else { continue };
+            guard_procs.push(p as u32);
+            // Never woken by its waiters: it runs in `run_guards`.
+            procs[p].ready = true;
+            for (s, _) in reads {
+                let l = guard_readers.entry(s.0).or_default();
+                if !l.contains(&(p as u32)) {
+                    l.push(p as u32);
+                }
+            }
         }
         let mut sim = SimControl {
+            guard_procs,
+            guard_readers,
+            guard_due: Vec::new(),
+            readers_start,
+            readers,
+            idle_active,
+            idle_live,
+            idle_live_possible: idle_live != 0,
             names,
             rng: cfg.shuffle,
             cfg,
@@ -750,6 +1123,7 @@ impl SimControl {
             queue: Queue::default(),
             direct: Vec::new(),
             directv: Vec::new(),
+            directb: Vec::new(),
             direct_sigs: Vec::new(),
             ops: Vec::new(),
             changed_sigs: Vec::new(),
@@ -758,6 +1132,10 @@ impl SimControl {
             ready_several: Vec::new(),
             clock_batch: None,
             batch_mono: false,
+            toggles: Vec::new(),
+            toggle_ix: Vec::new(),
+            skip_wake: [0; SKIP_MAX],
+            skip_n: 0,
             postponed: Vec::new(),
             last_ran: Vec::new(),
             late: Vec::new(),
@@ -790,9 +1168,32 @@ impl SimControl {
         };
         for (m, slot) in sim.procs.iter().zip(&mut sim.slots) {
             if let Some(t) = m.trigger {
-                slot_mut(slot).st.known_edge =
-                    (cfg_edge_triggers && t.reset.is_none() && !t.legacy)
-                        .then_some((t.signal, t.elem, t.rising));
+                let st = &mut slot_mut(slot).st;
+                if cfg_edge_triggers && t.reset.is_none() && t.elem < 1 << 30 {
+                    let kind = u8::from(t.rising) | if t.legacy { crate::EDGE_LEVEL } else { 0 };
+                    st.known_edge = Some((t.signal, t.elem, kind));
+                    st.known_key = crate::process::edge_key(t.signal, t.elem, kind);
+                }
+            }
+        }
+        if cfg_edge_triggers {
+            for p in 0..sim.slots.len() {
+                let g = slot_mut(&mut sim.slots[p]).process.generator();
+                if let Some((d, t)) = g {
+                    let period = t.quantize(sim.cfg.resolution);
+                    if period == Time::ZERO || sim.drivers[d.0 as usize].owner.0 as usize != p {
+                        continue;
+                    }
+                    if sim.toggle_ix.is_empty() {
+                        sim.toggle_ix = vec![u32::MAX; sim.drivers.len()];
+                    }
+                    sim.toggle_ix[d.0 as usize] = sim.toggles.len() as u32;
+                    sim.toggles.push(Toggle {
+                        driver: d.0,
+                        period,
+                        proc: p as u32,
+                    });
+                }
             }
         }
         sim.settle().map_err(SimError::new)?;
@@ -1027,6 +1428,16 @@ impl SimControl {
         Ok(s.cur.extract(r.offset as usize, r.len as usize).to_value())
     }
 
+    /// Effective value read in place (see `Hook::view`).
+    pub fn view(&self, r: impl Into<SigRef>) -> Result<SigView<'_>, SimError> {
+        let (s, r) = self.check(r)?;
+        Ok(SigView {
+            buf: &s.cur,
+            off: r.offset as usize,
+            len: r.len as usize,
+        })
+    }
+
     /// Driving value, after `force out`.
     pub fn driving_value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = self.check(r)?;
@@ -1050,7 +1461,10 @@ impl SimControl {
             .fold(0, |m, &p| m | 1 << p as u32);
         self.watch_changes = self.observers.iter().any(|o| o.wants_value_changes());
         if self.watch_changes {
-            self.signals.iter_mut().for_each(|s| s.watched = true);
+            self.signals.iter_mut().for_each(|s| {
+                s.watched = true;
+                s.fine = true;
+            });
         }
         let bits = |o: &dyn Observer, f: &dyn Fn(&dyn Observer, Phase) -> bool| {
             ALL_PHASES
@@ -1189,6 +1603,9 @@ impl SimControl {
                     p.ready = true;
                 }
                 self.run_batch((0..self.procs.len() as u32).collect(), false, true)?;
+                for &g in &self.guard_procs {
+                    self.procs[g as usize].ready = true;
+                }
                 self.phase(Phase::EndOfProcesses);
                 self.phase(Phase::EndOfInit);
                 if self.end.is_none() {
@@ -1245,6 +1662,94 @@ impl SimControl {
         }
     }
 
+    /// The `_guard` processes whose conditions read a signal with an event in this update run now,
+    /// before anything is woken: GUARD changes in the cycle of the event (LRM 11.2, 14.7.5.3), and
+    /// so do the processes that wait for it. A guard whose condition reads another GUARD runs
+    /// again after that one.
+    fn run_guards(&mut self) -> Result<(), SimError> {
+        let mut seen = 0;
+        loop {
+            let mut due = std::mem::take(&mut self.guard_due);
+            for i in seen..self.changed_sigs.len() {
+                if let Some(l) = self.guard_readers.get(&self.changed_sigs[i]) {
+                    for &g in l {
+                        if !due.contains(&g) {
+                            due.push(g);
+                        }
+                    }
+                }
+            }
+            seen = self.changed_sigs.len();
+            if due.is_empty() {
+                self.guard_due = due;
+                return Ok(());
+            }
+            due.sort_unstable();
+            self.run_batch(due.clone(), false, false)?;
+            self.finish_direct().map_err(|k| self.err(k))?;
+            for &g in &due {
+                self.procs[g as usize].ready = true;
+            }
+            due.clear();
+            self.guard_due = due;
+        }
+    }
+
+    /// Signal `s` had an event: the clocked processes that read it must run at their next edge.
+    #[inline]
+    fn arm_readers(&mut self, s: u32) {
+        let (a, b) = (
+            self.readers_start[s as usize] as usize,
+            self.readers_start[s as usize + 1] as usize,
+        );
+        for i in a..b {
+            self.procs[self.readers[i] as usize].armed = true;
+        }
+    }
+
+    /// Take the clocked processes out of `pids` that need not run at this edge: none of the
+    /// signals they read had an event since their last activation, so it would do what the
+    /// last one did (`Builder::idle_skip`). That one assigned values (`idle_state` 2) that
+    /// queue nothing on a signal that allows skipping, but they make a delta cycle, as the
+    /// skipped activation would. With `Config::idle_check` the process runs and its activation
+    /// is checked (`check_idle`).
+    fn idle_filter(&mut self, pids: &mut Vec<u32>) {
+        let mut keep = 0;
+        for i in 0..pids.len() {
+            let p = pids[i];
+            let m = &mut self.procs[p as usize];
+            if m.idle_ok && !m.armed && m.idle_state != 0 && m.perm != 0 {
+                self.stats.idle_skips += 1;
+                m.idle_hits = m.idle_hits.saturating_add(1);
+                m.idle_win = m.idle_win.saturating_add(1);
+                if self.cfg.idle_check {
+                    m.shadow = true;
+                } else {
+                    m.ready = false;
+                    self.empty_delta |= m.idle_state == 2;
+                    continue;
+                }
+            }
+            pids[keep] = p;
+            keep += 1;
+        }
+        pids.truncate(keep);
+    }
+
+    /// Track again the processes `note_idle` stopped tracking: their inputs may be quiet now.
+    fn idle_reprobe(&mut self) {
+        for m in &mut self.procs {
+            if m.idle_static && !m.idle_ok {
+                m.idle_ok = true;
+                m.idle_win = 0;
+                m.idle_hits = 0;
+                m.armed = true;
+                self.idle_live += 1;
+            }
+        }
+        self.idle_active = self.idle_live != 0;
+    }
+
     fn next_queued(&mut self) -> Option<Time> {
         while let Some(&e) = self.queue.next_delta.last() {
             if self.live(self.now, e) {
@@ -1252,7 +1757,7 @@ impl SimControl {
             }
             self.queue.next_delta.pop();
         }
-        while let Some(&Reverse((t, e))) = self.queue.later.peek() {
+        while let Some((t, e)) = self.queue.peek() {
             if self.live(t, e) {
                 return Some(t);
             }
@@ -1292,21 +1797,30 @@ impl SimControl {
                     .iter()
                     .map(|&p| self.names[p as usize].clone())
                     .collect();
+                let cause = self.loop_cause();
                 return Err(self.err(ErrorKind::DeltaLimit {
                     limit: self.cfg.max_deltas,
                     processes,
+                    cause,
                 }));
             }
             self.delta += 1;
         }
         self.cycle += 1;
         self.stats.cycles += 1;
+        PROGRESS.store(self.stats.process_runs, Ordering::Relaxed);
+        if self.idle_live_possible && self.cycle & 0xffff == 0 {
+            self.idle_reprobe();
+        }
         self.phase(Phase::NextCycle);
         if !self.wakes.pending.is_empty() {
             self.fire_wakes();
         }
         self.update().map_err(|k| self.err(k))?;
         self.commit_callouts();
+        if !self.guard_procs.is_empty() {
+            self.run_guards()?;
+        }
         if self.changed_sigs.len() > 1 {
             self.changed_sigs.sort_unstable();
             self.changed_sigs.dedup();
@@ -1314,21 +1828,28 @@ impl SimControl {
 
         // Value-change bus, then 14.7.5.3 d: resume sensitive processes.
         if self.watch_changes {
-            for i in 0..self.changed_sigs.len() {
-                let s = self.changed_sigs[i];
-                for r in self.signals[s as usize].changed.clone() {
-                    self.notify(|o, h| o.value_change(h, SignalId(s), r));
-                }
-            }
+            self.notify_changes();
         }
         let memo = std::cell::Cell::new((0u32, false));
         // Nothing below adds to `changed_sigs`: walked in place, cleared after.
         for i in 0..self.changed_sigs.len() {
             let s = self.changed_sigs[i];
+            if self.idle_active {
+                self.arm_readers(s);
+            }
             let sig = &mut self.signals[s as usize];
             self.stats.events += sig.changed.len() as u64 + std::mem::take(&mut sig.nruns);
             // No process ever waited for it (a signal only read by value).
             if self.waiters[s as usize].is_unwatched() {
+                sig.changed.clear();
+                continue;
+            }
+            // Only the clock generator that re-armed itself waits for it: nothing to wake.
+            if self.skip_n != 0
+                && self.skip_wake[..self.skip_n]
+                    .iter()
+                    .any(|&p| self.waiters[s as usize].only_resident(p))
+            {
                 sig.changed.clear();
                 continue;
             }
@@ -1380,9 +1901,37 @@ impl SimControl {
                 }
                 continue;
             }
+            // One event on a signal with a few waiters, all resident and alive: the same wake as
+            // the scan below makes, in list order, with nothing to remove from the list.
+            if let [r] = runs[..]
+                && let Some(list) = waiters.small_list(8)
+            {
+                let plain = list
+                    .iter()
+                    .filter(|w| w.range.overlaps(r))
+                    .all(|w| w.perm != 0 && live(w));
+                if plain {
+                    for w in list.iter().filter(|w| w.range.overlaps(r)) {
+                        if !(uniform.is_none() && hold(w)) {
+                            wake_proc(
+                                &mut self.procs,
+                                &mut self.postponed,
+                                &mut self.ready_several,
+                                &mut self.ready_mono,
+                                &mut self.ready,
+                                &mut self.stats.wakes,
+                                w.proc,
+                                false,
+                            );
+                        }
+                    }
+                    self.signals[s as usize].changed.clear();
+                    continue;
+                }
+            }
             // Every waiter resident for the whole signal: the wake list is known.
             if let Some(tids) = waiters.cache_tids() {
-                let held: smallvec::SmallVec<[(u32, bool); 4]> = tids
+                let held: smallvec::SmallVec<[(u32, bool); 8]> = tids
                     .iter()
                     .map(|&t| {
                         let h = t != 0
@@ -1432,6 +1981,13 @@ impl SimControl {
                                 self.wake(p, false);
                             }
                         }
+                        for &p in &self.skip_wake[..self.skip_n] {
+                            // `pids` is in process order: find it, or fall back to a scan.
+                            match pids.binary_search(&p) {
+                                Ok(i) => _ = pids.remove(i),
+                                Err(_) => pids.retain(|&q| q != p),
+                            }
+                        }
                         if !pids.is_empty() {
                             self.clock_batch = Some(pids);
                         } else {
@@ -1463,6 +2019,12 @@ impl SimControl {
         }
 
         self.changed_sigs.clear();
+        if self.skip_n != 0 {
+            for &p in &self.skip_wake[..self.skip_n] {
+                self.procs[p as usize].ready = false;
+            }
+            self.skip_n = 0;
+        }
 
         // e: run the resumed non-postponed processes.
         let mut ready = std::mem::take(&mut self.ready);
@@ -1481,8 +2043,24 @@ impl SimControl {
             several.clear();
             self.ready_several = several;
         }
+        if self.idle_active && !ready.is_empty() {
+            self.idle_filter(&mut ready);
+        }
         self.phase(Phase::StartOfProcesses);
-        self.run_batch(ready, false, false)?;
+        if ready.is_empty() {
+            // Nothing resumed (the falling edge of a clock, a transaction nobody waits for):
+            // the batch would only commit the direct entries there are none of, and note that
+            // no process ran.
+            self.batch_mono = false;
+            self.commit_direct();
+            let mut old = std::mem::replace(&mut self.last_ran, ready);
+            if self.ready.capacity() == 0 {
+                old.clear();
+                self.ready = old;
+            }
+        } else {
+            self.run_batch(ready, false, false)?;
+        }
         self.phase(Phase::EndOfProcesses);
 
         self.last_delta()
@@ -1495,14 +2073,29 @@ impl SimControl {
         // Another delta follows: nothing below runs, so `run_until` can use this answer.
         self.known_next = (next == Some(self.now)).then_some(next);
         if next != Some(self.now) {
+            // Observers of the phases below may schedule something (a force, a wake-up): ask again
+            // after them. Without any, `next` stands for `run_until` too.
+            let bits = [
+                Phase::LastKnownDelta,
+                Phase::StartOfPostponed,
+                Phase::EndOfTimeStep,
+            ]
+            .map(|p| 1u16 << p as u32)
+            .into_iter()
+            .fold(0, |m, b| m | b);
+            let watched = self.phase_mask & bits != 0;
             self.phase(Phase::LastKnownDelta);
-            if self.next_time() != Some(self.now) {
-                let postponed = std::mem::take(&mut self.postponed);
-                if !postponed.is_empty() {
+            if !watched || self.next_time() != Some(self.now) {
+                let none = self.postponed.is_empty();
+                if !none {
+                    let postponed = std::mem::take(&mut self.postponed);
                     self.phase(Phase::StartOfPostponed);
+                    self.run_batch(postponed, true, false)?;
                 }
-                self.run_batch(postponed, true, false)?;
                 self.phase(Phase::EndOfTimeStep);
+                if !watched && none {
+                    self.known_next = Some(next);
+                }
             }
         }
         Ok(())
@@ -1518,10 +2111,11 @@ impl SimControl {
         // place.
         if self.ops.is_empty()
             && self.implicits.is_empty()
-            && (self.queue.later.peek()).is_none_or(|Reverse((t, _))| *t > now)
+            && self.queue.peek_time().is_none_or(|t| t > now)
         {
             let one = self.one_independent();
             if one.is_some() || self.queue.next_delta.is_empty() {
+                self.stats.update_fast += 1;
                 if let Some(s0) = one {
                     let sig = &mut self.signals[s0 as usize];
                     for e in &self.queue.next_delta {
@@ -1534,6 +2128,7 @@ impl SimControl {
                             match w.quick {
                                 Some(q) if q.time <= now => {
                                     w.quick = None;
+                                    self.stats.quick_applied += 1;
                                     sig.apply_quick(q, info.slot, now, cycle);
                                 }
                                 _ => sig.apply_driver(w, info.slot, now, cycle),
@@ -1548,6 +2143,15 @@ impl SimControl {
                 return self.finish_direct();
             }
         }
+        if self.ops.is_empty()
+            && self.implicits.is_empty()
+            && self.queue.next_delta.is_empty()
+            && let Some(r) = self.update_timed()
+        {
+            self.stats.update_timed += 1;
+            return r;
+        }
+        self.stats.update_general += 1;
         // Worklists by port level; `queued` stamps keep each signal in a list once per cycle.
         // Kept between cycles (empty here), so an empty one costs no construction and no drop.
         let mut work = self.work.take().unwrap_or_default();
@@ -1587,12 +2191,12 @@ impl SimControl {
         // before `now` (time only advances to its first entry), as the delta list.
         let mut entries = std::mem::take(&mut self.queue.next_delta);
         let from_delta = entries.len();
-        while let Some(&Reverse((t, e))) = self.queue.later.peek() {
-            if t > now {
+        while let Some(l) = self.queue.later.peek() {
+            if l.time > now {
                 break;
             }
+            entries.push(l.entry());
             self.queue.later.pop();
-            entries.push(e);
         }
         // The usual clocked case: every entry a driver of one independent signal, already in
         // order, and no force or deposit: apply them in place, with no job list or second pass.
@@ -1699,8 +2303,18 @@ impl SimControl {
                 sig.sync_drivers();
                 sig.exact |= sig_ops.iter().any(|op| op.mode == OpMode::Deposit);
             }
+            let deposit = self.idle_active && sig_ops.iter().any(|op| op.mode == OpMode::Deposit);
             for op in sig_ops {
                 apply_op(sig, &op, now, cycle)?;
+            }
+            if deposit {
+                // The value a deposit leaves is not what the drivers' processes last assigned:
+                // they assign again at their next edge.
+                for d in &self.drivers {
+                    if d.signal.0 == s {
+                        self.procs[d.owner.0 as usize].armed = true;
+                    }
+                }
             }
             if sig.queued_down != cycle {
                 sig.queued_down = cycle;
@@ -1736,15 +2350,182 @@ impl SimControl {
                 }
             }
         }
-        let r = if self.implicits.is_empty() {
-            Ok(())
-        } else {
-            let r = self.update_implicit(due);
-            due.clear();
-            r
-        };
+        if self.implicits.is_empty() {
+            self.work = Some(work);
+            return Ok(());
+        }
+        let r = self.update_implicit(due);
+        due.clear();
         self.work = Some(work);
         r
+    }
+
+    /// The update of a cycle whose due entries are all in the future queue and are drivers of
+    /// independent signals (the edge of a clock generator, the end of a delayed assignment) or
+    /// timeouts: taken off the heap and applied in place, with no work lists. A few clocks that
+    /// edge together are one such cycle. `None` (nothing done) for anything else: a timeout of
+    /// an implicit signal, a port or group, a force, two drivers of one signal, too many.
+    #[inline]
+    fn update_timed(&mut self) -> Option<Result<(), ErrorKind>> {
+        let now = self.now;
+        let l = self.queue.later.peek()?;
+        if l.time > now {
+            return None;
+        }
+        if l.key >> 32 != 0 || self.queue.later.second_time().is_some_and(|t| t <= now) {
+            return self.update_timed_many();
+        }
+        let d = l.key as u32;
+        if !self.independent[self.drivers[d as usize].signal.0 as usize] {
+            return None;
+        }
+        self.queue.later.pop();
+        if let Err(e) = self.apply_timed(d) {
+            return Some(Err(e));
+        }
+        Some(self.finish_direct())
+    }
+
+    /// Apply the matured quick or waveform transaction of driver `d` (of an independent signal)
+    /// and finish its signal; a generator's driver re-arms itself (`rearm`).
+    #[inline(always)]
+    fn apply_timed(&mut self, d: u32) -> Result<(), ErrorKind> {
+        let (now, cycle) = (self.now, self.cycle);
+        let info = &self.drivers[d as usize];
+        let s0 = info.signal.0;
+        let sig = &mut self.signals[s0 as usize];
+        let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+        let w = &mut slot.st.waveforms[info.local as usize];
+        let mut quick = None;
+        match w.quick {
+            Some(q) if q.time <= now => {
+                w.quick = None;
+                self.stats.quick_applied += 1;
+                sig.apply_quick(q, info.slot, now, cycle);
+                quick = Some(q);
+            }
+            _ => sig.apply_driver(w, info.slot, now, cycle),
+        }
+        // Nothing but the quick transaction: its event is all there is to finish.
+        let fused = sig.end_apply();
+        let changed = if sig.unfinished() || sig.has_pending() {
+            finish_applied(sig, fused, now, cycle)?
+        } else {
+            fused
+        };
+        if changed {
+            self.changed_sigs.push(s0);
+        }
+        if fused
+            && let Some(q) = quick
+            && let Some(&k) = self.toggle_ix.get(d as usize)
+            && k != u32::MAX
+        {
+            self.rearm(k as usize, q.code);
+        }
+        Ok(())
+    }
+
+    /// `update_timed` for several entries due now (`TIMED_MAX` of them at most): drivers of
+    /// distinct independent signals, applied in signal order as the general path does, and
+    /// timeouts. Entries taken off the heap before one that does not fit go back on it.
+    fn update_timed_many(&mut self) -> Option<Result<(), ErrorKind>> {
+        const TIMED_MAX: usize = 4;
+        let now = self.now;
+        // (signal, driver) and (process, generation).
+        let mut drv = [(0u32, 0u32); TIMED_MAX];
+        let mut tmo = [(0u32, 0u64); TIMED_MAX];
+        let (mut nd, mut nt) = (0, 0);
+        while let Some(l) = self.queue.later.peek() {
+            if l.time > now {
+                break;
+            }
+            let fits = match l.key >> 32 {
+                0 => {
+                    let d = l.key as u32;
+                    let s = self.drivers[d as usize].signal.0;
+                    let ok = nd < TIMED_MAX
+                        && self.independent[s as usize]
+                        && drv[..nd].iter().all(|x| x.0 != s);
+                    if ok {
+                        drv[nd] = (s, d);
+                        nd += 1;
+                    }
+                    ok
+                }
+                1 => {
+                    let ok = nt < TIMED_MAX;
+                    if ok {
+                        tmo[nt] = (l.key as u32, l.generation);
+                        nt += 1;
+                    }
+                    ok
+                }
+                _ => false,
+            };
+            if !fits {
+                // Back on the heap, as they were: the general path takes all of them.
+                for &(_, d) in &drv[..nd] {
+                    self.queue.later.push(now, u64::from(d), 0);
+                }
+                for &(p, g) in &tmo[..nt] {
+                    self.queue.later.push(now, 1 << 32 | u64::from(p), g);
+                }
+                return None;
+            }
+            self.queue.later.pop();
+        }
+        for &(p, g) in &tmo[..nt] {
+            if self.procs[p as usize].generation == g {
+                self.wake(p, true);
+            }
+        }
+        drv[..nd].sort_unstable();
+        // An error is taken at the first signal that has one, after all of them were updated.
+        let mut failed = None;
+        for &(_, d) in &drv[..nd] {
+            if let Err(e) = self.apply_timed(d) {
+                failed.get_or_insert(e);
+            }
+        }
+        if let Some(e) = failed {
+            return Some(Err(e));
+        }
+        Some(self.finish_direct())
+    }
+
+    /// The generator `k` made an event with its own transaction (the signal now has `code`):
+    /// its process would resume, assign the complement after its delay and wait again.
+    /// Do that here: the next transaction and its queue entry, and the process stays
+    /// suspended (`skip_wake`). Only where the process's waiter stands for it and its driver
+    /// is idle (the transaction just matured); else the process resumes as usual.
+    fn rearm(&mut self, k: usize, code: u8) {
+        let t = &self.toggles[k];
+        let (d, p) = (t.driver, t.proc);
+        let Ok(next) = self.now.checked_add(t.period) else {
+            return;
+        };
+        if self.procs[p as usize].perm == 0 || self.skip_n == SKIP_MAX {
+            return;
+        }
+        let info = &self.drivers[d as usize];
+        let w = &mut slot_mut(&mut self.slots[info.owner.0 as usize])
+            .st
+            .waveforms[info.local as usize];
+        if !w.idle() || !w.phantom.is_empty() {
+            return;
+        }
+        let elem = info.range.offset;
+        w.quick = Some(crate::signal::Quick {
+            time: next,
+            elem,
+            code: StdULogic::from_code_pub(code).not() as u8,
+        });
+        self.queue.later.push(next, u64::from(d), 0);
+        // `wake` ignores a process that is ready already.
+        self.procs[p as usize].ready = true;
+        self.skip_wake[self.skip_n] = p;
+        self.skip_n += 1;
     }
 
     /// The signal of `queue.next_delta` when every entry is a driver of that one independent
@@ -1771,15 +2552,17 @@ impl SimControl {
 
     /// The direct transactions of the processes committed in the batch loop, to their signals.
     fn commit_direct(&mut self) {
-        if !self.direct.is_empty() || !self.directv.is_empty() {
+        if !self.direct.is_empty() || !self.directv.is_empty() || !self.directb.is_empty() {
             let sigs = &mut self.direct_sigs;
             let empty = &mut self.empty_delta;
             commit_out(
+                &mut self.stats,
                 &mut self.signals,
                 sigs,
                 empty,
                 &mut self.direct,
                 &mut self.directv,
+                &mut self.directb,
             );
         }
     }
@@ -1828,6 +2611,13 @@ impl SimControl {
     /// changes, which must see the change before any process is resumed.
     #[inline]
     fn wake_sole(&mut self, s: u32) -> bool {
+        // A GUARD that other guards read stays in `changed_sigs` (`run_guards`).
+        if !self.guard_readers.is_empty() && self.guard_readers.contains_key(&s) {
+            return false;
+        }
+        if self.idle_active {
+            self.arm_readers(s);
+        }
         let sig = &self.signals[s as usize];
         let [r] = sig.changed[..] else {
             return false;
@@ -1883,6 +2673,36 @@ impl SimControl {
                 self.changed_sigs.push(s as u32);
             }
             return Ok(());
+        }
+        // Several signals and no pool to hand them to (or too few for it): one after the other,
+        // with no job and result lists. An error is taken at the first signal that has one, after
+        // all of them were updated, as below.
+        // ponytail: the cut-off is the pool's below.
+        if self.pool.is_none() || due.len() < 256 {
+            let mut failed = None;
+            for run in due.chunk_by(|a, b| a.0 == b.0) {
+                let s = run[0].0 as usize;
+                let sig = self
+                    .signals
+                    .get_mut(s)
+                    .ok_or_else(|| ErrorKind::Internal(format!("driver of missing signal {s}")))?;
+                for &(_, d) in run {
+                    let info = &self.drivers[d as usize];
+                    let slot = slot_mut(&mut self.slots[info.owner.0 as usize]);
+                    sig.apply_driver(
+                        &mut slot.st.waveforms[info.local as usize],
+                        info.slot,
+                        now,
+                        cycle,
+                    );
+                }
+                match finish_signal(sig, now, cycle) {
+                    Ok(true) => self.changed_sigs.push(s as u32),
+                    Ok(false) => {}
+                    Err(e) => _ = failed.get_or_insert(e),
+                }
+            }
+            return failed.map_or(Ok(()), Err);
         }
         let mut jobs = Vec::new();
         let mut it = self.signals.iter_mut();
@@ -2137,30 +2957,31 @@ impl SimControl {
                 b.others.push((p, tid));
             }
         }
-        let ok = b.plain.is_sorted() && !b.plain.is_empty();
+        // They run in process order whatever the order they registered in (`order` sorts a
+        // batch of such processes), and once each.
+        b.plain.sort_unstable();
+        b.plain.dedup();
+        for (_, l) in &mut b.by_tid {
+            l.sort_unstable();
+            l.dedup();
+        }
+        let ok = !b.plain.is_empty();
         self.waiters[s].set_cache_batch(ok.then_some(b));
         ok
     }
 
     #[inline(always)]
     fn wake(&mut self, p: u32, by_timeout: bool) {
-        let meta = &mut self.procs[p as usize];
-        if meta.ready {
-            return;
-        }
-        meta.ready = true;
-        meta.by_timeout = by_timeout;
-        meta.generation += 1;
-        if meta.flags.postponed {
-            self.postponed.push(p);
-        } else {
-            if meta.flags.several_waits {
-                self.ready_several.push(p);
-            } else {
-                self.ready_mono &= self.ready.last().is_none_or(|&l| l < p);
-                self.ready.push(p);
-            }
-        }
+        wake_proc(
+            &mut self.procs,
+            &mut self.postponed,
+            &mut self.ready_several,
+            &mut self.ready_mono,
+            &mut self.ready,
+            &mut self.stats.wakes,
+            p,
+            by_timeout,
+        );
     }
 
     /// The order in which a batch runs (serial processes) and commits (#252, user
@@ -2250,6 +3071,7 @@ impl SimControl {
                 drivers: &self.drivers,
                 names: &self.names,
                 live: self.live_sink.as_deref(),
+                interrupt: &self.interrupt.0,
             };
             // Reports go straight to the output when the commit order is the order they are
             // made in: no shuffled run, and (below) nothing earlier in the batch to write.
@@ -2262,6 +3084,7 @@ impl SimControl {
                             || !slot.st.phantoms.is_empty()
                             || !slot.st.out.is_empty()
                             || !slot.st.outv.is_empty()
+                            || !slot.st.outb.is_empty()
                             || slot.st.scheduled.iter().any(|&(t, _)| t == sh.now))
             };
             let run = |p: u32, slot: &mut Slot, live: bool| {
@@ -2355,9 +3178,16 @@ impl SimControl {
                                 && s.result.is_ok()
                             {
                                 st.again = false;
+                                st.matched = 0;
                                 meta.ready = false;
                                 meta.resumed = true;
                                 self.serial_ran |= meta.flags.serial;
+                                if meta.idle_ok
+                                    && note_idle(meta, sh.signals, &self.names[p as usize], st)
+                                {
+                                    self.idle_live -= 1;
+                                    self.idle_active = self.idle_live != 0;
+                                }
                                 for &(t, d) in st.scheduled.iter() {
                                     self.queue.push(now, t, Entry::Driver(d.0));
                                 }
@@ -2369,9 +3199,17 @@ impl SimControl {
                                     }
                                     st.out.clear();
                                 }
-                                if !st.outv.is_empty() {
+                                if let [o] = st.outv[..] {
+                                    // One entry (the usual register): a store, not a `memcpy`.
+                                    self.directv.push(o);
+                                    st.outv.clear();
+                                } else if !st.outv.is_empty() {
                                     self.directv.extend_from_slice(&st.outv);
                                     st.outv.clear();
+                                }
+                                if !st.outb.is_empty() {
+                                    self.directb.extend_from_slice(&st.outb);
+                                    st.outb.clear();
                                 }
                                 if !st.phantoms.is_empty() {
                                     self.empty_delta |= st.take_phantoms();
@@ -2396,6 +3234,7 @@ impl SimControl {
     /// `run_batch` of one process after initialisation (a stage of a chain of processes): no
     /// order, no batch loop, and the usual clocked commit straight from its own lists.
     fn run_one(&mut self, p: u32, pids: Vec<u32>) -> Result<(), SimError> {
+        self.stats.single_runs += 1;
         let sh = Shared {
             now: self.now,
             delta: self.delta,
@@ -2406,6 +3245,7 @@ impl SimControl {
             drivers: &self.drivers,
             names: &self.names,
             live: self.live_sink.as_deref(),
+            interrupt: &self.interrupt.0,
         };
         let s = slot_mut(&mut self.slots[p as usize]);
         resumption(&self.procs, p, &mut s.st);
@@ -2433,9 +3273,14 @@ impl SimControl {
             return self.commit_rest(late, pids, false, false);
         }
         st.again = false;
+        st.matched = 0;
         meta.ready = false;
         meta.resumed = true;
         self.serial_ran |= meta.flags.serial;
+        if meta.idle_ok && note_idle(meta, sh.signals, &self.names[p as usize], st) {
+            self.idle_live -= 1;
+            self.idle_active = self.idle_live != 0;
+        }
         for &(t, d) in st.scheduled.iter() {
             self.queue.push(self.now, t, Entry::Driver(d.0));
         }
@@ -2443,13 +3288,29 @@ impl SimControl {
         if !st.phantoms.is_empty() {
             self.empty_delta |= st.take_phantoms();
         }
-        commit_out(
-            &mut self.signals,
-            &mut self.direct_sigs,
-            &mut self.empty_delta,
-            &mut st.out,
-            &mut st.outv,
-        );
+        if let [o] = st.out[..]
+            && st.outv.is_empty()
+            && st.outb.is_empty()
+        {
+            // One element (a stage of a chain): `commit_out` without its loops.
+            st.out.clear();
+            self.stats.direct_codes += 1;
+            match self.signals[o.sig as usize].commit_code(o.slot, o.elem, o.code as u8) {
+                Some(true) => self.direct_sigs.push(o.sig),
+                Some(false) => {}
+                None => self.empty_delta = true,
+            }
+        } else {
+            commit_out(
+                &mut self.stats,
+                &mut self.signals,
+                &mut self.direct_sigs,
+                &mut self.empty_delta,
+                &mut st.out,
+                &mut st.outv,
+                &mut st.outb,
+            );
+        }
         self.stats.process_runs += 1;
         let mut old = std::mem::replace(&mut self.last_ran, pids);
         if self.ready.capacity() == 0 {
@@ -2493,6 +3354,26 @@ impl SimControl {
             let (generation, trigger, tid) = (meta.generation, meta.trigger, meta.tid);
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
+            // A plain activation (below) of a clocked process the idle skip tracks: record what
+            // it did, as the batch loop does, before the commit takes its lists.
+            if meta.idle_ok
+                && !init
+                && !postponed
+                && st.again
+                && meta.perm != 0
+                && st.sens.is_empty()
+                && st.deadline.is_none()
+                && st.effects.is_empty()
+                && slot.result.is_ok()
+            {
+                if note_idle(meta, &self.signals, &self.names[p as usize], st) {
+                    self.idle_live -= 1;
+                    self.idle_active = self.idle_live != 0;
+                }
+            } else {
+                meta.idle_state = 0;
+                meta.shadow = false;
+            }
             // The usual clocked process: it waited again on the range its resident waiter
             // already covers (`Ctx::wait_on_again`) and did nothing but schedule drivers.
             if st.again
@@ -2505,16 +3386,19 @@ impl SimControl {
                 && slot.result.is_ok()
             {
                 st.again = false;
+                st.matched = 0;
                 for &(t, d) in st.scheduled.iter() {
                     self.queue.push(self.now, t, Entry::Driver(d.0));
                 }
                 st.scheduled.clear();
                 commit_out(
+                    &mut self.stats,
                     &mut self.signals,
                     &mut self.direct_sigs,
                     &mut self.empty_delta,
                     &mut st.out,
                     &mut st.outv,
+                    &mut st.outb,
                 );
                 continue;
             }
@@ -2524,6 +3408,7 @@ impl SimControl {
                     || !st.phantoms.is_empty()
                     || !st.out.is_empty()
                     || !st.outv.is_empty()
+                    || !st.outb.is_empty()
                     || st.scheduled.iter().any(|&(t, _)| t == self.now));
             if !st.scheduled.is_empty() {
                 for &(t, d) in st.scheduled.iter() {
@@ -2535,11 +3420,13 @@ impl SimControl {
                 self.empty_delta |= st.take_phantoms();
             }
             commit_out(
+                &mut self.stats,
                 &mut self.signals,
                 &mut self.direct_sigs,
                 &mut self.empty_delta,
                 &mut st.out,
                 &mut st.outv,
+                &mut st.outb,
             );
             let timed = st.deadline.is_some();
             if let Some(t) = st.deadline.take() {
@@ -2547,6 +3434,14 @@ impl SimControl {
             }
             // The same wait as the last run, without a timeout: the waiters of the last run
             // stay (resident, `ProcMeta::perm`), or become so now.
+            // A wait that ended after naming a part of the last one again: that part first.
+            if st.matched != 0 && !st.again {
+                let k = st.matched as usize;
+                let mut all = st.sens_prev[..k].to_vec();
+                all.append(&mut st.sens);
+                st.sens = all;
+            }
+            st.matched = 0;
             let mut again = std::mem::take(&mut st.again);
             if again && (timed || !st.sens.is_empty()) {
                 // More was added to the wait (`Ctx::wait_on_again`): the last wait's ranges
@@ -2585,7 +3480,9 @@ impl SimControl {
             }
             let list = if from_prev { &st.sens_prev } else { &st.sens };
             for &(s, range) in list {
-                self.signals[s.0 as usize].watched = true;
+                let sig = &mut self.signals[s.0 as usize];
+                sig.watched = true;
+                sig.fine |= range != Range::new(0, sig.ty.len);
                 let procs = &self.procs;
                 self.waiters[s.0 as usize].add(
                     p,
@@ -2739,6 +3636,35 @@ impl SimControl {
         });
     }
 
+    /// The changed ranges of `changed_sigs` to every observer (`Observer::value_changes`): one
+    /// hook and no copy of the range lists.
+    fn notify_changes(&mut self) {
+        let mut observers = std::mem::take(&mut self.observers);
+        let mut hook = Hook {
+            now: self.now,
+            delta: self.delta,
+            cycle: self.cycle,
+            cfg: &self.cfg,
+            drivers: &self.drivers,
+            names: &self.names,
+            queue: &mut self.queue,
+            signals: &self.signals,
+            ops: &mut self.ops,
+            end: &mut self.end,
+            wakes: &mut self.wakes,
+            empty_delta: &mut self.empty_delta,
+            slots: &self.slots,
+            observer: 0,
+        };
+        for (i, o) in observers.iter_mut().enumerate() {
+            if o.wants_value_changes() {
+                hook.observer = i;
+                o.value_changes(&mut hook, &self.changed_sigs);
+            }
+        }
+        self.observers = observers;
+    }
+
     fn notify(&mut self, f: impl FnMut(&mut dyn Observer, &mut Hook<'_>)) {
         self.notify_which(!0, f)
     }
@@ -2776,6 +3702,11 @@ impl SimControl {
 fn finish_signal(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Quick transactions finished when they were applied.
     let fused = sig.end_apply();
+    finish_applied(sig, fused, now, cycle)
+}
+
+/// `finish_signal` after `Signal::end_apply` said whether a quick transaction made an event.
+fn finish_applied(sig: &mut Signal, fused: bool, now: Time, cycle: u64) -> Result<bool, ErrorKind> {
     // Direct transactions, element order: first, so the runs stay in order when nothing else
     // came.
     let pend = sig.finish_pend(now, cycle, false);
@@ -2824,12 +3755,17 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
 /// `direct_sigs` for the next update. The entries of one driver are all in one of the lists.
 #[inline]
 fn commit_out(
+    stats: &mut Stats,
     signals: &mut [Signal],
     direct_sigs: &mut Vec<u32>,
     empty: &mut bool,
     out: &mut Vec<Out>,
     outv: &mut Vec<OutV>,
+    outb: &mut Vec<OutB>,
 ) {
+    stats.direct_codes += out.len() as u64;
+    stats.direct_planes += outv.len() as u64;
+    stats.direct_bytes += outb.len() as u64;
     // Runs of entries of one signal (processes of one vector, in order) at once.
     let mut i = 0;
     while let Some(&o) = out.get(i) {
@@ -2856,6 +3792,15 @@ fn commit_out(
         i += n;
     }
     out.clear();
+    for o in outb.iter() {
+        let sig = &mut signals[o.sig as usize];
+        match sig.commit_bytes(o.slot, o.elem, o.es as usize, &o.val) {
+            Some(true) => direct_sigs.push(o.sig),
+            Some(false) => {}
+            None => *empty = true,
+        }
+    }
+    outb.clear();
     if outv.is_empty() {
         return;
     }
@@ -2887,6 +3832,110 @@ fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
             .is_some_and(|(r, e, c)| signals[r.0 as usize].cur_code(e as usize) == c)
 }
 
+/// The activations over which `note_idle` counts a process's skips (`ProcMeta::idle_win`).
+const IDLE_WINDOW: u16 = 128;
+
+/// A clocked process of `idle_ok` finished a plain activation (committed from its own lists): the
+/// signals it reads had no event since, until one does (`armed`), and what it did is what a skipped
+/// activation would do. With `Config::idle_check` an activation `idle_filter` would have skipped
+/// is checked against that first.
+fn note_idle(meta: &mut ProcMeta, signals: &[Signal], name: &str, st: &ProcState) -> bool {
+    // Tracking costs ~40 instructions an activation and a skip saves ~1000: a process that is
+    // skipped in fewer than 3% of its activations over a window stops being tracked for a while (a
+    // design whose registers always change pays for the bookkeeping and gains nothing).
+    if meta.idle_state != 0 {
+        meta.idle_win = meta.idle_win.saturating_add(1);
+        if meta.idle_win >= IDLE_WINDOW {
+            let dead = meta.idle_hits < IDLE_WINDOW / 32;
+            meta.idle_win = 0;
+            meta.idle_hits = 0;
+            if dead {
+                meta.idle_ok = false;
+                meta.idle_state = 0;
+                meta.shadow = false;
+                return true;
+            }
+        }
+    }
+    let assigned = !(st.out.is_empty()
+        && st.outv.is_empty()
+        && st.outb.is_empty()
+        && st.scheduled.is_empty()
+        && st.phantoms.is_empty());
+    if std::mem::take(&mut meta.shadow) {
+        let forced = |s: u32| {
+            let s = &signals[s as usize];
+            s.force_eff.is_some() || s.force_drv.is_some()
+        };
+        let mut same = meta.idle_state == 2 || !assigned;
+        // The net value of each element: a later assignment of the run (a field set after
+        // `r <= r_next`) replaces an earlier one.
+        let mut codes: std::collections::HashMap<(u32, u32), u8> = std::collections::HashMap::new();
+        for o in &st.out {
+            codes.insert((o.sig, o.elem), o.code as u8);
+        }
+        for o in &st.outv {
+            for k in 0..o.len {
+                let c = (0..4).fold(0u8, |c, p| c | ((o.planes[p] >> k & 1) as u8) << p);
+                codes.insert((o.sig, o.elem + k), c);
+            }
+        }
+        for (&(sig, elem), &c) in &codes {
+            same &= forced(sig) || signals[sig as usize].cur_code(elem as usize) == c;
+        }
+        let mut bytes: std::collections::HashMap<(u32, u32), &crate::process::OutB> =
+            std::collections::HashMap::new();
+        for o in &st.outb {
+            bytes.insert((o.sig, o.elem), o);
+        }
+        for o in bytes.values() {
+            same &= forced(o.sig)
+                || signals[o.sig as usize]
+                    .cur
+                    .bytes(o.elem as usize, 1)
+                    .is_some_and(|b| b == &o.val[..o.es as usize]);
+        }
+        assert!(
+            same,
+            "idle skip: process {name} would not have done what its last activation did"
+        );
+    }
+    meta.idle_state = 1 + u8::from(assigned);
+    meta.armed = false;
+    false
+}
+
+/// `SimControl::wake` on the fields it touches, for a caller that holds borrows of others.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn wake_proc(
+    procs: &mut [ProcMeta],
+    postponed: &mut Vec<u32>,
+    ready_several: &mut Vec<u32>,
+    ready_mono: &mut bool,
+    ready: &mut Vec<u32>,
+    wakes: &mut u64,
+    p: u32,
+    by_timeout: bool,
+) {
+    let meta = &mut procs[p as usize];
+    if meta.ready {
+        return;
+    }
+    meta.ready = true;
+    meta.by_timeout = by_timeout;
+    meta.generation += 1;
+    *wakes += 1;
+    if meta.flags.postponed {
+        postponed.push(p);
+    } else if meta.flags.several_waits {
+        ready_several.push(p);
+    } else {
+        *ready_mono &= ready.last().is_none_or(|&l| l < p);
+        ready.push(p);
+    }
+}
+
 /// Whether the edge of trigger `t` holds in this cycle: an event on the element, with its
 /// value and `'last_value` through `To_X01` giving the edge ('1' or 'H' after '0' or 'L' for
 /// rising), or an event ending on '1' (rising) or '0' for the legacy form.
@@ -2901,13 +3950,20 @@ fn edge(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
         };
         return s.event_in(Range::new(t.elem, 1), cycle) && s.cur_code(i) == end as u8;
     }
-    let to_x01 = |c: u8| match c {
-        c if c == StdULogic::One as u8 || c == StdULogic::H as u8 => Some(true),
-        c if c == StdULogic::Zero as u8 || c == StdULogic::L as u8 => Some(false),
-        _ => None,
+    // `To_X01` of a code: 0 for '0' and 'L', 1 for '1' and 'H', 2 (neither) for the rest.
+    const X01: [u8; 16] = {
+        let mut t = [2u8; 16];
+        t[StdULogic::Zero as usize] = 0;
+        t[StdULogic::L as usize] = 0;
+        t[StdULogic::One as usize] = 1;
+        t[StdULogic::H as usize] = 1;
+        t
     };
-    let (now, before) = (to_x01(s.cur_code(i)), to_x01(s.last_value.code(i)));
-    s.event_in(Range::new(t.elem, 1), cycle) && now == Some(t.rising) && before == Some(!t.rising)
+    let to_x01 = |c: u8| X01[usize::from(c & 15)];
+    let want = u8::from(t.rising);
+    s.event_in(Range::new(t.elem, 1), cycle)
+        && to_x01(s.cur_code(i)) == want
+        && to_x01(s.last_value.code(i)) == 1 - want
 }
 
 /// The std_ulogic code of BIT/BOOLEAN `b` in logic storage.
@@ -2948,9 +4004,16 @@ fn process_panic(sh: &Shared, p: u32, panic: &(dyn std::any::Any + Send)) -> Sim
 /// process with an edge trigger, the edge that holds (`Ctx::edge`). Not for the first run.
 #[inline(always)]
 fn resumption(procs: &[ProcMeta], p: u32, st: &mut ProcState) {
+    if let Some(m) = &mut st.marks {
+        m.epoch += 1;
+    }
     let by_timeout = procs[p as usize].by_timeout;
     st.timed_out = by_timeout;
-    st.edge_ok = !by_timeout;
+    st.known = if by_timeout {
+        crate::process::NO_EDGE
+    } else {
+        st.known_key
+    };
 }
 
 fn slot_mut(m: &mut Mutex<Slot>) -> &mut Slot {

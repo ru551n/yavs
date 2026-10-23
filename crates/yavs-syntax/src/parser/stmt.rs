@@ -206,6 +206,8 @@ impl Parser<'_> {
                 }
             }
             Tok::Kw(Kw::With) => {
+                let at = self.span();
+                self.require_2008(at, "a selected assignment in a process");
                 let (target, expr, matching) = self.with_header()?;
                 if self.eat(Tok::Assign) {
                     let alts = self.selected_alts(|p| p.expr())?;
@@ -234,6 +236,10 @@ impl Parser<'_> {
                     Tok::Assign => {
                         self.bump();
                         let rhs = self.conditional(|p| p.var_value())?;
+                        if !matches!(rhs, Rhs::Simple(_)) {
+                            let at = self.span();
+                            self.require_2008(at, "a conditional variable assignment");
+                        }
                         self.semi()?;
                         SeqStmtKind::VariableAssign { target, rhs }
                     }
@@ -463,6 +469,10 @@ impl Parser<'_> {
         } else {
             let delay = self.delay()?;
             let rhs = self.conditional(|p| p.waveform())?;
+            if !concurrent && matches!(rhs, Rhs::Conditional(_)) {
+                let at = self.span();
+                self.require_2008(at, "a conditional assignment in a process");
+            }
             SignalAssignKind::Waveform { delay, rhs }
         };
         self.semi()?;
@@ -622,6 +632,10 @@ impl Parser<'_> {
                     self.expect_kw(Kw::Generate)?;
                     let body = self.generate_body()?;
                     branches.push((alt, cond?, body));
+                    if self.at_kw(Kw::Elsif) || self.at_kw(Kw::Else) {
+                        let at = self.span();
+                        self.require_2008(at, "`elsif` or `else` in an if generate statement");
+                    }
                     if self.eat_kw(Kw::Elsif) {
                         continue;
                     }
@@ -638,6 +652,7 @@ impl Parser<'_> {
             Tok::Kw(Kw::Case) => {
                 self.need_label(label, "a generate statement");
                 let open = self.bump_span();
+                self.require_2008(open, "a case generate statement");
                 let expr = self.header_expr(&[Tok::Kw(Kw::Generate)]);
                 self.expect_kw(Kw::Generate)?;
                 let mut alts = Vec::new();
@@ -679,8 +694,14 @@ impl Parser<'_> {
                     return Ok(None);
                 }
             },
+            Tok::Kw(Kw::Default) if self.psl_default_clock() => return Ok(None),
             t if is_psl_start(t) => {
-                self.psl_skip();
+                if !self.psl_decl() {
+                    if self.at_kw(Kw::Property) || self.at_kw(Kw::Sequence) {
+                        self.psl_skipped_name();
+                    }
+                    self.psl_skip();
+                }
                 return Ok(None);
             }
             _ => {
@@ -753,6 +774,8 @@ impl Parser<'_> {
         let open = self.expect_kw(Kw::Process)?;
         let sensitivity = if self.eat(Tok::LParen) {
             let s = if self.at_kw(Kw::All) {
+                let at = self.span();
+                self.require_2008(at, "`process (all)`");
                 Sensitivity::All(self.bump_span())
             } else {
                 let mut v = vec![self.name()?];

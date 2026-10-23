@@ -36,6 +36,7 @@
 
 mod cfg;
 mod inline;
+mod layout_cache;
 mod licm;
 mod live;
 mod memo;
@@ -108,6 +109,19 @@ fn compiled() -> bool {
     COMPILED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static LAYOUT_SLOTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Some functions will be compiled to native code (`--tier=auto`): the frames of processes get
+/// the layout slots of `layout_cache` as under `--tier=llvm` (user, 2026-10-23: the peak memory
+/// is the price of the compiled code's hits). Call it before the first function is asked for.
+pub fn layout_slots() {
+    LAYOUT_SLOTS.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn layout_slots_on() -> bool {
+    compiled() || LAYOUT_SLOTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 static EXTERNAL_VARS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Process variables may be read or written from outside (a plugin deposits a value through
@@ -120,6 +134,22 @@ pub fn external_variables() {
 
 pub(crate) fn external() -> bool {
     EXTERNAL_VARS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// May processes get copies specialised to their instance data (`copies.rs`)? Not with the
+/// pass off, nor while a debugger keeps variables in their slots, nor when a plugin or the
+/// waveform recorder reads or writes process variables, nor under `--tier=llvm`, which compiles
+/// the program before any copy exists, nor with `YAVS_NO_SPEC` (differential testing).
+pub fn specialise_on() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_SPEC")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    }) && enabled()
+        && !KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
+        && !external()
+        && !compiled()
 }
 
 /// Whether an optimised copy made now is the one every run makes: the pass is on and no debugger
@@ -142,12 +172,13 @@ pub fn fingerprint() -> String {
         KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed),
         compiled(),
         external(),
+        layout_slots_on(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 7]) -> String {
+fn fingerprint_of(f: [bool; 8]) -> String {
     let names = [
-        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external",
+        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -164,9 +195,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 7]);
-        for i in 0..7 {
-            let mut f = [false; 7];
+        let base = fingerprint_of([false; 8]);
+        for i in 0..8 {
+            let mut f = [false; 8];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -231,7 +262,15 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 /// Reads only what lowering produced of other functions (flags, kinds, types), so the result
 /// does not depend on which function was optimised first.
 pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
-    let mut f = optimize_body(prog, id)?;
+    optimize_func_with(prog, id, None)
+}
+
+fn optimize_func_with(
+    prog: &Program,
+    id: FuncId,
+    inst: Option<InstView<'_>>,
+) -> Option<Box<crate::Func>> {
+    let mut f = optimize_body_with(prog, id, inst)?;
     if inline::run(prog, id, &mut f, 1) {
         // The inlined bodies are code of this function now: what is known at the call decides
         // their branches and repeated reads are shared.
@@ -258,6 +297,21 @@ pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     Some(f)
 }
 
+/// The instance data a copy is made for and the byte ranges of it (offset, length) that are not
+/// folded.
+type InstView<'a> = (&'a [u8], &'a [(u32, u32)]);
+
+/// The copy of process `id` for the instance data `data` (`holes` are not folded): the
+/// function optimised as [`optimize_func`] does, with reads of the data folded.
+pub(crate) fn optimize_copy(
+    prog: &Program,
+    id: FuncId,
+    data: &[u8],
+    holes: &[(u32, u32)],
+) -> Option<Box<crate::Func>> {
+    optimize_func_with(prog, id, Some((data, holes)))
+}
+
 /// Is a debugger keeping the variables of subprograms in their slots?
 fn keep_variables_on() -> bool {
     KEEP_VARS.load(std::sync::atomic::Ordering::Relaxed)
@@ -265,6 +319,14 @@ fn keep_variables_on() -> bool {
 
 /// The function optimised, without inlining: the copy [`optimize_func`] starts from.
 pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
+    optimize_body_with(prog, id, None)
+}
+
+fn optimize_body_with(
+    prog: &Program,
+    id: FuncId,
+    inst: Option<InstView<'_>>,
+) -> Option<Box<crate::Func>> {
     if !enabled() {
         return None;
     }
@@ -285,6 +347,7 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
         raw.nested,
         &mut layouts,
     );
+    o.inst = inst;
     o.run();
     let mut loc = raw.loc.clone();
     let blocks = o.changed.then(|| o.compact(&mut loc, None));
@@ -317,6 +380,10 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
     }
     if memo_enabled() {
         memo::run(prog, &mut f);
+        // Frame bytes only a compiled tier uses (`--tier=interp` has none).
+        if layout_slots_on() {
+            layout_cache::run(prog, &mut f);
+        }
     }
     renumber(prog, &mut f);
     crate::build::number_func(&mut f, |c| {
@@ -512,6 +579,7 @@ fn for_defs_fast(i: &Inst, mut f: impl FnMut(Reg)) {
         | Inst::Cmp { dst, .. }
         | Inst::Bool { dst, .. }
         | Inst::Pos { dst, .. }
+        | Inst::SlicePos { dst, .. }
         | Inst::DopeLen { dst, .. }
         | Inst::Field { dst, .. }
         | Inst::Un { dst, .. } => f(dst),
@@ -721,6 +789,10 @@ enum Step {
 struct Opt<'a> {
     prog: &'a Program,
     f: &'a crate::Func,
+    /// A copy specialised to one instance (`copies.rs`): the frozen instance data it is for and
+    /// the byte ranges of it that are not to be folded; reads of the data fold like reads of
+    /// the constant pool.
+    inst: Option<InstView<'a>>,
     code: Vec<Inst>,
     operands: Vec<Reg>,
     blocks: Vec<(u32, u32)>,
@@ -809,6 +881,7 @@ impl<'a> Opt<'a> {
         Opt {
             prog,
             f,
+            inst: None,
             code,
             operands,
             blocks: f.blocks.values().iter().map(|b| (b.start, b.end)).collect(),
@@ -1271,9 +1344,105 @@ impl<'a> Opt<'a> {
             }
             self.forward_frame_copies();
         }
+        self.drop_clean_roots();
         self.drop_statements();
         self.merge_consts();
         self.dce();
+    }
+
+    /// A fat pair in a block this function just allocated, whose two words (stored just before
+    /// its `TempRoot`) are addresses of the frame, the constant pool, instance or temporary
+    /// memory, points into no heap: the record would be empty (`Machine::fat_root`), so the
+    /// instruction goes. Strings built for a native call or a report were one in four
+    /// instructions of some testbenches; compiled code stepped each `TempRoot` and then every
+    /// `Stmt` after it (the markers are stepped while roots are recorded).
+    fn drop_clean_roots(&mut self) {
+        // Instructions between the stores and the root that change no memory.
+        let pure = |i: &Inst| {
+            matches!(
+                i,
+                Inst::Const { .. }
+                    | Inst::ConstF { .. }
+                    | Inst::Move { .. }
+                    | Inst::AddrOf { .. }
+                    | Inst::Index { .. }
+                    | Inst::Alloc { .. }
+                    | Inst::Load { .. }
+                    | Inst::Bin { .. }
+                    | Inst::Un { .. }
+                    | Inst::Cmp { .. }
+                    | Inst::Select { .. }
+                    | Inst::Bool { .. }
+            )
+        };
+        for b in 0..self.blocks.len() {
+            let rg = self.range(b);
+            for pc in rg.clone() {
+                let Inst::TempRoot {
+                    addr: fat,
+                    ty: None,
+                    ..
+                } = self.code[pc]
+                else {
+                    continue;
+                };
+                let fat_at = self.opn(fat);
+                if !self.single(fat) || !matches!(self.cls_of(fat_at), Some(Cls::Block(_))) {
+                    continue;
+                }
+                // The latest stores of words 0 and 8 of the pair, read forwards from the
+                // window's start; anything that may write memory forgets them.
+                let (mut w0, mut w8) = (None, None);
+                let mut second: Vec<Reg> = Vec::new();
+                for k in pc.saturating_sub(16).max(rg.start)..pc {
+                    match self.code[k] {
+                        Inst::Index {
+                            dst,
+                            base,
+                            pos,
+                            stride: 1,
+                        } if self.single(dst)
+                            && self.opn(base) == fat_at
+                            && self.opn(pos) == Opn::K(8) =>
+                        {
+                            second.push(self.resolve(dst));
+                        }
+                        Inst::Store {
+                            addr,
+                            src,
+                            w: Width::B8,
+                        } => {
+                            if self.opn(addr) == fat_at {
+                                w0 = Some(src);
+                            } else if second.contains(&self.resolve(addr)) {
+                                w8 = Some(src);
+                            } else if !matches!(self.cls_of(self.opn(addr)), Some(Cls::Block(x))
+                                if Some(Cls::Block(x)) != self.cls_of(fat_at))
+                            {
+                                (w0, w8) = (None, None);
+                            }
+                        }
+                        ref i if pure(i) => {}
+                        _ => (w0, w8) = (None, None),
+                    }
+                }
+                let off_heap = |s: &Self, r: Reg| match s.opn(r) {
+                    Opn::A(..) => true,
+                    Opn::K(v) => !matches!((v as u64) >> 61, 4 | 7),
+                    o @ Opn::R(_) => {
+                        matches!(s.cls_of(o), Some(Cls::Space(_) | Cls::Temp | Cls::Block(_)))
+                    }
+                    Opn::V(..) => false,
+                };
+                if let (Some(a), Some(c)) = (w0, w8)
+                    && off_heap(self, a)
+                    && off_heap(self, c)
+                {
+                    self.code[pc] = dead();
+                    self.changed = true;
+                }
+            }
+        }
     }
 
     /// A `NewFrame` copy of constant size that only constant-offset loads read (the local
@@ -1423,6 +1592,7 @@ impl<'a> Opt<'a> {
                             | Inst::Bool { .. }
                             | Inst::Check { .. }
                             | Inst::Pos { .. }
+                            | Inst::SlicePos { .. }
                             | Inst::DopeLen { .. }
                             | Inst::Deref { .. }
                             | Inst::Br { .. }
@@ -2309,6 +2479,7 @@ impl<'a> Opt<'a> {
             | Inst::FCheck { .. }
             | Inst::BinRange { .. }
             | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
             | Inst::DopeLen { .. }
             | Inst::SubtypeCheck { .. }
             | Inst::Br { .. }
@@ -2325,6 +2496,7 @@ impl<'a> Opt<'a> {
             | Inst::SigSlice { .. }
             | Inst::SigReadScalar { .. }
             | Inst::SigAttr { .. }
+            | Inst::Edge { .. }
             | Inst::Driving { .. }
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }
@@ -2513,6 +2685,19 @@ impl<'a> Opt<'a> {
 
     /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded).
     fn const_read(&self, a: Opn, out: &mut [u8]) -> bool {
+        if let (Opn::A(AddrSpace::Inst, o), Some((data, holes))) = (a, self.inst) {
+            let (o, n) = (o as usize, out.len());
+            if holes
+                .iter()
+                .any(|&(h, z)| (h as usize) < o + n && o < (h + z) as usize)
+            {
+                return false;
+            }
+            return data.get(o..o + n).is_some_and(|b| {
+                out.copy_from_slice(b);
+                true
+            });
+        }
         let Opn::A(AddrSpace::Const(c), o) = a else {
             return false;
         };
@@ -2774,7 +2959,12 @@ impl<'a> Opt<'a> {
                 }
                 let n = w.bytes() as usize;
                 let mut x = [0u8; 8];
-                if self.const_read(a, &mut x[..n]) {
+                // (Instance data folds into integer registers only: a pointer or a handle
+                // register keeps its load, the collector's roots rule.)
+                let folds = self.inst.is_none()
+                    || !matches!(a, Opn::A(AddrSpace::Inst, _))
+                    || self.rty(dst) == Some(RegTy::I64);
+                if folds && self.const_read(a, &mut x[..n]) {
                     // A 4-byte load sign-extends (narrow integer elements, #415).
                     let v = if n == 4 {
                         i64::from(i32::from_le_bytes([x[0], x[1], x[2], x[3]]))
@@ -2832,7 +3022,39 @@ impl<'a> Opt<'a> {
                     self.cse(pc, Some(dst), Key::Pos(d, dim, i));
                 }
             }
-            Inst::LayoutOf { dst, ty, desc } => {
+            Inst::SlicePos {
+                dst,
+                dope,
+                left,
+                right,
+                dir,
+                ..
+            } => {
+                if let (Opn::K(a), Opn::K(b), Opn::K(w)) =
+                    (self.opn(left), self.opn(right), self.opn(dir))
+                {
+                    // A null slice: no element, no check.
+                    if dim_len(a, b, w == 1) == Some(0) {
+                        return self.make_const(pc, dst, 0);
+                    }
+                    if let Some((l, r, d)) = self.const_dim(self.opn(dope), 0) {
+                        let inside = |i: i64| match d {
+                            0 => l <= i && i <= r,
+                            1 => r <= i && i <= l,
+                            _ => false,
+                        };
+                        if w == d as i64 && inside(a) && inside(b) {
+                            let pos = if d == 0 {
+                                a.wrapping_sub(l)
+                            } else {
+                                l.wrapping_sub(a)
+                            };
+                            self.make_const(pc, dst, pos);
+                        }
+                    }
+                }
+            }
+            Inst::LayoutOf { dst, ty, desc, .. } => {
                 if self.single(dst)
                     && let Some(w) = self.known_layout(ty, desc)
                 {
@@ -3756,6 +3978,7 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::Copy { .. }
             | Inst::Fill { .. }
             | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
             | Inst::Index { .. }
             | Inst::Field { .. }
             | Inst::Bin { .. }
@@ -3802,6 +4025,7 @@ fn retargetable(i: &Inst) -> bool {
         | Inst::Select { .. }
         | Inst::Index { .. }
         | Inst::Pos { .. }
+        | Inst::SlicePos { .. }
         | Inst::DopeLen { .. }
         | Inst::Field { .. }
         | Inst::FBin { .. }

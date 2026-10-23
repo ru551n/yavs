@@ -1,7 +1,7 @@
 //! Access types: allocators, dereference, incomplete type uses and
 //! `'designated_subtype` (sem.md 2.6, 3.7, 7.1; LRM 5.4, 8.1, 9.3.7).
 //!
-//! An allocator is typed by its context only (`ClassMask::ANY_ACCESS`); this
+//! An allocator fits the access types designating its type (`CandSet::Alloc`); this
 //! module checks it against the designated subtype of the expected access type
 //! and builds `ExprKind::New`. Dereference, explicit (`p.all`) or implicit (a
 //! selected, indexed or sliced name or an attribute of an access value, 8.1

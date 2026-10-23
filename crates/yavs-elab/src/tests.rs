@@ -1675,6 +1675,43 @@ fn external_signal_alias_binds_in_elaboration_order() {
     assert_eq!(e.hier.scope(e.nets.obj(o).scope).name.text.as_str(), "u");
 }
 
+/// An external name's subtype indication must give the object's type and the lengths of its
+/// constrained array dimensions (LRM 8.7, #463); an unconstrained one takes the object's.
+#[test]
+fn external_name_subtype_must_match() {
+    let sub = "entity sub is end; architecture a of sub is
+        signal s : bit_vector(3 downto 0); signal b : bit;
+        constant c : integer := 4; begin end;";
+    let one = |name: &str, alias: &str| {
+        let src = format!(
+            "{sub} entity t is end; architecture a of t is
+             begin u : entity work.sub;
+               p : process {alias} begin wait; end process;
+             end;"
+        );
+        match try_elab(name, &src, "t", &[]).1 {
+            Ok(_) => Vec::new(),
+            Err(v) => v.into_iter().map(|(c, _)| c).collect(),
+        }
+    };
+    for ok in [
+        "alias x is <<signal .t.u.s : bit_vector(3 downto 0)>>;",
+        "alias x is <<signal .t.u.s : bit_vector(0 to 3)>>;",
+        "alias x is <<signal .t.u.s : bit_vector>>;",
+        "alias x is <<constant .t.u.c : natural>>;",
+    ] {
+        assert!(one("ext_ok", ok).is_empty(), "{ok}");
+    }
+    for bad in [
+        "alias x is <<signal .t.u.s : bit_vector(7 downto 0)>>;",
+        "alias x is <<signal .t.u.b : integer>>;",
+        "alias x is <<signal .t.u.s : bit>>;",
+        "alias x is <<constant .t.u.c : bit>>;",
+    ] {
+        assert_eq!(one("ext_bad", bad), [codes::EXTERNAL_MISMATCH], "{bad}");
+    }
+}
+
 const VAR_PORT_PKG: &str = "
   package pk is type prot_t is protected procedure p; end protected; end;
   package body pk is
@@ -1991,7 +2028,9 @@ fn clocked_processes_get_edge_triggers() {
         signal clk, rst, en : std_logic := '0';
         signal v : std_logic_vector(3 downto 0);
         signal q, r, s : std_logic;
-        signal bt : bit;
+        signal bt, bt2 : bit;
+        signal ul : std_ulogic;
+        signal bo : boolean;
       begin
         p1 : process (clk) begin if rising_edge(clk) then q <= '1'; end if; end process;
         p2 : process (rst) begin if falling_edge(rst) then r <= '1'; end if; end process;
@@ -2022,6 +2061,32 @@ fn clocked_processes_get_edge_triggers() {
         p19 : process (clk, rst) begin
           if rst = en then q <= '0'; elsif rising_edge(clk) then q <= '1'; end if;
         end process;
+        p20 : process (clk) begin if not clk'stable and clk = '1' then q <= '1'; end if; end process;
+        p21 : process (clk) begin if clk = '0' and not clk'stable then q <= '1'; end if; end process;
+        p22 : process (bt) begin if rising_edge(bt) then q <= '1'; end if; end process;
+        p23 : process (bt) begin if falling_edge(bt) then q <= '1'; end if; end process;
+        p24 : process begin wait until clk = '1'; q <= '1'; end process;
+        p25 : process begin wait until '0' = clk; q <= '1'; end process;
+        p26 : process begin wait until bt = '1'; q <= '1'; end process;
+        p27 : process begin wait on clk until clk = '1'; q <= '1'; end process;
+        p28 : process begin wait until clk = '1' and en = '1'; q <= '1'; end process;
+        p29 : process (ul) begin if rising_edge(ul) then q <= '1'; end if; end process;
+        p30 : process (ul) begin if ul'event and ul = '1' then q <= '1'; end if; end process;
+        p31 : process (bt, bt2) begin
+          if bt2 = '1' then q <= '0'; elsif rising_edge(bt) then q <= '1'; end if;
+        end process;
+        p32 : process begin wait until bt'event and bt = '0'; q <= '1'; end process;
+        p33 : process (bo) begin if rising_edge(bo) then q <= '1'; end if; end process;
+        p34 : process (bt) begin if not bt'stable and bt = '1' then q <= '1'; end if; end process;
+        p35 : process (clk) begin if clk = '1' then q <= '1'; end if; end process;
+        p36 : process begin wait until rising_edge(clk) and en = '1'; q <= '1'; end process;
+        p37 : process begin wait on clk, rst until rising_edge(clk); q <= '1'; end process;
+        p38 : process begin wait until en = '1' and rising_edge(clk); q <= '1'; end process;
+        p39 : process begin wait until rising_edge(bt) and bt2 = '1'; q <= '1'; end process;
+        p40 : process begin wait until clk'event and clk = '1' and en = '1'; q <= '1'; end process;
+        p41 : process begin wait until falling_edge(ul); q <= '1'; end process;
+        p42 : process begin wait until rising_edge(clk) or rst = '1'; q <= '1'; end process;
+        p43 : process begin wait until bt'event and bt = '1' and rst = '1'; q <= '1'; end process;
       end;";
     let (_, e) = elab("edges", src, "t", &[]);
     let t: Vec<_> = e
@@ -2050,7 +2115,7 @@ fn clocked_processes_get_edge_triggers() {
             x(true, 0, edge, None),
             None,
             x(true, 0, edge, None),
-            None,
+            x(true, 0, edge, None),
             x(true, 0, wait, None),
             None,
             x(true, 0, edge, Some((0, 3))),
@@ -2060,10 +2125,34 @@ fn clocked_processes_get_edge_triggers() {
             x(false, 0, legacy, None),
             None,
             x(false, 0, edge, Some((0, 2))),
-            None,
+            x(true, 0, legacy, None),
             x(true, 0, legacy, Some((0, 3))),
             None,
             None,
+            x(true, 0, legacy, None),
+            x(false, 0, legacy, None),
+            x(true, 0, edge, None),
+            x(false, 0, edge, None),
+            x(true, 0, (true, true), None),
+            x(false, 0, (true, true), None),
+            x(true, 0, (true, true), None),
+            x(true, 0, (true, true), None),
+            None,
+            x(true, 0, edge, None),
+            x(true, 0, legacy, None),
+            x(true, 0, edge, Some((0, 3))),
+            x(false, 0, (true, true), None),
+            x(true, 0, edge, None),
+            x(true, 0, legacy, None),
+            None,
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, false), None),
+            x(true, 0, (true, true), None),
+            x(false, 0, (true, false), None),
+            None,
+            x(true, 0, (true, true), None),
         ]
     );
 }
@@ -2257,4 +2346,193 @@ fn signal_copies_run_in_the_kernel() {
     );
     assert_eq!(kernel.len(), 4);
     assert_eq!(kernel, interp);
+}
+
+/// A concurrent `x <= not x after T;` on `std_ulogic`, BIT or BOOLEAN with a static delay is a
+/// kernel `ToggleProcess`; other shapes (a computed or signal-dependent delay, another source,
+/// a rejection limit, a constrained subtype, vector `not`) stay processes. Same reports either
+/// way (`Config::edge_triggers` off keeps them interpreted).
+#[test]
+fn clock_generators_run_in_the_kernel() {
+    let src = "library ieee; use ieee.std_logic_1164.all;
+      entity t is generic (h : time := 3 ns); end; architecture a of t is
+        constant k : time := h * 2;
+        signal a : std_logic := '0';
+        signal b : std_ulogic := '1';
+        signal c : bit;
+        signal d : boolean;
+        signal v : std_logic_vector(1 downto 0) := \"01\";
+        signal e : std_logic := '0';
+        signal f, g, i, j : std_logic := '0';
+        signal l : std_logic range '0' to '1' := '0';
+        signal per : time := 2 ns;
+        signal m, n : std_logic := '0';
+        signal o : bit_vector(0 to 1);
+      begin
+        a <= not a after h;
+        b <= not b after k;
+        c <= transport not c after 5 ns;
+        d <= not d after k / 2;
+        v(1) <= not v(1) after 4 ns;
+        e <= not f after 4 ns;
+        f <= '1' after 2 ns;
+        g <= reject 1 ns inertial not g after 4 ns;
+        i <= not i after per;
+        j <= not i;
+        l <= not l after 3 ns;
+        m <= not m after 3 ns;
+        m <= '1' after 20 ns;
+        n <= not n after 3 ns, '1' after 9 ns;
+        o <= not o after 1 ns;
+        process (a, b, c, d, v, e, f, g, i, j, l, m, n) begin
+          report std_logic'image(a) & std_ulogic'image(b) & bit'image(c) & boolean'image(d)
+            & to_string(v) & std_logic'image(e) & std_logic'image(f) & std_logic'image(g)
+            & std_logic'image(i) & std_logic'image(j) & std_logic'image(l) & std_logic'image(m)
+            & std_logic'image(n);
+        end process;
+        process begin wait for 40 ns; report \"end\"; wait; end process;
+      end;";
+    let (mut db, mut e) = elab("toggles", src, "t", &[]);
+    let toggles: Vec<bool> = e.procs.iter().map(|p| p.toggle.is_some()).collect();
+    // The statements in order (one process each), then the two processes.
+    assert_eq!(
+        toggles,
+        [
+            true, true, true, true, true, false, false, false, false, false, false, true, false,
+            false, false, false, false
+        ]
+    );
+    e.lower(&mut db).expect("lower");
+    let run = |e: &Elaborated, cfg: yavs_kernel::Config| {
+        let mut sim = e.build(cfg).expect("build");
+        let got = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        sim.subscribe(Box::new(Collect(got.clone())));
+        sim.run_until(yavs_kernel::Time::ns(40)).expect("run");
+        got.lock().expect("lock").clone()
+    };
+    let kernel = run(&e, yavs_kernel::Config::default());
+    let interp = run(
+        &e,
+        yavs_kernel::Config {
+            edge_triggers: false,
+            ..Default::default()
+        },
+    );
+    assert!(kernel.len() > 40);
+    assert_eq!(kernel, interp);
+}
+
+/// The scans for the signals and shared variables of loaded packages skip std and ieee
+/// (`walk.rs` `builtin_lib`, #426): none of their packages may declare one.
+#[test]
+fn builtin_packages_declare_no_signals_or_shared_variables() {
+    let uses: String = [
+        "std.textio",
+        "std.env",
+        "ieee.std_logic_1164",
+        "ieee.std_logic_textio",
+        "ieee.numeric_std",
+        "ieee.numeric_bit",
+        "ieee.numeric_std_unsigned",
+        "ieee.numeric_bit_unsigned",
+        "ieee.math_real",
+        "ieee.math_complex",
+        "ieee.fixed_pkg",
+        "ieee.float_pkg",
+        "ieee.std_logic_arith",
+        "ieee.std_logic_misc",
+        "ieee.std_logic_signed",
+        "ieee.std_logic_unsigned",
+        "ieee.vital_timing",
+        "ieee.vital_primitives",
+        "ieee.vital_memory",
+    ]
+    .iter()
+    .map(|p| format!("use {p}.all;\n"))
+    .collect();
+    let src = format!("library ieee;\n{uses}entity t is end; architecture a of t is begin end;");
+    for rev in [LangRev::Vhdl2008, LangRev::Vhdl2019] {
+        builtin_packages_without_signals(analyze_rev("builtin", &src, rev));
+    }
+}
+
+fn builtin_packages_without_signals(db: Db) {
+    use yavs_sem::decl::{DeclKind, ObjClass};
+    let mut packages = 0;
+    for (u, unit) in db.units.iter() {
+        if !matches!(
+            db.libs[unit.lib].source,
+            yavs_sem::loader::LibSource::StdDir(_)
+        ) {
+            continue;
+        }
+        for region in db.package_regions(u).unwrap_or_default() {
+            packages += 1;
+            for d in db.decls_with_instances(region) {
+                if let DeclKind::Object(o) = &db.decls[d].kind {
+                    assert!(
+                        !matches!(o.class, ObjClass::Signal | ObjClass::SharedVariable),
+                        "a built-in package declares a signal or shared variable: {:?}",
+                        db.decls[d].name
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        packages > 20,
+        "only {packages} built-in package regions loaded"
+    );
+}
+
+/// The packages with run-time objects are found when the image is made and come back with it,
+/// as long as the design has not grown (#426).
+#[test]
+fn run_time_packages_come_with_the_image() {
+    let src = "package p is signal s : bit; end;
+      package q is constant c : integer := 1; end;
+      entity t is end; architecture a of t is begin end;";
+    let mut db = analyze("rtp", src);
+    db.settle();
+    let found = db.run_time_package_set();
+    assert_eq!(found.len(), 1, "only p has a run-time object");
+    assert!(db.stored_run_time_packages().is_none());
+    let image = db.to_image().expect("image");
+    assert_eq!(db.stored_run_time_packages(), Some(&found[..]));
+    let opts = Options::new(LangRev::Vhdl2008, yavs_sem::default_stdlib());
+    let image = yavs_sem::image::Image::new(yavs_diag::Buffer::new(image));
+    let back = Db::from_image(opts, image, &|_| true).expect("restore");
+    assert_eq!(back.stored_run_time_packages(), Some(&found[..]));
+    assert_eq!(back.run_time_package_set(), found);
+}
+
+/// A subprogram whose external name is bound at elaboration makes its package a run-time one
+/// without growing the design: the stored set must not be used then (CI: ename6).
+#[test]
+fn stored_run_time_packages_are_not_used_with_external_names() {
+    let src = "package pack is procedure p; end package;
+      package body pack is
+        procedure p is
+          alias s1 is << signal .t.s : bit >>;
+        begin
+          s1 <= force '1';
+        end procedure;
+      end package body;
+      entity t is end;
+      use work.pack.all;
+      architecture a of t is
+        signal s : bit;
+      begin
+        process begin p; wait; end process;
+      end;";
+    let mut db = analyze("rtp-ext", src);
+    db.settle();
+    db.to_image().expect("image");
+    assert!(db.stored_run_time_packages().is_none());
+    // Before the external name is bound the package is not a run-time one, after it is.
+    let before = db.run_time_package_set();
+    let top = crate::find_top(&mut db, "work", "t").expect("top");
+    crate::elaborate(&mut db, top, &[], &ElabConfig::default()).expect("elaborate");
+    let after = db.run_time_package_set();
+    assert!(after.len() > before.len(), "{before:?} {after:?}");
 }

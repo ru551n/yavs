@@ -79,25 +79,27 @@ struct Slot {
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[repr(C)]
 pub struct Heap {
+    // What a suspension asks (`Machine::after_suspend`) comes first, in one cache line.
     tag: u8,
-    slots: Vec<Slot>,
-    free: Vec<u32>,
+    /// Bytes allocated since the last collection.
+    pub since_gc: u64,
     /// Deallocated slots not reusable yet (module docs).
     quarantine: Vec<u32>,
     /// Quarantine length at which [`Heap::reclaim_due`].
     reclaim_at: usize,
-    /// Bytes allocated since the last collection.
-    pub since_gc: u64,
     /// Bytes of the objects that survived the last collection.
     pub live_bytes: u64,
-    /// Handles that are roots for good ([`Heap::seal`]).
-    sealed: Vec<u64>,
     /// Changes whenever an object's bytes may have moved or gone (a deallocation, an edit in
     /// place): the host address of an object found at an earlier value is stale (compiled code
     /// keeps the addresses it found between activations).
     #[serde(skip)]
     epoch: u64,
+    slots: Vec<Slot>,
+    free: Vec<u32>,
+    /// Handles that are roots for good ([`Heap::seal`]).
+    sealed: Vec<u64>,
 }
 
 /// An object's bytes as one block in a serialised heap (package state, #407).

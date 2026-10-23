@@ -11,10 +11,10 @@ script/compile_order.txt; testbench files by a dependency scan, as tools/corpus/
 with `yavs analyze --relaxed`. Each testbench (entity plus generic set) then runs with `yavs run --relaxed`
 in its own directory. PASS = exit 0 and the library's final summary ">> Simulation SUCCESS" without a
 ">> Simulation FAILED". Every call runs under `timeout 300 systemd-run --user --scope -p MemoryMax=...`.
-Results: DIR/results.tsv (component, lib.entity, generics, status, first error line) and DIR/<comp>/<n>/log.txt;
+Results: DIR/results.tsv (component, lib.entity, generics, status, first error line, seconds of the run) and DIR/<comp>/<n>/log.txt;
 the per-component pass/fail table is printed at the end. Exit 0 always unless usage errors (a measurement).
 """
-import argparse, concurrent.futures as cf, contextlib, glob, io, itertools, os, re, shutil, subprocess, sys, types
+import argparse, concurrent.futures as cf, contextlib, glob, io, itertools, os, re, shutil, subprocess, sys, time, types
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -105,7 +105,25 @@ def order_blocks(blocks):
     return out
 
 
-def plan(root, comp, scratch):
+# Third-party design files the testbenches use that are not in the pinned checkout: prefix below the UVVM root -> the
+# checkout (tools/fetch-corpus.sh) that holds the files below that prefix.
+THIRD_PARTY = {
+    "bitvis_vip_spi/tb/maintenance_tb/spi_master_slave_opencores": "uvvm-supplementary/bitvis_vip_spi/tb/maintenance_tb/spi_master_slave_opencores",
+    "bitvis_vip_i2c/tb/maintenance_tb/i2c_opencores/trunk": "uvvm-i2c-master",
+    "bitvis_vip_i2c/tb/maintenance_tb/fpga_i2c_slave_github": "uvvm-i2c-slave",
+}
+
+
+def third_party(root, corpus, p):
+    """`p` (a glob below the UVVM root) moved to its fetched third-party checkout; `p` itself when there is none."""
+    rel = p.relative_to(root).as_posix()
+    for prefix, to in THIRD_PARTY.items():
+        if rel.startswith(prefix + "/"):
+            return corpus / to / rel[len(prefix) + 1:]
+    return p
+
+
+def plan(root, comp, scratch, corpus):
     """Compile list [(lib, path)], the testbench files [(lib, path)] and generic sets for one component."""
     files, generics = record(script_dir(root, comp) / "test.py", scratch / comp)
     blocks, tbs, seen, missing = [], [], set(), []
@@ -117,6 +135,8 @@ def plan(root, comp, scratch):
         elif "/src_target_dependent/" in str(p):
             pass  # compiled per VVC library by that component's compile_order.txt
         else:
+            if not glob.glob(str(p)):
+                p = third_party(root, corpus, p)
             if not glob.glob(str(p)):
                 missing.append(str(p.relative_to(root / comp)).split('/maintenance_tb/')[-1].split('/')[0])
             for f in sorted(glob.glob(str(p))):
@@ -237,19 +257,32 @@ def archs(tbs, ent):
     return sorted({m.lower() for _, p in tbs for m in re.findall(rf"^\s*architecture\s+(\w+)\s+of\s+{ent}\b", p.read_text(errors="replace"), re.I | re.M)})
 
 
-def run_one(a, comp, n, lib, ent, gens, libs):
+# Testbenches that need a different command line than the project's regression script gives them.
+# A reference simulator behaves the same: with the default the first run stops with status 1.
+DISABLED = {"questa_extension_tb": ["-gGC_EXTENSIONS_ENABLED=false"]}  # exercises a vendor extension only one simulator has
+NO_SUMMARY = {"questa_extension_tb"}  # prints no final summary; an expected-alert count stops it with status 1 otherwise
+
+
+def run_one(a, comp, n, lib, ent, gens, libs, miss):
     d = a.out / comp / str(n)
     d.mkdir(parents=True, exist_ok=True)
-    gl = [f"-g{k}={gval(v, d)}" for k, v in zip(gens[::2], gens[1::2])]
-    cmd = [a.yavs, "run", f"--std={STD}", "--relaxed", f"--work={lib}:{a.out}/{comp}/libs/{lib}"] + \
+    shared = a.out / comp / "files" / ent  # a PATH generic: one directory for all runs of the entity (a test reads what an earlier one wrote)
+    shared.mkdir(parents=True, exist_ok=True)
+    gl = [f"-g{k}={gval(v, shared)}" for k, v in zip(gens[::2], gens[1::2])] + DISABLED.get(ent.split(".")[0], [])
+    # The project's own verdict is its final summary: error reports of a design under test do not fail a run.
+    cmd = [a.yavs, "run", f"--std={STD}", "--relaxed", "--exit-severity=failure", f"--work={lib}:{a.out}/{comp}/libs/{lib}"] + \
         [f"--map={l}:{a.out}/{comp}/libs/{l}" for l in libs if l != lib] + [ent] + gl
+    t0 = time.perf_counter()
     rc, out = sh(cmd, d, not a.no_wrap, a.mem, d / "log.txt")
-    if rc == 0 and ">> Simulation FAILED" not in out and ">> Simulation SUCCESS" in out:
-        return "PASS", ""
+    secs = f"{time.perf_counter() - t0:.1f}"
+    if rc == 0 and ">> Simulation FAILED" not in out and (">> Simulation SUCCESS" in out or ent.split(".")[0] in NO_SUMMARY):
+        return "PASS", "", secs
     if rc == 124:
-        return "SKIP", "over 5 minutes (timeout 300)"
+        return "SKIP", "over 5 minutes (timeout 300)", secs
+    if rc and miss and (m := re.search(r"no entity `(\w+)` is visible and none is configured", out)):
+        return "SKIP", f"design component {m[1]} stays unbound: third-party sources absent from the pinned checkout: {' '.join(dict.fromkeys(miss))}", secs
     why = first_error(out) if rc else ("summary reports FAILED" if ">> Simulation FAILED" in out else "no final summary")
-    return "FAIL", f"exit {rc}: {why}"
+    return "FAIL", f"exit {rc}: {why}", secs
 
 
 def job(a, t, plans, built, libs):
@@ -263,7 +296,7 @@ def job(a, t, plans, built, libs):
     for p, msg in bad.items():
         if re.search(mine, p.read_text(errors="replace"), re.I):
             return ("SKIP", f"sources absent from the pinned checkout: {' '.join(dict.fromkeys(miss))}") if miss and "not found" in msg else ("FAIL", msg)
-    return run_one(a, c, n, lib, ent, g, libs[c])
+    return run_one(a, c, n, lib, ent, g, libs[c], miss)
 
 
 def main():
@@ -280,12 +313,13 @@ def main():
     a = ap.parse_args()
     a.out = Path(a.out).expanduser()
     root = (Path(a.root).expanduser() / "uvvm").resolve()
+    corpus = Path(a.root).expanduser()  # the third-party checkouts are next to the UVVM one
     if not root.is_dir():
         sys.exit(f"{root} not found; run tools/fetch-corpus.sh")
     comps = [c for c in (root / "script/component_list.txt").read_text().split() if (root / c / "script/maintenance_script/test.py").exists()]
     if a.only:
         comps = [c for c in comps if c in a.only.split(",")]
-    plans = {c: plan(root, c, a.out / 'rec') for c in comps}
+    plans = {c: plan(root, c, a.out / "rec", corpus) for c in comps}
     jobs = []  # (comp, lib, entity, generics)
     for c in comps:
         _, tbs, _, gens = plans[c]
@@ -302,12 +336,21 @@ def main():
             print(c, f"{lib}.{ent}", *g)
         return
     a.out.mkdir(parents=True, exist_ok=True)
+    for c in comps:
+        shutil.rmtree(a.out / c / "files", ignore_errors=True)  # no file of an earlier invocation
     with cf.ThreadPoolExecutor(a.j) as ex:
         built = dict(zip(comps, ex.map(lambda c: build(a, c, plans[c]), comps)))
         berr = {c: built[c][0] for c in comps}
         libs = {c: sorted({l for l, _ in plans[c][0] + plans[c][1]}) for c in comps}
-        res = list(ex.map(lambda t: job(a, t, plans, built, libs), enumerate(jobs)))
-    rows = [(c, f"{lib}.{ent}", " ".join(map(str, g)), s, w) for (c, lib, ent, g), (s, w) in zip(jobs, res)]
+        # Runs of one entity with a PATH generic share a directory and run in order, on one worker.
+        groups = {}
+        for i, (c, _, ent, g) in enumerate(jobs):
+            groups.setdefault((c, ent) if any(isinstance(v, tuple) for v in g) else i, []).append(i)
+        res = [None] * len(jobs)
+        for part in ex.map(lambda ix: [(i, job(a, (i, jobs[i]), plans, built, libs)) for i in ix], groups.values()):
+            for i, r in part:
+                res[i] = r
+    rows = [(c, f"{lib}.{ent}", " ".join(map(str, g)), s, w, *t) for (c, lib, ent, g), (s, w, *t) in zip(jobs, res)]
     (a.out / "results.tsv").write_text("".join("\t".join(r) + "\n" for r in rows))
     print(f"{'component':32} pass fail skip")
     for c in comps:

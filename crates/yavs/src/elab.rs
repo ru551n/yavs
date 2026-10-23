@@ -21,6 +21,7 @@ use yavs_kernel::{EndReason, RunStatus};
 use crate::StdArg;
 use crate::analyze::Out;
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 pub struct Common {
     /// Design revision of std/ieee; default: the newest standard in the design's closure.
@@ -58,6 +59,7 @@ pub struct Common {
     generics: Vec<(String, String)>,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum ResolutionArg {
     Fs,
@@ -68,6 +70,7 @@ enum ResolutionArg {
     Sec,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 pub struct RunArgs {
     #[command(flatten)]
@@ -100,9 +103,23 @@ pub struct RunArgs {
     /// standard error when the simulation ends.
     #[arg(long)]
     time_report: bool,
+    /// Sample where the simulation spends its time and print the busiest processes, instances
+    /// and subprograms to standard error when the run ends; with FILE also write them as
+    /// JSON.
+    #[arg(long, value_name = "FILE", num_args = 0..=1, require_equals = true)]
+    profile: Option<Option<String>>,
     /// Stop the simulation at this time, e.g. `10ms`.
     #[arg(long, value_name = "TIME")]
     stop_time: Option<String>,
+    /// Print what every waiting process waits for when the run ends at `--stop-time` without
+    /// `stop` or `finish`, or runs out of events with a process still waiting for a signal; at
+    /// most MAX processes are listed per part (default 30). `kill -USR1 PID` prints the same
+    /// report of a running simulation (Unix, always available).
+    #[arg(long, value_name = "MAX", num_args = 0..=1, require_equals = true, default_missing_value = "30")]
+    hang_report: Option<usize>,
+    /// Most delta cycles at one simulated time before the run fails with E3002.
+    #[arg(long, value_name = "N", default_value = "10000", value_parser = parse_max_deltas)]
+    max_deltas: u32,
     /// Time resolution limit (`std.env.resolution_limit`, TIME values in reflection).
     #[arg(long, value_enum, default_value = "fs")]
     resolution: ResolutionArg,
@@ -206,6 +223,14 @@ fn parse_size(s: &str) -> Result<u64, String> {
     }
 }
 
+fn parse_max_deltas(s: &str) -> Result<u32, String> {
+    match s.trim().parse::<u32>() {
+        Ok(0) => Err("the limit must be at least 1".into()),
+        Ok(n) => Ok(n),
+        Err(e) => Err(format!("`{s}` is not a number of delta cycles: {e}")),
+    }
+}
+
 fn heat(s: &str) -> Result<[u32; 3], String> {
     let v: Vec<u32> = s
         .split(',')
@@ -236,6 +261,7 @@ impl RunArgs {
     }
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TierArg {
     Interp,
@@ -250,6 +276,7 @@ pub enum TierArg {
     Auto3,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum CovKindArg {
     Statement,
@@ -257,6 +284,7 @@ pub enum CovKindArg {
     Toggle,
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum SeverityArg {
     Note,
@@ -339,9 +367,13 @@ fn elaborate(
         }
     };
     let rev = match c.std {
+        Some(StdArg::V1993) => LangRev::Vhdl1993,
         Some(StdArg::V2008) => LangRev::Vhdl2008,
         Some(StdArg::V2019) => LangRev::Vhdl2019,
+        // The newest standard recorded in the closure (cli-contract section 2).
         None if files.iter().any(|f| f.std == "2019") => LangRev::Vhdl2019,
+        None if files.iter().any(|f| f.std == "2008") => LangRev::Vhdl2008,
+        None if !files.is_empty() => LangRev::Vhdl1993,
         None => LangRev::Vhdl2008,
     };
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
@@ -836,6 +868,11 @@ fn use_llvm_tier(
 /// Run the compiled program from now on (`--tier=llvm`).
 #[cfg(feature = "llvm")]
 fn use_llvm(rt: &yavs_interp::Runtime, tier: yavs_llvm::LlvmTier, verbose: bool) {
+    crate::counters::llvm_compiled(
+        tier.inline,
+        tier.interpreted.iter().map(|k| k.1).sum(),
+        tier.native_frames(),
+    );
     if verbose {
         for (f, why) in &tier.notes {
             let name = rt.prog.func(*f).map_or("?", |f| f.name.as_str());
@@ -899,8 +936,13 @@ pub fn run(
     if a.dap.is_some() {
         yavs_interp::keep_variables();
     }
-    if a.tier() == TierArg::Llvm {
-        yavs_interp::compiled_tier();
+    // Eager Cranelift compiles the whole program before time 0 like `--tier=llvm` (no specialised
+    // copies, layout slots); the tiers that tier up get the layout slots when LLVM is one of
+    // their levels (the Cranelift code ignores them).
+    match a.tier() {
+        TierArg::Llvm | TierArg::Clift => yavs_interp::compiled_tier(),
+        TierArg::Auto | TierArg::Auto3 => yavs_interp::layout_slots(),
+        TierArg::Interp | TierArg::CliftAuto => {}
     }
     // A plugin may deposit into process variables between activations, and the waveform
     // recorder reads them from their slots.
@@ -924,7 +966,7 @@ pub fn run(
     let (mut out, mut db, e) = match elaborate(
         &a.common,
         counters,
-        a.tier() == TierArg::Llvm,
+        matches!(a.tier(), TierArg::Llvm | TierArg::Clift),
         collapse,
         format,
         color,
@@ -942,6 +984,17 @@ pub fn run(
             .with_note("this is a limitation of yavs, not an error in the design")
     };
     if a.dap.is_some() {
+        if a.profile.is_some() {
+            out.emit(
+                &none,
+                &Diagnostic::error("E0125", "`--profile` cannot be combined with `--dap`")
+                    .with_note(
+                        "a stop at a breakpoint would be sampled as time in the stopped process",
+                    )
+                    .with_help("profile a run without `--dap`"),
+            );
+            return out.finish(2);
+        }
         if a.cov.is_some() {
             out.emit(&none, &unsupported("`--cov` together with `--dap` (M8)"));
             return out.finish(2);
@@ -990,9 +1043,11 @@ pub fn run(
         }
     }
     let observed_free = a.cov.is_none() && a.dap.is_none() && a.vhpi.is_empty();
+    let idle_mode = std::env::var("YAVS_IDLE_SKIP").unwrap_or_default();
     let cfg = yavs_kernel::Config {
         threads: a.threads.max(1),
         shuffle: a.shuffle,
+        max_deltas: a.max_deltas,
         resolution,
         stop_severity: match a.exit_severity.unwrap_or(SeverityArg::Failure) {
             SeverityArg::Note => yavs_kernel::Severity::Note,
@@ -1004,8 +1059,18 @@ pub fn run(
         // a debugger stepping through it, and foreign callbacks.
         edge_triggers: observed_free,
         skip_unchanged: observed_free && !db.facts().reads_activity,
-        ..Default::default()
+        // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
+        // `check` runs the ones the kernel would skip and fails when one does something else.
+        idle_skip: idle_mode != "off",
+        idle_check: idle_mode == "check",
     };
+    if let Some(seed) = a.shuffle {
+        out.emit(&none, &shuffle_note(seed));
+    }
+    let cfg_profile = a
+        .profile
+        .is_some()
+        .then(yavs_kernel::profile::Profile::install);
     let _ = &a.ieee_warnings; // ponytail: no ieee processes run yet; filter reports once they do
     let stop = match &a.stop_time {
         None => yavs_kernel::Time::MAX,
@@ -1034,9 +1099,14 @@ pub fn run(
     }
     if let Some(t) = a.dap {
         let (db, e) = (Arc::new(db), Arc::new(e));
-        let interrupted = Arc::new(AtomicBool::new(false));
         let attach = |sim: &mut yavs_kernel::SimControl, built: Option<&yavs_elab::Built>| {
-            let rec = observers(&a, &db, &e, sim, built, &interrupted, &mut out)?;
+            let rec = observers(&a, &db, &e, sim, built, &mut out)?;
+            if rec.is_some() {
+                // Ctrl-C ends the run between cycles so the file is finished (rule 11).
+                let mut hooks = yavs_wave::interrupt::Handlers::default();
+                ctrl_c_stops(&mut hooks, sim.interrupt(), Arc::default(), true);
+                yavs_wave::interrupt::start(hooks).map_err(handler_error)?;
+            }
             Ok(rec.map(|(path, rec)| {
                 let r = rec.clone();
                 let finish: yavs_dap::Finish =
@@ -1067,6 +1137,11 @@ pub fn run(
             return out.finish(if err.exit_status() == 101 { 3 } else { 2 });
         }
     };
+    // Where the processes are, for the diagnostics of a stuck run; read before the model is freed.
+    let procs = e.proc_table();
+    for w in e.no_wait_warnings(&procs) {
+        out.emit(&db.sources, &w);
+    }
     // Held to the end of the run: `end` or a drop ends tier-up.
     let tier_up = match use_tier(built.as_ref().map(|b| &*b.rt), &a) {
         Ok(g) => g,
@@ -1076,6 +1151,12 @@ pub fn run(
             return out.finish(code);
         }
     };
+    if cfg_profile.is_some()
+        && a.tier() == TierArg::Interp
+        && let Some(b) = &built
+    {
+        crate::profile::watch_interpreter(&b.rt);
+    }
     // Only the design writes to standard output: no plugin, no foreign code.
     let foreign =
         e.ir.as_ref()
@@ -1107,28 +1188,54 @@ pub fn run(
         t
     });
     let interrupted = Arc::new(AtomicBool::new(false));
-    let recorder = match observers(
-        &a,
-        &db,
-        &e,
-        &mut sim,
-        built.as_ref(),
-        &interrupted,
-        &mut out,
-    ) {
+    let recorder = match observers(&a, &db, &e, &mut sim, built.as_ref(), &mut out) {
         Ok(r) => r,
         Err(d) => {
             out.emit(&none, &d);
             return out.finish(2);
         }
     };
-    // Ctrl-C or SIGTERM without a recorder ends the run at once: write out the reports that
-    // wait in the output buffer first.
-    if recorder.is_none() && crate::stdout::is_on() {
-        let _ = yavs_wave::interrupt::install(|| {
+    // One thread for Ctrl-C/SIGTERM, SIGUSR1 (hang report) and the output flusher (#562).
+    // With a recorder the first signal ends the run between cycles so that the file is finished
+    // (rule 11). With `--profile` it does so that the profile of the time so far is printed; the
+    // exit status stays 130. Else, with output collected, it writes the reports that wait in
+    // the buffer out and exits at once.
+    let signalled = Arc::new(AtomicBool::new(false));
+    let mut hooks = yavs_wave::interrupt::Handlers {
+        usr1: Some(crate::stuck::on_request(sim.interrupt())),
+        ..Default::default()
+    };
+    if crate::stdout::is_on() {
+        hooks.tick = Some((crate::stdout::TICK, Box::new(crate::stdout::flush)));
+    }
+    let keep_exit = !a.load.is_empty() || !a.vhpi.is_empty();
+    if recorder.is_some() || cfg_profile.is_some() {
+        let flag = if recorder.is_some() {
+            &interrupted
+        } else {
+            &signalled
+        };
+        ctrl_c_stops(&mut hooks, sim.interrupt(), flag.clone(), keep_exit);
+    } else if crate::stdout::is_on() {
+        hooks.first = Some(Box::new(move || {
             crate::stdout::flush();
-            std::process::exit(130);
-        });
+            exit_after_signal(130, keep_exit);
+        }));
+    }
+    if let Err(err) = yavs_wave::interrupt::start(hooks) {
+        if recorder.is_some() {
+            out.emit(&none, &handler_error(err));
+            return out.finish(2);
+        }
+        crate::stdout::unbuffer();
+        out.emit(
+            &none,
+            &Diagnostic::warning(
+                "W0116",
+                "cannot install the signal handlers (Ctrl-C, SIGUSR1 hang reports)",
+            )
+            .with_note(err.to_string()),
+        );
     }
     // Nothing below reads the elaborated model but its IR (run-time diagnostics) unless a
     // plugin, the waveform recorder or coverage does (#421).
@@ -1136,10 +1243,61 @@ pub fn run(
         e.release_for_run();
     }
     crate::timing::mark("init");
-    let r = sim.run_until(stop);
+    crate::counters::start();
+    let sampler = cfg_profile.map(|p| {
+        crate::profile::Sampler::start(
+            p,
+            rt.as_ref().map(|rt| rt.sampler()),
+            rt.as_ref().map(|rt| rt.line_sampler()),
+        )
+    });
+    let max = a.hang_report.unwrap_or(30);
+    let r = loop {
+        let r = sim.run_until(stop);
+        if matches!(r, Ok(RunStatus::Paused)) && crate::stuck::take_request() {
+            let report = sim.stuck_report();
+            let d = e.stuck_diagnostic(&report, yavs_elab::StuckWhy::Requested, &procs, max);
+            out.emit(&db.sources, &with_seed(d, a.shuffle));
+            continue;
+        }
+        if a.hang_report.is_some() {
+            let why = match &r {
+                Ok(RunStatus::Paused) => Some(yavs_elab::StuckWhy::StopTime(stop)),
+                Ok(RunStatus::Ended(EndReason::Idle)) => Some(yavs_elab::StuckWhy::Idle),
+                _ => None,
+            };
+            if let Some(why) = why {
+                let report = sim.stuck_report();
+                if why != yavs_elab::StuckWhy::Idle || crate::stuck::idle_is_stuck(&report) {
+                    let d = e.stuck_diagnostic(&report, why, &procs, max);
+                    out.emit(&db.sources, &with_seed(d, a.shuffle));
+                }
+            }
+        }
+        break r;
+    };
     crate::timing::mark("simulate");
     crate::stdout::flush();
+    let mut profile_error = None;
+    if let (Some(s), Some(file)) = (sampler, &a.profile) {
+        profile_error = s
+            .finish(rt.as_deref(), &db.sources, file.as_deref())
+            .err()
+            .map(|err| (file.clone().unwrap_or_default(), err));
+    }
     crate::timing::report();
+    crate::counters::report(sim.stats(), rt.as_deref());
+    yavs_interp::census_dump(40);
+    if signalled.load(Ordering::SeqCst) {
+        if let Some((path, err)) = profile_error {
+            out.emit(
+                &none,
+                &Diagnostic::error("E0124", format!("cannot write the profile `{path}`"))
+                    .with_note(err.to_string()),
+            );
+        }
+        return out.finish(130);
+    }
     let mut o = std::io::stdout().lock();
     let code = match r {
         Ok(RunStatus::Ended(EndReason::Stop(c) | EndReason::Finish(c))) => {
@@ -1171,13 +1329,22 @@ pub fn run(
         Ok(_) => 0,
         Err(err) => {
             let _ = o.flush();
-            out.emit(&db.sources, &e.runtime_diagnostic(&err));
+            let d = e.runtime_diagnostic_in(&err, &procs);
+            out.emit(&db.sources, &with_seed(d, a.shuffle));
             if err.exit_status() == 101 { 3 } else { 1 }
         }
     };
     let _ = o.flush();
     drop(o);
     let mut code = code;
+    if let Some((path, err)) = profile_error {
+        out.emit(
+            &none,
+            &Diagnostic::error("E0124", format!("cannot write the profile `{path}`"))
+                .with_note(err.to_string()),
+        );
+        code = code.max(1);
+    }
     if let Some((path, rec)) = recorder
         && let Err(err) = rec.finish(&sim)
     {
@@ -1261,9 +1428,65 @@ pub fn run(
     done
 }
 
+/// The seed of a shuffled run, once at the start and again in a diagnostic that ends or
+/// explains a run, so a failure found in a long log can be replayed.
+fn shuffle_note(seed: u64) -> Diagnostic {
+    Diagnostic::new(
+        yavs_diag::Severity::Note,
+        "",
+        format!("process order is shuffled with seed {seed}; replay it with `--shuffle={seed}`"),
+    )
+}
+
+fn with_seed(d: Diagnostic, shuffle: Option<u64>) -> Diagnostic {
+    match shuffle {
+        Some(s) => d.with_note(format!(
+            "process order was shuffled with seed {s}; replay it with `--shuffle={s}`"
+        )),
+        None => d,
+    }
+}
+
 fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {
     Diagnostic::error("E0801", format!("cannot write the waveform file `{path}`"))
         .with_note(err.to_string())
+}
+
+/// Ends the process from the signal thread. With the compiled tier built in, `exit` would run
+/// the static destructors of LLVM under a compile thread that is inside LLVM (a crash, #625), so
+/// the process ends without exit handlers, unless `keep_exit` (foreign libraries or VHPI plugins
+/// loaded, whose exit handlers must run).
+fn exit_after_signal(code: u8, keep_exit: bool) -> ! {
+    #[cfg(feature = "llvm")]
+    if !keep_exit {
+        yavs_llvm::exit_now(code);
+    }
+    let _ = keep_exit;
+    std::process::exit(code.into())
+}
+
+/// The first Ctrl-C/SIGTERM sets `flag` and ends the run between cycles; the second writes out
+/// the buffered output and exits.
+fn ctrl_c_stops(
+    hooks: &mut yavs_wave::interrupt::Handlers,
+    stop: yavs_kernel::Interrupt,
+    flag: Arc<AtomicBool>,
+    keep_exit: bool,
+) {
+    hooks.first = Some(Box::new(move || {
+        flag.store(true, Ordering::SeqCst);
+        stop.stop();
+    }));
+    hooks.at_exit = Some(Box::new(move || {
+        crate::stdout::flush();
+        exit_after_signal(1, keep_exit);
+    }));
+}
+
+fn handler_error(err: std::io::Error) -> Box<Diagnostic> {
+    Box::new(
+        Diagnostic::error("E0803", "cannot install the Ctrl-C handler").with_note(err.to_string()),
+    )
 }
 
 /// Subscribe the VHPI observer (`--vhpi`) and the waveform recorder (`--wave`) to `sim`, for
@@ -1274,7 +1497,6 @@ fn observers(
     e: &yavs_elab::Elaborated,
     sim: &mut yavs_kernel::SimControl,
     built: Option<&yavs_elab::Built>,
-    interrupted: &Arc<AtomicBool>,
     out: &mut Out,
 ) -> Result<Option<(String, yavs_wave::Recorder)>, Box<Diagnostic>> {
     let none = SourceMap::default();
@@ -1320,20 +1542,6 @@ fn observers(
                         );
                     }
                     sim.subscribe(Box::new(rec.clone()));
-                    // Ctrl-C ends the run between cycles so the file is finished (rule 11).
-                    let (stop, flag) = (sim.interrupt(), interrupted.clone());
-                    if let Err(err) = yavs_wave::interrupt::install_with(
-                        move || {
-                            flag.store(true, Ordering::Relaxed);
-                            stop.stop();
-                        },
-                        crate::stdout::flush,
-                    ) {
-                        return Err(Box::new(
-                            Diagnostic::error("E0803", "cannot install the Ctrl-C handler")
-                                .with_note(err.to_string()),
-                        ));
-                    }
                     Some((path.clone(), rec))
                 }
                 Err(err) => return Err(Box::new(wave_error(path, err))),

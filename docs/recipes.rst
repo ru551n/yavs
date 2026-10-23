@@ -67,12 +67,20 @@ library is locked while its manifest is updated.
 Standard per file
 -----------------
 
-``--std=2008`` or ``--std=2019`` applies to the files of one ``analyze`` call (default ``2008``),
-so a project that mixes both standards calls ``analyze`` once per standard. yavs records the
+``--std=93``, ``--std=2008`` or ``--std=2019`` applies to the files of one ``analyze`` call (default
+``2008``), so a project that mixes standards calls ``analyze`` once per standard. yavs records the
 standard of each file. ``run`` and ``elab`` re-analyze every file with its recorded standard, and
 need no ``--std``. The whole design uses one revision of ``std`` and ``ieee``, the newest standard
 among its files; a construct that is not legal under that revision fails early with ``E1007``,
 and one whose meaning changes is warning ``W1008``.
+
+``--std=93`` is VHDL-1993: ``std_logic_vector`` is a type of its own (so a package may overload a
+subprogram on both ``std_logic_vector`` and ``std_ulogic_vector``), the 1993 ``numeric_std``,
+``std_logic_textio`` and ``std.textio`` are used, a shared variable can have any type, and the
+words 2008 reserved (``default``, ``context``, ``force``, ...) and its predefined names
+(``to_string``, ``maximum``, ``integer_vector``, ...) are free. A design made only of 93 files runs
+against these packages. A 93 file in a design with 2008 files is checked as 93 but sees the 2008
+packages.
 
 Simulation options
 ------------------

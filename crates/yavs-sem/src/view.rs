@@ -479,18 +479,35 @@ impl Db {
     /// Like `view_driven_paths`, for the part of the signal that the formal part `steps`
     /// names (an individual association, 6.5.7.1): the paths are relative to that part.
     pub fn view_driven_below(&self, m: Mode, steps: &[LspStep]) -> Vec<Vec<LspStep>> {
-        fn walk(t: &ModeTree, path: &mut Vec<LspStep>, out: &mut Vec<Vec<LspStep>>) {
+        self.view_paths(m, steps, |m| {
+            matches!(m, Mode::Out | Mode::Inout | Mode::Buffer)
+        })
+    }
+
+    /// The paths below a signal with mode view `m` to the elements it reads (`in`, `inout`):
+    /// the sensitivity of a concurrent procedure call (11.4).
+    pub fn view_read_paths(&self, m: Mode) -> Vec<Vec<LspStep>> {
+        self.view_paths(m, &[], |m| matches!(m, Mode::In | Mode::Inout))
+    }
+
+    fn view_paths(&self, m: Mode, steps: &[LspStep], keep: fn(Mode) -> bool) -> Vec<Vec<LspStep>> {
+        fn walk(
+            t: &ModeTree,
+            path: &mut Vec<LspStep>,
+            out: &mut Vec<Vec<LspStep>>,
+            keep: fn(Mode) -> bool,
+        ) {
             match t {
-                ModeTree::Leaf(Mode::Out | Mode::Inout | Mode::Buffer) => out.push(path.clone()),
+                ModeTree::Leaf(m) if keep(*m) => out.push(path.clone()),
                 ModeTree::Leaf(_) => {}
                 ModeTree::Record { elems, .. } => {
                     for (i, e) in elems.iter().enumerate() {
                         path.push(LspStep::Field(i as u32));
-                        walk(e, path, out);
+                        walk(e, path, out, keep);
                         path.pop();
                     }
                 }
-                ModeTree::Array(e) => walk(e, path, out),
+                ModeTree::Array(e) => walk(e, path, out, keep),
             }
         }
         fn below<'a>(mut t: &'a ModeTree, mut steps: &[LspStep]) -> &'a ModeTree {
@@ -516,6 +533,7 @@ impl Db {
             below(&self.port_mode_tree(m), steps),
             &mut Vec::new(),
             &mut out,
+            keep,
         );
         out
     }

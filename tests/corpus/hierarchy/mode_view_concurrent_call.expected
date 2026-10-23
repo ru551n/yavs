@@ -1,0 +1,2 @@
+exit	0
+diag	note	1000000	0	:mode_view_concurrent_call:check	ok

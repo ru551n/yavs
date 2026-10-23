@@ -857,22 +857,47 @@ fn psl_warnings(src: &str) -> Vec<String> {
 }
 
 #[test]
+fn psl_formal_only_directives_are_skipped_silently() {
+    // Nothing to run in simulation: no W0004, and the rest of the unit still parses.
+    for f in [
+        "restrict {a[*]; b};",
+        "restrict_guarantee {a};",
+        "assume_guarantee always a;",
+        "l: restrict {a; b}[*];",
+        "fairness a;",
+        "strong fairness a, b;",
+        "assume always (nondet(1, 2) = 1);",
+        "assume always (nondet_vector(3, 0 to 7) = x);",
+        "assert always (a -> next (nondet(0, 1) = 0));",
+        "assert nondet(0, 1) = 0;",
+        "cover {a; nondet(0, 1) = 1};",
+    ] {
+        let src = conc(&format!("{f}\ns <= '1';"));
+        assert_eq!(psl_warnings(&src), Vec::<String>::new(), "{f}");
+        let p = parse_std(&src, Std::Vhdl2008);
+        let LibraryUnit::Architecture(a) = &p.design.unwrap().units[0].unit else {
+            panic!()
+        };
+        assert_eq!(a.stmts.len(), 1, "{f}: the assignment survives");
+    }
+    // A directive that is not formal-only still warns, also after one that is.
+    let src = conc("fairness a;\nassert eventually! a;");
+    assert_eq!(psl_warnings(&src), ["W0004"]);
+}
+
+#[test]
 fn psl_is_skipped_with_one_warning_per_unit() {
     // Every PSL form is skipped and the rest of the file still parses.
     let forms = [
-        "property p is always (a -> next b);",
-        "sequence s is {a; b[*2]; c};",
-        "property q (boolean x) is always {x; x} |=> x;",
+        "property p is always (a -> eventually! b);",
+        "sequence s (bit x) is {x; b[*2]; c};",
+        "property q (numeric r) is always {r = 1; r = 1} |=> r = 2;",
         "assert always (a -> next[1](b));",
         "assert never {a; b};",
         "l: assume always a;",
         "cover {a; b};",
-        "restrict {a[*]; b};",
-        "assume_guarantee always a;",
-        "restrict_guarantee {a};",
-        "fairness a;",
         "assert always a report \"x\" severity error;",
-        "one: assert (always (a -> next [2] (b))) async_abort areset;",
+        "one: assert (always (a -> next [2] (b))) until! areset;",
         "assert always (a -> next (not a or (b before_ a)));",
         "assert {a; b} |-> {c};",
         "assert eventually! a;",
@@ -897,8 +922,16 @@ fn psl_is_skipped_with_one_warning_per_unit() {
     // Two units, two warnings.
     let src = "vunit v (e) { assert always a; }\nvmode m (e) { assume always {a; b}; }\nvprop p (e) { }\nentity e is end;";
     assert_eq!(psl_warnings(src), ["W0004", "W0004", "W0004"]);
-    // A plain VHDL assertion is not PSL, even on a signal named `always`.
+    // A plain VHDL assertion is not PSL, even on a signal named `always`, `abort` or `before`.
     assert!(psl_warnings(&conc("assert always;\nassert a report \"x\";")).is_empty());
+    for f in [
+        "assert abort = '0' report \"x\";",
+        "assert before report \"x\";",
+        "assert (x = until_) report \"x\";",
+        "assert iff or x report \"x\";",
+    ] {
+        assert!(psl_warnings(&conc(f)).is_empty(), "{f}");
+    }
 }
 
 #[test]
@@ -985,23 +1018,179 @@ fn psl_subset_becomes_checker_processes() {
 }
 
 #[test]
-fn psl_outside_the_subset_is_skipped() {
-    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nproperty p is always a;\nbegin\n";
-    for f in [
-        "assert always p;",
-        "assert always rose(a);",
-        "assert always a -> next_e[1 to 2] b;",
-        "assert always a until b;",
-        "assert always (a -> b) abort rst;",
-        "assert always a -> next[300] b;",
-        "assert always a -> next a -> next b;",
-        "assert eventually! a;",
+fn psl_sequences_become_checker_processes() {
+    // Every form is one checker process and no warning.
+    let forms = [
         "cover {a; b};",
-        "-- psl assert always {a; b};",
+        "cover {a; b[*2 to 3]; c[+]} report \"x\";",
+        "cover {a[->2]; b[=1]; c[*]};",
+        "cover {a : b};",
+        "cover {{a; b} : {b; c}};",
+        "cover {{a; b} | {c}};",
+        "cover {{a; b} && {c; c}};",
+        "cover {{a; b} & {c[*3]}};",
+        "cover {b within {a; c; a}};",
+        "cover {{a; b}[*2]};",
+        "cover {a[*0 to 2]; b};",
+        "assert never {a; b};",
+        "assert always {a; b} |-> c;",
+        "assert always {a; b} |=> {c; a};",
+        "assert always {a} |=> next[2] b;",
+        "assert always {a; b};",
+        "assert {a; b} |-> {c};",
+        "assert (always {a} |=> {b[*1 to 2]; c});",
+        "assert always ({a; b} |-> c) @falling_edge(clk);",
+        "l: assume always {a} |-> {b} report \"r\" severity warning;",
+        "cover {rose(a); stable(b)};",
+        "cover {[*]; a; b};",
+        "cover {[*2]; a};",
+        "assert always a |=> b;",
+        "assert a |-> next b;",
+        "assert never a[*3];",
+        "assert never (a = '1')[->2];",
+        "cover a[*2];",
+    ];
+    for f in forms {
+        let src =
+            format!("architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n{f}\nend;");
+        let c = checkers(&src);
+        assert_eq!(c.len(), 1, "{f}");
+    }
+    // Outside the sequence forms: skipped, one warning.
+    for f in [
+        "cover {a; b}!;",
+        "assert always {a; b} |-> c until! d;",
+        "assert always {{a} | {b} && {c}};",
+        "cover {a[*70]};",
+        "cover {{a[*60]}[*60]};",
+    ] {
+        let src =
+            format!("architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n{f}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
+    }
+}
+
+#[test]
+fn psl_temporal_properties() {
+    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n";
+    for f in [
+        "assert always (a -> next_a[1 to 3] (b));",
+        "assert always (a -> next_e[2 to 4] (b = '1')) report \"x\";",
+        "assert always (a -> next_event(c)(b));",
+        "assert always (a -> next_event(c)[2](b));",
+        "assert always (a -> next_event_a(c)[1 to 3](b));",
+        "assert always (a -> next_event_e(c)[1 to 3](b));",
+        "assert always (a -> (b until c));",
+        "assert always (a -> (b until_ c));",
+        "assert always (a -> (b before c));",
+        "assert always (a -> (b before_ c));",
+        "assert always (a <-> b);",
+        "assert always (a iff b);",
+        "assert always ((a -> next b) and (a -> next[2] (c)));",
+        "assert always ((a -> next b) or (a -> next[2] (c)));",
+        "assert always ((next[2] (b)) sync_abort c);",
+        "assert (always (a -> next b)) sync_abort c;",
+        "assert always ((a -> next b) abort c);",
+        "assert always ((a -> next b) async_abort c);",
+        "assert (always (a -> next b)) abort c;",
+        "assert always {a; b} |=> (c until d);",
+        "assert always {a} |-> next_e[1 to 3] (b);",
+        "assert (a -> next_a[1 to 2] (b));",
+        "assume always (a -> next (b -> next[3] (c)));",
+        "l: assert always (a -> next (always (b -> next c))) report \"x\" severity warning;",
+    ] {
+        let src = format!("{pre}{f}\nend;");
+        let c = checkers(&src);
+        assert_eq!(c.len(), 1, "{f}");
+    }
+    // Strong operators and what the checker cannot hold: skipped.
+    for f in [
+        "assert always (a -> eventually! b);",
+        "assert always (a -> next! b);",
+        "assert always (a -> (b until! c));",
+        "assert always (a -> next_a![1 to 3] (b));",
+        "assert always (a -> (b before! c));",
+        "assert always (a -> next_a[1 to 99] (b));",
+        "assert always ((a until b) -> c);",
+        "assert always (a -> next_event(c)[0](b));",
     ] {
         let src = format!("{pre}{f}\nend;");
         assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
     }
+}
+
+#[test]
+fn psl_default_clock_as_statement() {
+    // The clock may be declared among the concurrent statements too.
+    let src =
+        "architecture a of e is\nbegin\ndefault clock is rising_edge(clk);\nassert always a;\nend;";
+    assert_eq!(checkers(src).len(), 1);
+}
+
+#[test]
+fn psl_named_sequences_and_properties() {
+    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nbegin\n";
+    // Declarations produce nothing; every use is one checker process.
+    let src = format!(
+        "{pre}sequence s1 is {{a; b}};
+        sequence s2 (boolean x, y) is {{x; y[*2]}};
+        sequence s3 (boolean x; const n) is {{x[*n]; s1}};
+        sequence s4 (sequence p) is {{p; p}};
+        property p1 is always (a -> next b);
+        property p2 (boolean x, y) is always (x -> next y);
+        property p3 is always (s1 |=> c);
+        property p4 (property q) is always (a -> next q);
+        property p5 (property q, sequence s) is always (s |=> q);
+        c1: cover s1;
+        c2: cover s2(a, b);
+        c3: cover s3(a, 2);
+        c4: cover {{s4({{a; b}}); c}};
+        c5: assert p1;
+        c6: assert p2(a = '1', b) report \"x\";
+        c7: assert p3 @falling_edge(clk);
+        c8: assert always s1 |=> c;
+        c9: assert p4(b);
+        c10: assert p4((c until d));
+        c11: assert p5(next_e[1 to 2] (b), {{a; b}});
+        end;"
+    );
+    let c = checkers(&src);
+    assert_eq!(c.len(), 11, "{c:?}");
+    // Not supported, so skipped with one warning: property and typed formals, a wrong
+    // number of actuals, a recursive sequence, a declaration with an operator the subset
+    // does not run, a built-in on a formal.
+    for (decl, uses) in [
+        ("property p (property q) is always q;", "assert p(a, b);"),
+        ("sequence s (bit x) is {x; x};", "cover s(a);"),
+        ("sequence s (boolean x) is {x; x};", "cover s(a, b);"),
+        ("sequence s is {a; s};", "cover s;"),
+        ("property p is always (a -> eventually! b);", "assert p;"),
+        ("sequence s (boolean x) is {rose(x); b};", "cover s(a);"),
+    ] {
+        let src = format!("{pre}{decl}\n{uses}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{decl} {uses}");
+    }
+}
+
+#[test]
+fn psl_outside_the_subset_is_skipped() {
+    let pre = "architecture a of e is\ndefault clock is rising_edge(clk);\nproperty p is always a;\nbegin\n";
+    for f in [
+        "assert always p;",
+        "assert always a -> next_e[1 to 2] b;",
+        "assert always (a -> b) until! rst;",
+        "assert always a -> next[300] b;",
+        "assert always a -> next a -> next b;",
+        "assert eventually! a;",
+        "cover {a; b}!;",
+    ] {
+        let src = format!("{pre}{f}\nend;");
+        assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
+    }
+    // A directive that only names a skipped property is skipped too (#593).
+    let src =
+        "architecture a of e is\nproperty p0 is always a;\nbegin\nl: assert p0 report \"x\";\nend;";
+    assert_eq!(psl_warnings(src), ["W0004"]);
     // Without a clock: skipped.
     assert_eq!(psl_warnings(&conc("assert always a;")), ["W0004"]);
     // A default clock holds in its block only.
@@ -1059,6 +1248,30 @@ fn deep_nesting_does_not_overflow() {
         .join()
         .expect("no stack overflow");
     assert_eq!(e, ["nesting is too deep"]);
+}
+
+/// A chain of parenthesised groups like GRLIB's `can_top.vhd` has: one level of parentheses is one
+/// level of depth, so 60 are fine and 70 are too deep (#604).
+#[test]
+fn parenthesised_chain_is_deep_but_bounded() {
+    let chain = |n: usize| {
+        format!(
+            "constant c : boolean := {}true{};",
+            "(".repeat(n),
+            " and true)".repeat(n)
+        )
+    };
+    let run = move |n: usize| {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || parse_std(&pkg(&chain(n)), Std::Vhdl2008).design.is_some())
+            .expect("spawn")
+            .join()
+            .expect("no stack overflow")
+    };
+    assert!(run(40));
+    assert!(run(60));
+    assert!(!run(70));
 }
 
 #[test]
@@ -1210,4 +1423,55 @@ fn encoding_utf8_rejects_invalid_utf8() {
     let d = d.expect("diagnostic");
     assert_eq!(d.code, crate::codes::INVALID_UTF8);
     assert_eq!(d.primary.expect("span").span.start, 6);
+}
+
+// ---- VHDL-1993 (#629) ----
+
+fn ok93(src: &str) -> DesignFile {
+    ok_std(src, Std::Vhdl1993)
+}
+
+fn codes93(src: &str) -> Vec<String> {
+    let p = parse_std(src, Std::Vhdl1993);
+    assert!(p.design.is_none(), "expected errors");
+    p.diags.iter().map(|d| d.code.to_string()).collect()
+}
+
+#[test]
+fn vhdl_1993_reserved_words_are_identifiers() {
+    ok93(
+        "package p is constant default : integer := 1; signal context, force, release : bit; end;",
+    );
+    assert!(!errors("package p is constant default : integer := 1; end;").is_empty());
+}
+
+#[test]
+fn vhdl_1993_rejects_2008_statements() {
+    for src in [
+        seq("wait;").replace("process begin", "process (all) begin"),
+        seq("s <= '1' when c else '0';"),
+        seq("with c select s <= '1' when true, '0' when others;"),
+        seq("v := 1 when c else 2;"),
+        "architecture a of e is begin g: if c generate begin elsif d generate begin end generate; end;"
+            .to_string(),
+        "architecture a of e is begin g: case c generate when true => s <= '1'; end generate; end;"
+            .to_string(),
+        pkg("").replace("package p is", "package p is generic (n : integer := 1);"),
+        "package q is new work.p generic map (n => 1);".to_string(),
+    ] {
+        assert_eq!(codes93(&src), ["E0011"], "{src}");
+    }
+    // 2008 takes them.
+    ok(&seq("s <= '1' when c else '0';"));
+}
+
+#[test]
+fn vhdl_1993_keeps_its_own_statements() {
+    ok93(&seq(
+        "s <= '1' after 1 ns; if c then v := 1; elsif d then v := 2; end if; wait on s;",
+    ));
+    ok93("architecture a of e is begin g: if c generate begin end generate; end;");
+    ok93(
+        "architecture a of e is begin s <= '1' when c else '0'; with c select t <= '1' when true, '0' when others; end;",
+    );
 }

@@ -52,7 +52,7 @@ What the research found locally:
 | `yavs-diag` | One diagnostics model shared by every stage, rendered with `annotate-snippets` (codes, snippets, labels, notes, help). A diagnostic carries a severity and colour, a stable code (`yavs --explain E0xxx`), a primary span plus labelled secondary spans, and `note:`/`help:` lines with suggested fixes. Errors recover and are reported together, with cascading errors suppressed. **Runtime errors** add a VHDL stacktrace (one frame per subprogram, with its source line), the process, the instance path, and the time and delta, so an assert raised inside an IEEE library still points at the caller in user code. Colour turns off when the output isn't a TTY, with `--color` and `NO_COLOR` to override. Also `--message-format=json\|short` for test runners, editors and DAP. Internal compiler errors are caught and rendered at the span being processed. |
 | `yavs-syntax` | Lexer and recursive-descent parser into an owned AST with spans. Handles 2008 and 2019, including mode views, private regions, the 2019 generic forms and the sequential block. Conditional analysis (`` `if ``) is evaluated in the token stream. Parsing and analysis run on a single thread. |
 | `yavs-sem` | Libraries and design units, scopes and visibility (`use`, `context`, selected names), the type system, overload resolution, static expression evaluation, and diagnostics. Its output is a **typed HIR** in which every expression carries its type and every call names the overload it resolved to. |
-| `yavs-lib` | Library manifests. `yavs analyze --work L f.vhd` checks the file and records it in `L/yavs-lib.toml` (in compile order), under the library lock (rule 14), so parallel analysis is safe. `elab` and `run` analyze the closure of the top level from source, or read it back from the compilation cache of the work library (`yavs-cache`, `docs/decisions.md` "Compilation cache"). **Analysis is on demand:** the manifest maps unit names to files, and `elab` analyzes only the units the top level can reach. This keeps big vendor libraries such as UNISIM from being re-analyzed in full on every run. |
+| `yavs-lib` | Library manifests. `yavs analyze --work L f.vhd` checks the file and records it in `L/yavs-lib.toml` (the index, in compile order) and `L/yavs-lib.d/` (a record per file), under the library lock (rule 14), so parallel analysis is safe. `elab` and `run` analyze the closure of the top level from source, or read it back from the compilation cache of the work library (`yavs-cache`, `docs/decisions.md` "Compilation cache"). **Analysis is on demand:** the manifest maps unit names to files, and `elab` analyzes only the units the top level can reach. This keeps big vendor libraries such as UNISIM from being re-analyzed in full on every run. |
 | `yavs-cache` | The on-disk store of the compilation cache: keys, atomic writes, validation of what is read, pruning, cleaning. It knows nothing about VHDL; `yavs-sem` makes and restores the analysis images (`image.rs`) and the CLI decides when. |
 | `yavs-ir` | Lowers the HIR to a register-based IR. Each instruction carries a statement-location tag, used for stepping and for coverage. |
 | `yavs-elab` | Elaboration. Folds generics through the interpreter, expands generates, binds components and configurations, and resolves external names. It builds the signal net graph (drivers, resolution, port conversions). |
@@ -128,7 +128,7 @@ Other open source simulators kept running into these bug classes.
   - UNISIM/UNIMACRO, altera_mf/lpm and Lattice/Microchip primitives analyze and simulate, each with a documented test-runner recipe.
   - Python called from VHDL through VHPIDIRECT foreign subprograms and `--load` works under a test runner.
 - **M5: VHPI (mandatory).** The full VHPI object model over `SimControl` and the event bus. Install a Python testbench framework into a venv. Check: its own regression passes on yavs.
-- **M6: JIT tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against the primary reference simulator are tracked in `STATUS.md`.
+- **M6: JIT tier.** Lower to LLVM 21 with tiering. Check: the M2 to M5 suites pass under LLVM only, and benchmarks against the primary reference simulator are tracked in `docs/STATUS.md`.
 - **M7: waves.** FST output through `wellen`, as an event-bus subscriber.
 - **M8: DAP server.** Interpreter stepping, signal peek/force, and the wave-stream extension. Check: scripted DAP sessions in tests, plus manual use from a DAP-capable editor.
 - **M9: coverage.** Statement, branch and toggle coverage, merge, HTML and Cobertura output.
@@ -155,7 +155,7 @@ Other open source simulators kept running into these bug classes.
 - **External suites, gated in CI once they first pass:**
   - An external test runner's own VHDL test suites (M4) and a Python testbench framework's regression (M5).
   - External verification libraries' own suites (from M4), which stress protected types, access types and generic packages together.
-  - Pass counts are tracked in `STATUS.md`.
+  - Pass counts are tracked in `docs/STATUS.md`.
 - **Both tiers on every suite** (from M6). JIT-only and interpreter-only runs must give identical output.
 
 ## Out of scope (add when needed)

@@ -58,7 +58,7 @@ pub(crate) fn add_type(
         scope: db.root,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     db.types.push(TypeDef {
         decl,
@@ -83,7 +83,7 @@ pub(crate) fn add_enum(db: &mut Db, name: &str, lits: &[Designator]) -> (TypeId,
                 scope: db.root,
                 span: Span::default(),
                 implicit: false,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             })
         })
         .collect();

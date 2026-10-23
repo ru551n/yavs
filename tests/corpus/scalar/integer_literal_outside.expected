@@ -1,0 +1,4 @@
+exit	1
+diag	note	0	0	:integer_literal_outside:_p0	2147483647
+diag	note	0	0	:integer_literal_outside:_p0	-2147483648
+diag	fatal	0	0	-	value 2147483648 outside of INTEGER range -2147483648 to 2147483647

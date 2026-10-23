@@ -38,7 +38,7 @@ Benchmarks (`run.py --list`):
 | `vai_pe_array`, `vai_window_gen` | external | Two long testbenches of a local, read-only testbench repository; needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset |
 
 Head-to-head designs (group `h2h`, run by `--ref`; written for yavs, each has a header comment). The old names are the
-ones used in `STATUS.md` (performance sections of 2026-10-20 and 2026-10-21) and in issues:
+ones used in `docs/STATUS.md` (performance sections of 2026-10-20 and 2026-10-21) and in issues:
 
 | Name | Old name, parameters | What it stresses |
 |---|---|---|
@@ -72,14 +72,14 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 | Reference simulators (`--sims`) time the internal designs only, as one number (elaborate + run, analysis excluded), and are shown by label only. Labels map to commands through `BENCH_SIM1` etc. (else key `bench`, then `DISCREP_SIM1` etc., then key `discrep` of the untracked `tools/sims.local.conf`); never write a tool name, path or licence value into the repository or the JSON beyond the label | Root rule 3 and 11; reuses `tools/discrepancies/run.py` templates | #387 |
 | Every command runs under `timeout 300`; reference simulators also under `systemd-run --user --scope -p MemoryMax=2G`. One process at a time | Root rules 15 and 16 | root `AGENTS.md` |
 | Peak RSS (`rss`, MiB, shown as `peak MiB`) is the child's own, measured with `time -f %M` inside the `timeout` wrapper. Without a `time` binary it is 0 | A wait4 rusage of our own child would be floored by the harness RSS at fork | #409 |
-| `--ref` (head-to-head) times one yavs binary and the references on the same designs: analysis once per tool and not timed, one untimed warm-up run per cell, then `--runs` rounds with the tools interleaved (order alternating every round), median wall, CPU (user plus system of the process tree) and peak RSS (largest process, `time -f %M`), ratios yavs/reference per design. Every timed run is `taskset`-pinned to `--cores` (default: the performance cores of the host, the same set for every tool), under `systemd-run -p MemoryMax=2G`, `timeout 300` and a 6 GB free-memory guard; references also get an unlimited stack. `--instructions` adds one extra `perf stat` run per cell, with the counter of the core type the cores belong to | Same method as the `STATUS.md` head-to-head sections; root rules 15 to 19 | #387 |
+| `--ref` (head-to-head) times one yavs binary and the references on the same designs: analysis once per tool and not timed, one untimed warm-up run per cell, then `--runs` rounds with the tools interleaved (order alternating every round), median wall, CPU (user plus system of the process tree) and peak RSS (largest process, `time -f %M`), ratios yavs/reference per design. Every timed run is `taskset`-pinned to `--cores` (default: the performance cores of the host, the same set for every tool), under `systemd-run -p MemoryMax=2G`, `timeout 300` and a 6 GB free-memory guard; references also get an unlimited stack. `--instructions` adds one extra `perf stat` run per cell, with the counter of the core type the cores belong to | Same method as the `docs/STATUS.md` head-to-head sections; root rules 15 to 19 | #387 |
 | Reference templates in `--ref` and `tiny.py` are the `--sims` ones (`load_sims` of `tools/discrepancies/run.py`): a label maps to an `analyse\|\|\|elaborate-and-run` template through `BENCH_<LABEL>`, key `bench`, `DISCREP_<LABEL>` or key `discrep` of the untracked `tools/sims.local.conf`. Several labels may name the same tool run in different ways (an extra label with its own template). No tool name, path or licence value in the repository | Root rules 3 and 11 | #387 |
-| `tiny.py` runs the whole process once under `taskset` and a 2 GiB cap (it re-executes itself under `systemd-run`), times each run as wall clock of `bash -c` minus the median cost of `true` under the same wrapper, and drops a tool from a test when its analysis fails or its warm-up run crashes, times out or fails to elaborate. Its reference templates (key `bench`) may use the environment variables `STOP_FLAG` (`--stop-time=T` or empty), `RELAXED` and `PSL` (`1` or empty) | Tests take milliseconds: per-run wrappers would dominate | #387 |
+| `tiny.py` runs the whole process once under `taskset` and a 2 GiB cap (it re-executes itself under `systemd-run`), times each run as wall clock of `bash -c` minus the median of three `true` runs under the same wrapper timed right before it (per cell, so the subtracted value follows the host load; a single number from the start biased two invocations by up to 1 ms on a loaded host and made them incomparable, #569; the spread is printed at the end and the raw values are in the JSON `ov`; two invocations are comparable only if their spreads are alike, otherwise compare with `run.py --compare`), and drops a tool from a test when its analysis fails or its warm-up run crashes, times out or fails to elaborate. Its reference templates (key `bench`) may use the environment variables `STOP_FLAG` (`--stop-time=T` or empty), `RELAXED` and `PSL` (`1` or empty) | Tests take milliseconds: per-run wrappers would dominate | #387 |
 | The JSON file holds raw samples (`wall`, `cpu`, `rss`, `phases`, `rc`, `error`) and medians per benchmark and binary, plus the binary hash and host CPU count | Tracking over time | #387 |
 
 ## 4. Invariants and pitfalls
 
-- Build both binaries from `--release` with the same features; compare binaries built the same way.
+- Build both binaries with `tools/build-bench.sh` (release plus 64-byte aligned functions, #576; same features for both, own `CARGO_TARGET_DIR`); a plain release build moves some designs by 3 to 33 percent in cycles with identical instructions when unrelated code moves. Release builds and CI artefacts stay unaligned and have no line tables (#600); the script turns line tables on (`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` is its default) so `perf` and `gdb` show lines, without changing code or timing.
   Other agents load the host: for a decision, repeat with `--runs 5` and look at CPU, not wall.
 - The external benchmarks need the corpora (`tools/fetch-corpus.sh`, `YAVS_CORPUS`); the first run per binary
   analyzes the libraries (minutes) and caches them. A benchmark that cannot be prepared is skipped with the
@@ -91,8 +91,9 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 ## 5. How to work here
 
 ```sh
-cargo build --release -p yavs
+tools/build-bench.sh                                                          # release + aligned functions (#576)
 python3 -I tools/bench/run.py --list
+# where does one long run spend its time (VHDL level)? yavs run --profile (see docs/usage.rst)
 python3 -I tools/bench/run.py target/release/yavs --group internal                      # one binary
 python3 -I tools/bench/run.py --compare /path/to/yavs-before target/release/yavs --runs 5   # A/B, all benchmarks
 python3 -I tools/bench/run.py --compare A B --bench elab_heavy,vunit_vc30 --fail-on-regression
@@ -108,8 +109,9 @@ BENCH_SIM1=<template-name> python3 -I tools/bench/run.py --compare A B --group i
 
 ## 7. Head-to-head against reference simulators
 
-Method (the same for every number quoted in `STATUS.md`):
+Method (the same for every number quoted in `docs/STATUS.md`):
 
+- Binaries under test come from `tools/build-bench.sh` (`RUSTFLAGS="-C llvm-args=-align-all-functions=6" cargo build --release -p yavs`; Cargo profiles cannot set `llvm-args`, so it is a flag, not a profile). Check with `nm -n --defined-only BIN | awk '$2~/[tT]/' | head`: function starts are multiples of 0x40. A release binary is not comparable with an aligned one.
 - Pin every timed run, of every tool, to the performance cores of the host (`--cores`, default read from the CPU topology;
   on a hybrid host pass a subset when other agents use some of them). Run builds, analysis and test suites elsewhere
   (`taskset -c <efficiency cores> cargo ...`) so they do not disturb the timings. Say which cores were used.
@@ -138,4 +140,4 @@ python3 -I tools/bench/tiny.py target/release/yavs --ref sim1,sim2 --filter delt
 
 - Real testbenches of real projects (about 30, diverse; baseline against the reference, A/B between binaries): `tools/realbench/AGENTS.md`. Use it besides these designs when tuning, so a choice is not fitted to them.
 
-- #387 (this harness). Slow spots it found are filed as `perf` issues; the baseline is in `STATUS.md` ("Performance").
+- #387 (this harness). Slow spots it found are filed as `perf` issues; the baseline is in `docs/STATUS.md` ("Performance").

@@ -19,8 +19,8 @@ Read the root `AGENTS.md` first. This file is for an agent about to run or chang
 | Decision | Why | Source |
 |---|---|---|
 | Fuzz the parser and semantic analysis from M0 | Rule 15 | `docs/plan.md` rule 15, sem.md 9.3 |
-| An ICE diagnostic counts as a crash, not only a panic | Error motto: broken invariants are bugs | `fuzz_targets/sem.rs`, `STATUS.md` "sem robustness" |
-| Every find becomes a minimised regression test (`tests/diag/sem/fuzz/`, or a `yavs-syntax` unit test) before the fix lands | Keeps it fixed | `STATUS.md` "sem robustness" |
+| An ICE diagnostic counts as a crash, not only a panic | Error motto: broken invariants are bugs | `fuzz_targets/sem.rs`, `docs/STATUS.md` "sem robustness" |
+| Every find becomes a minimised regression test (`tests/diag/sem/fuzz/`, or a `yavs-syntax` unit test) before the fix lands | Keeps it fixed | `docs/STATUS.md` "sem robustness" |
 
 Decisions about fuzzing go here in the same commit (root `AGENTS.md` rule 24).
 

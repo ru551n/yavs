@@ -1,0 +1,1 @@
+With `--relaxed`, an aggregate with an `others` choice assigned to a port, signal or variable parameter of unconstrained type takes the bounds of the object at run time (warning `W1325`) instead of being rejected.

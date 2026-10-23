@@ -20,3 +20,8 @@ tempfile = "3"
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+
+# Its own `main`: the check needs the process's main thread (the allocator's `brk` heap).
+[[test]]
+name = "huge_heap"
+harness = false

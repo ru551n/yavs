@@ -1,0 +1,12 @@
+warning[W3101]: the simulation reached --stop-time 1 us without `stop` or `finish` ending it
+ --> $DIR/stuck_forever.vhd:9:5
+  |
+9 |     wait until go = '1';
+  |     ^^^^^^^^^^^^^^^^^^^^ :stuck_forever:p waits for :stuck_forever:go
+  |
+  = note: at 1 us, delta 0: 3 processes, 1 waiting for a timeout, 1 for signals that can still change, 1 that can never run again, 0 ended or at `wait;`
+  = note: process :stuck_forever:p waits for an event on :stuck_forever:go, which nothing can cause
+  = note: signal :stuck_forever:go is '0' and never had an event; it has no driver
+  = note: process :stuck_forever:g runs again at 100 us
+  = help: find out why the signal never changes: is it driven, is its driver reached, did the process that should drive it end? `--hang-report` prints this at the end of a run
+

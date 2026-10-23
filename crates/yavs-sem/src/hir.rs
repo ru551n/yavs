@@ -448,6 +448,10 @@ pub enum StmtKind {
     ConcSignalAssign {
         postponed: bool,
         guarded: bool,
+        /// The `GUARD` signal a guarded assignment reads (11.6): the implicit one of the
+        /// enclosing guarded block, else an explicitly declared signal of that name that is
+        /// visible. `None` when not `guarded`.
+        guard: Option<DeclId>,
         target: Target,
         delay: Delay,
         rhs: Rhs<Waveform>,

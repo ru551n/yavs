@@ -280,6 +280,7 @@ pub(super) fn plan(
                 | Inst::Load { .. }
                 | Inst::Index { .. }
                 | Inst::Pos { .. }
+                | Inst::SlicePos { .. }
                 | Inst::DopeLen { .. }
                 | Inst::Field { .. }
         )

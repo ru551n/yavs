@@ -434,6 +434,7 @@ fn fits(db: &Db, c: &CandSet, ty: TypeId) -> bool {
                 }
         }),
         CandSet::Class(m) => m.0 & class_of(db, ty).0 != 0,
+        CandSet::Alloc(d) => db.alloc_admits(*d, ty),
     }
 }
 
@@ -1232,6 +1233,17 @@ pub fn resolve_aggregate(
                             })
                             .collect(),
                     ),
+                    // `x'element` of an array of arrays with open element bounds: the
+                    // part of the object's descriptor after the outer dimensions.
+                    Constraint::FromObject { .. } => Some(
+                        (1..=n_dims)
+                            .map(|dim| RangeC::Attr {
+                                prefix: crate::hir::AttrPrefix::Subtype(ctx),
+                                reverse: false,
+                                dim,
+                            })
+                            .collect(),
+                    ),
                     _ => None,
                 },
             };
@@ -1465,7 +1477,7 @@ fn record_agg(
         for (st, group) in groups {
             match sub_value(db, r, st, &a.value) {
                 Ok(v) => {
-                    stat = stat.min(db.exprs[v].stat);
+                    stat = stat.min(db.exprs[v].stat).min(db.constraint_staticness(st));
                     for &i in &group {
                         values[i as usize] = db.value(v).cloned();
                     }
@@ -1600,6 +1612,18 @@ fn array_agg(
                 type_name(db, cx.ty)
             )),
         ));
+    }
+
+    if has_others && dim == 0 && db.relaxed_target == Some(cx.ctx) {
+        db.report(
+            Diagnostic::warning(
+                diag::W_OTHERS_TARGET,
+                "`others` takes the bounds of an unconstrained target",
+            )
+            .with_primary(span, "accepted by `--relaxed`")
+            .with_note("LRM 9.3.3.3 needs a constrained subtype from the context here")
+            .with_help("constrain the target's subtype, or qualify the aggregate with a type mark"),
+        );
     }
 
     // One misplaced scalar in an n-dimensional aggregate is usually all of

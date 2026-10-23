@@ -30,7 +30,7 @@ mod stubs {
             .or_else(|_| unsafe { libloading::Library::new(PATH) })
             .map_err(|e| format!("cannot load the LLVM library {SONAME}: {e}"))?;
         let mut slots = [0usize; COUNT];
-        for (slot, name) in slots.iter_mut().zip(NAMES) {
+        for (slot, name) in slots.iter_mut().zip(NAMES.split_inclusive('\0')) {
             // SAFETY: only the address is taken; the stubs call it with the C API's signature.
             let f: libloading::Symbol<'_, unsafe extern "C" fn()> =
                 unsafe { lib.get(name.as_bytes()) }.map_err(|e| {

@@ -1,4 +1,4 @@
 exit	1
 diag	note	0	0	:array_conversion_index:_p0	conv(0) 101
 diag	note	0	0	:array_conversion_index:_p0	conv(5) 101
-diag	fatal	0	0	-	value -1 outside of NATURAL range 0 to 2147483647 for index constraint
+diag	fatal	0	0	:array_conversion_index:_p0	value -1 outside of NATURAL range 0 to 2147483647 for index constraint

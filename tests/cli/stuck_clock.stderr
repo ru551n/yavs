@@ -1,0 +1,13 @@
+warning[W3101]: the simulation ran out of events at 60 ns without `stop` or `finish` ending it
+  --> $DIR/stuck_clock.vhd:22:5
+   |
+22 | /     if rising_edge(clk) then
+23 | |       q <= d;
+24 | |     end if;
+   | |___________^ :stuck_clock:reg waits for :stuck_clock:clk
+   |
+   = note: at 60 ns, delta 1: 2 processes, 0 waiting for a timeout, 0 for signals that can still change, 1 that can never run again, 1 ended or at `wait;`
+   = note: process :stuck_clock:reg waits for an event on :stuck_clock:clk, which nothing can cause
+   = note: signal :stuck_clock:clk behaved like a clock but stopped toggling after 55 ns, and 1 process still waits for its edge (:stuck_clock:reg); its driver is :stuck_clock:gen (ended or at `wait;`)
+   = help: find out why the signal never changes: is it driven, is its driver reached, did the process that should drive it end? `--hang-report` prints this at the end of a run
+

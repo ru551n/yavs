@@ -929,8 +929,8 @@ fn conv_int<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let (arg, size) = (int(a, 0)?, int(a, 1)?);
-    // INTEGER'LOW: -2**31 in 2008, -(2**63 - 1) in 2019 (the bounds' low is i64::MIN).
-    let low = m.rt.revision.integer_bounds().low.max(-i64::MAX);
+    // INTEGER'LOW: -2**31 in 2008, -2**63 in 2019.
+    let low = m.rt.revision.integer_bounds().low;
     // `temp - 1` of INTEGER'LOW is an overflow error in the unsigned body.
     if size < 1 || (!SIGNED && arg == low) {
         return fallback(m);

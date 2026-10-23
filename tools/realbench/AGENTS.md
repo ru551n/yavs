@@ -43,6 +43,7 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
 
 ## 4. Invariants and pitfalls
 
+- Time only binaries from `tools/build-bench.sh` (64-byte aligned functions, #576); a plain release build shifts the cycles of single tests by up to 30 percent with identical instructions when unrelated code moves. Use the same build for both sides of `--compare`.
 - Never put a tool name, path or licence value into `tests.toml`, the results or this file; labels only.
 - `tests.toml` changes invalidate earlier result files: say so in the commit. Pick generics as the project's own test setup does
   (its Python or script), not at random; the defaults of a testbench are often invalid combinations.
@@ -50,7 +51,9 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
   them one per simulation (state kept between cases); name one case then (`vunit = "test_name"`).
 - Testbenches that never finish need `stop` (`--stop-time`); the same flag is passed to both tools.
 - Results with a loaded host are noise: check the load average printed at the start and use the instruction ratio when wall differs.
-- Excluded testbenches (they fail on yavs or the reference) are listed with the reason in `STATUS.md`
+- `data` files of a test (the GRLIB template reads `prom.srec` and `ram.srec` from its working directory) are copied into the world; the run starts in the world directory.
+- `grlib_leon3mp` runs at `std = "1993"` with the `grlib-1993` manifest (GRLIB is VHDL-93 code, decision #629; see `tools/corpus/AGENTS.md` and `docs/STATUS.md` "GRLIB"). Its `stop` is just before the template's own end-of-test failure assertion, so the run ends with status 0; the pass check is the text `Test passed` of the on-chip system test, searched in the whole output (`ok` is matched by `bench/run.py timed`, not in its 200 character tail).
+- Excluded testbenches (they fail on yavs or the reference) are listed with the reason in `docs/STATUS.md`
   ("Real-world performance suite, baseline 2026-10-21") and each yavs failure has an issue.
 - Do not read the `codegen` ratio as a code generation ratio against the reference: it divides by the reference's whole elaboration (which contains its code generation). Compare yavs `elab-X` + `codegen-X` with the reference `elab-X` for that.
 - Scratch worlds are removed after each test; a killed run may leave `~/.cache/yavs-realbench/scratch/*`.
@@ -58,7 +61,7 @@ Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`
 ## 5. How to work here
 
 ```sh
-cargo build --release -p yavs --features llvm
+tools/build-bench.sh --features llvm      # release + 64-byte aligned functions (#576), never a plain release build
 cp ~/.cache/yavs-agents/sims.local.conf tools/sims.local.conf       # untracked
 python3 -I tools/realbench/run.py --list
 python3 -I tools/realbench/run.py --self-test
@@ -77,4 +80,4 @@ Results (raw samples reduced to medians, plus the markdown) go to `~/.cache/yavs
 
 ## 6. Coordination
 
-- The baselines and the worst tests are in `STATUS.md` ("Real-world performance suite, baseline 2026-10-21" for run, "Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22" for the other phases). Slow spots are `perf` issues.
+- The baselines and the worst tests are in `docs/STATUS.md` ("Real-world performance suite, baseline 2026-10-21" for run, "Real-world suite: analysis, elaboration and code generation vs sim1, 2026-10-22" for the other phases). Slow spots are `perf` issues.

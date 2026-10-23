@@ -163,3 +163,147 @@ fn a_shifted_element_assignment_keeps_its_fused_ops() {
     assert!(!err.contains("WaveBuf"), "{err}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Slices with generic bounds (the descriptors the process builds are instance-constant, so the
+/// process keeps them in its frame) and the null slice (which checks nothing): the run is the
+/// same as without the memoisation, the slice that fails fails at the same time with the same
+/// text, and the direction of a slice is checked against the array's.
+const SLICES: &str = "
+entity slices is generic (HI : natural := 5; LO : natural := 2; BAD : natural := 99); end;
+architecture a of slices is
+  signal clk : bit := '0';
+  signal v : bit_vector(7 downto 0) := \"10110100\";
+  signal o : bit_vector(HI downto LO);
+  signal n : natural := 0;
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin
+    if clk = '1' then
+      n <= n + 1;
+      o <= v(HI downto LO) xor v(HI - LO + 2 downto 2);
+      if n = 3 then o <= v(BAD downto LO); end if;
+      if n = 2 then o(LO + 1 downto LO + 2) <= \"\"; end if;
+    end if;
+  end process;
+  process (v(HI downto LO)) begin report \"slice sensitivity\"; end process;
+end;
+";
+
+#[test]
+fn slices_of_generic_bounds_do_not_change_a_run() {
+    let d = tmp("slices");
+    let with = run(&d, "slices", SLICES, false);
+    let without = run(&d, "slices", SLICES, true);
+    assert_ne!(with.0, 0, "{with:?}");
+    // The fourth rising edge, at 35 ns, is the slice outside the array.
+    assert!(
+        with.2.contains("35 ns") || with.2.contains("35000000fs"),
+        "{with:?}"
+    );
+    assert!(with.2.contains("outside of range"), "{with:?}");
+    assert_eq!(with, without);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Whole-array signal copies sized by generics, one after the other in a clocked process: the
+/// sizes of the waveforms are instance-constant (memoised), and the waveform of each copy is
+/// built, filled and driven by one op whose size register must still hold its own size.
+const COPIES: &str = "
+entity copies is generic (N : natural := 9); end;
+architecture a of copies is
+  signal clk : bit := '0';
+  type arr_t is array (0 to N - 1) of integer;
+  signal a, b, c, d : arr_t := (others => 3);
+  signal e : arr_t := (others => 0);
+begin
+  clk <= not clk after 5 ns;
+  process (clk) begin
+    if clk = '1' then
+      a <= e;
+      b <= a;
+      c <= b;
+      d <= c;
+      e <= (others => e(0) + 1);
+    end if;
+  end process;
+  process begin
+    wait for 100 ns;
+    report integer'image(a(0)) & \" \" & integer'image(b(N - 1)) & \" \" & integer'image(d(4));
+    wait;
+  end process;
+end;
+";
+
+#[test]
+fn memoised_array_copies_drive_their_own_sizes() {
+    let d = tmp("copies");
+    let with = run(&d, "copies", COPIES, false);
+    let without = run(&d, "copies", COPIES, true);
+    assert_eq!(with.0, 0, "{with:?}");
+    assert!(
+        with.1.contains("9 8 6") || with.2.contains("9 8 6"),
+        "{with:?}"
+    );
+    assert_eq!(with, without);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// References to parts of instance signals (`SigVal`) whose bounds are instance-constant are
+/// remembered by the process like the numbers they come from; a reference to one element is
+/// not, as the interpreter fuses it with the read or wait that uses it. The run is the same as
+/// without the memoisation.
+const REFS: &str = "
+entity refs is generic (W : natural := 4; OFF : natural := 2); end;
+architecture a of refs is
+  signal clk : bit := '0';
+  signal v : bit_vector(0 to 7) := \"10110010\";
+  signal o : bit_vector(0 to 7) := (others => '0');
+  signal q : bit_vector(0 to 3) := \"0110\";
+  signal done : boolean := false;
+begin
+  clk <= not clk after 5 ns when not done;
+  process (clk) begin
+    if clk = '1' then
+      v <= not v;
+      o(OFF to OFF + W - 1) <= v(0 to W - 1) xor v(OFF to OFF + W - 1);
+    end if;
+  end process;
+  g: for i in 0 to 2 generate
+    process (clk) begin
+      if clk = '1' then q(i + 1) <= not q(i); end if;
+    end process;
+  end generate;
+  process (v(OFF to OFF + W - 1)) begin report \"change \" & to_string(v(OFF to OFF + W - 1)); end process;
+  process begin
+    wait for 60 ns;
+    report \"o=\" & to_string(o) & \" q=\" & to_string(q);
+    done <= true; wait;
+  end process;
+end;
+";
+
+#[test]
+fn signal_references_of_instance_constant_bounds_do_not_change_a_run() {
+    let d = tmp("refs");
+    let with = run(&d, "refs", REFS, false);
+    let without = run(&d, "refs", REFS, true);
+    assert_eq!(with.0, 0, "{with:?}");
+    assert!(with.1.contains("o=") || with.2.contains("o="), "{with:?}");
+    assert_eq!(with, without);
+    // The clocked processes of single elements keep the fused read and wait; the references
+    // of the vector slices are loaded from the frame.
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let work = format!("work:{}", d.join("lib").display());
+    let o = Command::new(yavs)
+        .current_dir(&d)
+        .env("YAVS_DUMPIR", "1")
+        .args(["--color", "never", "run", "--no-cache", "--work", &work])
+        .args(["--tier=interp", "--stop-time=60ns", "refs"])
+        .output()
+        .expect("run");
+    let err = String::from_utf8_lossy(&o.stderr);
+    for want in ["SigRead1Slot", "WaitSuspend", "LoadSlot8x2"] {
+        assert!(err.contains(want), "no {want}:\n{err}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

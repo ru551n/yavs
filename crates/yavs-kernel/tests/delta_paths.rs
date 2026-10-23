@@ -276,7 +276,8 @@ fn second_assignment_of_an_activation_replaces_the_first() {
 
 /// The byte codes of a logic signal (`Ctx::elem_code`, `Ctx::code_view`) agree with the planes
 /// after every kind of update: one-element finishes of drivers that are an element's only
-/// source, a vector driver, a block pass of many elements and a deposit.
+/// source, a vector driver, a block pass of many elements and a deposit. A signal of more than
+/// 64 elements keeps no byte codes: its elements are read from the planes.
 #[test]
 fn element_codes_follow_every_kind_of_update() {
     for n in [3u32, 64, 70, 200] {
@@ -337,8 +338,22 @@ fn element_codes_follow_every_kind_of_update() {
             &[],
             p(move |c| {
                 let view = c.code_view(s);
-                assert_eq!(view.map(|v| v.1), Some(n as usize), "{n} elements");
+                assert_eq!(
+                    view.map(|v| v.1),
+                    (n <= 64).then_some(n as usize),
+                    "{n} elements"
+                );
                 assert!(c.code_view(clk).is_some_and(|v| v.1 == 1));
+                // Whole plane blocks of codes can be read: compiled code reads groups of eight.
+                assert_eq!(
+                    c.code_cap(s),
+                    if n <= 64 {
+                        (n as usize).next_multiple_of(64)
+                    } else {
+                        0
+                    },
+                    "{n} elements"
+                );
                 let whole = c.logic(s)?;
                 for e in 0..n {
                     let want = whole.get(e as usize) as u8;
@@ -494,4 +509,117 @@ fn assign_blocks_longer_than_a_word_and_wrong_sizes() {
     let (mut sim, _) = build(b, Config::default());
     sim.run_until(ns(5)).unwrap();
     assert_eq!(sim.value(s).unwrap(), Value::Logic(v));
+}
+
+/// Wide registers (130 and 70 elements, whole and partly assigned through `assign_blocks` and
+/// `assign`) driven by one process each, every nanosecond, with forces, releases and deposits in
+/// between and each process reporting its `'driving_value`. A plain signal takes the wide
+/// assignments as one plane-word entry per 64 elements; with an identity resolution function
+/// (no direct driver) the same run takes the general path and must give the same trace.
+fn wide_registers(direct: bool, cfg: Config) -> (Vec<String>, Stats) {
+    let mut b = Builder::new();
+    let same: Resolver = Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out.copy_from_slice(srcs[0]);
+        Ok(())
+    });
+    let mut sig = |name: &str, n: u32| {
+        let (ty, init) = (
+            SignalType::logic(n),
+            LogicVec::new(n as usize, StdULogic::U),
+        );
+        if direct {
+            b.signal(name, ty, &init)
+        } else {
+            b.resolved_signal(name, ty, &init, Resolution::Func(same.clone()))
+        }
+    };
+    let w = sig("w", 200);
+    for (k, (off, len)) in [(0u32, 130u32), (130, 70)].into_iter().enumerate() {
+        let d = b.driver(w.slice(off, len));
+        let mut t = 0u32;
+        b.process(
+            &format!("p{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                t += 1;
+                if t > 1 {
+                    c.report(Severity::Note, format!("{}", c.driving_value(d)?));
+                }
+                // Whole, then a part now and then, then a delayed whole one (the general path).
+                let (r, n) = match t % 4 {
+                    1 => (None, len),
+                    2 => (Some(Range::new(off + 3, len - 9)), len - 9),
+                    3 => (Some(Range::new(off, len)), len),
+                    _ => (Some(Range::new(off + 64, len - 64)), len - 64),
+                };
+                let v = pattern(k as u32, t, n);
+                let delay = if t.is_multiple_of(7) {
+                    ns(1)
+                } else {
+                    Time::ZERO
+                };
+                if (t + k as u32).is_multiple_of(3) {
+                    c.assign(d, r, &[(delay, &v)], DelayMode::INERTIAL)?;
+                } else {
+                    c.assign_blocks(d, r, delay, &blocks_of(&v), DelayMode::INERTIAL)?;
+                }
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let mut t = 0u32;
+    b.process(
+        "ctl",
+        NONE,
+        &[],
+        p(move |c| {
+            t += 1;
+            let ones = |n: u32| LogicVec::new(n as usize, StdULogic::One);
+            match t - 1 {
+                2 => c.force(w.slice(60, 80), ForceMode::Driving, &ones(80))?,
+                4 => c.release(w.slice(60, 80), ForceMode::Driving)?,
+                5 => c.deposit(w.slice(120, 30), &ones(30))?,
+                6 => c.force(w.slice(0, 200), ForceMode::Effective, &ones(200))?,
+                8 => c.release(w.slice(0, 200), ForceMode::Effective)?,
+                _ => {}
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    let (mut sim, trace) = build(b, cfg);
+    sim.run_until(ns(40)).unwrap();
+    let mut lines = trace.take();
+    lines.push(format!("final {}", sim.value(w).unwrap()));
+    (lines, sim.stats())
+}
+
+#[test]
+fn wide_registers_are_direct_entries_per_plane_word() {
+    let (direct, st) = wide_registers(true, Config::default());
+    let (general, st_general) = wide_registers(false, Config::default());
+    assert!(direct.len() > 100, "{}", direct.len());
+    // The ranges of one cycle's changes may be listed in another order (a deposit and direct
+    // entries of a cycle are finished in different passes): the same set, and the reports in
+    // the same order.
+    let reports = |l: &[String]| {
+        l.iter()
+            .filter(|x| x.contains(" Note"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let sorted = |l: &[String]| {
+        let mut l = l.to_vec();
+        l.sort();
+        l
+    };
+    assert_eq!(reports(&direct), reports(&general));
+    assert_eq!(sorted(&direct), sorted(&general));
+    assert!(st.direct_planes > 40, "{st:?}");
+    assert_eq!(st_general.direct_planes, 0);
+    let four = Config {
+        threads: 4,
+        ..Config::default()
+    };
+    assert_eq!(wide_registers(true, four).0, direct);
 }

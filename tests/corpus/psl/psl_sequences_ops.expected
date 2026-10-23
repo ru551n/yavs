@@ -1,0 +1,102 @@
+exit	1
+diag	note	25000000	0	:psl_sequences_ops:alt	alt
+diag	note	25000000	0	:psl_sequences_ops:eq1	eq
+diag	note	25000000	0	:psl_sequences_ops:anon1	anonymous repeat
+diag	note	25000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	25000000	0	:psl_sequences_ops:bare1	boolean left side
+diag	error	25000000	0	:psl_sequences_ops:bare2	never repeat
+diag	error	25000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	25000000	0	:psl_sequences_ops:bare4	bare repeat
+diag	note	35000000	0	:psl_sequences_ops:alt	alt
+diag	note	35000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	35000000	0	:psl_sequences_ops:eq1	eq
+diag	note	35000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	35000000	0	:psl_sequences_ops:opt1	optional
+diag	note	35000000	0	:psl_sequences_ops:anon1	anonymous repeat
+diag	error	35000000	0	:psl_sequences_ops:bare1	boolean left side
+diag	error	35000000	0	:psl_sequences_ops:seqp	lhs alt
+diag	note	45000000	0	:psl_sequences_ops:alt	alt
+diag	note	45000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	45000000	0	:psl_sequences_ops:within1	within
+diag	note	45000000	0	:psl_sequences_ops:eq1	eq
+diag	note	45000000	0	:psl_sequences_ops:opt1	optional
+diag	note	45000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	45000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	55000000	0	:psl_sequences_ops:alt	alt
+diag	note	55000000	0	:psl_sequences_ops:eq1	eq
+diag	note	55000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	55000000	0	:psl_sequences_ops:anon1	anonymous repeat
+diag	error	55000000	0	:psl_sequences_ops:bare1	boolean left side
+diag	error	55000000	0	:psl_sequences_ops:seqp	lhs alt
+diag	note	65000000	0	:psl_sequences_ops:alt	alt
+diag	note	65000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	65000000	0	:psl_sequences_ops:eq1	eq
+diag	note	65000000	0	:psl_sequences_ops:opt1	optional
+diag	note	75000000	0	:psl_sequences_ops:eq1	eq
+diag	note	75000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	75000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	85000000	0	:psl_sequences_ops:alt	alt
+diag	note	85000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	85000000	0	:psl_sequences_ops:eq1	eq
+diag	note	85000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	85000000	0	:psl_sequences_ops:opt1	optional
+diag	note	85000000	0	:psl_sequences_ops:anon1	anonymous repeat
+diag	error	85000000	0	:psl_sequences_ops:bare1	boolean left side
+diag	error	85000000	0	:psl_sequences_ops:seqp	lhs alt
+diag	note	95000000	0	:psl_sequences_ops:within1	within
+diag	note	95000000	0	:psl_sequences_ops:eq1	eq
+diag	note	95000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	95000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	95000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	105000000	0	:psl_sequences_ops:alt	alt
+diag	note	105000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	105000000	0	:psl_sequences_ops:eq1	eq
+diag	note	105000000	0	:psl_sequences_ops:opt1	optional
+diag	error	105000000	0	:psl_sequences_ops:rng1	imp range
+diag	note	105000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	105000000	0	:psl_sequences_ops:bare2	never repeat
+diag	error	105000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	105000000	0	:psl_sequences_ops:bare4	bare repeat
+diag	note	115000000	0	:psl_sequences_ops:within1	within
+diag	note	115000000	0	:psl_sequences_ops:eq1	eq
+diag	error	115000000	0	:psl_sequences_ops:rng1	imp range
+diag	error	115000000	0	:psl_sequences_ops:alt3	imp alt
+diag	note	115000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	115000000	0	:psl_sequences_ops:bare2	never repeat
+diag	error	115000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	115000000	0	:psl_sequences_ops:bare4	bare repeat
+diag	note	125000000	0	:psl_sequences_ops:alt	alt
+diag	note	125000000	0	:psl_sequences_ops:eq1	eq
+diag	note	125000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	125000000	0	:psl_sequences_ops:anon1	anonymous repeat
+diag	error	125000000	0	:psl_sequences_ops:bare1	boolean left side
+diag	error	125000000	0	:psl_sequences_ops:seqp	lhs alt
+diag	note	135000000	0	:psl_sequences_ops:alt	alt
+diag	note	135000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	135000000	0	:psl_sequences_ops:eq1	eq
+diag	note	135000000	0	:psl_sequences_ops:opt1	optional
+diag	note	145000000	0	:psl_sequences_ops:eq1	eq
+diag	note	145000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	145000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	145000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	155000000	0	:psl_sequences_ops:alt	alt
+diag	note	155000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	155000000	0	:psl_sequences_ops:eq1	eq
+diag	note	155000000	0	:psl_sequences_ops:opt1	optional
+diag	error	155000000	0	:psl_sequences_ops:rng1	imp range
+diag	note	155000000	0	:psl_sequences_ops:anon2	anonymous count
+diag	error	155000000	0	:psl_sequences_ops:bare2	never repeat
+diag	error	155000000	0	:psl_sequences_ops:bare3	never goto
+diag	note	155000000	0	:psl_sequences_ops:bare4	bare repeat
+diag	note	165000000	0	:psl_sequences_ops:alt	alt
+diag	note	165000000	0	:psl_sequences_ops:alt2	alt2
+diag	note	165000000	0	:psl_sequences_ops:eq1	eq
+diag	note	165000000	0	:psl_sequences_ops:eq2	eq then
+diag	note	165000000	0	:psl_sequences_ops:opt1	optional
+diag	note	165000000	0	:psl_sequences_ops:anon1	anonymous repeat
+diag	error	165000000	0	:psl_sequences_ops:bare1	boolean left side
+diag	error	165000000	0	:psl_sequences_ops:seqp	lhs alt
+diag	note	175000000	0	:psl_sequences_ops:eq1	eq
+diag	error	175000000	0	:psl_sequences_ops:rng1	imp range
+diag	note	185000000	0	:psl_sequences_ops:eq1	eq
+diag	note	195000000	0	:psl_sequences_ops:eq1	eq

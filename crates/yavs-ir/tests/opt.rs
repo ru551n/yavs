@@ -1103,6 +1103,7 @@ fn the_size_of_a_layout_of_known_length_is_a_constant() {
         dst: l,
         ty: arr,
         desc: d,
+        cache: None,
     });
     let size = fb.reg(RegTy::I64);
     fb.emit(Inst::Load {
@@ -1174,7 +1175,12 @@ fn the_words_of_a_record_layout_and_the_stride_of_an_array_of_them_are_constants
     let (d_rec, d_arr) = (ptr(&mut fb, 0), ptr(&mut fb, 8));
     let word = |fb: &mut FuncBuilder<'_>, ty: TyId, desc: Reg, off: i64| {
         let l = fb.reg(RegTy::Ptr);
-        fb.emit(Inst::LayoutOf { dst: l, ty, desc });
+        fb.emit(Inst::LayoutOf {
+            dst: l,
+            ty,
+            desc,
+            cache: None,
+        });
         let at = fb.reg(RegTy::Ptr);
         let o = fb.int(off);
         fb.emit(Inst::Index {
@@ -2004,4 +2010,66 @@ fn a_byte_variable_lives_in_a_register() {
         0,
         "{code:?}"
     );
+}
+
+/// A fat pair made of temporaries and constants is no GC root; one holding a pointer of unknown
+/// origin (it may point into a heap) keeps its `TempRoot`.
+#[test]
+fn a_fat_pair_of_temporaries_needs_no_root() {
+    if !on() {
+        return;
+    }
+    let roots = |unknown: bool| {
+        let code = build(FuncKind::Function, |fb| {
+            let p = fb.slot(8, 8);
+            fb.stmt(StmtKind::Return, sp());
+            let (eight, sixteen) = (fb.int(8), fb.int(16));
+            let data = fb.reg(RegTy::Ptr);
+            if unknown {
+                let a = fb.addr(AddrSpace::Frame, p);
+                fb.emit(Inst::Load {
+                    dst: data,
+                    addr: a,
+                    w: Width::B8,
+                });
+            } else {
+                fb.emit(Inst::Alloc {
+                    dst: data,
+                    size: eight,
+                });
+            }
+            let dope = fb.addr(AddrSpace::Inst, 0);
+            let fat = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Alloc {
+                dst: fat,
+                size: sixteen,
+            });
+            fb.emit(Inst::Store {
+                addr: fat,
+                src: data,
+                w: Width::B8,
+            });
+            let at8 = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Index {
+                dst: at8,
+                base: fat,
+                pos: eight,
+                stride: 1,
+            });
+            fb.emit(Inst::Store {
+                addr: at8,
+                src: dope,
+                w: Width::B8,
+            });
+            fb.emit(Inst::TempRoot {
+                addr: fat,
+                desc: None,
+                ty: None,
+            });
+            fb.emit(Inst::Ret { v: Some(sixteen) });
+        });
+        count(&code, |i| matches!(i, Inst::TempRoot { .. }))
+    };
+    assert_eq!(roots(false), 0);
+    assert_eq!(roots(true), 1);
 }

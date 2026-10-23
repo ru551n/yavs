@@ -306,6 +306,13 @@ impl yavs_sem::UnitStore for Units {
             .map(yavs_diag::Buffer::new)
     }
 
+    fn has(&self, lib: &str, identity: &[u8; 32]) -> bool {
+        let Some((s, k)) = self.store(lib, identity) else {
+            return false;
+        };
+        s.payload_len("unit", &k).is_some() || self.get(lib, identity).is_some()
+    }
+
     fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]) {
         if !self.writable {
             return;
@@ -541,12 +548,14 @@ pub fn analyze_closure(
     }
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(clap::Subcommand)]
 pub enum Command {
     /// Remove the cache entries of libraries.
     Clean(CleanArgs),
 }
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(clap::Args)]
 pub struct CleanArgs {
     /// A library, `NAME:PATH`; the cache of its directory is removed.

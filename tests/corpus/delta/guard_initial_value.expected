@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:guard_initial_value:a:_p0	a guard=true
+diag	note	0	0	:guard_initial_value:b:_p0	b guard=false
+diag	note	0	0	:guard_initial_value:c:_p0	c guard=true
+diag	note	1000000	0	:guard_initial_value:a:inner:_p0	inner guard=true

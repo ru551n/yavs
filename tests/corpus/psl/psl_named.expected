@@ -1,0 +1,38 @@
+exit	1
+diag	note	25000000	0	:psl_named:c1	ab
+diag	error	25000000	0	:psl_named:p4	no aa
+diag	note	35000000	0	:psl_named:c1	ab
+diag	note	35000000	0	:psl_named:c2	abc
+diag	note	35000000	0	:psl_named:c3	pair bc
+diag	note	35000000	0	:psl_named:c5	rep
+diag	note	45000000	0	:psl_named:c2	abc
+diag	note	45000000	0	:psl_named:c3	pair bc
+diag	note	55000000	0	:psl_named:c1	ab
+diag	note	55000000	0	:psl_named:c6	ab ab
+diag	note	65000000	0	:psl_named:c2	abc
+diag	note	65000000	0	:psl_named:c3	pair bc
+diag	note	85000000	0	:psl_named:c1	ab
+diag	note	95000000	0	:psl_named:c4	pair nested
+diag	error	95000000	0	:psl_named:p2	b then c
+diag	error	95000000	0	:psl_named:p3	ab then c
+diag	error	95000000	0	:psl_named:p6	rhs pair
+diag	note	105000000	0	:psl_named:c3	pair bc
+diag	error	105000000	0	:psl_named:p1	a then b
+diag	error	105000000	0	:psl_named:p4	no aa
+diag	error	105000000	0	:psl_named:p6	rhs pair
+diag	error	115000000	0	:psl_named:p1	a then b
+diag	error	115000000	0	:psl_named:p4	no aa
+diag	error	115000000	0	:psl_named:p6	rhs pair
+diag	note	125000000	0	:psl_named:c1	ab
+diag	note	125000000	0	:psl_named:c5	rep
+diag	note	135000000	0	:psl_named:c2	abc
+diag	note	135000000	0	:psl_named:c3	pair bc
+diag	note	155000000	0	:psl_named:c3	pair bc
+diag	error	155000000	0	:psl_named:p1	a then b
+diag	error	155000000	0	:psl_named:p4	no aa
+diag	error	155000000	0	:psl_named:p6	rhs pair
+diag	note	165000000	0	:psl_named:c1	ab
+diag	note	165000000	0	:psl_named:c5	rep
+diag	error	175000000	0	:psl_named:p2	b then c
+diag	error	175000000	0	:psl_named:p3	ab then c
+diag	error	175000000	0	:psl_named:p6	rhs pair

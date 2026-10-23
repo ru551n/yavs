@@ -28,7 +28,8 @@ change a driver that simulates an external library's own testbenches on yavs.
 | A testbench entity with several architectures runs once per architecture; an entity with a `GC_TESTCASE` generic and no default runs once per `GC_TESTCASE = "name"` it tests | What the project's tool does | #277 |
 | Pass = exit 0, a `>> Simulation SUCCESS` line and no `>> Simulation FAILED` line in the output | The library's own final summary | #277 |
 | `--private-copies` analyzes every library source from a per-library copy of the file | The same source file compiled into several libraries was a yavs defect (#290, fixed); the option is no longer needed | #277, #290 |
-| A testbench whose third-party design files are not in the pinned checkout is skipped with the missing directories named | Not a yavs result | #277 |
+| Third-party design files a testbench needs are fetched at pinned commits (`uvvm-supplementary`, `uvvm-i2c-master`, `uvvm-i2c-slave`, `THIRD_PARTY` in `uvvm.py` maps the testbench paths to them). A testbench whose files are still absent (vendor simulation libraries) is skipped with the missing directories named, and so is a run that fails with a design component left unbound | Not a yavs result | #277 |
+| Every run passes `--exit-severity=failure`: the library's verdict is its final summary, and a design under test may report errors by design (a sim1 run exits 1 on an `error` report too). `func_cov_tb` runs share one directory per entity and run in the listed order (a test reads the files an earlier one wrote). `questa_extension_tb` runs with `GC_EXTENSIONS_ENABLED=false` and passes on exit 0 (it prints no summary; sim1 behaves the same, with the default it stops with status 1) | The project's own tool runs them that way | #277 |
 | `pro.py` generates the body of `OsvvmScriptSettingsPkg` from the default one with the scripts' release (`OsvvmVersion`) as `OSVVM_REVISION` and `OSVVM_SETTINGS_REVISION`, as the scripts' own generator does | The settings revision selects the transcript layout the tests compare against the validated results (58 false failures with the default body) | #276 |
 | Each yavs call is `timeout 300 systemd-run --user --scope -p MemoryMax=...` (2G for analysis, `--mem` for runs, default 4G); `-j` calls at once (default 4) | Root rules 15 and 16: a testbench over 5 minutes is reported as skipped, never shortened | root `AGENTS.md` |
 
@@ -53,4 +54,4 @@ python3 -I tools/suites/uvvm.py --yavs target/release/yavs --out ~/.cache/yavs-u
 
 ## 6. Coordination
 
-- #277 (`uvvm.py`), #276 (`pro.py`), #115 (parent). Root causes found: #285 to #290, #291 to #304, fixed #391 to #393, open: #460 (see `STATUS.md`).
+- #277 (`uvvm.py`), #276 (`pro.py`), #115 (parent). Root causes found: #285 to #290, #291 to #304, fixed #391 to #393, open: #460 (see `docs/STATUS.md`).

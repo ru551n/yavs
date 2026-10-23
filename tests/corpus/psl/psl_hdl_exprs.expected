@@ -1,0 +1,15 @@
+exit	1
+diag	error	25000000	0	-	std_ulogic
+diag	error	35000000	0	-	bit
+diag	error	45000000	0	-	boolean
+diag	error	55000000	0	-	string
+diag	error	65000000	0	-	enumeration
+diag	error	75000000	0	-	real
+diag	error	85000000	0	-	onehot
+diag	error	95000000	0	-	function
+diag	error	105000000	0	-	std_logic_vector
+diag	error	115000000	0	-	record
+diag	error	125000000	0	-	numeric_std
+diag	error	135000000	0	-	bit slice
+diag	error	145000000	0	-	bit_vector
+diag	error	155000000	0	-	slice

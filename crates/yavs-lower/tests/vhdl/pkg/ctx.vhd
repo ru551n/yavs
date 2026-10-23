@@ -1,5 +1,5 @@
--- Subprograms that read the name of an object depend on the design they are lowered for
--- (the name is a cell of the instance data of the architecture being lowered).
+-- Subprograms that read the name of an item of a library package do not depend on the design they
+-- are lowered for (the name is a constant, #460).
 package ctx is
   constant c : integer := 1;
   function who return string;

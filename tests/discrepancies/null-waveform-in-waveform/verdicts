@@ -1,0 +1,1 @@
+# sim1: OK* (a value before the null and the null itself are lost, see the catalogue), sim2: CRASH (undefined symbol in the back end)

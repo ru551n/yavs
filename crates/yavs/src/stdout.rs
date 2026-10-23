@@ -2,8 +2,9 @@
 //! plugin or foreign library is loaded, so its report and `OUTPUT` text is collected and
 //! written in blocks (a write per `report` line costs a system call each). Every other writer
 //! (diagnostics on standard error, the final status lines) calls [`flush`] first, so the order
-//! of the two streams is unchanged; a thread writes out what is waiting every 100 ms, so a
-//! run that goes quiet or is killed shows its output without a long delay. A terminal, a
+//! of the two streams is unchanged; the signal thread (`yavs_wave::interrupt`, which also
+//! handles Ctrl-C and SIGUSR1) writes out what is waiting every [`TICK`], so a run that goes
+//! quiet or is killed shows its output without a long delay. A terminal, a
 //! plugin or a foreign library keeps the line-by-line writes.
 
 use std::io::{IsTerminal, Write};
@@ -80,17 +81,15 @@ pub fn buffer() {
         }
         prev(info);
     }));
-    let spawned = std::thread::Builder::new()
-        .name("stdout-flush".into())
-        .spawn(|| {
-            loop {
-                std::thread::sleep(Duration::from_millis(100));
-                drain(&mut buf());
-            }
-        });
-    if spawned.is_err() {
-        ON.store(false, Ordering::Relaxed);
-    }
+}
+
+/// How often the signal thread writes out what waits (`yavs_wave::interrupt::Handlers::tick`).
+pub const TICK: Duration = Duration::from_millis(100);
+
+/// Stop collecting (the thread that would write the output out could not be started).
+pub fn unbuffer() {
+    flush();
+    ON.store(false, Ordering::Relaxed);
 }
 
 /// Whether output is being collected.

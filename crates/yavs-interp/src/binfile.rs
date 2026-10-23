@@ -1,7 +1,8 @@
-//! READ and WRITE on files of non-text types (LRM 5.5.2): `file of T` with `T` a scalar type
-//! or an array of scalars. The on-disk format is documented in `docs/decisions.md` "Binary
-//! files": a scalar is little-endian in the fewest whole bytes its range needs (as the
-//! reference simulators do), an array is a `u32` element count and then its elements.
+//! READ and WRITE on files of non-text types (LRM 5.5.2): `file of T` with `T` a scalar type,
+//! an array of scalars, a record or an array of composites. The on-disk format is documented in
+//! `docs/decisions.md` "Binary files": a scalar is little-endian in the fewest whole bytes its
+//! range needs (as the reference simulators do), an array of scalars is a `u32` element count and
+//! then its elements, any other composite is its descriptor and memory image.
 
 use yavs_ir::{Ty, TyId, Width};
 use yavs_kernel::Ctx;
@@ -103,6 +104,9 @@ enum Elem {
     /// An array of scalars: its dimensions, the element and whether the
     /// elements are a logic leaf (`Some(is_bit)`).
     Array(u8, Sc, Option<bool>),
+    /// A record or an array of composites, as a memory image: the type and the dimensions of
+    /// an array (0 for a record).
+    Image(TyId, u8),
 }
 
 impl Machine {
@@ -127,7 +131,24 @@ impl Machine {
                 .map(|k| k != yavs_ir::LogicKind::StdULogic);
             return Ok(Elem::Array(dims, s, logic));
         }
-        rt_err("binary files of records or arrays of composites are not implemented yet (#79)")
+        let dims = match t {
+            Ty::Array { dims, .. } => dims,
+            _ => 0,
+        };
+        Ok(Elem::Image(elem, dims))
+    }
+
+    /// The descriptor bytes and the size of the data of a value of type `ty` whose fat pair
+    /// is at `fat`, and the address of its data.
+    fn image_of(&self, ty: TyId, fat: u64) -> R<(Vec<u8>, u64, u64)> {
+        let data = self.load(fat, Width::B8)?;
+        let desc = self.load(add_addr(fat, 8)?, Width::B8)?;
+        let dsz = Ty::desc_size(&self.rt.prog.types, ty)
+            .ok_or_else(|| ice(format!("type {ty} has no descriptor size")))?;
+        let d = self.rd(desc, dsz)?.to_vec();
+        let (l, _) = Ty::layout(&self.rt.prog.types, &self.rt.prog.consts, ty, &d)
+            .map_err(|e| Fault::Runtime(e.to_string()))?;
+        Ok((d, l.size, data))
     }
 }
 
@@ -140,6 +161,7 @@ pub(crate) fn write(
     let mut out = Vec::new();
     match m.file_elem(file_ty)? {
         Elem::Scalar(s) => s.encode(arg(a, 1)?, &mut out),
+        Elem::Image(ty, _) => write_image(m, ty, arg(a, 1)?, &mut out)?,
         Elem::Array(dims, s, logic) => {
             let (data, lens) = m.fat(arg(a, 1)?, dims)?;
             let n = lens.iter().try_fold(1u64, |x, &l| x.checked_mul(l));
@@ -172,6 +194,56 @@ pub(crate) fn write(
     Ok(None)
 }
 
+/// The image of a record or an array of composites: `u32` descriptor size, descriptor, `u32`
+/// data size, data.
+fn write_image(m: &mut Machine, ty: TyId, fat: u64, out: &mut Vec<u8>) -> R<()> {
+    let (desc, size, data) = m.image_of(ty, fat)?;
+    let (dn, sn) = (u32::try_from(desc.len()), u32::try_from(size));
+    let (Ok(dn), Ok(sn)) = (dn, sn) else {
+        return rt_err("value too large to write to a file");
+    };
+    out.extend_from_slice(&dn.to_le_bytes());
+    out.extend_from_slice(&desc);
+    out.extend_from_slice(&sn.to_le_bytes());
+    out.extend_from_slice(m.rd(data, size)?);
+    Ok(())
+}
+
+/// Reads an image into the object at `fat`: its bounds must be the stored ones (`LENGTH`, when
+/// given, is the stored length of the first dimension).
+fn read_image(
+    m: &mut Machine,
+    cell: u64,
+    ty: TyId,
+    dims: u8,
+    fat: u64,
+    len_out: Option<u64>,
+) -> R<()> {
+    let (want, size, data) = m.image_of(ty, fat)?;
+    let n = |m: &mut Machine| -> R<usize> {
+        let h = text(m, cell, |f| f.read_bytes(4))?;
+        Ok(u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize)
+    };
+    let dn = n(m)?;
+    let got = text(m, cell, |f| f.read_bytes(dn))?;
+    let sn = n(m)?;
+    let bytes = text(m, cell, |f| f.read_bytes(sn))?;
+    if got != want || sn as u64 != size {
+        return rt_err("a value read from a file has other bounds than the object it is read into");
+    }
+    m.wr(data, size)?.copy_from_slice(&bytes);
+    if let Some(l) = len_out {
+        let first = if dims == 0 {
+            1
+        } else {
+            let (_, lens) = m.fat(fat, dims)?;
+            lens[0]
+        };
+        m.store(l, Width::B8, first)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn read(
     m: &mut Machine,
     _: &mut Option<&mut Ctx<'_>>,
@@ -185,6 +257,7 @@ pub(crate) fn read(
             let v = s.decode(&b)?;
             m.store(arg(a, 1)?, s.mem, v)?;
         }
+        Elem::Image(ty, dims) => read_image(m, cell, ty, dims, arg(a, 1)?, a.get(2).copied())?,
         Elem::Array(dims, s, logic) => {
             let (data, lens) = m.fat(arg(a, 1)?, dims)?;
             let cap = lens.iter().try_fold(1u64, |x, &l| x.checked_mul(l));

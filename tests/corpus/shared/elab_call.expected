@@ -1,0 +1,5 @@
+exit	0
+diag	note	0	0	:shared_elab_call:u1:_p0	g = 1
+diag	note	0	0	:shared_elab_call:u2:_p0	g = 3
+diag	note	0	0	:shared_elab_call:u3:_p0	g = 31
+diag	note	1000000	0	:shared_elab_call:b:_p0	cnt = 4 d = 4 r = 12 01 a = 101 101 r2 = 12

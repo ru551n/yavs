@@ -107,6 +107,25 @@ impl Db {
                                     }
                                 }
                             }
+                            DeclKind::Unit(u)
+                                if matches!(
+                                    self.units[u].kind,
+                                    crate::loader::UnitKind::Entity
+                                        | crate::loader::UnitKind::Architecture
+                                ) =>
+                            {
+                                match self.enclosing_unit_region(scope, d) {
+                                    Some(s) => Region::Scope(s),
+                                    // Its declarations are selected by name only within it (8.3).
+                                    None => {
+                                        return NameRes::NotInRegion(
+                                            self.units[u].scope,
+                                            suffix_span(suffix, n.span),
+                                            key,
+                                        );
+                                    }
+                                }
+                            }
                             DeclKind::Object(_) | DeclKind::Alias(Alias::Object { .. }) => {
                                 return NameRes::Value;
                             }
@@ -246,7 +265,11 @@ impl Db {
 
     /// The region of the construct (labelled statement or subprogram) one of `ds` names,
     /// and whether it encloses `scope` (8.3: only then is an expanded name into it legal).
-    fn construct_region(&self, scope: ScopeId, ds: &[DeclId]) -> Option<(ScopeId, bool)> {
+    pub(crate) fn construct_region(
+        &self,
+        scope: ScopeId,
+        ds: &[DeclId],
+    ) -> Option<(ScopeId, bool)> {
         let owned = |s: ScopeId| self.scopes[s].owner.is_some_and(|o| ds.contains(&o));
         let mut cur = Some(scope);
         while let Some(s) = cur {
@@ -445,7 +468,7 @@ impl Db {
                 v.dedup();
                 Ok(v)
             }
-            CandSet::Class(_) => Ok(Vec::new()),
+            CandSet::Class(_) | CandSet::Alloc(_) => Ok(Vec::new()),
         }
     }
 
@@ -824,7 +847,7 @@ impl Db {
             let (PSrc::Entity(d) | PSrc::Object(d, _)) = *src else {
                 return None;
             };
-            let v = attr::user_value(self, self.entity(d), key)?;
+            let v = self.user_attr_value(d, key)?;
             let st = attr::spec_subtype(self, self.attr_values[v].attr)?;
             Some(self.base(st))
         })
@@ -836,11 +859,13 @@ impl Db {
         prefix: &ast::Name,
         args: &[ast::AssocElem],
     ) -> CandSet {
-        if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind {
+        if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind
+            && takes_args(attr)
+        {
             return self.attr_cands(scope, p, *attr, args);
         }
         if let Some(st) = self.quiet_type_mark(scope, prefix) {
-            // Type conversion (9.3.6).
+            // Type conversion (9.3.6), also to `x'subtype`.
             return CandSet::Types(smallvec::smallvec![Interp::new(self.base(st), Via::Other)]);
         }
         let slice = self.is_slice_arg(scope, args);
@@ -1185,7 +1210,9 @@ impl Db {
                 self.build_attr(scope, prefix, *attr, &[], i, span)
             }
             (ast::NameKind::Apply { prefix, args }, _) => {
-                if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind {
+                if let ast::NameKind::Attribute { prefix: p, attr } = &prefix.kind
+                    && takes_args(attr)
+                {
                     return self.build_attr(scope, p, *attr, args, i, span);
                 }
                 if let Some(st) = self.quiet_type_mark(scope, prefix) {
@@ -1478,39 +1505,65 @@ impl Db {
             _ => return self.poison_expr(),
         };
         let value = value.and_then(|c| self.rebound(c, subtype));
-        self.add_expr(Expr {
+        let id = self.add_expr(Expr {
             kind: ExprKind::Obj(d),
             subtype,
             span,
             stat,
             value,
-        })
+        });
+        // A reference to an `out` port or parameter is a read unless a write context says
+        // otherwise (LRM 1993 4.3.2; `Db::not_read`).
+        if matches!(&self.decls[d].kind, DeclKind::Object(o) if o.mode == Some(crate::hir::Mode::Out))
+            && self
+                .cur()
+                .is_some_and(|c| c.file_rev == crate::LangRev::Vhdl1993)
+        {
+            self.out_reads.push(id);
+        }
+        id
     }
 
-    /// Folded array value `c` seen through constrained subtype `st`: the bounds of `st`, not
-    /// those of the initial value (a constant takes its subtype's bounds, LRM 6.4.2.2).
-    /// `None` (not folded) when the bounds of `st` are not static or a length differs, so
-    /// lowering evaluates the constant and its run-time check reports a mismatch.
+    /// Folded value `c` seen through constrained subtype `st`: the bounds of `st`, not those of
+    /// the initial value (a constant takes its subtype's bounds, LRM 6.4.2.2), also for the
+    /// array fields of a record. `None` (not folded) when the bounds of `st` are not static
+    /// or a length differs, so lowering evaluates the constant and its run-time check reports
+    /// a mismatch.
     fn rebound(&mut self, c: ConstId, st: SubtypeId) -> Option<ConstId> {
-        let ConstValue::Array(a) = &self.consts[c] else {
-            return Some(c);
-        };
-        let mut want = Vec::with_capacity(a.bounds.len());
-        for dim in 0..a.bounds.len() {
-            let Some(r) = crate::expr::aggregate::subtype_range(self, st, dim) else {
-                let constrained = matches!(
-                    self.subtypes[st].constraint,
-                    crate::types::Constraint::Array { dims: Some(_), .. }
-                );
-                return (!constrained).then_some(c);
-            };
-            want.push((r.left, r.dir, r.right));
+        let v = self.consts[c].clone();
+        let r = self.rebound_value(&v, st)?;
+        Some(if r == v { c } else { self.add_const(r) })
+    }
+
+    fn rebound_value(&mut self, v: &ConstValue, st: SubtypeId) -> Option<ConstValue> {
+        match v {
+            ConstValue::Array(a) => {
+                let mut want = Vec::with_capacity(a.bounds.len());
+                for dim in 0..a.bounds.len() {
+                    let Some(r) = crate::expr::aggregate::subtype_range(self, st, dim) else {
+                        let constrained = matches!(
+                            self.subtypes[st].constraint,
+                            crate::types::Constraint::Array { dims: Some(_), .. }
+                        );
+                        return (!constrained).then(|| v.clone());
+                    };
+                    want.push((r.left, r.dir, r.right));
+                }
+                if *a.bounds == *want {
+                    return Some(v.clone());
+                }
+                Some(ConstValue::Array(a.with_bounds(&want)?))
+            }
+            ConstValue::Record(vs) => {
+                let mut out = Vec::with_capacity(vs.len());
+                for (i, f) in vs.iter().enumerate() {
+                    let fst = self.field_subtype(st, i as u32);
+                    out.push(self.rebound_value(f, fst)?);
+                }
+                Some(ConstValue::Record(out.into()))
+            }
+            _ => Some(v.clone()),
         }
-        if *a.bounds == *want {
-            return Some(c);
-        }
-        let v = ConstValue::Array(a.with_bounds(&want)?);
-        Some(self.add_const(v))
     }
 
     /// A function call with named or positional association; defaults are `Actual::Default`.
@@ -1671,6 +1724,9 @@ impl Db {
                 },
                 Slot::None => Actual::Default,
             };
+            if classes[k].1 == crate::hir::Mode::Out {
+                self.not_read_actual(&actual);
+            }
             hargs.push(Arg {
                 formal: k as u16,
                 actual,
@@ -1922,7 +1978,11 @@ impl Db {
         });
         let fe = match fe {
             Ok(fe) if self.is_poison_expr(fe) => return None,
-            Ok(fe) => fe,
+            Ok(fe) => {
+                // The formal part names the formal, it reads nothing.
+                self.not_read(fe);
+                fe
+            }
             Err(true) => return None,
             Err(false) => {
                 let tn = self.type_name(want);
@@ -2103,6 +2163,9 @@ impl Db {
             );
             return self.poison.expr;
         }
+        if !self.is_poison_expr(operand) {
+            self.warn_conversion_bounds(operand, st);
+        }
         let stat = self.exprs[operand].stat;
         let id = self.add_expr(Expr {
             kind: ExprKind::Conv { to: st, operand },
@@ -2118,6 +2181,46 @@ impl Db {
             }
         }
         id
+    }
+
+    /// `W1403` (9.3.6): `operand` has static bounds and converts to the unconstrained array
+    /// subtype `st`, whose index subtypes do not contain them. The result takes the operand's
+    /// bounds, so the conversion fails when it executes; like the scalar case (L51) the code
+    /// may be dead, so it stays a warning and the run-time check fails.
+    fn warn_conversion_bounds(&mut self, operand: ExprId, st: SubtypeId) {
+        use crate::expr::aggregate::subtype_range;
+        let TypeKind::Array { indexes, .. } = &self.types[self.base(st)].kind else {
+            return;
+        };
+        if matches!(
+            &self.subtypes[st].constraint,
+            crate::types::Constraint::Array { dims: Some(_), .. }
+        ) {
+            return;
+        }
+        let os = self.exprs[operand].subtype;
+        for (k, &ix) in indexes.clone().iter().enumerate() {
+            let (Some(r), Some(o)) = (subtype_range(self, os, k), subtype_range(self, ix, 0))
+            else {
+                continue;
+            };
+            if r.is_null() || o.is_null() || (o.contains(r.low()) && o.contains(r.high())) {
+                continue;
+            }
+            let (name, span) = (self.subtype_name(ix), self.exprs[operand].span);
+            self.report(
+                Diagnostic::warning(
+                    diag::W_STATIC_OUTSIDE,
+                    format!("the bounds of the operand are not inside index subtype `{name}` of the target"),
+                )
+                .with_primary(
+                    span,
+                    format!("{} to {} is outside {} to {}", r.low(), r.high(), o.low(), o.high()),
+                )
+                .with_note("the code may never run, so this is checked again at run time (LRM 9.3.6): the result has the operand's bounds, which must belong to the index subtypes of the target"),
+            );
+            return;
+        }
     }
 
     /// 9.3.6: a type is closely related to itself; abstract numeric types to each other;
@@ -2210,6 +2313,9 @@ impl Db {
             }
             Via::AttrOf(t) => {
                 let p = self.resolve_prefix(scope, prefix, t);
+                if !a.reads_value() {
+                    self.not_read(p);
+                }
                 // 4.2.2.2: of a formal signal parameter these attributes are not allowed;
                 // of another signal they are, and the implicit signal lives outside the
                 // subprogram (sim2, sim3).
@@ -2547,6 +2653,35 @@ impl Db {
         false
     }
 
+    /// The object an object alias `d` names as a whole (through further aliases), `None`
+    /// when `d` is not such an alias: a part of an object (`alias a : bit is v(1)`) is
+    /// another entity.
+    fn aliased_object(&self, d: DeclId) -> Option<DeclId> {
+        let mut d = d;
+        let mut hops = 0;
+        while let DeclKind::Alias(Alias::Object { target, .. }) = &self.decls[d].kind {
+            let ExprKind::Obj(next) = self.exprs[*target].kind else {
+                return None;
+            };
+            d = next;
+            hops += 1;
+            if hops > 64 {
+                return None;
+            }
+        }
+        (hops > 0).then_some(d)
+    }
+
+    /// The value of user attribute `key` of the named entity `d` denotes (7.2): its own,
+    /// else that of the object it is an alias of (an attribute of an object applies to every
+    /// alias of the whole object, 4.3.3).
+    fn user_attr_value(&self, d: DeclId, key: Symbol) -> Option<crate::ids::AttrValueId> {
+        attr::user_value(self, self.entity(d), key).or_else(|| {
+            let root = self.aliased_object(d)?;
+            attr::user_value(self, root, key)
+        })
+    }
+
     /// `x'a` for a user-defined attribute `a` (6.7): the value given to the
     /// named entity `x` by a specification (7.2).
     fn build_user_attr(
@@ -2560,9 +2695,7 @@ impl Db {
             return self.poison_expr();
         };
         let found = ps.iter().find_map(|(_, src)| match *src {
-            PSrc::Entity(d) | PSrc::Object(d, _) => {
-                attr::user_value(self, self.entity(d), attr.key)
-            }
+            PSrc::Entity(d) | PSrc::Object(d, _) => self.user_attr_value(d, attr.key),
             _ => None,
         });
         let Some(v) = found else {
@@ -2572,6 +2705,8 @@ impl Db {
         let subtype =
             attr::spec_subtype(self, self.attr_values[v].attr).unwrap_or(self.exprs[value].subtype);
         let (stat, folded) = (self.exprs[value].stat, self.exprs[value].value);
+        // The value takes the attribute's subtype, bounds included (7.2, #638).
+        let folded = folded.and_then(|c| self.rebound(c, subtype));
         self.add_expr(Expr {
             kind: ExprKind::AttrValue { spec: v },
             subtype,
@@ -2749,6 +2884,20 @@ impl Db {
             Some(crate::types::RangeC::Attr { .. }) => Staticness::Globally,
             None => Staticness::Locally,
         }
+    }
+
+    /// Staticness of the constraint a value is held to: a scalar range's, or a constrained
+    /// array's index ranges (a value's fold must not skip the run-time check against a
+    /// subtype whose bounds are known only at elaboration, 5.3.2.2, 9.3.3.2).
+    pub(crate) fn constraint_staticness(&self, st: SubtypeId) -> Staticness {
+        if matches!(
+            self.subtypes[st].constraint,
+            crate::types::Constraint::Array { dims: Some(_), .. }
+        ) && !self.array_locally_static(st)
+        {
+            return Staticness::Globally;
+        }
+        self.subtype_staticness(st)
     }
 
     /// An array subtype whose index ranges are all locally static (9.4.2).
@@ -2968,4 +3117,12 @@ pub(crate) fn assoc_map(
         }
     }
     Ok(map)
+}
+
+/// Whether `attr(args)` is an attribute call. `x'subtype`, `x'element` and `t'base` denote
+/// subtypes, so applying them is a type conversion; a user-defined attribute has a value that
+/// the arguments index (`x'a(1)`, LRM 7.2).
+fn takes_args(attr: &ast::Ident) -> bool {
+    !matches!(attr.key.as_str(), "subtype" | "element" | "base")
+        && PredefAttr::from_key(attr.key).is_some()
 }

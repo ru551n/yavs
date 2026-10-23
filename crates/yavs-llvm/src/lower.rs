@@ -13,21 +13,124 @@
 //! fails (re-executed by the interpreter, so messages are identical): compiled code never
 //! reports an error itself (rule 5).
 
-use std::ffi::CString;
+use std::ffi::{CString, c_void};
 use std::sync::Mutex;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyFunction};
 use llvm_sys::core::*;
 use llvm_sys::prelude::*;
 use llvm_sys::{LLVMIntPredicate as IP, LLVMRealPredicate as RP};
-use yavs_interp::{Called, Tier, TierHost, space};
+use yavs_interp::{Called, TIER_SUSPEND, Tier, TierHost, space};
 use yavs_ir::{
-    AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
-    Program, Reg, Width,
+    AddrSpace, BoolOp, CheckKind, CmpOp, EdgeKind, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp,
+    IntUnOp, Program, Reg, Width,
 };
 
 use crate::rt::*;
 use crate::{Error, Jit, Module, OptLevel};
+
+type Known = crate::rt::Known<LLVMValueRef>;
+type ObjRef = crate::rt::ObjRef<LLVMValueRef>;
+
+/// Ask the kernel to back the compiled code of a whole-program module with huge pages (Linux): the
+/// code of a design of thousands of processes is megabytes that every clock cycle runs through,
+/// and each 4 KiB page of it is an entry of the instruction TLB. `MADV_COLLAPSE` makes the pages
+/// now; a failure changes nothing, `YAVS_LLVM_HUGE=0` leaves it out. (The CPU design: instruction
+/// TLB misses 52 M to 9 M, 6 percent of the cycles.)
+#[cfg(target_os = "linux")]
+fn huge_code(addrs: impl Iterator<Item = usize>) {
+    unsafe extern "C" {
+        fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+    }
+    const HUGE: usize = 2 << 20;
+    if std::env::var("YAVS_LLVM_HUGE").is_ok_and(|v| v == "0") {
+        return;
+    }
+    let (lo, hi) = addrs.fold((usize::MAX, 0), |(lo, hi), a| (lo.min(a), hi.max(a)));
+    let (start, end) = (lo.next_multiple_of(HUGE), hi & !(HUGE - 1));
+    if lo == usize::MAX || end <= start || end - start < 2 * HUGE {
+        return;
+    }
+    // SAFETY: advice on the pages of our own JIT code; the call changes no content.
+    unsafe {
+        madvise(start as *mut c_void, end - start, 14);
+        madvise(start as *mut c_void, end - start, 25);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn huge_code(_: impl Iterator<Item = usize>) {}
+
+/// Measuring aid (`YAVS_LLVM_KINDS=1`): LLVM instructions generated per IR instruction kind,
+/// printed by `--tier=llvm` after the whole-program compile (frame-mode code, before the passes).
+static KIND_STATS: Mutex<Vec<(String, usize, usize)>> = Mutex::new(Vec::new());
+
+/// Measuring aid (`YAVS_LLVM_ABLATE=Kind,Kind`): those IR kinds are stepped by the interpreter
+/// instead of compiled, to measure how much code the generator spends on them. Only for kinds
+/// that have a step path (not control flow).
+fn ablate(i: &Inst) -> bool {
+    static SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| {
+        std::env::var("YAVS_LLVM_ABLATE")
+            .map(|v| v.split(',').map(str::to_string).collect())
+            .unwrap_or_default()
+    });
+    !set.is_empty() && set.contains(&kind_name(i))
+}
+
+/// The variant name of `i` (`CallNative` for every native call).
+fn kind_name(i: &Inst) -> String {
+    let d = format!("{i:?}");
+    d.split([' ', '{', '(']).next().unwrap_or("").to_string()
+}
+
+/// The LLVM instructions in `f`.
+// ponytail: a walk per IR instruction, quadratic in a function's size; fine for a measuring aid.
+unsafe fn fn_count(f: LLVMValueRef) -> usize {
+    let mut n = 0;
+    // SAFETY: plain iteration over a live function.
+    unsafe {
+        let mut bb = LLVMGetFirstBasicBlock(f);
+        while !bb.is_null() {
+            let mut i = LLVMGetFirstInstruction(bb);
+            while !i.is_null() {
+                n += 1;
+                i = LLVMGetNextInstruction(i);
+            }
+            bb = LLVMGetNextBasicBlock(bb);
+        }
+    }
+    n
+}
+
+fn kind_add(k: String, ir: usize, llvm: usize) {
+    let mut v = KIND_STATS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(e) = v.iter_mut().find(|e| e.0 == k) {
+        e.1 += ir;
+        e.2 += llvm;
+    } else {
+        v.push((k, ir, llvm));
+    }
+}
+
+fn kind_report() {
+    let mut v = KIND_STATS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    v.sort_by_key(|e| std::cmp::Reverse(e.2));
+    let tot: usize = v.iter().map(|e| e.2).sum();
+    eprintln!("kinds: total llvm insts (pre-opt, frame mode) {tot}");
+    for (k, ir, l) in v.iter().take(40) {
+        eprintln!(
+            "kinds: {k:20} ir={ir:8} llvm={l:9} per={:.1} share={:.1}%",
+            *l as f64 / (*ir).max(1) as f64,
+            100.0 * *l as f64 / tot.max(1) as f64
+        );
+    }
+}
 
 /// Compiled code for the functions of one program.
 pub struct LlvmTier {
@@ -112,6 +215,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (HOST, yavs_rt_host as *const () as usize),
             (SIGNAL, yavs_rt_signal as *const () as usize),
             (DRIVE, yavs_rt_drive as *const () as usize),
+            (DRIVE_BIT, yavs_rt_drive_bit as *const () as usize),
             (WAIT, yavs_rt_wait as *const () as usize),
             (WAIT_ON, yavs_rt_wait_on as *const () as usize),
             (WAIT_SAME, yavs_rt_wait_same as *const () as usize),
@@ -122,6 +226,9 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DEOPT_SLOTS, yavs_rt_deopt_slots as *const () as usize),
             (DEOPT_END, yavs_rt_deopt_end as *const () as usize),
             (MEMEQ, yavs_rt_memeq as *const () as usize),
+            (SCAN, yavs_rt_scan as *const () as usize),
+            (CODES, yavs_rt_codes as *const () as usize),
+            (PLANES, yavs_rt_planes as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
@@ -152,7 +259,8 @@ pub(crate) enum Part {
     Frame,
 }
 
-/// A `--tier=llvm` module of more LLVM instructions than this is compiled at `OptLevel::Fast`.
+/// A `--tier=llvm` module of more LLVM instructions than this is compiled at `OptLevel::Fast`
+/// (`YAVS_LLVM_FAST_MIN` overrides it, a tuning aid like `YAVS_LLVM_PIPELINE`).
 const EAGER_FAST_MIN: usize = 150_000;
 
 /// Predecessors of one exit block of a frame-mode function (`Gen::exit_for`).
@@ -392,7 +500,11 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     };
     notes.extend(more);
     // Optimised code generation of a module this big takes minutes (#501).
-    let opt = if opt == OptLevel::O2 && m.instruction_count() > EAGER_FAST_MIN {
+    let fast_min = std::env::var("YAVS_LLVM_FAST_MIN")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(EAGER_FAST_MIN);
+    let opt = if opt == OptLevel::O2 && m.instruction_count() > fast_min {
         OptLevel::Fast
     } else {
         opt
@@ -409,6 +521,7 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         let f: RunFn = unsafe { std::mem::transmute::<usize, RunFn>(addr) };
         funcs[id.0 as usize] = Some((f, nregs));
     }
+    huge_code(funcs.iter().flatten().map(|(f, _)| *f as usize));
     let mut natives = vec![0; prog.funcs.len()];
     let mut calls = vec![0; prog.funcs.len()];
     for &id in &nc {
@@ -429,6 +542,9 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
         let syms: Vec<(usize, &str, &str)> =
             syms.iter().map(|(a, n, s)| (*a, *n, s.as_str())).collect();
         perf_map(&syms);
+    }
+    if std::env::var_os("YAVS_LLVM_KINDS").is_some() {
+        kind_report();
     }
     let mut kinds = std::collections::HashMap::new();
     let mut inline = 0;
@@ -471,13 +587,54 @@ pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
             native_kind(prog, f, *native, *args, *dst),
             Some(NativeKind::Table(..))
         ),
-        Inst::LayoutOf { ty, .. } => static_layout(prog, *ty).is_some(),
+        Inst::LayoutOf { ty, cache, .. } => {
+            static_layout(prog, *ty).is_some()
+                || cache.is_some() && layout_shape(prog, *ty).is_some()
+        }
         Inst::Bin { op, .. } | Inst::BinRange { op, .. } => *op != IntOp::Pow,
         Inst::FBin { op, .. } => !matches!(op, FOp::Pow | FOp::PowI),
         Inst::AddrOf { space, .. } => {
             addr_const(*space, 0).is_some() || matches!(space, AddrSpace::Up(1..=2))
         }
         _ => !inline_regs(f, i).is_empty() || matches!(i, Inst::Br { .. } | Inst::Stmt),
+    }
+}
+
+/// Whether compiled frame-mode code of `f` leaves for a callback at instruction `pc` on its usual
+/// path, as the policy of `--tier=auto` counts it (`auto::callbacks`): what `Gen::func` does not
+/// answer in place. Not only `is_inline`: also the signal reads, `'event` and the clock-edge natives
+/// answered from the kernel's views, the `WaitOn` that ends an activation, and the calls of
+/// functions that run on native frames (`nc`, `native_set`). Keep in step with `Gen::func`; the
+/// `cb_*` counters (`YAVS_COUNTERS=1`) show what really leaves.
+pub(crate) fn leaves(
+    prog: &Program,
+    f: &Func,
+    pc: usize,
+    nc: &std::collections::HashSet<FuncId>,
+) -> bool {
+    let Some(i) = f.code.get(pc) else {
+        return false;
+    };
+    match i {
+        _ if is_inline(prog, f, i) => false,
+        Inst::SigReadScalar { .. }
+        | Inst::SigRead { .. }
+        | Inst::Edge { .. }
+        | Inst::SigAttr {
+            kind: yavs_ir::AttrKind::Event,
+            ..
+        } => false,
+        Inst::CallNative { native, args, dst } => {
+            !matches!(
+                native_kind(prog, f, *native, *args, *dst),
+                Some(NativeKind::Edge(_))
+            ) || !matches!((f.regs(*args), dst), (Some(&[_]), Some(_)))
+        }
+        // The wait that ends the activation is its way out, not a callback in the middle of it.
+        Inst::WaitOn { .. } => !matches!(f.code.get(pc + 1), Some(Inst::Suspend { .. })),
+        Inst::Suspend { .. } => false,
+        Inst::Call { func, .. } | Inst::CallProt { func, .. } => !nc.contains(func),
+        _ => true,
     }
 }
 
@@ -498,10 +655,11 @@ const NC_REGS: usize = 512;
 const NC_SLOTS: u32 = 4096;
 const NC_CODE: usize = 2000;
 
-/// Instructions only a native frame lowers without a step (`Gen::func`): their frame is not the
-/// interpreter's, so a frame-mode function steps them. `NewFrame`, `Fill`, a `Cat` of
-/// non-logic elements, a typed `TempRoot`, a `CallNative` of a native `yavs_interp::direct_native`
-/// allows, and `CallProt` (its callee is checked by `native_set`).
+/// Instructions a native frame lowers without a step (`Gen::func`); a frame-mode function lowers
+/// the `Cat` of non-logic elements and the `CallNative` of a `direct_native` too
+/// (`frame_direct`) and steps the others. `NewFrame`, `Fill`, a `Cat` of non-logic elements, a
+/// typed `TempRoot`, a `CallNative` of a native `yavs_interp::direct_native` allows, and
+/// `CallProt` (its callee is checked by `native_set`).
 fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     let n = f.reg_ty.len() as u32;
     let fits = |rs: &[Reg]| rs.iter().all(|r| r.0 < n);
@@ -581,6 +739,86 @@ fn xstep_ok(f: &Func, i: &Inst) -> bool {
 
 /// The most pieces (operand pairs) of a `Cat` a native frame lowers.
 const CAT_PARTS: usize = 64;
+
+/// The byte ranges of the slots of `f` (`id`) when no address of its frame can leave its own
+/// code, so nothing else can ask for them by frame index (`Mem::nslots`): no function is nested
+/// in it, every address of the frame is made once (`AddrOf`, a preload) and used only as the
+/// address of a `Load` or a `Store`, never as data, an operand of a call or of any other
+/// instruction. The ranges are the parameters and what those loads and stores touch, merged;
+/// the rest of the slots stay zero.
+fn closed_frame(prog: &Program, f: &Func, id: FuncId) -> Option<Vec<(u64, u64)>> {
+    if prog.funcs.iter().any(|(_, g)| g.parent == Some(id)) {
+        return None;
+    }
+    let n = f.reg_ty.len();
+    let mut at: Vec<Option<u64>> = vec![None; n + 1];
+    let mut defs = vec![0u32; n + 1];
+    for i in &f.code {
+        // Operand lists (calls, natives, concatenations) count: `inst_regs`, not `Inst::visit`.
+        for r in yavs_interp::inst_regs(f, i).1 {
+            if let Some(d) = defs.get_mut(r.0 as usize) {
+                *d += 1;
+            }
+        }
+        if let Inst::AddrOf {
+            dst,
+            space: AddrSpace::Frame,
+            off,
+        } = *i
+            && let Some(a) = at.get_mut(dst.0 as usize)
+        {
+            *a = Some(off.into());
+        }
+    }
+    if at.iter().zip(&defs).any(|(a, &d)| a.is_some() && d != 1) {
+        return None;
+    }
+    let mut ranges: Vec<(u64, u64)> = f
+        .params
+        .iter()
+        .map(|p| {
+            (
+                u64::from(p.slot),
+                u64::from(p.slot) + u64::from(p.width.bytes()),
+            )
+        })
+        .collect();
+    for i in &f.code {
+        let uses = yavs_interp::inst_regs(f, i)
+            .0
+            .iter()
+            .filter(|r| at.get(r.0 as usize).is_some_and(|a| a.is_some()))
+            .count();
+        let allowed = match *i {
+            Inst::Load { addr: a, w, .. } | Inst::Store { addr: a, w, .. } => {
+                match at.get(a.0 as usize).copied().flatten() {
+                    Some(o) => {
+                        ranges.push((o, o + u64::from(w.bytes())));
+                        1
+                    }
+                    None => 0,
+                }
+            }
+            _ => 0,
+        };
+        if uses != allowed {
+            return None;
+        }
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (lo, hi) in ranges {
+        match merged.last_mut() {
+            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+            _ => merged.push((lo, hi)),
+        }
+    }
+    // A range beyond the frame is the function's own bug: leave it to the registered form.
+    merged
+        .iter()
+        .all(|&(_, hi)| hi <= u64::from(f.frame))
+        .then_some(merged)
+}
 
 /// Whether `f` itself may run on a native frame (`docs/decisions.md` "Compiled frames"): a
 /// function or procedure without a static link, small, whose instructions are all lowered
@@ -712,6 +950,11 @@ struct Gen {
     /// `yavs_rt_drive(env, regs, mem, pc, driver, lo, len, wave, inertial) -> u32`.
     drive_ty: LLVMTypeRef,
     drive: LLVMValueRef,
+    /// `yavs_rt_drive_bit(env, regs, mem, pc, driver, lo, len, delay, code) -> u32`: the scalar
+    /// logic assignment of a `yavs_interp::ScalarDrive`, the code in the low byte and bit 8 for
+    /// an inertial one.
+    drive_bit_ty: LLVMTypeRef,
+    drive_bit: LLVMValueRef,
     /// `yavs_rt_wait(env, regs, mem, pc, lo, len) -> u32`, and `yavs_rt_wait_on` of that type.
     wait_ty: LLVMTypeRef,
     wait: LLVMValueRef,
@@ -726,7 +969,7 @@ struct Gen {
     /// `yavs_rt_fast(env, regs, mem, op, dst, a, b) -> u32`.
     fast_ty: LLVMTypeRef,
     fast: LLVMValueRef,
-    /// `yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, link) -> ptr`.
+    /// `yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, link, regs) -> ptr`.
     deopt_ty: LLVMTypeRef,
     deopt: LLVMValueRef,
     /// `yavs_rt_deopt_slots(env) -> ptr`.
@@ -738,6 +981,15 @@ struct Gen {
     /// `yavs_rt_memeq(a, b, n) -> i64`.
     memeq_ty: LLVMTypeRef,
     memeq: LLVMValueRef,
+    /// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out, depth) -> iterations`.
+    scan_ty: LLVMTypeRef,
+    scan: LLVMValueRef,
+    /// `yavs_rt_codes(codes, groups, mask, out)`.
+    codes_ty: LLVMTypeRef,
+    codes: LLVMValueRef,
+    /// `yavs_rt_planes(src, nblk, bit0, n, dst)`.
+    planes_ty: LLVMTypeRef,
+    planes: LLVMValueRef,
     /// `yavs_rt_native(env, mem, native, cells, n, depth, out) -> u32`.
     native_ty: LLVMTypeRef,
     native: LLVMValueRef,
@@ -754,6 +1006,9 @@ struct Gen {
     frame_addr: (LLVMTypeRef, LLVMValueRef),
     /// Native callees are called by symbol (one module, `compile`), else through `Mem::ntab`.
     pub(crate) direct: bool,
+    /// Above 0 while a slow path of an inline fast path is generated: its callbacks are marked
+    /// `cold` and its blocks go behind the rest of the function (`Cur::cold`).
+    cold_depth: std::cell::Cell<u32>,
     /// Which memory a pointer value points into (`AA_*`), for alias scope metadata.
     kinds: std::cell::RefCell<std::collections::HashMap<usize, usize>>,
     /// `alias.scope` and `noalias` list nodes per kind, and their metadata kind ids.
@@ -811,6 +1066,12 @@ struct Cur<'p> {
     /// The frame's base before each slow path being generated (`slow_path`), and whether its
     /// step may push a frame; `join` takes them back.
     joins: std::cell::RefCell<Vec<(Option<LLVMValueRef>, bool)>>,
+    /// Blocks that run only when a guard fails: moved behind the rest at the end, so the hot
+    /// path falls through instead of jumping over them.
+    cold: std::cell::RefCell<Vec<LLVMBasicBlockRef>>,
+    /// The object the instruction being generated found for its result register (`ObjRef`):
+    /// entered in `known` once `track` has run for it.
+    objnew: std::cell::Cell<Option<(Reg, ObjRef)>>,
 }
 
 /// Deferred register stores (`regs.rs`): a definition of a pure instruction is kept as a value
@@ -861,6 +1122,15 @@ struct Nat {
     temp_base: LLVMValueRef,
     scratch: LLVMValueRef,
     id: FuncId,
+    /// Where the exit sites put the registers live at their pc, for `yavs_rt_deopt`: an
+    /// `alloca` that escapes to the call only, so the registers themselves stay SSA values.
+    spill: LLVMValueRef,
+    /// The registers live before each instruction (none: every register is recorded).
+    live: Option<crate::regs::Live>,
+    /// No address of the frame's slots ever leaves the function's own loads and stores
+    /// (`closed_frame`, the ranges of its slots in use): the slots are not registered in
+    /// `Mem::nslots` and LLVM may keep them in registers.
+    closed: Option<Vec<(u64, u64)>>,
 }
 
 impl Gen {
@@ -892,6 +1162,9 @@ impl Gen {
             let drive_name = CString::new(DRIVE).expect("no NUL");
             let mut dparams = [ptr, ptr, ptr, i32, i32, i64, i64, ptr, i32];
             let drive_ty = LLVMFunctionType(i32, dparams.as_mut_ptr(), 9, 0);
+            let drive_bit_name = CString::new(DRIVE_BIT).expect("no NUL");
+            let mut bparams = [ptr, ptr, ptr, i32, i32, i64, i64, i64, i64];
+            let drive_bit_ty = LLVMFunctionType(i32, bparams.as_mut_ptr(), 9, 0);
             let wait_name = CString::new(WAIT).expect("no NUL");
             let wait_on_name = CString::new(WAIT_ON).expect("no NUL");
             let wait_same_name = CString::new(WAIT_SAME).expect("no NUL");
@@ -906,14 +1179,21 @@ impl Gen {
             let layout_name = CString::new(LAYOUT).expect("no NUL");
             let mut yparams = [ptr, ptr, ptr, i64, i32, i32, i64, i64, i64, i32];
             let layout_ty = LLVMFunctionType(i32, yparams.as_mut_ptr(), 10, 0);
-            let mut dparams = [ptr, ptr, i32, i32, i64, i64, i64, i64];
-            let deopt_ty = LLVMFunctionType(ptr, dparams.as_mut_ptr(), 8, 0);
+            let mut dparams = [ptr, ptr, i32, i32, i64, i64, i64, i64, ptr];
+            let deopt_ty = LLVMFunctionType(ptr, dparams.as_mut_ptr(), 9, 0);
             let mut dsparams = [ptr];
             let deopt_slots_ty = LLVMFunctionType(ptr, dsparams.as_mut_ptr(), 1, 0);
             let mut deparams = [ptr, ptr, i32];
             let deopt_end_ty = LLVMFunctionType(i32, deparams.as_mut_ptr(), 3, 0);
             let mut mparams = [ptr, ptr, i64];
             let memeq_ty = LLVMFunctionType(i64, mparams.as_mut_ptr(), 3, 0);
+            let mut scparams = [ptr, ptr, i64, i64, i64, i64, i64, i64, i64, ptr, i64];
+            let scan_ty = LLVMFunctionType(i32, scparams.as_mut_ptr(), 11, 0);
+            let mut cparams = [ptr, i64, i64, ptr];
+            let codes_ty = LLVMFunctionType(LLVMVoidTypeInContext(ctx), cparams.as_mut_ptr(), 4, 0);
+            let mut plparams = [ptr, i64, i64, i64, ptr];
+            let planes_ty =
+                LLVMFunctionType(LLVMVoidTypeInContext(ctx), plparams.as_mut_ptr(), 5, 0);
             let mut nparams = [ptr, ptr, i32, ptr, i32, i64, ptr];
             let native_ty = LLVMFunctionType(i32, nparams.as_mut_ptr(), 7, 0);
             let mut tparams = [ptr, ptr, i64, i32, ptr, i64];
@@ -953,6 +1233,8 @@ impl Gen {
                 signal: LLVMAddFunction(module, signal_name.as_ptr(), signal_ty),
                 drive_ty,
                 drive: LLVMAddFunction(module, drive_name.as_ptr(), drive_ty),
+                drive_bit_ty,
+                drive_bit: LLVMAddFunction(module, drive_bit_name.as_ptr(), drive_bit_ty),
                 wait_ty,
                 wait: LLVMAddFunction(module, wait_name.as_ptr(), wait_ty),
                 wait_on: LLVMAddFunction(module, wait_on_name.as_ptr(), wait_ty),
@@ -971,6 +1253,12 @@ impl Gen {
                 deopt_end: add(DEOPT_END, deopt_end_ty),
                 memeq_ty,
                 memeq: add(MEMEQ, memeq_ty),
+                scan_ty,
+                scan: add(SCAN, scan_ty),
+                codes_ty,
+                codes: add(CODES, codes_ty),
+                planes_ty,
+                planes: add(PLANES, planes_ty),
                 native_ty,
                 native: add(NATIVE, native_ty),
                 troot_ty,
@@ -981,6 +1269,7 @@ impl Gen {
                 xstep: add(XSTEP, xstep_ty),
                 frame_addr,
                 direct: false,
+                cold_depth: Default::default(),
                 kinds: Default::default(),
                 aa: Default::default(),
                 sadd: intrinsic(c"llvm.sadd.with.overflow"),
@@ -1039,11 +1328,24 @@ impl Gen {
                 self.troot,
                 self.endstmt,
                 self.xstep,
+                self.scan,
             ] {
                 self.attr(f, false, "nounwind", 0);
             }
             self.attr(self.memeq, false, "nounwind", 0);
-            for f in [self.host, self.lcopy, self.deopt_slots, self.memeq] {
+            self.attr(self.codes, false, "nounwind", 0);
+            self.attr(self.planes, false, "nounwind", 0);
+            self.attr(self.planes, false, "willreturn", 0);
+            self.attr(self.planes, false, "memory", mem_effects(RW, 0, 0));
+            self.attr(self.planes, false, "nofree", 0);
+            self.attr(self.planes, false, "nosync", 0);
+            for f in [
+                self.host,
+                self.lcopy,
+                self.deopt_slots,
+                self.memeq,
+                self.codes,
+            ] {
                 self.attr(f, false, "willreturn", 0);
             }
             self.attr(self.memeq, false, "memory", mem_effects(REF, 0, 0));
@@ -1053,6 +1355,9 @@ impl Gen {
             self.attr(self.lcopy, false, "memory", mem_effects(RW, 0, 0));
             self.attr(self.lcopy, false, "nofree", 0);
             self.attr(self.lcopy, false, "nosync", 0);
+            self.attr(self.codes, false, "memory", mem_effects(RW, 0, 0));
+            self.attr(self.codes, false, "nofree", 0);
+            self.attr(self.codes, false, "nosync", 0);
             self.attr(self.deopt_slots, false, "memory", mem_effects(REF, 0, 0));
         }
     }
@@ -1113,8 +1418,33 @@ impl Gen {
     unsafe fn leave(&self, c: &Cur, v: LLVMValueRef) {
         // SAFETY: the builder is in a block of c.f; the phi is the exit block's.
         unsafe {
+            if let Some(n) = &c.nat {
+                self.spill_live(c, n, v);
+            }
             let exit = self.exit_for(c, v);
             LLVMBuildBr(self.b, exit);
+        }
+    }
+
+    /// A native frame leaves to be materialised at the pc `v`: store the registers the
+    /// interpreter reads from there (all of them when `v` is no constant or liveness is not
+    /// known) in the spill buffer. Only these are live up to this exit, so the other registers
+    /// need not stay in machine registers or stack slots up to every guard.
+    unsafe fn spill_live(&self, c: &Cur, n: &Nat, v: LLVMValueRef) {
+        // SAFETY: the builder is in a block of c.f; `spill` has one word per register.
+        unsafe {
+            let row = (!LLVMIsAConstantInt(v).is_null())
+                .then(|| LLVMConstIntGetZExtValue(v) as usize)
+                .zip(n.live.as_ref())
+                .map(|(pc, l)| l.row(pc));
+            let nregs = c.known.borrow().len();
+            for r in 0..nregs {
+                if row.is_some_and(|w| w[r / 64] >> (r % 64) & 1 == 0) {
+                    continue;
+                }
+                let at = self.gep(n.spill, self.c64(r as i64 * 8));
+                self.store(self.ld(c, Reg(r as u32)), at);
+            }
         }
     }
 
@@ -1484,7 +1814,8 @@ impl Gen {
         unsafe {
             let out = self.block(c);
             let cont = self.block(c);
-            LLVMBuildCondBr(self.b, bad, out, cont);
+            c.cold.borrow_mut().push(out);
+            self.cond_br(bad, out, cont, false);
             LLVMPositionBuilderAtEnd(self.b, out);
             self.flush_exit(c, pc);
             LLVMPositionBuilderAtEnd(self.b, cont);
@@ -1673,6 +2004,7 @@ impl Gen {
                 let sty = LLVMArrayType2(self.i64, (u64::from(f.frame)).div_ceil(8).max(1));
                 let slots = LLVMBuildAlloca(self.b, sty, c"".as_ptr());
                 let scratch = LLVMBuildAlloca(self.b, self.i64, c"".as_ptr());
+                let spill = LLVMBuildAlloca(self.b, rty, c"".as_ptr());
                 let tbase = LLVMBuildAlloca(self.b, self.i64, c"".as_ptr());
                 let depth = LLVMGetParam(fv, 2);
                 let tag = self.c64((u64::from(space::FRAME) << 29) as i64);
@@ -1690,14 +2022,30 @@ impl Gen {
                     temp_base: tbase,
                     scratch,
                     id,
+                    spill,
+                    live: crate::regs::Live::new(prog, f, None),
+                    closed: closed_frame(prog, f, id),
                 };
                 (regs, LLVMGetParam(fv, 1), Some(nat))
             } else {
                 (LLVMGetParam(fv, 1), LLVMGetParam(fv, 2), None)
             };
-            let static_wait = (!native && f.kind == FuncKind::Process)
-                .then(|| yavs_interp::static_wait(prog, f))
-                .flatten();
+            let static_wait = if !native && f.kind == FuncKind::Process {
+                yavs_interp::static_wait(prog, f, 1)
+            } else {
+                Vec::new()
+            };
+            // The scalar logic assignments the interpreter runs as one op: the waveform is not
+            // made here either (its instructions are `skipped`, the `Drive` is the step).
+            let scalar_drives = if !native && f.kind == FuncKind::Process {
+                yavs_interp::scalar_drives(prog, f)
+            } else {
+                Vec::new()
+            };
+            let skipped: std::collections::HashSet<u32> = scalar_drives
+                .iter()
+                .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
+                .collect();
             let mut c = Cur {
                 prog,
                 consts: Default::default(),
@@ -1718,11 +2066,22 @@ impl Gen {
                 defer: None,
                 scal: None,
                 joins: Default::default(),
+                cold: Default::default(),
+                objnew: Default::default(),
             };
             // Registers the interpreter starts the frame with hold the same address everywhere.
             let mut base_known: Vec<Option<Known>> = vec![None; nregs];
-            if !native {
-                let pre = crate::regs::preloaded(f);
+            {
+                // A native frame stores them at entry (`preloads`).
+                let pre = if native {
+                    let mut p = vec![false; nregs];
+                    for (r, a, _) in preloads(f) {
+                        p[r.0 as usize] = a.is_some();
+                    }
+                    p
+                } else {
+                    crate::regs::preloaded(f)
+                };
                 for i in &f.code {
                     if let Inst::AddrOf { dst, space, off } = *i
                         && pre.get(dst.0 as usize) == Some(&true)
@@ -1950,13 +2309,17 @@ impl Gen {
                 // in the parameter slots.
                 let nat = c.nat.as_ref().expect("native");
                 let slots = nat.slots;
-                LLVMBuildMemSet(
-                    self.b,
-                    slots,
-                    LLVMConstInt(self.i8, 0, 0),
-                    self.c64(i64::from(f.frame)),
-                    8,
-                );
+                let zero = LLVMConstInt(self.i8, 0, 0);
+                match &nat.closed {
+                    // Only the bytes in use: the rest is never read (`closed_frame`).
+                    Some(rs) => rs.iter().for_each(|&(lo, hi)| {
+                        let at = self.gep(slots, self.c64(lo as i64));
+                        LLVMBuildMemSet(self.b, at, zero, self.c64((hi - lo) as i64), 1);
+                    }),
+                    None => {
+                        LLVMBuildMemSet(self.b, slots, zero, self.c64(i64::from(f.frame)), 8);
+                    }
+                }
                 let mut k = if f.parent.is_some() { 5 } else { 3 };
                 for p in &f.params {
                     let at = self.gep(slots, self.c64(i64::from(p.slot)));
@@ -1982,7 +2345,8 @@ impl Gen {
                     c"".as_ptr(),
                 );
                 LLVMBuildStore(self.b, entry_len, nat.temp_base);
-                // Callees reach these slots through their frame index.
+                // Callees reach these slots through their frame index. A closed frame has no
+                // address they could be asked for: its entry only says it holds nothing.
                 let tab = LLVMBuildLoad2(
                     self.b,
                     self.ptr,
@@ -1993,8 +2357,12 @@ impl Gen {
                     tab,
                     LLVMBuildMul(self.b, nat.depth, self.c64(16), c"".as_ptr()),
                 );
-                self.store(slots, ent);
-                self.store(self.c64(i64::from(f.frame)), self.gep(ent, self.c64(8)));
+                if nat.closed.is_some() {
+                    self.store(self.c64(0), self.gep(ent, self.c64(8)));
+                } else {
+                    self.store(slots, ent);
+                    self.store(self.c64(i64::from(f.frame)), self.gep(ent, self.c64(8)));
+                }
                 for (r, addr, v) in preloads(f) {
                     let x = match addr {
                         None => self.c64(v),
@@ -2055,12 +2423,83 @@ impl Gen {
                     .map(|b| b.start as usize)
                     .ok_or_else(|| format!("branch to missing block {}", b.0))
             };
+            // A native frame's block with a single way in takes what its predecessor knew at the
+            // jump: the values defined there dominate it (`inherit`).
+            let mut inherit: Vec<Option<Vec<Option<Known>>>> = vec![None; n + 1];
+            let mut ways = vec![0u32; n + 1];
+            ways[0] = 2;
+            if native {
+                for inst in &f.code {
+                    let to_all: Vec<yavs_ir::BlockId> = match *inst {
+                        Inst::Br { to } => vec![to],
+                        Inst::CondBr { t, f: e, .. } => vec![t, e],
+                        Inst::Case { table, .. } => prog
+                            .cases
+                            .get(table)
+                            .map(|t| {
+                                std::iter::once(t.default)
+                                    .chain(t.arms.iter().map(|a| a.2))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        _ => continue,
+                    };
+                    for b in to_all {
+                        if let Some(w) =
+                            f.blocks.get(b).and_then(|b| ways.get_mut(b.start as usize))
+                        {
+                            *w += 1;
+                        }
+                    }
+                }
+            }
+            // Search loops (`yavs_interp::search_loops`) of a native frame run through
+            // `yavs_rt_scan` at their head; the helper's exits jump to blocks it skips the way to.
+            let scans: std::collections::HashMap<u32, yavs_interp::SearchLoop> = if native {
+                yavs_interp::search_loops(f)
+                    .into_iter()
+                    .map(|l| (l.head, l))
+                    .collect()
+            } else {
+                Default::default()
+            };
+            for l in scans.values() {
+                for b in [l.found, l.end] {
+                    if let Some(w) = f.blocks.get(b).and_then(|b| ways.get_mut(b.start as usize)) {
+                        *w += 1;
+                    }
+                }
+            }
             let mut open = false;
             let mut prev = None;
+            let kinds = std::env::var_os("YAVS_LLVM_KINDS").is_some() && !native;
+            let mut kmark: Option<(String, usize)> = None;
             for (i, &inst) in f.code.iter().enumerate() {
                 let pc = i as u32;
+                if kinds {
+                    let now = fn_count(fv);
+                    if let Some((k, was)) = kmark.take() {
+                        kind_add(k, 1, now - was);
+                    }
+                    kmark = Some((kind_name(&inst), now));
+                }
                 if let Some(p) = prev.replace(inst) {
                     track(&mut c.known.borrow_mut(), &c.fixed, &p);
+                    // The objects found stay valid up to an instruction that may free or move
+                    // one (`keeps_objects`: the rule of the object table too).
+                    if !keeps_objects(&p) {
+                        c.objnew.set(None);
+                        for k in c.known.borrow_mut().iter_mut().flatten() {
+                            if let Known::Heap(o) = k {
+                                *o = None;
+                            }
+                        }
+                    }
+                    if let Some((r, o)) = c.objnew.take()
+                        && let Some(k) = c.known.borrow_mut().get_mut(r.0 as usize)
+                    {
+                        *k = Some(Known::Heap(Some(o)));
+                    }
                     // What the previous instruction defined and did not defer is in the frame.
                     if let Some(d) = &c.defer {
                         let fresh = std::mem::take(&mut *d.fresh.borrow_mut());
@@ -2083,7 +2522,33 @@ impl Gen {
                     d.pc.set(pc);
                 }
                 if block_start[i] {
-                    c.known.borrow_mut().clone_from(&base_known);
+                    match inherit[i].take() {
+                        Some(k) if native && ways[i] == 1 => *c.known.borrow_mut() = k,
+                        _ => c.known.borrow_mut().clone_from(&base_known),
+                    }
+                }
+                if native {
+                    let to_all: Vec<yavs_ir::BlockId> = match inst {
+                        Inst::Br { to } => vec![to],
+                        Inst::CondBr { t, f: e, .. } => vec![t, e],
+                        Inst::Case { table, .. } => prog
+                            .cases
+                            .get(table)
+                            .map(|t| {
+                                std::iter::once(t.default)
+                                    .chain(t.arms.iter().map(|a| a.2))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        _ => Vec::new(),
+                    };
+                    for b in to_all {
+                        if let Some(at) = f.blocks.get(b).map(|b| b.start as usize)
+                            && ways.get(at) == Some(&1)
+                        {
+                            inherit[at] = Some(c.known.borrow().clone());
+                        }
+                    }
                 }
                 // What is known about an address register (`Gen::host`).
                 let fk = |r: Reg| self.known_addr(&c, r);
@@ -2120,7 +2585,58 @@ impl Gen {
                     open = false;
                     continue;
                 }
+                if ablate(&inst) {
+                    self.step(&c, pc, &inst);
+                    continue;
+                }
+                if let Some(l) = scans.get(&pc) {
+                    // The iterations that need nothing special run in the helper; what it leaves
+                    // (a fault, a long loop, memory it does not reach) is the generic code below.
+                    let out = self.entry_alloca(&c, 32);
+                    let mut args = [
+                        c.env,
+                        c.mem,
+                        self.c64(scan_ctl(l) as i64),
+                        self.ld(&c, l.dope),
+                        self.ld(&c, l.base),
+                        self.ld(&c, l.idx),
+                        self.ld(&c, l.x),
+                        self.ld(&c, l.e),
+                        self.c64(l.shape.delta),
+                        out,
+                        c.nat.as_ref().map_or(self.c64(0), |n| n.depth),
+                    ];
+                    let iters = LLVMBuildCall2(
+                        self.b,
+                        self.scan_ty,
+                        self.scan,
+                        args.as_mut_ptr(),
+                        11,
+                        c"".as_ptr(),
+                    );
+                    let (done, generic) = (self.block(&c), self.block(&c));
+                    LLVMBuildCondBr(
+                        self.b,
+                        self.icmp(IP::LLVMIntNE, iters, self.c32(0)),
+                        done,
+                        generic,
+                    );
+                    LLVMPositionBuilderAtEnd(self.b, done);
+                    let word = |k: i64| self.load(self.i64, self.gep(out, self.c64(k * 8)));
+                    self.st(&c, l.idx, word(0));
+                    self.st(&c, l.ch, word(1));
+                    let sw = LLVMBuildSwitch(self.b, word(2), generic, 2);
+                    LLVMAddCase(sw, self.c64(1), block_bb(l.found)?);
+                    LLVMAddCase(sw, self.c64(2), block_bb(l.end)?);
+                    LLVMPositionBuilderAtEnd(self.b, generic);
+                }
                 match inst {
+                    _ if skipped.contains(&pc) => {}
+                    Inst::Drive { .. }
+                        if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) =>
+                    {
+                        self.drive_bit(&c, pc, d)
+                    }
                     Inst::Const { dst, v } => self.std(&c, dst, self.c64(v)),
                     Inst::ConstF { dst, v } => self.std(&c, dst, self.c64(v.to_bits() as i64)),
                     Inst::Move { dst, src } => self.std(&c, dst, self.ld(&c, src)),
@@ -2291,16 +2807,41 @@ impl Gen {
                         stride,
                     } => {
                         // Address offset in the low 32 bits; anything over 4 GiB is the
-                        // interpreter's error.
+                        // interpreter's error. With a position under 2^32 and a stride under
+                        // 2^32 the product and the sum cannot wrap, so one test of both
+                        // against 32 bits does for the overflow checks (a stride of 0 takes no
+                        // position into account).
+                        let known_obj = match fk(base) {
+                            Some(Known::Heap(Some(o))) => Some(o),
+                            _ => None,
+                        };
                         let a = self.ld(&c, base);
-                        let (off, o1) =
-                            self.ovf(self.umul, self.ld(&c, pos), self.c64(i64::from(stride)));
-                        let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
-                        let (sum, o2) = self.ovf(self.uadd, lo, off);
-                        let big = self.icmp(IP::LLVMIntUGT, sum, self.c64(0xffff_ffff));
-                        self.exit_if(&c, self.or(self.or(o1, o2), big), pc);
-                        let hi = LLVMBuildAnd(self.b, a, self.c64(!0xffff_ffff), c"".as_ptr());
+                        let p = self.ld(&c, pos);
+                        let off =
+                            LLVMBuildMul(self.b, p, self.c64(i64::from(stride)), c"".as_ptr());
+                        let lo = match known_obj {
+                            Some(o) => o.off,
+                            None => LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr()),
+                        };
+                        let sum = LLVMBuildAdd(self.b, lo, off, c"".as_ptr());
+                        let wide = if stride == 0 {
+                            sum
+                        } else {
+                            LLVMBuildOr(self.b, p, sum, c"".as_ptr())
+                        };
+                        self.exit_if(
+                            &c,
+                            self.icmp(IP::LLVMIntUGT, wide, self.c64(0xffff_ffff)),
+                            pc,
+                        );
+                        let hi = match known_obj {
+                            Some(o) => o.hi,
+                            None => LLVMBuildAnd(self.b, a, self.c64(!0xffff_ffff), c"".as_ptr()),
+                        };
                         self.st(&c, dst, LLVMBuildOr(self.b, hi, sum, c"".as_ptr()));
+                        if let Some(o) = known_obj {
+                            c.objnew.set(Some((dst, ObjRef { off: sum, ..o })));
+                        }
                     }
                     Inst::AddrOf { dst, space, off } => match addr_const(space, off) {
                         Some(a) if space == AddrSpace::Frame => {
@@ -2337,8 +2878,9 @@ impl Gen {
                     // (`Machine::fat_root`); the helper says when none does.
                     Inst::TempRoot { addr, ty: None, .. } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
-                        // A native frame records the roots itself where the interpreter would.
-                        let miss = if c.nat.is_some() {
+                        // The roots are recorded by the host's own function, in a native frame
+                        // and in frame-mode code (no frame view, no registers to store).
+                        let miss = {
                             let here = LLVMGetInsertBlock(self.b);
                             let rec = self.block(&c);
                             LLVMPositionBuilderAtEnd(self.b, rec);
@@ -2352,32 +2894,62 @@ impl Gen {
                             );
                             LLVMPositionBuilderAtEnd(self.b, here);
                             rec
-                        } else {
-                            slow
                         };
-                        self.fast_op(&c, FAST_FAT_ROOT, 0, self.ld(&c, addr), self.c64(0), miss);
+                        // Both words read in place (a pair in a frame, the temporary area or an
+                        // object found before); `yavs_rt_fast` where they cannot be.
+                        let a = self.ld(&c, addr);
+                        let p = self.host(
+                            &c,
+                            a,
+                            self.known_addr(&c, addr),
+                            self.c64(0),
+                            self.c64(16),
+                            false,
+                            miss,
+                        );
+                        let in_heap = |w: LLVMValueRef| {
+                            let sp = LLVMBuildLShr(self.b, w, self.c64(61), c"".as_ptr());
+                            self.or(
+                                self.icmp(IP::LLVMIntEQ, sp, self.c64(i64::from(space::HEAP))),
+                                self.icmp(
+                                    IP::LLVMIntEQ,
+                                    sp,
+                                    self.c64(i64::from(space::SHARED_HEAP)),
+                                ),
+                            )
+                        };
+                        let (w0, w1) = (
+                            self.load(self.i64, p),
+                            self.load(self.i64, self.gep(p, self.c64(8))),
+                        );
+                        let heap = self.or(in_heap(w0), in_heap(w1));
+                        self.guard(&c, LLVMBuildNot(self.b, heap, c"".as_ptr()), miss);
                         self.join(&c, join);
                     }
                     Inst::Stmt => {
-                        // With recorded temporaries a native frame drops them itself.
-                        let (slow, join) = if c.nat.is_some() {
-                            let (join, here) = (self.block(&c), LLVMGetInsertBlock(self.b));
-                            let rec = self.block(&c);
-                            LLVMPositionBuilderAtEnd(self.b, rec);
-                            let mut a = [c.env, c.mem, self.temp_base(&c)];
+                        // With recorded temporaries the host's own function drops them, in a native
+                        // frame and in frame-mode code.
+                        let endstmt = |g: &Self| {
+                            let mut a = [c.env, c.mem, g.temp_base(&c)];
                             LLVMBuildCall2(
-                                self.b,
-                                self.endstmt_ty,
-                                self.endstmt,
+                                g.b,
+                                g.endstmt_ty,
+                                g.endstmt,
                                 a.as_mut_ptr(),
                                 3,
                                 c"".as_ptr(),
                             );
+                        };
+                        let (slow, join) = if c.nat.is_some() {
+                            let (join, here) = (self.block(&c), LLVMGetInsertBlock(self.b));
+                            let rec = self.block(&c);
+                            LLVMPositionBuilderAtEnd(self.b, rec);
+                            endstmt(self);
                             LLVMBuildBr(self.b, join);
                             LLVMPositionBuilderAtEnd(self.b, here);
                             (rec, join)
                         } else {
-                            self.slow_path(&c, pc, &inst)
+                            self.slow_path_with(&c, pc, &inst, false, |g, _| endstmt(g))
                         };
                         let roots = self.mem_ld(&c, MEM_TEMP_ROOTS, self.i64);
                         self.guard(&c, self.icmp(IP::LLVMIntEQ, roots, self.c64(0)), slow);
@@ -2389,7 +2961,7 @@ impl Gen {
                         self.join(&c, join);
                         // The wait that names the same signals every time: the kernel keeps
                         // the last one, and the process suspends without naming them (#530).
-                        if let Some((_, at)) = static_wait.filter(|w| w.0 == i) {
+                        if let Some(&(_, at)) = static_wait.iter().find(|w| w.0 == i) {
                             let mut args = [
                                 c.env,
                                 c.regs,
@@ -2407,8 +2979,52 @@ impl Gen {
                         self.st(&c, dst, a);
                         self.join(&c, join);
                     }
-                    Inst::LayoutOf { dst, ty, desc } => match static_layout(prog, ty) {
-                        Some(StaticLayout::Array { dims, elem, logic }) if c.nat.is_none() => {
+                    // The layout the process's frame keeps for this type, when the descriptor is
+                    // the one it was made for (`layout_cache`); else the interpreter makes it and
+                    // the frame keeps that.
+                    Inst::LayoutOf {
+                        dst,
+                        ty,
+                        desc,
+                        cache: Some(at),
+                    } if c.nat.is_none() && layout_shape(prog, ty).is_some() => {
+                        let (dsz, nw) = layout_shape(prog, ty).expect("checked");
+                        let (slow, join) = self.slow_path_then(&c, pc, &inst, |g, join| {
+                            g.layout_keep(&c, dst, desc, fk(desc), at, dsz, nw, join)
+                        });
+                        let slots = self.tag(self.own_slots_cached(&c), AA_SLOTS);
+                        let base = self.gep(slots, self.c64(i64::from(at)));
+                        let kept = self.load(self.i64, base);
+                        self.guard(&c, self.icmp(IP::LLVMIntNE, kept, self.c64(0)), slow);
+                        let pd = self.host(
+                            &c,
+                            self.ld(&c, desc),
+                            fk(desc),
+                            self.c64(0),
+                            self.c64(i64::from(dsz)),
+                            false,
+                            slow,
+                        );
+                        let mut diff = self.c64(0);
+                        for k in 0..i64::from(dsz / 8) {
+                            let x = LLVMBuildXor(
+                                self.b,
+                                self.load(self.i64, self.gep(pd, self.c64(8 * k))),
+                                self.load(self.i64, self.gep(base, self.c64(8 + 8 * k))),
+                                c"".as_ptr(),
+                            );
+                            diff = self.or(diff, x);
+                        }
+                        self.guard(&c, self.icmp(IP::LLVMIntEQ, diff, self.c64(0)), slow);
+                        let hi = LLVMBuildShl(self.b, self.own_hi(&c), self.c64(32), c"".as_ptr());
+                        let words = self.c64(i64::from(at) + 8 + i64::from(dsz));
+                        self.st(&c, dst, LLVMBuildOr(self.b, hi, words, c"".as_ptr()));
+                        self.join(&c, join);
+                    }
+                    Inst::LayoutOf { dst, ty, desc, .. } => match static_layout(prog, ty) {
+                        Some(StaticLayout::Array { dims, elem, logic })
+                            if c.nat.is_none() && dims > 1 =>
+                        {
                             // `yavs_rt_layout` does what `Ty::layout` would; 0 is the interpreter's.
                             let (slow, join) = self.slow_path(&c, pc, &inst);
                             let stride = elem.size.next_multiple_of(elem.align.max(1));
@@ -2629,6 +3245,59 @@ impl Gen {
                         }
                         self.join(&c, join);
                     }
+                    Inst::SlicePos {
+                        dst,
+                        dope,
+                        left,
+                        right,
+                        dir,
+                        ..
+                    } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let p = self.host(
+                            &c,
+                            self.ld(&c, dope),
+                            fk(dope),
+                            self.c64(0),
+                            self.c64(24),
+                            false,
+                            slow,
+                        );
+                        let (l, r, d) = self.dope_words(p);
+                        let (a, b, w) = (self.ld(&c, left), self.ld(&c, right), self.ld(&c, dir));
+                        let and = |x, y| LLVMBuildAnd(self.b, x, y, c"".as_ptr());
+                        let le = |x, y| self.icmp(IP::LLVMIntSLE, x, y);
+                        let down = self.icmp(IP::LLVMIntEQ, w, self.c64(1));
+                        // A null slice names no element and checks nothing.
+                        let null = LLVMBuildSelect(
+                            self.b,
+                            down,
+                            self.icmp(IP::LLVMIntSLT, a, b),
+                            self.icmp(IP::LLVMIntSGT, a, b),
+                            c"".as_ptr(),
+                        );
+                        let up = self.icmp(IP::LLVMIntEQ, d, self.c64(0));
+                        let inside = |i| {
+                            let u = and(up, and(le(l, i), le(i, r)));
+                            let n = and(
+                                self.icmp(IP::LLVMIntEQ, d, self.c64(1)),
+                                and(le(r, i), le(i, l)),
+                            );
+                            self.or(u, n)
+                        };
+                        let valid = and(self.icmp(IP::LLVMIntEQ, w, d), and(inside(a), inside(b)));
+                        self.guard(&c, self.or(null, valid), slow);
+                        let from_l = LLVMBuildSub(self.b, a, l, c"".as_ptr());
+                        let from_a = LLVMBuildSub(self.b, l, a, c"".as_ptr());
+                        let pos = LLVMBuildSelect(self.b, up, from_l, from_a, c"".as_ptr());
+                        let zero = self.c64(0);
+                        self.st(
+                            &c,
+                            dst,
+                            LLVMBuildSelect(self.b, null, zero, pos, c"".as_ptr()),
+                        );
+                        self.join(&c, join);
+                    }
                     Inst::Pos {
                         dst,
                         dope,
@@ -2649,20 +3318,25 @@ impl Gen {
                         );
                         let (l, r, dir) = self.dope_words(p);
                         let i = self.ld(&c, idx);
-                        let le = |a, b| self.icmp(IP::LLVMIntSLE, a, b);
-                        let and = |a, b| LLVMBuildAnd(self.b, a, b, c"".as_ptr());
-                        let up = and(
-                            self.icmp(IP::LLVMIntEQ, dir, self.c64(0)),
-                            and(le(l, i), le(i, r)),
+                        // With the range `lo <= hi` (upwards `l..r`, downwards `r..l`), `i` is in
+                        // it exactly when `i - lo` is at most `hi - lo` as unsigned numbers.
+                        let sub = |a, b| LLVMBuildSub(self.b, a, b, c"".as_ptr());
+                        let up = self.icmp(IP::LLVMIntEQ, dir, self.c64(0));
+                        let sel = |a, b| LLVMBuildSelect(self.b, up, a, b, c"".as_ptr());
+                        let (lo, hi) = (sel(l, r), sel(r, l));
+                        let ok = LLVMBuildAnd(
+                            self.b,
+                            LLVMBuildAnd(
+                                self.b,
+                                self.icmp(IP::LLVMIntULE, dir, self.c64(1)),
+                                self.icmp(IP::LLVMIntSLE, lo, hi),
+                                c"".as_ptr(),
+                            ),
+                            self.icmp(IP::LLVMIntULE, sub(i, lo), sub(hi, lo)),
+                            c"".as_ptr(),
                         );
-                        let dn = and(
-                            self.icmp(IP::LLVMIntEQ, dir, self.c64(1)),
-                            and(le(r, i), le(i, l)),
-                        );
-                        self.guard(&c, self.or(up, dn), slow);
-                        let a = LLVMBuildSub(self.b, i, l, c"".as_ptr());
-                        let b = LLVMBuildSub(self.b, l, i, c"".as_ptr());
-                        self.st(&c, dst, LLVMBuildSelect(self.b, up, a, b, c"".as_ptr()));
+                        self.guard(&c, ok, slow);
+                        self.st(&c, dst, sel(sub(i, l), sub(l, i)));
                         self.join(&c, join);
                     }
                     Inst::Field {
@@ -2684,7 +3358,14 @@ impl Gen {
                         );
                         let off = self.load(self.i64, p);
                         let a = self.ld(&c, base);
-                        let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                        let known_obj = match fk(base) {
+                            Some(Known::Heap(Some(o))) => Some(o),
+                            _ => None,
+                        };
+                        let lo = match known_obj {
+                            Some(o) => o.off,
+                            None => LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr()),
+                        };
                         let (sum, o) = self.ovf(self.uadd, lo, off);
                         let big = self.icmp(IP::LLVMIntUGT, sum, self.c64(0xffff_ffff));
                         self.guard(
@@ -2692,9 +3373,15 @@ impl Gen {
                             LLVMBuildNot(self.b, self.or(o, big), c"".as_ptr()),
                             slow,
                         );
-                        let hi = LLVMBuildAnd(self.b, a, self.c64(!0xffff_ffff), c"".as_ptr());
+                        let hi = match known_obj {
+                            Some(o) => o.hi,
+                            None => LLVMBuildAnd(self.b, a, self.c64(!0xffff_ffff), c"".as_ptr()),
+                        };
                         self.st(&c, dst, LLVMBuildOr(self.b, hi, sum, c"".as_ptr()));
                         self.join(&c, join);
+                        if let (Some(o), true) = (known_obj, c.nat.is_some()) {
+                            c.objnew.set(Some((dst, ObjRef { off: sum, ..o })));
+                        }
                     }
                     Inst::LGet { dst, base, idx } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
@@ -2708,6 +3395,100 @@ impl Gen {
                             code = LLVMBuildOr(self.b, code, bit, c"".as_ptr());
                         }
                         self.st(&c, dst, code);
+                        self.join(&c, join);
+                    }
+                    // A run of 1 to 64 elements inside one plane block set to one code; any other
+                    // run is stepped.
+                    Inst::LFill { base, idx, n, v } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let code = self.ld(&c, v);
+                        self.guard(&c, self.icmp(IP::LLVMIntULE, code, self.c64(8)), slow);
+                        let cnt = self.ld(&c, n);
+                        let n1 = LLVMBuildSub(self.b, cnt, self.c64(1), c"".as_ptr());
+                        self.guard(&c, self.icmp(IP::LLVMIntULT, n1, self.c64(64)), slow);
+                        let (p, sh) = self.logic_word(&c, base, fk(base), idx, true, slow);
+                        let end = LLVMBuildAdd(self.b, sh, cnt, c"".as_ptr());
+                        self.guard(&c, self.icmp(IP::LLVMIntULE, end, self.c64(64)), slow);
+                        let low = LLVMBuildSub(
+                            self.b,
+                            LLVMBuildShl(self.b, self.c64(1), cnt, c"".as_ptr()),
+                            self.c64(1),
+                            c"".as_ptr(),
+                        );
+                        let low = LLVMBuildSelect(
+                            self.b,
+                            self.icmp(IP::LLVMIntEQ, cnt, self.c64(64)),
+                            self.c64(-1),
+                            low,
+                            c"".as_ptr(),
+                        );
+                        let mask = LLVMBuildShl(self.b, low, sh, c"".as_ptr());
+                        let keep = LLVMBuildNot(self.b, mask, c"".as_ptr());
+                        for k in 0..4 {
+                            let pk = self.gep(p, self.c64(k * 8));
+                            let w =
+                                LLVMBuildAnd(self.b, self.load(self.i64, pk), keep, c"".as_ptr());
+                            let bit = LLVMBuildAnd(
+                                self.b,
+                                LLVMBuildLShr(self.b, code, self.c64(k), c"".as_ptr()),
+                                self.c64(1),
+                                c"".as_ptr(),
+                            );
+                            let set = LLVMBuildAnd(
+                                self.b,
+                                mask,
+                                LLVMBuildSub(self.b, self.c64(0), bit, c"".as_ptr()),
+                                c"".as_ptr(),
+                            );
+                            self.store(self.or(w, set), pk);
+                        }
+                        self.join(&c, join);
+                    }
+                    // Equality of two logic arrays of 1 to 64 elements: the four planes under the
+                    // mask of the elements; any other count is stepped.
+                    Inst::LEq { dst, a, b, n } => {
+                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let cnt = self.ld(&c, n);
+                        let n1 = LLVMBuildSub(self.b, cnt, self.c64(1), c"".as_ptr());
+                        self.guard(&c, self.icmp(IP::LLVMIntULT, n1, self.c64(64)), slow);
+                        let pa = self.host(
+                            &c,
+                            self.ld(&c, a),
+                            fk(a),
+                            self.c64(0),
+                            self.c64(32),
+                            false,
+                            slow,
+                        );
+                        let pb = self.host(
+                            &c,
+                            self.ld(&c, b),
+                            fk(b),
+                            self.c64(0),
+                            self.c64(32),
+                            false,
+                            slow,
+                        );
+                        let mut diff = self.c64(0);
+                        for k in 0..4 {
+                            let x = LLVMBuildXor(
+                                self.b,
+                                self.load(self.i64, self.gep(pa, self.c64(k * 8))),
+                                self.load(self.i64, self.gep(pb, self.c64(k * 8))),
+                                c"".as_ptr(),
+                            );
+                            diff = self.or(diff, x);
+                        }
+                        // The low `cnt` bits (a shift by 64 is poison, `cnt` is 1 to 64).
+                        let mask = LLVMBuildLShr(
+                            self.b,
+                            self.c64(-1),
+                            LLVMBuildSub(self.b, self.c64(64), cnt, c"".as_ptr()),
+                            c"".as_ptr(),
+                        );
+                        let masked = LLVMBuildAnd(self.b, diff, mask, c"".as_ptr());
+                        let eq = self.icmp(IP::LLVMIntEQ, masked, self.c64(0));
+                        self.st(&c, dst, self.zext(eq));
                         self.join(&c, join);
                     }
                     Inst::LSet { base, idx, v } => {
@@ -2736,28 +3517,57 @@ impl Gen {
                     Inst::Deref { dst, handle, .. } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
                         let h = self.ld(&c, handle);
-                        let e = self
-                            .obj_entry(&c, LLVMBuildLShr(self.b, h, self.c64(32), c"".as_ptr()));
-                        let eh = self.load(self.i64, self.gep(e, self.c64(OBJ_H as i64)));
-                        let hit = LLVMBuildAnd(
-                            self.b,
-                            self.icmp(IP::LLVMIntEQ, eh, h),
-                            self.icmp(IP::LLVMIntNE, h, self.c64(0)),
-                            c"".as_ptr(),
-                        );
-                        let (fast, miss) = (self.block(&c), self.block(&c));
-                        LLVMBuildCondBr(self.b, hit, fast, miss);
-                        LLVMPositionBuilderAtEnd(self.b, fast);
-                        let hi = self.load(self.i64, e);
-                        self.st(
+                        let e = self.obj_entry(
                             &c,
-                            dst,
-                            LLVMBuildShl(self.b, hi, self.c64(32), c"".as_ptr()),
+                            LLVMBuildLShr(self.b, h, self.c64(32), c"".as_ptr()),
+                            true,
                         );
-                        LLVMBuildBr(self.b, join);
-                        LLVMPositionBuilderAtEnd(self.b, miss);
-                        self.fast_reg(&c, FAST_DEREF, dst, h, self.c64(0), slow);
-                        self.join(&c, join);
+                        let eh = self.load(self.i64, self.gep(e, self.c64(OBJ_H as i64)));
+                        // An entry with an access value is writable, and a null handle is no
+                        // entry's value (`NO_H`).
+                        let hit = self.icmp(IP::LLVMIntEQ, eh, h);
+                        let miss = self.block(&c);
+                        if c.nat.is_some() {
+                            // The object stays in hand for the instructions that follow
+                            // (`ObjRef`).
+                            self.cond_br(hit, join, miss, true);
+                            LLVMPositionBuilderAtEnd(self.b, miss);
+                            // The callback enters the object at `e`, writable, for `h`; a native
+                            // frame's slow path leaves, so the join is reached by these two.
+                            self.fast_reg(&c, FAST_DEREF, dst, h, self.c64(0), slow);
+                            // The callback may have found the address and failed to enter the
+                            // object (`yavs_rt_fast`): the entry must hold what `dst` points into.
+                            let found = self.load(self.i64, e);
+                            let at =
+                                LLVMBuildLShr(self.b, self.ld(&c, dst), self.c64(32), c"".as_ptr());
+                            self.guard(&c, self.icmp(IP::LLVMIntEQ, found, at), slow);
+                            LLVMBuildBr(self.b, join);
+                            LLVMPositionBuilderAtEnd(self.b, join);
+                            self.join_here(&c, join);
+                            let hi = self.load(self.i64, e);
+                            let o = ObjRef {
+                                ptr: self.load(self.ptr, self.gep(e, self.c64(OBJ_PTR as i64))),
+                                len: self.load(self.i64, self.gep(e, self.c64(OBJ_LEN as i64))),
+                                hi: LLVMBuildShl(self.b, hi, self.c64(32), c"".as_ptr()),
+                                off: self.c64(0),
+                            };
+                            self.st(&c, dst, o.hi);
+                            c.objnew.set(Some((dst, o)));
+                        } else {
+                            let fast = self.block(&c);
+                            self.cond_br(hit, fast, miss, true);
+                            LLVMPositionBuilderAtEnd(self.b, fast);
+                            let hi = self.load(self.i64, e);
+                            self.st(
+                                &c,
+                                dst,
+                                LLVMBuildShl(self.b, hi, self.c64(32), c"".as_ptr()),
+                            );
+                            LLVMBuildBr(self.b, join);
+                            LLVMPositionBuilderAtEnd(self.b, miss);
+                            self.fast_reg(&c, FAST_DEREF, dst, h, self.c64(0), slow);
+                            self.join(&c, join);
+                        }
                     }
                     Inst::MemEq { dst, a, b, n } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
@@ -2782,8 +3592,8 @@ impl Gen {
                         offset,
                         len,
                     } => {
-                        // `Machine::sig_val`: element range within u32, an instance signal.
-                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        // `Machine::sig_val`: element range within u32, an instance signal; a
+                        // reference that is not leaves to the interpreter, which reports it.
                         let (o, l) = (self.ld(&c, offset), self.ld(&c, len));
                         let max = self.c64(i64::from(u32::MAX));
                         let n = self.mem_ld(&c, MEM_NSIGS, self.i64);
@@ -2795,11 +3605,15 @@ impl Gen {
                         );
                         let s = self.c64(i64::from(sig));
                         let has = self.icmp(IP::LLVMIntULT, s, n);
-                        self.guard(&c, LLVMBuildAnd(self.b, ok, has, c"".as_ptr()), slow);
+                        let bad = LLVMBuildNot(
+                            self.b,
+                            LLVMBuildAnd(self.b, ok, has, c"".as_ptr()),
+                            c"".as_ptr(),
+                        );
+                        self.exit_if(&c, bad, pc);
                         let hi = self.c64(i64::from(sig) << 32);
-                        self.st(&c, dst, LLVMBuildOr(self.b, hi, o, c"".as_ptr()));
-                        self.st(&c, Reg(dst.0 + 1), l);
-                        self.join(&c, join);
+                        self.std(&c, dst, LLVMBuildOr(self.b, hi, o, c"".as_ptr()));
+                        self.std(&c, Reg(dst.0 + 1), l);
                     }
                     Inst::Br { to } => {
                         let bb = block_bb(to)?;
@@ -2933,6 +3747,12 @@ impl Gen {
                         }
                     }
                     Inst::SigReadScalar { dst, sig } => self.sig_read_scalar(&c, pc, dst, sig),
+                    Inst::Edge { dst, kind, sig } => self.edge(&c, pc, kind, sig, dst, 0),
+                    Inst::SigAttr {
+                        dst,
+                        kind: yavs_ir::AttrKind::Event,
+                        sig,
+                    } if c.nat.is_none() => self.sig_event(&c, pc, dst, sig),
                     Inst::Drive {
                         driver,
                         target: Some(t),
@@ -2984,7 +3804,14 @@ impl Gen {
                                 self.join(&c, join);
                             }
                             Some(NativeKind::Edge(rising)) => match (f.regs(args), dst) {
-                                (Some(&[s]), Some(d)) => self.edge(&c, pc, rising, s, d),
+                                (Some(&[s]), Some(d)) => {
+                                    let (kind, e) = if rising {
+                                        (EdgeKind::Rising, 1)
+                                    } else {
+                                        (EdgeKind::Falling, 2)
+                                    };
+                                    self.edge(&c, pc, kind, s, d, e)
+                                }
                                 _ => self.signal(&c, pc, if rising { 1 } else { 2 }),
                             },
                             None if c.nat.is_some()
@@ -2996,6 +3823,9 @@ impl Gen {
                                 self.step(&c, pc, &inst)
                             }
                             None if c.nat.is_some() && nat_inline(prog, f, &inst) => {
+                                self.native_direct(&c, pc, &inst, f, native, args, dst)?
+                            }
+                            None if c.nat.is_none() && frame_direct(prog, f, &inst) => {
                                 self.native_direct(&c, pc, &inst, f, native, args, dst)?
                             }
                             None => self.step(&c, pc, &inst),
@@ -3050,7 +3880,7 @@ impl Gen {
                         bias: _,
                         logic: false,
                         w,
-                    } if c.nat.is_some() => {
+                    } if c.nat.is_some() || nat_inline(prog, f, &inst) => {
                         let rs = f.regs(parts).ok_or("operand list out of range")?;
                         let fk = |r: Reg| self.known_addr(&c, r);
                         self.cat_bytes(&c, pc, &inst, dst, elem, rs, scalars, w, &fk);
@@ -3092,6 +3922,15 @@ impl Gen {
                 // Falling off the end: the interpreter reports it.
                 self.leave(&c, self.c32(n as u32));
             }
+            let kend = if kinds {
+                let now = fn_count(fv);
+                if let Some((k, was)) = kmark.take() {
+                    kind_add(k, 1, now - was);
+                }
+                now
+            } else {
+                0
+            };
             if let Some(nat) = &c.nat {
                 // Materialisation: record the registers, slots, pc and temporary base, and
                 // return with `Mem::ndeopt` set.
@@ -3106,19 +3945,16 @@ impl Gen {
                     self.c64(nregs as i64),
                     self.c64(i64::from(f.frame)),
                     nat.up[0],
+                    nat.spill,
                 ];
-                let rp = LLVMBuildCall2(
+                LLVMBuildCall2(
                     self.b,
                     self.deopt_ty,
                     self.deopt,
                     args.as_mut_ptr(),
-                    8,
+                    9,
                     c"".as_ptr(),
                 );
-                for r in 0..nregs {
-                    let v = self.ld(&c, Reg(r as u32));
-                    self.store(v, self.gep(rp, self.c64(r as i64 * 8)));
-                }
                 let mut env = [c.env];
                 let sp = LLVMBuildCall2(
                     self.b,
@@ -3128,8 +3964,23 @@ impl Gen {
                     1,
                     c"".as_ptr(),
                 );
-                LLVMBuildMemCpy(self.b, sp, 1, nat.slots, 8, self.c64(i64::from(f.frame)));
+                match &nat.closed {
+                    // The rest of the buffer is zero and so were these bytes (`closed_frame`).
+                    Some(rs) => rs.iter().for_each(|&(lo, hi)| {
+                        let (to, from) = (
+                            self.gep(sp, self.c64(lo as i64)),
+                            self.gep(nat.slots, self.c64(lo as i64)),
+                        );
+                        LLVMBuildMemCpy(self.b, to, 1, from, 1, self.c64((hi - lo) as i64));
+                    }),
+                    None => {
+                        LLVMBuildMemCpy(self.b, sp, 1, nat.slots, 8, self.c64(i64::from(f.frame)));
+                    }
+                }
                 LLVMBuildRet(self.b, self.c64(0));
+            }
+            for &b in c.cold.borrow().iter() {
+                LLVMMoveBasicBlockAfter(b, LLVMGetLastBasicBlock(fv));
             }
             // A block nothing branches to (the generator and `regs::reach` agree on all but
             // dead code) has phis without incoming values.
@@ -3140,6 +3991,9 @@ impl Gen {
                         LLVMInstructionEraseFromParent(phi);
                     }
                 }
+            }
+            if kinds {
+                kind_add("<tail>".into(), 0, fn_count(fv) - kend);
             }
             debug_assert!(c.joins.borrow().is_empty(), "a slow path was not joined");
             if LLVMVerifyFunction(fv, LLVMVerifierFailureAction::LLVMReturnStatusAction) != 0 {
@@ -3172,7 +4026,10 @@ impl Gen {
                 .defer
                 .as_ref()
                 .map(|d| *d.pend.borrow().last().expect("base"));
+            c.cold.borrow_mut().push(slow);
+            self.cold_depth.set(self.cold_depth.get() + 1);
             self.signal(c, pc, edge);
+            self.cold_depth.set(self.cold_depth.get() - 1);
             if let (Some(d), Some(b)) = (&c.defer, base) {
                 *d.pend.borrow_mut().last_mut().expect("base") = b;
                 c.joins.borrow_mut().push((b, false));
@@ -3211,22 +4068,188 @@ impl Gen {
         }
     }
 
-    /// `Inst::SigReadScalar` of a logic signal that keeps its codes: the byte, in place;
-    /// anything else through `TierHost::signal`.
+    /// `Inst::SigReadScalar` of a logic signal: the byte of its codes, in place, else the four
+    /// plane bits of the kernel's blocks (`TierSig::planes`: a signal wider than the codes are
+    /// kept for, or a bus of many sources); anything else through `TierHost::signal`.
     unsafe fn sig_read_scalar(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) {
-        // SAFETY: see `sig_entry`; the guard checks the element is within the codes.
+        // SAFETY: see `sig_entry`; the guards check the element is within the codes or planes.
         unsafe {
             let (slow, join) = self.slow_signal(c, pc, 0);
             let (ent, off) = self.sig_entry(c, sig, None, slow);
             let len = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
-            self.guard(c, self.icmp(IP::LLVMIntULT, off, len), slow);
+            let (bytes, planes) = (self.block(c), self.block(c));
+            self.cond_br(self.icmp(IP::LLVMIntULT, off, len), bytes, planes, true);
+            LLVMPositionBuilderAtEnd(self.b, bytes);
             let codes = self.tag(
                 self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
                 AA_CODES,
             );
             let byte = self.load(self.i8, self.gep(codes, off));
             self.st(c, dst, self.zext8(byte));
-            self.join(c, join);
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, planes);
+            let plen = self.load(self.i64, self.gep(ent, self.c64(SIG_PLEN)));
+            self.guard(c, self.icmp(IP::LLVMIntULT, off, plen), slow);
+            let blocks = self.load(self.ptr, self.gep(ent, self.c64(SIG_PLANES)));
+            let (logic, other) = (self.block(c), self.block(c));
+            self.cond_br(
+                LLVMBuildIsNotNull(self.b, blocks, c"".as_ptr()),
+                logic,
+                other,
+                true,
+            );
+            // Enumeration, integer, boolean or real elements: their bytes, a four-byte element
+            // sign-extended (`cell`).
+            LLVMPositionBuilderAtEnd(self.b, other);
+            let data = self.load(self.ptr, self.gep(ent, self.c64(SIG_BYTES)));
+            self.guard(c, LLVMBuildIsNotNull(self.b, data, c"".as_ptr()), slow);
+            let es = self.load(self.i64, self.gep(ent, self.c64(SIG_ES)));
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let e = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            let p = self.gep(data, LLVMBuildMul(self.b, e, es, c"".as_ptr()));
+            let (one, four, eight, done) =
+                (self.block(c), self.block(c), self.block(c), self.block(c));
+            let (not1, not4) = (self.block(c), self.block(c));
+            LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, es, self.c64(1)), one, not1);
+            LLVMPositionBuilderAtEnd(self.b, not1);
+            LLVMBuildCondBr(
+                self.b,
+                self.icmp(IP::LLVMIntEQ, es, self.c64(4)),
+                four,
+                not4,
+            );
+            LLVMPositionBuilderAtEnd(self.b, not4);
+            let is8 = self.icmp(IP::LLVMIntEQ, es, self.c64(8));
+            self.guard(c, is8, slow);
+            LLVMBuildBr(self.b, eight);
+            LLVMPositionBuilderAtEnd(self.b, one);
+            let v1 = self.zext8(self.load(self.i8, p));
+            let from1 = LLVMGetInsertBlock(self.b);
+            LLVMBuildBr(self.b, done);
+            LLVMPositionBuilderAtEnd(self.b, four);
+            let v4 = LLVMBuildSExt(self.b, self.load(self.i32, p), self.i64, c"".as_ptr());
+            let from4 = LLVMGetInsertBlock(self.b);
+            LLVMBuildBr(self.b, done);
+            LLVMPositionBuilderAtEnd(self.b, eight);
+            let v8 = self.load(self.i64, p);
+            let from8 = LLVMGetInsertBlock(self.b);
+            LLVMBuildBr(self.b, done);
+            LLVMPositionBuilderAtEnd(self.b, done);
+            let phi = LLVMBuildPhi(self.b, self.i64, c"".as_ptr());
+            LLVMAddIncoming(phi, &mut { v1 }, &mut { from1 }, 1);
+            LLVMAddIncoming(phi, &mut { v4 }, &mut { from4 }, 1);
+            LLVMAddIncoming(phi, &mut { v8 }, &mut { from8 }, 1);
+            self.st(c, dst, phi);
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, logic);
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let e = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            let at = LLVMBuildMul(
+                self.b,
+                LLVMBuildLShr(self.b, e, self.c64(6), c"".as_ptr()),
+                self.c64(32),
+                c"".as_ptr(),
+            );
+            let blk = self.gep(blocks, at);
+            let sh = LLVMBuildAnd(self.b, e, self.c64(63), c"".as_ptr());
+            let mut code = self.c64(0);
+            for p in 0..4 {
+                let w = self.load(self.i64, self.gep(blk, self.c64(8 * p)));
+                let bit = LLVMBuildAnd(
+                    self.b,
+                    LLVMBuildLShr(self.b, w, sh, c"".as_ptr()),
+                    self.c64(1),
+                    c"".as_ptr(),
+                );
+                code = self.or(code, LLVMBuildShl(self.b, bit, self.c64(p), c"".as_ptr()));
+            }
+            self.st(c, dst, code);
+            LLVMBuildBr(self.b, join);
+            self.join_here(c, join);
+        }
+    }
+
+    /// `Inst::SigRead` of `l` elements (a count of at most 2^32) from the kernel's plane blocks
+    /// of the signal whose table entry is `ent` (`off` the first element in it), through
+    /// `yavs_rt_planes`; `slow` when it offers none or has fewer elements. The builder ends in
+    /// a block that branches to `join`.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn sig_read_planes(
+        &self,
+        c: &Cur,
+        ent: LLVMValueRef,
+        off: LLVMValueRef,
+        l: LLVMValueRef,
+        dst: Reg,
+        slow: LLVMBasicBlockRef,
+        join: LLVMBasicBlockRef,
+    ) {
+        // SAFETY: loads from a table entry the caller checked; the guards check the elements
+        // lie within the signal and the destination holds their blocks.
+        unsafe {
+            let blocks = self.load(self.ptr, self.gep(ent, self.c64(SIG_PLANES)));
+            self.guard(c, LLVMBuildIsNotNull(self.b, blocks, c"".as_ptr()), slow);
+            // A count and an offset are below 2^32 where the reference was made; checked, so the
+            // sum below cannot wrap.
+            self.guard(
+                c,
+                self.icmp(IP::LLVMIntULE, l, self.c64(i64::from(u32::MAX))),
+                slow,
+            );
+            let plen = self.load(self.i64, self.gep(ent, self.c64(SIG_PLEN)));
+            let used = LLVMBuildAdd(self.b, off, l, c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, plen), slow);
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let bit0 = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            let nelem = LLVMBuildAdd(self.b, first, plen, c"".as_ptr());
+            let nblk = LLVMBuildLShr(
+                self.b,
+                LLVMBuildAdd(self.b, nelem, self.c64(63), c"".as_ptr()),
+                self.c64(6),
+                c"".as_ptr(),
+            );
+            let bytes = LLVMBuildShl(
+                self.b,
+                LLVMBuildLShr(
+                    self.b,
+                    LLVMBuildAdd(self.b, l, self.c64(63), c"".as_ptr()),
+                    self.c64(6),
+                    c"".as_ptr(),
+                ),
+                self.c64(5),
+                c"".as_ptr(),
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                bytes,
+                true,
+                slow,
+            );
+            let mut args = [blocks, nblk, bit0, l, pd];
+            LLVMBuildCall2(
+                self.b,
+                self.planes_ty,
+                self.planes,
+                args.as_mut_ptr(),
+                5,
+                c"".as_ptr(),
+            );
+            LLVMBuildBr(self.b, join);
+        }
+    }
+
+    /// `Inst::SigRead` of a plain reference of more than 64 elements (the count known): from the
+    /// kernel's plane blocks; anything else through `TierHost::signal`.
+    unsafe fn sig_read_wide(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg, l: i64) {
+        // SAFETY: see `sig_entry` and `sig_read_planes`.
+        unsafe {
+            let (slow, join) = self.slow_signal(c, pc, 0);
+            let (ent, off) = self.sig_entry(c, sig, Some(l), slow);
+            self.sig_read_planes(c, ent, off, self.c64(l), dst, slow, join);
+            self.join_here(c, join);
         }
     }
 
@@ -3235,20 +4258,34 @@ impl Gen {
     /// elements at a time; anything else through `TierHost::signal`. `false`: not that case,
     /// nothing generated.
     unsafe fn sig_read_block(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) -> bool {
-        let Some(l) = self
-            .kint(c, Reg(sig.0 + 1))
-            .filter(|l| (1..=64).contains(l))
-        else {
-            return false;
+        let Some(l) = self.kint(c, Reg(sig.0 + 1)) else {
+            // SAFETY: as below.
+            unsafe { self.sig_read_dyn(c, pc, dst, sig) };
+            return true;
         };
+        if l > 64 && l <= i64::from(u32::MAX) {
+            // SAFETY: as below.
+            unsafe { self.sig_read_wide(c, pc, dst, sig, l) };
+            return true;
+        }
+        if !(1..=64).contains(&l) {
+            return false;
+        }
         let groups = (l as u64).div_ceil(8);
         // SAFETY: see `sig_entry`; the guards check the groups lie within the codes.
         unsafe {
             let (slow, join) = self.slow_signal(c, pc, 0);
             let (ent, off) = self.sig_entry(c, sig, Some(l), slow);
+            // The elements are there, and so are the whole groups of eight codes that hold them
+            // (the codes are kept in whole plane blocks; the planes are masked to the elements);
+            // else the kernel's plane blocks.
+            let alt = self.block(c);
             let tl = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            let used = LLVMBuildAdd(self.b, off, self.c64(l), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), alt);
+            let cap = self.load(self.i64, self.gep(ent, self.c64(SIG_CAP)));
             let end = LLVMBuildAdd(self.b, off, self.c64(8 * groups as i64), c"".as_ptr());
-            self.guard(c, self.icmp(IP::LLVMIntULE, end, tl), slow);
+            self.guard(c, self.icmp(IP::LLVMIntULE, end, cap), alt);
             let codes = self.tag(
                 self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
                 AA_CODES,
@@ -3282,38 +4319,187 @@ impl Gen {
                 let w = LLVMBuildAnd(self.b, *plane, self.c64(mask as i64), c"".as_ptr());
                 self.store(w, self.gep(pd, self.c64(8 * p as i64)));
             }
-            self.join(c, join);
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, alt);
+            self.sig_read_planes(c, ent, off, self.c64(l), dst, slow, join);
+            self.join_here(c, join);
         }
         true
     }
 
-    /// `rising_edge` / `falling_edge` of one element: true in place when the kernel resumed the
-    /// process for that edge (`TierFrame::known_sig`), else through `TierHost::signal`.
-    unsafe fn edge(&self, c: &Cur, pc: u32, rising: bool, sig: Reg, dst: Reg) {
-        // SAFETY: see `sig_entry`.
+    /// `Inst::SigRead` of a plain reference whose count (`sig + 1`) is only known at run time, to
+    /// a logic signal that keeps its codes: when the count is 1 to 64 and the codes are there,
+    /// the planes come from `yavs_rt_codes`, a call that touches no host state; anything else
+    /// through `TierHost::signal`.
+    unsafe fn sig_read_dyn(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) {
+        // SAFETY: see `sig_entry`; the guards check the groups lie within the codes and the
+        // count is 1 to 64.
         unsafe {
-            let (slow, join) = self.slow_signal(c, pc, if rising { 1 } else { 2 });
+            let (slow, join) = self.slow_signal(c, pc, 0);
+            let l = self.ld(c, Reg(sig.0 + 1));
+            let (ent, off) = self.sig_entry(c, sig, None, slow);
+            // Up to 64 elements from the codes, else (or without the codes) from the planes.
+            let alt = self.block(c);
+            let l1 = LLVMBuildSub(self.b, l, self.c64(1), c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULT, l1, self.c64(64)), alt);
+            let tl = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            let used = LLVMBuildAdd(self.b, off, l, c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), alt);
+            let groups = LLVMBuildLShr(
+                self.b,
+                LLVMBuildAdd(self.b, l, self.c64(7), c"".as_ptr()),
+                self.c64(3),
+                c"".as_ptr(),
+            );
+            let end = LLVMBuildAdd(
+                self.b,
+                off,
+                LLVMBuildShl(self.b, groups, self.c64(3), c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let cap = self.load(self.i64, self.gep(ent, self.c64(SIG_CAP)));
+            self.guard(c, self.icmp(IP::LLVMIntULE, end, cap), alt);
+            let codes = self.tag(
+                self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
+                AA_CODES,
+            );
+            let base = self.gep(codes, off);
+            // (1 << l) - 1, all ones for 64 (a shift by 64 is poison).
+            let ones = self.c64(-1);
+            let mask = LLVMBuildLShr(
+                self.b,
+                ones,
+                LLVMBuildSub(self.b, self.c64(64), l, c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                self.c64(32),
+                true,
+                slow,
+            );
+            let mut args = [base, groups, mask, pd];
+            LLVMBuildCall2(
+                self.b,
+                self.codes_ty,
+                self.codes,
+                args.as_mut_ptr(),
+                4,
+                c"".as_ptr(),
+            );
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, alt);
+            self.sig_read_planes(c, ent, off, l, dst, slow, join);
+            self.join_here(c, join);
+        }
+    }
+
+    /// `Inst::SigAttr` `'event` of one element: its last event was in this cycle, from the
+    /// kernel's event stamp (`TierSig::stamps`, offered for a signal of at most 64 elements);
+    /// anything else through `TierHost::signal`.
+    unsafe fn sig_event(&self, c: &Cur, pc: u32, dst: Reg, sig: Reg) {
+        // SAFETY: see `sig_entry`; the stamp array has an entry for every kernel element.
+        unsafe {
+            let (slow, join) = self.slow_signal(c, pc, 0);
+            let (ent, off) = self.sig_entry(c, sig, Some(1), slow);
+            let stamps = self.load(self.ptr, self.gep(ent, self.c64(SIG_STAMPS)));
+            self.guard(c, LLVMBuildIsNotNull(self.b, stamps, c"".as_ptr()), slow);
+            let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
+            let elem = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
+            let at = LLVMBuildMul(self.b, elem, self.c64(8), c"".as_ptr());
+            let stamp = self.load(self.i64, self.gep(stamps, at));
+            let cycle = self.mem_ld(c, MEM_CYCLE, self.i64);
+            self.st(c, dst, self.zext(self.icmp(IP::LLVMIntEQ, stamp, cycle)));
+            self.join(c, join);
+        }
+    }
+
+    /// The clock-edge test `kind` of one element (`Inst::Edge`, or the `rising_edge` /
+    /// `falling_edge` native, whose `TierHost::signal` entry is `edge` 1 or 2): true in place
+    /// when the kernel resumed the process for that edge (`TierFrame::known`), else from the
+    /// event stamp, the codes and, for the IEEE function, the `'last_value` planes; anything
+    /// else through `TierHost::signal`.
+    unsafe fn edge(&self, c: &Cur, pc: u32, kind: EdgeKind, sig: Reg, dst: Reg, edge: u32) {
+        // SAFETY: see `sig_entry`; the stamps and the `'last_value` block are the kernel's, read
+        // only here, and offered (nonzero) for a signal of at most 64 elements.
+        unsafe {
+            let (slow, join) = self.slow_signal(c, pc, edge);
             let (ent, off) = self.sig_entry(c, sig, Some(1), slow);
             let signal = self.load(self.i64, self.gep(ent, self.c64(SIG_SIGNAL)));
             let first = self.load(self.i64, self.gep(ent, self.c64(SIG_OFF)));
             let elem = LLVMBuildAdd(self.b, first, off, c"".as_ptr());
             let held = |a: LLVMValueRef, b: LLVMValueRef| self.icmp(IP::LLVMIntEQ, a, b);
-            let ks = self.mem_ld(c, MEM_KNOWN_SIG, self.i64);
-            let ke = self.mem_ld(c, MEM_KNOWN_ELEM, self.i64);
-            let ku = self.mem_ld(c, MEM_KNOWN_UP, self.i64);
-            let ok = LLVMBuildAnd(
-                self.b,
-                held(signal, ks),
-                LLVMBuildAnd(
-                    self.b,
-                    held(elem, ke),
-                    held(ku, self.c64(i64::from(rising))),
-                    c"".as_ptr(),
+            // `yavs_kernel::edge_key`.
+            let key = self.or(
+                self.or(
+                    LLVMBuildShl(self.b, signal, self.c64(32), c"".as_ptr()),
+                    LLVMBuildShl(self.b, elem, self.c64(2), c"".as_ptr()),
                 ),
-                c"".as_ptr(),
+                self.c64(i64::from(kind.code())),
             );
-            self.guard(c, ok, slow);
+            let ok = held(key, self.mem_ld(c, MEM_KNOWN, self.i64));
+            // The kernel resumed the process for this very edge: it holds.
+            let (fast, rest) = (self.block(c), self.block(c));
+            self.cond_br(ok, fast, rest, true);
+            LLVMPositionBuilderAtEnd(self.b, fast);
             self.st(c, dst, self.c64(1));
+            LLVMBuildBr(self.b, join);
+            LLVMPositionBuilderAtEnd(self.b, rest);
+            // Else the answer is in the event stamp, the codes and the `'last_value` plane bits.
+            let stamps = self.load(self.ptr, self.gep(ent, self.c64(SIG_STAMPS)));
+            self.guard(c, LLVMBuildIsNotNull(self.b, stamps, c"".as_ptr()), slow);
+            let last = self.load(self.ptr, self.gep(ent, self.c64(SIG_LAST)));
+            if !kind.to_level() {
+                self.guard(c, LLVMBuildIsNotNull(self.b, last, c"".as_ptr()), slow);
+            }
+            let len = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            self.guard(c, self.icmp(IP::LLVMIntULT, off, len), slow);
+            let at = LLVMBuildMul(self.b, elem, self.c64(8), c"".as_ptr());
+            let stamp = self.load(self.i64, self.gep(stamps, at));
+            let cycle = self.mem_ld(c, MEM_CYCLE, self.i64);
+            let (ev, none, merge) = (self.block(c), self.block(c), self.block(c));
+            LLVMBuildCondBr(self.b, held(stamp, cycle), ev, none);
+            LLVMPositionBuilderAtEnd(self.b, none);
+            LLVMBuildBr(self.b, merge);
+            LLVMPositionBuilderAtEnd(self.b, ev);
+            let codes = self.tag(
+                self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
+                AA_CODES,
+            );
+            let cur = self.zext8(self.load(self.i8, self.gep(codes, off)));
+            let res = if kind.to_level() {
+                // An event ending on the level: the code is exactly '1' (3) or '0' (2).
+                self.zext(held(cur, self.c64(if kind.rising() { 3 } else { 2 })))
+            } else {
+                let plane = |k: i64| {
+                    let w = self.load(self.i64, self.gep(last, self.c64(8 * k)));
+                    let bit = LLVMBuildAnd(
+                        self.b,
+                        LLVMBuildLShr(self.b, w, elem, c"".as_ptr()),
+                        self.c64(1),
+                        c"".as_ptr(),
+                    );
+                    LLVMBuildShl(self.b, bit, self.c64(k), c"".as_ptr())
+                };
+                let before = self.or(plane(0), plane(1));
+                // `To_X01` of a code is '1' or '0' when its low two bits are 1 x (3 and 7 are '1'
+                // and 'H', 2 and 6 '0' and 'L'); the level is bit 0.
+                let (now_want, before_want) = if kind.rising() { (3, 2) } else { (2, 3) };
+                let m3 = |v: LLVMValueRef| LLVMBuildAnd(self.b, v, self.c64(3), c"".as_ptr());
+                let a = held(m3(cur), self.c64(now_want));
+                let b2 = held(m3(before), self.c64(before_want));
+                self.zext(LLVMBuildAnd(self.b, a, b2, c"".as_ptr()))
+            };
+            let from_ev = LLVMGetInsertBlock(self.b);
+            LLVMBuildBr(self.b, merge);
+            LLVMPositionBuilderAtEnd(self.b, merge);
+            let phi = LLVMBuildPhi(self.b, self.i64, c"".as_ptr());
+            LLVMAddIncoming(phi, &mut self.c64(0), &mut { none }, 1);
+            LLVMAddIncoming(phi, &mut { res }, &mut { from_ev }, 1);
+            self.st(c, dst, phi);
             self.join(c, join);
         }
     }
@@ -3465,16 +4651,65 @@ impl Gen {
                 self.icmp(IP::LLVMIntEQ, self.ld(c, n), self.c64(1)),
                 slow,
             );
+            // A signal of enumeration, integer, boolean or real elements has a waveform element
+            // of 16 bytes (time and cell), a logic one 40 (time and the first plane block).
+            let (ent, _) = self.sig_entry(c, target, None, slow);
+            let es = self.load(self.i64, self.gep(ent, self.c64(SIG_ES)));
+            let bytes = self.icmp(IP::LLVMIntNE, es, self.c64(0));
+            // A wider than 64 elements: the time and a block of planes per 64.
+            let len = self.ld(c, Reg(target.0 + 1));
+            let wide = self.icmp(IP::LLVMIntUGT, len, self.c64(64));
+            self.guard(
+                c,
+                self.icmp(IP::LLVMIntULE, len, self.c64(i64::from(u32::MAX))),
+                slow,
+            );
+            let blocks = LLVMBuildLShr(
+                self.b,
+                LLVMBuildAdd(self.b, len, self.c64(63), c"".as_ptr()),
+                self.c64(6),
+                c"".as_ptr(),
+            );
+            let wide_bytes = LLVMBuildAdd(
+                self.b,
+                LLVMBuildShl(self.b, blocks, self.c64(5), c"".as_ptr()),
+                self.c64(8),
+                c"".as_ptr(),
+            );
+            let logic = LLVMBuildSelect(self.b, wide, wide_bytes, self.c64(40), c"".as_ptr());
+            let want = LLVMBuildSelect(self.b, bytes, self.c64(16), logic, c"".as_ptr());
             let w = self.host(
                 c,
                 self.ld(c, wave),
                 self.known_addr(c, wave),
                 self.c64(0),
-                self.c64(40),
+                want,
                 false,
                 slow,
             );
-            let inertial = u32::from(mode == yavs_ir::DriveMode::Inertial);
+            let inertial = LLVMBuildOr(
+                self.b,
+                self.c32(u32::from(mode == yavs_ir::DriveMode::Inertial)),
+                LLVMBuildSelect(self.b, bytes, self.c32(2), self.c32(0), c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let inertial = LLVMBuildOr(
+                self.b,
+                inertial,
+                LLVMBuildSelect(
+                    self.b,
+                    LLVMBuildAnd(
+                        self.b,
+                        wide,
+                        LLVMBuildNot(self.b, bytes, c"".as_ptr()),
+                        c"".as_ptr(),
+                    ),
+                    self.c32(4),
+                    self.c32(0),
+                    c"".as_ptr(),
+                ),
+                c"".as_ptr(),
+            );
             let mut args = [
                 c.env,
                 c.regs,
@@ -3484,10 +4719,36 @@ impl Gen {
                 self.ld(c, target),
                 self.ld(c, Reg(target.0 + 1)),
                 w,
-                self.c32(inertial),
+                inertial,
             ];
             self.call_go(c, self.drive_ty, self.drive, &mut args, false);
             self.join(c, join);
+        }
+    }
+
+    /// The `Drive` of a scalar logic assignment the interpreter fuses (`yavs_interp::ScalarDrive`):
+    /// the waveform is never made, the delay and the code go to the kernel in registers.
+    unsafe fn drive_bit(&self, c: &Cur, pc: u32, s: &yavs_interp::ScalarDrive) {
+        // SAFETY: the arguments match `drive_bit_ty`; well-formed blocks of c.f.
+        unsafe {
+            let code = LLVMBuildOr(
+                self.b,
+                self.ld(c, s.value),
+                self.c64(if s.inertial { 0x100 } else { 0 }),
+                c"".as_ptr(),
+            );
+            let mut args = [
+                c.env,
+                c.regs,
+                c.mem,
+                self.c32(pc),
+                self.c32(s.driver),
+                self.ld(c, s.target),
+                self.ld(c, Reg(s.target.0 + 1)),
+                self.ld(c, s.time),
+                code,
+            ];
+            self.call_go(c, self.drive_bit_ty, self.drive_bit, &mut args, true);
         }
     }
 
@@ -3776,7 +5037,7 @@ impl Gen {
             }
             let nd = self.mem_ld(c, MEM_NDEOPT, self.i64);
             let (out, cont) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntNE, nd, self.c64(0)), out, cont);
+            self.cond_br(self.icmp(IP::LLVMIntNE, nd, self.c64(0)), out, cont, false);
             LLVMPositionBuilderAtEnd(self.b, out);
             match &c.nat {
                 Some(_) => self.leave(c, self.c32(pc)),
@@ -4072,9 +5333,11 @@ impl Gen {
         }
     }
 
-    /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, on a native frame:
-    /// the argument cells go to `TierHost::native_direct`; where it does not run the native
-    /// the frames are materialised and the interpreter executes the call.
+    /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows: the argument cells
+    /// go to `TierHost::native_direct` (a native frame; where it does not run the native the
+    /// frames are materialised and the interpreter executes the call) or `native_frame` (a
+    /// frame-mode function: the interpreter steps the call; no register is flushed or reloaded
+    /// on the way).
     #[allow(clippy::too_many_arguments)]
     unsafe fn native_direct(
         &self,
@@ -4088,7 +5351,6 @@ impl Gen {
     ) -> Result<(), String> {
         // SAFETY: the arguments match `native_ty`; well-formed blocks of c.f.
         unsafe {
-            let nat = c.nat.as_ref().ok_or("native call outside a native frame")?;
             let rs = f.regs(args).ok_or("operand list out of range")?;
             let mut cells = Vec::new();
             for &r in rs {
@@ -4102,14 +5364,21 @@ impl Gen {
             for (k, &r) in cells.iter().enumerate() {
                 self.store(self.ld(c, r), self.gep(buf, self.c64(k as i64 * 8)));
             }
+            let (depth, scratch) = match &c.nat {
+                Some(nat) => (nat.depth, nat.scratch),
+                None => (
+                    self.c64((NATIVE_FRAME_MODE | u64::from(pc)) as i64),
+                    self.entry_alloca(c, 8),
+                ),
+            };
             let mut a = [
                 c.env,
                 c.mem,
                 self.c32(native.0),
                 buf,
                 self.c32(cells.len() as u32),
-                nat.depth,
-                nat.scratch,
+                depth,
+                scratch,
             ];
             let st = LLVMBuildCall2(
                 self.b,
@@ -4132,10 +5401,11 @@ impl Gen {
             }
             self.guard(c, ok, slow);
             if let Some(d) = dst {
-                let v = LLVMBuildLoad2(self.b, self.i64, nat.scratch, c"".as_ptr());
+                let v = LLVMBuildLoad2(self.b, self.i64, scratch, c"".as_ptr());
                 self.st(c, d, v);
             }
-            // The native ended the process: the frames are materialised after the call.
+            // The native ended the process: a native frame is materialised after the call, a
+            // frame-mode function suspends with the registers in the frame.
             let (out, cont) = (self.block(c), self.block(c));
             LLVMBuildCondBr(
                 self.b,
@@ -4144,7 +5414,13 @@ impl Gen {
                 cont,
             );
             LLVMPositionBuilderAtEnd(self.b, out);
-            self.leave(c, self.c32(pc + 1));
+            if c.nat.is_some() {
+                self.leave(c, self.c32(pc + 1));
+            } else {
+                self.flush(c, pc as usize + 1);
+                self.leave(c, self.c32(TIER_SUSPEND));
+                c.cold.borrow_mut().push(out);
+            }
             LLVMPositionBuilderAtEnd(self.b, cont);
             self.join(c, join);
             Ok(())
@@ -4207,7 +5483,7 @@ impl Gen {
                 self.st(c, r, v);
             }
             let (out, cont) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, st, self.c32(2)), out, cont);
+            self.cond_br(self.icmp(IP::LLVMIntEQ, st, self.c32(2)), out, cont, false);
             LLVMPositionBuilderAtEnd(self.b, out);
             self.leave(c, self.c32(pc + 1));
             LLVMPositionBuilderAtEnd(self.b, cont);
@@ -4386,18 +5662,28 @@ impl Gen {
                 args.len() as u32,
                 c"".as_ptr(),
             );
+            let cold = self.cold_depth.get() > 0;
+            if cold {
+                self.attr(r, true, "cold", 0);
+            }
             // The callback may have pushed a frame, which moves the slots.
             if let Some(d) = &c.defer {
                 *d.pend.borrow_mut().last_mut().expect("base") = None;
             }
             let cont = self.block(c);
+            if cold {
+                c.cold.borrow_mut().push(cont);
+            }
             let ok = self.icmp(IP::LLVMIntEQ, r, self.c32(GO));
             if key.is_empty() {
                 let exit = self.exit_for(c, r);
-                LLVMBuildCondBr(self.b, ok, cont, exit);
+                self.cond_br(ok, cont, exit, true);
             } else {
                 let fail = self.block(c);
-                LLVMBuildCondBr(self.b, ok, cont, fail);
+                if cold {
+                    c.cold.borrow_mut().push(fail);
+                }
+                self.cond_br(ok, cont, fail, true);
                 LLVMPositionBuilderAtEnd(self.b, fail);
                 self.leave_slots(c, key, r);
             }
@@ -4429,6 +5715,38 @@ impl Gen {
         pc: u32,
         i: &Inst,
     ) -> (LLVMBasicBlockRef, LLVMBasicBlockRef) {
+        // SAFETY: as `slow_path_then`.
+        unsafe { self.slow_path_then(c, pc, i, |_, _| {}) }
+    }
+
+    /// `slow_path`, with `after` generating code in the slow block once the instruction has
+    /// been stepped (it gets the join block to go to instead of continuing).
+    unsafe fn slow_path_then(
+        &self,
+        c: &Cur,
+        pc: u32,
+        i: &Inst,
+        after: impl FnOnce(&Self, LLVMBasicBlockRef),
+    ) -> (LLVMBasicBlockRef, LLVMBasicBlockRef) {
+        // SAFETY: as `slow_path_with`.
+        unsafe {
+            self.slow_path_with(c, pc, i, true, |g, join| {
+                g.step(c, pc, i);
+                after(g, join);
+            })
+        }
+    }
+
+    /// A block that runs `body` (given the join block) in place of the fast path of the
+    /// instruction `i` and goes on at the returned join block. `cold`: it is the rare case.
+    unsafe fn slow_path_with(
+        &self,
+        c: &Cur,
+        _pc: u32,
+        i: &Inst,
+        cold: bool,
+        body: impl FnOnce(&Self, LLVMBasicBlockRef),
+    ) -> (LLVMBasicBlockRef, LLVMBasicBlockRef) {
         // SAFETY: well-formed blocks of c.f.
         unsafe {
             let here = LLVMGetInsertBlock(self.b);
@@ -4442,7 +5760,14 @@ impl Gen {
                 .defer
                 .as_ref()
                 .map(|d| *d.pend.borrow().last().expect("base"));
-            self.step(c, pc, i);
+            if cold {
+                c.cold.borrow_mut().push(slow);
+                self.cold_depth.set(self.cold_depth.get() + 1);
+            }
+            body(self, join);
+            if cold {
+                self.cold_depth.set(self.cold_depth.get() - 1);
+            }
             if let (Some(d), Some(b)) = (&c.defer, base) {
                 *d.pend.borrow_mut().last_mut().expect("base") = b;
                 c.joins.borrow_mut().push((b, !quiet(i)));
@@ -4458,22 +5783,113 @@ impl Gen {
         // SAFETY: well-formed blocks of c.f.
         unsafe {
             let go = self.block(c);
-            LLVMBuildCondBr(self.b, ok, go, slow);
+            self.cond_br(ok, go, slow, true);
             LLVMPositionBuilderAtEnd(self.b, go);
+        }
+    }
+
+    /// A conditional branch whose true edge is the common one (`likely`) or the rare one: block
+    /// placement keeps the hot path straight.
+    unsafe fn cond_br(
+        &self,
+        cond: LLVMValueRef,
+        t: LLVMBasicBlockRef,
+        f: LLVMBasicBlockRef,
+        likely: bool,
+    ) {
+        // SAFETY: blocks of the function being built.
+        unsafe {
+            let br = LLVMBuildCondBr(self.b, cond, t, f);
+            self.weights(br, if likely { (2000, 1) } else { (1, 2000) });
+        }
+    }
+
+    /// Branch weights on the conditional branch `br`.
+    unsafe fn weights(&self, br: LLVMValueRef, (a, b): (u64, u64)) {
+        // SAFETY: metadata nodes of our context attached to a branch of our module.
+        unsafe {
+            let name = LLVMMDStringInContext2(self.ctx, c"branch_weights".as_ptr(), 14);
+            let w = |n: u64| LLVMValueAsMetadata(LLVMConstInt(self.i32, n, 0));
+            let mut ops = [name, w(a), w(b)];
+            let node = LLVMMDNodeInContext2(self.ctx, ops.as_mut_ptr(), ops.len());
+            let kind = LLVMGetMDKindIDInContext(self.ctx, c"prof".as_ptr(), 4);
+            LLVMSetMetadata(br, kind, LLVMMetadataAsValue(self.ctx, node));
         }
     }
 
     /// End the fast path at the slow path's join block.
     unsafe fn join(&self, c: &Cur, join: LLVMBasicBlockRef) {
         // SAFETY: the builder is in a block of the function of `join`.
-        unsafe {
-            LLVMBuildBr(self.b, join);
-            LLVMPositionBuilderAtEnd(self.b, join);
-        }
+        unsafe { LLVMBuildBr(self.b, join) };
+        self.join_here(c, join);
+    }
+
+    /// `join` for paths that all branched to `join` already: continue there.
+    fn join_here(&self, c: &Cur, join: LLVMBasicBlockRef) {
+        // SAFETY: a block of the function being built.
+        unsafe { LLVMPositionBuilderAtEnd(self.b, join) };
         if let Some(d) = &c.defer
             && let Some((b, loud)) = c.joins.borrow_mut().pop()
         {
             *d.pend.borrow_mut().last_mut().expect("base") = if loud { None } else { b };
+        }
+    }
+
+    /// After the interpreter made the layout of a `LayoutOf` with a frame slot (its address in
+    /// register `dst`): keep the descriptor and the layout words in the slot at `at`, `dsz`
+    /// and `nw` words, and mark it, when the slot is empty (a kept layout is never replaced:
+    /// registers hold its address). Anything compiled code cannot reach goes on to `join`
+    /// without keeping.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn layout_keep(
+        &self,
+        c: &Cur,
+        dst: Reg,
+        desc: Reg,
+        at_desc: Option<Known>,
+        at: u32,
+        dsz: u32,
+        nw: u32,
+        join: LLVMBasicBlockRef,
+    ) {
+        // SAFETY: well-formed blocks of c.f; the frame has the slot (`layout_cache`).
+        unsafe {
+            self.reg_in(c, dst);
+            // Kept once: the address of a kept layout is handed out and lives as long as the
+            // process, so a slot is never written again.
+            let slot = self.gep(
+                self.tag(self.own_slots(c), AA_SLOTS),
+                self.c64(i64::from(at)),
+            );
+            let kept = self.load(self.i64, slot);
+            self.guard(c, self.icmp(IP::LLVMIntEQ, kept, self.c64(0)), join);
+            let pw = self.host(
+                c,
+                self.ld(c, dst),
+                Some(Known::Temp),
+                self.c64(0),
+                self.c64(8 * i64::from(nw)),
+                false,
+                join,
+            );
+            let pd = self.host(
+                c,
+                self.ld(c, desc),
+                at_desc,
+                self.c64(0),
+                self.c64(i64::from(dsz)),
+                false,
+                join,
+            );
+            let slot = self.gep(
+                self.tag(self.own_slots(c), AA_SLOTS),
+                self.c64(i64::from(at)),
+            );
+            let d0 = self.gep(slot, self.c64(8));
+            LLVMBuildMemCpy(self.b, d0, 1, pd, 1, self.c64(i64::from(dsz)));
+            let w0 = self.gep(slot, self.c64(8 + i64::from(dsz)));
+            LLVMBuildMemCpy(self.b, w0, 1, pw, 1, self.c64(8 * i64::from(nw)));
+            self.store(self.c64(1), slot);
         }
     }
 
@@ -4535,10 +5951,19 @@ impl Gen {
     }
 
     /// The address of the entry of `Mem::objs` for high half `hi` (`obj_at`).
-    unsafe fn obj_entry(&self, c: &Cur, hi: LLVMValueRef) -> LLVMValueRef {
+    unsafe fn obj_entry(&self, c: &Cur, hi: LLVMValueRef, handle: bool) -> LLVMValueRef {
         // SAFETY: integer arithmetic on values of c.f; the entry lies inside `Mem`.
         unsafe {
-            let k = LLVMBuildAnd(self.b, hi, self.c64(OBJS as i64 - 1), c"".as_ptr());
+            // The key of `obj_at`; the constants are shared with `handle_at` (`obj_keys_agree`).
+            let shift = if handle {
+                KEY_SHIFT_HANDLE
+            } else {
+                KEY_SHIFT_ADDR
+            };
+            let flag = LLVMBuildLShr(self.b, hi, self.c64(shift as i64), c"".as_ptr());
+            let flag = LLVMBuildAnd(self.b, flag, self.c64(KEY_FLAG as i64), c"".as_ptr());
+            let k = LLVMBuildXor(self.b, hi, flag, c"".as_ptr());
+            let k = LLVMBuildAnd(self.b, k, self.c64(OBJS as i64 - 1), c"".as_ptr());
             let off = LLVMBuildMul(self.b, k, self.c64(OBJ_SIZE as i64), c"".as_ptr());
             let off = LLVMBuildAdd(self.b, off, self.c64(MEM_OBJS as i64), c"".as_ptr());
             self.gep(c.mem, off)
@@ -4681,6 +6106,16 @@ impl Gen {
                     _ => {}
                 }
             }
+            // An object a `Deref` found in this stretch of straight-line code: its bytes are in
+            // hand, no lookup.
+            if let Some(Known::Heap(Some(o))) = at {
+                let off = LLVMBuildAdd(self.b, o.off, extra, c"".as_ptr());
+                let fits = self.icmp(IP::LLVMIntULE, n, o.len);
+                let rest = LLVMBuildSub(self.b, o.len, n, c"".as_ptr());
+                let inside = self.icmp(IP::LLVMIntULE, off, rest);
+                self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
+                return self.gep(o.ptr, off);
+            }
             if let Some(Known::Frame(o)) = at {
                 // Within the frame whatever the frame: no check.
                 if !LLVMIsAConstantInt(extra).is_null() && !LLVMIsAConstantInt(n).is_null() {
@@ -4724,22 +6159,33 @@ impl Gen {
                 return self.gep(self.tag(self.mem_ld(c, base, self.ptr), kind), o);
             }
             // A native frame's own slots are found here: the interpreter has no frame for it.
+            let heap = matches!(at, Some(Known::Heap(_)));
             let (own, other, merge) = match &c.nat {
-                Some(nat) => {
-                    let (own, other, merge) = (self.block(c), self.block(c), self.block(c));
+                // A closed frame is asked for by no address of unknown space (`closed_frame`): its
+                // slots stay out of the test of its own frame, so they may live in registers; the
+                // frames of its native callers (by-reference parameters) are found as ever.
+                Some(nat) if !heap => {
+                    let (other, merge) = (self.block(c), self.block(c));
                     let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
-                    LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, hi, nat.fhi), own, other);
-                    LLVMPositionBuilderAtEnd(self.b, own);
-                    let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
-                    let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-                    let len = self.c64(c.frame_len as i64);
-                    let fits = self.icmp(IP::LLVMIntULE, n, len);
-                    let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
-                    let inside = self.icmp(IP::LLVMIntULE, o, rest);
-                    self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
-                    let p = self.gep(nat.slots, o);
-                    let from = LLVMGetInsertBlock(self.b);
-                    LLVMBuildBr(self.b, merge);
+                    let mut own_v = Vec::new();
+                    if nat.closed.is_some() {
+                        LLVMBuildBr(self.b, other);
+                    } else {
+                        let own = self.block(c);
+                        LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, hi, nat.fhi), own, other);
+                        LLVMPositionBuilderAtEnd(self.b, own);
+                        let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                        let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                        let len = self.c64(c.frame_len as i64);
+                        let fits = self.icmp(IP::LLVMIntULE, n, len);
+                        let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+                        let inside = self.icmp(IP::LLVMIntULE, o, rest);
+                        self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
+                        let p = self.gep(nat.slots, o);
+                        let from = LLVMGetInsertBlock(self.b);
+                        LLVMBuildBr(self.b, merge);
+                        own_v.push((p, from));
+                    }
                     LLVMPositionBuilderAtEnd(self.b, other);
                     // The slots of a native caller, registered at its entry: a frame above the
                     // interpreter's top frame and below this one.
@@ -4769,9 +6215,10 @@ impl Gen {
                     let from_up = LLVMGetInsertBlock(self.b);
                     LLVMBuildBr(self.b, merge);
                     LLVMPositionBuilderAtEnd(self.b, rest_blk);
-                    (vec![(p, from), (pu, from_up)], other, merge)
+                    own_v.push((pu, from_up));
+                    (own_v, other, merge)
                 }
-                None => (Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
+                _ => (Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
             };
             // Other memory: first the object's entry of `Mem::objs` (the objects found before, in
             // a process kept between activations: its heap variables; heap objects a `Deref`
@@ -4787,7 +6234,7 @@ impl Gen {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-                let e = self.obj_entry(c, hi);
+                let e = self.obj_entry(c, hi, false);
                 let mut hit = self.icmp(IP::LLVMIntEQ, self.load(self.i64, e), hi);
                 if write {
                     let w = self.load(self.i64, self.gep(e, self.c64(OBJ_W as i64)));
@@ -4801,9 +6248,19 @@ impl Gen {
                 // planes a caller made as temporaries, #527).
                 let at = |sp: u8| self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(sp) << 29));
                 let mut tries = vec![(hit, None)];
-                tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
-                if !write {
-                    tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));
+                if !heap {
+                    // The interpreter's top frame: the function's own (the address of a layout
+                    // the frame keeps), or for a native frame the frame its chain started in
+                    // (the variables of the process or function that called into compiled
+                    // code, reached through by-reference parameters).
+                    tries.push((
+                        self.icmp(IP::LLVMIntEQ, hi, self.mem_ld(c, MEM_FRAME, self.i64)),
+                        Some((MEM_SLOTS, MEM_SLOTS_LEN)),
+                    ));
+                    tries.push((at(space::TEMP), Some((MEM_TEMP, MEM_TEMP_LEN))));
+                    if !write {
+                        tries.push((at(space::INST), Some((MEM_INST, MEM_INST_LEN))));
+                    }
                 }
                 for (hit, view) in tries {
                     let (base, len) = match view {
@@ -4820,7 +6277,7 @@ impl Gen {
                         c"".as_ptr(),
                     );
                     let (fast, miss) = (self.block(c), self.block(c));
-                    LLVMBuildCondBr(self.b, ok, fast, miss);
+                    self.cond_br(ok, fast, miss, true);
                     LLVMPositionBuilderAtEnd(self.b, fast);
                     let pf = self.gep(base, o);
                     LLVMBuildBr(self.b, merge_at);
@@ -4829,6 +6286,8 @@ impl Gen {
                 }
             }
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
+            // The lookup in the objects `Mem` keeps failed: the rare case.
+            c.cold.borrow_mut().push(LLVMGetInsertBlock(self.b));
             let phi = LLVMBuildCall2(
                 self.b,
                 self.host_ty,
@@ -4837,7 +6296,9 @@ impl Gen {
                 6,
                 c"".as_ptr(),
             );
+            self.attr(phi, true, "cold", 0);
             self.guard(c, LLVMBuildIsNotNull(self.b, phi, c"".as_ptr()), slow);
+            c.cold.borrow_mut().push(LLVMGetInsertBlock(self.b));
             let mut p = phi;
             {
                 let here = LLVMGetInsertBlock(self.b);
@@ -5057,6 +6518,70 @@ impl Drop for Gen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The entry of an object found through its address (`obj_at`) is the entry of its access
+    /// value (`handle_at`, what `obj_entry` builds for a `Deref`), private and shared heaps.
+    #[test]
+    fn obj_keys_agree() {
+        for idx in [
+            0u64, 1, 7, 8, 15, 16, 255, 256, 257, 1000, 65_535, 0xff_ffff,
+        ] {
+            for (space, tag) in [(space::HEAP, 1u64), (space::SHARED_HEAP, 2)] {
+                let addr_hi = u64::from(space) << 29 | idx;
+                let handle_hi = tag << 24 | idx;
+                assert_eq!(obj_at(addr_hi), handle_at(handle_hi), "idx {idx} tag {tag}");
+            }
+            // A private and a shared object of one index get two entries.
+            assert_ne!(
+                obj_at(u64::from(space::HEAP) << 29 | idx),
+                obj_at(u64::from(space::SHARED_HEAP) << 29 | idx)
+            );
+        }
+    }
+
+    /// A frame whose address goes into the operand list of a call is not closed; the callee
+    /// that only loads and stores through its own parameter slot is.
+    #[test]
+    fn closed_frames_exclude_addresses_in_operand_lists() {
+        use yavs_ir::{FuncBuilder, Mode, ParamClass, ProgramBuilder, RegTy};
+        let mut pb = ProgramBuilder::new();
+        let leaf = pb.declare("leaf", FuncKind::Function, None);
+        let top = pb.declare("top", FuncKind::Function, None);
+        let mut fb: FuncBuilder<'_> = pb.define(leaf);
+        let s = fb.param("p", Width::B8, ParamClass::Value, Mode::In, None);
+        fb.stmt(
+            yavs_ir::StmtKind::Return,
+            yavs_diag::Span::new(yavs_diag::FileId(0), 0, 1),
+        );
+        let a = fb.addr(AddrSpace::Frame, s);
+        let p = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: p,
+            addr: a,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Ret { v: Some(p) });
+        fb.finish();
+        let mut fb = pb.define(top);
+        let v = fb.slot(8, 8);
+        fb.stmt(
+            yavs_ir::StmtKind::Return,
+            yavs_diag::Span::new(yavs_diag::FileId(0), 0, 1),
+        );
+        let a = fb.addr(AddrSpace::Frame, v);
+        let args = fb.regs(&[a]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: leaf,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+        let prog = pb.finish().unwrap();
+        assert!(closed_frame(&prog, prog.func(leaf).unwrap(), leaf).is_some());
+        assert!(closed_frame(&prog, prog.func(top).unwrap(), top).is_none());
+    }
 
     /// The helper declarations carry the effects `Gen::effects` means (the encoding of
     /// `memory(...)` is LLVM's own, checked here against its printer).

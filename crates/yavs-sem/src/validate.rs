@@ -24,6 +24,8 @@
 
 use std::collections::HashSet;
 
+use rustc_hash::FxHashMap;
+
 use yavs_diag::Span;
 
 use crate::db::{Db, Reported};
@@ -77,7 +79,11 @@ fn check_from(db: &Db, from: Mark) -> (Vec<Violation>, Mark) {
     let mut cx = Cx {
         db,
         out: Vec::new(),
+        rows: FxHashMap::default(),
     };
+    for i in from.exprs..db.exprs.len() {
+        cx.note_rows(ExprId::from_index(i));
+    }
     for i in from.types..db.types.len() {
         cx.type_(TypeId::from_index(i));
     }
@@ -107,6 +113,9 @@ fn check_from(db: &Db, from: Mark) -> (Vec<Violation>, Mark) {
 struct Cx<'a> {
     db: &'a Db,
     out: Vec<Violation>,
+    /// Nested rows of multi-dimensional aggregates -> the aggregate holding them (the HIR gives a
+    /// row the outermost aggregate's subtype; its dimension is its depth, aggregate.rs).
+    rows: FxHashMap<ExprId, ExprId>,
 }
 
 impl<'a> Cx<'a> {
@@ -488,6 +497,24 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Records the rows of a multi-dimensional aggregate (see `rows`).
+    fn note_rows(&mut self, id: ExprId) {
+        let ExprKind::Aggregate { assocs, .. } = &self.db.exprs[id].kind else {
+            return;
+        };
+        let at = self.base_of(id);
+        if matches!(self.kind(at), TypeKind::Array { indexes, .. } if indexes.len() > 1) {
+            for a in assocs.iter() {
+                // Rows carry the outermost aggregate's type; an element value does not.
+                if matches!(self.db.exprs[a.value].kind, ExprKind::Aggregate { .. })
+                    && self.base_of(a.value) == at
+                {
+                    self.rows.insert(a.value, id);
+                }
+            }
+        }
+    }
+
     fn aggregate(&mut self, id: ExprId, assocs: &[AggAssoc]) {
         let span = self.db.exprs[id].span;
         let at = self.base_of(id);
@@ -495,14 +522,21 @@ impl<'a> Cx<'a> {
             TypeKind::Array { indexes, elem } => {
                 let elem = self.norm(self.db.subtypes[*elem].base);
                 let one_dim = indexes.len() == 1;
+                let (mut dim, mut up) = (0, id);
+                while let Some(&p) = self.rows.get(&up) {
+                    (dim, up) = (dim + 1, p);
+                }
                 let index = indexes
-                    .first()
+                    .get(dim)
                     .map(|&s| self.norm(self.db.subtypes[s].base));
                 for a in assocs {
-                    // Multi-dimensional aggregates nest: the element is a lower-dimensional array.
+                    // Multi-dimensional aggregates nest: a row's value is a lower-dimensional
+                    // array, except in the last dimension.
                     if one_dim {
                         let want = if a.slice_piece { at } else { elem };
                         self.expect(a.value, want, "array aggregate element");
+                    } else if dim + 1 == indexes.len() {
+                        self.expect(a.value, elem, "array aggregate element");
                     }
                     for c in a.choices.iter() {
                         match (c, index) {
@@ -813,7 +847,7 @@ mod tests {
             scope: root,
             span: Span::default(),
             implicit: false,
-            since: crate::LangRev::Vhdl2008,
+            since: crate::LangRev::Vhdl1993,
         })
     }
 
@@ -884,7 +918,7 @@ mod tests {
             scope: root,
             span: Span::default(),
             implicit: false,
-            since: crate::LangRev::Vhdl2008,
+            since: crate::LangRev::Vhdl1993,
         });
         let m = msgs(&t.db);
         assert!(m.iter().any(|m| m.contains("ExprKind::Error")), "{m:?}");

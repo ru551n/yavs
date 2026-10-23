@@ -123,7 +123,7 @@ fn add_subprogram(db: &mut Db, name: &str, kind: SubprogramKind) -> (DeclId, Sco
         scope: outer,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     (decl, scope)
 }
@@ -451,7 +451,7 @@ impl Fx {
             scope: self.scope,
             span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         })
     }
 
@@ -637,7 +637,7 @@ fn lsp_follows_object_aliases_and_fields() {
         scope: fx.scope,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     let ae = fx.obj(al);
     let l = fx.db.lsp(ae).unwrap();
@@ -736,6 +736,7 @@ fn multiple_sources_records_generates_and_resolution() {
         fx.db.stmts[a].kind = StmtKind::ConcSignalAssign {
             postponed: false,
             guarded: false,
+            guard: None,
             target,
             delay,
             rhs,
@@ -872,7 +873,7 @@ fn instance_out_ports_are_sources() {
         scope: fx.scope,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     let inst = |fx: &mut Fx, formal: u16| {
         let so = fx.obj(s);
@@ -944,7 +945,7 @@ fn process_info_drivers_and_all() {
         scope: pscope,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     fx.db.scopes[pscope].order.push(q);
     let p = fx.process_in(pscope, assigns, true);
@@ -1007,7 +1008,7 @@ fn procedure_call_actuals_drive_and_read() {
         scope: fx.scope,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     let (ae, be) = (fx.obj(a), fx.obj(b));
     let span = fx.span();

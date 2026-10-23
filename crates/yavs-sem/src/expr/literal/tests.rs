@@ -30,7 +30,7 @@ pub(crate) fn add_type(db: &mut Db, name: &str, kind: TypeKind) -> TypeId {
         scope: root,
         span: Span::default(),
         implicit: false,
-        since: LangRev::Vhdl2008,
+        since: LangRev::Vhdl1993,
     });
     let ty = db.types.next_id();
     let st = db.subtypes.push(SubtypeDef {
@@ -82,7 +82,7 @@ pub(crate) fn char_enum(db: &mut Db, name: &str, chars: &str) -> TypeId {
                 scope: root,
                 span: Span::default(),
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             })
         })
         .collect();
@@ -360,7 +360,7 @@ fn physical_typed() {
             scope: root,
             span: Span::default(),
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         units.push(PhysUnit {
             decl,

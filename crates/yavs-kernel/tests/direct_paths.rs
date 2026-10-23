@@ -371,3 +371,379 @@ fn direct_drivers_keep_their_values_through_forces_and_deposits() {
     assert!(direct.len() > 80, "{direct:?}");
     assert_eq!(direct, forced_drivers(false));
 }
+
+/// Random zero-delay and delayed assignments (scalar and vector) of processes that are the only
+/// source of their elements, every nanosecond, with each process reporting its `'driving_value`.
+/// `explicit` names the rejection limit of a delayed inertial assignment (the delay itself, the
+/// same semantics), which sends it down the general path; the delayed one-element and vector
+/// assignments to an idle driver otherwise wait as a quick transaction for their time.
+fn random_delays(explicit: bool, seed: u64) -> Vec<String> {
+    let mut b = Builder::new();
+    let lv = |s: &str| s.parse::<LogicVec>().unwrap();
+    let a = b.signal("a", SignalType::logic(1), &lv("0"));
+    let v = b.signal("v", SignalType::logic(6), &lv("000000"));
+    let w = b.signal("w", SignalType::logic(2), &lv("00"));
+    let drivers = [
+        b.driver(a),
+        b.driver(v),
+        b.driver(w.slice(0, 1)),
+        b.driver(w.slice(1, 1)),
+    ];
+    for (k, d) in drivers.into_iter().enumerate() {
+        let mut rng = seed ^ (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        b.process(
+            &format!("p{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                // One to three assignments per run, so a delayed one meets the run's own
+                // zero-delay entries and earlier delayed transactions.
+                for _ in 0..1 + rng % 3 {
+                    rng = rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let r = rng >> 33;
+                    let (delay, bits) = (r % 5, (r >> 8) as u32);
+                    let mode = if explicit && delay > 0 {
+                        DelayMode::Inertial {
+                            reject: Some(ns(delay)),
+                        }
+                    } else {
+                        DelayMode::INERTIAL
+                    };
+                    if r.is_multiple_of(7) {
+                        continue;
+                    }
+                    if k == 1 {
+                        let planes: LogicVec = (0..6)
+                            .map(|i| if bits >> i & 1 == 1 { '1' } else { '0' })
+                            .collect::<String>()
+                            .parse()
+                            .unwrap();
+                        c.assign(d, None, &[(ns(delay), &planes)], mode)?;
+                    } else {
+                        let code = if bits & 1 == 1 { ONE } else { ZERO };
+                        c.assign_code(d, None, ns(delay), code, mode)?;
+                    }
+                }
+                c.report(
+                    Severity::Note,
+                    format!("p{k} driving {}", c.driving_value(d)?),
+                );
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(300)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn delayed_assignments_to_idle_drivers_match_the_general_path() {
+    for seed in 0..8 {
+        let (fast, general) = (random_delays(false, seed), random_delays(true, seed));
+        assert!(fast.len() > 600, "{}", fast.len());
+        assert_eq!(fast, general, "seed {seed}");
+    }
+}
+
+/// Random zero-delay and delayed assignments of processes that are the only source of an
+/// integer and of the elements of an enumeration array (byte signals), reporting the signals'
+/// events, last values and last event times. `general` gives the signals an identity
+/// resolution function (they are updated through the dirty ranges) and the delayed inertial
+/// assignments an explicit rejection limit (the general assignment path).
+fn random_bytes(general: bool, seed: u64) -> Vec<String> {
+    let mut b = Builder::new();
+    let same: Resolver = std::sync::Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out.copy_from_slice(srcs[0]);
+        Ok(())
+    });
+    let mut sig = |name: &str, ty: SignalType, init: &[u8]| {
+        if general {
+            b.resolved_signal(name, ty, init, Resolution::Func(same.clone()))
+        } else {
+            b.signal(name, ty, init)
+        }
+    };
+    let n = sig("n", SignalType::bytes(4, 1), &[0; 4]);
+    let e = sig("e", SignalType::bytes(1, 3), &[0; 3]);
+    let drivers = [
+        b.driver(n),
+        b.driver(e.slice(0, 1)),
+        b.driver(e.slice(1, 1)),
+    ];
+    for (k, d) in drivers.into_iter().enumerate() {
+        let mut rng = seed ^ (k as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let sref = if k == 0 {
+            n.slice(0, 1)
+        } else {
+            e.slice(k as u32 - 1, 1)
+        };
+        b.process(
+            &format!("p{k}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                for _ in 0..1 + rng % 3 {
+                    rng = rng
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let r = rng >> 33;
+                    let (delay, v) = (r % 5, (r >> 8) as u32 % 3);
+                    let mode = if general && delay > 0 {
+                        DelayMode::Inertial {
+                            reject: Some(ns(delay)),
+                        }
+                    } else {
+                        DelayMode::INERTIAL
+                    };
+                    if r.is_multiple_of(7) {
+                        continue;
+                    }
+                    if k == 0 {
+                        c.assign_bytes(d, None, ns(delay), &v.to_le_bytes(), mode)?;
+                    } else {
+                        c.assign_bytes(d, None, ns(delay), &[v as u8], mode)?;
+                    }
+                }
+                c.report(
+                    Severity::Note,
+                    format!(
+                        "p{k} {:?} ev={} last={:?} at {:?} active={}",
+                        c.value(sref)?,
+                        c.event(sref)?,
+                        c.last_value(sref)?,
+                        c.last_event(sref)?,
+                        c.active(sref)?,
+                    ),
+                );
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let (mut sim, trace) = build(
+        b,
+        Config {
+            skip_unchanged: true,
+            ..Config::default()
+        },
+    );
+    sim.run_until(ns(300)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn byte_signal_assignments_match_the_general_path() {
+    for seed in 0..8 {
+        let (fast, general) = (random_bytes(false, seed), random_bytes(true, seed));
+        assert!(fast.len() > 500, "{}", fast.len());
+        assert_eq!(fast, general, "seed {seed}");
+    }
+}
+
+/// Four direct drivers of one enumeration element and two of one integer, assigning at every ns
+/// (some values repeat), with forces of the driving value, releases and deposits in between;
+/// each process reports its `'driving_value`, and a postponed process what it sees at the end
+/// of every time step. The direct commits write only the driving value (`Signal::lag`), so the
+/// same run on signals with an identity resolution function (no direct driver) must give the
+/// same trace.
+fn forced_byte_drivers(direct: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let same: Resolver = std::sync::Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
+        out.copy_from_slice(srcs[0]);
+        Ok(())
+    });
+    let mut sig = |name: &str, es: u32, n: u32| {
+        let (ty, init) = (SignalType::bytes(es, n), vec![0u8; (es * n) as usize]);
+        if direct {
+            b.signal(name, ty, &init)
+        } else {
+            b.resolved_signal(name, ty, &init, Resolution::Func(same.clone()))
+        }
+    };
+    let (a, n) = (sig("a", 1, 4), sig("n", 4, 2));
+    for i in 0..4u32 {
+        let d = b.driver(a.slice(i, 1));
+        let mut t = 0u32;
+        b.process(
+            &format!("p{i}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                t += 1;
+                if t > 1 {
+                    let got = c.driving_value(d)?;
+                    c.report(
+                        Severity::Note,
+                        format!("{got:?} ev={}", c.event(a.slice(i, 1))?),
+                    );
+                }
+                let v = [1u8, 0, 2, 2, 1][((t + i) % 5) as usize];
+                c.assign_bytes(d, None, Time::ZERO, &[v], DelayMode::INERTIAL)?;
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    for i in 0..2u32 {
+        let d = b.driver(n.slice(i, 1));
+        let mut t = 0u32;
+        b.process(
+            &format!("q{i}"),
+            NONE,
+            &[d],
+            p(move |c| {
+                t += 1;
+                if t > 1 {
+                    let got = c.driving_value(d)?;
+                    c.report(Severity::Note, format!("{got:?}"));
+                }
+                let v = [7u32, 7, 9, 100000, 7][((t + i) % 5) as usize];
+                c.assign_bytes(d, None, Time::ZERO, &v.to_le_bytes(), DelayMode::INERTIAL)?;
+                // A delayed one now and then, on the same driver.
+                if t.is_multiple_of(4) {
+                    c.assign_bytes(d, None, ns(2), &(v + 1).to_le_bytes(), DelayMode::INERTIAL)?;
+                }
+                c.wait_for(ns(1))
+            }),
+        );
+    }
+    let mut t = 0u32;
+    b.process(
+        "ctl",
+        NONE,
+        &[],
+        p(move |c| {
+            t += 1;
+            match t - 1 {
+                2 => {
+                    c.force(a.slice(1, 2), ForceMode::Driving, &[2u8, 1][..])?;
+                    c.force(n.slice(1, 1), ForceMode::Driving, &55u32.to_le_bytes()[..])?;
+                }
+                4 => c.release(a.slice(1, 1), ForceMode::Driving)?,
+                5 => {
+                    c.release(a.slice(2, 1), ForceMode::Driving)?;
+                    c.release(n.slice(1, 1), ForceMode::Driving)?;
+                }
+                6 => {
+                    c.deposit(a.slice(0, 2), &[2u8, 2][..])?;
+                    c.deposit(n.slice(0, 1), &66u32.to_le_bytes()[..])?;
+                }
+                7 => c.force(a.slice(3, 1), ForceMode::Effective, &[1u8][..])?,
+                _ => {}
+            }
+            c.wait_for(ns(1))
+        }),
+    );
+    b.process(
+        "watch",
+        ProcFlags {
+            postponed: true,
+            ..NONE
+        },
+        &[],
+        p(move |c| {
+            c.report(
+                Severity::Note,
+                format!("{:?} {:?}", c.value(a)?, c.value(n)?),
+            );
+            c.wait_on(a)?;
+            c.wait_on(n)?;
+            c.wait_for(ns(1))
+        }),
+    );
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(14)).unwrap();
+    let mut lines = trace.take();
+    let (fa, fn_) = (sim.value(a).unwrap(), sim.value(n).unwrap());
+    lines.push(format!("final {fa:?} {fn_:?}"));
+    lines
+}
+
+#[test]
+fn byte_direct_drivers_keep_their_values_through_forces_and_deposits() {
+    let direct = forced_byte_drivers(true);
+    assert!(direct.len() > 80, "{direct:?}");
+    assert_eq!(direct, forced_byte_drivers(false));
+}
+
+/// Direct byte assignments that change nothing: with `skip_unchanged` the commit writes nothing,
+/// yet every delta, phase and report is where it was, also when a later assignment of the run
+/// preempts the unchanged one.
+fn unchanged_bytes(skip: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let (s, t) = (
+        b.signal("s", SignalType::bytes(1, 1), &[1]),
+        b.signal("t", SignalType::bytes(4, 1), &[5, 0, 0, 0]),
+    );
+    let (ds, dt) = (b.driver(s), b.driver(t));
+    b.process(
+        "same",
+        NONE,
+        &[ds],
+        p(move |c| {
+            c.assign_bytes(ds, None, Time::ZERO, &[1], DelayMode::INERTIAL)?;
+            if c.now() == Time::ZERO {
+                c.wait_for(ns(5))?;
+            }
+            Ok(())
+        }),
+    );
+    b.process(
+        "preempted",
+        NONE,
+        &[dt],
+        p(move |c| {
+            let five = 5u32.to_le_bytes();
+            if c.now() == Time::ZERO {
+                c.assign_bytes(dt, None, Time::ZERO, &five, DelayMode::INERTIAL)?;
+                c.assign_bytes(dt, None, ns(2), &6u32.to_le_bytes(), DelayMode::INERTIAL)?;
+                c.wait_for(ns(4))?;
+            } else if c.now() == ns(4) {
+                c.assign_bytes(
+                    dt,
+                    None,
+                    Time::ZERO,
+                    &6u32.to_le_bytes(),
+                    DelayMode::INERTIAL,
+                )?;
+                c.assign_bytes(dt, None, Time::ZERO, &five, DelayMode::INERTIAL)?;
+            }
+            Ok(())
+        }),
+    );
+    b.process(
+        "watch",
+        ProcFlags {
+            postponed: true,
+            ..NONE
+        },
+        &[],
+        p(move |c| {
+            c.report(Severity::Note, format!("t={:?}", c.value(t)?));
+            c.wait_on(s)?;
+            c.wait_on(t)?;
+            c.wait_for(ns(1))
+        }),
+    );
+    let mut sim = b
+        .build(Config {
+            skip_unchanged: skip,
+            ..Config::default()
+        })
+        .unwrap();
+    let trace = Trace {
+        phases: true,
+        ..Trace::default()
+    };
+    sim.subscribe(Box::new(trace.clone()));
+    sim.run_until(ns(20)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn unchanged_direct_byte_assignments_keep_the_deltas() {
+    let (off, on) = (unchanged_bytes(false), unchanged_bytes(true));
+    assert!(off.iter().any(|l| l.contains("+1 NextCycle")), "{off:?}");
+    assert_eq!(off, on);
+}

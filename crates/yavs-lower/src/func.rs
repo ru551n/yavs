@@ -153,6 +153,8 @@ pub(crate) struct Fx<'a, 'b> {
     pub fb: FuncBuilder<'b>,
     pub depth: u8,
     pub kind: FuncKind,
+    /// A postponed process (`FuncKind::Process` only).
+    pub postponed: bool,
     /// Whether the current block can still take instructions (no terminator yet).
     pub live: bool,
     /// Enclosing loops: (loop statement, `next` target, `exit` target).
@@ -203,6 +205,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             fb,
             depth,
             kind,
+            postponed: false,
             live: true,
             loops: Vec::new(),
             ret: None,
@@ -524,11 +527,16 @@ impl<'a, 'b> Fx<'a, 'b> {
                 tid,
                 ..
             } => {
-                let dope = match subtype
-                    .map(|st| self.subtype_dope(st, span))
-                    .transpose()?
-                    .flatten()
-                {
+                // A subtype that constrains only the index (`arr(0 to n)` of an array of open
+                // arrays) takes the element bounds from the aliased object.
+                let want = match subtype {
+                    Some(st) => match self.subtype_dope(st, span)? {
+                        Some(w) => Some(w),
+                        None => self.desc_of(st, Some(dope), span)?,
+                    },
+                    None => None,
+                };
+                let dope = match want {
                     Some(want) => {
                         let t = db.base(db.exprs[target].subtype);
                         self.check_desc(t, tid, dope, want, &ty::obj_desc(db, d), span)?;
@@ -858,6 +866,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             dst: l,
             ty: tid,
             desc: dope,
+            cache: None,
         });
         let size = self.load(l, Width::B8, RegTy::I64);
         // A record layout has its field offsets where an array has its element count (and may
@@ -1522,8 +1531,8 @@ pub(crate) fn thunk(
     v.map(|_| id)
 }
 
-/// The thunk that creates the object of protected shared variable `d` in the shared heap and
-/// returns its handle (`Lowerer::region_var_init`).
+/// The thunk that creates the object of shared variable `d` in the shared heap and
+/// returns its handle (protected) or the address of its slot (`Lowerer::region_var_init`).
 pub(crate) fn region_var_init(
     db: &Db,
     pb: &mut ProgramBuilder,
@@ -1535,7 +1544,17 @@ pub(crate) fn region_var_init(
         return Err(cx.ice(decl.span, "not an object"));
     };
     let (t, span, name) = (db.base(o.subtype), decl.span, decl.name.to_string());
-    thunk(db, pb, cx, &name, span, |fx| fx.prot_new(t, true, span))
+    let protected = matches!(
+        db.types[t].kind,
+        yavs_sem::types::TypeKind::Protected { .. }
+    );
+    thunk(db, pb, cx, &name, span, |fx| {
+        if protected {
+            fx.prot_new(t, true, span)
+        } else {
+            Ok(fx.new_shared_slot(d, t, &name, span)?.1)
+        }
+    })
 }
 
 fn inst_object(db: &Db, pb: &mut ProgramBuilder, cx: &mut Cx, ir: &mut UnitIr, d: DeclId) -> R<()> {
@@ -1800,7 +1819,7 @@ fn process(
     cx: &mut Cx,
     ir: &mut UnitIr,
     s: StmtId,
-    guard: Option<DeclId>,
+    mut guard: Option<DeclId>,
 ) -> R<()> {
     let st = &db.stmts[s];
     let (postponed, info, scope, implicit) = match &st.kind {
@@ -1813,9 +1832,15 @@ fn process(
         HStmt::ConcSignalAssign {
             postponed,
             guarded,
+            guard: assign_guard,
             info,
             ..
         } => {
+            // The GUARD signal sem found at the statement: the block's own, or a signal
+            // declared with that name (11.6).
+            if assign_guard.is_some() {
+                guard = *assign_guard;
+            }
             if *guarded && guard.is_none() {
                 return Err(cx.ice(st.span, "guarded assignment outside a guarded block"));
             }
@@ -1892,6 +1917,7 @@ fn process(
     fx.drivers = drivers;
     fx.driver_base = bases;
     fx.guard = guard;
+    fx.postponed = postponed;
     fx.stmt_start(StmtKind::Process, st.span);
     let mut r = Ok(());
     if let Some(sc) = scope {

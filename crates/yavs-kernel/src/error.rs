@@ -45,8 +45,12 @@ pub enum ErrorKind {
     /// `base + delay` is beyond `TIME'HIGH`.
     TimeOverflow { base: Time, delay: Time },
     /// More than `limit` delta cycles at one time; `processes` (instance
-    /// paths) ran in the last delta.
-    DeltaLimit { limit: u32, processes: Vec<String> },
+    /// paths) ran in the last delta, `cause` is the loop behind it if one was found.
+    DeltaLimit {
+        limit: u32,
+        processes: Vec<String>,
+        cause: crate::LoopCause,
+    },
     /// A postponed process scheduled a delta cycle (LRM 14.7.5.3).
     PostponedDelta,
     /// A malformed signal assignment.
@@ -126,7 +130,9 @@ impl fmt::Display for ErrorKind {
             ErrorKind::TimeOverflow { base, delay } => {
                 write!(f, "time overflow: {base} + {delay} exceeds TIME'HIGH")
             }
-            ErrorKind::DeltaLimit { limit, processes } => {
+            ErrorKind::DeltaLimit {
+                limit, processes, ..
+            } => {
                 write!(
                     f,
                     "delta cycle limit {limit} exceeded; active processes: {}",

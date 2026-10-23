@@ -186,8 +186,10 @@ pub fn parse(key: &str) -> Option<Op> {
     // type argument to tell them apart (the interpreter converts the bit arrays).
     let bit = pkg == "numeric_bit";
     let pkg = if bit { "numeric_std" } else { pkg };
+    // In 1993 `std_logic_vector` is a type of its own, not a subtype of `std_ulogic_vector`;
+    // both are arrays of `std_ulogic` values, so one native serves both.
     let unify = |t| {
-        if bit && t == "bit_vector" {
+        if (bit && t == "bit_vector") || t == "std_logic_vector" {
             "std_ulogic_vector"
         } else {
             t

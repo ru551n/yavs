@@ -13,7 +13,7 @@ use yavs_interp::{
     CallVal, DebugSession, InstData, InstSig, InterpProcess, ProcDriver, Runtime, SharedState,
 };
 use yavs_kernel::{Config, ErrorKind, SimControl, SimError};
-use yavs_lower::{LowerOptions, Lowerer, UnitIr};
+use yavs_lower::{LowerOptions, Lowerer, UnitIr, package_prefix, subprogram_element};
 use yavs_sem::{Db, UnitId};
 
 use crate::Elaborated;
@@ -107,6 +107,14 @@ struct LoweringKey {
     part: Vec<u8>,
 }
 
+/// The most specialised copies of processes one design may have (`Program::reserve_copies`).
+const MAX_COPIES: usize = 4096;
+/// A copy of fewer IR instructions than this is rare, and a design with many tiny processes
+/// keeps the rest shared if it is not (`spec_full`): the slots are sized by the cap.
+const MIN_COPY_IR: usize = 32;
+/// The slots every design with copies gets.
+const MIN_COPIES: usize = 32;
+
 /// The constant bytes up to which a lowering is stored: reading a big constant pool back costs
 /// more than lowering the design again (`Lowerer::image` has the same limit).
 const LOWERING_MAX_CONSTS: usize = yavs_lower::IMAGE_MAX_CONSTS;
@@ -133,6 +141,22 @@ impl LoweringKey {
             })
             .sum();
         consts <= LOWERING_MAX_CONSTS
+    }
+
+    /// The specialised copies of processes stored for this lowering (kind `spec`, one entry for
+    /// all of them, `CopyBlob`).
+    fn get_copies(&self) -> Vec<yavs_ir::CopyBlob> {
+        let Some(bytes) = self.cache.get(&self.extent, "spec", &self.part) else {
+            return Vec::new();
+        };
+        yavs_diag::sharing(&bytes, || postcard::from_bytes(&bytes).ok()).unwrap_or_default()
+    }
+
+    /// Store the copies `program` made and the stored ones it did not use.
+    fn put_copies(&self, program: &yavs_ir::Program) {
+        if let Ok(bytes) = postcard::to_stdvec(&program.export_copies()) {
+            self.cache.put(&self.extent, "spec", &self.part, &bytes);
+        }
     }
 
     /// Store `program` (verified) and `rest` with the optimised copies `program` holds; returns
@@ -418,6 +442,45 @@ impl Elaborated {
             }
         }
         let sources = yavs_interp::Sources::of(&program, &db.sources);
+        // Slots for the specialised copies the processes may switch to while the simulation runs
+        // (one per instance of a process that can have copies at most); the runtime's tables are
+        // made for them.
+        let mut program = program;
+        let mut may: HashMap<_, bool> = HashMap::new();
+        let (mut instances, mut ir, mut seen) = (0, 0, std::collections::HashSet::new());
+        for p in self.procs.iter().filter(|p| p.actual.is_none()) {
+            let i = self.instance_of(p.scope);
+            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+                continue;
+            };
+            instances += usize::from(*may.entry((arch, p.stmt)).or_insert_with(|| {
+                units.get(&arch).is_some_and(|u: &UnitIr| {
+                    u.processes
+                        .iter()
+                        .find(|x| x.actual.is_none() && x.stmt == p.stmt)
+                        .is_some_and(|x| {
+                            let ok = program.specialisable(x.func);
+                            if ok && seen.insert(x.func) {
+                                ir += program.funcs.get(x.func).map_or(0, |f| f.full().code.len());
+                            }
+                            ok
+                        })
+                })
+            }));
+        }
+        // The growth cap lets at most that many copies of at least `MIN_COPY_IR` instructions in.
+        let cap = yavs_ir::cap_percent() as usize;
+        let room = if cap == 0 {
+            usize::MAX
+        } else {
+            (ir * cap / 100 / MIN_COPY_IR).max(MIN_COPIES)
+        };
+        program.reserve_copies(instances.min(MAX_COPIES).min(room));
+        // The copies of processes earlier runs of this lowering made, read when the first is.
+        if let Some(l) = &learn {
+            let key = l.key.clone();
+            program.set_copy_loader(Box::new(move || key.get_copies()));
+        }
         self.ir = Some(Ir {
             sources,
             revision: crate::pkgcall::revision_of(db),
@@ -646,6 +709,9 @@ impl Elaborated {
             lib.learn(made);
         }
         let Some(l) = &mut ir.learn else { return };
+        if ir.program.fresh_copies() > 0 {
+            l.key.put_copies(&ir.program);
+        }
         if ir.program.optimized_count() > l.stored {
             l.stored = l.key.put(&ir.program, &l.rest);
         }
@@ -1012,8 +1078,8 @@ impl Elaborated {
         }
         for &region in &ir.init_regions {
             match self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base) {
-                // ponytail: a constant initialised from a signal has no signal context here
-                // (#453); the instance is left unevaluated, as before, until that is fixed.
+                // ponytail: a constant reading a signal that elaboration could not fold (#453)
+                // has no signal context here; the instance is left unevaluated.
                 Err(e)
                     if matches!(&e.kind, ErrorKind::Runtime(m)
                         if m == "signal or wait operation during elaboration") => {}
@@ -1112,6 +1178,18 @@ impl Elaborated {
             Ok((f, serial))
         };
         let mut proc_index: HashMap<_, HashMap<_, usize>> = HashMap::new();
+        // The parameters of `for` generates are not folded into a process's copy (so the
+        // iterations of a generate share one): their bytes in the instance data of each unit.
+        let gen_params: std::collections::HashSet<yavs_sem::DeclId> = self
+            .hier
+            .scopes
+            .iter()
+            .filter_map(|s| match s.kind {
+                ScopeKind::ForGenerate { param, .. } => Some(param),
+                _ => None,
+            })
+            .collect();
+        let mut holes_of: HashMap<_, Arc<[(u32, u32)]>> = HashMap::new();
         let mut s = self.build_res(
             cfg,
             |p, ds| {
@@ -1174,13 +1252,30 @@ impl Elaborated {
                     });
                 }
                 let serial = ir.program.is_serial(pir.func);
-                let proc = InterpProcess::new(
+                let mut proc = InterpProcess::new(
                     rt.clone(),
                     pir.func,
                     inst,
                     drivers,
                     serial.then(|| shared.clone()),
                 )?;
+                if !serial {
+                    let holes = match holes_of.get(&arch) {
+                        Some(h) => h.clone(),
+                        None => {
+                            let mut holes = Vec::new();
+                            for v in u.values.iter().filter(|v| gen_params.contains(&v.decl)) {
+                                let n = rt.prog.types.get(v.ty).and_then(|t| t.scalar_size());
+                                let n = n.ok_or_else(|| {
+                                    sim_err("a generate parameter is not a scalar".into())
+                                })?;
+                                holes.push((v.off, n as u32));
+                            }
+                            holes_of.entry(arch).or_insert(holes.into()).clone()
+                        }
+                    };
+                    proc.specialise_later(holes);
+                }
                 Ok(Box::new(attach(proc, p)))
             },
             res,
@@ -1725,33 +1820,12 @@ fn write_desc(
     Ok(())
 }
 
-/// Packages outside std with objects that exist at run time: signals, shared variables,
-/// files, or constants sem did not fold (in the declaration or the body), or the aliases of
-/// external names its subprograms use (#255).
+/// Packages outside std with objects that exist at run time (`Db::run_time_package_set`, from
+/// the image when it holds it), in the order they are elaborated.
 pub(crate) fn run_time_packages(db: &Db) -> Vec<UnitId> {
-    use yavs_sem::decl::{DeclKind, ObjClass};
-    let run_time = |d: yavs_sem::DeclId| match &db.decls[d].kind {
-        DeclKind::Object(o) => match o.class {
-            ObjClass::Constant => o.default.is_some_and(|e| db.exprs[e].value.is_none()),
-            _ => true,
-        },
-        _ => db.decl_subprograms(d).into_iter().any(|m| {
-            !db.external_uses(yavs_sem::external::ExtOwner::Sub(m))
-                .is_empty()
-        }),
-    };
-    let wanted: Vec<UnitId> = db
-        .units
-        .iter()
-        .filter(|(_, u)| db.libs[u.lib].name.key.as_str() != "std")
-        .filter(|&(id, _)| {
-            db.package_regions(id).is_some_and(|rs| {
-                rs.into_iter()
-                    .any(|s| db.decls_with_instances(s).into_iter().any(run_time))
-            })
-        })
-        .map(|(id, _)| id)
-        .collect();
+    let wanted = db
+        .stored_run_time_packages()
+        .map_or_else(|| db.run_time_package_set(), <[UnitId]>::to_vec);
     dependency_order(db, wanted)
 }
 
@@ -1800,66 +1874,6 @@ fn dependency_order(db: &Db, packages: Vec<UnitId>) -> Vec<UnitId> {
         visit(db, &bodies, &wanted, &mut seen, &mut out, u);
     }
     out
-}
-
-/// `name[type, type return type]` (LRM 16.2.5, lower case): a subprogram's path element.
-fn subprogram_element(db: &Db, d: yavs_sem::DeclId) -> String {
-    let decl = &db.decls[d];
-    let sub = decl.kind.subprogram().expect("a subprogram declaration");
-    let ty = |st| db.type_name(db.base(st)).to_ascii_lowercase();
-    let params: Vec<String> = sub.params.iter().map(|p| ty(p.subtype)).collect();
-    let mut sig = params.join(",");
-    if let Some(r) = sub.ret {
-        if !sig.is_empty() {
-            sig.push(' ');
-        }
-        sig += &format!("return {}", ty(r));
-    }
-    format!("{}[{sig}]", decl.name.to_string().to_ascii_lowercase())
-}
-
-/// The path elements of the subprograms and local package (instance) an item declared in
-/// `scope` sits in, outermost first, each with its colon, when it sits in a package; the
-/// second value is `:lib:pkg:` when that package is a library unit (then the elements start
-/// below it). Empty and `None` for an item outside any package.
-fn package_prefix(db: &Db, scope: yavs_sem::ScopeId) -> (String, Option<String>) {
-    use yavs_sem::scope::ScopeKind as S;
-    let mut parts = Vec::new();
-    let mut sc = Some(scope);
-    while let Some(s) = sc {
-        let sd = &db.scopes[s];
-        match (sd.kind, sd.owner) {
-            (S::Subprogram, Some(o)) => parts.push(format!("{}:", subprogram_element(db, o))),
-            (S::Loop | S::SeqBlock | S::PackageBody, _) => {}
-            (S::Package, _) => {
-                if let Some(u) = db.units.iter().map(|(_, u)| u).find(|u| u.scope == s) {
-                    let lib = db.libs[u.lib].name.key.to_string();
-                    let lib = format!(":{lib}:{}:", u.name.key);
-                    return (parts.iter().rev().map(String::as_str).collect(), Some(lib));
-                }
-                parts.push(format!(
-                    "{}:",
-                    sd.owner.map_or(String::new(), |o| db.decls[o]
-                        .name
-                        .to_string()
-                        .to_ascii_lowercase())
-                ));
-                return (parts.iter().rev().map(String::as_str).collect(), None);
-            }
-            (S::Instance, Some(o))
-                if matches!(db.decls[o].kind, yavs_sem::decl::DeclKind::PackageInst(_)) =>
-            {
-                parts.push(format!(
-                    "{}:",
-                    db.decls[o].name.to_string().to_ascii_lowercase()
-                ));
-                return (parts.iter().rev().map(String::as_str).collect(), None);
-            }
-            _ => break,
-        }
-        sc = sd.parent;
-    }
-    (String::new(), None)
 }
 
 /// The path elements between a region and an object declared in `scope` inside a process or

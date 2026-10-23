@@ -90,6 +90,86 @@ impl Db {
         Ok(())
     }
 
+    /// The object `e` names is not read by its context (an assignment target, the actual of
+    /// an `out` formal, the prefix of an attribute that does not read the value, an alias
+    /// target): the reference to an `out` port or parameter at its root is not a read
+    /// (LRM 1993 4.3.2). The indices of an indexed target and the arguments of a call stay
+    /// reads.
+    pub(crate) fn not_read(&mut self, e: ExprId) {
+        if self.out_reads.is_empty() {
+            return;
+        }
+        let mut x = e;
+        loop {
+            match &self.exprs[x].kind {
+                ExprKind::Index { prefix, .. }
+                | ExprKind::Slice { prefix, .. }
+                | ExprKind::Field { prefix, .. } => x = *prefix,
+                // `conv(port)` as the actual of an `out` formal converts the formal's value.
+                ExprKind::Conv { operand, .. }
+                | ExprKind::Qualified { operand, .. }
+                | ExprKind::ImplicitConv { operand } => x = *operand,
+                ExprKind::Call { args, .. } if args.len() == 1 => match args[0].actual {
+                    Actual::Expr(a) => x = a,
+                    _ => break,
+                },
+                ExprKind::Aggregate { assocs, .. } => {
+                    let parts: smallvec::SmallVec<[ExprId; 4]> =
+                        assocs.iter().map(|a| a.value).collect();
+                    for p in parts {
+                        self.not_read(p);
+                    }
+                    return;
+                }
+                _ => break,
+            }
+        }
+        self.out_reads.retain(|&p| p != x);
+    }
+
+    /// `not_read` for the actual of an `out` formal in a call or a map.
+    pub(crate) fn not_read_actual(&mut self, a: &Actual) {
+        if self.out_reads.is_empty() {
+            return;
+        }
+        match a {
+            Actual::Expr(x) | Actual::Converted { actual: x, .. } => self.not_read(*x),
+            Actual::Individual(parts) => {
+                let xs: smallvec::SmallVec<[ExprId; 4]> = parts.iter().map(|p| p.1).collect();
+                for x in xs {
+                    self.not_read(x);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `E1360`: what is left of `out_reads` at the end of a unit are reads of `out` ports and
+    /// parameters in a VHDL-1993 file (LRM 1993 4.3.2: the value of an `out` interface object
+    /// cannot be read; VHDL-2008 6.5.2 lifted the rule).
+    pub(crate) fn report_out_reads(&mut self) {
+        for x in std::mem::take(&mut self.out_reads) {
+            let ExprKind::Obj(d) = self.exprs[x].kind else {
+                continue;
+            };
+            let what = match &self.decls[d].kind {
+                crate::decl::DeclKind::Object(o) if o.role == crate::decl::ObjRole::Port => "port",
+                _ => "parameter",
+            };
+            let name = self.decls[d].name;
+            self.report(
+                Diagnostic::error(
+                    diag::CLASS_MISUSE,
+                    format!("cannot read {what} `{name}` of mode `out`"),
+                )
+                .with_primary(self.exprs[x].span, "read here")
+                .with_secondary(self.decls[d].span, "declared with mode `out` here")
+                .with_note("VHDL-1993 does not allow the value of an `out` interface object to be read (LRM 1993 4.3.2); VHDL-2008 does")
+                .with_help("declare it `inout` or `buffer`, read a separate signal or variable, or analyze the file as VHDL-2008"),
+            );
+        }
+    }
+
     /// Resolve a complete context for a target of subtype `st` (assignment
     /// targets, return values, initial values): an aggregate with `others` at
     /// the top takes its bounds from `st` (9.3.3.3).
@@ -322,6 +402,38 @@ impl Db {
                     self.poison_expr()
                 }
             },
+            CandSet::Alloc(d) => match exp {
+                // Another access type: the allocator checks its designated subtype and says so.
+                Expected::Type(t) if self.alloc_admits(d, t) || self.designated(t).is_some() => {
+                    self.build_class(scope, e, t)
+                }
+                Expected::Type(t) => {
+                    let tn = self.type_name(t);
+                    let dn = self.type_name(d);
+                    self.report(
+                        Diagnostic::error(
+                            diag::TYPE_MISMATCH,
+                            format!("expected `{tn}`, found an allocator of `{dn}`"),
+                        )
+                        .with_primary(
+                            e.span,
+                            format!("an allocator of `{dn}` cannot be of type `{tn}`"),
+                        ),
+                    );
+                    self.poison_expr()
+                }
+                _ => {
+                    self.report(
+                        Diagnostic::error(
+                            diag::AMBIGUOUS,
+                            "the access type of this allocator cannot be determined from its context",
+                        )
+                        .with_primary(e.span, "type not determined")
+                        .with_help("qualify it with a type mark, as in `t'(...)`"),
+                    );
+                    self.poison_expr()
+                }
+            },
             CandSet::Types(is) => {
                 if is.iter().any(|i| i.ty == self.poison.ty) {
                     return self.build_any(scope, e, is[0], exp);
@@ -409,7 +521,12 @@ impl Db {
                 {
                     return crate::expr::literal::const_expr(self, e.span, i.ty, Some(v));
                 }
-                self.build_operator(scope, i, &[operand.as_ref()], e.span)
+                let id = self.build_operator(scope, i, &[operand.as_ref()], e.span);
+                if *op == ast::UnaryOp::Not {
+                    self.not_stable_as_event(id)
+                } else {
+                    id
+                }
             }
             K::Binary { left, right, .. } => {
                 self.build_operator(scope, i, &[left.as_ref(), right.as_ref()], e.span)
@@ -446,6 +563,72 @@ impl Db {
             K::Conditional(alts) => self.conditional(scope, e, alts, i.ty),
             K::Unaffected | K::Error => self.poison_expr(),
         }
+    }
+
+    /// `not s'stable` (the predefined `not`, no time argument) read as `s'event` (#632): a stable
+    /// time of zero is false in exactly the cycle of an event, so the value is the same, and the
+    /// implicit signal the occurrence would declare (kernel work at every event of `s`) is not
+    /// made. `id` is the call just built; any other expression is returned as it is.
+    fn not_stable_as_event(&mut self, id: ExprId) -> ExprId {
+        use crate::decl::{DeclKind, ObjRole};
+        use crate::hir::{AttrPrefix, PredefAttr};
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &self.exprs[id].kind
+        else {
+            return id;
+        };
+        let [
+            Arg {
+                actual: Actual::Expr(a),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return id;
+        };
+        if !self.decls[*callee].implicit
+            || self.decls[*callee].name.key().as_str() != "\"not\""
+            || Some(self.base(self.exprs[id].subtype)) != self.well_known.boolean
+        {
+            return id;
+        }
+        let ExprKind::Obj(d) = self.exprs[*a].kind else {
+            return id;
+        };
+        let DeclKind::Object(o) = &self.decls[d].kind else {
+            return id;
+        };
+        let Some(def) = o.default.filter(|_| o.role == ObjRole::ImplicitSignal) else {
+            return id;
+        };
+        let ExprKind::Attr {
+            attr: PredefAttr::Stable,
+            prefix: AttrPrefix::Expr(p),
+            args,
+        } = &self.exprs[def].kind
+        else {
+            return id;
+        };
+        if !args.is_empty() {
+            return id;
+        }
+        let (prefix, subtype, span) = (*p, self.exprs[id].subtype, self.exprs[id].span);
+        crate::attr::discard_implicit_signal(self, d);
+        self.add_expr(Expr {
+            kind: ExprKind::Attr {
+                attr: PredefAttr::Event,
+                prefix: AttrPrefix::Expr(prefix),
+                args: Box::new([]),
+            },
+            subtype,
+            span,
+            stat: Staticness::None,
+            value: None,
+        })
     }
 
     fn build_operator(
@@ -860,7 +1043,7 @@ impl Db {
                         .iter()
                         .find(|i| self.type_contains_protected(i.ty))
                         .map(|i| i.ty),
-                    CandSet::Class(_) => None,
+                    CandSet::Class(_) | CandSet::Alloc(_) => None,
                 });
                 if let Some(t) = prot {
                     self.report(
@@ -1565,7 +1748,22 @@ impl Db {
         match (target, suffix) {
             (Some((pt, _)), ast::Suffix::Ident(i)) => match self.protected_member(pt, *i, scope) {
                 Err(r) => r,
-                Ok(_) => self.ice(span, "a method found only by protected_member"),
+                // The member exists but is no subprogram: a method whose declaration
+                // failed was reported there (8.2), a private variable is no procedure.
+                Ok(found)
+                    if found.iter().any(|&d| {
+                        matches!(
+                            self.decls[self.entity(d)].kind,
+                            crate::decl::DeclKind::Error
+                        )
+                    }) =>
+                {
+                    crate::Reported
+                }
+                Ok(_) => self.error(
+                    Diagnostic::error(diag::NOT_AN_OBJECT, "this name is not a procedure")
+                        .with_primary(span, "expected a procedure name"),
+                ),
             },
             _ => self.error(
                 Diagnostic::error(diag::NOT_AN_OBJECT, "this name is not a procedure")
@@ -1906,7 +2104,7 @@ impl Db {
         };
         let types = |db: &mut Db, x: &ast::Expr| match db.cands(scope, x) {
             CandSet::Types(is) => is.iter().map(|i| i.ty).collect(),
-            CandSet::Class(_) => Vec::new(),
+            CandSet::Class(_) | CandSet::Alloc(_) => Vec::new(),
         };
         let (l, r) = (types(self, left), types(self, right));
         // ponytail: keyed on the type names of numeric_std/numeric_bit; a table of known

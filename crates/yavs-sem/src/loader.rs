@@ -5,7 +5,7 @@
 //! ieee), parses the whole file and analyzes only the requested unit. The
 //! other units of the file keep their AST in the file cache until asked for.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 use yavs_diag::{Diagnostic, FileId, Span};
@@ -82,11 +82,7 @@ mod source_tag {
 
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<LibSource, D::Error> {
         Ok(match <u8 as serde::Deserialize>::deserialize(d)? {
-            0 => LibSource::Manifest(yavs_lib::Manifest {
-                format: 0,
-                name: String::new(),
-                files: Vec::new(),
-            }),
+            0 => LibSource::Manifest(std::sync::Arc::default()),
             1 => LibSource::StdDir(std::path::PathBuf::new()),
             2 => LibSource::Files,
             _ => return Err(serde::de::Error::custom("bad library source tag")),
@@ -96,7 +92,7 @@ mod source_tag {
 
 pub enum LibSource {
     /// A library directory with `yavs-lib.toml`.
-    Manifest(Manifest),
+    Manifest(std::sync::Arc<Manifest>),
     /// The vendored `lib/<name>/<rev>` tree: package `p` is in `p.vhdl`, its
     /// body in `p-body.vhdl`.
     // ponytail: file-name convention instead of an index of the tree; add an
@@ -166,6 +162,7 @@ pub(crate) struct FileCache {
 
 fn parse_rev(s: &str) -> Option<LangRev> {
     match s {
+        "1993" => Some(LangRev::Vhdl1993),
         "2008" => Some(LangRev::Vhdl2008),
         "2019" => Some(LangRev::Vhdl2019),
         _ => None,
@@ -250,13 +247,13 @@ impl Db {
             scope: self.root,
             span: name.span,
             implicit: false,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
         });
         self.libs.push(Library {
             name,
             decl,
             source,
-            units: HashMap::new(),
+            units: HashMap::default(),
         })
     }
 
@@ -295,7 +292,7 @@ impl Db {
                     }
                     UnitKey::Secondary(e, a) => m.find(LibKind::Architecture, &format!("{e}/{a}")),
                 };
-                rec.and_then(|r| Some((r.file.clone(), parse_rev(&r.std)?)))
+                rec.and_then(|r| Some((r.file.to_path_buf(), parse_rev(r.std)?)))
             }
         }
     }
@@ -517,14 +514,23 @@ impl Db {
         let Some(ast) = ast else {
             return Err(self.not_found(lib, key, at));
         };
-        // sem.md 0.1: what the 2008 copy of a std/ieee package lacks gets `since: V2019`.
-        let fresh = (self.rev == LangRev::Vhdl2019
-            && matches!(key, UnitKey::Primary(_))
-            && matches!(self.libs[lib].source, LibSource::StdDir(_)))
-        .then(|| self.fresh_in_2019(lib, key, &path, &ast, file));
+        // sem.md 0.1: what the 2008 copy of a std/ieee package lacks gets `since: V2019`; under a
+        // 2008 design a unit without a 1993 copy gets `since: V2008`.
+        let std_primary = matches!(key, UnitKey::Primary(_))
+            && matches!(self.libs[lib].source, LibSource::StdDir(_));
+        let fresh = match self.rev {
+            LangRev::Vhdl2019 if std_primary => Some((
+                self.fresh_in_2019(lib, key, &path, &ast, file),
+                LangRev::Vhdl2019,
+            )),
+            LangRev::Vhdl2008 if std_primary => {
+                Some((self.fresh_in_2008(&path), LangRev::Vhdl2008))
+            }
+            _ => None,
+        };
         let r = self.analyze_unit(lib, key, ast, file, rev);
-        if let (Ok(u), Some(f)) = (&r, fresh) {
-            self.mark_fresh(*u, f);
+        if let (Ok(u), Some((f, since))) = (&r, fresh) {
+            self.mark_fresh(*u, f, since);
         }
         if r.is_err() {
             self.libs[lib].units.insert(key, UnitSlot::Failed);
@@ -549,7 +555,8 @@ impl Db {
                     && self.decls[self.units[u].decl].since > self.file_rev()
                 {
                     let what = format!("{}.{}", self.libs[lib].name.text, self.span_text(at));
-                    self.not_in_file_rev(what, at);
+                    let since = self.decls[self.units[u].decl].since;
+                    self.not_in_file_rev(what, at, since);
                 }
             }
             Err(_) => {
@@ -629,6 +636,31 @@ impl Db {
         rev: LangRev,
         hash: Option<&str>,
     ) -> Result<Vec<UnitRecord>, Reported> {
+        self.analyze_file_with(work, path, rev, hash, false)
+    }
+
+    /// [`Db::analyze_file_hashed`] for a caller that wants the records only (`yavs analyze`): a
+    /// file whose units all have entries that hold and report nothing, and which the manifest
+    /// records as they were, is registered but not loaded (`Db::warm_records`). The units load
+    /// when a later file needs them.
+    pub fn analyze_file_lazy(
+        &mut self,
+        work: &str,
+        path: &Path,
+        rev: LangRev,
+        hash: Option<&str>,
+    ) -> Result<Vec<UnitRecord>, Reported> {
+        self.analyze_file_with(work, path, rev, hash, true)
+    }
+
+    fn analyze_file_with(
+        &mut self,
+        work: &str,
+        path: &Path,
+        rev: LangRev,
+        hash: Option<&str>,
+        lazy: bool,
+    ) -> Result<Vec<UnitRecord>, Reported> {
         let name = ident(work);
         let lib =
             if self.opts.libraries.get(work).is_some() || self.lib_by_key.contains_key(&name.key) {
@@ -660,6 +692,9 @@ impl Db {
                     rev,
                 },
             );
+        }
+        if lazy && let Some(records) = self.warm_records(lib, path, &keys) {
+            return Ok(records);
         }
         let before = self.error_count();
         let mut ids = Vec::new();
@@ -747,7 +782,7 @@ impl Db {
             return None;
         };
         let fe = m.file(&std::path::absolute(path).ok()?)?;
-        if fe.std != rev.as_str() || fe.units.is_empty() {
+        if fe.std != rev.as_str() || fe.units().next().is_none() || fe.partial {
             return None;
         }
         let hash = match hash {
@@ -758,15 +793,14 @@ impl Db {
             return None;
         }
         let keys: Vec<UnitKey> = fe
-            .units
-            .iter()
+            .units()
             .map(|u| match u.kind {
                 LibKind::Architecture => {
                     let (e, a) = u.key.split_once('/')?;
                     Some(UnitKey::Secondary(Symbol::intern(e), Symbol::intern(a)))
                 }
-                LibKind::PackageBody => Some(UnitKey::body(Symbol::intern(&u.key))),
-                _ => Some(UnitKey::Primary(Symbol::intern(&u.key))),
+                LibKind::PackageBody => Some(UnitKey::body(Symbol::intern(u.key))),
+                _ => Some(UnitKey::Primary(Symbol::intern(u.key))),
             })
             .collect::<Option<_>>()?;
         let stub = self.warm_stub(lib, &keys, path, &hash, rev)?;
@@ -837,9 +871,7 @@ impl Db {
         match &self.libs[lib].source {
             LibSource::Manifest(m) => m
                 .units()
-                .filter(|u| {
-                    u.kind == LibKind::Architecture && u.primary.as_deref() == Some(key.as_str())
-                })
+                .filter(|u| u.kind == LibKind::Architecture && u.primary == Some(key.as_str()))
                 .last()
                 .and_then(|u| u.key.split_once('/').map(|(_, a)| Symbol::intern(a))),
             _ => self

@@ -1,11 +1,14 @@
+use crate::text::{Cur, put_line, put_num, put_str};
 use crate::{Result, error::err};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "yavs-lib.toml";
 pub const LOCK_FILE: &str = "_YAVS_LIB";
-pub(crate) const FORMAT: u32 = 2;
+/// The directory of the per-file records, next to the index.
+pub const RECORD_DIR: &str = "yavs-lib.d";
+pub(crate) const FORMAT: u32 = 3;
 
 /// Case-fold an identifier: basic identifiers are case-insensitive,
 /// extended identifiers (`\Foo\`) are not.
@@ -162,178 +165,22 @@ impl UnitRecord {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileEntry {
-    /// Absolute path as analyzed.
-    pub path: PathBuf,
-    pub hash: String,
-    /// VHDL standard this file was analyzed with (per file: projects may mix 2008 and 2019).
-    pub std: String,
-    /// Size of the file when `hash` was taken, if it was old enough to trust (see [`Stamp`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size: Option<u64>,
-    /// Modification time (ns since the epoch) of the file when `hash` was taken.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mtime_ns: Option<i64>,
-    #[serde(default, rename = "unit")]
-    pub units: Vec<UnitRecord>,
-}
-
-impl FileEntry {
-    /// The file on disk is the one `hash` was taken of, by size and modification time alone.
-    pub fn unchanged(&self) -> bool {
-        match (self.size, self.mtime_ns) {
-            (Some(size), Some(mtime_ns)) => Stamp::of(&self.path) == Some(Stamp { size, mtime_ns }),
-            _ => false,
-        }
-    }
-}
-
-/// Contents of `yavs-lib.toml`. Files are in compile order.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub format: u32,
-    pub name: String,
-    #[serde(default, rename = "file")]
-    pub files: Vec<FileEntry>,
-}
-
-impl Manifest {
-    pub(crate) fn new(name: &str) -> Self {
-        Manifest {
-            format: FORMAT,
-            name: name.into(),
-            files: vec![],
+impl UnitKind {
+    /// The name in the index and the records (the serde name).
+    pub(crate) fn text(self) -> &'static str {
+        match self {
+            UnitKind::Entity => "entity",
+            UnitKind::Architecture => "architecture",
+            UnitKind::Package => "package",
+            UnitKind::PackageBody => "package_body",
+            UnitKind::PackageInstance => "package_instance",
+            UnitKind::Configuration => "configuration",
+            UnitKind::Context => "context",
         }
     }
 
-    pub(crate) fn parse(text: &str, origin: &std::path::Path) -> Result<Self> {
-        if let Some(m) = parse_written(text) {
-            return Ok(m);
-        }
-        #[derive(Deserialize)]
-        struct Head {
-            format: u32,
-        }
-        if let Ok(h) = toml::from_str::<Head>(text)
-            && h.format != FORMAT
-        {
-            return Err(Box::new(
-                err(
-                    "L0004",
-                    format!("library manifest `{}` has format version {}, this yavs reads version {FORMAT}", origin.display(), h.format),
-                )
-                .with_help("re-analyze the library's files to rewrite the manifest"),
-            ));
-        }
-        let mut m: Manifest = toml::from_str(text).map_err(|e| {
-            Box::new(
-                err(
-                    "L0003",
-                    format!("library manifest `{}` is corrupt", origin.display()),
-                )
-                .with_note(e.to_string()),
-            )
-        })?;
-        for f in &mut m.files {
-            for u in &mut f.units {
-                u.file = f.path.clone();
-            }
-        }
-        Ok(m)
-    }
-
-    pub(crate) fn to_text(&self) -> String {
-        toml::to_string(self).expect("manifest serializes")
-    }
-
-    /// Replace everything `path` defined with `units`; the file moves to the end.
-    pub(crate) fn replace_file(
-        &mut self,
-        path: PathBuf,
-        hash: String,
-        stamp: Option<Stamp>,
-        std: String,
-        mut units: Vec<UnitRecord>,
-    ) {
-        self.files.retain(|f| f.path != path);
-        for u in &mut units {
-            u.file = path.clone();
-        }
-        for f in &mut self.files {
-            f.units
-                .retain(|o| !units.iter().any(|u| u.kind == o.kind && u.key == o.key));
-        }
-        self.files.retain(|f| !f.units.is_empty());
-        self.files.push(FileEntry {
-            path,
-            hash,
-            std,
-            size: stamp.map(|s| s.size),
-            mtime_ns: stamp.map(|s| s.mtime_ns),
-            units,
-        });
-    }
-
-    pub fn units(&self) -> impl Iterator<Item = &UnitRecord> {
-        self.files.iter().flat_map(|f| f.units.iter())
-    }
-
-    pub fn find(&self, kind: UnitKind, key: &str) -> Option<&UnitRecord> {
-        self.units().find(|u| u.kind == kind && u.key == key)
-    }
-
-    pub fn file(&self, path: &std::path::Path) -> Option<&FileEntry> {
-        self.files.iter().find(|f| f.path == path)
-    }
-}
-
-/// Reads the text `Manifest::to_text` writes, about ten times faster than the `toml` crate (a
-/// manifest of a library of a few hundred units is parsed by every run). `None` for anything else
-/// (another format version, an escape, an unknown key, a missing field, hand editing): the caller
-/// then parses with `toml`, which gives the same manifest or the diagnostic.
-fn parse_written(text: &str) -> Option<Manifest> {
-    enum At {
-        Top,
-        File,
-        Unit,
-        Dep,
-    }
-    fn string(v: &str) -> Option<&str> {
-        let v = v.strip_prefix('"')?.strip_suffix('"')?;
-        (!v.bytes().any(|b| b == b'"' || b == b'\\' || b < b' ')).then_some(v)
-    }
-    fn set(slot: &mut Option<String>, v: &str) -> Option<()> {
-        if slot.is_some() {
-            return None;
-        }
-        *slot = Some(string(v)?.to_string());
-        Some(())
-    }
-    fn num<T: std::str::FromStr>(slot: &mut Option<T>, v: &str) -> Option<()> {
-        if slot.is_some() {
-            return None;
-        }
-        *slot = Some(v.parse().ok()?);
-        Some(())
-    }
-    let mut format: Option<u32> = None;
-    let mut name: Option<String> = None;
-    let mut files: Vec<FileEntry> = Vec::new();
-    // Fields of the file, unit and dependency being read; moved into their parents when done.
-    let mut at = At::Top;
-    let (mut path, mut hash, mut std): (Option<String>, Option<String>, Option<String>) =
-        Default::default();
-    let (mut size, mut mtime): (Option<u64>, Option<i64>) = Default::default();
-    let (mut kind, mut uname, mut key): (Option<String>, Option<String>, Option<String>) =
-        Default::default();
-    let (mut ustd, mut primary): (Option<String>, Option<String>) = Default::default();
-    let (mut dlib, mut dkind, mut dkey): (Option<String>, Option<String>, Option<String>) =
-        Default::default();
-    let mut units: Vec<UnitRecord> = Vec::new();
-    let mut deps: Vec<UnitRef> = Vec::new();
-    let kind_of = |k: &str| -> Option<UnitKind> {
-        Some(match k {
+    pub(crate) fn from_text(t: &str) -> Option<Self> {
+        Some(match t {
             "entity" => UnitKind::Entity,
             "architecture" => UnitKind::Architecture,
             "package" => UnitKind::Package,
@@ -343,112 +190,510 @@ fn parse_written(text: &str) -> Option<Manifest> {
             "context" => UnitKind::Context,
             _ => return None,
         })
+    }
+}
+
+/// A string of the index: where it is in [`Manifest::arena`].
+#[derive(Clone, Copy, Debug)]
+struct Span(u32, u32);
+
+/// A source file of the library, as the index knows it.
+#[derive(Clone, Debug)]
+struct IFile {
+    path: Span,
+    hash: Span,
+    std: Span,
+    size: Option<u64>,
+    mtime_ns: Option<i64>,
+    /// A later file replaced some units this file defined (#577): the index lists only the rest.
+    partial: bool,
+    /// The record (`RECORD_DIR`) of the file, named by this digest of its text.
+    record: u128,
+}
+
+/// A unit the index knows, with the position of its file in `files`.
+#[derive(Clone, Debug)]
+struct IUnit {
+    file: u32,
+    kind: UnitKind,
+    key: Span,
+    primary: Option<Span>,
+}
+
+/// The index of a library (`yavs-lib.toml`): its files in analysis order with what a lookup needs
+/// (where a unit is, the standard and content hash of a file, which units a file still defines),
+/// and a digest naming the record of each file. A record holds the rest of a file's units (their
+/// names and dependencies, `Manifest::records`) and is read only by those who need it. All
+/// strings are in one buffer, so a parse makes a few allocations and a clone is a copy (#599).
+#[derive(Clone, Debug, Default)]
+pub struct Manifest {
+    name: String,
+    /// The library directory (holds `RECORD_DIR`); empty for a library that is not on disk.
+    dir: PathBuf,
+    arena: String,
+    files: Vec<IFile>,
+    /// In analysis order: the units of the first file, then of the second, ...
+    units: Vec<IUnit>,
+}
+
+/// A source file of the library.
+#[derive(Clone, Copy, Debug)]
+pub struct FileRef<'a> {
+    m: &'a Manifest,
+    i: usize,
+    /// Absolute path as analyzed.
+    pub path: &'a Path,
+    pub hash: &'a str,
+    /// VHDL standard this file was analyzed with (per file: projects may mix 2008 and 2019).
+    pub std: &'a str,
+    /// A later file replaced some units this file defined: [`FileRef::units`] lists only the rest,
+    /// so the file cannot be re-registered from them without parsing it (#577).
+    pub partial: bool,
+    size: Option<u64>,
+    mtime_ns: Option<i64>,
+}
+
+impl FileRef<'_> {
+    /// The file on disk is the one `hash` was taken of, by size and modification time alone.
+    pub fn unchanged(&self) -> bool {
+        match (self.size, self.mtime_ns) {
+            (Some(size), Some(mtime_ns)) => Stamp::of(self.path) == Some(Stamp { size, mtime_ns }),
+            _ => false,
+        }
+    }
+
+    /// The units the file still defines, in the order they were analyzed.
+    pub fn units(&self) -> impl Iterator<Item = UnitLoc<'_>> {
+        let i = self.i as u32;
+        self.m
+            .units
+            .iter()
+            .filter(move |u| u.file == i)
+            .map(|u| self.m.loc(u))
+    }
+}
+
+/// A unit and the file that defines it.
+#[derive(Clone, Copy, Debug)]
+pub struct UnitLoc<'a> {
+    pub kind: UnitKind,
+    /// Folded lookup key (architectures: `entity/arch`).
+    pub key: &'a str,
+    /// Folded key of the entity (architecture) or package (body) this unit belongs to.
+    pub primary: Option<&'a str>,
+    pub file: &'a Path,
+    /// The standard of the file.
+    pub std: &'a str,
+    /// Position of the file in the analysis order.
+    pub(crate) file_idx: usize,
+}
+
+impl Manifest {
+    pub(crate) fn new(name: &str, dir: &Path) -> Self {
+        Manifest {
+            name: name.into(),
+            dir: dir.into(),
+            ..Self::default()
+        }
+    }
+
+    fn s(&self, sp: Span) -> &str {
+        &self.arena[sp.0 as usize..sp.1 as usize]
+    }
+
+    fn add(&mut self, s: &str) -> Span {
+        let at = self.arena.len() as u32;
+        self.arena.push_str(s);
+        Span(at, self.arena.len() as u32)
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Number of files.
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    pub(crate) fn file_at(&self, i: usize) -> FileRef<'_> {
+        let f = &self.files[i];
+        FileRef {
+            m: self,
+            i,
+            path: Path::new(self.s(f.path)),
+            hash: self.s(f.hash),
+            std: self.s(f.std),
+            partial: f.partial,
+            size: f.size,
+            mtime_ns: f.mtime_ns,
+        }
+    }
+
+    fn loc(&self, u: &IUnit) -> UnitLoc<'_> {
+        let f = &self.files[u.file as usize];
+        UnitLoc {
+            kind: u.kind,
+            key: self.s(u.key),
+            primary: u.primary.map(|p| self.s(p)),
+            file: Path::new(self.s(f.path)),
+            std: self.s(f.std),
+            file_idx: u.file as usize,
+        }
+    }
+
+    /// The files in analysis order.
+    pub fn files(&self) -> impl Iterator<Item = FileRef<'_>> {
+        (0..self.files.len()).map(|i| self.file_at(i))
+    }
+
+    fn index_of_str(&self, t: &str) -> Option<usize> {
+        (0..self.files.len()).find(|&i| t == self.s(self.files[i].path))
+    }
+
+    fn index_of(&self, path: &Path) -> Option<usize> {
+        // The text of the path first (it is what the index holds), else by components.
+        path.to_str()
+            .and_then(|t| self.index_of_str(t))
+            .or_else(|| {
+                (0..self.files.len()).find(|&i| Path::new(self.s(self.files[i].path)) == path)
+            })
+    }
+
+    pub fn file(&self, path: &Path) -> Option<FileRef<'_>> {
+        self.index_of(path).map(|i| self.file_at(i))
+    }
+
+    /// Every unit, in analysis order.
+    pub fn units(&self) -> impl Iterator<Item = UnitLoc<'_>> {
+        self.units.iter().map(|u| self.loc(u))
+    }
+
+    pub fn find(&self, kind: UnitKind, key: &str) -> Option<UnitLoc<'_>> {
+        self.units
+            .iter()
+            .find(|u| u.kind == kind && self.s(u.key) == key)
+            .map(|u| self.loc(u))
+    }
+
+    /// Read the index text `to_text` wrote. A library of another format version is `L0004`.
+    pub(crate) fn parse(text: &str, origin: &Path) -> Result<Self> {
+        let first = text.lines().next().unwrap_or("");
+        if let Some(v) = first.strip_prefix("format = ")
+            && let Ok(v) = v.parse::<u32>()
+            && v != FORMAT
+        {
+            return Err(Box::new(
+                err(
+                    "L0004",
+                    format!("library manifest `{}` has format version {v}, this yavs reads version {FORMAT}", origin.display()),
+                )
+                .with_help(format!(
+                    "delete the library directory `{}` and analyze its files again (a library of another format version is not converted)",
+                    origin.parent().unwrap_or(Path::new("")).display()
+                )),
+            ));
+        }
+        parse_index(text, origin.parent().unwrap_or(Path::new(""))).map_err(|(line, why)| {
+            Box::new(
+                err(
+                    "L0003",
+                    format!("library manifest `{}` is corrupt", origin.display()),
+                )
+                .with_note(format!("line {line}: {why}"))
+                .with_help(format!(
+                    "delete the library directory `{}` and analyze its files again",
+                    origin.parent().unwrap_or(Path::new("")).display()
+                )),
+            )
+        })
+    }
+
+    pub(crate) fn to_text(&self) -> String {
+        let mut o = String::with_capacity(self.files.len() * 400 + self.units.len() * 60 + 64);
+        put_num(&mut o, "format", FORMAT);
+        put_line(&mut o, "name", &self.name);
+        let mut at = 0;
+        for (i, f) in self.files.iter().enumerate() {
+            o.push_str("\n[[file]]\n");
+            put_line(&mut o, "path", self.s(f.path));
+            put_line(&mut o, "hash", self.s(f.hash));
+            put_line(&mut o, "std", self.s(f.std));
+            if let Some(n) = f.size {
+                put_num(&mut o, "size", n);
+            }
+            if let Some(n) = f.mtime_ns {
+                put_num(&mut o, "mtime_ns", n);
+            }
+            if f.partial {
+                o.push_str("partial = true\n");
+            }
+            put_line(&mut o, "record", &format!("{:032x}", f.record));
+            o.push_str("units = [");
+            // The units of a file are together, in file order.
+            while let Some(u) = self.units.get(at).filter(|u| u.file as usize == i) {
+                if at > 0 && self.units[at - 1].file as usize == i {
+                    o.push_str(", ");
+                }
+                o.push('[');
+                put_str(&mut o, u.kind.text());
+                o.push_str(", ");
+                put_str(&mut o, self.s(u.key));
+                if let Some(p) = u.primary {
+                    o.push_str(", ");
+                    put_str(&mut o, self.s(p));
+                }
+                o.push(']');
+                at += 1;
+            }
+            o.push_str("]\n");
+        }
+        o
+    }
+
+    /// The digest of the record of `path`.
+    pub(crate) fn record_of(&self, path: &str) -> Option<u128> {
+        self.index_of_str(path).map(|i| self.files[i].record)
+    }
+
+    /// Forget `path`; the digest of the record it had.
+    pub(crate) fn remove_file(&mut self, path: &str) -> Option<u128> {
+        let i = self.index_of_str(path)?;
+        Some(self.remove_at(i))
+    }
+
+    fn remove_at(&mut self, i: usize) -> u128 {
+        let f = self.files.remove(i);
+        self.units.retain(|u| u.file as usize != i);
+        for u in &mut self.units {
+            if u.file as usize > i {
+                u.file -= 1;
+            }
+        }
+        f.record
+    }
+
+    /// Take the units `new` define away from the files that define them now: those files are
+    /// `partial`, and one left with no unit is forgotten. The digests of the records of the
+    /// forgotten files.
+    pub(crate) fn take_units(&mut self, new: &[UnitRecord]) -> Vec<u128> {
+        let mut lost: Vec<u32> = Vec::new();
+        let (arena, files) = (&self.arena, &mut self.files);
+        self.units.retain(|u| {
+            let key = &arena[u.key.0 as usize..u.key.1 as usize];
+            let hit = new.iter().any(|n| n.kind == u.kind && n.key == key);
+            if hit && !lost.contains(&u.file) {
+                lost.push(u.file);
+                files[u.file as usize].partial = true;
+            }
+            !hit
+        });
+        lost.sort_unstable_by(|a, b| b.cmp(a));
+        let mut gone = Vec::new();
+        for i in lost {
+            if !self.units.iter().any(|u| u.file == i) {
+                gone.push(self.remove_at(i as usize));
+            }
+        }
+        gone
+    }
+
+    /// Add `path` at the end of the analysis order.
+    pub(crate) fn push_file(
+        &mut self,
+        path: &str,
+        hash: &str,
+        std: &str,
+        stamp: Option<Stamp>,
+        record: u128,
+        units: &[UnitRecord],
+    ) {
+        let file = self.files.len() as u32;
+        let f = IFile {
+            path: self.add(path),
+            hash: self.add(hash),
+            std: self.add(std),
+            size: stamp.map(|s| s.size),
+            mtime_ns: stamp.map(|s| s.mtime_ns),
+            partial: false,
+            record,
+        };
+        self.files.push(f);
+        for u in units {
+            let (key, primary) = (self.add(&u.key), u.primary.as_deref().map(|p| self.add(p)));
+            self.units.push(IUnit {
+                file,
+                kind: u.kind,
+                key,
+                primary,
+            });
+        }
+    }
+
+    /// The directory of the records of this library.
+    pub(crate) fn record_dir(&self) -> PathBuf {
+        self.dir.join(RECORD_DIR)
+    }
+
+    /// The full records of the units of `f` (names and dependencies), read from the record the
+    /// index names. The record can hold units the file lost since (`partial`).
+    pub fn records(&self, f: &FileRef<'_>) -> Result<Vec<UnitRecord>> {
+        crate::record::load(&self.record_dir(), self.files[f.i].record, f.path)
+    }
+}
+
+/// The parse of [`Manifest::parse`]: the line number and the reason on failure.
+fn parse_index(text: &str, dir: &Path) -> std::result::Result<Manifest, (usize, &'static str)> {
+    /// The fields of the file being read.
+    #[derive(Default)]
+    struct Pending {
+        path: Option<Span>,
+        hash: Option<Span>,
+        std: Option<Span>,
+        size: Option<u64>,
+        mtime_ns: Option<i64>,
+        partial: bool,
+        record: Option<u128>,
+        units: bool,
+    }
+    let mut m = Manifest {
+        dir: dir.into(),
+        arena: String::with_capacity(text.len()),
+        ..Manifest::default()
     };
-    // Closes the dependency / unit / file in progress.
-    macro_rules! end_dep {
-        () => {
-            if let (At::Dep, Some(l), Some(k), Some(key)) =
-                (&at, dlib.take(), dkind.take(), dkey.take())
+    if text.is_empty() {
+        return Err((1, "expected `format = N` first"));
+    }
+    let mut at: Option<Pending> = None;
+    let mut name = false;
+    macro_rules! finish {
+        ($n:expr) => {
+            if let Some(p) = at.take() {
+                let (Some(path), Some(hash), Some(std), Some(record), true) =
+                    (p.path, p.hash, p.std, p.record, p.units)
+                else {
+                    return Err(($n, "a file lacks a field"));
+                };
+                m.files.push(IFile {
+                    path,
+                    hash,
+                    std,
+                    size: p.size,
+                    mtime_ns: p.mtime_ns,
+                    partial: p.partial,
+                    record,
+                });
+            }
+        };
+    }
+    for (n, line) in text.lines().enumerate() {
+        let n = n + 1;
+        if n == 1 {
+            if line
+                .strip_prefix("format = ")
+                .and_then(|v| v.parse::<u32>().ok())
+                != Some(FORMAT)
             {
-                deps.push(UnitRef {
-                    library: l,
-                    kind: kind_of(&k)?,
-                    key,
-                });
-            } else if matches!(at, At::Dep) {
-                return None;
+                return Err((n, "expected `format = N` first"));
             }
-        };
-    }
-    macro_rules! end_unit {
-        () => {
-            end_dep!();
-            if matches!(at, At::Unit | At::Dep) {
-                units.push(UnitRecord {
-                    kind: kind_of(&kind.take()?)?,
-                    name: uname.take()?,
-                    key: key.take()?,
-                    primary: primary.take(),
-                    std: ustd.take()?,
-                    depends_on: std::mem::take(&mut deps),
-                    file: PathBuf::new(),
-                });
-            }
-        };
-    }
-    macro_rules! end_file {
-        () => {
-            end_unit!();
-            if !matches!(at, At::Top) {
-                files.push(FileEntry {
-                    path: PathBuf::from(path.take()?),
-                    hash: hash.take()?,
-                    std: std.take()?,
-                    size: size.take(),
-                    mtime_ns: mtime.take(),
-                    units: std::mem::take(&mut units),
-                });
-            }
-        };
-    }
-    for line in text.lines() {
+            continue;
+        }
         if line.is_empty() {
             continue;
         }
-        match line {
-            "[[file]]" => {
-                end_file!();
-                at = At::File;
+        if line == "[[file]]" {
+            finish!(n);
+            at = Some(Pending::default());
+            continue;
+        }
+        let Some(sp) = line.bytes().position(|b| b == b' ') else {
+            return Err((n, "expected `key = value`"));
+        };
+        let (key, Some(val)) = (&line[..sp], line[sp..].strip_prefix(" = ")) else {
+            return Err((n, "expected `key = value`"));
+        };
+        let mut c = Cur::new(val);
+        // A string value, into the buffer.
+        macro_rules! string {
+            () => {{
+                let start = m.arena.len() as u32;
+                c.string(&mut m.arena).ok_or((n, "bad string"))?;
+                if !c.done() {
+                    return Err((n, "text after the value"));
+                }
+                Span(start, m.arena.len() as u32)
+            }};
+        }
+        match (&mut at, key) {
+            (None, "name") if !name => {
+                let mut s = String::new();
+                c.string(&mut s).ok_or((n, "bad string"))?;
+                m.name = s;
+                name = true;
             }
-            "[[file.unit]]" if !matches!(at, At::Top) => {
-                end_unit!();
-                at = At::Unit;
+            (Some(p), "path") => p.path = Some(string!()),
+            (Some(p), "hash") => p.hash = Some(string!()),
+            (Some(p), "std") => p.std = Some(string!()),
+            (Some(p), "size") => p.size = Some(val.parse().map_err(|_| (n, "bad number"))?),
+            (Some(p), "mtime_ns") => p.mtime_ns = Some(val.parse().map_err(|_| (n, "bad number"))?),
+            (Some(p), "partial") if val == "true" => p.partial = true,
+            (Some(p), "record") => {
+                let sp = string!();
+                p.record = Some(
+                    u128::from_str_radix(&m.arena[sp.0 as usize..sp.1 as usize], 16)
+                        .map_err(|_| (n, "bad digest"))?,
+                );
             }
-            "[[file.unit.depends_on]]" if matches!(at, At::Unit | At::Dep) => {
-                end_dep!();
-                at = At::Dep;
-            }
-            _ if line.starts_with('[') => return None,
-            _ => {
-                let (k, v) = line.split_once(" = ")?;
-                match (&at, k) {
-                    (At::Top, "format") => num(&mut format, v)?,
-                    (At::Top, "name") => set(&mut name, v)?,
-                    (At::Top, "file") if v == "[]" => {}
-                    (At::File, "unit") if v == "[]" => {}
-                    (At::File, "path") => set(&mut path, v)?,
-                    (At::File, "hash") => set(&mut hash, v)?,
-                    (At::File, "std") => set(&mut std, v)?,
-                    (At::File, "size") => num(&mut size, v)?,
-                    (At::File, "mtime_ns") => num(&mut mtime, v)?,
-                    (At::Unit, "kind") => set(&mut kind, v)?,
-                    (At::Unit, "name") => set(&mut uname, v)?,
-                    (At::Unit, "key") => set(&mut key, v)?,
-                    (At::Unit, "primary") => set(&mut primary, v)?,
-                    (At::Unit, "std") => set(&mut ustd, v)?,
-                    (At::Unit, "depends_on") if v == "[]" => {}
-                    (At::Dep, "library") => set(&mut dlib, v)?,
-                    (At::Dep, "kind") => set(&mut dkind, v)?,
-                    (At::Dep, "key") => set(&mut dkey, v)?,
-                    _ => return None,
+            (Some(p), "units") if !p.units => {
+                p.units = true;
+                let file = m.files.len() as u32;
+                let sep = |c: &mut Cur| c.eat(b',').and_then(|()| c.eat(b' '));
+                c.eat(b'[').ok_or((n, "expected ["))?;
+                while c.peek() != Some(b']') {
+                    c.eat(b'[').ok_or((n, "expected ["))?;
+                    let mut k = String::new();
+                    c.string(&mut k).ok_or((n, "bad string"))?;
+                    let kind = UnitKind::from_text(&k).ok_or((n, "unknown unit kind"))?;
+                    sep(&mut c).ok_or((n, "expected a comma"))?;
+                    let start = m.arena.len() as u32;
+                    c.string(&mut m.arena).ok_or((n, "bad string"))?;
+                    let ukey = Span(start, m.arena.len() as u32);
+                    let primary = if c.peek() == Some(b',') {
+                        sep(&mut c).ok_or((n, "expected a comma"))?;
+                        let start = m.arena.len() as u32;
+                        c.string(&mut m.arena).ok_or((n, "bad string"))?;
+                        Some(Span(start, m.arena.len() as u32))
+                    } else {
+                        None
+                    };
+                    c.eat(b']').ok_or((n, "expected ]"))?;
+                    m.units.push(IUnit {
+                        file,
+                        kind,
+                        key: ukey,
+                        primary,
+                    });
+                    if c.peek() == Some(b',') {
+                        sep(&mut c).ok_or((n, "expected a comma"))?;
+                    }
+                }
+                c.eat(b']').ok_or((n, "expected ]"))?;
+                if !c.done() {
+                    return Err((n, "text after the units"));
                 }
             }
+            _ => return Err((n, "unexpected line")),
         }
     }
-    end_file!();
-    if format? != FORMAT {
-        return None;
+    finish!(text.lines().count());
+    if !name {
+        return Err((text.lines().count(), "no name"));
     }
-    for f in &mut files {
-        for u in &mut f.units {
-            u.file = f.path.clone();
-        }
-    }
-    Some(Manifest {
-        format: FORMAT,
-        name: name?,
-        files,
-    })
+    Ok(m)
 }
 
 #[cfg(test)]
@@ -456,79 +701,185 @@ mod tests {
     use super::*;
 
     fn sample(path: &str) -> Manifest {
-        let mut m = Manifest::new("lib");
+        let mut m = Manifest::new("lib", Path::new("/l"));
         let a = UnitRecord::new(UnitKind::Package, "Pkg_A", "2008");
-        let b =
-            UnitRecord::package_body("Pkg_A", "2008").depends("lib", UnitKind::Package, "pkg_a");
-        let c = UnitRecord::architecture("Ent", "Rtl", "2019")
-            .depends("ieee", UnitKind::Package, "std_logic_1164")
-            .depends("lib", UnitKind::Package, "pkg_a");
-        m.replace_file(
-            path.into(),
-            "sha256:ab".into(),
-            None,
-            "2008".into(),
-            vec![a, b],
-        );
-        m.replace_file(
-            "/x/b.vhd".into(),
-            "sha256:cd".into(),
-            Some(Stamp {
-                size: 12,
-                mtime_ns: 1_700_000_000_123_456_789,
-            }),
-            "2019".into(),
-            vec![c, UnitRecord::new(UnitKind::Context, "ctx", "2019")],
+        let b = UnitRecord::package_body("Pkg_A", "2008");
+        let c = UnitRecord::architecture("Ent", "Rtl", "2019");
+        m.push_file(path, "sha256:ab", "2008", None, 7, &[a, b]);
+        let stamp = Some(Stamp {
+            size: 12,
+            mtime_ns: 1_700_000_000_123_456_789,
+        });
+        m.push_file(
+            "/x/b.vhd",
+            "sha256:cd",
+            "2019",
+            stamp,
+            u128::MAX,
+            &[c, UnitRecord::new(UnitKind::Context, "ctx", "2019")],
         );
         m
     }
 
-    fn by_toml(text: &str) -> Manifest {
-        let mut m: Manifest = toml::from_str(text).unwrap();
-        for f in &mut m.files {
-            for u in &mut f.units {
-                u.file = f.path.clone();
-            }
-        }
-        m
+    fn same(a: &Manifest, b: &Manifest) {
+        assert_eq!(a.name(), b.name());
+        let files = |m: &Manifest| {
+            m.files()
+                .map(|f| {
+                    (
+                        f.path.to_path_buf(),
+                        f.hash.to_string(),
+                        f.std.to_string(),
+                        f.partial,
+                        f.size,
+                        f.mtime_ns,
+                        f.m.files[f.i].record,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(files(a), files(b));
+        let units = |m: &Manifest| {
+            m.units()
+                .map(|u| {
+                    (
+                        u.kind,
+                        u.key.to_string(),
+                        u.primary.map(String::from),
+                        u.file.to_path_buf(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(units(a), units(b));
     }
 
     #[test]
-    fn fast_parse_equals_toml() {
-        let m = sample("/x/a.vhd");
-        let text = m.to_text();
-        assert_eq!(parse_written(&text), Some(by_toml(&text)));
-        assert_eq!(
-            Manifest::parse(&text, "m".as_ref()).unwrap(),
-            by_toml(&text)
-        );
-        let empty = Manifest::new("empty").to_text();
-        assert_eq!(parse_written(&empty), Some(by_toml(&empty)));
-    }
-
-    #[test]
-    fn unusual_text_goes_to_toml() {
-        // Quotes, backslashes and non-ASCII are written with escapes or literal strings: the fast
-        // reader steps aside and the result is the same as ever.
+    fn text_round_trips() {
         for path in [
+            "/x/a.vhd",
             "/x/a\"b.vhd",
             "C:\\x\\a.vhd",
             "/x/\u{e9}.vhd",
             "/x/tab\there.vhd",
+            "/x/n\nl.vhd",
+            "/x/it's #1 [a] = b.vhd",
         ] {
-            let text = sample(path).to_text();
-            let got = Manifest::parse(&text, "m".as_ref()).unwrap();
-            assert_eq!(got, by_toml(&text), "{path}");
-            assert_eq!(got.files[0].path, PathBuf::from(path));
+            let m = sample(path);
+            let text = m.to_text();
+            assert!(text.starts_with("format = 3\nname = \"lib\"\n"));
+            let back = Manifest::parse(&text, Path::new("/l/yavs-lib.toml")).unwrap();
+            same(&m, &back);
+            // Written again, the same text.
+            assert_eq!(back.to_text(), text, "{path}");
+            assert_eq!(back.file(Path::new(path)).unwrap().path, Path::new(path));
         }
-        // Other format versions, unknown keys and missing fields are not the fast reader's.
-        for text in [
-            "format = 1\nname = \"l\"\n",
-            "format = 2\nname = \"l\"\nextra = 1\n",
-            "format = 2\n",
-            "format = 2\nname = \"l\"\n[[file]]\npath = \"/a\"\n",
-        ] {
-            assert_eq!(parse_written(text), None, "{text}");
-        }
+        let empty = Manifest::new("empty", Path::new("/l"));
+        let back = Manifest::parse(&empty.to_text(), Path::new("/l/yavs-lib.toml")).unwrap();
+        assert!(back.is_empty() && back.name() == "empty");
+    }
+
+    #[test]
+    fn parsed_text_is_the_toml_of_the_same_values() {
+        // The text stays valid TOML, for anyone who looks at it.
+        let text = sample("/x/it's \"q\" \\ \u{e9}.vhd").to_text();
+        let v: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(v["format"].as_integer(), Some(3));
+        assert_eq!(
+            v["file"][0]["path"].as_str(),
+            Some("/x/it's \"q\" \\ \u{e9}.vhd")
+        );
+        assert_eq!(v["file"][1]["units"][0][1].as_str(), Some("ent/rtl"));
+        assert_eq!(v["file"][1]["units"][0][2].as_str(), Some("ent"));
+    }
+
+    #[test]
+    fn partial_and_removed_files() {
+        let mut m = sample("/x/a.vhd");
+        // c.vhd defines package pkg_a again: a.vhd keeps only its body and is partial.
+        let gone = m.take_units(&[UnitRecord::new(UnitKind::Package, "Pkg_A", "2008")]);
+        assert!(gone.is_empty());
+        m.push_file(
+            "/x/c.vhd",
+            "sha256:ef",
+            "2008",
+            None,
+            9,
+            &[UnitRecord::new(UnitKind::Package, "Pkg_A", "2008")],
+        );
+        let partial: Vec<_> = m
+            .files()
+            .map(|f| (f.path.to_path_buf(), f.partial))
+            .collect();
+        assert_eq!(
+            partial,
+            [
+                ("/x/a.vhd".into(), true),
+                ("/x/b.vhd".into(), false),
+                ("/x/c.vhd".into(), false)
+            ]
+        );
+        // It is written, read back and a file written again is whole.
+        let back = Manifest::parse(&m.to_text(), Path::new("/l/yavs-lib.toml")).unwrap();
+        same(&m, &back);
+        assert!(back.file(Path::new("/x/a.vhd")).unwrap().partial);
+        assert_eq!(m.remove_file("/x/a.vhd"), Some(7));
+        m.push_file(
+            "/x/a.vhd",
+            "sha256:ab",
+            "2008",
+            None,
+            7,
+            &[UnitRecord::package_body("Pkg_A", "2008")],
+        );
+        assert!(m.files().all(|f| !f.partial));
+        // A file that lost every unit goes, with the digest of its record.
+        let gone = m.take_units(&[
+            UnitRecord::new(UnitKind::Context, "ctx", "2019"),
+            UnitRecord::architecture("Ent", "Rtl", "2019"),
+        ]);
+        assert_eq!(gone, [u128::MAX]);
+        assert!(m.file(Path::new("/x/b.vhd")).is_none());
+        assert_eq!(m.units().count(), 2);
+    }
+
+    #[test]
+    fn corrupt_text_is_named() {
+        let good = sample("/x/a.vhd").to_text();
+        let p = Path::new("/l/yavs-lib.toml");
+        let line_of = |text: &str| -> String {
+            let e = Manifest::parse(text, p).unwrap_err();
+            let d = crate::render(&e, false);
+            assert!(
+                d.contains("L0003") && d.contains("`/l/yavs-lib.toml` is corrupt"),
+                "{d}"
+            );
+            d
+        };
+        assert!(line_of("").contains("line 1"));
+        assert!(line_of("name = \"x\"\n").contains("line 1"));
+        assert!(line_of(&good.replace("name = \"lib\"\n", "")).contains("no name"));
+        assert!(line_of(&good.replace("std = \"2008\"", "std = 2008")).contains("bad string"));
+        assert!(line_of(&good.replace("record = ", "recor = ")).contains("unexpected line"));
+        assert!(
+            line_of(&good.replace("[\"package\",", "[\"packge\",")).contains("unknown unit kind")
+        );
+        assert!(line_of(&good.replace("\"]]\n", "\"]] x\n")).contains("text after the units"));
+        assert!(line_of(&good.replace("units = ", "units = [] ")).contains("text after"));
+        let cut = &good[..good.len() - 7];
+        let d = line_of(cut);
+        assert!(d.contains("line"), "{d}");
+        // A string that is not closed, or has a bad escape.
+        assert!(
+            line_of(&good.replace("hash = \"sha256:ab\"", "hash = \"sha256:ab"))
+                .contains("bad string")
+        );
+        assert!(
+            line_of(&good.replace("hash = \"sha256:ab\"", "hash = \"a\\qb\""))
+                .contains("bad string")
+        );
+        // Another format version is not corrupt.
+        let e = Manifest::parse(&good.replacen("format = 3", "format = 4", 1), p).unwrap_err();
+        assert!(crate::render(&e, false).contains("L0004"));
     }
 }

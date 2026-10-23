@@ -103,12 +103,8 @@ fn main() {
     .unwrap();
     writeln!(
         rs,
-        "static NAMES: [&str; COUNT] = [{}];",
-        names
-            .iter()
-            .map(|n| format!("\"{n}\\0\""))
-            .collect::<Vec<_>>()
-            .join(",")
+        "static NAMES: &str = \"{}\";",
+        names.iter().map(|n| format!("{n}\\0")).collect::<String>()
     )
     .unwrap();
     writeln!(rs, "std::arch::global_asm!({asm:?}, options(att_syntax));").unwrap();

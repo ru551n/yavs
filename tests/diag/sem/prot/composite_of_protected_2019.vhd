@@ -1,5 +1,5 @@
 -- yavs-test: std=2019
--- expect: E9999 22:9 a variable port of a composite of protected types is not implemented
+-- expect: E1907 22:9 a variable port of a composite of protected types is not supported
 -- expect: E1905 30:10 a signal cannot be of a type with protected subelements
 -- expect: E1904 31:19 a shared variable of a non-protected type
 -- expect: E1905 37:5 a type with protected subelements cannot be assigned

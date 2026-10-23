@@ -37,6 +37,7 @@ codes! {
     NOT_FULLY_CONSTRAINED = "E1212", "Signals and variables need a fully constrained subtype.";
     BAD_RECORD_CONSTRAINT = "E1213", "A record constraint names an element that does not exist, or names one twice.";
     INDEX_ARITY = "E1214", "An index constraint has a different number of ranges than the array has dimensions.";
+    CONSTRAINT_OUTSIDE = "E1215", "A range or index constraint with static bounds must lie inside the range of its type mark or index subtype (LRM 5.2.1, 5.3.2.2, 6.3); a null range is always compatible.";
     INCOMPLETE = "E1220", "An incomplete type declaration is not completed in the same declarative region, or the incomplete type is used before its full declaration other than as the designated subtype of an access type (LRM 5.4.2).";
     BAD_DESIGNATED = "E1221", "In VHDL-2008 the designated type of an access type may not be a file type or a protected type (LRM 5.4.1); VHDL-2019 allows both.";
     BAD_FILE_ELEMENT = "E1222", "The element type of a file type may not be an access, protected or file type, or contain one.";
@@ -80,7 +81,7 @@ codes! {
     NOT_BOOLEAN = "E1340", "A condition must be BOOLEAN, or of a type with a visible `??` operator.";
     AMBIGUOUS_CONDITION = "E1341", "More than one `??` operator applies to this condition.";
     BAD_CONVERSION = "E1350", "A type conversion is only legal between closely related types.";
-    CLASS_MISUSE = "E1360", "The object's class or mode does not allow this use (assigning an `in` port, reading a `linkage` port, a variable assignment to a signal, ...).";
+    CLASS_MISUSE = "E1360", "The object's class or mode does not allow this use (assigning an `in` port, reading a `linkage` port, reading an `out` port or parameter in a VHDL-1993 file, a variable assignment to a signal, ...).";
     NOT_AN_OBJECT = "E1361", "The name does not denote an object or value here.";
     FORCE_RESOLVED_MEMBER = "E1362", "The target of a force or release assignment is a member (an element, slice or field) of a signal whose composite subtype is resolved as a whole (LRM 10.5.2.1); force or release the whole composite signal.";
     // E14xx static evaluation
@@ -96,6 +97,7 @@ codes! {
     GENERIC_DEFAULT = "E1504", "No unique subprogram matches the `is <>` default.";
     UNINSTANTIATED_CALL = "E1505", "An uninstantiated subprogram cannot be called.";
     GENERIC_SUBPROGRAM_ACTUAL = "E1506", "A generic subprogram of a component or block cannot be the actual of an entity's generic subprogram in a generic map. Name a subprogram declared elsewhere, or rely on the default binding, which passes a component's generic subprogram by name.";
+    ANONYMOUS_FORMAL_CONVERSION = "E1507", "A generic or port declared with an anonymous type (`type is ...`, VHDL-2019) takes the type of its actual (LRM 6.5.2, 6.5.3), so its association has no conversion function or type conversion on the formal side: the converted type would have to come from the actual, which the conversion hides. Associate the formal directly and convert in the design.";
     // E16xx names, aliases, attributes, signatures
     EXTERNAL_CLASS = "E1601", "The class of the external name does not allow this use.";
     EXTERNAL_PATH = "E1602", "The path of an external name is malformed: a package path is `@lib.pkg.obj`, an absolute path names the top entity first, only generate labels take a globally static index, and a relative path needs an enclosing concurrent region (LRM 8.7).";
@@ -120,7 +122,7 @@ codes! {
     BINDING_MISMATCH = "E1703", "A port or generic of the component has no match in the bound entity.";
     NO_ENTITY_BOUND = "E1704", "The binding names no entity where one is needed: a configuration specification without an entity aspect, maps without a primary binding, or a block configuration of an instance with no entity.";
     // E18xx statements, processes, drivers
-    BAD_WAIT = "E1801", "`wait` is not allowed in a process with a sensitivity list or in a function.";
+    BAD_WAIT = "E1801", "`wait` is not allowed in a process with a sensitivity list or in a function, nor in a procedure that such a process calls, directly or through other procedures (10.2, 11.3); decided at analysis for procedures whose body is in the same design unit, otherwise when the `wait` executes.";
     BAD_RETURN = "E1802", "`return` is only allowed in a subprogram, with a value exactly in functions.";
     SENSITIVITY_NOT_STATIC = "E1803", "A name in a sensitivity list or `wait on` clause must be a static signal name: every index and slice in it must be static.";
     DRIVER_OUTSIDE_PROCESS = "E1810", "A subprogram declared outside a process drives a signal that is not one of its parameters.";
@@ -136,15 +138,17 @@ codes! {
     SHARED_NOT_PROTECTED = "E1904", "A shared variable must be of a protected type (LRM 6.4.2.4); `--relaxed` turns this into warning W1904.";
     PROTECTED_MISUSE = "E1905", "A protected type cannot be the type of a signal, port or file, and has no `=`. A 2019 record with a protected element has only protected elements (LRM 5.3.1).";
     PROTECTED_ITEM = "E1906", "This declaration is not allowed in a protected type declaration or body (LRM 5.6): the declaration holds method declarations, use clauses, attribute specifications and, in VHDL-2019, private variables and aliases of methods; the body holds no signals or shared variables.";
+    PROTECTED_COMPOSITE_PORT = "E1907", "A variable port of a composite (array or record) of protected types is not supported by yavs, and most reference simulators reject it too. Use a variable port of the protected type, one per object.";
     NEEDS_2019 = "E1910", "The construct needs VHDL-2019.";
     // Warnings
     W_CHANGED_MEANING = "W1008", "The construct means something different under the design's VHDL-2019 std/ieee than under VHDL-2008, for example `integer'high`.";
     W_OVERFLOW = "W1401", "Static arithmetic overflows in a context that does not require the value; the runtime check stays.";
-    W_STATIC_OUTSIDE = "W1403", "A static operand of a qualified expression or type conversion lies outside the subtype it is converted to; the code may be dead, so this is checked again at runtime.";
+    W_STATIC_OUTSIDE = "W1403", "A static operand of a qualified expression or type conversion lies outside the subtype it is converted to, or an array with static bounds converted to an unconstrained array type has bounds outside the target's index subtype; the code may be dead, so this is checked again at runtime.";
     W_STATIC_INDEX = "W1404", "A static index is outside the static range of the array; the code may be dead, so this is checked again at runtime.";
     W_UNUSED_GENERIC = "W1501", "A generic is never used.";
     W_GENERIC_EQ = "W1506", "An instance of a generic with a 2008 `type T` (or 2019 `type T is private`) compares values with the actual type's predefined `=`/`/=` (LRM 6.5.3), while a different user `\"=\"` for the actual type is visible at the instantiation; sim1 would use that one (decision U-6). To use the user operator, declare a formal `function \"=\" (l, r : t) return boolean is <>`.";
     W_DEFAULT_BINDING = "W1703", "Default binding found an entity in the library of the component declaration (or a directly visible one) and a different one in `work`; the former is used.";
+    W_OTHERS_TARGET = "W1325", "`--relaxed` (R5): an aggregate with `others` is assigned to an object whose subtype is unconstrained (a port, a formal); it takes the bounds of the object at run time.";
     W_PURE_IMPURE = "W1830", "`--relaxed` (R2): a pure function reads or calls something impure.";
     W_SHARED_NOT_PROTECTED = "W1904", "`--relaxed` (R1): a shared variable of a non-protected type is accepted; the processes using it run serially.";
 }

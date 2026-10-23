@@ -47,13 +47,14 @@ extern "C" fn clift_deopt(
     temp_base: u64,
     nregs: u64,
     slen: u64,
+    regs: *const u64,
 ) -> *mut u64 {
     static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if *TRACE.get_or_init(|| std::env::var_os("YAVS_CLIFT_TRACE").is_some()) {
         eprintln!("materialise f{func} at pc {pc}");
     }
     // SAFETY: compiled code passes the `Env` and `Mem` it was given.
-    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, u64::MAX) }
+    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, u64::MAX, regs) }
 }
 
 /// `memmove` (`Inst::Copy`; ranges may overlap).
@@ -169,7 +170,7 @@ impl Jit {
         let lcopy = imp(LCOPY, &[I64; 7], None)?;
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
-        let deopt = imp(DEOPT, &[I64, I64, I32, I32, I64, I64, I64], Some(I64))?;
+        let deopt = imp(DEOPT, &[I64, I64, I32, I32, I64, I64, I64, I64], Some(I64))?;
         let deopt_slots = imp(DEOPT_SLOTS, &[I64], Some(I64))?;
         let deopt_end = imp(DEOPT_END, &[I64, I64, I32], Some(I32))?;
         let mut sig = module.make_signature();
@@ -1033,7 +1034,7 @@ fn gen_func(
                 g.st(dst, a);
                 g.join(join);
             }
-            Inst::LayoutOf { dst, ty, desc } => match static_layout(prog, ty) {
+            Inst::LayoutOf { dst, ty, desc, .. } => match static_layout(prog, ty) {
                 Some(sl) => {
                     let (slow, join) = g.slow_path(pc, &inst);
                     let words = g.layout_words(&sl, desc, slow);
@@ -1618,22 +1619,19 @@ impl Gen<'_> {
         Ok(())
     }
 
-    /// Record the native frame at `pc` for the interpreter (`yavs_rt_deopt`): its registers and
-    /// slots are copied to the buffers the callback hands out.
+    /// Record the native frame at `pc` for the interpreter (`yavs_rt_deopt`): the callback copies
+    /// its registers from the register array, its slots are copied to the buffer it hands out.
     fn record_frame(&mut self, f: &Func, pc: Value) {
         let Some(n) = &self.nat else { return };
         let (func, nregs, slots, tb) = (n.func, n.nregs, n.slots, n.temp_base);
         let fu = self.c32(func);
         let nr = self.c64(nregs as i64);
         let sl = self.c64(i64::from(f.frame));
-        let c = self
-            .b
-            .ins()
-            .call(self.imp.deopt, &[self.env, self.mem, fu, pc, tb, nr, sl]);
-        let buf = self.b.inst_results(c)[0];
-        let bytes = self.c64(nregs as i64 * 8);
         let regs = self.regs;
-        self.b.ins().call(self.imp.mov, &[buf, regs, bytes]);
+        self.b.ins().call(
+            self.imp.deopt,
+            &[self.env, self.mem, fu, pc, tb, nr, sl, regs],
+        );
         if f.frame > 0 {
             let c = self.b.ins().call(self.imp.deopt_slots, &[self.env]);
             let sb = self.b.inst_results(c)[0];

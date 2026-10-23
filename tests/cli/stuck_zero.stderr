@@ -1,0 +1,13 @@
+error[E3002]: delta cycle limit 10000 exceeded; active processes: :stuck_zero:p
+ --> $DIR/stuck_zero.vhd:7:5
+  |
+7 |     wait for 0 ns;
+  |     ^^^^^^^^^^^^^^ `:stuck_zero:p` waits for 0 ns and runs again in the next delta
+  |
+  = note: at 0 fs, delta 10000
+  = note: process `:stuck_zero:p` runs again in every delta: it waits for 0 ns (`wait for 0 ns;`) in a loop
+  = help: wait for a real time or for a signal instead of `wait for 0 ns;` in a loop
+  = help: if the design needs more delta cycles at one time, raise the limit with `--max-deltas=N`
+
+error: aborting due to 1 previous error
+

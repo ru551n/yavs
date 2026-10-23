@@ -21,10 +21,11 @@ One file per area. "Slice" is the sem.md section 10 slice that fills it.
 | `decl.rs` | `Decl`/`DeclKind`/`Object`/`Subprogram`/`Body`/`Alias`/`Component`; declarative item analysis | S1 (objects, subprogram specs), S2 (bodies) | M1 lead; semstatic: deferred constants outside packages #53; s7left: named return values #33; subhdr: subprogram header generic maps and non-object parameters in `subprogram_spec` #227 (done); constnoval: constants without a value outside packages and missing full declarations #213; extuse: aliases of external names #19; namedret: named return values of records, generic subprograms and protected methods #239; portiface: non-signal interfaces in `interface_list` #236 |
 | `types.rs` | types, subtypes, constraints, constrainedness, type/subtype declarations | S1 (scalars), S3 (composites, constraint model) | M1 lead (S1); semdrv: range attribute prefix diagnostics #47 |
 | `implicit.rs` | implicitly declared operations per type (2.10) | S2 | owner: implicit |
-| `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead; semtyping: expression typing, conversions, conditions, parameter class checks #48; indivassoc: sub-element associations in calls #210; s7left: 2019 conditional expressions #33; callconv: conversions in call associations #229; sem3perf: candidate sets without heap, operator candidate filtering (#442) |
+| `expr/cands.rs`, `expr/resolve.rs` | two-pass overload resolution (3.1, 3.2, 3.6, 3.7) | S2 | M1 lead; out93: reads of `out` ports and parameters in 1993 files (#629, L138): `Db::out_reads`, `not_read`, `not_read_actual`, `report_out_reads` here, the hooks in `expr/names.rs`, `types.rs`, `alias.rs`, `stmt.rs`, `unit.rs`, `unit/binding.rs`; semtyping: expression typing, conversions, conditions, parameter class checks #48; indivassoc: sub-element associations in calls #210; s7left: 2019 conditional expressions #33; callconv: conversions in call associations #229; sem3perf: candidate sets without heap, operator candidate filtering (#442) |
 | `expr/names.rs` | `Apply`/`Selected`/`Attribute` interpretation (1.5, 3.3) | S2 | owner: names (core by M1 lead: classify, name_cands, build_name, calls, index/slice/field, attributes); sem08: corpus false positives #167-#170; semuse: expanded names into constructs #54; semtyping: type conversions (9.3.6) #48; indivassoc: sub-element associations in calls #210; semstatic: attribute dimension, static index and slice checks #53; callconv: conversions in call associations #229; blockshv: protected type prefixes of expanded names #250 |
 | `expr/literal.rs` | literals, bit-string expansion (3.5, Q11) | S2 | owner: literal; semext: negative suite #49 |
 | `expr/aggregate.rs` | aggregates and choice sets (3.4), shared with `case` | S3 | owner: aggregate; semaggr: negative suite #45 |
+| `edge.rs` | clock-edge shapes of the HIR (`Db::edge_shape`, `level_of`, `same_name`), shared by the elaborator's edge triggers and the lowering (#632) | M2 | owner: edge632 (also small hooks in `expr/resolve.rs` `not_stable_as_event` and `attr.rs` `discard_implicit_signal`) |
 | `stat.rs` | staticness, `ConstValue`, folding (section 4) | S1 (scalar folding), S3 | M1 lead (S1) |
 | `attr.rs` | predefined attribute table, user attributes (6.3) | S3, S6 | owner: aggregate; sem08: corpus false positives #167-#170 (user attribute specifications) |
 | `generic.rs` | generic classes, `Instance`, `GenericMap`, cloning (section 5); 2008 `type T` has implicit `=`, `/=` (Q9, L18) | S4 | owner: generic; gentypes: concurrent statements in the clone, `seed_type` (#75); subhdr: header generic maps through `subprogram_instance` (#227, done); namedret: named return values in instances #239; pkggen: `instance_regions`, `package_regions`, `decls_with_instances` for M2 (#101); genarr: generic array types as `TypeKind::Array`, anonymous index/element/designated types, index constraints (`generic_type`, `check_class`, `anonymous_parts`; #30); anonobj: anonymous types of generic constants, ports and parameters (`bind_const`, `implicit_instance`; #283); v2019c: generic maps in calls (`call_instance`, #362), signatures in formals (`formals_with_signature`, #363) |
@@ -234,18 +235,16 @@ From alloc (alloc.rs):
   call statement (so `deallocate(p)` cannot have a negative-suite test yet).
 - **U-2**: the reference simulators 2026.1 all reject incomplete types in protected method profiles in
   user code (`tests/diag/sem/SIM1.md`); done: the ruling is limited to `std`.
-- ponytail: allocators do not filter overloads by designated type (`f(new integer)` with `f`
-  overloaded on two access types is `E1302`), as `null` is.
+- Allocators filter overloads by designated type (`CandSet::Alloc`, #27); `null` is still the
+  class `ANY_ACCESS`.
 
 From cli (`yavs analyze`):
 
 - **loader.rs** a `--map`ped library without `yavs-lib.toml` is an empty library (cli-contract
   section 3), but loading it reports `L0001 library not found`. Request: treat a missing manifest
   as an empty library, so the use is `E1002`/`E1004` (unit not found), not `L0001`.
-- **std/ieee as work**: `tools/corpus/yavs-lib-*` analyzes lib/std and lib/ieee themselves with
-  `--work=std:...`, which the CLI rejects (E0102, contract: yavs resolves them). The stdlib corpus
-  needs a bootstrap mode from the sem owners (a `Db` mode that analyzes std.standard as work)
-  before the CLI can offer one.
+- **std/ieee as work**: done (#22): `yavs analyze --bootstrap` allows `std`/`ieee` as `--work`/`--map`
+  (cli-contract section 3), which `tools/corpus/yavs-lib-*` uses.
 
 ## Units (unit.rs, unit/binding.rs)
 
@@ -259,8 +258,8 @@ From cli (`yavs analyze`):
 - `Unit::refs` are manifest dependencies on units not loaded during analysis (an instance's
   named architecture, the default-bound entity of a component); `unit_record` adds them.
 - Generic types, subprograms and packages on entities, components and blocks report `E9999`
-  (S4, generic); a subtype indication as a generate specification (`for g(natural range 1 to
-  2)`) reports `E9999`.
+  (S4, generic). A subtype indication as a generate specification (`for g(natural range 1 to
+  2)`) is a `GenSelect::Range` over the subtype (#35).
 - An entity and its architecture are one region (12.1): `declare` in an architecture checks the
   entity's names (`E1101`).
 

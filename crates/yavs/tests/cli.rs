@@ -50,7 +50,7 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "bad_std",
-        args: &["analyze", "--std=93", "--work=work:$TMP/lib", "ok.vhd"],
+        args: &["analyze", "--std=87", "--work=work:$TMP/lib", "ok.vhd"],
         code: 2,
     },
     Case {
@@ -117,6 +117,16 @@ const CASES: &[Case] = &[
     Case {
         name: "psl_skipped",
         args: &["analyze", "--work=work:$TMP/lib", "psl_run.vhd"],
+        code: 0,
+    },
+    Case {
+        name: "psl_formal_only",
+        args: &[
+            "analyze",
+            "--work=work:$TMP/lib",
+            "-Werror=W0004",
+            "psl_formal_only.vhd",
+        ],
         code: 0,
     },
     Case {
@@ -388,6 +398,107 @@ fn signal_keeps_reports() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// The output of a run that goes quiet is written out within a fraction of a second, with no
+/// signal: the tick of the signal thread (#562).
+#[cfg(unix)]
+#[test]
+fn quiet_run_is_flushed() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("quiet_flush");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", &lib, "signal_flush.vhd"])
+        .current_dir(&dir)
+        .status()
+        .expect("run");
+    assert!(a.success());
+    let (ready, out) = (tmp.join("ready"), tmp.join("out"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["run", &lib, &format!("-gready={}", ready.display())])
+        .arg("signal_flush")
+        .current_dir(&dir)
+        .stdout(std::fs::File::create(&out).expect("out"))
+        .spawn()
+        .expect("spawn");
+    let t0 = std::time::Instant::now();
+    let mut seen = false;
+    while !seen && t0.elapsed().as_secs() < 60 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // The report is made before the marker file exists; the process then computes for ever.
+        seen = ready.exists()
+            && std::fs::read_to_string(&out).is_ok_and(|t| t.contains("before signal"));
+    }
+    child.kill().expect("kill");
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(seen, "the report was not written out while the run went on");
+}
+
+/// Two signals end a run that is stuck inside one cycle: the second exits with status 1
+/// after writing out the reports, also when they come in one burst (#562: one thread counts
+/// them), with a waveform file or `--profile` (whose first signal only asks the run to stop
+/// between cycles; in a build with the compiled tier the exit used to crash, #625).
+#[cfg(unix)]
+#[test]
+fn second_signal_exits_at_once() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("second_signal");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", &lib, "signal_flush.vhd"])
+        .current_dir(&dir)
+        .status()
+        .expect("run");
+    assert!(a.success());
+    for (round, extra) in [
+        format!("--wave={}", tmp.join("w.fst").display()),
+        "--profile".to_string(),
+    ]
+    .into_iter()
+    .cycle()
+    .take(6)
+    .enumerate()
+    {
+        let (ready, out) = (tmp.join(format!("ready{round}")), tmp.join("out"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["run", &extra, &lib, &format!("-gready={}", ready.display())])
+            .arg("signal_flush")
+            .current_dir(&dir)
+            .stdout(std::fs::File::create(&out).expect("out"))
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let t0 = std::time::Instant::now();
+        while !ready.exists() {
+            assert!(t0.elapsed().as_secs() < 60, "the run never got going");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let pid = child.id().to_string();
+        // Two signals at once; if the kernel merged them, one more every 150 ms until it ends.
+        let kill = |pids: &[&str]| {
+            let k = Command::new("kill").arg("-INT").args(pids).status();
+            assert!(k.expect("kill").success());
+        };
+        kill(&[&pid, &pid]);
+        let t0 = std::time::Instant::now();
+        let status = loop {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            if let Some(s) = child.try_wait().expect("wait") {
+                break s;
+            }
+            if t0.elapsed().as_secs() > 20 {
+                child.kill().expect("kill");
+                panic!("two signals did not end the run");
+            }
+            kill(&[&pid]);
+        };
+        assert_eq!(status.code(), Some(1), "{extra}, round {round}: {status:?}");
+        let text = std::fs::read_to_string(&out).expect("read");
+        assert!(text.contains("before signal"), "{text:?}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Runs `yavs run` on `long_report` with a piped stdout; `extra` are more arguments.
 #[cfg(unix)]
 fn spawn_long_report(tmp: &Path, extra: &[&str]) -> std::process::Child {
@@ -550,6 +661,13 @@ fn body_not_elaborated() {
     run_snapshot("body_not_elaborated", 2);
 }
 
+/// An external name whose subtype indication has another length than its object is E2121
+/// (LRM 8.7, #463).
+#[test]
+fn external_mismatch() {
+    run_snapshot("external_mismatch", 2);
+}
+
 /// Analyze `tests/cli/NAME.vhd`, run its entity `NAME`, check the exit code and compare stderr
 /// with `NAME.stderr`.
 fn run_snapshot(name: &str, code: i32) {
@@ -600,8 +718,9 @@ fn library_recorded_and_read_only() {
     };
     assert_eq!(yavs("ok.vhd").status.code(), Some(0));
     let m = std::fs::read_to_string(tmp.join("lib/yavs-lib.toml")).expect("manifest");
+    assert!(m.contains("name = \"work\""), "{m}");
     assert!(
-        m.contains("name = \"ok\"") && m.contains("std = \"2008\""),
+        m.contains("std = \"2008\"") && m.contains("[\"package\", \"ok\"]"),
         "{m}"
     );
 
@@ -681,7 +800,7 @@ fn concurrent_batches() {
     for p in ["pa", "pb"] {
         for i in 0..n {
             assert!(
-                m.contains(&format!("name = \"{p}{i}\"")),
+                m.contains(&format!("[\"package\", \"{p}{i}\"]")),
                 "{p}{i} missing\n{m}"
             );
         }
@@ -1653,4 +1772,66 @@ fn run_package_initialisation_follows_dependencies() {
     let o = yavs_cmd(&["run", "--std=2008", &w, &a, &t, "top"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stdout).contains("g=4"));
+}
+
+/// A 2019 `T'VALUE` of an array type is not lowered yet: an explicit E2001, not an internal
+/// error (the first reference suite's `value4`).
+#[test]
+fn composite_value_attribute_is_not_an_ice() {
+    let dir = tempdir("composite_value");
+    let lib = format!("--work=work:{}/lib", dir.display());
+    let src = dir.join("top.vhd");
+    std::fs::write(
+        &src,
+        "entity top is end entity;\n\
+         architecture a of top is\n\
+           type abc is ('a', 'b', 'c');\n\
+           type abc_vec is array (natural range <>) of abc;\n\
+         begin\n\
+           process begin\n\
+             assert abc_vec'value(\"abc\") = \"abc\";\n\
+             wait;\n\
+           end process;\n\
+         end architecture;\n",
+    )
+    .expect("write");
+    let o = yavs_cmd(&["analyze", "--std=2019", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = yavs_cmd(&["elab", "--std=2019", &lib, "top"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("E2001"), "{err}");
+    assert!(!err.contains("E9999"), "{err}");
+}
+
+/// An aggregate target made of fields of a signal parameter is not lowered yet: an explicit
+/// E2001, not an internal error (the second reference suite's `issue3030`).
+#[test]
+fn aggregate_target_of_signal_parameter_is_not_an_ice() {
+    let dir = tempdir("agg_target_param");
+    let lib = format!("--work=work:{}/lib", dir.display());
+    let src = dir.join("top.vhd");
+    std::fs::write(
+        &src,
+        "entity top is end entity;\n\
+         architecture a of top is\n\
+           type rec_t is record x : bit_vector(0 to 1); y : bit_vector(0 to 1); end record;\n\
+           procedure split (signal bv : in bit_vector; signal r : out rec_t) is\n\
+           begin\n\
+             (r.x, r.y) <= bv;\n\
+           end procedure;\n\
+           signal s : rec_t;\n\
+           signal b : bit_vector(0 to 3) := \"1001\";\n\
+         begin\n\
+           process begin split(b, s); wait; end process;\n\
+         end architecture;\n",
+    )
+    .expect("write");
+    let o = yavs_cmd(&["analyze", "--std=2008", &lib, &src.display().to_string()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = yavs_cmd(&["elab", "--std=2008", &lib, "top"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("E2001"), "{err}");
+    assert!(!err.contains("E9999"), "{err}");
 }

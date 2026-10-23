@@ -10,7 +10,10 @@ use smallvec::{SmallVec, smallvec};
 
 use crate::error::ErrorKind;
 use crate::time::Time;
-use crate::value::{Buf, Elem, SignalType, bits, fill_bits, plane_code, put_bits, put_plane_code};
+use crate::value::{
+    Buf, Elem, SignalType, bits, bytes_eq, fill_bits, plane_code, put_bits, put_bytes,
+    put_plane_code,
+};
 use yavs_logic::Block;
 use yavs_logic::wide::{nmask, put_block};
 
@@ -180,6 +183,13 @@ pub(crate) struct Reg {
     pub tid: u32,
 }
 
+/// The most chunk lists with waiters a signal tracks (`Waiters::chunk_ix`).
+const CHUNK_IX: usize = 16;
+
+/// The most distinct edge triggers a signal's wake list (`Cache`) can hold: a clock read by the
+/// processes of a CPU has one per reset signal and edge.
+const MAX_TIDS: usize = 32;
+
 /// The most buckets a waiter is copied into before it goes to the wide list instead.
 const WAIT_NARROW: u32 = 4;
 
@@ -193,7 +203,7 @@ const WAIT_NARROW: u32 = 4;
 #[derive(Default)]
 pub(crate) struct Waiters {
     /// Per chunk, then the wide list last; empty until the first `add`.
-    lists: SmallVec<[(SmallVec<[Waiter; 1]>, usize); 1]>,
+    lists: Vec<(SmallVec<[Waiter; 1]>, usize)>,
     next: u64,
     /// Elements of the signal, and log2 of the chunk size.
     len: u32,
@@ -208,6 +218,10 @@ pub(crate) struct Waiters {
     /// lists of the elements it hit. Without, only the wide list is scanned, whatever the
     /// number of runs (a wide bus whose processes all wait for all of it, #519).
     chunked: bool,
+    /// The chunk lists that may hold a waiter (at most `CHUNK_IX`; `chunk_over` when more were
+    /// used): an event on a wide signal looks only at these, not at every chunk it spans.
+    chunk_ix: SmallVec<[u32; 4]>,
+    chunk_over: bool,
 }
 
 /// `Cache::batch`: the plain processes (one suspension point, not postponed) in list order,
@@ -215,15 +229,15 @@ pub(crate) struct Waiters {
 pub(crate) struct Batch {
     pub plain: Vec<u32>,
     /// `plain` by trigger id, each in list order.
-    pub by_tid: SmallVec<[(u32, Vec<u32>); 4]>,
+    pub by_tid: SmallVec<[(u32, Vec<u32>); 8]>,
     pub others: Vec<(u32, u32)>,
 }
 
 struct Cache {
     /// `(registration, process, trigger id)` of every waiter, in list order.
     list: Vec<(u64, u32, u32)>,
-    /// The distinct trigger ids in `list` (0: none), at most 4.
-    tids: SmallVec<[u32; 4]>,
+    /// The distinct trigger ids in `list` (0: none), at most `MAX_TIDS`.
+    tids: SmallVec<[u32; 8]>,
     /// The processes of `list` that run as one batch in list order when they all wake, and
     /// the others, which wake one by one (`SimControl::batch_of`); `None` inside when the list
     /// is not in process order. Set by the kernel at first use.
@@ -250,14 +264,32 @@ impl Waiters {
             _ => 6,
         };
         Waiters {
-            lists: SmallVec::new(),
+            lists: Vec::new(),
             next: 0,
             len,
             shift,
             trig: Trig::Empty,
             cache: None,
             chunked: false,
+            chunk_ix: SmallVec::new(),
+            chunk_over: false,
         }
+    }
+
+    /// Every waiter in every list (a waiter in several chunk lists comes up once per list); for
+    /// the hang report, which is cold.
+    pub fn iter(&self) -> impl Iterator<Item = &Waiter> {
+        self.lists.iter().flat_map(|(l, _)| l.iter())
+    }
+
+    /// The one list every waiter is in, when none was ever put in a chunk's list: the only list of
+    /// a small signal, or the wide list of a big one whose waiters all wait for most of it.
+    #[inline(always)]
+    fn only(&self) -> Option<&[Waiter]> {
+        if self.chunked {
+            return None;
+        }
+        self.lists.last().map(|l| l.0.as_slice())
     }
 
     /// No process has ever waited on the signal.
@@ -282,6 +314,19 @@ impl Waiters {
         }
     }
 
+    /// The signal has one waiter, a resident one of process `p`.
+    #[inline]
+    pub fn only_resident(&self, p: u32) -> bool {
+        matches!(self.only(), Some([w]) if w.proc == p && w.perm != 0)
+    }
+
+    /// The waiters of a signal that has one list of at most `max` (a clock read by a few
+    /// processes), in registration order.
+    #[inline]
+    pub fn small_list(&self, max: usize) -> Option<&[Waiter]> {
+        self.only().filter(|l| l.len() <= max)
+    }
+
     /// Forget the wake list (a waiter changed).
     pub fn drop_cache(&mut self) {
         self.cache = None;
@@ -292,13 +337,13 @@ impl Waiters {
     /// list need not be scanned. Stale waiters have the trigger of their process, too.
     pub fn uniform_trigger(&self) -> Option<crate::EdgeTrigger> {
         match self.trig {
-            Trig::Same(t) if self.lists.len() == 1 => Some(t),
+            Trig::Same(t) if self.only().is_some() => Some(t),
             _ => None,
         }
     }
 
     /// The distinct trigger ids of the wake list, if it is valid.
-    pub fn cache_tids(&self) -> Option<SmallVec<[u32; 4]>> {
+    pub fn cache_tids(&self) -> Option<SmallVec<[u32; 8]>> {
         self.cache.as_ref().map(|c| c.tids.clone())
     }
 
@@ -373,9 +418,7 @@ impl Waiters {
         let joins = perm != 0 && self.len > 0 && range == Range::new(0, self.len);
         match &mut self.cache {
             Some(c)
-                if joins
-                    && self.lists.len() == 1
-                    && (c.tids.contains(&tid) || c.tids.len() < 4) =>
+                if joins && !self.chunked && (c.tids.contains(&tid) || c.tids.len() < MAX_TIDS) =>
             {
                 if !c.tids.contains(&tid) {
                     c.tids.push(tid);
@@ -386,7 +429,17 @@ impl Waiters {
         }
         let wide = self.lists.len() - 1;
         for i in self.lists_of(range) {
-            self.chunked |= i != wide;
+            if i != wide {
+                self.chunked = true;
+                if !self.chunk_over && !self.chunk_ix.contains(&(i as u32)) {
+                    if self.chunk_ix.len() == CHUNK_IX {
+                        self.chunk_over = true;
+                        self.chunk_ix.clear();
+                    } else {
+                        self.chunk_ix.push(i as u32);
+                    }
+                }
+            }
             let (l, n) = &mut self.lists[i];
             if l.len() >= 2 * *n + 16 {
                 l.retain(|w| live(w));
@@ -408,14 +461,16 @@ impl Waiters {
     /// hits, so the rest are alive.
     fn build_cache(&mut self) {
         let full = Range::new(0, self.len);
-        let l = &self.lists[0].0;
+        let Some(l) = self.lists.last().map(|l| &l.0) else {
+            return;
+        };
         if full.len == 0 || l.len() < 16 || !l.iter().all(|w| w.perm != 0 && w.range == full) {
             return;
         }
-        let mut tids: SmallVec<[u32; 4]> = SmallVec::new();
+        let mut tids: SmallVec<[u32; 8]> = SmallVec::new();
         for w in l.iter() {
             if !tids.contains(&w.tid) {
-                if tids.len() == 4 {
+                if tids.len() == MAX_TIDS {
                     return;
                 }
                 tids.push(w.tid);
@@ -515,6 +570,20 @@ impl Waiters {
             scan(&mut self.lists[wide]);
         } else if !self.chunked {
             scan(&mut self.lists[wide]);
+        } else if !self.chunk_over {
+            // The few chunk lists with waiters, those an event spans, then the wide list.
+            let len = self.len;
+            let mut ix = std::mem::take(&mut self.chunk_ix);
+            for &c in &ix {
+                let lo = c << shift;
+                if hit(Range::new(lo, (1 << shift).min(len - lo))) {
+                    scan(&mut self.lists[c as usize]);
+                }
+            }
+            scan(&mut self.lists[wide]);
+            ix.retain(|&mut c| !self.lists[c as usize].0.is_empty());
+            self.chunked = !ix.is_empty();
+            self.chunk_ix = ix;
         } else {
             let mut last = usize::MAX;
             let chunks = runs.iter().flat_map(|r| {
@@ -531,10 +600,14 @@ impl Waiters {
                 scan(&mut self.lists[i]);
             }
         }
-        if self.lists.len() == 1 && self.lists[0].0.is_empty() {
+        if self.only().is_some_and(|l| l.is_empty()) {
             self.trig = Trig::Empty;
         }
-        if self.cache.is_none() && self.lists.len() == 1 && scanned == 1 && !runs.is_empty() {
+        if self.cache.is_none()
+            && self.only().is_some_and(|l| l.len() >= 16)
+            && scanned == 1
+            && !runs.is_empty()
+        {
             self.build_cache();
         }
         if scanned > 1 && out.len() > 1 {
@@ -593,26 +666,29 @@ pub(crate) struct Signal {
     /// Elements changed in the current cycle.
     pub changed: Vec<Range>,
     /// Ranges whose driving value must be recomputed this cycle.
-    pub dirty: SmallVec<[Range; 2]>,
+    pub dirty: Vec<Range>,
     /// Ranges whose driving value was written when the transaction was applied (a vector quick
     /// transaction on a sole source, `apply_driver`): only the effective value is left to update.
-    pub fast_dirty: SmallVec<[Range; 2]>,
+    pub fast_dirty: Vec<Range>,
     /// Ranges whose effective value must be recomputed this cycle.
-    pub eff_dirty: SmallVec<[Range; 2]>,
+    pub eff_dirty: Vec<Range>,
     /// The simulation runs (not initialising): reports of its resolution function are
     /// collected in `callouts` for the kernel to commit (#372).
     pub live: bool,
     /// Ranges where a force or release of this cycle changed the effective value, whatever
     /// the cycle's last one left: an event even when the value ends up unchanged (#382).
-    pub force_ev: SmallVec<[Range; 2]>,
+    pub force_ev: Vec<Range>,
     pub callouts: Vec<(crate::process::Severity, String)>,
     /// An assignment of the value a source already has may be skipped (`Builder::build`).
     pub skip_ok: bool,
+    /// What `plain` asks that never changes after the build (`SimControl::new`).
+    pub static_plain: bool,
     /// The segment the last `compute_driving` started in: the next dirty range is usually there
     /// or in the next one.
     seg_hint: usize,
     /// The `std_ulogic` code of every element of `cur`, one byte each (rounded up to whole
-    /// plane blocks), for logic signals of at most `CODES_MAX` elements; empty otherwise. Kept
+    /// plane blocks), for logic signals of at most `CODES_MAX` elements without a bus-wide source
+    /// (`CODES_SOURCE_MAX`); empty otherwise. Kept
     /// in step with `cur` (`sync_codes`, `refresh_codes`): a read of one element is one load.
     codes: Vec<u8>,
     /// Quick transactions of this cycle finished at once (`apply_driver`), and whether one of
@@ -622,12 +698,16 @@ pub(crate) struct Signal {
     /// A process waits on the signal, or an observer wants its value changes: `changed` lists
     /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
     pub watched: bool,
+    /// Something needs the exact runs in `changed`: a process waits for a part of the signal, or
+    /// an observer wants the value changes. Else `changed` holds the cover of the runs
+    /// (one range) and `nruns` counts them.
+    pub fine: bool,
     pub nruns: u64,
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
     /// one bit each (made at the first one), and the words with a bit set.
     pend: Vec<u64>,
-    pend_words: SmallVec<[u32; 2]>,
+    pend_words: Vec<u32>,
     /// One element is pending and it is not in `pend`: the one `last_commit` holds.
     pend_one: bool,
     /// Direct commits wrote the driving value only: the values of the sole-source drivers
@@ -656,9 +736,20 @@ struct EvRec {
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
 /// (`Signal::watched`), else only counted.
 #[inline(always)]
-fn note_run(changed: &mut Vec<Range>, nruns: &mut u64, watched: bool, e: usize, len: u32) {
+fn note_run(
+    changed: &mut Vec<Range>,
+    nruns: &mut u64,
+    watched: bool,
+    fine: bool,
+    e: usize,
+    len: u32,
+) {
     if !watched {
         *nruns += 1;
+        return;
+    }
+    if !fine {
+        cover(changed, nruns, e, len, 1);
         return;
     }
     match changed.last_mut() {
@@ -667,12 +758,38 @@ fn note_run(changed: &mut Vec<Range>, nruns: &mut u64, watched: bool, e: usize, 
     }
 }
 
+/// `changed` as one range: the elements `e .. e + len`, `runs` runs of them, joined to the cover of
+/// the runs so far. The cover counts as one event itself, so `nruns` leaves it out and
+/// the cycle's count of events (`changed` plus `nruns`) stays the number of runs.
+#[inline(always)]
+fn cover(changed: &mut Vec<Range>, nruns: &mut u64, e: usize, len: u32, runs: u64) {
+    *nruns += runs;
+    match changed.first_mut() {
+        Some(c) => {
+            let lo = c.offset.min(e as u32);
+            let hi = c.end().max(e as u32 + len);
+            *c = Range::new(lo, hi - lo);
+        }
+        None => {
+            changed.push(Range::new(e as u32, len));
+            *nruns -= 1;
+        }
+    }
+}
+
 /// The longest logic signal that keeps `Signal::codes`.
 const CODES_MAX: usize = 1 << 20;
 
+/// A logic signal of more than 64 elements (several plane blocks) keeps its byte codes only when
+/// every source (driver or out-port) has at most this many elements. A wider source makes it a
+/// bus, updated a block at a time: refreshing 64 codes on every change costs more than the
+/// plane reads of the rare single element do. A vector of registers (sources of one element,
+/// or a byte lane) keeps them: its updates are single elements and its elements are read singly.
+const CODES_SOURCE_MAX: usize = 16;
+
 /// Elements `elem .. elem + len` (`len <= 64`) into the pending bit mask and its list of words.
 #[inline(always)]
-fn mark_bits(pend: &mut [u64], words: &mut SmallVec<[u32; 2]>, elem: u32, len: u32) {
+fn mark_bits(pend: &mut [u64], words: &mut Vec<u32>, elem: u32, len: u32) {
     let (w, s, m) = (elem as usize / 64, elem % 64, nmask(len as usize));
     if pend[w] == 0 {
         words.push(w as u32);
@@ -772,21 +889,23 @@ impl Signal {
             queued_up: 0,
             queued_down: 0,
             changed: Vec::new(),
-            dirty: SmallVec::new(),
-            fast_dirty: SmallVec::new(),
-            eff_dirty: SmallVec::new(),
+            dirty: Vec::new(),
+            fast_dirty: Vec::new(),
+            eff_dirty: Vec::new(),
             live: false,
-            force_ev: SmallVec::new(),
+            force_ev: Vec::new(),
             callouts: Vec::new(),
             skip_ok: false,
+            static_plain: false,
             seg_hint: 0,
             codes: Vec::new(),
             fuse_n: 0,
             fused_event: false,
             watched: false,
+            fine: false,
             nruns: 0,
             pend: Vec::new(),
-            pend_words: SmallVec::new(),
+            pend_words: Vec::new(),
             pend_one: false,
             lag: false,
             exact: false,
@@ -802,6 +921,11 @@ impl Signal {
         self.codes.clear();
         if let Buf::Planes { len, b } = &self.cur
             && *len <= CODES_MAX
+            && (*len <= 64
+                || self
+                    .drivers
+                    .iter()
+                    .all(|d| d.range.len as usize <= CODES_SOURCE_MAX))
         {
             self.codes.resize(b.len() * 64, 0);
             refresh_codes(&mut self.codes, &self.cur, 0, *len);
@@ -811,7 +935,14 @@ impl Signal {
     /// Element run `e .. e + len` changed (`note_run`).
     #[inline(always)]
     fn note_run(&mut self, e: usize, len: u32) {
-        note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
+        note_run(
+            &mut self.changed,
+            &mut self.nruns,
+            self.watched,
+            self.fine,
+            e,
+            len,
+        );
     }
 
     /// Put `changed` in ascending order and join the runs that touch.
@@ -838,6 +969,53 @@ impl Signal {
     /// `codes` as a pointer and the number of elements, if the signal keeps them.
     pub fn codes_view(&self) -> Option<(*const u8, usize)> {
         (!self.codes.is_empty()).then_some((self.codes.as_ptr(), self.ty.len as usize))
+    }
+
+    /// The bytes `codes_view` can be read from its start: whole plane blocks, so the group of
+    /// eight codes around the last element is there (the bytes past the last element are 0),
+    /// 0 for a signal that keeps no codes.
+    pub fn codes_cap(&self) -> usize {
+        self.codes.len()
+    }
+
+    /// The cycle number of the last event of each element (`event_in`) of a signal of at most 64
+    /// elements, which compiled code compares with the current cycle for `'event` (a wider signal
+    /// also keeps event records per block). The address stays for the whole simulation; the
+    /// numbers change only while no process runs.
+    pub fn event_view(&self) -> Option<*const u64> {
+        (self.ty.len <= 64).then(|| self.stamps.as_ptr())
+    }
+
+    /// The plane blocks of the current value of a logic signal and its number of elements, for
+    /// reads of compiled code (four words per block, element `e` in bit `e % 64` of block
+    /// `e / 64`). The address stays for the whole simulation; the bits change only while no
+    /// process runs.
+    pub fn planes_view(&self) -> Option<(*const Block, usize)> {
+        match &self.cur {
+            Buf::Planes { len, b } if !b.is_empty() => Some((b.as_ptr(), *len)),
+            _ => None,
+        }
+    }
+
+    /// The bytes of the current value of a signal of enumeration, integer, boolean or real
+    /// elements, the size of an element and the number of elements (address and bytes as for
+    /// `planes_view`).
+    pub fn bytes_view(&self) -> Option<(*const u8, usize, usize)> {
+        match &self.cur {
+            Buf::Bytes { es, data } if *es > 0 => Some((data.as_ptr(), *es, data.len() / *es)),
+            _ => None,
+        }
+    }
+
+    /// The plane block of `last_value` of a logic signal of at most 64 elements that keeps its
+    /// codes, for `rising_edge` of compiled code (the address as for `event_view`).
+    pub fn last_view(&self) -> Option<*const Block> {
+        match &self.last_value {
+            Buf::Planes { len, b } if *len <= 64 && !self.codes.is_empty() && !b.is_empty() => {
+                Some(b.as_ptr())
+            }
+            _ => None,
+        }
     }
 
     /// The code of element `e` of `cur` from `codes`, if the signal keeps them and has the element.
@@ -1046,14 +1224,16 @@ impl Signal {
     /// source's value is the signal's.
     #[inline(always)]
     fn plain(&self) -> bool {
-        matches!(self.ty.elem, Elem::Logic)
-            && self.groups.is_empty()
-            && self.guard.is_none()
+        self.static_plain
             && self.force_ev.is_empty()
             && self.force_drv.is_none()
-            && self.port_in.is_none()
             && self.force_eff.is_none()
-            && matches!(self.resolution, None | Some(Resolution::StdLogic))
+    }
+
+    /// A direct transaction waits to be finished (`finish_pend`).
+    #[inline(always)]
+    pub fn has_pending(&self) -> bool {
+        self.pend_one || !self.pend_words.is_empty()
     }
 
     /// Something besides direct transactions is left to finish (`finish_signal`).
@@ -1271,7 +1451,14 @@ impl Signal {
                     *c = cycle;
                     *t = stamp(now);
                 }
-                note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
+                note_run(
+                    &mut self.changed,
+                    &mut self.nruns,
+                    self.watched,
+                    self.fine,
+                    e,
+                    len,
+                );
                 w &= !(nmask(len as usize) << s);
             }
             let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
@@ -1359,7 +1546,7 @@ impl Signal {
                 st[2 * len + e] = t;
             }
         }
-        if self.watched {
+        if self.watched && self.fine {
             let mut v = m;
             while v != 0 {
                 let s = v.trailing_zeros();
@@ -1368,11 +1555,24 @@ impl Signal {
                     &mut self.changed,
                     &mut self.nruns,
                     true,
+                    true,
                     base + s as usize,
                     run,
                 );
                 v &= !(nmask(run as usize) << s);
             }
+        } else if self.watched {
+            // Only whole-signal waiters: the cover of the changed elements tells them all
+            // they need; the runs are counted.
+            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
+            let runs = u64::from((m & !(m << 1)).count_ones());
+            cover(
+                &mut self.changed,
+                &mut self.nruns,
+                base + lo,
+                (hi - lo) as u32,
+                runs,
+            );
         } else {
             self.nruns += u64::from((m & !(m << 1)).count_ones());
         }
@@ -1433,6 +1633,52 @@ impl Signal {
         }
         self.spill_pend_one();
         self.last_commit = (elem, code);
+        Some(self.mark_pend(elem, 1))
+    }
+
+    /// A zero-delay transaction of one element of a byte signal's direct driver
+    /// (`DriverInfo::bdirect`), committed as `commit_code` commits a logic one: the driving
+    /// value now (the driver value too after a deposit), the element waiting for the next update
+    /// (`finish_pend`). True for the signal's first one; `None` when the driver and the signal
+    /// already have the bytes and the signal allows skipping.
+    #[inline]
+    pub(crate) fn commit_bytes(
+        &mut self,
+        slot: u32,
+        elem: u32,
+        es: usize,
+        val: &[u8; 8],
+    ) -> Option<bool> {
+        let v = &val[..es];
+        let at = elem as usize * es;
+        let (Buf::Bytes { data: drv, .. }, Buf::Bytes { data: cur, .. }) =
+            (&mut self.driving, &self.cur)
+        else {
+            unreachable!("commit_bytes of logic storage")
+        };
+        let same = bytes_eq(&cur[at..at + es], v);
+        if self.exact {
+            let d = &mut self.drivers[slot as usize];
+            let rel = (elem - d.range.offset) as usize * es;
+            if let Buf::Bytes { data, .. } = &mut d.value {
+                if same && self.skip_ok && bytes_eq(&data[rel..rel + es], v) {
+                    return None;
+                }
+                data[rel..rel + es].copy_from_slice(v);
+            }
+        } else if same && self.skip_ok && bytes_eq(&drv[at..at + es], v) {
+            return None;
+        }
+        put_bytes(&mut drv[at..at + es], v);
+        self.lag |= !self.exact;
+        // The first element of the cycle stays in `last_commit` alone (`pend_one`).
+        if !self.pend_one && self.pend_words.is_empty() {
+            self.pend_one = true;
+            self.last_commit = (elem, 0);
+            return Some(true);
+        }
+        self.spill_pend_one();
+        self.last_commit = (elem, 0);
         Some(self.mark_pend(elem, 1))
     }
 
@@ -1594,6 +1840,9 @@ impl Signal {
             // The general paths compute the driving value from the drivers.
             self.sync_drivers();
         }
+        if matches!(self.ty.elem, Elem::Bytes(_)) {
+            return self.finish_pend_bytes(now, cycle, plain);
+        }
         // One element (one stage of a chain): no bit mask.
         if self.pend_one {
             let (e, code) = self.last_commit;
@@ -1626,6 +1875,75 @@ impl Signal {
         Some(any)
     }
 
+    /// `finish_pend` of a byte signal: each pending element's driving bytes against its current
+    /// ones (an event if they differ), or, with a layer on the signal, dirty ranges for the
+    /// general paths.
+    fn finish_pend_bytes(&mut self, now: Time, cycle: u64, plain: bool) -> Option<bool> {
+        let one = |s: &mut Signal, e: usize| -> bool {
+            if plain {
+                s.finish_bytes_elem(e, now, cycle)
+            } else {
+                let r = Range::new(e as u32, 1);
+                s.mark_active(r, now, cycle);
+                s.push_dirty(r);
+                false
+            }
+        };
+        if self.pend_one {
+            self.pend_one = false;
+            return Some(one(self, self.last_commit.0 as usize));
+        }
+        if self.pend_words.is_empty() {
+            return None;
+        }
+        let mut words = std::mem::take(&mut self.pend_words);
+        if !words.is_sorted() {
+            words.sort_unstable();
+        }
+        let mut any = false;
+        for &w in &words {
+            let mut m = std::mem::take(&mut self.pend[w as usize]);
+            while m != 0 {
+                let e = w as usize * 64 + m.trailing_zeros() as usize;
+                m &= m - 1;
+                any |= one(self, e);
+            }
+        }
+        words.clear();
+        self.pend_words = words;
+        Some(any)
+    }
+
+    /// An element of a plain byte signal committed directly: active, and an event when its
+    /// driving bytes differ from the current ones.
+    #[inline]
+    fn finish_bytes_elem(&mut self, e: usize, now: Time, cycle: u64) -> bool {
+        let n = self.ty.len as usize;
+        if !self.inactive {
+            let st = self.stamps.as_mut_slice();
+            st[n + e] = cycle;
+            st[3 * n + e] = stamp(now);
+        }
+        let (
+            Buf::Bytes { es, data: drv },
+            Buf::Bytes { data: cur, .. },
+            Buf::Bytes { data: last, .. },
+        ) = (&self.driving, &mut self.cur, &mut self.last_value)
+        else {
+            unreachable!("finish_bytes_elem of logic storage")
+        };
+        let es = *es;
+        let (d, c) = (&drv[e * es..(e + 1) * es], &mut cur[e * es..(e + 1) * es]);
+        if bytes_eq(c, d) {
+            return false;
+        }
+        put_bytes(&mut last[e * es..(e + 1) * es], c);
+        put_bytes(c, d);
+        set_event(&mut self.stamps, n, e, cycle, now);
+        self.note_run(e, 1);
+        true
+    }
+
     /// `finish_pend` when only the element `pend_one` holds is pending, on a plain signal with
     /// nothing else to finish: whether it changed. `None` (nothing done) otherwise.
     #[inline(always)]
@@ -1638,6 +1956,10 @@ impl Signal {
             || self.unfinished()
         {
             return None;
+        }
+        if matches!(self.ty.elem, Elem::Bytes(_)) {
+            self.pend_one = false;
+            return Some(self.finish_bytes_elem(e as usize, now, cycle));
         }
         let &old = self.codes.get(e as usize)?;
         self.pend_one = false;
@@ -1742,7 +2064,86 @@ impl Signal {
             self.apply_quick(q, slot, now, cycle);
             return;
         }
+        if let Some(q) = w.bquick
+            && q.time <= now
+        {
+            w.bquick = None;
+            self.apply_bquick(q, slot, now, cycle);
+            return;
+        }
         self.apply_rest(w, slot, now, cycle);
+    }
+
+    /// The due byte transaction `q` of driver `slot`: as `apply_quick`.
+    fn apply_bquick(&mut self, q: BQuick, slot: u32, now: Time, cycle: u64) {
+        let (es, e) = (q.es as usize, q.elem as usize);
+        let d = &mut self.drivers[slot as usize];
+        let rel = (q.elem - d.range.offset) as usize;
+        if let Buf::Bytes { data, .. } = &mut d.value {
+            data[rel * es..(rel + 1) * es].copy_from_slice(&q.val[..es]);
+        }
+        if let Some(off) = &mut d.off {
+            fill_bits(off, rel, 1, false);
+        }
+        let shared = d.shared;
+        let n = self.ty.len as usize;
+        let st = self.stamps.as_mut_slice();
+        st[n + e] = cycle;
+        st[3 * n + e] = stamp(now);
+        if !shared && self.plain_bytes() {
+            // The element's only source: its driving and effective values follow now.
+            self.fuse_n += 1;
+            self.finish_bquick(e, &q.val[..es], now, cycle);
+        } else {
+            self.push_dirty(Range::new(q.elem, 1));
+        }
+    }
+
+    /// `finish_quick` for an element of byte storage.
+    fn finish_bquick(&mut self, e: usize, v: &[u8], now: Time, cycle: u64) {
+        let es = v.len();
+        let (
+            Buf::Bytes { data: drv, .. },
+            Buf::Bytes { data: cur, .. },
+            Buf::Bytes { data: last, .. },
+        ) = (&mut self.driving, &mut self.cur, &mut self.last_value)
+        else {
+            unreachable!("finish_bquick of logic storage")
+        };
+        drv[e * es..(e + 1) * es].copy_from_slice(v);
+        let c = &mut cur[e * es..(e + 1) * es];
+        if bytes_eq(c, v) {
+            return;
+        }
+        last[e * es..(e + 1) * es].copy_from_slice(c);
+        c.copy_from_slice(v);
+        set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
+        self.note_run(e, 1);
+        self.fused_event = true;
+    }
+
+    /// The part of `plain` that holds for the whole run: a logic signal with no group, guard,
+    /// port layer or resolution function but `std_logic`'s.
+    pub(crate) fn set_static_plain(&mut self) {
+        self.static_plain = matches!(self.ty.elem, Elem::Logic)
+            && self.groups.is_empty()
+            && self.guard.is_none()
+            && self.port_in.is_none()
+            && matches!(self.resolution, None | Some(Resolution::StdLogic));
+    }
+
+    /// A byte signal with no layer, group, guard or resolution function to wait for: a sole
+    /// source's value is the signal's (`plain` for byte storage).
+    #[inline(always)]
+    fn plain_bytes(&self) -> bool {
+        matches!(self.ty.elem, Elem::Bytes(_))
+            && self.groups.is_empty()
+            && self.guard.is_none()
+            && self.force_ev.is_empty()
+            && self.force_drv.is_none()
+            && self.port_in.is_none()
+            && self.force_eff.is_none()
+            && self.resolution.is_none()
     }
 
     /// The due quick transaction `q` of driver `slot` (taken from its waveform): the driver
@@ -1912,8 +2313,12 @@ impl Signal {
 
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
-        self.stamps[r.elems()].contains(&cycle)
-            || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
+        // One element (an edge test): a load and a compare, not a scan.
+        (if r.len == 1 {
+            self.stamps[r.offset as usize] == cycle
+        } else {
+            self.stamps[r.elems()].contains(&cycle)
+        }) || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
     }
 
     /// `'last_event` of `r`: time since the most recent event, `TIME'HIGH` if none.
@@ -1950,7 +2355,7 @@ fn stamp(t: Time) -> u64 {
 /// Add `r` to a list of ranges, extending the last one when `r` continues it (ascending, or
 /// descending: processes numbered the other way round).
 #[inline]
-fn push_range(list: &mut SmallVec<[Range; 2]>, r: Range) {
+fn push_range(list: &mut Vec<Range>, r: Range) {
     match list.last_mut() {
         Some(l) if l.end() == r.offset => l.len += r.len,
         Some(l) if r.end() == l.offset => {
@@ -2136,6 +2541,9 @@ pub(crate) struct Waveform {
     /// (`Ctx::assign`, `Ctx::assign_blocks`) as plane words, no list entry, no value buffer.
     /// At most one of `quick`, `vquick` and `pending` is in use; `spill` and `idle` as for `quick`.
     pub vquick: Option<VQuick>,
+    /// The byte-signal counterpart: an assignment of one element of at most 8 bytes (an enum,
+    /// an integer, a boolean, a real). Same rules as `quick`.
+    pub bquick: Option<BQuick>,
     /// Values of applied transactions, reused by the next assignments (no allocation per
     /// transaction in the steady state).
     pub spare: Vec<Buf>,
@@ -2151,6 +2559,15 @@ pub(crate) struct Quick {
     /// The element, of the signal (not of the driver).
     pub elem: u32,
     pub code: u8,
+}
+
+/// A pending assignment of one element of a byte signal, `es` (at most 8) bytes in `val`.
+#[derive(Clone, Copy)]
+pub(crate) struct BQuick {
+    pub time: Time,
+    pub elem: u32,
+    pub es: u8,
+    pub val: [u8; 8],
 }
 
 /// A pending zero-delay assignment of at most 64 logic elements.
@@ -2194,21 +2611,38 @@ impl Waveform {
     /// Nothing is pending.
     #[inline]
     pub fn idle(&self) -> bool {
-        self.pending.is_empty() && self.quick.is_none() && self.vquick.is_none()
+        self.pending.is_empty()
+            && self.quick.is_none()
+            && self.vquick.is_none()
+            && self.bquick.is_none()
     }
 
     /// The time of the first pending transaction.
     #[inline]
     pub fn first_time(&self) -> Option<Time> {
-        match (&self.quick, &self.vquick) {
-            (Some(q), _) => Some(q.time),
-            (_, Some(q)) => Some(q.time),
+        match (&self.quick, &self.vquick, &self.bquick) {
+            (Some(q), _, _) => Some(q.time),
+            (_, Some(q), _) => Some(q.time),
+            (_, _, Some(q)) => Some(q.time),
             _ => self.pending.first().map(|t| t.time),
         }
     }
 
     /// Turn the quick transaction into a list entry, for the paths that preempt and merge.
     pub fn spill(&mut self) {
+        if let Some(q) = self.bquick.take() {
+            self.pending.insert(
+                0,
+                Txn {
+                    time: q.time,
+                    range: Range::new(q.elem, 1),
+                    value: Some(Buf::Bytes {
+                        es: q.es as usize,
+                        data: SmallVec::from_slice(&q.val[..q.es as usize]),
+                    }),
+                },
+            );
+        }
         if let Some(q) = self.vquick.take() {
             self.pending.insert(
                 0,
@@ -2313,6 +2747,21 @@ impl Waveform {
             d.value.put_code((q.elem - d.range.offset) as usize, q.code);
             if let Some(off) = &mut d.off {
                 fill_bits(off, (q.elem - d.range.offset) as usize, 1, false);
+            }
+            applied(Range::new(q.elem, 1));
+            return;
+        }
+        if let Some(q) = self.bquick {
+            if q.time > now {
+                return self.apply_pending(now, d, applied);
+            }
+            self.bquick = None;
+            let (rel, es) = ((q.elem - d.range.offset) as usize, q.es as usize);
+            if let Buf::Bytes { data, .. } = &mut d.value {
+                data[rel * es..(rel + 1) * es].copy_from_slice(&q.val[..es]);
+            }
+            if let Some(off) = &mut d.off {
+                fill_bits(off, rel, 1, false);
             }
             applied(Range::new(q.elem, 1));
             return;

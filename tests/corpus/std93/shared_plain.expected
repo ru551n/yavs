@@ -1,0 +1,2 @@
+exit	0
+diag	note	100000000	0	:shared_plain:check	total 3 ups 3 downs 3

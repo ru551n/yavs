@@ -13,13 +13,14 @@ use std::collections::HashMap;
 use yavs_diag::{Diagnostic, Span};
 
 use crate::db::Db;
-use crate::decl::{Alias, DeclKind, ObjClass, ObjRole};
+use crate::decl::{Alias, DeclKind, ObjClass, ObjRole, SubprogramKind};
 use crate::diag;
 use crate::hir::{
-    Actual, AttrPrefix, Call, Choice, ExprKind, InstTarget, Lsp, LspStep, Mode, NewInit, ObjRoot,
-    PredefAttr, ProcessInfo, RangeC, Rhs, StmtKind, Target, UnitHir, Waveform,
+    Actual, AttrPrefix, Call, Choice, ExprKind, InstTarget, LoopScheme, Lsp, LspStep, Mode,
+    NewInit, ObjRoot, PredefAttr, ProcessInfo, RangeC, Rhs, StmtKind, Target, UnitHir, Waveform,
 };
 use crate::ids::{DeclId, ExprId, ScopeId, StmtId, SubtypeId};
+use crate::scope::ScopeKind;
 use crate::stat::Staticness;
 use crate::types::{Resolution, TypeKind};
 
@@ -731,6 +732,21 @@ impl Db {
         for (e, u) in uses {
             match u {
                 Use::Value | Use::Actual(Mode::In | Mode::Inout) => self.reads(e, out),
+                // A mode view reads its `in` and `inout` elements only (6.5.2).
+                Use::Actual(m @ Mode::View { .. }) => {
+                    let mut whole = Vec::new();
+                    self.name_reads(e, &mut whole);
+                    if let Some(l) = self.signal_lsp(e) {
+                        for p in self.view_read_paths(m) {
+                            let mut l = l.clone();
+                            l.path = l.path.iter().chain(&p).cloned().collect();
+                            push_unique(self, out, l);
+                        }
+                    }
+                    for l in whole {
+                        push_unique(self, out, l);
+                    }
+                }
                 Use::Target | Use::Actual(_) => self.name_reads(e, out),
             }
         }
@@ -869,9 +885,180 @@ impl Db {
         let reads_all = all.then(|| {
             let mut r = Vec::new();
             self.reads_deep(body, &mut r);
+            self.scope_subprogram_reads(scope, &mut r);
             r
         });
         ProcessInfo { drivers, reads_all }
+    }
+
+    /// The signals read by a clocked process (a branch of its statement, `conds` the other
+    /// branches' conditions, such as a reset) when what an activation does is a function of
+    /// those signals and constants alone: no variable or file in `scope`, only signal
+    /// assignments without delay, `if`, `case`, `for` loops and `null`, and expressions of
+    /// constants, signals, predefined operators and pure package functions without signal
+    /// parameters. `None` for anything else. An activation of such a process with none of the
+    /// signals changed since the last one does what that one did.
+    pub fn pure_clocked_reads(
+        &self,
+        scope: ScopeId,
+        conds: &[ExprId],
+        body: &[StmtId],
+    ) -> Option<Vec<Lsp>> {
+        for &d in &self.scopes[scope].order {
+            if let DeclKind::Object(o) = &self.decls[d].kind
+                && matches!(
+                    o.class,
+                    ObjClass::Variable | ObjClass::SharedVariable | ObjClass::File
+                )
+            {
+                return None;
+            }
+        }
+        let mut reads = Vec::new();
+        for &c in conds {
+            if !self.pure_tree(c) {
+                return None;
+            }
+            self.reads(c, &mut reads);
+        }
+        if !self.pure_stmts(body, &mut reads) {
+            return None;
+        }
+        // Whole objects and record fields: an index or a slice would be worked out once per
+        // instance of the process, for little (the reader wakes for a change anywhere in the array).
+        let mut coarse = Vec::new();
+        for mut l in reads {
+            let k = l
+                .path
+                .iter()
+                .position(|st| !matches!(st, LspStep::Field(_)))
+                .unwrap_or(l.path.len());
+            l.path = l.path[..k].into();
+            push_unique(self, &mut coarse, l);
+        }
+        Some(coarse)
+    }
+
+    fn pure_stmts(&self, body: &[StmtId], reads: &mut Vec<Lsp>) -> bool {
+        body.iter().all(|&s| self.pure_stmt(s, reads))
+    }
+
+    fn pure_stmt(&self, s: StmtId, reads: &mut Vec<Lsp>) -> bool {
+        use crate::hir::Delay;
+        let kind_ok = match &self.stmts[s].kind {
+            StmtKind::SignalAssign { delay, rhs, .. } => {
+                let wave = |w: &Waveform| match w {
+                    Waveform::Elements(els) => {
+                        els.iter().all(|e| e.after.is_none() && e.value.is_some())
+                    }
+                    Waveform::Unaffected => false,
+                };
+                matches!(delay, Delay::Default | Delay::Transport)
+                    && match rhs {
+                        Rhs::Simple(w) => wave(w),
+                        Rhs::Conditional(alts) => alts.iter().all(|(w, _)| wave(w)),
+                        Rhs::Selected { .. } => false,
+                    }
+            }
+            StmtKind::If { .. } | StmtKind::Case { .. } | StmtKind::Null => true,
+            StmtKind::Loop {
+                scheme: LoopScheme::For { .. },
+                ..
+            } => true,
+            StmtKind::Next { .. } | StmtKind::Exit { .. } => true,
+            _ => false,
+        };
+        if !kind_ok {
+            return false;
+        }
+        let mut ok = true;
+        self.stmt_exprs(s, &mut |e, _| ok &= self.pure_tree(e));
+        if !ok {
+            return false;
+        }
+        self.stmt_reads(s, reads);
+        self.pure_stmts(&self.stmt_children(s), reads)
+    }
+
+    /// Every node of `e` is a constant, a signal, or a pure operation on them.
+    fn pure_tree(&self, e: ExprId) -> bool {
+        use PredefAttr::*;
+        let mut ok = true;
+        self.walk_expr(e, &mut |x| {
+            ok &= match &self.exprs[x].kind {
+                ExprKind::Const(_)
+                | ExprKind::Index { .. }
+                | ExprKind::Slice { .. }
+                | ExprKind::Field { .. }
+                | ExprKind::Aggregate { .. }
+                | ExprKind::Qualified { .. }
+                | ExprKind::Conv { .. }
+                | ExprKind::ImplicitConv { .. }
+                | ExprKind::Conditional { .. } => true,
+                ExprKind::Obj(d) => match &self.decls[*d].kind {
+                    DeclKind::Object(o) => match o.class {
+                        ObjClass::Constant => true,
+                        ObjClass::Signal => matches!(o.role, ObjRole::Plain | ObjRole::Port),
+                        _ => false,
+                    },
+                    _ => false,
+                },
+                ExprKind::Call {
+                    callee,
+                    method_of: None,
+                    ..
+                } => {
+                    let d = &self.decls[*callee];
+                    d.implicit
+                        || d.kind.subprogram().is_some_and(|sp| {
+                            matches!(sp.kind, SubprogramKind::Function { pure: true })
+                                && !sp.params.iter().any(|p| p.class == ObjClass::Signal)
+                                && matches!(
+                                    self.scopes[d.scope].kind,
+                                    ScopeKind::Package | ScopeKind::PackageBody
+                                )
+                        })
+                }
+                ExprKind::Attr { attr, .. } => matches!(
+                    attr,
+                    High | Low
+                        | Left
+                        | Right
+                        | Ascending
+                        | Length
+                        | Range
+                        | ReverseRange
+                        | Pos
+                        | Val
+                        | Succ
+                        | Pred
+                        | Leftof
+                        | Rightof
+                ),
+                _ => false,
+            };
+        });
+        ok
+    }
+
+    /// Signals read in the bodies of subprograms declared in `scope` (and in their nested
+    /// regions), for `process (all)`: the process is sensitive to what its own procedures and
+    /// functions read, not to their parameters.
+    fn scope_subprogram_reads(&self, scope: ScopeId, out: &mut Vec<Lsp>) {
+        for &d in &self.scopes[scope].order {
+            if let Some(sp) = self.decls[d].kind.subprogram()
+                && let crate::decl::Body::Hir { scope, stmts } = &sp.body
+            {
+                let mut rs = Vec::new();
+                self.reads_deep(stmts, &mut rs);
+                for l in rs {
+                    if !self.is_param(l.root) {
+                        push_unique(self, out, self.cut_at_subprogram_values(l));
+                    }
+                }
+                self.scope_subprogram_reads(*scope, out);
+            }
+        }
     }
 
     fn seq_block_scopes(&self, body: &[StmtId], out: &mut Vec<ScopeId>) {

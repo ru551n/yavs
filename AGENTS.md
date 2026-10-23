@@ -12,7 +12,7 @@ to, and those documents win over your memory.
 |---|---|
 | `docs/plan.md` | Binding plan: decisions, the 15 design rules, milestones, error motto, LRM policy |
 | `docs/decisions.md` | Decisions made since the plan, by area; append yours here |
-| `STATUS.md` | What exists and works, per crate and milestone |
+| `docs/STATUS.md` | What exists and works, per crate and milestone |
 | `release_notes/news.d/README.md` | Release note fragments (towncrier): one file per user-visible change (rule 25) |
 | `<module>/AGENTS.md` | Per-module guide (every crate, `lib/`, `tools/`, `tests/`, `fuzz/`): boundaries, map, binding decisions, pitfalls, commands, open issues (rule 23) |
 
@@ -171,7 +171,7 @@ to, and those documents win over your memory.
     a user can do now: features, not numbers. The user documentation (README, `docs/*.rst`,
     release notes) describes yavs as a simulator on its own: never mention other projects there
     (test runners, simulators, libraries, frameworks), and the same holds for every document in the
-    repository (developer docs, `AGENTS.md` files, `STATUS.md`, tool and test docs), except licence notes
+    repository (developer docs, `AGENTS.md` files, `docs/STATUS.md`, tool and test docs), except licence notes
     (user, 2026-10-18, widened the same day). Never write `release_notes/<version>.md` by hand
     outside a release. The user documentation (Sphinx, `docs/conf.py`, `docs/*.rst`, published
     on Read the Docs) shows the fragments under "Unreleased"; build it with
@@ -196,13 +196,46 @@ python3 tools/difftest/difftest.py --candidate sim1   # differential corpus (see
 python3 tools/discrepancies/run.py --check           # simulator discrepancy catalogue (docs/design/simulator-discrepancies.md)
 cargo test -p yavs-llvm --features llvm              # LLVM tier (needs LLVM 21)
 cargo run -p yavs -- analyze --std=2008 --work=work:out/work file.vhd
+yavs run --profile[=out.json] --work=work:W top      # first tool for "where does a long run spend its time": busiest processes, instances, subprograms with file:line (stderr; JSON with FILE)
 ```
 
-AArch64 under qemu and Windows under Wine: see the commands in `STATUS.md` ("ffi").
+For a performance question about a long run, start with `--profile` (VHDL-level: which process, which line), then `perf` on a
+`tools/build-bench.sh` build (machine-level) for the cause inside that process.
+
+AArch64 under qemu and Windows under Wine: see the commands in `docs/STATUS.md` ("ffi").
+
+### Work-counter tests (perf regressions that do not depend on the host)
+
+`crates/yavs/tests/perf.rs` runs about 25 small designs (`crates/yavs/tests/perf/*.vhd`, each
+asserting its own result) with `YAVS_COUNTERS=1 --tier=interp --threads 1` and checks counters of
+work against bounds: kernel (`cycles`, `process_runs`, `wakes`, `events`, update paths,
+quick and direct commits), interpreter `ops` executed, elaboration call cache hits, analysed-unit
+cache hits, recorded wave variables, and under `--features llvm` (the CI `llvm` job) the
+callbacks of compiled code and the instructions left to the interpreter. A bound is a ceiling
+(`Max`) or, where fewer is the regression, a floor (`Min`). `ops` and `cb_*` are counted in debug
+builds and with `--features op-census` only (a release test run skips them).
+
+```sh
+cargo test -p yavs --test perf                                   # check
+YAVS_PERF_PRINT=1 cargo test -p yavs --test perf -- --nocapture  # every counter of every design
+cargo test -p yavs --features llvm --test perf                   # plus the LLVM counters
+```
+
+- A failure names the counter, design, value and bound. First find the change that made the
+  design do more work; if the new value is intended (a trade, a feature), edit the bound in the
+  `case!` line of that design to the new value plus about 3 percent and say why in the commit
+  message. When your change lowers a counter, lower its bound to the new value plus the margin, so
+  the next regression is seen. A new perf feature gets a design and bounds in the same commit:
+  pick the counter of the slow path it avoids, not only totals.
+- Counters are exact and equal on every host and platform: no timing in these tests. Keep a design
+  to a few hundred cycles (debug builds run it) and make it print a checksum.
+- Rule of thumb for new counters: a plain increment on a path that is already slow, or one add per
+  cycle. Nothing per op or per element on a fast path in release builds; `ops` and `cb_*` use
+  `cfg(any(debug_assertions, feature = "op-census"))` for that reason.
 
 ## 5. When you finish a task
 
-- Update `STATUS.md` for what you changed, and `docs/decisions.md` for any decision you made.
+- Update `docs/STATUS.md` for what you changed, and `docs/decisions.md` for any decision you made.
 - Add a release note fragment in `release_notes/news.d/` for every user-visible change (rule 25),
   and update the user documentation in `docs/*.rst` when the change shows there.
 - Report: commits pushed, what works now (with test and corpus numbers), what is left, and

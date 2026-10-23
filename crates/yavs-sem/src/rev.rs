@@ -1,7 +1,9 @@
-//! Mixed 2008/2019 designs (sem.md 0.1). Under a 2019 design revision every std/ieee
+//! Mixed 1993/2008/2019 designs (sem.md 0.1). Under a 2019 design revision every std/ieee
 //! declaration the 2008 copy lacks gets `since: V2019` (same designator and type marks of
 //! the profile count as the same declaration); a 2008 file that names one gets `E1007`.
-//! INTEGER bounds that differ between the two copies get `W1008` in a 2008 file.
+//! Under a 2008 design a std/ieee unit without a 1993 copy gets `since: V2008` (units only,
+//! the items of a unit are not compared). INTEGER bounds that differ between the two copies
+//! get `W1008` in a 2008 file.
 
 use std::path::Path;
 
@@ -73,12 +75,25 @@ impl Db {
         )
     }
 
-    /// Set `since: V2019` on what `fresh` says is new in std/ieee unit `u`.
-    pub(crate) fn mark_fresh(&mut self, u: UnitId, fresh: Fresh) {
+    /// Whether std/ieee primary unit `unit` has no copy in the 1993 tree (a 2008 design).
+    pub(crate) fn fresh_in_2008(&self, path: &Path) -> Fresh {
+        let (Some(dir), Some(name)) = (path.parent().and_then(Path::parent), path.file_name())
+        else {
+            return Fresh::Items(Vec::new());
+        };
+        if crate::stdlib::is_file(&dir.join(LangRev::Vhdl1993.as_str()).join(name)) {
+            Fresh::Items(Vec::new())
+        } else {
+            Fresh::Unit
+        }
+    }
+
+    /// Set `since: rev` on what `fresh` says is new in std/ieee unit `u`.
+    pub(crate) fn mark_fresh(&mut self, u: UnitId, fresh: Fresh, rev: LangRev) {
         let spans = match fresh {
             Fresh::Unit => {
                 let d = self.units[u].decl;
-                self.decls[d].since = LangRev::Vhdl2019;
+                self.decls[d].since = rev;
                 return;
             }
             Fresh::Items(s) if s.is_empty() => return,
@@ -96,28 +111,44 @@ impl Db {
                 .iter()
                 .any(|s| s.file == at.file && (s.start..s.end).contains(&at.start))
             {
-                self.decls[d].since = LangRev::Vhdl2019;
+                self.decls[d].since = rev;
             }
         }
     }
 
-    /// `E1007`: `what` is new in VHDL-2019, named at `at` in a 2008 file.
-    pub(crate) fn not_in_file_rev(&mut self, what: String, at: Span) -> crate::Reported {
+    /// The name of a revision in messages.
+    pub(crate) fn rev_name(rev: LangRev) -> &'static str {
+        match rev {
+            LangRev::Vhdl1993 => "VHDL-1993",
+            LangRev::Vhdl2008 => "VHDL-2008",
+            LangRev::Vhdl2019 => "VHDL-2019",
+        }
+    }
+
+    /// `E1007`: `what`, new in revision `needs`, is named at `at` in an older file.
+    pub(crate) fn not_in_file_rev(
+        &mut self,
+        what: String,
+        at: Span,
+        needs: LangRev,
+    ) -> crate::Reported {
         if !self.rev_reported.insert(at) {
             return crate::Reported;
         }
+        let (file, need) = (Self::rev_name(self.file_rev()), Self::rev_name(needs));
         let mut d = Diagnostic::error(
             diag::NOT_IN_REVISION,
-            format!("`{what}` is not available in VHDL-2008"),
+            format!("`{what}` is not available in {file}"),
         )
-        .with_primary(at, "needs VHDL-2019");
+        .with_primary(at, format!("needs {need}"));
         if let Some(c) = self.cur() {
             let path = &self.sources.get(self.units[c.unit].file).path;
-            d = d.with_note(format!("file `{path}` is analyzed as VHDL-2008"));
+            d = d.with_note(format!("file `{path}` is analyzed as {file}"));
         }
-        self.error(d.with_help(
-            "the design is elaborated with the VHDL-2019 std because another unit is VHDL-2019",
-        ))
+        let design = Self::rev_name(self.rev);
+        self.error(d.with_help(format!(
+            "the design is elaborated with the {design} std because another unit is {design}"
+        )))
     }
 
     /// A lookup result without the declarations newer than the file (sem.md 0.1): a 2008
@@ -132,13 +163,15 @@ impl Db {
         let what = |db: &Db| db.span_text(name);
         match r {
             NameRes::One(d) if self.decls[d].since > rev => {
-                self.not_in_file_rev(what(self), at);
+                self.not_in_file_rev(what(self), at, self.decls[d].since);
                 NameRes::Error
             }
             NameRes::Overloads(mut ds) if ds.iter().any(|&d| self.decls[d].since > rev) => {
+                let all = ds.clone();
                 ds.retain(|&d| self.decls[d].since <= rev);
                 if ds.is_empty() {
-                    self.not_in_file_rev(what(self), at);
+                    let since = self.decls[all[0]].since;
+                    self.not_in_file_rev(what(self), at, since);
                     NameRes::Error
                 } else {
                     NameRes::Overloads(ds)
@@ -151,7 +184,7 @@ impl Db {
     /// `W1008` for `'left`, `'right`, `'high`, `'low` of an INTEGER subtype in a 2008 file of
     /// a 2019 design when the bound lies outside the 32-bit 2008 INTEGER, once per span.
     pub(crate) fn integer_bound_changed(&mut self, a: PredefAttr, st: SubtypeId, span: Span) {
-        if self.file_rev() != LangRev::Vhdl2008
+        if self.file_rev() >= LangRev::Vhdl2019
             || self.rev != LangRev::Vhdl2019
             || !matches!(
                 a,
@@ -172,10 +205,19 @@ impl Db {
             diag::W_CHANGED_MEANING,
             format!("`{what}` means something different under VHDL-2019"),
         )
-        .with_primary(span, format!("{v} here, a 32-bit bound under VHDL-2008"));
+        .with_primary(
+            span,
+            format!(
+                "{v} here, a 32-bit bound under {}",
+                Self::rev_name(self.file_rev())
+            ),
+        );
         if let Some(c) = self.cur() {
             let path = &self.sources.get(self.units[c.unit].file).path;
-            d = d.with_note(format!("file `{path}` is analyzed as VHDL-2008"));
+            d = d.with_note(format!(
+                "file `{path}` is analyzed as {}",
+                Self::rev_name(self.file_rev())
+            ));
         }
         self.report(d.with_note(
             "the design is elaborated with the VHDL-2019 std, where INTEGER is 64-bit, because another unit is VHDL-2019",

@@ -1,4 +1,4 @@
-//! Library directories for yavs: a TOML manifest per library, guarded by an
+//! Library directories for yavs: an index per library and a record per source file, guarded by an
 //! advisory lock file (plan.md, design rule 14), plus the on-demand closure
 //! query that turns a top unit into an ordered list of source files.
 //!
@@ -8,12 +8,14 @@ mod closure;
 mod error;
 mod library;
 mod manifest;
+mod record;
+mod text;
 
 pub use closure::{ClosureFile, Libraries, closure};
 pub use library::{Library, Session};
 pub use manifest::{
-    FileEntry, LOCK_FILE, MANIFEST_FILE, Manifest, Stamp, UnitKind, UnitRecord, UnitRef, fold,
-    hash_content,
+    FileRef, LOCK_FILE, MANIFEST_FILE, Manifest, RECORD_DIR, Stamp, UnitKind, UnitLoc, UnitRecord,
+    UnitRef, fold, hash_content,
 };
 
 /// Every error is a ready-to-render diagnostic (no source spans).

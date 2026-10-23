@@ -126,4 +126,4 @@ M5 plan:
 2. The `scripts/run_*.sh` marker lists are the pass criteria to copy.
 3. On Windows, run the same plugins built with the `dynamic` feature
    (`vhpi-shim`), which exercises yavs.exe's export table directly.
-4. Track pass counts per plugin in `STATUS.md` next to the framework's regression.
+4. Track pass counts per plugin in `docs/STATUS.md` next to the framework's regression.

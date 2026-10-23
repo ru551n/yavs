@@ -243,17 +243,21 @@ impl Db {
             let mut roots = Vec::new();
             // Declared aliases of whole external names (`ExtOwner::Sub`).
             let mut own = Vec::new();
-            match owner {
-                ExtOwner::Stmt(s) => self.stmt_externals(s, &mut exprs, &mut roots),
-                ExtOwner::Sub(d) => self.sub_externals(d, &mut exprs, &mut roots, &mut own),
-                ExtOwner::Expr(e) => self.walk_expr(e, &mut |x| exprs.push(x)),
-                ExtOwner::Alias(d) => {
-                    if let DeclKind::Alias(Alias::Object { target, .. }) = self.decls[d].kind {
-                        self.walk_expr(target, &mut |e| {
-                            if e != target {
-                                exprs.push(e);
-                            }
-                        });
+            // Without an external name in the design there is nothing to find, and looking
+            // decodes every expression of the statements of a run restored from an image (#426).
+            if !self.externals.is_empty() {
+                match owner {
+                    ExtOwner::Stmt(s) => self.stmt_externals(s, &mut exprs, &mut roots),
+                    ExtOwner::Sub(d) => self.sub_externals(d, &mut exprs, &mut roots, &mut own),
+                    ExtOwner::Expr(e) => self.walk_expr(e, &mut |x| exprs.push(x)),
+                    ExtOwner::Alias(d) => {
+                        if let DeclKind::Alias(Alias::Object { target, .. }) = self.decls[d].kind {
+                            self.walk_expr(target, &mut |e| {
+                                if e != target {
+                                    exprs.push(e);
+                                }
+                            });
+                        }
                     }
                 }
             }

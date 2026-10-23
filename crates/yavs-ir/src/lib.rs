@@ -9,6 +9,7 @@
 //! `yavs_kernel::StmtId`, so a runtime error's trace resolves to spans without another table.
 
 mod build;
+mod copies;
 mod dump;
 pub mod ieee;
 mod inst;
@@ -18,9 +19,11 @@ mod ty;
 mod verify;
 
 pub use build::{FuncBuilder, ProgramBuilder};
+pub use copies::{Copies, CopyBlob, CopyLoader, CopyStats, NoCopy, cap_percent};
 pub use inst::{
-    AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, ElabOp, FOp, FUnOp, ForceKind, Inst,
-    IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES, Width,
+    AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, EdgeKind, ElabOp, FOp, FUnOp,
+    ForceKind, Inst, IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES,
+    Width,
 };
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
@@ -117,6 +120,12 @@ impl<I: Id, T> IdVec<I, T> {
 
     pub fn get_mut(&mut self, i: I) -> Option<&mut T> {
         self.items.get_mut(i.index())
+    }
+
+    /// Room for `n` more items, no more (a vector that doubles would hold a spare function's
+    /// 368 bytes twice over: `Program::reserve_copies`).
+    pub fn reserve_exact(&mut self, n: usize) {
+        self.items.reserve_exact(n);
     }
 
     pub fn len(&self) -> usize {

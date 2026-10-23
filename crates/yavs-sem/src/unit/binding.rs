@@ -643,6 +643,13 @@ impl Db {
                 self.inst_types.extend(parts);
             }
             if let Some(actual) = actual {
+                // The actual of an `out` or `linkage` formal is written, not read.
+                if matches!(
+                    &self.decls[f].kind,
+                    DeclKind::Object(o) if matches!(o.mode, Some(Mode::Out | Mode::Linkage))
+                ) {
+                    self.not_read_actual(&actual);
+                }
                 args.push(Arg {
                     formal: k as u16,
                     actual,
@@ -975,6 +982,25 @@ impl Db {
         )
     }
 
+    /// A range or subtype indication as the actual of an object formal (only a generic type
+    /// takes a subtype indication, 6.5.7.2).
+    fn not_an_expression_actual(&mut self, a: &ast::Actual, at: Span) -> Reported {
+        let what = if matches!(a, ast::Actual::Subtype(_)) {
+            "a subtype indication"
+        } else {
+            "a range"
+        };
+        let span = crate::generic::actual_span(a);
+        self.error(
+            Diagnostic::error(
+                diag::NOT_AN_OBJECT,
+                format!("{what} is not an expression and cannot be the actual of an object"),
+            )
+            .with_primary(span, "not an expression")
+            .with_secondary(at, "associated with this formal"),
+        )
+    }
+
     /// The actual of a whole formal.
     fn actual(
         &mut self,
@@ -1051,11 +1077,8 @@ impl Db {
                 });
             }
             ast::Actual::Expr(e) | ast::Actual::Inertial(e) => e,
-            ast::Actual::Subtype(si) => {
-                return Err(self.unsupported(si.span, "subtype actuals", "S4"));
-            }
-            ast::Actual::Range(_) => {
-                return Err(self.unsupported(fspan, "range actuals", "S4"));
+            ast::Actual::Subtype(_) | ast::Actual::Range(_) => {
+                return Err(self.not_an_expression_actual(a, fspan));
             }
         };
         // Decided on the rule 1 review (F8, #111): no bounds flow back through a formal
@@ -1126,10 +1149,16 @@ impl Db {
         }
         let id = match anon {
             Some(_) if formal_conv.is_some() => {
-                return Err(self.unsupported(
-                    fspan,
-                    "a conversion of a formal of an anonymous type",
-                    "S7",
+                let name = self.decls[f].name;
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::ANONYMOUS_FORMAL_CONVERSION,
+                        format!("the formal `{name}` has an anonymous type and cannot be converted"),
+                    )
+                    .with_primary(fspan, "conversion of a formal of an anonymous type")
+                    .with_secondary(self.decls[f].span, "declared with `type is ...`")
+                    .with_note("LRM 6.5.3: the type of such an object is the type of its actual, which a conversion on the formal side would have to supply")
+                    .with_help("associate the formal directly and convert in the design"),
                 ));
             }
             Some(t) => {
@@ -1185,10 +1214,22 @@ impl Db {
             .filter(|&d| matches!(self.decls[d].kind, DeclKind::Subtype(_)));
         let actual_conv = match &self.exprs[id].kind {
             _ if !call_syntax => None,
-            ExprKind::Call { callee, args, .. } if args.len() == 1 => match &args[0].actual {
-                Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
-                _ => None,
-            },
+            // A predefined operator in call syntax (`"not"(s)`) is an expression, not a
+            // conversion function: it has no body to convert with.
+            ExprKind::Call { callee, args, .. }
+                if args.len() == 1
+                    && !self.decls[*callee].kind.subprogram().is_some_and(|sp| {
+                        matches!(
+                            sp.body,
+                            crate::decl::Body::Implicit(_) | crate::decl::Body::Native(_)
+                        )
+                    }) =>
+            {
+                match &args[0].actual {
+                    Actual::Expr(x) if self.is_signal_name(*x) => Some((Some(*callee), *x)),
+                    _ => None,
+                }
+            }
             ExprKind::Conv { to, operand } if self.is_signal_name(*operand) => {
                 let t = self.types[self.subtypes[*to].base].decl;
                 Some((Some(mark.unwrap_or(t)), *operand))
@@ -1534,6 +1575,8 @@ impl Db {
                 )));
                 continue;
             };
+            // The formal designator names the formal, it reads nothing.
+            self.not_read(fe);
             let Some((root, steps, stat, cut)) = self.lsp_parts(fe) else {
                 errs.keep::<()>(Err(self.ice(span, "formal sub-element without a prefix")));
                 continue;
@@ -1568,11 +1611,7 @@ impl Db {
                 continue;
             }
             let (ast::Actual::Expr(e) | ast::Actual::Inertial(e)) = &a.actual else {
-                errs.keep::<()>(Err(self.unsupported(
-                    span,
-                    "range actuals of sub-elements",
-                    "S5",
-                )));
+                errs.keep::<()>(Err(self.not_an_expression_actual(&a.actual, span)));
                 continue;
             };
             let inertial = matches!(a.actual, ast::Actual::Inertial(_));
@@ -1763,16 +1802,15 @@ impl Db {
             else {
                 continue;
             };
-            self.config_specs
-                .entry(p.scope)
-                .or_default()
-                .push(ComponentConfig {
+            self.config_specs.edit(p.scope, |v| {
+                v.push(ComponentConfig {
                     instances,
                     component: p.component,
                     binding: Some(p.binding),
                     block: None,
                     span: p.span,
-                });
+                })
+            });
         }
     }
 
@@ -1955,6 +1993,11 @@ impl Db {
             Some(m) => errs.keep(self.assoc_list(cscope, &ep, m, b.span)),
             None => errs.keep(self.default_map(&locals_p, &ep, e, &types, at)),
         };
+        // A binding indication connects the component's ports to the entity's, it reads no
+        // value (LRM 1993 4.3.2): an `out` port of the component is no read there.
+        for a in generic_map.iter().chain(&port_map).flat_map(|m| m.iter()) {
+            self.not_read_actual(&a.actual);
+        }
         let generic_map = match (generic_map, &port_map) {
             (Some(g), Some(p)) => errs.keep(self.with_hidden_args(&eg, &ep, g, p, b.span)),
             _ => None,
@@ -2232,11 +2275,22 @@ impl Db {
             StmtKind::ForGenerate {
                 param, scope: s, ..
             } => {
-                let s = *s;
+                let (s, param) = (*s, *param);
                 let select = match arg {
                     None => None,
+                    // `for g(r'range)` and `for g(subtype_name)`: a discrete range written as a
+                    // name (1.3.1), not an index value.
+                    Some(ast::Actual::Expr(e)) if matches!(&e.kind, ast::ExprKind::Name(n) if self.is_range_name(scope, n)) =>
+                    {
+                        let ast::ExprKind::Name(n) = &e.kind else {
+                            unreachable!("checked above");
+                        };
+                        let st = self.formal_subtype(param).unwrap_or(self.poison.subtype);
+                        let base = self.base(st);
+                        Some(GenSelect::Range(self.range_name(scope, n, base)?))
+                    }
                     Some(ast::Actual::Expr(e)) => {
-                        let st = self.formal_subtype(*param).unwrap_or(self.poison.subtype);
+                        let st = self.formal_subtype(param).unwrap_or(self.poison.subtype);
                         let id = self.expr_in_subtype(scope, e, st);
                         if self.is_poison_expr(id) {
                             return Err(Reported);
@@ -2244,17 +2298,37 @@ impl Db {
                         Some(GenSelect::Index(id))
                     }
                     Some(ast::Actual::Range(r)) => {
-                        let st = self.formal_subtype(*param).unwrap_or(self.poison.subtype);
+                        let st = self.formal_subtype(param).unwrap_or(self.poison.subtype);
                         let base = self.base(st);
                         Some(GenSelect::Range(self.range(scope, r, base)?))
                     }
                     Some(ast::Actual::Subtype(si)) => {
-                        // ponytail: `for g(natural range 1 to 3)`; add with a RangeC of a subtype.
-                        return Err(self.unsupported(
-                            si.span,
-                            "subtype indications as generate specifications",
-                            "S5",
-                        ));
+                        // `for g(natural range 1 to 3)`: the loop parameter's type, constrained.
+                        let want = self.formal_subtype(param).map(|p| self.base(p));
+                        let st = self.subtype_indication(scope, si)?;
+                        let t = self.base(st);
+                        if let Some(w) = want
+                            && w != t
+                            && w != self.poison.ty
+                            && t != self.poison.ty
+                        {
+                            let n = self.type_names(&[w, t]);
+                            return Err(self.error(
+                                Diagnostic::error(
+                                    diag::TYPE_MISMATCH,
+                                    format!(
+                                        "expected a range of `{}`, found one of `{}`",
+                                        n[0], n[1]
+                                    ),
+                                )
+                                .with_primary(si.span, "wrong type for this generate parameter"),
+                            ));
+                        }
+                        Some(GenSelect::Range(crate::types::RangeC::Attr {
+                            prefix: crate::hir::AttrPrefix::Subtype(st),
+                            reverse: false,
+                            dim: 1,
+                        }))
                     }
                     Some(_) => return Err(self.not_block(b.spec.span, named_in)),
                 };
@@ -2317,6 +2391,22 @@ impl Db {
             items,
             span: b.span,
         })
+    }
+
+    /// Whether `n` is a range attribute (`a'range`, `t'reverse_range(2)`) or a type mark.
+    fn is_range_name(&mut self, scope: ScopeId, n: &ast::Name) -> bool {
+        let attr = match &n.kind {
+            ast::NameKind::Attribute { attr, .. } => Some(attr),
+            ast::NameKind::Apply { prefix, .. } => match &prefix.kind {
+                ast::NameKind::Attribute { attr, .. } => Some(attr),
+                _ => None,
+            },
+            _ => None,
+        };
+        match attr {
+            Some(a) => matches!(a.key.as_str(), "range" | "reverse_range"),
+            None => self.quiet_type_mark(scope, n).is_some(),
+        }
     }
 
     fn not_block(&mut self, span: Span, named_in: ScopeId) -> Reported {

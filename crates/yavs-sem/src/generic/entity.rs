@@ -251,11 +251,7 @@ impl Db {
             let Some(&nk) = r.scopes.get(&k) else {
                 return Err(self.ice(at, "configuration specification in a region not cloned"));
             };
-            let specs = if moved {
-                self.config_specs.remove(&k).unwrap_or_default()
-            } else {
-                std::mem::take(self.config_specs.get_mut(&k).expect("key listed"))
-            };
+            let specs = self.config_specs.remove(&k).unwrap_or_default();
             let mut out = Vec::with_capacity(specs.len());
             for c in &specs {
                 if c.block.is_some() {
@@ -291,7 +287,7 @@ impl Db {
             if !moved {
                 self.config_specs.insert(k, specs);
             }
-            self.config_specs.entry(nk).or_default().extend(out);
+            self.config_specs.edit(nk, |v| v.extend(out));
         }
         Ok(())
     }

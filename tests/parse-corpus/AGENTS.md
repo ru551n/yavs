@@ -6,7 +6,7 @@ Read the root `AGENTS.md` and `tests/AGENTS.md` first.
   `vests.txt`, `sim2.txt`), one line `PASS|FAIL <std> <source>/<path>` per file, compared by
   `crates/yavs/tests/corpus.rs` (`--features corpus`), which fails when `YAVS_CORPUS` is unset.
   Which files are parsed as 2019 and why some are expected failures: `docs/decisions.md`
-  "Parser" (corpus lists) and the table in `STATUS.md` "syntax".
+  "Parser" (corpus lists) and the table in `docs/STATUS.md` "syntax".
 - The corpora come from `tools/fetch-corpus.sh` at pinned commits; bump a commit and the lists
   together. Never commit corpus files (root rule 7).
 - An expected `FAIL` must be a test of invalid syntax, PSL, VHDL-87/93-only code or a known

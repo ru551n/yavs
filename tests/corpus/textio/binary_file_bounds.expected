@@ -1,0 +1,3 @@
+exit	1
+diag	note	0	0	:binary_file_bounds:_p0	reading
+diag	fatal	0	0	-	a value read from a file has other bounds than the object it is read into

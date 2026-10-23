@@ -1,7 +1,7 @@
 # AGENTS.md: yavs-clift
 
 Read the root `AGENTS.md` first. This file is for an agent about to change `crates/yavs-clift`.
-Spike for #481 item 1; measurements in `STATUS.md` "clift", decision in `docs/decisions.md`
+Spike for #481 item 1; measurements in `docs/STATUS.md` "clift", decision in `docs/decisions.md`
 "Cranelift tier (spike)".
 
 ## 1. Purpose and boundaries

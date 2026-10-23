@@ -1,0 +1,1 @@
+PSL: `default clock` may stand among the concurrent statements, `[*n]` starts a sequence as `true[*n]`, a boolean may stand before `|->` and `|=>` and, with a repetition, after `never` or `cover`, without braces.

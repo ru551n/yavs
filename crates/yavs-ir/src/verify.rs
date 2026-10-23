@@ -42,10 +42,8 @@ impl std::error::Error for VerifyError {}
 /// Verify `prog`, its functions from id `first` on.
 pub(crate) fn verify(prog: &Program, first: usize) -> Vec<VerifyError> {
     let mut errs = Vec::new();
-    for (id, _) in prog.funcs.iter().skip(first) {
-        if let Some(f) = prog.funcs.get(id) {
-            verify_func(prog, id, f.full(), &mut errs);
-        }
+    for (id, f) in prog.funcs.iter().skip(first).filter(|(_, f)| !f.spare) {
+        verify_func(prog, id, f.full(), &mut errs);
     }
     for (id, t) in prog.cases.iter() {
         let sorted = t.arms.windows(2).all(|w| w[0].1 < w[1].0);
@@ -315,11 +313,17 @@ fn check_inst(
         {
             err(format!("missing check message {what}"))
         }
+        Inst::SlicePos { what, dir_what, .. } if !msg_ok(what) || !msg_ok(dir_what) => {
+            err(format!("missing check message {what} or {dir_what}"))
+        }
         Inst::LayoutOf { ty, .. } | Inst::New { ty, .. } | Inst::NewFill { ty, .. }
             if prog.types.get(ty).is_none() =>
         {
             err(format!("missing type {ty}"))
         }
+        Inst::LayoutOf {
+            cache: Some(at), ..
+        } if at >= f.frame => err(format!("layout cache {at} beyond the frame")),
         Inst::Case { table, .. } => match prog.cases.get(table) {
             None => err(format!("missing case table {table}")),
             Some(t) => {

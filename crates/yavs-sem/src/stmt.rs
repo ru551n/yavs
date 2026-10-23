@@ -16,6 +16,7 @@
 // `analyze_conc_stmts` is called from unit.rs once architectures land.
 #![allow(dead_code)]
 
+use rustc_hash::FxHashSet;
 use yavs_diag::{Diagnostic, Span};
 use yavs_syntax::Symbol;
 use yavs_syntax::ast::{self, ForceMode, Ident};
@@ -147,7 +148,9 @@ impl Db {
         self.stmt_owners.push(owner);
         let body = self.seq_list(&mut cx, stmts);
         self.stmt_owners.pop();
+        let unresolved = crate::attr::unresolved_labels(self, scope);
         let body = body?;
+        unresolved?;
         if let SubprogramKind::Function { pure: true } = kind {
             self.check_purity(decl, scope, &body);
         }
@@ -222,7 +225,7 @@ impl Db {
                 scope,
                 span: label.span,
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             },
         )?;
         crate::attr::label_declared(self, scope, d)?;
@@ -254,7 +257,7 @@ impl Db {
                 scope,
                 span: name.span,
                 implicit: false,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             },
         )
     }
@@ -579,6 +582,74 @@ impl Db {
             d = d.with_secondary(sp, m);
         }
         Err(self.error(d))
+    }
+
+    /// 10.2, 11.3: a procedure called by a process with a sensitivity list, directly or through
+    /// other procedures, shall not contain a `wait`. Decided for procedures whose body is in the
+    /// unit being analysed; others (another unit, a protected method, an instance) are caught
+    /// when the `wait` executes (#597).
+    fn check_calls_wait(&mut self, body: &[StmtId], sens: Span) -> Result<(), Reported> {
+        let mut bad = Vec::new();
+        self.calls_wait(body, &mut bad);
+        let failed = !bad.is_empty();
+        for (call, wait) in bad {
+            let name = self.decls[call.0].name;
+            let d = Diagnostic::error(
+                diag::BAD_WAIT,
+                format!("procedure `{name}` contains a `wait` and is called by a process with a sensitivity list"),
+            )
+            .with_primary(call.1, "called here")
+            .with_secondary(wait, "the `wait`")
+            .with_secondary(sens, "the sensitivity list");
+            self.error(d);
+        }
+        if failed { Err(Reported) } else { Ok(()) }
+    }
+
+    /// The calls in `body` (nested statements included) of procedures that wait, as
+    /// `((callee, call span), span of a wait)`.
+    fn calls_wait(&self, body: &[StmtId], out: &mut Vec<((DeclId, Span), Span)>) {
+        for &s in body {
+            if let StmtKind::ProcCall(c) = &self.stmts[s].kind
+                && let Some(w) = self.waits_in(self.entity(c.callee), &mut FxHashSet::default())
+            {
+                out.push(((c.callee, self.stmts[s].span), w));
+            }
+            self.calls_wait(&self.stmt_children(s), out);
+        }
+    }
+
+    /// A `wait` in procedure `d` or in a procedure it calls, if its body is in the unit being
+    /// analysed.
+    fn waits_in(&self, d: DeclId, seen: &mut FxHashSet<DeclId>) -> Option<Span> {
+        let crate::decl::Body::Hir { scope, stmts } = &self.decls[d].kind.subprogram()?.body else {
+            return None;
+        };
+        let unit = self.cur()?.unit;
+        let mut s = Some(*scope);
+        while let Some(x) = s {
+            if x == self.units[unit].scope {
+                break;
+            }
+            s = self.scopes[x].parent;
+        }
+        if s.is_none() || !seen.insert(d) {
+            return None;
+        }
+        let mut stack = stmts.to_vec();
+        while let Some(s) = stack.pop() {
+            match &self.stmts[s].kind {
+                StmtKind::Wait { .. } => return Some(self.stmts[s].span),
+                StmtKind::ProcCall(c) => {
+                    if let Some(w) = self.waits_in(self.entity(c.callee), seen) {
+                        return Some(w);
+                    }
+                }
+                _ => {}
+            }
+            stack.extend(self.stmt_children(s));
+        }
+        None
     }
 
     fn loop_target(
@@ -933,8 +1004,17 @@ impl Db {
             let e = self.st_target(scope, target, Expected::Any)?;
             let lsps = self.check_target(e, kind)?;
             // The target's subtype, so an `others` aggregate takes its bounds (9.3.3.3).
-            let st = self.exprs[e].subtype;
-            let rhs = self.rhs(scope, rhs, Some(st), each)?;
+            let mut st = self.exprs[e].subtype;
+            // `--relaxed` (R5): an unconstrained target (a port, a formal) gives an `others`
+            // aggregate the bounds it has at run time.
+            if self.opts.relaxed && self.constrainedness(st) != crate::types::Constrainedness::Full
+            {
+                st = self.runtime_subtype(e, target.span);
+                self.relaxed_target = Some(st);
+            }
+            let rhs = self.rhs(scope, rhs, Some(st), each);
+            self.relaxed_target = None;
+            let rhs = rhs?;
             Ok((Target { expr: e, lsps }, rhs))
         }
     }
@@ -1650,6 +1730,7 @@ impl Db {
                 self.stmts[id].kind = StmtKind::ConcSignalAssign {
                     postponed,
                     guarded: sa.guarded,
+                    guard: guard.map(|g| g.0),
                     target,
                     delay,
                     rhs,
@@ -1775,8 +1856,12 @@ impl Db {
         };
         let body = errs.keep(self.seq_list(&mut cx, &p.stmts));
         self.stmt_owners.pop();
+        errs.keep(crate::attr::unresolved_labels(self, pscope));
         errs.finish(())?;
         let body = body.expect("no error means a body");
+        if let Some(sp) = sens_span {
+            self.check_calls_wait(&body, sp)?;
+        }
         let all = matches!(sensitivity, Sensitivity::All);
         let info = self.process_info(pscope, &body, all);
         self.check_passive(passive, &info)?;
@@ -1899,7 +1984,7 @@ impl Db {
                 scope,
                 span,
                 implicit: true,
-                since: LangRev::Vhdl2008,
+                since: LangRev::Vhdl1993,
             },
         )
     }
@@ -2003,6 +2088,7 @@ impl Db {
             return Err(Reported);
         }
         self.check_linkage_reads(id, true)?;
+        self.not_read(id);
         Ok(id)
     }
 
@@ -2075,7 +2161,8 @@ impl Db {
         let ty = self.base(st);
         check_case_subject(self, st, self.exprs[subject].span)?;
         check_case_others(self, alts)?;
-        let mut r = ChoiceResolver(scope);
+        // An aggregate choice takes the case expression's subtype (9.3.3.3).
+        let mut r = ChoiceResolver(scope, st);
         let mut errs = Errs::default();
         let mut resolved = Vec::with_capacity(alts.len());
         for a in alts {
@@ -2157,13 +2244,14 @@ impl Db {
 }
 
 /// Case choices resolved in the statement's region (aggregate.rs's resolver interface).
-struct ChoiceResolver(ScopeId);
+struct ChoiceResolver(ScopeId, SubtypeId);
 
 impl crate::expr::aggregate::AggResolver for ChoiceResolver {
     fn cands(&mut self, db: &mut Db, e: &ast::Expr) -> crate::expr::CandSet {
         db.cands(self.0, e)
     }
     fn resolve(&mut self, db: &mut Db, e: &ast::Expr, exp: Expected) -> Result<ExprId, Reported> {
+        db.context_subtype = Some(self.1);
         let id = db.static_expr(self.0, e, exp);
         if db.is_poison_expr(id) {
             Err(Reported)

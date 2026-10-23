@@ -769,3 +769,48 @@ fn wave_enum_of_logic_characters() {
     );
     assert_eq!(changes(&dump(&fst), "rm3.a"), "0=z 1000000=1");
 }
+
+/// A port collapsed into its actual and the actual are one value chain in the FST (an alias),
+/// and the file reads back with both names and the same changes.
+#[test]
+fn wave_collapsed_port_is_an_alias() {
+    let d = scratch("alias");
+    let src = d.join("al.vhd");
+    std::fs::write(
+        &src,
+        "library ieee; use ieee.std_logic_1164.all;\n\
+         entity sub is port (v : in std_logic_vector(3 downto 0); e : in boolean); end;\n\
+         architecture rtl of sub is begin end;\n\
+         library ieee; use ieee.std_logic_1164.all;\n\
+         entity al is end;\narchitecture t of al is\n  \
+         signal v : std_logic_vector(3 downto 0) := \"0000\"; signal e : boolean := false;\n\
+         begin\n  u1: entity work.sub port map (v => v, e => e);\n  \
+         process begin wait for 1 ns; v <= \"01ZX\"; e <= true; wait; end process;\nend;\n",
+    )
+    .expect("write");
+    assert!(analyze(&d, &src, "2008"));
+    let fst = d.join("a.fst");
+    let out = run(&d, &[&format!("--wave={}", fst.display()), "al"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = dump(&fst);
+    for (a, b) in [("al.v", "al.u1.v"), ("al.e", "al.u1.e")] {
+        assert_eq!(changes(&text, a), changes(&text, b), "{a} and {b}");
+    }
+    assert_eq!(changes(&text, "al.v"), "0=0000 1000000=01zx");
+    let w = read(&fst).expect("wellen");
+    let h = w.hierarchy();
+    let (va, vb) = (h.lookup_var(&["al"], "v"), h.lookup_var(&["al", "u1"], "v"));
+    assert_eq!(
+        h[va.expect("v")].signal_ref(),
+        h[vb.expect("u1.v")].signal_ref()
+    );
+    let (ea, eb) = (h.lookup_var(&["al"], "e"), h.lookup_var(&["al", "u1"], "e"));
+    assert_eq!(
+        h[ea.expect("e")].signal_ref(),
+        h[eb.expect("u1.e")].signal_ref()
+    );
+}

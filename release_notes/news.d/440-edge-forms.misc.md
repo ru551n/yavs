@@ -1,0 +1,1 @@
+Clocked processes stay suspended between edges whatever way the edge is written: `wait until clk = '1'`, `not clk'stable and clk = '1'`, `rising_edge` and `falling_edge` of BIT and BOOLEAN, `clk'event and clk = '1'` on BIT, and an enable written before the edge (`en = '1' and rising_edge(clk)`) now get the same kernel fast path as `rising_edge(clk)` on `std_logic`.

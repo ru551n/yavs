@@ -44,6 +44,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "The file is not valid UTF-8 and `--encoding=utf8` was given. Use `--encoding=auto` or `latin1`.",
     ),
     (
+        "E0011",
+        "A VHDL-2008 construct was used in a VHDL-1993 file. Analyze with `--std=2008` or rewrite it.",
+    ),
+    (
         "W0001",
         "A `` `warning `` conditional analysis directive was reached; the message is the one in the directive.",
     ),
@@ -57,7 +61,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W0004",
-        "A design unit contains PSL (IEEE 1850) outside the subset yavs runs. yavs runs `default clock is ...;`, clocked `assert`/`assume` directives with `always b`, `never b`, `always a -> b` and `always a -> next[n] b` on VHDL booleans, and `cover {b}`, written as VHDL-2008 statements or in `-- psl` comments. Everything else (property and sequence declarations, SERE sequences, other operators, unclocked directives, restrict and fairness directives, vunit/vmode/vprop units) is skipped, so that property is not checked and the simulation is otherwise unaffected. One warning is given per design unit. Use `-Werror=W0004` to make it an error, or `-Wno-W0004` to silence it.",
+        "A design unit contains PSL (IEEE 1850) outside the subset yavs runs. yavs runs `default clock is ...;`, clocked `assert`/`assume` directives with `always b`, `never b`, `always a -> b` and `always a -> next[n] b` on VHDL booleans, and `cover {b}`, written as VHDL-2008 statements or in `-- psl` comments. Everything else (property and sequence declarations, SERE sequences, other operators, unclocked directives, vunit/vmode/vprop units) is skipped, so that property is not checked and the simulation is otherwise unaffected. Directives for formal tools only (`restrict`, `restrict_guarantee`, `assume_guarantee`, `fairness`, `strong fairness`, and any directive that calls `nondet` or `nondet_vector`) are skipped without this warning. One warning is given per design unit. Use `-Werror=W0004` to make it an error, or `-Wno-W0004` to silence it.",
     ),
     // yavs command line
     (
@@ -93,6 +97,14 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "E0123",
         "`yavs cache clean` could not remove a compilation cache entry of a library directory (permissions, or the directory is in use by a read-only mount). Entries are only ever an optimisation: the next run analyzes from source.",
+    ),
+    (
+        "E0124",
+        "`yavs run --profile=FILE` could not write the profile file (missing directory, permissions, full disk). The tables on standard error are printed anyway; the run exits at least 1.",
+    ),
+    (
+        "E0125",
+        "`yavs run --profile` was combined with `--dap`. The profiler samples which process is running; a stop at a breakpoint would be counted as time in the stopped process. Profile a run without `--dap`. Exit status 2.",
     ),
     // yavs-wave
     (
@@ -172,6 +184,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "W0115",
         "A signal or port has more `bit`/`std_ulogic` scalars than `--cov-toggle-max` (default 65536), so its toggles are not counted. Raise the limit to count them; large memories are usually left out on purpose.",
     ),
+    (
+        "W0116",
+        "The signal handlers of a running simulation (Ctrl-C and SIGTERM writing out the buffered output, SIGUSR1 printing a hang report) could not be installed (the note gives the operating system error). The run goes on without them, and its output is written line by line; `--hang-report` is not affected.",
+    ),
     // yavs-vhpi
     (
         "E0901",
@@ -201,15 +217,15 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "L0002",
-        "A library manifest cannot be read, written or resolved.",
+        "A library manifest or record cannot be read, written or resolved.",
     ),
     (
         "L0003",
-        "A library manifest is corrupt. Delete the library directory and analyze its files again.",
+        "A library manifest (the index `yavs-lib.toml`) or a record of a file in `yavs-lib.d/` is corrupt, damaged or missing. Delete the library directory and analyze its files again.",
     ),
     (
         "L0004",
-        "A library manifest has a format version this yavs does not read, or was written before the rename to yavs. Re-analyze the library's files.",
+        "A library manifest has a format version this yavs does not read, or was written before the rename to yavs. Libraries are not converted: delete the library directory and analyze its files again.",
     ),
     (
         "L0010",
@@ -308,6 +324,10 @@ const EXPLAIN: &[(&str, &str)] = &[
         "A TIME physical literal or unit name has a unit below the resolution limit selected with `yavs run --resolution` and appears in the design hierarchy, in a package it uses or in code that never runs (LRM 5.2.4.2). A literal whose abstract literal is zero (`0 fs`) is legal, and so is a value such as `0.4 ns` under `ns`: the rule is about the unit, not the value.",
     ),
     (
+        "E2121",
+        "An external name's subtype indication does not match the object it names: the type differs, or a constrained array dimension has another length (LRM 8.7).",
+    ),
+    (
         "W2118",
         "A constant whose initial value calls an impure function cannot be evaluated during elaboration yet; it is evaluated when the simulation starts, so its calls run after the elaboration-time calls instead of in declaration order.",
     ),
@@ -318,7 +338,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E3002",
-        "More delta cycles than the limit ran at one simulated time, usually a zero-delay feedback loop. The note lists the processes that ran in the last delta.",
+        "More delta cycles than the limit ran at one simulated time, usually a zero-delay feedback loop. The labels and the note name the processes of the loop and the signals through which they wake each other: two processes (or concurrent assignments) that assign each other's inputs with no delay, a process that waits only on a signal it assigns, a combinational loop through concurrent statements, or a process that waits for 0 ns in a loop. `--max-deltas=N` raises the limit (default 10000) for a design that needs more deltas at one time.",
     ),
     (
         "E3003",
@@ -342,6 +362,15 @@ const EXPLAIN: &[(&str, &str)] = &[
     (
         "E3010",
         "The model, the simulation configuration or a control request is invalid.",
+    ),
+    // yavs-kernel run-time reports (W3101, W3102 are warnings of `yavs run`)
+    (
+        "W3101",
+        "A report of a simulation that did not finish, printed with `--hang-report` when the run ends at `--stop-time` without `stop` or `finish` or runs out of events with a process still waiting, and on SIGUSR1 (Unix) for a running simulation. It gives the time and delta, how many processes wait for a timeout, for signals that can still change, or for signals nothing can change any more, then names the processes that can never run again with what they wait for, and for each such signal its value, its last event and the processes that drive it (\"it has no driver\" is the usual cause). A signal that an edge-triggered process waits on, that had an event and that nothing can change any more is reported as a clock that stopped. `--hang-report=MAX` lists at most MAX processes per part (default 30).",
+    ),
+    (
+        "W3102",
+        "A process has no wait statement, no sensitivity list and calls no procedure that waits. It never gives control back to the simulator, so time cannot advance and the run does not end by itself; it can only end through `stop` or `finish`, a failed assertion or an error. A process that should run once ends with `wait;`.",
     ),
     // every stage
     (

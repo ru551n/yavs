@@ -184,7 +184,7 @@ impl<'a> Fx<'a, '_> {
         let e = &db.exprs[id];
         let span = e.span;
         if let Some(c) = e.value {
-            let v = self.konst(&db.consts[c], e.subtype, span)?;
+            let v = self.konst_checked(&db.consts[c], e.subtype, span)?;
             // A folded constant keeps the bounds of its subtype, element bounds too, not those
             // of its initialiser's literals (LRM 6.4.2.2): `'element'left` of it, or of a
             // parameter it is passed to, reads them.
@@ -196,17 +196,24 @@ impl<'a> Fx<'a, '_> {
             return Ok(v);
         }
         match &e.kind {
-            ExprKind::Const(c) => self.konst(&db.consts[*c], e.subtype, span),
+            ExprKind::Const(c) => self.konst_checked(&db.consts[*c], e.subtype, span),
             ExprKind::Obj(d) => self.read_obj(*d, span),
             ExprKind::Call {
                 callee,
                 args,
                 method_of,
                 ..
-            } => match self.call(*callee, args, *method_of, Some(e.subtype), span)? {
-                Some(v) => Ok(v),
-                None => Err(self.cx.ice(span, "procedure call in an expression")),
-            },
+            } => {
+                if method_of.is_none()
+                    && let Some(r) = self.edge_test(id)?
+                {
+                    return Ok(V::S(r));
+                }
+                match self.call(*callee, args, *method_of, Some(e.subtype), span)? {
+                    Some(v) => Ok(v),
+                    None => Err(self.cx.ice(span, "procedure call in an expression")),
+                }
+            }
             ExprKind::Index { prefix, indices } => match self.rec_part(id, span)? {
                 Some(v) => Ok(v),
                 None => match self.sig_elem(id, *prefix, span)? {
@@ -263,7 +270,18 @@ impl<'a> Fx<'a, '_> {
             // The value of a user-defined attribute is its specification's expression.
             ExprKind::AttrValue { spec } => {
                 let v = db.attr_values[*spec].value;
-                self.expr(v)
+                let val = self.expr(v)?;
+                // The value takes the attribute's subtype (implicit subtype conversion): a
+                // string literal given to `string (3 downto 1)` has those bounds (#638).
+                if let V::A(data, vd) = val
+                    && let Some(want) = self.desc_of(e.subtype, Some(vd), span)?
+                {
+                    let t = db.base(e.subtype);
+                    let tid = self.ty(t, span)?;
+                    self.check_desc(t, tid, vd, want, "attribute value", span)?;
+                    return Ok(V::A(data, want));
+                }
+                Ok(val)
             }
             ExprKind::Open | ExprKind::Error => {
                 Err(self.cx.ice(span, "open or poisoned expression"))
@@ -272,6 +290,21 @@ impl<'a> Fx<'a, '_> {
     }
 
     // ---- constants ----
+
+    /// `konst`, and an integer literal typed by a subtype whose range it lies outside of (a
+    /// universal literal converted to `INTEGER`, LRM 9.3.6) fails when evaluated.
+    fn konst_checked(&mut self, v: &ConstValue, st: SubtypeId, span: Span) -> R<V> {
+        let r = self.konst(v, st, span)?;
+        if let (ConstValue::Int(i), V::S(reg), Some((l, d, h))) = (v, r, self.db.static_bounds(st))
+            && let (Some(l), Some(h)) = (l.as_int(), h.as_int())
+        {
+            let (lo, hi) = if d == Direction::To { (l, h) } else { (h, l) };
+            if lo <= hi && (*i < lo || *i > hi) {
+                self.check_scalar(reg, None, st, "", span)?;
+            }
+        }
+        Ok(r)
+    }
 
     pub fn konst(&mut self, v: &ConstValue, st: SubtypeId, span: Span) -> R<V> {
         if let Some(c) = ty::cell(v) {
@@ -395,6 +428,15 @@ impl<'a> Fx<'a, '_> {
     fn read_obj(&mut self, d: DeclId, span: Span) -> R<V> {
         let db = self.db;
         let decl = &db.decls[d];
+        // A deferred constant of a package instance has a slot of its own that nothing fills:
+        // its value is the full declaration's (LRM 4.8).
+        if let DeclKind::Object(o) = &decl.kind
+            && o.role == yavs_sem::decl::ObjRole::Deferred
+            && o.class == yavs_sem::decl::ObjClass::Constant
+            && let Some(c) = self.deferred_completion(d)
+        {
+            return self.read_obj(c, span);
+        }
         let obj = self.cx.objs.get(&d).copied();
         if self.cx.capture_free
             && obj.is_some()
@@ -506,16 +548,13 @@ impl<'a> Fx<'a, '_> {
                     self.capture_free(d, o.subtype, span)?;
                     self.read_obj(d, span)
                 }
-                // A protected shared variable of an enclosing region: a slot holding the
-                // handle of its object, created and filled in by the elaborator.
+                // A shared variable of an enclosing region: a slot holding the handle of its
+                // object (protected) or the address of its slot (`--relaxed`), created and
+                // filled in by the elaborator.
                 DeclKind::Object(o)
                     if self.cx.capture_free
                         && self.cx.capture_vars
                         && o.class == yavs_sem::decl::ObjClass::SharedVariable
-                        && matches!(
-                            db.types[db.base(o.subtype)].kind,
-                            yavs_sem::types::TypeKind::Protected { .. }
-                        )
                         && matches!(
                             db.scopes[decl.scope].kind,
                             yavs_sem::scope::ScopeKind::Entity
@@ -524,16 +563,23 @@ impl<'a> Fx<'a, '_> {
                                 | yavs_sem::scope::ScopeKind::Generate
                         ) =>
                 {
-                    let t = self.ty(db.base(o.subtype), span)?;
                     let off = self.cx.inst_alloc(8);
-                    self.cx.objs.insert(
-                        d,
-                        Obj::Scalar {
+                    let (obj, t) = if matches!(
+                        db.types[db.base(o.subtype)].kind,
+                        yavs_sem::types::TypeKind::Protected { .. }
+                    ) {
+                        let t = self.ty(db.base(o.subtype), span)?;
+                        let obj = Obj::Scalar {
                             space: Space::Inst,
                             off,
                             w: Width::B8,
-                        },
-                    );
+                        };
+                        (obj, t)
+                    } else {
+                        let (shape, t) = self.shared_shape(d, db.base(o.subtype), span)?;
+                        (shape.obj(Space::Region(off), 0), t)
+                    };
+                    self.cx.objs.insert(d, obj);
                     self.cx.free_objs.push(crate::FreeObj {
                         decl: d,
                         ty: t,
@@ -1566,6 +1612,22 @@ impl<'a> Fx<'a, '_> {
         let val = self.alloc(size);
         for (l, sref, len) in &p.leaves {
             let facts = self.leaf_facts(l, span)?;
+            let rel = &l.path[p.path.len()..];
+            // A logic vector that is a field of nested records: read it where it lies.
+            if facts.0 && self.plain_vector_field(p.t, rel, span)? {
+                let (mut a, mut d, mut t) = (val, p.desc, p.t);
+                for &n in rel {
+                    let tid = self.ty(t, span)?;
+                    (a, d) = self.field_addr(tid, a, d, n, span)?;
+                    t = self.db.base(self.field_subtype(t, n)?);
+                }
+                self.emit(if last {
+                    Inst::SigLastValue { dst: a, sig: *sref }
+                } else {
+                    Inst::SigRead { dst: a, sig: *sref }
+                });
+                continue;
+            }
             let size = self.leaf_size(l, *len, span)?;
             let buf = self.alloc(size);
             self.emit(if last {
@@ -1580,10 +1642,23 @@ impl<'a> Fx<'a, '_> {
                 }
             });
             let k = self.int(0);
-            let rel = &l.path[p.path.len()..];
             self.leaf_walk(p.t, val, p.desc, rel, k, (buf, *len), facts, true, span)?;
         }
         Ok(V::A(val, p.desc))
+    }
+
+    /// Does the field path `rel` from record type `t` lead through records only to an array
+    /// of logic scalars, whose planes then lie in one piece in the record's value?
+    fn plain_vector_field(&mut self, t: TypeId, rel: &[u32], span: Span) -> R<bool> {
+        let mut t = t;
+        for &n in rel {
+            if !matches!(self.db.types[t].kind, TypeKind::Record { .. }) {
+                return Ok(false);
+            }
+            t = self.db.base(self.field_subtype(t, n)?);
+        }
+        let tid = self.ty(t, span)?;
+        Ok(!rel.is_empty() && ty::is_array(self.db, t) && self.is_logic(tid))
     }
 
     /// Write the elements of leaf `l` (relative field path `rel`) of value `(data, desc)` of
@@ -4164,6 +4239,13 @@ impl<'a> Fx<'a, '_> {
             }
             AttrPrefix::Subtype(st) => {
                 let Some(dope) = self.subtype_dope(st, span)? else {
+                    // Only the range attributes read the bounds of the type mark; the others
+                    // (2019 'value of a composite type) are not lowered.
+                    if !matches!(attr, Left | Right | Low | High | Ascending | Length) {
+                        return Err(self
+                            .cx
+                            .unsupported(span, &format!("attribute '{}", attr.name())));
+                    }
                     return Err(self
                         .cx
                         .ice(span, "array attribute of an unconstrained type"));
@@ -4326,6 +4408,16 @@ impl<'a> Fx<'a, '_> {
                 self.konst(&v, st, span)
             }
             AttrPrefix::Entity(d) if matches!(attr, PathName | InstanceName) => {
+                // An item of a library-unit package is named the same in every instance, and the
+                // subprogram that reads it is shared by them: a constant, not an instance slot.
+                if let Some(name) = crate::pathname::library_package_item_name(db, d) {
+                    let st = self.string_subtype(span)?;
+                    let v = ConstValue::Array(yavs_sem::stat::ArrayConst {
+                        bounds: Box::new([(1, Direction::To, name.len() as i64)]),
+                        elems: Elems::Bytes(name.into_bytes().into_boxed_slice()),
+                    });
+                    return self.konst(&v, st, span);
+                }
                 let instance = attr == InstanceName;
                 let off = match self
                     .cx
@@ -4639,42 +4731,17 @@ impl<'a> Fx<'a, '_> {
         let nd = self.one_dope(r.left, r.right, dir);
         let n = self.dope_len(nd);
         let p = self.reg(RegTy::I64);
-        let (null, chk, j) = (self.block(), self.block(), self.block());
-        let z = self.int(0);
-        let isnull = self.cmp(CmpOp::Eq, n, z);
-        self.branch(isnull, null, chk);
-        self.at(chk);
-        let m = self.msg(what, Dir::To);
-        self.emit(Inst::Pos {
+        let what_id = self.msg(what, Dir::To);
+        let dir_what = self.msg(&format!("direction of the slice of {what}"), Dir::To);
+        self.emit(Inst::SlicePos {
             dst: p,
             dope,
-            dim: 0,
-            idx: r.left,
-            what: m,
+            left: r.left,
+            right: r.right,
+            dir,
+            what: what_id,
+            dir_what,
         });
-        let q = self.reg(RegTy::I64);
-        self.emit(Inst::Pos {
-            dst: q,
-            dope,
-            dim: 0,
-            idx: r.right,
-            what: m,
-        });
-        let pd = self.offset(dope, 16);
-        let pdir = self.load(pd, Width::B8, RegTy::I64);
-        let m = self.msg(&format!("direction of the slice of {what}"), Dir::To);
-        self.emit(Inst::Check {
-            kind: CheckKind::Range,
-            v: dir,
-            lo: pdir,
-            hi: pdir,
-            what: m,
-        });
-        self.jump(j);
-        self.at(null);
-        self.emit(Inst::Const { dst: p, v: 0 });
-        self.jump(j);
-        self.at(j);
         Ok((p, n, nd))
     }
 
@@ -5242,6 +5309,29 @@ fn cmp_op(f: Family) -> CmpOp {
 pub fn deferred_completion(db: &Db, d: DeclId) -> Option<DeclId> {
     let decl = &db.decls[d];
     let key = decl.name.key();
+    let full = |scope, d| {
+        db.scopes[scope]
+            .names
+            .get(&key)?
+            .iter()
+            .copied()
+            .find(|&c| {
+                c != d
+                    && matches!(&db.decls[c].kind, DeclKind::Object(o)
+                if o.class == yavs_sem::decl::ObjClass::Constant && o.default.is_some())
+            })
+    };
+    // An instance of a generic package holds a copy of the body's declarations in its body
+    // region (cloned when the body is first needed).
+    if let Some(body) = db
+        .insts
+        .iter()
+        .find_map(|(_, i)| (i.scope == decl.scope).then(|| i.body.get().copied()))
+        .flatten()
+        && let Some(c) = full(body, d)
+    {
+        return Some(c);
+    }
     db.units.iter().find_map(|(_, u)| {
         let UnitHir::PackageBody { package } = u.hir else {
             return None;

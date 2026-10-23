@@ -1,0 +1,1 @@
+PSL sequences run: `cover {a; b[*2]}`, `assert never {..}`, `assert always {..} |-> ..` and `|=> ..` with concatenation, fusion, alternation, `&&`, `&`, `within`, repetition counts and ranges, `[=n]` and `[->n]` are checked at the clock like the simple directives.

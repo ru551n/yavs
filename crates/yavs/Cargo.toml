@@ -8,12 +8,14 @@ publish.workspace = true
 
 [dependencies]
 clap.workspace = true
+serde_json = "1"
 yavs-cache = { path = "../yavs-cache" }
 yavs-cov = { path = "../yavs-cov" }
 yavs-diag.workspace = true
 yavs-dap = { path = "../yavs-dap" }
 yavs-elab = { path = "../yavs-elab" }
 yavs-interp = { path = "../yavs-interp" }
+yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }
 yavs-lib = { path = "../yavs-lib" }
 yavs-sem = { path = "../yavs-sem" }
@@ -39,6 +41,8 @@ llvm = ["dep:yavs-llvm", "yavs-llvm/llvm"]
 clift = ["dep:yavs-clift", "yavs-clift/clift"]
 # Test builds only: the heap collection stress mode of yavs-interp (crates/yavs-interp/AGENTS.md).
 gc-stress = ["yavs-interp/gc-stress"]
+# Op and adjacent-pair census of the interpreter, printed at the end of `yavs run` (crates/yavs-interp/AGENTS.md).
+op-census = ["yavs-interp/op-census", "yavs-llvm?/op-census"]
 
 [[test]]
 name = "corpus"

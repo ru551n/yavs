@@ -66,7 +66,7 @@ impl fmt::Display for Program {
                 x.signature()
             )?;
         }
-        for (id, _) in self.funcs.iter() {
+        for (id, _) in self.funcs.iter().filter(|(_, f)| !f.spare) {
             if let Some(func) = self.func(id) {
                 write_func(f, id, func)?;
             }

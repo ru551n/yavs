@@ -11,8 +11,10 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 |---|---|---|---|
 | E1104 | prefix of a use clause or context reference is not a package, library, package instance or context declaration | 1.4 (suffix "must denote a package or an instance") | `use/prefix_not_a_package`, `use/prefix_is_type`, `use/context_not_a_context` |
 | E1303 | illegal operator declaration: not an operator symbol, or wrong number of parameters for the operator | 4.5.2 LRM, not in sem.md | `ovl/operator_wrong_arity`, `ovl/unary_only_operator_binary` |
+| E1507 | a conversion on the formal side of a generic or port with an anonymous type (`type is ...`): the formal's type can only come from the actual | 6.5.2, 6.5.3 LRM (2019), not in sem.md | `v2019/anonymous_object_formal_conversion` |
 | E1623 | attribute dimension argument out of range for the prefix (`m'length(2)` of a 1-D array) | 6.3 / 4.2 "attribute dimension arguments" | `stat/attribute_dimension_out_of_range` |
 | E1700 | instantiated name is not a component, entity or configuration | 3.3 (`l: p;` re-interpretation) | `unit/component_instance_not_a_component` |
+| W1325 | R5 relaxation: an `others` aggregate takes the bounds of an unconstrained assignment target | 8.4 R5, LRM 9.3.3.3 | `relax/others_unconstrained_target_relaxed` |
 | W1830 | R2 relaxation: pure function calls something impure (own warning code per relaxation, 8.4) | 8.4 R2, 6.6 | `relax/pure_function_calls_impure_relaxed` |
 | W1904 | R1 relaxation: shared variable of non-protected type | 6.6 names `W1904` explicitly; 8.1 only lists `W1990` | `relax/shared_variable_unprotected_relaxed` |
 | W1401 | static overflow where the value is not required; run-time check kept | Q5 (11), not in 8.1 | `stat/integer_overflow_addition`, `stat/integer_overflow_multiplication` |
@@ -118,7 +120,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1702 | rebinding | 8.1 |
 | E1703 | component/entity port or generic mismatch | 8.1 |
 | E1704 | binding without an entity where one is needed | 8.1 |
-| E1801 | `wait` misplaced | 8.1 |
+| E1801 | `wait` misplaced, or a call of a procedure that waits from a process with a sensitivity list | 8.1, 10.2, 11.3 |
 | E1802 | `return` misplaced | 8.1 |
 | E1810 | signal driven from outside a process | 8.1 |
 | E1811 | `next`/`exit` misplaced or unknown label | 8.1 |
@@ -131,6 +133,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 | E1903 | view port mode misuse | 8.1 |
 | E1904 | shared / private variable not protected | 8.1 |
 | E1905 | illegal use of a protected type | 8.1 |
+| E1907 | variable port of a composite of protected types, not supported | 6.5.2 |
 | W1008 | construct means something different under the design revision | 0.1, 8.1 |
 | W1403 | static operand of a qualified expression or type conversion outside its subtype, in possibly dead code | 9.3.5, 9.3.6, not in 8.1 |
 | W1404 | static index out of range in possibly dead code | 8.1 |

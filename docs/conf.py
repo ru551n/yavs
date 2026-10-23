@@ -3,7 +3,7 @@ Sphinx configuration of the yavs user documentation (Read the Docs, .readthedocs
 
 Build with: sphinx-build -W -b html docs docs/_build/html
 
-The other files in docs/ (plan, decisions, design notes, the VUnit CLI contract) are for
+The other files in docs/ (plan, decisions, status, design notes, the VUnit CLI contract) are for
 developers and agents and are not part of the site.
 """
 
@@ -26,6 +26,7 @@ suppress_warnings = ["myst.header"]
 exclude_patterns = [
     "_build",
     "plan.md",
+    "STATUS.md",
     "decisions.md",
     "cli-contract.md",
     "test-runner-requirements.md",
@@ -55,6 +56,7 @@ html_context = {
 towncrier_draft_autoversion_mode = "draft"
 towncrier_draft_include_empty = False
 towncrier_draft_working_directory = ROOT
+towncrier_draft_config_path = ROOT / "release_notes" / "towncrier.toml"
 _notes = ["# Release notes", ""]
 _unreleased = sorted((ROOT / "release_notes").glob("unreleased.md"))
 _fragments = [p for p in (ROOT / "release_notes" / "news.d").glob("*.md") if p.name != "README.md"]

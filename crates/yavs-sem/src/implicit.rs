@@ -341,7 +341,7 @@ impl Spec {
             name,
             params,
             ret,
-            since: LangRev::Vhdl2008,
+            since: LangRev::Vhdl1993,
             pure: true,
             aliases: &[],
         }
@@ -706,6 +706,7 @@ impl Db {
                 None => Spec::new(ty, f, name, vec![named("L", l)], Some(ret)).form(Form::Reduce),
             })
         };
+        let v08 = LangRev::Vhdl2008;
         let to_string = |since: LangRev| {
             Spec::new(
                 ty,
@@ -738,11 +739,11 @@ impl Db {
                 }
                 if is_bit || self.is_std_ulogic(ty) {
                     for (f, op) in MATCHING {
-                        v.push(bin(f, op, me, me, me));
+                        v.push(bin(f, op, me, me, me).since(v08));
                     }
                 }
                 if is_bit {
-                    v.push(un(Family::Cond, "??", me, boolean));
+                    v.push(un(Family::Cond, "??", me, boolean).since(v08));
                 }
                 match shape {
                     Shape::Integer | Shape::Floating => {
@@ -783,8 +784,8 @@ impl Db {
                     }
                     _ => {}
                 }
-                v.extend(minmax(me, Some(me), me));
-                v.push(to_string(LangRev::Vhdl2008));
+                v.extend(minmax(me, Some(me), me).map(|s| s.since(v08)));
+                v.push(to_string(v08));
                 if self.is_std(ty, "real") {
                     v.push(
                         Spec::new(
@@ -794,7 +795,8 @@ impl Db {
                             vec![named("VALUE", me), named("DIGITS", T::Std("natural"))],
                             Some(string),
                         )
-                        .form(Form::Digits),
+                        .form(Form::Digits)
+                        .since(v08),
                     );
                     v.push(
                         Spec::new(
@@ -804,7 +806,8 @@ impl Db {
                             vec![named("VALUE", me), named("FORMAT", string)],
                             Some(string),
                         )
-                        .form(Form::Format),
+                        .form(Form::Format)
+                        .since(v08),
                     );
                 }
                 if self.is_std(ty, "time") {
@@ -816,7 +819,8 @@ impl Db {
                             vec![named("VALUE", me), named("UNIT", me)],
                             Some(string),
                         )
-                        .form(Form::Unit),
+                        .form(Form::Unit)
+                        .since(v08),
                     );
                 }
                 if is_bool || is_bit {
@@ -828,7 +832,7 @@ impl Db {
                             class: ObjClass::Signal,
                             ..named("S", me)
                         };
-                        v.push(Spec::new(ty, f, name, vec![s], Some(boolean)));
+                        v.push(Spec::new(ty, f, name, vec![s], Some(boolean)).since(v08));
                     }
                 }
             }
@@ -840,7 +844,7 @@ impl Db {
                     let et = T::Base(e);
                     // 9.2.3: discrete elements; 2019 LCS-2016-059a: any scalar element.
                     let ordered = if self.is_discrete_type(e) {
-                        Some(LangRev::Vhdl2008)
+                        Some(LangRev::Vhdl1993)
                     } else if self.is_scalar_type(e) {
                         Some(LangRev::Vhdl2019)
                     } else {
@@ -856,10 +860,10 @@ impl Db {
                     v.push(bin(Family::Cat, "&", et, me, me).form(Form::ScalarArray));
                     v.push(bin(Family::Cat, "&", et, et, me).form(Form::ScalarScalar));
                     if let Some(since) = ordered {
-                        v.extend(minmax(me, Some(me), me).map(|s| s.since(since)));
+                        v.extend(minmax(me, Some(me), me).map(|s| s.since(since.max(v08))));
                     }
                     if self.is_scalar_type(e) {
-                        v.extend(minmax(me, None, et));
+                        v.extend(minmax(me, None, et).map(|s| s.since(v08)));
                     }
                     if self.is_std(e, "boolean") || self.is_std(e, "bit") {
                         for (f, op) in LOGICAL {
@@ -867,37 +871,39 @@ impl Db {
                         }
                         v.push(un(Family::Not, "not", me, me));
                         for (f, op) in LOGICAL {
-                            v.push(bin(f, op, me, et, me).form(Form::ArrayScalar));
-                            v.push(bin(f, op, et, me, me).form(Form::ScalarArray));
+                            v.push(bin(f, op, me, et, me).form(Form::ArrayScalar).since(v08));
+                            v.push(bin(f, op, et, me, me).form(Form::ScalarArray).since(v08));
                         }
                         for (f, op) in LOGICAL {
-                            v.push(un(f, op, me, et).form(Form::Reduce));
+                            v.push(un(f, op, me, et).form(Form::Reduce).since(v08));
                         }
                         for (f, op) in SHIFTS {
                             v.push(bin(f, op, me, integer, me));
                         }
                     }
                     if self.is_std(e, "bit") || self.is_std_ulogic(e) {
-                        v.push(bin(Family::MEq, "?=", me, me, et));
-                        v.push(bin(Family::MNeq, "?/=", me, me, et));
+                        v.push(bin(Family::MEq, "?=", me, me, et).since(v08));
+                        v.push(bin(Family::MNeq, "?/=", me, me, et).since(v08));
                     }
                     if self.is_std(ty, "bit_vector") {
                         let value = || vec![named("VALUE", me)];
                         v.push(Spec {
                             aliases: &["TO_BSTRING", "TO_BINARY_STRING"],
-                            ..to_string(LangRev::Vhdl2008)
+                            ..to_string(v08)
                         });
                         v.push(Spec {
                             aliases: &["TO_OCTAL_STRING"],
                             ..Spec::new(ty, Family::ToOString, "TO_OSTRING", value(), Some(string))
+                                .since(v08)
                         });
                         v.push(Spec {
                             aliases: &["TO_HEX_STRING"],
                             ..Spec::new(ty, Family::ToHString, "TO_HSTRING", value(), Some(string))
+                                .since(v08)
                         });
                         to_string_done = true;
                     } else if self.is_char_enum(e) {
-                        v.push(to_string(LangRev::Vhdl2008));
+                        v.push(to_string(v08));
                         to_string_done = true;
                     }
                 }
@@ -1021,7 +1027,7 @@ impl Db {
             proc(Family::FileClose, "FILE_CLOSE", vec![f()]),
             proc(Family::Read, "READ", read),
             proc(Family::Write, "WRITE", vec![f(), named("VALUE", tm)]),
-            proc(Family::Flush, "FLUSH", vec![f()]),
+            proc(Family::Flush, "FLUSH", vec![f()]).since(LangRev::Vhdl2008),
             func(Family::Endfile, "ENDFILE", vec![f()], T::Std("boolean")),
         ]
     }

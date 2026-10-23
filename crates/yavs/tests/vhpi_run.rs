@@ -865,6 +865,11 @@ fn vhpi_reads_and_deposits_variables() {
     let (code, err, again) = run("--threads=4");
     assert_eq!(code, 0, "{err}");
     assert_eq!(again, out, "--threads=4");
+    // The profiler wraps every process: the plugin still reaches their variables (#580).
+    let (code, err, again) = run("--profile");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(again, out, "--profile");
+    assert!(err.contains("profile: processes"), "{err}");
     if cfg!(feature = "llvm") {
         for t in ["--tier=llvm", "--tier=auto"] {
             let (code, err, again) = tier(t);

@@ -472,12 +472,19 @@ pub(crate) fn deferrable(f: &Func) -> Vec<bool> {
                 | Inst::Bool { .. }
                 | Inst::AddrOf { .. }
                 | Inst::Load { .. }
+                | Inst::SigVal { .. }
         ) {
             i.visit(&mut |r, role, _| {
                 if role == Role::Def
                     && let Some(x) = out.get_mut(r.0 as usize)
                 {
                     *x = true;
+                    // A signal reference is two registers.
+                    if matches!(i, Inst::SigVal { .. })
+                        && let Some(y) = out.get_mut(r.0 as usize + 1)
+                    {
+                        *y = true;
+                    }
                 }
             });
         }

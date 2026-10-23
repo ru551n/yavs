@@ -161,6 +161,7 @@ a call into your module in a small commit.
 | `Attr` on an array object `left right high low length ascending` | `DopeLen` / dope loads for the dimension |
 | `Attr` `range reverse_range` | only inside `RangeC::Attr`: the dope of the prefix, direction flipped |
 | `Attr` on a signal `event active last_event last_active last_value` | `SigAttr` |
+| Clock-edge idioms (`Db::edge_shape`: `rising_edge`/`falling_edge`, `x'event and x = '1'`/`'0'`, BOOLEAN `x'event and x`, `not x'stable and ...`; the level of a `wait until x = '1'` in a non-postponed process that waits on `x` alone) | one `Edge` (`edge.rs`) |
 | `Attr` `simple_name path_name instance_name` | instance-data string (elab computes the path) |
 | `Aggregate` | static: one pool constant; dynamic: dope from `AggBounds`, then per association `Store`/`LSet`/`LFill`/`Fill`/`LCopy` |
 | `Qualified` | operand, then `SubtypeCheck`/`Check{Range}` against `to` |

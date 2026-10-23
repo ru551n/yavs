@@ -14,10 +14,11 @@ use yavs_interp::{
 };
 
 use yavs_ir::{AddrSpace, Func, FuncId, FuncKind, Inst, Program, Reg, Width};
+
+use crate::census::{Cb, cb};
 /// The code of `f<id>_c` (`Gen::adapter`): a native-frame function called from the interpreter
 /// with its argument cells in an array.
 pub type CallFn = unsafe extern "C" fn(*mut c_void, *mut Mem, u64, *const u64) -> i64;
-
 pub const STEP: &str = "yavs_rt_step";
 pub const HOST: &str = "yavs_rt_host";
 pub const SIGNAL: &str = "yavs_rt_signal";
@@ -36,6 +37,10 @@ pub const FAST_DOPE_LEN: u32 = 1;
 pub const FAST_SUBTYPE: u32 = 2;
 pub const FAST_FAT_ROOT: u32 = 3;
 pub const FAST_DEREF: u32 = 4;
+pub const DRIVE_BIT: &str = "yavs_rt_drive_bit";
+pub const SCAN: &str = "yavs_rt_scan";
+pub const CODES: &str = "yavs_rt_codes";
+pub const PLANES: &str = "yavs_rt_planes";
 pub const MEMEQ: &str = "yavs_rt_memeq";
 pub const NATIVE: &str = "yavs_rt_native";
 pub const TROOT: &str = "yavs_rt_troot";
@@ -74,6 +79,9 @@ pub struct Mem {
     pub objs: [Obj; OBJS],
     /// Entries of `objs` in use, at most (0: none, nothing to forget).
     pub live: u64,
+    /// Which entries of `objs` are in use: the walks (`retain`, `save_objs`, `begin`) visit only
+    /// those.
+    pub occ: [u64; OBJS / 64],
     /// The `TierFrame::owner` and `heap_epoch` the objects were found at (`begin`).
     pub objs_owner: u64,
     pub objs_epoch: u64,
@@ -165,8 +173,10 @@ pub fn nslots_grow(depth: usize) -> *mut NSlot {
 }
 
 /// An object in `Mem::objs`: the high half of its addresses (`u64::MAX`: none), start,
-/// length, whether it was found for writing, and the access value a `Deref` found it for (0:
-/// none; its address is `hi << 32`).
+/// length, whether it was found for writing, and the access value a `Deref` found it for
+/// (`NO_H`: none; its address is `hi << 32`). An entry with an access value is writable
+/// (`yavs_rt_obj` keeps the permission of an entry it replaces for the same object), so a
+/// `Deref` needs one compare.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Obj {
@@ -178,23 +188,47 @@ pub struct Obj {
 }
 
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
-/// object index (`obj_at`), two objects whose indices agree there evict each other; ways if a
-/// profile shows such conflicts.
-pub const OBJS: usize = 16;
+/// object index xor its space (`obj_at`: a private and a shared heap object of the same index
+/// are two objects of one protected-type library function), two objects whose keys agree there
+/// evict each other. 16 entries missed three heap objects in four on a test runner's queue
+/// code (95 million `Deref` callbacks in a 16 s run, 12 million at 256: objects of the pointer
+/// tables, their data and the queues' buffers), and a walk visits only the entries in use
+/// (`Mem::occ`); ways if a profile shows conflicts again.
+pub const OBJS: usize = 256;
+const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
-/// The entry of `Mem::objs` for the object whose addresses have high half `hi` (and for the
-/// access values of heap index `hi & 0x1fff_ffff`, whose bits 32 and up are that index).
+/// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low bits of
+/// its index, bit 3 flipped for a shared heap (space 7, bit 29 of `hi`; private is 4). The
+/// access value of a heap object has the same index in bits 32 to 55 and, as its tag, a shared
+/// flag in bit 57 (`handle_at`, and `obj_entry` in the generated code, which must agree with
+/// both: `obj_keys_agree`).
 #[inline(always)]
 pub fn obj_at(hi: u64) -> usize {
-    hi as usize & (OBJS - 1)
+    (hi ^ (hi >> KEY_SHIFT_ADDR & KEY_FLAG)) as usize & (OBJS - 1)
 }
+
+/// `obj_at` from the high half of an access value (`handle >> 32`).
+#[cfg(test)]
+pub fn handle_at(hi: u64) -> usize {
+    (hi ^ (hi >> KEY_SHIFT_HANDLE & KEY_FLAG)) as usize & (OBJS - 1)
+}
+
+/// The shared-heap flag of the key, as bit 3: shifted down from bit 29 of an address's high half
+/// and from bit 25 of an access value's.
+pub const KEY_FLAG: u64 = 8;
+pub const KEY_SHIFT_ADDR: u32 = 26;
+pub const KEY_SHIFT_HANDLE: u32 = 22;
+
+/// The access value of an entry no `Deref` found: no handle (not null either: a null handle
+/// must miss).
+pub const NO_H: u64 = 1;
 
 pub const NO_OBJ: Obj = Obj {
     hi: u64::MAX,
     ptr: std::ptr::null_mut(),
     len: 0,
     w: 0,
-    h: 0,
+    h: NO_H,
 };
 
 pub const MEM_SLOTS: u64 = std::mem::offset_of!(Mem, fr.slots) as u64;
@@ -211,9 +245,8 @@ pub const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
 pub const MEM_TEMP_ROOTS: u64 = std::mem::offset_of!(Mem, fr.temp_roots) as u64;
 pub const MEM_SIGTAB: u64 = std::mem::offset_of!(Mem, fr.sigtab) as u64;
 pub const MEM_SIGTAB_LEN: u64 = std::mem::offset_of!(Mem, fr.sigtab_len) as u64;
-pub const MEM_KNOWN_SIG: u64 = std::mem::offset_of!(Mem, fr.known_sig) as u64;
-pub const MEM_KNOWN_ELEM: u64 = std::mem::offset_of!(Mem, fr.known_elem) as u64;
-pub const MEM_KNOWN_UP: u64 = std::mem::offset_of!(Mem, fr.known_up) as u64;
+pub const MEM_KNOWN: u64 = std::mem::offset_of!(Mem, fr.known) as u64;
+pub const MEM_CYCLE: u64 = std::mem::offset_of!(Mem, fr.cycle) as u64;
 pub const MEM_FRAME_IDX: u64 = std::mem::offset_of!(Mem, fr.frame) as u64;
 pub const MEM_MAX_DEPTH: u64 = std::mem::offset_of!(Mem, fr.max_depth) as u64;
 pub const MEM_NDEOPT: u64 = std::mem::offset_of!(Mem, ndeopt) as u64;
@@ -233,6 +266,13 @@ pub const SIG_ENT: i64 = std::mem::size_of::<yavs_interp::TierSig>() as i64;
 pub const SIG_CODES: i64 = std::mem::offset_of!(yavs_interp::TierSig, codes) as i64;
 pub const SIG_LEN: i64 = std::mem::offset_of!(yavs_interp::TierSig, len) as i64;
 pub const SIG_SIGNAL: i64 = std::mem::offset_of!(yavs_interp::TierSig, signal) as i64;
+pub const SIG_CAP: i64 = std::mem::offset_of!(yavs_interp::TierSig, cap) as i64;
+pub const SIG_STAMPS: i64 = std::mem::offset_of!(yavs_interp::TierSig, stamps) as i64;
+pub const SIG_LAST: i64 = std::mem::offset_of!(yavs_interp::TierSig, last) as i64;
+pub const SIG_PLANES: i64 = std::mem::offset_of!(yavs_interp::TierSig, planes) as i64;
+pub const SIG_PLEN: i64 = std::mem::offset_of!(yavs_interp::TierSig, plen) as i64;
+pub const SIG_BYTES: i64 = std::mem::offset_of!(yavs_interp::TierSig, bytes) as i64;
+pub const SIG_ES: i64 = std::mem::offset_of!(yavs_interp::TierSig, es) as i64;
 pub const SIG_OFF: i64 = std::mem::offset_of!(yavs_interp::TierSig, off) as i64;
 
 impl Mem {
@@ -241,6 +281,7 @@ impl Mem {
             fr,
             objs: [NO_OBJ; OBJS],
             live: 0,
+            occ: [0; OBJS / 64],
             objs_owner: 0,
             objs_epoch: 0,
             dirty: false,
@@ -265,11 +306,16 @@ impl Mem {
     /// The start of an activation or a call from the interpreter, on a view just made: keep the
     /// objects found before that are still where they were (`Life`), and count the writes of
     /// the writable heap objects kept as this run's (`TierHost::wrote`).
+    #[inline(always)]
     pub fn begin(&mut self, host: &mut dyn TierHost) {
         self.dirty = false;
-        if self.live == 0 {
-            return;
+        if self.live != 0 {
+            self.begin_kept(host);
         }
+    }
+
+    #[inline(never)]
+    fn begin_kept(&mut self, host: &mut dyn TierHost) {
         let same = self.objs_owner == self.fr.owner;
         let epoch = same && self.objs_epoch == self.fr.heap_epoch;
         if !epoch || self.transient {
@@ -280,12 +326,21 @@ impl Mem {
             });
         }
         if epoch && self.fr.flags & yavs_interp::TIER_STAMPS != 0 {
-            for o in &self.objs {
-                if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
+            for o in self.in_use() {
+                if o.w != 0 && life(o.hi) == Life::Heap {
                     host.wrote(o.hi << 32);
                 }
             }
         }
+    }
+
+    /// The entries of `objs` in use.
+    #[inline]
+    fn in_use(&self) -> impl Iterator<Item = &Obj> {
+        self.occ.iter().enumerate().flat_map(move |(w, &bits)| {
+            let objs = &self.objs;
+            BitIter(bits).map(move |b| &objs[w * 64 + b])
+        })
     }
 
     /// The end of an activation or call: what `begin` checks next time.
@@ -297,8 +352,10 @@ impl Mem {
     /// Enter object `o` at its entry.
     #[inline(always)]
     pub fn put_obj(&mut self, o: Obj) {
-        let e = &mut self.objs[obj_at(o.hi)];
+        let at = obj_at(o.hi);
+        let e = &mut self.objs[at];
         self.live += u64::from(e.hi == u64::MAX);
+        self.occ[at / 64] |= 1 << (at % 64);
         self.transient |= life(o.hi) == Life::Volatile;
         self.dirty = true;
         *e = o;
@@ -314,7 +371,7 @@ impl Mem {
                     ptr: k[1] as *mut u8,
                     len: k[2],
                     w: k[3],
-                    h: 0,
+                    h: NO_H,
                 });
             }
         }
@@ -335,8 +392,12 @@ impl Mem {
             return;
         }
         st.words[..16].fill(u64::MAX);
-        let kept = self.objs.iter().filter(|o| o.hi != u64::MAX);
-        for (k, o) in st.words[..16].as_chunks_mut::<4>().0.iter_mut().zip(kept) {
+        for (k, o) in st.words[..16]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(self.in_use())
+        {
             k.copy_from_slice(&[o.hi, o.ptr as u64, o.len, o.w]);
         }
         st.words[16] = self.fr.heap_epoch;
@@ -356,13 +417,15 @@ impl Mem {
     #[inline]
     pub fn retain(&mut self, keep: impl Fn(u64) -> bool) {
         let (mut live, mut transient) = (0, false);
-        for o in &mut self.objs {
-            if o.hi != u64::MAX {
+        for w in 0..self.occ.len() {
+            for b in BitIter(self.occ[w]) {
+                let o = &mut self.objs[w * 64 + b];
                 if keep(o.hi) {
                     live += 1;
                     transient |= life(o.hi) == Life::Volatile;
                 } else {
                     *o = NO_OBJ;
+                    self.occ[w] &= !(1 << b);
                     self.dirty = true;
                 }
             }
@@ -383,15 +446,33 @@ impl Mem {
     /// `forget` after a host call that started at heap epoch `epoch` (`TierFrame::heap_epoch`):
     /// heap objects stay too while no heap object was deallocated or edited in place.
     pub fn forget_since(&mut self, epoch: u64) {
-        if self.live == 0 {
+        let heap = self.fr.heap_epoch == epoch;
+        // Nothing volatile found, no heap object freed or edited: nothing to drop.
+        if self.live == 0 || heap && !self.transient {
             return;
         }
-        let heap = self.fr.heap_epoch == epoch;
         self.retain(|hi| match life(hi) {
             Life::Volatile => false,
             Life::Heap => heap,
             _ => true,
         });
+    }
+}
+
+/// The positions of the set bits of a word, lowest first.
+struct BitIter(u64);
+
+impl Iterator for BitIter {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.0 == 0 {
+            return None;
+        }
+        let b = self.0.trailing_zeros() as usize;
+        self.0 &= self.0 - 1;
+        Some(b)
     }
 }
 
@@ -446,6 +527,7 @@ pub unsafe extern "C" fn yavs_rt_step(
     mem: *mut Mem,
     pc: u32,
 ) -> u32 {
+    cb(Cb::Step);
     // SAFETY: `env` and `mem` are what `enter` (or this function, for a callee) passed to the
     // compiled function, which is blocked in this call; `regs` points into the register
     // stack, which the compiled code does not touch until we return (it passes it only so
@@ -485,6 +567,7 @@ pub unsafe extern "C" fn yavs_rt_signal(
     pc: u32,
     edge: u32,
 ) -> u32 {
+    cb(Cb::Signal);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -523,7 +606,8 @@ pub unsafe fn stepped(
 }
 
 /// Record a native frame of `func` at `pc` for materialisation (`docs/decisions.md` "Compiled
-/// frames"): its registers go to the returned buffer, its slots to `yavs_rt_deopt_slots`.
+/// frames"): its registers are copied from `regs` (the function's spill buffer, filled at the
+/// exit site with the registers live at `pc`), its slots go to `yavs_rt_deopt_slots`.
 pub unsafe extern "C" fn yavs_rt_deopt(
     env: *mut c_void,
     mem: *mut Mem,
@@ -533,14 +617,16 @@ pub unsafe extern "C" fn yavs_rt_deopt(
     nregs: u64,
     slen: u64,
     link: u64,
+    regs: *const u64,
 ) -> *mut u64 {
-    // SAFETY: as in `yavs_rt_step`.
+    cb(Cb::Deopt);
+    // SAFETY: as in `yavs_rt_step`; `regs` holds `nregs` words.
     let (env, mem) = unsafe { (&mut *(env as *mut Env<'_>), &mut *mem) };
     mem.ndeopt = 1;
     env.pending.push(NativeFrame {
         func: FuncId(func),
         pc,
-        regs: vec![0; nregs as usize],
+        regs: unsafe { std::slice::from_raw_parts(regs, nregs as usize) }.to_vec(),
         slots: vec![0; slen as usize],
         temp_base,
         link,
@@ -595,12 +681,23 @@ pub unsafe extern "C" fn yavs_rt_drive(
     lo: u64,
     len: u64,
     wave: *const u8,
-    inertial: u32,
+    flags: u32,
 ) -> u32 {
-    // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`.
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`, 16 where
+    // the target keeps bytes (bit 1 of `flags`: one scalar, whose cell is the first word).
     let envp = env as *mut Env<'_>;
+    let inertial = flags & 1;
+    if flags & 4 != 0 {
+        return yavs_rt_drive_wide(envp, mem, pc, driver, lo, len, wave, inertial);
+    }
     let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
-    let (delay, block) = (word(0) as i64, [word(1), word(2), word(3), word(4)]);
+    let bytes = flags & 2 != 0;
+    let (delay, block) = if bytes {
+        (word(0) as i64, [word(1), 0, 0, 0])
+    } else {
+        (word(0) as i64, [word(1), word(2), word(3), word(4)])
+    };
     // The usual case, taken by the host without a frame view or a result.
     if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
         return GO;
@@ -621,6 +718,85 @@ pub unsafe extern "C" fn yavs_rt_drive(
     unsafe { stepped(envp, mem, pc, r) }
 }
 
+/// `TierHost::drive_wide` for the `Drive` at `pc` of more than 64 elements: `wave` holds the
+/// time and the plane blocks of the one waveform element (checked by the caller).
+#[allow(clippy::too_many_arguments)]
+fn yavs_rt_drive_wide(
+    envp: *mut Env<'_>,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    wave: *const u8,
+    inertial: u32,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_step`; the caller checked 8 + 32 bytes per 64 elements at `wave`.
+    let delay = unsafe { std::ptr::read_unaligned(wave.cast::<i64>()) };
+    let n = (len.div_ceil(64) * 32) as usize;
+    // A copy: the host reads the machine's memory while the kernel takes the planes.
+    let src = unsafe { std::slice::from_raw_parts(wave.add(8), n) };
+    let mut stack = [0u8; 256];
+    let heap;
+    let planes: &[u8] = if n <= stack.len() {
+        stack[..n].copy_from_slice(src);
+        &stack[..n]
+    } else {
+        heap = src.to_vec();
+        &heap
+    };
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.drive_wide(
+            &mut (*mem).fr,
+            pc,
+            driver,
+            [lo, len],
+            delay,
+            planes,
+            inertial != 0,
+        )
+    }));
+    unsafe { stepped(envp, mem, pc, r) }
+}
+
+/// The scalar logic assignment of a `yavs_interp::ScalarDrive` whose `Drive` is at `pc`: the
+/// kernel's fastest path for a zero delay (`TierHost::drive_bit_now`, no frame view, no result),
+/// else `TierHost::drive_bit`, which does everything the five instructions would have done.
+/// `code` holds the logic code and, in bit 8, whether the assignment is inertial.
+pub unsafe extern "C" fn yavs_rt_drive_bit(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    delay: u64,
+    code: u64,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    let (inertial, code) = (code & 0x100 != 0, code & !0x100);
+    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code) } {
+        return GO;
+    }
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.drive_bit(
+            &mut (*mem).fr,
+            pc,
+            driver,
+            [lo, len],
+            delay as i64,
+            code,
+            inertial,
+        )
+    }));
+    unsafe { stepped(envp, mem, pc, r) }
+}
+
 /// `TierHost::wait_suspend` for the `WaitOn` at `pc` and the `Suspend` after it.
 pub unsafe extern "C" fn yavs_rt_wait(
     env: *mut c_void,
@@ -630,6 +806,7 @@ pub unsafe extern "C" fn yavs_rt_wait(
     lo: u64,
     len: u64,
 ) -> u32 {
+    cb(Cb::Wait);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if unsafe { (*envp).host.wait_again(pc, [lo, len]) } {
@@ -654,6 +831,7 @@ pub extern "C" fn yavs_rt_wait_on(
     lo: u64,
     len: u64,
 ) -> u32 {
+    cb(Cb::WaitOn);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     if unsafe { (*envp).host.wait_on_again([lo, len]) } {
@@ -674,6 +852,7 @@ pub extern "C" fn yavs_rt_wait_same(
     _lo: u64,
     _len: u64,
 ) -> u32 {
+    cb(Cb::WaitSame);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -684,8 +863,13 @@ pub extern "C" fn yavs_rt_wait_same(
     }
 }
 
+/// `depth` of `yavs_rt_native` with this bit set: a frame-mode function's call at the pc in the
+/// low 32 bits (`TierHost::native_frame`).
+pub const NATIVE_FRAME_MODE: u64 = 1 << 63;
+
 /// `TierHost::native_direct` for a `CallNative` of a native frame: `cells` (`n`) are the
-/// argument cells, `depth` the frame index of the calling native frame. Returns 0 where the
+/// argument cells, `depth` the frame index of the calling native frame (or `NATIVE_FRAME_MODE`
+/// and the pc of a frame-mode caller). Returns 0 where the
 /// interpreter must execute the instruction, 1 when the native ran, 2 when it ran and the
 /// process ends (compiled code leaves at the next instruction); bit 8 says the native returned
 /// a value, written to `out`.
@@ -698,14 +882,20 @@ pub extern "C" fn yavs_rt_native(
     depth: u64,
     out: *mut u64,
 ) -> u32 {
-    // SAFETY: as in `yavs_rt_step`; `cells` holds `n` words of the calling native frame (an
-    // `alloca` of the compiled code), `out` one word.
+    cb(Cb::Native);
+    // SAFETY: as in `yavs_rt_step`; `cells` holds `n` words of the caller (an `alloca` of the
+    // compiled code), `out` one word.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let epoch = unsafe { (*mem).fr.heap_epoch };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         let cells = std::slice::from_raw_parts(cells, n as usize);
         let env = &mut *envp;
+        if depth & NATIVE_FRAME_MODE != 0 {
+            return env
+                .host
+                .native_frame(&mut (*mem).fr, depth as u32, native, cells);
+        }
         let w = env
             .windows
             .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
@@ -747,6 +937,7 @@ pub extern "C" fn yavs_rt_troot(
     desc: *const u8,
     n: u64,
 ) -> u32 {
+    cb(Cb::Troot);
     // SAFETY: as in `yavs_rt_step`; compiled code checked `n` readable bytes at `desc`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -775,6 +966,7 @@ pub extern "C" fn yavs_rt_troot(
 /// `TierHost::end_stmt`: the end of a statement of a native frame whose temporaries start at
 /// `base`, while temporaries are recorded for the collector.
 pub extern "C" fn yavs_rt_endstmt(env: *mut c_void, mem: *mut Mem, base: u64) {
+    cb(Cb::Endstmt);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
     unsafe { (*mem).sync(&mut *(*envp).host) };
@@ -808,6 +1000,7 @@ pub extern "C" fn yavs_rt_xstep(
     nout: u32,
     temp_base: u64,
 ) -> u32 {
+    cb(Cb::Xstep);
     // SAFETY: as in `yavs_rt_step`; `ins` holds `nin` words, `outs` `nout`, the index arrays as
     // many `u32`, all of the calling native frame (allocas and constants of compiled code).
     let envp = env as *mut Env<'_>;
@@ -861,6 +1054,7 @@ pub unsafe extern "C" fn yavs_rt_lcopy(
     s0: u64,
     n: u64,
 ) {
+    cb(Cb::Lcopy);
     let blocks = |b: &[u8], out: &mut [[u64; 4]]| {
         for (o, c) in out.iter_mut().zip(b.as_chunks::<32>().0) {
             *o = std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j])));
@@ -896,6 +1090,58 @@ pub unsafe extern "C" fn yavs_rt_memeq(a: *const u8, b: *const u8, n: u64) -> u6
         u64::from(
             std::slice::from_raw_parts(a, n as usize) == std::slice::from_raw_parts(b, n as usize),
         )
+    }
+}
+
+/// The plane block of `groups` groups of eight `std_ulogic` codes at `codes`, as `Inst::SigRead`
+/// of up to 64 elements makes it: the four planes (element 0 in bit 0) masked by `mask` into the
+/// 32 bytes at `out`. Pure, no host state: compiled code calls it where it does not know the
+/// length (`Gen::sig_read_block`).
+pub unsafe extern "C" fn yavs_rt_codes(codes: *const u8, groups: u64, mask: u64, out: *mut u64) {
+    let mut planes = [0u64; 4];
+    for j in 0..groups as usize {
+        // SAFETY: the caller checked `groups * 8` readable bytes at `codes`.
+        let w = unsafe { std::ptr::read_unaligned(codes.add(8 * j).cast::<u64>()) };
+        for (p, plane) in planes.iter_mut().enumerate() {
+            let bits = (w >> p) & 0x0101_0101_0101_0101;
+            *plane |= (bits.wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * j);
+        }
+    }
+    for (p, plane) in planes.iter().enumerate() {
+        // SAFETY: the caller checked 32 writable bytes at `out`.
+        unsafe { std::ptr::write_unaligned(out.add(p), plane & mask) };
+    }
+}
+
+/// `Inst::SigRead` of `n` elements from element `bit0` of the `nblk` plane blocks of a kernel
+/// signal at `src`: the planes of the elements, four words per 64 elements, the bits past `n`
+/// zero, as `Ctx::read_into` writes them to `dst`. Pure, no host state: compiled code calls it
+/// where the signal keeps no codes or the read is wider than 64 elements.
+pub unsafe extern "C" fn yavs_rt_planes(
+    src: *const u64,
+    nblk: u64,
+    bit0: u64,
+    n: u64,
+    dst: *mut u64,
+) {
+    for c in 0..n.div_ceil(64) {
+        let k = (n - c * 64).min(64);
+        let from = bit0 + c * 64;
+        let (w, sh) = ((from >> 6) as usize, from & 63);
+        let mask = if k == 64 { !0 } else { (1u64 << k) - 1 };
+        for p in 0..4usize {
+            // SAFETY: compiled code checked that `bit0 + n` lies within the signal's `nblk`
+            // blocks and that `dst` has `n.div_ceil(64)` blocks.
+            unsafe {
+                let lo = *src.add(w * 4 + p) >> sh;
+                let hi = if sh != 0 && (w as u64 + 1) < nblk {
+                    *src.add((w + 1) * 4 + p) << (64 - sh)
+                } else {
+                    0
+                };
+                *dst.add(c as usize * 4 + p) = (lo | hi) & mask;
+            }
+        }
     }
 }
 
@@ -944,6 +1190,41 @@ pub unsafe fn step_in(env: *mut Env<'_>, mem: *mut Mem, pc: u32) -> u32 {
 }
 
 impl Mem {
+    /// The object `a` points into, as its start and length, where `find` reaches it (reading),
+    /// and the slots of the native frames between the interpreter's top frame and frame
+    /// `depth` (registered in `nslots`; a closed frame is not there).
+    fn span(&self, a: u64, depth: u64) -> Option<(*const u8, u64)> {
+        let hi = a >> 32;
+        let fr = &self.fr;
+        let (base, len) = if hi == fr.frame_hi {
+            (fr.slots.cast_const(), fr.slots_len)
+        } else if hi == u64::from(space::TEMP) << 29 {
+            (fr.temp.cast_const(), fr.temp_len)
+        } else if hi == u64::from(space::INST) << 29 {
+            (fr.inst, fr.inst_len)
+        } else if hi >> 29 == u64::from(space::FRAME) {
+            let idx = hi & ((1 << 29) - 1);
+            if idx <= fr.frame || idx > depth || self.nslots.is_null() {
+                return None;
+            }
+            // SAFETY: the table has an entry for every frame index up to the depth limit and
+            // the entries of frames above the interpreter's top frame and up to `depth` are those
+            // of live native frames (their entry writes them, closed frames write length 0).
+            let e = unsafe { *self.nslots.add(idx as usize) };
+            if e.len == 0 {
+                return None;
+            }
+            (e.ptr.cast_const(), e.len)
+        } else {
+            let o = &self.objs[obj_at(hi)];
+            if o.hi != hi {
+                return None;
+            }
+            (o.ptr.cast_const(), o.len)
+        };
+        ((a & 0xffff_ffff) <= len).then_some((base, len))
+    }
+
     /// The host pointer to `n` bytes at address `a` plus `extra` where they lie in the frame's
     /// slots, the temporary area, (reading) the instance data or a cached object.
     pub fn find(&self, a: u64, extra: u64, n: u64, write: bool) -> Option<*mut u8> {
@@ -978,6 +1259,7 @@ pub unsafe extern "C" fn yavs_rt_host(
     n: u64,
     write: u32,
 ) -> *mut u8 {
+    cb(Cb::Host);
     // SAFETY: as in `yavs_rt_step`.
     let m = unsafe { &*mem };
     if let Some(p) = m.find(a, extra, n, write != 0) {
@@ -991,6 +1273,99 @@ pub unsafe extern "C" fn yavs_rt_host(
     let m = unsafe { &*mem };
     m.find(a, extra, n, write != 0)
         .unwrap_or(std::ptr::null_mut())
+}
+
+/// `yavs_rt_scan(env, mem, ctl, dope, base, i0, x, e, delta, out)`: the iterations of a search loop
+/// (`yavs_interp::search_loops`) compiled code is at the head of, as the interpreter runs them
+/// (`yavs_interp::scan_bytes`); `ctl` packs the shape (`scan_ctl`). The descriptor and the array's
+/// object are looked up once; `out` gets the index, the element, the exit taken and the iterations.
+/// Returns the iterations done, 0 where the generic code must go on (memory the table does not
+/// reach, an index outside the bounds): it errs at the same iteration then.
+pub unsafe extern "C" fn yavs_rt_scan(
+    env: *mut c_void,
+    mem: *mut Mem,
+    ctl: u64,
+    dope: u64,
+    base: u64,
+    i0: i64,
+    x: i64,
+    e: i64,
+    delta: i64,
+    out: *mut i64,
+    depth: u64,
+) -> u32 {
+    cb(Cb::Scan);
+    let shape = yavs_interp::ScanShape {
+        stride: (ctl >> 8) as u32,
+        w: match ctl >> 40 & 3 {
+            0 => yavs_ir::Width::B1,
+            1 => yavs_ir::Width::B4,
+            _ => yavs_ir::Width::B8,
+        },
+        m: (ctl >> 42 & 7) as u8,
+        m2: (ctl >> 45 & 7) as u8,
+        idx_left: ctl >> 48 & 1 != 0,
+        delta,
+    };
+    // The object `a` points into, looked up in the object table when it is not in the view.
+    let span = |a: u64| {
+        // SAFETY: as in `yavs_rt_step`.
+        if let Some(s) = unsafe { &*mem }.span(a, depth) {
+            return Some(s);
+        }
+        if unsafe { yavs_rt_obj(env, mem, a, 0) } == 0 {
+            return None;
+        }
+        // SAFETY: as above.
+        unsafe { &*mem }.span(a, depth)
+    };
+    let Some((dp, dlen)) = span(dope) else {
+        return 0;
+    };
+    let at = (dope & 0xffff_ffff) + (ctl & 0xff) * 24;
+    if at + 24 > dlen {
+        return 0;
+    }
+    // SAFETY: the 24 bytes at `dp + at` lie in the descriptor's object (checked).
+    let word =
+        |k: usize| unsafe { std::ptr::read_unaligned(dp.add(at as usize + k * 8).cast::<i64>()) };
+    let dim = (word(0), word(1), word(2) as u64);
+    let Some((bp, blen)) = span(base) else {
+        return 0;
+    };
+    // SAFETY: the object's `blen` bytes at `bp` are what `Mem::find` hands out for reading;
+    // nothing runs between here and the end of the scan that could free them.
+    let bytes = unsafe { std::slice::from_raw_parts(bp, blen as usize) };
+    let from = yavs_interp::ScanFrom {
+        i0,
+        x,
+        e,
+        limit: 1 << 24,
+    };
+    let sc = yavs_interp::scan_bytes(&shape, dim, bytes, base & 0xffff_ffff, from);
+    // SAFETY: `out` is four words of the caller.
+    unsafe {
+        *out = sc.i;
+        *out.add(1) = sc.ch as i64;
+        *out.add(2) = i64::from(sc.hit);
+    }
+    sc.iters
+}
+
+/// The `ctl` word of `yavs_rt_scan` for a search loop.
+pub fn scan_ctl(l: &yavs_interp::SearchLoop) -> u64 {
+    let s = &l.shape;
+    let w = match s.w {
+        yavs_ir::Width::B1 => 0,
+        yavs_ir::Width::B4 => 1,
+        _ => 2,
+    };
+    u64::from(l.dim)
+        | u64::from(s.stride) << 8
+        | w << 40
+        | u64::from(s.m) << 42
+        | u64::from(s.m2) << 45
+        | u64::from(s.idx_left) << 48
 }
 
 /// `Inst::LayoutOf` of an array whose element layout is fixed (`StaticLayout::Array`): reads
@@ -1009,6 +1384,7 @@ pub unsafe extern "C" fn yavs_rt_layout(
     el_count: u64,
     logic: u32,
 ) -> u32 {
+    cb(Cb::Layout);
     // SAFETY: the pointers are the ones compiled code was given.
     let p = unsafe { yavs_rt_host(env, mem, desc, 0, u64::from(dims) * 24, 0) };
     if p.is_null() {
@@ -1097,6 +1473,7 @@ pub unsafe extern "C" fn yavs_rt_fast(
     a: u64,
     b: u64,
 ) -> u32 {
+    cb(Cb::Fast);
     match op {
         FAST_ALLOC => {
             // SAFETY: as in `yavs_rt_step`.
@@ -1204,12 +1581,16 @@ pub unsafe fn yavs_rt_obj(env: *mut c_void, mem: *mut Mem, addr: u64, write: u32
             // The same object found before (by a `Deref`, for the other direction) keeps the
             // access value it was found for.
             let e = &mem.objs[obj_at(hi)];
-            let h = if e.hi == hi { e.h } else { 0 };
+            let (h, w) = if e.hi == hi {
+                (e.h, e.w | u64::from(write))
+            } else {
+                (NO_H, u64::from(write))
+            };
             mem.put_obj(Obj {
                 hi,
                 ptr: p,
                 len: len as u64,
-                w: u64::from(write),
+                w,
                 h,
             });
             1
@@ -1236,7 +1617,7 @@ pub fn enter(
     // This thread's `Mem`, or a new one inside an activation that holds it.
     let p = MEM.replace(std::ptr::null_mut());
     let mut mem = if p.is_null() {
-        Box::new(Mem::of(TierFrame::default()))
+        new_mem()
     } else {
         // SAFETY: `MEM` holds a `Box` of this thread's that nothing else uses (taken above).
         unsafe { Box::from_raw(p) }
@@ -1249,6 +1630,12 @@ pub fn enter(
         Ok(next) => next,
         Err(p) => resume_unwind(p),
     }
+}
+
+/// A new `Mem` (out of line: its 10 KB would otherwise be a stack probe in every `enter`).
+#[inline(never)]
+fn new_mem() -> Box<Mem> {
+    Box::new(Mem::of(TierFrame::default()))
 }
 
 thread_local! {
@@ -1287,8 +1674,8 @@ pub fn enter_on(
         mem.load_objs(&st.words);
         // The heap objects it may write count as written in this activation.
         if mem.fr.flags & yavs_interp::TIER_STAMPS != 0 {
-            for o in mem.objs {
-                if o.hi != u64::MAX && o.w != 0 && life(o.hi) == Life::Heap {
+            for o in mem.in_use() {
+                if o.w != 0 && life(o.hi) == Life::Heap {
                     host.wrote(o.hi << 32);
                 }
             }
@@ -1349,7 +1736,7 @@ pub fn call(
     }
     let p = MEM.replace(std::ptr::null_mut());
     let mut mem = if p.is_null() {
-        Box::new(Mem::of(TierFrame::default()))
+        new_mem()
     } else {
         // SAFETY: as in `enter`.
         unsafe { Box::from_raw(p) }
@@ -1473,6 +1860,14 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::Store { addr, src, w } => [vec![addr], pair(src, w)].concat(),
         Inst::Copy { dst, src, bytes } => vec![dst, src, bytes],
         Inst::Pos { dst, dope, idx, .. } => vec![dst, dope, idx],
+        Inst::SlicePos {
+            dst,
+            dope,
+            left,
+            right,
+            dir,
+            ..
+        } => vec![dst, dope, left, right, dir],
         Inst::Field {
             dst, base, layout, ..
         } => vec![dst, base, layout],
@@ -1488,6 +1883,8 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
             n,
         } => vec![dst, dst_off, src, src_off, n],
         Inst::LSet { base, idx, v } => vec![base, idx, v],
+        Inst::LEq { dst, a, b, n } => vec![dst, a, b, n],
+        Inst::LFill { base, idx, n, v } => vec![base, idx, n, v],
         Inst::SigVal {
             dst, offset, len, ..
         } => vec![dst, Reg(dst.0.saturating_add(1)), offset, len],
@@ -1547,6 +1944,21 @@ pub fn native_kind(
     yavs_interp::edge_native(sym).map(NativeKind::Edge)
 }
 
+/// A `CallNative` of a frame-mode function that runs through `TierHost::native_frame`: a native
+/// `yavs_interp::direct_native` allows, its operands in the frame.
+pub fn frame_direct(prog: &Program, f: &Func, i: &Inst) -> bool {
+    let Inst::CallNative { native, args, dst } = *i else {
+        return false;
+    };
+    let n = f.reg_ty.len() as u32;
+    prog.natives
+        .get(native)
+        .is_some_and(|n| yavs_interp::direct_native(&n.symbol))
+        && f.regs(args)
+            .is_some_and(|rs| rs.iter().all(|r| r.0 < n) && rs.len() <= 8)
+        && dst.is_none_or(|d| d.0 < n)
+}
+
 /// The address `AddrOf` yields in `space`, without the frame index for `Frame`; `None` where
 /// the interpreter computes it (static links, an index beyond the address format).
 pub fn addr_const(space: AddrSpace, off: u32) -> Option<u64> {
@@ -1578,6 +1990,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::Copy { .. }
             | Inst::Fill { .. }
             | Inst::Pos { .. }
+            | Inst::SlicePos { .. }
             | Inst::Index { .. }
             | Inst::Field { .. }
             | Inst::Bin { .. }
@@ -1614,6 +2027,7 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::SigReadScalar { .. }
             | Inst::SigLastValue { .. }
             | Inst::SigAttr { .. }
+            | Inst::Edge { .. }
             | Inst::Driving { .. }
             | Inst::DrivingValue { .. }
             | Inst::Drive { .. }
@@ -1645,6 +2059,19 @@ pub fn resumes(prog: &Program, f: &Func, i: &Inst) -> bool {
                 | Inst::Suspend { .. }
         ),
     }
+}
+
+/// The descriptor bytes and layout words of a type whose layout a frame slot keeps
+/// (`yavs_ir::opt` `layout_cache`).
+pub fn layout_shape(prog: &Program, ty: yavs_ir::TyId) -> Option<(u32, u32)> {
+    use yavs_ir::Ty;
+    let words = match prog.types.get(ty)? {
+        Ty::Record { fields } => 2 + fields.len() as u32,
+        Ty::Array { .. } => 4,
+        _ => return None,
+    };
+    let dsz = u32::try_from(Ty::desc_size(&prog.types, ty)?).ok()?;
+    (dsz > 0).then_some((dsz, words))
 }
 
 /// A `LayoutOf` result the generator can build: fixed words, or an array whose element
@@ -1711,7 +2138,7 @@ pub fn static_layout(prog: &Program, ty: yavs_ir::TyId) -> Option<StaticLayout> 
 
 /// What the generator knows about a register's value within a basic block.
 #[derive(Clone, Copy)]
-pub enum Known {
+pub enum Known<V = ()> {
     Int(i64),
     /// The address of byte `.0` of the frame's slots.
     Frame(u64),
@@ -1721,6 +2148,24 @@ pub enum Known {
     Inst(u64),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
+    /// An address in a heap object (what a `Deref` makes, or an index into it): not in a frame, the
+    /// temporary area, the instance data or a constant. In a native frame, the object itself while
+    /// nothing that could free or move it ran (`ObjRef`).
+    Heap(Option<ObjRef<V>>),
+}
+
+/// An object a `Deref` found in a native frame, as the generated code holds it: valid up to the
+/// next instruction outside `keeps_objects` (the facts are dropped there, `Gen::func`), always
+/// writable (a `Deref` hit requires it). Its bytes are `ptr[..len]`; a register that points into
+/// it has the address `hi | off`.
+#[derive(Clone, Copy)]
+pub struct ObjRef<V> {
+    pub ptr: V,
+    pub len: V,
+    /// The high half of the addresses (low 32 bits zero).
+    pub hi: V,
+    /// The low 32 bits of this register's address: the offset in the object.
+    pub off: V,
 }
 
 /// The registers `f` defines exactly once, by a `Const` or `ConstF` (its bits), and their values.
@@ -1795,13 +2240,24 @@ pub fn preloads(f: &Func) -> Vec<Preload> {
 }
 
 /// Update `known` for what `i` writes.
-pub fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
+pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: &Inst) {
     let get = |r: Reg| known.get(r.0 as usize).copied().flatten();
     // Before the definitions clear what they overwrite.
     let len_known = match *i {
         Inst::SigVal { len, .. } => match get(len) {
             Some(k @ Known::Int(_)) => Some(k),
             _ => fixed.get(len.0 as usize).copied().flatten().map(Known::Int),
+        },
+        _ => None,
+    };
+    let off_known = match *i {
+        Inst::SigVal { offset, .. } => match get(offset) {
+            Some(Known::Int(v)) => Some(Known::<V>::Int(v)),
+            _ => fixed
+                .get(offset.0 as usize)
+                .copied()
+                .flatten()
+                .map(Known::Int),
         },
         _ => None,
     };
@@ -1823,6 +2279,7 @@ pub fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
             off,
         } => Some((dst, Known::Inst(off.into()))),
         Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
+        Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
         Inst::Index {
@@ -1849,6 +2306,7 @@ pub fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
                 }
                 // An offset past 4 GiB leaves the block through the instruction's own exit.
                 (Some(Known::Temp), _) => Some((dst, Known::Temp)),
+                (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
                 _ => None,
             }
         }
@@ -1868,12 +2326,19 @@ pub fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
     {
         *x = Some(k);
     }
-    // The length word of a signal reference is the `len` it was made with.
-    if let Inst::SigVal { dst, .. } = *i
+    // The length word of a signal reference is the `len` it was made with, the first word the
+    // signal and the offset.
+    if let Inst::SigVal { dst, sig, .. } = *i
         && let Some(Known::Int(l)) = len_known
         && let Some(x) = known.get_mut(dst.0 as usize + 1)
     {
         *x = Some(Known::Int(l));
+        if let Some(Known::Int(o)) = off_known
+            && let Some(0..=0xffff_ffff) = Some(o)
+            && let Some(x) = known.get_mut(dst.0 as usize)
+        {
+            *x = Some(Known::Int(i64::from(sig) << 32 | o));
+        }
     }
 }
 

@@ -9,6 +9,7 @@ pub mod callout;
 mod error;
 mod kernel;
 mod process;
+pub mod profile;
 mod signal;
 mod time;
 mod value;
@@ -16,10 +17,13 @@ mod value;
 pub use builder::{Builder, Converter, EdgeTrigger, PortConv, PortMode, ProcFlags};
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
-    Config, EndReason, Hook, Interrupt, Observer, Phase, Report, RunStatus, SimControl, Stats,
-    WakeId,
+    Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer, Phase, ProcWait,
+    Report, RunStatus, SigView, SimControl, Stats, StuckProc, StuckReport, StuckSignal, WakeId,
+    progress,
 };
-pub use process::{CopyProcess, Ctx, LiveSink, ProcId, Process, Severity};
+pub use process::{
+    CopyProcess, Ctx, EDGE_LEVEL, LiveSink, ProcId, Process, Severity, ToggleProcess, edge_key,
+};
 pub use signal::{
     DelayMode, DriverId, ForceMode, GuardKind, Range, Resolution, Resolver, SigRef, SignalId,
 };

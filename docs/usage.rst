@@ -46,8 +46,34 @@ otherwise.
   ``init``, ``simulate``) and the total to standard error when the simulation ends, for example
   ``time-report: simulate wall=1.204 cpu=1.19``. CPU time is for the whole process, in 10 ms
   steps, and is shown as ``n/a`` on platforms that do not report it.
+* ``--profile[=FILE]`` finds where a long simulation spends its time. A sampler takes 1000
+  samples a second and, when the run ends, prints the busiest processes (instance path, source
+  file and line), instances, subprograms and source lines to standard error, for example
+  ``profile:   93.2     2280  :top:dut:hot (dut.vhd:15)``. Give a file name to also get all rows
+  as JSON. Press Ctrl-C to stop a long run: the profile of the time so far is printed (and
+  written) and the exit status is 130. The output of the design is unchanged and the run is slowed by by about 2 to 3 percent.
+  Source lines are known for interpreted code only (``--tier=interp``, or code that
+  ``--tier=auto`` has not compiled yet); a small subprogram is inlined into its caller and
+  counts as the caller in the subprogram table. With ``--threads N`` a sample counts every
+  thread that runs a process, so shares can add up to more than 100 percent. ``--profile``
+  cannot be combined with ``--dap`` (``E0125``).
 * ``--threads N`` evaluates processes on N threads (default 1). The output is identical for any
   N. ``--shuffle[=SEED]`` randomizes the process order to find testbenches that depend on it.
+* ``--max-deltas N`` sets how many delta cycles may run at one simulated time (default 10000)
+  before the run fails with ``E3002``. The error names the processes and signals of the loop and
+  how they wake each other; raise the limit only for a design that needs more deltas.
+* ``--hang-report[=MAX]`` explains a simulation that did not finish. When the run ends at
+  ``--stop-time`` without ``stop`` or ``finish``, or runs out of events while a process still waits
+  for a signal, it prints warning ``W3101``: how many processes wait for a timeout, for signals that
+  can still change, or can never run again, what those processes wait for, and for a signal nothing
+  can change its value, last event and drivers ("it has no driver" is the usual answer). A clock
+  that stopped toggling while a process waits for its edge is named. At most MAX processes are
+  listed per part (default 30). Without the option nothing is printed at those ends. On Unix,
+  ``kill -USR1 PID`` prints the same report of a running simulation, which then goes on. A
+  process with no wait statement and no sensitivity list never suspends, so time cannot advance;
+  ``W3102`` warns about it before time 0.
+* ``--shuffle[=SEED]`` prints its seed at the start of the run and repeats it in the diagnostics
+  of the run; ``--shuffle=SEED`` replays the same order.
 * ``--gc-threshold SIZE`` sets how much memory access values may allocate (plain bytes, or a
   ``k``, ``m`` or ``g`` suffix; at least 1) before the heap is collected, during elaboration
   and in the simulation. A collection also waits until as much was allocated as the last one
@@ -141,6 +167,10 @@ Waveforms
   sized after elaboration. Records are scopes with one entry per field, and arrays of anything
   other than ``std_logic`` or ``bit`` are scopes with one entry per element (``mem(2)``,
   ``grid(1,2)``). Variables are only recorded with ``--wave-variables``.
+* A port that is connected to a signal, and the signal itself, are one value: the file holds
+  its data once and each name (the signal and the port at every level of the hierarchy) points
+  to it, so a viewer shows all of them with the same changes and the file does not grow with
+  the depth of the hierarchy.
 * FST has no delta cycles: several deltas at one time step give one change with the final
   value. The file is the same for any ``--threads``.
 * ``--wave-include GLOB`` and ``--wave-exclude GLOB`` (repeatable) choose what is recorded by
@@ -365,10 +395,62 @@ its ``report`` text, as a note, every time it is hit, and nothing without one. A
 comment holds one statement, which may continue on the comment lines below it up to its ``;``.
 Without ``--psl`` such comments are comments; pass the option to ``analyze``, ``elab`` and ``run``.
 
-Everything else (``property`` and ``sequence`` declarations, sequences such as
-``{a; b}``, other operators, built-in functions such as ``rose``, directives without a clock,
-``restrict``, ``fairness`` and verification units) is skipped with warning ``W0004``, once per
-design unit; the rest of the design runs as usual.
+Built-in functions ``prev``, ``stable``, ``rose``, ``fell``, ``isunknown``, ``countones``,
+``onehot`` and ``onehot0`` work inside the conditions.
+
+Sequences in braces run in ``cover``, in ``assert never``, and on either side of ``|->`` and
+``|=>``:
+
+.. code-block:: text
+
+   c2: cover {req; busy[*2 to 4]; done} report "transfer";
+   p6: assert never {valid; not ready[*3]};
+   p7: assert always {start; req} |=> {busy[*1 to 3]; ack};
+   p8: assert always {write} |-> next[2] ready;
+
+A boolean stands for a sequence of one on the left of ``|->`` and ``|=>``, and with a repetition
+without braces (``never a[*3]``); ``[*n]`` first in a sequence means ``true[*n]``.
+A sequence has concatenation ``;``, fusion ``:``, alternation ``|``, ``&&`` (both match and end
+together), ``&``, ``within``, and ``[*]``, ``[+]``, ``[*n]``, ``[*m to n]``, ``[*m to inf]``,
+``[=n]`` and ``[->n]`` repetition; ``|``, ``&``, ``&&`` and ``within`` need braces when mixed.
+A ``cover`` hit and a failing ``never`` are reported at the tick where a match ends. The right
+side of ``|->`` and ``|=>`` is a boolean or a sequence that must match from the tick the left
+side ends (``|->``) or the tick after (``|=>``): it fails at the tick where it can no longer
+match. Without ``always`` a directive starts at the first clock tick only. One directive may
+test at most 6 different conditions on its right side; a longer one is skipped with ``W0004``.
+
+Properties may also use ``next_a``, ``next_e``, ``next_event``, ``next_event_a``, ``next_event_e``
+(``next_event(c)(p)`` counts the current cycle), ``until``, ``until_``, ``before``, ``before_``,
+``sync_abort``, ``abort``, ``async_abort``, ``<->`` and ``iff``, ``and`` and ``or`` of properties, nested ``next`` and
+``always``, and a property on the right of ``|->`` and ``|=>``:
+
+.. code-block:: text
+
+   p10: assert always (req -> next_e[1 to 4] (ack = '1'));
+   p11: assert always {start} |=> (busy until done);
+
+These are weak: an obligation still open when the run ends is not a failure. A failure is
+reported at the tick where the obligation can no longer be met, once per tick however many
+starts fail; the parts of a conjunction (``next_a``) fail separately. The strong forms
+(``eventually!``, ``next!``, ``until!``, ``before!``, a sequence followed by ``!``) are skipped
+with ``W0004``. ``abort`` and ``async_abort`` are checked at the clock tick like ``sync_abort``,
+not between ticks as the PSL standard defines the asynchronous abort.
+
+Sequences and properties can be named, with ``boolean``, ``const``, ``sequence`` and ``property`` formals,
+and used where a sequence or a whole property is expected:
+
+.. code-block:: text
+
+   sequence handshake (boolean r, a) is {r; a};
+   property ack_follows (boolean r, a) is always (r -> next a);
+   c3: cover handshake(req = '1', ack = '1');
+   p9: assert ack_follows(req = '1', ack = '1');
+
+Everything else (other ``property`` and ``sequence`` declarations, other operators such as ``eventually!``, the ``next`` and ``ended`` functions, directives without a clock
+and verification units) is skipped with warning ``W0004``, once per design unit; the rest of
+the design runs as usual. ``restrict``, ``restrict_guarantee``, ``assume_guarantee``, ``fairness``, ``strong fairness`` and directives that
+call ``nondet`` or ``nondet_vector`` are for formal tools only: they are skipped without a
+warning, as they have nothing to check in a simulation.
 
 Diagnostics
 -----------

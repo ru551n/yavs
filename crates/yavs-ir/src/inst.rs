@@ -192,6 +192,40 @@ pub enum AttrKind {
     LastActive,
 }
 
+/// The clock edge an [`Inst::Edge`] tests (#632). Signal values are `std_ulogic` codes; BIT and
+/// BOOLEAN signals hold the codes of '0' and '1'.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum EdgeKind {
+    /// `falling_edge`: an event, `To_X01` of the value '0' and of `'last_value` '1'.
+    Falling = 0,
+    /// `rising_edge`: an event in this cycle, `To_X01` of the value '1' and of `'last_value` '0'.
+    Rising = 1,
+    /// `x'event and x = '0'`.
+    To0 = 2,
+    /// `x'event and x = '1'`: an event and the value exactly '1' (whatever it was before).
+    To1 = 3,
+}
+
+impl EdgeKind {
+    /// The kernel's code of the test (`yavs_kernel::Ctx::edge_by`): bit 0 rising, bit 1 an
+    /// event ending on the level.
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Whether the edge ends on '1'.
+    pub fn rising(self) -> bool {
+        matches!(self, EdgeKind::Rising | EdgeKind::To1)
+    }
+
+    /// Whether it is an event ending on the level ([`EdgeKind::To1`], [`EdgeKind::To0`]), not the
+    /// IEEE function.
+    pub fn to_level(self) -> bool {
+        matches!(self, EdgeKind::To1 | EdgeKind::To0)
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DriveMode {
     Transport,
@@ -304,6 +338,19 @@ pub enum Inst {
         dim: u8,
         idx: Reg,
         what: CheckMsgId,
+    },
+    /// The start position of the slice `left` to or downto `right` (`dir` 0 or 1) in dimension 0
+    /// of the descriptor `dope`: 0 for a null slice, which names no element and checks nothing;
+    /// otherwise the checked position (as [`Inst::Pos`], message `what`) of `left`, with `right`
+    /// checked the same way and `dir` checked against the array's direction (message `dir_what`).
+    SlicePos {
+        dst: Reg,
+        dope: Reg,
+        left: Reg,
+        right: Reg,
+        dir: Reg,
+        what: CheckMsgId,
+        dir_what: CheckMsgId,
     },
     /// `base + pos * stride`.
     Index {
@@ -496,11 +543,17 @@ pub enum Inst {
         dim: u8,
     },
     /// Layout of `ty` constrained by the descriptor at `desc`, written to temporary memory as
-    /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays).
+    /// `[size, align, offsets...]` (records) or `[size, align, stride, count]` (arrays). With
+    /// `cache`, a process's frame bytes at that offset keep the last layout of `ty` (the
+    /// optimiser's `layout_cache`): a word that is 0 until a layout is kept, then 1, a copy of
+    /// the descriptor bytes and the layout words. A descriptor equal to the copy makes the result
+    /// the address of the kept words in the frame, which no statement ends; the interpreter may
+    /// leave the bytes alone, a tier that keeps them checks the descriptor each time.
     LayoutOf {
         dst: Reg,
         ty: TyId,
         desc: Reg,
+        cache: Option<u32>,
     },
     /// Per-dimension length check of the value descriptor `dope` against the target `want`.
     SubtypeCheck {
@@ -647,6 +700,14 @@ pub enum Inst {
     SigAttr {
         dst: Reg,
         kind: AttrKind,
+        sig: Reg,
+    },
+    /// The clock-edge test `kind` (0 or 1) of the one element `sig` refers to, a `std_ulogic`,
+    /// BIT or BOOLEAN signal: the one instruction every clock-edge idiom lowers to
+    /// (`rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...).
+    Edge {
+        dst: Reg,
+        kind: EdgeKind,
         sig: Reg,
     },
     /// `'driving` of driver slot `driver`.
@@ -837,6 +898,20 @@ impl Inst {
                 d(dst, i);
                 f(dope, Use, p);
                 f(idx, Use, i);
+            }
+            Inst::SlicePos {
+                dst,
+                dope,
+                left,
+                right,
+                dir,
+                ..
+            } => {
+                d(dst, i);
+                f(dope, Use, p);
+                f(left, Use, i);
+                f(right, Use, i);
+                f(dir, Use, i);
             }
             Inst::Index { dst, base, pos, .. } => {
                 d(dst, p);
@@ -1096,7 +1171,9 @@ impl Inst {
                 f(dst, Use, p);
                 f(sig, Use, s);
             }
-            Inst::SigReadScalar { dst, sig } | Inst::SigAttr { dst, sig, .. } => {
+            Inst::SigReadScalar { dst, sig }
+            | Inst::SigAttr { dst, sig, .. }
+            | Inst::Edge { dst, sig, .. } => {
                 d(dst, i);
                 f(sig, Use, s);
             }

@@ -16,6 +16,7 @@ mod hier;
 pub mod libstage;
 mod pkgcall;
 mod sim;
+mod stuck;
 mod value;
 mod walk;
 mod whole;
@@ -23,12 +24,14 @@ mod whole;
 #[cfg(test)]
 mod tests;
 
+pub use callcache::stats as call_cache_stats;
 pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
 pub use hier::{
     Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
     ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
 pub use sim::{Built, Ir};
+pub use stuck::{ProcTable, StuckWhy};
 /// Values in IR memory and back (VHPI variables, #309).
 pub use value::{CellKind, DataLeaf, decode as ir_decode, encode as ir_encode, leaf_locs};
 pub use walk::{load_bodies, load_bodies_in};
@@ -81,6 +84,8 @@ pub mod codes {
     pub const VARIABLE_PORT_OPEN: &str = "E2119";
     /// A TIME unit below the resolution limit appears in the design hierarchy (LRM 5.2.4.2).
     pub const TIME_BELOW_RESOLUTION: &str = "E2120";
+    /// An external name's subtype indication does not match the object it names (LRM 8.7).
+    pub const EXTERNAL_MISMATCH: &str = "E2121";
     /// Not implemented yet in yavs (names the slice or milestone).
     pub const NOT_IMPLEMENTED: &str = "E9999";
     /// Internal error: a broken invariant ("this is a bug in yavs").
@@ -168,6 +173,28 @@ pub struct ProcInst {
     /// source parts, one per part of `lsps[0]` (the target) and of the same length and kind.
     /// The kernel copies them itself (`yavs_kernel::CopyProcess`, #529).
     pub copy: Option<Vec<(LeafId, yavs_kernel::Range)>>,
+    /// A concurrent `x <= not x after T;` on one scalar element with `T` known now
+    /// (`Walker::toggle_source`): the kernel runs it itself (`yavs_kernel::ToggleProcess`, #440).
+    pub toggle: Option<ProcToggle>,
+    /// A clocked process (it has a `trigger`) whose activation is a function of the signals
+    /// listed here and constants alone (`Db::pure_clocked_reads`): the kernel may skip an
+    /// activation when none of them had an event since the last one
+    /// (`yavs_kernel::Builder::idle_skip`).
+    pub idle: Option<Vec<(LeafId, yavs_kernel::Range)>>,
+    /// The `_guard` process of a guarded block: the signal parts its condition reads. The kernel
+    /// runs it in the update phase of the cycle in which one of them has an event, so GUARD
+    /// changes in that cycle (LRM 11.2; `yavs_kernel::Builder::guard_process`).
+    pub guard: Option<Vec<(LeafId, yavs_kernel::Range)>>,
+}
+
+/// The clock generator `x <= not x after T;` of [`ProcInst::toggle`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcToggle {
+    pub leaf: LeafId,
+    pub elem: u32,
+    /// The delay in femtoseconds, positive.
+    pub delay: i64,
+    pub transport: bool,
 }
 
 /// The trigger of a clocked process ([`ProcInst::trigger`]).

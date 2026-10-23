@@ -1,0 +1,35 @@
+# Release note fragments (user, 2026-10-18); paths below are relative to this file. Each change adds
+# release_notes/news.d/<issue>.<type>.md, so parallel work never edits one shared file. They are
+# collected into release_notes/unreleased.md with `towncrier build --config release_notes/towncrier.toml --version <version>` when
+# releasing, and that file is renamed release_notes/<version>.md.
+[tool.towncrier]
+directory = "news.d"
+filename = "unreleased.md"
+title_format = false
+issue_format = "#{issue}"
+ignore = ["README.md"]
+
+[[tool.towncrier.type]]
+directory = "breaking"
+name = "Breaking changes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "feature"
+name = "Features"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "bugfix"
+name = "Bug fixes"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "doc"
+name = "Documentation"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "misc"
+name = "Miscellaneous"
+showcontent = true

@@ -106,22 +106,23 @@ pub(super) fn expr_into_name(p: &mut Parser, e: Expr, what: &str) -> PResult<Nam
 }
 
 impl Parser<'_> {
+    /// No `nested` here: every recursion back into `expr` (a parenthesis, an aggregate, a call's
+    /// arguments, an operand of `not`) goes through `primary`, which counts it, so one level of
+    /// parentheses is one level of depth, not two (#604).
     pub(super) fn expr(&mut self) -> PResult<Expr> {
-        self.nested(|p| {
-            if p.at(Tok::Cond) {
-                let start = p.bump_span();
-                let operand = p.primary()?;
-                let span = start.to(operand.span);
-                return Ok(Expr {
-                    kind: ExprKind::Unary {
-                        op: UnaryOp::Condition,
-                        operand: Box::new(operand),
-                    },
-                    span,
-                });
-            }
-            p.logical()
-        })
+        if self.at(Tok::Cond) {
+            let start = self.bump_span();
+            let operand = self.primary()?;
+            let span = start.to(operand.span);
+            return Ok(Expr {
+                kind: ExprKind::Unary {
+                    op: UnaryOp::Condition,
+                    operand: Box::new(operand),
+                },
+                span,
+            });
+        }
+        self.logical()
     }
 
     /// A VHDL-2019 `conditional_expression`: `e { when c else e }`. Used for
@@ -604,7 +605,7 @@ impl Parser<'_> {
                     };
                 }
                 Tok::Tick if self.nth(1) != Tok::LParen => n = self.attribute(n)?,
-                Tok::LBracket => n = self.signature_suffix(n)?,
+                Tok::LBracket if !self.psl_no_sig => n = self.signature_suffix(n)?,
                 _ => return Ok(n),
             }
         }

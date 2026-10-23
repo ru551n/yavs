@@ -66,6 +66,7 @@ def load_tests(path=HERE / "tests.toml"):
         t.setdefault("relaxed", False)
         t.setdefault("generics", [])
         t.setdefault("files", [])
+        t.setdefault("data", [])
         t.setdefault("stop", "")
         t.setdefault("vunit", False)
         t.setdefault("ok", "")
@@ -95,7 +96,7 @@ def check_sources(tests):
     """Every source checkout a selected test uses must exist, at its pinned commit. Returns {id: commit}."""
     pins, used, bad, got = fetch_pins(), {}, [], {}
     for t in tests:
-        ids = {t["source"]} | {f["source"] for f in t["files"]}
+        ids = {t["source"]} | {f["source"] for f in t["files"] + t["data"]}
         for sid in ids:
             used.setdefault(sid, []).append(t["name"])
         for m in t["corpus"]:
@@ -161,7 +162,7 @@ def record_driver(t, Y, key):
         runs = [runs[t["nth"]]]  # a testbench the driver runs for several generic sets: the nth
     if len(runs) != 1:
         raise Fail(f"{t['name']}: the driver recorded {len(runs)} runs matching `{t['pick']}`, expected 1 (or give `nth`)")
-    libs, gens, flags, top, stop = {}, [], [], None, ""
+    libs, gens, flags, top, stop, severity = {}, [], [], None, "", ""
     for a in runs[0]["argv"][1:]:
         if a.startswith(("--work=", "--map=")):
             n, _, pth = a.split("=", 1)[1].partition(":")
@@ -170,6 +171,8 @@ def record_driver(t, Y, key):
                 flags.append(n)
         elif a.startswith("--stop-time="):
             stop = a.split("=", 1)[1]
+        elif a.startswith("--exit-severity="):
+            severity = a.split("=", 1)[1]
         elif a.startswith("-g"):
             gens.append(a[2:])
         elif a == "--relaxed":
@@ -181,7 +184,7 @@ def record_driver(t, Y, key):
         else:
             top = a
     toplib = next(f for f in flags if not f.startswith("-"))
-    return [r for r in recs if r["argv"][0] == "analyze"], dict(top=top, toplib=toplib, relaxed="--relaxed" in flags, generics=gens, stop=stop), libs
+    return [r for r in recs if r["argv"][0] == "analyze"], dict(top=top, toplib=toplib, relaxed="--relaxed" in flags, generics=gens, stop=stop, severity=severity), libs
 
 
 def sh(argv, cwd=None, wrap=True, timeout=1800):
@@ -267,6 +270,8 @@ def make_pristine(t, tool, Y, key, dest):
         return _pristine_driver(t, tool, Y, key, dest)
     copy_corpus_libs(t, tool, Y, key, dest)
     (dest / "out").mkdir()
+    for d in t["data"]:  # files the testbench reads at run time from its working directory (the world)
+        shutil.copy(source_root(d["source"]) / d["path"], dest)
     pending = expand_files(t)
     done, skipped = [], []
     while pending:  # fixed point: retry what failed until a pass makes no progress (files given in dependency order pass at once)
@@ -354,6 +359,7 @@ def yavs_script(Y, t, w, tier, sub="run", stop=None):
         a += [f"--tier={tier}"]
         stop = stop or t["stop"]
         a += [f"--stop-time={stop}"] if stop else []
+        a += [f"--exit-severity={t['severity']}"] if t.get("severity") else []
     a += [t["top"]] + gen_args(t, w)
     return f"cd {shlex.quote(str(w))} && " + " ".join(shlex.quote(x) for x in a)
 
@@ -537,7 +543,7 @@ def corpus_key(t):
 
 
 def ok_run(t, c, w):
-    return not w["rc"] and (c.mode != "run" or not t["ok"] or re.search(t["ok"], w["tail"]))
+    return not w["rc"] and (c.mode != "run" or not t["ok"] or w["ok_match"])
 
 
 def measure_group(t, cells, ctx, cores, runs, instr, scratch):
@@ -547,7 +553,7 @@ def measure_group(t, cells, ctx, cores, runs, instr, scratch):
     bad = {}
     for c in cells:
         for _ in range(c.warmups):
-            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, ref=c.tool != "yavs")
+            w = B.timed(c.prepare(ctx, scratch, t), str(scratch), cores, ref=c.tool != "yavs", ok=t["ok"] or None)
             if not ok_run(t, c, w):
                 bad[c.name] = {"rc": w["rc"], "tail": w["tail"]}
                 break

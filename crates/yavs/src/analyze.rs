@@ -12,6 +12,7 @@ use yavs_syntax::Encoding;
 
 use crate::StdArg;
 
+#[cfg_attr(test, derive(Debug))]
 #[derive(ClapArgs)]
 pub struct Args {
     /// Language standard of this file.
@@ -201,14 +202,11 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     let work_lib: Library = libs.get(work).expect("just added").clone();
 
     let rev = match a.std {
+        StdArg::V1993 => LangRev::Vhdl1993,
         StdArg::V2008 => LangRev::Vhdl2008,
         StdArg::V2019 => LangRev::Vhdl2019,
     };
-    let std_name = if matches!(a.std, StdArg::V2008) {
-        "2008"
-    } else {
-        "2019"
-    };
+    let std_name = rev.as_str();
     let mut opts = Options::new(rev, yavs_sem::default_stdlib());
     // Developer check of the analysed-unit cache: every file is analysed a second time without
     // it, and the two analyses must be the same (`docs/decisions.md` "Analysed-unit cache").
@@ -216,6 +214,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
     opts.psl = a.psl;
+    opts.unit_audit |= check;
     opts.defines = a.defines;
     opts.encoding = encoding;
     if !a.no_cache {
@@ -242,6 +241,20 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             o.units = None;
             std::mem::ManuallyDrop::new(Db::new(o))
         });
+        // Warnings and notes are shown for the files of this call only; a unit read from the library
+        // was reported when its file was analysed (#584). Errors are always shown.
+        let paths: std::collections::HashSet<PathBuf> = a
+            .files
+            .iter()
+            .filter_map(|f| std::path::absolute(f).ok())
+            .collect();
+        let named = |sources: &SourceMap, d: &Diagnostic| match &d.primary {
+            Some(l) if d.severity != Severity::Error => {
+                std::path::absolute(&sources.get(l.span.file).path)
+                    .is_ok_and(|p| paths.contains(&p))
+            }
+            _ => true,
+        };
         let bodies_opts = opts.clone();
         let mut db = std::mem::ManuallyDrop::new(Db::new(opts));
         let mut shown = 0;
@@ -251,7 +264,12 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
             let stamp = yavs_lib::Stamp::of(file);
             let hash = std::fs::read(file).map(|b| yavs_lib::hash_content(&b));
             let before = out.errors;
-            let r = db.analyze_file_hashed(work, file, rev, hash.as_deref().ok());
+            let h = hash.as_deref().ok();
+            let r = if shadow.is_some() {
+                db.analyze_file_hashed(work, file, rev, h)
+            } else {
+                db.analyze_file_lazy(work, file, rev, h)
+            };
             if let Some(sh) = shadow.as_mut() {
                 let r2 = sh.analyze_file(work, file, rev);
                 if r.is_ok() != r2.is_ok() {
@@ -268,7 +286,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
                 }
             }
             for d in &db.diagnostics()[shown..] {
-                out.emit(&db.sources, d);
+                if named(&db.sources, d) {
+                    out.emit(&db.sources, d);
+                }
             }
             shown = db.diagnostics().len();
             let records = match r {
@@ -321,6 +341,9 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
         note_batch(&a.files, i, &done.borrow());
         return out.finish(1);
     }
+    // The process exits now: the lock goes with it, and freeing the session's copy of the manifest
+    // (thousands of small strings) is pure cost, as for the database.
+    std::mem::forget(session);
     out.finish(0)
 }
 

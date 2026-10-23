@@ -1,0 +1,19 @@
+exit	1
+diag	error	45000000	0	-	ab_rst
+diag	error	45000000	0	-	aab_rst
+diag	error	65000000	0	-	plain
+diag	error	65000000	0	-	ab_and
+diag	error	65000000	0	-	aab_and
+diag	error	65000000	0	-	ab_next
+diag	error	105000000	0	-	plain
+diag	error	105000000	0	-	ab_rst
+diag	error	105000000	0	-	aab_rst
+diag	error	155000000	0	-	plain
+diag	error	175000000	0	-	plain
+diag	error	175000000	0	-	ab_and
+diag	error	175000000	0	-	aab_and
+diag	error	175000000	0	-	ab_next
+diag	error	185000000	0	-	plain
+diag	error	185000000	0	-	ab_and
+diag	error	185000000	0	-	aab_and
+diag	error	185000000	0	-	ab_next

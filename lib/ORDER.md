@@ -7,6 +7,39 @@ tests read the fenced blocks below, so keep the `order-<std>` info strings.
 A package declaration always precedes its body. Files on the same indentation
 level do not depend on each other.
 
+## VHDL-1993
+
+```order-1993
+std std/1993/standard.vhdl
+std std/1993/textio.vhdl
+ieee ieee/1993/std_logic_1164.vhdl
+ieee ieee/1993/std_logic_1164-body.vhdl
+ieee ieee/1993/std_logic_textio.vhdl
+ieee ieee/1993/std_logic_textio-body.vhdl
+ieee ieee/1993/numeric_std.vhdl
+ieee ieee/1993/numeric_std-body.vhdl
+ieee ieee/1993/numeric_bit.vhdl
+ieee ieee/1993/numeric_bit-body.vhdl
+ieee ieee/1993/math_real.vhdl
+ieee ieee/1993/math_real-body.vhdl
+ieee ieee/1993/math_complex.vhdl
+ieee ieee/1993/math_complex-body.vhdl
+ieee ieee/1993/std_logic_arith.vhdl
+ieee ieee/1993/std_logic_arith-body.vhdl
+ieee ieee/1993/std_logic_unsigned.vhdl
+ieee ieee/1993/std_logic_unsigned-body.vhdl
+ieee ieee/1993/std_logic_signed.vhdl
+ieee ieee/1993/std_logic_signed-body.vhdl
+ieee ieee/1993/std_logic_misc.vhdl
+ieee ieee/1993/std_logic_misc-body.vhdl
+ieee ieee/1993/vital_timing.vhdl
+ieee ieee/1993/vital_timing-body.vhdl
+ieee ieee/1993/vital_primitives.vhdl
+ieee ieee/1993/vital_primitives-body.vhdl
+ieee ieee/1993/vital_memory.vhdl
+ieee ieee/1993/vital_memory-body.vhdl
+```
+
 ## VHDL-2008
 
 ```order-2008

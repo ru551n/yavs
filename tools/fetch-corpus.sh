@@ -51,6 +51,10 @@ fetch ghdl https://github.com/ghdl/ghdl 71b3e1ac7088489b1214e0c626e00d2dfad7c6d9
 # Analysis corpora (tools/corpus/*.toml): standalone OSVVM (tag 2026.09, with its library submodules) and UVVM.
 fetch_with_submodules osvvm-libraries https://github.com/OSVVM/OsvvmLibraries ab47a2637008a0709bbf593aa1ab0060dcc39aac
 fetch uvvm https://github.com/UVVM/UVVM 90d56e93c542bf0d5e2ab9f791cc7395bd1aa896
+# Third-party designs the UVVM maintenance testbenches of the SPI and I2C VIPs need (tools/suites/uvvm.py maps them back).
+fetch uvvm-supplementary https://github.com/UVVM/UVVM_SUPPLEMENTARY c91e3d7365a9aa0c0d67708e7bc9a5e3db9d8a75 '/bitvis_vip_spi/tb/maintenance_tb/spi_master_slave_opencores/'
+fetch uvvm-i2c-master https://github.com/freecores/i2c 3b067f00ccced753b0502024766a51f58f3e04bc '/rtl/vhdl/'
+fetch uvvm-i2c-slave https://github.com/oetr/FPGA-I2C-Minion dde7b0fc71241a8821c1dd21ef7b1716e12c31dc '/I2C_slave.vhd' '/debounce.vhd' '/txt_util.vhd'
 # hdl-modules release v6.2.1 (src/ and rtl/ of each module are the analysis corpus).
 fetch hdl-modules https://github.com/hdl-modules/hdl-modules c4f01c4bb69aab66c879f545e80abb477f1ebf35
 
@@ -71,3 +75,7 @@ fetch neotrng https://github.com/stnolting/neoTRNG c688149f70fbd582eac1029cbfec4
 fetch vhdl-ideas https://github.com/bpadalino/vhdl-ideas f5970bd9f66bf12179f651ab43bfa0db946a7035
 fetch neorv32 https://github.com/stnolting/neorv32 b2620454ebb2407e81a6a1965ef52e2a860b0432 '/rtl/' '/sim/' '/LICENSE'
 fetch surf https://github.com/slaclab/surf f0b5e3a7b5ab191be1cb5f4453e418299181c9d8 '*.vhd' '*.vhdl' '/LICENSE*'
+# GRLIB IP library with the LEON3 and NOEL-V templates (GPL-2.0), release 2026.3 build 4301. The commit is the tagged release in a
+# git mirror and is file-identical to the official tarball (https://download.gaisler.com/products/GRLIB/bin/grlib-gpl-2026.3-b4301.tar.gz,
+# sha256 0978edc1c3c9fd20a9e06f6f283a1d95eb72778eacfa645ec1ab3f9d742253f2; only empty directories and the mirror's README differ).
+fetch grlib https://github.com/TUT-ASI/leon3-grlib-gpl-mirror 020f83888d67e140bdca248f51fcc783fd8f99a0 '/Makefile' '/bin/' '/lib/' '/boards/gr-cpci-xc4v/' '/software/leon3/' '/software/noelv/' '/designs/leon3mp/' '/designs/leon3-minimal/' '/designs/noelv-generic/'

@@ -1,0 +1,11 @@
+exit	0
+diag	note	0	0	:guard_same_cycle:outer:inner:_p0	inner w=0 guard=true
+diag	note	0	0	:guard_same_cycle:outer:_p0	outer v=0 guard=true
+diag	note	0	0	:guard_same_cycle:outer:_p2	s='0'
+diag	note	0	2	:guard_same_cycle:outer:_p2	s='1'
+diag	note	1000000	1	:guard_same_cycle:outer:inner:_p0	inner w=7 guard=false
+diag	note	2000000	1	:guard_same_cycle:outer:_p0	outer v=10 guard=false
+diag	note	3000000	1	:guard_same_cycle:outer:inner:_p0	inner w=1 guard=true
+diag	note	3000000	1	:guard_same_cycle:outer:_p0	outer v=2 guard=true
+diag	note	3000000	2	:guard_same_cycle:outer:_p2	s='0'
+diag	note	4000000	1	:guard_same_cycle:outer:inner:_p0	inner w=2 guard=true

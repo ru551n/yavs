@@ -1,0 +1,11 @@
+error[E2121]: external name does not match signal `s`: the object has 4 elements, the subtype indication 8
+ --> $DIR/external_mismatch.vhd:6:16
+  |
+6 |     alias e is <<signal .external_mismatch.s : bit_vector(7 downto 0)>>;
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ external name
+  |
+  = note: the object has the type and the array lengths of the name's subtype indication (LRM 8.7)
+  = note: in instance :external_mismatch:
+
+error: aborting due to 1 previous error
+

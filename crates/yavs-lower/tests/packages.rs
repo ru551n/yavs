@@ -76,11 +76,10 @@ fn constants_evaluated_once() {
     assert_ne!(call(fs[2]), 0);
 }
 
-/// A subprogram that reads the name of an object, and every subprogram that calls it, cannot be
-/// lowered ahead of the design: the name is a cell of the architecture's instance data. A
-/// subprogram that does not is not named (`Lowerer::context_dependent`).
+/// The name of an item of a library-unit package is the same in every design, so a subprogram that
+/// reads it (and its callers) can be lowered ahead of the design (`Lowerer::context_dependent`, #460).
 #[test]
-fn subprograms_that_read_a_name_depend_on_the_design() {
+fn subprograms_that_read_a_library_package_name_do_not_depend_on_the_design() {
     let file = PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/vhdl/pkg/ctx.vhd"
@@ -112,12 +111,6 @@ fn subprograms_that_read_a_name_depend_on_the_design() {
     for d in [plain, wrap, who] {
         l.subprogram(d).unwrap();
     }
-    let mut want = vec![who, wrap];
-    want.sort_by_key(|d| yavs_sem::Id::index(*d));
-    assert_eq!(l.context_dependent(), want);
-    assert_eq!(l.context_users(), 1);
-    // Without them nothing is.
-    let mut l = Lowerer::new(&db, LowerOptions::default());
-    l.subprogram(plain).unwrap();
     assert!(l.context_dependent().is_empty());
+    assert_eq!(l.context_users(), 0);
 }

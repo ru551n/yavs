@@ -31,6 +31,7 @@ pub mod attr;
 pub mod db;
 pub mod decl;
 pub mod diag;
+pub mod edge;
 pub mod expr;
 pub mod external;
 pub mod generic;
@@ -51,6 +52,7 @@ pub mod stat;
 pub mod stdlib;
 pub mod stmt;
 pub mod suggest;
+pub mod tracked;
 pub mod types;
 pub mod unit;
 pub mod units;
@@ -88,6 +90,10 @@ pub struct Options {
     /// The analysed-unit cache (`units.rs`): units are read from it when their entry holds, and
     /// written to it when it is writable. `None`: every unit is analysed from source.
     pub units: Option<std::sync::Arc<dyn UnitStore>>,
+    /// Compare every table of `Db` before and after each unit recorded for the analysed-unit cache
+    /// and fail when that finds a change the write log of the table missed (`units.rs`
+    /// `Db::diff`). Default: debug builds; `YAVS_UNIT_CHECK=1` sets it for `yavs analyze`.
+    pub unit_audit: bool,
 }
 
 /// The store of the analysed-unit cache (`docs/decisions.md` "Analysed-unit cache"): entries by
@@ -95,6 +101,10 @@ pub struct Options {
 /// silent.
 pub trait UnitStore: Send + Sync + std::fmt::Debug {
     fn get(&self, lib: &str, identity: &[u8; 32]) -> Option<yavs_diag::Buffer>;
+    /// Whether an entry is there, without reading it (its content is not checked).
+    fn has(&self, lib: &str, identity: &[u8; 32]) -> bool {
+        self.get(lib, identity).is_some()
+    }
     fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]);
     /// Whether units analysed from source are written (`yavs analyze`; never `yavs run`).
     fn writable(&self) -> bool;
@@ -181,6 +191,7 @@ impl Options {
             defines: Vec::new(),
             encoding: yavs_syntax::Encoding::Auto,
             psl: false,
+            unit_audit: cfg!(debug_assertions),
             stages: None,
             units: None,
         }

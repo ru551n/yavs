@@ -4,7 +4,8 @@
   tiny.py BIN --ref sim1,sim2 [--runs 5] [--cores 0-7] [--tiers interp,auto] [--filter SUBSTR] [--out DIR]
 
 Per test: analysis once per tool (not timed), one untimed warm-up run, then --runs timed runs with the tools
-interleaved (order alternating every rep); the wrapper's own cost (`true` under the same wrapper) is subtracted.
+interleaved (order alternating every rep); the wrapper's own cost is subtracted per cell: three runs of `true`
+under the same wrapper are timed right before each timed run, so the subtracted value follows the host load (#569).
 The whole process runs once under `taskset` (every tool on the same cores) and a 2 GiB memory cap. Tests a tool
 cannot analyse, elaborate or finish are left out for that tool; the summary also gives the set all tools ran.
 
@@ -65,8 +66,7 @@ def main():
     tiers = [s for s in a.tiers.split(",") if s]
     tools = ["yavs-" + t for t in tiers] + list(refs)
     work = bench.mkdir(bench.CACHE / "work" / "tiny")
-    ov = st.median([tm("true", "/")[0] for _ in range(300)])
-    print(f"pinned to cpus {cores}; wrapper overhead {ov * 1000:.2f} ms; median of {a.runs}; load {open('/proc/loadavg').read().split()[:3]}", file=sys.stderr)
+    print(f"pinned to cpus {cores}; median of {a.runs}; load {open('/proc/loadavg').read().split()[:3]}", file=sys.stderr)
     plans, ok = {}, {}
     for t in sorted((REPO / "tests/corpus").rglob("*.vhd")):
         key = str(t.relative_to(REPO / "tests/corpus"))
@@ -99,7 +99,7 @@ def main():
         plans[key] = (scripts, d, env)
         ok[key] = good
     print(f"analysed {len(plans)} tests", file=sys.stderr, flush=True)
-    data = {}
+    data, ovs = {}, []
     for key, (scripts, d, env) in plans.items():
         for tool in tools:  # warm-up, and drop what crashes or times out
             if ok[key][tool]:
@@ -108,11 +108,15 @@ def main():
         for key, (scripts, d, env) in plans.items():
             order = [t for t in tools if ok[key][t]]
             for tool in (order if rep % 2 == 0 else order[::-1]):
+                ov = st.median([tm("true", "/")[0] for _ in range(3)])  # interleaved baseline, not one number from the start
+                ovs.append(ov)
                 data.setdefault(key, {}).setdefault(tool, []).append(tm(scripts[tool], d, env)[0] - ov)
         print(f"rep {rep + 1}/{a.runs}", file=sys.stderr, flush=True)
+    q = st.quantiles(ovs, n=10) if len(ovs) > 1 else ovs * 9
+    print(f"wrapper overhead per cell: median {st.median(ovs) * 1000:.2f} ms, p10 {q[0] * 1000:.2f}, p90 {q[-1] * 1000:.2f}, max {max(ovs, default=0) * 1000:.2f} ms", file=sys.stderr)
     summary(data, ok, tools, refs, [t for t in tools if t.startswith("yavs")])
     out = bench.mkdir(Path(a.out).expanduser() / "results") / f"{time.strftime('%Y%m%d-%H%M%S')}-tiny{'-' + a.label if a.label else ''}.json"
-    out.write_text(json.dumps({"ov": ov, "cores": cores, "runs": a.runs, "ok": ok, "data": data}))
+    out.write_text(json.dumps({"ov": ovs, "cores": cores, "runs": a.runs, "ok": ok, "data": data}))
     print(f"\nresults: {out}")
 
 

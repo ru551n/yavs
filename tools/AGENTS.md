@@ -8,7 +8,7 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 
 - Developer and CI scripts around the Rust workspace: fetching external corpora, deriving and
   checking the vendored IEEE libraries, generating `lib/NATIVE.md`, reference simulator runs, the
-  rename sweep, the analysis corpus runner and the differential test harness.
+  analysis corpus runner and the differential test harness.
 - Not part of any crate; nothing here is built by cargo. Python is stdlib only (run with
   `python3 -I`), shell is bash or POSIX sh.
 - Inputs are external checkouts in a cache directory, never repository content (root rule 7).
@@ -22,7 +22,6 @@ Read the root `AGENTS.md` first. This file is for an agent about to change or ru
 | `update-ieee-libs.sh [--write]` | Re-fetch the pinned VASG commit, verify `lib/UPSTREAM.sha256`, derive, compare (default) or rewrite |
 | `gen_native_md.py` | Generate `lib/NATIVE.md` (`python3 -I tools/gen_native_md.py > lib/NATIVE.md`) |
 | `check-sim1.sh [2008|2019]` | Analyze `lib/` with the reference simulator in `lib/ORDER.md` order (scratch `~/.cache/rsim-libs/work`, `YAVS_LIBS_SCRATCH`) |
-| `rename-yavs.sh` | Idempotent rsim to yavs sweep for worktrees that still carry the old name |
 | `suites/` | Drivers that simulate an external library's own testbenches on yavs (`tools/suites/AGENTS.md`) |
 | `corpus/` | Analysis corpus manifests, runner, report (`tools/corpus/AGENTS.md`) |
 | `difftest/` | Differential simulation harness (`tools/difftest/AGENTS.md`) |
@@ -40,7 +39,7 @@ git-ignored `tools/sims.local.conf`, an INI file with a section per label, read 
 `discrep`, `bench` (discrepancies, bench, tiny: `analyse|||run[|||crash regex]`); `difftest`,
 `difftest_relaxed`, `difftest_ignore`, `ext_analyse`, `ext_elab`, `ext_run`, `ext_psl` (difftest, external.py);
 `corpus_cmd`, `corpus_suffix`, `corpus_fixup`, `gen_cmd`, `gen_setup`, `gen_licence`,
-`gen_version`, `osvvm_tool_name`, `osvvm_tool_vendor`, `uvvm_simulator_name` (tools/corpus, tools/suites);
+`gen_version`, `grlib_target` (sim1 only: the make target in GRLIB's script generator that writes the ordered per-file list, used by `tools/corpus/gen_external.py` for `grlib-2008`), `osvvm_tool_name`, `osvvm_tool_vendor`, `uvvm_simulator_name` (tools/corpus, tools/suites);
 `real_elab`, `real_run` (realbench: elaboration and run templates with `{std} {lib} {dir} {gens} {top} {rest}`; analysis uses `corpus_cmd`); `check_cmd`, `check_bootstrap` (check-sim1.sh); `vhpi_analyse`, `vhpi_run` (vhpi-conformance);
 `negtest_cmd`, `negtest_err`, `negtest_warn` (tests/diag/sem/check_ref.py); `golden_cmd`, `golden_name`
 (crates/yavs-std/golden/gen.py). The `YAVS_SIM1_CMD` variable names the sim1 command of the ignored

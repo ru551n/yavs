@@ -52,7 +52,7 @@ YAVS_AUTO3_EAGER = YAVS.replace("--threads=", "--tier=auto3 --tier-heat=0,0,0 --
 TEMPLATES = {"yavs": YAVS, "yavs-interp": YAVS_INTERP, "yavs-llvm": YAVS_LLVM, "yavs-auto": YAVS_AUTO, "yavs-clift": YAVS_CLIFT, "yavs-clift-auto": YAVS_CLIFT_AUTO, "yavs-auto3": YAVS_AUTO3, "yavs-auto3-eager": YAVS_AUTO3_EAGER}
 # yavs repeats analysis warnings when it loads the units: W1904 (a shared variable of a
 # non-protected type) is the warning `relaxed` tests are about.
-_RX = "--relaxed -Wno-W1904"
+_RX = "--relaxed -Wno-W1904 -Wno-W1325"
 RELAXED = {k: _RX for k in TEMPLATES}
 # Fields masked by default per builtin candidate (a reference label: key `difftest_ignore`; the reference prints them all).
 DEFAULT_IGNORE = {k: "" for k in TEMPLATES}
@@ -125,7 +125,7 @@ FMT2_CTL = re.compile(r"^simulation (finished|stopped) @(\d+)([a-z]+)(?: with st
 FMT2_ERR = re.compile(r"^\w+:error: (.*)$")
 FMT2_INFO = re.compile(r"^\w+:info: ")
 YAVS_RTE = re.compile(r"^error\[(?:E3\d{3}|E9999)\]: (.*)$")
-YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)")
+YAVS_AT = re.compile(r"^\s*= note: at (\d+) ([a-z]+), delta (\d+)(?:, in process (\S+))?")
 
 
 def yavs_fatal(out, err):
@@ -143,6 +143,10 @@ def yavs_fatal(out, err):
         at = next((a for a in at if a), None)
         if at:
             fatal.append(f"** Fatal: {at.group(1)}{at.group(2)}+{at.group(3)}: {m.group(1)}")
+            # sim1's trace names the process only when the error is inside a subprogram, which
+            # yavs shows as a "called from here" label (#506).
+            if at.group(4) and any("called from here" in l for l in lines[i:j]):
+                fatal.append(f"   Process {at.group(4)}")
             i = j
             continue
         if not (fatal and lines[i].startswith("error: aborting due to")):
@@ -178,6 +182,8 @@ def normalise(rc, out, err, yavs=False):
 
     for stream, text in (("out", out), ("err", err)):  # sim2: reports on stdout, errors on stderr
         for line in text.splitlines():
+            if yavs and line.startswith("note: process order is shuffled with seed"):
+                continue  # `--shuffle` announces its seed on stderr
             if swallow and stream == "err" and (FMT1_TRACE.match(line) or FMT1_SNIP.match(line)):
                 continue
             swallow = False
@@ -243,7 +249,12 @@ def normalise(rc, out, err, yavs=False):
     return ["exit\t%d" % rc] + diags + outl
 
 
+WALLCLOCK = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?")
+
+
 def mask(lines, ignore):
+    if "wallclock" in ignore:  # time-of-day text (ISO timestamps) differs when two runs straddle a second
+        lines = [WALLCLOCK.sub("<wallclock>", l) for l in lines]
     if "errexit" in ignore and lines[0] == "exit\t1" and not any(
             l.startswith(("diag\tfailure\t", "diag\tfatal\t")) for l in lines):
         lines = ["exit\t0"] + lines[1:]  # sim1 exits 1 after `error` severity reports, sim2 0
@@ -359,7 +370,7 @@ def main():
     ap.add_argument("--threads", type=lambda s: [1] + [int(x) for x in s.split(",") if x and int(x) != 1],
                     default=[1], help="candidate thread counts to compare, e.g. 4 (runs 1 and 4); needs {threads} in the template")
     ap.add_argument("--shuffle", default="", help="seed passed to the candidate as {shuffle}/{shuffle_flag}")
-    ap.add_argument("--ignore", default=None, help="comma list of: delta,path,fatalmsg,order,errexit,time,stderr (default depends on candidate)")
+    ap.add_argument("--ignore", default=None, help="comma list of: delta,path,fatalmsg,order,errexit,time,stderr,wallclock (default depends on candidate)")
     ap.add_argument("--corpus", type=Path, default=CORPUS)
     ap.add_argument("--no-sandbox", action="store_true", help="skip systemd-run (debugging only)")
     ap.add_argument("--json", type=Path, help="write one JSON result per test (stage, message) to this file")

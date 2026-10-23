@@ -68,7 +68,8 @@ femtoseconds from whatever unit the simulator printed; the reference simulator s
 traces and the second reference simulator `instance:`/`from:` lines dropped (the first process trace gives `path`);
 the reference simulator's trailing full stop on "Assertion violation." removed and the path of that default assert
 message dropped (the reference simulator prints a source snippet instead of the process; yavs keeps the `Process`
-line of its CLI format); `FINISH called`/`simulation finished`
+line of its CLI format); a fatal runtime error has a `path` only when it happens inside a subprogram, the
+reference simulator's trace then names the process (yavs: the note "in process P" of a diagnostic with a "called from here" label); `FINISH called`/`simulation finished`
 unified; `sim2:info:` lines dropped. Streams are kept in separate sections (report text goes
 to stderr in the reference simulator and stdout in the second reference simulator, so cross-stream order is not compared).
 
@@ -86,6 +87,7 @@ to stderr in the reference simulator and stdout in the second reference simulato
   `docs/decisions.md`).
 - `errexit`: the reference simulator exits 1 after any `error` severity report, the second reference simulator exits 0. Exit 1 is treated as 0
   when there is no `failure` or `fatal` event.
+- `wallclock`: ISO timestamps (`2026-10-23T08:16:29`) in the output are replaced by a placeholder, for tests that print the time of day and would differ when two runs straddle a second. Always on in `external.py` (#567); off elsewhere. Nothing else is masked.
 - `time`, `stderr`: extra, off by default.
 
 ## Plugging yavs in
@@ -157,4 +159,4 @@ only, they carry its time format). A run of the
 second suite that exits 1 after `error` reports only counts as passing (the `errexit` rule).
 `external-sim1.pass` and `external-sim2.pass` list the tests that pass both ways; CI (`corpus`
 job) runs `--oracle --check` on them, so a regression fails the build. Regenerate them with
-`--write-pass` from a differential run and keep only names that also pass `--oracle`.
+`--oracle --write-pass FILE` on a release build (the suite's own verdict; a differential run shows which of the tests also match the reference output, a few do not).

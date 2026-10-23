@@ -6,7 +6,7 @@ Binding inputs: `docs/plan.md` (architecture table, "Designed for
 the GUI", "Parallel kernel design", rules 1 to 12, the error-handling motto) and
 `docs/decisions.md`. Interfaces read from: the kernel worktree (`yavs-kernel`: `Process`, `Ctx`,
 `Builder`, `SimControl`, `Observer`, `SimError { trace: Vec<StmtId> }`), `yavs-logic`,
-`yavs-wave`, the LLVM spike (`yavs-llvm`, `STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
+`yavs-wave`, the LLVM spike (`yavs-llvm`, `docs/STATUS.md`), `yavs-std` (`arith`), `lib/NATIVE.md`,
 the VHPI stub. The HIR is specified in `docs/design/sem.md`; section 0 lists what this design
 assumes of it.
 
@@ -201,7 +201,7 @@ has a `StmtId` in `Func.loc`.
 | calls | `Call{func, args}` (VHDL), `CallNative{id, args}` (NATIVE.md symbols and implicit families), `CallForeign{id, args}` (VHPIDIRECT, 1.7), `CallIndirect{func_reg, args}` (subprogram generics), `CallProt{func, obj, args}` (protected method: takes the instance lock, 3.5) |
 | heap | `New{dst, ty, init}`, `NewFill{dst, ty, desc, dsize, data, size, fill}` (descriptor bytes then a copy of `data`, or with `fill` > 0 that element repeated: no temporary to build and copy, #427), `Free{handle}` (`deallocate`), `Deref{dst, handle}` (null check included); the handle operands are `Handle` registers. `TempRoot{addr, desc, ty}`: the temporary at `addr` holds a value of `ty` (constrained by `desc`) whose handles are roots, or with `ty` `None` a fat pair whose addresses keep their heap objects, until the statement ends (#422) |
 | signal read | `SigVal{dst, inst_sig, offset, len}` builds a signal reference; `SigParts{dst, parts, n}` one of several parts and `SigSlice{dst, sig, offset, len}` a slice of either form (1.8); `SigRead{dst_addr, sig}` (effective value), `SigReadScalar{dst, sig}`, `SigDriving{dst_addr, driver_slot}` (`'driving_value`, out-port read) |
-| attributes | `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
+| attributes | `Edge{dst, kind: Rising\|Falling\|To1\|To0, sig}` (the one clock-edge test, #632: `rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...; `sig` one element of a `std_ulogic`, BIT or BOOLEAN signal), `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
 | signal write | `Drive{driver_slot, target: Option<sig>, waveform: Addr, n, mode: Transport\|Inertial{reject: Option<Reg>}}` (waveform = `n` `(time, value)` pairs in a temp, ascending); `Force{sig, mode: In\|Out, value}`, `Release{sig, mode}`; `Disconnect{driver_slot}` (null transaction, guarded, M3) |
 | wait | `WaitOn{sig}` (adds to sensitivity), `WaitFor{t}`, `WaitAt{abs}`, `Suspend{resume}`; `TimedOut{dst}`, `Now{dst}`, `Delta{dst}` |
 | effects | `Report{msg: Addr, len, severity}` (assert = branch + `Report`); `Output{stream, addr, len}` is only used by natives |
@@ -402,6 +402,7 @@ impl yavs_kernel::Process for InterpProcess {
 |---|---|
 | `SigRead`, `SigReadScalar` | `ctx.value(SigRef)` then copy; logic leaves arrive as planes and are copied with `LCopy` (no transpose); a reference of several parts reads each part in order (1.8) |
 | `SigAttr` | `ctx.event/active/last_event/last_active/last_value` |
+| `Edge` | `ctx.edge_by(sig, kind code)` (the kernel answers true without looking when it resumed the process for that very edge) |
 | `Drive` | `ctx.assign(drivers[slot], target, waveform, DelayMode)` |
 | `Force`/`Release` | `ctx.force/release(r, ForceMode::Effective\|Driving)` |
 | `WaitOn`/`WaitFor`/`WaitAt`/`TimedOut` | `ctx.wait_on/wait_for/wait_at/timed_out` |
@@ -617,7 +618,7 @@ and the DAP variable references.
 
 ## 5. JIT tier seam (M6)
 
-What the spike (`yavs-llvm`, STATUS.md, decisions.md) fixes:
+What the spike (`yavs-llvm`, docs/STATUS.md, decisions.md) fixes:
 
 | Spike result | Consequence for the IR |
 |---|---|
@@ -653,7 +654,7 @@ everything before time 0. `--tier=auto` (#125) is the tier-up protocol above wit
 differences: hotness is the interpreted time the compile thread samples per function (#432), the
 side table is a per-function `OnceLock` in the tier, and the swap happens at the next call,
 return or (every 256) jumps rather than only at entries and resumptions (safe because both tiers
-share the frame and compiled code enters at any pc). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
+share the frame and compiled code enters at any pc). Registers a frame starts with: the preloaded `Const`/`ConstF`/`AddrOf` values, zero elsewhere, except that the registers holding the address of a lean function's parameter slot are zero too (`Pre::next` skips their `AddrOf`): compiled code entering at any pc must not read them (#566). The size cap is 50k yavs IR instructions by default, `--tier-max-size=N`
 (user, 2026-10-19, #126).
 
 **Identical semantics:** the interpreter is the reference (rule 5). CI runs every difftest group
@@ -728,6 +729,7 @@ What the implementation does differently from sections 1 to 3, and what producer
 | Area | Implemented as |
 |---|---|
 | bounds-checked `Index{..idx..}` | split: `Pos{dst, dope, dim, idx, what}` (checked position from the left, message from the dope's own direction) then `Index{dst, base, pos, stride}`; logic arrays index from the right, so lowering computes `len - 1 - pos` for `LGet`/`LSet` |
+| slice start | `SlicePos{dst, dope, left, right, dir, what, dir_what}` (added, #520): 0 for a null slice, else the checked `Pos` of `left`, `right` checked as well, and `dir` against the array's direction; one instruction instead of a branch and three |
 | temporaries | `Alloc{dst, size}` (added) bumps the per-process temp area; `Stmt` resets it to the current frame's base. `Ret` does not reset, so a callee's result in temp memory lives until the caller's next statement |
 | package data of run-time size | `PkgAlloc{dst, size}` (added, #73) appends zeroed bytes to the data of the package being initialised (package initialisation thunks only, an ICE elsewhere), for constants whose bounds are known only at run time |
 | `Stmt{id}` | `Stmt` has no operand: its statement is `Func::loc[pc]` |

@@ -1,4 +1,4 @@
--- LRM 2019 5.2.3.1 / 2008 5.2.3.1: the minimum of INTEGER.
+-- LRM 2019 5.2.3.1 / 2008 5.2.3.1: the range of INTEGER (it includes the symmetric 32-bit and 64-bit ranges).
 entity top is end entity;
 architecture a of top is
 begin

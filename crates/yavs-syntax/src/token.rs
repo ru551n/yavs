@@ -77,6 +77,30 @@ impl Kw {
         let kw = Kw::from_lower(lower)?;
         match kw {
             Kw::Private | Kw::View if std < Std::Vhdl2019 => None,
+            // 15.10: the words 1076-2008 reserved (the PSL words and `context`, `default`,
+            // `force`, `parameter`, `protected`, `release`) are plain identifiers in 1993.
+            Kw::Assume
+            | Kw::AssumeGuarantee
+            | Kw::Context
+            | Kw::Cover
+            | Kw::Default
+            | Kw::Fairness
+            | Kw::Force
+            | Kw::Parameter
+            | Kw::Property
+            | Kw::Protected
+            | Kw::Release
+            | Kw::Restrict
+            | Kw::RestrictGuarantee
+            | Kw::Sequence
+            | Kw::Strong
+            | Kw::Vmode
+            | Kw::Vprop
+            | Kw::Vunit
+                if std < Std::Vhdl2008 =>
+            {
+                None
+            }
             kw => Some(kw),
         }
     }
@@ -124,6 +148,8 @@ pub enum Tok {
     Arrow,
     /// `->`, PSL implication.
     Imply,
+    /// `<->`, PSL equivalence.
+    Equiv,
     /// `**`
     Pow,
     /// `:=`
@@ -201,6 +227,7 @@ impl Tok {
             Tok::Caret => "^",
             Tok::Arrow => "=>",
             Tok::Imply => "->",
+            Tok::Equiv => "<->",
             Tok::Pow => "**",
             Tok::Assign => ":=",
             Tok::Ne => "/=",

@@ -1,0 +1,10 @@
+exit	0
+diag	note	1000000	0	:null_waveform_mixed:_p0	1 ns '1''1' 10 107
+diag	note	3000000	0	:null_waveform_mixed:_p0	3 ns 'Z''1' ZZ 100
+diag	note	5000000	0	:null_waveform_mixed:_p0	5 ns '0''0' 01 109
+diag	note	7000000	0	:null_waveform_mixed:_p0	7 ns 'Z'
+diag	note	9000000	0	:null_waveform_mixed:_p0	9 ns '1'
+diag	note	9000000	1	:null_waveform_mixed:_p0	lone 'Z'
+diag	note	10000000	0	:null_waveform_mixed:_p0	t 1 ns '0'
+diag	note	11000000	0	:null_waveform_mixed:_p0	t 2 ns 'Z'
+diag	note	13000000	0	:null_waveform_mixed:_p0	t 4 ns 'Z'

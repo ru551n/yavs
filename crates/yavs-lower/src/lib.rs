@@ -12,12 +12,15 @@
 mod access;
 mod assoc;
 mod composite;
+mod edge;
 mod expr;
 mod file;
 mod force;
 mod foreign;
 pub use foreign::vhpi_model;
+pub use pathname::{library_package_item_name, package_prefix, subprogram_element};
 mod func;
+mod pathname;
 mod protected;
 mod reduce;
 mod reflect;

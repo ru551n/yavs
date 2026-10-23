@@ -9,6 +9,9 @@
 mod decl;
 mod expr;
 mod psl;
+mod psl_named;
+mod psl_prop;
+mod psl_seq;
 mod stmt;
 mod unit;
 
@@ -48,6 +51,19 @@ pub(crate) struct Parser<'a> {
     psl_clock: Option<usize>,
     /// Keys of the PSL `property` and `sequence` declarations skipped so far.
     psl_names: Vec<Symbol>,
+    /// Reading a boolean of a PSL sequence: a `[` opens a repetition, not a signature.
+    psl_no_sig: bool,
+    /// The PSL sequences and properties declared so far in this design unit.
+    psl_decls: Vec<psl_named::PslDecl>,
+    /// The formals of the named sequence or property being expanded.
+    psl_env: psl_named::Env,
+    /// Token index where the body being expanded ends: a `;` there ends a sequence.
+    psl_end: usize,
+    /// Boolean actuals of the expansions in this directive.
+    psl_args: psl_named::Args,
+    /// Expansions in this directive, and the number of the latest.
+    psl_expansions: u32,
+    psl_scope: u32,
     /// Lists under construction, one stack per element type: a list parser pushes its
     /// elements here and moves them into a vector of exactly their number, so no
     /// list grows (and copies its large elements) by doubling.
@@ -90,6 +106,13 @@ pub(crate) fn parse(
         psl_warned: false,
         psl_clock: None,
         psl_names: Vec::new(),
+        psl_no_sig: false,
+        psl_decls: Vec::new(),
+        psl_env: Vec::new(),
+        psl_end: usize::MAX,
+        psl_args: Vec::new(),
+        psl_expansions: 0,
+        psl_scope: 0,
         sc: Scratch::default(),
     };
     p.design_file()
@@ -238,6 +261,17 @@ impl<'a> Parser<'a> {
         Err(self.expected("`;`"))
     }
 
+    /// `what` needs VHDL-2008 (`E0011`) in a VHDL-1993 file.
+    fn require_2008(&mut self, span: Span, what: &str) {
+        if self.std < Std::Vhdl2008 {
+            self.report(
+                Diagnostic::error(codes::NEEDS_2008, format!("{what} requires VHDL-2008"))
+                    .with_primary(span, "")
+                    .with_help("analyze with `--std 2008`"),
+            );
+        }
+    }
+
     fn require_2019(&mut self, span: Span, what: &str) {
         if self.std < Std::Vhdl2019 {
             self.report(
@@ -250,9 +284,11 @@ impl<'a> Parser<'a> {
 
     /// Skip the PSL construct that starts at the current token, up to and
     /// including its `;` (outside parentheses, brackets and braces), and warn
-    /// once per design unit.
+    /// once per design unit, unless it is formal-only (`psl_formal_only`).
     fn psl_skip(&mut self) {
-        self.psl_warn();
+        if !self.psl_formal_only() {
+            self.psl_warn();
+        }
         self.sync();
     }
 
@@ -268,10 +304,10 @@ impl<'a> Parser<'a> {
                 )
                 .with_primary(span, "PSL starts here")
                 .with_note(
-                    "yavs runs only clocked `assert`/`assume` with `always`, `never`, `->` \
-                         and `next[n]` on booleans, and `cover` of a boolean; other PSL \
-                         declarations, directives and verification units are ignored, so their \
-                         properties are not checked",
+                    "yavs runs only clocked `assert`/`assume` with `always`, `never`, `->`, \
+                         `next[n]`, `|->` and `|=>` over booleans and braced sequences, and \
+                         `cover` of a boolean or a sequence; other PSL declarations, directives \
+                         and verification units are ignored, so their properties are not checked",
                 ),
             );
         }
@@ -288,10 +324,73 @@ impl<'a> Parser<'a> {
             let t = self.toks[i];
             match t.kind {
                 Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
-                Tok::LBrace | Tok::Imply | Tok::Kw(Kw::Next | Kw::Strong) => return true,
+                Tok::LBrace
+                | Tok::Imply
+                | Tok::Equiv
+                | Tok::Kw(Kw::Next | Kw::Strong | Kw::Until) => {
+                    return true;
+                }
+                Tok::Bar if matches!(self.toks[i + 1].kind, Tok::Imply | Tok::Arrow) => {
+                    return true;
+                }
                 Tok::Ident => {
+                    if !(self.psl_names.is_empty() && self.psl_decls.is_empty()) {
+                        let key = self.make_ident(t).key;
+                        if self.psl_names.contains(&key) || self.psl_decls.iter().any(|d| d.is(key))
+                        {
+                            return true;
+                        }
+                    }
                     let w = self.text(t).to_ascii_lowercase();
-                    if matches!(w.as_str(), "always" | "never" | "eventually" | "forall")
+                    if matches!(w.as_str(), "nondet" | "nondet_vector")
+                        && self.toks[i + 1].kind == Tok::LParen
+                    {
+                        return true;
+                    }
+                    // Operators between two operands (`a before b`): a signal that has such a
+                    // name, as in `assert abort = '0'`, is not one.
+                    let ends = |k: Tok| {
+                        matches!(
+                            k,
+                            Tok::Ident
+                                | Tok::ExtIdent
+                                | Tok::RParen
+                                | Tok::RBracket
+                                | Tok::RBrace
+                                | Tok::Abstract
+                                | Tok::Char
+                                | Tok::Str
+                                | Tok::BitStr
+                        )
+                    };
+                    let starts = |k: Tok| {
+                        matches!(
+                            k,
+                            Tok::Ident
+                                | Tok::ExtIdent
+                                | Tok::LParen
+                                | Tok::LBrace
+                                | Tok::Abstract
+                                | Tok::Char
+                                | Tok::Str
+                                | Tok::BitStr
+                                | Tok::Kw(Kw::Not)
+                        )
+                    };
+                    let infix = matches!(
+                        w.as_str(),
+                        "iff"
+                            | "before"
+                            | "before_"
+                            | "until_"
+                            | "abort"
+                            | "sync_abort"
+                            | "async_abort"
+                    ) && i > self.pos + 1
+                        && ends(self.toks[i - 1].kind)
+                        && starts(self.toks[i + 1].kind);
+                    if infix
+                        || matches!(w.as_str(), "always" | "never" | "eventually" | "forall")
                         || w.starts_with("next_")
                     {
                         let alone = i == self.pos + 1

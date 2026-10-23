@@ -318,7 +318,7 @@ impl Db {
     fn is_guarded_of(&self, d: DeclId, base: crate::ids::TypeId) -> bool {
         matches!(&self.decls[d].kind, DeclKind::Object(o)
             if o.class == ObjClass::Signal
-                && o.role == ObjRole::Plain
+                && matches!(o.role, ObjRole::Plain | ObjRole::Port)
                 && o.signal_kind.is_some()
                 && self.base(o.subtype) == base)
     }
@@ -358,7 +358,12 @@ impl Db {
         };
         let (msg, ok) = match &self.decls[d].kind {
             DeclKind::Error => return Err(Reported),
-            DeclKind::Object(o) if o.class == ObjClass::Signal && o.role == ObjRole::Plain => {
+            // A port of the region is a signal of its declarative part (the entity's or the
+            // block's) and may be disconnected too (#644).
+            DeclKind::Object(o)
+                if o.class == ObjClass::Signal
+                    && matches!(o.role, ObjRole::Plain | ObjRole::Port) =>
+            {
                 if o.signal_kind.is_none() {
                     ("is not a guarded signal", false)
                 } else if self.base(o.subtype) != base {

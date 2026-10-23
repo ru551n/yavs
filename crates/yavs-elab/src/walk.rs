@@ -143,6 +143,9 @@ pub(crate) struct Elab<'d> {
     /// Implicit aliases of external names used in processes, by region: bound once the
     /// whole hierarchy is elaborated (#93).
     pending: Vec<(ScopeId, DeclId)>,
+    /// `idle_reads` of a process statement (the same for every instance of it): the signals
+    /// read, or `None` where the process is not pure.
+    idle_cache: HashMap<StmtId, Option<Vec<Lsp>>>,
     /// Processes whose drivers are rooted at external names: their drivers are elaborated
     /// once the whole hierarchy is (#93).
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
@@ -295,6 +298,12 @@ fn unsupported(span: Span, what: &str, when: &str) -> Box<Diagnostic> {
             "planned for {when}; this is a limitation of yavs, not an error in the design"
         )),
     )
+}
+
+/// Whether `lib` is std or ieee, built into yavs: no package of them declares a signal or a
+/// shared variable, so the scans for those need not decode their declarations (#426).
+fn builtin_lib(db: &Db, lib: yavs_sem::ids::LibId) -> bool {
+    matches!(db.libs[lib].source, yavs_sem::loader::LibSource::StdDir(_))
 }
 
 /// The aliases of the external names used in the subprograms of every loaded package (not
@@ -498,6 +507,7 @@ pub(crate) fn elaborate(
         cfg: cfg.clone(),
         stmt: None,
         pending: Vec::new(),
+        idle_cache: HashMap::new(),
         deferred: Vec::new(),
         pkg_uses,
         units_seen: 0,
@@ -541,6 +551,7 @@ pub(crate) fn elaborate(
             .db
             .units
             .iter()
+            .filter(|(_, u)| !builtin_lib(e.db, u.lib))
             .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
             .flat_map(|s| e.db.decls_with_instances(s))
             .filter(|&d| {
@@ -557,6 +568,7 @@ pub(crate) fn elaborate(
         let vars: Vec<DeclId> =
             e.db.units
                 .iter()
+                .filter(|(_, u)| !builtin_lib(e.db, u.lib))
                 .flat_map(|(u, _)| e.db.package_regions(u).unwrap_or_default())
                 .flat_map(|s| e.db.decls_with_instances(s))
                 .filter(|&d| {
@@ -575,7 +587,9 @@ pub(crate) fn elaborate(
             e.db.units
                 .iter()
                 .filter_map(|(_, u)| match u.hir {
-                    UnitHir::PackageBody { package } => Some((package, u.scope)),
+                    UnitHir::PackageBody { package } if !builtin_lib(e.db, u.lib) => {
+                        Some((package, u.scope))
+                    }
                     _ => None,
                 })
                 .flat_map(|(p, s)| e.db.scopes[s].order.iter().map(move |&d| (p, d)))
@@ -1088,6 +1102,29 @@ impl Elab<'_> {
         Ok(())
     }
 
+    /// The implicit GUARD signal of a guarded block (LRM 11.2), driven by the block's guard
+    /// process. It starts as the value of the guard condition (14.7.3.3, #464).
+    fn guard_signal(&mut self, s: ScopeId, g: yavs_sem::DeclId) -> R<()> {
+        let db: &Db = self.db;
+        let decl = &db.decls[g];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(Box::new(ice(decl.span, "GUARD is not an object")));
+        };
+        self.m.sig_init = true;
+        let init = o.default.map(|e| self.m.eval(db, e, Some(s)));
+        self.m.sig_init = false;
+        let init = init.transpose()?;
+        let Some(shape) = self
+            .m
+            .shape_init(db, o.subtype, init.as_ref(), Some(s), decl.span)?
+        else {
+            return Err(Box::new(ice(decl.span, "GUARD subtype")));
+        };
+        self.m
+            .add_obj(db, s, g, ObjKind::Signal, shape, init.as_ref(), decl.span)?;
+        Ok(())
+    }
+
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
         if self.db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process {
@@ -1138,10 +1175,10 @@ impl Elab<'_> {
                 }
                 (ObjClass::Signal, ObjRole::Plain) => {
                     let span = decl.span;
-                    let init = match o.default {
-                        Some(e) => Some(self.m.eval(db, e, Some(s))?),
-                        None => None,
-                    };
+                    self.m.sig_init = true;
+                    let init = o.default.map(|e| self.m.eval(db, e, Some(s)));
+                    self.m.sig_init = false;
+                    let init = init.transpose()?;
                     let Some(shape) =
                         self.m
                             .shape_init(db, o.subtype, init.as_ref(), Some(s), span)?
@@ -1190,12 +1227,7 @@ impl Elab<'_> {
                 (ObjClass::Signal, ObjRole::Guard) => {
                     // The implicit GUARD signal of a guarded block (LRM 11.2), driven by
                     // the block's guard process.
-                    let span = decl.span;
-                    let Some(shape) = self.m.shape(db, o.subtype, Some(s), span)? else {
-                        return Err(Box::new(ice(span, "GUARD subtype")));
-                    };
-                    self.m
-                        .add_obj(self.db, s, d, ObjKind::Signal, shape, None, span)?;
+                    self.guard_signal(s, d)?;
                 }
                 (ObjClass::Signal, ObjRole::ImplicitSignal) => {
                     self.implicit_signal(s, d)?;
@@ -1211,6 +1243,22 @@ impl Elab<'_> {
                         && o.default.is_some_and(|e| db.uses_external(e)) =>
                 {
                     self.m.value_of(db, d, Some(s), decl.span)?;
+                }
+                // A constant that reads a signal gets the signal's initial value, as the initial
+                // value of a signal does (#453). One that cannot be evaluated yet keeps its
+                // run-time thunk.
+                (ObjClass::Constant, ObjRole::Plain)
+                    if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
+                        && o.default.is_some_and(|e| crate::eval::reads_signal(db, e)) =>
+                {
+                    self.m.sig_init = true;
+                    let r = self.m.value_of(db, d, Some(s), decl.span);
+                    self.m.sig_init = false;
+                    match r {
+                        Ok(_) => {}
+                        Err(x) if x.code == crate::codes::NOT_EVALUATED => {}
+                        Err(x) => return Err(x),
+                    }
                 }
                 (ObjClass::Constant, ObjRole::Plain)
                     if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
@@ -1793,15 +1841,7 @@ impl Elab<'_> {
                 self.decls(b, bscope)?;
                 if let Some(g) = guard {
                     if self.m.signal(b, g).is_none() {
-                        let gspan = self.db.decls[g].span;
-                        let DeclKind::Object(o) = &self.db.decls[g].kind else {
-                            return Err(Box::new(ice(span, "GUARD is not an object")));
-                        };
-                        let Some(shape) = self.m.shape(self.db, o.subtype, Some(b), gspan)? else {
-                            return Err(Box::new(ice(span, "GUARD subtype")));
-                        };
-                        self.m
-                            .add_obj(self.db, b, g, ObjKind::Signal, shape, None, gspan)?;
+                        self.guard_signal(b, g)?;
                     }
                     // The guard process `GUARD <= guard_expression` (LRM 11.2): its
                     // statement is the block statement; it drives GUARD.
@@ -1813,6 +1853,10 @@ impl Elab<'_> {
                         span,
                     };
                     self.process_refs(b, st, name, false, vec![(o, Vec::new(), span)])?;
+                    let reads = self.guard_reads(b, g);
+                    if let Some(p) = self.procs.last_mut() {
+                        p.guard = reads;
+                    }
                 }
                 let mut c = 0;
                 self.stmts(b, &body, bcfg.as_ref(), &mut c, depth)
@@ -2485,10 +2529,14 @@ impl Elab<'_> {
         }
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
+        let idle = trigger.and_then(|_| self.idle_reads(s, st));
         let copy = self.copy_source(s, st);
+        let toggle = self.toggle_source(s, st);
         if let Some(p) = self.procs.last_mut() {
+            p.idle = idle;
             p.trigger = trigger;
             p.copy = copy;
+            p.toggle = toggle;
         }
         Ok(())
     }
@@ -2603,6 +2651,8 @@ impl Elab<'_> {
         else {
             return None;
         };
+        // `wait until x = '1'`: the whole condition is the level (its `on` list must be `x`).
+        let mut plain = None;
         let (cond, reset, wait) = match (sensitivity, &body[..]) {
             (Sensitivity::List(sens), [only]) if !sens.is_empty() => {
                 let StmtKind::If {
@@ -2620,17 +2670,28 @@ impl Elab<'_> {
             }
             (Sensitivity::None, body) => {
                 let mut waits = body.iter().filter_map(|&w| match &db.stmts[w].kind {
-                    StmtKind::Wait { until, timeout, .. } => Some((*until, timeout.is_some())),
+                    StmtKind::Wait { on, until, timeout } => {
+                        Some((*until, timeout.is_some(), &on[..]))
+                    }
                     _ => None,
                 });
-                let (Some((Some(c), false)), None) = (waits.next(), waits.next()) else {
+                let (Some((Some(c), false, on)), None) = (waits.next(), waits.next()) else {
                     return None;
                 };
+                plain = Some(on.to_vec());
                 (c, None, true)
             }
             _ => return None,
         };
-        let (rising, arg, level) = self.edge_of(cond)?;
+        let (rising, arg, level) = self.edge_of(cond, plain.is_some())?;
+        // The level form (`level` is `arg` itself) resumes on the events of its `on` list
+        // (implicit: the signals of the condition), which must be this element alone.
+        if level == Some(arg) {
+            let mine = self.static_elem(s, arg)?;
+            for l in &plain? {
+                (self.lsp_elem(s, l)? == mine).then_some(())?;
+            }
+        }
         let (leaf, elem) = self.static_elem(s, arg)?;
         let legacy = level.is_some();
         if let Some(l) = level {
@@ -2640,7 +2701,7 @@ impl Elab<'_> {
         let logic = |e: &Self, l: LeafId| e.m.nets.leaf(l).ty.elem == Elem::Logic;
         let reset = match reset {
             Some(r) => {
-                let (x, pos) = self.level_of(r)?;
+                let (x, pos) = self.db.level_of(r)?;
                 let (rl, re) = self.static_elem(s, x)?;
                 (logic(self, rl) && pos <= 8).then_some((rl, re, pos as u8))
             }
@@ -2659,72 +2720,102 @@ impl Elab<'_> {
         })
     }
 
-    /// The leaf and element a static signal name denotes.
-    fn static_elem(&mut self, s: ScopeId, e: ExprId) -> Option<(LeafId, u32)> {
-        let db: &Db = &*self.db;
-        let (d, path) = self.static_signal(e)?;
-        let l = Lsp {
-            root: ObjRoot::Decl(d),
-            path: path.into(),
-            stat: Staticness::Globally,
-            span: db.exprs[e].span,
+    /// The signal parts the condition of the guard `g` of block `b` reads; `None` when one of
+    /// them cannot be resolved here (the `_guard` process then wakes as any process).
+    fn guard_reads(&mut self, b: ScopeId, g: DeclId) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+        let db: &Db = self.db;
+        let DeclKind::Object(o) = &db.decls[g].kind else {
+            return None;
         };
-        // A probe: the same name is resolved for real when the process is lowered.
-        let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
-        match self.m.nets.select(o, &sels).ok()?.0[..] {
-            [(leaf, r)] if r.len == 1 => Some((leaf, r.offset)),
-            _ => None,
+        let cond = o.default?;
+        let mut lsps = Vec::new();
+        db.reads(cond, &mut lsps);
+        let mut out = Vec::new();
+        for l in lsps {
+            let (o, sels) = self.m.lsp_ref(db, &l, b).ok()?;
+            for (leaf, r) in self.m.nets.select(o, &sels).ok()?.0 {
+                if !out.contains(&(leaf, r)) {
+                    out.push((leaf, r));
+                }
+            }
         }
+        Some(out)
     }
 
-    /// `x = '1'` or `'1' = x` of the predefined `=`: the signal name and the position of the
-    /// enumeration literal.
-    fn level_of(&self, e: ExprId) -> Option<(ExprId, u32)> {
-        let db: &Db = &*self.db;
-        let ExprKind::Call {
-            callee,
-            args,
-            method_of: None,
-            implicit_cond: false,
-        } = &db.exprs[e].kind
+    /// The signal parts a clocked process (one with an edge trigger) reads, when an activation
+    /// of it is a function of those and constants alone (`Db::pure_clocked_reads`); the edge test
+    /// itself is not one of them. Shapes: `process (c) begin if <edge> then B end if; end process;`
+    /// (also behind a reset branch `if R then A elsif <edge> then B`) and
+    /// `process begin wait until <edge>; B end process;`.
+    fn idle_reads(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+        let db: &Db = self.db;
+        let StmtKind::Process {
+            sensitivity,
+            body,
+            scope,
+            ..
+        } = &db.stmts[st].kind
         else {
             return None;
         };
-        let decl = &db.decls[*callee];
-        let [
-            Arg {
-                actual: Actual::Expr(l),
-                ..
-            },
-            Arg {
-                actual: Actual::Expr(r),
-                ..
-            },
-        ] = &args[..]
-        else {
-            return None;
+        let (mut conds, stmts, edge): (Vec<ExprId>, Vec<StmtId>, ExprId) =
+            match (sensitivity, &body[..]) {
+                (Sensitivity::List(_), [only]) => {
+                    let StmtKind::If {
+                        branches,
+                        else_: None,
+                    } = &db.stmts[*only].kind
+                    else {
+                        return None;
+                    };
+                    match &branches[..] {
+                        [(c, b)] => (Vec::new(), b.to_vec(), *c),
+                        [(r, a), (c, b)] => {
+                            (vec![*r], a.iter().chain(b.iter()).copied().collect(), *c)
+                        }
+                        _ => return None,
+                    }
+                }
+                (Sensitivity::None, [w, rest @ ..]) => {
+                    let StmtKind::Wait {
+                        until: Some(c),
+                        timeout: None,
+                        ..
+                    } = &db.stmts[*w].kind
+                    else {
+                        return None;
+                    };
+                    (Vec::new(), rest.to_vec(), *c)
+                }
+                _ => return None,
+            };
+        let lsps = match self.idle_cache.get(&st) {
+            Some(c) => c.clone()?,
+            None => {
+                // What the edge test also reads (`rising_edge(c) and en = '1'`).
+                let r = self.edge_extras(edge).and_then(|ex| {
+                    conds.extend(ex);
+                    self.db.pure_clocked_reads(*scope, &conds, &stmts)
+                });
+                self.idle_cache.insert(st, r.clone());
+                r?
+            }
         };
-        if !decl.implicit || decl.name.key().as_str() != "\"=\"" {
-            return None;
+        let mut out = Vec::new();
+        for l in lsps {
+            let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
+            for (leaf, r) in self.m.nets.select(o, &sels).ok()?.0 {
+                if !out.contains(&(leaf, r)) {
+                    out.push((leaf, r));
+                }
+            }
         }
-        let pos = |x: ExprId| match db.exprs[x].kind {
-            ExprKind::Const(c) => match db.consts[c] {
-                yavs_sem::stat::ConstValue::Enum(p) => Some(p),
-                _ => None,
-            },
-            _ => None,
-        };
-        match (pos(*l), pos(*r)) {
-            (None, Some(p)) => Some((*l, p)),
-            (Some(p), None) => Some((*r, p)),
-            _ => None,
-        }
+        Some(out)
     }
 
-    /// `rising_edge(x)` or `falling_edge(x)` of IEEE 1164, `x'event and x = '1'` (or `'0'`;
-    /// either order), or an `and` of BOOLEANs whose first operand is one: whether it is rising,
-    /// the argument and, for the legacy form, the other mention of the signal.
-    fn edge_of(&self, cond: ExprId) -> Option<(bool, ExprId, Option<ExprId>)> {
+    /// The operands of a clock-edge condition besides the edge: none for `rising_edge(c)` and
+    /// `c'event and c = '1'` (or the level of a `wait until`), the other operands of an `and`.
+    fn edge_extras(&self, cond: ExprId) -> Option<Vec<ExprId>> {
         let db: &Db = &*self.db;
         let ExprKind::Call {
             callee,
@@ -2736,60 +2827,249 @@ impl Elab<'_> {
             return None;
         };
         let decl = &db.decls[*callee];
-        let first = match args.first() {
-            Some(Arg {
+        if !decl.implicit {
+            return Some(Vec::new());
+        }
+        if matches!(decl.name.key().as_str(), "rising_edge" | "falling_edge") {
+            return Some(Vec::new());
+        }
+        let [
+            Arg {
                 actual: Actual::Expr(a),
                 ..
-            }) => *a,
-            _ => return None,
-        };
-        if decl.implicit {
-            // The predefined `and` of BOOLEAN (it does not evaluate its second operand
-            // after a false first one).
-            let boolean = Some(db.base(db.exprs[cond].subtype)) == db.well_known.boolean;
-            if !(boolean && args.len() == 2 && decl.name.key().as_str() == "\"and\"") {
-                return None;
-            }
-            if let Some(Arg {
-                actual: Actual::Expr(second),
+            },
+            Arg {
+                actual: Actual::Expr(b),
                 ..
-            }) = args.get(1)
-                && let Some(x) = self.legacy_of(first, *second)
-            {
-                return Some(x);
+            },
+        ] = &args[..]
+        else {
+            // The level of a `wait until c = '1'`.
+            return self.db.level_of(cond).map(|_| Vec::new());
+        };
+        if decl.name.key().as_str() == "\"and\"" {
+            if db.edge_shape(cond).is_some() {
+                return Some(Vec::new());
             }
-            return self.edge_of(first);
+            if let Some(mut ex) = self.edge_extras(*a) {
+                ex.push(*b);
+                return Some(ex);
+            }
+            if self.safe_operand(*a)
+                && let Some(mut ex) = self.edge_extras(*b)
+            {
+                ex.push(*a);
+                return Some(ex);
+            }
+            return None;
         }
-        let owner = db.scopes[decl.scope].owner?;
-        match (
-            decl.name.key().as_str(),
-            db.decls[owner].name.key().as_str(),
-        ) {
-            ("rising_edge", "std_logic_1164") if args.len() == 1 => Some((true, first, None)),
-            ("falling_edge", "std_logic_1164") if args.len() == 1 => Some((false, first, None)),
+        // `c = '1'` of a `wait until`.
+        self.db.level_of(cond).map(|_| Vec::new())
+    }
+
+    /// A concurrent `x <= not x after T;` (a clock generator, not postponed or guarded, no
+    /// rejection limit) on one element of a signal of `std_ulogic`, BIT or BOOLEAN itself (so
+    /// no check of the assignment can fail) with the predefined `not`, a delay that is static
+    /// and evaluates now to a positive time without calling a subprogram, and the process's
+    /// one driver exactly that element. `None` for anything else.
+    fn toggle_source(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcToggle> {
+        let db: &Db = self.db;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            target,
+            delay: delay @ (Delay::Default | Delay::Transport | Delay::Inertial { reject: None }),
+            rhs: Rhs::Simple(Waveform::Elements(elems)),
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let [
+            WaveElem {
+                value: Some(e),
+                after: Some(after),
+            },
+        ] = &elems[..]
+        else {
+            return None;
+        };
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[*e].kind
+        else {
+            return None;
+        };
+        let [
+            Arg {
+                actual: Actual::Expr(arg),
+                ..
+            },
+        ] = &args[..]
+        else {
+            return None;
+        };
+        let (callee, arg, after, texpr) = (*callee, *arg, *after, target.expr);
+        let transport = matches!(delay, Delay::Transport);
+        if db.decls[callee].name.key().as_str() != "\"not\""
+            || db.exprs[after].stat == Staticness::None
+        {
+            return None;
+        }
+        let (leaf, elem) = self.static_elem(s, texpr)?;
+        if self.static_elem(s, arg)? != (leaf, elem) {
+            return None;
+        }
+        let (_, shape) = self.static_signal_parts(s, texpr)?;
+        let db: &Db = self.db;
+        let decl = &db.decls[callee];
+        let Shape::Scalar {
+            ty,
+            range: Some(range),
+            elem: kind,
+            ..
+        } = &shape
+        else {
+            return None;
+        };
+        let wk = &db.well_known;
+        let ok = match kind {
+            // The IEEE `not` of `std_ulogic` (the whole type), or the predefined one of BIT
+            // or BOOLEAN (bit-plane logic too).
+            Elem::Logic if range.low_high() == (0, 8) => {
+                !decl.implicit
+                    && db.scopes[decl.scope]
+                        .owner
+                        .is_some_and(|o| db.decls[o].name.key().as_str() == "std_logic_1164")
+            }
+            Elem::Logic if range.low_high() == (0, 1) => {
+                decl.implicit && (Some(*ty) == wk.boolean || Some(*ty) == wk.bit)
+            }
+            _ => false,
+        };
+        if !ok || db.base(db.exprs[arg].subtype) != *ty {
+            return None;
+        }
+        let [dst] = &self.procs.last()?.lsps[..] else {
+            return None;
+        };
+        let [(k, l, r)] = &dst[..] else {
+            return None;
+        };
+        let nets = &self.m.nets;
+        if (*l, r.offset, r.len) != (leaf, elem, 1) || nets.drivers[*k].leaf != leaf {
+            return None;
+        }
+        // A probe: a delay that needs a subprogram call (or fails) stays with the process.
+        let mark = self.m.session.mark();
+        let v = self.m.eval(db, after, Some(s));
+        let called = self.m.session.mark() != mark;
+        self.m.session.undo(db, mark).ok()?;
+        let Ok(Val::Phys(t)) = v else {
+            return None;
+        };
+        (t > 0 && !called).then_some(crate::ProcToggle {
+            leaf,
+            elem,
+            delay: t,
+            transport,
+        })
+    }
+
+    /// The leaf and element a static signal name denotes.
+    fn static_elem(&mut self, s: ScopeId, e: ExprId) -> Option<(LeafId, u32)> {
+        let db: &Db = &*self.db;
+        let (d, path) = self.static_signal(e)?;
+        let l = Lsp {
+            root: ObjRoot::Decl(d),
+            path: path.into(),
+            stat: Staticness::Globally,
+            span: db.exprs[e].span,
+        };
+        self.lsp_elem(s, &l)
+    }
+
+    /// The leaf and element a static longest prefix denotes.
+    fn lsp_elem(&mut self, s: ScopeId, l: &Lsp) -> Option<(LeafId, u32)> {
+        let db: &Db = &*self.db;
+        // A probe: the same name is resolved for real when the process is lowered.
+        let (o, sels) = self.m.lsp_ref(db, l, s).ok()?;
+        match self.m.nets.select(o, &sels).ok()?.0[..] {
+            [(leaf, r)] if r.len == 1 => Some((leaf, r.offset)),
             _ => None,
         }
     }
 
-    /// `x'event` with `x = '1'` (rising) or `x = '0'`, in either order.
-    fn legacy_of(&self, a: ExprId, b: ExprId) -> Option<(bool, ExprId, Option<ExprId>)> {
-        use yavs_sem::hir::{AttrPrefix, PredefAttr};
+    /// `rising_edge(x)` or `falling_edge(x)` of IEEE 1164, `x'event and x = '1'` (or `'0'`;
+    /// either order, `Db::edge_shape`), or an `and` of BOOLEANs whose first operand is one:
+    /// whether it is rising, the argument and, for the legacy form, the other mention of the
+    /// signal.
+    fn edge_of(&self, cond: ExprId, plain: bool) -> Option<(bool, ExprId, Option<ExprId>)> {
         let db: &Db = &*self.db;
-        let event = |e: ExprId| match &db.exprs[e].kind {
-            ExprKind::Attr {
-                attr: PredefAttr::Event,
-                prefix: AttrPrefix::Expr(x),
-                ..
-            } => Some(*x),
-            _ => None,
+        // `wait until x = '1'`: it resumes on an event on `x` that ends on '1', as the legacy form.
+        if plain && let Some((x, pos @ (2 | 3))) = db.level_of(cond) {
+            return Some((pos == 3, x, Some(x)));
+        }
+        if let Some(s) = db.edge_shape(cond) {
+            return Some((s.rising, s.sig, s.other));
+        }
+        let ExprKind::Call {
+            callee,
+            args,
+            method_of: None,
+            implicit_cond: false,
+        } = &db.exprs[cond].kind
+        else {
+            return None;
         };
-        let (x, (l, pos)) = match (event(a), event(b)) {
-            (Some(x), None) => (x, self.level_of(b)?),
-            (None, Some(x)) => (x, self.level_of(a)?),
-            _ => return None,
+        // The predefined `and` of BOOLEAN (it does not evaluate its second operand after a false
+        // first one).
+        let decl = &db.decls[*callee];
+        let boolean = Some(db.base(db.exprs[cond].subtype)) == db.well_known.boolean;
+        if !(decl.implicit && boolean && args.len() == 2 && decl.name.key().as_str() == "\"and\"") {
+            return None;
+        }
+        let (Actual::Expr(first), Actual::Expr(second)) = (&args[0].actual, &args[1].actual) else {
+            return None;
         };
-        // std_ulogic positions: '0' is 2, '1' is 3.
-        matches!(pos, 2 | 3).then_some((pos == 3, x, Some(l)))
+        if let Some(x) = self.edge_of(*first, false) {
+            return Some(x);
+        }
+        // The edge as a later operand: the earlier ones cannot fail (a level of a static
+        // signal name), so skipping them on a false edge changes nothing.
+        if self.safe_operand(*first) {
+            return self.edge_of(*second, false);
+        }
+        None
+    }
+
+    /// A BOOLEAN operand whose evaluation cannot fail or have an effect: `x = '1'` on a static
+    /// signal name, or an `and` of such.
+    fn safe_operand(&self, e: ExprId) -> bool {
+        let db: &Db = &*self.db;
+        if let Some((x, _)) = self.db.level_of(e) {
+            return self.static_signal(x).is_some();
+        }
+        match &db.exprs[e].kind {
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                implicit_cond: false,
+            } if db.decls[*callee].implicit
+                && db.decls[*callee].name.key().as_str() == "\"and\""
+                && args.len() == 2 =>
+            {
+                args.iter().all(|a| match a.actual {
+                    Actual::Expr(x) => self.safe_operand(x),
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
     }
 
     /// A name made of a signal, static indices and fields: the signal and the steps.
@@ -2883,6 +3163,9 @@ impl Elab<'_> {
             actual: None,
             trigger: None,
             copy: None,
+            toggle: None,
+            idle: None,
+            guard: None,
         });
         ProcIdx(self.procs.len() as u32 - 1)
     }
@@ -3521,6 +3804,78 @@ impl Model {
         x: yavs_sem::ExternalId,
         scope: ScopeId,
     ) -> R<ExtTarget> {
+        let t = self.find_external(db, x, scope)?;
+        self.check_external(db, x, scope, &t)?;
+        Ok(t)
+    }
+
+    /// The type of the object an external name denotes is the type of its subtype indication,
+    /// and an array's constrained dimensions have the object's lengths (LRM 8.7): a mismatch
+    /// is an error when the name is bound.
+    fn check_external(
+        &mut self,
+        db: &Db,
+        x: yavs_sem::ExternalId,
+        scope: ScopeId,
+        t: &ExtTarget,
+    ) -> R<()> {
+        let ext = &db.externals[x];
+        let want = db.base(ext.subtype);
+        if matches!(db.types[want].kind, yavs_sem::types::TypeKind::Error) {
+            return Ok(());
+        }
+        let (name, class, got, shape) = match *t {
+            ExtTarget::Signal(o) => {
+                let obj = self.nets.obj(o);
+                (obj.name.text.to_string(), "signal", obj.shape.ty(), Some(o))
+            }
+            ExtTarget::Value(_, d) => {
+                let DeclKind::Object(o) = &db.decls[d].kind else {
+                    return Ok(());
+                };
+                let class = if ext.class == ExternalClass::Constant {
+                    "constant"
+                } else {
+                    "shared variable"
+                };
+                (
+                    db.decls[d].name.to_string(),
+                    class,
+                    db.base(o.subtype),
+                    None,
+                )
+            }
+        };
+        let fail = |why: String| {
+            Box::new(
+                Diagnostic::error(
+                    codes::EXTERNAL_MISMATCH,
+                    format!("external name does not match {class} `{name}`: {why}"),
+                )
+                .with_primary(ext.span, "external name")
+                .with_note("the object has the type and the array lengths of the name's subtype indication (LRM 8.7)"),
+            )
+        };
+        if want != got {
+            return Err(fail(format!(
+                "its type is `{}`, the name says `{}`",
+                db.type_name(got),
+                db.type_name(want)
+            )));
+        }
+        let Some(o) = shape else { return Ok(()) };
+        let Some(sub) = self.shape(db, ext.subtype, Some(scope), ext.span)? else {
+            return Ok(()); // unconstrained: the object's bounds
+        };
+        match length_mismatch(&sub, &self.nets.obj(o).shape) {
+            Some((name_n, obj_n)) => Err(fail(format!(
+                "the object has {obj_n} elements, the subtype indication {name_n}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    fn find_external(&mut self, db: &Db, x: yavs_sem::ExternalId, scope: ScopeId) -> R<ExtTarget> {
         use yavs_syntax::ast::PathKind;
         let ext = &db.externals[x];
         let span = ext.span;
@@ -4024,6 +4379,18 @@ impl Model {
             let Some(&mode) = modes.get(&f.0) else {
                 return Err(Box::new(ice(span, "formal leaf without a mode")));
             };
+            // An `in` formal starts with its actual's value (LRM 14.7.3.3), which the
+            // initial value of a later signal may read.
+            if mode == PortMode::In {
+                let al = self.nets.leaf(a.0);
+                let src = crate::collapse::slice_init(&al.init, al.ty.len, a.1);
+                crate::collapse::put_init(
+                    &mut self.nets.leaves[f.0.index()].init,
+                    f.1.offset,
+                    &src,
+                    f.1.len,
+                );
+            }
             self.nets.ports.push(PortEdge {
                 formal: *f,
                 actual: *a,
@@ -4052,6 +4419,30 @@ impl Model {
             ));
         }
         Ok(())
+    }
+}
+
+/// The first pair of array dimension lengths (the name's, the object's) that differ.
+fn length_mismatch(name: &Shape, obj: &Shape) -> Option<(u64, u64)> {
+    match (name, obj) {
+        (
+            Shape::Array {
+                dims: a, elem: ea, ..
+            },
+            Shape::Array {
+                dims: b, elem: eb, ..
+            },
+        ) => a
+            .iter()
+            .zip(b)
+            .find(|(x, y)| x.len() != y.len())
+            .map(|(x, y)| (x.len(), y.len()))
+            .or_else(|| length_mismatch(ea, eb)),
+        (Shape::Record { fields: a, .. }, Shape::Record { fields: b, .. }) => a
+            .iter()
+            .zip(b)
+            .find_map(|((_, x), (_, y))| length_mismatch(x, y)),
+        _ => None,
     }
 }
 

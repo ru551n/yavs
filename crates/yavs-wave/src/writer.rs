@@ -6,8 +6,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use wavefst::{
-    FileType, FstWriter, GeomEntry, Header, ScopeType, SignalValue, SupplementalDataType as Dt,
-    SupplementalVarType, SupplementalVariableMetadata, VarDir, VarType,
+    ChainCompression, FileType, FstWriter, GeomEntry, Header, MiscAttributeType, ScopeType,
+    SignalValue, SupplementalDataType as Dt, SupplementalVarType, SupplementalVariableMetadata,
+    VarDir, VarType,
 };
 
 use crate::model::*;
@@ -70,7 +71,11 @@ impl Default for WaveConfig {
 enum Codec {
     /// Position -> FST character; scalar if `width == 1` and not a vector.
     Logic {
-        chars: Vec<u8>,
+        /// Position -> character, 0 for a position the type does not have.
+        chars: Box<[u8; 256]>,
+        /// An even position `z` whose character is `0` and `z + 1` is `1`: vectors of only those
+        /// are mapped eight at a time (`ZERO_NONE`: no such pair).
+        zero: u8,
         width: usize,
         vector: bool,
     },
@@ -98,7 +103,7 @@ pub struct WaveWriter {
     plans: Vec<Option<Plan>>,
     enum_tables: HashMap<(String, Vec<String>), u32>,
     now: Option<u64>,
-    scratch: String,
+    scratch: Vec<u8>,
     cfg: WaveConfig,
     last_flush: Instant,
     flush_due: bool,
@@ -114,6 +119,7 @@ impl WaveWriter {
         let mut fst = FstWriter::builder(file)
             .timescale_exponent(cfg.timescale_exponent)
             .block_change_limit(block_change_limit)
+            .chain_compression(ChainCompression::Lz4)
             .build()?;
         let mut w = Self {
             fst: None,
@@ -121,7 +127,7 @@ impl WaveWriter {
             plans: vec![None; h.types().len()],
             enum_tables: HashMap::new(),
             now: None,
-            scratch: String::new(),
+            scratch: Vec::new(),
             last_flush: Instant::now(),
             flush_due: false,
             since_check: 0,
@@ -190,10 +196,6 @@ impl WaveWriter {
             _ => name.to_string(),
         };
         let slot = self.slots[idx];
-        if slot.handle != 0 {
-            fst.add_alias(p.var_type, dir, name, slot.handle)?;
-            return Ok(());
-        }
         if let Some(t) = p.table {
             fst.add_enum_table_ref(t)?;
         }
@@ -206,6 +208,18 @@ impl WaveWriter {
             },
             p.data,
         );
+        if slot.handle != 0 {
+            // What `add_supplemental_variable` writes before a variable, then the alias.
+            let argument = (u64::from(meta.variable_type as u8) << 10)
+                | (u64::from(meta.data_type as u16) & 0x3ff);
+            fst.add_misc_attribute(
+                MiscAttributeType::SupplementalVariable,
+                meta.type_description,
+                argument,
+            )?;
+            fst.add_alias(p.var_type, dir, name, slot.handle)?;
+            return Ok(());
+        }
         let handle = fst.add_supplemental_variable(p.var_type, dir, name, p.geom.clone(), meta)?;
         self.slots[idx] = Slot {
             handle,
@@ -241,7 +255,13 @@ impl WaveWriter {
                     },
                     geom: GeomEntry::Fixed(width as u32),
                     codec: Codec::Logic {
-                        chars,
+                        zero: (0..chars.len().saturating_sub(1))
+                            .step_by(2)
+                            .find(|&z| chars[z] == b'0' && chars[z + 1] == b'1')
+                            .map_or(ZERO_NONE, |z| z as u8),
+                        chars: Box::new(std::array::from_fn(|i| {
+                            chars.get(i).copied().unwrap_or(0)
+                        })),
                         width,
                         vector,
                     },
@@ -362,24 +382,39 @@ impl WaveWriter {
         let v = match codec {
             Codec::Logic {
                 chars,
+                zero,
                 width,
                 vector,
             } => {
                 if value.len() != *width {
                     return Err(bad("wrong element count"));
                 }
+                if !*vector {
+                    let c = chars[value[0] as usize];
+                    if c == 0 {
+                        return Err(bad("enum position out of range"));
+                    }
+                    if c == b'0' || c == b'1' {
+                        fst.emit_binary_change(time, slot.handle, c == b'1')?;
+                    } else {
+                        fst.emit_change(time, slot.handle, SignalValue::Bit(c as char))?;
+                    }
+                    return Ok(());
+                }
                 self.scratch.clear();
-                for p in value {
-                    let c = *chars
-                        .get(*p as usize)
-                        .ok_or_else(|| bad("enum position out of range"))?;
-                    self.scratch.push(c as char);
+                if *zero == ZERO_NONE || !ascii_binary(value, *zero, &mut self.scratch) {
+                    self.scratch.clear();
+                    let mut missing = false;
+                    self.scratch.extend(value.iter().map(|&p| {
+                        let c = chars[p as usize];
+                        missing |= c == 0;
+                        c
+                    }));
+                    if missing {
+                        return Err(bad("enum position out of range"));
+                    }
                 }
-                if *vector {
-                    SignalValue::Vector(Cow::Borrowed(&self.scratch))
-                } else {
-                    SignalValue::Bit(self.scratch.as_bytes()[0] as char)
-                }
+                SignalValue::Bytes(Cow::Borrowed(&self.scratch))
             }
             Codec::Enum { width } => {
                 let b: [u8; 4] = value.try_into().map_err(|_| bad("expected u32"))?;
@@ -438,6 +473,29 @@ struct Plan {
     desc: String,
 }
 
+const ZERO_NONE: u8 = u8::MAX;
+
+/// Appends the characters of `value` (positions) if they are all `zero` or `zero + 1` (an even
+/// `zero`, whose characters are `0` and `1`), eight at a time; false (and nothing
+/// appended) otherwise.
+fn ascii_binary(value: &[u8], zero: u8, out: &mut Vec<u8>) -> bool {
+    const ONES: u64 = 0x0101_0101_0101_0101;
+    let z = u64::from(zero) * ONES;
+    let (chunks, rest) = value.as_chunks::<8>();
+    for c in chunks {
+        let y = u64::from_le_bytes(*c) ^ z;
+        if y & !ONES != 0 {
+            return false;
+        }
+        out.extend_from_slice(&(y + 0x3030_3030_3030_3030).to_le_bytes());
+    }
+    rest.iter().all(|&p| {
+        let y = p ^ zero;
+        out.push(b'0' + y);
+        y < 2
+    })
+}
+
 /// Low `bits` bits of `v`, MSB first, and the number of bytes they take.
 fn packed(v: u64, bits: u32) -> ([u8; 8], usize) {
     let shifted = if bits >= 64 { v } else { v << (64 - bits) };
@@ -489,5 +547,26 @@ fn scope_type(k: ScopeKind) -> ScopeType {
         ScopeKind::Package => ScopeType::VhdlPackage,
         ScopeKind::Record => ScopeType::VhdlRecord,
         ScopeKind::Array => ScopeType::SvArray,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ascii_binary;
+
+    #[test]
+    fn binary_vectors_map_eight_at_a_time() {
+        for len in 0..21usize {
+            let v: Vec<u8> = (0..len).map(|i| 2 + ((i * 7 % 3) & 1) as u8).collect();
+            let mut out = Vec::new();
+            assert!(ascii_binary(&v, 2, &mut out));
+            let want: Vec<u8> = v.iter().map(|p| b'0' + (p - 2)).collect();
+            assert_eq!(out, want, "len {len}");
+        }
+        for at in [0, 7, 8, 15, 19] {
+            let mut v = vec![2u8; 20];
+            v[at] = 4;
+            assert!(!ascii_binary(&v, 2, &mut Vec::new()), "position {at}");
+        }
     }
 }

@@ -843,7 +843,7 @@ impl Db {
                     )),
                 }
             }
-            crate::expr::CandSet::Class(_) => Err(self.error(
+            crate::expr::CandSet::Class(_) | crate::expr::CandSet::Alloc(_) => Err(self.error(
                 yavs_diag::Diagnostic::error(
                     crate::diag::NOT_AN_OBJECT,
                     "the aliased name does not denote an object",
@@ -1296,9 +1296,11 @@ impl Db {
         }
         // 4.2.1 (2008, 2019): the result of a pure function is not of an access type and
         // has no access subelement (clear; sim2 and sim4 reject, sim1 and sim3 accept).
-        // `--relaxed` makes it warning W1830. Vendored VITAL packages are exempt.
+        // `--relaxed` makes it warning W1830. Vendored VITAL packages are exempt, and a 1993
+        // file is: the rule is not in the 1993 text (a vests 1993 test returns an access type).
         if let (SubprogramKind::Function { pure: true }, Some(r), Some(n)) =
             (kind, ret, &s.return_type)
+            && self.file_rev() >= LangRev::Vhdl2008
             && !self.in_vital_library(scope)
             && let Some((_, bad)) = self.bad_elem(self.base(r), false)
             && matches!(self.types[bad].kind, crate::types::TypeKind::Access { .. })
@@ -1587,10 +1589,15 @@ impl Db {
                 && !matches!(self.types[t].kind, crate::types::TypeKind::Protected { .. })
                 && self.all_protected(t)
             {
-                return Err(self.unsupported(
-                    o.span,
-                    "a variable port of a composite of protected types",
-                    "S7",
+                return Err(self.error(
+                    yavs_diag::Diagnostic::error(
+                        crate::diag::PROTECTED_COMPOSITE_PORT,
+                        "a variable port of a composite of protected types is not supported",
+                    )
+                    .with_primary(o.span, "variable port")
+                    .with_help(
+                        "most reference simulators reject this form; declare the port with a protected type, or one port per object",
+                    ),
                 ));
             }
             if !matches!(

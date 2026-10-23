@@ -4124,6 +4124,7 @@ impl Db {
             S::ConcSignalAssign {
                 postponed,
                 guarded,
+                guard,
                 target,
                 delay,
                 rhs,
@@ -4131,6 +4132,7 @@ impl Db {
             } => S::ConcSignalAssign {
                 postponed: *postponed,
                 guarded: *guarded,
+                guard: guard.map(|g| self.r_decl(r, g)),
                 target: self.r_target(r, target),
                 delay: self.r_delay(r, delay),
                 rhs: self.r_rhs(r, rhs, &mut |db, r, w| db.r_waveform(r, w)),

@@ -1819,7 +1819,7 @@ fn process(
     cx: &mut Cx,
     ir: &mut UnitIr,
     s: StmtId,
-    guard: Option<DeclId>,
+    mut guard: Option<DeclId>,
 ) -> R<()> {
     let st = &db.stmts[s];
     let (postponed, info, scope, implicit) = match &st.kind {
@@ -1832,9 +1832,15 @@ fn process(
         HStmt::ConcSignalAssign {
             postponed,
             guarded,
+            guard: assign_guard,
             info,
             ..
         } => {
+            // The GUARD signal sem found at the statement: the block's own, or a signal
+            // declared with that name (11.6).
+            if assign_guard.is_some() {
+                guard = *assign_guard;
+            }
             if *guarded && guard.is_none() {
                 return Err(cx.ice(st.span, "guarded assignment outside a guarded block"));
             }

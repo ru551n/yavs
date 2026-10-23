@@ -1269,7 +1269,7 @@ value, delay: Waveform/Option<ExprId>}`, `If`, `Case{matching: bool, choices: Ch
 with `LoopParam(DeclId)`, `Next/Exit{loop: StmtId}`, `Wait{sensitivity: Vec<Lsp>, until, for}`,
 `Return`, `ProcCall(Call)`, `Assert`, `Report`, `Force/Release`, `Null`, 2019 `SequentialBlock`)
 and concurrent (`Process{info: ProcessInfo, decls: ScopeId, body}`, `Block{guard, ports, generics}`,
-`ConcAssign`, `ConcProcCall`, `ConcAssert`, `Instance{target: InstTarget, scope, generic_map, port_map}`
+`ConcAssign{guarded, guard: Option<DeclId>}` (the `GUARD` signal of a guarded assignment: the block's implicit one or a visible signal of that name, 11.6, #641), `ConcProcCall`, `ConcAssert`, `Instance{target: InstTarget, scope, generic_map, port_map}`
 (`scope`: the instance's region, for `Db::default_binding(scope, component)` in elaboration),
 `ForGenerate{param, range}`, `IfGenerate`, `CaseGenerate`). Targets keep their `Lsp` next to the
 `ExprId`. Every statement has a `StmtId`; M2 tags IR instructions with it (plan: statement-location

@@ -422,6 +422,7 @@ const PASS: &[&str] = &[
     "sigassign/assign_reject",
     "sigassign/assign_transport",
     "sigassign/concurrent_aggregate_choices",
+    "sigassign/guarded_explicit_guard",
     "sigassign/guarded_unguarded_target",
     "sigassign/implicit_in_process",
     "sigassign/implicit_in_subprogram",

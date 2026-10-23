@@ -736,6 +736,7 @@ fn multiple_sources_records_generates_and_resolution() {
         fx.db.stmts[a].kind = StmtKind::ConcSignalAssign {
             postponed: false,
             guarded: false,
+            guard: None,
             target,
             delay,
             rhs,

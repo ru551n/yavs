@@ -1730,6 +1730,7 @@ impl Db {
                 self.stmts[id].kind = StmtKind::ConcSignalAssign {
                     postponed,
                     guarded: sa.guarded,
+                    guard: guard.map(|g| g.0),
                     target,
                     delay,
                     rhs,

@@ -54,6 +54,9 @@ const FAST_FAT_ROOT: u32 = 3;
 const FAST_DEREF: u32 = 4;
 const MEMEQ: &str = "yavs_rt_memeq";
 const CODES: &str = "yavs_rt_codes";
+const SPEC_BAIL: &str = "yavs_rt_spec_bail";
+const SPEC_CODES01: &str = "yavs_rt_spec_codes01";
+const SPEC_MISMATCH: &str = "yavs_rt_spec_mismatch";
 const NATIVE: &str = "yavs_rt_native";
 const TROOT: &str = "yavs_rt_troot";
 const ENDSTMT: &str = "yavs_rt_endstmt";
@@ -955,6 +958,45 @@ extern "C" fn yavs_rt_codes(codes: *const u8, groups: u64, mask: u64, out: *mut 
     }
 }
 
+/// Compiled code of function `func` leaves a speculative two-state instruction for the
+/// interpreter (`kind` 0: a code is no `'0'` or `'1'`; 1: the signal is not one compiled code
+/// reads in place). The back-off is `yavs_interp::spec01`'s.
+extern "C" fn yavs_rt_spec_bail(func: u32, kind: u32) {
+    yavs_interp::spec01::bail(func, kind as usize);
+}
+
+/// `yavs_rt_codes` for two-state code: 1 and the planes `[bits, mask, 0, 0]` when every one of
+/// the `groups` groups of eight codes is `'0'` or `'1'` in the first `mask` elements, else 0.
+extern "C" fn yavs_rt_spec_codes01(codes: *const u8, groups: u64, mask: u64, out: *mut u64) -> u64 {
+    let mut bits = 0u64;
+    for j in 0..groups as usize {
+        // SAFETY: the caller checked `groups * 8` readable bytes at `codes`.
+        let w = unsafe { std::ptr::read_unaligned(codes.add(8 * j).cast::<u64>()) };
+        let m = (mask >> (8 * j)) & 0xff;
+        let m8 = (0..8).fold(0u64, |a, k| a | (m >> k & 1) * (0xffu64 << (8 * k)));
+        if (w & 0xfefe_fefe_fefe_fefe ^ 0x0202_0202_0202_0202) & m8 != 0 {
+            return 0;
+        }
+        bits |= ((w & 0x0101_0101_0101_0101).wrapping_mul(0x0102_0408_1020_4080) >> 56) << (8 * j);
+    }
+    // SAFETY: the caller checked 32 writable bytes at `out`.
+    unsafe {
+        std::ptr::write_unaligned(out, bits & mask);
+        std::ptr::write_unaligned(out.add(1), mask);
+        std::ptr::write_unaligned(out.add(2), 0);
+        std::ptr::write_unaligned(out.add(3), 0);
+    }
+    1
+}
+
+/// Shadow mode found the two-state result of function `func` at `pc` unlike the general one.
+extern "C" fn yavs_rt_spec_mismatch(func: u32, pc: u32) {
+    eprintln!(
+        "internal error: speculative two-state code of function {func} at pc {pc} differs from the general code (this is a bug in yavs)"
+    );
+    std::process::exit(70);
+}
+
 /// The body of `yavs_rt_step`.
 ///
 /// # Safety
@@ -1303,7 +1345,9 @@ impl Tier for LlvmTier {
     fn run(&self, func: FuncId, pc: u32, host: &mut dyn TierHost) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), None)
+        yavs_interp::spec01::gate(func.0, || {
+            enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), None)
+        })
     }
 
     fn run_cached(
@@ -1315,15 +1359,17 @@ impl Tier for LlvmTier {
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(
-            f,
-            nregs,
-            pc,
-            host,
-            &lookup,
-            self.natives.as_ptr(),
-            Some(state),
-        )
+        yavs_interp::spec01::gate(func.0, || {
+            enter(
+                f,
+                nregs,
+                pc,
+                host,
+                &lookup,
+                self.natives.as_ptr(),
+                Some(state),
+            )
+        })
     }
 
     fn ready(&self, func: FuncId) -> bool {
@@ -1592,6 +1638,9 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (DEOPT_END, yavs_rt_deopt_end as *const () as usize),
             (MEMEQ, yavs_rt_memeq as *const () as usize),
             (CODES, yavs_rt_codes as *const () as usize),
+            (SPEC_BAIL, yavs_rt_spec_bail as *const () as usize),
+            (SPEC_CODES01, yavs_rt_spec_codes01 as *const () as usize),
+            (SPEC_MISMATCH, yavs_rt_spec_mismatch as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
@@ -1797,6 +1846,7 @@ fn perf_map(new: &[(usize, &str, &str)]) {
 /// `max_size` IR instructions) stay interpreted and are listed in [`LlvmTier::notes`].
 pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTier, Error> {
     crate::lazy::ensure()?;
+    yavs_interp::spec01::init(prog.funcs.len());
     let mut notes = Vec::new();
     let mut todo = Vec::new();
     for (id, f) in prog
@@ -1909,6 +1959,15 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
             syms.iter().map(|(a, n, s)| (*a, *n, s.as_str())).collect();
         perf_map(&syms);
     }
+    if std::env::var_os("YAVS_LLVM_KINDS").is_some() {
+        let mut v = KIND_STATS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        v.sort_by(|a, b| b.2.cmp(&a.2));
+        let tot: usize = v.iter().map(|e| e.2).sum();
+        eprintln!("kinds: total llvm insts (pre-opt, frame mode) {tot}");
+        for (k, ir, l) in v.iter().take(40) {
+            eprintln!("kinds: {k:20} ir={ir:8} llvm={l:9} per={:.1} share={:.1}%", *l as f64 / (*ir).max(1) as f64, 100.0 * *l as f64 / tot as f64);
+        }
+    }
     let mut kinds = std::collections::HashMap::new();
     let mut inline = 0;
     for (id, f) in prog
@@ -2017,6 +2076,55 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::CondBr { c, .. } => vec![c],
         Inst::Case { v, .. } => vec![v],
         _ => vec![],
+    }
+}
+
+
+/// Debug aid (`YAVS_LLVM_KINDS=1`): LLVM instructions generated per IR instruction kind.
+pub(crate) static KIND_STATS: Mutex<Vec<(String, usize, usize)>> = Mutex::new(Vec::new());
+
+/// Debug aid (`YAVS_LLVM_ABLATE=Kind,Kind`): those kinds are stepped by the interpreter, to
+/// measure how much code the generator spends on them.
+fn ablate(i: &Inst) -> bool {
+    static SET: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| {
+        std::env::var("YAVS_LLVM_ABLATE")
+            .map(|v| v.split(',').map(str::to_string).collect())
+            .unwrap_or_default()
+    });
+    !set.is_empty() && set.contains(&kind_name(i))
+}
+
+fn kind_name(i: &Inst) -> String {
+    let d = format!("{i:?}");
+    let k = d.split([' ', '{', '(']).next().unwrap_or("").to_string();
+    if let Inst::CallNative { .. } = i { "CallNative".into() } else { k }
+}
+
+unsafe fn fn_count(f: LLVMValueRef) -> usize {
+    let mut n = 0;
+    // SAFETY: plain iteration over a live function.
+    unsafe {
+        let mut bb = LLVMGetFirstBasicBlock(f);
+        while !bb.is_null() {
+            let mut i = LLVMGetFirstInstruction(bb);
+            while !i.is_null() {
+                n += 1;
+                i = LLVMGetNextInstruction(i);
+            }
+            bb = LLVMGetNextBasicBlock(bb);
+        }
+    }
+    n
+}
+
+fn kind_add(k: String, ir: usize, llvm: usize) {
+    let mut v = KIND_STATS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(e) = v.iter_mut().find(|e| e.0 == k) {
+        e.1 += ir;
+        e.2 += llvm;
+    } else {
+        v.push((k, ir, llvm));
     }
 }
 
@@ -2754,6 +2862,9 @@ struct Cur<'p> {
     /// The frame's base before each slow path being generated (`slow_path`), and whether its
     /// step may push a frame; `join` takes them back.
     joins: std::cell::RefCell<Vec<(Option<LLVMValueRef>, bool)>>,
+    /// Two-state speculation (`yavs_interp::spec01`): the mode and this function's id, for a
+    /// process in frame mode.
+    spec: Option<(yavs_interp::spec01::Mode, u32)>,
     /// Blocks that run only when a guard fails: moved behind the rest at the end, so the hot
     /// path falls through instead of jumping over them.
     cold: std::cell::RefCell<Vec<LLVMBasicBlockRef>>,
@@ -3712,6 +3823,10 @@ impl Gen {
                 defer: None,
                 scal: None,
                 joins: Default::default(),
+                spec: (!native
+                    && f.kind == FuncKind::Process
+                    && yavs_interp::spec01::mode() != yavs_interp::spec01::Mode::Off)
+                    .then(|| (yavs_interp::spec01::mode(), id.0)),
                 cold: Default::default(),
             };
             // Registers the interpreter starts the frame with hold the same address everywhere.
@@ -4052,8 +4167,17 @@ impl Gen {
             };
             let mut open = false;
             let mut prev = None;
+            let kinds = std::env::var_os("YAVS_LLVM_KINDS").is_some() && !native;
+            let mut kmark: Option<(String, usize)> = None;
             for (i, &inst) in f.code.iter().enumerate() {
                 let pc = i as u32;
+                if kinds {
+                    let now = fn_count(fv);
+                    if let Some((k, was)) = kmark.take() {
+                        kind_add(k, 1, now - was);
+                    }
+                    kmark = Some((kind_name(&inst), now));
+                }
                 if let Some(p) = prev.replace(inst) {
                     track(&mut c.known.borrow_mut(), &c.fixed, &p);
                     // What the previous instruction defined and did not defer is in the frame.
@@ -4113,6 +4237,10 @@ impl Gen {
                         }
                     }
                     open = false;
+                    continue;
+                }
+                if ablate(&inst) {
+                    self.step(&c, pc, &inst);
                     continue;
                 }
                 match inst {
@@ -5013,6 +5141,8 @@ impl Gen {
                         self.call_go(&c, self.wait_ty, self.wait_on, &mut args, true);
                     }
                     Inst::SigRead { dst, sig }
+                        if c.spec.is_some() && self.sig_read_spec(&c, pc, &inst, dst, sig) => {}
+                    Inst::SigRead { dst, sig }
                         if c.nat.is_none() && self.sig_read_block(&c, pc, dst, sig) => {}
                     Inst::SigRead { .. }
                     | Inst::WaitOn { .. }
@@ -5148,6 +5278,15 @@ impl Gen {
                 // Falling off the end: the interpreter reports it.
                 self.leave(&c, self.c32(n as u32));
             }
+            let kend = if kinds {
+                let now = fn_count(fv);
+                if let Some((k, was)) = kmark.take() {
+                    kind_add(k, 1, now - was);
+                }
+                now
+            } else {
+                0
+            };
             if let Some(nat) = &c.nat {
                 // Materialisation: record the registers, slots, pc and temporary base, and
                 // return with `Mem::ndeopt` set.
@@ -5196,6 +5335,9 @@ impl Gen {
                         LLVMInstructionEraseFromParent(phi);
                     }
                 }
+            }
+            if kinds {
+                kind_add("<tail>".into(), 0, fn_count(fv) - kend);
             }
             debug_assert!(c.joins.borrow().is_empty(), "a slow path was not joined");
             if LLVMVerifyFunction(fv, LLVMVerifierFailureAction::LLVMReturnStatusAction) != 0 {
@@ -5346,6 +5488,205 @@ impl Gen {
                 self.store(w, self.gep(pd, self.c64(8 * p as i64)));
             }
             self.join(c, join);
+        }
+        true
+    }
+
+    /// A cold block that leaves for the interpreter at `pc` as a two-state bail of `kind`
+    /// (`yavs_interp::spec01::bail`).
+    unsafe fn spec_bail(&self, c: &Cur, pc: u32, kind: u32) -> LLVMBasicBlockRef {
+        // SAFETY: well-formed blocks of c.f; the helper takes (i32, i32).
+        unsafe {
+            let here = LLVMGetInsertBlock(self.b);
+            let out = self.block(c);
+            c.cold.borrow_mut().push(out);
+            LLVMPositionBuilderAtEnd(self.b, out);
+            let mut ps = [self.i32, self.i32];
+            let ty = LLVMFunctionType(LLVMVoidTypeInContext(self.ctx), ps.as_mut_ptr(), 2, 0);
+            let f = self.declare(SPEC_BAIL, ty);
+            let id = c.spec.map_or(0, |s| s.1);
+            let mut args = [self.c32(id), self.c32(kind)];
+            LLVMBuildCall2(self.b, ty, f, args.as_mut_ptr(), 2, c"".as_ptr());
+            self.flush_exit(c, pc);
+            LLVMPositionBuilderAtEnd(self.b, here);
+            out
+        }
+    }
+
+    /// `Inst::SigRead` of a plain reference to a logic signal that keeps its codes, on the
+    /// assumption that every element is `'0'` or `'1'` (speculative two-state code, mode of
+    /// `c.spec`): the planes are `[bits, mask, 0, 0]`, built from the code bytes in place with
+    /// one test for the lot. Any other case, and a signal compiled code does not read in place,
+    /// leaves for the interpreter at `pc` (no step and no join: the stored planes are known to
+    /// the optimiser downstream). `false`: not that case, nothing generated.
+    unsafe fn sig_read_spec(&self, c: &Cur, pc: u32, inst: &Inst, dst: Reg, sig: Reg) -> bool {
+        use yavs_interp::spec01::Mode;
+        let Some((mode, _)) = c.spec else {
+            return false;
+        };
+        let l = self.kint(c, Reg(sig.0 + 1));
+        if l.is_some_and(|l| !(1..=64).contains(&l)) {
+            return false;
+        }
+        // SAFETY: see `sig_entry` and `sig_read_block`; every failing guard leaves.
+        unsafe {
+            let structural = self.spec_bail(c, pc, 1);
+            let (ent, off) = self.sig_entry(c, sig, l, structural);
+            let lv = match l {
+                Some(l) => self.c64(l),
+                None => {
+                    let r = self.ld(c, Reg(sig.0 + 1));
+                    self.guard(
+                        c,
+                        self.icmp(IP::LLVMIntULT, LLVMBuildSub(self.b, r, self.c64(1), c"".as_ptr()), self.c64(64)),
+                        structural,
+                    );
+                    r
+                }
+            };
+            let tl = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
+            let used = LLVMBuildAdd(self.b, off, lv, c"".as_ptr());
+            self.guard(c, self.icmp(IP::LLVMIntULE, used, tl), structural);
+            let groups = match l {
+                Some(l) => self.c64((l as u64).div_ceil(8) as i64),
+                None => LLVMBuildLShr(
+                    self.b,
+                    LLVMBuildAdd(self.b, lv, self.c64(7), c"".as_ptr()),
+                    self.c64(3),
+                    c"".as_ptr(),
+                ),
+            };
+            let end = LLVMBuildAdd(
+                self.b,
+                off,
+                LLVMBuildShl(self.b, groups, self.c64(3), c"".as_ptr()),
+                c"".as_ptr(),
+            );
+            let cap = self.load(self.i64, self.gep(ent, self.c64(SIG_CAP)));
+            self.guard(c, self.icmp(IP::LLVMIntULE, end, cap), structural);
+            let codes = self.tag(
+                self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
+                AA_CODES,
+            );
+            let base = self.gep(codes, off);
+            // The low `l` bits (all ones for 64; a shift by 64 is poison).
+            let mask = match l {
+                Some(l) if l == 64 => self.c64(-1),
+                Some(l) => self.c64(((1u64 << l) - 1) as i64),
+                None => LLVMBuildLShr(
+                    self.b,
+                    self.c64(-1),
+                    LLVMBuildSub(self.b, self.c64(64), lv, c"".as_ptr()),
+                    c"".as_ptr(),
+                ),
+            };
+            let pd = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                self.c64(32),
+                true,
+                structural,
+            );
+            let mut bits = self.c64(0);
+            if let Some(l) = l {
+                // Known length: bytes of the groups, the tail group masked to its elements.
+                let spread = self.c64(0x0102_0408_1020_4080);
+                let mut bad = self.c64(0);
+                for j in 0..(l as u64).div_ceil(8) {
+                    let w = self.load(self.i64, self.gep(base, self.c64(8 * j as i64)));
+                    let left = l as u64 - 8 * j;
+                    let m8: u64 = if left >= 8 { !0 } else { (1u64 << (8 * left)) - 1 };
+                    let v = LLVMBuildAnd(self.b, w, self.c64(0xfefe_fefe_fefe_fefeu64 as i64), c"".as_ptr());
+                    let v = LLVMBuildXor(self.b, v, self.c64(0x0202_0202_0202_0202), c"".as_ptr());
+                    let v = LLVMBuildAnd(self.b, v, self.c64(m8 as i64), c"".as_ptr());
+                    bad = LLVMBuildOr(self.b, bad, v, c"".as_ptr());
+                    let b0 = LLVMBuildAnd(self.b, w, self.c64(0x0101_0101_0101_0101), c"".as_ptr());
+                    let b0 = LLVMBuildMul(self.b, b0, spread, c"".as_ptr());
+                    let b0 = LLVMBuildLShr(self.b, b0, self.c64(56), c"".as_ptr());
+                    let b0 = LLVMBuildShl(self.b, b0, self.c64(8 * j as i64), c"".as_ptr());
+                    bits = LLVMBuildOr(self.b, bits, b0, c"".as_ptr());
+                }
+                if mode != Mode::Oracle {
+                    let ok = self.icmp(IP::LLVMIntEQ, bad, self.c64(0));
+                    self.guard(c, ok, self.spec_bail(c, pc, 0));
+                }
+                bits = LLVMBuildAnd(self.b, bits, mask, c"".as_ptr());
+            } else {
+                // Run-time length: the pure helper checks and builds, 0 for a non-01 code.
+                let mut ps = [self.ptr, self.i64, self.i64, self.ptr];
+                let ty = LLVMFunctionType(self.i64, ps.as_mut_ptr(), 4, 0);
+                let f = self.declare(SPEC_CODES01, ty);
+                self.attr(f, false, "nounwind", 0);
+                let mut args = [base, groups, mask, pd];
+                let ok = LLVMBuildCall2(self.b, ty, f, args.as_mut_ptr(), 4, c"".as_ptr());
+                let ok = self.icmp(IP::LLVMIntNE, ok, self.c64(0));
+                self.guard(c, ok, self.spec_bail(c, pc, 0));
+                // The helper stored the planes.
+                return self.sig_read_spec_done(c, pc, inst, dst, pd, [None; 4], structural, mode);
+            }
+            let planes = [Some(bits), Some(mask), Some(self.c64(0)), Some(self.c64(0))];
+            for (p, v) in planes.iter().enumerate() {
+                self.store(v.unwrap_or(self.c64(0)), self.gep(pd, self.c64(8 * p as i64)));
+            }
+            self.sig_read_spec_done(c, pc, inst, dst, pd, planes, structural, mode)
+        }
+    }
+
+    /// Shadow mode of `sig_read_spec`: the interpreter reads the signal again into the same
+    /// planes and any difference from what the two-state code stored is an internal error.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn sig_read_spec_done(
+        &self,
+        c: &Cur,
+        pc: u32,
+        _inst: &Inst,
+        dst: Reg,
+        pd: LLVMValueRef,
+        planes: [Option<LLVMValueRef>; 4],
+        structural: LLVMBasicBlockRef,
+        mode: yavs_interp::spec01::Mode,
+    ) -> bool {
+        if mode != yavs_interp::spec01::Mode::Shadow {
+            return true;
+        }
+        // SAFETY: as `sig_read_spec`.
+        unsafe {
+            let mine: Vec<LLVMValueRef> = (0..4)
+                .map(|p| match planes[p] {
+                    Some(v) => v,
+                    None => self.load(self.i64, self.gep(pd, self.c64(8 * p as i64))),
+                })
+                .collect();
+            self.signal(c, pc, 0);
+            let pd2 = self.host(
+                c,
+                self.ld(c, dst),
+                self.known_addr(c, dst),
+                self.c64(0),
+                self.c64(32),
+                false,
+                structural,
+            );
+            let mut diff = self.c64(0);
+            for (p, m) in mine.iter().enumerate() {
+                let g = self.load(self.i64, self.gep(pd2, self.c64(8 * p as i64)));
+                diff = LLVMBuildOr(self.b, diff, LLVMBuildXor(self.b, g, *m, c"".as_ptr()), c"".as_ptr());
+            }
+            let ok = self.icmp(IP::LLVMIntEQ, diff, self.c64(0));
+            let bad = self.block(c);
+            c.cold.borrow_mut().push(bad);
+            let go = self.block(c);
+            LLVMBuildCondBr(self.b, ok, go, bad);
+            LLVMPositionBuilderAtEnd(self.b, bad);
+            let mut ps = [self.i32, self.i32];
+            let ty = LLVMFunctionType(LLVMVoidTypeInContext(self.ctx), ps.as_mut_ptr(), 2, 0);
+            let f = self.declare(SPEC_MISMATCH, ty);
+            let mut args = [self.c32(c.spec.map_or(0, |s| s.1)), self.c32(pc)];
+            LLVMBuildCall2(self.b, ty, f, args.as_mut_ptr(), 2, c"".as_ptr());
+            LLVMBuildUnreachable(self.b);
+            LLVMPositionBuilderAtEnd(self.b, go);
         }
         true
     }

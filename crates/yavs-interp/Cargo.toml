@@ -13,6 +13,8 @@ gc-stress = []
 # Count the ops of the interpreter's dispatch loop and the adjacent executed pairs, and print the
 # table (`census::dump`): the tool for choosing fusions (AGENTS.md). Never a dependency edge.
 op-census = []
+# Measurement builds only: count the logic reads that see nothing but 0 and 1 (spec01).
+spec-census = []
 
 [dependencies]
 yavs-diag.workspace = true

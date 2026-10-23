@@ -73,6 +73,9 @@ pub fn report() {
         "time-report: gc collections={}",
         yavs_interp::gc_collections()
     );
+    if std::env::var_os("YAVS_SPEC01_STATS").is_some() {
+        eprintln!("{}", yavs_interp::spec01::report());
+    }
     let now = (Instant::now(), cpu());
     line(
         "total",

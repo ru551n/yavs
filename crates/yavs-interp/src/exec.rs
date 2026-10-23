@@ -2140,6 +2140,15 @@ impl Machine {
         };
         let n = value_size(ty.elem, sr.range.map_or(0, |r| r.len));
         c.read_into(sr, self.wr(self.r(dst), n)?)?;
+        #[cfg(feature = "spec-census")]
+        if let (Elem::Logic, Some(r)) = (ty.elem, sr.range)
+            && (1..=64).contains(&r.len)
+            && let Ok(b) = self.rd(self.r(dst), 32)
+        {
+            let w = |p: usize| u64::from_le_bytes(b[8 * p..8 * p + 8].try_into().unwrap_or([0; 8]));
+            let mask = if r.len == 64 { !0 } else { (1u64 << r.len) - 1 };
+            crate::spec01::census::vec(w(1) == mask && w(2) == 0 && w(3) == 0);
+        }
         Ok(())
     }
 
@@ -3326,7 +3335,10 @@ impl Machine {
                 let Some(r) = sr.range.filter(|r| r.len > 0) else {
                     return Err(ice_s!("scalar read of a null signal range"));
                 };
-                u64::from(c.elem_code(sr.signal, r.offset)?)
+                let code = c.elem_code(sr.signal, r.offset)?;
+                #[cfg(feature = "spec-census")]
+                crate::spec01::census::scalar(code == 2 || code == 3);
+                u64::from(code)
             }
             Elem::Bytes(es) => {
                 return Err(ice_f!("scalar read of a {es}-byte element"));

@@ -1268,6 +1268,7 @@ impl AutoTier {
         // The LLVM library is opened by the compile thread at the first compile (`Worker::compile`): a
         // run in which nothing gets hot never pays for loading it (about 40 million cycles).
         let prog = rt.prog.clone();
+        yavs_interp::spec01::init(prog.funcs.len());
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();
         let shared = Arc::new(Shared {
@@ -1597,7 +1598,9 @@ impl Tier for AutoTier {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
         // `AtomicUsize` has the layout of `usize`: compiled code loads the entries atomically.
-        enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast(), None)
+        yavs_interp::spec01::gate(func.0, || {
+            enter(f, nregs, pc, host, &lookup, self.ntab.as_ptr().cast(), None)
+        })
     }
 
     fn run_cached(
@@ -1609,15 +1612,17 @@ impl Tier for AutoTier {
     ) -> Option<u32> {
         let (f, nregs) = self.funcs.get(func.0 as usize)?.get()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize)?.get();
-        enter(
-            f,
-            nregs,
-            pc,
-            host,
-            &lookup,
-            self.ntab.as_ptr().cast(),
-            Some(state),
-        )
+        yavs_interp::spec01::gate(func.0, || {
+            enter(
+                f,
+                nregs,
+                pc,
+                host,
+                &lookup,
+                self.ntab.as_ptr().cast(),
+                Some(state),
+            )
+        })
     }
 
     fn ready(&self, func: FuncId) -> bool {

@@ -57,12 +57,14 @@ unsafe fn take_message(msg: *mut c_char) -> String {
 
 /// Code generator switches (LLVM command line options, process-wide, set once before the first
 /// target machine). Instruction scheduling and the machine-level motion and clean-up passes
-/// (sinking, LICM, CSE, block placement, copy propagation, post-RA scheduling, if-conversion,
-/// tail duplication) cost about a quarter of the codegen time of the generated code and change
-/// the speed of the compiled code by less than the run-to-run noise of the benchmarks (#432);
-/// instruction selection, register allocation, peepholes and branch folding stay.
+/// (sinking, LICM, CSE, copy propagation, post-RA scheduling, if-conversion, tail duplication)
+/// cost about a quarter of the codegen time of the generated code and change the speed of the
+/// compiled code by less than the run-to-run noise of the benchmarks (#432); instruction
+/// selection, register allocation, peepholes, branch folding and block placement stay (the
+/// placement keeps the hot path straight: fewer taken branches, 20 percent fewer branch misses
+/// and 5 to 9 percent fewer cycles on compiled clocked RTL, #634).
 const CODEGEN_ARGS: &str = "-enable-misched=false -enable-post-misched=false \
-    -disable-machine-sink -disable-machine-licm -disable-machine-cse -disable-block-placement \
+    -disable-machine-sink -disable-machine-licm -disable-machine-cse \
     -disable-copyprop -disable-post-ra -disable-early-ifcvt -disable-postra-machine-licm \
     -disable-postra-machine-sink -disable-early-taildup";
 

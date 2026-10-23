@@ -4072,7 +4072,7 @@ impl Gen {
             let out = self.block(c);
             let cont = self.block(c);
             c.cold.borrow_mut().push(out);
-            LLVMBuildCondBr(self.b, bad, out, cont);
+            self.cond_br(bad, out, cont, false);
             LLVMPositionBuilderAtEnd(self.b, out);
             self.flush_exit(c, pc);
             LLVMPositionBuilderAtEnd(self.b, cont);
@@ -5770,7 +5770,7 @@ impl Gen {
                         if c.nat.is_some() {
                             // The object stays in hand for the instructions that follow
                             // (`ObjRef`).
-                            LLVMBuildCondBr(self.b, hit, join, miss);
+                            self.cond_br(hit, join, miss, true);
                             LLVMPositionBuilderAtEnd(self.b, miss);
                             // The callback enters the object at `e`, writable, for `h`; a native
                             // frame's slow path leaves, so the join is reached by these two.
@@ -5795,7 +5795,7 @@ impl Gen {
                             c.objnew.set(Some((dst, o)));
                         } else {
                             let fast = self.block(&c);
-                            LLVMBuildCondBr(self.b, hit, fast, miss);
+                            self.cond_br(hit, fast, miss, true);
                             LLVMPositionBuilderAtEnd(self.b, fast);
                             let hi = self.load(self.i64, e);
                             self.st(
@@ -6318,7 +6318,7 @@ impl Gen {
             let (ent, off) = self.sig_entry(c, sig, None, slow);
             let len = self.load(self.i64, self.gep(ent, self.c64(SIG_LEN)));
             let (bytes, planes) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntULT, off, len), bytes, planes);
+            self.cond_br(self.icmp(IP::LLVMIntULT, off, len), bytes, planes, true);
             LLVMPositionBuilderAtEnd(self.b, bytes);
             let codes = self.tag(
                 self.load(self.ptr, self.gep(ent, self.c64(SIG_CODES))),
@@ -6332,11 +6332,11 @@ impl Gen {
             self.guard(c, self.icmp(IP::LLVMIntULT, off, plen), slow);
             let blocks = self.load(self.ptr, self.gep(ent, self.c64(SIG_PLANES)));
             let (logic, other) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(
-                self.b,
+            self.cond_br(
                 LLVMBuildIsNotNull(self.b, blocks, c"".as_ptr()),
                 logic,
                 other,
+                true,
             );
             // Enumeration, integer, boolean or real elements: their bytes, a four-byte element
             // sign-extended (`cell`).
@@ -6683,7 +6683,7 @@ impl Gen {
             let ok = held(key, self.mem_ld(c, MEM_KNOWN, self.i64));
             // The kernel resumed the process for this very edge: it holds.
             let (fast, rest) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, ok, fast, rest);
+            self.cond_br(ok, fast, rest, true);
             LLVMPositionBuilderAtEnd(self.b, fast);
             self.st(c, dst, self.c64(1));
             LLVMBuildBr(self.b, join);
@@ -7251,7 +7251,7 @@ impl Gen {
             }
             let nd = self.mem_ld(c, MEM_NDEOPT, self.i64);
             let (out, cont) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntNE, nd, self.c64(0)), out, cont);
+            self.cond_br(self.icmp(IP::LLVMIntNE, nd, self.c64(0)), out, cont, false);
             LLVMPositionBuilderAtEnd(self.b, out);
             match &c.nat {
                 Some(_) => self.leave(c, self.c32(pc)),
@@ -7697,7 +7697,7 @@ impl Gen {
                 self.st(c, r, v);
             }
             let (out, cont) = (self.block(c), self.block(c));
-            LLVMBuildCondBr(self.b, self.icmp(IP::LLVMIntEQ, st, self.c32(2)), out, cont);
+            self.cond_br(self.icmp(IP::LLVMIntEQ, st, self.c32(2)), out, cont, false);
             LLVMPositionBuilderAtEnd(self.b, out);
             self.leave(c, self.c32(pc + 1));
             LLVMPositionBuilderAtEnd(self.b, cont);
@@ -7891,13 +7891,13 @@ impl Gen {
             let ok = self.icmp(IP::LLVMIntEQ, r, self.c32(GO));
             if key.is_empty() {
                 let exit = self.exit_for(c, r);
-                LLVMBuildCondBr(self.b, ok, cont, exit);
+                self.cond_br(ok, cont, exit, true);
             } else {
                 let fail = self.block(c);
                 if cold {
                     c.cold.borrow_mut().push(fail);
                 }
-                LLVMBuildCondBr(self.b, ok, cont, fail);
+                self.cond_br(ok, cont, fail, true);
                 LLVMPositionBuilderAtEnd(self.b, fail);
                 self.leave_slots(c, key, r);
             }
@@ -7997,8 +7997,37 @@ impl Gen {
         // SAFETY: well-formed blocks of c.f.
         unsafe {
             let go = self.block(c);
-            LLVMBuildCondBr(self.b, ok, go, slow);
+            self.cond_br(ok, go, slow, true);
             LLVMPositionBuilderAtEnd(self.b, go);
+        }
+    }
+
+    /// A conditional branch whose true edge is the common one (`likely`) or the rare one: block
+    /// placement keeps the hot path straight.
+    unsafe fn cond_br(
+        &self,
+        cond: LLVMValueRef,
+        t: LLVMBasicBlockRef,
+        f: LLVMBasicBlockRef,
+        likely: bool,
+    ) {
+        // SAFETY: blocks of the function being built.
+        unsafe {
+            let br = LLVMBuildCondBr(self.b, cond, t, f);
+            self.weights(br, if likely { (2000, 1) } else { (1, 2000) });
+        }
+    }
+
+    /// Branch weights on the conditional branch `br`.
+    unsafe fn weights(&self, br: LLVMValueRef, (a, b): (u64, u64)) {
+        // SAFETY: metadata nodes of our context attached to a branch of our module.
+        unsafe {
+            let name = LLVMMDStringInContext2(self.ctx, c"branch_weights".as_ptr(), 14);
+            let w = |n: u64| LLVMValueAsMetadata(LLVMConstInt(self.i32, n, 0));
+            let mut ops = [name, w(a), w(b)];
+            let node = LLVMMDNodeInContext2(self.ctx, ops.as_mut_ptr(), ops.len());
+            let kind = LLVMGetMDKindIDInContext(self.ctx, c"prof".as_ptr(), 4);
+            LLVMSetMetadata(br, kind, LLVMMetadataAsValue(self.ctx, node));
         }
     }
 
@@ -8462,7 +8491,7 @@ impl Gen {
                         c"".as_ptr(),
                     );
                     let (fast, miss) = (self.block(c), self.block(c));
-                    LLVMBuildCondBr(self.b, ok, fast, miss);
+                    self.cond_br(ok, fast, miss, true);
                     LLVMPositionBuilderAtEnd(self.b, fast);
                     let pf = self.gep(base, o);
                     LLVMBuildBr(self.b, merge_at);

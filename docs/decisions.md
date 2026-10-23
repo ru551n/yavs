@@ -5830,6 +5830,18 @@ to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 
   objects, `inherit` in `Gen::func`; the values defined in the predecessor dominate such a block). The arms of a `Case` of
   a protected method (one block each) found their objects again with a full lookup each; now they are held from the
   `Deref`s before the `Case`. Measured: one protected `get` 397 to 359 instructions, `protected_queue` 6.17 G to 5.88 G.
+- **Block placement is on, and a guard that holds says so** (L, `jit.rs` `CODEGEN_ARGS`, `Gen::cond_br`/`weights`):
+  `-disable-block-placement` was one of the switches that cut the code generator's time (#432); with it the
+  hot path of a compiled process jumped over its own rare paths 14 to 26 times per activation (`rtl_ff`: 26 taken
+  branches in 316 instructions) and the front end paid for each (branch misses and fetch redirects: compiled code
+  runs at an IPC of 1.4 to 1.7 against the interpreter's 2.5). Every `guard`, `exit_if`, host-call result test and the
+  signal-read alternatives carry branch weights (2000 to 1) for the common edge, so the placement makes the common
+  edge the fall-through: 6 taken branches in 310 instructions. `--tier=auto` (per-function `O2` modules)
+  on `fletcher_bufferreader`, `fletcher_bufferwriter_512` and `neorv32_single_min`: branch misses -20 to -25
+  percent, cycles -5 to -9 percent (minimum of 5 interleaved runs on core 12/13, bench builds); compile time of the
+  761 `O2` modules of `neorv32_single_min` unchanged (codegen 12.79 s against 12.81 s). `--tier=llvm` compiles
+  its large module with the unoptimised code generator, which has no block placement: unchanged. Shared:
+  nothing (a second generator lays out its own blocks); the idea carries over (cold exits last).
 
 ## Search loops in compiled code: one shared scan (yavs-interp `scan.rs`, yavs-llvm, #578, 2026-10-23)
 

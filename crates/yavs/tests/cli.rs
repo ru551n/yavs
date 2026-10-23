@@ -435,7 +435,9 @@ fn quiet_run_is_flushed() {
 }
 
 /// Two signals end a run that is stuck inside one cycle: the second exits with status 1
-/// after writing out the reports, also when they come in one burst (#562: one thread counts them).
+/// after writing out the reports, also when they come in one burst (#562: one thread counts
+/// them), with a waveform file or `--profile` (whose first signal only asks the run to stop
+/// between cycles; in a build with the compiled tier the exit used to crash, #625).
 #[cfg(unix)]
 #[test]
 fn second_signal_exits_at_once() {
@@ -448,49 +450,52 @@ fn second_signal_exits_at_once() {
         .status()
         .expect("run");
     assert!(a.success());
-    let (ready, out) = (tmp.join("ready"), tmp.join("out"));
-    // `--wave`: the first signal only asks the run to stop between cycles (`--profile` would do
-    // too, but its second signal crashes in an llvm build, #625).
-    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
-        .args([
-            "run",
-            &format!("--wave={}", tmp.join("w.fst").display()),
-            &lib,
-            &format!("-gready={}", ready.display()),
-        ])
-        .arg("signal_flush")
-        .current_dir(&dir)
-        .stdout(std::fs::File::create(&out).expect("out"))
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn");
-    let t0 = std::time::Instant::now();
-    while !ready.exists() {
-        assert!(t0.elapsed().as_secs() < 60, "the run never got going");
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    for (round, extra) in [
+        format!("--wave={}", tmp.join("w.fst").display()),
+        "--profile".to_string(),
+    ]
+    .into_iter()
+    .cycle()
+    .take(6)
+    .enumerate()
+    {
+        let (ready, out) = (tmp.join(format!("ready{round}")), tmp.join("out"));
+        let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["run", &extra, &lib, &format!("-gready={}", ready.display())])
+            .arg("signal_flush")
+            .current_dir(&dir)
+            .stdout(std::fs::File::create(&out).expect("out"))
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn");
+        let t0 = std::time::Instant::now();
+        while !ready.exists() {
+            assert!(t0.elapsed().as_secs() < 60, "the run never got going");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let pid = child.id().to_string();
+        // Two signals at once; if the kernel merged them, one more every 150 ms until it ends.
+        let kill = |pids: &[&str]| {
+            let k = Command::new("kill").arg("-INT").args(pids).status();
+            assert!(k.expect("kill").success());
+        };
+        kill(&[&pid, &pid]);
+        let t0 = std::time::Instant::now();
+        let status = loop {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            if let Some(s) = child.try_wait().expect("wait") {
+                break s;
+            }
+            if t0.elapsed().as_secs() > 20 {
+                child.kill().expect("kill");
+                panic!("two signals did not end the run");
+            }
+            kill(&[&pid]);
+        };
+        assert_eq!(status.code(), Some(1), "{extra}, round {round}: {status:?}");
+        let text = std::fs::read_to_string(&out).expect("read");
+        assert!(text.contains("before signal"), "{text:?}");
     }
-    let pid = child.id().to_string();
-    // Two signals at once; if the kernel merged them, one more every 150 ms until it ends.
-    let kill = |pids: &[&str]| {
-        let k = Command::new("kill").arg("-INT").args(pids).status();
-        assert!(k.expect("kill").success());
-    };
-    kill(&[&pid, &pid]);
-    let t0 = std::time::Instant::now();
-    let status = loop {
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        if let Some(s) = child.try_wait().expect("wait") {
-            break s;
-        }
-        if t0.elapsed().as_secs() > 20 {
-            child.kill().expect("kill");
-            panic!("two signals did not end the run");
-        }
-        kill(&[&pid]);
-    };
-    assert_eq!(status.code(), Some(1), "{status:?}");
-    let text = std::fs::read_to_string(&out).expect("read");
-    assert!(text.contains("before signal"), "{text:?}");
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

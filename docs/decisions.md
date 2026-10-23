@@ -5020,6 +5020,12 @@ relocations, no line tables; one signal thread", #562).
   7.54 M instructions, 10.96 M to 10.59 M cycles (-3.4%) without the `llvm` feature, and 8.08 M to 7.82 M instructions, 10.25
   M to 9.81 M cycles (-4.3%) with it; a warm `analyze` 1 to 2% fewer instructions (the executable has 570 relocations fewer), cycles
   level within the spread. The compile thread of `--tier=auto` is the one helper thread left (#562).
+- **The signal thread ends the process without exit handlers when the compiled tier is built in** (`exit_after_signal`,
+  #625, agent, 2026-10-23): `exit` ran the static destructors of the LLVM library under a compile thread that was inside
+  it: the second Ctrl-C of a hung `--profile` run ended in SIGSEGV instead of status 1 (eight times in ten as reported,
+  one in twenty in a debug build here). The buffered output is written first, then `yavs_llvm::exit_now` (`_exit`) ends the process
+  with the same status (1 for the second signal, 130 for the first one of a plain run). With foreign libraries or VHPI
+  plugins loaded (`--load`, `--vhpi`) the ordinary `exit` stays, so their exit handlers run.
 
 ## `--tier=auto` compile policy: no candidate holds up another, natively called functions repay after twice their compile time (yavs-llvm, #572, #520, #493, 2026-10-23)
 

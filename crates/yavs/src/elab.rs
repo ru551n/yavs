@@ -894,7 +894,7 @@ pub fn run(
             if rec.is_some() {
                 // Ctrl-C ends the run between cycles so the file is finished (rule 11).
                 let mut hooks = yavs_wave::interrupt::Handlers::default();
-                ctrl_c_stops(&mut hooks, sim.interrupt(), Arc::default());
+                ctrl_c_stops(&mut hooks, sim.interrupt(), Arc::default(), true);
                 yavs_wave::interrupt::start(hooks).map_err(handler_error)?;
             }
             Ok(rec.map(|(path, rec)| {
@@ -998,17 +998,18 @@ pub fn run(
     if crate::stdout::is_on() {
         hooks.tick = Some((crate::stdout::TICK, Box::new(crate::stdout::flush)));
     }
+    let keep_exit = !a.load.is_empty() || !a.vhpi.is_empty();
     if recorder.is_some() || cfg_profile.is_some() {
         let flag = if recorder.is_some() {
             &interrupted
         } else {
             &signalled
         };
-        ctrl_c_stops(&mut hooks, sim.interrupt(), flag.clone());
+        ctrl_c_stops(&mut hooks, sim.interrupt(), flag.clone(), keep_exit);
     } else if crate::stdout::is_on() {
-        hooks.first = Some(Box::new(|| {
+        hooks.first = Some(Box::new(move || {
             crate::stdout::flush();
-            std::process::exit(130);
+            exit_after_signal(130, keep_exit);
         }));
     }
     if let Err(err) = yavs_wave::interrupt::start(hooks) {
@@ -1241,18 +1242,35 @@ fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {
         .with_note(err.to_string())
 }
 
+/// Ends the process from the signal thread. With the compiled tier built in, `exit` would run
+/// the static destructors of LLVM under a compile thread that is inside LLVM (a crash, #625), so
+/// the process ends without exit handlers, unless `keep_exit` (foreign libraries or VHPI plugins
+/// loaded, whose exit handlers must run).
+fn exit_after_signal(code: u8, keep_exit: bool) -> ! {
+    #[cfg(feature = "llvm")]
+    if !keep_exit {
+        yavs_llvm::exit_now(code);
+    }
+    let _ = keep_exit;
+    std::process::exit(code.into())
+}
+
 /// The first Ctrl-C/SIGTERM sets `flag` and ends the run between cycles; the second writes out
 /// the buffered output and exits.
 fn ctrl_c_stops(
     hooks: &mut yavs_wave::interrupt::Handlers,
     stop: yavs_kernel::Interrupt,
     flag: Arc<AtomicBool>,
+    keep_exit: bool,
 ) {
     hooks.first = Some(Box::new(move || {
         flag.store(true, Ordering::SeqCst);
         stop.stop();
     }));
-    hooks.at_exit = Some(Box::new(crate::stdout::flush));
+    hooks.at_exit = Some(Box::new(move || {
+        crate::stdout::flush();
+        exit_after_signal(1, keep_exit);
+    }));
 }
 
 fn handler_error(err: std::io::Error) -> Box<Diagnostic> {

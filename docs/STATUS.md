@@ -2590,6 +2590,7 @@ composite 6/6, force 8/8, protected 6/6, resolution 4/5, textio 2/3 at 1 and 4 t
 - Entity statements (passive assertions and processes in an entity, LRM 3.2.4) lower with the architecture's, entity ones first (#301; difftest `hierarchy/entity_statements`).
 - Block configurations of for-generates evaluate their index or range in the generate's scope, so a generic works as the index; errors are reported (#41; difftest `hierarchy/config_generate_index`).
 - A configuration declaration may configure an entity of another library from VHDL-2019 on; before, it is `E1007` (LCS-2016-023, #445; `crates/yavs-sem/tests/config_library.rs`).
+- Anonymous types in interface declarations (`a : in type is private`, LCS-2016-016) were done with #283 and #308; the LCS example is now a difftest, `generics/anonymous_ports_2019_hand` (#445).
 
 - Aggregate variable targets of a record value, `(x, y) := f;`, positional elements (#302; difftest `composite/record_aggregate_target`).
 

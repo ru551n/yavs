@@ -26,7 +26,7 @@ with the result of the four reference simulators (`sim1` to `sim4`, labels as in
 
 ## Summary
 
-46 LCS rows: 40 supported, 0 partial, 1 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
+46 LCS rows: 41 supported, 0 partial, 0 unsupported, 0 rejected by decision, 4 not tested, 1 not applicable.
 
 For comparison, over the rows that have a probe, the references run the probe (`ok` or `ok (output differs)`) for the following number of rows: sim1 37, sim2 11, sim3 22, sim4 39 (rows with several probes count only when all probes agree).
 
@@ -48,7 +48,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 014a | Access types to composites of protected types | supported | reject | reject | reject | ok | allocation and deallocation (#361) |
 | 015 | Report the calling path | supported | crash | reject | ok | crash | `get_call_path` |
 | 015a | Report the current file name | supported | ok | reject | ok | ok | `file_name`, `file_line` |
-| 016 | Anonymous types | unsupported | reject | reject | reject | reject | `E0002` on `array (..) of` in an object declaration; no reference accepts the form I tried, so the intended syntax is unverified. No issue filed |
+| 016 | Anonymous types | supported | reject | reject | reject | reject | the LCS is about interface declarations: `a : in type is private`, `b : in type is <>`, `c : type is range <>` in ports, generics and parameters take their type from the actual (#283, #308, L94; the intended syntax is the LCS example in the conformance suite). No reference simulator binds the anonymous type from its actual, so the tests are `ref=hand`: `tests/corpus/generics/anonymous_ports_2019_hand.vhd`, `anonymous_objects_2019_hand.vhd` |
 | 018 | Attributes for enumerated types | supported | ok | reject | reject | ok | `T'LENGTH` of a discrete type or subtype, the number of its values (0 for a null range; a physical type stays `E1621`); the other attributes of the LCS example (`'base` as a type mark, `'ascending`, `'reverse_range` of enumeration-indexed arrays) already worked (#445) |
 | 018a | `'INDEX` | supported | ok | reject | reject | ok |  |
 | 018d | `'DESIGNATED_SUBTYPE` | supported | ok | reject | reject | ok |  |
@@ -100,7 +100,7 @@ occur in those sources.
 | 3 | Generic map on a subprogram call (LCS-049): done | #362 |
 | 4 | Arrays and records of protected types (LCS-014, 014a): done | #361 |
 | 5 | Signature in a generic map formal (LCS-I03): done | #363 |
-| 6 | Anonymous types (LCS-016): intended syntax unverified, no reference accepts the probe | none |
+| 6 | Anonymous types (LCS-016): done | #283, #308 |
 
 ## Differences found
 

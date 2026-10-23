@@ -1142,10 +1142,16 @@ impl Db {
         }
         let id = match anon {
             Some(_) if formal_conv.is_some() => {
-                return Err(self.unsupported(
-                    fspan,
-                    "a conversion of a formal of an anonymous type",
-                    "S7",
+                let name = self.decls[f].name;
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::ANONYMOUS_FORMAL_CONVERSION,
+                        format!("the formal `{name}` has an anonymous type and cannot be converted"),
+                    )
+                    .with_primary(fspan, "conversion of a formal of an anonymous type")
+                    .with_secondary(self.decls[f].span, "declared with `type is ...`")
+                    .with_note("LRM 6.5.3: the type of such an object is the type of its actual, which a conversion on the formal side would have to supply")
+                    .with_help("associate the formal directly and convert in the design"),
                 ));
             }
             Some(t) => {

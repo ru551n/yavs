@@ -11,6 +11,7 @@ Status (2026-10-18): every proposed code in this table is now defined in `yavs-s
 |---|---|---|---|
 | E1104 | prefix of a use clause or context reference is not a package, library, package instance or context declaration | 1.4 (suffix "must denote a package or an instance") | `use/prefix_not_a_package`, `use/prefix_is_type`, `use/context_not_a_context` |
 | E1303 | illegal operator declaration: not an operator symbol, or wrong number of parameters for the operator | 4.5.2 LRM, not in sem.md | `ovl/operator_wrong_arity`, `ovl/unary_only_operator_binary` |
+| E1507 | a conversion on the formal side of a generic or port with an anonymous type (`type is ...`): the formal's type can only come from the actual | 6.5.2, 6.5.3 LRM (2019), not in sem.md | `v2019/anonymous_object_formal_conversion` |
 | E1623 | attribute dimension argument out of range for the prefix (`m'length(2)` of a 1-D array) | 6.3 / 4.2 "attribute dimension arguments" | `stat/attribute_dimension_out_of_range` |
 | E1700 | instantiated name is not a component, entity or configuration | 3.3 (`l: p;` re-interpretation) | `unit/component_instance_not_a_component` |
 | W1325 | R5 relaxation: an `others` aggregate takes the bounds of an unconstrained assignment target | 8.4 R5, LRM 9.3.3.3 | `relax/others_unconstrained_target_relaxed` |

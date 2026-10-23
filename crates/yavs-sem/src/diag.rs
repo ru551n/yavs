@@ -97,6 +97,7 @@ codes! {
     GENERIC_DEFAULT = "E1504", "No unique subprogram matches the `is <>` default.";
     UNINSTANTIATED_CALL = "E1505", "An uninstantiated subprogram cannot be called.";
     GENERIC_SUBPROGRAM_ACTUAL = "E1506", "A generic subprogram of a component or block cannot be the actual of an entity's generic subprogram in a generic map. Name a subprogram declared elsewhere, or rely on the default binding, which passes a component's generic subprogram by name.";
+    ANONYMOUS_FORMAL_CONVERSION = "E1507", "A generic or port declared with an anonymous type (`type is ...`, VHDL-2019) takes the type of its actual (LRM 6.5.2, 6.5.3), so its association has no conversion function or type conversion on the formal side: the converted type would have to come from the actual, which the conversion hides. Associate the formal directly and convert in the design.";
     // E16xx names, aliases, attributes, signatures
     EXTERNAL_CLASS = "E1601", "The class of the external name does not allow this use.";
     EXTERNAL_PATH = "E1602", "The path of an external name is malformed: a package path is `@lib.pkg.obj`, an absolute path names the top entity first, only generate labels take a globally static index, and a relative path needs an enclosing concurrent region (LRM 8.7).";

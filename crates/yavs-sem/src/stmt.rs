@@ -933,8 +933,17 @@ impl Db {
             let e = self.st_target(scope, target, Expected::Any)?;
             let lsps = self.check_target(e, kind)?;
             // The target's subtype, so an `others` aggregate takes its bounds (9.3.3.3).
-            let st = self.exprs[e].subtype;
-            let rhs = self.rhs(scope, rhs, Some(st), each)?;
+            let mut st = self.exprs[e].subtype;
+            // `--relaxed` (R5): an unconstrained target (a port, a formal) gives an `others`
+            // aggregate the bounds it has at run time.
+            if self.opts.relaxed && self.constrainedness(st) != crate::types::Constrainedness::Full
+            {
+                st = self.runtime_subtype(e, target.span);
+                self.relaxed_target = Some(st);
+            }
+            let rhs = self.rhs(scope, rhs, Some(st), each);
+            self.relaxed_target = None;
+            let rhs = rhs?;
             Ok((Target { expr: e, lsps }, rhs))
         }
     }

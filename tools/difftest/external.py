@@ -80,6 +80,8 @@ def script_flags(t, toks):
             if STD_FLAGS[f] is None:
                 raise Skip(f)
             t["std"] = STD_FLAGS[f]
+            if f == "--std=93c":  # the relaxed 1993 mode of the second suite
+                t["relaxed"] = True
         elif f in ("-frelaxed", "-frelaxed-rules"):
             t["relaxed"] = True
         elif f == "-fpsl":

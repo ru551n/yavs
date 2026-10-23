@@ -183,6 +183,10 @@ pub struct Db {
     /// bounds (9.3.3.3). Consumed by `resolve`.
     #[serde(skip)]
     pub(crate) context_subtype: Option<SubtypeId>,
+    /// Under `--relaxed` (R5): the run-time subtype of an unconstrained assignment target
+    /// whose right-hand side is being resolved, so `others` aggregates take its bounds.
+    #[serde(skip)]
+    pub(crate) relaxed_target: Option<SubtypeId>,
     /// `(top AST node address, context subtype)` of the complete context being resolved.
     #[serde(skip)]
     pub(crate) top_context: Option<(usize, SubtypeId)>,
@@ -617,6 +621,7 @@ impl Db {
             written_marks: HashMap::default(),
             incomplete_ok: false,
             context_subtype: None,
+            relaxed_target: None,
             top_context: None,
             tainted: HashSet::default(),
             stmt_owners: Vec::new(),

@@ -58,7 +58,7 @@ Full module table with owners: `CONTRIBUTING.md` "Module map". Entry points and 
 | Checked i64 static arithmetic; static overflow `E1401` where required, `W1401` elsewhere (run-time check kept) | Rule 7, Q2/Q5 | `docs/decisions.md` "Semantic analysis", sem.md 4 |
 | Original spelling plus folded keys (`Designator::key()`) | Rule 8 | `docs/plan.md` rule 8, CONTRIBUTING "Names" |
 | Cascade suppression with poison values; a failed file hides all its units in the session | No cascades; per-file results equal one `yavs analyze` per file | sem.md 8.2, `docs/decisions.md` "Semantic analysis" |
-| Codes `E1xxx`/`W1xxx` with explain texts; one warning code per `--relaxed` relaxation (R1 `W1904`, R2 `W1830`) | Rule 13 | sem.md 8.1, 8.4 |
+| Codes `E1xxx`/`W1xxx` with explain texts; one warning code per `--relaxed` relaxation (R1 `W1904`, R2 `W1830`, R5 `W1325`) | Rule 13 | sem.md 8.1, 8.4 |
 | Generic instance identity by mangling | Rule 4 | sem.md 5.3 |
 | Default binding: directly visible entity, then the component declaration's library, then `work`; `W1703` when `work` has another; last architecture | Q4 | `docs/decisions.md` "Design units and binding" |
 | Formal packages with a generic map are checked against the actual (`E1503`) | LRM clear, the third reference simulator rejects | `docs/decisions.md` "Generics" |

@@ -1890,6 +1890,27 @@ impl Db {
         }
     }
 
+    /// The subtype of the object `e`; when it is not fully constrained, a subtype whose bounds
+    /// come from the object at run time (rule 1).
+    pub(crate) fn runtime_subtype(&mut self, e: ExprId, span: Span) -> SubtypeId {
+        let st = self.exprs[e].subtype;
+        if self.constrainedness(st) == Constrainedness::Full {
+            return st;
+        }
+        let base = self.base(st);
+        self.subtypes.push(SubtypeDef {
+            base,
+            name: None,
+            parent: Some(st),
+            constraint: Constraint::FromObject {
+                expr: e,
+                elem_depth: 0,
+            },
+            resolution: self.subtypes[st].resolution.clone(),
+            span,
+        })
+    }
+
     /// `x'subtype`, `x'element`, `t'base` used as type marks (16.2).
     pub(crate) fn attribute_type_mark(
         &mut self,
@@ -1917,24 +1938,7 @@ impl Db {
                 ));
             };
             let e = self.resolve_prefix(scope, prefix, *t);
-            let st = self.exprs[e].subtype;
-            if self.constrainedness(st) == Constrainedness::Full {
-                st
-            } else {
-                // Bounds come from the object at run time (rule 1).
-                let base = self.base(st);
-                self.subtypes.push(SubtypeDef {
-                    base,
-                    name: None,
-                    parent: Some(st),
-                    constraint: Constraint::FromObject {
-                        expr: e,
-                        elem_depth: 0,
-                    },
-                    resolution: self.subtypes[st].resolution.clone(),
-                    span: attr.span,
-                })
-            }
+            self.runtime_subtype(e, attr.span)
         } else {
             return Err(self.error(
                 Diagnostic::error(

@@ -1614,6 +1614,18 @@ fn array_agg(
         ));
     }
 
+    if has_others && dim == 0 && db.relaxed_target == Some(cx.ctx) {
+        db.report(
+            Diagnostic::warning(
+                diag::W_OTHERS_TARGET,
+                "`others` takes the bounds of an unconstrained target",
+            )
+            .with_primary(span, "accepted by `--relaxed`")
+            .with_note("LRM 9.3.3.3 needs a constrained subtype from the context here")
+            .with_help("constrain the target's subtype, or qualify the aggregate with a type mark"),
+        );
+    }
+
     // One misplaced scalar in an n-dimensional aggregate is usually all of
     // them (`('0', '1')` for a 2-D type): report the first only.
     if dim + 1 < ndims

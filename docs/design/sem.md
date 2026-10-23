@@ -1346,6 +1346,7 @@ Each relaxation turns an error into its own warning code; nothing else differs.
 | R2 | pure function reading or calling something impure (4.?/9.4.?) | common in vendor libraries |
 | R3 | dropped: the reference simulator's `--relaxed` does not relax case choices (its list is impure calls and files in pure functions, non-globally-static interface defaults, non-protected shared variables) [L17] | per Q6 |
 | R4 | default binding to an entity in `work` when it is not visible (implementation choice) | none needed if Q4 picks the rule above |
+| R5 | an `others` aggregate assigned to an object of unconstrained subtype (a port, a formal) takes the object's run-time bounds (LRM 9.3.3.3 needs a constrained context; `W1325`) | both reference simulators accept it under their relaxed switch (second suite `issue1191`, `issue2421`); agent, 2026-10-23, confirm | 
 
 Q6 asks the user to confirm the list.
 

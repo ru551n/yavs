@@ -5618,7 +5618,8 @@ through `TierHost::object` (22 percent of the main thread's instructions in the 
   disagrees between the two sides loses nothing but speed: while changing the size I saw 565 million callbacks and
   1.5 billion from exactly that.)
   Tag: LLVM-only (the table is the generator's cache in front of the heap's own look-up; a Cranelift tier would need
-  the same cache or a flat view of the heap slots in `TierFrame`).
+  the same cache or a flat view of the heap slots in `TierFrame`; the view was built and measured in #655 and loses on
+  instructions, see "A flat view of the heap slots for compiled `Deref`" at the end).
 - **A callee of a hot function that was never seen running is left out of its compile** (`left_out`, `Worker::unseen`,
   `Worker::left`; with a budget, more than `UNSEEN_MIN` = 32 IR instructions). `Worker::tree` brought the whole closure
   of native callees along (and the callees of a process), so a 27-instruction `pop` priced at 330 to 490 ms because its
@@ -6061,3 +6062,81 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   data (array generics, descriptors) are not folded; copy ids depend on the order of the switches, so with `--threads` above 1 the compiled-code
   cache keys of copies (which name the function id) can differ between runs; designs whose lowering is not cached (`ir` entry) re-optimise
   their copies in every run.
+
+
+## A flat view of the heap slots for compiled `Deref`: built, measured, not landed (yavs-interp, yavs-llvm, #655, 2026-10-23)
+
+User decision 2026-10-23: build the view of #655 (`{ptr, len, generation}` per heap slot in the shared layer, so compiled code resolves
+a handle without the object table) with strict invariants and a cross-check against the handle path. It was built, passed every safety
+net, and lost on instructions, so nothing of it is in the tree (user decision 2026-10-23, #576: land a change if instructions drop
+and the cycle geomean over many designs is not worse). The prototype is a patch against d72ffdd9, posted on #655 (the comment of
+2026-10-23 that opens with the table below) for the day a second code generator or a different measurement asks again.
+
+- **Design (all of it worked).** `Heap` keeps a `Vec<ViewSlot>` next to `slots`, one 16-byte entry per slot: host address and length
+  of `data[start..]` (length under 4 GiB), and the generation. Every other slot (never used, deallocated, collected, being edited, too
+  long) is `ViewSlot::NONE`: length 0 and generation 0, which no handle carries (generations start at 1). `TierFrame::heaps` held, per
+  handle tag, a pointer to a header `{table address, index bound << 32, space bits}` that lives inside the heap (a `Machine` does not
+  move during an activation), so the table growing and moving needed no refresh of the frame view. A `Deref` was: tag clamp, header
+  loads, `handle & index bits < bound`, entry at `index * 16`, `entry.generation == handle as u32`, address from the space bits; a miss
+  of any kind went to the old callback. Heap addresses (no generation) were looked up the same way with a liveness test on the entry, so
+  an access of any size, none included, meets the freed slot's length 0.
+- **Invariants and where each was kept.** Generation compared on every access (a stale, null or foreign handle misses and fails in the
+  interpreter's words). A freed slot shows length 0 and generation 0 (`release`, which `take`, `free` and `collect` end in). `edit`
+  hides the slot before it hands out the `Vec` (the caller may reallocate or return early without `reissue`: textio's error paths do),
+  `reissue` shows it again. `alloc_from` and `reissue` are the only places that show an object. No raw pointer is cloned or
+  serialised: `Heap` has a hand-written `Clone` and `restore_state` that rebuild the view for the new buffers (`#[serde(skip)]`), and
+  addresses are `u64`s so a machine stays `Send`. `TIER_STAMPS` (writes through the view bypass `Heap::writes`): `tier_heaps` offers
+  empty headers while the flag is set. The frame view is refreshed at the three places that set `heap_epoch` (`tier_view`,
+  `view_root`, `tier_temp`, now together in `tier_heap`), which every host entry ends in; that covers a host call that brings the shared
+  heap into being (`SharedState`'s heap is created lazily in `alloc_heap`). Process and thread switch: the view is rebuilt at every
+  activation. The shared state is moved between a machine and the global guard only at the entry points of `lib.rs`, never during
+  compiled code, so a header pointer cannot go stale inside an activation. VHPI and DAP reach heap objects through `Machine::obj` and
+  `obj_mut` (`data`, `data_mut`: no buffer moves). Protected-object calls across threads: serial processes only, one at a time, each
+  with its own activation. No update point was found that could not be covered.
+- **Safety net.** A heap fuzz test (40 seeds x 400 random allocate, free, take, edit with growth, collect, recycle, clone and store
+  round trip operations; after each: the view equals the slots, a handle the view finds resolves to the same bytes, a stale, null,
+  foreign or out-of-range handle misses, a live one hits; removing the `hide` in `edit` fails it at step 4). A cross-check in debug
+  and `gc-stress` builds: every hit of generated code called `TierHost::check_view` (a callback of its own, in no work counter) which
+  compared the frame's header pointer with the heap's, the handle path's slot and the bytes' address and length, and panicked on a
+  difference. The unit tests of yavs-interp and yavs-llvm passed under `gc-stress` (the `yavs gc-stress` feature does not switch on
+  yavs-llvm's: it needs `"yavs-llvm?/gc-stress"`, which the check wants).
+- **Measured (instructions of the main thread; `--tier=llvm` warm, the only deterministic tier: `--tier=auto` runs differ by 5 percent
+  from run to run in what they compile when; builds from `tools/build-bench.sh --features llvm`, core 11).**
+
+  | Change | one protected `get` (4 `Deref`s), instr | `protected_queue` | window generator, row bank case | Cranelift too? |
+  |---|---:|---:|---:|---|
+  | main (object table) | 336 to 339 | 5.392 G | 257.98 G | |
+  | `Deref` through the view, miss to the old callback | 367 (+9 percent) | 5.760 G (+6.8) | 266.3 G (+3.2) | yes: the view is TierFrame data |
+  | plus addresses a `Deref` made through the view | 365 to 367 (+8) | 5.777 G (+7.1) | 266.7 G (+3.4) | yes |
+  | the view used only by `TierHost::deref` and `object` (no change to generated code) | 336 | 5.391 G | 257.46 G (-0.2) | yes |
+
+  Callbacks of the window generator (`--tier=auto`): `cb_fast` 7.28 M to 0, `cb_host` 3.42 M to 1.85 M; `protected_queue` has 142 and
+  49. `TierHost::object` is 2.5 percent of that run's cycles and `yavs_rt_fast` 0.4, so the callbacks the view removes are worth at
+  most 1 to 3 percent, and the table that costs them is gone only if the hit path is as short as the table's.
+  Real testbenches (`tools/realbench`, `--tier=auto` warm, view in the `Deref` and addresses, 3 runs, cores 11 and 12): instructions
+  within 1 percent on the window generator (190.5 G to 190.2 G), `uvvm_sb_slv`, `uvvm_axistream_vvc`, `osvvm_axis_random`, `hdlm_axis_bfm`
+  and `hdlm_fifo_sync`; `sc5_fifo_repack` +5 percent and `uvvm_util_rand` -40 percent (probably the functions `auto` had
+  compiled when the run ended, which differs from run to run; not checked); wall within the spread.
+- **Why it loses.** The estimate of #655 (about 22 instructions per `Deref` to about 12) counted the index, the bound and the
+  generation compare. A `Deref` also has to choose the heap by the handle's tag, reach its table, form the address's space bits
+  and load pointer and length: 24 LLVM instructions in the optimised function against 18 for the table hit (key from index and tag,
+  entry address, one compare of the stored access value, three loads), which already is one compare because an entry that has an
+  access value is writable and no entry holds the null handle (`Obj::h`, round 14). About two of the six extra are this
+  prototype's choice: the table is reached through a header inside the heap (a dependent load, and the tag-indexed address of the
+  pointer), which was chosen so that no refresh of the frame view can be missed; copying base and bound into `TierFrame` and
+  branching on the tag is estimated at parity with the table hit and was not measured, and parity does not land. The table
+  misses on conflicts (direct-mapped, 256 entries) and after a deallocation, and the misses of the real runs cost 1 to 3
+  percent; the flat view buys those back and pays four to seven instructions at every hit.
+- **The host-side variant (h0)** used the view only in `TierHost::deref` and `object`, which leaves the generated code as it is:
+  -0.2 percent of the window generator's instructions (deterministic), nothing on the others. The cycle half of the landing rule
+  was not measured for it, and 0.2 percent does not pay for a second copy of the slot state whose one missed update would be a host
+  use-after-free in `object`.
+- **What would change the verdict.** Misses becoming a larger part of a run (a protected library with thousands of live objects in
+  its hot loop; a counter: `cb_fast` plus `cb_host` over 5 percent of the instructions): then the table first, with the view
+  filling it through a small Rust helper instead of the host call, is the design (ceiling measured here: about 1 percent of the
+  window generator, so not before the misses grow). A second code generator with no object table can use the prototype as it is
+  (`TierFrame::heaps` and `ViewSlot` are backend-neutral) and does not need the table's per-Deref hash.
+- **Prototype checks.** `cargo test -p yavs-interp --features gc-stress` (24 + helpers) and `-p yavs-llvm --features llvm,gc-stress`
+  (31 tier tests with the cross-check) green; the differential corpus on a release `gc-stress` build with the cross-check on:
+  499 of 499 tests on `yavs-interp`, `yavs-auto` and `yavs-llvm` (three tests added to the corpus while it ran need a newer build
+  than the prototype's). The measured binaries are the same code without the check.

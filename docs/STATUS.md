@@ -6491,3 +6491,13 @@ and auto, 1 and 4 threads (`tests/spec.rs` does the same for every design of `te
 
 Not verified: AArch64 and Windows (CI), a debugger or VHPI session with copies on (they are off there by design), copies with
 `--threads` above 4.
+
+## llvm: a flat view of the heap slots, built and not landed (#655, 2026-10-23)
+
+A per-slot `{address, length, generation}` view of both heaps, read by compiled `Deref` and by accesses to the addresses it makes, was
+built with the invariants of #655 (generation on every access, freed slots empty, no cloned or stored addresses, empty under
+`TIER_STAMPS`, refreshed with `heap_epoch`, a cross-check against the handle path in debug and `gc-stress` builds). It was correct
+(fuzz test, tier tests under `gc-stress`, 499 of 499 corpus tests on a `gc-stress` build on the interpreter, `auto` and `llvm`) and
+slower than the object table it was to replace: one protected `get` 336 to 367 instructions, `protected_queue` +7 percent, the
+window generator +3 percent (`--tier=llvm`), real testbenches under `--tier=auto` unchanged. Nothing is in the tree; numbers, the
+update-point audit and what would change the verdict are in decisions.md "A flat view of the heap slots for compiled `Deref`".

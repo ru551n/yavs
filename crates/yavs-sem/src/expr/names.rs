@@ -107,6 +107,25 @@ impl Db {
                                     }
                                 }
                             }
+                            DeclKind::Unit(u)
+                                if matches!(
+                                    self.units[u].kind,
+                                    crate::loader::UnitKind::Entity
+                                        | crate::loader::UnitKind::Architecture
+                                ) =>
+                            {
+                                match self.enclosing_unit_region(scope, d) {
+                                    Some(s) => Region::Scope(s),
+                                    // Its declarations are selected by name only within it (8.3).
+                                    None => {
+                                        return NameRes::NotInRegion(
+                                            self.units[u].scope,
+                                            suffix_span(suffix, n.span),
+                                            key,
+                                        );
+                                    }
+                                }
+                            }
                             DeclKind::Object(_) | DeclKind::Alias(Alias::Object { .. }) => {
                                 return NameRes::Value;
                             }

@@ -632,10 +632,33 @@ impl Db {
         self.error(d)
     }
 
+    /// The declarative region of the entity or architecture `d` names, when `scope` lies
+    /// inside it: its own declarations can be selected with its name (8.3, #639).
+    pub(crate) fn enclosing_unit_region(&self, scope: ScopeId, d: DeclId) -> Option<ScopeId> {
+        let DeclKind::Unit(u) = self.decls[self.entity(d)].kind else {
+            return None;
+        };
+        if !matches!(self.units[u].kind, UnitKind::Entity | UnitKind::Architecture) {
+            return None;
+        }
+        let region = self.units[u].scope;
+        let mut cur = Some(scope);
+        while let Some(c) = cur {
+            if c == region {
+                return Some(region);
+            }
+            cur = self.scopes[c].parent;
+        }
+        None
+    }
+
     /// The region a name denotes, for use clauses and expanded names: a library,
     /// a package (loaded on demand) or a package instance.
     pub(crate) fn region_of(&mut self, scope: ScopeId, n: &ast::Name) -> Result<Region, Reported> {
         let d = self.expanded_name_decl(scope, n)?;
+        if let Some(s) = self.enclosing_unit_region(scope, d) {
+            return Ok(Region::Scope(s));
+        }
         // A label of an enclosing statement names its declarative region (8.3): `p.st` inside
         // process `p`.
         if let DeclKind::Label(_) = self.decls[d].kind

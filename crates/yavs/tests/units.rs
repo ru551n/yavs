@@ -216,7 +216,10 @@ impl Env {
                 }
             }
         }
-        out.replace(&self.tmp.display().to_string(), "T")
+        // Paths with a backslash (Windows) are escaped in the text.
+        let tmp = self.tmp.display().to_string();
+        out.replace(&tmp.replace('\\', "\\\\"), "T")
+            .replace(&tmp, "T")
     }
 }
 

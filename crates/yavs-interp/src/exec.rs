@@ -7101,7 +7101,17 @@ impl Machine {
                 let m = self.msg(what);
                 rt_err(outside(k, &x.to_string(), &bounds(l, h, dir), &m))
             }
-            CheckKind::Length => rt_err_f!("value length {x} does not match {w} length {l}"),
+            CheckKind::Length => {
+                // `subtype` is the lead word of the message when set ("expression").
+                let lead = self
+                    .rt
+                    .prog
+                    .checks
+                    .get(what)
+                    .map_or("", |c| c.subtype.as_str());
+                let lead = if lead.is_empty() { "value" } else { lead };
+                rt_err_f!("{lead} length {x} does not match {w} length {l}")
+            }
             CheckKind::Null => rt_err_f!("null access value: {w}"),
         }
     }

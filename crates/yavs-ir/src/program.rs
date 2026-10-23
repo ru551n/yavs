@@ -833,7 +833,9 @@ pub enum Dir {
 pub struct CheckMsg {
     pub what: String,
     pub dir: Dir,
-    /// The subtype checked against, as messages name it (`INTEGER`, `PCT`); may be empty.
+    /// The subtype checked against, as messages name it (`INTEGER`, `PCT`); may be empty. For a
+    /// `Length` check it is the lead word of the message instead (`expression length 4 does
+    /// not match case choice length 3`), `value` when empty.
     pub subtype: String,
 }
 

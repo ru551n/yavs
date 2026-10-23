@@ -259,6 +259,9 @@ impl Fx<'_, '_> {
         let t = db.base(db.exprs[expr].subtype);
         let array = ty::is_array(db, t);
         let v = self.expr(expr)?;
+        if array {
+            self.case_length_check(v, sets, span)?;
+        }
         let blocks: Vec<BlockId> = sets.iter().map(|_| self.block()).collect();
         let mut default = None;
         for (set, &b) in sets.iter().zip(&blocks) {
@@ -314,6 +317,37 @@ impl Fx<'_, '_> {
             }
         }
         Ok(blocks)
+    }
+
+    /// The expression of an array `case` has the choices' length (LRM 10.9, all choices have
+    /// one); a value of another length is a run-time error, not a missed choice.
+    fn case_length_check(&mut self, v: crate::expr::V, sets: &[&ChoiceSet], span: Span) -> R<()> {
+        let Some(first) = sets
+            .iter()
+            .flat_map(|s| s.choices.iter())
+            .find_map(|c| match c {
+                Choice::Expr(e) => Some(*e),
+                _ => None,
+            })
+        else {
+            return Ok(());
+        };
+        let cv = self.expr(first)?;
+        let (_, vp) = self.arr(v, span)?;
+        let (_, cp) = self.arr(cv, span)?;
+        let (lv, lc) = (self.dope_len(vp), self.dope_len(cp));
+        let what = self
+            .fb
+            .program()
+            .check_msg_for("case choice", Dir::To, "expression");
+        self.emit(Inst::Check {
+            kind: yavs_ir::CheckKind::Length,
+            v: lv,
+            lo: lc,
+            hi: lc,
+            what,
+        });
+        Ok(())
     }
 
     /// The `?=` class of a plane code: 0 for '0'/'L', 1 for '1'/'H', 2 for '-', 3 otherwise.

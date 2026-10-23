@@ -1,0 +1,5 @@
+exit	1
+diag	note	0	0	:case_length_mismatch:_p0	three a
+diag	note	0	0	:case_length_mismatch:_p0	abc
+diag	note	0	0	:case_length_mismatch:_p0	other
+diag	fatal	0	0	:case_length_mismatch:_p0	expression length 4 does not match case choice length 3

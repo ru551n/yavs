@@ -231,7 +231,16 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<Fx>>;
 /// Reads only what lowering produced of other functions (flags, kinds, types), so the result
 /// does not depend on which function was optimised first.
 pub(crate) fn optimize_func(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
-    let mut f = optimize_body(prog, id)?;
+    optimize_func_inst(prog, id, None)
+}
+
+/// [`optimize_func`] for one instance (spike): reads of `inst` fold.
+pub(crate) fn optimize_func_inst(
+    prog: &Program,
+    id: FuncId,
+    inst: Option<(&[u8], &[(u32, u32)])>,
+) -> Option<Box<crate::Func>> {
+    let mut f = optimize_body_inst(prog, id, inst)?;
     if inline::run(prog, id, &mut f, 1) {
         // The inlined bodies are code of this function now: what is known at the call decides
         // their branches and repeated reads are shared.
@@ -265,6 +274,14 @@ fn keep_variables_on() -> bool {
 
 /// The function optimised, without inlining: the copy [`optimize_func`] starts from.
 pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Func>> {
+    optimize_body_inst(prog, id, None)
+}
+
+fn optimize_body_inst(
+    prog: &Program,
+    id: FuncId,
+    inst: Option<(&[u8], &[(u32, u32)])>,
+) -> Option<Box<crate::Func>> {
     if !enabled() {
         return None;
     }
@@ -285,6 +302,7 @@ pub(crate) fn optimize_body(prog: &Program, id: FuncId) -> Option<Box<crate::Fun
         raw.nested,
         &mut layouts,
     );
+    o.inst = inst;
     o.run();
     let mut loc = raw.loc.clone();
     let blocks = o.changed.then(|| o.compact(&mut loc, None));
@@ -722,6 +740,9 @@ enum Step {
 struct Opt<'a> {
     prog: &'a Program,
     f: &'a crate::Func,
+    /// Spike (specialisation study): the frozen instance data of the instance this copy is
+    /// made for; reads of it fold like reads of the constant pool.
+    inst: Option<(&'a [u8], &'a [(u32, u32)])>,
     code: Vec<Inst>,
     operands: Vec<Reg>,
     blocks: Vec<(u32, u32)>,
@@ -810,6 +831,7 @@ impl<'a> Opt<'a> {
         Opt {
             prog,
             f,
+            inst: None,
             code,
             operands,
             blocks: f.blocks.values().iter().map(|b| (b.start, b.end)).collect(),
@@ -2612,6 +2634,23 @@ impl<'a> Opt<'a> {
 
     /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded).
     fn const_read(&self, a: Opn, out: &mut [u8]) -> bool {
+        if let (Opn::A(AddrSpace::Inst, o), Some((d, holes))) = (a, self.inst) {
+            let o = o as usize;
+            let n = out.len();
+            if holes
+                .iter()
+                .any(|&(h, z)| (h as usize) < o + n && o < (h + z) as usize)
+            {
+                return false;
+            }
+            return match d.get(o..o + n) {
+                Some(b) => {
+                    out.copy_from_slice(b);
+                    true
+                }
+                None => false,
+            };
+        }
         let Opn::A(AddrSpace::Const(c), o) = a else {
             return false;
         };
@@ -2873,7 +2912,11 @@ impl<'a> Opt<'a> {
                 }
                 let n = w.bytes() as usize;
                 let mut x = [0u8; 8];
-                if self.const_read(a, &mut x[..n]) {
+                if (self.inst.is_none()
+                    || !matches!(a, Opn::A(AddrSpace::Inst, _))
+                    || self.rty(dst) == Some(RegTy::I64))
+                    && self.const_read(a, &mut x[..n])
+                {
                     // A 4-byte load sign-extends (narrow integer elements, #415).
                     let v = if n == 4 {
                         i64::from(i32::from_le_bytes([x[0], x[1], x[2], x[3]]))

@@ -85,6 +85,35 @@ impl Program {
         }
     }
 
+    /// Spike (specialisation study): a copy of the program with `bases.len()` spare functions
+    /// after the last one, each a copy of the base function (same raw code, no optimised copy yet).
+    /// The first spare is `FuncId(self.funcs.len())`.
+    pub fn with_spares(&self, bases: &[FuncId]) -> Program {
+        let mut p = self.clone();
+        p.stored_opt = StoredOpt(std::sync::Mutex::new(self.stored_opt.map().clone()));
+        for &b in bases {
+            let mut f = self.funcs.get(b).expect("base function").full().clone();
+            f.opt = std::sync::OnceLock::new();
+            p.funcs.push(f);
+        }
+        p
+    }
+
+    /// Spike: make spare `spare` the copy of its code optimised for the frozen instance data
+    /// `inst`; false when the optimiser left the function alone (the spare then runs the raw code).
+    pub fn specialize(&self, spare: FuncId, inst: &[u8], holes: &[(u32, u32)]) -> bool {
+        let Some(raw) = self.funcs.get(spare) else {
+            return false;
+        };
+        let o = crate::opt::optimize_func_inst(self, spare, Some((inst, holes)));
+        let made = o.is_some();
+        let _ = raw.opt.set(o);
+        if std::env::var_os("YAVS_DUMPIR").is_some() {
+            eprintln!("{}", self.dump_func(spare));
+        }
+        made
+    }
+
     #[cold]
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {

@@ -904,9 +904,46 @@ impl Elaborated {
         }));
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), CallVal> = HashMap::new();
+        // Spike (specialisation study, docs/design/specialisation.md): one spare function per
+        // process instance, filled with the process code optimised for the instance's data.
+        let spec = std::env::var_os("YAVS_SPEC").is_some();
+        let mut spare_of: HashMap<ScopeId, yavs_ir::FuncId> = HashMap::new();
+        let prog_run: Arc<yavs_ir::Program> = if spec {
+            let mut bases = Vec::new();
+            for p in &self.procs {
+                if p.actual.is_some() {
+                    continue;
+                }
+                let i = self.instance_of(p.scope);
+                let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+                    continue;
+                };
+                let Some(u) = ir.units.get(&arch) else {
+                    continue;
+                };
+                let Some(x) = u
+                    .processes
+                    .iter()
+                    .find(|x| x.actual.is_none() && x.stmt == p.stmt)
+                else {
+                    continue;
+                };
+                spare_of.insert(
+                    p.scope,
+                    yavs_ir::FuncId((ir.program.funcs.len() + bases.len()) as u32),
+                );
+                bases.push(x.func);
+            }
+            Arc::new(ir.program.with_spares(&bases))
+        } else {
+            ir.program.clone()
+        };
+        let mut spec_map: HashMap<(yavs_ir::FuncId, u64), yavs_ir::FuncId> = HashMap::new();
+        // (base function, spare, data hash) per process instance, for the statistics.
+        let mut spec_log: Vec<(yavs_ir::FuncId, u64, u64)> = Vec::new();
         // Package data, created once in order: each initialisation sees the packages before it.
         let rt = crate::pkgcall::init_packages(
-            &ir.program,
+            &prog_run,
             self.cov_rows() * ir.program.cov.len(),
             &ir.packages,
             &ir.sources,
@@ -1112,6 +1149,16 @@ impl Elaborated {
             Ok((f, serial))
         };
         let mut proc_index: HashMap<_, HashMap<_, usize>> = HashMap::new();
+        let stats = std::env::var_os("YAVS_SPEC_STATS").is_some();
+        let gen_params: std::collections::HashSet<yavs_sem::DeclId> = self
+            .hier
+            .scopes
+            .iter()
+            .filter_map(|s| match s.kind {
+                ScopeKind::ForGenerate { param, .. } => Some(param),
+                _ => None,
+            })
+            .collect();
         let mut s = self.build_res(
             cfg,
             |p, ds| {
@@ -1174,9 +1221,47 @@ impl Elaborated {
                     });
                 }
                 let serial = ir.program.is_serial(pir.func);
+                let mut func = pir.func;
+                if spec || stats {
+                    use std::hash::{Hash, Hasher};
+                    // YAVS_SPEC=2: the parameters of `for` generates are not folded, so the
+                    // iterations of a generate share one copy.
+                    let mut holes: Vec<(u32, u32)> = Vec::new();
+                    if std::env::var("YAVS_SPEC").is_ok_and(|v| v == "2") {
+                        for v in &u.values {
+                            if gen_params.contains(&v.decl) {
+                                let n = rt.prog.types.get(v.ty).and_then(|t| t.scalar_size());
+                                holes.push((v.off, n.unwrap_or(16) as u32));
+                            }
+                        }
+                    }
+                    let mut masked = inst.data.clone();
+                    for &(o, z) in &holes {
+                        if let Some(b) = masked.get_mut(o as usize..(o + z) as usize) {
+                            b.fill(0);
+                        }
+                    }
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    masked.hash(&mut h);
+                    let hk = h.finish();
+                    spec_log.push((pir.func, hk, self.np_hash(u, region, &gen_params)));
+                    if spec
+                        && !serial
+                        && let Some(&sp) = spare_of.get(&p.scope)
+                    {
+                        func = *spec_map.entry((pir.func, hk)).or_insert_with(|| {
+                            rt.prog.specialize(sp, &inst.data, &holes);
+                            if stats {
+                                let n = |f| rt.prog.func(f).map_or(0, |f| f.code.len());
+                                eprintln!("SPEC-FN {} {} {}", n(pir.func), n(sp), pir.func.0);
+                            }
+                            sp
+                        });
+                    }
+                }
                 let proc = InterpProcess::new(
                     rt.clone(),
-                    pir.func,
+                    func,
                     inst,
                     drivers,
                     serial.then(|| shared.clone()),
@@ -1227,12 +1312,117 @@ impl Elaborated {
                 }
             }
         }
+        if stats {
+            self.spec_stats(ir, &insts, &spec_log, &gen_params);
+        }
         // The shared heap is collected between cycles (#303).
         s.subscribe(Box::new(yavs_interp::SharedGc {
             rt: rt.clone(),
             shared: shared.clone(),
         }));
         Ok((s, Some(Built { rt, shared, vars })))
+    }
+
+    /// Spike: hash of the values of region `sc` without the parameters of `for` generates.
+    fn np_hash(
+        &self,
+        u: &UnitIr,
+        sc: ScopeId,
+        gen_params: &std::collections::HashSet<yavs_sem::DeclId>,
+    ) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for v in &u.values {
+            if !gen_params.contains(&v.decl) {
+                format!("{:?}", self.value(sc, v.decl)).hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+
+    /// Spike: how many distinct generic sets and instance data the instances of each
+    /// architecture have, and what specialising every process per distinct data would add.
+    fn spec_stats(
+        &self,
+        ir: &Ir,
+        insts: &HashMap<ScopeId, Arc<InstData>>,
+        log: &[(yavs_ir::FuncId, u64, u64)],
+        gen_params: &std::collections::HashSet<yavs_sem::DeclId>,
+    ) {
+        use std::collections::HashSet;
+        use std::hash::{Hash, Hasher};
+        let hash = |x: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            x(&mut h);
+            h.finish()
+        };
+        #[derive(Default)]
+        struct A {
+            regions: usize,
+            instances: usize,
+            vals_np: HashSet<u64>,
+            vals: HashSet<u64>,
+            data: HashSet<u64>,
+            ex: String,
+        }
+        let mut per: std::collections::BTreeMap<String, A> = Default::default();
+        for (&sc, d) in insts {
+            let i = self.instance_of(sc);
+            let ScopeKind::Instance { arch, .. } = self.hier.scope(i).kind else {
+                continue;
+            };
+            let Some(u) = ir.units.get(&arch) else {
+                continue;
+            };
+            let a = per.entry(format!("{arch:?}")).or_default();
+            a.regions += 1;
+            a.instances += usize::from(sc == i);
+            a.vals_np.insert(self.np_hash(u, sc, gen_params));
+            if a.ex.is_empty() {
+                a.ex = self.hier.path_name(i, crate::Case::Lrm);
+            }
+            a.vals.insert(hash(&|h| {
+                for v in &u.values {
+                    format!("{:?}", self.value(sc, v.decl)).hash(h);
+                }
+            }));
+            a.data.insert(hash(&|h| d.data.hash(h)));
+        }
+        let nsize = |f: yavs_ir::FuncId| ir.program.funcs.get(f).map_or(0, |f| f.full().code.len());
+        eprintln!(
+            "SPEC-ARCH regions instances distinct_values distinct_values_no_genparam distinct_data example"
+        );
+        for a in per.values() {
+            eprintln!(
+                "SPEC-ARCH {} {} {} {} {} {}",
+                a.regions,
+                a.instances,
+                a.vals.len(),
+                a.vals_np.len(),
+                a.data.len(),
+                a.ex
+            );
+        }
+        let funcs: HashSet<_> = log.iter().map(|x| x.0).collect();
+        let specs: HashSet<_> = log.iter().map(|x| (x.0, x.1)).collect();
+        let specs_np: HashSet<_> = log.iter().map(|x| (x.0, x.2)).collect();
+        let np_sz: usize = specs_np.iter().map(|x| nsize(x.0)).sum();
+        let base_sz: usize = funcs.iter().map(|&f| nsize(f)).sum();
+        let spec_sz: usize = specs.iter().map(|x| nsize(x.0)).sum();
+        let inst_sz: usize = log.iter().map(|x| nsize(x.0)).sum();
+        eprintln!(
+            "SPEC-TOTAL archs {} regions {} procs {} funcs {} specs {} specs_no_genparam {} ir_shared {} ir_spec {} ir_spec_no_genparam {} ir_per_instance {}",
+            per.len(),
+            per.values().map(|a| a.regions).sum::<usize>(),
+            log.len(),
+            funcs.len(),
+            specs.len(),
+            specs_np.len(),
+            base_sz,
+            spec_sz,
+            np_sz,
+            inst_sz
+        );
     }
 
     /// The equivalent process of an expression actual (`ProcInst::actual`): the region's

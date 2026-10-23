@@ -6458,3 +6458,41 @@ compile as never seen (`UNSEEN_MIN`) and compiled 340 ms later. The rule stays.
 Not done: a flat heap-slot view in `TierFrame` (the remaining four `Deref`s of an accessor are 88 of its 231 instructions;
 a flat view would take about 10 of the 22 each and the miss callbacks), inlining accessors across modules (a call and a
 return cost about 50 instructions of 337).
+
+## Specialised copies of processes (#651, 2026-10-23)
+
+Five commits (`docs/decisions.md` "Specialised copies of processes", `docs/design/specialisation.md` sections 11 and 12): a process of
+an instance with generics and constants switches, once it has run 1024 activations, to a copy of its code optimised for its instance's
+frozen data (the optimiser folds the data's integer reads: lengths, slice positions, allocation sizes, checks, arms of `if generic then`).
+Equal data share a copy, the parameters of `for` generates are not folded, the copies' optimised IR is capped at 1.5 times the shared
+process IR, they are kept in the compilation cache (kind `spec`), and the tiers see them as ordinary functions. Shared code under
+`--dap`, `--vhpi`, wave variables, coverage, `--tier=llvm`, serial processes and processes with several waits.
+
+Bench builds with `llvm`, core 9, `perf stat` user instructions in G (whole process tree), main at 430c1c3d against the commits; warm
+worlds, `--tier=interp` unless stated; the cycles are noisy on the loaded host (the same binary and the same instructions gave 16.8 to 26.6 G
+cycles under `--tier=auto` on `sc5_fifo_repack`: the compile thread shares the pinned core), the instruction counts are exact:
+
+| design | interp | auto warm | auto cold | copies (switched), IR growth |
+|---|---|---|---|---|
+| `poc_arith_addw` | 373.94 / 333.23 (-10.9 %) | 294.12 / 283.12 (-3.7 %) | 330.01 / 296.57 (-10.1 %) | 147 (147), 1.49x (cap) |
+| `sc5_fifo_repack` | 57.99 / 49.12 (-15.3 %) | 58.09 / 49.14 (-15.4 %) | 59.57 / 50.72 (-14.9 %) | 21 (34), 1.49x (cap) |
+| `fletcher_bufferwriter_512` | 112.29 / 105.35 (-6.2 %) | 112.76 / 105.79 (-6.2 %) | 112.97 / 105.95 (-6.2 %) | 72 (94), 0.64x |
+| `poc_cache_cpu` | 25.50 / 24.27 (-4.8 %) | 25.78 / 24.54 (-4.8 %) | 26.57 / 25.38 (-4.5 %) | 49 (274), 0.56x |
+| `hdlm_lfsr` | 66.54 / 64.48 (-3.1 %) | 36.92 / 34.57 (-6.3 %) | 40.14 / 37.36 (-6.9 %) | 1 (1), 0.23x |
+| `neorv32_single_min` (300 us) | 65.52 / 64.57 (-1.4 %) | 66.08 / 65.12 (-1.5 %) | 67.92 / 67.29 (-0.9 %) | 91 (171), 0.24x |
+| `osvvm_axis_random`, `uvvm_sb_slv`, `hdlm_axi_crossbar`, `hdlm_axi_fifo`, `hdlm_fifo_sync`, `olo_fix_cordic_rot` | within 0.3 % | within 0.2 % | within 0.5 % | 0 |
+
+`tools/realbench/run.py --compare` (ten tests, core 9, worlds per binary, medians of 3): instructions geometric mean 0.96 of before on
+`interp`, `auto` and `auto-cold`; CPU time 0.98 / 1.02 / 1.01 and wall 0.98 / 1.02 / 1.02 (the wall of `fletcher_bufferwriter_512` and
+`sc5_fifo_repack` on `auto` moves by 10 to 30 percent between runs of the same binary on this host). `tools/bench` h2h designs, geometric
+mean of CPU 1.01 (noise; instructions equal). Initialisation (`--stop-time=0fs`) equal within 0.4 percent. The cap costs 0.5 percent on
+`poc_arith_addw` and 4.3 points on `sc5_fifo_repack` (-19.6 % without it). The prototype's `neorv32_single_min` gain (-3.3 %) is -1.4 % now:
+the interpreter rounds since took most of it.
+
+Checked: `cargo test --workspace` (also with `YAVS_SPEC_AFTER=2`, every process switching at its second activation), the differential
+corpus 493/493 on `yavs-interp`, `yavs-auto` and `yavs-llvm`, plain and with `YAVS_SPEC_AFTER=2`, at 1 and 4 threads; 38 realbench
+testbenches (OSVVM, UVVM, hdl-modules, Open Logic, PoC, neorv32, fletcher, satcat5) byte-identical with copies off and forced, interp
+and auto, 1 and 4 threads (`tests/spec.rs` does the same for every design of `tests/perf`).
+
+Not verified: AArch64 and Windows (CI), a debugger or VHPI session with copies on (they are off there by design), copies with
+`--threads` above 4.

@@ -3834,13 +3834,61 @@ the native process first, then the edge path itself.
   legacy kind: an event ending on the level; allowed when the `on` list, implicit or written, names only that element),
   and the edge as a later operand of an `and` when the earlier ones are levels of static signal names (they cannot fail,
   so skipping them on a false edge changes nothing). `tests/corpus/process/edge_forms.vhd` runs every form on std_logic,
-  std_ulogic and bit (the first reference simulator counts `x'event and x = '0'` once more than the LRM, because its
-  `'event` is true in the first cycle: `ref=hand`). Not covered, and why: `wait on clk; if rising_edge(clk)` (two
+  std_ulogic and bit (the first reference simulator runs the process of `x'event and x = '0'` as true once at time 0, which the
+  second one and the LRM do not: `ref=hand`). Not covered, and why: `wait on clk; if rising_edge(clk)` (two
   statements), `x'event and x` on BOOLEAN, `x'last_value = '0'` spellings, and the edge as the second operand after an
   operand that can fail. Costs the trigger does not change: `x'event and x = '1'` is stepped out of the interpreter's fast
   loop (about 380 instructions more per activation than `rising_edge` in `rtl_ff`), and every `not x'stable` is an
   implicit signal the kernel updates per event (4.4 times the instructions of `rising_edge` on `rtl_ff`).
   `Signal::event_in` of one element is a compare instead of a scan.
+- **A clock generator re-arms itself** (`SimControl::rearm`, `Process::generator`). When the transaction of a
+  `ToggleProcess` driver matures through the quick path of `update_one_timed` and makes an event (so the signal is plain
+  and the generator its sole source), the kernel does what the process would do on that event: the next quick transaction
+  with the complement of the new value, its queue entry, and the process stays suspended. The process is not woken: its
+  `ready` flag is set until the end of the cycle's wake phase (`wake` ignores a ready process), it is taken out of the
+  clock's cached batch (`skip_wake`), and a signal whose only waiter it is skips the waiter scan (`Waiters::only_resident`).
+  Anything else keeps the process: a force, deposit or release (the general update path), a second source, a delay that
+  needs `assign_code`, a process whose waiter is not resident yet (the first edge), two entries due at one time. A forced
+  clock resumes its process on that event and the process preempts the pending transaction as before
+  (`tests/toggle.rs`, native and closure traces equal through deposits, a force and a release). `stats.process_runs` no
+  longer counts the generator's edges. `examples/clk.rs` one clock, kernel alone: 1330 to 915 instructions per edge;
+  `sc5_timestamp` (three clocks) 0.926 of the instructions.
+- **An empty batch is skipped** in `cycle`: nothing resumed (the falling edge of a clock, a transaction nobody waits for)
+  means `run_batch` would only commit nothing; it still ends `batch_mono` (the postponed batch after it must be
+  ordered, `tests/scenarios.rs`).
+- **Direct entries have a per-driver mark for a process of many drivers** (`ProcState::marks`, more than
+  `MARKED_DRIVERS` = 4 drivers): "this driver has `out`/`outv`/`outb` entries in this run" was a scan of the run's entry
+  lists at every assignment, O(entries) in a CPU's processes. The mark is the run number (bumped at every resumption) and
+  the kind of entry: no clearing, a mark of an older run means none, and a stale mark of the same run only sends the
+  assignment to the general path. A process of up to four drivers has no marks and scans its short lists as before (a
+  mark per driver in `ProcState` cost one-bit registers 1% in cycles: the slot stride of 4096 processes grew). neorv32
+  2.3% fewer instructions.
+- **The wake list of a clock keeps up to 32 distinct edge triggers** (was 4) and its batch is sorted: a CPU's clock has a
+  trigger per reset signal and edge, so the 375 waiters of neorv32's clock never made the cache and the clock was
+  scanned waiter by waiter at every edge (`take_woken` and `build_cache` were 3.5% of the instructions, 3.0% fewer
+  instructions now). The batch of plain processes runs in process order whatever the order the waiters registered
+  in (`order` sorts such a batch anyway), and once each (a process waiting twice on a signal ran twice in the cached path).
+- **A wide bus whose waiters all wait for all of it lists one covering run** (`Signal::fine`, `cover`): `changed` holds
+  the exact runs only when a process waits for a part of the signal or an observer wants the value changes; else it
+  holds the cover of the runs and `nruns` counts them (`stats.events` counts the cover once more). The 512-bit
+  pipeline stages of `fletcher_bufferwriter_512` changed ~64 runs per update and each was noted, then looked up in
+  the waiters. A signal whose waiters are all in the wide list (`Waiters::only`, whatever the number of chunk lists
+  it has) takes the short wake paths of a one-list signal, and an event looks only at the chunk lists that have
+  waiters (`chunk_ix`, up to 16) instead of every chunk it spans. `fletcher_bufferwriter_512` 8.5% fewer instructions
+  together.
+- Small ones, each counted: `Signal::static_plain` (the part of `plain` that cannot change: 12 instructions per quick
+  update), `To_X01` through a table, the `small_list` wake without a list of woken processes (`wake_proc` on the fields),
+  a one-entry commit in `run_one` (a chain stage 27 instructions), `wait_on_again` inlined into the interpreter (8 per
+  activation), one `OutV` pushed instead of copied.
+- **Tried and dropped**: committing a process's direct entries right after it runs (instead of after the batch): 17
+  instructions fewer per activation for a changed order of commit against the other processes of the batch.
+- **Measured** (aligned bench builds, `main` 897d19ad against this commit; instructions of `--tier=interp --no-cache`
+  runs, then `perf stat` cycles:u, minimum of five alternating runs on cores 10 and 11): head-to-head designs
+  instructions `rtl_ff` 0.998, `rtl_lfsr` 0.991, `rtl_chain` 0.988 (cycles 0.972), `rtl_fan` 0.993, `rtl_bus` 0.997,
+  `rtl_ram` 0.989 (0.981), `lfsr64` 0.990; real-world suite instructions / cycles: `neorv32_single_min` 0.936 / 0.957,
+  `fletcher_bufferwriter_512` 0.915 / 0.938, `sc5_timestamp` 0.918 / 0.933, `poc_cache_cpu` 0.990 / 0.963,
+  `sc5_fifo_repack` 0.999 / 0.967, `fletcher_bufferreader` 0.991 / 1.005, `hdlm_lfsr` 0.989, the rest 1.000 within 0.1%.
+  A bare clock edge (`examples/clk.rs`, kernel alone): 1300 to 912 instructions.
 
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 

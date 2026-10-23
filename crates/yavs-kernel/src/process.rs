@@ -62,6 +62,13 @@ pub trait Process: Send {
         None
     }
 
+    /// The process is a clock generator (`ToggleProcess`): its driver and the delay it assigns
+    /// the complement after. The kernel then re-arms the transaction itself when it matures
+    /// (`SimControl::rearm`) and leaves the process suspended.
+    fn generator(&self) -> Option<(DriverId, Time)> {
+        None
+    }
+
     /// The process as `Any`, so an observer that knows its implementation can reach its
     /// state while it is suspended (`Hook::with_process`: VHPI reads and writes variables).
     fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -162,6 +169,10 @@ impl ToggleProcess {
 }
 
 impl Process for ToggleProcess {
+    fn generator(&self) -> Option<(DriverId, Time)> {
+        Some((self.driver, self.delay))
+    }
+
     fn run(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
         let c = ctx.elem_code(self.signal, self.elem)?;
         let n = StdULogic::from_code_pub(c).not() as u8;
@@ -252,6 +263,16 @@ pub(crate) struct OutB {
     pub val: [u8; 8],
 }
 
+/// A process with more drivers than this keeps `ProcState::marks`.
+pub(crate) const MARKED_DRIVERS: usize = 4;
+
+/// The direct-entry marks of a process with many drivers (`ProcState::marks`): the run number
+/// (from 1, bumped at every resumption) and per driver (local index) `epoch << 2 | kind`.
+pub(crate) struct Marks {
+    pub epoch: u64,
+    pub d: Vec<u64>,
+}
+
 /// Per-process state the process mutates while it runs.
 #[derive(Default)]
 pub(crate) struct ProcState {
@@ -276,6 +297,12 @@ pub(crate) struct ProcState {
     /// run): the edge then holds for the whole activation, so `Ctx::edge` of it need not look.
     pub known_edge: Option<(SignalId, u32, bool)>,
     pub edge_ok: bool,
+    /// The run's number (from 1, bumped at every resumption), and per driver (local index) which
+    /// kind of direct entry it has in this run: `epoch << 2 | kind`, kind 1 `out`, 2 `outv`,
+    /// 3 `outb`. A mark of an older run means none, so the entries need no scan and no clearing.
+    /// Only for a process of more than `MARKED_DRIVERS` drivers (empty otherwise: the lists of a
+    /// small process are short, scanning them is cheaper than keeping marks).
+    pub marks: Option<Box<Marks>>,
     /// A one-element logic value kept for `Ctx::assign_code`.
     pub one: Option<LogicVec>,
     /// Direct transactions of this run: one element, and up to 64.
@@ -597,6 +624,15 @@ impl Ctx<'_> {
             return;
         };
         let key = (info.signal.0, info.slot);
+        if self.st.marks.is_some() {
+            if !self.direct_entries(info) {
+                return;
+            }
+            // All of the driver's entries move to its waveform now.
+            if let Some(m) = &mut self.st.marks {
+                m.d[info.local as usize] = 0;
+            }
+        }
         // The entries of a byte driver (all of its entries are in `outb`).
         if self.st.outb.iter().any(|o| (o.sig, o.slot) == key) {
             let (local, now) = (info.local as usize, self.sh.now);
@@ -832,7 +868,7 @@ impl Ctx<'_> {
         let at = at.unwrap_or(now);
         if at > now {
             // A delayed assignment to a driver with nothing pending has nothing to preempt.
-            if (info.direct && self.direct_entries(info.signal.0, info.slot))
+            if (info.direct && self.direct_entries(info))
                 || !matches!(
                     self.sh.signals[info.signal.0 as usize].ty.elem,
                     crate::value::Elem::Logic
@@ -852,9 +888,10 @@ impl Ctx<'_> {
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
             // The driver's vector entries keep the order: the general path moves them.
-            if self.st.outv.iter().any(|o| (o.sig, o.slot) == (sig, slot)) {
+            if self.has_entries(info, 2) {
                 return false;
             }
+            self.mark_entries(info, 1);
             self.st.out.push(Out {
                 sig,
                 slot,
@@ -996,6 +1033,7 @@ impl Ctx<'_> {
             if at == now {
                 // The commit writes it to the signal; a later assignment of the run to the driver
                 // is another entry (the last one wins), one that needs the waveform moves them.
+                self.mark_entries(info, 3);
                 self.st.outb.push(OutB {
                     sig: sig as u32,
                     slot: info.slot,
@@ -1007,7 +1045,7 @@ impl Ctx<'_> {
             }
             // The entries commit at the end of the run, before this one: the general path
             // orders them (inertial preemption must see them).
-            if self.direct_entries(sig as u32, info.slot) {
+            if self.direct_entries(info) {
                 return false;
             }
         }
@@ -1064,7 +1102,7 @@ impl Ctx<'_> {
         let now = self.sh.now;
         let at = at.unwrap_or(now);
         if at > now {
-            if (info.direct && self.direct_entries(info.signal.0, info.slot))
+            if (info.direct && self.direct_entries(info))
                 || !matches!(
                     self.sh.signals[info.signal.0 as usize].ty.elem,
                     crate::value::Elem::Logic
@@ -1085,9 +1123,10 @@ impl Ctx<'_> {
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
             // The driver's one-element entries keep the order: the general path moves them.
-            if self.st.out.iter().any(|o| (o.sig, o.slot) == (sig, slot)) {
+            if self.has_entries(info, 1) {
                 return false;
             }
+            self.mark_entries(info, 2);
             self.st.outv.push(OutV {
                 sig,
                 slot,
@@ -1176,10 +1215,41 @@ impl Ctx<'_> {
 
     /// The process has a direct entry for `slot` of signal `sig` in this run (they commit at its
     /// end, so a delayed assignment must come after them: the general path orders it).
-    fn direct_entries(&self, sig: u32, slot: u32) -> bool {
-        self.st.out.iter().any(|o| (o.sig, o.slot) == (sig, slot))
-            || self.st.outv.iter().any(|o| (o.sig, o.slot) == (sig, slot))
-            || self.st.outb.iter().any(|o| (o.sig, o.slot) == (sig, slot))
+    #[inline(always)]
+    fn direct_entries(&self, info: &DriverInfo) -> bool {
+        let Some(m) = &self.st.marks else {
+            let key = (info.signal.0, info.slot);
+            return self.st.out.iter().any(|o| (o.sig, o.slot) == key)
+                || self.st.outv.iter().any(|o| (o.sig, o.slot) == key)
+                || self.st.outb.iter().any(|o| (o.sig, o.slot) == key);
+        };
+        m.d.get(info.local as usize)
+            .is_some_and(|&x| x >> 2 == m.epoch && x & 3 != 0)
+    }
+
+    /// Driver `local` has `kind` (1 `out`, 2 `outv`, 3 `outb`) entries in this run.
+    #[inline(always)]
+    fn has_entries(&self, info: &DriverInfo, kind: u64) -> bool {
+        let Some(m) = &self.st.marks else {
+            let key = (info.signal.0, info.slot);
+            return match kind {
+                1 => self.st.out.iter().any(|o| (o.sig, o.slot) == key),
+                2 => self.st.outv.iter().any(|o| (o.sig, o.slot) == key),
+                _ => self.st.outb.iter().any(|o| (o.sig, o.slot) == key),
+            };
+        };
+        m.d.get(info.local as usize) == Some(&(m.epoch << 2 | kind))
+    }
+
+    /// Driver `local` has `kind` entries now.
+    #[inline(always)]
+    fn mark_entries(&mut self, info: &DriverInfo, kind: u64) {
+        if let Some(m) = &mut self.st.marks {
+            let v = m.epoch << 2 | kind;
+            if let Some(x) = m.d.get_mut(info.local as usize) {
+                *x = v;
+            }
+        }
     }
 
     /// Whether a zero-delay assignment of `v` to `r` of driver `d` would change nothing: the
@@ -1349,7 +1419,7 @@ impl Ctx<'_> {
     /// `wait_on` of one range, when the last wait was on exactly that range, with no timeout,
     /// and nothing was added to this one: the commit keeps the registered waiter and `sens`
     /// stays empty. `false` (nothing done) otherwise; the caller then uses `wait_on`.
-    #[inline]
+    #[inline(always)]
     pub fn wait_on_again(&mut self, signal: SignalId, range: Range) -> bool {
         let st = &mut *self.st;
         if st.sens.is_empty()
@@ -1367,7 +1437,7 @@ impl Ctx<'_> {
     /// timeout and nothing was added to this one: the commit keeps the registered waiters, as
     /// `wait_on_again` does for one range. `false` (nothing done) otherwise; the caller then
     /// names the wait with `wait_on`.
-    #[inline]
+    #[inline(always)]
     pub fn wait_same(&mut self) -> bool {
         let st = &mut *self.st;
         if st.sens.is_empty() && st.deadline.is_none() && !st.sens_prev.is_empty() {

@@ -183,6 +183,13 @@ pub(crate) struct Reg {
     pub tid: u32,
 }
 
+/// The most chunk lists with waiters a signal tracks (`Waiters::chunk_ix`).
+const CHUNK_IX: usize = 16;
+
+/// The most distinct edge triggers a signal's wake list (`Cache`) can hold: a clock read by the
+/// processes of a CPU has one per reset signal and edge.
+const MAX_TIDS: usize = 32;
+
 /// The most buckets a waiter is copied into before it goes to the wide list instead.
 const WAIT_NARROW: u32 = 4;
 
@@ -211,6 +218,10 @@ pub(crate) struct Waiters {
     /// lists of the elements it hit. Without, only the wide list is scanned, whatever the
     /// number of runs (a wide bus whose processes all wait for all of it, #519).
     chunked: bool,
+    /// The chunk lists that may hold a waiter (at most `CHUNK_IX`; `chunk_over` when more were
+    /// used): an event on a wide signal looks only at these, not at every chunk it spans.
+    chunk_ix: SmallVec<[u32; 4]>,
+    chunk_over: bool,
 }
 
 /// `Cache::batch`: the plain processes (one suspension point, not postponed) in list order,
@@ -218,15 +229,15 @@ pub(crate) struct Waiters {
 pub(crate) struct Batch {
     pub plain: Vec<u32>,
     /// `plain` by trigger id, each in list order.
-    pub by_tid: SmallVec<[(u32, Vec<u32>); 4]>,
+    pub by_tid: SmallVec<[(u32, Vec<u32>); 8]>,
     pub others: Vec<(u32, u32)>,
 }
 
 struct Cache {
     /// `(registration, process, trigger id)` of every waiter, in list order.
     list: Vec<(u64, u32, u32)>,
-    /// The distinct trigger ids in `list` (0: none), at most 4.
-    tids: SmallVec<[u32; 4]>,
+    /// The distinct trigger ids in `list` (0: none), at most `MAX_TIDS`.
+    tids: SmallVec<[u32; 8]>,
     /// The processes of `list` that run as one batch in list order when they all wake, and
     /// the others, which wake one by one (`SimControl::batch_of`); `None` inside when the list
     /// is not in process order. Set by the kernel at first use.
@@ -260,6 +271,8 @@ impl Waiters {
             trig: Trig::Empty,
             cache: None,
             chunked: false,
+            chunk_ix: SmallVec::new(),
+            chunk_over: false,
         }
     }
 
@@ -267,6 +280,16 @@ impl Waiters {
     /// the hang report, which is cold.
     pub fn iter(&self) -> impl Iterator<Item = &Waiter> {
         self.lists.iter().flat_map(|(l, _)| l.iter())
+    }
+
+    /// The one list every waiter is in, when none was ever put in a chunk's list: the only list of
+    /// a small signal, or the wide list of a big one whose waiters all wait for most of it.
+    #[inline(always)]
+    fn only(&self) -> Option<&[Waiter]> {
+        if self.chunked {
+            return None;
+        }
+        self.lists.last().map(|l| l.0.as_slice())
     }
 
     /// No process has ever waited on the signal.
@@ -291,14 +314,17 @@ impl Waiters {
         }
     }
 
+    /// The signal has one waiter, a resident one of process `p`.
+    #[inline]
+    pub fn only_resident(&self, p: u32) -> bool {
+        matches!(self.only(), Some([w]) if w.proc == p && w.perm != 0)
+    }
+
     /// The waiters of a signal that has one list of at most `max` (a clock read by a few
     /// processes), in registration order.
     #[inline]
     pub fn small_list(&self, max: usize) -> Option<&[Waiter]> {
-        match self.lists.as_slice() {
-            [(l, _)] if l.len() <= max => Some(l.as_slice()),
-            _ => None,
-        }
+        self.only().filter(|l| l.len() <= max)
     }
 
     /// Forget the wake list (a waiter changed).
@@ -311,13 +337,13 @@ impl Waiters {
     /// list need not be scanned. Stale waiters have the trigger of their process, too.
     pub fn uniform_trigger(&self) -> Option<crate::EdgeTrigger> {
         match self.trig {
-            Trig::Same(t) if self.lists.len() == 1 => Some(t),
+            Trig::Same(t) if self.only().is_some() => Some(t),
             _ => None,
         }
     }
 
     /// The distinct trigger ids of the wake list, if it is valid.
-    pub fn cache_tids(&self) -> Option<SmallVec<[u32; 4]>> {
+    pub fn cache_tids(&self) -> Option<SmallVec<[u32; 8]>> {
         self.cache.as_ref().map(|c| c.tids.clone())
     }
 
@@ -392,9 +418,7 @@ impl Waiters {
         let joins = perm != 0 && self.len > 0 && range == Range::new(0, self.len);
         match &mut self.cache {
             Some(c)
-                if joins
-                    && self.lists.len() == 1
-                    && (c.tids.contains(&tid) || c.tids.len() < 4) =>
+                if joins && !self.chunked && (c.tids.contains(&tid) || c.tids.len() < MAX_TIDS) =>
             {
                 if !c.tids.contains(&tid) {
                     c.tids.push(tid);
@@ -405,7 +429,17 @@ impl Waiters {
         }
         let wide = self.lists.len() - 1;
         for i in self.lists_of(range) {
-            self.chunked |= i != wide;
+            if i != wide {
+                self.chunked = true;
+                if !self.chunk_over && !self.chunk_ix.contains(&(i as u32)) {
+                    if self.chunk_ix.len() == CHUNK_IX {
+                        self.chunk_over = true;
+                        self.chunk_ix.clear();
+                    } else {
+                        self.chunk_ix.push(i as u32);
+                    }
+                }
+            }
             let (l, n) = &mut self.lists[i];
             if l.len() >= 2 * *n + 16 {
                 l.retain(|w| live(w));
@@ -427,14 +461,16 @@ impl Waiters {
     /// hits, so the rest are alive.
     fn build_cache(&mut self) {
         let full = Range::new(0, self.len);
-        let l = &self.lists[0].0;
+        let Some(l) = self.lists.last().map(|l| &l.0) else {
+            return;
+        };
         if full.len == 0 || l.len() < 16 || !l.iter().all(|w| w.perm != 0 && w.range == full) {
             return;
         }
-        let mut tids: SmallVec<[u32; 4]> = SmallVec::new();
+        let mut tids: SmallVec<[u32; 8]> = SmallVec::new();
         for w in l.iter() {
             if !tids.contains(&w.tid) {
-                if tids.len() == 4 {
+                if tids.len() == MAX_TIDS {
                     return;
                 }
                 tids.push(w.tid);
@@ -534,6 +570,20 @@ impl Waiters {
             scan(&mut self.lists[wide]);
         } else if !self.chunked {
             scan(&mut self.lists[wide]);
+        } else if !self.chunk_over {
+            // The few chunk lists with waiters, those an event spans, then the wide list.
+            let len = self.len;
+            let mut ix = std::mem::take(&mut self.chunk_ix);
+            for &c in &ix {
+                let lo = c << shift;
+                if hit(Range::new(lo, (1 << shift).min(len - lo))) {
+                    scan(&mut self.lists[c as usize]);
+                }
+            }
+            scan(&mut self.lists[wide]);
+            ix.retain(|&mut c| !self.lists[c as usize].0.is_empty());
+            self.chunked = !ix.is_empty();
+            self.chunk_ix = ix;
         } else {
             let mut last = usize::MAX;
             let chunks = runs.iter().flat_map(|r| {
@@ -550,12 +600,11 @@ impl Waiters {
                 scan(&mut self.lists[i]);
             }
         }
-        if self.lists.len() == 1 && self.lists[0].0.is_empty() {
+        if self.only().is_some_and(|l| l.is_empty()) {
             self.trig = Trig::Empty;
         }
         if self.cache.is_none()
-            && self.lists.len() == 1
-            && self.lists[0].0.len() >= 16
+            && self.only().is_some_and(|l| l.len() >= 16)
             && scanned == 1
             && !runs.is_empty()
         {
@@ -632,6 +681,8 @@ pub(crate) struct Signal {
     pub callouts: Vec<(crate::process::Severity, String)>,
     /// An assignment of the value a source already has may be skipped (`Builder::build`).
     pub skip_ok: bool,
+    /// What `plain` asks that never changes after the build (`SimControl::new`).
+    pub static_plain: bool,
     /// The segment the last `compute_driving` started in: the next dirty range is usually there
     /// or in the next one.
     seg_hint: usize,
@@ -647,6 +698,10 @@ pub(crate) struct Signal {
     /// A process waits on the signal, or an observer wants its value changes: `changed` lists
     /// the runs of elements that changed in a cycle. Otherwise only `nruns` counts them.
     pub watched: bool,
+    /// Something needs the exact runs in `changed`: a process waits for a part of the signal, or
+    /// an observer wants the value changes. Else `changed` holds the cover of the runs
+    /// (one range) and `nruns` counts them.
+    pub fine: bool,
     pub nruns: u64,
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
@@ -681,14 +736,44 @@ struct EvRec {
 /// Element run `e .. e + len` changed: listed in `changed` if anything looks at the list
 /// (`Signal::watched`), else only counted.
 #[inline(always)]
-fn note_run(changed: &mut Vec<Range>, nruns: &mut u64, watched: bool, e: usize, len: u32) {
+fn note_run(
+    changed: &mut Vec<Range>,
+    nruns: &mut u64,
+    watched: bool,
+    fine: bool,
+    e: usize,
+    len: u32,
+) {
     if !watched {
         *nruns += 1;
+        return;
+    }
+    if !fine {
+        cover(changed, nruns, e, len, 1);
         return;
     }
     match changed.last_mut() {
         Some(run) if run.end() as usize == e => run.len += len,
         _ => changed.push(Range::new(e as u32, len)),
+    }
+}
+
+/// `changed` as one range: the elements `e .. e + len`, `runs` runs of them, joined to the cover of
+/// the runs so far. The cover counts as one event itself, so `nruns` leaves it out and
+/// the cycle's count of events (`changed` plus `nruns`) stays the number of runs.
+#[inline(always)]
+fn cover(changed: &mut Vec<Range>, nruns: &mut u64, e: usize, len: u32, runs: u64) {
+    *nruns += runs;
+    match changed.first_mut() {
+        Some(c) => {
+            let lo = c.offset.min(e as u32);
+            let hi = c.end().max(e as u32 + len);
+            *c = Range::new(lo, hi - lo);
+        }
+        None => {
+            changed.push(Range::new(e as u32, len));
+            *nruns -= 1;
+        }
     }
 }
 
@@ -811,11 +896,13 @@ impl Signal {
             force_ev: SmallVec::new(),
             callouts: Vec::new(),
             skip_ok: false,
+            static_plain: false,
             seg_hint: 0,
             codes: Vec::new(),
             fuse_n: 0,
             fused_event: false,
             watched: false,
+            fine: false,
             nruns: 0,
             pend: Vec::new(),
             pend_words: SmallVec::new(),
@@ -848,7 +935,14 @@ impl Signal {
     /// Element run `e .. e + len` changed (`note_run`).
     #[inline(always)]
     fn note_run(&mut self, e: usize, len: u32) {
-        note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
+        note_run(
+            &mut self.changed,
+            &mut self.nruns,
+            self.watched,
+            self.fine,
+            e,
+            len,
+        );
     }
 
     /// Put `changed` in ascending order and join the runs that touch.
@@ -1090,14 +1184,10 @@ impl Signal {
     /// source's value is the signal's.
     #[inline(always)]
     fn plain(&self) -> bool {
-        matches!(self.ty.elem, Elem::Logic)
-            && self.groups.is_empty()
-            && self.guard.is_none()
+        self.static_plain
             && self.force_ev.is_empty()
             && self.force_drv.is_none()
-            && self.port_in.is_none()
             && self.force_eff.is_none()
-            && matches!(self.resolution, None | Some(Resolution::StdLogic))
     }
 
     /// A direct transaction waits to be finished (`finish_pend`).
@@ -1321,7 +1411,14 @@ impl Signal {
                     *c = cycle;
                     *t = stamp(now);
                 }
-                note_run(&mut self.changed, &mut self.nruns, self.watched, e, len);
+                note_run(
+                    &mut self.changed,
+                    &mut self.nruns,
+                    self.watched,
+                    self.fine,
+                    e,
+                    len,
+                );
                 w &= !(nmask(len as usize) << s);
             }
             let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
@@ -1409,7 +1506,7 @@ impl Signal {
                 st[2 * len + e] = t;
             }
         }
-        if self.watched {
+        if self.watched && self.fine {
             let mut v = m;
             while v != 0 {
                 let s = v.trailing_zeros();
@@ -1418,11 +1515,24 @@ impl Signal {
                     &mut self.changed,
                     &mut self.nruns,
                     true,
+                    true,
                     base + s as usize,
                     run,
                 );
                 v &= !(nmask(run as usize) << s);
             }
+        } else if self.watched {
+            // Only whole-signal waiters: the cover of the changed elements tells them all
+            // they need; the runs are counted.
+            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
+            let runs = u64::from((m & !(m << 1)).count_ones());
+            cover(
+                &mut self.changed,
+                &mut self.nruns,
+                base + lo,
+                (hi - lo) as u32,
+                runs,
+            );
         } else {
             self.nruns += u64::from((m & !(m << 1)).count_ones());
         }
@@ -1970,6 +2080,16 @@ impl Signal {
         set_event(&mut self.stamps, self.ty.len as usize, e, cycle, now);
         self.note_run(e, 1);
         self.fused_event = true;
+    }
+
+    /// The part of `plain` that holds for the whole run: a logic signal with no group, guard,
+    /// port layer or resolution function but `std_logic`'s.
+    pub(crate) fn set_static_plain(&mut self) {
+        self.static_plain = matches!(self.ty.elem, Elem::Logic)
+            && self.groups.is_empty()
+            && self.guard.is_none()
+            && self.port_in.is_none()
+            && matches!(self.resolution, None | Some(Resolution::StdLogic));
     }
 
     /// A byte signal with no layer, group, guard or resolution function to wait for: a sole

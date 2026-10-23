@@ -1,6 +1,6 @@
 -- difftest: top=edge_forms std=2008 ref=hand
--- ref=hand: the first reference simulator counts `x'event and x = '0'` once more than the LRM (and the second
--- one) because its `'event` is true in the first cycle at time 0; the three `*_lf` counts are edited to the LRM result.
+-- ref=hand: the first reference simulator runs the process of `x'event and x = '0'` as true once at time 0 (the
+-- second one and the LRM: no event at initialization); the three `*_lf` counts are edited to the LRM result.
 -- Every spelling of a clock edge on std_logic, std_ulogic and bit: rising_edge/falling_edge,
 -- `x'event and x = '1'`, `not x'stable and x = '1'`, `wait until x = '1'` and the wait forms.
 -- Weak and unknown levels must give the same counts as without any kernel shortcut.

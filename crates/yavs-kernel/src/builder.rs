@@ -558,6 +558,12 @@ impl Builder {
         for p in self.procs {
             let st = ProcState {
                 waveforms: p.drivers.iter().map(|_| Waveform::default()).collect(),
+                marks: (p.drivers.len() > crate::process::MARKED_DRIVERS).then(|| {
+                    Box::new(crate::process::Marks {
+                        epoch: 1,
+                        d: vec![0; p.drivers.len()],
+                    })
+                }),
                 ..Default::default()
             };
             slots.push(Mutex::new(Slot {

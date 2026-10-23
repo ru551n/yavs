@@ -153,3 +153,75 @@ fn a_delay_below_the_resolution_is_a_delta() {
     };
     assert_eq!(run(true), run(false));
 }
+
+/// A clock with readers (a counter on every event, a counter on rising edges), deposits, a force and a
+/// release on it in the middle of the run: the kernel re-arms the generator
+/// itself between those, and must resume it when something else changes the clock.
+fn clock_with_ops(native: bool) -> Vec<String> {
+    let mut b = Builder::new();
+    let c = b.signal("c", SignalType::logic(1), &"0".parse::<LogicVec>().unwrap());
+    let d = b.driver(c);
+    let delay = ns(5);
+    let proc: Box<dyn Process> = if native {
+        Box::new(ToggleProcess::new(c, 0, d, delay, DelayMode::INERTIAL))
+    } else {
+        Box::new(p(move |ctx| {
+            let next = StdULogic::from_code_pub(ctx.elem_code(c, 0)?).not() as u8;
+            ctx.assign_code(d, None, delay, next, DelayMode::INERTIAL)?;
+            if !ctx.wait_same() {
+                ctx.wait_on(c)?;
+            }
+            Ok(())
+        }))
+    };
+    b.process_boxed("clk", NONE, &[d], proc);
+    for (name, rising) in [("any", false), ("rise", true)] {
+        let n = b.signal(name, SignalType::bytes(1, 1), &[0]);
+        let dn = b.driver(n);
+        let pid = b.process(
+            name,
+            NONE,
+            &[dn],
+            p(move |ctx| {
+                let k = ctx.value(n)?[0];
+                ctx.assign(dn, None, &[(Time::ZERO, &[k + 1][..])], DelayMode::INERTIAL)?;
+                if !ctx.wait_same() {
+                    ctx.wait_on(c)?;
+                }
+                Ok(())
+            }),
+        );
+        if rising {
+            b.edge_trigger(
+                pid,
+                EdgeTrigger {
+                    signal: c,
+                    elem: 0,
+                    rising: true,
+                    legacy: false,
+                    reset: None,
+                },
+            );
+        }
+    }
+    let (mut sim, trace) = build(b, Config::default());
+    let one = "1".parse::<LogicVec>().unwrap();
+    let zero = "0".parse::<LogicVec>().unwrap();
+    sim.run_until(ns(23)).unwrap();
+    sim.deposit(c, &one).unwrap();
+    sim.run_until(ns(47)).unwrap();
+    sim.deposit(c, &zero).unwrap();
+    sim.run_until(ns(71)).unwrap();
+    sim.force(c, ForceMode::Driving, &one).unwrap();
+    sim.run_until(ns(83)).unwrap();
+    sim.release(c, ForceMode::Driving).unwrap();
+    sim.run_until(ns(120)).unwrap();
+    trace.take()
+}
+
+#[test]
+fn forces_and_deposits_resume_a_rearmed_clock() {
+    let (a, b) = (clock_with_ops(true), clock_with_ops(false));
+    assert_eq!(a, b);
+    assert!(a.len() > 30, "{a:?}");
+}

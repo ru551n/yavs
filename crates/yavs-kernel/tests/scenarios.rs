@@ -1798,3 +1798,47 @@ fn a_wait_that_adds_to_the_last_one_keeps_everything() {
     assert_eq!(n[3], n[4], "{n:?}");
     assert!(n[3] > n[0] && n[2] == n[0], "{n:?}");
 }
+
+#[test]
+fn postponed_processes_run_in_process_order_when_no_other_process_resumes() {
+    // At 5 ns two postponed processes resume through different signals and no ordinary process
+    // runs in that cycle: they still run in elaboration order, not in the order they woke.
+    let mut b = Builder::new();
+    let s = b.signal("s", BYTE, &[0]);
+    let t = b.signal("t", BYTE, &[0]);
+    let (ds, dt) = (b.driver(s), b.driver(t));
+    let post = ProcFlags {
+        postponed: true,
+        serial: false,
+        several_waits: false,
+        concurrent_call: false,
+    };
+    for (name, sig) in [("on_t", t), ("on_s", s)] {
+        b.process(
+            name,
+            post,
+            &[],
+            p(move |c| {
+                c.report(Severity::Note, format!("{name} {:?}", c.value(sig)?));
+                c.wait_on(sig)
+            }),
+        );
+    }
+    b.process(
+        "src",
+        NONE,
+        &[ds, dt],
+        p(move |c| {
+            c.assign(ds, None, &[(ns(5), &[1][..])], DelayMode::INERTIAL)?;
+            c.assign(dt, None, &[(ns(5), &[1][..])], DelayMode::INERTIAL)
+        }),
+    );
+    let (mut sim, trace) = build(b, Config::default());
+    sim.run_until(ns(10)).unwrap();
+    let lines = trace.take();
+    let late: Vec<_> = lines.iter().filter(|l| l.contains("Note")).collect();
+    assert!(
+        late[2].contains("on_t") && late[3].contains("on_s"),
+        "{lines:?}"
+    );
+}

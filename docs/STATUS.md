@@ -3854,6 +3854,24 @@ Checks on the pushed range: `cargo fmt`, `cargo clippy --workspace --all-targets
 `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled, and `--tier=auto` with `--no-collapse-ports`; UVVM suite 102 pass,
 9 fail, 26 skip as before; OSVVM `.pro` 314 of 314 under 2008 and 2019.
 
+### Kernel round 15: edge spellings, clock generators that re-arm, wide buses and CPU clocks (#440, 2026-10-23)
+
+(`docs/decisions.md` "Kernel round 15".) (1) Every spelling of a clock edge gets the edge trigger: `wait until clk = '1'`,
+`not clk'stable and clk = '1'`, `rising_edge`/`falling_edge` of BIT and BOOLEAN, `clk'event and clk = '1'` on BIT, and an enable
+written before the edge (`tests/corpus/process/edge_forms.vhd`, std_logic, std_ulogic and bit). (2) A clock generator
+(`ToggleProcess`) re-arms its next transaction in the kernel and its process stays suspended: a bare edge 1300 to 912
+instructions. (3) Ranked by instructions saved times breadth after exact per-function counts of one clock edge, the
+chain delta, a register activation and the real-world suite (tracer over `examples/clk.rs` and `yavs run`): neorv32's clock
+had 375 waiters under more than four edge triggers and never used its wake cache; the 512-bit pipeline stages of the
+fletcher writer noted ~64 runs per update; the assignment path scanned the run's entry lists. Instructions / cycles
+(bench builds, cores 10 and 11): `neorv32_single_min` 0.936 / 0.957, `fletcher_bufferwriter_512` 0.915 / 0.938,
+`sc5_timestamp` 0.918 / 0.933, `poc_cache_cpu` 0.990 / 0.963, `sc5_fifo_repack` 0.999 / 0.967, head-to-head designs 0.988 to 0.998.
+Kernel share of what is left (`fletcher_bufferwriter_512`, 117 G instructions): `Signal::update_effective` 12% (the plane
+words of the wide buses: records of `blk_event`, runs, codes), `take_woken` 5%. Not done: the reader's `'event` forms
+(`x'event and x = '1'` costs 25% more instructions than `rising_edge(x)` per activation in `rtl_ff`, stepped out of the
+interpreter's fast loop), `not x'stable` (an implicit signal per occurrence, 4.4 times `rising_edge`), conditional
+generators (`clk <= not clk after T when running else ...`, 24 of ~650 in the corpora).
+
 ### Kernel round 14: clock generators in the kernel, the clock edge path (#440, 2026-10-22)
 
 (`docs/decisions.md` "Kernel round 14".) Ranked from the round 13 list after an exact per-function count of one clock edge (a

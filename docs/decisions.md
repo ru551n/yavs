@@ -5240,6 +5240,28 @@ two more, `LSet`, the compare, the step and the jump), about 500 instructions pe
   integer arrays (`Index` with loads and stores): none of them is among the hot loops of the benchmark designs and
   testbenches counted (`YAVS_DUMPIR=1` says why a loop is not one: "is not an element loop: op N").
 
+## The activation state of a process in three cache lines (yavs-interp, #520, 2026-10-23)
+
+A design of thousands of processes (4000 near-idle processes on one clock) takes a data cache miss on every line of
+every process it touches: 30 L1 misses and 4.3 L2 misses per activation, and 56 percent of the instructions of an
+activation are outside the dispatch loop's own work (`InterpProcess::run`, `run_quick`: 245 of 686 instructions, a third
+of their cycles waiting for the first load of each line). The fields were spread over ten lines of the 848 bytes of
+`Machine`. Decisions:
+
+- **`Machine` is `repr(C, align(64))` with the fields an activation of a small process reads and writes in its first
+  three lines** (frames, registers, pause; root slots, temporaries, runtime handles; instance data, drivers,
+  debugger, execution count and the flags), the heap's `since_gc` and quarantine next (`Heap` is `repr(C)` with them
+  first), the rest after. `hot` and `execs` moved from `InterpProcess` into `Machine` to sit there; the debugger state is a
+  `Box` (a null check instead of 40 bytes). `InterpProcess` is 896 bytes, as before, and the peak RSS of 20000 instances is
+  unchanged (178.3 MB, 177.8 MB).
+- **Measured** (`tools/bench` designs, cores 4 and 5, `perf stat`): `rtl_fan` L1 data cache misses 597 M to 516 M, L2
+  misses 78.5 M to 61.1 M, cycles 0.85 to 0.91 in four paired runs; `rtl_ff` 0.97, `rtl_chain` 0.93; the designs of a few
+  processes (neorv32, compute_loop, calls, protected_queue) are within the noise of the host (instructions equal to the
+  per-mille). Cycles on a shared host move by 10 percent between runs, so the evidence is the miss counts.
+- **Not done:** frames, registers and root slots of a process are still three separate allocations (one line each at
+  least); the kernel's per-process state is another set of lines (`run_batch`, `wait_on_again`). Prefetching the next
+  process of a batch needs `unsafe` or the kernel.
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

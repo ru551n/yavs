@@ -493,8 +493,53 @@ impl std::ops::IndexMut<usize> for Regs {
     }
 }
 
+#[repr(C, align(64))]
 pub(crate) struct Machine {
+    // The first three cache lines hold what an activation of a small process reads and writes
+    // (a design of thousands of processes misses in the cache on every line of every process
+    // it touches: 30 data cache misses per activation of a near-idle process before they were
+    // gathered here); the order of the fields is the point of `repr(C)`.
+    pub frames: Vec<Frame>,
+    /// The registers of all frames, one stack (`push_frame`, `pop_frame`; never push or pop
+    /// `frames` directly).
+    regs: Regs,
+    /// Stop when the entry frame jumps to this block (a process's body, #342).
+    pub pause: Option<yavs_ir::BlockId>,
+    /// The slots of frame 0 (a process's variables survive its suspensions).
+    root: Vec<u8>,
+    pub temp: Vec<u8>,
     pub rt: Arc<Runtime>,
+    /// A second handle on `rt` that `exec` takes while it runs, so an activation does not
+    /// touch the shared reference count (every process of a batch has the same runtime).
+    rt_run: Option<Arc<Runtime>>,
+    pub inst: Arc<InstData>,
+    pub drivers: Vec<ProcDriver>,
+    dbg: Option<Box<Dbg>>,
+    /// What the compiled tier keeps for this process between activations.
+    pub(crate) tier_state: Option<Box<crate::TierState>>,
+    /// Bumped whenever the machine runs or a variable is written: unchanged means every
+    /// variable of the process has its last value (the waveform recorder skips it).
+    pub(crate) execs: u64,
+    /// A native `ieee` subprogram made a report at the stop severity: the process ends after
+    /// the call, as after `Inst::Report`.
+    pub ieee_stop: bool,
+    /// A native `ieee` subprogram gives its call back to the VHDL body (`ieee::fallback`).
+    pub ieee_fallback: bool,
+    /// `regs` and `temp` went to the thread's scratch at the last suspension
+    /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
+    released: bool,
+    /// A small process keeps its registers and temporaries between activations instead of
+    /// handing them to the thread's scratch (set when it starts, [`RESIDENT_REGS`]): no
+    /// swap per activation. A process whose temporaries grow past [`RESIDENT_TEMP`] stops
+    /// being resident at its next suspension.
+    resident: bool,
+    /// The entry function is a process (set when the process starts): its root frame needs
+    /// no check of the frames it waits in ([`Machine::suspend`]).
+    root_process: bool,
+    /// Started, not ended, no shared state and no debugger: `InterpProcess::run` goes straight
+    /// to `run_quick`.
+    pub(crate) hot: bool,
+    pub heap: Heap,
     /// This machine for compiled code (`TierFrame::owner`): unique in the process.
     owner: u64,
     /// The slots of the native frames of compiled code, for the frame indices `nwin_from` to
@@ -502,21 +547,8 @@ pub(crate) struct Machine {
     nwin: Option<Box<dyn crate::NativeSlots>>,
     nwin_from: usize,
     nwin_to: usize,
-    /// A second handle on `rt` that `exec` takes while it runs, so an activation does not
-    /// touch the shared reference count (every process of a batch has the same runtime).
-    rt_run: Option<Arc<Runtime>>,
-    pub inst: Arc<InstData>,
-    pub drivers: Vec<ProcDriver>,
-    pub frames: Vec<Frame>,
-    /// The registers of all frames, one stack (`push_frame`, `pop_frame`; never push or pop
-    /// `frames` directly).
-    regs: Regs,
-    /// The slots of frame 0 (a process's variables survive its suspensions).
-    root: Vec<u8>,
     /// The slots of the other frames, one stack: no per-call allocation.
     sstack: Vec<u8>,
-    pub heap: Heap,
-    pub temp: Vec<u8>,
     /// Temporaries that hold handles or heap addresses (`Inst::TempRoot`), until the
     /// statement that made them ends (`Inst::Stmt` drops those at or above its frame's base).
     troots: Vec<TempRoot>,
@@ -531,15 +563,7 @@ pub(crate) struct Machine {
     /// package is initialised or a traced call runs, `call_values_traced`).
     pub(crate) init_reports: Option<Vec<(u8, String)>>,
     pub entry: FuncId,
-    dbg: Option<Dbg>,
     waits: Waits,
-    /// Stop when the entry frame jumps to this block (a process's body, #342).
-    pub pause: Option<yavs_ir::BlockId>,
-    /// A native `ieee` subprogram made a report at the stop severity: the process ends after
-    /// the call, as after `Inst::Report`.
-    pub ieee_stop: bool,
-    /// A native `ieee` subprogram gives its call back to the VHDL body (`ieee::fallback`).
-    pub ieee_fallback: bool,
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
@@ -547,26 +571,13 @@ pub(crate) struct Machine {
     cells: Vec<u64>,
     /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
     bytes: Vec<u8>,
-    /// `regs` and `temp` went to the thread's scratch at the last suspension
-    /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
-    released: bool,
     /// The instance signals as compiled code reads them (`TierFrame::sigtab`), made at the first
     /// entry of compiled code from the kernel's signals (this machine belongs to one kernel).
     tier_sigs: Vec<crate::TierSig>,
-    /// What the compiled tier keeps for this process between activations.
-    pub(crate) tier_state: Option<Box<crate::TierState>>,
-    /// A small process keeps its registers and temporaries between activations instead of
-    /// handing them to the thread's scratch (set when it starts, [`RESIDENT_REGS`]): no
-    /// swap per activation. A process whose temporaries grow past [`RESIDENT_TEMP`] stops
-    /// being resident at its next suspension.
-    resident: bool,
     /// `to_string` / `'image` texts of enumeration literals made so far: (type, image, text of each literal).
     pub(crate) enum_text: Vec<EnumText>,
     /// What this process added to [`RESIDENT_USED`], given back when it is dropped.
     resident_bytes: usize,
-    /// The entry function is a process (set when the process starts): its root frame needs
-    /// no check of the frames it waits in ([`Machine::suspend`]).
-    root_process: bool,
     /// The fault of the last `run_quick`.
     quick_fault: Option<Fault>,
 }
@@ -977,6 +988,8 @@ impl Machine {
             resident_bytes: 0,
             root_process: false,
             quick_fault: None,
+            hot: false,
+            execs: 0,
         }
     }
 
@@ -1068,12 +1081,12 @@ impl Machine {
     }
 
     pub(crate) fn attach(&mut self, session: Arc<DebugSession>, index: usize) {
-        self.dbg = Some(Dbg {
+        self.dbg = Some(Box::new(Dbg {
             session,
             index,
             mode: StepMode::Run,
             fuel: 0,
-        });
+        }));
     }
 
     /// Push the frame of `func` with `args` (one cell per parameter, two for a signal).

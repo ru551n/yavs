@@ -3824,6 +3824,24 @@ the native process first, then the edge path itself.
   the order the commit and finish paths touch them, with and without 64-byte alignment: neorv32 cycles within 1% (the
   thousands of signals are in L2/L3 whatever the order).
 
+## Kernel round 15: edge spellings, the kernel part of a clock edge (yavs-kernel, yavs-elab, #440, 2026-10-23)
+
+- **Every spelling of a clock edge gets the edge trigger** (user requirement: no form favoured over `rising_edge`).
+  `Walker::edge_trigger` now takes `rising_edge`/`falling_edge` of BIT and BOOLEAN (the predefined functions of
+  STANDARD), `x'event and x = '1'` and the other legacy shapes on BIT (the literals of BIT and BOOLEAN are looked up as
+  their storage codes, which is also right for a BIT or BOOLEAN reset level), `not x'stable and x = '1'` (a stable time
+  of zero; `'stable` is read through its implicit signal), the plain level `wait until x = '1'` / `'0'` (a trigger of the
+  legacy kind: an event ending on the level; allowed when the `on` list, implicit or written, names only that element),
+  and the edge as a later operand of an `and` when the earlier ones are levels of static signal names (they cannot fail,
+  so skipping them on a false edge changes nothing). `tests/corpus/process/edge_forms.vhd` runs every form on std_logic,
+  std_ulogic and bit (the first reference simulator counts `x'event and x = '0'` once more than the LRM, because its
+  `'event` is true in the first cycle: `ref=hand`). Not covered, and why: `wait on clk; if rising_edge(clk)` (two
+  statements), `x'event and x` on BOOLEAN, `x'last_value = '0'` spellings, and the edge as the second operand after an
+  operand that can fail. Costs the trigger does not change: `x'event and x = '1'` is stepped out of the interpreter's fast
+  loop (about 380 instructions more per activation than `rising_edge` in `rtl_ff`), and every `not x'stable` is an
+  implicit signal the kernel updates per event (4.4 times the instructions of `rising_edge` on `rtl_ff`).
+  `Signal::event_in` of one element is a compare instead of a scan.
+
 ## Registers and frame variables across blocks (yavs-llvm, #432, 2026-10-21)
 
 Follow-up of "Tight compute loops": in compiled loops the registers and the frame's variables no longer go through

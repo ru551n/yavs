@@ -2153,8 +2153,12 @@ impl Signal {
 
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
-        self.stamps[r.elems()].contains(&cycle)
-            || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
+        // One element (an edge test): a load and a compare, not a scan.
+        (if r.len == 1 {
+            self.stamps[r.offset as usize] == cycle
+        } else {
+            self.stamps[r.elems()].contains(&cycle)
+        }) || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
     }
 
     /// `'last_event` of `r`: time since the most recent event, `TIME'HIGH` if none.

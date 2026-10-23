@@ -1991,7 +1991,9 @@ fn clocked_processes_get_edge_triggers() {
         signal clk, rst, en : std_logic := '0';
         signal v : std_logic_vector(3 downto 0);
         signal q, r, s : std_logic;
-        signal bt : bit;
+        signal bt, bt2 : bit;
+        signal ul : std_ulogic;
+        signal bo : boolean;
       begin
         p1 : process (clk) begin if rising_edge(clk) then q <= '1'; end if; end process;
         p2 : process (rst) begin if falling_edge(rst) then r <= '1'; end if; end process;
@@ -2022,6 +2024,24 @@ fn clocked_processes_get_edge_triggers() {
         p19 : process (clk, rst) begin
           if rst = en then q <= '0'; elsif rising_edge(clk) then q <= '1'; end if;
         end process;
+        p20 : process (clk) begin if not clk'stable and clk = '1' then q <= '1'; end if; end process;
+        p21 : process (clk) begin if clk = '0' and not clk'stable then q <= '1'; end if; end process;
+        p22 : process (bt) begin if rising_edge(bt) then q <= '1'; end if; end process;
+        p23 : process (bt) begin if falling_edge(bt) then q <= '1'; end if; end process;
+        p24 : process begin wait until clk = '1'; q <= '1'; end process;
+        p25 : process begin wait until '0' = clk; q <= '1'; end process;
+        p26 : process begin wait until bt = '1'; q <= '1'; end process;
+        p27 : process begin wait on clk until clk = '1'; q <= '1'; end process;
+        p28 : process begin wait until clk = '1' and en = '1'; q <= '1'; end process;
+        p29 : process (ul) begin if rising_edge(ul) then q <= '1'; end if; end process;
+        p30 : process (ul) begin if ul'event and ul = '1' then q <= '1'; end if; end process;
+        p31 : process (bt, bt2) begin
+          if bt2 = '1' then q <= '0'; elsif rising_edge(bt) then q <= '1'; end if;
+        end process;
+        p32 : process begin wait until bt'event and bt = '0'; q <= '1'; end process;
+        p33 : process (bo) begin if rising_edge(bo) then q <= '1'; end if; end process;
+        p34 : process (bt) begin if not bt'stable and bt = '1' then q <= '1'; end if; end process;
+        p35 : process (clk) begin if clk = '1' then q <= '1'; end if; end process;
       end;";
     let (_, e) = elab("edges", src, "t", &[]);
     let t: Vec<_> = e
@@ -2050,7 +2070,7 @@ fn clocked_processes_get_edge_triggers() {
             x(true, 0, edge, None),
             None,
             x(true, 0, edge, None),
-            None,
+            x(true, 0, edge, None),
             x(true, 0, wait, None),
             None,
             x(true, 0, edge, Some((0, 3))),
@@ -2060,9 +2080,25 @@ fn clocked_processes_get_edge_triggers() {
             x(false, 0, legacy, None),
             None,
             x(false, 0, edge, Some((0, 2))),
-            None,
+            x(true, 0, legacy, None),
             x(true, 0, legacy, Some((0, 3))),
             None,
+            None,
+            x(true, 0, legacy, None),
+            x(false, 0, legacy, None),
+            x(true, 0, edge, None),
+            x(false, 0, edge, None),
+            x(true, 0, (true, true), None),
+            x(false, 0, (true, true), None),
+            x(true, 0, (true, true), None),
+            x(true, 0, (true, true), None),
+            None,
+            x(true, 0, edge, None),
+            x(true, 0, legacy, None),
+            x(true, 0, edge, Some((0, 3))),
+            x(false, 0, (true, true), None),
+            x(true, 0, edge, None),
+            x(true, 0, legacy, None),
             None,
         ]
     );

@@ -82,6 +82,7 @@ to stderr in the reference simulator and stdout in the second reference simulato
   `docs/decisions.md`).
 - `errexit`: the reference simulator exits 1 after any `error` severity report, the second reference simulator exits 0. Exit 1 is treated as 0
   when there is no `failure` or `fatal` event.
+- `wallclock`: ISO timestamps (`2026-10-23T08:16:29`) in the output are replaced by a placeholder, for tests that print the time of day and would differ when two runs straddle a second. Always on in `external.py` (#567); off elsewhere. Nothing else is masked.
 - `time`, `stderr`: extra, off by default.
 
 ## Plugging yavs in

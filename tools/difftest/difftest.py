@@ -233,7 +233,12 @@ def normalise(rc, out, err, yavs=False):
     return ["exit\t%d" % rc] + diags + outl
 
 
+WALLCLOCK = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?")
+
+
 def mask(lines, ignore):
+    if "wallclock" in ignore:  # time-of-day text (ISO timestamps) differs when two runs straddle a second
+        lines = [WALLCLOCK.sub("<wallclock>", l) for l in lines]
     if "errexit" in ignore and lines[0] == "exit\t1" and not any(
             l.startswith(("diag\tfailure\t", "diag\tfatal\t")) for l in lines):
         lines = ["exit\t0"] + lines[1:]  # sim1 exits 1 after `error` severity reports, sim2 0
@@ -349,7 +354,7 @@ def main():
     ap.add_argument("--threads", type=lambda s: [1] + [int(x) for x in s.split(",") if x and int(x) != 1],
                     default=[1], help="candidate thread counts to compare, e.g. 4 (runs 1 and 4); needs {threads} in the template")
     ap.add_argument("--shuffle", default="", help="seed passed to the candidate as {shuffle}/{shuffle_flag}")
-    ap.add_argument("--ignore", default=None, help="comma list of: delta,path,fatalmsg,order,errexit,time,stderr (default depends on candidate)")
+    ap.add_argument("--ignore", default=None, help="comma list of: delta,path,fatalmsg,order,errexit,time,stderr,wallclock (default depends on candidate)")
     ap.add_argument("--corpus", type=Path, default=CORPUS)
     ap.add_argument("--no-sandbox", action="store_true", help="skip systemd-run (debugging only)")
     ap.add_argument("--json", type=Path, help="write one JSON result per test (stage, message) to this file")

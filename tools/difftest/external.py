@@ -321,7 +321,7 @@ def one(t, args):
     if [g[0] == "exit\t0" for g in got] != [r[0] == "exit\t0" for r in ref]:
         cls = "outcome"  # one passes a run that the other fails
     else:
-        cls = compare(ref, got, default_ignore.split(","))
+        cls = compare(ref, got, default_ignore.split(",") + ["wallclock"])  # the suites print the time of day (std.env tests)
     res["oracle"] = meets(t, runs, True)  # the pass lists also need the suite's own verdict
     msg = "" if cls == "pass" else "\n".join(f"ref: {a}\nyavs: {b}" for r, g in zip(ref, got) for a, b in zip(r + [""] * 99, g) if a != b)[:3000]
     return {**res, "class": cls, "msg": msg}

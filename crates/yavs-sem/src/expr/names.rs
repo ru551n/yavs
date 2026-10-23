@@ -2794,6 +2794,20 @@ impl Db {
         }
     }
 
+    /// Staticness of the constraint a value is held to: a scalar range's, or a constrained
+    /// array's index ranges (a value's fold must not skip the run-time check against a
+    /// subtype whose bounds are known only at elaboration, 5.3.2.2, 9.3.3.2).
+    pub(crate) fn constraint_staticness(&self, st: SubtypeId) -> Staticness {
+        if matches!(
+            self.subtypes[st].constraint,
+            crate::types::Constraint::Array { dims: Some(_), .. }
+        ) && !self.array_locally_static(st)
+        {
+            return Staticness::Globally;
+        }
+        self.subtype_staticness(st)
+    }
+
     /// An array subtype whose index ranges are all locally static (9.4.2).
     fn array_locally_static(&self, st: SubtypeId) -> bool {
         let crate::types::Constraint::Array {

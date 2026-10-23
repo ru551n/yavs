@@ -51,6 +51,8 @@ const PASS: &[&str] = &[
     "composite/alias_constant",
     "composite/record_aggregate_target",
     "composite/case_slice_choice",
+    "composite/record_aggregate_field_length",
+    "composite/record_aggregate_field_range",
     "composite/aggregate_target_logic_fields",
     "composite/aggregate_target_matrix",
     "composite/aggregate_target_matrix_cover",

@@ -1465,7 +1465,7 @@ fn record_agg(
         for (st, group) in groups {
             match sub_value(db, r, st, &a.value) {
                 Ok(v) => {
-                    stat = stat.min(db.exprs[v].stat);
+                    stat = stat.min(db.exprs[v].stat).min(db.constraint_staticness(st));
                     for &i in &group {
                         values[i as usize] = db.value(v).cloned();
                     }

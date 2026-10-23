@@ -48,7 +48,7 @@ own flags) and sim2 (`--std=93c --ieee=synopsys -fexplicit`).
 |---|---|---|---|
 | L1 | `ieee.std_logic_vector` | a type of its own (`array (natural range <>) of std_logic`), not a subtype of `std_ulogic_vector`; resolution is per element | `lib/ieee/1993/std_logic_1164` |
 | L2 | `std_logic_1164` content | no `to_string`/`to_hstring`/`to_ostring`, no `read`/`write`/`hread` (those are in `std_logic_textio`), no `??`, no matching operators, no shifts, no `to_01` for unresolved vector types | vendored text |
-| L3 | `numeric_std`, `numeric_bit` | IEEE 1076.3-1997 text (`unsigned`/`signed` are arrays of `std_logic` / `bit` as types of their own); no `resize` of mixed forms, no `to_01` forms of 2008, no `maximum`/`minimum`/`?=`/`to_string` | vendored text |
+| L3 | `numeric_std`, `numeric_bit` | the IEEE 1076.3 function set (`unsigned`/`signed` are arrays of `std_logic` / `bit` as types of their own); none of the 2008 additions (`resize` with a size model, `maximum`/`minimum`, `?=`, `to_string`, read/write, scalar operand forms, `to_x01`) | derived from the Apache-2.0 2008 files (`numeric93()` in `tools/derive_libs.py`, #650); the 1995 text is not shipped (restrictive notice) |
 | L4 | `numeric_std_unsigned`, `numeric_bit_unsigned`, `fixed_pkg`, `float_pkg`, `fixed_float_types`, the two contexts, `std.env` | do not exist | not shipped in `lib/*/1993` |
 | L5 | `std_logic_textio` | the Synopsys package (`read`/`write`/`hread`/`oread`/`hwrite` on `std_logic_vector` and `std_ulogic_vector`); in 2008 it is aliases into `std_logic_1164` | vendored (Synopsys text) |
 | L6 | `math_real`, `math_complex`, `std_logic_arith`, `std_logic_unsigned`, `std_logic_signed`, `std_logic_misc`, VITAL 2000 | the same texts as in the 2008 tree; `std_logic_misc` is the 1993 text (with the `Drive`/`Sense` overloads on `std_logic_vector` that the 2008 text comments out) | copies |
@@ -56,11 +56,16 @@ own flags) and sim2 (`--std=93c --ieee=synopsys -fexplicit`).
 | L8 | `std.textio` | no `JUSTIFY`, `TEE`, `SREAD`, `BREAD`/`OREAD`/`HREAD` (and their aliases) on `bit_vector`, `SWRITE`/`BWRITE`/`OWRITE`/`HWRITE`, no `WRITE (real, format)` | `lib/std/1993/textio.vhdl` derived |
 | L9 | Implicit predefined operations | none of: `MINIMUM`/`MAXIMUM`, `TO_STRING` (and the `TO_*STRING` aliases), `??`, `?=` and the other matching operators, reduction operators and array-scalar logical operators (`bv and '1'`), `RISING_EDGE`/`FALLING_EDGE` for `bit`/`boolean`, file `FLUSH`. A 93 design that declares its own `to_string`, `maximum` or `minimum` must not meet a second visible homograph | `since: V2008` on those implicit specs (`implicit.rs`) |
 
-Provenance and licences are in `lib/SOURCES.md` ("1993 packages"). The IEEE packages are taken the
-same way the VITAL ones were: unmodified text from the reference simulators' library trees, with
-the IEEE headers; `std_logic_1164` carries the IEEE P1076 WG Apache-2.0 header, `numeric_std` and
-`numeric_bit` the 1995 IEEE notice. The two `std` files are derived from the VASG sources by
-deleting what 2008 added (`tools/derive_libs.py`), like `std/2008` from 2019.
+Provenance and licences are in `lib/SOURCES.md` ("1993 packages"). `std_logic_1164`, `math_real`
+and `math_complex` are the unmodified IEEE P1076 WG Apache-2.0 texts of the 1993 era; the Synopsys
+and VITAL packages are taken the way the 2008 tree has them. The two `std` files and `numeric_std`/
+`numeric_bit` are derived from the VASG sources (`tools/derive_libs.py`): the `std` files by
+deleting what 2008 added, like `std/2008` from 2019; the numeric packages by giving `unsigned`/
+`signed` the 1076.3 types and deleting what 2008 added, with a few small additions (a `maximum`/
+`minimum` of `integer`, `to_01` on `std_ulogic_vector`, `std_match` of `std_logic_vector`, the edge
+functions of `bit`), all listed in `lib/SOURCES.md`. The 1995 IEEE 1076.3 text is not shipped: its
+notice forbids sale or distribution for profit (#650, user 2026-10-23). A random testbench over all
+operators gives the same results with the derived and the 1995 text.
 
 ### 3.2 Language
 
@@ -122,5 +127,5 @@ refuse (fail early) or, as implemented, elaborate with the newest libraries.
 
 ## 6. Results
 
-See `docs/STATUS.md` "VHDL-1993 mode": `grlib-1993` 453 of 454, `vests-1993` 1921 of 1939 (the failures are bugs that also exist at
+See `docs/STATUS.md` "VHDL-1993 mode": `grlib-1993` 454 of 454, `vests-1993` 1921 of 1939 (the failures are bugs that also exist at
 2008, #639 to #646), `grlib_leon3mp` runs unmodified.

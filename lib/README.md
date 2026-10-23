@@ -27,10 +27,8 @@ The six IEEE 1076.4 VITAL package files (`ieee/*/vital_*`, VITAL 2000) are the e
 copyright, no explicit licence grant, redistributed unmodified as GHDL and NVC do
 (`LICENSE-IEEE-VITAL`, origin in `SOURCES.md`).
 
-The four 1993 `numeric_std` and `numeric_bit` files (`ieee/1993/numeric_*`, IEEE 1076.3 of 1995)
-keep their IEEE notice ("may be distributed without change ... may not be sold or distributed for
-profit") and are redistributed unmodified (`LICENSE-IEEE-1993`, origin in `SOURCES.md`). The
-rest of this section is about everything else.
+The four 1993 `numeric_std` and `numeric_bit` files (`ieee/1993/numeric_*`) are derived from the
+Apache-2.0 2008 files by `tools/derive_libs.py` (edits in `SOURCES.md`).
 
 All files come from the IEEE VASG repository (<https://opensource.ieee.org/vasg/Packages>), licensed
 Apache-2.0 ("Copyright 2019 IEEE P1076 WG Authors"), except two small context files written for yavs

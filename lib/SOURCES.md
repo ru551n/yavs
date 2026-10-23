@@ -72,12 +72,12 @@ in `ieee` with no flag.
 
 ## 1993 packages (not from VASG; #629)
 
-`lib/ieee/1993/` holds the 1993-era unit files, all vendored unmodified (SHA256SUMS):
+`lib/ieee/1993/` holds the 1993-era unit files: vendored unmodified (SHA256SUMS), except `numeric_std` and `numeric_bit`, which are derived from the Apache-2.0 2008 files (below):
 
 | Files | Source | Licence |
 |---|---|---|
 | `std_logic_1164{,-body}.vhdl` | `libraries/ieee/` of a GHDL checkout (`8350ea4f5`, nightly 2026-10): the IEEE P1076 WG text without the 2008 additions (`STD_LOGIC_VECTOR` is an array type of its own); the `--!V87` marker comments in it are part of the text | Apache-2.0 (header "Copyright 2019 IEEE P1076 WG Authors") |
-| `numeric_std{,-body}.vhdl`, `numeric_bit{,-body}.vhdl` | same directory: IEEE 1076.3, version 2.4 of 12 April 1995 | IEEE copyright, no free licence: "may be distributed without change ... may not be sold or distributed for profit" (header kept), `LICENSE-IEEE-1993`; redistributed as GHDL does, taken as the published text from that one checkout (no second independent copy was available to cross-check). **The user has not confirmed this licence** (issue #650). |
+| `numeric_std{,-body}.vhdl`, `numeric_bit{,-body}.vhdl` | derived by `tools/derive_libs.py` from `ieee/2008` (VASG, see "1993 NUMERIC_STD and NUMERIC_BIT" below); replaces the 1995 IEEE 1076.3 texts, whose notice ("may not be sold or distributed for profit") is not free (#650) | Apache-2.0 (IEEE P1076 WG header kept) |
 | `math_real{,-body}.vhdl`, `math_complex{,-body}.vhdl` | the same bytes as `ieee/2008` (the same checkout's copies equal them) | Apache-2.0 |
 | `std_logic_textio{,-body}.vhdl` | `libraries/synopsys/` of the same checkout (Synopsys package, 1990-1992 notice), one file upstream cut at the line before `package body` (so the declaration file followed by the `-body` file is the upstream file byte for byte); the 2008 tree has only aliases into `std_logic_1164` | Synopsys notice, `LICENSE-SYNOPSYS` |
 | `std_logic_misc{,-body}.vhdl` | `libraries/synopsys/` (the unmarked 1993 text, with the `Drive`/`Sense` overloads on `STD_LOGIC_VECTOR` that the 2008 tree comments out) | Synopsys notice |
@@ -93,6 +93,35 @@ implicit-operation comments); `textio` loses `JUSTIFY`, `TEE`, `SREAD`, `STRING_
 `STRING_WRITE`, `BWRITE`, `BINARY_WRITE`, `OWRITE`, `OCTAL_WRITE`, `HWRITE`, `HEX_WRITE` and `WRITE`
 of `REAL` with a format (24 lines). Everything else is the 2008 text (INTEGER 32 bit, 64-bit TIME).
 `tools/update-ieee-libs.sh` keeps `ieee/1993` and checks `std/1993`.
+
+## 1993 NUMERIC_STD and NUMERIC_BIT (derived; #650)
+
+`lib/ieee/1993/numeric_{std,bit}{,-body}.vhdl` are generated from the VASG `ieee/numeric_std` and
+`numeric_bit` (and their bodies) by `numeric93()` in `tools/derive_libs.py`, by deletion and a few
+small additions; the Apache-2.0 header is kept and a note naming the derivation is added before
+the package. Nothing comes from the 1995 IEEE 1076.3 text (restrictive notice) or from another
+simulator's library. The edits, all of them:
+
+| Edit | Package | Why |
+|---|---|---|
+| `UNRESOLVED_UNSIGNED`, `UNRESOLVED_SIGNED`, the aliases `U_UNSIGNED`, `U_SIGNED` and the `(resolved)` subtypes are replaced by `type UNSIGNED/SIGNED is array (NATURAL range <>) of STD_LOGIC`; every `UNRESOLVED_` prefix in declaration and body is removed | std (`numeric_bit` has the types already) | the 1076.3 types: `STD_LOGIC_VECTOR` is a type of its own in 1993, `UNSIGNED` an array of `STD_LOGIC` |
+| `use STD.TEXTIO.all;` removed | both | only the deleted read/write procedures used it |
+| Deleted (declaration, body, the `-- Id:` line and the comments of each; 112 resp. 104 subprograms): `+`/`-` with a `STD_ULOGIC`/`BIT` operand (Ids A.3L/R, A.4L/R, A.9L/R, A.10L/R), `find_leftmost`/`find_rightmost` (A.39 to A.42), `MINIMUM`, `MAXIMUM` and the matching operators `?=` `?/=` `?<` `?<=` `?>` `?>=` (C.37 to C.84), the logical operators with a scalar operand and the reductions (L.15 to L.50), `"sla"`, `"sra"` (S.17 to S.20), `RESIZE`/`TO_UNSIGNED`/`TO_SIGNED` with a `SIZE_RES` parameter (no Id) and, in `numeric_std` only, `TO_X01`, `TO_X01Z`, `TO_UX01`, `IS_X` (T.3 to T.10) | both | added by 1076-2008; the function set left equals that of 1076.3 |
+| Deleted: the whole "string conversion and write operations" section (the `TO_STRING` aliases, `TO_OSTRING`, `TO_HSTRING`, `READ`, `WRITE`, `OREAD`, `OWRITE`, `HREAD`, `HWRITE` and their aliases) | both | 2008 additions that need `std.textio` and `to_string` |
+| Added to the body: `MAXIMUM` and `MINIMUM` of `INTEGER` | both | the 2008 body calls the predefined ones, which VHDL-1993 lacks |
+| Added to the body: `TO_01_VECTOR` (the algorithm of `TO_01` for `STD_ULOGIC_VECTOR` in the 2008 `std_logic_1164` body), called by the two `TO_01` bodies instead of that `TO_01` | std | 1993 `std_logic_1164` has no `TO_01` |
+| Added: `STD_MATCH (L, R : STD_LOGIC_VECTOR)` (Id M.4), declaration and body copied from M.5 with the type changed | std | `STD_LOGIC_VECTOR` and `STD_ULOGIC_VECTOR` are distinct types in 1993, 1076.3 has both |
+| Changed: the aliases `RISING_EDGE`/`FALLING_EDGE` of the 2008 `STD.STANDARD` functions become declarations `function RISING_EDGE (signal S : BIT) return BOOLEAN;` (and `FALLING_EDGE`), with bodies `S'EVENT and S = '1'` (`'0'`) at the end of the package body | bit | VHDL-1993 `STANDARD` has no edge functions |
+
+Not changed: the bodies of all kept subprograms (so their warnings, null-array and metavalue
+behaviour are those of the 2008 bodies), `TO_01`'s `XMAP` parameter is `STD_ULOGIC` (a supertype of
+`STD_LOGIC`, so every 1076.3 call is valid), the old warning texts are not kept (for example
+`"mod": Modulus Truncated`, capital M, in `numeric_bit`).
+
+Checked against the 1995 texts (kept out of the repository): a random testbench with null arrays and
+all nine `std_logic` values (every operator, comparison, shift, rotate, resize, conversion,
+`TO_01`, `STD_MATCH`) prints the same lines with both, apart from that warning text; the GRLIB and
+VESTs 1993 corpora and the `leon3mp` test are unchanged (`docs/STATUS.md`).
 
 ## Which revision is which
 

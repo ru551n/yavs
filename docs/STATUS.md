@@ -4983,8 +4983,8 @@ sim1; they are kept as history, not as targets.
 
 ### VHDL-1993 mode, 2026-10-23 (`--std=93`; #629; design `docs/design/vhdl-93.md`)
 
-`--std=93` (alias `1993`) selects the 1993 language and the 1993 packages (`lib/std/1993`, `lib/ieee/1993`): `std_logic_vector` is a type of its own, the 1995 `numeric_std`
-and `numeric_bit`, the Synopsys `std_logic_textio`, no `env`, none of the 2008 predefined names (`to_string`, `maximum`, `integer_vector`, ...), the 2008 reserved words are
+`--std=93` (alias `1993`) selects the 1993 language and the 1993 packages (`lib/std/1993`, `lib/ieee/1993`): `std_logic_vector` is a type of its own, `numeric_std`
+and `numeric_bit` with the 1076.3 types (derived from the Apache-2.0 2008 files, #650: the 1995 IEEE texts are not shipped), the Synopsys `std_logic_textio`, no `env`, none of the 2008 predefined names (`to_string`, `maximum`, `integer_vector`, ...), the 2008 reserved words are
 identifiers, shared variables of any type are legal, `E0011` for the 2008 statements. Mixing follows the 2008/2019 rule (newest standard of the closure; a 93 file keeps its own
 parsing and gates). `--std=87` and `02` are not added. Not enforced: reading an `out` port and the other 2008 relaxations (`docs/design/vhdl-93.md` section 5).
 

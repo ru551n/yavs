@@ -94,11 +94,10 @@ jobs:
           mkdir -p "dist/$name"
           # The built-in std/ieee sources are Apache-2.0 (lib/LICENSE, lib/SOURCES.md); the VITAL
           # packages are IEEE-copyrighted without a grant (lib/LICENSE-IEEE-VITAL); the Synopsys packages
-          # keep their notice (lib/LICENSE-SYNOPSYS); the 1993 numeric_std and numeric_bit keep the
-          # IEEE 1076.3 notice (lib/LICENSE-IEEE-1993).
+          # keep their notice (lib/LICENSE-SYNOPSYS).
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/$name/"
           cp lib/LICENSE "dist/$name/LICENSE-IEEE"
-          cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS lib/LICENSE-IEEE-1993 "dist/$name/"
+          cp lib/LICENSE-IEEE-VITAL lib/LICENSE-SYNOPSYS "dist/$name/"
           # yavs-gui is EUPL-1.2 (libsurfer); this licence applies to the yavs-gui binary only
           # (README.md "License").
           cp gui/LICENSE "dist/$name/LICENSE-EUPL-1.2-yavs-gui"

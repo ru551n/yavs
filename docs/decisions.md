@@ -865,10 +865,10 @@ difference, is `docs/design/vhdl-93.md`.
   `Vhdl1993` (it was 2008); implicit operations 2008 added (`MINIMUM`/`MAXIMUM`, `TO_STRING`, matching operators, `??`,
   reductions, array-scalar logical operators, `RISING_EDGE` of `bit`/`boolean`, file `FLUSH`) are `since: Vhdl2008`, so a 93 design
   may declare its own `to_string` or `maximum`.
-- **Libraries**: `lib/std/1993` (derived from 2008 by deletion) and `lib/ieee/1993` (vendored whole: `std_logic_1164` with its own
-  `std_logic_vector` type, the 1995 `numeric_std`/`numeric_bit`, the Synopsys `std_logic_textio`, the 1993 `std_logic_misc`, the
-  unchanged math, Synopsys and VITAL packages). Licences in `lib/SOURCES.md`; the 1995 IEEE 1076.3 texts carry a notice that
-  forbids sale or distribution for profit (`lib/LICENSE-IEEE-1993`): shipped like the VITAL packages until the user decides (#650).
+- **Libraries**: `lib/std/1993` (derived from 2008 by deletion) and `lib/ieee/1993` (vendored: `std_logic_1164` with its own
+  `std_logic_vector` type, the Synopsys `std_logic_textio`, the 1993 `std_logic_misc`, the unchanged math, Synopsys and VITAL
+  packages; `numeric_std`/`numeric_bit` are derived from the Apache-2.0 2008 files, user 2026-10-23, #650: the 1995 IEEE 1076.3
+  texts forbid sale or distribution for profit and are not shipped). Licences and every edit in `lib/SOURCES.md`.
 - **Mixing** follows the 2008/2019 rule: design revision = the newest standard in the closure, each file keeps its own revision for
   parsing and gates. A 93 file in a 2008 design sees the 2008 packages (so overloads on both vector types are homographs there) and
   does not see what 2008 added (`E1007` for `to_string`, a 2008-only unit). The reference simulators refuse to mix standards;

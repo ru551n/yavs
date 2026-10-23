@@ -5881,6 +5881,18 @@ to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 
   makes the waveform from the values and steps the instructions (`Host::drive_bit_replay`). The call is `quiet`: the live
   registers are written back only if it fails. `rtl_ff` 10.16 G to 9.06 G instructions, `rtl_chain` 3.48 G to 3.25 G
   (interpreter 3.20 G). Test: `crates/yavs/tests/compiled_drives.rs` (every shape of assignment, three tier settings).
+- **Frame-mode code asks the runtime for an address of unknown space, once** (L, `Gen::host`): the inline chain (the
+  object table entry, then the frame, the temporary area and the instance data, a branch site and 10 to 25 LLVM
+  instructions each) was most of the code of a process (`LayoutOf` and `Load` were 19 and 12 percent of the LLVM
+  instructions of the wide-vector design) and ran through branch sites the predictor had never seen; `yavs_rt_host`
+  does the same lookup (`Mem::find`) in one hot function. Native frames keep the chain (the hot loops of library code).
+  `--tier=auto`, cycles, minimum of 7 interleaved runs on core 12: `fletcher_bufferreader` 16.7 G to 15.6 G,
+  `fletcher_bufferwriter_512` 48.0 G to 43.6 G, `neorv32_single_min` 24.5 G to 23.7 G; instructions +0 to +2.7 percent,
+  LLVM instructions of the wide-vector design 1.15 M to 0.83 M (compile time follows). `--tier=llvm` code of a
+  process is generated the same way, so its object is smaller too.
+- **The kept-layout test of a long descriptor is one `memcmp`** (L, `LayoutOf` with a frame slot, descriptors over 32 bytes):
+  a record of arrays has descriptors of 100+ bytes, and the word-by-word compare was 82 LLVM instructions per
+  `LayoutOf` (1265 of them in the wide-vector design). `fletcher_bufferreader` another -5 percent cycles.
 
 ## Search loops in compiled code: one shared scan (yavs-interp `scan.rs`, yavs-llvm, #578, 2026-10-23)
 

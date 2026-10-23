@@ -5311,17 +5311,32 @@ impl Gen {
                             false,
                             slow,
                         );
-                        let mut diff = self.c64(0);
-                        for k in 0..i64::from(dsz / 8) {
-                            let x = LLVMBuildXor(
+                        if dsz <= 32 {
+                            let mut diff = self.c64(0);
+                            for k in 0..i64::from(dsz / 8) {
+                                let x = LLVMBuildXor(
+                                    self.b,
+                                    self.load(self.i64, self.gep(pd, self.c64(8 * k))),
+                                    self.load(self.i64, self.gep(base, self.c64(8 + 8 * k))),
+                                    c"".as_ptr(),
+                                );
+                                diff = self.or(diff, x);
+                            }
+                            self.guard(&c, self.icmp(IP::LLVMIntEQ, diff, self.c64(0)), slow);
+                        } else {
+                            // A long descriptor (a record of arrays): one call, not a word each.
+                            let mut args =
+                                [pd, self.gep(base, self.c64(8)), self.c64(i64::from(dsz))];
+                            let eq = LLVMBuildCall2(
                                 self.b,
-                                self.load(self.i64, self.gep(pd, self.c64(8 * k))),
-                                self.load(self.i64, self.gep(base, self.c64(8 + 8 * k))),
+                                self.memeq_ty,
+                                self.memeq,
+                                args.as_mut_ptr(),
+                                3,
                                 c"".as_ptr(),
                             );
-                            diff = self.or(diff, x);
+                            self.guard(&c, self.icmp(IP::LLVMIntNE, eq, self.c64(0)), slow);
                         }
-                        self.guard(&c, self.icmp(IP::LLVMIntEQ, diff, self.c64(0)), slow);
                         let hi = LLVMBuildShl(self.b, self.own_hi(&c), self.c64(32), c"".as_ptr());
                         let words = self.c64(i64::from(at) + 8 + i64::from(dsz));
                         self.st(&c, dst, LLVMBuildOr(self.b, hi, words, c"".as_ptr()));
@@ -8526,17 +8541,21 @@ impl Gen {
                 }
                 _ => (Vec::new(), std::ptr::null_mut(), std::ptr::null_mut()),
             };
-            // Other memory: first the object's entry of `Mem::objs` (the objects found before, in
-            // a process kept between activations: its heap variables; heap objects a `Deref`
-            // found), then in a process the temporary area (the results natives leave there),
-            // without a call; else `yavs_rt_host` (`Mem::find`, then the interpreter is asked
-            // for the object). The temporary area and the instance data are reached that way
-            // unless the generator knows the space (above): an inline test of the three view
-            // spaces cost 30 LLVM instructions per access of unknown space and codegen time;
-            // the object's entry is one load and compare (#432, #510).
+            // Other memory. Frame-mode code asks `yavs_rt_host` at once (`Mem::find`: the object's
+            // entry of `Mem::objs`, the temporary area, the instance data, the frame, then the
+            // interpreter): the same lookup once in the runtime instead of a chain of tests at
+            // every access, which was most of the code of a process and a branch site for each test
+            // (compiled clocked RTL -5 to -10 percent cycles, #634). A native frame keeps the
+            // chain inline (first the object's entry, then the temporary area and, reading, the
+            // instance data, then `yavs_rt_host`): its accesses are the hot loops of library code
+            // (#432, #510).
             let mut found = Vec::new();
             let merge_at = self.block(c);
-            {
+            // Frame-mode code asks `yavs_rt_host` (the same lookup, once, in the runtime): the inline
+            // chain of four tests per access was most of the code of a process and branch sites
+            // the front end paid for (#634); native frames keep it.
+            let direct = c.nat.is_none();
+            if !direct {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
@@ -8593,7 +8612,9 @@ impl Gen {
             }
             let mut args = [c.env, c.mem, a, extra, n, self.c32(u32::from(write))];
             // The lookup in the objects `Mem` keeps failed: the rare case.
-            c.cold.borrow_mut().push(LLVMGetInsertBlock(self.b));
+            if !direct {
+                c.cold.borrow_mut().push(LLVMGetInsertBlock(self.b));
+            }
             let phi = LLVMBuildCall2(
                 self.b,
                 self.host_ty,
@@ -8602,9 +8623,13 @@ impl Gen {
                 6,
                 c"".as_ptr(),
             );
-            self.attr(phi, true, "cold", 0);
+            if !direct {
+                self.attr(phi, true, "cold", 0);
+            }
             self.guard(c, LLVMBuildIsNotNull(self.b, phi, c"".as_ptr()), slow);
-            c.cold.borrow_mut().push(LLVMGetInsertBlock(self.b));
+            if !direct {
+                c.cold.borrow_mut().push(LLVMGetInsertBlock(self.b));
+            }
             let mut p = phi;
             {
                 let here = LLVMGetInsertBlock(self.b);

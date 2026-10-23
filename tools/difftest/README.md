@@ -155,4 +155,4 @@ only, they carry its time format). A run of the
 second suite that exits 1 after `error` reports only counts as passing (the `errexit` rule).
 `external-sim1.pass` and `external-sim2.pass` list the tests that pass both ways; CI (`corpus`
 job) runs `--oracle --check` on them, so a regression fails the build. Regenerate them with
-`--write-pass` from a differential run and keep only names that also pass `--oracle`.
+`--oracle --write-pass FILE` on a release build (the suite's own verdict; a differential run shows which of the tests also match the reference output, a few do not).

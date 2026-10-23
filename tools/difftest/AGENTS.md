@@ -39,7 +39,7 @@ themselves are described in `tests/corpus/AGENTS.md`.
 | yavs reports in the reference simulator's format on stdout; runtime errors are diagnostics on stderr (`error[E3xxx]`, `= note: at T, delta D`) | One canonical form | README; `docs/cli-contract.md` 5 |
 | Every run `timeout 300 systemd-run --user --scope -p MemoryMax=2G`, at most 8 at once; work dirs under `~/.cache/yavs-difftest/run-<pid>` (unique per process; `DIFFTEST_CACHE` overrides) | Root rule 15 | README |
 | `--bless` refuses an `.expected` whose exit status differs from the header's `exit=` | A broken test cannot be blessed by accident | README "Test header" |
-| `external.py` compares per run with the classes `pass` < `order` < `fatalmsg` < `delta-path` < `output`, `outcome` when the pass/fail verdict differs; the pass lists hold tests passing both the comparison and the suite's own verdict, and CI checks only the latter | CI has no reference simulator; the classes rank causes | #354 |
+| `external.py` compares per run with the classes `pass` < `order` < `fatalmsg` < `delta-path` < `output`, `outcome` when the pass/fail verdict differs; the pass lists hold the tests that pass the suite's own verdict (`--oracle --write-pass`; some differ from the reference output in the comparison), and CI checks only that | CI has no reference simulator; the classes rank causes | #354 |
 
 Decisions about the harness go in this section and README in the same commit (root `AGENTS.md`
 rule 24).

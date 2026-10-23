@@ -1098,6 +1098,29 @@ impl Elab<'_> {
         Ok(())
     }
 
+    /// The implicit GUARD signal of a guarded block (LRM 11.2), driven by the block's guard
+    /// process. It starts as the value of the guard condition (14.7.3.3, #464).
+    fn guard_signal(&mut self, s: ScopeId, g: yavs_sem::DeclId) -> R<()> {
+        let db: &Db = self.db;
+        let decl = &db.decls[g];
+        let DeclKind::Object(o) = &decl.kind else {
+            return Err(Box::new(ice(decl.span, "GUARD is not an object")));
+        };
+        self.m.sig_init = true;
+        let init = o.default.map(|e| self.m.eval(db, e, Some(s)));
+        self.m.sig_init = false;
+        let init = init.transpose()?;
+        let Some(shape) = self
+            .m
+            .shape_init(db, o.subtype, init.as_ref(), Some(s), decl.span)?
+        else {
+            return Err(Box::new(ice(decl.span, "GUARD subtype")));
+        };
+        self.m
+            .add_obj(db, s, g, ObjKind::Signal, shape, init.as_ref(), decl.span)?;
+        Ok(())
+    }
+
     /// Signal declarations of a declarative region (constants are evaluated on demand).
     fn decls(&mut self, s: ScopeId, region: yavs_sem::ScopeId) -> R<()> {
         if self.db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process {
@@ -1200,12 +1223,7 @@ impl Elab<'_> {
                 (ObjClass::Signal, ObjRole::Guard) => {
                     // The implicit GUARD signal of a guarded block (LRM 11.2), driven by
                     // the block's guard process.
-                    let span = decl.span;
-                    let Some(shape) = self.m.shape(db, o.subtype, Some(s), span)? else {
-                        return Err(Box::new(ice(span, "GUARD subtype")));
-                    };
-                    self.m
-                        .add_obj(self.db, s, d, ObjKind::Signal, shape, None, span)?;
+                    self.guard_signal(s, d)?;
                 }
                 (ObjClass::Signal, ObjRole::ImplicitSignal) => {
                     self.implicit_signal(s, d)?;
@@ -1803,15 +1821,7 @@ impl Elab<'_> {
                 self.decls(b, bscope)?;
                 if let Some(g) = guard {
                     if self.m.signal(b, g).is_none() {
-                        let gspan = self.db.decls[g].span;
-                        let DeclKind::Object(o) = &self.db.decls[g].kind else {
-                            return Err(Box::new(ice(span, "GUARD is not an object")));
-                        };
-                        let Some(shape) = self.m.shape(self.db, o.subtype, Some(b), gspan)? else {
-                            return Err(Box::new(ice(span, "GUARD subtype")));
-                        };
-                        self.m
-                            .add_obj(self.db, b, g, ObjKind::Signal, shape, None, gspan)?;
+                        self.guard_signal(b, g)?;
                     }
                     // The guard process `GUARD <= guard_expression` (LRM 11.2): its
                     // statement is the block statement; it drives GUARD.

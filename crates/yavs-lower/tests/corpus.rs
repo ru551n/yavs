@@ -109,6 +109,7 @@ const PASS: &[&str] = &[
     "delta/delta_chain",
     "delta/delta_order",
     "delta/event_attrs",
+    "delta/guard_initial_value",
     "delta/signal_update_order",
     "delta/skip_unchanged",
     "env/assert_clear_exit",

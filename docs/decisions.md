@@ -1436,8 +1436,11 @@ which tools/difftest parses.
   A guarded concurrent assignment tests the block's guard condition itself on the current
   values, not the GUARD signal, which updates a delta after the signals the condition reads
   (LRM 11.6; the references update GUARD in the cycle of the event); its sensitivity is the
-  condition's signals instead of GUARD (#373). A process reading GUARD still sees it a delta
-  late.
+  condition's signals instead of GUARD (#373). GUARD starts as the condition on the initial
+  values of its signals (`guard_signal` in yavs-elab, evaluated like a signal's initial value,
+  #464). A process reading GUARD still sees later changes a delta late (open, #464: the
+  references update it in the cycle of the event, which needs the kernel to evaluate the
+  condition in its update phase).
 - **Null waveform elements** (LRM 10.5.2.2, #352): a waveform with a `null` element is driven
   one transaction per element in order. The first has the assignment's delay mechanism, so it
   preempts as the whole waveform would; the rest are transport, which only appends after it

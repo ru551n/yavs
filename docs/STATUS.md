@@ -6007,3 +6007,11 @@ Corpus `sigassign/null_waveform` (reference output) and `sigassign/null_waveform
 (`ref=hand`: sim1 loses a value before a null and a null in the middle of a waveform, sim2 cannot
 run a null among elements; `tests/discrepancies/null-waveform-in-waveform`). Still `E2001`: null in
 record signals (blocked by #595), aggregate targets and signal parameters.
+
+## GUARD initial value (#464, 2026-10-23)
+
+The implicit GUARD signal starts as the guard condition on the initial values (`guard_signal` in
+`yavs-elab`), so a process reading it at time 0 sees the condition, not `false`. Corpus
+`delta/guard_initial_value`. Open (#464): GUARD still changes a delta after the condition's
+signals, where the references update it in the same cycle (needs a kernel update-phase
+evaluation of the condition).

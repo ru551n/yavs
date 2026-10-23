@@ -44,7 +44,7 @@ For comparison, over the rows that have a probe, the references run the probe (`
 | 007 | Sequential declaration regions | supported | ok | ok | ok | ok | editorial rule; only name hiding in nested regions probed |
 | 011 | Date and time functions | supported | ok | reject | ok | ok |  |
 | 012 | `'IMAGE` and `TO_STRING` for composite types | supported | ok/ok/ok/ok/ok (output differs) | reject | ok/ok/ok/reject/ok (output differs) | ok/ok/ok/ok/ok (output differs) | `'IMAGE` (type mark and object forms) and `TO_STRING` of arrays and records run (#360, L105); the references differ in quoting (catalogue `composite-image-quoting`). Cells list the five probes in order |
-| 014 | Composites of protected types | supported | reject | reject | reject | ok | each element is its own object; a record mixing protected and other elements is `E1905` (5.3.1, L102, #371); a variable port of such a composite is `E9999` (#370) |
+| 014 | Composites of protected types | supported | reject | reject | reject | ok | each element is its own object; a record mixing protected and other elements is `E1905` (5.3.1, L102, #371); a variable port of such a composite is `E1907` (not supported, #370) |
 | 014a | Access types to composites of protected types | supported | reject | reject | reject | ok | allocation and deallocation (#361) |
 | 015 | Report the calling path | supported | crash | reject | ok | crash | `get_call_path` |
 | 015a | Report the current file name | supported | ok | reject | ok | ok | `file_name`, `file_line` |

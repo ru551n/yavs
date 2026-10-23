@@ -1587,10 +1587,15 @@ impl Db {
                 && !matches!(self.types[t].kind, crate::types::TypeKind::Protected { .. })
                 && self.all_protected(t)
             {
-                return Err(self.unsupported(
-                    o.span,
-                    "a variable port of a composite of protected types",
-                    "S7",
+                return Err(self.error(
+                    yavs_diag::Diagnostic::error(
+                        crate::diag::PROTECTED_COMPOSITE_PORT,
+                        "a variable port of a composite of protected types is not supported",
+                    )
+                    .with_primary(o.span, "variable port")
+                    .with_help(
+                        "most reference simulators reject this form; declare the port with a protected type, or one port per object",
+                    ),
                 ));
             }
             if !matches!(

@@ -137,6 +137,7 @@ codes! {
     SHARED_NOT_PROTECTED = "E1904", "A shared variable must be of a protected type (LRM 6.4.2.4); `--relaxed` turns this into warning W1904.";
     PROTECTED_MISUSE = "E1905", "A protected type cannot be the type of a signal, port or file, and has no `=`. A 2019 record with a protected element has only protected elements (LRM 5.3.1).";
     PROTECTED_ITEM = "E1906", "This declaration is not allowed in a protected type declaration or body (LRM 5.6): the declaration holds method declarations, use clauses, attribute specifications and, in VHDL-2019, private variables and aliases of methods; the body holds no signals or shared variables.";
+    PROTECTED_COMPOSITE_PORT = "E1907", "A variable port of a composite (array or record) of protected types is not supported by yavs, and most reference simulators reject it too. Use a variable port of the protected type, one per object.";
     NEEDS_2019 = "E1910", "The construct needs VHDL-2019.";
     // Warnings
     W_CHANGED_MEANING = "W1008", "The construct means something different under the design's VHDL-2019 std/ieee than under VHDL-2008, for example `integer'high`.";

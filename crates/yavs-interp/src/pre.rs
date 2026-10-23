@@ -203,6 +203,17 @@ enum Known {
 /// Bit of `PosIndexLoadCmpBr::dim`: the op heads a search loop (see there).
 pub(crate) const SCAN: u8 = 0x80;
 
+/// `Inst::AddrOf` of a fixed object: the address as a constant.
+fn const_addr(dst: yavs_ir::Reg, space: u8, idx: u32, off: u32, pc: usize) -> Op {
+    match mk_addr(space, idx, u64::from(off)) {
+        Ok(v) => Op::Const {
+            dst: dst.0,
+            v: v as i64,
+        },
+        Err(_) => Op::Step(pc as u32),
+    }
+}
+
 /// One predecoded operation (`Code`). Registers are `u32` indices into the frame's
 /// registers, jump targets op indices. Widths are never `Width::Sig` (those go to `Step`).
 #[derive(Clone, Copy, Debug)]
@@ -763,6 +774,24 @@ pub(crate) enum Op {
     Const {
         dst: u32,
         v: i64,
+    },
+    /// `Inst::FCmp`.
+    FCmp {
+        op: yavs_ir::CmpOp,
+        dst: u32,
+        a: u32,
+        b: u32,
+    },
+    /// `Inst::AddrOf` of the frame, defined more than once in the function.
+    AddrFrame {
+        dst: u32,
+        off: u32,
+    },
+    /// `Inst::AddrOf` of a frame `depth` static links up, defined more than once.
+    AddrUp {
+        dst: u32,
+        depth: u8,
+        off: u32,
     },
     Deref {
         dst: u32,
@@ -3167,6 +3196,26 @@ impl Code {
                     size: size.0,
                 },
                 Inst::Const { dst, v } => Op::Const { dst: dst.0, v },
+                Inst::FCmp { op, dst, a, b } => Op::FCmp {
+                    op,
+                    dst: dst.0,
+                    a: a.0,
+                    b: b.0,
+                },
+                // The other spaces are numbers (an address the machine cannot make stays a
+                // step, which reports it).
+                Inst::AddrOf { dst, space, off } => match space {
+                    AddrSpace::Frame => Op::AddrFrame { dst: dst.0, off },
+                    AddrSpace::Up(depth) => Op::AddrUp {
+                        dst: dst.0,
+                        depth,
+                        off,
+                    },
+                    AddrSpace::Inst => const_addr(dst, INST, 0, off, pc),
+                    AddrSpace::Pkg(p) => const_addr(dst, PKG, p, off, pc),
+                    AddrSpace::Const(c) => const_addr(dst, CONST, c.0, off, pc),
+                    AddrSpace::Shared => const_addr(dst, SHARED, 0, off, pc),
+                },
                 Inst::ConstF { dst, v } => Op::Const {
                     dst: dst.0,
                     v: v.to_bits() as i64,

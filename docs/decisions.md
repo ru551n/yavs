@@ -4870,6 +4870,12 @@ window generator, hdl-modules) 18 to 25 percent of `run_ops`. Decisions:
   the chain of 1000 one-line processes (the wait loses its fusion) and 6 to 11 percent of cycles with `--tier=auto` and
   `--tier=llvm` on the shift-register designs. The gain thresholds of the plan are unchanged: lowering them
   (`gain >= roots / 4 + 1`) costs 4 percent of instructions on `poc_arith_addw` (more roots than computations dropped).
+- **`AddrOf` and `FCmp` are ops of the fast loop** (`Op::AddrFrame`, `Op::AddrUp`, `Op::FCmp`; the addresses of the other
+  spaces are `Op::Const`): a register that is defined more than once is not preloaded, and an address up the static chain
+  never is, so a nested procedure's reads of the variables of its enclosing subprogram, and every comparison of reals,
+  were generic steps (a copy of the instruction, `step_out`, the big `match`): 4.4 percent of the operations of
+  `sc5_fifo_repack` (its random-number procedure) and 1.1 percent for the reals. An address the machine cannot make
+  stays a step, which reports it.
 - Tried and not done, each measured on the realistic set (see `STATUS.md` "Interpreter round 14"): a copy of the loop
   for functions of simple ops (`LITE`, 63 arms excluded by const guards; the entry of an activation 105 to 70 instructions)
   gains 5 percent on a design of 4000 near-idle processes and nothing on any realistic design, because their processes use

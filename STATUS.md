@@ -5727,6 +5727,10 @@ size and cache misses, #532); the exits left there are `LayoutOf` of records wit
 clock the process was not resumed for (7 M in `neorv32_single_min`), `WaitOn` of waits on several signals, `Drive` of
 more than 64 elements.
 
+What is left in `poc_arith_addw` (89 M `signal` calls: vector `SigRead` and `Cat` of generic widths, whose lengths are
+instance constants the generator does not know) and the shape of the rest of the gap to the interpreter on clocked RTL
+(code size and cache misses, not exits) are in the issue comments of #565 and #532.
+
 ## Interpreter round 14: entry of the dispatch loop, memoised signal references (#520, 2026-10-23)
 
 (Written during the round; the numbers are the final ones at the end of the section.)
@@ -5738,7 +5742,5 @@ more than 64 elements.
 
 - Package data and the rare slot paths are out of the inline memory paths of `run_ops` (`docs/decisions.md` "Interpreter
   round 14"): 17 to 11 address pairs spilled on every entry of the loop.
-
-What is left in `poc_arith_addw` (89 M `signal` calls: vector `SigRead` and `Cat` of generic widths, whose lengths are
-instance constants the generator does not know) and the shape of the rest of the gap to the interpreter on clocked RTL
-(code size and cache misses, not exits) are in the issue comments of #565 and #532.
+- `AddrOf` (frame, up the static chain, fixed spaces) and `FCmp` are ops of the fast loop instead of generic steps:
+  `sc5_fifo_repack` -4.5 percent of instructions.

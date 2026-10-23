@@ -5773,6 +5773,30 @@ impl Machine {
                     self.regs[dst as usize] = v as u64;
                     k += 1;
                 }
+                Op::FCmp { op, dst, a, b } => {
+                    let (x, y) = (
+                        f64::from_bits(self.regs[a as usize]),
+                        f64::from_bits(self.regs[b as usize]),
+                    );
+                    self.regs[dst as usize] =
+                        u64::from(x.partial_cmp(&y).is_some_and(|o| cmp(op, o)));
+                    k += 1;
+                }
+                Op::AddrFrame { dst, off } => {
+                    self.regs[dst as usize] = t!(mk_addr(FRAME, top as u32, off.into()));
+                    k += 1;
+                }
+                Op::AddrUp { dst, depth, off } => {
+                    let mut i = top;
+                    for _ in 0..depth {
+                        i = t!(self.frames[i]
+                            .link
+                            .ok_or_else(|| ice_s!("static link missing")))
+                            as usize;
+                    }
+                    self.regs[dst as usize] = t!(mk_addr(FRAME, i as u32, off.into()));
+                    k += 1;
+                }
                 Op::Copy { dst, src, bytes } => {
                     t!(self.copy_mem(
                         self.regs[dst as usize],

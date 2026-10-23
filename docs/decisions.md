@@ -6043,21 +6043,23 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   counters, under `--tier=llvm`, with `YAVS_NO_IROPT`, for serial processes and for processes with several waits; the
   stage cache holds copies only where optimised copies are portable (`copies_are_portable`).
 - **Tiers**: under `--tier=auto` a copy is compiled like any function; the instance-count rule for clocked processes counts
-  the instances of the process it is a copy of; a process whose shared code is compiled already does not switch
-  (`YAVS_SPEC_AFTER` forces it, for tests, which also compile copies at once under `--tier-heat=1,0,0`).
+  the instances of the process it is a copy of; a process whose shared code is compiled already does not switch, and none switches in the 150 ms
+  after the tier is set (`SPEC_TIER_WAIT`: the tier needs about 30 ms of samples of a process before it compiles it, and a compiled process beats
+  its interpreted copy by far); `YAVS_SPEC_AFTER` forces the switch, for tests, which also compile copies at once under `--tier-heat=1,0,0`.
 - **Stage cache**: kind `spec`, one entry per lowering with the copies of all runs, read when the first copy is optimised and
   written at the end of a run that optimised one the entry lacked; a warm run optimises none.
 - **Test aids**: `YAVS_NO_SPEC=1`, `YAVS_SPEC_AFTER=n`, `YAVS_SPEC_CAP=p`; counters `spec_*` (`YAVS_COUNTERS=1`).
   `crates/yavs/tests/spec.rs` is the shadow check: every perf design with copies off and with every process switching at its
   second activation, 1 and 4 threads, byte-identical output.
-- **Measured** (`docs/STATUS.md` "Specialised copies of processes", `docs/design/specialisation.md` section 12; instructions of the
-  whole process, bench builds, main before and after): `poc_arith_addw` -10.9 %, `sc5_fifo_repack` -15.3 %, `fletcher_bufferwriter_512`
-  -6.2 %, `poc_cache_cpu` -4.8 %, `hdlm_lfsr` -3.1 %, `neorv32_single_min` -1.4 % (the prototype's -3.3 % was against an older, slower
-  base), single-instance testbenches (OSVVM, UVVM) 0; the same under `--tier=auto` cold (-0.9 to -15 %) and warm (-1.5 to -15 %, `poc_arith_addw`
-  -3.7 %); initialisation within 0.4 %; with copies off within 0.1 % of before; the cap binds on two designs (`poc_arith_addw`, `sc5_fifo_repack`:
-  0.5 and 4.3 points of gain). The interpreter rule (instructions down, cycles geometric mean not worse) holds: instructions 0.96 and CPU time
-  0.98 over ten realbench tests on `interp`.
-- **Open** (reported, not decided): the cap (2.5 would take the 4.3 points back on `sc5_fifo_repack` for 2.5 times the process IR); processes
+- **Measured** (`docs/STATUS.md` "Specialised copies of processes", `docs/design/specialisation.md` section 12; user instructions of the
+  whole process tree, bench builds, main before and after): `sc5_fifo_repack` -15.6 %, `poc_arith_addw` -11.0 %, `fletcher_bufferwriter_512`
+  -7.3 %, `poc_cache_cpu` -5.1 %, `hdlm_lfsr` -3.3 %, `neorv32_single_min` -2.5 % (the prototype's -3.3 % was against an older, slower
+  base), single-instance testbenches (OSVVM, UVVM) 0; under `--tier=auto` cold -0.9 to -11.6 % (`hdlm_lfsr` +0.9 %), warm -2.5 to -7.5 %
+  (`sc5_fifo_repack` +4.9 %, `hdlm_lfsr` +2.0 %: #661); initialisation within 0.4 %; with copies off within 0.1 % of before; the cap binds on two
+  designs (`poc_arith_addw`, `sc5_fifo_repack`: 0.5 and 4.3 points of gain). The interpreter rule (instructions down, cycles not worse in
+  the geometric mean) holds on `interp`: instructions 0.96 over ten realbench tests, interleaved cycle medians -2.5 to -10 % where measured;
+  under `auto` the instructions are 0.98 and the two exceptions are filed.
+- **Open** (reported, not decided): the tier policy for processes that run copies (#661); the cap (2.5 would take the 4.3 points back on `sc5_fifo_repack` for 2.5 times the process IR); processes
   with several wait statements stay shared (a mapping of the resume point by statement would admit them); loads of pointer-typed instance
   data (array generics, descriptors) are not folded; copy ids depend on the order of the switches, so with `--threads` above 1 the compiled-code
   cache keys of copies (which name the function id) can differ between runs; designs whose lowering is not cached (`ir` entry) re-optimise

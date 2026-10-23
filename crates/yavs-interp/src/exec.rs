@@ -1320,6 +1320,20 @@ impl Machine {
         {
             return;
         }
+        // With a tier the shared code of a process that takes much of the run is about to be
+        // compiled (a compiled process beats its interpreted copy by far, and the copies of a
+        // process of many instances would each be too small a share for the tier to take): give
+        // it `SPEC_TIER_WAIT`, then try again later.
+        if !crate::spec_forced()
+            && rt
+                .tier_at
+                .get()
+                .is_some_and(|t| t.elapsed() < crate::SPEC_TIER_WAIT)
+        {
+            self.spec = Some(holes);
+            self.spec_at = self.execs.saturating_mul(2);
+            return;
+        }
         let Ok(id) = prog.copy_of(base, &self.inst.data, &holes) else {
             return;
         };

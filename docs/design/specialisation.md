@@ -356,7 +356,13 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
 - **Tiers.** Under `--tier=auto` a copy is a function with its own id: the sampler sees it, the
   policy compiles it when it is hot (the instance count of the rule for clocked processes is the
   one of its process, `Program::base_of`), and a process whose shared code is compiled already
-  does not switch. Copies whose shared code is compiled at once (`--tier-heat=1,0,0`, tests) are
+  does not switch. A process also waits 150 ms after the tier is set before its first try
+  (`SPEC_TIER_WAIT`, then again at twice the activations): the tier takes about 30 ms of samples to
+  compile a process, and a compiled process beats its interpreted copy by far (`hdlm_lfsr`: 31.7 G
+  compiled shared code against 66.9 G interpreted copy); without the wait the processes had moved to
+  copies before they were sampled long enough (`hdlm_lfsr` auto 32.7 G, against 30.5 G with the wait). The
+  copies of a process of many instances are each too small a share of the run for the tier's rule, and
+  `sc5_fifo_repack` still runs 8 to 10 percent above the compiled shared code of main (#661). Copies whose shared code is compiled at once (`--tier-heat=1,0,0`, tests) are
   compiled at their first entry.
 - **Stage cache, kind `spec`**: one entry per lowering (the key of the `ir` entry, which holds the
   program, and with it the optimiser switches, the tier configuration and the build) with the
@@ -375,52 +381,59 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
 
 ## 12. Measurements of the implementation (2026-10-23)
 
-Bench builds with the `llvm` feature (`tools/build-bench.sh`) of main at 430c1c3d ("before") and of the commits of #651 ("after"),
-core 9 (CCD1), `perf stat` user instructions and cycles of the whole process tree (the compile thread of `auto` included), G =
-billions. The worlds are warm (two untimed runs, then the counted run; median of 3 interleaved pairs for the four designs of the
-study, one pair for the rest); "cold" is a copy of the world without any compilation cache, one run. Instructions are exact, cycles
-are what the loaded host gave (other agents ran; compare ratios, not values). `--tier=interp` unless the column says auto.
-Default settings: switch at activation 1024, cap 1.5. Rows with 0 copies are designs whose processes read no instance data, run
-once or are single-instance testbenches.
+Bench builds with the `llvm` feature (`tools/build-bench.sh`) of main at d72ffdd9 ("before") and of the commits of #651 ("after"),
+core 9 (CCD1). Instructions are user-mode instructions of the whole process tree, the compile thread of `auto` included (`perf stat`,
+exact); the figures come from `tools/realbench/run.py --compare` (a world per binary, medians of 3, phase `run`), G = billions.
+"warm" has an untimed run before the timed ones, "cold" is a world without any compilation cache. The host was loaded by other agents and
+cycles and wall times moved by 10 to 30 percent between runs of the same binary (a pinned core shares with its SMT sibling, and under
+`--tier=auto` the compile thread shares the core: the same binary gave 16.8 to 26.6 G cycles for the same instructions), so the ratios
+of instructions are the result; cycles are given where three interleaved pairs agree. Settings: switch at activation 1024, cap 1.5.
 
-| design | interp instr | | interp cycles | | auto warm instr | | auto cold instr | | init instr (interp) | copies (switched) / IR growth | RSS MB |
-|---|---|---:|---|---:|---|---:|---|---:|---|---|---|
-| `hdlm_lfsr` | 66.54 / 64.48 | -3.1 % | 18.77 / 17.46 | -7.0 % | 36.92 / 34.57 | -6.3 % | 40.14 / 37.36 | -6.9 % | 0.336 / 0.336 | 1 (1) / 0.23x | 36 / 35 |
-| `fletcher_bufferwriter_512` | 112.29 / 105.35 | -6.2 % | 45.67 / 41.84 | -8.4 % | 112.76 / 105.79 | -6.2 % | 112.97 / 105.95 | -6.2 % | 0.493 / 0.534 (note 1) | 72 (94) / 0.64x | 39 / 41 |
-| `poc_arith_addw` | 373.94 / 333.23 | -10.9 % | 99.06 / 88.92 | -10.2 % | 294.12 / 283.12 | -3.7 % | 330.01 / 296.57 | -10.1 % | 0.172 / 0.173 | 147 (147) / 1.49x (cap) | 32 / 34 |
-| `neorv32_single_min` (300 us) | 65.52 / 64.57 | -1.4 % | 25.41 / 24.94 | -1.8 % | 66.08 / 65.12 | -1.5 % | 67.92 / 67.29 | -0.9 % | 1.426 / 1.421 | 91 (171) / 0.24x | 75 / 79 |
-| `sc5_fifo_repack` | 57.99 / 49.12 | -15.3 % | 16.70 / 14.12 | -15.4 % | 58.09 / 49.14 | -15.4 % | 59.57 / 50.72 | -14.9 % | 0.039 / 0.039 | 21 (34) / 1.49x (cap) | 19 / 20 |
-| `poc_cache_cpu` | 25.50 / 24.27 | -4.8 % | 8.06 / 7.65 | -5.1 % | 25.78 / 24.54 | -4.8 % | 26.57 / 25.38 | -4.5 % | 0.148 / 0.149 | 49 (274) / 0.56x | 35 / 35 |
-| `osvvm_axis_random` | 3.94 / 3.95 | +0.1 % | 1.27 / 1.25 | | 4.00 / 4.00 | 0.0 % | 5.78 / 5.78 | 0.0 % | 0.341 / 0.340 | 0 | 39 / 40 |
-| `uvvm_sb_slv`, `hdlm_axi_crossbar`, `hdlm_axi_fifo`, `hdlm_fifo_sync`, `olo_fix_cordic_rot` | within +0.3 % | | within 2 % | | within +0.2 % | | within +0.5 % | | equal | 0 | equal |
+| design | interp instr | | auto warm instr | | auto cold instr | | copies (switched) / IR growth | RSS MB interp |
+|---|---|---:|---|---:|---|---:|---|---|
+| `poc_arith_addw` | 372.93 / 331.99 | -11.0 % | 287.28 / 265.70 | -7.5 % | 329.24 / 304.46 | -7.5 % | 147 (147) / 1.49x (cap) | 33 / 35 |
+| `sc5_fifo_repack` | 57.64 / 48.63 | -15.6 % | 47.27 / 49.58 | +4.9 % (note 2) | 57.07 / 50.46 | -11.6 % | 21 (34) / 1.49x (cap) | 21 / 20 |
+| `fletcher_bufferwriter_512` | 106.36 / 98.64 | -7.3 % | 106.92 / 99.26 | -7.2 % | 106.88 / 99.23 | -7.2 % | 72 (94) / 0.64x | 40 / 41 |
+| `poc_cache_cpu` | 25.36 / 24.07 | -5.1 % | 25.76 / 24.44 | -5.1 % | 26.21 / 24.99 | -4.7 % | 49 (274) / 0.56x | 35 / 37 |
+| `hdlm_lfsr` | 69.02 / 66.77 | -3.3 % | 31.90 / 32.53 | +2.0 % (note 2) | 35.91 / 36.23 | +0.9 % | 1 (1) / 0.23x | 37 / 36 |
+| `neorv32_single_min` (300 us) | 64.97 / 63.36 | -2.5 % | 65.61 / 63.98 | -2.5 % | 67.78 / 65.70 | -3.1 % | 91 (171) / 0.24x | 75 / 79 |
+| `osvvm_axis_random` | 3.94 / 3.94 | 0.0 % | 4.00 / 4.00 | 0.0 % | 5.06 / 5.06 | 0.0 % | 0 | 40 / 41 |
+| `hdlm_axi_crossbar`, `hdlm_fifo_sync`, `olo_fix_cordic_rot` | within +1.1 % | | within +0.3 % | | within +2 % | | 0 | equal |
 
-Note 1: the analysed-unit cache of the worlds was written by the "before" binary (a cache entry is keyed by the build), so the
-"after" binary re-analyses the units of this testbench at start-up (+40 M instructions in every mode, also with copies off); it is
-not the copies. `tools/realbench/run.py --compare` makes a world per binary (section 12.2).
+Geometric mean over these ten tests: instructions 0.96 (`interp`), 0.98 (`auto`), 0.97 (`auto-cold`); CPU time 0.84 / 0.91 / 0.97 and wall
+0.84 / 0.92 / 0.96, which the noise above inflates (`poc_cache_cpu` ran 2.25 s against 1.53 s with 5 percent fewer instructions).
+Interleaved three-pair medians of cycles (`--tier=interp`): `hdlm_lfsr` 29.30 / 27.96 G (-4.6 %), `poc_arith_addw` 98.65 / 88.39 (-10.4 %),
+`neorv32_single_min` 25.86 / 25.21 (-2.5 %); `tools/bench` h2h designs: geometric mean of CPU time 1.01, instructions equal.
 
-- **Copies off** (`YAVS_NO_SPEC=1`): 66.540, 112.855, 374.081 and 65.574 G for the four designs of the study, 0.00 to 0.5 percent
-  above before (fletcher is the 40 M of note 1): the plumbing (one compare per activation, the copy slots, the counters) is below the noise of the
-  interpreter loop's code layout, which moved the same designs by up to 1.3 percent when `Program::func` was changed in the first versions.
-- **Initialisation** (`--stop-time=0fs`): unchanged within 0.4 percent. The reserved slots cost 12 M instructions of the 1.43 G of
-  `neorv32_single_min` (0.8 percent) before slots were reserved only for processes that can have a copy, 5 M (0.35 percent) now; the
-  prototype's eager copies cost 950 M to 1.25 G.
+Note 2: with copies the tier does not compile these two designs' clocked processes the way it does without them (`sc5_fifo_repack`: 45.1 G
+with `YAVS_NO_SPEC=1`, 49.6 G with copies, against 57.6 G interpreted without copies; `hdlm_lfsr` single process: 30.5 to 32.7 G against
+31.7 to 31.9 G, the copy of its one process compiles late). #661 holds the analysis; the wait of `SPEC_TIER_WAIT` (150 ms) is the first
+step and made `hdlm_lfsr` better than main in the interleaved run (30.46 against 31.66 G) but not `sc5_fifo_repack`.
+
+- **Copies off** (`YAVS_NO_SPEC=1`): 68.931, 106.301, 372.809 and 64.935 G for `hdlm_lfsr`, `fletcher_bufferwriter_512`,
+  `poc_arith_addw` and `neorv32_single_min` against 68.926, 106.243, 372.683 and 64.913 before (+0.0 to +0.1 percent): the plumbing (one compare
+  per activation, the copy slots, the counters) is below the noise of the interpreter loop's code layout, which moved the same designs by up to
+  1.3 percent in the first versions when `Program::func` itself was changed.
+- **Initialisation** (`--stop-time=0fs`): equal within 0.4 percent for every design above (`neorv32_single_min` 1.418 / 1.416 G, `poc_arith_addw`
+  0.172 / 0.173); the prototype's eager copies cost 950 M to 1.25 G. (An earlier run of `fletcher_bufferwriter_512` showed +40 M: the analysed-unit
+  cache of the benchmark world was written by the other binary; compare binaries in worlds of their own.)
 - **The cap** binds on two designs. `poc_arith_addw`: 312 candidate copies of 40 functions would be 3.5 times the shared IR, 147 fit; gain
   -10.9 percent with the cap, -11.3 percent without (`YAVS_SPEC_CAP=0`: 331.5 G). `sc5_fifo_repack`: 30 candidates, 2.46 times, 21 fit; -15.3
   percent with the cap, -19.6 percent without (46.6 G). No other measured design gets near it (0.64 times for `fletcher_bufferwriter_512`).
-- **The threshold** (`YAVS_SPEC_AFTER`, instructions of the whole run in G for 2, 64, 256, 1024, 4096, 16384 activations):
-  `fletcher_bufferwriter_512` 105.18, 105.27, 105.26, 105.34, 105.61, 106.63 (before: 112.29); `neorv32_single_min` 64.61, 64.53, 64.53, 64.57,
-  64.74, 65.21 (before: 65.52); `poc_arith_addw` 343.0, 333.0, 333.1, 333.2, 333.7, 335.6 (before: 373.9). A copy costs the optimiser about
-  0.7 M instructions and pays that back after a few thousand activations of the process, so the number of copies falls and the gain with
-  it only above 4096; 1024 keeps every process of an initialisation (which runs each once) on the shared code with a margin and loses less
-  than 0.1 percent of the gain against 64. At 2 the initialisation and the cap are spent on processes that run twice (`poc_arith_addw` 343 G).
-- **Against the prototype** (section 6; its base was older and slower: neorv32 94.7 G where main is now 65.5): `poc_arith_addw` -12.6 percent
-  there, -10.9 here (cap 1.5; -11.3 without); `fletcher_bufferwriter_512` -7.2 / -6.2; `hdlm_lfsr` -3.0 / -3.1; `neorv32_single_min` -3.3 /
-  -1.4 (the memoisation and the other interpreter rounds since took most of what the copies gained there: its hot processes read little
-  instance data; of 847 process functions 287 take an instance-data address and 171 process instances reach 1024 activations in 300 us);
-  OSVVM 0 / 0.
-- **RSS** within 4 MB everywhere (the copy slots and one `Pre` per copy; `neorv32_single_min` +4 MB, 5 percent).
+- **The threshold** (`YAVS_SPEC_AFTER`, instructions of the whole run in G for 2, 64, 256, 1024, 4096, 16384 activations, an older base): 
+  `fletcher_bufferwriter_512` 105.18, 105.27, 105.26, 105.34, 105.61, 106.63 (without copies 112.29); `neorv32_single_min` 64.61, 64.53, 64.53,
+  64.57, 64.74, 65.21 (65.52); `poc_arith_addw` 343.0, 333.0, 333.1, 333.2, 333.7, 335.6 (373.9). A copy costs the optimiser about 0.7 M
+  instructions and pays that back after a few thousand activations of the process, so the number of copies falls and the gain with it only above
+  4096; 1024 keeps every process of an initialisation (which runs each once) on the shared code with a margin and loses less than 0.1 percent of
+  the gain against 64. At 2 the initialisation and the cap are spent on processes that run twice (`poc_arith_addw` 343 G).
+- **Against the prototype** (section 6; its base was older and slower: neorv32 94.7 G where main is now 65.0): `poc_arith_addw` -12.6 percent
+  there, -11.0 here (cap 1.5; -11.3 without); `fletcher_bufferwriter_512` -7.2 / -7.3; `hdlm_lfsr` -3.0 / -3.3; `neorv32_single_min` -3.3 / -2.5
+  (the memoisation and the other interpreter rounds since took part of what the copies gained there: its hot processes read little instance data;
+  of 847 process functions 287 take an instance-data address and 171 process instances reach 1024 activations in 300 us); OSVVM 0 / 0.
+- **RSS** within 4 MB everywhere in the table (slots are 0.9 KB each and sized by the cap; one `Pre` per copy; `neorv32_single_min` +4 MB, 5 percent;
+  a synthetic design of 4096 one-process instances +0.7 MB of 35).
 - **The stage cache** (kind `spec`): 44 KB for `sc5_fifo_repack` (21 copies), 71 KB for `poc_cache_cpu` (49), 220 KB for
   `poc_arith_addw` (147) and 334 KB for `neorv32_single_min` (91), next to `ir` entries of 0.09 to 5.2 MB; designs whose lowering is not
   cached (`fletcher_bufferwriter_512`, `hdlm_lfsr`: no `ir` entry) store none and optimise their copies in every run (0.7 M instructions
-  each, 50 M of 105 G for fletcher). A warm run reads the copies of the earlier runs instead of optimising them (`spec_loaded` =
+  each, 50 M of 100 G for fletcher). A warm run reads the copies of the earlier runs instead of optimising them (`spec_loaded` =
   `spec_copies`, `spec_fresh` = 0; `tests/spec.rs`).

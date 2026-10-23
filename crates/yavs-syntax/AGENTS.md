@@ -62,7 +62,7 @@ Module-local decisions go in this section in the same commit; LRM readings go to
 ## 4. Invariants and pitfalls
 
 - The parser never panics or loops: every list loop must make progress, nesting is capped at 64
-  (`E0006`), and the fuel counter stops a stalled parse. A new loop without progress is a fuzz
+  (`E0006`; one level of parentheses, an aggregate or a call counts once, in `primary`, not in `expr`: a chain of 30 to 60 parenthesised groups is real RTL, #604; the cap is what a 2 MiB debug-build stack parses, and the rest of the pipeline was checked to 60 levels on 2 MiB), and the fuel counter stops a stalled parse. A new loop without progress is a fuzz
   crash waiting to happen (`fuzz/` target `parse`, rule 15).
 - Keep ambiguous forms ambiguous. Resolving them here breaks `yavs-sem`'s name interpretation
   (`docs/design/sem.md` 3.3).

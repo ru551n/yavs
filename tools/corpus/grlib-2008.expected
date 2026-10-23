@@ -1,5 +1,4 @@
 # tools/corpus/run.py expected results for grlib-2008 (yavs); one line per manifest entry, in order
-# Known yavs failure: can_top.vhd, #604 (E0006 at 32 nested parentheses); the reference simulators accept it.
 PASS grlib grlib/lib/grlib/stdlib/version.vhd
 PASS grlib grlib/lib/grlib/stdlib/config_types.vhd
 PASS grlib grlib/lib/grlib/stdlib/config.vhd
@@ -125,7 +124,7 @@ PASS eth grlib/lib/eth/core/greth_rx.vhd
 PASS eth grlib/lib/eth/core/grethc.vhd
 PASS eth grlib/lib/eth/wrapper/greth_gen.vhd
 PASS opencores grlib/lib/opencores/can/cancomp.vhd
-FAIL opencores grlib/lib/opencores/can/can_top.vhd
+PASS opencores grlib/lib/opencores/can/can_top.vhd
 PASS opencores grlib/lib/opencores/i2c/i2c_master_bit_ctrl.vhd
 PASS opencores grlib/lib/opencores/i2c/i2c_master_byte_ctrl.vhd
 PASS opencores grlib/lib/opencores/i2c/i2coc.vhd

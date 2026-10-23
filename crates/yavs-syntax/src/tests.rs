@@ -1250,6 +1250,30 @@ fn deep_nesting_does_not_overflow() {
     assert_eq!(e, ["nesting is too deep"]);
 }
 
+/// A chain of parenthesised groups like GRLIB's `can_top.vhd` has: one level of parentheses is one
+/// level of depth, so 60 are fine and 70 are too deep (#604).
+#[test]
+fn parenthesised_chain_is_deep_but_bounded() {
+    let chain = |n: usize| {
+        format!(
+            "constant c : boolean := {}true{};",
+            "(".repeat(n),
+            " and true)".repeat(n)
+        )
+    };
+    let run = move |n: usize| {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || parse_std(&pkg(&chain(n)), Std::Vhdl2008).design.is_some())
+            .expect("spawn")
+            .join()
+            .expect("no stack overflow")
+    };
+    assert!(run(40));
+    assert!(run(60));
+    assert!(!run(70));
+}
+
 #[test]
 fn garbage_does_not_panic() {
     for src in [

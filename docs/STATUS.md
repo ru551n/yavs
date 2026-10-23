@@ -4976,7 +4976,7 @@ commit of a git mirror that is file-identical to the tarball (sparse: `lib/`, `b
 `corpus` job fetches it with the other corpora (same cache key) and runs `grlib-2008` against its expected list.
 
 - **Analysis corpus `grlib-2008`**: the order of GRLIB's own script generator for `designs/leon3mp` with inferred technology (no vendor library), 410 files.
-  sim1 and sim2 accept all 410, yavs 409; `lib/opencores/can/can_top.vhd` fails with E0006 at 32 nested parentheses (#604). 46 of GRLIB's 456 files are
+  sim1 and sim2 accept all 410, yavs too (`lib/opencores/can/can_top.vhd` failed with E0006 at 32 nested parentheses until #604: the parser now counts one level of parentheses once, so 64 levels are fine). 46 of GRLIB's 456 files are
   excluded: GRLIB is VHDL-93 code and the `std_logic_vector`/`std_ulogic_vector` overload pairs of its `stdio` and `testlib` packages are homographs under 2008
   (LRM 12.3), rejected by every tool; the processor core (`iu3` through `sparc_disas`), the bus controller and the simulation models depend on them.
 - **VHDL-93**: with GRLIB's own flags the unmodified tree works on both references: sim1 (`--std=93 --relaxed`) analyses 454 of 456 library files (two are

@@ -622,6 +622,7 @@ impl Ctx<'_> {
     /// The edge the kernel resumed this process for in this activation (signal, element,
     /// kind: `rising`, plus [`EDGE_LEVEL`] for an event ending on the level), if `Ctx::edge`
     /// or `Ctx::edge_by` of that kind takes it as held.
+    #[inline(always)]
     pub fn known_edge(&self) -> Option<(SignalId, u32, u8)> {
         self.st.known_edge.filter(|_| self.st.known != NO_EDGE)
     }

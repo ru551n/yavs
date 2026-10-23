@@ -5736,3 +5736,32 @@ used by direct loads and stores to registers); ours differs in that a native fra
   concatenations (`yavs_interp::inst_regs` has them). The first version missed `CallNative`'s argument list and the corpus
   caught it (`textio/std_logic_textio`, a frame address passed to a native `READ` helper).
 
+
+
+## Compiled clocked RTL processes, round 5: the entry cost of a small process (yavs-interp, yavs-llvm, #634, 2026-10-23)
+
+Compiled clocked RTL took more cycles than the interpreter (#634). The first measurement of this round
+(`rtl_ff`, 4096 one-line processes, exact instruction trace of one activation: 1231 instructions, 325 of them the
+compiled body) showed that for small processes the plumbing around the body is the bigger part, and that
+two of the leanest paths were not taken. Decisions, tagged shared (S, any code generator) or LLVM only (L):
+
+- **A resident process stays resident when it suspends compiled** (S, `Machine::run_compiled`): the downgrade at
+  every `TIER_SUSPEND` handed the registers and the temporary area to the thread's scratch (a thread-local borrow
+  and two vector swaps per activation, about 120 instructions). The compiled body never reads the register file in
+  its fast paths, so the cache argument for the scratch does not apply to registers; a process whose temporary
+  area is the interpreter's too stays as small as before (`RESIDENT_TEMP`). Cost: the first `Alloc` of each resident
+  process grows its temporary area through the step callback (`cb_step` of `llvm_clocked` 6 to 25, once per process).
+- **The wait of one signal short-cuts too in compiled code, and in every copy of a wait** (S for the analysis,
+  L for the use; `pre::static_wait(prog, f, min)`): `static_wait` required two `WaitOn`s (the interpreter's fused
+  wait is cheap for one) and found only the first copy of a wait. A process of a concurrent assignment or with a
+  sensitivity list that names array elements has two copies of its wait (the lowering makes the first activation's copy
+  keep the references), and every activation after the first runs the second, which never short-cut. Compiled code
+  now asks for `min` 1 and for all copies (`IMPLICIT` processes with no call that can suspend count as a list, as
+  `SENS_LIST` ones do), and calls `yavs_rt_wait_same` (about 50 instructions) instead of `yavs_rt_wait`,
+  `wait_again` and `wait_on_again` (about 140). The interpreter keeps `min` 2 and gains the later copies.
+- **`Mem::begin`'s common case is inline** and a new `Mem` is made out of line (L): `enter` had a 20 KB frame with
+  five stack probes in every call, and a six-register prologue for a function that returns at its first test.
+
+Measured (bench builds, instructions of the simulation phase, main thread, `--tier=auto --tier-heat=1,0,0` warm):
+`rtl_ff` 12.17 G to 10.32 G (interpreter 11.57 G), `rtl_chain` 3.93 G to 3.49 G (interpreter 3.20 G), `rtl_lfsr` 5.09 G
+to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 3.02 G (interpreter 3.34 G).

@@ -312,11 +312,16 @@ impl Mem {
     /// The start of an activation or a call from the interpreter, on a view just made: keep the
     /// objects found before that are still where they were (`Life`), and count the writes of
     /// the writable heap objects kept as this run's (`TierHost::wrote`).
+    #[inline(always)]
     fn begin(&mut self, host: &mut dyn TierHost) {
         self.dirty = false;
-        if self.live == 0 {
-            return;
+        if self.live != 0 {
+            self.begin_kept(host);
         }
+    }
+
+    #[inline(never)]
+    fn begin_kept(&mut self, host: &mut dyn TierHost) {
         let same = self.objs_owner == self.fr.owner;
         let epoch = same && self.objs_epoch == self.fr.heap_epoch;
         if !epoch || self.transient {
@@ -1501,7 +1506,7 @@ pub(crate) fn enter(
     // This thread's `Mem`, or a new one inside an activation that holds it.
     let p = MEM.replace(std::ptr::null_mut());
     let mut mem = if p.is_null() {
-        Box::new(Mem::of(TierFrame::default()))
+        new_mem()
     } else {
         // SAFETY: `MEM` holds a `Box` of this thread's that nothing else uses (taken above).
         unsafe { Box::from_raw(p) }
@@ -1514,6 +1519,12 @@ pub(crate) fn enter(
         Ok(next) => next,
         Err(p) => resume_unwind(p),
     }
+}
+
+/// A new `Mem` (out of line: its 10 KB would otherwise be a stack probe in every `enter`).
+#[inline(never)]
+fn new_mem() -> Box<Mem> {
+    Box::new(Mem::of(TierFrame::default()))
 }
 
 thread_local! {
@@ -1614,7 +1625,7 @@ pub(crate) fn call(
     }
     let p = MEM.replace(std::ptr::null_mut());
     let mut mem = if p.is_null() {
-        Box::new(Mem::of(TierFrame::default()))
+        new_mem()
     } else {
         // SAFETY: as in `enter`.
         unsafe { Box::from_raw(p) }
@@ -4090,9 +4101,11 @@ impl Gen {
             } else {
                 (LLVMGetParam(fv, 1), LLVMGetParam(fv, 2), None)
             };
-            let static_wait = (!native && f.kind == FuncKind::Process)
-                .then(|| yavs_interp::static_wait(prog, f))
-                .flatten();
+            let static_wait = if !native && f.kind == FuncKind::Process {
+                yavs_interp::static_wait(prog, f, 1)
+            } else {
+                Vec::new()
+            };
             let mut c = Cur {
                 prog,
                 consts: Default::default(),
@@ -4888,7 +4901,7 @@ impl Gen {
                         self.join(&c, join);
                         // The wait that names the same signals every time: the kernel keeps
                         // the last one, and the process suspends without naming them (#530).
-                        if let Some((_, at)) = static_wait.filter(|w| w.0 == i) {
+                        if let Some(&(_, at)) = static_wait.iter().find(|w| w.0 == i) {
                             let mut args = [
                                 c.env,
                                 c.regs,

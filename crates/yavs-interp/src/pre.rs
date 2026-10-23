@@ -1896,27 +1896,28 @@ fn peephole(
 /// holds is this one unless the process just started. Skipping the instructions changes
 /// nothing else: they write registers only, and no register is live across a suspension.
 fn static_waits(prog: &Program, f: &Func, ops: &mut [Op], at: &[u32], entry: &[u32]) {
-    let Some((st, s)) = static_wait(prog, f) else {
-        return;
-    };
-    let Some(k) = (0..ops.len()).find(|&k| matches!(ops[k], Op::Suspend) && at[k] as usize == s)
-    else {
-        return;
-    };
-    if let Some(&k0) = entry.get(st)
-        && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
-    {
-        *o = Op::WaitStatic { to: k as u32 };
+    for (st, s) in static_wait(prog, f, 2) {
+        let Some(k) =
+            (0..ops.len()).find(|&k| matches!(ops[k], Op::Suspend) && at[k] as usize == s)
+        else {
+            continue;
+        };
+        if let Some(&k0) = entry.get(st)
+            && let Some(o @ Op::Stmt) = ops.get_mut(k0 as usize)
+        {
+            *o = Op::WaitStatic { to: k as u32 };
+        }
     }
 }
 
-/// The wait of `f` that names the same signals at every activation (`static_waits`): the IR pc
-/// of the `Stmt` that starts it and of its `Suspend`. Compiled code takes the same short cut.
-/// A process with a sensitivity list may have several suspension points (the lowering makes the
-/// first wait of a list that names array elements or slices a copy that also keeps the
-/// references for the later ones): they all wait for the same list, so the one that qualifies
-/// stands for them.
-pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
+/// The waits of `f` (at least `min` `WaitOn`s each) that name the same signals at every
+/// activation (`static_waits`): the IR pc of the `Stmt` that starts each and of its `Suspend`.
+/// Compiled code takes the same short cut (with `min` 1: the call it saves is more than the
+/// interpreter's fused wait). A process with a sensitivity list may have several suspension
+/// points (the lowering makes the first wait of a list that names array elements or slices a copy
+/// that also keeps the references for the later ones, and the activations after the first run the
+/// later copy): they all wait for the same list, so every one that qualifies short-cuts.
+pub fn static_wait(prog: &Program, f: &Func, min: usize) -> Vec<(usize, usize)> {
     let calls = |i: &Inst| match *i {
         Inst::Call { func, .. } | Inst::CallProt { func, .. } => prog
             .func(func)
@@ -1928,46 +1929,53 @@ pub fn static_wait(prog: &Program, f: &Func) -> Option<(usize, usize)> {
         .filter(|&p| matches!(f.code[p], Inst::Suspend { .. }))
         .collect();
     let sens = f.flags.contains(FuncFlags::SENS_LIST);
-    let one = suspends.len() == 1 && f.resume.len() == 1 && (sens || !f.code.iter().any(calls));
-    if !(one || sens && !suspends.is_empty()) {
-        return None;
+    // Lazily: asking whether a callee may suspend decodes its body.
+    let quiet = || !f.code.iter().any(calls);
+    let one = suspends.len() == 1 && f.resume.len() == 1 && (sens || quiet());
+    // The concurrent statement's process waits on its one list too (no call suspends).
+    let same = sens || f.flags.contains(FuncFlags::IMPLICIT) && quiet();
+    if !(one || same && !suspends.is_empty()) {
+        return Vec::new();
     }
-    suspends.into_iter().find_map(|s| {
-        let st = (0..s).rev().find(|&p| {
-            !matches!(
-                f.code[p],
-                Inst::Const { .. }
-                    | Inst::ConstF { .. }
-                    | Inst::AddrOf { .. }
-                    | Inst::DopeLen { .. }
-                    | Inst::Pos { .. }
-                    | Inst::SlicePos { .. }
-                    | Inst::Index { .. }
-                    | Inst::Field { .. }
-                    | Inst::Bin { .. }
-                    | Inst::BinRange { .. }
-                    | Inst::Un { .. }
-                    | Inst::Cmp { .. }
-                    | Inst::Bool { .. }
-                    | Inst::Select { .. }
-                    | Inst::Load { .. }
-                    | Inst::Alloc { .. }
-                    | Inst::MakeDope { .. }
-                    | Inst::LayoutOf { .. }
-                    | Inst::SigVal { .. }
-                    | Inst::SigSlice { .. }
-                    | Inst::WaitOn { .. }
-            )
-        })?;
-        let waits = f.code[st + 1..s]
-            .iter()
-            .filter(|i| matches!(i, Inst::WaitOn { .. }))
-            .count();
-        (matches!(f.code[st], Inst::Stmt)
-            && waits >= 2
-            && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
-        .then_some((st, s))
-    })
+    suspends
+        .into_iter()
+        .filter_map(|s| {
+            let st = (0..s).rev().find(|&p| {
+                !matches!(
+                    f.code[p],
+                    Inst::Const { .. }
+                        | Inst::ConstF { .. }
+                        | Inst::AddrOf { .. }
+                        | Inst::DopeLen { .. }
+                        | Inst::Pos { .. }
+                        | Inst::SlicePos { .. }
+                        | Inst::Index { .. }
+                        | Inst::Field { .. }
+                        | Inst::Bin { .. }
+                        | Inst::BinRange { .. }
+                        | Inst::Un { .. }
+                        | Inst::Cmp { .. }
+                        | Inst::Bool { .. }
+                        | Inst::Select { .. }
+                        | Inst::Load { .. }
+                        | Inst::Alloc { .. }
+                        | Inst::MakeDope { .. }
+                        | Inst::LayoutOf { .. }
+                        | Inst::SigVal { .. }
+                        | Inst::SigSlice { .. }
+                        | Inst::WaitOn { .. }
+                )
+            })?;
+            let waits = f.code[st + 1..s]
+                .iter()
+                .filter(|i| matches!(i, Inst::WaitOn { .. }))
+                .count();
+            (matches!(f.code[st], Inst::Stmt)
+                && waits >= min
+                && !(st + 1..=s).any(|p| f.blocks.iter().any(|(_, b)| b.start as usize == p)))
+            .then_some((st, s))
+        })
+        .collect()
 }
 
 /// Where an operand of an element loop comes from: a register the loop does not write, the

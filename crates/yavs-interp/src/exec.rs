@@ -1397,15 +1397,6 @@ impl Machine {
         match ran {
             Some(crate::TIER_SUSPEND) => {
                 self.top().pc += 1;
-                // A process that suspends compiled hands its registers to the thread's scratch
-                // from now on, resident or not: the register files of thousands of processes
-                // do not stay in the cache (an activation touches a few lines of them), the
-                // one scratch does, and the swap costs less than the misses.
-                if self.resident_bytes != 0 {
-                    RESIDENT_USED.fetch_sub(self.resident_bytes, Ordering::Relaxed);
-                    self.resident_bytes = 0;
-                    self.resident = false;
-                }
                 Some(Quick::Suspended)
             }
             Some(crate::TIER_UNWIND) | None => None,

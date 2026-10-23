@@ -624,7 +624,7 @@ mod llvm {
         "wide=",
         [
             ("cb_signal", Max(56)),
-            ("cb_step", Max(9)),
+            ("cb_step", Max(12)),
             ("cb_native", Max(56)),
             ("cb_drive", Max(263)),
             ("cb_troot", Max(53)),
@@ -653,11 +653,11 @@ mod llvm {
         "q=",
         [
             ("cb_signal", Max(4)),
-            ("cb_step", Max(6)),
+            ("cb_step", Max(26)),
             ("cb_native", Max(55)),
             ("cb_drive", Max(998)),
-            ("cb_wait", Max(911)),
-            ("cb_wait_same", Max(106)),
+            ("cb_wait", Max(19)),
+            ("cb_wait_same", Max(1018)),
             ("llvm_inline_insts", Min(624)),
             ("llvm_interpreted_insts", Max(48)),
             ("llvm_native_frames", Min(1)),

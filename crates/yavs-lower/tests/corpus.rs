@@ -41,6 +41,7 @@ const PASS: &[&str] = &[
     "composite/record_subtype_others",
     "composite/others_element_attr",
     "composite/case_aggregate_choice",
+    "composite/process_label_subtype",
     "composite/user_attribute_index",
     "composite/record_constant_element_bounds",
     "composite/alias_subtype_open_elements",

@@ -246,7 +246,11 @@ impl Db {
 
     /// The region of the construct (labelled statement or subprogram) one of `ds` names,
     /// and whether it encloses `scope` (8.3: only then is an expanded name into it legal).
-    fn construct_region(&self, scope: ScopeId, ds: &[DeclId]) -> Option<(ScopeId, bool)> {
+    pub(crate) fn construct_region(
+        &self,
+        scope: ScopeId,
+        ds: &[DeclId],
+    ) -> Option<(ScopeId, bool)> {
         let owned = |s: ScopeId| self.scopes[s].owner.is_some_and(|o| ds.contains(&o));
         let mut cur = Some(scope);
         while let Some(s) = cur {

@@ -619,6 +619,13 @@ impl Db {
     /// a package (loaded on demand) or a package instance.
     pub(crate) fn region_of(&mut self, scope: ScopeId, n: &ast::Name) -> Result<Region, Reported> {
         let d = self.expanded_name_decl(scope, n)?;
+        // A label of an enclosing statement names its declarative region (8.3): `p.st` inside
+        // process `p`.
+        if let DeclKind::Label(_) = self.decls[d].kind
+            && let Some((s, true)) = self.construct_region(scope, &[d])
+        {
+            return Ok(Region::Scope(s));
+        }
         match self.decls[d].kind {
             DeclKind::Library(l) => Ok(Region::Library(l)),
             DeclKind::Unit(_)

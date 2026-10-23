@@ -182,7 +182,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "W0116",
-        "The SIGUSR1 handler that prints a hang report of a running simulation could not be installed (the note gives the operating system error). The run goes on without it; `--hang-report` is not affected.",
+        "The signal handlers of a running simulation (Ctrl-C and SIGTERM writing out the buffered output, SIGUSR1 printing a hang report) could not be installed (the note gives the operating system error). The run goes on without them, and its output is written line by line; `--hang-report` is not affected.",
     ),
     // yavs-vhpi
     (

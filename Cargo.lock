@@ -1476,7 +1476,6 @@ dependencies = [
  "clap",
  "serde_json",
  "sha2",
- "signal-hook",
  "tempfile",
  "wellen",
  "yavs-cache",
@@ -1714,6 +1713,7 @@ name = "yavs-wave"
 version = "0.8.0"
 dependencies = [
  "ctrlc",
+ "signal-hook",
  "tempfile",
  "wavefst",
  "wellen",

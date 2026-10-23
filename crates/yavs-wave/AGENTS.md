@@ -8,11 +8,11 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 - Waveform recording sink: a `Hierarchy` description (built with `HierarchyBuilder`) plus a
   stream of `(time, SignalId, value bytes)` changes into `WaveWriter`, written as FST through the
   `wavefst` crate; include/exclude globs and an array size cap (`Selection`); SIGINT/SIGTERM flag
-  (`interrupt::install`).
+  (`interrupt::install`) and the one signal thread of `yavs run` (`interrupt::start`).
 - `src/sim.rs` (`record`, `Recorder`): builds the `Hierarchy` from an elaborated design and
   subscribes to the kernel's value-change bus; the writer sink itself stays kernel-free.
   `yavs run --wave` wires it (E0801-E0803, W0802).
-- Depends on: `wavefst` (writer, lz4; no C compiler), `ctrlc`; dev: `wellen` (read-back),
+- Depends on: `wavefst` (writer, lz4; no C compiler), `signal-hook` (Unix), `ctrlc` (Windows); dev: `wellen` (read-back),
   `tempfile`. Called by: `yavs` (`run --wave`), `yavs-dap` (live waves, `record_to`), `examples/demo.rs`.
 
 ## 2. Map
@@ -24,7 +24,7 @@ The writer choice and the FST mapping are in `docs/decisions.md` "Waveform write
 | `src/select.rs` | `Selection`: case-insensitive globs (`*` one level, `**` across, `?`), `max_array_elems` |
 | `src/writer.rs` | `WaveWriter` (`change`, `finish`, also on drop; one declaration plan per `Hierarchy` type, a slot of two `u32`s per signal), `WaveConfig` (timescale `-15` fs, `flush_interval` 5 s, `block_change_limit`), `Error` |
 | `src/sim.rs` | `Sink` (where a recorder writes: `WaveWriter`, or the DAP live stream), `record_to` (a recorder into any sink, returns the hierarchy), `Recorder::start` (a recorder subscribed after the start), `record` (with `Option<&Built>` for `--wave-variables`), `Recorder`: elaborated design to `Hierarchy`; kernel changes to `change` calls, final value per time step in entry order (same file at any `--threads`) |
-| `src/interrupt.rs` | `install(stop)`: first Ctrl-C/SIGTERM calls `stop` (kernel ends between cycles, file finished); second exits 1 |
+| `src/interrupt.rs` | `start(Handlers)`: one thread for the first Ctrl-C/SIGTERM/SIGHUP (`first`: the kernel ends between cycles, file finished), the second (`at_exit`, exit 1), SIGUSR1 and a periodic `tick` (the output flusher of `yavs run`); `install(stop)` and `install_with` for `first` and `at_exit` only. Unix: `signal-hook` flag plus a byte on a socket pair, safe code; Windows: `ctrlc` and a tick thread (#562) |
 | `tests/roundtrip.rs` | Every file read back with wellen |
 | `examples/writer_bench.rs` | Writer throughput on synthetic changes (`SCALARS`, `VECTORS`): the per-change cost of the writer alone |
 | `examples/demo.rs` | Small end-to-end use |

@@ -889,9 +889,14 @@ pub fn run(
     }
     if let Some(t) = a.dap {
         let (db, e) = (Arc::new(db), Arc::new(e));
-        let interrupted = Arc::new(AtomicBool::new(false));
         let attach = |sim: &mut yavs_kernel::SimControl, built: Option<&yavs_elab::Built>| {
-            let rec = observers(&a, &db, &e, sim, built, &interrupted, &mut out)?;
+            let rec = observers(&a, &db, &e, sim, built, &mut out)?;
+            if rec.is_some() {
+                // Ctrl-C ends the run between cycles so the file is finished (rule 11).
+                let mut hooks = yavs_wave::interrupt::Handlers::default();
+                ctrl_c_stops(&mut hooks, sim.interrupt(), Arc::default());
+                yavs_wave::interrupt::start(hooks).map_err(handler_error)?;
+            }
             Ok(rec.map(|(path, rec)| {
                 let r = rec.clone();
                 let finish: yavs_dap::Finish =
@@ -973,42 +978,53 @@ pub fn run(
         t
     });
     let interrupted = Arc::new(AtomicBool::new(false));
-    let recorder = match observers(
-        &a,
-        &db,
-        &e,
-        &mut sim,
-        built.as_ref(),
-        &interrupted,
-        &mut out,
-    ) {
+    let recorder = match observers(&a, &db, &e, &mut sim, built.as_ref(), &mut out) {
         Ok(r) => r,
         Err(d) => {
             out.emit(&none, &d);
             return out.finish(2);
         }
     };
-    // Ctrl-C or SIGTERM without a recorder ends the run at once: write out the reports that
-    // wait in the output buffer first.
-    // With `--profile` the first signal instead stops the run between cycles so that the
-    // profile of the time so far is printed; the exit status stays 130.
+    // One thread for Ctrl-C/SIGTERM, SIGUSR1 (hang report) and the output flusher (#562).
+    // With a recorder the first signal ends the run between cycles so that the file is finished
+    // (rule 11). With `--profile` it does so that the profile of the time so far is printed; the
+    // exit status stays 130. Else, with output collected, it writes the reports that wait in
+    // the buffer out and exits at once.
     let signalled = Arc::new(AtomicBool::new(false));
-    if recorder.is_none() && cfg_profile.is_some() {
-        let (stop, flag) = (sim.interrupt(), signalled.clone());
-        let _ = yavs_wave::interrupt::install_with(
-            move || {
-                flag.store(true, Ordering::SeqCst);
-                stop.stop();
-            },
-            || {
-                crate::stdout::flush();
-            },
-        );
-    } else if recorder.is_none() && crate::stdout::is_on() {
-        let _ = yavs_wave::interrupt::install(|| {
+    let mut hooks = yavs_wave::interrupt::Handlers {
+        usr1: Some(crate::stuck::on_request(sim.interrupt())),
+        ..Default::default()
+    };
+    if crate::stdout::is_on() {
+        hooks.tick = Some((crate::stdout::TICK, Box::new(crate::stdout::flush)));
+    }
+    if recorder.is_some() || cfg_profile.is_some() {
+        let flag = if recorder.is_some() {
+            &interrupted
+        } else {
+            &signalled
+        };
+        ctrl_c_stops(&mut hooks, sim.interrupt(), flag.clone());
+    } else if crate::stdout::is_on() {
+        hooks.first = Some(Box::new(|| {
             crate::stdout::flush();
             std::process::exit(130);
-        });
+        }));
+    }
+    if let Err(err) = yavs_wave::interrupt::start(hooks) {
+        if recorder.is_some() {
+            out.emit(&none, &handler_error(err));
+            return out.finish(2);
+        }
+        crate::stdout::unbuffer();
+        out.emit(
+            &none,
+            &Diagnostic::warning(
+                "W0116",
+                "cannot install the signal handlers (Ctrl-C, SIGUSR1 hang reports)",
+            )
+            .with_note(err.to_string()),
+        );
     }
     // Nothing below reads the elaborated model but its IR (run-time diagnostics) unless a
     // plugin, the waveform recorder or coverage does (#421).
@@ -1024,9 +1040,6 @@ pub fn run(
             rt.as_ref().map(|rt| rt.line_sampler()),
         )
     });
-    if let Err(d) = crate::stuck::on_signal(sim.interrupt()) {
-        out.emit(&none, &d);
-    }
     let max = a.hang_report.unwrap_or(30);
     let r = loop {
         let r = sim.run_until(stop);
@@ -1228,6 +1241,26 @@ fn wave_error(path: &str, err: yavs_wave::Error) -> Diagnostic {
         .with_note(err.to_string())
 }
 
+/// The first Ctrl-C/SIGTERM sets `flag` and ends the run between cycles; the second writes out
+/// the buffered output and exits.
+fn ctrl_c_stops(
+    hooks: &mut yavs_wave::interrupt::Handlers,
+    stop: yavs_kernel::Interrupt,
+    flag: Arc<AtomicBool>,
+) {
+    hooks.first = Some(Box::new(move || {
+        flag.store(true, Ordering::SeqCst);
+        stop.stop();
+    }));
+    hooks.at_exit = Some(Box::new(crate::stdout::flush));
+}
+
+fn handler_error(err: std::io::Error) -> Box<Diagnostic> {
+    Box::new(
+        Diagnostic::error("E0803", "cannot install the Ctrl-C handler").with_note(err.to_string()),
+    )
+}
+
 /// Subscribe the VHPI observer (`--vhpi`) and the waveform recorder (`--wave`) to `sim`, for
 /// `yavs run` with or without `--dap`; returns the recorder and its file.
 fn observers(
@@ -1236,7 +1269,6 @@ fn observers(
     e: &yavs_elab::Elaborated,
     sim: &mut yavs_kernel::SimControl,
     built: Option<&yavs_elab::Built>,
-    interrupted: &Arc<AtomicBool>,
     out: &mut Out,
 ) -> Result<Option<(String, yavs_wave::Recorder)>, Box<Diagnostic>> {
     let none = SourceMap::default();
@@ -1282,20 +1314,6 @@ fn observers(
                         );
                     }
                     sim.subscribe(Box::new(rec.clone()));
-                    // Ctrl-C ends the run between cycles so the file is finished (rule 11).
-                    let (stop, flag) = (sim.interrupt(), interrupted.clone());
-                    if let Err(err) = yavs_wave::interrupt::install_with(
-                        move || {
-                            flag.store(true, Ordering::Relaxed);
-                            stop.stop();
-                        },
-                        crate::stdout::flush,
-                    ) {
-                        return Err(Box::new(
-                            Diagnostic::error("E0803", "cannot install the Ctrl-C handler")
-                                .with_note(err.to_string()),
-                        ));
-                    }
                     Some((path.clone(), rec))
                 }
                 Err(err) => return Err(Box::new(wave_error(path, err))),

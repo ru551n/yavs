@@ -2186,6 +2186,17 @@ Left in the floor (not changed here, owners named):
    would save 9 ms.
 3. Package initialisation (20 to 28 ms for a library with a protected-type logger) waits for #422.
 
+### Floor of a run: one signal thread; relocations and line tables (#562, #600, 2026-10-23)
+
+A `yavs run` started three helper threads for Ctrl-C/SIGTERM, SIGUSR1 hang reports and writing out piped output; it starts
+one (`yavs_wave::interrupt::start`). Tiny run (`array_attrs`, stdout a pipe, bench builds, pinned core, 100 interleaved
+runs): 7.76 M to 7.54 M instructions, 10.96 M to 10.59 M cycles (-3.4%); with the `llvm` feature 8.08 M to 7.82 M and 10.25 M
+to 9.81 M (-4.3%); a warm `analyze` 1 to 2% fewer instructions, cycles level. Packed relative relocations
+(`-z pack-relative-relocs`) do not help (cycles +1 to 3%, 12 000 more instructions in `--version`) and cannot be linked by the
+release toolchain (zig 0.14.1, x86_64 and aarch64 at glibc 2.17); release line tables are not loaded and change nothing at
+run time (they are 17.6 MB of the 24.9 MB gzipped executable). `docs/decisions.md` "Release executable: no packed
+relocations, line tables stay; one signal thread".
+
 ### floor of a run: the lowered design is cached (#479)
 
 Elaboration lowered every subprogram a library testbench reaches again on each run and verified all of

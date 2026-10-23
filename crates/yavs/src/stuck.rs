@@ -2,42 +2,18 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use yavs_diag::Diagnostic;
 use yavs_kernel::{Interrupt, ProcWait, StuckReport};
 
 /// A report was asked for (SIGUSR1) since the last `take_request`.
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Print a report of the running simulation on SIGUSR1: a thread of this module sets a flag and
-/// pauses the kernel between two cycles, `yavs run` reports and continues. Nothing on Windows.
-#[cfg(unix)]
-pub(crate) fn on_signal(pause: Interrupt) -> Result<(), Box<Diagnostic>> {
-    use signal_hook::{consts::SIGUSR1, iterator::Signals};
-    let fail = |e: std::io::Error| {
-        Box::new(
-            Diagnostic::warning(
-                "W0116",
-                "cannot install the SIGUSR1 handler for hang reports",
-            )
-            .with_note(e.to_string()),
-        )
-    };
-    let mut signals = Signals::new([SIGUSR1]).map_err(fail)?;
-    std::thread::Builder::new()
-        .name("yavs-sigusr1".into())
-        .spawn(move || {
-            for _ in signals.forever() {
-                REQUESTED.store(true, Ordering::SeqCst);
-                pause.pause();
-            }
-        })
-        .map(drop)
-        .map_err(fail)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn on_signal(_pause: Interrupt) -> Result<(), Box<Diagnostic>> {
-    Ok(())
+/// The SIGUSR1 hook of `yavs_wave::interrupt` (its thread, no thread of ours): sets the flag and
+/// pauses the kernel between two cycles, `yavs run` reports and continues.
+pub(crate) fn on_request(pause: Interrupt) -> Box<dyn Fn() + Send> {
+    Box::new(move || {
+        REQUESTED.store(true, Ordering::SeqCst);
+        pause.pause();
+    })
 }
 
 /// Whether a report was asked for; clears the request.

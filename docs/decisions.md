@@ -4887,7 +4887,45 @@ Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians
   `/proc/self/maps`) is 6 to 7% of a tiny run; avoiding it needs a C `main` (`#![no_main]`), which loses the runtime's
   stack overflow report and needs the exit status as a number. The two helper threads that start with every piped run
   (the output flusher and the Ctrl-C handler) cost 6% together; starting them late needs a time source that does not
-  depend on interpreted activity.
+  depend on interpreted activity (the two threads were merged into one with the SIGUSR1 thread: "Release executable: no packed
+relocations, line tables stay; one signal thread", #562).
+
+## Release executable: no packed relocations, line tables stay; one signal thread (#600, #562, 2026-10-23)
+
+- **Packed relative relocations (`-C link-arg=-Wl,-z,pack-relative-relocs`, DT_RELR) are not used** (user, 2026-10-23: PIE
+  stays, this option was to be measured). Measured on a release build of main (bench build, GNU ld 2.46, glibc 2.43, pinned
+  core 12 and 13, 100 interleaved runs, `perf stat`): the 13 819 relative relocations become 3 960 bytes of RELR and 4 008
+  bytes of RELA, a tiny `run` executes 0.4% fewer instructions and 1% MORE cycles (the spread of one run is 5 to 10%), a
+  warm `analyze` 0.4% fewer instructions and 2 to 3% more cycles, `yavs --version` has 12 000 more user instructions (the RELR
+  applier) and the same 280 page faults: the cost of the relocations is the copy-on-write of the pages they touch, which
+  packing does not remove (the finding of round 3 holds). It also cannot be shipped: the Linux release archives are linked by
+  zig 0.14.1 (cargo-zigbuild), whose linker fails with "unsupported linker extension flag: -z pack-relative-relocs" (checked
+  with a hello-world crate, `cargo zigbuild --target x86_64-unknown-linux-gnu.2.17` and `aarch64-unknown-linux-gnu.2.17`, the
+  same flag as in the release job; DT_RELR is an ELF feature, the Windows archive is not concerned), and DT_RELR needs a glibc 2.36 loader
+  (GNU ld marks the executable with `GLIBC_ABI_DT_RELR`), against the 2.17 baseline of the archives.
+- **Line tables in release builds stay** (`profile.release.debug = "line-tables-only"`). They are not loaded: an executable
+  with the debug sections stripped runs the same (cycles 0.99 to 1.01 of the original, instructions within 0.5%, same page
+  faults); a fully stripped one (also without `.symtab`, not a line-table question) was 2% faster in a tiny run in
+  all four batches (0.98, 0.98, 0.99, 0.98 of the cycles; within the spread of a run, consistent in sign), which is not
+  landed: it costs the names in `perf` and `gdb` on a downloaded binary. A question for the maintainer. The artefacts need no backtrace: both panic hooks are silent (`main.rs`, `analyze.rs`), an internal error is a
+  diagnostic. What line tables cost is download size: the Linux executable gzips to 24.9 MB with them and 7.3 MB without
+  (`strip-debug`). Left to the maintainer: dropping them is a size decision, not a speed one.
+- **One thread serves Ctrl-C/SIGTERM, SIGUSR1 and the output flusher** (`yavs_wave::interrupt::Handlers`, started once by
+  `yavs run` just before the simulation, #562; user, 2026-10-23: merge, no semantic change, no new unsafe). A run used to
+  start three threads for them (the `ctrlc` crate's, `stdout-flush`, `yavs-sigusr1`; the first two cost 6.7% of a tiny run).
+  On Unix the signal handlers of `signal-hook` set a flag and write a byte to a socket pair (both safe code); the thread waits
+  on the socket with a read timeout of 100 ms (`stdout::TICK`) and after each wake handles the signals, then writes out the
+  buffer. What it does is as before: the first SIGINT/SIGTERM/SIGHUP calls `first` (flush and exit 130; or stop between
+  cycles with a recorder or `--profile`), the second runs `at_exit` and exits 1, SIGUSR1 pauses the kernel and the run reports.
+  The handlers are installed where the Ctrl-C handler was (so from before the first instruction of the simulation), SIGUSR1
+  from there instead of a few statements later (a pause before `run_until` is a pause request, answered with the report at
+  once). A socket gets one byte per Ctrl-C/SIGTERM, so two signals that arrive before the thread runs count twice (the second
+  exits), as with the `ctrlc` crate. If the thread cannot be started, the output is written line by line and W0116 says so (a recorder: E0803, as
+  before). Windows keeps the `ctrlc` handler and a tick thread (the console handler runs on a thread of its own there).
+  Measured (bench builds, core 12 and 13, 100 interleaved runs each, stdout a pipe): a tiny `run` (`array_attrs`) 7.76 M to
+  7.54 M instructions, 10.96 M to 10.59 M cycles (-3.4%) without the `llvm` feature, and 8.08 M to 7.82 M instructions, 10.25
+  M to 9.81 M cycles (-4.3%) with it; a warm `analyze` 1 to 2% fewer instructions (the executable has 570 relocations fewer), cycles
+  level within the spread. The compile thread of `--tier=auto` is the one helper thread left (#562).
 
 ## `--tier=auto` compile policy: no candidate holds up another, natively called functions repay after twice their compile time (yavs-llvm, #572, #520, #493, 2026-10-23)
 

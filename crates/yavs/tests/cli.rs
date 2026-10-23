@@ -388,6 +388,102 @@ fn signal_keeps_reports() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// The output of a run that goes quiet is written out within a fraction of a second, with no
+/// signal: the tick of the signal thread (#562).
+#[cfg(unix)]
+#[test]
+fn quiet_run_is_flushed() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("quiet_flush");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", &lib, "signal_flush.vhd"])
+        .current_dir(&dir)
+        .status()
+        .expect("run");
+    assert!(a.success());
+    let (ready, out) = (tmp.join("ready"), tmp.join("out"));
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["run", &lib, &format!("-gready={}", ready.display())])
+        .arg("signal_flush")
+        .current_dir(&dir)
+        .stdout(std::fs::File::create(&out).expect("out"))
+        .spawn()
+        .expect("spawn");
+    let t0 = std::time::Instant::now();
+    let mut seen = false;
+    while !seen && t0.elapsed().as_secs() < 60 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        // The report is made before the marker file exists; the process then computes for ever.
+        seen = ready.exists()
+            && std::fs::read_to_string(&out).is_ok_and(|t| t.contains("before signal"));
+    }
+    child.kill().expect("kill");
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(seen, "the report was not written out while the run went on");
+}
+
+/// Two signals end a run that is stuck inside one cycle: the second exits with status 1
+/// after writing out the reports, also when they come in one burst (#562: one thread counts them).
+#[cfg(unix)]
+#[test]
+fn second_signal_exits_at_once() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli");
+    let tmp = tempdir("second_signal");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args(["analyze", &lib, "signal_flush.vhd"])
+        .current_dir(&dir)
+        .status()
+        .expect("run");
+    assert!(a.success());
+    let (ready, out) = (tmp.join("ready"), tmp.join("out"));
+    // `--wave`: the first signal only asks the run to stop between cycles (`--profile` would do
+    // too, but its second signal crashes in an llvm build, #625).
+    let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
+        .args([
+            "run",
+            &format!("--wave={}", tmp.join("w.fst").display()),
+            &lib,
+            &format!("-gready={}", ready.display()),
+        ])
+        .arg("signal_flush")
+        .current_dir(&dir)
+        .stdout(std::fs::File::create(&out).expect("out"))
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let t0 = std::time::Instant::now();
+    while !ready.exists() {
+        assert!(t0.elapsed().as_secs() < 60, "the run never got going");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let pid = child.id().to_string();
+    // Two signals at once; if the kernel merged them, one more every 150 ms until it ends.
+    let kill = |pids: &[&str]| {
+        let k = Command::new("kill").arg("-INT").args(pids).status();
+        assert!(k.expect("kill").success());
+    };
+    kill(&[&pid, &pid]);
+    let t0 = std::time::Instant::now();
+    let status = loop {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        if let Some(s) = child.try_wait().expect("wait") {
+            break s;
+        }
+        if t0.elapsed().as_secs() > 20 {
+            child.kill().expect("kill");
+            panic!("two signals did not end the run");
+        }
+        kill(&[&pid]);
+    };
+    assert_eq!(status.code(), Some(1), "{status:?}");
+    let text = std::fs::read_to_string(&out).expect("read");
+    assert!(text.contains("before signal"), "{text:?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Runs `yavs run` on `long_report` with a piped stdout; `extra` are more arguments.
 #[cfg(unix)]
 fn spawn_long_report(tmp: &Path, extra: &[&str]) -> std::process::Child {

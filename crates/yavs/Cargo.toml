@@ -25,9 +25,6 @@ yavs-wave = { path = "../yavs-wave" }
 yavs-llvm = { path = "../yavs-llvm", optional = true }
 yavs-vhpi = { path = "../yavs-vhpi" }
 
-[target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
-
 [build-dependencies]
 sha2 = "0.11"
 

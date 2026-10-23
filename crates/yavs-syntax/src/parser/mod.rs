@@ -290,6 +290,10 @@ impl<'a> Parser<'a> {
                 Tok::Semi | Tok::Kw(Kw::End | Kw::Begin) => return false,
                 Tok::LBrace | Tok::Imply | Tok::Kw(Kw::Next | Kw::Strong) => return true,
                 Tok::Ident => {
+                    if !self.psl_names.is_empty() && self.psl_names.contains(&self.make_ident(t).key)
+                    {
+                        return true;
+                    }
                     let w = self.text(t).to_ascii_lowercase();
                     if matches!(w.as_str(), "always" | "never" | "eventually" | "forall")
                         || w.starts_with("next_")

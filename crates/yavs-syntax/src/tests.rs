@@ -1002,6 +1002,9 @@ fn psl_outside_the_subset_is_skipped() {
         let src = format!("{pre}{f}\nend;");
         assert_eq!(psl_warnings(&src), ["W0004"], "{f}");
     }
+    // A directive that only names a skipped property is skipped too (#593).
+    let src = "architecture a of e is\nproperty p0 is always a;\nbegin\nl: assert p0 report \"x\";\nend;";
+    assert_eq!(psl_warnings(src), ["W0004"]);
     // Without a clock: skipped.
     assert_eq!(psl_warnings(&conc("assert always a;")), ["W0004"]);
     // A default clock holds in its block only.

@@ -209,14 +209,10 @@ impl Db {
         let scope = self.add_scope(scope_kind, Some(context), Some(decl));
         self.units[unit].scope = scope;
         let hir = match &ast.unit {
+            L::Package(p) if p.generic_map.is_some() => {
+                UnitHir::PackageInst(self.mapped_package(context, scope, decl, p)?)
+            }
             L::Package(p) => {
-                if p.generic_map.is_some() {
-                    return Err(self.unsupported(
-                        p.name.span,
-                        "a package with a generic map",
-                        "S4",
-                    ));
-                }
                 let generics = p.generics.as_ref().map(|g| self.generic_list(scope, g));
                 let is_standard = self.is_std_standard(unit);
                 if is_standard {
@@ -238,6 +234,13 @@ impl Db {
             }
             L::PackageBody(b) => {
                 let package = self.units[unit].deps[0];
+                if matches!(self.units[package].hir, UnitHir::PackageInst(_)) {
+                    return Err(self.unsupported(
+                        b.name.span,
+                        "a package body of a package with a generic map",
+                        "S4",
+                    ));
+                }
                 self.decls_in(scope, &b.decls);
                 let pscope = self.units[package].scope;
                 let _ = self.check_protected_bodies(pscope, b.span);

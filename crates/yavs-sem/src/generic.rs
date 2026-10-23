@@ -997,6 +997,18 @@ impl Db {
         let d = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
         let s = self.add_scope(ScopeKind::Instance, Some(scope), Some(d));
         let inst = self.package_instance(scope, s, d, p)?;
+        self.declared_instance(scope, d, s, inst, p.name.span)
+    }
+
+    /// Declares package instance `inst` (region `s`) as `d` in `scope`, with the 4.9 checks.
+    pub(crate) fn declared_instance(
+        &mut self,
+        scope: ScopeId,
+        d: DeclId,
+        s: ScopeId,
+        inst: InstId,
+        name_span: Span,
+    ) -> Result<(), Reported> {
         self.decls[d].kind = DeclKind::PackageInst(inst);
         self.declare(scope, d);
         let mut objs = self.decls_with_instances(s);
@@ -1005,10 +1017,10 @@ impl Db {
         if self.sequential_owner(scope).is_some() {
             match self.generic_body_scope(inst)? {
                 Some(b) => objs.extend(self.decls_with_instances(b)),
-                None => self.pending_inst_checks.push((inst, scope, p.name.span)),
+                None => self.pending_inst_checks.push((inst, scope, name_span)),
             }
         }
-        self.check_instance_objects(objs, scope, p.name.span)
+        self.check_instance_objects(objs, scope, name_span)
     }
 
     /// `E1237` for the first signal or shared variable among `objs`, the objects of an
@@ -1037,24 +1049,31 @@ impl Db {
         p: &ast::PackageInstance,
     ) -> Result<InstId, Reported> {
         let g = self.generic_package_of(scope, &p.package)?;
+        let assocs = p.generic_map.as_deref().unwrap_or(&[]);
+        self.instantiate_package(scope, inst_scope, site, g, assocs, p.name.span)
+    }
+
+    /// The instance of generic package `g` made in `inst_scope` for `site`, generics mapped
+    /// by `assocs` looked up in `scope`.
+    pub(crate) fn instantiate_package(
+        &mut self,
+        scope: ScopeId,
+        inst_scope: ScopeId,
+        site: DeclId,
+        g: DeclId,
+        assocs: &[ast::AssocElem],
+        name_span: Span,
+    ) -> Result<InstId, Reported> {
         let Some((gscope, formals)) = self.generic_package(g) else {
-            return Err(self.ice(p.span, "generic package without generics"));
+            return Err(self.ice(name_span, "generic package without generics"));
         };
         let what = format!("package `{}`", self.decls[g].name);
-        let assocs = p.generic_map.as_deref().unwrap_or(&[]);
         let (actuals, assoc_ok) = self.associate(scope, &what, &formals, assocs);
         let mut r = Remap::new(gscope, inst_scope);
         let mut map = GenericMap::default();
         let overflow = self.overflow.len();
         let bound = self.bind_formals(
-            scope,
-            inst_scope,
-            p.name.span,
-            gscope,
-            &formals,
-            &actuals,
-            &mut r,
-            &mut map,
+            scope, inst_scope, name_span, gscope, &formals, &actuals, &mut r, &mut map,
         );
         if bound.is_ok() {
             self.fill_scope(&mut r, gscope, inst_scope);

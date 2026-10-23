@@ -2402,6 +2402,10 @@ An installed binary finds `lib/` next to itself (#43).
   #363, L104) pick one of overloaded formal subprograms in subprogram, package and entity
   instances; the signature may name a generic type of the same list; one that fits no formal is
   `E1630`: `tests/diag/sem/gen/generic_map_signature_*`, difftest `generics/generic_map_signature_2019`.
+- A package declaration with a generic map aspect (4.7, 4.9, #598, L128) is analysed as an invisible
+  generic package and instantiated, in a library and in a declarative part, and runs:
+  `tests/diag/sem/unit/package_generic_map_*`, difftest `generics/package_generic_map`, catalogue
+  `package-generic-map`; its package body is `E9999`.
 - Negative suite `tests/diag/sem` run by `tests/diag_sem.rs` (exact code, line and column; optional
   rendered `.stderr` snapshots); what still fails is in `tests/diag_sem_xfail.txt` (the
   aggregates and case choices group passes, #45; external names and literals, #49; aliases, #46).

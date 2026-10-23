@@ -8,7 +8,7 @@ use yavs_syntax::ast;
 use crate::db::{Db, Reported};
 use crate::decl::{DeclKind, Designator};
 use crate::diag;
-use crate::ids::{DeclId, ScopeId};
+use crate::ids::{DeclId, InstId, ScopeId};
 use crate::scope::ScopeKind;
 
 impl Db {
@@ -19,7 +19,10 @@ impl Db {
         p: &ast::PackageDecl,
     ) -> Result<(), Reported> {
         if p.generic_map.is_some() {
-            return Err(self.unsupported(p.name.span, "a package with a generic map", "S4"));
+            let d = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
+            let s = self.add_scope(ScopeKind::Instance, Some(scope), Some(d));
+            let inst = self.mapped_package(scope, s, d, p)?;
+            return self.declared_instance(scope, d, s, inst, p.name.span);
         }
         let d = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
         let s = self.add_scope(ScopeKind::Package, Some(scope), Some(d));
@@ -33,6 +36,33 @@ impl Db {
         self.declare(scope, d);
         self.decls_in(s, &p.decls);
         if failed { Err(Reported) } else { Ok(()) }
+    }
+
+    /// `package p is generic (...); generic map (...); ... end;` (4.7, 4.9): the declaration is
+    /// analysed as an invisible generic package in a region of its own and instantiated into
+    /// `inst_scope`, the region `site` stands for (the unit's or the declared package's).
+    pub(crate) fn mapped_package(
+        &mut self,
+        scope: ScopeId,
+        inst_scope: ScopeId,
+        site: DeclId,
+        p: &ast::PackageDecl,
+    ) -> Result<InstId, Reported> {
+        let d = self.new_decl(scope, Designator::Ident(p.name), DeclKind::Error, p.span);
+        let s = self.add_scope(ScopeKind::Package, Some(scope), Some(d));
+        let generics = p.generics.as_ref().map(|g| self.generic_list(s, g));
+        let failed = matches!(generics, Some(Err(_)));
+        self.decls[d].kind = DeclKind::Package {
+            scope: s,
+            generics: generics.and_then(Result::ok),
+            body: None,
+        };
+        self.decls_in(s, &p.decls);
+        if failed {
+            return Err(Reported);
+        }
+        let assocs = p.generic_map.as_deref().unwrap_or(&[]);
+        self.instantiate_package(scope, inst_scope, site, d, assocs, p.name.span)
     }
 
     /// `package body p is ... end;` in a declarative part: in the region declaring `p`, or, for
@@ -52,6 +82,22 @@ impl Db {
             })
         });
         let Some(d) = found else {
+            // The declaration is a mapped package, not an instance of a generic package.
+            if regions.iter().any(|&r| {
+                self.scopes[r].names.get(&b.name.key).is_some_and(|ds| {
+                    ds.iter().any(|&d| {
+                        matches!(self.decls[d].kind, DeclKind::PackageInst(i)
+                            if self.decls[self.insts[i].generic].name == self.decls[d].name
+                                && self.decls[self.insts[i].generic].scope == self.decls[d].scope)
+                    })
+                })
+            }) {
+                return Err(self.unsupported(
+                    b.name.span,
+                    "a package body of a package with a generic map",
+                    "S4",
+                ));
+            }
             return Err(self.error(
                 Diagnostic::error(
                     diag::NO_PRIMARY,

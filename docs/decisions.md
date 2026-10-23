@@ -4131,6 +4131,15 @@ general update path for every cycle where two clocks edge together (`update_gene
   `wide_registers_are_direct_entries_per_plane_word` compares the set and the reports, forces, releases and deposits
   included). What is left of that design: the per-word update (`update_word`, ~470 instructions per changed plane word,
   half of it the event records of `blk_event`), 17% of its cycles.
+- **Measured and not taken** (numbers in `docs/STATUS.md` "Kernel round 17"): merging the processes of a clock into one batch
+  (at most 1.5 to 6.7% of the instructions of the real-world designs, needs shared frames and error-order care); the idle skip
+  for processes with variables or constant-written variables (under 3% of the activations that were not skipped already, none
+  in `hdlm_lfsr`); `#[inline(always)]` on `Machine::run_quick` (-4% instructions of the near-idle `rtl_fan`, +0.3% of the CPU
+  designs and a worse cycle geometric mean: the interpreter rule says no); a hoisted per-word update for wide buses and an
+  inline record list (-0.8% instructions of the 512-bit design, cycles level); a cheaper empty delta cycle and a sorted array
+  for the future queue (~130 and ~25 instructions of ~2300 per cycle of a three-clock testbench). Idea of the reference
+  simulator's kernel used (rewritten for ours): one pass drains every due heap event of a time step (here several timed
+  entries: a clock edge and the timeouts that fall on it).
 - **The idle skip records its state on the pool path** (`commit_rest`): a plain activation of a tracked process calls
   `note_idle` before the commit takes its lists, as the serial batch loop does, instead of forgetting the state. Runs with
   4 threads skip the same activations as runs with 1 (`idle_skips` and `process_runs` equal; `tests/idle_skip.rs`

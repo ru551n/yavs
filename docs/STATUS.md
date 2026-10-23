@@ -3914,6 +3914,36 @@ Checks on the pushed range: `cargo fmt`, `cargo clippy --workspace --all-targets
 `--tier=auto` and `--tier=llvm` (1 and 4 threads), 4 threads shuffled, and `--tier=auto` with `--no-collapse-ports`; UVVM suite 102 pass,
 9 fail, 26 skip as before; OSVVM `.pro` 314 of 314 under 2008 and 2019.
 
+### Kernel round 17: coincident timed entries, resident big processes, wide direct entries (#440, 2026-10-23)
+
+(`docs/decisions.md` "Kernel round 17".) Baseline first (a ptrace single-stepper over `examples/clk.rs` and windows of
+real-world designs, exact per-function and per-line counts; `perf record` cycles and L1 misses of the suite; bench builds, core 8):
+a bare clock edge is 933 kernel instructions (round 15's number; the ~1330 of the brief was round 14), a near-idle interpreted
+activation (`rtl_fan`) 678 (`run_ops` 422 of which ~80 entry and ~30 exit, `run_quick` 103, `run_batch` 97, `InterpProcess::run` 55),
+a near-idle compiled one (`--tier=llvm`, `rtl_fan`, before #634's leaner activation) 926 of which the compiled code itself is ~90
+(after it 702: `run_quick` 160, `enter` 134, `run_batch` 101, `view_again` 80, `Process::run` 55). The kernel is 37 to 41% of the
+cycles of `neorv32_single_min` and the fletcher testbenches, 63% of `sc5_timestamp`, 54% of `rtl_chain`, 29% of `rtl_fan`, 14% of
+`rtl_ff`, 17 to 21% of `sc5_fifo_repack`, `poc_cache_cpu` and `hdlm_lfsr`. Ranked by instructions saved times breadth:
+
+| Change | Commit | Instructions | Cycles |
+|---|---|---:|---:|
+| Several timed entries due together (clocks that edge together, timeouts on edges) stay on the timed path | 648741bf | `sc5_timestamp` 0.959 | 0.903 |
+| Processes of up to 2048 registers keep their register file (was 256) | c0a614a1 | `neorv32_single_min` 0.990, `fletcher_bufferreader` 0.977, `fletcher_bufferwriter_512` 0.989, `poc_cache_cpu` 0.999 | 0.977, 0.951, 0.973, 0.977 |
+| A vector of more than 64 elements assigned to a direct driver is one entry per plane word | 0ad2e8a1 | `fletcher_bufferwriter_512` 0.957 | 0.893 |
+| The idle skip records its state on the pool path (4 threads skip what 1 thread skips) | 173fae51 | equal skips at 1 and 4 threads | - |
+
+All 15 designs together (`main` before this round against the pushed tip, bench builds, minimum of 5 alternating runs): instructions
+geometric mean 0.991, cycles 0.984 (`rtl_ff`, `rtl_lfsr`, `rtl_fan`, `rtl_bus` level within 0.2% in instructions).
+Measured and not done: merging the processes of a clock into one batch (the fixed part of an activation the merge could remove,
+`run_batch` + `Process::run` + `run_quick` + `run_ops` entry and exit, ~340 instructions, is at most 5.1% of `neorv32_single_min`,
+6.7% of `fletcher_bufferreader`, 2.9% of the writer, 5.1% of `poc_cache_cpu`, 1.5% of `sc5_fifo_repack`, 2.1% of `hdlm_lfsr`); the idle
+skip for processes with variables (clocked processes outside the pure shape that did nothing: 330 k of 9.9 M activations in
+neorv32, 0.5 M of 8.2 M in the fletcher reader, 0.25 M of 2.6 M in `sc5_fifo_repack`, 0 in `hdlm_lfsr`, whose variable changes at
+every edge); the general update path for designs with implicit signals (at most 5% of the cycles of `osvvm_axi4_random`, nothing
+elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130 of ~2300 instructions each); `#[inline(always)]` of
+`Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
+look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
+
 ### Idle activations of pure clocked processes, GUARD in the update phase (#440, #464, 2026-10-23)
 
 (`docs/decisions.md` "Kernel round 16", "GUARD changes in the cycle of its condition".) A clocked process whose activation is a

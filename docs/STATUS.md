@@ -563,6 +563,22 @@ every analysis corpus.
 Analysing a file again whose unit a later file replaced (the same entity name in two files) re-parses it and analyses all
 its units like the first time (#577; the manifest marks such a file `partial`).
 
+Analysing a library file by file (#581, #584): the head-to-head's "slower than sim1" cells (hdl-modules FIFO selection 1.45,
+satcat5 1.37, Open Logic 1.16) were the per-call manifest fsync (#561, fixed in 60ebdc2e): at 65b7f573 the hdl-modules FIFO
+selection took 5.5 s cold and 4.4 s warm, on the main before this work 2.3 s and 1.4 s (cores 8 and 9, same host load,
+sim1 4.5 s). What was left per call was CPU: a warm file replayed its whole dependency closure (85 units, 2 MB for an Open
+Logic testbench) to give back the records the manifest holds, the work library's manifest was parsed twice and rendered by
+the `toml` serializer per call (satcat5's one 244 KB manifest made its warm call as dear as its cold one), and every
+file repeated the warnings of the library units it read. Now a warm file whose units report nothing and whose manifest
+record is the entry's is registered, not loaded (`Db::warm_records`), the manifest is parsed once and written directly,
+and `analyze` shows warnings for the files named in the call only. `tools/realbench --compare --phases analyze` (cores 8,9,
+5 runs, interleaved, 41 tests, loaded host): wall geometric mean cold 0.94, warm 0.53 (library part 0.94 and 0.54; own
+files 0.97 and 0.71), instructions 0.91 and 0.38; against sim1 (lib + own, seconds, cold: sim1 / main / now, warm: sim1 /
+main / now): hdl-modules FIFO 4.14 / 2.31 / 2.03 and 4.52 / 1.42 / 0.76, Open Logic 7.95 / 4.29 / 4.09 and 7.92 / 3.14 /
+1.53, satcat5 6.72 / 3.82 / 3.34 and 7.22 / 3.47 / 1.89, OSVVM 11.70 / 6.90 / 6.73 and 12.31 / 4.38 / 2.36, UVVM 2.83 /
+1.56 / 1.52 and 2.72 / 0.73 / 0.53. What is left per call is the size of the work library's manifest (read, parse, clone,
+render, write per call), the table snapshots of `frame_end` (cold), and the dynamic loader relocating the 97 MB executable.
+
 Real-world suite (`tools/realbench`, phases analyze, elab, run interp; P-core 2; main before the cache against main
 with it, geometric mean of the wall ratio over 41 tests): analyze cold 0.68 (OSVVM compile order 16.1 s to 5.9 s,
 UVVM 0.45 to 0.56), analyze warm 0.43, elab cold 0.71, elab warm 0.96, run unchanged (1.00). Against sim1 (P-core 4,

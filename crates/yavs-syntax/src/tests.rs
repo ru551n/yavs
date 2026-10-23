@@ -1009,6 +1009,13 @@ fn psl_sequences_become_checker_processes() {
         "assert always ({a; b} |-> c) @falling_edge(clk);",
         "l: assume always {a} |-> {b} report \"r\" severity warning;",
         "cover {rose(a); stable(b)};",
+        "cover {[*]; a; b};",
+        "cover {[*2]; a};",
+        "assert always a |=> b;",
+        "assert a |-> next b;",
+        "assert never a[*3];",
+        "assert never (a = '1')[->2];",
+        "cover a[*2];",
     ];
     for f in forms {
         let src =

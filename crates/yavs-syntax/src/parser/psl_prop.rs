@@ -39,6 +39,8 @@ const MAX_BOUND: u32 = 64;
 
 /// A parsed property.
 pub(super) enum Pt {
+    /// A property that never holds (the right side of `never {s}`).
+    False,
     Leaf(usize),
     /// A boolean that must be false (`never b`)
     NotLeaf(usize),
@@ -302,20 +304,6 @@ impl Parser<'_> {
             }
             return Ok(Pt::Leaf(self.tp_bool(lv)?));
         }
-        if self.psl_sequence_at(0) {
-            let s = self.sere_primary(lv)?;
-            if self.at(Tok::Bar) && matches!(self.nth(1), Tok::Imply | Tok::Arrow) {
-                self.bump();
-                let overlap = self.bump().kind == Tok::Imply;
-                let rhs = self.nested(|p| p.tp_prop(lv))?;
-                return Ok(Pt::Suffix {
-                    lhs: s,
-                    overlap,
-                    rhs: Box::new(rhs),
-                });
-            }
-            return Ok(Pt::Seq(s));
-        }
         if let Some(w) = self.tp_word() {
             let call = |p: &mut Self, lv: &mut Leaves| -> PResult<Box<Pt>> {
                 p.expect(Tok::LParen)?;
@@ -329,8 +317,16 @@ impl Parser<'_> {
                     let p = self.nested(|s| s.tp_prop(lv))?;
                     return Ok(Pt::Always(Box::new(p)));
                 }
-                "never" if !self.psl_sequence_at(1) => {
+                "never" => {
                     self.bump();
+                    if self.psl_sequence_at(0) {
+                        let s = self.sere_primary(lv)?;
+                        return Ok(Pt::Suffix {
+                            lhs: s,
+                            overlap: true,
+                            rhs: Box::new(Pt::False),
+                        });
+                    }
                     let p = self.nested(|s| s.tp_unary(lv))?;
                     return match p {
                         Pt::Leaf(k) => Ok(Pt::NotLeaf(k)),
@@ -378,7 +374,33 @@ impl Parser<'_> {
                 _ => {}
             }
         }
-        Ok(Pt::Leaf(self.tp_bool(lv)?))
+        if self.psl_sequence_at(0) {
+            let s = self.sere_primary(lv)?;
+            if self.at(Tok::Bar) && matches!(self.nth(1), Tok::Imply | Tok::Arrow) {
+                self.bump();
+                let overlap = self.bump().kind == Tok::Imply;
+                let rhs = self.nested(|p| p.tp_prop(lv))?;
+                return Ok(Pt::Suffix {
+                    lhs: s,
+                    overlap,
+                    rhs: Box::new(rhs),
+                });
+            }
+            return Ok(Pt::Seq(s));
+        }
+        let k = self.tp_bool(lv)?;
+        // `a |=> p`: a boolean is a sequence of one.
+        if self.at(Tok::Bar) && matches!(self.nth(1), Tok::Imply | Tok::Arrow) {
+            self.bump();
+            let overlap = self.bump().kind == Tok::Imply;
+            let rhs = self.nested(|p| p.tp_prop(lv))?;
+            return Ok(Pt::Suffix {
+                lhs: Sere::Leaf(k),
+                overlap,
+                rhs: Box::new(rhs),
+            });
+        }
+        Ok(Pt::Leaf(k))
     }
 }
 
@@ -628,6 +650,7 @@ struct Out {
 
 fn to_term(pt: &Pt, sq: &mut Seqs) -> PResult<T> {
     Ok(match pt {
+        Pt::False => T::False,
         Pt::Leaf(k) => T::Lit(*k, true),
         Pt::NotLeaf(k) => T::Lit(*k, false),
         Pt::Seq(s) => {
@@ -673,6 +696,7 @@ impl TProp {
     /// Does the directive start only at the first tick?
     pub(super) fn needs_first(&self) -> bool {
         !matches!(self.pt, Pt::Always(_))
+            && !matches!(&self.pt, Pt::Suffix { rhs, .. } if matches!(**rhs, Pt::False))
     }
 }
 
@@ -694,6 +718,8 @@ pub(super) fn temporal_checker(
         Pt::Suffix { lhs, overlap, rhs } => (Some(lhs), overlap, *rhs),
         p => (None, true, p),
     };
+    // `never {s}` looks for matches from every tick.
+    let always = always || matches!(body, Pt::False);
     let mut sq = Seqs {
         nfa: Nfa::default(),
         frags: Vec::new(),
@@ -706,10 +732,12 @@ pub(super) fn temporal_checker(
     if !overlap {
         p0 = mk_next(1, p0);
     }
-    if p0 == T::False {
+    // `never {s}`: a failure at every match, no obligation to follow.
+    let never_seq = p0 == T::False && trig_frag.is_some() && overlap;
+    if p0 == T::False && !never_seq {
         return Err(Recover);
     }
-    let start: Vec<T> = conjuncts(p0);
+    let start: Vec<T> = if never_seq { Vec::new() } else { conjuncts(p0) };
     // Every term reachable from the start, with where it goes on each valuation of the
     // booleans it tests.
     let mut atoms: Vec<T> = Vec::new();
@@ -801,6 +829,9 @@ pub(super) fn temporal_checker(
         }
     };
     stmts.push(g.assign("\\psl fail\\", g.var("false")));
+    if never_seq {
+        stmts.push(g.assign("\\psl fail\\", inject(g)));
+    }
     for a in 0..atoms.len() {
         stmts.push(g.assign(&e(a), g.var("false")));
     }

@@ -405,6 +405,8 @@ Sequences in braces run in ``cover``, in ``assert never``, and on either side of
    p7: assert always {start; req} |=> {busy[*1 to 3]; ack};
    p8: assert always {write} |-> next[2] ready;
 
+A boolean stands for a sequence of one on the left of ``|->`` and ``|=>``, and with a repetition
+without braces (``never a[*3]``); ``[*n]`` first in a sequence means ``true[*n]``.
 A sequence has concatenation ``;``, fusion ``:``, alternation ``|``, ``&&`` (both match and end
 together), ``&``, ``within``, and ``[*]``, ``[+]``, ``[*n]``, ``[*m to n]``, ``[*m to inf]``,
 ``[=n]`` and ``[->n]`` repetition; ``|``, ``&``, ``&&`` and ``within`` need braces when mixed.

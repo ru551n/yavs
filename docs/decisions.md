@@ -727,7 +727,7 @@ Choices made while writing the M0 parser that the plan does not settle. Each is 
   Without `always` the directive starts at the first clock tick only. A sequence of one boolean,
   and `{a} |-> b`, `{a} |=> b`, keep the cheaper process of the simple subset. Empty matches (a
   sequence that can match the empty word) are ignored, except that a right side that is a star
-  from zero (`{b[*]}`) holds at once, as in both references. Fusion needs non-empty operands.
+  from zero (`{b[*]}`) holds at once, as in both references. Fusion needs non-empty operands. A `[*n]` that starts a sequence is `true[*n]`, and a boolean takes the place of a sequence of one before `|->`/`|=>` and, with a repetition, without braces (`never a[*3]`, `cover (a = '1')[->2]`).
   Not in this step: `ended`, strong sequences (`{s}!`), `eventually!`, `until`, `before`, `abort`,
   `next_e` and relatives, named sequences/properties, local variables, `forall`, units. Catalogue
   rows `psl-sere-*`; `tests/corpus/psl/psl_sequences{,_ops}.vhd`.

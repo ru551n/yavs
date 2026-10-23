@@ -155,6 +155,44 @@ impl Parser<'_> {
         self.nth(i) == Tok::LBrace
             || self.psl_named_at(i, DeclKind::Sequence).is_some()
             || self.psl_formal_is_sequence(i)
+            || self.psl_bare_repeat_at(i)
+    }
+
+    /// A boolean with a repetition and no braces (`a[*3]`, `(a = '1')[->2]`) starts at `i`
+    /// tokens ahead: a `[` followed by `*`, `+`, `=` or `->` at depth zero before the end of
+    /// the property.
+    pub(super) fn psl_bare_repeat_at(&self, i: usize) -> bool {
+        let mut depth = 0u32;
+        let mut j = (self.pos + i).min(self.eof_index());
+        while j < self.eof_index() {
+            match self.toks[j].kind {
+                Tok::LParen | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBrace => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                }
+                Tok::LBracket if depth == 0 => {
+                    return matches!(
+                        self.toks[j + 1].kind,
+                        Tok::Star | Tok::Plus | Tok::Eq | Tok::Imply
+                    );
+                }
+                Tok::Semi
+                | Tok::At
+                | Tok::Bar
+                | Tok::Imply
+                | Tok::Kw(Kw::Report | Kw::Severity)
+                    if depth == 0 =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        false
     }
 
     /// The property of a directive whose property starts with a sequence.
@@ -273,6 +311,10 @@ impl Parser<'_> {
             let s = self.psl_expand(d, |p| p.sere_concat(leaves))?;
             return self.sere_postfix(s, leaves);
         }
+        if self.psl_bare_repeat_at(0) {
+            let leaf = self.sere_leaf(leaves)?;
+            return self.sere_postfix(leaf, leaves);
+        }
         Err(Recover)
     }
 
@@ -346,6 +388,11 @@ impl Parser<'_> {
 
     /// A braced sequence or a boolean, with repetition operators.
     fn sere_item(&mut self, leaves: &mut Leaves) -> PResult<Sere> {
+        // `[*3]` alone is `true[*3]`.
+        if self.at(Tok::LBracket) {
+            let t = self.sere_true(leaves);
+            return self.sere_postfix(t, leaves);
+        }
         if self.psl_sequence_at(0) {
             return self.sere_primary(leaves);
         }

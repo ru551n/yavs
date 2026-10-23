@@ -1,7 +1,9 @@
 -- difftest: top=psl_sequences_ops std=2008 ref=hand exit=1 ignore=path,order
 -- ref=hand: the first reference simulator rejects or mishandles `|`, `within`, `&`, `[=n]` and
 -- sequences that start with `[*0 ..]`; the expected output is the LRM result, which the second
--- reference simulator also gives (its output agrees). IEEE 1850 6.1.1.2, 6.1.2.
+-- reference simulator also gives (its output agrees). IEEE 1850 6.1.1.2, 6.1.2. A `[*n]` that
+-- starts a sequence is `true[*n]`; a boolean stands for a sequence of one before `|->`/`|=>` and
+-- with a repetition after `never` or `cover`.
 library ieee;
 use ieee.std_logic_1164.all;
 entity psl_sequences_ops is end;
@@ -37,5 +39,11 @@ begin
   opt1:   cover {a = '1'; b = '1'[*0 to 1]; c = '1'} report "optional";
   rng1:   assert always {a = '1'} |=> {b = '1'[*1 to 2]; c = '1'} report "imp range";
   alt3:   assert always {a = '1'} |=> {{b = '1'} | {c = '1'}} report "imp alt";
+  anon1:  cover {[*]; a = '1'; b = '1'} report "anonymous repeat";
+  anon2:  cover {[*2]; a = '1'} report "anonymous count";
+  bare1:  assert always a = '1' |=> b = '0' report "boolean left side";
+  bare2:  assert never a = '1'[*2] report "never repeat";
+  bare3:  assert never (a = '1')[->2] report "never goto";
+  bare4:  cover a = '1'[*2] report "bare repeat";
   seqp:   assert always {{a = '1'; b = '1'} | {c = '1'; c = '1'}} |-> a = '1' report "lhs alt";
 end;

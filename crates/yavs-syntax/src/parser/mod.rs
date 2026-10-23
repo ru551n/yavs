@@ -317,6 +317,9 @@ impl<'a> Parser<'a> {
                 | Tok::Kw(Kw::Next | Kw::Strong | Kw::Until) => {
                     return true;
                 }
+                Tok::Bar if matches!(self.toks[i + 1].kind, Tok::Imply | Tok::Arrow) => {
+                    return true;
+                }
                 Tok::Ident => {
                     if !(self.psl_names.is_empty() && self.psl_decls.is_empty()) {
                         let key = self.make_ident(t).key;

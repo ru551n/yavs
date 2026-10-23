@@ -13,6 +13,12 @@
 //! point is left to the interpreter), so output is identical whenever compilation finishes
 //! (rule 5). At the end of a run `stop(false)` does not wait for a function being compiled;
 //! the CLI then ends the process with [`exit_now`].
+//!
+//! After the swap of a clocked process the thread measures what the compiled code did for the run
+//! (#596, [`Worker::trial`]): process runs per CPU second with it and with the interpreter running
+//! the process, a few windows in turn, and takes it back for good when the run did not progress
+//! faster. The static rules before the swap (size, instances, share, callbacks, search loops) are
+//! the first guess; the measure corrects what they cannot see.
 
 use std::panic::resume_unwind;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -320,24 +326,22 @@ pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
         return false;
     }
     let total = inside.iter().filter(|&&b| b).count();
-    // A call of a function that runs on native frames is a direct call.
-    let nc = crate::lower::native_set(
-        prog,
-        f.code.iter().filter_map(|i| match i {
-            yavs_ir::Inst::Call { func, .. } => Some(*func),
-            _ => None,
-        }),
-    );
-    let stepped = f
-        .code
-        .iter()
-        .zip(&inside)
-        .filter(|(i, b)| {
-            **b && !crate::lower::is_inline(prog, f, i)
-                && !matches!(i, yavs_ir::Inst::Call { func, .. } if nc.contains(func))
-        })
+    let nc = calls_native(prog, f);
+    let stepped = (0..f.code.len())
+        .filter(|&pc| inside[pc] && crate::lower::leaves(prog, f, pc, &nc))
         .count();
     stepped * 20 <= total
+}
+
+/// The functions `f` calls that run on native frames once compiled (a call of one is direct).
+fn calls_native(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> std::collections::HashSet<FuncId> {
+    native_set(
+        prog,
+        f.code.iter().filter_map(|i| match i {
+            yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } => Some(*func),
+            _ => None,
+        }),
+    )
 }
 
 /// The instructions an activation of process `f` runs once it has suspended (those reached from
@@ -365,18 +369,16 @@ fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> (usize, usize) {
             work.extend(s.into_iter().map(|t| t as usize));
         }
     }
-    let run = || {
-        f.code
-            .iter()
-            .zip(&seen)
-            .filter(|(_, b)| **b)
-            .map(|(i, _)| i)
-    };
-    let roots = run().any(|i| matches!(i, Inst::TempRoot { .. }));
-    let out = run()
-        .filter(|i| !crate::lower::is_inline(prog, f, i) || roots && matches!(i, Inst::Stmt))
+    let roots = (0..n).any(|pc| seen[pc] && matches!(f.code[pc], Inst::TempRoot { .. }));
+    let nc = calls_native(prog, f);
+    let out = (0..n)
+        .filter(|&pc| {
+            seen[pc]
+                && (crate::lower::leaves(prog, f, pc, &nc)
+                    || roots && matches!(f.code[pc], Inst::Stmt))
+        })
         .count();
-    (out, run().count())
+    (out, seen.iter().filter(|&&b| b).count())
 }
 
 /// Why hot process `f` stays interpreted: more than one in `CALLBACKS` of the instructions an
@@ -399,20 +401,9 @@ fn too_many_callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func, id: FuncId) ->
     if called_natively(prog, f, id) {
         return None;
     }
-    let nc = native_set(
-        prog,
-        f.code.iter().filter_map(|i| match i {
-            yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } => Some(*func),
-            _ => None,
-        }),
-    );
-    let out = f
-        .code
-        .iter()
-        .filter(|i| {
-            !crate::lower::is_inline(prog, f, i)
-                && !matches!(i, yavs_ir::Inst::Call { func, .. } | yavs_ir::Inst::CallProt { func, .. } if nc.contains(func))
-        })
+    let nc = calls_native(prog, f);
+    let out = (0..f.code.len())
+        .filter(|&pc| crate::lower::leaves(prog, f, pc, &nc))
         .count();
     (out * CALLBACKS > f.code.len()).then(|| {
         format!(
@@ -430,9 +421,10 @@ const CALLBACKS: usize = 10;
 
 /// Whether `f` is the body of a process that runs once per activation (a clocked or
 /// combinational process: no loop of its own, at least `SHORT` IR instructions). Its time goes
-/// to the signal and kernel operations compiled code reaches directly, so its first-level
-/// code at O0 runs as fast as O2 and compiles in a tenth of the time: it is compiled as soon
-/// as it has run for a few milliseconds, within the budget of a compute loop.
+/// to the signal and kernel operations compiled code reaches directly: it is compiled as soon as
+/// it has run for a few milliseconds, within the budget of a compute loop, at the final level
+/// (O0 code ran 15 to 25 percent slower than O2 on these bodies, so a trial of it said little), and
+/// measured after the swap (`Worker::trial`, #596).
 fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     f.kind == FuncKind::Process && (RTL_MIN..=RTL_MAX).contains(&f.code.len()) && !loops(prog, f)
 }
@@ -479,32 +471,169 @@ fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
 
-/// A clocked process (`rtl`) of fewer or more IR instructions than this stays interpreted
-/// (`outside_band`): of 136 instructions (`rtl_ff`) it ran 8 percent slower in cycles compiled, of 320
-/// and 458 13 to 17 percent (code size, #532); 200 to 280 gain. Interpreted, the classes still go
-/// through `cold`. ponytail: the length of the body stands for the work of an activation (`lfsr64`,
-/// 132, gains a little compiled and is refused too); a cost model of the activation, or a check of
-/// the progress before and after compiling, is the better rule (#575).
+/// The bodies of clocked processes that gained from compiled code in trials are 160 to 300 IR
+/// instructions long (#575): `rtl_lfsr` (206) and variants of `rtl_ff` (228, 274) gain a tenth to a
+/// fifth, `rtl_ff` itself (136) loses a tenth. Length stands for the work of an activation, which it
+/// does not (`lfsr64`, 132, gains 11 percent at ten times its default length), so the measurement
+/// after the swap judges all of them; the band only says how long a process must have been seen
+/// before it is tried outside it (`band_wait`), because a trial that takes the code back costs the
+/// run about 40 ms (+4 percent of `rtl_ff`'s 0.75 s, nothing at ten times that).
 const RTL_BAND: std::ops::RangeInclusive<usize> = 160..=300;
 
-/// Why an `rtl` process of `len` IR instructions stays interpreted: its length is outside `RTL_BAND`.
-fn outside_band(len: usize) -> Option<String> {
-    (!RTL_BAND.contains(&len)).then(|| {
-        format!(
-            "a clocked process of {len} IR instructions: compiled code of bodies outside {} to {} ran \
-             slower than interpreted",
-            RTL_BAND.start(),
-            RTL_BAND.end()
-        )
-    })
+/// The sampled microseconds a clocked process of `len` IR instructions must have been seen
+/// interpreted before it is compiled: none inside `RTL_BAND`, a second outside.
+fn band_wait(len: usize) -> u64 {
+    if RTL_BAND.contains(&len) {
+        0
+    } else {
+        1_000_000
+    }
 }
 
-/// Microseconds of compile time per IR instruction at O0.
-const US_PER_INSTR_O0: f64 = 30.0;
+/// A compiled function seen for at least this part of the sampled time is measured after its swap
+/// (`Worker::trial`): a smaller part moves the progress of the run less than the measure can see.
+const TRIAL_SHARE: u64 = 8;
 
-/// An `rtl` process is compiled again at O2 once seen running its first code this many times as
-/// long as `Heat::threshold` (the compile thread is another core).
-const RTL_O2_AFTER: u64 = 6;
+/// One window of a trial: at least this much CPU time of the simulation threads and `TRIAL_RUNS`
+/// process runs, and as many times the largest step the progress made between two looks (a
+/// millisecond apart; it is published once per delta cycle, so a window of few cycles counts too
+/// coarsely); else the run cannot be measured (it has no clock to speak of) and the compiled code
+/// stays. `TRIAL_MAX` bounds a window in wall time.
+const TRIAL_WINDOW: Duration = Duration::from_millis(25);
+const TRIAL_MAX: Duration = Duration::from_millis(250);
+const TRIAL_RUNS: u64 = 1000;
+const TRIAL_STEPS: u64 = 30;
+
+/// The compiled code stays when the run progressed at least this many times as fast with it as
+/// without; a ratio outside `TRIAL_CLEAR` after the first pair of windows decides at once.
+const TRIAL_KEEP: f64 = 1.05;
+const TRIAL_CLEAR: (f64, f64) = (0.9, 1.15);
+
+/// What a trial says about the compiled code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Verdict {
+    /// The run progressed faster with it: it stays.
+    Keep(f64),
+    /// It did not: it is taken back for good.
+    Drop(f64),
+}
+
+/// What the windows of a trial say: progress per CPU second with compiled code and with the
+/// interpreter, in pairs taken in turn. `None` while the pairs so far do not decide.
+fn decide(compiled: &[f64], interp: &[f64]) -> Option<Verdict> {
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let n = compiled.len().min(interp.len());
+    if n == 0 || mean(interp) <= 0.0 {
+        return None;
+    }
+    let r = mean(compiled) / mean(interp);
+    if r < TRIAL_CLEAR.0 {
+        // Not even O2 makes up for that.
+        return Some(Verdict::Drop(r));
+    }
+    // Clear after one pair or two, else a third pair and the margin.
+    let keep = |r: f64| Some(Verdict::Keep(r));
+    match n {
+        1 => (r >= TRIAL_CLEAR.1).then_some(Verdict::Keep(r)),
+        2 if r >= TRIAL_CLEAR.1 => keep(r),
+        2 if r >= TRIAL_CLEAR.0 + 0.05 => None,
+        2 => Some(Verdict::Drop(r)),
+        _ => Some(if r >= TRIAL_KEEP {
+            Verdict::Keep(r)
+        } else {
+            Verdict::Drop(r)
+        }),
+    }
+}
+
+/// CPU time of the simulation threads: that of the process less that of the calling thread (the
+/// compile thread, which sleeps during a trial). `None` where the platform has no such clock.
+#[cfg(target_os = "linux")]
+fn sim_cpu() -> Option<Duration> {
+    #[repr(C)]
+    struct Timespec {
+        sec: i64,
+        nsec: i64,
+    }
+    unsafe extern "C" {
+        fn clock_gettime(clock: i32, t: *mut Timespec) -> i32;
+    }
+    let read = |clock: i32| {
+        let mut t = Timespec { sec: 0, nsec: 0 };
+        // SAFETY: `t` is a `struct timespec` (64-bit `time_t`, as on the 64-bit Linux targets).
+        let ok = unsafe { clock_gettime(clock, &mut t) } == 0;
+        ok.then(|| Duration::new(t.sec as u64, t.nsec as u32))
+    };
+    // CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID
+    read(2)?.checked_sub(read(3)?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sim_cpu() -> Option<Duration> {
+    None
+}
+
+/// The progress per CPU second of the simulation threads in one window (per second of wall time
+/// where `cpu` has no clock), `None` when it ended with too little progress to say or the tier
+/// stopped.
+fn window(
+    progress: &dyn Fn() -> u64,
+    cpu: &dyn Fn() -> Option<Duration>,
+    halt: &dyn Fn() -> bool,
+    min: Duration,
+    max: Duration,
+) -> Option<f64> {
+    let (t0, p0, c0) = (std::time::Instant::now(), progress(), cpu());
+    let (mut last, mut step) = (p0, 0);
+    loop {
+        std::thread::sleep(Duration::from_millis(1));
+        let (wall, p) = (t0.elapsed(), progress());
+        if halt() {
+            return None;
+        }
+        step = step.max(p.wrapping_sub(last));
+        last = p;
+        let dt = match (cpu(), c0) {
+            (Some(c), Some(c0)) => c.saturating_sub(c0),
+            _ => wall,
+        };
+        let runs = p.wrapping_sub(p0);
+        if dt >= min && runs >= TRIAL_RUNS && runs >= TRIAL_STEPS * step {
+            return Some(runs as f64 / dt.as_secs_f64());
+        }
+        if wall >= max {
+            return None;
+        }
+    }
+}
+
+/// Run the windows of a trial: `swap(true)` puts the compiled code in (it is in when the trial
+/// starts), `swap(false)` the interpreter. A first window with the compiled code warms it up; then
+/// the interpreter and the compiled code in turn, twice at most.
+fn run_trial(
+    swap: &mut dyn FnMut(bool),
+    progress: &dyn Fn() -> u64,
+    cpu: &dyn Fn() -> Option<Duration>,
+    halt: &dyn Fn() -> bool,
+) -> Option<Verdict> {
+    let w = || window(progress, cpu, halt, TRIAL_WINDOW, TRIAL_MAX);
+    w()?;
+    let (mut compiled, mut interp) = (Vec::new(), Vec::new());
+    for _ in 0..3 {
+        swap(false);
+        interp.push(w()?);
+        swap(true);
+        compiled.push(w()?);
+        if let Some(d) = decide(&compiled, &interp) {
+            return Some(d);
+        }
+    }
+    None
+}
+
+/// Microseconds of compile time per IR instruction of a clocked process (`rtl`; 130 to 270 IR
+/// instructions took 31 to 92 ms at O2, 360 to 500 took 28 to 34 ms with the `Fast` level).
+const US_PER_INSTR_RTL: f64 = 200.0;
 
 /// A compute loop gets this many times the budget: it runs five to ten times faster compiled
 /// (the interpreter's time goes to dispatch), so the payback rule alone limits it, and the
@@ -518,7 +647,7 @@ const COMPUTE_BUDGET: u64 = 50;
 /// what the class ran into in the first seconds of a cold run (#572).
 const NATIVE_BUDGET: u64 = 16;
 
-/// An `rtl` process gets this many times the budget (its compiled code is a tenth faster).
+/// An `rtl` process gets this many times the budget (its compiled code can be a third faster).
 const RTL_BUDGET: u64 = 16;
 
 /// Whether a callee that was seen running for `seen` microseconds and has `size` IR instructions is
@@ -591,6 +720,11 @@ impl Entry {
     fn set(&self, (run, nregs): (RunFn, usize)) {
         self.nregs.store(nregs, Ordering::Relaxed);
         self.run.store(run as usize, Ordering::Release);
+    }
+
+    /// Back to the interpreter from the next entry; the code stays valid for frames running it.
+    fn clear(&self) {
+        self.run.store(0, Ordering::Release);
     }
 }
 
@@ -678,8 +812,6 @@ struct Worker {
     /// nothing.
     jit: Option<Jit>,
     jit2: Option<Jit>,
-    /// For `rtl` processes, made at O0.
-    jit0: Option<Jit>,
     /// For functions at `OptLevel::Fast`.
     jitf: Option<Jit>,
     /// Per function: compiled at the first level, at O2.
@@ -714,6 +846,11 @@ struct Worker {
     /// Per function: `tree` left it out of a compile as a callee (`unseen`); the native-frame code
     /// of a caller is published without it (`publish`).
     left: Vec<std::cell::Cell<bool>>,
+    /// Per function: a trial found the run no faster with its compiled code (`trial`): it stays
+    /// interpreted, whatever else asks for it.
+    lost: Vec<bool>,
+    /// A trial found the run not measurable (`window`): none of the others is tried.
+    unmeasurable: bool,
     /// Per function: looked up in the compilation cache already (`probe`).
     probed: Vec<bool>,
     /// A `probe` is running: a failure is no note and leaves the function to compile later.
@@ -795,7 +932,7 @@ impl Worker {
     /// The microseconds of compile time to expect for `f`.
     fn cost(&self, f: &yavs_ir::Func) -> u64 {
         let per = if rtl(&self.prog, f) {
-            US_PER_INSTR_O0
+            US_PER_INSTR_RTL
         } else {
             self.us_per_instr
         };
@@ -830,16 +967,13 @@ impl Worker {
             return u64::MAX;
         };
         if compiled {
-            // An `rtl` process runs its O0 code about a tenth slower than O2: compile again soon.
-            return if rtl(&self.prog, f) {
-                self.heat.threshold(f).saturating_mul(RTL_O2_AFTER)
-            } else {
-                self.heat.o2_threshold(f)
-            };
+            return self.heat.o2_threshold(f);
         }
         let at = self.heat.threshold(f);
-        if self.heat.budget == 0 || rtl(&self.prog, f) {
+        if self.heat.budget == 0 {
             at
+        } else if rtl(&self.prog, f) {
+            at.max(band_wait(f.code.len()))
         } else if self.is_compute(id) {
             at.max(PAYBACK_COMPUTE * self.cost(f))
         } else if self.natively(id) {
@@ -855,7 +989,8 @@ impl Worker {
     fn unseen(&self, i: FuncId) -> bool {
         let k = i.0 as usize;
         let size = self.prog.func(i).map_or(0, |f| f.code.len());
-        let out = left_out(self.heat.budget, self.time[k][0] + self.time[k][1], size);
+        let out =
+            self.lost[k] || left_out(self.heat.budget, self.time[k][0] + self.time[k][1], size);
         if out {
             self.left[k].set(true);
         }
@@ -963,7 +1098,7 @@ impl Worker {
     fn publish(&mut self) {
         for k in 0..self.nat.len() {
             let (addr, done) = self.nat[k];
-            if addr == 0 || done {
+            if addr == 0 || done || self.lost[k] {
                 continue;
             }
             let ready = self
@@ -1067,7 +1202,12 @@ impl Worker {
             return false;
         };
         let k = id.0 as usize;
-        if self.probed[k] || self.done[k][0] || seen < self.heat.threshold(f) {
+        let wait = if rtl(&self.prog, f) {
+            band_wait(f.code.len())
+        } else {
+            0
+        };
+        if self.probed[k] || self.done[k][0] || seen < self.heat.threshold(f).max(wait) {
             return false;
         }
         // The look-up generates the function's code: within the budget, as a compile is, with at
@@ -1135,11 +1275,103 @@ impl Worker {
         true
     }
 
+    /// Measure what the compiled code of `id`, just published, does for the run (#596): the
+    /// process runs per CPU second with it and with the interpreter running `id`, in turn, a window
+    /// each (`run_trial`). The simulation is bound by the CPU, so the progress per second is what
+    /// faster code raises, kernel and cache effects of the compiled code included. Compiled code
+    /// that did not raise it (`TRIAL_KEEP`) is taken back for good. Only a function seen for a good
+    /// part of the run (`TRIAL_SHARE`) is measured, and only in a run with the clock the measure
+    /// needs; the compile thread waits meanwhile.
+    fn trial(&mut self, id: FuncId, halt: &AtomicBool) {
+        let k = id.0 as usize;
+        let Some(f) = self.prog.func(id) else {
+            return;
+        };
+        // Only a function whose own activations are the progress counted: the process runs of a
+        // clocked process. A procedure or a process that loops between its waits does its work in
+        // stretches the counter does not see (`poc_arith_addw`'s checker, 15 s in a few hundred
+        // thousand runs: verdicts 0.89 to 0.96 for code that makes the run a fifth faster).
+        if !rtl(&self.prog, f)
+            || self.heat.budget == 0
+            || self.heat.eager()
+            || self.unmeasurable
+            || self.time[k][0].saturating_mul(TRIAL_SHARE) < self.total
+        {
+            return;
+        }
+        let (run, (_, published)) = (self.table[k].get(), self.nat[k]);
+        let native = self.ntab[k].load(Ordering::Acquire);
+        let call = self.ctab[k].load(Ordering::Acquire);
+        // Nothing of its own to swap, or its native-frame code still waits for its callees.
+        if run.is_none() && native == 0 || self.nat[k].0 != 0 && !published {
+            return;
+        }
+        // Compiled callers find a callee without native-frame code (null) and leave to the interpreter.
+        let mut swap = |compiled: bool| {
+            if compiled {
+                if let Some(r) = run {
+                    self.table[k].set(r);
+                    self.native.set(id);
+                }
+                self.ntab[k].store(native, Ordering::Release);
+                self.ctab[k].store(call, Ordering::Release);
+                if call != 0 {
+                    self.native.set_call(id);
+                }
+            } else {
+                self.native.clear_call(id);
+                self.ctab[k].store(0, Ordering::Release);
+                self.ntab[k].store(0, Ordering::Release);
+                if run.is_some() {
+                    self.native.clear(id);
+                    self.table[k].clear();
+                }
+            }
+        };
+        let t0 = std::time::Instant::now();
+        let r = run_trial(&mut swap, &yavs_interp::sim_progress, &sim_cpu, &|| {
+            halt.load(Ordering::SeqCst)
+        });
+        let drop = matches!(r, Some(Verdict::Drop(_)));
+        swap(!drop);
+        if r.is_none() {
+            self.unmeasurable = true;
+        }
+        if let Some(tr) = &self.trace {
+            let name = &f.name;
+            tr.line(format!(
+                "trial f{k} `{name}`: {} after {} ms",
+                match r {
+                    Some(Verdict::Keep(x)) =>
+                        format!("kept, {x:.3} times the progress of the interpreter"),
+                    Some(Verdict::Drop(x)) =>
+                        format!("taken back, {x:.3} times the progress of the interpreter"),
+                    None => "not measurable, kept".to_string(),
+                },
+                t0.elapsed().as_millis()
+            ));
+        }
+        if let Some(Verdict::Drop(x)) = r {
+            self.lost[k] = true;
+            (self.note)(
+                id,
+                self.opt,
+                Err(format!(
+                    "the run progressed {x:.2} times as fast with its compiled code as with the \
+                     interpreter, so it was taken back"
+                )),
+            );
+        }
+    }
+
     /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled.
     fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
         // Native-frame code and frame-mode code are modules of their own, so the compilation
         // cache holds each one whatever was compiled with it (#510). Native-frame code is made
         // once.
+        if self.lost.get(id.0 as usize).copied().unwrap_or(false) {
+            return false;
+        }
         let native_done = self.nat.get(id.0 as usize).is_some_and(|n| n.0 != 0);
         if part == Part::Both {
             if !native_done && self.nset(id).contains(&id) {
@@ -1167,20 +1399,12 @@ impl Worker {
         else {
             return false;
         };
-        let process = !o2 && rtl(&self.prog, f);
-        let level = if o2 {
-            OptLevel::O2
-        } else if process {
-            OptLevel::O0
-        } else {
-            self.opt
-        };
+        let level = if o2 { OptLevel::O2 } else { self.opt };
         let level = crate::lower::level_for(&self.prog, f, level);
         let few = rtl(&self.prog, f)
             .then(|| {
                 let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
                 cold(self.native.instances(id), seen, self.total)
-                    .or_else(|| outside_band(f.code.len()))
             })
             .flatten();
         let short = (sampled && !o2)
@@ -1216,8 +1440,6 @@ impl Worker {
             &mut self.jitf
         } else if o2 {
             &mut self.jit2
-        } else if process {
-            &mut self.jit0
         } else {
             &mut self.jit
         };
@@ -1243,8 +1465,11 @@ impl Worker {
                 }
                 if let Some(tr) = &self.trace {
                     let seen = self.time.get(id.0 as usize).map_or([0, 0], |t| *t);
+                    let leave = (f.kind == FuncKind::Process)
+                        .then(|| callbacks(&self.prog, f))
+                        .map_or(String::new(), |(o, t)| format!(", {o} of {t} leave"));
                     tr.line(format!(
-                        "{id} compiled `{}` ({} IR) {level:?} in {} us, first seen {} ms and candidate {} ms ago, \
+                        "{id} compiled `{}` ({} IR{leave}) {level:?} in {} us, first seen {} ms and candidate {} ms ago, \
                          seen {}/{} us, spent {} of {} us",
                         f.name,
                         f.code.len(),
@@ -1343,7 +1568,6 @@ impl AutoTier {
             max_size,
             jit: None,
             jit2: None,
-            jit0: None,
             jitf: None,
             total: 0,
             spent: 0,
@@ -1355,6 +1579,8 @@ impl AutoTier {
             leaf: Default::default(),
             seen: 0,
             probed: vec![false; nfuncs],
+            lost: vec![false; nfuncs],
+            unmeasurable: false,
             told: vec![false; nfuncs],
             left: vec![Default::default(); nfuncs],
             probing: false,
@@ -1432,9 +1658,7 @@ impl AutoTier {
                                             let now = tr.ms();
                                             tr.cand.insert(id, now);
                                         }
-                                    } else if upgrade
-                                        || w.prog.func(id).is_some_and(|f| rtl(&w.prog, f))
-                                    {
+                                    } else if upgrade {
                                         later.push(id);
                                     }
                                 }
@@ -1468,13 +1692,17 @@ impl AutoTier {
                         if let Some(id) = probe {
                             if w.probe(id) {
                                 cands.retain(|&c| c != id);
+                                w.trial(id, &sh.halt);
+                                last = std::time::Instant::now();
                             }
                             sh.busy.store(false, Ordering::SeqCst);
                             continue;
                         }
                         let first = ids.first().map(|&(id, _)| id);
+                        let mut root_done = false;
                         for (i, (id, part)) in ids.into_iter().enumerate() {
                             let done = w.compile(id, o2, sampled && i == 0, part);
+                            root_done |= done && i == 0;
                             // Its callees compile for its sake only.
                             if !done && i == 0 {
                                 break;
@@ -1483,6 +1711,10 @@ impl AutoTier {
                             if done && heat.eager() && upgrade && !o2 {
                                 later.push(id);
                             }
+                        }
+                        if let (Some(id), true) = (first, root_done && sampled && !o2) {
+                            w.trial(id, &sh.halt);
+                            last = std::time::Instant::now();
                         }
                         if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
                             f.store(true, Ordering::Release);
@@ -1512,13 +1744,8 @@ impl AutoTier {
                         w.total, w.spent
                     ));
                 }
-                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
-                    .jit
-                    .into_iter()
-                    .chain(w.jit2)
-                    .chain(w.jit0)
-                    .chain(w.jitf)
-                    .collect();
+                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
+                    w.jit.into_iter().chain(w.jit2).chain(w.jitf).collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
@@ -1714,8 +1941,8 @@ impl Tier for AutoTier {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPUTE_BUDGET, NATIVE_BUDGET, UNSEEN_MIN, cold, compute, first_fit, fused_search,
-        left_out, loops, outside_band, too_many_callbacks, within_budget,
+        COMPUTE_BUDGET, NATIVE_BUDGET, UNSEEN_MIN, band_wait, cold, compute, decide, first_fit,
+        fused_search, left_out, loops, run_trial, too_many_callbacks, within_budget,
     };
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
@@ -1949,6 +2176,109 @@ mod tests {
         }
     }
 
+    /// The signal operations compiled code answers in place (reads, `'event`, the wait that ends an
+    /// activation) are no callbacks (#633); `'last_event` and a wait in the middle are.
+    #[test]
+    fn signal_operations_answered_in_place_do_not_count_as_callbacks() {
+        use yavs_ir::{AttrKind, Inst, RegTy};
+        for (inplace, refused) in [(true, false), (false, true)] {
+            let mut pb = ProgramBuilder::new();
+            let f = pb.declare("p", yavs_ir::FuncKind::Process, None);
+            let mut fb = pb.define(f);
+            let body = fb.block();
+            fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+            fb.emit(Inst::Br { to: body });
+            fb.at(body);
+            fb.emit(Inst::Suspend { resume: 0 });
+            let (s, d, ptr) = (fb.reg(RegTy::Sig), fb.reg(RegTy::I64), fb.reg(RegTy::Ptr));
+            let (off, len) = (fb.int(0), fb.int(1));
+            fb.emit(Inst::AddrOf {
+                dst: ptr,
+                space: yavs_ir::AddrSpace::Frame,
+                off: 0,
+            });
+            fb.emit(Inst::SigVal {
+                dst: s,
+                sig: 0,
+                offset: off,
+                len,
+            });
+            for _ in 0..4 {
+                fb.emit(Inst::SigReadScalar { dst: d, sig: s });
+                fb.emit(Inst::SigRead { dst: ptr, sig: s });
+                fb.emit(Inst::SigAttr {
+                    dst: d,
+                    kind: if inplace {
+                        AttrKind::Event
+                    } else {
+                        AttrKind::LastEvent
+                    },
+                    sig: s,
+                });
+            }
+            fb.emit(Inst::WaitOn { sig: s });
+            fb.emit(Inst::Suspend { resume: 1 });
+            fb.emit(Inst::Br { to: body });
+            fb.finish();
+            let prog = pb.finish().unwrap();
+            let why = too_many_callbacks(&prog, prog.func(f).unwrap(), f);
+            assert_eq!(why.is_some(), refused, "{inplace}: {why:?}");
+        }
+    }
+
+    /// Compiled code stays when the run progressed faster with it (by a margin), goes when it did
+    /// not; the first pair of windows decides only when it is clear (#596).
+    #[test]
+    fn a_trial_decides_on_the_progress_ratio() {
+        use super::Verdict::{Drop, Keep};
+        assert_eq!(decide(&[], &[]), None);
+        assert_eq!(decide(&[100.0], &[100.0]), None);
+        assert_eq!(decide(&[100.0], &[70.0]), Some(Keep(100.0 / 70.0)));
+        assert_eq!(decide(&[80.0], &[100.0]), Some(Drop(0.8)));
+        // Two pairs near parity: a third.
+        assert_eq!(decide(&[100.0, 101.0], &[100.0, 100.0]), None);
+        assert_eq!(decide(&[120.0, 120.0], &[100.0, 100.0]), Some(Keep(1.2)));
+        assert_eq!(decide(&[92.0, 92.0], &[100.0, 100.0]), Some(Drop(0.92)));
+        assert_eq!(
+            decide(&[103.0, 103.0, 103.0], &[100.0, 100.0, 100.0]),
+            Some(Drop(1.03))
+        );
+        assert_eq!(
+            decide(&[106.0, 106.0, 106.0], &[100.0, 100.0, 100.0]),
+            Some(Keep(1.06))
+        );
+    }
+
+    /// The windows of a trial swap the code in turn and measure the run's progress each time: with
+    /// progress that depends on the code, the verdict follows; without progress there is none.
+    #[test]
+    fn a_trial_swaps_in_turn_and_measures_the_run() {
+        use super::Verdict;
+        use std::cell::Cell;
+        use std::time::Instant;
+        for (rate_compiled, keep) in [(1.5e6, true), (0.7e6, false)] {
+            let compiled = Cell::new(true);
+            let acc = Cell::new((0.0f64, Instant::now()));
+            let progress = || {
+                let (p, t) = acc.get();
+                let now = Instant::now();
+                let rate = if compiled.get() { rate_compiled } else { 1.0e6 };
+                let p = p + (now - t).as_secs_f64() * rate;
+                acc.set((p, now));
+                p as u64
+            };
+            let mut swap = |on: bool| {
+                progress();
+                compiled.set(on);
+            };
+            let r = run_trial(&mut swap, &progress, &|| None, &|| false);
+            assert_eq!(matches!(r, Some(Verdict::Keep(_))), keep, "{r:?}");
+            assert!(r.is_some());
+        }
+        let mut swap = |_: bool| {};
+        assert_eq!(run_trial(&mut swap, &|| 0, &|| None, &|| true), None);
+    }
+
     /// A clocked process stays interpreted unless it has many instances and is a good part of
     /// the run: the processes of a CPU design are a few percent of it each (#532).
     #[test]
@@ -1959,18 +2289,19 @@ mod tests {
         assert!(cold(1, 44_000, 44_000).is_some());
     }
 
-    /// Clocked processes are compiled only from 160 to 300 IR instructions (#575).
+    /// A clocked process outside the band of bodies that gained is tried only in a run that used it
+    /// for a second (#575, #596).
     #[test]
-    fn a_clocked_process_outside_the_band_stays_interpreted() {
-        for (len, refused) in [
-            (120, true),
-            (159, true),
-            (160, false),
-            (300, false),
-            (301, true),
-            (600, true),
+    fn a_clocked_process_outside_the_band_waits_for_a_second() {
+        for (len, wait) in [
+            (120, 1_000_000),
+            (159, 1_000_000),
+            (160, 0),
+            (300, 0),
+            (301, 1_000_000),
+            (600, 1_000_000),
         ] {
-            assert_eq!(outside_band(len).is_some(), refused, "{len}");
+            assert_eq!(band_wait(len), wait, "{len}");
         }
     }
 

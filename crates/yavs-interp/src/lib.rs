@@ -60,6 +60,8 @@ pub use tier_census::report as tier_census;
 pub use yavs_ir::opt::{
     compiled_tier, external_variables, fingerprint as opt_fingerprint, keep_variables, layout_slots,
 };
+/// How far the simulation has got, in process runs (see `yavs_kernel::progress`).
+pub use yavs_kernel::progress as sim_progress;
 
 use exec::{Fault, Machine, Outcome};
 
@@ -887,6 +889,30 @@ impl NativeFlags {
         self.func
             .get(func as usize)
             .is_some_and(|n| n.load(Ordering::Acquire) & NAT_CALL != 0)
+    }
+
+    /// The tier calls `func` from the interpreter no more (compiled code taken back, `clear`).
+    pub fn clear_call(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_and(!NAT_CALL, Ordering::Release);
+        }
+    }
+
+    /// `func` has no compiled code any more: the interpreter runs it from its next entry (frames
+    /// of the compiled code that are running finish as they are).
+    pub fn clear(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_and(!NAT_CODE, Ordering::Release);
+        }
+        // Nothing compiled any more: the fast loop goes back to the one without the tier's
+        // bookkeeping. Only the thread that calls `set` calls this, so the two do not race.
+        if !self
+            .func
+            .iter()
+            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK) != 0)
+        {
+            self.any.store(false, Ordering::Release);
+        }
     }
 
     /// `func` has compiled code now.

@@ -6376,3 +6376,15 @@ itself as callbacks) are unchanged. The interpreter gained 1.2 percent of its in
 
 The code of a whole-program module in huge pages (`YAVS_LLVM_HUGE=0` off): `neorv32_single_min` `--tier=llvm` 70.3 to 65.7 G
 cycles at equal instructions (instruction TLB misses 52 M to 9 M; the table above is without it).
+
+## `--tier=auto`: what leaves compiled code, and compiled clocked processes measured and taken back (#633, #596, 2026-10-23)
+
+The callback count of the policy now takes the signal reads, `'event`, the clock-edge tests, the wait that ends an activation and
+direct calls as staying in compiled code (`lower::leaves`); a clocked process is compiled at the final level at once and measured
+after the swap (process runs per CPU second with the compiled code and with the interpreter, in turn), and the code is taken back
+when the run did not progress at least 1.05 times as fast. The size band of #575 became a wait of a second for bodies outside it.
+Results on core 11 (cycles against `--tier=interp`, before / after): `sc5_fifo_repack` 1.013 / 0.778, `rtl_ff` at five times its
+length 1.029 / 0.932, `rtl_lfsr` 0.797 / 0.763, `hdlm_lfsr`, `vai_window_gen_interlock`, `poc_arith_addw`, `neorv32_single_min`,
+`poc_cache_cpu`, `fletcher_bufferwriter_512` and the other benchmark designs level; table and method in docs/decisions.md ("the
+callback count sees what leaves compiled code"). Open: functions and processes that loop are not measured (#652); `fused_search`
+stays (the scan helper of #578 is not enough: `uvvm_sb_slv` 1.22 without it).

@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rayon::prelude::*;
@@ -238,6 +238,17 @@ impl SigView<'_> {
     pub fn bytes(&self) -> Option<&[u8]> {
         self.buf.bytes(self.off, self.len)
     }
+}
+
+/// The process runs the simulation had done when it last started a delta cycle: how far the run
+/// has got, for a reader on another thread (the tier policy compares the progress per second
+/// before and after it swaps compiled code in, `yavs_interp::sim_progress`). One store per cycle,
+/// by the kernel that runs; with several kernels in a process (tests) it is only a hint.
+static PROGRESS: AtomicU64 = AtomicU64::new(0);
+
+/// See [`PROGRESS`].
+pub fn progress() -> u64 {
+    PROGRESS.load(Ordering::Relaxed)
 }
 
 /// The interrupt flags of an observer's process context: observers run between cycles.
@@ -1797,6 +1808,7 @@ impl SimControl {
         }
         self.cycle += 1;
         self.stats.cycles += 1;
+        PROGRESS.store(self.stats.process_runs, Ordering::Relaxed);
         if self.idle_live_possible && self.cycle & 0xffff == 0 {
             self.idle_reprobe();
         }

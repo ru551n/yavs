@@ -2484,6 +2484,44 @@ pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     }
 }
 
+/// Whether compiled frame-mode code of `f` leaves for a callback at instruction `pc` on its usual
+/// path, as the policy of `--tier=auto` counts it (`auto::callbacks`): what `Gen::func` does not
+/// answer in place. Not only `is_inline`: also the signal reads, `'event` and the clock-edge natives
+/// answered from the kernel's views, the `WaitOn` that ends an activation, and the calls of
+/// functions that run on native frames (`nc`, `native_set`). Keep in step with `Gen::func`; the
+/// `cb_*` counters (`YAVS_COUNTERS=1`) show what really leaves.
+pub(crate) fn leaves(
+    prog: &Program,
+    f: &Func,
+    pc: usize,
+    nc: &std::collections::HashSet<FuncId>,
+) -> bool {
+    let Some(i) = f.code.get(pc) else {
+        return false;
+    };
+    match i {
+        _ if is_inline(prog, f, i) => false,
+        Inst::SigReadScalar { .. }
+        | Inst::SigRead { .. }
+        | Inst::Edge { .. }
+        | Inst::SigAttr {
+            kind: yavs_ir::AttrKind::Event,
+            ..
+        } => false,
+        Inst::CallNative { native, args, dst } => {
+            !matches!(
+                native_kind(prog, f, *native, *args, *dst),
+                Some(NativeKind::Edge(_))
+            ) || !matches!((f.regs(*args), dst), (Some(&[_]), Some(_)))
+        }
+        // The wait that ends the activation is its way out, not a callback in the middle of it.
+        Inst::WaitOn { .. } => !matches!(f.code.get(pc + 1), Some(Inst::Suspend { .. })),
+        Inst::Suspend { .. } => false,
+        Inst::Call { func, .. } | Inst::CallProt { func, .. } => !nc.contains(func),
+        _ => true,
+    }
+}
+
 /// `ModRef` of an LLVM `memory(...)` attribute: reads, writes, both.
 const REF: u64 = 1;
 const MODS: u64 = 2;

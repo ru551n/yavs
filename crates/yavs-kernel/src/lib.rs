@@ -19,6 +19,7 @@ pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
     Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer, Phase, ProcWait,
     Report, RunStatus, SigView, SimControl, Stats, StuckProc, StuckReport, StuckSignal, WakeId,
+    progress,
 };
 pub use process::{
     CopyProcess, Ctx, EDGE_LEVEL, LiveSink, ProcId, Process, Severity, ToggleProcess, edge_key,

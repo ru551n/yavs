@@ -5871,3 +5871,94 @@ position check and the object lookup at every element: 95 instructions an elemen
   frame; native frames now do after a miss of the object table. `cb_host` 43.5 M to 5.3 M, main-thread instructions of the
   window generator (warm `--tier=auto`) about -2.5 percent. A table of 1024 objects instead of 256 halves `cb_fast`
   (13.7 M to 6.8 M) but moves `cb_host` by 8 percent and was not kept.
+
+
+
+## `--tier=auto`: the callback count sees what leaves compiled code, and compiled code is measured and taken back (yavs-llvm, yavs-interp, yavs-kernel, #633, #596, #575, #573, 2026-10-23)
+
+Policy owner's change. The static rules of `auto.rs` stay as the first guess about what to compile; a measurement after each swap
+corrects what they cannot see. Measured with benchmark builds (`tools/build-bench.sh --features llvm`, both sides the same flags),
+core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians of interleaved runs, warm compilation cache.
+
+- **`lower::leaves` counts what really leaves compiled code (#633).** `is_inline` stays what it was (it decides which functions run on
+  native frames and feeds the `llvm_inline_insts` counter); the policy (`callbacks`, `too_many_callbacks`, `compute`) uses `leaves`,
+  which also takes as staying: `SigReadScalar`, `SigRead` of any length, `'event`, the clock-edge natives answered from the kernel's
+  event stamps, the `WaitOn` that ends an activation and its `Suspend` (the way out of the activation, not a callback in the middle
+  of it), and a call of a function that runs on native frames (a direct call, as `compute` and the function rule assumed already).
+  Still leaving, by the `cb_*` counters of `--tier=llvm` runs (`YAVS_COUNTERS=1`, a build with `op-census`): `Drive` (`cb_drive`, one
+  `yavs_rt_drive` per drive: `rtl_ff` 8.2 million for 8.2 million activations), `CallNative` through `yavs_rt_native` (`cb_native`,
+  `rtl_ram` 120 000 for 100 000 activations), a wait in the middle (`cb_wait_on`), `WaitFor`, `DriveSlot`, reports, `Cat` of a
+  logic vector whose lengths the generator does not know (counted always: the policy has no constant tracking), every stepped
+  instruction. Evidence: the static count of the clocked processes of the benchmark designs fell from 13 to 2 (`rtl_ff`), 20 to 5
+  (`rtl_lfsr`), 6 to 3 (`lfsr64`) leaving instructions of 135, 205 and 92 on a path (a union of all paths: `rtl_ff` has two
+  drives on different branches, runs one: `cb_drive` per activation 1.0). The rule stays at one in `CALLBACKS` = 10; with the new
+  count nearly every clocked process passes it (neorv32's hot processes 1 to 6 percent, `rtl_ram`'s testbench process 9, which
+  `RTL_INSTANCES` refuses), so it is a guard against stepped-instruction-heavy bodies now, and the measurement below is the judge.
+  Compile sets changed on the realbench designs: `poc_arith_addw` compiles `_p8` (341 IR) instead of `procChecker`, `sc5_fifo_repack`
+  `p_col` and `p_in` (657 and 717 IR, processes with loops), `vai_window_gen_interlock` `check_axi_stream`: processes with signal
+  reads that were refused for them.
+- **A trial after the swap of a clocked process (`rtl`) seen for at least an eighth of the sampled time (#596)** (`Worker::trial`,
+  `run_trial`, `decide`). The compile thread measures the process runs the kernel did per CPU second of the simulation threads (the
+  process's CPU time less the compile thread's own, `CLOCK_PROCESS_CPUTIME_ID` less `CLOCK_THREAD_CPUTIME_ID`), in windows of at
+  least 25 ms, with the compiled code (a warm-up window first), with the interpreter running the process (its entry, `NAT_CODE`,
+  `NAT_CALL` and its native-frame table slot cleared; compiled callers find a null slot and leave to the interpreter, as for a
+  function compiled later), with the compiled code again, up to three pairs. A first pair below 0.9 takes the code back and one at or
+  above 1.15 keeps it; two pairs below 0.95 take it back, at or above 1.15 keep it; else a third pair, and the code stays when the
+  run progressed at least 1.05 times as fast with it (at parity a coin flip would keep code that runs at a lower IPC: a 504 IR
+  variant of `rtl_ff` kept at 1.03 ran 8 percent slower than the interpreter, 25 percent fewer instructions). A process taken back
+  is `lost`: never compiled again, not as a callee either, and when nothing else is compiled the fast loop goes back to the one
+  without the tier's bookkeeping (`NativeFlags::clear`). Cost: 75 to 175 ms of the compile thread's time per trial and the
+  windows in the slower mode, about 40 ms of the run for code that is taken back. The progress is `yavs_kernel::progress()`, the
+  process runs counted when each delta cycle starts: one relaxed store per cycle in the kernel (`rtl_chain`, 2 million cycles: 0.12
+  percent more instructions; nothing measurable elsewhere). A run in which the windows cannot reach 1000 runs and 30 times the
+  largest step the counter makes in a millisecond within 250 ms (no clock to speak of) is not measurable: its process stays compiled
+  and no more are tried. Not tried with `--tier-heat` (budget 0) or the eager tier of the tests.
+- **Only clocked processes are measured.** The counter is the process runs of the kernel, so it measures a function whose own activations
+  are the progress. A procedure, or a process that loops between its waits, does its work in stretches the counter does not see: the
+  checker of `poc_arith_addw` (a procedure, 594 IR, 15 s of a 35 s run in a few hundred thousand runs) got verdicts of 0.89 to 0.96
+  for code that makes the whole run a fifth faster (main before this change: 0.81 of the interpreter's cycles), and a trial that
+  takes it back is a regression. Those stay on the static rules; a count of the function's own entries in both modes (the
+  interpreter would count them while a trial runs) is the way to measure them and is not built.
+- **Clocked processes are compiled at the final level at once.** The class (`rtl`, 120 to 600 IR instructions) compiled at O0
+  first and at O2 a few hundred milliseconds later; in trials O0 code was 15 to 25 percent slower than the same code at O2
+  (`rtl_lfsr` 0.99 to 1.04 against 1.3 to 1.5, `lfsr64` 0.86 against 1.19, a 228 IR variant of `rtl_ff` 0.78 against 1.16,
+  loaded host), so a verdict on O0 code would have judged the wrong code. Now `compile` uses the tier's level (O2, `Fast` from
+  `FAST_MIN`) for them, and the budget prices them at 200 us an IR instruction (31 to 92 ms measured for 130 to 270, 28 to 34 ms
+  with `Fast` for 360 to 500; was 30 us at O0).
+- **`RTL_BAND` is a wait, no longer a refusal.** The 160 to 300 band of #575 (measured on a mix of O0 and O2 code) refused bodies
+  that gain: `lfsr64` (132 IR) at ten times its length 0.89 of the interpreter's cycles compiled at once, 1.02 with the band.
+  Length stands for the work of an activation, which it does not, so the trial judges. A trial that takes the code back costs the
+  run about 40 ms (`rtl_ff`: +4 percent of its 0.75 s, +0 at ten times that), so outside the band a process is tried only
+  after it has been seen for a second (`band_wait`, also for the look-up in the compilation cache). `RTL_MIN`, `RTL_MAX`,
+  `RTL_INSTANCES` and `RTL_SHARE` stay: their effects (a few percent of a run in many processes) are below what a trial can see.
+- **`fused_search` stays a static rule**, as do the size, share and callback rules for functions and looping processes: a trial cannot
+  take them back (`uvvm_sb_slv` with the rule off: "not measurable" after 250 ms, the testbench has no clock to speak of). The
+  scan helper of #578 does not make it obsolete: with the rule off `uvvm_sb_slv` ran 1.22 times the interpreter's cycles (1.03 with
+  the rule), 28 percent more instructions.
+- **Results (core 11, warm, cycles of the main thread against `--tier=interp` of the same build; B = main before this change,
+  N = after).**
+
+  | Design (warm, medians of 5 to 9) | main: auto / interp cycles | now: auto / interp cycles | instructions main / now |
+  |---|---:|---:|---:|
+  | `rtl_ff` (no gain by body) | 1.000 | 0.996 | 1.028 / 1.028 |
+  | `rtl_ff` at 5 times the length | 1.029 | 0.932 (kept, 19 percent fewer cycles of compiled code) | 1.028 / 0.939 |
+  | `rtl_lfsr` | 0.797 | 0.763 | 0.747 / 0.742 |
+  | `rtl_chain`, `rtl_fan`, `rtl_bus`, `rtl_ram` | 0.986, 1.037, 1.015, 1.006 | 1.003, 1.026, 1.032, 1.007 | 1.023, 1.067, 1.010, 1.007 / same |
+  | `lfsr64`, `lfsr64_xor` (0.19 and 0.09 s) | 0.992, 0.994 | 1.006, 1.001 | 1.018, 1.012 / same |
+  | `lfsr64` at 10 times the length | 1.000 | 0.997 | 1.018 / 0.990 |
+  | 366 and 504 IR variants of `rtl_ff` | 1.049, 1.045 | 1.033, 1.041 | 1.014, 1.011 / 1.014, 0.972 |
+  | `sc5_fifo_repack` (processes of 657 and 717 IR with loops, refused by the callback count before) | 1.013 | 0.778 | 1.017 / 0.834 |
+  | `hdlm_lfsr` | 0.521 | 0.504 | 0.510 / 0.510 |
+  | `poc_arith_addw` | 0.780 | 0.790 | 0.765 / 0.768 |
+  | `vai_window_gen_interlock` | 0.417 | 0.407 | 0.386 / 0.387 |
+  | `neorv32_single_min`, `poc_cache_cpu`, `fletcher_bufferwriter_512`, `osvvm_axis_random` | 1.009, 0.998, 1.004, 1.007 | 1.000, 1.003, 1.000, 1.005 | within 1 percent |
+  | `uvvm_sb_slv` (two runs) | 0.991, 1.034 | 1.053, 1.032 | 1.019 / 1.020 |
+
+  The interpreter tier of the new build against the old one (the kernel's store, one per cycle): instructions equal except
+  `rtl_chain` +0.1 percent; cycles within the spread of the runs (0.98 to 1.04, a different binary moves single designs by a
+  few percent, #576). Taken back in the runs: `rtl_ff` (0.95 to 1.03 in single runs, a coin flip around parity), the 366 IR
+  variant (0.86 to 0.98), mostly the 504 IR one; kept: `rtl_lfsr` (1.3 to 1.5), the 228 and 274 IR variants, `rtl_ff` at 5
+  times the length. Cores: all timed runs on core 11 alone (the compile thread shares it), builds on 0-7 and 16-23.
+- Not done: counting activations per function in the interpreter to compare time per activation (a cost on every run, the
+  point of #596 was none); a trial of every swap (a function below an eighth of the run moves the progress less than the
+  measure resolves, and a trial of each costs the compile thread its time); weighting the static count by which path runs.

@@ -1438,6 +1438,17 @@ which tools/difftest parses.
   (LRM 11.6; the references update GUARD in the cycle of the event); its sensitivity is the
   condition's signals instead of GUARD (#373). A process reading GUARD still sees it a delta
   late.
+- **Null waveform elements** (LRM 10.5.2.2, #352): a waveform with a `null` element is driven
+  one transaction per element in order. The first has the assignment's delay mechanism, so it
+  preempts as the whole waveform would; the rest are transport, which only appends after it
+  (they are later than the first, so nothing is left to delete). A value element is an
+  `Inst::Drive` of one element, a null element an `Inst::Disconnect` at its own time (the
+  explicit `after`, 0 fs without one; the disconnection specification time belongs to the
+  GUARD of a guarded concurrent assignment only). Still `E2001`: a null in an aggregate target
+  or a signal parameter, a pulse rejection limit with a null first element, and in a record
+  signal (blocked by #595). sim1 loses the value before and the null itself in some
+  multi-element forms and sim2 cannot run them: the corpus case `sigassign/null_waveform_mixed`
+  is `ref=hand`, `tests/discrepancies/null-waveform-in-waveform`.
 - **Individual association of parameters** (#71, LRM 6.5.7.1): a variable or constant formal
   associated part by part is a temporary of its subtype; every part is copied in before the
   call (also for `out`: a composite formal shows its actual's value) and back after it for

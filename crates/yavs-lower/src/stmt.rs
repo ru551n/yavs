@@ -2045,92 +2045,40 @@ impl Fx<'_, '_> {
             }
             None => (self.int(if logic { 8 + 32 } else { 16 }), None),
         };
-        let n = self.int(elems.len() as i64);
-        let total = self.bin(IntOp::Mul, stride, n);
-        let wave = self.alloc(total);
         let what = self.target_name(target.expr);
-        for (k, el) in elems.iter().enumerate() {
-            let Some(v) = el.value else {
+        if elems.iter().any(|e| e.value.is_none()) {
+            if param_slot.is_some() {
                 return Err(self
                     .cx
-                    .unsupported(span, "null waveform elements (guarded signals)"));
-            };
-            let kk = self.int(k as i64);
-            let o = self.bin(IntOp::Mul, kk, stride);
-            let at = self.reg(RegTy::Ptr);
-            self.emit(Inst::Index {
-                dst: at,
-                base: wave,
-                pos: o,
-                stride: 1,
-            });
-            let t = match el.after {
-                Some(a) => {
-                    let t = self.scalar_expr(a)?;
-                    let z = self.int(0);
-                    let max = self.int(i64::MAX);
-                    let m = self.msg("delay of a waveform element", Dir::To);
-                    self.emit(Inst::Check {
-                        kind: CheckKind::Range,
-                        v: t,
-                        lo: z,
-                        hi: max,
-                        what: m,
-                    });
-                    t
-                }
-                None => self.int(0),
-            };
-            self.store(at, t, Width::B8);
-            let va = self.offset(at, 8);
-            match (tdope, size) {
-                (Some(dope), Some(size)) => {
-                    let val = self.expr(v)?;
-                    let (data, vd) = self.arr(val, span)?;
-                    let dims = ty::array_of(db, db.base(st)).map_or(1, |x| x.1);
-                    let m = self.msg(&what, Dir::To);
-                    self.emit(Inst::SubtypeCheck {
-                        dope: vd,
-                        want: dope,
-                        dims,
-                        what: m,
-                    });
-                    self.emit(Inst::Copy {
-                        dst: va,
-                        src: data,
-                        bytes: size,
-                    });
-                }
-                _ => {
-                    let (_, _, vw) = self.scalar(st, span)?;
-                    let r = self.scalar_expr(v)?;
-                    self.check_scalar(r, Some(db.exprs[v].subtype), st, &what, span)?;
-                    if logic {
-                        let z = self.int(0);
-                        let bias = self.code_bias(tid);
-                        let r = self.enc(r, bias);
-                        self.emit(Inst::LSet {
-                            base: va,
-                            idx: z,
-                            v: r,
-                        });
-                    } else {
-                        self.store(va, r, vw);
-                    }
-                }
+                    .unsupported(span, "null waveform elements of signal parameters"));
             }
+            let (mode, reject) = self.drive_mode(delay)?;
+            return self.drive_nulls(
+                elems,
+                slot,
+                sref,
+                mode,
+                reject,
+                span,
+                |fx, k| fx.delay_time(elems[k].after),
+                |fx, k, mode, reject| {
+                    let one = &elems[k..=k];
+                    let (wave, n) =
+                        fx.wave_of(one, st, tid, tdope, size, stride, logic, &what, span)?;
+                    fx.emit(Inst::Drive {
+                        driver: slot,
+                        target: Some(sref),
+                        wave,
+                        n,
+                        mode,
+                        reject,
+                    });
+                    Ok(())
+                },
+            );
         }
-        let (mode, reject) = match delay {
-            Delay::Transport => (DriveMode::Transport, None),
-            Delay::Default => (DriveMode::Inertial, None),
-            Delay::Inertial { reject } => {
-                let r = match reject {
-                    Some(e) => Some(self.scalar_expr(*e)?),
-                    None => None,
-                };
-                (DriveMode::Inertial, r)
-            }
-        };
+        let (wave, n) = self.wave_of(elems, st, tid, tdope, size, stride, logic, &what, span)?;
+        let (mode, reject) = self.drive_mode(delay)?;
         match param_slot {
             Some(slot) => self.emit(Inst::DriveSlot {
                 slot,
@@ -2148,6 +2096,157 @@ impl Fx<'_, '_> {
                 mode,
                 reject,
             }),
+        }
+        Ok(())
+    }
+
+    /// A waveform of value elements for one signal target as `n` records of `stride` bytes: the
+    /// delay, then the value (`Inst::Drive`'s layout).
+    #[allow(clippy::too_many_arguments)]
+    fn wave_of(
+        &mut self,
+        elems: &[yavs_sem::hir::WaveElem],
+        st: yavs_sem::SubtypeId,
+        tid: yavs_ir::TyId,
+        tdope: Option<Reg>,
+        size: Option<Reg>,
+        stride: Reg,
+        logic: bool,
+        what: &str,
+        span: Span,
+    ) -> R<(Reg, Reg)> {
+        let db = self.db;
+        let n = self.int(elems.len() as i64);
+        let total = self.bin(IntOp::Mul, stride, n);
+        let wave = self.alloc(total);
+        for (k, el) in elems.iter().enumerate() {
+            let Some(v) = el.value else {
+                return Err(self.cx.ice(span, "null element in a value waveform"));
+            };
+            let kk = self.int(k as i64);
+            let o = self.bin(IntOp::Mul, kk, stride);
+            let at = self.reg(RegTy::Ptr);
+            self.emit(Inst::Index {
+                dst: at,
+                base: wave,
+                pos: o,
+                stride: 1,
+            });
+            let t = self.delay_time(el.after)?;
+            self.store(at, t, Width::B8);
+            let va = self.offset(at, 8);
+            match (tdope, size) {
+                (Some(dope), Some(size)) => {
+                    let val = self.expr(v)?;
+                    let (data, vd) = self.arr(val, span)?;
+                    let dims = ty::array_of(db, db.base(st)).map_or(1, |x| x.1);
+                    let m = self.msg(what, Dir::To);
+                    self.emit(Inst::SubtypeCheck {
+                        dope: vd,
+                        want: dope,
+                        dims,
+                        what: m,
+                    });
+                    self.emit(Inst::Copy {
+                        dst: va,
+                        src: data,
+                        bytes: size,
+                    });
+                }
+                _ => {
+                    let (_, _, vw) = self.scalar(st, span)?;
+                    let r = self.scalar_expr(v)?;
+                    self.check_scalar(r, Some(db.exprs[v].subtype), st, what, span)?;
+                    if logic {
+                        let z = self.int(0);
+                        let bias = self.code_bias(tid);
+                        let r = self.enc(r, bias);
+                        self.emit(Inst::LSet {
+                            base: va,
+                            idx: z,
+                            v: r,
+                        });
+                    } else {
+                        self.store(va, r, vw);
+                    }
+                }
+            }
+        }
+        Ok((wave, n))
+    }
+
+    /// The delay mechanism of an assignment and its pulse rejection limit.
+    fn drive_mode(&mut self, delay: &Delay) -> R<(DriveMode, Option<Reg>)> {
+        Ok(match delay {
+            Delay::Transport => (DriveMode::Transport, None),
+            Delay::Default => (DriveMode::Inertial, None),
+            Delay::Inertial { reject } => {
+                let r = match reject {
+                    Some(e) => Some(self.scalar_expr(*e)?),
+                    None => None,
+                };
+                (DriveMode::Inertial, r)
+            }
+        })
+    }
+
+    /// The delay of a waveform element in femtoseconds, checked to be non-negative.
+    fn delay_time(&mut self, after: Option<ExprId>) -> R<Reg> {
+        let Some(a) = after else {
+            return Ok(self.int(0));
+        };
+        let t = self.scalar_expr(a)?;
+        let z = self.int(0);
+        let max = self.int(i64::MAX);
+        let m = self.msg("delay of a waveform element", Dir::To);
+        self.emit(Inst::Check {
+            kind: CheckKind::Range,
+            v: t,
+            lo: z,
+            hi: max,
+            what: m,
+        });
+        Ok(t)
+    }
+
+    /// A waveform with null elements (LRM 10.5.2.2, #352): one transaction per element in order.
+    /// The first has the assignment's delay mechanism and preempts the driver's later
+    /// transactions; the others are transport, which adds them after it. A null element
+    /// disconnects the driver of a guarded signal at its time, a value is driven as usual.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_nulls(
+        &mut self,
+        elems: &[yavs_sem::hir::WaveElem],
+        slot: u32,
+        sref: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+        span: Span,
+        mut time: impl FnMut(&mut Self, usize) -> R<Reg>,
+        mut value: impl FnMut(&mut Self, usize, DriveMode, Option<Reg>) -> R<()>,
+    ) -> R<()> {
+        for (k, el) in elems.iter().enumerate() {
+            let (mode, reject) = if k == 0 {
+                (mode, reject)
+            } else {
+                (DriveMode::Transport, None)
+            };
+            if el.value.is_some() {
+                value(self, k, mode, reject)?;
+                continue;
+            }
+            if reject.is_some() {
+                return Err(self
+                    .cx
+                    .unsupported(span, "a pulse rejection limit with a null first element"));
+            }
+            let after = time(self, k)?;
+            self.emit(Inst::Disconnect {
+                driver: slot,
+                target: Some(sref),
+                after: Some(after),
+                mode,
+            });
         }
         Ok(())
     }

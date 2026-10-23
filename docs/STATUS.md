@@ -5997,3 +5997,13 @@ E0124; `--dap` is E0125; Ctrl-C prints the profile so far, #587), and `--profile
   is the same, cycles move with code layout, #574). Realbench `run` phase (core 15, 5 runs, `--tier=interp` and `auto`; the first 3 tests of a planned 8, the run was stopped for time): `hdlm_fifo_sync` and `olo_base_cam` 1.0, `poc_arith_addw` (23 s) 0.94 to 1.0, all within noise.
 - On (B with `--profile` / B without, geometric mean of total CPU, two rounds): 1.03 with `--tier=interp`, 1.015 with
   `--tier=auto`; short designs show the fixed cost of the report (a few ms: resolving lines reads the source files).
+
+## Null waveform elements in sequential assignments (#352, 2026-10-23)
+
+`s <= v after a, null after b, ...` on a `bus` or `register` signal lowers to one transaction per
+element (`yavs-lower` `drive_nulls`): the first with the assignment's delay mechanism, the rest
+transport, a null as `Inst::Disconnect` at its own time. No IR, interpreter or kernel change.
+Corpus `sigassign/null_waveform` (reference output) and `sigassign/null_waveform_mixed`
+(`ref=hand`: sim1 loses a value before a null and a null in the middle of a waveform, sim2 cannot
+run a null among elements; `tests/discrepancies/null-waveform-in-waveform`). Still `E2001`: null in
+record signals (blocked by #595), aggregate targets and signal parameters.

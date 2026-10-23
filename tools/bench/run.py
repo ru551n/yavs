@@ -139,7 +139,14 @@ def prep_osvvm(test, Y, key):
     return [(["{Y}"] + recs[0]["argv"], recs[0]["cwd"])]
 
 
-VAI_TBS = ["tb_cnn_accel_pe_array", "tb_cnn_accel_window_gen"]
+# testbench -> (test case, generics): the cases realbench uses (tools/realbench/tests.toml), so both suites run the same work
+VAI_TBS = {"tb_cnn_accel_pe_array": ("test_varying_kernels", []),
+           "tb_cnn_accel_window_gen": ("test_row_bank_interlock_full_rate", ["g_assembly_buffers=3"])}
+
+
+def pending_after(marker):
+    """The (library, file) pairs the analysis of prep_vai could not place, as written to its marker file."""
+    return [(l, Path(f)) for l, f in (x.split(" ", 1) for x in marker.read_text().splitlines())]
 
 
 def prep_vai(tb, Y, key):
@@ -153,8 +160,10 @@ def prep_vai(tb, Y, key):
     srcs = []  # (library, file): the module and its testbenches that need no Python, and the hdl-modules libraries
     for d in sorted((root / "hdl-modules/modules").glob("*")):
         srcs += [(d.name, f) for f in sorted((d / "src").rglob("*.vhd"))]
+    srcs += [("register_file", f) for f in sorted((root / "hdl-modules/modules/register_file/sim").glob("*.vhd"))]
+    srcs += [("sim_common", f) for f in sorted((root / "modules/sim_common/sim").glob("*.vhd"))]
     mod = root / "modules/cnn_accel"
-    srcs += [("cnn_accel", f) for d in ("regs_src", "src") for f in sorted((mod / d).glob("*.vhd"))]
+    srcs += [("cnn_accel", f) for d in ("regs_src", "regs_sim", "src") for f in sorted((mod / d).glob("*.vhd"))]
     srcs += [("cnn_accel", f) for f in sorted((mod / "test").glob("*.vhd")) if not re.search(r"python_(pkg|context|execute|call)", f.read_text(errors="replace"), re.I)]
     names = sorted({l for l, _ in srcs})
     maps = [f"--map={n}:{wd}/{n}" for n in names] + [f"--map=vunit_lib:{libs}/vunit_lib", f"--map=osvvm:{libs}/osvvm"]
@@ -167,8 +176,12 @@ def prep_vai(tb, Y, key):
                 break
             pending = rest
         marker.write_text("\n".join(f"{l} {f}" for l, f in pending))
-    cfg = f"active python runner : false,seed : 12345,output path : {wd}/,tb path : {mod}/test/,use_color : false"
-    return [(["{Y}", "run", "--tier=interp", f"--std={STD}", "--relaxed", f"--work=cnn_accel:{wd}/cnn_accel"] + maps + [tb, f"-grunner_cfg={cfg}"], str(wd))]
+    case, gens = VAI_TBS[tb]
+    if any(f.stem == tb for _, f in pending_after(marker)):
+        raise Skip(f"{tb} does not analyse against {root}: see {marker}")
+    cfg = f"active python runner : false,enabled_test_cases : {case},seed : 12345,output path : {wd}/,tb path : {mod}/test/,use_color : false"
+    return [(["{Y}", "run", "--tier=interp", f"--std={STD}", "--relaxed", f"--work=cnn_accel:{wd}/cnn_accel"] + maps
+             + [tb, f"-grunner_cfg={cfg}"] + [f"-g{g}" for g in gens], str(wd))]
 
 
 def registry():

@@ -393,7 +393,7 @@ case!(
     static_chain,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(6520)),]
+    [("process_runs", Max(2)), ("ops", Max(5080)),]
 );
 case!(
     record_sig,

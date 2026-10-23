@@ -6031,6 +6031,42 @@ impl Machine {
                     self.regs[dst as usize] = t!(mk_addr(FRAME, i as u32, off.into()));
                     k += 1;
                 }
+                Op::LoadUp { dst, depth, w, off } => {
+                    let mut i = top;
+                    for _ in 0..depth {
+                        i = t!(self.frames[i]
+                            .link
+                            .ok_or_else(|| ice_s!("static link missing")))
+                            as usize;
+                    }
+                    let n = w.bytes().min(8) as usize;
+                    let o = off as usize;
+                    self.regs[dst as usize] =
+                        match self.fslots(i).and_then(|s| s.get(o..o + n)) {
+                            Some(b) => cell_w(b, w),
+                            None => t!(mk_addr(FRAME, i as u32, off.into())
+                                .and_then(|a| self.load_slow(a, w))),
+                        };
+                    k += 2;
+                }
+                Op::StoreUp { src, depth, w, off } => {
+                    let mut i = top;
+                    for _ in 0..depth {
+                        i = t!(self.frames[i]
+                            .link
+                            .ok_or_else(|| ice_s!("static link missing")))
+                            as usize;
+                    }
+                    let v = self.regs[src as usize];
+                    let n = w.bytes() as usize;
+                    let o = off as usize;
+                    match self.fslots_mut(i).and_then(|s| s.get_mut(o..o + n)) {
+                        Some(b) => put_le(b, v),
+                        None => t!(mk_addr(FRAME, i as u32, off.into())
+                            .and_then(|a| self.store_slow(a, w, v))),
+                    }
+                    k += 2;
+                }
                 Op::Copy { dst, src, bytes } => {
                     t!(self.copy_mem(
                         self.regs[dst as usize],

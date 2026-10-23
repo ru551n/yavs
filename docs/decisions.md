@@ -5542,6 +5542,22 @@ of their cycles waiting for the first load of each line). The fields were spread
   least); the kernel's per-process state is another set of lines (`run_batch`, `wait_on_again`). Prefetching the next
   process of a batch needs `unsafe` or the kernel.
 
+## Interpreter round 16: superinstructions from the op census (yavs-interp, #520, #518, 2026-10-24)
+
+The user decided (2026-10-24) that superinstructions are wanted, one at a time, aimed at the biggest gaps to the reference
+simulator; a second code generator may replace the LLVM tier later, so a fusion that every backend could lower belongs in
+the IR and one that only the interpreter's dispatch gains from is marked interpreter-only here. The ranking comes from
+`op-census` (crates/yavs-interp/AGENTS.md section 5), which now also has a time column (nanoseconds from the end of one op
+to the start of the next, the clock reads subtracted; ops that suspend or return include the kernel) and
+`YAVS_CENSUS_TOP=N` for the length of the tables. Each change lands only if the executed instructions drop and the
+cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` (windows of 50 to 200 us) is not worse.
+
+- **`LoadUp` and `StoreUp` (interpreter only).** An `AddrUp` (the address of a variable of an enclosing subprogram, up the
+  static chain) followed by the `Load` or `Store` through that address, which nothing else reads, is one op that walks the
+  links and touches the slots of that frame directly. A nested procedure reads its parent's variables this way on every
+  statement (`sc5_fifo_repack`: `AddrUp -> Load` was 4.7 percent of its ops, `Stmt -> AddrUp` 4.5). A failing access reports
+  what the plain `Load`/`Store` reports (the slow path is the old one). The compiled tiers are unaffected.
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

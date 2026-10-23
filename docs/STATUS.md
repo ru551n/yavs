@@ -6360,6 +6360,15 @@ their cycles waiting for lines of the process. Tried and not kept: `k` in a regi
 `Op` pairs from the census (`SigVal->SigVal`, `SigRead1->CmpBr`, `WaveBuf->LCopy->Drive`) is open: an arm added to
 `run_ops` has to pay for itself against that layout effect.
 
+## Interpreter round 16: superinstructions from the op census (#520, #518, 2026-10-24)
+
+Details and the ranking in `docs/decisions.md` "Interpreter round 16". One commit per fusion, each measured by
+`perf stat` user instructions and cycles on 32 designs of `tools/bench` and `tools/realbench` (aligned bench builds, one
+core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median of 5 interleaved runs).
+
+- `LoadUp`/`StoreUp` (interpreter only): a variable of an enclosing subprogram is read or written in one op instead of
+  `AddrUp` and `Load`/`Store`. `sc5_fifo_repack` instructions 0.969.
+
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 
 `frame_end` hashed every table of `Db` (33 maps, sets and values) before and after each unit analysed from source, to find what the

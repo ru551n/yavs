@@ -799,6 +799,21 @@ pub(crate) enum Op {
         depth: u8,
         off: u32,
     },
+    /// `AddrUp` and the `Load` through its result, which nothing else reads: a variable of an
+    /// enclosing subprogram (interpreter only).
+    LoadUp {
+        dst: u32,
+        depth: u8,
+        w: Width,
+        off: u32,
+    },
+    /// `AddrUp` and the `Store` through its result, which nothing else reads (interpreter only).
+    StoreUp {
+        src: u32,
+        depth: u8,
+        w: Width,
+        off: u32,
+    },
     Deref {
         dst: u32,
         handle: u32,
@@ -2702,6 +2717,21 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
     let r16 = |r: u32| u16::try_from(r).ok();
     for k in 0..ops.len() {
         let fused = match (ops[k], ops.get(k + 1), ops.get(k + 2)) {
+            (Op::AddrUp { dst: a, depth, off }, Some(&Op::Load { dst, addr, w }), _)
+                if addr == a
+                    && let Some(&lp) = at.get(k + 1)
+                    && (dst == a || !live_after(f, lp as usize, yavs_ir::Reg(a))) =>
+            {
+                Some(Op::LoadUp { dst, depth, w, off })
+            }
+            (Op::AddrUp { dst: a, depth, off }, Some(&Op::Store { addr, src, w }), _)
+                if addr == a
+                    && src != a
+                    && let Some(&sp) = at.get(k + 1)
+                    && !live_after(f, sp as usize, yavs_ir::Reg(a)) =>
+            {
+                Some(Op::StoreUp { src, depth, w, off })
+            }
             (
                 Op::Alloc { dst, size },
                 Some(&Op::Store {

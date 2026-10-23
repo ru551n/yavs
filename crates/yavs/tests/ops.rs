@@ -1,6 +1,7 @@
 //! Operations of the interpreter's fast loop for instructions that used to be generic steps: the
 //! address of a variable of an enclosing subprogram (`AddrOf` up the static chain, in a register
-//! that is defined more than once) and the comparison of reals (`FCmp`).
+//! that is defined more than once; with its load or store it is `LoadUp` or `StoreUp`) and the
+//! comparison of reals (`FCmp`).
 
 mod common;
 use common::tempdir as tmp;
@@ -66,7 +67,7 @@ fn static_chain_addresses_and_real_compares_are_ops() {
         out.contains("acc=440 x=2") || err.contains("acc=440 x=2"),
         "{out}\n{err}"
     );
-    for want in [" AddrUp {", " FCmp {"] {
+    for want in [" LoadUp {", " StoreUp {", " FCmp {"] {
         let in_ops = err.lines().any(|l| l.contains(" pc") && l.contains(want));
         assert!(in_ops, "no op{want}\n{err}");
     }

@@ -1240,6 +1240,22 @@ impl Elab<'_> {
                 {
                     self.m.value_of(db, d, Some(s), decl.span)?;
                 }
+                // A constant that reads a signal gets the signal's initial value, as the initial
+                // value of a signal does (#453). One that cannot be evaluated yet keeps its
+                // run-time thunk.
+                (ObjClass::Constant, ObjRole::Plain)
+                    if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
+                        && o.default.is_some_and(|e| crate::eval::reads_signal(db, e)) =>
+                {
+                    self.m.sig_init = true;
+                    let r = self.m.value_of(db, d, Some(s), decl.span);
+                    self.m.sig_init = false;
+                    match r {
+                        Ok(_) => {}
+                        Err(x) if x.code == crate::codes::NOT_EVALUATED => {}
+                        Err(x) => return Err(x),
+                    }
+                }
                 (ObjClass::Constant, ObjRole::Plain)
                     if db.scopes[region].kind != yavs_sem::scope::ScopeKind::Process
                         && o.default.is_some_and(|e| crate::eval::calls_impure(db, e)) =>

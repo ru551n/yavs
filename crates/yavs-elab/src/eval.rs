@@ -1982,6 +1982,18 @@ pub(crate) fn calls_impure(db: &Db, e: ExprId) -> bool {
     .is_some()
 }
 
+/// Whether expression `e` names a signal or port.
+pub(crate) fn reads_signal(db: &Db, e: ExprId) -> bool {
+    let mut found = false;
+    db.walk_expr(e, &mut |x| {
+        if let ExprKind::Obj(d) = db.exprs[x].kind {
+            found |=
+                matches!(&db.decls[d].kind, DeclKind::Object(o) if o.class == ObjClass::Signal);
+        }
+    });
+    found
+}
+
 /// The value of `shape` from the initial values of the leaves from `*next` on (the inverse
 /// of [`leaf_values`]).
 fn init_val(db: &Db, shape: &Shape, nets: &NetGraph, next: &mut usize) -> Option<Val> {

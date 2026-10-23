@@ -1012,8 +1012,8 @@ impl Elaborated {
         }
         for &region in &ir.init_regions {
             match self.region_data(&rt, ir, region, &shared, &mut once, &mut insts, &mut base) {
-                // ponytail: a constant initialised from a signal has no signal context here
-                // (#453); the instance is left unevaluated, as before, until that is fixed.
+                // ponytail: a constant reading a signal that elaboration could not fold (#453)
+                // has no signal context here; the instance is left unevaluated.
                 Err(e)
                     if matches!(&e.kind, ErrorKind::Runtime(m)
                         if m == "signal or wait operation during elaboration") => {}

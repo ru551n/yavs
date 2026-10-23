@@ -6203,3 +6203,42 @@ their cycles waiting for lines of the process. Tried and not kept: `k` in a regi
 +7.6 percent of instructions: the compiler lays the large function out differently, as in round 14). The ranking of
 `Op` pairs from the census (`SigVal->SigVal`, `SigRead1->CmpBr`, `WaveBuf->LCopy->Drive`) is open: an arm added to
 `run_ops` has to pay for itself against that layout effect.
+
+## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
+
+`frame_end` hashed every table of `Db` (33 maps, sets and values) before and after each unit analysed from source, to find what the
+unit changed: about a fifth of a cold analysis, growing with the closure. The maps and sets a unit may change are now `TrackedMap` and
+`TrackedSet` (`crates/yavs-sem/src/tracked.rs`): a write appends the key and the hash of the value it replaced to a log, a unit's own
+changes are the log since its mark, and a finished unit hands the keys it and its dependencies changed to the unit around it, so a
+change is hashed once instead of once per level of loads. There is no `DerefMut`, so a write that bypasses the log does not compile.
+The few value tables are still compared. Safety net: debug builds (all of `cargo test`) and `YAVS_UNIT_CHECK=1` also compare every
+table as before and fail with an internal error naming the table when the log missed a write (checked by breaking the log on purpose).
+Decision and reasoning: `docs/decisions.md` "Table writes are tracked" (replaces "checked, not audited").
+
+Checks: `YAVS_UNIT_CHECK=1 yavs analyze` cold and warm over osvvm, uvvm (2008, 2019), vunit (2008, 2019), hdl-modules (2008, 2019),
+open-logic, neorv32, poc, surf, satcat5, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl: 34 runs, all as expected. The units cache entries
+of those 17 selections are byte for byte the same as before this change apart from the build hash in the header (same number, same
+content), so the stored units and the replay are unchanged.
+
+Before / after, `tools/realbench/run.py --compare`, `--phases analyze`, cores 6 and 7, 3 runs, 10 tests (one per selection that has a test),
+host load 20 to 26 from other agents: the instruction ratio is exact, the wall times are not (the short tests move by 10 to 15 percent
+with load in either direction). The sim1 columns are two separate runs with `--ref sim1`, cold analysis one file per call, yavs / sim1
+(below 1 is faster).
+
+| selection (test) | cold wall s before / after | cold instructions after / before | yavs / sim1 wall | yavs / sim1 instructions |
+|---|---:|---:|---:|---:|
+| hdl-modules (hdlm_fifo_sync) | 2.50 / 2.26 | 0.83 | 0.40 / 0.45 | 0.69 / 0.57 |
+| open-logic (olo_base_cam) | 5.42 / 4.29 | 0.79 | 0.55 / 0.48 | 0.74 / 0.58 |
+| vunit (vunit_logging) | 2.32 / 1.92 | 0.81 | 0.35 / 0.48 | 0.75 / 0.61 |
+| en_cl_fix (en_cl_fix_pkg) | 2.47 / 1.40 | 0.83 | 0.53 / 0.44 | 0.70 / 0.58 |
+| poc (poc_arith_addw) | 1.35 / 1.17 | 0.86 | 0.45 / 0.44 | 0.65 / 0.55 |
+| neorv32 (neorv32_single_min) | 0.50 / 0.58 | 0.87 | 0.44 / 0.41 | 0.62 / 0.54 |
+| osvvm (osvvm_axis_random) | 10.38 / 7.37 | 0.77 | 0.74 / 0.44 | 0.79 / 0.62 |
+| uvvm (uvvm_sb_slv) | 0.89 / 1.01 | 0.85 | 0.46 / 0.43 | 0.58 / 0.49 |
+| satcat5 (sc5_timestamp) | 2.03 / 1.80 | 0.89 | 0.49 / 0.50 | 0.75 / 0.64 |
+| fletcher (fletcher_bufferreader) | 0.71 / 0.74 | 0.86 | 0.42 / 0.41 | 0.64 / 0.55 |
+
+Warm analysis (files already in the library) is 0.94 to 1.01 in instructions: it replays little and rarely records. Selections without a
+realbench test, cold analysis of the whole corpus manifest one file per call (`perf stat`, core 7, instructions): surf 44.1 G to 42.1 G,
+vhdl-extras 1.50 G to 1.22 G, json-for-vhdl 11.3 G to 9.3 G; osvvm (core 6) 16.1 G to 13.0 G. The wall columns are also noisy because
+sim1's own time moved by up to 1.5x between the two runs; use the instruction columns.

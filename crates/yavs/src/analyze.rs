@@ -217,6 +217,7 @@ pub fn run(a: Args, format: MessageFormat, color: bool, encoding: Encoding) -> E
     opts.libraries = libs;
     opts.relaxed = a.relaxed;
     opts.psl = a.psl;
+    opts.unit_audit |= check;
     opts.defines = a.defines;
     opts.encoding = encoding;
     if !a.no_cache {

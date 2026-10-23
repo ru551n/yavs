@@ -51,6 +51,7 @@ pub mod stat;
 pub mod stdlib;
 pub mod stmt;
 pub mod suggest;
+pub mod tracked;
 pub mod types;
 pub mod unit;
 pub mod units;
@@ -88,6 +89,10 @@ pub struct Options {
     /// The analysed-unit cache (`units.rs`): units are read from it when their entry holds, and
     /// written to it when it is writable. `None`: every unit is analysed from source.
     pub units: Option<std::sync::Arc<dyn UnitStore>>,
+    /// Compare every table of `Db` before and after each unit recorded for the analysed-unit cache
+    /// and fail when that finds a change the write log of the table missed (`units.rs`
+    /// `Db::diff`). Default: debug builds; `YAVS_UNIT_CHECK=1` sets it for `yavs analyze`.
+    pub unit_audit: bool,
 }
 
 /// The store of the analysed-unit cache (`docs/decisions.md` "Analysed-unit cache"): entries by
@@ -185,6 +190,7 @@ impl Options {
             defines: Vec::new(),
             encoding: yavs_syntax::Encoding::Auto,
             psl: false,
+            unit_audit: cfg!(debug_assertions),
             stages: None,
             units: None,
         }

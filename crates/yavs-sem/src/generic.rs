@@ -18,6 +18,7 @@
 //! - subtypes and expressions that mention none of the above keep their ids;
 //!   changed expressions lose their folded value and are folded again.
 
+use crate::tracked::{TrackedMap, TrackedSet};
 use rustc_hash::{FxHashMap, FxHashMap as HashMap, FxHashSet as HashSet};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -133,45 +134,46 @@ mod once_scope {
 /// Generic bookkeeping kept on `Db` (sem.md 5).
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct GenericState {
-    pub(crate) defaults: HashMap<DeclId, SubpDefault>,
+    pub(crate) defaults: TrackedMap<DeclId, SubpDefault>,
     /// The generic list analyzed into a region (a package scope or a subprogram's
     /// parameter region, also the parameter region of a generic subprogram body).
-    pub(crate) lists: HashMap<ScopeId, Box<[DeclId]>>,
+    pub(crate) lists: TrackedMap<ScopeId, Box<[DeclId]>>,
     /// The id remapping of each instance (for its body and for formal packages).
-    pub(crate) maps: HashMap<InstId, Remap>,
+    pub(crate) maps: TrackedMap<InstId, Remap>,
     /// The generic spec the subprogram body being analyzed completes (`prepare_generic_body`).
     pub(crate) reuse: Option<DeclId>,
     /// The anonymous interface types of the parameters of subprograms, which each call binds
     /// to its actuals' types (`implicit_instance`, #283).
-    pub(crate) implicit: HashMap<DeclId, Box<[TypeId]>>,
+    pub(crate) implicit: TrackedMap<DeclId, Box<[TypeId]>>,
     /// The anonymous parameter types of formal subprograms: any type of their class in the
     /// actual's profile, all uses of one type the same (#308).
-    pub(crate) formal_anon: HashMap<DeclId, Box<[TypeId]>>,
+    pub(crate) formal_anon: TrackedMap<DeclId, Box<[TypeId]>>,
     /// Those instances, per region of the call and the actuals' subtypes.
     #[allow(clippy::type_complexity)]
-    pub(crate) implicit_insts: HashMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
+    pub(crate) implicit_insts: TrackedMap<(ScopeId, DeclId, Box<[SubtypeId]>), DeclId>,
     /// Instances of 2019 calls with a generic map (`call_instance`), per region and call
     /// span; `None` after an error.
-    pub(crate) call_insts: HashMap<(ScopeId, Span), Option<DeclId>>,
+    pub(crate) call_insts: TrackedMap<(ScopeId, Span), Option<DeclId>>,
     /// Instances of generic protected types (`protected_instance`): their body is cloned
     /// from the generic's at elaboration, not written in their region.
-    pub(crate) protected: HashSet<TypeId>,
+    pub(crate) protected: TrackedSet<TypeId>,
     /// Uninstantiated subprograms of headers with a generic map (`header_instance`).
-    pub(crate) header: HashSet<DeclId>,
+    pub(crate) header: TrackedSet<DeclId>,
     /// Generic constants, types and packages of packages and subprograms not yet
     /// looked up (`W1501`; `Db::lookup` removes them).
-    pub(crate) unused: HashSet<DeclId>,
+    pub(crate) unused: TrackedSet<DeclId>,
     /// The actuals a formal package with a generic map requires of its actual instance.
-    pub(crate) wants: HashMap<InstId, Vec<(DeclId, Want)>>,
+    pub(crate) wants: TrackedMap<InstId, Vec<(DeclId, Want)>>,
     /// Design entities cloned per map of generic type, subprogram and package actuals
     /// (`instantiate_entity`): (entity, architecture, actuals) to the clones.
     #[allow(clippy::type_complexity)]
-    pub(crate) entities: HashMap<(UnitId, UnitId, Box<[Option<GenericActual>]>), (UnitId, UnitId)>,
+    pub(crate) entities:
+        TrackedMap<(UnitId, UnitId, Box<[Option<GenericActual>]>), (UnitId, UnitId)>,
     /// Mangled names of those clones (5.3).
-    pub(crate) unit_names: HashMap<UnitId, Symbol>,
+    pub(crate) unit_names: TrackedMap<UnitId, Symbol>,
     /// Components cloned per map of those actuals (`instantiate_component`).
     #[allow(clippy::type_complexity)]
-    pub(crate) components: HashMap<(DeclId, Box<[Option<GenericActual>]>), DeclId>,
+    pub(crate) components: TrackedMap<(DeclId, Box<[Option<GenericActual>]>), DeclId>,
     /// Blocks with generic types, subprograms or packages of the architectures being
     /// analyzed, innermost first (`instantiate_blocks`).
     pub(crate) blocks: Vec<(UnitId, StmtId)>,

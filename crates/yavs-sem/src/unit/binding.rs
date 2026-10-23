@@ -1787,16 +1787,15 @@ impl Db {
             else {
                 continue;
             };
-            self.config_specs
-                .entry(p.scope)
-                .or_default()
-                .push(ComponentConfig {
+            self.config_specs.edit(p.scope, |v| {
+                v.push(ComponentConfig {
                     instances,
                     component: p.component,
                     binding: Some(p.binding),
                     block: None,
                     span: p.span,
-                });
+                })
+            });
         }
     }
 

@@ -4578,14 +4578,30 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   from source. A corrupt or stale entry is never an error. Questions a unit asks about libraries without
   loading a unit (whether a unit exists, an entity, the last architecture: `Db::unit_known`, `has_entity`,
   `last_architecture`) are recorded with their answer and asked again before a replay.
-- **Writes are checked, not audited.** What a unit changes is found by comparison: arena entries it
-  writes below its own (`Arena::watch`, the bytes before the first write) and every table of `Db` before
-  and after it (`units::tables!`; a test fails when a new serialized field of `Db` or `GenericState` is
-  not listed). The tables are compared by a 128-bit hash (xxh3) of every key and value, so recording a
-  unit allocates nothing per entry; a unit stores the keys it added, and one that changes or removes a
-  key another unit made is not stored (10 units of all the analysis corpora, all removals from
-  `GenericState::unused`). A change it shares with a unit loaded inside it, work left pending, an error,
-  or an id it cannot name makes it not stored too (`YAVS_LOG=debug` says why).
+- **Table writes are tracked, arena writes are watched; both are audited in tests** (user, 2026-10-23, #603; it replaces
+  "checked, not audited", under which a unit's changes were found by hashing every table before and after it, 20% of a cold
+  analysis and growing with the closure). Arena entries a unit writes below its own are seen by `Arena::watch` (the bytes
+  before the first write). The maps and sets of `Db` that a unit may change are `TrackedMap`/`TrackedSet` (`tracked.rs`):
+  while a unit is recorded each write appends the key and the hash of the value it replaced to a log of the table, and the
+  unit's own changes are the keys written since its mark whose value now differs (hashes of the raw bytes, xxh3-128, as
+  before). When the unit ends its frame forgets its part of the logs and hands the keys it and the units below it changed
+  (with the hash of the value after) to the frame around it (`Frame::nested_keys`, smaller map into the larger), so a
+  change is hashed once, not once per level of loads; a replayed change is not logged either (the replay already hashes
+  it for `nested_keys`). Before, a key a unit loaded inside it added and the unit itself removed again was no change and the
+  entry replayed it wrongly; now it is a change of both and the unit is not stored (the conservative side).
+  There is no `DerefMut`, so a write that does not go through `insert`, `remove` or `edit` does not compile; a new write path
+  cannot bypass the log by accident. The value tables (`well_known`, `validated`, `facts`, `errors`, `generic.reuse`,
+  `generic.blocks`: a few bytes each) are still compared by their bytes. The tables are listed in `units::tables!` (a test
+  fails when a new serialized field of `Db` or `GenericState` is not listed). A unit stores the keys it added, and one that
+  changes or removes a key another unit made is not stored (10 units of all the analysis corpora, all removals from
+  `GenericState::unused`). A change it shares with a unit loaded inside it, work left pending, an error, or an id it
+  cannot name makes it not stored too (`YAVS_LOG=debug` says why). **Reasoning:** the unit's own writes are few, the
+  tables are large, so finding them by comparison paid for the whole database per unit; the log costs one append on a write
+  and nothing on a read. The risk of a log is a missed write, which would store an entry that replays wrongly; that is why the
+  full comparison stays as an audit: `Options::unit_audit` (on in debug builds, so all of `cargo test`; `YAVS_UNIT_CHECK=1`
+  turns it on for `yavs analyze`) takes the old snapshot of every table and fails with an internal error naming the tables
+  when the comparison finds a change the logs do not. `YAVS_UNIT_CHECK=1` over all the analysis corpora, cold and warm, is part
+  of changing the cache. A new table is a `Tracked*` type in `Db`; a new kind of write is a method of `tracked.rs`.
 - **Whole pages of a replayed unit stay bytes until read** (`Arena::push_page`). An arena keeps its
   entries in pages of 64 (the chunks of an image are pages too); a run of a page or more of a unit's
   entries carries the length of each entry, and the replay keeps every page that falls inside the run

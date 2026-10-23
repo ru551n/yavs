@@ -33,7 +33,7 @@
 //! what it held when the entry was made) run during the replay; a failed one undoes the
 //! replay and the unit is analysed from source.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -50,6 +50,7 @@ mod canon;
 use crate::db::Db;
 use crate::ids::*;
 use crate::loader::{LibSource, UnitKey, UnitKind, UnitSlot};
+use crate::tracked::{Touched, TrackedMap, TrackedSet};
 use crate::{LangRev, UnitStore};
 
 /// A sha256 digest.
@@ -214,19 +215,24 @@ enum Step {
     Load(u32),
 }
 
-/// The values of the tables before a unit, to find what it changed.
-type Snap = Vec<TabSnap>;
+/// The tables before a unit, to find what it changed: the position of each map's write log and the
+/// bytes of each value table; with the audit also every map's content (`Options::unit_audit`).
+struct Snap {
+    tabs: Vec<TabSnap>,
+    full: Option<Vec<TabSnap>>,
+}
 
-/// A table before a unit: each key's hash with its value's (raw bytes, `hash_raw`), or a value
-/// table's bytes.
+/// A table before a unit: the length of a map's write log (`tracked.rs`), a value table's bytes
+/// or, for the audit, each key's hash with its value's (raw bytes, `hash_raw`).
 enum TabSnap {
+    Mark(usize),
     Map(FxHashMap<H, H>),
     Val(Vec<u8>),
 }
 
 /// A 128-bit hash of the raw bytes of a value (`hash_raw`): equal hashes are taken for equal
 /// values.
-type H = u128;
+pub(crate) type H = u128;
 
 /// What a unit changed in a table: the key's hash (0 for a value table) and the value's hash
 /// before and after; for a value table also its bytes before and after.
@@ -239,7 +245,7 @@ struct Change {
 }
 
 /// The hash of the raw bytes of `t`, written into `buf` (kept between calls).
-fn hash_raw<T: Serialize + ?Sized>(t: &T, buf: &mut Vec<u8>) -> H {
+pub(crate) fn hash_raw<T: Serialize + ?Sized>(t: &T, buf: &mut Vec<u8>) -> H {
     buf.clear();
     let b = std::mem::take(buf);
     let b = plain(|| yavs_syntax::raw_symbols(|| postcard::to_extend(t, b)))
@@ -270,10 +276,20 @@ pub(crate) struct Frame {
     /// Writes below the segment floor: (kind, index, bytes before), first per entry.
     touched: Vec<(Kind, u32, Vec<u8>)>,
     touched_set: FxHashSet<(Kind, u32)>,
-    /// What units loaded inside this one changed: table keys with their value after, entries.
-    nested_keys: FxHashMap<(u8, H), Option<H>>,
+    /// What units loaded inside this one (and changes it replayed) did to table keys, and the entries.
+    nested_keys: FxHashMap<(u8, H), Nested>,
     nested_touched: FxHashSet<(Kind, u32)>,
     pending: [usize; 6],
+}
+
+/// What the units loaded inside a unit (and the changes it replayed) did to a table key: the hash of
+/// the value before the first of them and after the last, and how many writes of the unit itself
+/// came before the first (the length of the table's log then).
+#[derive(Clone, Copy)]
+struct Nested {
+    pre: Option<H>,
+    post: Option<H>,
+    at: usize,
 }
 
 /// One change of a replay that `Db::rollback` undoes.
@@ -590,6 +606,9 @@ impl Db {
         });
         let cacheable = self.cacheable(lib);
         let capture = cacheable && self.store().is_some_and(|s| s.writable());
+        if capture {
+            self.track(true);
+        }
         let snap = capture.then(|| self.snapshot());
         let pending = self.pending_lens();
         self.frames.push(Frame {
@@ -628,7 +647,7 @@ impl Db {
             return;
         }
         self.seg_close();
-        let f = self.frames.pop().expect("checked");
+        let mut f = self.frames.pop().expect("checked");
         let parent = self.owner_now();
         self.set_owner(parent);
         let unit = match self.libs[f.lib].units.get(&f.key) {
@@ -664,8 +683,18 @@ impl Db {
             r.deps = deps;
             r.files = files;
         }
-        // What this unit and those it loaded changed, for the frame around it.
-        let changes = f.snap.as_ref().map(|s| self.diff(s));
+        // What this unit changed itself (the units it loaded and the changes it replayed are in
+        // `f.nested_keys`).
+        let (changes, same) = match f.snap.as_ref().map(|s| self.diff(s, &f.nested_keys)) {
+            Some((c, s)) => (Some(c), s),
+            None => (None, Vec::new()),
+        };
+        if let Some(s) = &f.snap {
+            self.forget(s);
+        }
+        if self.frames.is_empty() {
+            self.track(false);
+        }
         if f.capture && unit.is_some() && (full.is_none() || address.is_none()) {
             self.note_miss(&f, "what it was made from is not known");
         }
@@ -684,10 +713,66 @@ impl Db {
                 self.note_miss(&f, why);
             }
         }
+        // Where the unit sits among the writes of the frame around it.
+        let at: Vec<usize> = tables().iter().map(|t| (t.loglen)(&*self)).collect();
         if let Some(p) = self.frames.last_mut() {
             if let Some(changes) = changes {
+                // Everything below this unit, for the frame around it: its own changes after those
+                // of the units it loaded. The larger map is kept and the smaller one added to it.
+                let mut below = std::mem::take(&mut f.nested_keys);
+                // A key the unit wrote and left as it was at its start is no change of it or of the
+                // units loaded inside it; one it changed has the value before its first write.
+                for k in same {
+                    below.remove(&k);
+                }
                 for c in changes {
-                    p.nested_keys.insert((c.t, c.key), c.post);
+                    let n = Nested {
+                        pre: c.pre,
+                        post: c.post,
+                        at: 0,
+                    };
+                    below.insert((c.t, c.key), n);
+                }
+                for ((t, _), n) in below.iter_mut() {
+                    n.at = at[*t as usize];
+                }
+                // Older entries (siblings, replays) keep their value before and position, newer ones
+                // their value after; a key back to where it was is dropped.
+                let join = |older: Nested,
+                            newer: Nested,
+                            key: (u8, H),
+                            into: &mut FxHashMap<(u8, H), Nested>| {
+                    if older.pre == newer.post {
+                        into.remove(&key);
+                    } else {
+                        into.insert(
+                            key,
+                            Nested {
+                                post: newer.post,
+                                ..older
+                            },
+                        );
+                    }
+                };
+                if p.nested_keys.len() < below.len() {
+                    std::mem::swap(&mut p.nested_keys, &mut below);
+                    for (k, older) in below {
+                        match p.nested_keys.get(&k).copied() {
+                            Some(newer) => join(older, newer, k, &mut p.nested_keys),
+                            None => {
+                                p.nested_keys.insert(k, older);
+                            }
+                        }
+                    }
+                } else {
+                    for (k, newer) in below {
+                        match p.nested_keys.get(&k).copied() {
+                            Some(older) => join(older, newer, k, &mut p.nested_keys),
+                            None => {
+                                p.nested_keys.insert(k, newer);
+                            }
+                        }
+                    }
                 }
             } else {
                 // Not captured: the frame around it cannot tell its own changes apart.
@@ -827,12 +912,120 @@ impl Db {
     // -----------------------------------------------------------------------------------------
     // Tables
 
-    fn snapshot(&self) -> Snap {
-        tables().iter().map(|t| (t.snap)(self)).collect()
+    /// Start or end logging the writes of the tables (`tracked.rs`); ending forgets the logs.
+    fn track(&mut self, on: bool) {
+        for t in tables() {
+            (t.track)(self, on);
+        }
     }
 
-    /// The table changes since `before`, in table order (and key hash order within a table).
-    fn diff(&self, before: &Snap) -> Vec<Change> {
+    /// Forget the writes the logs hold since `before`.
+    fn forget(&mut self, before: &Snap) {
+        for (t, tab) in tables().iter().zip(&before.tabs) {
+            if let TabSnap::Mark(m) = tab {
+                (t.forget)(self, *m);
+            }
+        }
+    }
+
+    fn snapshot(&self) -> Snap {
+        Snap {
+            tabs: tables().iter().map(|t| (t.mark)(self)).collect(),
+            full: self
+                .opts
+                .unit_audit
+                .then(|| tables().iter().map(|t| (t.snap)(self)).collect()),
+        }
+    }
+
+    /// The table changes the unit made itself since `before`, in table order (and key hash order
+    /// within a table), and the keys it wrote that are the same as at its start. The changes of a
+    /// map are found from its log (a replayed change is not in it: it is in `nested`); the value of
+    /// a key before the unit is the one before its first write unless a unit loaded inside wrote the
+    /// key before that. The value tables are compared. With `Options::unit_audit` every table is
+    /// compared too, and a change that comparison finds and is neither in the result nor in
+    /// `nested` is an internal error (a write that bypassed the log).
+    fn diff(
+        &self,
+        before: &Snap,
+        nested: &FxHashMap<(u8, H), Nested>,
+    ) -> (Vec<Change>, Vec<(u8, H)>) {
+        let mut out = Vec::new();
+        let mut same = Vec::new();
+        for (i, t) in tables().iter().enumerate() {
+            let t8 = i as u8;
+            match &before.tabs[i] {
+                TabSnap::Mark(m) => {
+                    for (key, mut pre, post, first) in (t.touched)(self, *m) {
+                        if let Some(n) = nested.get(&(t8, key))
+                            && first >= n.at
+                        {
+                            pre = n.pre;
+                        }
+                        if pre == post {
+                            same.push((t8, key));
+                        } else {
+                            out.push(Change {
+                                t: t8,
+                                key,
+                                pre,
+                                post,
+                                val: None,
+                            });
+                        }
+                    }
+                }
+                TabSnap::Val(b) => {
+                    let TabSnap::Val(n) = (t.snap)(self) else {
+                        unreachable!("a table keeps its shape")
+                    };
+                    if *b != n {
+                        out.push(Change {
+                            t: t8,
+                            key: 0,
+                            pre: Some(twox_hash::XxHash3_128::oneshot(b)),
+                            post: Some(twox_hash::XxHash3_128::oneshot(&n)),
+                            val: Some((b.clone(), n)),
+                        });
+                    }
+                }
+                TabSnap::Map(_) => unreachable!("a full snapshot is for the audit"),
+            }
+        }
+        if let Some(full) = &before.full {
+            self.audit(&out, &self.diff_full(full), nested);
+        }
+        (out, same)
+    }
+
+    /// Every change found by comparison (`found`) is a logged one with the same values before and
+    /// after, or one of `nested` with the same value after; a logged change is found by comparison.
+    fn audit(&self, logged: &[Change], found: &[Change], nested: &FxHashMap<(u8, H), Nested>) {
+        let name = |c: &Change| tables()[c.t as usize].name;
+        let mine: FxHashMap<(u8, H), &Change> = logged.iter().map(|c| ((c.t, c.key), c)).collect();
+        for c in found {
+            let ok = match mine.get(&(c.t, c.key)) {
+                Some(l) => l.pre == c.pre && l.post == c.post && l.val == c.val,
+                None => nested.get(&(c.t, c.key)).is_some_and(|n| n.post == c.post),
+            };
+            assert!(
+                ok,
+                "internal error: a unit changed table {} without logging the write (this is a bug in yavs)",
+                name(c)
+            );
+        }
+        let found: FxHashSet<(u8, H)> = found.iter().map(|c| (c.t, c.key)).collect();
+        for c in logged {
+            assert!(
+                found.contains(&(c.t, c.key)),
+                "internal error: a unit logged a change of table {} that comparison does not find (this is a bug in yavs)",
+                name(c)
+            );
+        }
+    }
+
+    /// The table changes found by comparing every table with `before` (the audit of `diff`).
+    fn diff_full(&self, before: &[TabSnap]) -> Vec<Change> {
         let mut out = Vec::new();
         for (i, t) in tables().iter().enumerate() {
             let t8 = i as u8;
@@ -1061,8 +1254,8 @@ impl Db {
             let mut vals = Vec::new();
             for c in changes {
                 let name = tables()[c.t as usize].name;
-                if let Some(np) = f.nested_keys.get(&(c.t, c.key)) {
-                    if *np == c.post {
+                if let Some(n) = f.nested_keys.get(&(c.t, c.key)) {
+                    if n.post == c.post {
                         continue;
                     }
                     return Err(format!(
@@ -2114,8 +2307,11 @@ impl Db {
             let d = tables().get(t as usize).ok_or("bad table")?;
             let (undo, changed) = (d.replay)(self, &mut rest, raw)?;
             self.undo.push(undo);
-            if let (Some((raw_key, raw_post)), Some(f)) = (changed, self.frames.last_mut()) {
-                f.nested_keys.insert((t, raw_key), raw_post);
+            if let Some((key, pre, post)) = changed {
+                let at = (d.loglen)(self);
+                if let Some(f) = self.frames.last_mut() {
+                    f.nested_keys.insert((t, key), Nested { pre, post, at });
+                }
             }
         }
         // The facts of its entries (`Db::scan_facts`).
@@ -2363,13 +2559,25 @@ impl Db {
 // ---------------------------------------------------------------------------------------------
 // The tables a unit may change, besides the arenas
 
-/// What a replayed table change leaves for the frame around it: the hashes of the key and value.
-type Changed = Option<(H, Option<H>)>;
+/// What a replayed table change leaves for the frame around it: the hashes of the key and of the
+/// value before and after.
+type Changed = Option<(H, Option<H>, Option<H>)>;
 
 /// One table of `Db`: how to compare it, write a change and replay it.
 struct Desc {
     name: &'static str,
+    /// The whole table (for the audit and value tables).
     snap: fn(&Db) -> TabSnap,
+    /// What `diff` needs to find the changes: a map's log position, a value table's bytes.
+    mark: fn(&Db) -> TabSnap,
+    /// Log the writes of a map (or stop and forget).
+    track: fn(&mut Db, bool),
+    /// Forget the writes of a map since a log position.
+    forget: fn(&mut Db, usize),
+    /// The length of the log of a map (0 for a value table).
+    loglen: fn(&Db) -> usize,
+    /// The keys of a map written since a log position.
+    touched: fn(&Db, usize) -> Vec<Touched>,
     /// Write changes under the current `Reloc`, each as the table number, the key, the value
     /// before and the value after: of a map, the keys with these hashes (added by the unit); of a
     /// value table, the raw bytes before and after.
@@ -2413,15 +2621,15 @@ trait MapLike: 'static {
     type V: Serialize + DeserializeOwned + Send + Sync + 'static;
     fn entries(&self) -> Vec<(&Self::K, &Self::V)>;
     fn get_v(&self, k: &Self::K) -> Option<&Self::V>;
-    fn put(&mut self, k: Self::K, v: Self::V) -> Option<Self::V>;
-    fn del(&mut self, k: &Self::K) -> Option<Self::V>;
+    /// A write of a replay, not logged when `quiet` (the frame records it another way).
+    fn put(&mut self, k: Self::K, v: Self::V, quiet: bool) -> Option<Self::V>;
+    fn del(&mut self, k: &Self::K, quiet: bool) -> Option<Self::V>;
 }
 
-impl<K, V, S> MapLike for HashMap<K, V, S>
+impl<K, V> MapLike for TrackedMap<K, V>
 where
     K: Serialize + DeserializeOwned + Eq + std::hash::Hash + Clone + Send + Sync + 'static,
     V: Serialize + DeserializeOwned + Send + Sync + 'static,
-    S: std::hash::BuildHasher + 'static,
 {
     type K = K;
     type V = V;
@@ -2431,18 +2639,25 @@ where
     fn get_v(&self, k: &K) -> Option<&V> {
         self.get(k)
     }
-    fn put(&mut self, k: K, v: V) -> Option<V> {
-        self.insert(k, v)
+    fn put(&mut self, k: K, v: V, quiet: bool) -> Option<V> {
+        if quiet {
+            self.insert_quiet(k, v)
+        } else {
+            self.insert(k, v)
+        }
     }
-    fn del(&mut self, k: &K) -> Option<V> {
-        self.remove(k)
+    fn del(&mut self, k: &K, quiet: bool) -> Option<V> {
+        if quiet {
+            self.remove_quiet(k)
+        } else {
+            self.remove(k)
+        }
     }
 }
 
-impl<K, S> MapLike for HashSet<K, S>
+impl<K> MapLike for TrackedSet<K>
 where
     K: Serialize + DeserializeOwned + Eq + std::hash::Hash + Clone + Send + Sync + 'static,
-    S: std::hash::BuildHasher + 'static,
 {
     type K = K;
     type V = ();
@@ -2452,11 +2667,21 @@ where
     fn get_v(&self, k: &K) -> Option<&()> {
         self.contains(k).then_some(&())
     }
-    fn put(&mut self, k: K, _: ()) -> Option<()> {
-        (!self.insert(k)).then_some(())
+    fn put(&mut self, k: K, _: (), quiet: bool) -> Option<()> {
+        let new = if quiet {
+            self.insert_quiet(k)
+        } else {
+            self.insert(k)
+        };
+        (!new).then_some(())
     }
-    fn del(&mut self, k: &K) -> Option<()> {
-        self.remove(k).then_some(())
+    fn del(&mut self, k: &K, quiet: bool) -> Option<()> {
+        let had = if quiet {
+            self.remove_quiet(k)
+        } else {
+            self.remove(k)
+        };
+        had.then_some(())
     }
 }
 
@@ -2512,21 +2737,23 @@ fn map_replay<M: MapLike>(
         let mut buf = Vec::new();
         (
             hash_raw(&key, &mut buf),
+            pre.as_ref().map(|v| hash_raw(v, &mut buf)),
             post.as_ref().map(|v| hash_raw(v, &mut buf)),
         )
     });
+    // A frame that records (`raw`) is told the key and value hashes below, so it does not need the log.
     let old = match post {
-        Some(v) => acc(db).put(key.clone(), v),
-        None => acc(db).del(&key),
+        Some(v) => acc(db).put(key.clone(), v, raw),
+        None => acc(db).del(&key, raw),
     };
     let undo: Undo = Box::new(move |db: &mut Db| {
         let m = acc(db);
         match old {
             Some(v) => {
-                m.put(key, v);
+                m.put(key, v, raw);
             }
             None => {
-                m.del(&key);
+                m.del(&key, raw);
             }
         }
     });
@@ -2576,7 +2803,7 @@ fn val_replay<T: Serialize + DeserializeOwned + Send + Sync + 'static>(
     }
     let changed = raw.then(|| {
         let b = raw_bytes(&post);
-        (0, Some(twox_hash::XxHash3_128::oneshot(&b)))
+        (0, None, Some(twox_hash::XxHash3_128::oneshot(&b)))
     });
     let old = std::mem::replace(acc(db), post);
     let undo: Undo = Box::new(move |db: &mut Db| {
@@ -2595,6 +2822,11 @@ macro_rules! tables {
         Desc {
             name: stringify!($($f).+),
             snap: |db| map_snap(&db.$($f).+),
+            mark: |db| TabSnap::Mark(db.$($f).+.mark()),
+            track: |db, on| db.$($f).+.track(on),
+            forget: |db, m| db.$($f).+.forget(m),
+            loglen: |db| db.$($f).+.mark(),
+            touched: |db, m| db.$($f).+.touched_since(m),
             write: |db, t, k, v, out| map_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
             replay: |db, rest, raw| map_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| map_canon(&db.$($f).+),
@@ -2604,6 +2836,11 @@ macro_rules! tables {
         Desc {
             name: stringify!($($f).+),
             snap: |db| val_snap(&db.$($f).+),
+            mark: |db| val_snap(&db.$($f).+),
+            track: |_, _| {},
+            forget: |_, _| {},
+            loglen: |_| 0,
+            touched: |_, _| Vec::new(),
             write: |db, t, k, v, out| val_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
             replay: |db, rest, raw| val_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| canon::canon(&db.$($f).+),

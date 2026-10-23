@@ -3,6 +3,7 @@
 //! One `Db` per session. Ids are deterministic for a given input because
 //! analysis order is deterministic; they are not stable across inputs.
 
+use crate::tracked::{TrackedMap, TrackedSet};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::path::PathBuf;
 
@@ -112,22 +113,22 @@ pub struct Db {
     pub externals: Arena<ExternalId, External>,
     pub attr_values: Arena<AttrValueId, AttrValue>,
     /// User attribute values by (entity, attribute name key) (attr.rs).
-    pub attr_index: HashMap<(DeclId, Symbol), AttrValueId>,
+    pub attr_index: TrackedMap<(DeclId, Symbol), AttrValueId>,
     /// 2019 method aliases `alias m is v.m;`: the alias to the object `v` (a private
     /// variable, a shared variable, a variable) whose method it forwards (5.6.2, 6.6.3).
-    pub(crate) forwarding: HashMap<DeclId, DeclId>,
+    pub(crate) forwarding: TrackedMap<DeclId, DeclId>,
     /// Disconnection specifications (7.4): the time expression of each guarded signal that has
     /// one (a guarded signal without an entry disconnects after 0 fs).
-    pub disconnect_times: HashMap<DeclId, ExprId>,
+    pub disconnect_times: TrackedMap<DeclId, ExprId>,
     /// 2019 named return values (`return r of t`, 4.2.1), by the function's parameter region:
     /// the hidden constant whose descriptor is the call's result subtype (M2 passes it after
     /// the parameters) and the subtype `r` it constrains.
-    pub ret_names: HashMap<ScopeId, (DeclId, SubtypeId)>,
+    pub ret_names: TrackedMap<ScopeId, (DeclId, SubtypeId)>,
     /// Every non-zero TIME physical literal or unit name below one second that was analyzed,
     /// for the resolution limit check at elaboration (LRM 5.2.4.2, [`Db::fine_time_units`]).
     pub time_units: Vec<TimeUnitUse>,
     /// (region, attribute key, entity class) closed by `others`/`all` (7.2).
-    pub(crate) attr_closed: HashSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
+    pub(crate) attr_closed: TrackedSet<(ScopeId, Symbol, yavs_syntax::token::Kw)>,
     /// Specifications of labels of statements not analyzed yet (attr.rs, 7.2).
     #[serde(skip)]
     pub(crate) pending_label_attrs: Vec<crate::attr::PendingLabel>,
@@ -151,10 +152,10 @@ pub struct Db {
     pub(crate) stack: Vec<UnitCx>,
     #[allow(dead_code)]
     /// Undeclared names already reported, per (unit, key) (8.2).
-    pub(crate) undeclared: HashSet<(Option<UnitId>, Symbol)>,
+    pub(crate) undeclared: TrackedSet<(Option<UnitId>, Symbol)>,
     /// Spans already given `E1007` or `W1008` by rev.rs (once per construct: names are
     /// classified once per resolution pass).
-    pub(crate) rev_reported: HashSet<Span>,
+    pub(crate) rev_reported: TrackedSet<Span>,
     /// Bottom-up candidate sets of the complete context being resolved, by AST node address.
     /// `lookup` results valid while `Db::cache_epoch` is unchanged: (scope, key) -> (revision, epoch, direct hit, result).
     #[serde(skip)]
@@ -177,7 +178,7 @@ pub struct Db {
         HashMap<usize, crate::expr::CandSet>,
     )>,
     /// Units that depend on a failed unit: undeclared names in them are cascades (8.2).
-    pub(crate) tainted: HashSet<UnitId>,
+    pub(crate) tainted: TrackedSet<UnitId>,
     /// The subtype the next complete context's top expression is resolved for
     /// (an object's declared subtype), so an aggregate with `others` knows its
     /// bounds (9.3.3.3). Consumed by `resolve`.
@@ -217,13 +218,13 @@ pub struct Db {
     pub(crate) ext_memo: HashMap<usize, ExprId>,
     /// Implicit aliases of the external names used directly in a statement or an alias
     /// target, made by [`Db::alias_external_uses`] (#93).
-    pub(crate) ext_uses: HashMap<crate::external::ExtOwner, Box<[DeclId]>>,
+    pub(crate) ext_uses: TrackedMap<crate::external::ExtOwner, Box<[DeclId]>>,
     /// The package object each resolved package-path external name denotes, made by
     /// [`Db::bind_package_paths`] (#255).
-    pub(crate) pkg_targets: HashMap<ExternalId, DeclId>,
+    pub(crate) pkg_targets: TrackedMap<ExternalId, DeclId>,
     /// The type mark as written of a parameter (by its object decl) and of a function's
     /// result (by the subprogram decl), for messages in the user's spelling (8.3).
-    pub(crate) written_marks: HashMap<DeclId, Span>,
+    pub(crate) written_marks: TrackedMap<DeclId, Span>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     #[serde(skip)]
@@ -237,12 +238,12 @@ pub struct Db {
     #[serde(skip)]
     pub(crate) stmt_owners: Vec<crate::stmt::Owner>,
     /// Configuration specifications (7.3.1) by the declarative region they are in (unit.rs).
-    pub config_specs: HashMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
+    pub config_specs: TrackedMap<ScopeId, Vec<crate::hir::ComponentConfig>>,
     /// Configuration specifications whose instance labels wait for the statement part.
     #[serde(skip)]
     pub(crate) pending_specs: Vec<crate::unit::PendingSpec>,
     /// 2019 range record types (`R'RECORD`) by scalar base type, made on first use (attr.rs).
-    pub(crate) range_records: HashMap<TypeId, SubtypeId>,
+    pub(crate) range_records: TrackedMap<TypeId, SubtypeId>,
     /// Generic defaults, generic lists and instance remappings (generic.rs).
     pub(crate) generic: crate::generic::GenericState,
     /// Whole-design facts found by [`Db::settle`] (see [`Facts`]).
@@ -578,12 +579,12 @@ impl Db {
             views: Arena::new(),
             externals: Arena::new(),
             attr_values: Arena::new(),
-            attr_index: HashMap::default(),
-            forwarding: HashMap::default(),
-            disconnect_times: HashMap::default(),
-            ret_names: HashMap::default(),
+            attr_index: Default::default(),
+            forwarding: Default::default(),
+            disconnect_times: Default::default(),
+            ret_names: Default::default(),
             time_units: Vec::new(),
-            attr_closed: HashSet::default(),
+            attr_closed: Default::default(),
             pending_label_attrs: Vec::new(),
             pending_inst_checks: Vec::new(),
             pending_groups: Vec::new(),
@@ -598,8 +599,8 @@ impl Db {
             lib_by_key: HashMap::default(),
             files: HashMap::default(),
             stack: Vec::new(),
-            undeclared: HashSet::default(),
-            rev_reported: HashSet::default(),
+            undeclared: Default::default(),
+            rev_reported: Default::default(),
             // A library's worth of lookups fills it; sized up front so it does not rehash
             // a dozen times on the way.
             lookup_cache: HashMap::with_capacity_and_hasher(1 << 13, Default::default()),
@@ -616,17 +617,17 @@ impl Db {
             param_anon: Vec::new(),
             anon_reuse: Default::default(),
             ext_memo: HashMap::default(),
-            ext_uses: HashMap::default(),
-            pkg_targets: HashMap::default(),
-            written_marks: HashMap::default(),
+            ext_uses: Default::default(),
+            pkg_targets: Default::default(),
+            written_marks: Default::default(),
             incomplete_ok: false,
             context_subtype: None,
             relaxed_target: None,
             top_context: None,
-            tainted: HashSet::default(),
+            tainted: Default::default(),
             stmt_owners: Vec::new(),
-            config_specs: HashMap::default(),
-            range_records: HashMap::default(),
+            config_specs: Default::default(),
+            range_records: Default::default(),
             pending_specs: Vec::new(),
             generic: Default::default(),
             facts: None,

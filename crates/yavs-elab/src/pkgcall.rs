@@ -972,7 +972,7 @@ pub(crate) fn init_key(
     let cache = db.stages().filter(|_| !opts.coverage)?;
     Some(InitKey {
         cache: cache.clone(),
-        extent: db.extent(),
+        extent: db.stage_extent(),
         part: stage_part(packages, opts),
         lib: lib.map(|l| {
             let (cache, level, part) = l.init_entry();
@@ -1000,7 +1000,7 @@ pub(crate) fn package_lowerer<'a>(
         return Ok((l, Some(lib)));
     }
     let cache = db.stages().filter(|_| !opts.coverage);
-    let extent = db.extent();
+    let extent = db.stage_extent();
     let part = stage_part(packages, &opts);
     if let Some(c) = cache
         && let Some(bytes) = c.get(&extent, "low", &part)

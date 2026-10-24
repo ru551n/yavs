@@ -1076,6 +1076,46 @@ fn editing_a_subprogram_replaces_the_lowered_design() {
     }
 }
 
+const LATE_PKG: &str = "package cp is\n  component leaf is end component;\nend;\n";
+const LATE_LEAF: &str = "entity leaf is end;\narchitecture a of leaf is begin\n  process begin report \"leaf VERSION\"; wait; end process;\nend;\n";
+const LATE_TB: &str =
+    "use work.cp.all;\nentity tbl is end;\narchitecture a of tbl is begin\n  u : leaf;\nend;\n";
+
+/// A component bound by default to an entity outside the analysed closure (analysed after its
+/// user) is loaded while the design elaborates: the stage entries are still made and read (#671), and editing that entity
+/// replaces them.
+#[test]
+fn units_loaded_late_do_not_block_the_stage_entries() {
+    let e = Env::new("irlate");
+    let leaf = |v: &str| {
+        std::fs::write(e.tmp.join("leaf.vhd"), LATE_LEAF.replace("VERSION", v)).expect("write");
+        assert_eq!(
+            e.yavs(&["analyze", "--work", &e.work(), "leaf.vhd"]).code,
+            0
+        );
+    };
+    std::fs::write(e.tmp.join("cp.vhd"), LATE_PKG).expect("write");
+    std::fs::write(e.tmp.join("tbl.vhd"), LATE_TB).expect("write");
+    for f in ["cp.vhd", "tbl.vhd"] {
+        assert_eq!(e.yavs(&["analyze", "--work", &e.work(), f]).code, 0, "{f}");
+    }
+    // Analysed after its user: the closure of `tbl` does not name it.
+    leaf("one");
+    let plain = e.run_top("tbl", &["--no-cache"]);
+    assert!(plain.stdout.contains("leaf one"), "{plain:?}");
+    let cold = e.cold("tbl", &[]);
+    assert!(note(&cold, "store ir"), "{cold:?}");
+    let warm = e.run_top("tbl", &[]);
+    assert!(note(&warm, "hit ir"), "{warm:?}");
+    assert_eq!(visible(&plain), visible(&warm));
+    leaf("two");
+    for _ in 0..3 {
+        let r = e.run_top("tbl", &[]);
+        assert!(r.stdout.contains("leaf two"), "{r:?}");
+    }
+    assert!(note(&e.run_top("tbl", &[]), "hit ir"));
+}
+
 /// A generic picks the entity a generate instantiates: the architectures lowered differ, so
 /// do the entries, and no run reads the other's.
 #[test]

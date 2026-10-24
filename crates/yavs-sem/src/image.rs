@@ -88,6 +88,21 @@ impl Db {
         ]
     }
 
+    /// [`Db::extent`] and, last, a digest of the files the `Db` was made from (their paths and
+    /// content digests, in load order): the key part of a stage entry. Units loaded after the
+    /// analysis (while elaborating) grow the extent but are deterministic, so the entry holds
+    /// for a `Db` of the same extent made from the same files (#671).
+    pub fn stage_extent(&self) -> Vec<usize> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        for f in self.sources.digests() {
+            f.hash(&mut h);
+        }
+        let mut e = self.extent();
+        e.push(h.finish() as usize);
+        e
+    }
+
     /// The image of this `Db`, or why it cannot be restored later: an error was reported, an
     /// analysis is in progress, or work is pending.
     pub fn to_image(&mut self) -> Result<Vec<u8>, String> {

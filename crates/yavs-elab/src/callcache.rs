@@ -50,6 +50,8 @@ pub(crate) enum CallCache {
         /// `Db::extent` when the entry was read: a call is looked up or stored only while the
         /// `Db` has that extent (instantiation grows it).
         extent: Vec<usize>,
+        /// `Db::stage_extent` at the same time: the key of the entry.
+        stage: Vec<usize>,
         calls: HashMap<Vec<u8>, Hit>,
         /// New calls in order, as `(key, result bytes)`.
         new: Vec<(Vec<u8>, Vec<u8>)>,
@@ -98,7 +100,7 @@ impl CallCache {
             Some(c) => {
                 let mut calls = HashMap::new();
                 let mut old = Vec::new();
-                let entry = c.get(&db.extent(), KIND, PART);
+                let entry = c.get(&db.stage_extent(), KIND, PART);
                 let rows: Vec<(Vec<u8>, Vec<u8>)> = entry
                     .and_then(|b| postcard::from_bytes(&b).ok())
                     .unwrap_or_default();
@@ -111,6 +113,7 @@ impl CallCache {
                 CallCache::On {
                     cache: c.clone(),
                     extent: db.extent(),
+                    stage: db.stage_extent(),
                     calls,
                     new: Vec::new(),
                     old,
@@ -156,7 +159,7 @@ impl CallCache {
     pub(crate) fn flush(&mut self) {
         let CallCache::On {
             cache,
-            extent,
+            stage,
             new,
             old,
             ..
@@ -179,7 +182,7 @@ impl CallCache {
             keep = i;
         }
         if let Ok(b) = postcard::to_stdvec(&rows[keep..]) {
-            cache.put(extent, KIND, PART, &b);
+            cache.put(stage, KIND, PART, &b);
         }
     }
 }

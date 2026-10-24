@@ -2396,10 +2396,12 @@ Design: `docs/design/gui.md` (section 12 lists the same decisions).
   elaboration-time calls, the architectures and the rest goes on from there as it does from a cold
   lowering. Reading and decoding an image takes 2 ms for 490 KB.
   - *Key:* the analysis key (so: the sources, options and yavs build) plus the list of package units
-    and the lowering options, in the same store (`yavs-cache` kind `low`). It holds only for a `Db`
-    that has not grown since the analysis (`Db::extent`, the size of every arena): instantiating a
-    generic during elaboration appends to the arenas and the packages' ids are then not those of the
-    image, so such a run lowers from source and stores nothing. The CLI hands the stage a
+    and the lowering options, in the same store (`yavs-cache` kind `low`). It holds for a `Db` of the
+    extent it was made at (`Db::stage_extent`: the size of every arena and a digest of the source
+    files read, #671; before that only for a `Db` that had not grown since the analysis, so a design
+    that loads units while it elaborates had no entries): instantiating a generic during
+    elaboration appends to the arenas and the packages' ids are then not those of the
+    image, the key says so. The CLI hands the stage a
     `yavs_sem::StageCache` through the `Db` (`Db::set_stages`); a run without a store (`--no-cache`,
     custom std/ieee tree) is unchanged.
   - *When not:* with coverage counters; when the images would be under 256 bytes (packages with only
@@ -6372,9 +6374,8 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   keyed by content (#661, `docs/design/specialisation.md` section 12). **Tried and not landed** (measured, no gain, the patches are on #661):
   processes with several wait statements (a resume point mapped by statement admits 11 more processes over 42 realbench testbenches, +0.12 % to
   -0.01 % instructions) and folding the loads of pointer-typed instance data (0 to 2 such loads left per copy, at most 0.14 % fewer
-  instructions). **Open**: designs the stage cache holds no entries of re-optimise their copies in every run, and no `spec` entry is made
-  for them: `fletcher_bufferwriter_512` loads 21 units outside its analysed closure while it elaborates, so the extent no longer matches and
-  `init`, `low`, `ir` and `spec` are never made (#671; the copies are 50 M of 99 G instructions, 0.05 %);
+  instructions). **Open**: designs the stage cache held no entries of re-optimised their copies in every run (`fletcher_bufferwriter_512`
+  loads 21 units outside its analysed closure while it elaborates: fixed by #671, see "Stage entries of a design that loads units late");
   `hdlm_lfsr` runs under a lowered library (`library_made`), whose closures have no entries of their own so that a suite does not fill the 96
   entries of a library directory, which a `spec` entry per long-running testbench would do too.
 
@@ -6717,3 +6718,20 @@ percent between invocations, so the instruction counts are the reliable column a
   the band test (0.25 s), `activations_of_a_process_are_counted_while_a_trial_asks` (`yavs-interp/tests/sim.rs`); workspace tests, the
   `llvm` crate tests, the perf work-counter tests with and without `llvm`, and the 502-test differential corpus under
   `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` green.
+
+
+## Stage entries of a design that loads units late (yavs, yavs-sem, yavs-elab, #671, 2026-10-24)
+
+- **Decision: a stage entry (`low`, `init`, `ir`, `spec`, `ecall`) is keyed by the analysis' key, the stage's part and
+  `Db::stage_extent` (the size of every arena plus a digest of the paths and content digests of every source file the `Db` holds, in load
+  order), and no longer needs the extent of the analysis.** A component bound by default to an entity analysed after its user is not in the
+  closure (the closure follows what analysis loaded), so elaboration loads it: `fletcher_bufferwriter_512` goes from 36 to 57 units, and
+  its stage entries were never made or read (`Stages::key` compared the extent with the analysed one). The loading is deterministic (the
+  analysed-unit cache replays id for id, `units.rs`), so a `Db` of the same extent made from the same files has the same ids at that
+  point; a changed late unit changes the file digest, so its entries are not read. The library prefix entries (`lib*`, `Stages::level_key`)
+  keep the old rule (`analysed() == extent`): they are shared between closures and cannot hold anything a late unit made.
+- Measured (bench build, `--tier=interp`, steady state, `--stop-time=0fs`, instructions): `fletcher_bufferwriter_512` 497.1 M to 263.3 M,
+  `fletcher_bufferreader` 364.9 M to 214.8 M; the whole runs 91.94 G to 91.57 G and 36.74 G to 36.50 G (the optimised copies are no longer
+  made in every run). Test: `units_loaded_late_do_not_block_the_stage_entries` (`tests/cache.rs`, with an edit of the late unit).
+- `hdlm_lfsr` (the lowered-library case) has no late units: its first runs find `a package body follows the prefix` (`vunit_lib.run_pkg`)
+  and the closure's own entries are made on the second run as before; nothing to change there.

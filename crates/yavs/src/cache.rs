@@ -80,7 +80,8 @@ struct Level {
 }
 
 /// What later stages cache for one analysis: entries keyed by the analysis' key and the stage's
-/// own part, valid only for a `Db` of the extent it was analyzed to (`StageCache`); and the
+/// own part, valid for a `Db` of the size and source files it was made for (`Db::stage_extent`,
+/// `StageCache`); and the
 /// entries of the closure's library prefixes, which every closure that starts with the same
 /// files shares.
 #[derive(Debug)]
@@ -99,9 +100,9 @@ struct Stages {
 
 impl Stages {
     fn key(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<Key> {
-        (self.closure && extent == self.extent).then(|| {
+        self.closure.then(|| {
             let mut k = stage_key(kind, &self.base);
-            k.part(part);
+            k.text(&format!("{extent:?}")).part(part);
             k.finish()
         })
     }

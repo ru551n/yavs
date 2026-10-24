@@ -694,7 +694,7 @@ impl Elaborated {
         ids(&mut p, b'h', &mut archs.iter().map(|u| u.index()));
         Some(LoweringKey {
             cache,
-            extent: db.extent(),
+            extent: db.stage_extent(),
             part: p,
         })
     }

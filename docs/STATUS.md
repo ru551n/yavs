@@ -6922,3 +6922,8 @@ evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, t
   fifth of it: 22.5 G, 26.7 G, 39.3 G, 73.8 G at 128 taps (linear, 0.53 G a tap). Every real-world and head-to-head design
   executes the same instructions as before (within 1 percent); with the caps alone `olo_axi_master_full` executed 12 percent more (its three
   processes of 1400 to 1600 instructions save 9 to 15 percent of their block and predecoding the second copy is dear, #683), hence the fifth.
+- #671: stage entries (`init`, `low`, `ir`, `spec`, `ecall`) are keyed by the `Db`'s extent and a digest of its source files instead of
+  being tied to the extent of the analysis, so designs that load units while they elaborate (components bound by default to entities
+  analysed after their user: `fletcher_bufferwriter_512` 36 to 57 units) get entries. Instructions at time 0 (steady state, interp):
+  `fletcher_bufferwriter_512` 497.1 M to 263.3 M, `fletcher_bufferreader` 364.9 M to 214.8 M; whole runs 91.94 G to 91.57 G and
+  36.74 G to 36.50 G. `hdlm_lfsr` has no late units (it waits for its own entries on the second run as before).

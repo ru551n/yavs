@@ -7773,6 +7773,87 @@ instruction counts from the third on).
   drivers and no one-to-many path is needed).
 
 
+## Kernel round 22: the per-delta bookkeeping of CPU-style designs (yavs-kernel, #519, #521, 2026-10-25)
+
+Task (orchestrator, 2026-10-24): the kernel is the largest diffuse share of the CPU-style designs (neorv32_single_min about 25% of cycles,
+poc_arith_addw 26%, the fletcher reader 28%, hdlm_lfsr 36%); measure the fixed per-delta-cycle and per-wake costs and cut the biggest items.
+No timing cores this round: every number is an instruction count, `perf stat instructions:u` of a whole run (`--threads 1 --no-cache`, bench
+builds, one binary against the other) or a `tools/stepcount` window of 100 delta cycles (cycle 20000 on; 1000 and 3000 for rtl_fan and
+rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of `process.rs`.
+
+- **Whole-run share** (`perf record -e instructions:u`): the kernel is 54% (neorv32_single_min), 35% (poc_arith_addw), 61%
+  (fletcher_bufferreader), 16% (hdlm_lfsr), 11% (rtl_fan), 66% (rtl_chain) of the instructions. No function is above 7.2% (`finish_direct`
+  of neorv32); the per-delta cost is spread over the stages of one signal change. One delta cycle of neorv32_single_min (73 K instructions, 15
+  process runs, 10 changed signals, 25 changed plane words, 22 idle skips) is, kernel stages only: process-side `Ctx` reads and assigns 11.3 K,
+  wake 8.1 K (`take_woken` 3.8 K, `arm_readers` 3.4 K), finish 5.8 K (`update_word` about 410 instructions a changed word), commit 5.2 K,
+  `run_batch` and `order` 4.0 K, the `cycle` wake loop and idle filter 3.4 K. A delta of rtl_chain (one process, one bit) is 878 kernel
+  instructions: `run_one` 193, `finish_direct` 176, `wake_sole` 116, `cycle` 115, `assign_code_fast` 94, `commit_code` 80, `update` 41,
+  `last_delta` 34, `run_until` 28. An activation of rtl_fan costs about 100 instructions in the `run_batch` loop (the rest of its 667 is the
+  interpreter).
+- **Decisions** (each a measured drop of instructions, results unchanged; full-run instructions of neorv32_single_min unless named):
+  - `order()` sorts its keys with the unstable sort into a buffer kept between batches (-0.4%; fletcher reader -0.5%). A key names its process (the
+    low 32 bits are the process number or its complement), so equal keys are the same process and stability buys nothing; the stable
+    sort needed a scratch allocation per batch.
+  - The small-list wake of `cycle` (a signal with at most 8 waiters in one list) takes any number of changed runs and wakes while it checks,
+    in one pass (-0.3%; fletcher reader -0.3%, hdlm_lfsr -0.3%). A waiter that is not resident and alive hands the rest of the list to the scan;
+    waking is idempotent (`ProcMeta::ready`) and in list order, so the scan wakes the others in the same order.
+  - `arm_readers` tests a read of part of a signal of at most 64 elements by mask (the changed runs are folded to bits once per event, the reader
+    keeps its bits), keeps a guard of one literal in the reader entry (58% of the guards of neorv32; the others stay alternatives of
+    conjunctions) and is not called for a signal nobody reads (-0.84%; fletcher reader -0.71%). Readers are a `Reader` record, the guard a
+    `ReaderGuard` (`One` or `Any`).
+  - `update_word` refreshes the `codes` of the groups of eight elements that hold a change, not of every group between the first and the last
+    (-0.2%), and `take_woken` leaves an already ordered list alone (together -0.5%; fletcher reader -0.55%).
+  - **The list of woken waiters is ordered by registration only for a shuffled run** (`take_woken(.., ordered)`, `ordered = rng.is_some()`):
+    the wake order decides neither the order a batch runs in nor the order it commits in (`order()` sorts the batch by process), a waiter listed
+    in several chunk lists is woken once by the idempotent wake, and the shuffle takes the list in the order it is given (-0.6%). The sort and
+    dedup of every multi-list event were 0.9% of neorv32.
+  - The chunk index of a signal's waiters is rebuilt only when a list went empty (-0.25%).
+  - **A waiter of a signal of at most 64 elements keeps the elements it waits for as bits** (`Waiter::mask`) and the changed runs are folded to
+    bits once per event (`Hits`): the hit test of the scan and of the small-list path is one `and` instead of a range overlap per waiter and run
+    (-0.64%). Wider signals keep the range tests.
+  - Together: neorv32_single_min 37.60 G to 36.29 G (-3.5%), poc_arith_addw 154.81 G to 152.25 G (-1.7%), fletcher_bufferreader 22.73 G to
+    22.26 G (-2.1%), hdlm_lfsr 66.84 G to 66.48 G (-0.6%), rtl_chain 3.292 G to 3.288 G, rtl_fan level. Per delta cycle (stepcount windows): neorv32
+    73.3 K to 70.0 K, addw 46.4 K to 45.7 K, fletcher reader 12.3 K to 12.1 K; tables in `docs/STATUS.md` "Kernel round 22".
+- **Measured and not taken:**
+  - Splitting the plain readers (whole signal, no guard) of `arm_readers` into their own array that is armed without a test: only 48% of the
+    readers of neorv32 are plain, `arm_readers` got dearer (+145 instructions a delta) and the fletcher reader +0.8%. The cost is in the guarded and
+    partial readers (10.0 M of the 13.4 M readers examined that were not armed already, 1.1 M armed), which the mask and the inline literal now
+    answer.
+  - Lean event bookkeeping (`Signal::set_lean_events`) for logic vectors of 9 to 64 elements: the per-element stamp loop of `update_word` is 11
+    instructions a changed element (0.6% of neorv32), but only 542 of its 2021 signals qualify under the elaborator's facts and the whole-run
+    effect was -0.1% (neorv32), -0.2% (fletcher reader), -0.3% (hdlm_lfsr), against a wider reach of the lean promise (an internal error for
+    a `'last_event` of a part that the facts missed). Not kept.
+  - `Signal::update_word` out of line (`#[inline(never)]`): +0.2% on neorv32 and addw; the call costs more than the spills it saves.
+  - One lookup of the process record and a hoisted `!init && !postponed` in the `run_batch` loop: -0.4% on rtl_fan (the per-activation loop is
+    ~100 instructions, 38 to set up a run, 60 to commit it), level elsewhere. Not kept; a summary flag set by the `Ctx` push paths is the next
+    step (#733).
+  - Waking in `finish_direct` for every signal with a small list of resident waiters, as `wake_sole` does for one (it would skip the changed list, the
+    sort and the per-signal head of `cycle`, about 0.5% of neorv32): the edge-trigger and observer exclusions of `wake_sole` apply, and a wake
+    before the other signals of the update are finished changes which cycles can take the clock batch. Not built.
+  - Lazy arming (comparing the event cycle of each signal a process reads when it is woken instead of arming its readers at every event) costs
+    about as much as arming on neorv32 (37 woken processes per delta, each checking all its reads when it is not armed, against 53 reader entries
+    examined per delta) and loses the early exit of an already armed reader. Not built.
+- **Left, filed:** #733 (a summary flag for a quiet activation in the `run_batch` loop), #734 (a narrow signal's event stamps, run lists and
+  codes as one mask: `update_word` is ~410 instructions a changed word), #735 (the GC observer's Hook and Mutex every delta of a serial
+  process).
+- **Idea of the reference simulator's kernel used (rewritten for ours):** a waiter is attached to the net it waits on, so an event on a net
+  wakes its list with no range test (the reference splits nets at the waiters' boundaries); ours keeps the signal whole and, for a signal of at
+  most 64 elements, makes the range test a bit test, as round 21 did for wide signals with cells. A wake is a flag test on the waiting object
+  (`pending`) and an append to the run queue, in whatever order the event lists them; ours already had the flag (`ready`) and now also stops
+  ordering the list it appends from. Different: the reference runs processes in queue order, ours sorts each batch by process
+  (the commit order is a user decision, #252).
+- **Soundness of the wake changes.** The woken set of every path is the one of the old scan (same hit, alive and hold tests); only the order
+  in which `wake_proc` is called changed, and a batch is ordered by `order()` before it runs and commits (`ready_mono` records an already ordered
+  list). A shuffled run (`Config::shuffle`) keeps the registration order, so a seed gives the schedule it gave. Tests:
+  `signal::tests::unordered_wake_list_holds_the_same_processes`, the existing `Waiters` unit tests (now with `ordered` set),
+  `idle_skip::guarded_reads_arm_only_while_the_condition_holds` (a read under one literal and under two alternatives; with the one-literal
+  arm broken the check of `idle_check` stops the run), difftest 523/523 on
+  interp, llvm and auto at 1 and 4 threads and with `--shuffle 7`, `cargo test --workspace`, the UVVM and OSVVM suites unchanged.
+- **Found on the way (#736, fixed):** a panic while `run_batch` committed a process in place (the `idle_check` assertion, a broken invariant
+  in `note_idle`) was reported for the next process of the batch, or panicked again past the end of it and hid the message; the unwind guard now
+  keeps the index of the process it was running (`idle_skip::a_wrong_read_list_is_caught_by_the_check_and_names_the_process`).
+
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame

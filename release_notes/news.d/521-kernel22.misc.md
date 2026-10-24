@@ -1,0 +1,1 @@
+Designs with many processes and bus-wide signals (a CPU core, arithmetic testbenches) simulate a little faster: the kernel tests which waiters and idle-skip readers a change touches with one bit test on signals of up to 64 elements, and no longer orders the list of woken waiters, which the batch ordering made redundant. Results are unchanged.

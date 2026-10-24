@@ -198,6 +198,19 @@ pub(crate) fn run_traced(
     (r, t)
 }
 
+/// [`run_traced`] against the package state `shared` (a call of the session).
+fn run_traced_shared(
+    rt: &Arc<Runtime>,
+    s: &Sig,
+    args: &[Val],
+    shared: &Arc<Mutex<SharedState>>,
+    inst: Option<InstData>,
+) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
+    let mut t = yavs_interp::CallTrace::default();
+    let r = run_with(rt, s, args, Some(shared), inst, Some(&mut t));
+    (r, t)
+}
+
 fn run_with(
     rt: &Arc<Runtime>,
     s: &Sig,
@@ -228,7 +241,8 @@ fn run_with(
     let (inst, ret_ty) = (Arc::new(inst.unwrap_or_default()), composite.then_some(ret));
     let r = match trace {
         Some(t) => {
-            let (r, tr) = yavs_interp::call_values_traced(rt.clone(), s.func, inst, &cvs, ret_ty);
+            let (r, tr) =
+                yavs_interp::call_values_traced(rt.clone(), s.func, inst, &cvs, ret_ty, shared);
             *t = tr;
             r
         }
@@ -584,8 +598,16 @@ pub(crate) struct Session {
 
 impl Session {
     /// Call `f` with `args` against the package state, and log the call.
-    pub(crate) fn call(&mut self, db: &Db, f: DeclId, args: Vec<Val>) -> Result<Val, Fail> {
-        let result = self.run(db, f, false, &args, None)?;
+    ///
+    /// With `trace`, the call also says what it did besides computing (`CallTrace`).
+    pub(crate) fn call(
+        &mut self,
+        db: &Db,
+        f: DeclId,
+        args: Vec<Val>,
+        trace: Option<&mut yavs_interp::CallTrace>,
+    ) -> Result<Val, Fail> {
+        let result = self.run(db, f, false, &args, None, trace)?;
         self.log.push(Call {
             func: f,
             name: db.decls[f].name.to_string(),
@@ -606,7 +628,7 @@ impl Session {
         args: Vec<Val>,
         items: Vec<(DeclId, FillItem)>,
     ) -> Result<Val, Fail> {
-        let result = self.run(db, f, false, &args, Some(&items))?;
+        let result = self.run(db, f, false, &args, Some(&items), None)?;
         self.log.push(Call {
             func: f,
             name: db.decls[f].name.to_string(),
@@ -774,7 +796,7 @@ impl Session {
     /// The value of package constant `d` in the package data (its initial value ran when
     /// the package was elaborated).
     pub(crate) fn package_const(&mut self, db: &Db, d: DeclId) -> Result<Val, Fail> {
-        self.run(db, d, true, &[], None)
+        self.run(db, d, true, &[], None, None)
     }
 
     /// Lower `d` (a function, or the reader of a package constant) into the live program, or
@@ -863,6 +885,7 @@ impl Session {
         constant: bool,
         args: &[Val],
         items: Option<&[(DeclId, FillItem)]>,
+        trace: Option<&mut yavs_interp::CallTrace>,
     ) -> Result<Val, Fail> {
         self.ensure(db, d, constant)?;
         let live = self
@@ -885,9 +908,24 @@ impl Session {
             }
             None => None,
         };
-        let r = run(&live.rt, s, args, Some(&live.shared), inst);
+        let r = match trace {
+            Some(t) => {
+                let (r, tr) = run_traced_shared(&live.rt, s, args, &live.shared, inst);
+                *t = tr;
+                r
+            }
+            None => run(&live.rt, s, args, Some(&live.shared), inst),
+        };
         self.dirty |= r.is_err();
         r
+    }
+
+    /// Whether the package state is the same in every run of this closure: nothing that ran on
+    /// it printed, read the environment, a clock or a file, or called foreign code.
+    pub(crate) fn state_is_pure(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|l| l.shared.lock().is_ok_and(|s| !s.is_tainted()))
     }
 
     /// Lower the packages and `lowered`, initialise the packages and replay the log.

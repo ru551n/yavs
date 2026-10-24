@@ -5218,6 +5218,33 @@ every elaboration, and again for every instance. Decisions:
   evaluation again for an unchanged unit; yavs keeps the results of calls, not of units, because its elaboration is
   interpreted and the same call recurs per instance.
 
+## Package constants in elaboration-time calls come from the package state (yavs-lower, yavs-elab, #539, 2026-10-24)
+
+- **Problem:** an elaboration-time call lowers its callee on its own (`lower_one`). A package constant the callee reads
+  has no data there, so the lowering evaluated the constant's initialiser at every read. A PoC testbench called
+  functions that read `C_BOARD_INFO_LIST` (51 boards built by record constructor functions): each call rebuilt the whole
+  table (129 constructor calls, 6300 IR instructions of the callee alone, 35000 constructor calls and 200000 string
+  conversions per elaboration), 1.8 G instructions of the 2.0 G of a cold `yavs elab`.
+- **Decision:** a function lowered alone for an elaboration-time call (`capture_free_objects(false)`) that reads a
+  package or package body constant whose initialiser is not a folded value fails the lowering ("package constant without
+  a folded value"); `Model::call` then runs it in the session, against the package state, where the constant was
+  built once at package initialisation (the existing fallback for functions that need package objects). Folded
+  constants are still inlined. Why not capture the constant as a free object: its value would be encoded into
+  instance data at every call, the size of the table.
+- **Pure session calls are kept in the call cache too** (`Model::session_call`): a function declared `pure` in a package
+  that reads no object of a region reads only its arguments and the package constants, which are the closure's. Its
+  result and reports are stored like a lowered call's, unless the call reached an impure native or foreign code
+  (`CallTrace::tainted`) or the package state itself was tainted by its initialisation (printed, read the environment,
+  a clock or a file: `SharedState::is_tainted`), the same condition under which the state is not stored (#407).
+  `call_values_traced` takes the shared state for this.
+- **Measured** (`tools/realbench` worlds, `yavs elab`, user instructions of the process tree, bench builds): cold
+  `poc_uart_rx` 1.787 G to 0.221 G, warm unchanged (0.035 G); `olo_base_cam` cold 1.029 G to 0.999 G, warm 0.410 G to
+  0.380 G; the other six tests of the set are within 0.2 percent. Test: `crates/yavs/tests/elabcache.rs`
+  (`a_function_reading_a_package_table_is_answered_from_the_package_state`), work counter `pkg_table`
+  (`ops_elab` 3752 to 464).
+- **Ideas from the reference simulator (read, nothing copied):** it evaluates a package constant once, at the
+  elaboration of its package, and every use reads that object.
+
 ## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
 
 - **`watch_tick` (name the running function for the sampler, look for compiled code) is a cold function** called every

@@ -126,6 +126,12 @@ pub(crate) struct ProcRoots {
 }
 
 impl SharedState {
+    /// Whether code run on this state did more than compute (see `tainted`): what a pure call
+    /// reads of it may differ between runs.
+    pub fn is_tainted(&self) -> bool {
+        self.tainted.is_some()
+    }
+
     pub fn new(vars: Vec<u8>) -> SharedState {
         SharedState {
             vars,
@@ -2023,9 +2029,10 @@ pub fn call_values_traced(
     inst: Arc<InstData>,
     args: &[CallVal],
     ret: Option<yavs_ir::TyId>,
+    shared: Option<&Arc<Mutex<SharedState>>>,
 ) -> (Result<Option<CallVal>, SimError>, CallTrace) {
     let mut t = CallTrace::default();
-    let r = call_values_inner(rt, func, inst, args, ret, None, Some(&mut t));
+    let r = call_values_inner(rt, func, inst, args, ret, shared, Some(&mut t));
     (r, t)
 }
 

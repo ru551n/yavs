@@ -615,6 +615,14 @@ ratio (instructions / wall): elab warm 0.84 / 0.86, elab cold 0.96 / 0.96 (a rep
 `poc_uart_rx` warm 1.78 G to 0.06 G instructions (0.16 s to 0.01 s), `poc_cache_cpu` warm 2.62 G to 0.13 G (0.24 s to
 0.02 s) and cold 2.73 G to 0.50 G (0.26 s to 0.07 s); the other 39 tests are within noise.
 
+### Package constants in elaboration-time calls (#539)
+
+Functions called while elaborating that read a package constant with a computed initialiser (a configuration table, say) run
+against the package state instead of rebuilding the constant at every call (`docs/decisions.md` "Package constants in
+elaboration-time calls come from the package state"); pure ones are kept in the call cache. Cold `yavs elab` instructions
+(`tools/realbench` worlds, bench builds): `poc_uart_rx` 1.787 G to 0.221 G, `olo_base_cam` 1.029 G to 0.999 G, the other six
+tests of the set unchanged; warm `poc_uart_rx` 0.035 G both, `olo_base_cam` 0.410 G to 0.380 G.
+
 ### Compilation cache (#407)
 
 Cache keys name the build (a hash of all sources) and the optimiser and tier switches (#491, `docs/decisions.md`

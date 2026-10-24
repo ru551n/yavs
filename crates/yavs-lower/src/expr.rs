@@ -591,6 +591,25 @@ impl<'a> Fx<'a, '_> {
                     });
                     self.read_obj(d, span)
                 }
+                // A package constant whose initialiser is not folded, read by a function lowered
+                // alone for an elaboration-time call: evaluating the initialiser at every read
+                // rebuilt a whole table per call. The call runs against the package state instead.
+                DeclKind::Object(o)
+                    if self.cx.capture_free
+                        && !self.cx.capture_vars
+                        && o.class == yavs_sem::decl::ObjClass::Constant
+                        && o.default.is_some_and(|e| db.exprs[e].value.is_none())
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Package
+                                | yavs_sem::scope::ScopeKind::PackageBody
+                        ) =>
+                {
+                    Err(self.cx.unsupported(
+                        span,
+                        &format!("package constant `{}` without a folded value", decl.name),
+                    ))
+                }
                 // A constant without run-time data (locally static) is evaluated from its
                 // folded initialiser.
                 DeclKind::Object(o)

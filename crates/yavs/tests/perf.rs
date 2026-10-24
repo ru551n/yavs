@@ -113,7 +113,7 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
         let Some(&v) = r.counters.get(name) else {
             // Counted in debug builds and with `op-census`; a plain release build has none (`ops`, `cb_*`).
             assert!(
-                name == "ops" || name.starts_with("cb_"),
+                name == "ops" || name == "ops_elab" || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",
                 r.counters
             );
@@ -170,6 +170,12 @@ macro_rules! case {
     };
 }
 
+case!(
+    pkg_table,
+    "sum=212",
+    &[],
+    [("ops_elab", Max(480)), ("ops", Max(50))]
+);
 case!(
     clk_toggle,
     "q=",

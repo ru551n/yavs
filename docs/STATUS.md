@@ -6843,6 +6843,10 @@ interpreter run, before / after (bench builds, user instructions of the process 
 (0.917), `neorv32_single_cache` 46.27 / 43.25 (0.935), `neorv32_dual_full` 37.42 / 35.40 (0.946), `osvvm_axis_random` 3.82 / 3.62
 (0.948), `osvvm_axi4_random` 7.54 / 7.38 (0.979), `fletcher_bufferreader` 0.996; every other real-world design within 0.6%
 (`poc_cache_cpu` 1.004: the guard tests of its registers cost a little where nothing is saved), the 11 head-to-head designs 1.000.
+Cycles (core 15, medians of 5, interpreter, round 2 against round 3): `neorv32_dual_full` 0.921, `neorv32_single_cache` 0.928,
+`neorv32_single_min` 0.914, `osvvm_axi4_random` 0.938, `osvvm_axis_random` 0.947, `uvvm_axistream_vvc` 0.951; geometric mean over 37
+real-world designs 0.996 (the short designs move by 2 to 4% between runs of one binary; `poc_cache_cpu` 0.915 and 0.910 alone, interpreter
+and auto).
 
 ## `--tier=auto`: callees with their caller, band wait 0.25 s, trials of looping processes (#652, 2026-10-24)
 

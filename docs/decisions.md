@@ -7242,6 +7242,19 @@ percent between invocations, so the instruction counts are the reliable column a
   `llvm` crate tests, the perf work-counter tests with and without `llvm`, and the 502-test differential corpus under
   `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` green.
 
+## The runtime half of the compiled tier lives in `rt.rs` (yavs-llvm, #481, #679, user, 2026-10-24)
+
+- **Decision.** The frame view `Mem`, the callbacks compiled code calls (`yavs_rt_*`), `enter`/`call` and the per-instruction facts
+  (`Known<V>` and `ObjRef<V>` generic over the generator's value type, `track`, `native_kind`, `keeps_objects`, `static_layout`, ...)
+  moved from `lower.rs` to `rt.rs`, which builds without the `llvm` feature (`yavs-interp` and `yavs-ir` are plain dependencies of
+  the crate). `lower.rs` aliases `Known`/`ObjRef` to the LLVM value type. A pure move: items keep their text except visibility
+  (`pub`, `unsafe extern "C"` with the safety contract stated on `enter`) and the generic parameter; the generated code and the
+  work counters are unchanged.
+- **Why.** A second code generator (Cranelift, #481) needs the same frame view, callbacks and facts; the user decided on
+  2026-10-24 that the move lands on main once the LLVM-tier work in flight had pushed.
+- **Checks.** fmt, clippy `-D warnings` (default, `llvm`), `cargo test --workspace` and `-p yavs-llvm -p yavs --features llvm`,
+  difftest for `yavs-llvm` and `yavs-auto` (also `--tier-heat=1,0,0`) at 1 and 4 threads.
+
 ## Stage entries of a design that loads units late (yavs, yavs-sem, yavs-elab, #671, 2026-10-24)
 
 - **Decision: a stage entry (`low`, `init`, `ir`, `spec`, `ecall`) is keyed by the analysis' key, the stage's part and

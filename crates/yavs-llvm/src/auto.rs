@@ -30,7 +30,8 @@ use std::time::Duration;
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::lower::{Part, RunFn, call, compile_one, enter, native_set, new_jit, too_big};
+use crate::lower::{Part, compile_one, native_set, new_jit, too_big};
+use crate::rt::{RunFn, call, enter};
 use crate::{Error, Jit, OptLevel};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`

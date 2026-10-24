@@ -17,7 +17,6 @@
 mod arena;
 #[cfg(feature = "llvm")]
 mod auto;
-#[cfg(feature = "llvm")]
 mod census;
 #[cfg(feature = "llvm")]
 mod jit;
@@ -29,6 +28,7 @@ mod lower;
 mod objcache;
 #[cfg(feature = "llvm")]
 mod regs;
+pub mod rt;
 #[cfg(feature = "llvm")]
 pub mod spike;
 
@@ -40,7 +40,6 @@ pub fn code_arena_stats() -> Option<[usize; 4]> {
 }
 #[cfg(feature = "llvm")]
 pub use auto::{AutoTier, Heat, Note, exit_now};
-#[cfg(feature = "llvm")]
 pub use census::callback_counts;
 #[cfg(feature = "llvm")]
 pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};

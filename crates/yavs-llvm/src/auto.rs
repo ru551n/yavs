@@ -771,6 +771,9 @@ struct Worker {
     /// `ntab` names it. Published once everything it calls natively is compiled too: a missing
     /// callee would materialise the frames at every call.
     nat: Vec<(usize, bool)>,
+    /// Per function: the rank of the generator that made its native-frame code (1: the first
+    /// level, 2: the optimising one).
+    nat_by: Vec<u8>,
     /// Per function: the address of its `CallFn` (0: none), published with `nat`.
     calls: Vec<usize>,
     /// Microseconds each function was seen interpreted, and running compiled.
@@ -1452,12 +1455,12 @@ impl Worker {
 
     /// Compile `id` at the first level, or at O2 when `o2`; whether it was compiled.
     fn compile(&mut self, id: FuncId, o2: bool, sampled: bool, part: Part) -> bool {
-        // The first-level generator makes frame-mode code only (its own native variants come with
-        // it): every part is that, and LLVM stays closed until the O2 compile.
-        let part = if !o2 && self.first.is_some() {
-            Part::Frame
+        // The generator of this compile, and its rank: native-frame code of the first level is
+        // replaced by the optimising generator's when the function is compiled again.
+        let rank = if self.first.is_some() && (!o2 || self.main.is_none()) {
+            1
         } else {
-            part
+            2
         };
         // Native-frame code and frame-mode code are modules of their own, so the compilation
         // cache holds each one whatever was compiled with it (#510). Native-frame code is made
@@ -1465,7 +1468,8 @@ impl Worker {
         if self.lost.get(id.0 as usize).copied().unwrap_or(false) {
             return false;
         }
-        let native_done = self.nat.get(id.0 as usize).is_some_and(|n| n.0 != 0);
+        let native_done = self.nat.get(id.0 as usize).is_some_and(|n| n.0 != 0)
+            && self.nat_by.get(id.0 as usize).is_some_and(|&r| r >= rank);
         if part == Part::Both {
             if !native_done && self.nset(id).contains(&id) {
                 let ok = self.compile(id, o2, sampled, Part::Native);
@@ -1593,10 +1597,31 @@ impl Worker {
                 if !hit && !via_first && gen_.cache_enabled() && self.listed.insert(key) {
                     gen_.cache_note(&f.name, f.code.len() as u32);
                 }
+                for &(g, native, call) in &entry.extra {
+                    let k = g.0 as usize;
+                    if native != 0 && self.nat.get(k).is_some_and(|n| n.0 == 0) {
+                        self.nat[k] = (native, false);
+                        self.nat_by[k] = rank;
+                        self.calls[k] = call;
+                    }
+                }
                 if entry.native != 0 {
-                    // Published when what it calls is compiled (`publish`).
-                    self.nat[id.0 as usize] = (entry.native, false);
-                    self.calls[id.0 as usize] = entry.call;
+                    let k = id.0 as usize;
+                    // Published when what it calls is compiled (`publish`); code already
+                    // published is replaced at once.
+                    let was = self.nat[k].1;
+                    self.nat[k] = (entry.native, was);
+                    self.nat_by[k] = rank;
+                    self.calls[k] = entry.call;
+                    if was {
+                        self.ntab[k].store(entry.native, Ordering::Release);
+                        if entry.call != 0 {
+                            self.ctab[k].store(entry.call, Ordering::Release);
+                            self.native.set_call(id);
+                        }
+                    }
+                }
+                if entry.native != 0 || !entry.extra.is_empty() {
                     self.publish();
                 }
                 if let Some(run) = entry.run {
@@ -1694,6 +1719,7 @@ impl AutoTier {
             asked_for: vec![false; prog.funcs.len()],
             done: vec![[false; 2]; prog.funcs.len()],
             nat: vec![(0, false); prog.funcs.len()],
+            nat_by: vec![0; prog.funcs.len()],
             calls: vec![0; prog.funcs.len()],
             prog,
             table,

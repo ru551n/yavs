@@ -38,6 +38,9 @@ pub struct Compiled {
     /// The address of its native-frame code and of its `CallFn` (0 for none).
     pub native: usize,
     pub call: usize,
+    /// Native-frame code and `CallFn` of other functions this compile made on the way (a
+    /// generator that compiles the callees of a function into its module): function, addresses.
+    pub extra: Vec<(FuncId, usize, usize)>,
 }
 
 /// Instructions the compiled code executes itself on its fast path (keep in step with

@@ -473,6 +473,7 @@ pub(crate) fn compile_one(
         nregs: f.reg_ty.len(),
         native: naddr,
         call: caddr,
+        extra: Vec::new(),
     })
 }
 

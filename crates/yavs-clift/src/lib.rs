@@ -10,23 +10,19 @@
 #![allow(unsafe_code)]
 
 #[cfg(feature = "clift")]
-mod auto;
-#[cfg(feature = "clift")]
 mod lower;
 
-#[cfg(feature = "clift")]
-pub use auto::{AutoTier, Heat, Note};
 #[cfg(feature = "clift")]
 pub use lower::{Error, Jit, compile};
 
 #[cfg(feature = "clift")]
 use std::sync::Mutex;
 #[cfg(feature = "clift")]
-use yavs_interp::{Tier, TierHost};
+use yavs_interp::{Called, Tier, TierHost};
 #[cfg(feature = "clift")]
 use yavs_ir::FuncId;
 #[cfg(feature = "clift")]
-use yavs_llvm::rt::{RunFn, enter};
+use yavs_llvm::rt::{RunFn, call, enter};
 
 /// Compiled code for the functions of one program.
 #[cfg(feature = "clift")]
@@ -34,6 +30,10 @@ pub struct ClifTier {
     /// Keeps the code alive; never used after construction.
     pub(crate) _jit: Mutex<Jit>,
     pub(crate) funcs: Vec<Option<(RunFn, usize)>>,
+    /// Per function, the address of its native-frame code (`Mem::ntab`) and of its `CallFn`
+    /// (`Tier::call`), 0 for none.
+    pub(crate) natives: Vec<usize>,
+    pub(crate) calls: Vec<usize>,
     /// Functions that stay interpreted, with the reason.
     pub notes: Vec<(FuncId, String)>,
     /// Time spent translating and finalizing every function.
@@ -67,19 +67,28 @@ impl ClifTier {
     ) -> Option<u32> {
         let &(f, nregs) = self.funcs.get(func.0 as usize)?.as_ref()?;
         let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
-        enter(f, nregs, pc, host, &lookup, std::ptr::null(), state)
+        enter(f, nregs, pc, host, &lookup, self.natives.as_ptr(), state)
     }
 }
 
-/// The first level of `yavs-llvm`'s `AutoTier` (`--tier=auto3`): Cranelift translation of one
-/// function at a time.
+/// The Cranelift code generator of `yavs-llvm`'s `AutoTier` (`Generator`): the only one in a
+/// build without LLVM (`--tier=clift-auto`), the first level of the hybrid with LLVM
+/// (`--tier=auto3`). It compiles the callees of a native-frame function into the same module (direct
+/// calls, inlined when small), and reports them with the root (`Compiled::extra`).
 #[cfg(feature = "clift")]
-pub struct First(Jit);
+pub struct First {
+    jit: Jit,
+    /// Functions whose native-frame code was reported already.
+    reported: std::collections::HashSet<FuncId>,
+}
 
 #[cfg(feature = "clift")]
 impl First {
     pub fn new() -> Result<First, Error> {
-        Jit::new().map(First)
+        Ok(First {
+            jit: Jit::new()?,
+            reported: Default::default(),
+        })
     }
 }
 
@@ -95,16 +104,32 @@ impl yavs_llvm::Generator for First {
         id: FuncId,
         f: &yavs_ir::Func,
         _level: yavs_llvm::OptLevel,
-        _part: yavs_llvm::native::Part,
+        part: yavs_llvm::native::Part,
     ) -> Result<yavs_llvm::native::Compiled, String> {
-        let (cid, _) = self.0.define(prog, id, f)?;
-        self.0.finalize()?;
-        Ok(yavs_llvm::native::Compiled {
-            run: Some(self.0.entry(cid)),
+        use yavs_llvm::native::Part;
+        let frame = (part != Part::Native)
+            .then(|| self.jit.define(prog, id, f))
+            .transpose()?;
+        if part != Part::Frame {
+            self.jit.make_native(prog, id);
+        }
+        self.jit.finalize()?;
+        let mut out = yavs_llvm::native::Compiled {
+            run: frame.map(|(cid, _)| self.jit.entry(cid)),
             nregs: f.reg_ty.len(),
             native: 0,
             call: 0,
-        })
+            extra: Vec::new(),
+        };
+        for (g, native, call) in self.jit.variants() {
+            if g == id {
+                (out.native, out.call) = (native, call);
+            } else if self.reported.insert(g) {
+                out.extra.push((g, native, call));
+            }
+        }
+        self.reported.insert(id);
+        Ok(out)
     }
 }
 
@@ -126,5 +151,22 @@ impl Tier for ClifTier {
 
     fn ready(&self, func: FuncId) -> bool {
         self.funcs.get(func.0 as usize).is_some_and(Option::is_some)
+    }
+
+    fn callable(&self, func: FuncId) -> bool {
+        self.calls.get(func.0 as usize).is_some_and(|&a| a != 0)
+    }
+
+    fn call(
+        &self,
+        func: FuncId,
+        cells: &[u64],
+        obj: Option<u64>,
+        pc: u32,
+        host: &mut dyn TierHost,
+    ) -> Option<Called> {
+        let c = *self.calls.get(func.0 as usize)?;
+        let lookup = |id: FuncId| self.funcs.get(id.0 as usize).copied().flatten();
+        call(c, cells, obj, pc, host, &lookup, self.natives.as_ptr())
     }
 }

@@ -38,7 +38,7 @@ corpus = []
 # The LLVM tier (`yavs run --tier=llvm`); needs LLVM 21 (crates/yavs-llvm/AGENTS.md).
 llvm = ["dep:yavs-llvm", "yavs-llvm/llvm"]
 # The Cranelift tier (`yavs run --tier=clift`); no LLVM needed (crates/yavs-clift/AGENTS.md).
-clift = ["dep:yavs-clift", "yavs-clift/clift"]
+clift = ["dep:yavs-clift", "dep:yavs-llvm", "yavs-clift/clift"]
 # Test builds only: the heap collection stress mode of yavs-interp (crates/yavs-interp/AGENTS.md).
 gc-stress = ["yavs-interp/gc-stress"]
 # Op and adjacent-pair census of the interpreter, printed at the end of `yavs run` (crates/yavs-interp/AGENTS.md).

@@ -15,6 +15,7 @@ use cranelift_codegen::ir::{
     self, AbiParam, AliasRegionData, Block, BlockArg, FuncRef, GlobalValue, InstBuilder,
     MemFlagsData, Signature, StackSlotData, StackSlotKind, Type, UserFuncName, Value, types,
 };
+use cranelift_codegen::isa::CallConv;
 
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -24,6 +25,7 @@ use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
     Program, Reg, Width,
 };
+use yavs_llvm::native::{call_fits, native_set};
 use yavs_llvm::rt::*;
 
 const I64: Type = types::I64;
@@ -47,6 +49,7 @@ extern "C" fn clift_deopt(
     temp_base: u64,
     nregs: u64,
     slen: u64,
+    link: u64,
     regs: *const u64,
 ) -> *mut u64 {
     static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -54,7 +57,7 @@ extern "C" fn clift_deopt(
         eprintln!("materialise f{func} at pc {pc}");
     }
     // SAFETY: compiled code passes the `Env` and `Mem` it was given.
-    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, u64::MAX, regs) }
+    unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, link, regs) }
 }
 
 /// `memmove` (`Inst::Copy`; ranges may overlap).
@@ -91,24 +94,32 @@ pub struct Jit {
     /// Per function: its native-frame variant, or `None` when it has none.
     natives: HashMap<FuncId, Option<Rc<NatInfo>>>,
     building: HashSet<FuncId>,
+    /// `native_set` of a function alone, once asked.
+    nsets: HashMap<FuncId, Rc<HashSet<FuncId>>>,
 }
 
-/// The native-frame variant `n<id>` of a function: its registers and slots live on the native
-/// stack, the interpreter has no frame for it, and anything the compiled code cannot finish
-/// materialises the frame (`yavs_rt_deopt`).
+/// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
+/// (`native_sig`): its registers and slots live on the native stack, the interpreter has no frame
+/// for it, and anything the compiled code cannot finish materialises the frame
+/// (`yavs_rt_deopt`).
 struct NatInfo {
     id: ClifId,
+    /// The `CallFn` adapter `c<id>` for the interpreter's calls (`Tier::call`); none for a nested
+    /// function.
+    call: Option<ClifId>,
     /// The Cranelift body, for the inliner.
     body: ir::Function,
-    nparams: usize,
-    /// Whether it returns a value.
-    ret: bool,
 }
 
-/// Most IR instructions and frame bytes of a function with a native-frame variant.
-const NAT_MAX_IR: usize = 400;
-const NAT_MAX_FRAME: u32 = 1024;
-const NAT_MAX_REGS: usize = 128;
+/// What `Jit::native_of` found for a callee.
+enum NatVar {
+    /// Defined in this module: a direct call, which Cranelift may inline.
+    Direct(Rc<NatInfo>),
+    /// Being built (a cycle): called through `Mem::ntab` once published.
+    Indirect,
+    /// No variant can be made.
+    No,
+}
 
 // SAFETY: the module owns its code memory and is used by one thread at a time (the compile
 // thread, or the thread that built it); compiled code is called through plain pointers.
@@ -184,7 +195,11 @@ impl Jit {
         let lcopy = imp(LCOPY, &[I64; 7], None)?;
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
-        let deopt = imp(DEOPT, &[I64, I64, I32, I32, I64, I64, I64, I64], Some(I64))?;
+        let deopt = imp(
+            DEOPT,
+            &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
+            Some(I64),
+        )?;
         let deopt_slots = imp(DEOPT_SLOTS, &[I64], Some(I64))?;
         let deopt_end = imp(DEOPT_END, &[I64, I64, I32], Some(I32))?;
         let wait_sig = [I64, I64, I64, I32, I64, I64];
@@ -237,6 +252,7 @@ impl Jit {
             inline_max,
             natives: HashMap::new(),
             building: HashSet::new(),
+            nsets: HashMap::new(),
         })
     }
 
@@ -256,72 +272,51 @@ impl Jit {
         self.build(prog, id, f, false).map(|(c, s, _)| (c, s))
     }
 
+    /// Make the native-frame variant of `id` if it can have one; whether it has one.
+    pub fn make_native(&mut self, prog: &Program, id: FuncId) -> bool {
+        matches!(
+            self.native_of(prog, id),
+            NatVar::Direct(_) | NatVar::Indirect
+        )
+    }
+
+    /// `native_set` of `id` alone.
+    fn nset(&mut self, prog: &Program, id: FuncId) -> Rc<HashSet<FuncId>> {
+        self.nsets
+            .entry(id)
+            .or_insert_with(|| Rc::new(native_set(prog, [id])))
+            .clone()
+    }
+
     /// The native-frame variant of `id`, made on first use.
-    fn native_of(&mut self, prog: &Program, id: FuncId) -> Option<Rc<NatInfo>> {
+    fn native_of(&mut self, prog: &Program, id: FuncId) -> NatVar {
         if !self.native_on {
-            return None;
+            return NatVar::No;
         }
         if let Some(r) = self.natives.get(&id) {
-            return r.clone();
+            return r.clone().map_or(NatVar::No, NatVar::Direct);
         }
-        // A function calling itself, directly or not, has no native variant.
+        // A function calling itself, directly or not, calls through `Mem::ntab`.
         if !self.building.insert(id) {
-            return None;
+            return NatVar::Indirect;
         }
         let r = self.try_native(prog, id);
         self.building.remove(&id);
         self.natives.insert(id, r.clone());
-        r
+        r.map_or(NatVar::No, NatVar::Direct)
     }
 
     fn try_native(&mut self, prog: &Program, id: FuncId) -> Option<Rc<NatInfo>> {
         let f = prog.func(id)?;
         let dump = std::env::var_os("YAVS_CLIFT_DUMP").is_some();
-        if !matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
-            || f.parent.is_some()
-            || f.code.is_empty()
-            || f.code.len() > NAT_MAX_IR
-            || f.frame > NAT_MAX_FRAME
-            || f.reg_ty.len() > NAT_MAX_REGS
-            || bad_reg(f).is_some()
-        {
+        // The functions that run on native frames are the LLVM tier's rule (`native_set`).
+        if f.code.is_empty() || !self.nset(prog, id).contains(&id) {
             if dump {
                 eprintln!(
-                    "no native variant of {id} {}: kind {:?}, parent {:?}, {} IR, frame {}, {} regs",
-                    f.name,
-                    f.kind,
-                    f.parent,
-                    f.code.len(),
-                    f.frame,
-                    f.reg_ty.len()
+                    "no native variant of {id} {}: not in the native set",
+                    f.name
                 );
             }
-            return None;
-        }
-        // Value parameters of one word only; every return agrees on a value.
-        if !f.params.iter().all(|p| {
-            p.class == yavs_ir::ParamClass::Value
-                && p.width != Width::Sig
-                && u64::from(p.slot) + u64::from(p.width.bytes()) <= u64::from(f.frame)
-        }) {
-            if dump {
-                eprintln!(
-                    "no native variant of {id} {}: params {:?}",
-                    f.name,
-                    f.params
-                        .iter()
-                        .map(|p| (p.class, p.width))
-                        .collect::<Vec<_>>()
-                );
-            }
-            return None;
-        }
-        let mut rets = f.code.iter().filter_map(|i| match i {
-            Inst::Ret { v } => Some(v.is_some()),
-            _ => None,
-        });
-        let ret = rets.next()?;
-        if rets.any(|r| r != ret) {
             return None;
         }
         if self.natives.values().flatten().count() >= self.native_limit {
@@ -330,13 +325,26 @@ impl Jit {
         let (cid, _, body) = match self.build(prog, id, f, true) {
             Ok(r) => r,
             Err(why) => {
-                if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
+                if dump {
                     eprintln!("no native variant of {id} {}: {why}", f.name);
                 }
                 return None;
             }
         };
-        if std::env::var_os("YAVS_CLIFT_DUMP").is_some() {
+        let call = if f.parent.is_none() {
+            match self.define_adapter(f, cid) {
+                Ok(c) => Some(c),
+                Err(why) => {
+                    if dump {
+                        eprintln!("no adapter of {id} {}: {why}", f.name);
+                    }
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        if dump {
             eprintln!(
                 "native variant #{} of {} {}",
                 self.natives.values().flatten().count() + 1,
@@ -346,10 +354,73 @@ impl Jit {
         }
         Some(Rc::new(NatInfo {
             id: cid,
+            call,
             body: body?,
-            nparams: f.params.len(),
-            ret,
         }))
+    }
+
+    /// `c<id>(env, mem, depth, cells) -> i64` (`CallFn`): the variant `nat` with its argument cells
+    /// read from an array, for the interpreter's calls (`Tier::call`).
+    fn define_adapter(&mut self, f: &Func, nat: ClifId) -> Result<ClifId, Error> {
+        let mut ctx = self.module.make_context();
+        let mut fctx = FunctionBuilderContext::new();
+        ctx.func.signature.params.extend([AbiParam::new(I64); 4]);
+        ctx.func.signature.returns.push(AbiParam::new(I64));
+        ctx.func.signature.call_conv = self.sig.call_conv;
+        let fr = self.module.declare_func_in_func(nat, &mut ctx.func);
+        let ncells: usize = f
+            .params
+            .iter()
+            .map(|p| 1 + usize::from(p.width == Width::Sig))
+            .sum();
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+            let e = b.create_block();
+            b.append_block_params_for_function_params(e);
+            b.switch_to_block(e);
+            let p = b.block_params(e).to_vec();
+            let mut args = vec![p[0], p[1], p[2]];
+            for k in 0..ncells {
+                let v = b
+                    .ins()
+                    .load(I64, MemFlagsData::trusted(), p[3], (8 * k) as i32);
+                args.push(v);
+            }
+            let call = b.ins().call(fr, &args);
+            let r = b.inst_results(call)[0];
+            b.ins().return_(&[r]);
+            b.seal_all_blocks();
+            b.finalize(self.module.target_config());
+        }
+        let fid = self
+            .module
+            .declare_function(
+                &format!("c{}", nat.as_u32()),
+                Linkage::Export,
+                &ctx.func.signature,
+            )
+            .map_err(|e| e.to_string())?;
+        self.module
+            .define_function(fid, &mut ctx)
+            .map_err(|e| format!("Cranelift: {e:?} (a bug in yavs)"))?;
+        self.module.clear_context(&mut ctx);
+        Ok(fid)
+    }
+
+    /// The native-frame code and `CallFn` adapter of each variant made so far (0: none), after
+    /// `finalize`.
+    pub fn variants(&self) -> Vec<(FuncId, usize, usize)> {
+        let mut v: Vec<_> = self
+            .natives
+            .iter()
+            .filter_map(|(&id, n)| n.as_ref().map(|n| (id, n)))
+            .map(|(id, n)| {
+                let at = |c: ClifId| self.module.get_finalized_function(c) as usize;
+                (id, at(n.id), n.call.map_or(0, at))
+            })
+            .collect();
+        v.sort_by_key(|x| x.0.0);
+        v
     }
 
     /// Translate `f` into a function defined in the module: the frame-mode `f<id>`, or (`native`)
@@ -361,15 +432,36 @@ impl Jit {
         f: &Func,
         native: bool,
     ) -> Result<(ClifId, Vec<String>, Option<ir::Function>), Error> {
-        // The callees that have a native variant.
-        let mut nats: HashMap<FuncId, Rc<NatInfo>> = HashMap::new();
+        // The callees that run on native frames (the LLVM tier's rule): called directly when
+        // they have a variant in this module, else through `Mem::ntab`. A native variant is made
+        // only when every such callee can be called.
+        let nc = if native {
+            self.nset(prog, id)
+        } else {
+            Rc::new(native_set(
+                prog,
+                std::iter::once(id).chain(f.code.iter().filter_map(|i| match *i {
+                    Inst::Call { func, .. } | Inst::CallProt { func, .. } => Some(func),
+                    _ => None,
+                })),
+            ))
+        };
+        let mut nats: HashMap<FuncId, Option<Rc<NatInfo>>> = HashMap::new();
         for i in &f.code {
-            if let Inst::Call { func, .. } | Inst::CallProt { func, .. } = *i
-                && !nats.contains_key(&func)
-                && let Some(n) = self.native_of(prog, func)
-            {
-                nats.insert(func, n);
+            let (Inst::Call { func, args, .. } | Inst::CallProt { func, args, .. }) = *i else {
+                continue;
+            };
+            let prot = matches!(i, Inst::CallProt { .. });
+            let Some(g) = prog.func(func) else { continue };
+            if nats.contains_key(&func) || !nc.contains(&func) || !call_fits(f, id, g, args, prot) {
+                continue;
             }
+            match self.native_of(prog, func) {
+                NatVar::Direct(n) => nats.insert(func, Some(n)),
+                NatVar::Indirect => nats.insert(func, None),
+                NatVar::No if native => return Err(format!("{func} has no native variant")),
+                NatVar::No => None,
+            };
         }
         let mut ctx = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
@@ -400,7 +492,7 @@ impl Jit {
             }
         }
         ctx.func.signature = if native {
-            native_sig(&self.module, f.params.len())
+            native_sig(self.sig.call_conv, f)
         } else {
             self.sig.clone()
         };
@@ -408,16 +500,13 @@ impl Jit {
         let mut natives = HashMap::new();
         let mut bodies: HashMap<FuncRef, Rc<NatInfo>> = HashMap::new();
         for (&g, n) in &nats {
-            let fr = self.module.declare_func_in_func(n.id, &mut ctx.func);
-            natives.insert(
-                g,
-                NatRef {
-                    fr,
-                    nparams: n.nparams,
-                    ret: n.ret,
-                },
-            );
-            bodies.insert(fr, n.clone());
+            let fr = n
+                .as_ref()
+                .map(|n| self.module.declare_func_in_func(n.id, &mut ctx.func));
+            natives.insert(g, NatRef { fr });
+            if let (Some(fr), Some(n)) = (fr, n) {
+                bodies.insert(fr, n.clone());
+            }
         }
         let imports = Imports {
             step: self.module.declare_func_in_func(self.step, &mut ctx.func),
@@ -471,17 +560,10 @@ impl Jit {
                 .declare_func_in_func(self.kernel[11], &mut ctx.func),
             tables: tabs,
             natives,
+            cc: self.sig.call_conv,
         };
         let cfg = self.module.target_config();
-        let stepped = gen_func(
-            &mut ctx,
-            &mut fctx,
-            cfg,
-            prog,
-            f,
-            imports,
-            native.then_some(id.0),
-        )?;
+        let stepped = gen_func(&mut ctx, &mut fctx, cfg, prog, f, imports, id, native)?;
         if self.inline_max > 0 && !bodies.is_empty() {
             let inl = Inl {
                 bodies: &bodies,
@@ -545,23 +627,33 @@ struct Imports {
     xstep: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     natives: HashMap<FuncId, NatRef>,
+    /// The calling convention of the variants (`native_sig`).
+    cc: CallConv,
 }
 
-/// A call to a native-frame variant from a function being built.
+/// A call to a native-frame variant from a function being built: direct (`fr`) when the variant
+/// is in this module, else through `Mem::ntab`.
 #[derive(Clone, Copy)]
 struct NatRef {
-    fr: FuncRef,
-    nparams: usize,
-    ret: bool,
+    fr: Option<FuncRef>,
 }
 
-/// The signature of a native-frame variant: `(env, mem, depth, args...) -> (status, value)`;
-/// status 0 is a return (with the value), anything else a recorded frame (`yavs_rt_deopt`).
-fn native_sig(module: &JITModule, nparams: usize) -> Signature {
-    let mut s = module.make_signature();
+/// The signature of a native-frame variant, the LLVM tier's: `(env, mem, depth, [up1, up2], cells...)
+/// -> i64`, the static links of a nested function after `depth`, a cell per parameter and two for
+/// a signal; the value (0 for none). A frame recorded for materialisation (`yavs_rt_deopt`) is
+/// signalled by `Mem::ndeopt` after the call.
+fn native_sig(cc: CallConv, f: &Func) -> Signature {
+    let mut s = Signature::new(cc);
     s.params.extend([AbiParam::new(I64); 3]);
-    s.params.extend((0..nparams).map(|_| AbiParam::new(I64)));
-    s.returns.push(AbiParam::new(I32));
+    if f.parent.is_some() {
+        s.params.extend([AbiParam::new(I64); 2]);
+    }
+    for p in &f.params {
+        s.params.push(AbiParam::new(I64));
+        if p.width == Width::Sig {
+            s.params.push(AbiParam::new(I64));
+        }
+    }
     s.returns.push(AbiParam::new(I64));
     s
 }
@@ -662,8 +754,10 @@ struct Gen<'a> {
 struct Nat {
     func: u32,
     nregs: u64,
-    /// The frame index of this activation.
+    /// The frame index of this activation, and the high halves of the addresses of the frames one
+    /// and two static links up (-1: none).
     depth: Value,
+    up: [Value; 2],
     /// The frame's slots on the native stack.
     slots: Value,
     /// The temporary area's length at entry: where `Stmt` trims to.
@@ -709,7 +803,8 @@ fn gen_func(
     prog: &Program,
     f: &Func,
     imp: Imports,
-    nat_id: Option<u32>,
+    id: FuncId,
+    native: bool,
 ) -> Result<Vec<String>, String> {
     let mut b = FunctionBuilder::new(&mut ctx.func, fctx);
     let entry = b.create_block();
@@ -718,7 +813,6 @@ fn gen_func(
     let exit_pc = b.append_block_param(exit, I32);
     b.switch_to_block(entry);
     let p = b.block_params(entry).to_vec();
-    let native = nat_id.is_some();
     let (env, mem) = (p[0], if native { p[1] } else { p[2] });
     let pc_in = if native { p[2] } else { p[3] };
     let nregs = f.reg_ty.len() as u64;
@@ -744,10 +838,18 @@ fn gen_func(
             b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
         let temp_base = b.ins().stack_addr(I64, tcell, 0);
         b.ins().store(MemFlagsData::trusted(), len0, temp_base, 0);
+        // The static links of a nested function follow the frame index.
+        let up = if f.parent.is_some() {
+            [p[3], p[4]]
+        } else {
+            let none = b.ins().iconst(I64, -1);
+            [none, none]
+        };
         nat = Some(Nat {
-            func: nat_id.unwrap_or(0),
+            func: id.0,
             nregs,
             depth: pc_in,
+            up,
             slots,
             temp_base,
         });
@@ -851,7 +953,7 @@ fn gen_func(
         bad: None,
     };
     if g.nat.is_some() {
-        g.native_entry(f, &p[3..])?;
+        g.native_entry(f, &p[if f.parent.is_some() { 5 } else { 3 }..])?;
         match bbs.first().copied().flatten() {
             Some(first) => {
                 g.b.ins().jump(first, &[]);
@@ -912,8 +1014,7 @@ fn gen_func(
                     Some(r) => g.ld(r),
                     None => g.c64(0),
                 };
-                let ok = g.c32(0);
-                g.b.ins().return_(&[ok, val]);
+                g.b.ins().return_(&[val]);
             } else {
                 let v = g.c32(pc);
                 g.leave(v);
@@ -1146,9 +1247,12 @@ fn gen_func(
                     g.st(dst, v)
                 }
                 None => match space {
-                    AddrSpace::Up(d @ 1..=2) if g.nat.is_none() => {
+                    AddrSpace::Up(d @ 1..=2) => {
                         let (slow, join) = g.slow_path(pc, &inst);
-                        let hi = g.mem_ld(MEM_UP + 8 * u64::from(d - 1));
+                        let hi = match &g.nat {
+                            Some(n) => n.up[usize::from(d - 1)],
+                            None => g.mem_ld(MEM_UP + 8 * u64::from(d - 1)),
+                        };
                         let okc = g.b.ins().icmp_imm_s(IntCC::NotEqual, hi, -1);
                         g.guard(okc, slow);
                         let hi = g.b.ins().ishl_imm_s(hi, 32);
@@ -1526,10 +1630,10 @@ fn gen_func(
             }
             Inst::Call { func, args, dst } => {
                 let nr = g.imp.natives.get(&func).copied();
-                let rs = f.regs(args);
-                match (nr, rs) {
-                    (Some(nr), Some(rs)) if nr.nparams == rs.len() && nr.ret == dst.is_some() => {
-                        g.native_call(pc, &inst, nr, rs, dst, None)
+                let callee = prog.func(func);
+                match (nr, callee) {
+                    (Some(nr), Some(callee)) if call_fits(f, id, callee, args, false) => {
+                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, None)
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -1541,14 +1645,13 @@ fn gen_func(
                 dst,
             } => {
                 let nr = g.imp.natives.get(&func).copied();
-                let rs = f.regs(args);
-                match (nr, rs) {
-                    (Some(nr), Some(rs))
-                        if nr.nparams == rs.len() + 1
-                            && nr.ret == dst.is_some()
+                let callee = prog.func(func);
+                match (nr, callee) {
+                    (Some(nr), Some(callee))
+                        if call_fits(f, id, callee, args, true)
                             && obj.0 < f.reg_ty.len() as u32 =>
                     {
-                        g.native_call(pc, &inst, nr, rs, dst, Some(obj))
+                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, Some(obj))
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -1705,9 +1808,10 @@ fn gen_func(
     // The exit block.
     g.b.switch_to_block(g.exit);
     if g.nat.is_some() {
+        // (`yavs_rt_deopt` set `Mem::ndeopt`: the caller sees the frames recorded.)
         g.record_frame(f, exit_pc);
-        let (one, zero) = (g.c32(1), g.c64(0));
-        g.b.ins().return_(&[one, zero]);
+        let zero = g.c64(0);
+        g.b.ins().return_(&[zero]);
     } else {
         g.b.ins().return_(&[exit_pc]);
     }
@@ -1862,8 +1966,12 @@ impl Gen<'_> {
                 _ => {}
             }
         }
-        for (p, &v) in f.params.iter().zip(args) {
+        let mut args = args.iter();
+        for p in &f.params {
             let off = p.slot as i32;
+            let Some(&v) = args.next() else {
+                return Err("missing argument cell".into());
+            };
             match p.width {
                 Width::B1 => {
                     self.b.ins().istore8(self.gf, v, slots, off);
@@ -1874,7 +1982,14 @@ impl Gen<'_> {
                 Width::B8 => {
                     self.b.ins().store(self.gf, v, slots, off);
                 }
-                Width::Sig => return Err("signal parameter".into()),
+                // A signal reference takes two cells, stored as the interpreter's push does.
+                Width::Sig => {
+                    self.b.ins().store(self.gf, v, slots, off);
+                    let Some(&w) = args.next() else {
+                        return Err("missing argument cell".into());
+                    };
+                    self.b.ins().store(self.gf, w, slots, off + 8);
+                }
             }
         }
         Ok(())
@@ -1884,7 +1999,7 @@ impl Gen<'_> {
     /// its registers from the register array, its slots are copied to the buffer it hands out.
     fn record_frame(&mut self, f: &Func, pc: Value) {
         let Some(n) = &self.nat else { return };
-        let (func, nregs, slots) = (n.func, n.nregs, n.slots);
+        let (func, nregs, slots, link) = (n.func, n.nregs, n.slots, n.up[0]);
         let tb = self.nat_temp_base();
         let fu = self.c32(func);
         let nr = self.c64(nregs as i64);
@@ -1892,7 +2007,7 @@ impl Gen<'_> {
         let regs = self.regs;
         self.b.ins().call(
             self.imp.deopt,
-            &[self.env, self.mem, fu, pc, tb, nr, sl, regs],
+            &[self.env, self.mem, fu, pc, tb, nr, sl, link, regs],
         );
         if f.frame > 0 {
             let c = self.b.ins().call(self.imp.deopt_slots, &[self.env]);
@@ -1902,15 +2017,22 @@ impl Gen<'_> {
         }
     }
 
-    /// `Inst::Call` of a function that has a native-frame variant: a direct call one frame
-    /// deeper, with no frame in the interpreter; the interpreter makes the call when the depth
-    /// limit is near, and the frames are materialised when the callee cannot finish.
+    /// `Inst::Call` of a function that runs on native frames: a call one frame deeper (direct when
+    /// the variant is in this module, else through `Mem::ntab`, which a generator publishes its
+    /// variants in), with no frame in the interpreter; the frame is materialised (this one, if
+    /// native) when the depth limit or the native stack is near, when the callee has no code yet
+    /// and when it cannot finish (`Mem::ndeopt` after the call).
+    #[allow(clippy::too_many_arguments)]
     fn native_call(
         &mut self,
         pc: u32,
         inst: &Inst,
+        caller: FuncId,
+        f: &Func,
         nr: NatRef,
-        args: &[Reg],
+        callee: FuncId,
+        g: &Func,
+        args: yavs_ir::Regs,
         dst: Option<Reg>,
         obj: Option<Reg>,
     ) {
@@ -1947,31 +2069,84 @@ impl Gen<'_> {
             .b
             .ins()
             .icmp_imm_s(IntCC::UnsignedLessThan, d1, 1 << 29);
-        let okc = self.b.ins().band(a, b2);
+        let mut okc = self.b.ins().band(a, b2);
         // Native stack is left (`NEST_STACK`).
         let sp = self.b.ins().get_stack_pointer(I64);
         let lo = self.mem_ld(MEM_STACK_LO);
         let room = self.b.ins().icmp(IntCC::UnsignedGreaterThan, sp, lo);
-        let okc = self.b.ins().band(okc, room);
+        okc = self.b.ins().band(okc, room);
+        // Through the table: nothing there yet (null) is a materialised frame.
+        let target = match nr.fr {
+            Some(_) => None,
+            None => {
+                let tab = self.mem_ld(MEM_NTAB);
+                let at = self.b.ins().load(
+                    I64,
+                    MemFlagsData::trusted(),
+                    tab,
+                    (u64::from(callee.0) * 8) as i32,
+                );
+                let set = self.b.ins().icmp_imm_s(IntCC::NotEqual, at, 0);
+                okc = self.b.ins().band(okc, set);
+                Some(at)
+            }
+        };
         self.guard(okc, slow);
         let mut cargs = vec![self.env, self.mem, d1];
+        if let Some(p) = g.parent {
+            // The enclosing frames: the caller's own frame when it encloses the callee, else
+            // those its own static links name.
+            let up = |s: &mut Self, k: usize| match &s.nat {
+                Some(n) => n.up[k],
+                None => s.mem_ld(MEM_UP + 8 * k as u64),
+            };
+            let (u1, u2) = if p == caller {
+                let own = match &self.nat {
+                    Some(n) => self
+                        .b
+                        .ins()
+                        .bor_imm_s(n.depth, i64::from(space::FRAME) << 29),
+                    None => self.mem_ld(MEM_FRAME),
+                };
+                (own, up(self, 0))
+            } else {
+                (up(self, 0), up(self, 1))
+            };
+            debug_assert!(f.parent == Some(p) || p == caller);
+            let known = self.b.ins().icmp_imm_s(IntCC::NotEqual, u1, -1);
+            self.guard(known, slow);
+            cargs.extend([u1, u2]);
+        }
         if let Some(o) = obj {
             cargs.push(self.ld(o));
         }
-        for &r in args {
-            cargs.push(self.ld(r));
+        let rs = f.regs(args).unwrap_or(&[]).to_vec();
+        for (r, p) in rs
+            .iter()
+            .zip(g.params.iter().skip(usize::from(obj.is_some())))
+        {
+            cargs.push(self.ld(*r));
+            if p.width == Width::Sig {
+                cargs.push(self.ld(Reg(r.0 + 1)));
+            }
         }
-        let call = self.b.ins().call(nr.fr, &cargs);
-        let (status, val) = {
-            let rs = self.b.inst_results(call);
-            (rs[0], rs[1])
+        let call = match (nr.fr, target) {
+            (Some(fr), _) => self.b.ins().call(fr, &cargs),
+            (None, Some(at)) => {
+                let sig = self.b.import_signature(native_sig(self.imp.cc, g));
+                self.b.ins().call_indirect(sig, at, &cargs)
+            }
+            (None, None) => unreachable!("an indirect call has its address"),
         };
+        let val = self.b.inst_results(call)[0];
         if obj.is_some() {
             self.mem_st(MEM_FLAGS, flags);
         }
+        // The callee recorded its frames and unwound (`yavs_rt_deopt`).
+        let nd = self.mem_ld(MEM_NDEOPT);
         let (out, cont) = (self.b.create_block(), self.b.create_block());
         self.b.set_cold_block(out);
-        self.b.ins().brif(status, out, &[], cont, &[]);
+        self.b.ins().brif(nd, out, &[], cont, &[]);
         self.b.switch_to_block(out);
         let pcv = self.c32(pc);
         if self.nat.is_some() {
@@ -1986,7 +2161,7 @@ impl Gen<'_> {
             self.leave(r);
         }
         self.b.switch_to_block(cont);
-        if let (Some(d), true) = (dst, nr.ret) {
+        if let Some(d) = dst {
             self.st(d, val);
         }
         self.join(join);
@@ -3402,8 +3577,25 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
             Err(why) => notes.push((id, why)),
         }
     }
+    // Every function that runs on native frames has its variant, for the interpreter's calls and
+    // for callers in other modules.
+    for (id, f) in prog
+        .funcs
+        .iter()
+        .filter_map(|(id, _)| prog.func(id).map(|f| (id, f)))
+    {
+        if f.kind != FuncKind::Elab && f.code.len() <= max_size {
+            jit.make_native(prog, id);
+        }
+    }
     jit.finalize()?;
     let compile_time = t0.elapsed();
+    let mut natives = vec![0usize; prog.funcs.len()];
+    let mut calls = vec![0usize; prog.funcs.len()];
+    for (id, n, c) in jit.variants() {
+        natives[id.0 as usize] = n;
+        calls[id.0 as usize] = c;
+    }
     let mut funcs = vec![None; prog.funcs.len()];
     for (id, cid, nregs) in ids {
         funcs[id.0 as usize] = Some((jit.entry(cid), nregs));
@@ -3413,6 +3605,8 @@ pub fn compile(prog: &Program, max_size: usize) -> Result<crate::ClifTier, Error
     Ok(crate::ClifTier {
         _jit: std::sync::Mutex::new(jit),
         funcs,
+        natives,
+        calls,
         notes,
         compile_time,
         interpreted,

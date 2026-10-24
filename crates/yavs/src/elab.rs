@@ -567,10 +567,8 @@ pub fn elab(
 /// Ends tier-up when the run is over (`AutoTier::stop`): `end` at the normal end, without
 /// waiting for a function still compiling; on any other return the drop waits for it.
 enum StopTierUp {
-    #[cfg(feature = "llvm")]
+    #[cfg(any(feature = "llvm", feature = "clift"))]
     Llvm(std::sync::Arc<yavs_llvm::AutoTier>),
-    #[cfg(feature = "clift")]
-    Clift(std::sync::Arc<yavs_clift::AutoTier>),
 }
 
 impl StopTierUp {
@@ -580,14 +578,12 @@ impl StopTierUp {
     #[allow(unused_variables)]
     fn end(self, code: u8, keep_exit: bool) {
         match &self {
-            #[cfg(feature = "llvm")]
+            #[cfg(any(feature = "llvm", feature = "clift"))]
             StopTierUp::Llvm(t) => {
                 if !t.stop(keep_exit) {
                     yavs_llvm::exit_now(code);
                 }
             }
-            #[cfg(feature = "clift")]
-            StopTierUp::Clift(t) => t.stop(),
             #[cfg(not(any(feature = "llvm", feature = "clift")))]
             _ => {}
         }
@@ -597,12 +593,10 @@ impl StopTierUp {
 impl Drop for StopTierUp {
     fn drop(&mut self) {
         match self {
-            #[cfg(feature = "llvm")]
+            #[cfg(any(feature = "llvm", feature = "clift"))]
             StopTierUp::Llvm(t) => {
                 t.stop(true);
             }
-            #[cfg(feature = "clift")]
-            StopTierUp::Clift(t) => t.stop(),
             #[cfg(not(any(feature = "llvm", feature = "clift")))]
             _ => {}
         }
@@ -666,18 +660,20 @@ fn use_clift(
         rt.set_tier(std::sync::Arc::new(tier));
         return Ok(None);
     }
+    // The tier-up policy of `--tier=auto` with Cranelift as its only code generator.
     let heat = a
         .tier_heat
-        .map_or(yavs_clift::Heat::DEFAULT, |[base, per_instr, period]| {
-            yavs_clift::Heat {
+        .map_or(yavs_llvm::Heat::DEFAULT, |[base, per_instr, period]| {
+            yavs_llvm::Heat {
                 base,
                 per_instr,
                 period,
+                budget: 0,
             }
         });
     let prog = rt.prog.clone();
     let verbose = a.verbose;
-    let note: yavs_clift::Note = Box::new(move |f, why| {
+    let note: yavs_llvm::Note = Box::new(move |f, _level, why| {
         if !verbose {
             return;
         }
@@ -691,8 +687,20 @@ fn use_clift(
             Err(why) => eprintln!("note: `{name}` ({f}) is hot but stays interpreted: {why}"),
         }
     });
-    let t = yavs_clift::AutoTier::start(rt, a.tier_max_size, heat, note).map_err(bug)?;
-    Ok(Some(StopTierUp::Clift(t)))
+    let first = yavs_clift::First::new().map_err(bug)?;
+    let t = yavs_llvm::AutoTier::start_with(
+        rt,
+        yavs_llvm::OptLevel::O2,
+        a.tier_max_size,
+        heat,
+        note,
+        yavs_llvm::Gens {
+            main: None,
+            first: Some(Box::new(first)),
+        },
+    )
+    .map_err(|e| bug(e.to_string()))?;
+    Ok(Some(StopTierUp::Llvm(t)))
 }
 
 /// `--tier=auto3`: `yavs_llvm::AutoTier` with Cranelift as its first level (functions are

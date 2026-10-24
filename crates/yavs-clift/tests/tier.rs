@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use yavs_clift::{AutoTier, ClifTier, Heat, Note};
+use yavs_clift::{ClifTier, First};
+use yavs_llvm::{AutoTier, Gens, Heat, Note, OptLevel};
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime, Tier, TierHost};
 use yavs_ir::*;
@@ -166,7 +167,17 @@ const HOT: Heat = Heat {
     base: 1,
     per_instr: 0,
     period: 100,
+    budget: 0,
 };
+
+/// The tier-up policy with Cranelift as its only generator.
+fn start(rt: &Runtime, max_size: usize, note: Note) -> Arc<AutoTier> {
+    let gens = Gens {
+        main: None,
+        first: Some(Box::new(First::new().unwrap())),
+    };
+    AutoTier::start_with(rt, OptLevel::O2, max_size, HOT, note, gens).unwrap()
+}
 
 /// `--tier=auto`: the loop becomes hot while it runs in the interpreter, is compiled on the
 /// background thread and swapped in; the results never change (rule 5).
@@ -176,8 +187,8 @@ fn auto_tier_compiles_hot_functions() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
-    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
-    let tier = AutoTier::start(&rt, usize::MAX, HOT, note).unwrap();
+    let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
+    let tier = start(&rt, usize::MAX, note);
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
     // The loop runs until the sampler has seen it and its code is compiled.
     let t0 = Instant::now();
@@ -186,10 +197,11 @@ fn auto_tier_compiles_hot_functions() {
         assert_eq!(call().unwrap(), Some(5_000_050_000));
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
-    tier.stop();
+    tier.stop(true);
+    // One note per part compiled (native-frame code, frame-mode code).
     let notes = notes.lock().unwrap();
-    assert_eq!(notes.len(), 1);
-    assert!(notes[0].0 == f && notes[0].1.is_ok(), "{notes:?}");
+    assert!(!notes.is_empty());
+    assert!(notes.iter().all(|n| n.0 == f && n.1.is_ok()), "{notes:?}");
 }
 
 /// A hot function over `--tier-max-size` stays interpreted, with a note.
@@ -199,15 +211,15 @@ fn auto_tier_skips_functions_over_the_size_cap() {
     let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
-    let note: Note = Box::new(move |f, why| seen.lock().unwrap().push((f, why)));
-    let tier = AutoTier::start(&rt, 3, HOT, note).unwrap();
+    let note: Note = Box::new(move |f, _, why| seen.lock().unwrap().push((f, why)));
+    let tier = start(&rt, 3, note);
     let t0 = Instant::now();
     while notes.lock().unwrap().is_empty() {
         assert!(t0.elapsed() < Duration::from_secs(60), "no note");
         let r = yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]);
         assert_eq!(r.unwrap(), Some(5_000_050_000));
     }
-    tier.stop();
+    tier.stop(true);
     assert_eq!(tier.compiled(), 0);
     let notes = notes.lock().unwrap();
     assert_eq!(notes.len(), 1);

@@ -5567,6 +5567,34 @@ cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` 
   `run_ops` calls an out-of-line function: the same op with its body inline in the arm moved the other designs by +0.2 to
   +2.9 percent of instructions (the large function is laid out differently, #576), the call keeps them within 0.2.
 
+- **A check's message is built only for a failing call (IR, every backend; `opt/sink.rs`, `opt/inline.rs`).**
+  `poc_arith_addw` spends a third of its time building the message of `simAssertion(cond, "..." & image(x) & ...)` for
+  calls that pass (30 of 100 percent of its instructions with the message replaced by a constant). The message is an
+  actual parameter and the LRM evaluates it before the call, so the evaluation may be skipped only where nothing of it
+  can be seen. Two parts. (1) A call that passes a string a `Cat` filled just before it may inline a callee of up to
+  four times the usual raw size (`assertion`, 139 raw instructions for 41 after optimisation, was never inlined); the
+  wider callee is looked at only for such a call, so other designs do not pay for the optimisation of the callees they
+  never inline (`hdlm_axis_bfm` +14 percent of its instructions with a general widening, +1 percent now), and a second
+  round (`run_wide`) takes the call a wrapper (`simAssertion` in front of the protected method) brought in. (2) After an
+  inlining, `sink::run` moves instructions from the straight run in front of a `CondBr` to the start of the branch
+  that reads their results. What moves: register computations, loads, descriptor lengths and index arithmetic over
+  memory the run built itself (temporary blocks, the strings `'image` of an integer or enumeration returns), frame
+  slots and the constant pool, `Alloc`, `MakeDope`, `LayoutOf`, `Cat` and `Store` into such blocks, `+`, `-`, `*` and
+  the length check of `&` where all operands are lengths. What stays: every call (`to_integer` of a vector that holds
+  `U` reports at every call, so it is evaluated at every call), a division, a range check of a counter, an index or
+  slice check, a read of memory the run did not build. The one thing that moves although it can fail is the length
+  arithmetic and the index check of the concatenation: it fails only for a string of 2^31 elements or more, which no
+  run can hold (the same stop the allocation gives), so skipping it where the string is never read changes nothing a
+  run can show; the operands are lengths by construction (`DopeLen`, constants, sums of them), never a value from the
+  design. Moved results read nowhere but the target, writes go only into blocks a moved instruction made, a read moves
+  past no write that may reach its block and an allocation past no call or statement end, no register lives across a
+  suspension, and the moved code writes fresh registers (the code before the branch reuses the originals). Checked on
+  `poc_arith_addw` (instructions 25.57 G to 18.41 G, 0.72; the other designs within 0.2 percent), on twelve designs of
+  failing and passing checks with messages that divide by zero, overflow, index and slice out of range, call an impure
+  function and call `to_integer` of a vector with a `U` (identical output with the optimiser off:
+  `crates/yavs/tests/sink.rs`), and on 850 random programs of checks with messages of up to eight pieces in nested loops
+  against the build without the optimiser (no difference).
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

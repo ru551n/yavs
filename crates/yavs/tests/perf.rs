@@ -389,6 +389,9 @@ case!(
     &[],
     [("process_runs", Max(2)), ("ops", Max(3320)),]
 );
+// The message of a check is built after the branch that reads it: images, lengths and the
+// concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
+case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6540))]);
 case!(
     static_chain,
     "acc=",

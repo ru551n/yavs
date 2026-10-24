@@ -39,6 +39,8 @@ const MAX_BODY: usize = 24;
 /// 40 percent slower in `--tier=auto`, measured on the queue of a verification library.)
 const MAX_MULTI: usize = 60;
 const MAX_BLOCKS: usize = 8;
+/// Bit of a forwarder's level in the cache: made for a call that passes a string it builds.
+const WIDE: u8 = 0x80;
 /// The most arms of a `Case` that becomes compares.
 const MAX_ARMS: usize = 6;
 /// The most instructions inlining adds to one function, beyond four times its own size.
@@ -110,27 +112,33 @@ pub(super) fn enabled() -> bool {
 /// that with the calls inlined that level 0 makes inlinable. (A level is a function of the
 /// program alone, so the result does not depend on the order functions are first used, and a
 /// cycle of calls ends at level 0.)
-fn forwarder(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Arc<Forwarder>> {
+fn forwarder(
+    prog: &crate::Program,
+    callee: FuncId,
+    level: u8,
+    wide: bool,
+) -> Option<Arc<Forwarder>> {
+    let key = (callee.0, level | if wide { WIDE } else { 0 });
     if let Some(r) = prog
         .fwd
         .0
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(&(callee.0, level))
+        .get(&key)
     {
         return r.clone();
     }
     // Not under the lock: the optimiser takes the program's other locks.
-    let made = make(prog, callee, level).map(Arc::new);
+    let made = make(prog, callee, level, wide).map(Arc::new);
     prog.fwd
         .0
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert((callee.0, level), made.clone());
+        .insert(key, made.clone());
     made
 }
 
-fn make(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Forwarder> {
+fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<Forwarder> {
     let raw = prog.funcs.get(callee)?;
     // Cheap exits before optimising a function: not a small subprogram of the plain kind.
     if !matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
@@ -143,7 +151,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8) -> Option<Forwarder> {
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || raw.full().code.len() > 2 * MAX_MULTI
+        || raw.full().code.len() > if wide { 4 } else { 2 } * MAX_MULTI
     {
         return None;
     }
@@ -446,6 +454,36 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
     }
 }
 
+/// Does the call at `pc` take an argument that `Cat` filled earlier in the same block?
+fn builds_string(f: &crate::Func, pc: usize, args: crate::Regs, obj: Option<Reg>) -> bool {
+    let mut want: Vec<Reg> = obj.into_iter().collect();
+    if let Some(a) = f
+        .operands
+        .get(args.start as usize..(args.start + args.len) as usize)
+    {
+        want.extend_from_slice(a);
+    }
+    for i in f.code[..pc].iter().rev().take(800) {
+        if i.is_terminator() {
+            return false;
+        }
+        if let Inst::Cat { dst, .. } = *i
+            && want.contains(&dst)
+        {
+            return true;
+        }
+        i.visit(&mut |r, role, _| {
+            if role == Role::Def {
+                want.retain(|w| *w != r);
+            }
+        });
+        if want.is_empty() {
+            return false;
+        }
+    }
+    false
+}
+
 /// A call to inline: the callee's body, the arguments in the order of its parameters (the
 /// protected object of a `CallProt` first) and the register receiving the result.
 struct Site {
@@ -511,6 +549,26 @@ type Out = (Inst, StmtId, u32);
 /// Inline the calls of `f` (function `id`) whose callee has a forwarder. `true`: the code
 /// changed.
 pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level: u8) -> bool {
+    run_with(prog, id, f, level, false)
+}
+
+/// The second round over a function that inlined (`wide_only`): only the calls that hand over a
+/// string built just before them, which the first round may have brought in with the body of a
+/// wrapper (a package procedure in front of a protected method).
+pub(super) fn run_wide(prog: &crate::Program, id: FuncId, f: &mut crate::Func) -> bool {
+    f.code
+        .iter()
+        .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
+        && run_with(prog, id, f, 0, true)
+}
+
+fn run_with(
+    prog: &crate::Program,
+    id: FuncId,
+    f: &mut crate::Func,
+    level: u8,
+    wide_only: bool,
+) -> bool {
     if !enabled()
         || super::keep_variables_on()
         || !matches!(
@@ -537,7 +595,22 @@ pub(super) fn run(prog: &crate::Program, id: FuncId, f: &mut crate::Func, level:
         if func == id {
             continue;
         }
-        let Some(fw) = forwarder(prog, func, level) else {
+        // A call that hands over a string built just before it (the message of a check): a
+        // callee of up to four times the usual raw size, because sinking can then skip
+        // building it (`opt/sink.rs`).
+        let wide = || {
+            f.code
+                .iter()
+                .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
+                && builds_string(f, pc, args, obj)
+        };
+        let fw = if wide_only {
+            wide().then(|| forwarder(prog, func, level, true)).flatten()
+        } else {
+            forwarder(prog, func, level, false)
+                .or_else(|| wide().then(|| forwarder(prog, func, level, true)).flatten())
+        };
+        let Some(fw) = fw else {
             continue;
         };
         let Some(callee) = prog.funcs.get(func) else {

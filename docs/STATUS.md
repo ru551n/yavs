@@ -6372,6 +6372,11 @@ core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median
   only for a seed out of range. `sc5_fifo_repack` instructions 0.890 of main with `LoadUp` (0.919 of the commit before);
   the other designs within 0.2 percent. Lesson of the round: a new arm with a body of its own in `run_ops` moves the
   other designs by percents of instructions; an arm that calls an out-of-line function does not.
+- A check's message is built only for a failing call (IR, `opt/sink.rs`, `opt/inline.rs`): a call that hands over a string it
+  built may inline a callee of up to four times the raw size, and the instructions that only build the message move into
+  the branch that reads it. `poc_arith_addw` instructions 25.57 G to 18.41 G (0.720), cycles 0.76; the other designs
+  within 0.2 percent of instructions. What can be seen of a message (a failure, a report, `to_integer` warning of a vector
+  with `U`) is still done at every call; the one thing skipped that could fail is the length of a string of 2^31 elements.
 
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 

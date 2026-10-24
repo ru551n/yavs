@@ -269,3 +269,28 @@ fn background_compile_swaps_function_pointer() {
     eprintln!("interpreter calls before swap: {interp_calls}");
     drop(jit);
 }
+
+/// The unoptimised code generator reads the low half of a load as a 4-byte load: no 10-byte
+/// `movabs` of the mask (its immediate would be `ff ff ff ff 00 00 00 00` in the object).
+#[test]
+fn low_half_of_a_load_is_a_narrow_load() {
+    for opt in [OptLevel::O0, OptLevel::Fast] {
+        let mut m = Module::new("lowhalf");
+        spike::add_low_half(&m);
+        m.optimize(opt).expect("passes run");
+        let obj = m.emit(opt).expect("object");
+        let mask = [0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0];
+        assert!(
+            !obj.windows(8).any(|w| w == mask),
+            "{opt:?}: the mask is still an immediate"
+        );
+        let mut jit = Jit::new(opt, &runtime_symbols()).expect("LLJIT created");
+        jit.add_object(&obj).expect("object added");
+        let addr = jit.lookup("low_half").unwrap();
+        // SAFETY: the symbol is `extern "C" fn(*const i64) -> i64`.
+        let f: unsafe extern "C" fn(*const i64) -> i64 = unsafe { std::mem::transmute(addr) };
+        let x: i64 = 0x1122_3344_8899_aabbu64 as i64;
+        // SAFETY: x is valid for the call.
+        assert_eq!(unsafe { f(&x) }, 0x8899_aabb);
+    }
+}

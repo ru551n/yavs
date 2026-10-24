@@ -7301,6 +7301,44 @@ latency is 13.6 percent of the dispatch slots with the default `--tier=auto` aga
 sampled window touches about 150 KB, more than the L1i holds.
 Difftest 505/505 on `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0` at 1 and 4 threads, and with `YAVS_LLVM_ARENA=0`.
 
+## llvm: small code model, calls through the GOT, blocks in execution order, narrow masks (#679, 2026-10-24)
+
+(`docs/decisions.md` "llvm: small code model, calls through the GOT, ...".) Bench builds (`tools/build-bench.sh --features llvm`) of main
+(base) and of the change, `tools/realbench` worlds of a private cache (`--prepare`), one timed run at a time on core 11 (CCD1, a loaded
+host: load average 18 to 22), `perf stat --no-inherit` of the simulation thread, medians of 7 interleaved runs, each world warm (two
+untimed runs before). `--tier-heat=1,0,0` compiles every hot function early and deterministically; the LEON3 case is the 60 us window
+(`--stop-time=60us`) with `YAVS_AUTO_FORCE=comb@1000#0`. Cycles are `cycles:u`.
+
+| case (base to change) | instructions | cycles median (min) | frontend stall cycles | L1i misses | branch misses |
+|---|---:|---:|---:|---:|---:|
+| `neorv32_single_min`, heat | 36.04 G to 35.91 G | 16.95 G to 16.17 G (16.53 to 15.80), -4.6 % | 3.82 G to 3.03 G | 37.6 M to 30.0 M | 66 M to 55 M |
+| `fletcher_bufferreader`, heat | 25.94 G to 25.80 G | 10.36 G to 10.11 G (10.07 to 9.85), -2.4 % | 2.09 G to 1.85 G | 53.8 M to 46.1 M | 27.3 M to 25.7 M |
+| `fletcher_bufferwriter_512`, heat | 80.12 G to 79.52 G | 37.43 G to 33.61 G (36.72 to 33.38), -10.2 % | 11.46 G to 8.42 G | 124.9 M to 96.4 M | 165 M to 116 M |
+| `sc5_fifo_repack`, heat | 28.50 G to 28.42 G | 7.36 G to 7.37 G (7.27 to 7.28), level | 0.51 G to 0.50 G | 11.5 M to 9.4 M | level |
+| LEON3 60 us, `iu:comb` forced, heat | 91.9 G to 91.1 G | 43.1 G to 36.3 G (36.5 to 33.0), -16 % median, -9.5 % min | 11.86 G to 7.57 G | 103.9 M to 88.7 M | 108.7 M to 88.5 M |
+| `neorv32_single_min`, `--tier=auto` | 39.77 G to 39.81 G | 17.51 G to 17.57 G, level | 2.45 G to 2.43 G | level | level |
+| `sc5_fifo_repack`, `--tier=auto` | 33.86 G to 34.04 G | 9.39 G to 9.56 G (9.18 to 9.31), +1.8 % | 0.89 G to 0.92 G | 16.3 M to 15.5 M | 14.2 M to 15.0 M |
+| `fletcher_bufferreader`, `--tier=auto` | 26.53 G to 26.57 G | 10.51 G to 10.57 G, level | 1.77 G to 1.76 G | 41.7 M to 33.2 M | level |
+| `fletcher_bufferwriter_512`, `--tier=auto` | 82.64 G to 82.65 G | 32.13 G to 32.30 G (31.66 to 31.80), level | 5.76 G to 5.79 G | 81.5 M to 69.3 M | 118 M to 116 M |
+| LEON3 60 us, `--tier=auto`, nothing forced (9 runs) | 72.1 G to 73.9 G | 30.8 G to 30.4 G (25.8 to 26.1), level; the host's spread is 26 to 46 G | 4.22 G to 4.11 G | 56.3 M to 49.9 M | level |
+
+(`--tier=auto` alone compiles at host-dependent times: the instructions of `sc5_fifo_repack` are 33.1 G or 37.9 G from run to run in
+both builds, which is the +1.8 percent; an earlier pair of the same builds had it at -2.8 percent. The LEON3 median of the base is
+inflated by one slow sample: 5 runs of an earlier pair gave 37.0 G to 33.3 G, -10 percent.) Interim variants, same method, 5 runs:
+the small model with PLT stubs and nothing else, cycles level (neorv32 +5 %, LEON3 -0.6 %, writer +3 %); with the block layout and
+the narrow masks and `nonlazybind` -4.7 / -2.0 / -8.4 / -6.8 percent (neorv32, reader, writer, LEON3).
+
+Code size (objects of the `Fast` level of the base and of the change, written with `YAVS_LLVM_OBJ` from a cold compile cache): LEON3 `comb`
+copy, 20 122 IR instructions: `.text` 2 526 254 to 2 354 640 bytes (125.5 to 117.0 bytes per IR instruction, -6.8 %), machine instructions
+484 870 to 448 257 (-7.6 %), `jmp` 39 937 to 24 616, `movabs` 26 041 to 10 554. `neorv32` `exec_comb` (4 531 IR instructions): `.text`
+477 590 to 443 508 bytes (-7.1 %). Compile time of the `comb` copy at `Fast` (`YAVS_LLVM_TIMES=1`, 3 interleaved pairs, core 11): total 2.43 to 2.70 s
+before, 2.22 to 2.62 s after (code generation 1.28 to 1.40 s against 1.03 to 1.12 s; the block order adds 20 to 90 ms to the generation).
+
+The head-to-head designs under `--tier=llvm` (`tools/bench/designs`, 5 interleaved runs, core 11) execute 0.1 to 0.3 percent fewer instructions (`rtl_ff` 9.15 G to 9.12 G, `rtl_fan` 13.89 G to 13.85 G, `rtl_lfsr` 4.69 G, `rtl_chain` 3.24 G); cycles within the noise of this host (median `rtl_ff` -0.6, `rtl_fan` -3.9, `rtl_lfsr` +1.2, `rtl_chain` +9.7 percent, minimum -1.2).
+
+Difftest 508/508 at 1 and 4 threads for `yavs-llvm`, `yavs-auto`, `yavs-auto` with `--tier-heat=1,0,0` and `yavs-auto` with
+`YAVS_LLVM_ARENA=0`.
+
 ## IR optimiser round 13: repeated drives, copies without the declarative part, conditional assignments that idle (#667, #678, #521, 2026-10-24)
 
 Three changes (`docs/decisions.md` "IR optimiser round 13", "Specialised copies start after the declarative part", "Idle skip, round 4"):

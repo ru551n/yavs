@@ -2487,6 +2487,86 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     })
 }
 
+/// Orders the blocks of `fv` so that the likelier successor of a block follows it (the
+/// unoptimised code generator emits blocks in this order and a branch to the next one is free);
+/// `cold` blocks go last. Creation order puts a join block before the fast path that leads to
+/// it, which costs two taken jumps per guarded instruction (#679).
+unsafe fn layout(fv: LLVMValueRef, cold: &[LLVMBasicBlockRef]) {
+    use std::collections::{HashMap, HashSet};
+    // SAFETY: plain walks over the blocks of a function being generated; moving a block keeps
+    // the function valid (the entry block stays first).
+    unsafe {
+        let mut blocks = Vec::new();
+        let mut b = LLVMGetFirstBasicBlock(fv);
+        while !b.is_null() {
+            blocks.push(b);
+            b = LLVMGetNextBasicBlock(b);
+        }
+        if blocks.len() < 3 {
+            for &b in cold {
+                LLVMMoveBasicBlockAfter(b, LLVMGetLastBasicBlock(fv));
+            }
+            return;
+        }
+        let cold: HashSet<_> = cold.iter().copied().collect();
+        let pos: HashMap<_, _> = blocks.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+        let prof = LLVMGetMDKindIDInContext(
+            LLVMGetModuleContext(LLVMGetGlobalParent(fv)),
+            c"prof".as_ptr(),
+            4,
+        );
+        let mut placed = HashSet::new();
+        let mut order = Vec::with_capacity(blocks.len());
+        for &start in blocks.iter().filter(|b| !cold.contains(*b)) {
+            let mut cur = start;
+            while placed.insert(cur) {
+                order.push(cur);
+                let t = LLVMGetBasicBlockTerminator(cur);
+                if t.is_null() {
+                    break;
+                }
+                // The heavier edge of a branch with weights, else the earliest successor.
+                let weights = {
+                    let md = LLVMGetMetadata(t, prof);
+                    let mut w = [0u64; 2];
+                    if !md.is_null() && LLVMGetMDNodeNumOperands(md) == 3 {
+                        let mut ops = [std::ptr::null_mut(); 3];
+                        LLVMGetMDNodeOperands(md, ops.as_mut_ptr());
+                        if !ops[1].is_null() && !ops[2].is_null() {
+                            w = [
+                                LLVMConstIntGetZExtValue(ops[1]),
+                                LLVMConstIntGetZExtValue(ops[2]),
+                            ];
+                        }
+                    }
+                    w
+                };
+                let n = LLVMGetNumSuccessors(t);
+                let mut best: Option<(LLVMBasicBlockRef, u64, usize)> = None;
+                for i in 0..n {
+                    let s = LLVMGetSuccessor(t, i);
+                    if placed.contains(&s) || cold.contains(&s) {
+                        continue;
+                    }
+                    let w = if n == 2 { weights[i as usize] } else { 0 };
+                    let at = pos[&s];
+                    if best.is_none_or(|(_, bw, bp)| w > bw || (w == bw && at < bp)) {
+                        best = Some((s, w, at));
+                    }
+                }
+                match best {
+                    Some((s, ..)) => cur = s,
+                    None => break,
+                }
+            }
+        }
+        order.extend(blocks.iter().filter(|b| cold.contains(*b)));
+        for w in order.windows(2) {
+            LLVMMoveBasicBlockAfter(w[1], w[0]);
+        }
+    }
+}
+
 /// Ask the kernel to back the compiled code of a whole-program module with huge pages (Linux): the
 /// code of a design of thousands of processes is megabytes that every clock cycle runs through,
 /// and each 4 KiB page of it is an entry of the instruction TLB. `MADV_COLLAPSE` makes the pages
@@ -4023,6 +4103,15 @@ impl Gen {
             self.attr(self.codes, false, "nofree", 0);
             self.attr(self.codes, false, "nosync", 0);
             self.attr(self.deopt_slots, false, "memory", mem_effects(REF, 0, 0));
+            if crate::jit::small_model() {
+                let mut f = LLVMGetFirstFunction(self.module);
+                while !f.is_null() {
+                    if LLVMGetIntrinsicID(f) == 0 {
+                        self.attr(f, false, "nonlazybind", 0);
+                    }
+                    f = LLVMGetNextFunction(f);
+                }
+            }
         }
     }
 
@@ -4716,7 +4805,11 @@ impl Gen {
         unsafe {
             let f = LLVMGetNamedFunction(self.module, cname.as_ptr());
             if f.is_null() {
-                LLVMAddFunction(self.module, cname.as_ptr(), ty)
+                let f = LLVMAddFunction(self.module, cname.as_ptr(), ty);
+                if crate::jit::small_model() {
+                    self.attr(f, false, "nonlazybind", 0);
+                }
+                f
             } else {
                 f
             }
@@ -6879,9 +6972,7 @@ impl Gen {
                 }
                 LLVMBuildRet(self.b, self.c64(0));
             }
-            for &b in c.cold.borrow().iter() {
-                LLVMMoveBasicBlockAfter(b, LLVMGetLastBasicBlock(fv));
-            }
+            layout(fv, &c.cold.borrow());
             // A block nothing branches to (the generator and `regs::reach` agree on all but
             // dead code) has phis without incoming values.
             if let Some(pl) = c.defer.as_ref().and_then(|d| d.plan.as_ref()) {

@@ -7395,9 +7395,44 @@ Measurements in docs/STATUS.md "Window generator against sim1: where the time is
 - **What the machine code of a large process is made of** (LEON3 `comb` copy, 23 641 IR instructions, 3.7 MB, 158 bytes per IR
   instruction, `Fast`): 20.6 percent reloads from stack slots, 7.6 spills, 7.3 loads and 4.0 stores through pointers, 12.6 immediates
   (40 000 `movabs`: 20 000 are the callee address of a `callq *%rax`, 10 000 a 32-bit mask), 2.4 register copies, 45.5 everything else;
-  the frame is 110 KB (one slot per value). Open: the small code model with position-independent code and RuntimeDyld stubs would
-  make a call 5 bytes instead of 12 (the arena keeps code and data within 2 GiB); values that live across the guards of one IR
-  instruction are what the fast register allocator spills at every block end.
+  the frame is 110 KB (one slot per value). (The small code model and the spills: next section.)
+## llvm: small code model, calls through the GOT, blocks in execution order, narrow masks (yavs-llvm, #679, 2026-10-24)
+
+- **Decision: with the code arena the code is generated for the small code model with position independent code** (`jit.rs` `model`;
+  the arena is the precondition: code, stubs and data are within 2 GiB of each other). A call of a runtime callback is `call [rip+got]`
+  (6 bytes) where it was `movabs rax, imm64; call rax` (12), globals and tables are RIP-relative. The callbacks are declared
+  `nonlazybind` (`Gen::effects`, `Gen::declare`): without it the linker makes a PLT stub per callback and object and every call pays a
+  second jump (measured: the stubs cost what the shorter call saves, cycles level). Without the arena (other targets,
+  `YAVS_LLVM_ARENA=0`) and with `YAVS_LLVM_CODEMODEL=large` the JIT default is kept. The model is part of the key of the object cache
+  (`target_id`). A section that does not fit the arena is a hard stop in the small model (`arena.rs` `overflow`: a 32-bit displacement
+  to memory outside the arena would link to wrong code and the release linker does not check), where the large model maps it apart.
+- **Decision: the blocks of a function are put in execution order before the cold ones go last** (`lower.rs` `layout`: from each block
+  on to its likelier successor, by branch weights, else the earliest). Blocks were laid out in the order they were created, which puts
+  the join block of a slow path before the fast path that leads to it: the unoptimised code generator emits blocks in layout order, so
+  every guarded instruction cost `jne slow; jmp go` and a `jmp join` at the end of the fast path. The `jmp`s of the LEON3 `comb` copy
+  fall from 39 937 to 24 616 (the rest are the cold paths' way back).
+- **Decision: the low half of a load is a 4-byte load** (`jit.rs` `narrow_masks`, after the passes, unoptimised code generation only):
+  `and (load i64 p), 0xffffffff` becomes `zext (load i32 p)`, a 2-instruction saving where the mask is a 10-byte `movabs` and an `and`
+  (3 000 of the 26 000 `movabs` of the `comb` copy; the small model took 12 400, the callee addresses and constant addresses). It runs after the passes because a narrower load blocks the forwarding of a
+  store to the same bytes (early-cse), which made the first version (at generation time) worse in the places where the stored value was
+  a constant.
+- **Measured, not kept:** the address of an access (`gep` of the base and the checked offset) made before the guard instead of after it,
+  so that one value instead of two crosses the branch: 0.4 percent more code, cycles level or worse (the reloads of the three function
+  arguments, the frame views, are a third of the stack traffic and a new block reloads them again, which this does not touch).
+  Other optimiser pipelines on the same IR (`early-cse<memssa>`, a second round, `gvn`): code size level or larger.
+- **Where the instructions of a large process go now** (LEON3 `comb` copy, 20 122 IR instructions, `Fast`): 448 257 machine
+  instructions, 30 percent of them stack accesses (spills and reloads); a third of those are the reloads of the function's three
+  arguments (the frame views) at the start of every block, 10.5 percent of all instructions. Registers cannot be reserved for them (the
+  x86 target has no reserved-register switch) and the fast register allocator reloads what is live across a block at each block. **The
+  deferred register stores (`regs.rs` `Live`, the suspect of #679) are not the source** for this process: they are off for a function
+  whose liveness matrix is over `MAX_WORDS`, so every register is stored to the frame; where they are on (`exec_comb` of neorv32,
+  4 531 IR instructions) they save: 29 248 stack accesses and 90 901 instructions against 33 308 and 95 577 with them off
+  (`YAVS_NODEFER`, a temporary switch, not kept). Raising the cap makes the 20 000-instruction process read outside a heap object (#710).
+  The spills that are left are values of the guards themselves (a checked offset, an address) that cross the branch of each guard, one
+  new block per guard: the levers left are fewer blocks per IR instruction (guards that share a slow path, redundant bounds checks of the
+  temporary area: the same `len` and constant bounds are tested instruction after instruction) or a block-local allocator that keeps the
+  three views in registers.
+
 ## IR optimiser round 13: repeated drives of one driver are done once (yavs-ir `opt/drives.rs`, #667, 2026-10-24)
 
 Decision (landed): **a process's zero-delay drive that a later zero-delay drive of the same elements deletes is delayed down the control

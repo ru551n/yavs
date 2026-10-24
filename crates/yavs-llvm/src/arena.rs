@@ -10,6 +10,7 @@
 //! to a second zone of the same reservation (code and data stay within 2 GiB of each other).
 //! Linux x86_64 only (the instruction cache is coherent there); everywhere else, and when the
 //! reservation fails or `YAVS_LLVM_ARENA=0`, LLJIT keeps its default linker.
+//! The arena is also what lets the code be generated for the small code model (`jit.rs` `model`).
 //! `YAVS_LLVM_HUGE=0` keeps the arena but leaves the huge pages out.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -179,6 +180,15 @@ mod imp {
     /// A section that did not fit the arena: a mapping of its own.
     fn overflow(size: usize, prot: c_int) -> *mut u8 {
         OVERFLOW.fetch_add(1, Ordering::Relaxed);
+        // The small code model reaches its data and stubs with 32-bit offsets: a section outside
+        // the arena would link to wrong code, so this is a hard stop, not a fallback.
+        if crate::jit::small_model() {
+            eprintln!(
+                "error: the code arena is full ({size} bytes more asked for); compiled code of this \
+                 size needs YAVS_LLVM_CODEMODEL=large"
+            );
+            std::process::abort();
+        }
         // SAFETY: a fresh anonymous mapping.
         let p = unsafe {
             mmap(

@@ -96,8 +96,10 @@ pub fn target_id() -> String {
         LLVMGetVersion(&mut major, &mut minor, &mut patch);
         let triple = take_message(LLVMGetDefaultTargetTriple());
         format!(
-            "{triple} {} llvm-{major}.{minor}.{patch} args={} pipeline={}",
+            "{triple} {} llvm-{major}.{minor}.{patch} model={:?}/{:?} args={} pipeline={}",
             portable_cpu().to_string_lossy(),
+            model().0,
+            model().1,
             std::env::var("YAVS_LLVM_ARGS")
                 .as_deref()
                 .unwrap_or(CODEGEN_ARGS),
@@ -192,6 +194,106 @@ impl OptLevel {
     }
 }
 
+/// The code model and relocation mode of the generated code. With the code arena (code, stubs
+/// and data within 2 GiB of each other, #679) the small model with position independent code:
+/// 32-bit displacements everywhere, a call of a runtime callback is `call [rip+got]` (the
+/// callbacks are marked `nonlazybind`, `Gen::effects`), not a 10-byte `movabs` and `call rax`.
+/// Without the arena (and with `YAVS_LLVM_CODEMODEL=large`) the JIT default, which spells out
+/// every address.
+fn model() -> (LLVMRelocMode, LLVMCodeModel) {
+    static SMALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let small = *SMALL.get_or_init(|| {
+        crate::arena::enabled() && !std::env::var("YAVS_LLVM_CODEMODEL").is_ok_and(|v| v == "large")
+    });
+    if small {
+        (
+            LLVMRelocMode::LLVMRelocPIC,
+            LLVMCodeModel::LLVMCodeModelSmall,
+        )
+    } else {
+        (
+            LLVMRelocMode::LLVMRelocDefault,
+            LLVMCodeModel::LLVMCodeModelJITDefault,
+        )
+    }
+}
+
+/// `and (load i64 p), 0xffffffff` as `zext (load i32 p)`, after the passes (they forward a store
+/// to a load of the same bytes, which a narrower load would block): a 4-byte load zero-extends by
+/// itself, where the unoptimised code generator makes a 10-byte `movabs` and an `and` of the
+/// mask (the low half of a fat address is read this way thousands of times in a large process).
+unsafe fn narrow_masks(module: LLVMModuleRef) {
+    // SAFETY: plain walks over a module that is finished (the generator is done with it); the
+    // loads replaced have no other user.
+    unsafe {
+        let ctx = LLVMGetModuleContext(module);
+        let (i32t, i64t) = (LLVMInt32TypeInContext(ctx), LLVMInt64TypeInContext(ctx));
+        let kinds = [
+            LLVMGetMDKindIDInContext(ctx, c"alias.scope".as_ptr(), 11),
+            LLVMGetMDKindIDInContext(ctx, c"noalias".as_ptr(), 7),
+        ];
+        let mut found = Vec::new();
+        let mut fv = LLVMGetFirstFunction(module);
+        while !fv.is_null() {
+            let mut b = LLVMGetFirstBasicBlock(fv);
+            while !b.is_null() {
+                let mut i = LLVMGetFirstInstruction(b);
+                while !i.is_null() {
+                    if LLVMGetInstructionOpcode(i) == llvm_sys::LLVMOpcode::LLVMAnd {
+                        let (x, y) = (LLVMGetOperand(i, 0), LLVMGetOperand(i, 1));
+                        let (ld, k) = if LLVMIsAConstantInt(y).is_null() {
+                            (y, x)
+                        } else {
+                            (x, y)
+                        };
+                        if !LLVMIsAConstantInt(k).is_null()
+                            && LLVMConstIntGetZExtValue(k) == 0xffff_ffff
+                            && LLVMTypeOf(ld) == i64t
+                            && !LLVMIsALoadInst(ld).is_null()
+                            && LLVMGetVolatile(ld) == 0
+                            && LLVMGetOrdering(ld)
+                                == llvm_sys::LLVMAtomicOrdering::LLVMAtomicOrderingNotAtomic
+                        {
+                            let u = LLVMGetFirstUse(ld);
+                            if !u.is_null() && LLVMGetNextUse(u).is_null() {
+                                found.push((i, ld));
+                            }
+                        }
+                    }
+                    i = LLVMGetNextInstruction(i);
+                }
+                b = LLVMGetNextBasicBlock(b);
+            }
+            fv = LLVMGetNextFunction(fv);
+        }
+        if found.is_empty() {
+            return;
+        }
+        let bld = LLVMCreateBuilderInContext(ctx);
+        for (and, ld) in found {
+            LLVMPositionBuilderBefore(bld, ld);
+            let n = LLVMBuildLoad2(bld, i32t, LLVMGetOperand(ld, 0), c"".as_ptr());
+            LLVMSetAlignment(n, LLVMGetAlignment(ld));
+            for k in kinds {
+                let m = LLVMGetMetadata(ld, k);
+                if !m.is_null() {
+                    LLVMSetMetadata(n, k, m);
+                }
+            }
+            let z = LLVMBuildZExt(bld, n, i64t, c"".as_ptr());
+            LLVMReplaceAllUsesWith(and, z);
+            LLVMInstructionEraseFromParent(and);
+            LLVMInstructionEraseFromParent(ld);
+        }
+        LLVMDisposeBuilder(bld);
+    }
+}
+
+/// Whether the generated code is the small model (calls to the runtime go through the GOT).
+pub(crate) fn small_model() -> bool {
+    model().1 != LLVMCodeModel::LLVMCodeModelJITDefault
+}
+
 /// A target machine for the host triple with the portable CPU.
 fn target_machine(opt: OptLevel) -> Result<LLVMTargetMachineRef> {
     init();
@@ -204,14 +306,15 @@ fn target_machine(opt: OptLevel) -> Result<LLVMTargetMachineRef> {
             LLVMDisposeMessage(triple);
             return Err(Error(take_message(msg)));
         }
+        let (reloc, code) = model();
         let tm = LLVMCreateTargetMachine(
             target,
             triple,
             portable_cpu().as_ptr(),
             c"".as_ptr(),
             opt.codegen(),
-            LLVMRelocMode::LLVMRelocDefault,
-            LLVMCodeModel::LLVMCodeModelJITDefault,
+            reloc,
+            code,
         );
         LLVMDisposeMessage(triple);
         if tm.is_null() {
@@ -353,6 +456,10 @@ impl Module {
                 tm,
                 opts,
             );
+            // The unoptimised code generator does not do this itself.
+            if opt.codegen() == LLVMCodeGenOptLevel::LLVMCodeGenLevelNone {
+                narrow_masks(self.module);
+            }
             dump(self.module, "post");
             LLVMDisposePassBuilderOptions(opts);
             LLVMDisposeTargetMachine(tm);

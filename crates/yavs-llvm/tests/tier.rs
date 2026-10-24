@@ -2769,3 +2769,67 @@ fn natives_strings_and_layouts_in_frame_mode() {
         assert_eq!(entries, 1, "n {n} c {c}");
     }
 }
+
+/// The compile thread keeps the CPU mask the process was started with (#681): it is not moved to
+/// the CPUs outside it, which on a shared host belong to other pinned runs.
+#[cfg(target_os = "linux")]
+#[test]
+#[allow(unsafe_code)] // sched_setaffinity, to restrict this thread
+fn compile_thread_keeps_the_affinity_of_the_process() {
+    unsafe extern "C" {
+        fn sched_getaffinity(pid: i32, size: usize, mask: *mut u64) -> i32;
+        fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
+    }
+    let allowed = |tid: &str| -> String {
+        let s = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+        s.lines()
+            .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    // Restrict this test thread (threads it starts inherit the mask) to one CPU it may use.
+    let (mut old, mut one) = ([0u64; 16], [0u64; 16]);
+    let size = std::mem::size_of_val(&old);
+    // SAFETY: pid 0 is the calling thread; both masks hold `size` bytes.
+    unsafe {
+        assert_eq!(sched_getaffinity(0, size, old.as_mut_ptr()), 0);
+        let cpu = (0..64 * 16)
+            .find(|c| old[c / 64] >> (c % 64) & 1 == 1)
+            .unwrap();
+        one[cpu / 64] = 1 << (cpu % 64);
+        assert_eq!(sched_setaffinity(0, size, one.as_ptr()), 0);
+    }
+    let (prog, f) = sum();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let note: Note = Box::new(|_, _, _| {});
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, HOT, note).unwrap();
+    // The compile thread works only on a hot function: make one, then look at its mask.
+    let t0 = Instant::now();
+    while tier.compiled() == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(60), "never compiled");
+        yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[100_000]).unwrap();
+    }
+    let mine = allowed(
+        &std::fs::read_link("/proc/thread-self")
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy(),
+    );
+    let mut found = 0;
+    for e in std::fs::read_dir("/proc/self/task").unwrap() {
+        let tid = e.unwrap().file_name().to_string_lossy().into_owned();
+        let comm = std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).unwrap();
+        if comm.trim() == "yavs-tier-up" {
+            // (Compile threads of tests running at the same time have the full mask.)
+            found += usize::from(allowed(&tid) == mine);
+        }
+    }
+    assert!(found >= 1, "no compile thread with the mask {mine}");
+    tier.stop(true);
+    // SAFETY: as above.
+    unsafe {
+        sched_setaffinity(0, size, old.as_ptr());
+    }
+}

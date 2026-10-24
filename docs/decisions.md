@@ -4812,9 +4812,11 @@ Decisions:
   nothing compiled (#525).
 - **`NativeFlags` is one byte per function with three bits** (`NAT_CODE`, `NAT_ASK`, `NAT_CALL`) instead of two arrays,
   so the call check is one load.
-- **The compile thread moves itself off the CPUs the process was restricted to** (Linux, `sched_setaffinity`), when it was
-  restricted and another CPU is allowed: a run pinned to one core (`taskset`, benchmarks) shared that core with the
-  sampler every millisecond and with every compile and the LLVM load. An unrestricted process is left to the scheduler.
+- **The compile thread stays inside the CPUs the process was started with** (user, 2026-10-24, #681; it moved itself to the
+  complement of the mask by `sched_setaffinity` from #525 to then). The complement of a harness's single core is every
+  core of other pinned runs on a shared host. Under single-core pinning the compile thread now shares the simulation's
+  core, so wall totals of `--tier=auto` in `tools/bench` and `tools/realbench` include the compile CPU time; give the
+  run a mask of two CPUs to let them overlap. Test: `compile_thread_keeps_the_affinity_of_the_process` (`tests/tier.rs`).
 - Idea from the reference simulator: it decides tier-up from a per-function entry counter and never looks for compiled
   code inside a running loop, so interpreted code pays nothing per jump. Ours keeps time sampling and the hand-over
   inside loops (jumps back only) and pays per activation and per call instead of per jump.
@@ -5235,8 +5237,7 @@ every elaboration, and again for every instance. Decisions:
 Measured on a tiny warm test (`perf stat`, pinned, interleaved, 80 runs, medians; docs/STATUS.md "performance: floor of a run,
 2026-10-22"). Decisions:
 
-- **The `--tier=auto` compile thread waits 5 ms before it does anything** (`START_AFTER`): it neither moves itself off the
-  CPUs, nor reads the cache's list, nor samples earlier, and `stop` ends the wait. Those, and the first wake-ups, cost
+- **The `--tier=auto` compile thread waits 5 ms before it does anything** (`START_AFTER`): it neither reads the cache's list, nor samples earlier, and `stop` ends the wait. Those, and the first wake-ups, cost
   1.1 million cycles of 11 in a tiny run; the sleeping thread alone costs about 0.4 (5%). Why 5 ms: nothing a sampler sees
   in less pays for a compile (`Heat::DEFAULT` is 2 ms plus 40 us per IR instruction). Tried and reverted (0fdb10ee): not
   creating the thread until a tick of the interpreter's watching loop (`watch_tick`, every 128 jumps and calls) after 5 ms.

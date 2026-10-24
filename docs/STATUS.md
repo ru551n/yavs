@@ -7339,3 +7339,19 @@ is unknown (its descriptor is not when the bounds are known).
 Checked: output of `fletcher_bufferwriter_512`, `sc5_fifo_repack`, `poc_cache_cpu`, `neorv32_dual_full` (100 us) and `grlib_leon3mp` (300 us)
 byte-identical (stdout and stderr) with copies off and with every process switching at its second activation; `cargo test --workspace`
 plain and with `YAVS_SPEC_AFTER=2`; `-p yavs-llvm -p yavs --features llvm`.
+
+## llvm: light natives get a callback of their own (#698, 2026-10-24)
+
+`yavs_rt_native_light` / `TierHost::native_light` (decisions.md "Light natives in compiled code") for the `ieee` natives
+`Op::CallIeee` runs. `tools/stepcount`, `poc_arith_addw` `--tier=llvm`, 3 M-instruction window, 1078 calls: host side 113 to 82
+instructions per call, callback 68 to 73 (it gained `forget_end`, lost the epoch read); the native itself 45 to 115. Base and
+candidate bench builds, core 12, `--compare`:
+
+| test, tier | instructions before | after |
+|---|---:|---:|
+| `poc_arith_addw` llvm | 210.42 G | 207.93 G (-1.2 %) |
+| `poc_arith_addw` auto | 150.99 G | 148.93 G (-1.4 %) |
+| `vai_window_gen_interlock` llvm | 234.33 G | 232.48 G (-0.8 %) |
+
+The layer (about 155 instructions a call) is still as large as the native: it is spread over two prologues and epilogues, the table
+lookups, the result tuple and the argument slice. The remaining step is the native inline in compiled code.

@@ -53,7 +53,7 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pre::{ScalarDrive, scalar_drives, static_wait};
+pub use pre::{ScalarDrive, light_ieee as light_native, scalar_drives, static_wait};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 pub use tier_census::report as tier_census;
@@ -660,6 +660,21 @@ pub trait TierHost {
         pc: u32,
         native: u32,
         cells: &[u64],
+    ) -> NativeCall;
+
+    /// [`TierHost::native_direct`] (`at` is `None`, `depth` the frame index) or
+    /// [`TierHost::native_frame`] (`at` the pc) for a light native ([`light_native`]): the same
+    /// results. It allocates only temporary memory and never collects, so the collection check,
+    /// the allocation mode of the frame and most of the view update are left out; the caller
+    /// has the `ieee` flags taken as there.
+    fn native_light(
+        &mut self,
+        fr: &mut TierFrame,
+        native: u32,
+        cells: &[u64],
+        at: Option<u32>,
+        depth: u64,
+        slots: &mut Option<Box<dyn NativeSlots>>,
     ) -> NativeCall;
 
     /// Instruction `pc` of function `func`, executed for a native frame by the interpreter's own

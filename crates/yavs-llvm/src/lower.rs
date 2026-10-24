@@ -58,6 +58,7 @@ const SCAN: &str = "yavs_rt_scan";
 const CODES: &str = "yavs_rt_codes";
 const PLANES: &str = "yavs_rt_planes";
 const NATIVE: &str = "yavs_rt_native";
+const NATIVE_LIGHT: &str = "yavs_rt_native_light";
 const TROOT: &str = "yavs_rt_troot";
 const ENDSTMT: &str = "yavs_rt_endstmt";
 const XSTEP: &str = "yavs_rt_xstep";
@@ -1020,6 +1021,60 @@ extern "C" fn yavs_rt_native(
             0
         }
     }
+}
+
+/// `yavs_rt_native` for a light native (`yavs_interp::light_native`, `TierHost::native_light`):
+/// same arguments and results. The native allocates only temporary memory, so no heap object
+/// the compiled code found can have moved; the volatile ones are forgotten when any are held.
+extern "C" fn yavs_rt_native_light(
+    env: *mut c_void,
+    mem: *mut Mem,
+    native: u32,
+    cells: *const u64,
+    n: u32,
+    depth: u64,
+    out: *mut u64,
+) -> u32 {
+    cb(Cb::Native);
+    // SAFETY: as in `yavs_rt_native`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let cells = std::slice::from_raw_parts(cells, n as usize);
+        let env = &mut *envp;
+        let at = (depth & NATIVE_FRAME_MODE != 0).then_some(depth as u32);
+        if at.is_none() {
+            let _ = env
+                .windows
+                .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        }
+        env.host
+            .native_light(&mut (*mem).fr, native, cells, at, depth, &mut env.windows)
+    }));
+    // SAFETY: as above.
+    let m = unsafe { &mut *mem };
+    m.temp_seen = m.fr.temp_len;
+    m.forget_end();
+    match r {
+        Ok(NativeCall::Done(v)) => 1 | put_out(v, out),
+        Ok(NativeCall::Stop(v)) => 2 | put_out(v, out),
+        Ok(NativeCall::Slow) => 0,
+        Err(p) => {
+            // SAFETY: as above.
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
+}
+
+/// Write a native's result to `out` (one word of the caller); bit 8 says there was one.
+#[inline(always)]
+fn put_out(v: Option<u64>, out: *mut u64) -> u32 {
+    if let Some(v) = v {
+        // SAFETY: `out` is one word of the caller.
+        unsafe { *out = v };
+    }
+    u32::from(v.is_some()) << 8
 }
 
 /// `TierHost::temp_root` for a `TempRoot` of a native frame: `ty` is `u32::MAX` for a fat pair,
@@ -2029,6 +2084,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (CODES, yavs_rt_codes as *const () as usize),
             (PLANES, yavs_rt_planes as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
+            (NATIVE_LIGHT, yavs_rt_native_light as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
             (XSTEP, yavs_rt_xstep as *const () as usize),
@@ -3576,6 +3632,8 @@ struct Gen {
     /// `yavs_rt_native(env, mem, native, cells, n, depth, out) -> u32`.
     native_ty: LLVMTypeRef,
     native: LLVMValueRef,
+    /// `yavs_rt_native_light`: the type of `yavs_rt_native`.
+    native_light: LLVMValueRef,
     /// `yavs_rt_troot(env, mem, addr, ty, desc, n) -> u32`.
     troot_ty: LLVMTypeRef,
     troot: LLVMValueRef,
@@ -3862,6 +3920,7 @@ impl Gen {
                 planes: add(PLANES, planes_ty),
                 native_ty,
                 native: add(NATIVE, native_ty),
+                native_light: add(NATIVE_LIGHT, native_ty),
                 troot_ty,
                 troot: add(TROOT, troot_ty),
                 endstmt_ty,
@@ -3928,6 +3987,7 @@ impl Gen {
                 self.deopt_slots,
                 self.deopt_end,
                 self.native,
+                self.native_light,
                 self.troot,
                 self.endstmt,
                 self.xstep,
@@ -6645,12 +6705,28 @@ impl Gen {
                             {
                                 self.step(&c, pc, &inst)
                             }
-                            None if c.nat.is_some() && nat_inline(prog, f, &inst) => {
-                                self.native_direct(&c, pc, &inst, f, native, args, dst)?
-                            }
-                            None if c.nat.is_none() && frame_direct(prog, f, &inst) => {
-                                self.native_direct(&c, pc, &inst, f, native, args, dst)?
-                            }
+                            None if c.nat.is_some() && nat_inline(prog, f, &inst) => self
+                                .native_direct(
+                                    &c,
+                                    pc,
+                                    &inst,
+                                    f,
+                                    native,
+                                    args,
+                                    dst,
+                                    yavs_interp::light_native(prog, f, native, args),
+                                )?,
+                            None if c.nat.is_none() && frame_direct(prog, f, &inst) => self
+                                .native_direct(
+                                    &c,
+                                    pc,
+                                    &inst,
+                                    f,
+                                    native,
+                                    args,
+                                    dst,
+                                    yavs_interp::light_native(prog, f, native, args),
+                                )?,
                             None => self.step(&c, pc, &inst),
                         }
                     }
@@ -8287,6 +8363,7 @@ impl Gen {
         native: yavs_ir::NativeId,
         args: yavs_ir::Regs,
         dst: Option<Reg>,
+        light: bool,
     ) -> Result<(), String> {
         // SAFETY: the arguments match `native_ty`; well-formed blocks of c.f.
         unsafe {
@@ -8322,7 +8399,11 @@ impl Gen {
             let st = LLVMBuildCall2(
                 self.b,
                 self.native_ty,
-                self.native,
+                if light {
+                    self.native_light
+                } else {
+                    self.native
+                },
                 a.as_mut_ptr(),
                 7,
                 c"".as_ptr(),

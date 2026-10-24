@@ -7518,3 +7518,25 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   no fact (its descriptor does when the bounds are known).
 - **Measured**: `docs/STATUS.md` "Facts the declarative part leaves in a process copy". `spec_record_var` (`crates/yavs/tests/perf.rs`) is
   the work-counter case (239 313 ops with the shared code, 151 530 with copies), `crates/yavs-ir/tests/copies.rs` the unit cases.
+
+
+## Light natives in compiled code: a callback of their own (yavs-llvm, yavs-interp, #698, 2026-10-24)
+
+Counted with `tools/stepcount` on `poc_arith_addw` under `--tier=llvm` (1078 calls of a light `ieee` native in a window of
+3 M instructions): `TierHost::native_frame` 113 instructions and `yavs_rt_native` 68 per call, as much as the native (`add`
+115, `to_integer` 45) it surrounds.
+
+- **A `CallNative` of a light native (`yavs_interp::light_native`, the set `Op::CallIeee` already runs: an `ieee` native,
+  few cells, no signal, not `uniform`) calls `yavs_rt_native_light`** with the arguments and results of `yavs_rt_native`, and
+  `TierHost::native_light` on the host. Such a native allocates only temporary memory and never collects, so, as for
+  `Op::CallIeee`: no collection check (`reclaim_pending`), no allocation-mode swap of the frame, the heap epoch is not
+  read (`Mem::forget_end` replaces `forget_since`: only volatile objects can be stale), and the view update stores
+  only the temporary pointer, length and capacity (no roots, base or epoch change). Kept: the frame windows of native
+  frames (an operand may live in a slot of a native frame), the `ieee_fallback`/`ieee_stop` handling, the package
+  initialisation and elaboration-report decline, `catch_unwind`. Why a second symbol and not a flag: no branch in the shared
+  callback, and the code generator picks it at compile time with `light_native`. Shared with a second code generator:
+  `TierHost::native_light` and the argument convention of `yavs_rt_native`.
+- **Measured:** 113 + 68 to 82 + 73 instructions per call (-26, the rest is spread over many small pieces: two prologues and
+  epilogues, the table lookups, the result tuple and the argument slice); instructions of `poc_arith_addw` -1.2 percent
+  under `--tier=llvm`, -0.8 percent on the window generator. The callback layer is now about as large as the native;
+  removing it needs the native inline in compiled code (#698 idea 2).

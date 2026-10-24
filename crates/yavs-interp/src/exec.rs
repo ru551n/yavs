@@ -10038,6 +10038,61 @@ impl crate::TierHost for Host<'_, '_, '_> {
         }
     }
 
+    fn native_light(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        native: u32,
+        cells: &[u64],
+        at: Option<u32>,
+        depth: u64,
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+    ) -> crate::NativeCall {
+        use crate::NativeCall::{Done, Slow, Stop};
+        let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        let (Some(n), Some(fun)) = (
+            prog.natives.get(yavs_ir::NativeId(native)),
+            rt.natives.get(native as usize).copied().flatten(),
+        ) else {
+            return Slow;
+        };
+        // Reports of package initialisation and elaboration are noted (as in `native_frame`);
+        // a `hot` process has neither, and its lines stay unread. No collection check: a light
+        // native allocates only temporary memory, as for `Op::CallIeee`.
+        let top = m.frames.len();
+        if !m.hot && (m.pkg_init.is_some() || m.init_reports.is_some()) {
+            return Slow;
+        }
+        match at {
+            Some(pc) => m.top().pc = pc,
+            None => {
+                if (depth as usize) < top {
+                    return Slow;
+                }
+                // The native frames' slots are reached by address while the native runs.
+                m.nwin = slots.take();
+                (m.nwin_from, m.nwin_to) = (top, depth as usize);
+            }
+        }
+        let r = fun(m, self.ctx, n.ty, cells);
+        if at.is_none() {
+            *slots = m.nwin.take();
+        }
+        let fallback = std::mem::take(&mut m.ieee_fallback);
+        let stop = std::mem::take(&mut m.ieee_stop);
+        // Only the temporary area can have moved or grown.
+        tf.temp = m.temp.as_mut_ptr();
+        tf.temp_len = m.temp.len() as u64;
+        tf.temp_cap = m.temp.capacity() as u64;
+        match r {
+            Ok(v) if !fallback && stop => {
+                self.stop = true;
+                Stop(v)
+            }
+            Ok(v) if !fallback => Done(v),
+            _ => Slow,
+        }
+    }
+
     fn native_step(
         &mut self,
         tf: &mut crate::TierFrame,

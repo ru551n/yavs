@@ -1243,8 +1243,14 @@ fn scalar_image(
 }
 
 /// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most four arguments, none a
-/// signal, not the procedure `uniform` (which writes through its arguments).
-fn light_ieee(prog: &Program, f: &Func, native: yavs_ir::NativeId, args: yavs_ir::Regs) -> bool {
+/// signal, not the procedure `uniform` (which writes through its arguments). Such a native
+/// allocates only temporary memory and never collects ([`crate::TierHost::native_light`]).
+pub fn light_ieee(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+) -> bool {
     let Some(sym) = prog.natives.get(native).map(|n| &n.symbol) else {
         return false;
     };

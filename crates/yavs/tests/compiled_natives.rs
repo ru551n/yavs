@@ -80,6 +80,80 @@ fn natives_in_compiled_code_match_the_interpreter() {
     }
 }
 
+/// Light `ieee` natives called from functions (native frames) and from a process (frame mode):
+/// vector results that grow the temporary area many times over, a metavalue warning inside a
+/// function, and the stop severity.
+const LIGHT: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity l is end;
+architecture a of l is
+  function step(u : unsigned; k : natural) return natural is
+    variable w : unsigned(u'length - 1 downto 0) := u;
+  begin
+    for i in 1 to 40 loop
+      w := (w + k) xor (w srl 1);
+    end loop;
+    return to_integer(w(7 downto 0));
+  end function;
+  function bad(m : unsigned) return integer is
+  begin
+    return to_integer(m) + 1;
+  end function;
+begin
+  process
+    variable u : unsigned(31 downto 0) := x"12345678";
+    variable m : unsigned(3 downto 0) := "1X01";
+    variable n : integer := 0;
+  begin
+    for i in 0 to 300 loop
+      n := n + step(u, i);
+      u := u + to_unsigned(n, 32);
+    end loop;
+    report "n=" & integer'image(n) & " u=" & to_string(u);
+    n := bad(m);
+    report "after the warning " & integer'image(n);
+    wait;
+  end process;
+end;
+"#;
+
+#[test]
+fn light_natives_in_compiled_code_match_the_interpreter() {
+    let dir = tempdir("compiled_light");
+    std::fs::write(dir.join("l.vhd"), LIGHT).expect("write");
+    let a = yavs(&dir, &["analyze", "--work=work:work", "l.vhd"]);
+    assert!(a.status.success(), "{a:?}");
+    for severity in ["failure", "warning"] {
+        let run = |tier: &str| {
+            let o = yavs(
+                &dir,
+                &[
+                    "run",
+                    "--work=work:work",
+                    &format!("--tier={tier}"),
+                    &format!("--exit-severity={severity}"),
+                    "l",
+                ],
+            );
+            (
+                o.status.code(),
+                String::from_utf8_lossy(&o.stdout).into_owned(),
+            )
+        };
+        let want = run("interp");
+        assert!(want.1.contains("n="), "{want:?}");
+        assert_eq!(
+            want.1.contains("after the warning"),
+            severity == "failure",
+            "{want:?}"
+        );
+        for tier in ["llvm", "auto"] {
+            assert_eq!(run(tier), want, "{tier} at {severity}");
+        }
+    }
+}
+
 /// Vectors of every length class read from signals in a clocked process, among them the ones
 /// whose last group of eight codes is partly past the signal (1, 4, 9, 12 elements) and the
 /// ones that fill their plane block (64) or need two (65).

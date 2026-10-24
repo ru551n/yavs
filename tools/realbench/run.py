@@ -39,7 +39,7 @@ CORPUS = Path(os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus")).expanduser(
 SPECIAL = {"vhdl-ai-test": "YAVS_BENCH_VHDL_AI_TEST"}  # source id -> environment variable naming its checkout
 COLD = "-cold"
 RECORDER = (None, None)  # (binary, key) that records the suite drivers for the reference worlds
-TIERS_ALL = ("interp", "auto", "llvm")
+TIERS_ALL = ("interp", "auto", "llvm", "clift", "clift-auto", "auto3")
 
 
 class Fail(Exception):
@@ -605,7 +605,7 @@ def make_cells(binaries, refs, tiers, phases, compare=False):
             if p == "run":
                 for tk in tiers if yavs else ["run"]:
                     if yavs and tk.removesuffix(COLD) not in TIERS_ALL:
-                        raise Fail(f"unknown tier `{tk}` (interp, auto, llvm, each also with {COLD})")
+                        raise Fail(f"unknown tier `{tk}` (interp, auto, llvm, clift, clift-auto, auto3, each also with {COLD})")
                     cells.append(Cell(nm(tk), tool, b, tk.removesuffix(COLD) if yavs else None, tk.endswith(COLD)))
                     ph[p].append(nm(tk))
                     if yavs and ref0:

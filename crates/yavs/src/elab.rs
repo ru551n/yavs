@@ -859,7 +859,7 @@ fn use_llvm_tier(
                 note,
                 None,
             )
-            .map_err(bug)?;
+            .map_err(|e| bug(yavs_llvm::Error(e.0)))?;
             Ok(Some(StopTierUp::Llvm(t)))
         }
     }

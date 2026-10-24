@@ -53,13 +53,10 @@ pub(crate) fn enabled() -> bool {
         .is_some()
 }
 
-/// Run `f` with `add` linking only stored objects: a module the cache does not have fails
-/// instead of compiling.
-pub(crate) fn cached_only<T>(f: impl FnOnce() -> T) -> T {
-    CACHED_ONLY.set(true);
-    let r = f();
-    CACHED_ONLY.set(false);
-    r
+/// While on, `add` links only stored objects: a module the cache does not have fails instead of
+/// compiling.
+pub(crate) fn set_cached_only(on: bool) {
+    CACHED_ONLY.set(on);
 }
 
 fn debug(what: &str, k: &Key) {

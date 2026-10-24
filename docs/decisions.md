@@ -398,7 +398,7 @@ milestone users care about works.
   native-frame body (below).
 - **Tiers:** `--tier=clift` translates every function before time 0; `--tier=clift-auto` translates hot functions
   (with the small functions they call) on one background thread; `--tier=auto3` is the LLVM `AutoTier` with Cranelift
-  as its first level (`FirstLevel`): the budget, payback, sampling and `Tier::hot` rules of `auto.rs` apply to the
+  as its first level (`Generator`): the budget, payback, sampling and `Tier::hot` rules of `auto.rs` apply to the
   Cranelift translation (cost learned per IR instruction), a function seen running translated code for 30 times its
   threshold is compiled again by LLVM at O2, and the LLVM library is opened only for that compile. `clift` and
   `clift-auto` need only the `clift` feature, `auto3` both; otherwise error `E0120`.
@@ -6781,3 +6781,16 @@ percent between invocations, so the instruction counts are the reliable column a
   the band test (0.25 s), `activations_of_a_process_are_counted_while_a_trial_asks` (`yavs-interp/tests/sim.rs`); workspace tests, the
   `llvm` crate tests, the perf work-counter tests with and without `llvm`, and the 502-test differential corpus under
   `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` green.
+
+## Tier-up policy generic over the code generator (yavs-llvm, #481, user, 2026-10-24)
+
+- **Decision.** `auto.rs` (the `Worker` and `AutoTier`) no longer needs LLVM: it drives `Generator`s (`generator.rs`: `open`,
+  `compile` at a `Part` and `OptLevel`, the compilation cache hooks) given as `Gens { main, first }`. `LlvmGenerator` is the
+  LLVM one (a JIT per level, the compilation cache, opening the library at the first compile); `AutoTier::start` is the
+  LLVM convenience, `start_with` the general entry. The rules that say which functions run on native frames and what a
+  generator lowers without a step (`native_set`, `native_local`, `is_inline`, `nat_inline`, `leaves`, `Part`, `Compiled`)
+  moved to `native.rs`, and `regs.rs` is built without LLVM; none of it changed.
+- **Why.** Long term Cranelift can replace LLVM; a build without LLVM must run the real policy (budget, payback, bands,
+  trials), not a heat-only copy. The policy is host-independent logic, only the compile call and the cache are LLVM's.
+- **Effect on LLVM.** None by construction: the same calls in the same order on the compile thread; the generated code
+  and the work counters (`perf` tests with `llvm`) are unchanged.

@@ -10,6 +10,8 @@ use llvm_sys::error::*;
 use llvm_sys::orc2::lljit::*;
 use llvm_sys::orc2::*;
 use llvm_sys::prelude::*;
+
+use crate::OptLevel;
 use llvm_sys::target::*;
 use llvm_sys::target_machine::*;
 use llvm_sys::transforms::pass_builder::*;
@@ -159,18 +161,6 @@ const LEAN_HUGE: &CStr =
 /// The module size from which `LEAN_HUGE` stands for `LEAN` (a process of about 5 000 IR
 /// instructions): below it the two passes cost less than 10 percent of the time of the module.
 const HUGE_MIN: usize = 100_000;
-
-/// Optimisation level for the new pass manager and for codegen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptLevel {
-    O0,
-    O1,
-    O2,
-    /// `LEAN` passes and the unoptimised code generator (instruction selection of one
-    /// instruction at a time, no live-variable analysis): for functions so large that
-    /// optimised code generation takes longer than linear time (`lower::level_for`).
-    Fast,
-}
 
 impl OptLevel {
     fn pipeline(self) -> &'static CStr {

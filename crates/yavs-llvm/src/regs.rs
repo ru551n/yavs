@@ -12,7 +12,7 @@
 use yavs_ir::{AddrSpace, Func, Inst, Program, Reg, RegTy, Role, Width};
 
 /// Registers live before each instruction (`bits[pc * words ..]`), `n + 1` rows (the last is empty).
-pub(crate) struct Live {
+pub struct Live {
     words: usize,
     bits: Vec<u64>,
 }
@@ -114,7 +114,7 @@ impl Live {
 
 /// The registers the interpreter starts a frame of `f` with a value in: defined exactly once,
 /// by a constant or an address that is not an `Up` one (`Pre::new`).
-pub(crate) fn preloaded(f: &Func) -> Vec<bool> {
+pub fn preloaded(f: &Func) -> Vec<bool> {
     let n = f.reg_ty.len();
     let mut defs = vec![0u8; n];
     for i in &f.code {
@@ -141,7 +141,7 @@ pub(crate) fn preloaded(f: &Func) -> Vec<bool> {
 }
 
 /// The instructions that can run after `i` at `pc` (`None`: a branch to a missing block).
-pub(crate) fn succs(prog: &Program, f: &Func, pc: usize, i: &Inst) -> Option<Vec<u32>> {
+pub fn succs(prog: &Program, f: &Func, pc: usize, i: &Inst) -> Option<Vec<u32>> {
     let start = |b: yavs_ir::BlockId| f.blocks.get(b).map(|b| b.start);
     Some(match *i {
         Inst::Br { to } => vec![start(to)?],
@@ -162,7 +162,7 @@ pub(crate) fn succs(prog: &Program, f: &Func, pc: usize, i: &Inst) -> Option<Vec
 }
 
 /// What `reach` finds: the instructions reached, the loop headers and the retreating edges.
-pub(crate) struct Reach {
+pub struct Reach {
     pub reached: Vec<bool>,
     pub head: Vec<bool>,
     /// The natural loop of each retreating edge: its instructions.
@@ -171,7 +171,7 @@ pub(crate) struct Reach {
 
 /// The instructions reached from instruction 0 and from `extra` entry points, and the targets
 /// of retreating edges of a depth-first search from them (loop headers: the edge closes a cycle).
-pub(crate) fn reach(prog: &Program, f: &Func, extra: &[usize]) -> Option<Reach> {
+pub fn reach(prog: &Program, f: &Func, extra: &[usize]) -> Option<Reach> {
     let n = f.code.len();
     let mut state = vec![0u8; n]; // 1 on the stack, 2 done
     let mut head = vec![false; n];
@@ -244,7 +244,7 @@ pub(crate) fn reach(prog: &Program, f: &Func, extra: &[usize]) -> Option<Reach> 
 /// one width: compiled code keeps their values in SSA registers like those of the registers
 /// (`Gen`: virtual register `nregs + k` is slot `k`), and writes them back where something can
 /// look at the frame.
-pub(crate) struct Scalars {
+pub struct Scalars {
     /// The slot an instruction (a `Load` or `Store`) reads or writes.
     pub at: Vec<Option<u32>>,
     /// Offset and width of each slot.
@@ -259,7 +259,7 @@ const MAX_SLOTS: usize = 12;
 /// Instructions that may collect garbage, run other code or end the activation: what they do
 /// before returning to compiled code can look at the frame, so slot variables are written
 /// back before them (and a loop with one gains little from keeping variables as values).
-pub(crate) fn loud(i: &Inst, native: &dyn Fn(&Inst) -> bool) -> bool {
+pub fn loud(i: &Inst, native: &dyn Fn(&Inst) -> bool) -> bool {
     // A call the compiled code makes directly to a native frame runs no step: it cannot collect.
     if let Inst::Call { .. } = i {
         return !native(i);
@@ -452,7 +452,7 @@ impl Scalars {
 
 /// The registers some instruction of `f` defines as a deferred value (`Gen::std`): the others
 /// are always in the frame, so no phi carries them.
-pub(crate) fn deferrable(f: &Func) -> Vec<bool> {
+pub fn deferrable(f: &Func) -> Vec<bool> {
     let mut out = vec![false; f.reg_ty.len()];
     for i in &f.code {
         if matches!(

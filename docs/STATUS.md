@@ -3204,7 +3204,7 @@ the LLVM tier (without them a tier-up could not enter a running loop). `--tier=c
 with the small functions it calls (as `Worker::tree`). Cranelift runs with `opt_level=speed` and backtracking
 register allocation (`YAVS_CLIFT_OPT`, `YAVS_CLIFT_RA`, `YAVS_CLIFT_VERIFY` are measurement knobs).
 
-`--tier=auto3` is the LLVM `AutoTier` with Cranelift as its first level (`FirstLevel` in `yavs_llvm::rt`): the budget,
+`--tier=auto3` is the LLVM `AutoTier` with Cranelift as its first level (`Generator` in `yavs_llvm::generator`): the budget,
 payback and sampling rules are the LLVM tier's, the first-level cost is learned from the Cranelift translations
 (about 45 us per IR instruction to start with), a function that stays hot (30 times its threshold running translated
 code) is compiled again by LLVM at O2, and LLVM is opened only then.

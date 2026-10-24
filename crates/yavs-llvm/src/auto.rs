@@ -30,9 +30,9 @@ use std::time::Duration;
 use yavs_interp::{Runtime, Tier, TierHost};
 use yavs_ir::{FuncId, FuncKind};
 
-use crate::lower::{Part, compile_one, native_set, new_jit, too_big};
-use crate::rt::{FirstLevel, RunFn, back_edges, call, enter, loops, off_simulation_cpus};
-use crate::{Error, Jit, OptLevel};
+use crate::generator::{Generator, OptLevel, StartError};
+use crate::native::{Part, native_set, too_big};
+use crate::rt::{RunFn, back_edges, call, enter, loops, off_simulation_cpus};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
 /// microseconds plus `per_instr` nanoseconds per IR instruction of the function (about the
@@ -146,7 +146,7 @@ pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     let total = inside.iter().filter(|&&b| b).count();
     let nc = calls_native(prog, f);
     let stepped = (0..f.code.len())
-        .filter(|&pc| inside[pc] && crate::lower::leaves(prog, f, pc, &nc))
+        .filter(|&pc| inside[pc] && crate::native::leaves(prog, f, pc, &nc))
         .count();
     stepped * 20 <= total
 }
@@ -238,7 +238,7 @@ fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> (usize, usize) {
     let out = (0..n)
         .filter(|&pc| {
             seen[pc]
-                && (crate::lower::leaves(prog, f, pc, &nc)
+                && (crate::native::leaves(prog, f, pc, &nc)
                     || roots && matches!(f.code[pc], Inst::Stmt))
         })
         .count();
@@ -267,7 +267,7 @@ fn too_many_callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func, id: FuncId) ->
     }
     let nc = calls_native(prog, f);
     let out = (0..f.code.len())
-        .filter(|&pc| crate::lower::leaves(prog, f, pc, &nc))
+        .filter(|&pc| crate::native::leaves(prog, f, pc, &nc))
         .count();
     (out * CALLBACKS > f.code.len()).then(|| {
         format!(
@@ -677,6 +677,13 @@ pub struct AutoTier {
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
+/// The code generators of a tier: `main` compiles hot functions (and again at O2 those that stay
+/// hot), a cheaper `first` takes the first level when there is one. A tier needs one of them.
+pub struct Gens {
+    pub main: Option<Box<dyn Generator>>,
+    pub first: Option<Box<dyn Generator>>,
+}
+
 /// What the tier and its compile thread share.
 #[derive(Default)]
 struct Shared {
@@ -687,26 +694,20 @@ struct Shared {
     /// Eager mode: per function, its compile (or the decision to leave it interpreted) is over,
     /// `Tier::hot` returns then.
     finished: Vec<AtomicBool>,
-    /// The JITs once the thread has ended: compiled code lives as long as the tier.
-    jit: Mutex<Vec<Jit>>,
-    /// The first-level generator (`Worker::first`) once the thread has ended.
-    first: Mutex<Option<Box<dyn FirstLevel>>>,
+    /// The generators once the thread has ended: compiled code lives as long as the tier.
+    gens: Mutex<Vec<Box<dyn Generator>>>,
 }
 
 /// Microseconds of compile time per IR instruction to start with (O2, one function in a
 /// module of its own); the thread replaces it by what it measures.
-const US_PER_INSTR: f64 = 800.0;
-
-/// Microseconds of opening the LLVM library (about 40 million cycles), counted with the first
-/// compile or look-up in the compilation cache: a run too short to pay for it loads nothing.
-const LOAD_US: u64 = 10_000;
+pub(crate) const US_PER_INSTR: f64 = 800.0;
 
 /// A look-up in the compilation cache generates the code of the function, about this part of a
 /// compile (generation and the key: 10 to 20 us per IR instruction).
 const PROBE_PART: u64 = 50;
 
-/// Microseconds of translation time per IR instruction to start with for a `FirstLevel`
-/// generator (Cranelift: 40 to 45); the thread replaces it by what it measures.
+/// Microseconds of translation time per IR instruction to start with for a first-level
+/// `Generator` (Cranelift: 40 to 45); the thread replaces it by what it measures.
 const FIRST_US_PER_INSTR: f64 = 45.0;
 
 /// A function must have been seen interpreted this many times as long as compiling it takes:
@@ -756,16 +757,14 @@ struct Worker {
     heat: Heat,
     opt: OptLevel,
     max_size: usize,
-    /// Made with the first function compiled at their level: a run that never gets hot pays
-    /// nothing.
-    jit: Option<Jit>,
-    jit2: Option<Jit>,
-    /// A code generator that replaces LLVM at the first level (`--tier=auto3`), with the
-    /// microseconds it takes per IR instruction (learned).
-    first: Option<Box<dyn FirstLevel>>,
+    /// The optimising generator (LLVM), which compiles at `opt` and again at O2 (none: the first
+    /// level is the only one). Opened by the first function it compiles: a run that never gets
+    /// hot pays nothing.
+    main: Option<Box<dyn Generator>>,
+    /// A cheaper generator at the first level (`--tier=auto3`), with the microseconds it takes
+    /// per IR instruction (learned).
+    first: Option<Box<dyn Generator>>,
     first_us: f64,
-    /// For functions at `OptLevel::Fast`.
-    jitf: Option<Jit>,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
     /// Per function: the address of its native-frame code once compiled (0: none), and whether
@@ -814,10 +813,10 @@ struct Worker {
     probed: Vec<bool>,
     /// A `probe` is running: a failure is no note and leaves the function to compile later.
     probing: bool,
-    /// The warning that the LLVM library cannot be loaded was printed.
+    /// The warning that a generator cannot be opened was printed.
     warned: bool,
-    /// The LLVM library was opened (its time counts as compile time spent).
-    loaded: bool,
+    /// The generators (`main`, `first`) were opened (their time counts as compile time spent).
+    loaded: [bool; 2],
     /// The functions the compilation cache has compiled code of (`objcache::compiled_list`):
     /// the others are not looked up.
     listed: std::collections::HashSet<(String, u32)>,
@@ -867,7 +866,7 @@ impl Worker {
             // compiling it alone gains; a nested one is entered with its frame-mode code.
             if f.parent.is_none()
                 || too_short(prog, f, id).is_none()
-                || !crate::lower::native_set(prog, [id]).contains(&id)
+                || !crate::native::native_set(prog, [id]).contains(&id)
             {
                 return None;
             }
@@ -1239,7 +1238,7 @@ impl Worker {
         // The look-up generates the function's code: within the budget, as a compile is, with at
         // least the factor of a function called natively (code compiled before for a function
         // hot before is likely to pay); asked again at the next sample while there is no room.
-        let go = crate::objcache::enabled()
+        let go = self.main.as_ref().is_some_and(|m| m.cache_enabled())
             && self.listed.contains(&(f.name.clone(), f.code.len() as u32))
             && within_budget(
                 self.heat.budget,
@@ -1262,9 +1261,21 @@ impl Worker {
         }
     }
 
-    /// `LOAD_US` until the LLVM library is open.
+    /// What opening the generator of the first level costs until it is open (`LOAD_US` for LLVM).
     fn load_cost(&self) -> u64 {
-        if self.loaded { 0 } else { LOAD_US }
+        let (g, k) = match (&self.first, &self.main) {
+            (Some(g), _) => (g, 1),
+            (None, Some(g)) => (g, 0),
+            (None, None) => return 0,
+        };
+        if self.loaded[k] { 0 } else { g.load_us() }
+    }
+
+    /// Whether the optimising generator only links from its compilation cache.
+    fn cached_only(&mut self, on: bool) {
+        if let Some(m) = &mut self.main {
+            m.cached_only(on);
+        }
     }
 
     /// Link `id` from the compilation cache if it is there, at once and outside the budget (a
@@ -1278,7 +1289,9 @@ impl Worker {
         };
         let t0 = std::time::Instant::now();
         self.probing = true;
-        let hit = crate::objcache::cached_only(|| self.compile(root, false, true, part));
+        self.cached_only(true);
+        let hit = self.compile(root, false, true, part);
+        self.cached_only(false);
         self.probing = false;
         if !hit {
             self.spent += u64::try_from(t0.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -1294,7 +1307,9 @@ impl Worker {
                 self.compile(i, false, false, p);
             } else {
                 self.probing = true;
-                crate::objcache::cached_only(|| self.compile(i, false, false, p));
+                self.cached_only(true);
+                self.compile(i, false, false, p);
+                self.cached_only(false);
                 self.probing = false;
             }
         }
@@ -1477,9 +1492,13 @@ impl Worker {
         else {
             return false;
         };
-        let via_first = !o2 && self.first.is_some();
+        // (Without an optimising generator the first level is the only one.)
+        let via_first = self.first.is_some() && (!o2 || self.main.is_none());
         let level = if o2 { OptLevel::O2 } else { self.opt };
-        let level = crate::lower::level_for(&self.prog, f, level);
+        let level = match &self.main {
+            Some(m) if !via_first => m.level_for(&self.prog, f, level),
+            _ => level,
+        };
         let few = self
             .is_rtl(id)
             .then(|| {
@@ -1505,59 +1524,45 @@ impl Worker {
             .flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let refused = too_big(f, self.max_size).or(short);
-        // A refused function does not open the LLVM library.
-        let loaded = if refused.is_none() && !via_first {
+        let k = usize::from(via_first);
+        let Some(gen_) = (if via_first {
+            &mut self.first
+        } else {
+            &mut self.main
+        }) else {
+            return false;
+        };
+        // A refused function does not open the generator (the LLVM library).
+        let opened = if refused.is_none() {
             let t_load = std::time::Instant::now();
-            let loaded = crate::lazy::ensure();
-            if !std::mem::replace(&mut self.loaded, true) {
+            let opened = gen_.open();
+            if !std::mem::replace(&mut self.loaded[k], true) {
                 self.spent += u64::try_from(t_load.elapsed().as_micros()).unwrap_or(u64::MAX);
             }
-            loaded
+            opened
         } else {
             Ok(())
         };
-        if let Err(e) = loaded {
+        if let Err(e) = opened {
             // Said once, not for every hot function; they all stay interpreted.
             if !std::mem::replace(&mut self.warned, true) {
                 eprintln!("warning: --tier=auto: {e}; hot functions stay interpreted");
             }
-            (self.note)(id, level, Err(e.to_string()));
+            (self.note)(id, level, Err(e));
             return false;
         }
-        let j = if level == OptLevel::Fast {
-            &mut self.jitf
-        } else if o2 {
-            &mut self.jit2
-        } else {
-            &mut self.jit
-        };
         let t0 = std::time::Instant::now();
-        let hits = crate::objcache::cache_stats().0;
-        let r = match (refused, j) {
-            (Some(why), _) => Err(why),
-            (None, _) if via_first => {
-                let first = self.first.as_mut().expect("checked above");
-                first
-                    .compile(&self.prog, id, f)
-                    .map(|(run, nregs)| crate::lower::Compiled {
-                        run: Some(run),
-                        nregs,
-                        native: 0,
-                        call: 0,
-                    })
-            }
-            (None, Some(j)) => compile_one(j, &self.prog, id, f, level, part),
-            (None, j @ None) => match new_jit(level) {
-                Ok(n) => compile_one(j.insert(n), &self.prog, id, f, level, part),
-                Err(e) => Err(format!("LLVM: {e} (a bug in yavs)")),
-            },
+        let hits = gen_.cache_hits();
+        let r = match refused {
+            Some(why) => Err(why),
+            None => gen_.compile(&self.prog, id, f, level, part),
         };
         match r {
             Ok(entry) => {
                 let took = t0.elapsed();
                 self.spent += u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
                 // A module linked from the compilation cache says nothing about compile cost.
-                let hit = crate::objcache::cache_stats().0 != hits;
+                let hit = gen_.cache_hits() != hits;
                 if via_first {
                     let per = took.as_micros() as f64 / f.code.len().max(1) as f64;
                     self.first_us = (self.first_us + per) / 2.0;
@@ -1585,8 +1590,8 @@ impl Worker {
                     ));
                 }
                 let key = (f.name.clone(), f.code.len() as u32);
-                if !hit && !via_first && crate::objcache::enabled() && self.listed.insert(key) {
-                    crate::objcache::add_compiled(&f.name, f.code.len() as u32);
+                if !hit && !via_first && gen_.cache_enabled() && self.listed.insert(key) {
+                    gen_.cache_note(&f.name, f.code.len() as u32);
                 }
                 if entry.native != 0 {
                     // Published when what it calls is compiled (`publish`).
@@ -1651,16 +1656,18 @@ impl AutoTier {
     /// again at O2 (`Heat::o2_threshold`; at once with an eager `heat`); functions over
     /// `max_size` IR instructions stay interpreted. `note` is called on the compile thread for
     /// every compile.
-    pub fn start(
+    pub fn start_with(
         rt: &Runtime,
         opt: OptLevel,
         max_size: usize,
         heat: Heat,
         note: Note,
-        first: Option<Box<dyn FirstLevel>>,
-    ) -> Result<Arc<AutoTier>, Error> {
-        // The LLVM library is opened by the compile thread at the first compile (`Worker::compile`): a
-        // run in which nothing gets hot never pays for loading it (about 40 million cycles).
+        gens: Gens,
+    ) -> Result<Arc<AutoTier>, StartError> {
+        let Gens { main, first } = gens;
+        // A generator (the LLVM library) is opened by the compile thread at the first compile
+        // (`Worker::compile`): a run in which nothing gets hot never pays for loading it (about 40
+        // million cycles).
         let prog = rt.prog.clone();
         let funcs: Arc<[Entry]> = (0..prog.funcs.len()).map(|_| Entry::default()).collect();
         let (tx, rx) = channel::<FuncId>();
@@ -1696,14 +1703,12 @@ impl AutoTier {
             heat,
             opt,
             max_size,
-            jit: None,
-            jit2: None,
+            first_us: first.as_ref().map_or(FIRST_US_PER_INSTR, |g| g.start_us()),
+            us_per_instr: main.as_ref().map_or(US_PER_INSTR, |g| g.start_us()),
+            main,
             first,
-            first_us: FIRST_US_PER_INSTR,
-            jitf: None,
             total: 0,
             spent: 0,
-            us_per_instr: US_PER_INSTR,
             compute: vec![Default::default(); nfuncs],
             nsets: vec![Default::default(); nfuncs],
             pick_at: 0,
@@ -1718,7 +1723,7 @@ impl AutoTier {
             musts: vec![Default::default(); nfuncs],
             probing: false,
             warned: false,
-            loaded: false,
+            loaded: [false; 2],
             listed: Default::default(),
             trace: std::env::var_os("YAVS_AUTO_TRACE").map(|_| Trace {
                 t0: std::time::Instant::now(),
@@ -1744,7 +1749,7 @@ impl AutoTier {
                 }
                 off_simulation_cpus();
                 let mut running = Vec::new();
-                w.listed = crate::objcache::compiled_list();
+                w.listed = w.main.as_ref().map(|m| m.cache_list()).unwrap_or_default();
                 let mut last = std::time::Instant::now();
                 // Functions `Tier::hot` asked for (eager), those the sampler found hot, those to
                 // compile again at O2.
@@ -1755,6 +1760,7 @@ impl AutoTier {
                 // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
                 // recompile at O2 (code of the two does not call each other's native code).
                 let upgrade = opt != OptLevel::O2
+                    && w.main.is_some()
                     && !(w.first.is_some() && std::env::var_os("YAVS_FIRST_ONLY").is_some());
                 loop {
                     match rx.recv_timeout(period) {
@@ -1893,12 +1899,11 @@ impl AutoTier {
                         w.total, w.spent
                     ));
                 }
-                *sh.first.lock().unwrap_or_else(PoisonError::into_inner) = w.first;
-                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
-                    w.jit.into_iter().chain(w.jit2).chain(w.jitf).collect();
+                *sh.gens.lock().unwrap_or_else(PoisonError::into_inner) =
+                    w.main.into_iter().chain(w.first).collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
-            .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
+            .map_err(|e| StartError(format!("cannot start the compile thread: {e}")))?;
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
@@ -1910,7 +1915,7 @@ impl AutoTier {
         });
         if !rt.set_tier(tier.clone()) {
             tier.stop(true);
-            return Err(Error(
+            return Err(StartError(
                 "the runtime has a tier already (a bug in yavs)".into(),
             ));
         }
@@ -1918,6 +1923,24 @@ impl AutoTier {
             rt.set_eager();
         }
         Ok(tier)
+    }
+
+    /// `start_with` LLVM as the optimising generator, and `first` as a cheaper one at the first
+    /// level when given.
+    #[cfg(feature = "llvm")]
+    pub fn start(
+        rt: &Runtime,
+        opt: OptLevel,
+        max_size: usize,
+        heat: Heat,
+        note: Note,
+        first: Option<Box<dyn Generator>>,
+    ) -> Result<Arc<AutoTier>, StartError> {
+        let gens = Gens {
+            main: Some(Box::new(crate::LlvmGenerator::new())),
+            first,
+        };
+        AutoTier::start_with(rt, opt, max_size, heat, note, gens)
     }
 
     /// End tier-up: functions still queued stay interpreted, and compiled code stays usable.
@@ -2086,6 +2109,7 @@ mod tests {
 
     /// A function of `n` frees whose last block loops on itself: a compute loop for
     /// `compute`, whatever its size.
+    #[cfg(feature = "llvm")]
     fn padded_loop(n: usize) -> (yavs_ir::Program, yavs_ir::FuncId) {
         let mut pb = ProgramBuilder::new();
         let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
@@ -2110,6 +2134,7 @@ mod tests {
 
     /// A function of 1 500 IR instructions or more is compiled at `Fast` even when its loops make
     /// it a compute loop: optimised code generation of such a function takes minutes (#630).
+    #[cfg(feature = "llvm")]
     #[test]
     fn a_huge_function_with_a_short_loop_is_compiled_fast() {
         for (n, level) in [(400, crate::OptLevel::O2), (1_600, crate::OptLevel::Fast)] {

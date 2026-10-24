@@ -13,29 +13,29 @@
 // `lower` and `spike` modules.
 #![allow(unsafe_code)]
 
-#[cfg(feature = "llvm")]
-mod auto;
+pub mod auto;
 mod census;
+pub mod generator;
 #[cfg(feature = "llvm")]
 mod jit;
 #[cfg(feature = "llvm")]
 mod lazy;
 #[cfg(feature = "llvm")]
 mod lower;
+pub mod native;
 #[cfg(feature = "llvm")]
 mod objcache;
-#[cfg(feature = "llvm")]
-mod regs;
+pub mod regs;
 pub mod rt;
 #[cfg(feature = "llvm")]
 pub mod spike;
 
-#[cfg(feature = "llvm")]
-pub use auto::{AutoTier, Heat, Note, exit_now};
+pub use auto::{AutoTier, Gens, Heat, Note, exit_now};
 pub use census::callback_counts;
+pub use generator::{Generator, OptLevel, StartError};
 #[cfg(feature = "llvm")]
-pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
+pub use jit::{Error, Jit, Module, portable_cpu};
 #[cfg(feature = "llvm")]
-pub use lower::{LlvmTier, compile};
+pub use lower::{LlvmGenerator, LlvmTier, compile};
 #[cfg(feature = "llvm")]
 pub use objcache::{cache_stats, set_cache};

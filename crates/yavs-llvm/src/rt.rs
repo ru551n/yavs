@@ -2614,13 +2614,6 @@ pub fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     false
 }
 
-/// A code generator for the first compiled level of `AutoTier` (`--tier=auto3`): it translates
-/// one function to the frame-mode contract of this module (`RunFn`, the function's register
-/// count) and keeps the code alive until it is dropped.
-pub trait FirstLevel: Send {
-    fn compile(&mut self, prog: &Program, id: FuncId, f: &Func) -> Result<(RunFn, usize), String>;
-}
-
 /// Move the calling thread (the compile thread) off the CPUs the process was restricted to,
 /// when it was restricted to some (`taskset`, a pinned benchmark): there it would take turns
 /// with the simulation thread on one core every sampling period, and run the LLVM load and

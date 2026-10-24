@@ -1095,7 +1095,8 @@ fn elab_and_run() {
         ["--tier-max-size=50000", "--threads=4"],
     ] {
         let auto = yavs(&["run", &lib, "busy", "--tier=auto", extra[0], extra[1]]);
-        if cfg!(feature = "llvm") {
+        // Without LLVM, `auto` is the Cranelift policy when that is built in.
+        if cfg!(any(feature = "llvm", feature = "clift")) {
             assert_eq!(auto, interp);
         } else {
             assert_eq!(auto.0, 2);

@@ -7973,3 +7973,48 @@ run in a debug build. Fixed in `opt/inline.rs`; release builds ran the design un
 `kill_unreachable` no longer removes the only definition of a constant or address another block reads; before, inlining
 a procedure with a constant argument could leave such a register undefined (VUnit `exit_gate` wrote element 0 instead of
 20; a debug build stopped with "read before it is written"). `vai_window_gen_interlock` runs in a debug build again.
+
+## poc_arith_addw: carry-in aggregates, slice reads, conversion copies, copies compiled once (#713, #520, 2026-10-24)
+
+Where the 32 adder instances of `poc_arith_addw` spent their time (main at 855aefd8, `--tier=auto` warm 10 s, core 10), by layer:
+kernel 26 percent (diffuse: `finish_direct`, `cycle`, `run_batch`, `commit_out`), interpreted processes 33 percent, compiled processes
+29 percent (the adder bodies and the checker), the rest the `ieee` natives and the glue between interpreter and compiled code. By
+process (a per-process run counter, 40.1 M runs in 3.03 M delta cycles): the `z <= ... + ... + (0 to 0 => cin)` processes 47 percent
+of the runs, the `s <= std_logic_vector(z(...))` copies 31 percent, the checker 1.3 percent (20 percent of the interpreted time).
+
+What was changed (decisions: `docs/decisions.md` "Carry-in aggregates and copies of the same module"):
+
+| change | interpreter, 400 us window, instructions G | `--tier=auto` |
+|---|---:|---|
+| main at 855aefd8 | 31.4 | warm 10.08 s, cold 13.41 s |
+| conversion copies are kernel copies | 27.4 (with the aggregate) | |
+| `(0 to 0 => cin)` straight code: no compute loop, so `LEAN` passes (58 to 6 ms a function), `CopyDrive` fuses | 27.4 | warm 9.10 s, cold 11.20 s |
+| copies of one module compiled once (24 + 8 adder copies are 2 + 1 modules) | 27.4 | warm 8.41 s, cold 9.41 s |
+| slices of signals read as slices (no whole-signal read and `LCopy`) | 26.2 | |
+
+Rows are cumulative; wall seconds are medians of 5 interleaved runs of `tools/realbench --compare` (aligned bench builds with llvm, core
+10, the host about 20 loaded), the interpreter column is `perf stat` instructions of a 400 us window. Operations of the interpreter per
+activation of the adder process: 60 to 46. `perf.rs` design `agg_carry`: 11756 to 7627 operations.
+
+On main at 479463c1 (with #697 and #698 landed) against the same plus these changes, `tools/realbench --compare`, median of 5:
+`--tier=interp` 11.32 s to 9.09 s (instructions 0.82), `--tier=auto` warm 8.13 s to 7.05 s, cold 10.98 s to 7.57 s (instructions
+0.99 and 0.81). Against the reference simulator (5.47 s, same session): `--tier=auto` warm 1.51x to 1.31x, cold 2.03x to 1.44x (it was
+1.85x and 2.50x before #697, #698 and this).
+
+Whole suite (42 tests of `tools/realbench`, `--compare`, `--tier=interp` and `--tier=auto`, median of 3, core 10, main at 479463c1
+against the same plus these changes): geometric mean of wall 0.97 interpreter, 1.00 `--tier=auto`; instructions 1.00 and 1.03 (the
+`--tier=auto` mean moves with tests of 0.03 s whose instructions include the compile thread; the tests of 1 s and more: 0.97 and
+1.01). `neorv32_single_cache` (1.43) and `osvvm_axis_random` (1.34) were slower in the sweep and equal on 7 more runs of each (1.00,
+1.00). Differential corpus 523/523 on `yavs-interp`, `yavs-auto` and `yavs-llvm`; `cargo test --workspace` and `-p yavs-llvm -p yavs
+--features llvm` green.
+
+Found, not fixed (comments on #697, #698, #710, #675):
+- The loop-free carry-chain adder process (8 copies, 6.3 M runs) is an `rtl` process and `cold()` refuses it at the decision (share
+  under one eighth); it stays interpreted and nothing says so. Forcing it saves 0.3 to 0.5 s of 8.4 s (#675).
+- The checker process is compiled at 4.7 s of a cold run, after the adder copies (a warm run compiles it first, 218 ms).
+- Entry into compiled code costs about 217 instructions per activation (`enter`, `view_again`, objects of the thread), against about
+  500 instructions of the adder body (#710 lane).
+- The kernel is 26 percent of the run with no single hot spot (`finish_direct` 2984 instructions per delta cycle in 11 pieces).
+- Ideas of the reference simulator used: it reuses the lowered code of instances that are equal (cloned instances at elaboration);
+  we do the same after specialisation, on the generated module. Its profile on this test: 20 percent in the compiler, 30 percent in
+  generated code, the rest in a runtime whose `+` and `to_integer` are natives as ours are; nothing of its code was used.

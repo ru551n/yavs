@@ -1,0 +1,9 @@
+exit	0
+diag	note	0	0	:tb_conversion_copies:watch	u=UUUUUUUU w=UUUU s=UUUU p=-------- ev=falsefalsefalsefalse
+diag	note	0	1	:tb_conversion_copies:watch	u=UUUUUUUU w=UUUU s=UUUU p=UUUUUUUU ev=falsefalsefalsetrue
+diag	note	1000000	2	:tb_conversion_copies:watch	u=10100101 w=UUUU s=0101 p=UUUUUUUU ev=truefalsetruefalse
+diag	note	1000000	3	:tb_conversion_copies:watch	u=10100101 w=1001 s=0101 p=01010101 ev=falsetruefalsetrue
+diag	note	3000000	2	:tb_conversion_copies:watch	u=0011XZ01 w=1001 s=XZ01 p=01010101 ev=truefalsetruefalse
+diag	note	3000000	3	:tb_conversion_copies:watch	u=0011XZ01 w=11XZ s=XZ01 p=XZ01XZ01 ev=falsetruefalsetrue
+diag	note	4000000	2	:tb_conversion_copies:watch	u=00111100 w=11XZ s=1100 p=XZ01XZ01 ev=truefalsetruefalse
+diag	note	4000000	3	:tb_conversion_copies:watch	u=00111100 w=1111 s=1100 p=11001100 ev=falsetruefalsetrue

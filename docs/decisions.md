@@ -8278,3 +8278,43 @@ elements, only `0 1 L H`) the code generator now emits that arithmetic instead o
   is the register's only definition in the function now stays while a reachable instruction (also in an operand list)
   reads the register; `drop_declarations` does the same for the declarative part.
 - **Test:** `tests/sink.rs` `a_constant_shared_by_two_branches_survives_the_folding_of_one`.
+
+## Carry-in aggregates and copies of the same module (yavs-lower, yavs-elab, yavs-llvm, #713, 2026-10-24)
+
+Profile of `poc_arith_addw` by layer and by process (32 adder instances, 40.1 M process runs in 3.03 M delta cycles): the `z <=
+... + ... + (0 to 0 => cin)` processes are 47 percent of the runs, the `s <= std_logic_vector(z(...))` conversion copies 31 percent,
+and `--tier=auto` compiled every adder process with the full `O2` pipeline, one after the other. Decided by the performance agent
+(no user ruling needed: no behaviour changes).
+
+- **Decision: a choice range of at most four static elements in an aggregate of a one-dimensional array (`(0 to 0 => cin)`,
+  `(3 downto 2 => x)`) is written element by element (`AGG_UNROLL` in `yavs-lower/src/expr.rs`); null ranges write nothing.** Why: the
+  loop made the process a compute loop for `--tier=auto` (`auto::compute`: loops that do not leave compiled code), which asks for the
+  full `default<O2>` pipeline (58 ms of passes for a 135-instruction process, against 6 ms for `LEAN`), and it kept the signal write
+  out of the `CopyDrive` fusion; the straight code is 9 operations shorter per activation. A longer range stays a loop (a fill or a
+  runtime loop as before). The element value is evaluated once either way.
+- **Decision: a slice of a signal of a plain array type read as a value (`a(M-1 downto 0)`, the prefix a signal name) reads the
+  sub-signal the slice selects (`Fx::sig_slice` with `sig_steps`, as `sig_part` does for the rows of an array of arrays).** Why: the
+  lowering read the whole signal into a temporary and then copied the slice out of it (`AllocReadVec`, `SigReadVec`, `AllocLCopy`,
+  `LCopy`); two operations and the bytes of the whole signal per slice, which for the slice of a wide bus is the whole bus. Bounds
+  and the run-time error of a slice outside the signal are those of the other path (`walk_steps`, checked equal on both).
+- **Decision: a concurrent `target <= conv(source);` where `conv` is a conversion of an array to an unconstrained array type (an array of
+  the same element type, as `unsigned(v)` and `std_logic_vector(u(5 downto 2))`) is a kernel copy like `target <= source;`
+  (`Walker::copy_source`, `same_array_values`).** Why: the conversion moves no value (the copy is positional), and these statements
+  were 31 percent of the process runs of the adder testbench, each an interpreted process of 11 operations. A conversion to a
+  constrained subtype (its length is checked), or between element types, is not a copy. #529 listed this shape as not covered.
+- **Decision: `compile_one` compiles the copies of a process once per distinct module (`Jit::twins`).** A copy
+  (`Program::copy_of`) is generated under the fixed name `ftwin`; its key is the hash of that module (bitcode) with the level, the
+  `full` flag, the part and the native flag; the module is renamed to `t<key>` and compiled once per `Jit`, and another copy with the
+  same key is those entry points. Why: instances that differ in data the code does not read (here the 24 and 8 adder processes
+  that differ only in `ARCH`/`SKIPPING`/`P_INCLUSIVE`) are different functions with different copy tags but two or three distinct
+  modules, and each was compiled alone (54 ms each on the cold path, 1.4 s of CPU in all, on the one core a pinned run has). A twin
+  counts as linked from the cache for the auto budget (`objcache::note_twin`: it is charged the cache price, not the compile price,
+  or the budget ends before the checker process is reached). The compilation cache has one object per module, found by the name
+  its content gives, so a warm run finds it in whatever order the copies switch. Only copies are keyed this way. Same idea as the
+  reference simulator's elaboration, which reuses the lowered code of instances that are equal (we do it after specialisation, on the
+  generated module, so it holds whatever made the instances equal); nothing of its code or data layout is used.
+- Not done / found on the way (issue #713): the auto policy refuses the loop-free CCC adder process (`cold()`, share under one
+  eighth of the run at decision time); forcing it saves 0.3 to 0.5 s of 8.4 s. The checker process is compiled at 4.7 s of a cold run.
+  Both are the auto policy's (#673, #675); the native operand convention (#697) and the callback layer (#698) own the two
+  `ieee` calls per adder activation (228 instructions of callback per call); `enter`/`view_again` cost 217 instructions per compiled
+  activation (compiled frame views).

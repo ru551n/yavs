@@ -1,0 +1,10 @@
+exit	0
+diag	note	1000000	0	:signal_slice_reads:_p0	a 010 0101 01 0011 1101
+diag	note	1000000	0	:signal_slice_reads:_p0	b 20 90 0101 01
+diag	note	1000000	0	:signal_slice_reads:_p0	c [] 0 0
+diag	note	1000000	0	:signal_slice_reads:_p0	d0 0101 1001
+diag	note	1000000	0	:signal_slice_reads:_p0	d1 0010 0010
+diag	note	1000000	0	:signal_slice_reads:_p0	d2 1001 0101
+diag	note	1000000	0	:signal_slice_reads:_p0	d3 0100 1011
+diag	note	2000000	0	:signal_slice_reads:_p0	e 00010011
+diag	note	3000000	0	:signal_slice_reads:_p0	f 00001100

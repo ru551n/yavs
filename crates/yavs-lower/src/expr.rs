@@ -29,6 +29,9 @@ pub(crate) enum Conv {
     Flat,
 }
 
+/// The most elements of an aggregate choice range written out one by one (more: a loop).
+const AGG_UNROLL: i64 = 4;
+
 /// A value: a scalar cell, or an array as `(data address, descriptor address)`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum V {
@@ -252,7 +255,10 @@ impl<'a> Fx<'a, '_> {
             },
             ExprKind::Slice { prefix, range } => match self.sig_part(id, span)? {
                 Some(v) => Ok(v),
-                None => self.slice(*prefix, range, span),
+                None => match self.sig_slice(id, *prefix, span)? {
+                    Some(v) => Ok(v),
+                    None => self.slice(*prefix, range, span),
+                },
             },
             ExprKind::Attr { attr, prefix, args } => {
                 self.attr(*attr, *prefix, args, e.subtype, span)
@@ -2418,6 +2424,32 @@ impl<'a> Fx<'a, '_> {
                         set(self, pos, v);
                     }
                     Choice::Range(rc) => {
+                        // A few elements (`(0 to 0 => cin)`): straight code, not a loop.
+                        if let Some(r) = yavs_sem::expr::aggregate::range_value(db, rc)
+                            && let Some(n) = match r.dir {
+                                Direction::To => r.right.checked_sub(r.left),
+                                Direction::Downto => r.left.checked_sub(r.right),
+                            }
+                            .and_then(|d| d.checked_add(1))
+                            && n <= AGG_UNROLL
+                        {
+                            for i in 0..n.max(0) {
+                                let idx = self.int(match r.dir {
+                                    Direction::To => r.left + i,
+                                    Direction::Downto => r.left - i,
+                                });
+                                let pos = self.reg(RegTy::I64);
+                                self.emit(Inst::Pos {
+                                    dst: pos,
+                                    dope,
+                                    dim: 0,
+                                    idx,
+                                    what: m,
+                                });
+                                set(self, pos, v);
+                            }
+                            continue;
+                        }
                         let r = self.range(rc, span)?;
                         let d = self.dir_reg(r.dir);
                         let rd = self.one_dope(r.left, r.right, d);
@@ -4935,6 +4967,33 @@ impl<'a> Fx<'a, '_> {
             || !ty::is_array(db, t)
             || self.is_general(t, span)?
             || !self.is_general(root_t, span)?
+        {
+            return Ok(None);
+        }
+        let (_, s, dope) = self.sig_name(e)?;
+        let Some(dope) = dope else {
+            return Ok(None);
+        };
+        let tid = self.ty(t, span)?;
+        let size = self.size_of(tid, dope);
+        let buf = self.alloc(size);
+        self.emit(Inst::SigRead { dst: buf, sig: s });
+        Ok(Some(V::A(buf, dope)))
+    }
+
+    /// `s(h downto l)` of a signal `s` of a plain array type: read the slice, not the whole
+    /// signal and then copy the slice out of it.
+    fn sig_slice(&mut self, e: ExprId, prefix: ExprId, span: Span) -> R<Option<V>> {
+        let db = self.db;
+        let ExprKind::Obj(d) = &db.exprs[prefix].kind else {
+            return Ok(None);
+        };
+        let t = db.base(db.exprs[e].subtype);
+        if !matches!(
+            self.cx.objs.get(d),
+            Some(Obj::Signal { .. } | Obj::SignalRef { .. })
+        ) || !ty::is_array(db, t)
+            || self.is_general(t, span)?
         {
             return Ok(None);
         }

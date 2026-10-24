@@ -7905,3 +7905,5 @@ loads (four object look-ups, three positions); the call and return are about 55 
 - Not done: a warm run waits for the payback time before it links the `FastRa` object from the cache; no trial after the swap (the first
   compile's trial measures the `Fast` code only); the price in `spent` is that of `Fast`; autoclk's pricing (#670) may want `ra_cost` and
   `PAYBACK_RA` in its own constants.
+
+The object table has 1 024 entries (#719): the shared-heap and package host calls of the window generator were conflict misses; `--tier=auto` warm 149.3 to 148.3 G instructions, 44.1 to 43.4 G cycles (decisions.md "llvm: 1 024 entries in the object table").

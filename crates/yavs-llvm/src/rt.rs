@@ -234,9 +234,10 @@ const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 /// are two objects of one protected-type library function), two objects whose keys agree there
 /// evict each other. 16 entries missed three heap objects in four on a test runner's queue
 /// code (95 million `Deref` callbacks in a 16 s run, 12 million at 256: objects of the pointer
-/// tables, their data and the queues' buffers), and a walk visits only the entries in use
-/// (`Mem::occ`); ways if a profile shows conflicts again.
-pub const OBJS: usize = 256;
+/// tables, their data and the queues' buffers; a new buffer that shares an entry with a pointer
+/// table makes every access of the table miss, 1 024 entries make that three times rarer), and a
+/// walk visits only the entries in use (`Mem::occ`); ways if a profile shows conflicts again.
+pub const OBJS: usize = 1024;
 
 const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
@@ -1971,7 +1972,7 @@ pub fn enter(
     }
 }
 
-/// A new `Mem` (out of line: its 10 KB would otherwise be a stack probe in every `enter`).
+/// A new `Mem` (out of line: its 64 KB would otherwise be a stack probe in every `enter`).
 #[inline(never)]
 fn new_mem() -> Box<Mem> {
     Box::new(Mem::of(TierFrame::default()))

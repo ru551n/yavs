@@ -8314,3 +8314,19 @@ So both the length of the chain and the number of instructions matter, and what 
 - **Not done:** the warm run does not look the `FastRa` object up before the payback time (that generates the module a second time, 0.3 s for the
   largest process); a `Part::Native` function does not get it (it runs its native-frame code); the compile is not charged at its true price
   to `spent`.
+
+## llvm: 1 024 entries in the object table (yavs-llvm `rt.rs`, #719, 2026-10-24)
+
+The host calls for package (`PKG`) and shared-heap addresses (#719) are conflict misses of the direct-mapped table, not a space the
+lookup does not hold: counted by the space of the address at `host_miss` and by the spaces of the old and new entry at every
+`put_obj` (a temporary instrumentation), the window generator makes 1.2 M misses of shared-heap and 0.3 to 0.55 M of package
+addresses in a run, with 5 M replacements of one shared object by another and 0.45 M by each other between a package and a shared object. A
+buffer the queue allocates whose index agrees with the pointer table's in the low eight bits makes every access of the table miss
+for as long as the buffer is read (about 3 of 256 buffers meet one of the four hot objects), and a package variable (space 2, no flag bit)
+shares entries with private and shared heap objects of the same low index. With 1 024 entries (64 KiB per machine, one per thread
+and one per nested activation) the misses fall to a third (shared heap 0.3 to 0.38 M, package 0.09 to 0.17 M) and with 4 096 to
+a sixth (the rest first touches of new objects); the same run needs fewer callbacks: `--tier=auto` warm (12 untimed runs, 5
+interleaved) 149.3 to 148.3 G instructions and 44.1 to 43.4 G cycles, `--tier=llvm` 181.8 to 180.8 G with cycles level; 4 096 gave
+180.7 G (not taken: 256 KiB to clear for every nested activation). A key that separates the spaces (package, shared, private) needs
+more operations in every look-up of an address of unknown space and every `Deref`; ways or a victim entry are the next step if a profile
+shows the misses of new objects.

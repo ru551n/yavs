@@ -318,7 +318,7 @@ impl yavs_sem::UnitStore for Units {
             return;
         }
         if let Some((s, k)) = self.store(lib, identity) {
-            self.note(&format!("store {lib} {} ({} bytes)", k.hex(), bytes.len()));
+            self.note(&|| format!("store {lib} {} ({} bytes)", k.hex(), bytes.len()));
             s.put("unit", &k, bytes);
         }
     }
@@ -327,15 +327,21 @@ impl yavs_sem::UnitStore for Units {
         self.writable
     }
 
-    fn note(&self, msg: &str) {
-        if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
-            eprintln!("debug: units: {msg}");
+    fn note(&self, msg: &dyn Fn() -> String) {
+        if debug_on() {
+            eprintln!("debug: units: {}", msg());
         }
     }
 }
 
+/// Whether `YAVS_LOG=debug` (read once: a note is asked for per unit replayed).
+fn debug_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug"))
+}
+
 fn debug(msg: String) {
-    if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
+    if debug_on() {
         eprintln!("debug: cache: {msg}");
     }
 }

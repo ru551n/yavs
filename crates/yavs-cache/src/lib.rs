@@ -167,7 +167,13 @@ pub struct Key([u8; 32]);
 
 impl Key {
     pub fn hex(&self) -> String {
-        self.0.iter().map(|b| format!("{b:02x}")).collect()
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        let mut s = String::with_capacity(64);
+        for b in self.0 {
+            s.push(DIGITS[usize::from(b >> 4)] as char);
+            s.push(DIGITS[usize::from(b & 15)] as char);
+        }
+        s
     }
 }
 

@@ -1412,6 +1412,7 @@ impl Db {
                 subtype: p.subtype,
                 default: p.default,
                 decl: p.decl,
+                mark: None,
             })
             .collect();
         let ret = s.ret;
@@ -1461,6 +1462,7 @@ impl Db {
             scope: Some(new_scope),
             body: Body::Instance(inst),
             mangled,
+            ret_mark: None,
         });
         if !kept.is_empty() {
             self.generic.implicit.insert(d, kept.into());
@@ -3381,6 +3383,7 @@ impl Db {
                 subtype: self.r_subtype(r, p.subtype),
                 default: p.default.map(|e| self.r_expr(r, e)),
                 decl: p.decl.map(|d| self.r_decl(r, d)),
+                mark: None,
             })
             .collect();
         let ret = s.ret.map(|t| self.r_subtype(r, t));
@@ -3416,6 +3419,7 @@ impl Db {
             scope,
             body,
             mangled,
+            ret_mark: None,
         }
     }
 

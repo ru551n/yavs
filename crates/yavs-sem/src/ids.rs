@@ -248,24 +248,66 @@ impl Reloc for ArcReloc {
     }
 }
 
+thread_local! {
+    /// The `Rc` forms of the last `Reloc` and file map a [`PageCtx`] ran under: entries are read
+    /// one at a time, mostly from the same unit, so wrapping them afresh for each was two
+    /// allocations per entry.
+    static WRAPPED: std::cell::RefCell<Wrapped> = const { std::cell::RefCell::new(Wrapped { reloc: None, files: None }) };
+}
+
+#[allow(clippy::type_complexity)]
+struct Wrapped {
+    reloc: Option<(
+        std::sync::Arc<dyn Reloc + Send + Sync>,
+        std::rc::Rc<dyn Reloc>,
+    )>,
+    files: Option<(SharedFileMap, yavs_diag::FileIdMap)>,
+}
+
 impl PageCtx {
     /// Run `f` with this context set, whatever the caller had set (a page may be read while a
     /// unit of the analysed-unit cache is written or read).
     pub(crate) fn run<R>(&self, f: impl FnOnce() -> R) -> R {
+        let (reloc, files) = WRAPPED.with(|w| {
+            let mut w = w.borrow_mut();
+            let reloc = self.reloc.as_ref().map(|r| match &w.reloc {
+                Some((a, rc))
+                    if std::ptr::addr_eq(std::sync::Arc::as_ptr(a), std::sync::Arc::as_ptr(r)) =>
+                {
+                    rc.clone()
+                }
+                _ => {
+                    let rc: std::rc::Rc<dyn Reloc> = std::rc::Rc::new(ArcReloc(r.clone()));
+                    w.reloc = Some((r.clone(), rc.clone()));
+                    rc
+                }
+            });
+            let files = self.files.as_ref().map(|m| match &w.files {
+                Some((a, rc))
+                    if std::ptr::addr_eq(std::sync::Arc::as_ptr(a), std::sync::Arc::as_ptr(m)) =>
+                {
+                    rc.clone()
+                }
+                _ => {
+                    let m2 = m.clone();
+                    let rc: yavs_diag::FileIdMap = std::rc::Rc::new(move |id| m2(id));
+                    w.files = Some((m.clone(), rc.clone()));
+                    rc
+                }
+            });
+            (reloc, files)
+        });
         plain(|| {
             let with_syms = || match &self.syms {
                 Some(t) => t.run(f),
                 None => f(),
             };
-            let with_files = || match &self.files {
-                Some(m) => {
-                    let m = m.clone();
-                    yavs_diag::map_file_ids(std::rc::Rc::new(move |id| m(id)), with_syms)
-                }
+            let with_files = || match files {
+                Some(m) => yavs_diag::map_file_ids(m, with_syms),
                 None => with_syms(),
             };
-            match &self.reloc {
-                Some(r) => with_reloc(std::rc::Rc::new(ArcReloc(r.clone())), with_files),
+            match reloc {
+                Some(r) => with_reloc(r, with_files),
                 None => with_files(),
             }
         })
@@ -275,6 +317,7 @@ impl PageCtx {
 enum Page<T> {
     Eager(Vec<T>),
     Lazy(Box<LazyPage<T>>),
+    Slots(Box<SlotPage<T>>),
 }
 
 struct LazyPage<T> {
@@ -303,38 +346,155 @@ impl<T> LazyPage<T> {
     }
 }
 
+/// The bytes of the entries of one replayed run, and how to read one of them.
+struct Src<T> {
+    data: yavs_diag::Slice,
+    ctx: PageCtx,
+    /// Decodes the entry at the start of the bytes.
+    decode: fn(&[u8]) -> T,
+    /// How many entries a read decodes at once (the one read and those after it of the same
+    /// bytes): 1 for entries that are read here and there, more for those read in runs.
+    window: usize,
+}
+
+/// An entry of a [`SlotPage`]: decoded the first time it is read.
+struct Slot<T> {
+    cell: std::sync::OnceLock<Box<T>>,
+    /// Index into the page's `srcs` and offset into that source's bytes; unused once decoded.
+    src: u32,
+    off: u32,
+}
+
+/// Up to [`PAGE`] entries that stay bytes one by one until read: what the replay of a unit of the
+/// analysed-unit cache pushes (a package's thousand declarations are read a tenth at a time).
+struct SlotPage<T> {
+    slots: Vec<Slot<T>>,
+    srcs: Vec<std::sync::Arc<Src<T>>>,
+}
+
+impl<T> SlotPage<T> {
+    fn new() -> Self {
+        SlotPage {
+            slots: Vec::with_capacity(PAGE),
+            srcs: Vec::new(),
+        }
+    }
+
+    fn from_eager(v: Vec<T>) -> Self {
+        let mut p = SlotPage::new();
+        for item in v {
+            p.push(item);
+        }
+        p
+    }
+
+    fn push(&mut self, item: T) {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(Box::new(item));
+        self.slots.push(Slot {
+            cell,
+            src: 0,
+            off: 0,
+        });
+    }
+
+    fn get(&self, j: usize) -> &T {
+        match self.slots[j].cell.get() {
+            Some(b) => b,
+            None => self.fill(j),
+        }
+    }
+
+    /// Decode entry `j` and, when its bytes say so (`Src::window`), the entries after it that come
+    /// from the same bytes: the context of a decode costs as much as a small entry.
+    #[cold]
+    fn fill(&self, j: usize) -> &T {
+        let s = &self.slots[j];
+        let src = &self.srcs[s.src as usize];
+        src.ctx.run(|| {
+            for (k, t) in self.slots[j..].iter().enumerate() {
+                if k >= src.window || t.src != s.src || (k > 0 && t.cell.get().is_some()) {
+                    break;
+                }
+                let v = (src.decode)(&src.data.get()[t.off as usize..]);
+                // Another thread may have decoded it meanwhile: both are the same entry.
+                let _ = t.cell.set(Box::new(v));
+            }
+        });
+        self.slots[j].cell.get().expect("entry decoded just now")
+    }
+
+    fn get_mut(&mut self, j: usize) -> &mut T {
+        self.get(j);
+        self.slots[j]
+            .cell
+            .get_mut()
+            .expect("entry decoded just now")
+    }
+
+    /// Decode everything and hand the entries over.
+    fn take(self) -> Vec<T> {
+        for j in 0..self.slots.len() {
+            self.get(j);
+        }
+        self.slots
+            .into_iter()
+            .map(|s| *s.cell.into_inner().expect("entry decoded just now"))
+            .collect()
+    }
+}
+
 impl<T> Page<T> {
-    fn get(&self) -> &Vec<T> {
+    #[inline]
+    fn at(&self, j: usize) -> &T {
         match self {
-            Page::Eager(v) => v,
-            Page::Lazy(l) => l.get(),
+            Page::Eager(v) => &v[j],
+            Page::Lazy(l) => &l.get()[j],
+            Page::Slots(s) => s.get(j),
         }
     }
 
-    fn get_mut(&mut self) -> &mut Vec<T> {
+    #[inline]
+    fn at_mut(&mut self, j: usize) -> &mut T {
         match self {
-            Page::Eager(v) => v,
-            Page::Lazy(l) => l.get_mut(),
+            Page::Eager(v) => &mut v[j],
+            Page::Lazy(l) => &mut l.get_mut()[j],
+            Page::Slots(s) => s.get_mut(j),
         }
     }
 
-    /// Decode the page for good (it is about to grow or shrink).
+    /// Decode the page for good (it is about to shrink).
     fn make_eager(&mut self) -> &mut Vec<T> {
-        if let Page::Lazy(_) = self {
-            let Page::Lazy(l) = std::mem::replace(self, Page::Eager(Vec::new())) else {
-                unreachable!("checked")
+        if !matches!(self, Page::Eager(_)) {
+            let v = match std::mem::replace(self, Page::Eager(Vec::new())) {
+                Page::Eager(v) => v,
+                Page::Lazy(l) => l.take(),
+                Page::Slots(s) => s.take(),
             };
-            *self = Page::Eager(l.take());
+            *self = Page::Eager(v);
         }
         match self {
             Page::Eager(v) => v,
-            Page::Lazy(_) => unreachable!("made eager above"),
+            _ => unreachable!("made eager above"),
+        }
+    }
+
+    /// Append an entry that is already a value.
+    fn push(&mut self, item: T) {
+        match self {
+            Page::Eager(v) => v.push(item),
+            Page::Slots(s) => s.push(item),
+            Page::Lazy(_) => self.make_eager().push(item),
         }
     }
 
     #[cfg(test)]
-    fn is_lazy_undecoded(&self) -> bool {
-        matches!(self, Page::Lazy(l) if l.cell.get().is_none())
+    fn undecoded(&self) -> usize {
+        match self {
+            Page::Eager(_) => 0,
+            Page::Lazy(l) => usize::from(l.cell.get().is_none()),
+            Page::Slots(s) => s.slots.iter().filter(|s| s.cell.get().is_none()).count(),
+        }
     }
 }
 
@@ -347,6 +507,35 @@ pub(crate) fn decode_entries<T: serde::de::DeserializeOwned>(mut rest: &[u8], n:
             t
         })
         .collect()
+}
+
+fn decode_one<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> T {
+    postcard::take_from_bytes::<T>(bytes)
+        .unwrap_or_else(|e| panic!("internal error: corrupt entry: {e}"))
+        .0
+}
+
+/// Write `n` as a varint (7 bits at a time, low bits first, the top bit says more follow).
+pub(crate) fn put_varint(out: &mut Vec<u8>, mut n: u32) {
+    while n >= 0x80 {
+        out.push((n & 0x7f) as u8 | 0x80);
+        n >>= 7;
+    }
+    out.push(n as u8);
+}
+
+/// Read a varint written by [`put_varint`] from the front of `b`.
+pub(crate) fn take_varint(b: &mut &[u8]) -> Option<u32> {
+    let mut n = 0u32;
+    for shift in (0..35).step_by(7) {
+        let (&x, rest) = b.split_first()?;
+        *b = rest;
+        n |= u32::from(x & 0x7f) << shift;
+        if x & 0x80 == 0 {
+            return Some(n);
+        }
+    }
+    None
 }
 
 impl<I: Id, T> Arena<I, T> {
@@ -380,7 +569,7 @@ impl<I: Id, T> Arena<I, T> {
         let i = self.len;
         self.note_owner(i);
         match self.pages.last_mut() {
-            Some(p) if !i.is_multiple_of(PAGE) => p.make_eager().push(item),
+            Some(p) if !i.is_multiple_of(PAGE) => p.push(item),
             _ => {
                 let mut v = Vec::with_capacity(PAGE);
                 v.push(item);
@@ -412,32 +601,73 @@ impl<I, T> Arena<I, T> {
         }
     }
 
-    /// Append a full page of [`PAGE`] entries as bytes, decoded under `ctx` the first time one of
-    /// them is read (`units.rs`). The arena must end on a page boundary.
-    pub(crate) fn push_page(&mut self, data: yavs_diag::Slice, ctx: PageCtx)
+    /// The page the next entry goes in, as a [`SlotPage`] (a partial page of values becomes one
+    /// whose entries are already decoded).
+    fn slots_tail(&mut self) -> &mut SlotPage<T> {
+        if self.len.is_multiple_of(PAGE) {
+            self.pages.push(Page::Slots(Box::new(SlotPage::new())));
+        }
+        let last = self.pages.last_mut().expect("a page was pushed above");
+        if !matches!(last, Page::Slots(_)) {
+            let v = std::mem::take(last.make_eager());
+            *last = Page::Slots(Box::new(SlotPage::from_eager(v)));
+        }
+        match last {
+            Page::Slots(s) => s,
+            _ => unreachable!("made a page of slots above"),
+        }
+    }
+
+    /// Append `n` entries as bytes, each decoded under `ctx` the first time it is read
+    /// (`units.rs`). `lens` holds the length of each entry as a varint ([`take_varint`]); `data`
+    /// the entries one after the other.
+    pub(crate) fn push_run(
+        &mut self,
+        n: usize,
+        mut lens: &[u8],
+        data: yavs_diag::Slice,
+        ctx: PageCtx,
+        window: usize,
+    ) -> Result<(), &'static str>
     where
         T: serde::de::DeserializeOwned,
     {
-        assert_eq!(
-            self.len % PAGE,
-            0,
-            "internal error: a page of bytes off a page boundary"
-        );
-        self.note_owner(self.len);
-        self.pages.push(Page::Lazy(Box::new(LazyPage {
-            n: PAGE,
+        let src = std::sync::Arc::new(Src {
             data,
             ctx,
-            cell: std::sync::OnceLock::new(),
-            decode: decode_entries::<T>,
-        })));
-        self.len += PAGE;
+            decode: decode_one::<T>,
+            window,
+        });
+        let mut off = 0u32;
+        for _ in 0..n {
+            let len = take_varint(&mut lens).ok_or("entry lengths")?;
+            self.note_owner(self.len);
+            let page = self.slots_tail();
+            if page
+                .srcs
+                .last()
+                .is_none_or(|l| !std::sync::Arc::ptr_eq(l, &src))
+            {
+                page.srcs.push(src.clone());
+            }
+            page.slots.push(Slot {
+                cell: std::sync::OnceLock::new(),
+                src: page.srcs.len() as u32 - 1,
+                off,
+            });
+            off = off.checked_add(len).ok_or("entry lengths")?;
+            self.len += 1;
+        }
+        if off as usize != src.data.len() {
+            return Err("entry lengths do not add up");
+        }
+        Ok(())
     }
 
     /// The number of pages that are still bytes (tests).
     #[cfg(test)]
     pub(crate) fn undecoded_pages(&self) -> usize {
-        self.pages.iter().filter(|p| p.is_lazy_undecoded()).count()
+        self.pages.iter().map(|p| p.undecoded()).sum()
     }
 
     /// The owner of the entries pushed from now on (`units.rs`).
@@ -474,7 +704,10 @@ impl<I, T> Arena<I, T> {
         if !len.is_multiple_of(PAGE)
             && let Some(p) = self.pages.last_mut()
         {
-            p.make_eager().truncate(len % PAGE);
+            match p {
+                Page::Slots(s) => s.slots.truncate(len % PAGE),
+                _ => p.make_eager().truncate(len % PAGE),
+            }
         }
         self.len = len;
         while self.runs.last().is_some_and(|r| r.0 as usize >= len) {
@@ -485,7 +718,7 @@ impl<I, T> Arena<I, T> {
     /// Replace entry `i` without counting it as a write of the unit being recorded.
     pub(crate) fn replace(&mut self, i: usize, item: T) -> T {
         self.version += 1;
-        std::mem::replace(&mut self.pages[i / PAGE].get_mut()[i % PAGE], item)
+        std::mem::replace(self.pages[i / PAGE].at_mut(i % PAGE), item)
     }
 
     /// Room for `n` more entries.
@@ -514,7 +747,7 @@ impl<I, T> Arena<I, T> {
 
     #[inline]
     fn at(&self, i: usize) -> &T {
-        &self.pages[i / PAGE].get()[i % PAGE]
+        self.pages[i / PAGE].at(i % PAGE)
     }
 }
 
@@ -641,7 +874,7 @@ impl<I: Id, T> std::ops::IndexMut<I> for Arena<I, T> {
                 w.touched.push((i as u32, before));
             }
         }
-        &mut self.pages[i / PAGE].get_mut()[i % PAGE]
+        self.pages[i / PAGE].at_mut(i % PAGE)
     }
 }
 
@@ -686,47 +919,71 @@ mod tests {
         assert!(c.iter().map(|(_, s)| s).eq(all.iter()));
     }
 
-    /// Pages of bytes appended after eager entries, read, written, truncated and grown again.
+    /// Runs of bytes appended after eager entries, read one by one, written, truncated and grown
+    /// again.
     #[test]
-    fn pages_of_bytes_mix_with_eager_entries() {
+    fn runs_of_bytes_mix_with_eager_entries() {
         let mut a: Arena<DeclId, String> = Arena::new();
-        for i in 0..PAGE {
+        let start = PAGE - 3;
+        for i in 0..start {
             a.push(format!("e{i}"));
         }
-        let mut bytes = Vec::new();
-        for i in 0..2 * PAGE {
-            bytes = postcard::to_extend(&format!("l{i}"), bytes).expect("write");
-        }
-        let half = {
-            let mut b = Vec::new();
-            for i in 0..PAGE {
-                b = postcard::to_extend(&format!("l{i}"), b).expect("write");
+        let run = |from: usize, n: usize| {
+            let (mut lens, mut bytes) = (Vec::new(), Vec::new());
+            for i in from..from + n {
+                let before = bytes.len();
+                bytes = postcard::to_extend(&format!("l{i}"), bytes).expect("write");
+                put_varint(&mut lens, (bytes.len() - before) as u32);
             }
-            b.len()
+            (lens, yavs_diag::Slice::from(bytes))
         };
-        let all = yavs_diag::Slice::from(bytes);
         let ctx = PageCtx {
             syms: None,
             reloc: None,
             files: None,
         };
-        a.push_page(all.range(0, half), ctx.clone());
-        a.push_page(all.range(half, all.len()), ctx);
+        let (lens, data) = run(0, 2 * PAGE);
+        a.push_run(2 * PAGE, &lens, data, ctx.clone(), 1)
+            .expect("a run");
+        let (lens, data) = run(2 * PAGE, 5);
+        a.push_run(5, &lens, data, ctx, 3).expect("another run");
         let id = a.push("tail".into());
-        assert_eq!((a.len(), id.index()), (3 * PAGE + 1, 3 * PAGE));
-        assert_eq!(a.undecoded_pages(), 2);
+        let n = start + 2 * PAGE + 5;
+        assert_eq!((a.len(), id.index()), (n + 1, n));
+        // Nothing but what is read is decoded.
+        assert_eq!(a.undecoded_pages(), 2 * PAGE + 5);
+        assert_eq!(a[DeclId::from_index(start + 7)], "l7");
         assert_eq!(
-            a[DeclId::from_index(2 * PAGE + 3)],
-            format!("l{}", PAGE + 3)
+            a[DeclId::from_index(start + 2 * PAGE + 4)],
+            format!("l{}", 2 * PAGE + 4)
         );
-        assert_eq!(a.undecoded_pages(), 1);
-        a[DeclId::from_index(PAGE)].push('!');
-        assert_eq!(a[DeclId::from_index(PAGE)], "l0!");
-        a.truncate(PAGE + 2);
-        assert_eq!(a.len(), PAGE + 2);
+        assert_eq!(a.undecoded_pages(), 2 * PAGE + 3);
+        assert_eq!(a[DeclId::from_index(start - 1)], format!("e{}", start - 1));
+        a[DeclId::from_index(start)].push('!');
+        assert_eq!(a[DeclId::from_index(start)], "l0!");
+        a.truncate(start + 2);
+        assert_eq!(a.len(), start + 2);
         let id = a.push("again".into());
         assert_eq!(a[id], "again");
-        assert_eq!(a[DeclId::from_index(PAGE + 1)], "l1");
+        assert_eq!(a[DeclId::from_index(start + 1)], "l1");
+        // Writing the arena out reads every entry.
+        let bytes = postcard::to_stdvec(&a).expect("serialize");
+        let b: Arena<DeclId, String> = postcard::from_bytes(&bytes).expect("deserialize");
+        assert!(b.iter().map(|(_, s)| s).eq(a.iter().map(|(_, s)| s)));
+    }
+
+    #[test]
+    fn varints_roundtrip() {
+        let mut b = Vec::new();
+        let xs = [0, 1, 127, 128, 300, 16_383, 16_384, u32::MAX >> 4];
+        for x in xs {
+            put_varint(&mut b, x);
+        }
+        let mut r = &b[..];
+        for x in xs {
+            assert_eq!(take_varint(&mut r), Some(x));
+        }
+        assert!(r.is_empty() && take_varint(&mut r).is_none());
     }
 
     #[test]

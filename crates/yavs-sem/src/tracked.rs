@@ -191,6 +191,23 @@ impl<K: Eq + Hash + Clone + Serialize> TrackedSet<K> {
             self.set.contains(k).then(|| hash_of(&()))
         })
     }
+
+    /// The keys that were there at `mark` and are gone now.
+    pub(crate) fn removed_since(&self, mark: usize) -> Vec<K> {
+        let mut first: FxHashMap<&K, bool> = FxHashMap::default();
+        let mut order = Vec::new();
+        for (k, pre) in &self.log[mark..] {
+            if let std::collections::hash_map::Entry::Vacant(v) = first.entry(k) {
+                v.insert(pre.is_some());
+                order.push(k);
+            }
+        }
+        order
+            .into_iter()
+            .filter(|k| first[*k] && !self.set.contains(*k))
+            .cloned()
+            .collect()
+    }
 }
 
 fn touched<K: Eq + Hash + Serialize>(
@@ -261,5 +278,10 @@ mod tests {
         ];
         want.sort_unstable_by_key(|c| c.0);
         assert_eq!(s.touched_since(mark), want);
+        assert_eq!(s.removed_since(mark), vec![1]);
+        s.insert(3);
+        s.remove(&3);
+        s.insert(1);
+        assert!(s.removed_since(mark).is_empty());
     }
 }

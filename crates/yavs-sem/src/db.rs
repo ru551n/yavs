@@ -227,9 +227,6 @@ pub struct Db {
     /// The package object each resolved package-path external name denotes, made by
     /// [`Db::bind_package_paths`] (#255).
     pub(crate) pkg_targets: TrackedMap<ExternalId, DeclId>,
-    /// The type mark as written of a parameter (by its object decl) and of a function's
-    /// result (by the subprogram decl), for messages in the user's spelling (8.3).
-    pub(crate) written_marks: TrackedMap<DeclId, Span>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     #[serde(skip)]
@@ -344,7 +341,6 @@ impl Db {
             ext_memo,
             ext_uses,
             pkg_targets,
-            written_marks,
             config_specs,
             range_records,
             time_units,
@@ -625,7 +621,6 @@ impl Db {
             ext_memo: HashMap::default(),
             ext_uses: Default::default(),
             pkg_targets: Default::default(),
-            written_marks: Default::default(),
             incomplete_ok: false,
             context_subtype: None,
             relaxed_target: None,

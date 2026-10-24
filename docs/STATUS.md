@@ -6531,3 +6531,52 @@ built with the invariants of #655 (generation on every access, freed slots empty
 slower than the object table it was to replace: one protected `get` 336 to 367 instructions, `protected_queue` +7 percent, the
 window generator +3 percent (`--tier=llvm`), real testbenches under `--tier=auto` unchanged. Nothing is in the tree; numbers, the
 update-point audit and what would change the verdict are in decisions.md "A flat view of the heap slots for compiled `Deref`".
+
+## Cold front end, round 2: entries stay bytes one by one, type marks in declarations, generic bodies stored (#424, 2026-10-24)
+
+Profile of a cold `yavs analyze`, one file per call (frame-pointer build, `perf record` with call graphs over a whole analysis corpus):
+the replay of the dependencies' entries was 34 to 40 percent of the cycles, a fifth of that one table (`written_marks`, 12 percent), a
+tenth the lookup of entries (`Key::hex` made 32 strings, 4 percent), and every cold `elab` of a UVVM testbench re-analysed four generic
+package bodies from source. Changes (decisions in `docs/decisions.md` "Analysed-unit cache" and "Cold front end, round 2"):
+
+- The type mark of a parameter and of a function result, as written, is a field of the declaration (`Param::mark`, `Subprogram::ret_mark`)
+  instead of the replayed table `Db::written_marks`. Cold analysis instructions 0.79 (UVVM, vunit) and 0.86 (hdl-modules) of before.
+- `Key::hex` without allocations, `UnitStore::note` takes a closure (nothing is formatted unless `YAVS_LOG=debug`, the flag is read once),
+  `Enc` keeps the owner number of each (load, kind): a further 0.09.
+- Every entry of a replayed unit stays bytes until it is read (`Arena::push_run`, `ids::SlotPage`): 0.58 of before for UVVM, 0.57
+  vunit, 0.61 hdl-modules after all changes. Expressions and statements decode in runs of a page (a body is read whole by lowering),
+  the rest one entry at a time (a window of 4 on every kind cost analysis 4 percent for 2.5 percent on `neorv32` elab; tried and not kept).
+- The body of a generic package is stored (its entry records the removal of the generics its declaration put into
+  `GenericState::unused`): five units of UVVM and OSVVM that every first `elab`/`run` analysed from source. Cold `elab` of
+  `uvvm_sb_slv` 0.40 G to 0.28 G instructions; warm analysis of UVVM 4.32 G to 2.15 G (those files are verified instead of replayed).
+- The check of a patch (a body completing its package's subprograms) compares raw bytes first (8 percent of a cold `elab`).
+
+Cold analysis, one file per call, whole corpus manifest, instructions in G, `tools/build-bench.sh` build, `perf stat -e instructions:u`
+over all calls (cores 0 to 7 and 16 to 23, instruction counts do not depend on the core):
+
+| selection | before | after | ratio |
+|---|---:|---:|---:|
+| osvvm-2008 | 10.94 | 5.48 | 0.50 |
+| open-logic-2008 | 21.93 | 11.26 | 0.51 |
+| poc-2008 | 4.86 | 2.76 | 0.57 |
+| vunit-2008 | 7.53 | 4.30 | 0.57 |
+| uvvm-2008 | 16.93 | 9.73 | 0.57 |
+| hdl-modules-2008 | 1.56 | 0.94 | 0.61 |
+| satcat5-2008 | 6.22 | 3.97 | 0.64 |
+| neorv32-2008 | 2.00 | 1.43 | 0.72 |
+| grlib-1993 | 19.14 | 14.76 | 0.77 |
+
+Warm analysis (the same files again): satcat5 1.51 to 1.45 G, hdl-modules 0.25 to 0.21, OSVVM 1.48 to 1.29, UVVM 4.32 to 2.15.
+
+`tools/realbench/run.py --compare`, ten tests (one per selection that has a test), instruction ratios after / before (wall ratios on
+a loaded host are not stable; the cold analysis wall geometric mean was 0.76): cold analysis 0.65 (OSVVM 0.53, Open Logic 0.56,
+UVVM 0.73 and 0.85, hdl-modules 0.60, vunit 0.59, PoC 0.65, neorv32 0.76), warm analysis 0.84, cold `elab` 0.91 (`uvvm_sb_slv` 0.70,
+`vunit_logging` 0.87, `en_cl_fix_pkg` 0.90, `osvvm_axis_random` 0.91, `hdlm_fifo_sync` 0.92; `neorv32_single_min` 1.06: its lowering reads
+nearly every entry it replays, and decoding one by one costs more per entry than a page), warm `elab` 0.98.
+
+Checked: `YAVS_UNIT_CHECK=1 yavs analyze` cold and warm over osvvm, uvvm (2008, 2019), vunit (2008, 2019), hdl-modules (2008, 2019),
+open-logic, neorv32, poc, satcat5, grlib-1993, surf, vhdl-extras, en_cl_fix, fletcher, json-for-vhdl, neotrng, vhlib and
+vhdl-compliance: as expected everywhere. Left, in order of weight: the index of a library (`yavs-lib.toml`) is parsed and rendered whole
+by every call (a quarter and a tenth of a warm call); the bodies of generic packages are cloned per instance at every cold `elab`
+(`fix_bodies`, 11 percent of `osvvm_axis_random`, #555); the entries of the closure are opened, checksummed and their heads parsed by every
+call (10 percent of a cold call).

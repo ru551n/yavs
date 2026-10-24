@@ -4750,9 +4750,11 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   There is no `DerefMut`, so a write that does not go through `insert`, `remove` or `edit` does not compile; a new write path
   cannot bypass the log by accident. The value tables (`well_known`, `validated`, `facts`, `errors`, `generic.reuse`,
   `generic.blocks`: a few bytes each) are still compared by their bytes. The tables are listed in `units::tables!` (a test
-  fails when a new serialized field of `Db` or `GenericState` is not listed). A unit stores the keys it added, and one that
-  changes or removes a key another unit made is not stored (10 units of all the analysis corpora, all removals from
-  `GenericState::unused`). A change it shares with a unit loaded inside it, work left pending, an error, or an id it
+  fails when a new serialized field of `Db` or `GenericState` is not listed). A unit stores the keys it added and the keys it removed
+  from a set (`GenericState::unused`: the body of a generic package takes out the generics its declaration put in; five
+  units of the UVVM and OSVVM libraries were never stored and so analysed from source at every first `elab`/`run`, a
+  quarter of that call for a UVVM scoreboard testbench, #424); one that changes a key another unit made, or removes one
+  of a map, is not stored. A change it shares with a unit loaded inside it, work left pending, an error, or an id it
   cannot name makes it not stored too (`YAVS_LOG=debug` says why). **Reasoning:** the unit's own writes are few, the
   tables are large, so finding them by comparison paid for the whole database per unit; the log costs one append on a write
   and nothing on a read. The risk of a log is a missed write, which would store an entry that replays wrongly; that is why the
@@ -4760,14 +4762,18 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   turns it on for `yavs analyze`) takes the old snapshot of every table and fails with an internal error naming the tables
   when the comparison finds a change the logs do not. `YAVS_UNIT_CHECK=1` over all the analysis corpora, cold and warm, is part
   of changing the cache. A new table is a `Tracked*` type in `Db`; a new kind of write is a method of `tracked.rs`.
-- **Whole pages of a replayed unit stay bytes until read** (`Arena::push_page`). An arena keeps its
-  entries in pages of 64 (the chunks of an image are pages too); a run of a page or more of a unit's
-  entries carries the length of each entry, and the replay keeps every page that falls inside the run
-  as the entry's bytes with what decodes them (symbol table, `Reloc`, file map), decoded the first
-  time an entry of it is read. Analysing one verification component reads about 1 200 of the
-  14 000 declarations and 60 of the 3 400 regions its dependencies replay, so this halved the
-  cost of such a call. The ids are those of an eager replay; reading every page (as
-  `differs_from` does) gives the same `Db`.
+- **Every entry of a replayed unit stays bytes until it is read** (`Arena::push_run`, #424; it replaces "whole pages stay
+  bytes", which kept only the full pages inside a run). A run of a unit's entries of one kind is written as the length of
+  each entry (a varint) followed by the entries; the replay makes one slot per entry (`ids::SlotPage`: the offset into the
+  entry's bytes, an empty `OnceLock<Box<T>>`) that holds the bytes with what decodes them (symbol table, `Reloc`, file map)
+  and decodes the one entry the first time it is read. Why: analysing one verification component reads about 1 200 of the
+  14 000 declarations and 60 of the 3 400 regions its dependencies replay, and the old scheme decoded every entry of a run
+  that did not fill a page (all the scopes, a third of the declarations, most expressions) and the whole page around any
+  other. Measured over the analysis corpora (cold, one file per call, instructions): 0.58 to 0.62 of before with the
+  other changes of the same round; a cold `elab` reads a quarter to a third of the entries it replays (28 000 of 125 000
+  for a UVVM scoreboard testbench) and costs about the same as with pages. The ids are those of an eager replay; reading
+  every entry (as `differs_from` does) gives the same `Db`. A decode error is an internal error (as for a page of an
+  image): the entry was checksummed when it was read and the plan checked its owners, so a failure is a bug in yavs.
 - **An entry holds the elaborator's facts about its own expressions and statements** (`Db::facts`: `'active` reads,
   force and release statements, package-path external names; format 2). They are found when the entry is made, from the
   unit's own segments (those entries are decoded then anyway), written last in the body as ids (so they are mapped by the
@@ -4819,6 +4825,28 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   which differs per process (two analyses of the same files gave different ids); `Remap::formal_firsts` is
   ordered now. The default span (`Span::default()`, file 0 meaning no file) is written as such inside an
   entry (`yavs_diag::map_file_ids`).
+
+## Cold front end, round 2: type marks in the declarations, cheaper entry lookups (yavs-sem, yavs-cache, CLI, #424, 2026-10-24)
+
+Profile of a cold `yavs analyze`, one file per call, over the analysis corpora (frame-pointer build, `perf record`, share of
+the cycles of all calls): the replay of the dependencies' entries was 34 to 40 percent, a fifth of it one table.
+
+- **The type mark of a parameter and of a function result, as written, is a field of the declaration** (`Param::mark`,
+  `Subprogram::ret_mark`), not the table `Db::written_marks` (a `TrackedMap<DeclId, Span>`). It exists for the spelling in
+  messages (`integer`, not `INTEGER`, user rule 8) and was one entry per parameter of every subprogram of the closure:
+  replayed one by one, with three hashes each for the frame around the unit, and found again by a scan of the whole table
+  for every unit written (12 percent of a UVVM or Open Logic cold analysis). As a field it travels with the declaration's
+  bytes. The clones of generic subprograms and the implicit operations carry `None`, as they had no table entry before
+  (messages are byte for byte the same).
+- **A lookup of an entry makes no strings**: `Key::hex` was 32 `format!` calls (4 percent of a cold analysis, once per entry
+  looked up), the notes of `YAVS_LOG=debug` were formatted and `YAVS_LOG` read for every unit replayed, and every id written
+  into an entry hashed its owner with the process-seeded `std` hasher. Now `hex` is a table lookup, a note is a closure the
+  store calls only when it prints (`UnitStore::note`; the flag is read once), and `Enc` keeps the owner number with the runs of
+  each (load, kind).
+- **The check of a patch compares bytes first.** An entry that completes another unit's declaration (a package body
+  filling in its package's subprograms) is replayed only if that entry still holds what it held when the body was analysed;
+  that compared canonical forms (a tree built by a serializer of its own) of both, 8 percent of a cold `elab`. Equal raw
+  bytes now settle it at once; only a difference falls back to the canonical forms (which sort the keys of maps).
 
 ## Instance bodies of generic packages: what a cold run pays and why it is cloned (yavs-sem `generic.rs`, #555, 2026-10-22)
 

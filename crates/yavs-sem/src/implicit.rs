@@ -505,6 +505,7 @@ impl Db {
                 subtype,
                 default: q.default.map(|pos| self.enum_default(subtype, pos, p.span)),
                 decl: None,
+                mark: None,
             })
             .collect();
         // Identifiers are written in upper case, operator symbols (`and`, `=`) are not.
@@ -535,6 +536,7 @@ impl Db {
                     form: spec.form,
                 }),
                 mangled,
+                ret_mark: None,
             }),
             scope: p.scope,
             span: p.span,

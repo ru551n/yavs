@@ -852,6 +852,7 @@ fn explicit_declaration_hides_the_implicit_one() {
                     subtype,
                     default: None,
                     decl: None,
+                    mark: None,
                 })
                 .collect(),
             ret,
@@ -859,6 +860,7 @@ fn explicit_declaration_hides_the_implicit_one() {
             scope: None,
             body: Body::Pending,
             mangled: Symbol::intern("x"),
+            ret_mark: None,
         }),
         scope: p,
         span: sp(),

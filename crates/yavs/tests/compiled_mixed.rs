@@ -111,5 +111,18 @@ fn llvm_and_cranelift_functions_call_each_other() {
             assert_eq!(got.stdout, want.stdout, "{flags:?}");
             assert_eq!(got.stderr, want.stderr, "{flags:?}");
         }
+        // Cranelift first, LLVM again for what stays hot (the variants of the second replace those of
+        // the first while the first is asked for again: once a duplicate LLVM module and a crash).
+        for _ in 0..5 {
+            let got = run(
+                &dir,
+                &["--tier=auto3", "--tier-heat=0,0,0", "--threads=4"],
+                fail,
+                false,
+            );
+            assert_eq!(got.status.code(), want.status.code(), "{got:?}");
+            assert_eq!(got.stdout, want.stdout);
+            assert_eq!(got.stderr, want.stderr);
+        }
     }
 }

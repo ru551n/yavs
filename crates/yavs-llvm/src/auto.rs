@@ -1635,7 +1635,9 @@ impl Worker {
                         self.calls[k] = call;
                     }
                 }
-                if entry.native != 0 {
+                // (The first level reports the variants it has again with a frame-mode compile:
+                // not to replace the optimising generator's.)
+                if entry.native != 0 && self.nat_by[id.0 as usize] <= rank {
                     let k = id.0 as usize;
                     // Published when what it calls is compiled (`publish`); code already
                     // published is replaced at once.

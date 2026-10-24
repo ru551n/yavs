@@ -2487,6 +2487,49 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   makes every `rising_edge` process also run on the falling edge (#707). The OSVVM AXI-stream test
   of the #692 numbers now ends in an interpreter internal error under `--cov` on main (#705), so
   `osvvm_axi4_random` stands for OSVVM here.
+- **Edge triggers stay on under coverage (#707, user, 2026-10-24):** `Config::edge_triggers` is
+  off only with `--dap` and `--vhpi` (`observed_free` still keeps `skip_unchanged`, the idle
+  skip and the lean wide-signal events off with `--cov`: coverage observes activity, see
+  "Assignment skipping and observers"). A clocked process of any trigger shape (`rising_edge`,
+  `falling_edge`, `x'event and x = '1'`, `not x'stable` which the analyser already reads as
+  `x'event`, `wait until` on an edge or a level, with or without an asynchronous reset) is
+  resumed at its edge, so the statement of a pure edge test counts one run at initialisation and
+  one per edge, and the arm "no condition held" of an edge-only test shows the initialisation
+  run, where it showed every other event on the clock. The statements inside the `if` count the
+  same as before. The same holds for the reset test of the asynchronous-reset form (it runs at
+  the reset level and at the edge). Accepted by the user; documented in `usage.rst`; pinned by
+  `edge_triggers_count_their_edges` (`tests/cli/cov_edge.vhd`, all forms, 1 and 4 threads). What
+  stays interpreted with statement, branch, condition or expression counters on: the plain
+  signal copy and the clock generator `x <= not x after T;` that the kernel otherwise runs itself
+  (`build.rs`, `counters_off`: their statement would count 0); with toggle coverage alone they
+  run in the kernel and the observer sees their events. Measured as above (interpreter,
+  user-mode instructions in millions, default `--cov` kinds, plain / before / after):
+  `rtl_ff` (CYC=500) 3121 / 5311 / 3434, `rtl_lfsr` (CYC=1000) 1356 / 3741 / 1831, neorv32
+  single-core minimal 30 us 6861 / 16445 / 14877, `sc5_fifo_repack` 41863 / 61805 / 52097,
+  `osvvm_axi4_random` 9309 / 9963 / 9779 (the last needs the #705 fix to run). Per kind, after:
+  statement alone 3342 / 1496 / 12761 / 50646 / 9670, toggle alone 3147 / 1722 / 12202 / 46393 /
+  9362 (same design order).
+- **Toggle observer cost (#707):** where it went, per design (toggle kind alone, millions of
+  instructions over a plain run, before / after): `rtl_ff` +1776 / +26, `rtl_lfsr` +2253 / +366,
+  neorv32 30 us +7258 / +5341, `sc5_fifo_repack` +14544 / +4530. Most of it was not the bus: (1)
+  the edge triggers that coverage switched off (every `rising_edge` process ran at both edges;
+  `edge_slow`, `run_quick` and `Process::run` three to five times the plain run); (2) per
+  value-change range the observer took a lock, copied the range into a freshly allocated
+  `Value` (`Hook::value`: `extract`, `to_value`, a `SmallVec`, a `malloc`) and compared element
+  by element. It now takes one lock per cycle (`Observer::value_changes`), reads the plane words
+  in place (`Hook::view`, `SigView::planes`), treats the changed ranges of a signal as their
+  hull (an element that did not change holds its last level, so the counts are the same) and
+  keeps the last levels as two bitsets, so a range costs a few word operations and one add
+  per toggled bit. (3) What is left on a big design is fixed, not per value change: building and
+  writing the database (a `Key` and an `Entry` with three strings for each scalar and
+  direction: about 1.7 G instructions for the 134 thousand scalars of neorv32, a 49 MB file),
+  of which the bulk insert in `Toggles::add_to` and the unformatted `Database::write` of toggle
+  lines took about 130 M. The rest of what neorv32 and `sc5_fifo_repack` keep over a plain run
+  is the skipping that coverage switches off (`skip_unchanged`, hence the idle skip). Counts are byte-identical to the old observer (`cmp` of databases of
+  `rtl_ff`, `rtl_lfsr` and neorv32). Not done, for the user to decide: with toggle coverage
+  alone `skip_unchanged` and the idle skip could stay on (nothing counts activations), which
+  takes neorv32 30 us from 12.2 G to 8.8 G; it contradicts the 2026-10-24 rule that coverage
+  observes activity, so it was not made.
 
 ## GUI (M10, #384, #388, user, 2026-10-19)
 
@@ -2856,7 +2899,8 @@ user's performance priority:
   `--threads`.
 - Off unless `yavs_elab::reads_activity` finds no `'active` or `'last_active` anywhere in the
   analysed units (they are the only activity readers the kernel cannot see), and with `--cov`,
-  `--dap`, `--vhpi` like the edge triggers. A new observer of activity must switch it off.
+  `--dap`, `--vhpi`. (The edge triggers are off with `--dap` and `--vhpi` only: they stay on with
+  `--cov`, #707.) A new observer of activity must switch it off.
 
 ## Remembered results of user resolution functions (yavs-elab, #420, 2026-10-20)
 

@@ -878,9 +878,12 @@ pub fn run(
             SeverityArg::Error => yavs_kernel::Severity::Error,
             SeverityArg::Failure => yavs_kernel::Severity::Failure,
         },
-        // A process left suspended by its edge trigger would be visible to statement coverage,
-        // a debugger stepping through it, and foreign callbacks.
-        edge_triggers: observed_free,
+        // A process left suspended by its edge trigger would be visible to a debugger stepping
+        // through it and to foreign callbacks. Coverage accepts it: the statement of a pure
+        // edge test counts the activations at its edge only (#707).
+        edge_triggers: a.dap.is_none() && a.vhpi.is_empty(),
+        // Coverage observes activity (user, 2026-10-24): no assignment is skipped, no activation
+        // left out.
         skip_unchanged: observed_free && !db.facts().reads_activity,
         // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
         // `check` runs the ones the kernel would skip and fails when one does something else.

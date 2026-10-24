@@ -181,6 +181,9 @@ impl Elaborated {
             let a: Vec<_> = e.actual.iter().map(sig).collect();
             b.port_parts(&f, &a, e.mode, pc);
         }
+        // Counters in the lowered code (statement, branch, condition coverage) count each
+        // activation, so the processes the kernel runs itself stay interpreted.
+        let counters_off = self.ir.as_ref().is_none_or(|ir| ir.program.cov.is_empty());
         for p in &self.procs {
             // Drivers of one process on adjacent elements of one kernel signal that one target
             // names together (a whole record of a pack, #686) are one kernel driver; `ds` has
@@ -210,22 +213,19 @@ impl Elaborated {
             let mut own = ds.clone();
             own.dedup();
             // A plain signal copy runs in the kernel when no one observes its activations
-            // (coverage, a debugger, foreign callbacks: `Config::edge_triggers` is off then).
-            let copy = p
-                .copy
-                .as_ref()
-                .filter(|_| cfg.edge_triggers)
-                .and_then(|src| {
-                    (src.iter().zip(p.lsps.first()?))
-                        .map(|(&(sl, sr), &(k, dl, dr))| {
-                            let src = nets.kref(sl, sr);
-                            let d = ds[p.drivers.iter().position(|&x| x == k)?];
-                            Some((src, d, nets.kpart(dl, dr).1))
-                        })
-                        .collect::<Option<Vec<_>>>()
-                });
+            // (statement counters, a debugger, foreign callbacks).
+            let native = cfg.edge_triggers && counters_off;
+            let copy = p.copy.as_ref().filter(|_| native).and_then(|src| {
+                (src.iter().zip(p.lsps.first()?))
+                    .map(|(&(sl, sr), &(k, dl, dr))| {
+                        let src = nets.kref(sl, sr);
+                        let d = ds[p.drivers.iter().position(|&x| x == k)?];
+                        Some((src, d, nets.kpart(dl, dr).1))
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
             // So does a clock generator `x <= not x after T;`.
-            let toggle = p.toggle.filter(|_| cfg.edge_triggers).and_then(|t| {
+            let toggle = p.toggle.filter(|_| native).and_then(|t| {
                 let time = yavs_kernel::Time::from_vhdl(t.delay).ok()?;
                 let k = p.lsps.first()?.first()?.0;
                 let d = *ds.get(p.drivers.iter().position(|&x| x == k)?)?;

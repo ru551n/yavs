@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use yavs_elab::{Case, Elaborated, ObjKind, Shape};
-use yavs_kernel::{Elem, Hook, Observer, Phase, Value};
+use yavs_kernel::{Elem, Hook, Observer, Phase, Range};
 use yavs_sem::Db;
 use yavs_sem::hir::Direction;
 
@@ -35,8 +35,12 @@ struct Name {
 struct State {
     /// Per kernel signal: the bit of its element at offset 0, if tracked.
     base: Vec<Option<u32>>,
-    /// Per bit: 0, 1, or 2 for neither.
-    prev: Vec<u8>,
+    /// Bits in use (the tracked elements of all signals, one bit each).
+    nbits: usize,
+    /// Per bit, as bitsets: the last level was '0'/'L' (`prev0`) or '1'/'H' (`prev1`); neither
+    /// is both clear.
+    prev0: Vec<u64>,
+    prev1: Vec<u64>,
     /// Per bit: falls (1->0), rises (0->1).
     counts: Vec<[u64; 2]>,
     names: Vec<Name>,
@@ -46,13 +50,31 @@ struct State {
 #[derive(Clone)]
 pub struct Toggles(Arc<Mutex<State>>);
 
-fn level(code: u8) -> u8 {
-    // std_ulogic codes: '0' 2, '1' 3, 'L' 6, 'H' 7 (BIT is stored as 2/3).
-    match code {
-        2 | 6 => 0,
-        3 | 7 => 1,
-        _ => 2,
+/// `n` (at most 64) bits of `bits` from bit `g`, in bits 0 and up.
+#[inline]
+fn get(bits: &[u64], g: usize, n: usize) -> u64 {
+    let (w, s) = (g / 64, g % 64);
+    let mut v = bits[w] >> s;
+    if s + n > 64 {
+        v |= bits[w + 1] << (64 - s);
     }
+    v & mask(n)
+}
+
+/// Store the low `n` (at most 64) bits of `v` at bit `g`.
+#[inline]
+fn put(bits: &mut [u64], g: usize, n: usize, v: u64) {
+    let (w, s) = (g / 64, g % 64);
+    let m = mask(n);
+    bits[w] = bits[w] & !(m << s) | (v & m) << s;
+    if s + n > 64 {
+        bits[w + 1] = bits[w + 1] & !(m >> (64 - s)) | (v & m) >> (64 - s);
+    }
+}
+
+#[inline]
+fn mask(n: usize) -> u64 {
+    if n >= 64 { !0 } else { (1 << n) - 1 }
 }
 
 /// The observer over every signal and port of `e` whose scalars are `bit` or `std_ulogic`;
@@ -60,7 +82,9 @@ fn level(code: u8) -> u8 {
 pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
     let mut st = State {
         base: vec![None; e.nets.signal_count()],
-        prev: Vec::new(),
+        nbits: 0,
+        prev0: Vec::new(),
+        prev1: Vec::new(),
         counts: Vec::new(),
         names: Vec::new(),
     };
@@ -105,10 +129,9 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
                 let (off, own) = obj.part.map_or((0, n), |r| (r.offset, r.len));
                 let (ks, at) = e.nets.kelem(yavs_elab::LeafId(leaf), off);
                 let base = *st.base[ks.0 as usize].get_or_insert_with(|| {
-                    let b = st.prev.len() as u32;
-                    st.prev
-                        .resize(st.prev.len() + e.nets.signal_len(ks) as usize, 2);
-                    st.counts.resize(st.prev.len(), [0; 2]);
+                    let b = st.nbits as u32;
+                    st.nbits += e.nets.signal_len(ks) as usize;
+                    st.counts.resize(st.nbits, [0; 2]);
                     b
                 });
                 st.names.push(Name {
@@ -122,6 +145,9 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
             }
         }
     }
+    // A word more: `get` and `put` read the next word when a range crosses a boundary.
+    st.prev0 = vec![0; st.nbits / 64 + 2];
+    st.prev1 = vec![0; st.nbits / 64 + 2];
     (Toggles(Arc::new(Mutex::new(st))), skipped)
 }
 
@@ -174,22 +200,58 @@ fn index_image(dims: &[yavs_elab::Bounds], mut j: u64) -> String {
 }
 
 impl State {
-    /// Compare elements `off .. off + len` of kernel signal `sig` with their last level.
-    fn change(&mut self, hook: &Hook<'_>, sig: u32, off: u32, len: u32, count: bool) {
+    /// Compare the elements of `ranges` of kernel signal `sig` with their last level.
+    fn change(&mut self, hook: &Hook<'_>, sig: u32, ranges: &[Range], count: bool) {
         let Some(base) = self.base.get(sig as usize).copied().flatten() else {
             return;
         };
-        let r = yavs_kernel::SignalId(sig).slice(off, len);
-        let Ok(Value::Logic(v)) = hook.value(r) else {
+        let Ok(v) = hook.view(yavs_kernel::SignalId(sig)) else {
             return;
         };
-        for i in 0..len as usize {
-            let b = (base + off) as usize + i;
-            let now = level(v.get(i) as u8);
-            let was = std::mem::replace(&mut self.prev[b], now);
-            if count && was != now && now != 2 && was != 2 {
-                let c = &mut self.counts[b][now as usize];
-                *c = c.saturating_add(1);
+        // An element that did not change has its last level already: one range over the hull of
+        // the changed ones counts the same as each of them, with one pass of the plane words
+        // (unless the changes are far apart).
+        let (mut lo, mut hi, mut total) = (u32::MAX, 0, 0);
+        for r in ranges {
+            lo = lo.min(r.offset);
+            hi = hi.max(r.offset + r.len);
+            total += r.len;
+        }
+        let hull = [Range::new(lo, hi.saturating_sub(lo))];
+        let ranges = if ranges.len() > 1 && hi - lo <= total.saturating_mul(4) + 64 {
+            &hull[..]
+        } else {
+            ranges
+        };
+        for r in ranges {
+            let mut i = 0;
+            while i < r.len as usize {
+                let n = (r.len as usize - i).min(64);
+                let at = r.offset as usize + i;
+                // Byte storage holds no `std_ulogic` element (nothing is tracked there).
+                let Some([p0, p1, _, p3]) = v.planes(at, n) else {
+                    return;
+                };
+                // std_ulogic codes: '0' 2, '1' 3, 'L' 6, 'H' 7 (BIT is stored as 2/3): bit 1
+                // set, bit 3 clear, bit 0 the level.
+                let defined = p1 & !p3;
+                let (one, zero) = (defined & p0, defined & !p0);
+                let g = base as usize + at;
+                if count {
+                    let rise = one & get(&self.prev0, g, n);
+                    let fall = zero & get(&self.prev1, g, n);
+                    for (m, d) in [(fall, 0), (rise, 1)] {
+                        let mut m = m;
+                        while m != 0 {
+                            let c = &mut self.counts[g + m.trailing_zeros() as usize][d];
+                            *c = c.saturating_add(1);
+                            m &= m - 1;
+                        }
+                    }
+                }
+                put(&mut self.prev0, g, n, zero);
+                put(&mut self.prev1, g, n, one);
+                i += n;
             }
         }
     }
@@ -209,11 +271,11 @@ impl Observer for Toggles {
         let mut st = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         for sig in 0..st.base.len() as u32 {
             if st.base[sig as usize].is_some() {
-                let len = match hook.value(yavs_kernel::SignalId(sig)) {
-                    Ok(Value::Logic(v)) => v.len() as u32,
+                let len = match hook.view(yavs_kernel::SignalId(sig)) {
+                    Ok(v) => v.len() as u32,
                     _ => continue,
                 };
-                st.change(hook, sig, 0, len, false);
+                st.change(hook, sig, &[Range::new(0, len)], false);
             }
         }
     }
@@ -225,36 +287,76 @@ impl Observer for Toggles {
         range: yavs_kernel::Range,
     ) {
         let mut st = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        st.change(hook, signal.0, range.offset, range.len, true);
+        st.change(hook, signal.0, &[range], true);
+    }
+
+    /// One lock for the whole cycle.
+    fn value_changes(&mut self, hook: &mut Hook<'_>, signals: &[u32]) {
+        let mut st = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        for &s in signals {
+            st.change(hook, s, hook.changed(yavs_kernel::SignalId(s)), true);
+        }
     }
 }
 
 impl Toggles {
-    /// Add one item per scalar and direction, count 0 included, to `db`.
+    /// Add one item per scalar and direction, count 0 included, to `db`, which holds no toggle
+    /// items yet.
     pub fn add_to(&self, db: &mut Database) {
         let st = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut items: Vec<(Key, Entry)> = Vec::with_capacity(st.names.len() * 2);
         for n in &st.names {
             for rise in [false, true] {
-                let e = db
-                    .items
-                    .entry(Key {
+                items.push((
+                    Key {
                         path: n.path.clone(),
                         kind: Kind::Toggle(rise),
                         hash: 0,
                         occ: 0,
                         sig: n.sig.clone(),
-                    })
-                    .or_insert_with(|| Entry {
+                    },
+                    Entry {
                         file: n.file.clone(),
                         line: n.line,
-                        count: 0,
+                        count: st.counts[n.bit as usize][usize::from(rise)],
                         text: String::new(),
                         tests: Vec::new(),
-                    });
-                e.count = e
-                    .count
-                    .saturating_add(st.counts[n.bit as usize][usize::from(rise)]);
+                    },
+                ));
             }
         }
+        // A scalar named twice keeps its first entry and the sum of the counts. The sort is
+        // stable and the names come in nearly sorted order; one bulk insert beats a search per item.
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut merged: Vec<(Key, Entry)> = Vec::with_capacity(items.len());
+        for (k, e) in items {
+            match merged.last_mut() {
+                Some(last) if last.0 == k => last.1.count = last.1.count.saturating_add(e.count),
+                _ => merged.push((k, e)),
+            }
+        }
+        db.items.append(&mut merged.into_iter().collect());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get, put};
+
+    /// Bit ranges across a word boundary read back what was stored and leave their neighbours.
+    #[test]
+    fn bit_ranges_cross_words() {
+        let mut bits = vec![0u64; 4];
+        put(&mut bits, 60, 10, 0b11_0101_1011);
+        assert_eq!(get(&bits, 60, 10), 0b11_0101_1011);
+        assert_eq!(get(&bits, 56, 4), 0);
+        assert_eq!(get(&bits, 70, 8), 0);
+        put(&mut bits, 62, 4, 0);
+        assert_eq!(get(&bits, 60, 10), 0b11_0100_0011);
+        put(&mut bits, 0, 64, !0);
+        assert_eq!(bits[0], !0);
+        assert_eq!(get(&bits, 0, 64), !0);
+        put(&mut bits, 64, 64, 0x0123_4567_89ab_cdef);
+        assert_eq!(bits[1], 0x0123_4567_89ab_cdef);
     }
 }

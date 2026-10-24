@@ -259,6 +259,14 @@ every evaluation of a multi-input condition, so they are asked for).
 * Items are identified by their path and the text of their statement, not by its position in
   the file, so a database stays mergeable after edits elsewhere in the file. Counts are the same
   for any ``--threads``.
+* **Clocked processes count only their edges.** A process that does nothing unless an edge
+  happens (``if rising_edge(clk) then ... end if``, ``falling_edge``, ``clk'event and clk = '1'``,
+  ``wait until rising_edge(clk)``, ``wait until clk = '1'``, also with an asynchronous reset) is
+  resumed only at that edge, with or without ``--cov``. Its edge test therefore counts one run at
+  initialisation and one per edge, not one per event on the clock, and the arm "no condition
+  held" of a test that is only an edge shows one run (the initialisation), not the falling
+  edges. The statements inside the ``if`` count exactly the same as when the process also ran
+  at the other edge.
 
 ``yavs cov merge A.ycov B.ycov ... -o OUT.ycov`` adds up the counts of several runs: write one
 database per run (one ``--cov=FILE`` each) and merge them. ``yavs cov report DB ...`` merges its

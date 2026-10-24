@@ -7,7 +7,8 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 ## 1. Purpose and boundaries
 
 - Counts toggles of `bit`/`std_ulogic` scalars of signals and ports as a kernel observer
-  (`toggle::Toggles`, subscribed only with toggle coverage on).
+  (`toggle::Toggles`, subscribed only with toggle coverage on): one lock and one read of the plane
+  words in place per cycle (`Observer::value_changes`), last levels as two bitsets.
 - Turns the coverage counters of a run (`yavs_interp::Runtime::coverage`) into a `Database`
   keyed per plan rule 10, reads and writes its text form, merges databases, and renders the
   text summary and Cobertura XML.
@@ -22,7 +23,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | File | Responsibility |
 |---|---|
 | `src/lib.rs` | `Kind`, `Key`, `Entry` (with `tests`), `Database` (`tests`, `write`, `parse`, `merge`, `attribute`, `rank`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
-| `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
+| `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer over `SigView::planes`, `add_to` the database as one bulk insert) |
 | `src/exclude.rs` | Exclusion file `parse` (text rows), `apply` (W0110, W0111, W0114), `Database::uncovered` and `uncovered_yaml`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
 | `src/exclude/yaml.rs` | `parse_yaml`: `saphyr-parser` events to a small node tree to the same `Rule`s as the text rows; `quote` for `--uncovered=yaml`. A new rule kind: add its key lists and rule in `entry` (and its text row in `parse`) |
 | `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS and one inline script (click-only popups, copy buttons), light/dark; a line's items are in a popup (groups of title + table), missed items carry their `exclude::miss_row` and `miss_yaml` with copy buttons) |
@@ -50,6 +51,9 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 
 | A counter is `Cover { item }` plus the `cov_base` of the instance that runs it, never part of code or of a copy's key; per-instance copies, memoised blocks and inlined functions keep their counters, a copy that folds an arm away drops that arm's counters (count 0 for that instance) | Specialisation, memoisation and inlining stay on under `--cov`; counts are byte-identical to the shared code's | `docs/decisions.md` "Code coverage" (#699) |
 
+| The toggle observer reads each cycle's changed ranges of a signal as their hull and compares plane words with the last levels (`prev0`/`prev1` bitsets, 'neither' is both clear); a rise is 'now 1 and last 0', a fall 'now 0 and last 1' | An element that did not change holds its last level, so the hull counts what the ranges would; a range costs word operations and one add per toggled bit (was a lock, an allocation and a loop over elements per range) | `docs/decisions.md` "Toggle observer cost" (#707) |
+| Edge triggers stay on under `--cov`: the statement of a pure edge test counts one run at initialisation and one per edge, its 'no condition held' arm the initialisation run; the statements inside the `if` are unchanged. Plain signal copies and clock generators the kernel runs itself stay interpreted when the program has counters | The user accepted the changed counts of the edge test line (user, 2026-10-24) for most of the `--cov` overhead; a kernel-run copy would count 0 | `docs/decisions.md` "Edge triggers stay on under coverage", `usage.rst` (#707) |
+
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
 ## 4. Invariants and pitfalls
@@ -57,6 +61,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 - A new optimiser pass must keep every `Cover`, `CoverIn` and `CoverCond` of code that can still run
   and must not read or write `cov_base` (it is the running instance's); `copies_count_alike` in
   `crates/yavs/tests/coverage.rs` compares a run with copies, memo and inlining against shared code.
+- Counts of a clocked process's edge test depend on its edge trigger (`edge_triggers_count_their_edges` pins every form): a new trigger shape in `yavs-elab` changes them, in the open.
 - `counts` must come from a design lowered with coverage on; its length is
   `cov_rows() * program.cov.len()` and `collect` walks it in rows of `program.cov.len()`.
 - A new branch kind in lowering needs no change here as long as it is `CovKind::Branch(arm)`;

@@ -45,8 +45,8 @@ pub struct Config {
     /// A report of this severity or higher ends the simulation.
     pub stop_severity: Severity,
     /// Leave a process with an edge trigger suspended on an event that does not make its
-    /// edge true (`Builder::edge_trigger`). Off where every activation is observable:
-    /// statement coverage, a debugger, foreign callbacks.
+    /// edge true (`Builder::edge_trigger`). Off where every activation is observable: a
+    /// debugger, foreign callbacks (statement coverage counts the edges only, #707).
     pub edge_triggers: bool,
     /// A zero-delay assignment that gives an unguarded, not user-resolved signal the value it
     /// already has, when its driver has nothing pending, queues no transaction (the delta

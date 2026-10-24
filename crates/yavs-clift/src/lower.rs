@@ -590,9 +590,24 @@ impl Jit {
             )
             .map_err(|e| e.to_string())?;
         let body = native.then(|| ctx.func.clone());
+        // `YAVS_CLIFT_ASM=<function id>`: the machine code of that function (variant) on stderr.
+        let asm = std::env::var("YAVS_CLIFT_ASM")
+            .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
+        ctx.set_disasm(asm);
         self.module
             .define_function(fid, &mut ctx)
             .map_err(|e| format!("Cranelift: {e:?} (a bug in yavs)"))?;
+        if let Some(v) = ctx
+            .compiled_code()
+            .and_then(|c| c.vcode.as_ref())
+            .filter(|_| asm)
+        {
+            eprintln!(
+                "asm of {} f{}:\n{v}",
+                if native { "variant" } else { "frame code" },
+                id.0
+            );
+        }
         self.module.clear_context(&mut ctx);
         Ok((fid, stepped, body))
     }
@@ -804,6 +819,7 @@ fn ok<T>(r: Option<T>, what: &str) -> Result<T, String> {
     r.ok_or_else(|| what.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gen_func(
     ctx: &mut Context,
     fctx: &mut FunctionBuilderContext,
@@ -1907,11 +1923,11 @@ impl Gen<'_> {
         self.b.ins().store(self.mf, v, self.mem, field as i32);
     }
 
-    /// The prologue of a native-frame variant: zeroed registers and slots (as a frame the
-    /// interpreter pushes), the arguments stored into their parameter slots.
+    /// The prologue of a native-frame variant: zeroed slots (as a frame the interpreter pushes),
+    /// the arguments stored into their parameter slots.
     fn native_entry(&mut self, f: &Func, args: &[Value]) -> Result<(), String> {
-        let (regs, slots) = match &self.nat {
-            Some(n) => (n.nregs * 8, n.slots),
+        let slots = match &self.nat {
+            Some(n) => n.slots,
             None => return Ok(()),
         };
         // Callees reach these slots through their frame index (`Mem::nslots`).
@@ -1922,20 +1938,17 @@ impl Gen<'_> {
         self.b.ins().store(MemFlagsData::trusted(), slots, ent, 0);
         let fl = self.c64(i64::from(f.frame));
         self.b.ins().store(MemFlagsData::trusted(), fl, ent, 8);
-        let regs_ptr = self.regs;
-        for (ptr, bytes, fl) in [
-            (regs_ptr, regs, self.rf),
-            (slots, u64::from(f.frame), self.gf),
-        ] {
-            if bytes <= 128 {
-                let z = self.c64(0);
-                for k in 0..bytes.div_ceil(8) {
-                    self.b.ins().store(fl, z, ptr, (k * 8) as i32);
-                }
-            } else {
-                let n = self.c64(bytes as i64);
-                self.b.ins().call(self.imp.zero, &[ptr, n]);
+        // The slots start zeroed, as in a pushed frame; the registers do not (every register is
+        // written before it is read, as in the LLVM tier's native frames).
+        let bytes = u64::from(f.frame);
+        if bytes <= 128 {
+            let z = self.c64(0);
+            for k in 0..bytes.div_ceil(8) {
+                self.b.ins().store(self.gf, z, slots, (k * 8) as i32);
             }
+        } else {
+            let n = self.c64(bytes as i64);
+            self.b.ins().call(self.imp.zero, &[slots, n]);
         }
         // The interpreter preloads the registers a constant or an address defines once.
         let mut defs = vec![0u8; f.reg_ty.len()];

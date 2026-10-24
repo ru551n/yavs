@@ -70,7 +70,7 @@ impl Heat {
     /// O2: `O2_AFTER` times `threshold`, about ten times its O2 compile time (O2 costs
     /// about seven times O0).
     pub fn o2_threshold(self, f: &yavs_ir::Func) -> u64 {
-        self.threshold(f).saturating_mul(O2_AFTER)
+        self.threshold(f).saturating_mul(o2_after())
     }
 
     /// Whether every function is compiled when the interpreter enters it.
@@ -629,6 +629,17 @@ fn first_fit(
 /// See `Heat::o2_threshold`.
 const O2_AFTER: u64 = 30;
 
+/// `O2_AFTER`, or `YAVS_O2_AFTER` (a tuning aid).
+fn o2_after() -> u64 {
+    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("YAVS_O2_AFTER")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(O2_AFTER)
+    })
+}
+
 /// What happened to a hot function: compiled at that level (with the time it took), or why
 /// it stays interpreted (or at its first level).
 pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
@@ -1120,6 +1131,29 @@ impl Worker {
             .collect();
         out.extend(natives);
         out
+    }
+
+    /// `root` compiled again by the optimising generator, with the functions it calls on native
+    /// frames that the first level made the native-frame code of: compiled callers call them
+    /// directly and the sampler never sees them run (a native frame has no entry of its own), so
+    /// nothing else would ever replace them.
+    fn upgrade_tree(&self, root: FuncId) -> Vec<(FuncId, Part)> {
+        let mut ids = vec![(root, Part::Both)];
+        if self.first.is_none() {
+            return ids;
+        }
+        let size = |i: FuncId| self.prog.func(i).map_or(0, |f| f.code.len());
+        let mut total = size(root);
+        let mut callees: Vec<FuncId> = self.nset(root).iter().copied().collect();
+        callees.sort_by_key(|c| c.0);
+        for c in callees {
+            let k = c.0 as usize;
+            if c != root && self.nat_by[k] == 1 && !self.lost[k] && total + size(c) <= NATIVE_MAX {
+                total += size(c);
+                ids.push((c, Part::Native));
+            }
+        }
+        ids
     }
 
     /// Publish the native-frame code whose callees are all compiled.
@@ -1855,7 +1889,7 @@ impl AutoTier {
                                     .pop_front()
                                     .map(|id| (vec![(id, Part::Both)], false, false))
                             })
-                            .or_else(|| later.pop().map(|id| (vec![(id, Part::Both)], true, false)))
+                            .or_else(|| later.pop().map(|id| (w.upgrade_tree(id), true, false)))
                             .or_else(|| w.pick(&mut cands).map(|ids| (ids, false, true)))
                         else {
                             break;

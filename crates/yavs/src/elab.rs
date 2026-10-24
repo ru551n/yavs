@@ -807,7 +807,7 @@ impl yavs_llvm::Generator for Mixed {
         level: yavs_llvm::OptLevel,
         part: yavs_llvm::native::Part,
     ) -> Result<yavs_llvm::native::Compiled, String> {
-        if id.0 % 2 == 0 {
+        if id.0.is_multiple_of(2) {
             self.llvm.compile(prog, id, f, level, part)
         } else {
             self.clift.compile(prog, id, f, level, part)

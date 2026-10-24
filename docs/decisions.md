@@ -7288,6 +7288,33 @@ prologue, a store per register definition, a lookup per memory access and `umul_
 - **Checks.** `cargo test -p yavs-clift --features clift` (the LLVM tier's tests against this tier), difftest for `yavs-clift`,
   `-clift-auto`, `-auto3`, `-mixed` at 1 and 4 threads.
 
+## Cranelift code quality, round 2: inline vector instructions, numeric_std small path, known spaces (yavs-clift, yavs-llvm, #481, user, 2026-10-24)
+
+Profiles of the four benchmark designs under `--tier=clift` / `clift-auto` (perf with `YAVS_CLIFT_PERFMAP=1`, callback counts
+by `YAVS_COUNTERS=pc`) showed which instructions still left compiled code: `SlicePos` 16 M times, `NewFrame`/`LFill`/`LogicOp`
+4 M each (the vector `and` of the window generator), `Cat` of a result of run-time length 19 M, `numeric_std` `+`, `-`,
+`to_integer` on unsigned 72 M, and every read of a constant, a temporary or instance data through the generic lookup.
+
+- **`slow_path_x`**: in a variant an instruction the interpreter can run on a frame of its own (`xstep_wide`) takes that as its
+  slow path and the code goes on, instead of recording the frame. `SlicePos`, `LFill` (1 to 64 elements in a plane block),
+  `LogicOp` (`and`, `or`, `xor`, their negations, `not`, `to_x01`, `to_ux01`; block by block, the planes beyond the length
+  zero), `NewFrame` and `Fill` (a call `clift_fill` for the repeat) are inline. `Cat` of a logic array whose piece lengths are
+  known only at run time is one block of at most 64 elements (`cat_dyn`), else the instruction's own form.
+- **`numeric_std` natives on their small path** (`+`, `-` of two unsigned vectors, `to_integer` of one): operands of 1 to 64
+  elements without a metavalue, as `yavs_interp::ieee::small` reads them and `put_down` writes the result (fat pair, descriptor and
+  plane block in temporary memory); any other operand runs the native (`native_direct`) with no side effect made before.
+- **Reads without a lookup** (`host`): a constant (up to 4 KiB, `ConstData::Bytes`) from a copy in the generated code,
+  `Known::Temp` from the temporary area, `Known::Inst`/`InstAny` from instance data, `Known::Up` from the view's enclosing
+  frames (frame mode): the bounds test and a load, as the LLVM generator does. A temporary of known size is zeroed by stores
+  when its start is aligned.
+- **Rejected**: LCopy of a count known only at run time inline (128-bit shifts by a variable cost more than the call: +10 G on
+  poc_arith_addw); the shared `yavs_rt_lcopy` instead shifts the planes as 128-bit words in place (up to 64 elements in
+  at most two blocks each side; the LLVM tier's too).
+- **Checks.** `crates/yavs/tests/compiled_vectors.rs` (every tier against the interpreter: vector operations of all length classes
+  with every std_ulogic code, null slices, fills, concatenations, unsigned arithmetic with and without metavalues, copies
+  of a constant count at every offset class), difftest for `yavs-clift`, `-clift-auto`, `-auto3`, `-auto3-eager`, `-mixed`,
+  `-llvm`, `-auto` at 1 and 4 threads, and under the collection stress build at 1 thread.
+
 ## One native-frame calling convention for both generators (yavs-clift, yavs-llvm, #481, user, 2026-10-24)
 
 - **Decision.** The native-frame variants of Cranelift use the LLVM generator's convention: `(env, mem, depth, [up1, up2],

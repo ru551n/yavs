@@ -3269,6 +3269,31 @@ runs (`clift` eager 0.5 s, LLVM O2 0.37 s). On clocked RTL it executes more inst
 (rtl_ff 26.5 G against 16 G): the entry and exit of compiled code and the callbacks cost more than the interpreter's
 predecoded dispatch.
 
+### clift: code quality, rounds 1 and 2 (2026-10-24, #481)
+
+Registers of a native-frame variant in Cranelift variables, closed frames with slot variables, held objects across blocks,
+`Index`, `Pos`, `Field` without overflow arithmetic on constants; then `SlicePos`, `LFill`, `LogicOp`, `NewFrame`, `Fill`,
+a dynamic `Cat` of one block, the `numeric_std` unsigned `+`, `-` and `to_integer` on their small path, reads of constants
+(a copy in the code), the temporary area, instance data and enclosing frames without a lookup, zeroing of temporaries by
+stores, and the interpreter's own `xstep` as the slow path of those in a variant (decisions "Cranelift code quality").
+Instructions of the whole process in G (compile thread included), one run each at the commit named, hosts shared, so
+`auto` rows move by several percent from run to run; the interpreter is 493.8 / 39.9 / 74.5 / 221.0:
+
+| design | clift-auto | auto3 | LLVM auto cold / warm | `--tier=clift` eager |
+|---|---:|---:|---:|---:|
+| window generator (`vai_window_gen_interlock`) | 216.0 | 222.1 | 243.2 / 191.3 | 275 (389.5 before) |
+| neorv32_single_min | 41.0 | 41.3 | 38.8 / 38.8 | 91.7 |
+| fletcher_bufferwriter_512 | 75.7 | 78.3 | 74.8 / 74.7 | 107.7 |
+| poc_arith_addw | 172.5 | 176.8 | 188.4 / 151.8 | 183.6 (234.5 before) |
+
+Where it stands: on the testbenches that run library code and numeric_std (window generator, poc) Cranelift is 54 and 22
+percent below the interpreter and level with or below LLVM `auto` cold. On neorv32 and fletcher it does not beat the
+interpreter and neither does LLVM: the kernel is 35 to 47 percent of the instructions and the compiled clocked processes
+cost what the interpreted ones do (eager Cranelift runs neorv32 in 39.3 G against 38.8 G interpreted, plus 51 G of
+translation of all 1900 functions; with `YAVS_CLIFT_OPT=none YAVS_CLIFT_RA=single_pass` the translation is 27 G). Tools:
+`YAVS_CLIFT_PERFMAP=1` with `perf record -e instructions:u` and `perf report` names the generated functions;
+`YAVS_COUNTERS=pc` counts `xstep` and `native` entries by instruction and symbol.
+
 ### clift: native frames and inlining (2026-10-21)
 
 Question (#481): do direct calls between compiled functions, and Cranelift's inliner on top of them, make Cranelift code

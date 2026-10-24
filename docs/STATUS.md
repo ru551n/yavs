@@ -7704,10 +7704,7 @@ Cold compile cost (empty compilation cache, `--tier=llvm`, run stopped at 1 us, 
 (29.6 G to 29.9 G), the window generator +0.3 %. The numeric natives of `poc_arith_addw` are gone from the profile; what is left
 there is the kernel, signal reads and concatenations. In the window generator the natives were a small share under
 `--tier=llvm` (about 3 percent of the instructions); the callbacks of its VHDL codec functions, `get`, `set`, `decode`, remain
-the bulk. Not understood: in a design whose functions take unconstrained vectors by reference from a process
-(`tests/perf/llvm_ieee.vhd`), `cb_host` rises (1416 to 2019 for 1695 natives saved): the operand reads of the inline code
-go through `yavs_rt_host` for addresses of kinds other than the temporary area, the instance data and the top frame
-(tested inline first in a trial, no change in instructions); `cb_native` of that design 1695 to 5.
+the bulk. The `cb_host` rise of `llvm_ieee` (1416 to 2019 for 1695 natives saved) is explained in "`yavs_rt_host` calls of frame-mode code" below (#711); `cb_native` of that design 1695 to 5.
 
 ### Inlining and the verifier (#709, 2026-10-24)
 
@@ -7778,3 +7775,17 @@ Found, not fixed (comments on #697, #698, #710, #675):
 - Ideas of the reference simulator used: it reuses the lowered code of instances that are equal (cloned instances at elaboration);
   we do the same after specialisation, on the generated module. Its profile on this test: 20 percent in the compiler, 30 percent in
   generated code, the rest in a runtime whose `+` and `to_integer` are natives as ours are; nothing of its code was used.
+
+### `yavs_rt_host` calls of frame-mode code (#711, 2026-10-24)
+
+The calls did not come from the native frame that reads the by-reference parameters but from the frame-mode code of the
+process: `llvm_ieee` 2116 of 2119. Spaces: the temporary area (the fat pair a call or native returned, the words
+loaded from it, dope and planes, layouts) and heap objects (process variables). Frame-mode `Gen::host` now tests a
+guess (`Known::LikelyTemp`, `Known::LikelyHeap`, and `Known::Heap(None)`) inline and falls back to the call.
+`cb_host` (`--tier=llvm`, debug build): `llvm_ieee` 2119 to 8 (bound added to `tests/perf.rs`), `poc_arith_addw`
+343 248 to 26 313 (3 us), `sc5_fifo_repack` 659 398 to 35 600 (10 us), window generator 104 834 to 54 875 (2 us).
+Cycles (core 12, medians of 5): `--tier=llvm` -0.8, -2.4 and -1.0 percent on those three, `--tier=auto` -3.0 percent on
+`poc_arith_addw`, -1.4 on the window generator and level (within 1.3 percent) on `sc5_fifo_repack`, `uvvm_sb_slv`,
+`osvvm_axis_random`, `neorv32_single_min`, `fletcher_bufferwriter_512`. The price is code: +2 to +13 percent LLVM
+instructions under `--tier=llvm` (`docs/decisions.md` "Frame-mode code tests the temporary area ..."). Open: package
+and protected-object addresses in native frames still end in `host_miss`.

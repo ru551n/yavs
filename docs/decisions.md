@@ -8175,3 +8175,44 @@ and `--tier=auto` compiled every adder process with the full `O2` pipeline, one 
   Both are the auto policy's (#673, #675); the native operand convention (#697) and the callback layer (#698) own the two
   `ieee` calls per adder activation (228 instructions of callback per call); `enter`/`view_again` cost 217 instructions per compiled
   activation (compiled frame views).
+
+## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
+
+- **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`
+  natives, #698) did not come from the native frame of the function that reads the parameters: 2116 of 2119 came from
+  the frame-mode code of the process, which always asks `yavs_rt_host` for an address of unknown space (#634). The
+  natives had read their operands inside the runtime callback; the inline code reads them through `host`. By space:
+  the temporary area (the fat pair a call or native returned, the two words loaded from it, the dope and plane block
+  they point at, the words of a layout: 80 percent in `poc_arith_addw`, 76 percent in `llvm_ieee`) and heap objects
+  (process variables: the plane reads and the `LCopy` and `LSet` writes, 52 percent in `sc5_fifo_repack`). The earlier
+  trial (below, "Measured and not taken") put its tests into the native-frame chain, which these designs do not use.
+- **Decision:** `rt::track` gives a register a guess, not a fact: `Known::LikelyTemp` for the result of a `Call`, a
+  `CallNative` and a `LayoutOf` and for the 8-byte words loaded from such an address (also through `Move` and `Index`),
+  `Known::LikelyHeap` for an 8-byte word loaded from the slot of a local variable (`Known::Frame` that is no parameter's
+  slot, or `Known::Up`: a caller passes any space, a variable's object is a heap object). Frame-mode `Gen::host`
+  tests a guess at run time before it asks the runtime: `LikelyTemp` is `hi == TEMP` and the bounds against the view's
+  length; `LikelyHeap` and `Known::Heap(None)` (a `Deref` of this stretch) are the object cache entry (`obj_entry`,
+  the first test of the native-frame chain). A miss takes the call as before, so a wrong guess costs the failed test
+  and never a wrong read. A guess is never `Known::Temp`: that path checks only the offset, so a wrong fact there would
+  read silently wrong data. A native frame ignores `LikelyHeap` (it finds its own slots by their address) and keeps its
+  chain.
+- **Also:** `track` cleared the fact of register `r + 1` for every definition of `r`; it does it only for a signal
+  reference (two cells), as the other analyses of the file do (`preloads`, `fixed_consts`). In `Load r18 <- [r17]`,
+  `Load r17 <- [r20]` the second no longer loses the fact of `r18`.
+- **Measured** (bench builds, core 12, `perf stat` user cycles and instructions, medians of 5 interleaved runs, base
+  3df7bc44; the host was loaded, single cells vary by 2 to 3 percent): `cb_host` in a debug build (`--tier=llvm`, windows of
+  3, 10 and 2 us): `llvm_ieee` 2119 to 8, `poc_arith_addw` 343 248 to 26 313, `sc5_fifo_repack` 659 398 to 35 600, the
+  window generator 104 834 to 54 875 (the rest: `CONST` reads by `LCopy` whose constant has no global; package and
+  protected-object addresses of native frames). Cycles, `--tier=llvm`: `poc_arith_addw` -0.8 percent, `sc5_fifo_repack`
+  -2.4, window generator -1.0 (instructions -0.9, -1.0, -0.6); `--tier=auto`: `poc_arith_addw` -3.0 percent (instructions
+  -1.8), the window generator -1.4 (the instructions of the same binary swing 165 to 180 G between runs under `auto`),
+  the others level within the noise (`sc5_fifo_repack`, `uvvm_sb_slv`, `osvvm_axis_random`, `neorv32_single_min`,
+  `fletcher_bufferwriter_512`: -0.1 to +1.3 percent). **Cost:** the tests are code. LLVM
+  instructions before optimisation, `--tier=llvm` (every function compiled): `neorv32_single_min` +2.0 percent,
+  `poc_arith_addw` +9.2, `uvvm_sb_slv` +9.7, `osvvm_axis_random` +13.2; the temporary area tests are two thirds of it
+  in `poc_arith_addw`, half in `osvvm_axis_random`. `--tier=llvm` runs of library testbenches are mostly code
+  generation, and take that much longer (`osvvm_axis_random` +4 percent cycles of a run of 11 s in a first
+  measurement); `--tier=auto` compiles what is hot only.
+- **Not done:** native frames of the window generator miss in `Mem::find` for package and protected-object addresses
+  (`PKG`, `SHARED_HEAP`: about 3 000 `host_miss` per us). The test sequences could be smaller (the `hi == TEMP` test
+  and the mask as one subtraction and compare).

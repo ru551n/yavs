@@ -2531,6 +2531,13 @@ pub enum Known<V = ()> {
     Up(u8),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
+    /// A guess, not a fact: probably an address in the temporary area (the fat pair a call
+    /// returned, the words loaded from it). Frame-mode code tests it at run time and asks the
+    /// runtime when wrong (`Gen::host`).
+    LikelyTemp,
+    /// A guess: probably an address in a heap object (a pointer loaded from the slot of a
+    /// variable). Only frame-mode code uses it, as `LikelyTemp`.
+    LikelyHeap,
     /// An address in a heap object (what a `Deref` makes, or an index into it): not in a frame, the
     /// temporary area, the instance data or a constant. In a native frame, the object itself while
     /// nothing that could free or move it ran (`ObjRef`).
@@ -2623,7 +2630,7 @@ pub fn preloads(f: &Func) -> Vec<Preload> {
 }
 
 /// Update `known` for what `i` writes.
-pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: &Inst) {
+pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: &Func, i: &Inst) {
     let get = |r: Reg| known.get(r.0 as usize).copied().flatten();
     // Before the definitions clear what they overwrite.
     let len_known = match *i {
@@ -2667,6 +2674,24 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: 
             ..
         } => Some((dst, Known::Up(d))),
         Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
+        // A result that is an array or a record is the address of a fat pair in the temporary
+        // area, and the words of a layout are made there too.
+        Inst::Call { dst: Some(dst), .. }
+        | Inst::CallNative { dst: Some(dst), .. }
+        | Inst::LayoutOf { dst, .. } => Some((dst, Known::LikelyTemp)),
+        Inst::Load {
+            dst,
+            addr,
+            w: yavs_ir::Width::B8,
+        } => match get(addr) {
+            Some(Known::LikelyTemp) => Some((dst, Known::LikelyTemp)),
+            // A variable's object, not the address a caller passed: that is in any space.
+            Some(Known::Frame(o)) if !f.params.iter().any(|p| u64::from(p.slot) == o) => {
+                Some((dst, Known::LikelyHeap))
+            }
+            Some(Known::Up(_)) => Some((dst, Known::LikelyHeap)),
+            _ => None,
+        },
         Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
@@ -2696,15 +2721,19 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: 
                 (Some(Known::Inst(_) | Known::InstAny), _) => Some((dst, Known::InstAny)),
                 (Some(Known::Up(d)), _) => Some((dst, Known::Up(d))),
                 (Some(Known::Temp), _) => Some((dst, Known::Temp)),
+                (Some(Known::LikelyTemp), _) => Some((dst, Known::LikelyTemp)),
+                (Some(Known::LikelyHeap), _) => Some((dst, Known::LikelyHeap)),
                 (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
                 _ => None,
             }
         }
         _ => None,
     };
-    i.visit(&mut |r, role, _| {
+    i.visit(&mut |r, role, ty| {
         if role == yavs_ir::Role::Def {
-            for k in [r.0, r.0.saturating_add(1)] {
+            // (A signal reference takes two cells, any other value one.)
+            let w = 1 + u32::from(ty == Some(yavs_ir::RegTy::Sig));
+            for k in r.0..r.0.saturating_add(w) {
                 if let Some(x) = known.get_mut(k as usize) {
                     *x = None;
                 }

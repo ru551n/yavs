@@ -2955,7 +2955,7 @@ impl Gen {
                     kpend.push(kind_name(&inst));
                 }
                 if let Some(p) = prev.replace(inst) {
-                    track(&mut c.known.borrow_mut(), &c.fixed, &p);
+                    track(&mut c.known.borrow_mut(), &c.fixed, f, &p);
                     // The objects found stay valid up to an instruction that may free or move
                     // one (`keeps_objects`: the rule of the object table too).
                     if !keeps_objects(&p) {
@@ -7237,6 +7237,12 @@ impl Gen {
     ) -> LLVMValueRef {
         // SAFETY: loads of `Mem` fields, integer arithmetic, well-formed blocks of c.f.
         unsafe {
+            // (A native frame finds its own slots by their address: a guess about heap is no use.)
+            let at = if c.nat.is_some() && matches!(at, Some(Known::LikelyHeap)) {
+                None
+            } else {
+                at
+            };
             if let Some(Known::Const(k, o)) = at {
                 match self.const_global(c, k) {
                     // A write to a constant is the interpreter's error.
@@ -7319,7 +7325,7 @@ impl Gen {
                 return self.gep(self.tag(self.mem_ld(c, base, self.ptr), kind), o);
             }
             // A native frame's own slots are found here: the interpreter has no frame for it.
-            let heap = matches!(at, Some(Known::Heap(_)));
+            let heap = matches!(at, Some(Known::Heap(_) | Known::LikelyHeap));
             let (own, other, merge) = match &c.nat {
                 // A closed frame is asked for by no address of unknown space (`closed_frame`): its
                 // slots stay out of the test of its own frame, so they may live in registers; the
@@ -7393,8 +7399,38 @@ impl Gen {
             // Frame-mode code asks `yavs_rt_host` (the same lookup, once, in the runtime): the inline
             // chain of four tests per access was most of the code of a process and branch sites
             // the front end paid for (#634); native frames keep it.
-            let direct = c.nat.is_none();
-            if !direct {
+            // An address that is probably in the temporary area (a call's result, the words loaded
+            // from it) gets that one test first (#711); a miss asks the runtime as ever.
+            let likely = c.nat.is_none() && matches!(at, Some(Known::LikelyTemp));
+            // The same for the object cache: a heap object the code found here with a `Deref`, or
+            // a pointer loaded from a variable's slot (a composite variable's object).
+            let likely_heap =
+                c.nat.is_none() && matches!(at, Some(Known::LikelyHeap | Known::Heap(None)));
+            let direct = c.nat.is_none() && !likely && !likely_heap;
+            if likely {
+                let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
+                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                let hit = self.icmp(IP::LLVMIntEQ, hi, self.c64(i64::from(space::TEMP) << 29));
+                let len = self.mem_ld(c, MEM_TEMP_LEN, self.i64);
+                let fits = self.icmp(IP::LLVMIntULE, n, len);
+                let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+                let inside = self.icmp(IP::LLVMIntULE, o, rest);
+                let ok = LLVMBuildAnd(
+                    self.b,
+                    hit,
+                    LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()),
+                    c"".as_ptr(),
+                );
+                let (fast, miss) = (self.block(c), self.block(c));
+                self.cond_br(ok, fast, miss, true);
+                LLVMPositionBuilderAtEnd(self.b, fast);
+                let pf = self.gep(self.tag(self.mem_ld(c, MEM_TEMP, self.ptr), AA_TEMP), o);
+                LLVMBuildBr(self.b, merge_at);
+                found.push((pf, fast));
+                LLVMPositionBuilderAtEnd(self.b, miss);
+            }
+            if !direct && !likely {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());

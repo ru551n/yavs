@@ -38,6 +38,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use super::*;
+use crate::{ConstData, ConstId, Regs, SCATTER_PART, SCATTER_REJECT};
 
 use std::rc::Rc;
 
@@ -52,11 +53,54 @@ const MAX_TRIES: usize = 2000;
 /// slots of one process that name the same elements are one kernel driver.
 type Key = (u32, u8, i64, i64);
 
+/// The leaf signals of a table (sorted) and whether its value type is a record.
+type TabInfo = (Rc<[u32]>, bool);
+
+/// The operands of a scatter: the delay, a rejection limit, the part (first, outer).
+type ScOps = (Reg, bool, Option<(Reg, Reg)>);
+
+/// An offset or count of a part: a constant (0) or a register defined once (1).
+type Pk = (u8, i64);
+
+/// What a drive-like instruction writes: elements of one signal ([`Key`]), or the leaf signals
+/// of a record driven by one `SigScatter` (sorted), all of them (`None`) or the part of the
+/// outermost array `(first, outer)` the registers name (#677).
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Fp {
+    D(Key),
+    S(Rc<[u32]>, Option<(Pk, Pk)>),
+}
+
+impl Fp {
+    /// Does a zero-delay write of `self` certainly write every element `d` writes? A scatter of
+    /// the whole record writes every element of its leaf signals; a drive writes no leaf of a
+    /// scatter entirely (the length of a signal is not known here).
+    fn covers(&self, d: &Fp) -> bool {
+        match (self, d) {
+            (Fp::D(a), Fp::D(b)) => a == b,
+            (Fp::S(s, None), Fp::D(k)) => s.binary_search(&k.0).is_ok(),
+            (Fp::S(s, p), Fp::S(t, q)) => {
+                (p.is_none() || p == q) && t.iter().all(|x| s.binary_search(x).is_ok())
+            }
+            _ => false,
+        }
+    }
+
+    /// Do the two certainly write no element in common?
+    fn apart(&self, o: &Fp) -> bool {
+        match (self, o) {
+            (Fp::D(a), Fp::D(b)) => a.0 != b.0 || disjoint(*a, *b),
+            (Fp::S(s, _), Fp::D(k)) | (Fp::D(k), Fp::S(s, _)) => s.binary_search(&k.0).is_err(),
+            (Fp::S(s, _), Fp::S(t, _)) => !s.iter().any(|x| t.binary_search(x).is_ok()),
+        }
+    }
+}
+
 /// Something in a block that matters to a delayed drive (`Dr::events`).
 enum Ev {
     Drive {
         idx: u32,
-        key: Option<Key>,
+        fp: Option<Fp>,
         /// A drive of one element at delay zero, so one that deletes an earlier one.
         zero: bool,
     },
@@ -92,8 +136,13 @@ struct Dr<'a> {
     /// Occurrences of each register in the code (operand lists included).
     occ: Vec<u32>,
     occ_on: bool,
-    /// How many drives each key has.
+    /// How many drives each key has, and how many scatters each signal is a leaf of.
     keys: FxMap<Key, u32>,
+    scat: FxMap<u32, u32>,
+    /// Constant memory: registers defined by `AddrOf` of the constant pool.
+    caddr: Vec<bool>,
+    /// The leaf signals of a leaf table (sorted), by constant.
+    tabs: std::cell::RefCell<FxMap<u32, Option<TabInfo>>>,
     preds: Vec<Vec<u32>>,
     /// `events` per block, dropped when the block changes.
     evs: std::cell::RefCell<Vec<Option<Rc<Vec<Ev>>>>>,
@@ -174,6 +223,11 @@ impl Dr<'_> {
                 offset,
                 len,
             } => self.rsig[dst.0 as usize] = Some((sig, offset, len)),
+            Inst::AddrOf {
+                dst,
+                space: AddrSpace::Const(_),
+                ..
+            } => self.caddr[dst.0 as usize] = true,
             _ => {}
         }
     }
@@ -223,6 +277,7 @@ impl Dr<'_> {
         self.defs = vec![0; n];
         self.rconst = vec![None; n];
         self.rsig = vec![None; n];
+        self.caddr = vec![false; n];
         let code = std::mem::take(&mut self.code);
         for b in &code {
             for i in b {
@@ -230,11 +285,10 @@ impl Dr<'_> {
             }
         }
         self.keys.clear();
+        self.scat.clear();
         for b in &code {
             for i in b {
-                if let Some(k) = self.key(i) {
-                    *self.keys.entry(k).or_insert(0) += 1;
-                }
+                self.tally(i, true);
             }
         }
         self.code = code;
@@ -271,6 +325,128 @@ impl Dr<'_> {
             return None;
         };
         self.sigv(t)
+    }
+
+    /// Count the drive or scatter `i` in `keys` and `scat` (`add`) or take it out.
+    fn tally(&mut self, i: &Inst, add: bool) {
+        let step = |n: &mut u32| {
+            if add {
+                *n += 1;
+            } else {
+                *n = n.saturating_sub(1);
+            }
+        };
+        match self.fp(i) {
+            Some(Fp::D(k)) => step(self.keys.entry(k).or_insert(0)),
+            Some(Fp::S(s, _)) => s
+                .iter()
+                .for_each(|x| step(self.scat.entry(*x).or_insert(0))),
+            None => {}
+        }
+    }
+
+    /// A register that is a constant or defined once.
+    fn pk(&self, r: Reg) -> Option<Pk> {
+        match self.konst(r) {
+            Some(c) => Some((0, c)),
+            None if self.defs[r.0 as usize] == 1 => Some((1, i64::from(r.0))),
+            None => None,
+        }
+    }
+
+    /// The operands of a scatter: the delay, whether it has a rejection limit, and the part.
+    fn scatter_ops(&self, ops: Regs, has: u8) -> Option<ScOps> {
+        let o = self
+            .operands
+            .get(ops.start as usize..(ops.start + ops.len) as usize)?;
+        let (&after, mut rest) = o.split_first()?;
+        let reject = has & SCATTER_REJECT != 0;
+        if reject {
+            rest = rest.get(1..)?;
+        }
+        let part = match (has & SCATTER_PART != 0, rest) {
+            (false, []) => None,
+            (true, &[a, b]) => Some((a, b)),
+            _ => return None,
+        };
+        Some((after, reject, part))
+    }
+
+    /// The signals of the leaves of table `tab`, sorted, and whether its value type is a record
+    /// (one instance of it; an array of records has a count that only the descriptor knows).
+    fn table_sigs(&self, tab: ConstId) -> Option<TabInfo> {
+        if let Some(r) = self.tabs.borrow().get(&tab.0) {
+            return r.clone();
+        }
+        let r = match self.prog.consts.get(tab) {
+            Some(ConstData::Bytes(b)) => crate::gather::entries(b).map(|(ty, it)| {
+                let mut v: Vec<u32> = it.map(|(l, _)| l.sig).collect();
+                v.sort_unstable();
+                v.dedup();
+                let rec = matches!(self.prog.types.get(ty), Some(Ty::Record { .. }));
+                (Rc::from(v), rec)
+            }),
+            _ => None,
+        };
+        self.tabs.borrow_mut().insert(tab.0, r.clone());
+        r
+    }
+
+    /// What a drive or scatter writes, when that is static.
+    fn fp(&self, i: &Inst) -> Option<Fp> {
+        match *i {
+            Inst::Drive { .. } => self.key(i).map(Fp::D),
+            Inst::SigScatter { tab, ops, has, .. } => {
+                let (_, _, part) = self.scatter_ops(ops, has)?;
+                let (sigs, rec) = self.table_sigs(tab)?;
+                // A part is a count of elements of the outermost array: one when the value is a
+                // record, else known at run time only.
+                let part = match part {
+                    Some((a, b)) if rec => Some((self.pk(a)?, self.pk(b)?)),
+                    Some(_) => return None,
+                    None => None,
+                };
+                Some(Fp::S(sigs, part))
+            }
+            _ => None,
+        }
+    }
+
+    /// Does the scatter `i` write at delay zero, with no rejection limit?
+    fn zero_scatter(&self, i: &Inst) -> bool {
+        let Inst::SigScatter { ops, has, .. } = *i else {
+            return false;
+        };
+        matches!(self.scatter_ops(ops, has), Some((a, false, _)) if self.konst(a) == Some(0))
+    }
+
+    /// Is `r` the address of constant memory?
+    fn const_addr(&self, r: Reg) -> bool {
+        self.defs[r.0 as usize] == 1 && self.caddr[r.0 as usize]
+    }
+
+    /// What `code[b][idx]` writes if it is a drive or scatter that a later one can delete and
+    /// that may move (the instruction's own form; `payload` checks the rest).
+    fn candidate(&self, b: usize, idx: usize) -> Option<Fp> {
+        match self.code[b][idx] {
+            Inst::Drive { .. } => self.zero_drive(b, idx).map(Fp::D),
+            Inst::SigScatter { src, desc, .. } => {
+                let i = &self.code[b][idx];
+                (self.zero_scatter(i) && self.const_addr(src) && self.const_addr(desc))
+                    .then(|| self.fp(i))?
+            }
+            _ => None,
+        }
+    }
+
+    /// Could a drive or scatter of the same signals as `fp` follow? (A cheap test before the
+    /// search.)
+    fn related(&self, fp: &Fp) -> bool {
+        let n = |x: &u32| self.scat.get(x).copied().unwrap_or(0);
+        match fp {
+            Fp::D(k) => self.keys.get(k).copied().unwrap_or(0) >= 2 || n(&k.0) >= 1,
+            Fp::S(s, _) => s.iter().any(|x| n(x) >= 2),
+        }
     }
 
     /// Is `code[b][idx]` a drive of one element at delay zero with no rejection limit; its key.
@@ -339,11 +515,15 @@ impl Dr<'_> {
             match *i {
                 Inst::Drive { .. } => v.push(Ev::Drive {
                     idx,
-                    key: self.key(i),
+                    fp: self.fp(i),
                     zero: self.zero_drive(b, idx as usize).is_some(),
                 }),
+                Inst::SigScatter { .. } => v.push(Ev::Drive {
+                    idx,
+                    fp: self.fp(i),
+                    zero: self.zero_scatter(i),
+                }),
                 Inst::DriveSlot { .. }
-                | Inst::SigScatter { .. }
                 | Inst::Disconnect { .. }
                 | Inst::Force { .. }
                 | Inst::Release { .. }
@@ -379,23 +559,24 @@ impl Dr<'_> {
         v
     }
 
-    fn scan(&self, b: usize, from: usize, key: Key) -> Scan {
+    fn scan(&self, b: usize, from: usize, fp: &Fp) -> Scan {
         let c = &self.code[b];
         for ev in self.events(b).iter() {
-            match *ev {
-                Ev::Drive { idx, key: k, zero } => {
+            match ev {
+                Ev::Drive { idx, fp: k, zero } => {
+                    let idx = *idx;
                     if (idx as usize) < from {
                         continue;
                     }
-                    if zero && k == Some(key) {
+                    if *zero && k.as_ref().is_some_and(|k| k.covers(fp)) {
                         return Scan::Kill;
                     }
-                    let free = k.is_some_and(|k| k.0 != key.0 || disjoint(k, key));
+                    let free = k.as_ref().is_some_and(|k| k.apart(fp));
                     if !free {
                         return Scan::Barrier(idx as usize);
                     }
                 }
-                Ev::Bar { idx, wait } => {
+                &Ev::Bar { idx, wait } => {
                     let idx = idx as usize;
                     if idx < from {
                         continue;
@@ -430,6 +611,7 @@ impl Dr<'_> {
             | Inst::Store { .. }
             | Inst::LSet { .. }
             | Inst::LCopy { .. }
+            | Inst::SigScatter { .. }
             | Inst::Drive { .. } => true,
             Inst::AddrOf { space, .. } => !matches!(space, AddrSpace::Up(_)),
             Inst::Alloc { size, .. } => k(size),
@@ -446,7 +628,7 @@ impl Dr<'_> {
     fn payload(&mut self, b: usize, k: usize) -> Option<Vec<usize>> {
         self.ensure_occ();
         let c = &self.code[b];
-        if !matches!(c[k], Inst::Drive { .. }) {
+        if !matches!(c[k], Inst::Drive { .. } | Inst::SigScatter { .. }) {
             return None;
         }
         let s0 = (0..k).rev().find(|&j| c[j] == Inst::Stmt)? + 1;
@@ -477,6 +659,22 @@ impl Dr<'_> {
                         reads.push(r);
                     }
                 });
+                // A scatter reads constant memory only (its source and descriptor), and its
+                // operands keep their value (they are not renamed in a copy).
+                if let Inst::SigScatter { src, desc, ops, .. } = i {
+                    if !self.const_addr(src) || !self.const_addr(desc) {
+                        return None;
+                    }
+                    for &r in self
+                        .operands
+                        .get(ops.start as usize..(ops.start + ops.len) as usize)?
+                    {
+                        if self.defs[r.0 as usize] != 1 {
+                            return None;
+                        }
+                        reads.push(r);
+                    }
+                }
                 for r in reads {
                     // The nearest definition in the statement, if any.
                     let Some(d) = (s0..j).rev().find(|&x| defines(&c[x], r)) else {
@@ -611,6 +809,7 @@ impl Dr<'_> {
                     }
                     self.rconst.resize(n, None);
                     self.rsig.resize(n, None);
+                    self.caddr.resize(n, false);
                 }
             });
             i.visit_mut(&mut |r, _, _| {
@@ -618,10 +817,18 @@ impl Dr<'_> {
                     r.0 = m.1;
                 }
             });
-            self.note(&i, true);
-            if let Some(k) = self.key(&i) {
-                *self.keys.entry(k).or_insert(0) += 1;
+            // A copy has an operand list of its own.
+            if let Some(l) = i.list_mut() {
+                let o = self
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)
+                    .unwrap_or(&[])
+                    .to_vec();
+                l.start = self.operands.len() as u32;
+                self.operands.extend(o);
             }
+            self.note(&i, true);
+            self.tally(&i, true);
             out.push(i);
         }
         out
@@ -629,14 +836,14 @@ impl Dr<'_> {
 
     /// Try to delay the drive at `code[b0][k]`; whether the code changed.
     fn try_one(&mut self, b0: usize, k: usize) -> bool {
-        let Some(key) = self.zero_drive(b0, k) else {
+        let Some(key) = self.candidate(b0, k) else {
             return false;
         };
-        if self.keys.get(&key).copied().unwrap_or(0) < 2 {
+        if !self.related(&key) {
             return false;
         }
         let nb = self.code.len();
-        let first = self.scan(b0, k + 1, key);
+        let first = self.scan(b0, k + 1, &key);
         if first == Scan::Give {
             return false;
         }
@@ -680,7 +887,7 @@ impl Dr<'_> {
                         let n = left.entry(x).or_insert(self.preds[x].len() as u32);
                         *n -= 1;
                         if *n == 0 {
-                            let sx = self.scan(x, 0, key);
+                            let sx = self.scan(x, 0, &key);
                             work.push((x, sx));
                         }
                     }
@@ -717,13 +924,7 @@ impl Dr<'_> {
         let seg: Vec<Inst> = m.iter().map(|&j| self.code[b0][j]).collect();
         let segloc: Vec<StmtId> = m.iter().map(|&j| self.loc[b0][j]).collect();
         for i in &seg {
-            if let Some(kk) = self.key(i)
-                && let Some(n) = self.keys.get_mut(&kk)
-            {
-                *n -= 1;
-            }
-        }
-        for i in &seg {
+            self.tally(i, false);
             self.note(i, false);
         }
         let mut ins: Vec<Vec<(usize, Vec<Inst>)>> = vec![Vec::new(); nb];
@@ -818,6 +1019,9 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     let mut seen: std::collections::HashSet<(u32, u8, i64, i64), BuildHasherDefault<Fx>> =
         std::collections::HashSet::default();
     let mut twice = false;
+    // Signals driven by a drive with a static target.
+    let mut driven: std::collections::HashSet<u32, BuildHasherDefault<Fx>> =
+        std::collections::HashSet::default();
     for i in &f.code {
         if let Inst::Drive {
             target: Some(t), ..
@@ -830,6 +1034,23 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
                 None => (1, i64::from(o)),
             };
             twice |= !seen.insert((sig, off.0, off.1, l));
+            driven.insert(sig);
+        }
+    }
+    // A scatter and a write of one of its leaves, or two scatters of one: the search tells.
+    let mut sc: std::collections::HashSet<u32, BuildHasherDefault<Fx>> =
+        std::collections::HashSet::default();
+    for i in &f.code {
+        if let Inst::SigScatter { tab, .. } = *i
+            && let Some(ConstData::Bytes(b)) = prog.consts.get(tab)
+            && let Some((_, it)) = crate::gather::entries(b)
+        {
+            let mut mine = Vec::new();
+            for (l, _) in it {
+                twice |= driven.contains(&l.sig) || sc.contains(&l.sig);
+                mine.push(l.sig);
+            }
+            sc.extend(mine);
         }
     }
     if !twice {
@@ -855,6 +1076,9 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
         occ: Vec::new(),
         occ_on: false,
         keys: FxMap::default(),
+        scat: FxMap::default(),
+        caddr: Vec::new(),
+        tabs: std::cell::RefCell::new(FxMap::default()),
         preds: Vec::new(),
         evs: std::cell::RefCell::new(Vec::new()),
     };
@@ -870,7 +1094,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
             k = 0;
             continue;
         }
-        if let Inst::Drive { driver, .. } = d.code[b][k]
+        if let Inst::Drive { driver, .. } | Inst::SigScatter { driver, .. } = d.code[b][k]
             && tried.insert((d.loc[b][k], driver))
         {
             ntry += 1;
@@ -905,5 +1129,6 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     f.code = code;
     f.loc = locs;
     f.reg_ty = d.reg_ty;
+    f.operands = d.operands;
     true
 }

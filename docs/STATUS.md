@@ -7395,6 +7395,41 @@ What is left: the repeats behind a join (tail duplication), a repeat across a lo
 register, PoC `ffdre` (#701), sharing the two `to_integer` of
 a check's condition and message (#520, a comment with the plan).
 
+## IR optimiser round 14: record defaults (#667, #677, 2026-10-24)
+
+`opt/drives.rs` sees `SigScatter` (`docs/decisions.md` "IR optimiser round 14"): a record driven whole is a footprint (the leaf signals of its
+table and the part registers) that kills what it covers, is a barrier only for what it may overlap, and a scatter with a constant source
+(a default such as `port_req(i) <= req_terminate_c`) is delayed and dropped where an override follows like a drive. With that the
+leaf-by-leaf lowering of record parts that another drive may override (`Fx::overridden_signals`) is gone: every record part is one
+`SigScatter` again. Tests: `crates/yavs/tests/drives.rs` (`a_record_default_that_is_overridden_is_driven_once`: 12 designs with whole
+records, fields before and after, elements of arrays of records, slices, a procedure call as barrier; output and exit status equal with
+and without the pass, packs on and off, and the pass saves a kernel drive or an interpreter operation in the 7 that must; it fails on the
+previous `drives.rs`).
+
+Host instructions (`perf stat` `instructions:u`, `--threads 1`, bench builds, warm world), main / with the change, G; interpreter on
+855aefd8, llvm on a4afa75d (the earlier measurement, before the commits between):
+
+| design | interp | llvm (compile thread included, spread about 0.3 G) |
+|---|---|---|
+| `neorv32_single_min` | 37.66 / 36.99 (-1.8 %) | 51.1 / 50.6 (-1.0 %) |
+| `grlib_leon3mp` | 663.0 / 654.8 (-1.2 %) | 738.2 / 730.5 (-1.0 %) |
+| `neorv32_single_cache` | 30.02 / 30.01 | 48.1 / 48.0 |
+| `neorv32_dual_full` | 25.21 / 25.21 | 43.8 / 43.8 |
+| `fletcher_bufferwriter_512` | 61.48 / 61.47 | 78.4 / 78.4 |
+| `fletcher_bufferreader` | 22.64 / 22.64 | 29.9 / 29.9 |
+| `sc5_fifo_repack`, `sc5_timestamp` | 0.0 % | 0.0 % |
+
+(Binaries built from different commits differ by up to 0.35 percent in instructions with the same executed IR and kernel counters, in
+`memmove` of the same copies; `fletcher_bufferreader` showed -0.34 percent with a commit that executes the same operations as main. Read
+single-design changes below 0.5 percent as noise. `neorv32_single_cache`, `neorv32_dual_full` and the fletcher designs gain nothing: their
+repeated drives are not record defaults of the shapes the pass handles, or there are none; not analysed further.) Checked: the 520-test differential corpus on `--tier=interp`, `llvm` and `auto` at 1 and
+4 threads, the eight designs' stdout, stderr and exit status equal to main on `--tier=interp` at 1 and 4 threads, `cargo test --workspace`
+and `-p yavs-llvm -p yavs --features llvm`.
+
+What is left of #667: repeats behind a join (tail duplication needs the registers of the duplicated tail renamed: not cheap, 33 static
+sites in `neorv32_single_min` have a kill behind a join), the leaf a field drive overrides in a scatter (a mask would split the pack
+run: argued, not built, not measured), parts picked by registers that are equal but computed twice (value numbering), a default that reads a signal (`r <= other`).
+
 ## llvm: scalar drives kept for one host call (#676, 2026-10-24)
 
 A process that assigns the elements of a vector one by one in a loop (`state(i) <= x`, the usual shift register, bit reversal or sorting

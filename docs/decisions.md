@@ -7347,7 +7347,7 @@ instructions per leaf for a read and a drive (the integer unit of the GRLIB LEON
   by leaf as before: an array of arrays of a byte type as a field, a signal parameter, a drive by several waveform elements, a drive of
   a part whose leaves are not consecutive among the leaves of the process's driver, and a slice that is not the last step. A whole read
   goes through `read_obj`'s callers as before and the per-activation copy of #630 is filled by one `SigGather`.
-- **A part is driven leaf by leaf when another drive of the process may override it** (`Fx::overridden_signals`: two targets of one
+- **(Superseded by "IR optimiser round 14": every part is a scatter again.) A part is driven leaf by leaf when another drive of the process may override it** (`Fx::overridden_signals`: two targets of one
   signal in the process whose field paths are the same or one below the other, such as `port_req(i) <= a; if c then port_req(i).stb <= b`).
   The drive-deleting pass (`opt/drives.rs`, #667) drops the first of two drives on the paths where the second follows, which it can for
   single-leaf `Drive`s and not inside a `SigScatter` (its targets are known only at run time). Measured on `neorv32_single_min`
@@ -7479,8 +7479,7 @@ whatever pulse-rejection limit the second has (it only deletes more). Hence:
   delayed into a block that did not join gets a copy at its end (a `CondBr` edge is split by a new block, a `Case` cannot be split, so
   its arms all take the drive or the copy goes in front of the `Case`). The copy goes before the first instruction that can see or change
   the driver's transactions: a drive onto elements that may overlap (different instance signals, or constant disjoint ranges, are passed),
-  `DriveSlot`, `SigScatter` (a whole record driven by one instruction, #677: a barrier, and not recognised as the drive that
-  deletes the earlier one, so a record default driven that way stays), `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, a call of a procedure, a protected method, an indirect or
+  `DriveSlot`, `SigScatter` (a whole record driven by one instruction, #677: a barrier in the first version, a footprint of its own since round 14), `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, a call of a procedure, a protected method, an indirect or
   foreign call; before a wait it goes in front of the wait's `Stmt` (`static_wait` wants the marker first). Reports and function calls do not
   matter. At most six copies per drive, and the drive must be dropped on at least one path, so code never grows for nothing. Each path
   still does the drive exactly once or not at all, and never later than the instruction that could tell.
@@ -7514,6 +7513,37 @@ drives each, enabled ports drive twice) and this pass removes them; `counter_inc
 one (not repeats, the kernel's marks cannot tell), `exec_comb` keeps the repeats behind joins. After the pass 4.8 M of 16 M scalar
 drives of `neorv32_single_min` still count as repeats by the kernel's marks, almost all of them element-wise drives of one vector driver.
 The kernel side (a pending-drive merge, option 2 of #667) was not touched: a repeat there already costs one push.
+
+## IR optimiser round 14: record defaults (yavs-ir `opt/drives.rs`, yavs-lower, #667, #677, 2026-10-24)
+
+Decision (landed): **the drive-deleting pass sees `SigScatter`, and every record part is a scatter again.**
+
+- **Footprints.** A drive is written as `Fp::D(key)` (instance signal, offset, length: as before); a scatter as `Fp::S(leaf signals of its
+  table (sorted), part)` where the part is `None` (the whole value, so every element of every leaf signal) or the pair of registers
+  `(first, outer)` of the outermost array, each a constant or a register defined once. `covers` says what a later zero-delay write
+  deletes: a drive the same key; a scatter without a part every drive of one of its leaf signals; a scatter with a part (or without) a
+  scatter of the same or fewer leaf signals and the same part (equal constants or equal registers). A drive never covers a scatter (the
+  length of a leaf signal is not known to the pass). `apart` says what certainly shares no element (other signals, or constant disjoint
+  ranges of one): such a write is no barrier, any other overlap that is not a kill is one. Before, every scatter was a barrier.
+- **A scatter is a unit that may be delayed** like a drive: its delay is the constant 0 and it has no rejection limit, its source and
+  descriptor are addresses of the constant pool (`AddrOf` of a constant: the memory cannot change before a copy), its operands (delay,
+  part) are registers defined once; it builds nothing, so the unit is the instruction alone. A copy gets an operand list of its own at
+  the end of `Func::operands`. A default that reads a signal or a variable (`r <= other` as the default) is not delayed: it is the
+  later write, the kill, that does not need to move, and the default stays.
+- **Why the lowering change.** With the scatter dropped where an override follows, a record part needs no leaf-by-leaf code: `Fx::overridden_signals`
+  and the `overridden` field are gone, and `port_req(i) <= term; if en then port_req(i) <= req_i; port_req(i).stb <= ..` is two scatters
+  and a drive, the first dropped on the enabled path. The gain comes from the lowering change, not from the pass alone: instructions,
+  bench builds, `--tier=interp --threads 1`, G, `neorv32_single_min` main at a4afa75d 38.05, new pass with the leaf-by-leaf restriction kept
+  38.06 (nothing changes: the parts that matter are leaf drives there), new pass without it 37.38 (-1.8 %); `grlib_leon3mp` 670.5, 670.3,
+  661.9 (-1.3 %); the other designs within noise (`docs/STATUS.md`).
+- **Not done, measured or argued.** (a) A field drive after a scatter (`port_req(i).stb`) deletes one leaf of the scatter before it. Masking
+  that leaf (a skip bit in the table or a mask operand, no new table: the pass cannot add constants) would split the pack run the
+  scatter writes in one assignment (`write_leaf` joins adjacent leaves of one driver) into two, so it is argued to cost more than the one
+  leaf transaction it saves; not built and not measured. (b) Repeats behind a join (tail duplication): a static probe over `neorv32_single_min` (each of the 1.9 k attempts of the pass)
+  found a kill behind a join that some path enters without the drive in 33 attempts. The pass relies on registers defined once; a
+  duplicated tail defines them twice, so everything up to the point where the paths meet again would have to be renamed as a whole.
+  Not cheap, not done; no dynamic weight was measured. (c) Two parts picked by registers that hold the same value but are
+  computed twice (`q(sel) <= a; if c then q(sel) <= b`) are not the same part until value numbering shares the registers.
 
 ## Specialised copies start after the declarative part (yavs-ir `opt.rs` `drop_declarations`, #678, 2026-10-24)
 

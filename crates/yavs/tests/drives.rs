@@ -90,7 +90,9 @@ architecture a of t is
   signal c, d, x, y, z : std_logic := '0';
   signal v : std_logic_vector(3 downto 0) := \"0000\";
   signal r : rec_t := (a => '0', b => \"00\");
+  signal r2 : rec_t := (a => '0', b => \"00\");
   signal q : rec_arr_t;
+  constant zero : rec_t := (a => '0', b => \"00\");
   procedure push(signal s : out std_logic; value : std_logic) is
   begin
     s <= value after 1 ns;
@@ -117,6 +119,7 @@ begin
           & \" x=\" & std_logic'image(x) & \" y=\" & std_logic'image(y) & \" z=\" & std_logic'image(z)
           & \" v=\" & std_logic'image(v(3)) & std_logic'image(v(2)) & std_logic'image(v(1)) & std_logic'image(v(0))
           & \" r=\" & std_logic'image(r.a) & std_logic'image(r.b(1)) & std_logic'image(r.b(0))
+          & \" r2=\" & std_logic'image(r2.a) & std_logic'image(r2.b(1)) & std_logic'image(r2.b(0))
           & \" q=\" & img(q);
       end loop;
     end loop;
@@ -125,7 +128,7 @@ begin
 end;
 ";
 
-fn run(dir: &std::path::Path, env: &[(&str, &str)]) -> (i32, String, Option<u64>) {
+fn run(dir: &std::path::Path, env: &[(&str, &str)]) -> (i32, String, Option<u64>, Option<u64>) {
     let yavs = env!("CARGO_BIN_EXE_yavs");
     let work = format!("work:{}", dir.join("lib").display());
     let a = Command::new(yavs)
@@ -161,6 +164,10 @@ fn run(dir: &std::path::Path, env: &[(&str, &str)]) -> (i32, String, Option<u64>
                 .and_then(|n| n.trim().parse::<u64>().ok())
         })
         .sum::<Option<u64>>();
+    let ops = err
+        .lines()
+        .find_map(|l| l.strip_prefix("counters: ops="))
+        .and_then(|n| n.trim().parse::<u64>().ok());
     (
         o.status.code().unwrap_or(-1),
         format!(
@@ -172,31 +179,120 @@ fn run(dir: &std::path::Path, env: &[(&str, &str)]) -> (i32, String, Option<u64>
                 .join("\n")
         ),
         drives,
+        ops,
     )
+}
+
+/// Records driven whole (`SigScatter`, #677); the designs marked `true` must also save a drive or an
+/// operation with the pass (the others may not: a barrier, or parts the pass cannot tell apart).
+const SCATTERS: &[(&str, &str, bool)] = &[
+    (
+        "a record default and a whole record override",
+        "r <= zero; if c = '1' then r <= (a => d, b => \"11\"); end if; r2 <= (a => '1', b => \"01\"); if d = '1' then r2 <= zero; end if;",
+        true,
+    ),
+    (
+        "a record default, an override and a field after it",
+        "r <= zero; if c = '1' then r <= (a => d, b => \"11\"); r.a <= '1'; end if;",
+        true,
+    ),
+    (
+        "a field and a record override after it",
+        "r.a <= d; r.b <= \"10\"; if c = '1' then r <= (a => '1', b => \"01\"); end if;",
+        true,
+    ),
+    (
+        "a record copied from another signal over a default",
+        "r2 <= zero; if d = '1' then r2 <= r; end if; r <= (a => c, b => \"11\");",
+        true,
+    ),
+    (
+        "elements of an array of records, a default and an override in a loop",
+        "for i in 0 to 3 loop q(i) <= zero; if en(i) then q(i) <= (a => d, b => \"10\"); end if; end loop;",
+        true,
+    ),
+    (
+        "an element picked by a signal",
+        "q(sel) <= zero; if c = '1' then q(sel) <= (a => d, b => \"01\"); end if;",
+        false,
+    ),
+    (
+        "two elements, the second overridden",
+        "q(0) <= zero; q(1) <= zero; if c = '1' then q(1) <= (a => d, b => \"11\"); end if;",
+        true,
+    ),
+    (
+        "a slice default and an element override",
+        "q(1 to 2) <= (zero, zero); if c = '1' then q(1) <= (a => d, b => \"11\"); end if; q(3) <= (a => d, b => \"01\");",
+        false,
+    ),
+    (
+        "an element default and a slice override",
+        "q(1) <= zero; if c = '1' then q(1 to 2) <= ((a => d, b => \"11\"), (a => '1', b => \"10\")); end if; q(0) <= zero;",
+        false,
+    ),
+    (
+        "an element default and a slice override that skips it",
+        "q(0) <= (a => d, b => \"11\"); if c = '1' then q(1 to 2) <= (zero, zero); end if;",
+        false,
+    ),
+    (
+        "a record default, a call of a procedure and an override",
+        "r <= zero; push(y, d); if c = '1' then r <= (a => d, b => \"11\"); end if;",
+        false,
+    ),
+    (
+        "a record default and a case with a null arm",
+        "r <= zero; case sel is when 0 => r <= (a => d, b => \"11\"); when 1 => null; when others => r <= (a => '1', b => \"01\"); end case;",
+        true,
+    ),
+];
+
+fn check(cases: &[(&str, &str, bool)], packs: &str) -> usize {
+    let mut fewer = 0;
+    for (what, body, strict) in cases {
+        let d = tmp("drives");
+        std::fs::write(d.join("t.vhd"), HEAD.replace("BODY", body)).expect("write");
+        let with = run(&d, &[("YAVS_PACKS", packs)]);
+        let without = run(&d, &[("YAVS_NO_DRIVES", "1"), ("YAVS_PACKS", packs)]);
+        assert_eq!((&with.0, &with.1), (&without.0, &without.1), "{what}");
+        assert_eq!(with.0, 0, "{what}: {}", with.1);
+        let mut less = false;
+        if let (Some(a), Some(b)) = (with.2, without.2) {
+            assert!(a <= b, "{what}: {a} drives with the pass, {b} without");
+            less |= a < b;
+        }
+        // Operations of the interpreter: a dropped drive of a pack is no kernel drive less when
+        // the values do not change, but it is code not run. (Only debug builds print the count.)
+        let ops = with.3.is_some() && without.3.is_some();
+        if let (Some(a), Some(b)) = (with.3, without.3) {
+            less |= a < b;
+        }
+        assert!(
+            less || !*strict || !ops,
+            "{what}: the pass saves no drive and no operation"
+        );
+        fewer += usize::from(less);
+    }
+    fewer
 }
 
 #[test]
 fn a_default_drive_that_is_overridden_changes_nothing_anyone_sees() {
-    let mut fewer = 0;
-    for (what, body) in CASES {
-        let d = tmp("drives");
-        std::fs::write(d.join("t.vhd"), HEAD.replace("BODY", body)).expect("write");
-        // One kernel signal per leaf: record packs (#686) merge drives of fields by themselves.
-        let with = run(&d, &[("YAVS_PACKS", "off")]);
-        let without = run(&d, &[("YAVS_NO_DRIVES", "1"), ("YAVS_PACKS", "off")]);
-        assert_eq!((&with.0, &with.1), (&without.0, &without.1), "{what}");
-        assert_eq!(with.0, 0, "{what}: {}", with.1);
-        if let (Some(a), Some(b)) = (with.2, without.2) {
-            assert!(a <= b, "{what}: {a} drives with the pass, {b} without");
-            fewer += usize::from(a < b);
-        }
-    }
+    // One kernel signal per leaf: record packs (#686) merge drives of fields by themselves.
+    let cases: Vec<_> = CASES.iter().map(|&(w, b)| (w, b, false)).collect();
+    let fewer = check(&cases, "off");
     // Counters are printed by release and debug builds alike.
     assert!(
-        // The designs that drive a whole record, or an element of an array of records, do it with
-        // one instruction (`SigScatter`), which the pass leaves alone.
         fewer >= 6,
         "only {fewer} of {} designs drive less",
         CASES.len()
     );
+}
+
+#[test]
+fn a_record_default_that_is_overridden_is_driven_once() {
+    for packs in ["off", "on"] {
+        check(SCATTERS, packs);
+    }
 }

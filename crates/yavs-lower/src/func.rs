@@ -193,9 +193,6 @@ pub(crate) struct Fx<'a, 'b> {
     pub local_files: Vec<(u32, String, TyId)>,
     /// A process with a sensitivity list: its whole-value reads of composite signals (#630).
     pub sigcopy: Option<SigCopies>,
-    /// The record signals whose parts the statements of this process drive more than once, so
-    /// that one drive may override another (`Fx::overridden_signals`).
-    pub overridden: Vec<DeclId>,
     /// The bounds `(left, right, dir)` a one-dimensional descriptor was made from in a block
     /// (`Inst::MakeDope`; only valid in that block), so a native `ieee` call takes them as values (#697).
     pub made_dopes: Vec<(BlockId, Reg, (Reg, Reg, Reg))>,
@@ -251,7 +248,6 @@ impl<'a, 'b> Fx<'a, 'b> {
             writeback_parts: Vec::new(),
             local_files: Vec::new(),
             sigcopy: None,
-            overridden: Vec::new(),
             made_dopes: Vec::new(),
         }
     }
@@ -535,43 +531,6 @@ impl<'a, 'b> Fx<'a, 'b> {
             .filter(|c| c.1 >= 2)
             .map(|c| c.0)
             .collect()
-    }
-
-    /// The record signals `body` drives a part of by two targets whose field paths are the same or
-    /// one below the other (`x(i) <= a; if c then x(i).f <= b; end if`): the first drive is
-    /// dropped on the paths where the second follows (`opt/drives.rs`, #667), which it can for
-    /// the drives of single leaves but not for the leaves of a `SigScatter`, so a part of such a
-    /// signal is driven leaf by leaf.
-    fn overridden_signals(&self, body: &[StmtId]) -> Vec<DeclId> {
-        fn walk(fx: &Fx<'_, '_>, body: &[StmtId], targets: &mut Vec<(DeclId, Vec<u32>)>) {
-            for &s in body {
-                if let HStmt::SignalAssign { target, .. } = &fx.db.stmts[s].kind
-                    && let Some((d, steps)) = fx.comp_steps(target.expr)
-                {
-                    let path = steps
-                        .iter()
-                        .filter_map(|s| match *s {
-                            crate::expr::Step::Field(n) => Some(n),
-                            _ => None,
-                        })
-                        .collect();
-                    targets.push((d, path));
-                }
-                walk(fx, &fx.db.stmt_children(s), targets);
-            }
-        }
-        let mut targets = Vec::new();
-        walk(self, body, &mut targets);
-        let mut out: Vec<DeclId> = Vec::new();
-        for (i, (d, p)) in targets.iter().enumerate() {
-            let hit = targets[i + 1..]
-                .iter()
-                .any(|(e, q)| e == d && (p.starts_with(q) || q.starts_with(p)));
-            if hit && !out.contains(d) {
-                out.push(*d);
-            }
-        }
-        out
     }
 
     pub fn decls(&mut self, scope: ScopeId) -> R<()> {
@@ -2088,9 +2047,6 @@ fn process(
                 });
             }
         }
-    }
-    if let HStmt::Process { body, .. } = &st.kind {
-        fx.overridden = fx.overridden_signals(body);
     }
     let body = match &st.kind {
         HStmt::Process { body, .. } => fx.stmts(body),

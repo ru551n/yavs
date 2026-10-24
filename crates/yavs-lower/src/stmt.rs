@@ -1571,9 +1571,7 @@ impl Fx<'_, '_> {
             Some((Step::Slice(_), rest)) => fi(rest),
             _ => fi(steps),
         };
-        // A part another drive of the process may override is driven leaf by leaf, where the
-        // optimiser can drop the first drive on the paths the second follows.
-        if !ok || (!steps.is_empty() && self.overridden.contains(&d)) {
+        if !ok {
             return Ok(None);
         }
         let path: Vec<u32> = steps

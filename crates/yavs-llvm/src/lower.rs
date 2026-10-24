@@ -13,7 +13,7 @@
 //! fails (re-executed by the interpreter, so messages are identical): compiled code never
 //! reports an error itself (rule 5).
 
-use std::ffi::{CString, c_void};
+use std::ffi::CString;
 use std::sync::Mutex;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyFunction};
@@ -39,6 +39,7 @@ type ObjRef = crate::rt::ObjRef<LLVMValueRef>;
 /// TLB misses 52 M to 9 M, 6 percent of the cycles.)
 #[cfg(target_os = "linux")]
 fn huge_code(addrs: impl Iterator<Item = usize>) {
+    use std::ffi::c_void;
     unsafe extern "C" {
         fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
     }

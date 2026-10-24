@@ -2241,8 +2241,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   the items per instance with count and tests (covered-only lines too); a click pins the popup
   so its text can be selected. Without the script, hover and focus still work (CSS). (3) A line
   that ran in some instances and not in others has its own colour and a `ran/total` instance
-  marker, explained by the legend. (4) A missed item's exclusion row in the popup has a copy
-  button (the script only adds the buttons and the pin). The popup is a list of groups (title,
+  marker, explained by the legend. (4) A missed item's exclusion row and YAML entry in the popup
+  each have a copy button (the script only adds the buttons and the pin). The popup is a list of groups (title,
   table), so a new item kind (condition rows, #688) adds groups without a new layout.
 - **Not yet:** the LLVM tier does not lower IR yet, so the interpreter is
   the only tier today.
@@ -2276,7 +2276,7 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   with their reasons. `cov merge` does not take exclusions. `unit` names packages only:
   entity and architecture items are excluded with `instance`.
 - **In the HTML report (user, 2026-10-24, #689):** a missed item's popup shows its exclusion row
-  with a copy button (the text row; the YAML entry once #687 lands), so the workflow stays
+  with a copy button (the text row and the YAML entry of `--uncovered=yaml`), so the workflow stays
   "copy the row from the report".
 
 - **YAML exclusion files (#687, user, 2026-10-24):** `--exclude FILE` also reads YAML; the

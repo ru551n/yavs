@@ -251,7 +251,8 @@ with a missed branch arm or toggle in yellow; a legend explains the colours. Hov
 focus it with the keyboard, to see a popup with its items (statement, branch arm, toggle per
 signal and direction) per instance with the count and, when the database has test names, the
 tests that hit it; click the line to pin the popup so its text can be selected. A missed item
-shows its ``--uncovered`` row with a copy button, ready for an exclusion file.
+shows its ``--uncovered`` row and its ``--uncovered=yaml`` entry, each with a copy button, ready
+for an exclusion file.
 Each file also has ``src-N-missed.html`` (linked from the index and the file page), the same page
 reduced to the lines with a missed or excluded item, to find the gaps in a big design. Items
 taken out by ``--exclude`` stay visible, greyed, with the reason of their row. Source paths are

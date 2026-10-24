@@ -25,7 +25,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
 | `src/exclude.rs` | Exclusion file `parse` (text rows), `apply` (W0110, W0111, W0114), `Database::uncovered` and `uncovered_yaml`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
 | `src/exclude/yaml.rs` | `parse_yaml`: `saphyr-parser` events to a small node tree to the same `Rule`s as the text rows; `quote` for `--uncovered=yaml`. A new rule kind: add its key lists and rule in `entry` (and its text row in `parse`) |
-| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS and one inline script (pin, copy buttons), light/dark; a line's items are in a popup (groups of title + table), missed items carry their `exclude::miss_row` with a copy button) |
+| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS and one inline script (pin, copy buttons), light/dark; a line's items are in a popup (groups of title + table), missed items carry their `exclude::miss_row` and `miss_yaml` with copy buttons) |
 | `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd` and toggles on `tests/cli/cov_toggle.vhd`, thread identity, merge, reports |
 
 ## 3. Design decisions that bind this module

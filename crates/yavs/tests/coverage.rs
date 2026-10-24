@@ -597,6 +597,11 @@ fn html_report() {
         "{src}"
     );
     assert!(src.contains("class=\"cp\">copy row</button>"), "{src}");
+    // The same item as a YAML entry, with its own button.
+    assert!(
+        src.contains("<pre>  - kind: statement") && src.contains("class=\"cp\">copy YAML</button>"),
+        "{src}"
+    );
     // No inline item lists, and a line without items is not focusable.
     assert!(!src.contains("class=\"it ") && !src.contains("<tr id=\"L1\" class=\"\" tabindex"));
     // Counts per instance and tests in the popup.

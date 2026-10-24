@@ -4,16 +4,16 @@
 //! in name order) shows a file's source with the hit count of each line. A line with items
 //! (statements, branch arms, toggles) is hoverable and keyboard-focusable: its popup lists the
 //! items per instance with counts and tests; a click pins it. A line hit in some instances and
-//! missed in others has its own colour and an `hit/total` instance marker. A missed item shows
-//! its `--uncovered` row with a copy button; an excluded one is greyed with the reason of its
-//! row. `src-N-missed.html` lists only the lines with a missed or excluded item. No timestamp:
-//! equal inputs give byte-identical files. The popup is a list of groups (title, table), so
-//! other item kinds add groups without a new layout.
+//! missed in others has its own colour and a `ran/total` instance marker. A missed item shows
+//! its `--uncovered` row and YAML entry, each with a copy button; an excluded one is greyed with
+//! the reason of its row. `src-N-missed.html` lists only the lines with a missed or excluded
+//! item. No timestamp: equal inputs give byte-identical files. The popup is a list of groups
+//! (title, table), so other item kinds add groups without a new layout.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::exclude::{head, miss_row};
+use crate::exclude::{head, miss_row, miss_yaml};
 use crate::{Database, Entry, Key, Kind, arrow};
 
 const CSS: &str = "\
@@ -43,7 +43,7 @@ body.pinned tr:not(.pin) .pop{display:none}\
 .pop table{width:100%}.pop td.n{width:3rem;padding-right:1rem}.pop h4{margin:.4rem 0 .1rem;font-size:.85rem}.pop p{margin:.2rem 0}\
 .pop table td{white-space:normal;padding:.05rem .5rem .05rem 0;border:0;background:none}\
 .pop tr.miss td:first-child{border-left:.3rem solid #cf222e;padding-left:.3rem}\
-.pop tr.x td{padding-bottom:.4rem}.pop code,.pop pre{user-select:all}.pop pre{margin:.1rem 0}\
+.pop tr.x td{padding-bottom:.4rem}.pop div{display:flex;align-items:flex-start}.pop code,.pop pre{user-select:all}.pop pre{margin:.1rem 0}\
 .pop .ex{color:var(--dim)}\
 .cp{display:none;margin-left:.5rem;font:12px system-ui,sans-serif}.js .cp{display:inline}\
 .legend span{padding:0 .5rem;margin-right:.3rem;color:var(--fg)}\
@@ -284,10 +284,13 @@ fn popup(db: &Database, n: usize, its: &[LineItem], summary: &str) -> String {
             e.count
         );
         if let Some(r) = miss_row(db, k, e).filter(|_| why.is_none()) {
+            let y = miss_yaml(db, k, e).unwrap_or_default();
             let _ = write!(
                 b,
-                "<tr class=\"x\"><td colspan=\"3\"><code>{}</code><button type=\"button\" class=\"cp\">copy row</button></td></tr>",
-                esc(r.trim_end())
+                "<tr class=\"x\"><td colspan=\"3\"><div><code>{}</code><button type=\"button\" class=\"cp\">copy row</button></div>\
+<div><pre>{}</pre><button type=\"button\" class=\"cp\">copy YAML</button></div></td></tr>",
+                esc(r.trim_end()),
+                esc(y.trim_end())
             );
         } else if why.is_some() {
             let _ = write!(

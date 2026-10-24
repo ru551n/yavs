@@ -338,7 +338,7 @@ fn both_missed(db: &Database, k: &Key) -> bool {
 }
 
 /// The same as a YAML list entry (`--uncovered=yaml`), the comment after `kind`.
-fn miss_yaml(db: &Database, k: &Key, e: &Entry) -> Option<String> {
+pub fn miss_yaml(db: &Database, k: &Key, e: &Entry) -> Option<String> {
     use yaml::quote as q;
     let c = miss_comment(db, k, e)?.replace(['\r', '\n'], " ");
     let id = format!("{:012x}.{}", k.hash >> 16, k.occ);

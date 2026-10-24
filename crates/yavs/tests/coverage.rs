@@ -696,7 +696,11 @@ fn html_report() {
     let o = yavs(&tmp, &["cov", "report", "m.ycov", "--html", "h4"]);
     assert!(o.status.success());
     let abs = std::fs::read_to_string(tmp.join("h4/src-0.html")).expect("h4");
-    assert!(abs.contains("tests/cli/cov_run.vhd</h1>"), "{abs}");
+    // Native separators on Windows.
+    assert!(
+        abs.replace('\\', "/").contains("tests/cli/cov_run.vhd</h1>"),
+        "{abs}"
+    );
 
     // A source the database names that cannot be read is E0113 and writes nothing.
     let text = std::fs::read_to_string(tmp.join("m.ycov")).expect("db");

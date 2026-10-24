@@ -14,7 +14,9 @@ mod signal;
 mod time;
 mod value;
 
-pub use builder::{Builder, Converter, EdgeTrigger, PortConv, PortMode, ProcFlags};
+pub use builder::{
+    Builder, Converter, EdgeTrigger, IdleLit, IdleRead, PortConv, PortMode, ProcFlags,
+};
 pub use error::{ErrorInfo, ErrorKind, SimError, StmtId};
 pub use kernel::{
     Config, DeadClock, EndReason, Hook, Interrupt, LoopCause, LoopLink, Observer, Phase, ProcWait,

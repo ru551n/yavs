@@ -4133,6 +4133,30 @@ data inputs, the edge was false) and, as a spelling of a clocked process, no idl
   one arm: the CPU bus changes it every instruction), user functions that are not pure or take a signal, `report`, `assert`, and
   the rest of round 16's list.
 
+## Idle skip, round 3: reads under a condition (yavs-sem, yavs-elab, yavs-kernel, #521, 2026-10-24)
+
+A register with an enable reads its data only while the enable is set (`if en = '1' then q <= d;`), and the 29 counters of neorv32
+read the bus data `data_i` in one arm of an `if` while the CPU puts a new word on it every instruction: round 2 armed them on
+every one of those events (`counter_core`: 652 k activations in 300 us, 5% of the time inside processes).
+
+- **What is recorded** (`Db::pure_*_reads` return `PureRead`s): with each signal a pure process reads, the condition under
+  which it is read: the conjunction of the literals of the `if`s around the read, `x = c`, `x /= c`, a BIT or BOOLEAN signal
+  name, `not` of one and `and` of those (`Db::cond_lits`, `Db::level_cmp`), and for the `else` and `elsif` arms the negation of
+  an earlier condition that is one literal. Several reads of one signal join as alternatives (more than four: unconditional).
+  A condition the walk cannot express adds no literal: a weaker condition only makes the read count more often.
+- **Why it is the same run.** An activation does what the last one did when every signal the last one read is unchanged. A
+  signal read only under a condition was not read when the condition was false at the last activation, and the signals
+  the condition reads are read unconditionally (or under the outer condition, by the same argument), so a change that
+  makes the condition true is an event on a signal that arms the process itself. The kernel evaluates the literals when it arms
+  the readers of a changed signal (`SimControl::arm_readers`, `guard_holds`): an event on a conditionally read signal arms
+  the process only while one of the alternatives holds; a literal on a value that has not been updated yet in the cycle
+  (the update phase is under way) can only be older than the activation's, and the change that outdated it arms by itself.
+  The elaborator maps each literal to a static element of a logic signal (`IdleRead`, `IdleLit`; collapsed ports remap them);
+  one it cannot map is left out. `YAVS_IDLE_SKIP=check` and `tests/corpus/delta/idle_comb.vhd` (registers with an enable, an
+  `if`/`else`, nested conditions, an `elsif` chain, BOOLEAN conditions and a conjunction; blessed from the reference simulator)
+  cover it; `perf.rs` `idle_comb` pins the skips.
+- **Measured**: see "Idle skip, round 3" in `docs/STATUS.md`.
+
 ## Kernel round 17: coincident timed entries (yavs-kernel, #440, 2026-10-23)
 
 The baseline of this round (exact per-function counts from a ptrace single-stepper over `examples/clk.rs` and over windows of

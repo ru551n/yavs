@@ -59,9 +59,29 @@ struct ProcDecl {
     trigger: Option<EdgeTrigger>,
     /// The signal parts a clocked process reads, when an activation is a function of them alone
     /// (`Builder::idle_skip`).
-    idle: Option<Vec<(SignalId, Range)>>,
+    idle: Option<Vec<IdleRead>>,
     /// The signal parts the condition of a guarded block reads (`Builder::guard_process`).
     guard: Option<Vec<(SignalId, Range)>>,
+}
+
+/// An element of a logic signal compared with a code: `eq` it is equal to it, else it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleLit {
+    pub signal: SignalId,
+    pub elem: u32,
+    pub code: u8,
+    pub eq: bool,
+}
+
+/// A signal part a pure process reads (`Builder::idle_skip_guarded`). With a `guard`, a
+/// disjunction of conjunctions of literals, every activation that reads the part satisfies one
+/// of the conjunctions: while none holds, an event on the part cannot change what the process
+/// does at its next activation, because the signals that decide are read too.
+#[derive(Clone, Debug)]
+pub struct IdleRead {
+    pub signal: SignalId,
+    pub range: Range,
+    pub guard: Option<Vec<Vec<IdleLit>>>,
 }
 
 /// The one condition under which an event resumes a process to any effect: the process is
@@ -397,8 +417,22 @@ impl Builder {
     /// process, with an edge trigger, at an edge); the caller guarantees the shape
     /// (`Db::pure_clocked_reads`, `Db::pure_comb_reads`, `Db::pure_conc_reads`).
     pub fn idle_skip(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
+        let reads = reads
+            .iter()
+            .map(|&(signal, range)| IdleRead {
+                signal,
+                range,
+                guard: None,
+            })
+            .collect();
+        self.idle_skip_guarded(p, reads);
+    }
+
+    /// [`Builder::idle_skip`] where a read can have a condition (`IdleRead::guard`): an event
+    /// on the signal then matters only while the condition holds.
+    pub fn idle_skip_guarded(&mut self, p: ProcId, reads: Vec<IdleRead>) {
         match self.procs.get_mut(p.0 as usize) {
-            Some(d) => d.idle = Some(reads.to_vec()),
+            Some(d) => d.idle = Some(reads),
             None => self.usage(format!("idle skip of process {} that does not exist", p.0)),
         }
     }

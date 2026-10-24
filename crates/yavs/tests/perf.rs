@@ -465,9 +465,9 @@ case!(
     "o=",
     &[],
     [
-        ("process_runs", Max(2600)),
-        ("idle_skips", Min(1750)),
-        ("ops", Max(31000)),
+        ("process_runs", Max(4500)),
+        ("idle_skips", Min(2850)),
+        ("ops", Max(68500)),
     ]
 );
 
@@ -508,7 +508,7 @@ fn spec_copies() {
 fn idle_skip_changes_nothing() {
     let designs = [
         ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
-        ("idle_comb", include_str!("perf/idle_comb.vhd"), 1700),
+        ("idle_comb", include_str!("perf/idle_comb.vhd"), 2700),
     ];
     for (design, src, floor) in designs {
         let d = tempdir(&format!("idle_equal_{design}"));

@@ -31,6 +31,12 @@ impl Db {
     /// enumeration literal in `std_ulogic` numbering (BIT and BOOLEAN are stored with its
     /// codes: '0' and FALSE are 2, '1' and TRUE are 3).
     pub fn level_of(&self, e: ExprId) -> Option<(ExprId, u32)> {
+        self.level_cmp(e).filter(|c| c.2).map(|(x, p, _)| (x, p))
+    }
+
+    /// [`Db::level_of`] also for `/=`: the signal name, the position, and whether the
+    /// comparison is `=`.
+    pub fn level_cmp(&self, e: ExprId) -> Option<(ExprId, u32, bool)> {
         let ExprKind::Call {
             callee,
             args,
@@ -54,9 +60,11 @@ impl Db {
         else {
             return None;
         };
-        if !decl.implicit || decl.name.key().as_str() != "\"=\"" {
-            return None;
-        }
+        let eq = match decl.name.key().as_str() {
+            "\"=\"" if decl.implicit => true,
+            "\"/=\"" if decl.implicit => false,
+            _ => return None,
+        };
         let pos = |x: ExprId| match self.exprs[x].kind {
             ExprKind::Const(c) => match self.consts[c] {
                 ConstValue::Enum(p) => Some(p),
@@ -69,8 +77,8 @@ impl Db {
             t == self.well_known.bit || t == self.well_known.boolean
         };
         match (pos(*l), pos(*r)) {
-            (None, Some(p)) => Some((*l, if bit(*r) { p + 2 } else { p })),
-            (Some(p), None) => Some((*r, if bit(*l) { p + 2 } else { p })),
+            (None, Some(p)) => Some((*l, if bit(*r) { p + 2 } else { p }, eq)),
+            (Some(p), None) => Some((*r, if bit(*l) { p + 2 } else { p }, eq)),
             _ => None,
         }
     }

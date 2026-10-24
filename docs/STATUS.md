@@ -6824,3 +6824,11 @@ interpreted (1520 G instructions against 993 G): the compiled frame-mode code of
 the interpreter (#679). What is left of the LEON3 gap is spread: `iu:comb` 18.9 percent of the interpreted run (record signal reads and drives, #677),
 `dctrl` 9.7, the four `state_register` processes of the SDRAM model 14, the two TLB processes 7.5, `ictrl` 3.7, the kernel 16.5.
 
+## Idle skip, round 3: reads under a condition (#521, 2026-10-24)
+
+A process that reads a signal only under a condition (`if en = '1' then q <= d;`, the arm of an `if`, an `elsif` chain) is no longer
+armed by an event on that signal while the condition is false (`docs/decisions.md` "Idle skip, round 3"). Instructions of the
+interpreter run, before / after (bench builds, user instructions of the process tree in G): `neorv32_single_min` 52.68 / 48.30
+(0.917), `neorv32_single_cache` 46.27 / 43.25 (0.935), `neorv32_dual_full` 37.42 / 35.40 (0.946), `osvvm_axis_random` 3.82 / 3.62
+(0.948), `osvvm_axi4_random` 7.54 / 7.38 (0.979), `fletcher_bufferreader` 0.996; every other real-world design within 0.6%
+(`poc_cache_cpu` 1.004: the guard tests of its registers cost a little where nothing is saved), the 11 head-to-head designs 1.000.

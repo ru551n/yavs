@@ -10,8 +10,8 @@ use yavs_sem::external::ExtOwner;
 use yavs_sem::generic::GenericActual;
 use yavs_sem::hir::{
     Actual, Arg, BlockConfig, BlockTarget, Choice, ConfigItem, Delay, EntityAspect, ExprKind,
-    GenSelect, InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, Rhs, Sensitivity, StmtKind,
-    UnitHir, WaveElem, Waveform,
+    GenSelect, InstTarget, InstanceSel, Lsp, LspStep, Mode, ObjRoot, PureRead, Rhs, Sensitivity,
+    StmtKind, UnitHir, WaveElem, Waveform,
 };
 use yavs_sem::loader::UnitKind;
 use yavs_sem::stat::Staticness;
@@ -145,7 +145,7 @@ pub(crate) struct Elab<'d> {
     pending: Vec<(ScopeId, DeclId)>,
     /// `idle_reads` of a process statement (the same for every instance of it): the signals
     /// read, or `None` where the process is not pure.
-    idle_cache: HashMap<StmtId, Option<Vec<Lsp>>>,
+    idle_cache: HashMap<StmtId, Option<Vec<PureRead>>>,
     /// Processes whose drivers are rooted at external names: their drivers are elaborated
     /// once the whole hierarchy is (#93).
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
@@ -2777,7 +2777,7 @@ impl Elab<'_> {
     /// itself is not one of them. Shapes: `process (c) begin if <edge> then B end if; end process;`
     /// (also behind a reset branch `if R then A elsif <edge> then B`) and
     /// `process begin wait until <edge>; B end process;`.
-    fn idle_reads(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+    fn idle_reads(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<crate::IdleRead>> {
         let db: &Db = self.db;
         let StmtKind::Process {
             sensitivity,
@@ -2856,11 +2856,7 @@ impl Elab<'_> {
     /// The signal parts a combinational process (`process (a, b) begin ... end process;`, also
     /// `process (all)`) reads, when an activation of it is a function of those and constants
     /// alone (`Db::pure_comb_reads`).
-    fn idle_comb_reads(
-        &mut self,
-        s: ScopeId,
-        st: StmtId,
-    ) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+    fn idle_comb_reads(&mut self, s: ScopeId, st: StmtId) -> Option<Vec<crate::IdleRead>> {
         let db: &Db = self.db;
         let StmtKind::Process {
             postponed: false,
@@ -2883,19 +2879,52 @@ impl Elab<'_> {
         self.idle_parts(s, lsps)
     }
 
-    /// The kernel signal parts of the reads `lsps` of a process in region `s`.
-    fn idle_parts(
-        &mut self,
-        s: ScopeId,
-        lsps: Vec<Lsp>,
-    ) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
-        let db: &Db = self.db;
-        let mut out = Vec::new();
-        for l in lsps {
-            let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;
-            for (leaf, r) in self.m.nets.select(o, &sels).ok()?.0 {
-                if !out.contains(&(leaf, r)) {
-                    out.push((leaf, r));
+    /// The kernel signal parts of the reads `reads` of a process in region `s`, with the
+    /// conditions under which each is read. A literal that is not an element of a logic signal
+    /// with static indices is left out of its conjunction (a weaker condition: the read counts
+    /// more often); a conjunction left empty makes the read unconditional.
+    fn idle_parts(&mut self, s: ScopeId, reads: Vec<PureRead>) -> Option<Vec<crate::IdleRead>> {
+        let mut out: Vec<crate::IdleRead> = Vec::new();
+        for r in reads {
+            let guard = r.guard.and_then(|alts| {
+                let alts = alts
+                    .iter()
+                    .map(|conj| {
+                        conj.iter()
+                            .filter_map(|l| {
+                                let (leaf, elem) = self.static_elem(s, l.sig)?;
+                                (self.m.nets.leaf(leaf).ty.elem == Elem::Logic).then_some(
+                                    crate::IdleLit {
+                                        leaf,
+                                        elem,
+                                        code: u8::try_from(l.pos).ok()?,
+                                        eq: l.eq,
+                                    },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                (alts.iter().all(|c| !c.is_empty())).then_some(alts)
+            });
+            let (o, sels) = self.m.lsp_ref(self.db, &r.lsp, s).ok()?;
+            for (leaf, range) in self.m.nets.select(o, &sels).ok()?.0 {
+                match out.iter_mut().find(|x| (x.leaf, x.range) == (leaf, range)) {
+                    // Read twice: under either condition, or unconditionally.
+                    Some(x) => {
+                        x.guard = match (x.guard.take(), &guard) {
+                            (Some(mut a), Some(b)) => {
+                                a.extend(b.iter().cloned());
+                                Some(a)
+                            }
+                            _ => None,
+                        }
+                    }
+                    None => out.push(crate::IdleRead {
+                        leaf,
+                        range,
+                        guard: guard.clone(),
+                    }),
                 }
             }
         }

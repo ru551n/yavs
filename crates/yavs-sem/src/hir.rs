@@ -209,6 +209,24 @@ pub struct Lsp {
     pub span: Span,
 }
 
+/// A signal a pure process reads (`Db::pure_comb_reads`, ...) and, when it reads it only under
+/// some conditions, those: `None` when it may read it in every activation, else a disjunction of
+/// conjunctions of literals, each of which has to hold for an activation to read the signal.
+#[derive(Clone, Debug)]
+pub struct PureRead {
+    pub lsp: Lsp,
+    pub guard: Option<Vec<Vec<GuardLit>>>,
+}
+
+/// `x = c` (`eq`) or `x /= c` on a signal name `x`, `pos` the position of the literal `c` in
+/// `std_ulogic` numbering (BIT and BOOLEAN are stored with its codes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuardLit {
+    pub sig: ExprId,
+    pub pos: u32,
+    pub eq: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ObjRoot {
     Decl(DeclId),

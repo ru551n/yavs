@@ -228,9 +228,26 @@ impl Elaborated {
             {
                 let r: Vec<_> = reads
                     .iter()
-                    .map(|&(l, r)| (yavs_kernel::SignalId(l.0), r))
+                    .map(|r| yavs_kernel::IdleRead {
+                        signal: yavs_kernel::SignalId(r.leaf.0),
+                        range: r.range,
+                        guard: r.guard.as_ref().map(|alts| {
+                            (alts.iter())
+                                .map(|conj| {
+                                    (conj.iter())
+                                        .map(|l| yavs_kernel::IdleLit {
+                                            signal: yavs_kernel::SignalId(l.leaf.0),
+                                            elem: l.elem,
+                                            code: l.code,
+                                            eq: l.eq,
+                                        })
+                                        .collect()
+                                })
+                                .collect()
+                        }),
+                    })
                     .collect();
-                b.idle_skip(pid, &r);
+                b.idle_skip_guarded(pid, r);
             }
         }
         // The processes of foreign architectures' models: drivers only (#330).

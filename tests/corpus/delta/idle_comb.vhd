@@ -2,8 +2,12 @@
 -- Pure processes left suspended when none of the signals they read had an event since their last
 -- run (idle skip): combinational processes whose sensitivity list is wider than what they read,
 -- ones with a variable assigned before it is read, clocked concurrent assignments, a clocked
--- process with such a variable, and a process that keeps a value in a variable (not pure). Every
--- value, time and delta a skipped run would have made must be there.
+-- process with such a variable, a process that keeps a value in a variable (not pure), and
+-- processes that read a signal only under a condition (an event on it matters only while the
+-- condition holds). Every value, time and delta a skipped run would have made must be there.
+library ieee;
+use ieee.std_logic_1164.all;
+
 entity idle_comb is end;
 
 architecture t of idle_comb is
@@ -16,6 +20,10 @@ architecture t of idle_comb is
   signal en : bit := '0';
   signal o1, o2, o3, o4, o5, o6, o7 : natural := 0;
   signal done : boolean := false;
+  signal g1, g2 : std_logic := '0';
+  signal gb : boolean := false;
+  signal d1, d2 : natural := 0;
+  signal qa, qb, qc, qd, qe, qf : natural := 0;
 begin
   clk <= not clk after 5 ns when not done;
 
@@ -67,11 +75,78 @@ begin
     o7 <= v;
   end process;
 
-  mon : process (o1, o2, o3, o4, o5, o6, o7)
+  -- A register that reads d1 only while g1 = '1'.
+  pa : process (clk)
+  begin
+    if rising_edge(clk) then
+      if g1 = '1' then qa <= d1; end if;
+    end if;
+  end process;
+
+  -- d1 while g1 = '1', d2 while it is not.
+  pb : process (clk)
+  begin
+    if rising_edge(clk) then
+      if g1 = '1' then qb <= d1; else qb <= d2; end if;
+    end if;
+  end process;
+
+  -- d2 only while both g1 and g2 are '1'.
+  pc : process (clk)
+  begin
+    if rising_edge(clk) then
+      if g1 = '1' then
+        if g2 = '1' then qc <= d2; end if;
+      end if;
+    end if;
+  end process;
+
+  -- A combinational process with an elsif chain.
+  pd : process (g1, g2, d1, d2)
+  begin
+    if g1 = '1' then qd <= d1; elsif g2 = '1' then qd <= d2; else qd <= 0; end if;
+  end process;
+
+  -- A BOOLEAN condition, and a conjunction of two conditions.
+  pe : process (clk)
+  begin
+    if rising_edge(clk) then
+      if gb then qe <= d1 + 1; end if;
+      if g1 = '1' and gb then qf <= d2 + 2; end if;
+    end if;
+  end process;
+
+  mon : process (o1, o2, o3, o4, o5, o6, o7, qa, qb, qc, qd, qe, qf)
   begin
     report "o=" & integer'image(o1) & "," & integer'image(o2) & "," & integer'image(o3) & ","
       & integer'image(o4) & "," & integer'image(o5) & "," & integer'image(o6) & ","
-      & integer'image(o7);
+      & integer'image(o7) & " q=" & integer'image(qa) & "," & integer'image(qb) & ","
+      & integer'image(qc) & "," & integer'image(qd) & "," & integer'image(qe) & ","
+      & integer'image(qf);
+  end process;
+
+  -- Changes of the data while the condition is false, then of both, then of the condition.
+  gstim : process
+  begin
+    for i in 1 to 24 loop
+      wait until rising_edge(clk);
+      case i is
+        when 2  => d1 <= 4;                   -- g1 low: unread by pa, pb takes d2
+        when 3  => d2 <= 6;                   -- pb
+        when 5  => g1 <= '1';                 -- pa, pb read d1 now
+        when 7  => d2 <= 8;                   -- pb ignores it, pc waits for g2
+        when 8  => g2 <= '1';                 -- pc reads d2
+        when 10 => d1 <= 5; d2 <= 9;
+        when 12 => g1 <= '0'; d1 <= 7;        -- the condition and the data change together
+        when 14 => d1 <= 11; gb <= true;      -- pe
+        when 16 => g1 <= '1'; d2 <= 13;       -- pf reads d2 now
+        when 18 => gb <= false; d1 <= 17;
+        when 20 => g2 <= '0'; d2 <= 19;
+        when 22 => g1 <= '0'; g2 <= '1';
+        when others => null;
+      end case;
+    end loop;
+    wait;
   end process;
 
   stim : process

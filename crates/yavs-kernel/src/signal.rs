@@ -538,6 +538,8 @@ impl Waiters {
         }
         let shift = self.shift;
         let mut scanned = 0;
+        // A list that went empty: the index of chunks with waiters is out of date.
+        let mut emptied = false;
         // One list: the waiters hit are taken in list order.
         let mut scan = |(l, n): &mut (SmallVec<[Waiter; 1]>, usize)| {
             if l.is_empty() {
@@ -562,6 +564,7 @@ impl Waiters {
             }
             if remove {
                 l.retain(|w| !hit(w.range) || (live(w) && (hold(w) || w.perm != 0)));
+                emptied |= l.is_empty();
             }
             *n = l.len();
         };
@@ -588,8 +591,10 @@ impl Waiters {
                 }
             }
             scan(&mut self.lists[wide]);
-            ix.retain(|&mut c| !self.lists[c as usize].0.is_empty());
-            self.chunked = !ix.is_empty();
+            if emptied {
+                ix.retain(|&mut c| !self.lists[c as usize].0.is_empty());
+                self.chunked = !ix.is_empty();
+            }
             self.chunk_ix = ix;
         } else {
             let mut last = usize::MAX;

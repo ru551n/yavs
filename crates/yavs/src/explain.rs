@@ -158,7 +158,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ),
     (
         "E0112",
-        "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row; the note names the line. Rows start with `statement`, `branch`, `toggle`, `instance`, `unit` or `file`.",
+        "An exclusion file given to `yavs cov report --exclude` cannot be read or has a malformed row or entry (a `.yaml` or `.yml` file is read as YAML, any other as text rows); the note names the line. Rows start with `statement`, `branch`, `toggle`, `instance`, `unit` or `file`; a YAML entry has the same word as its `kind`.",
     ),
     (
         "W0110",

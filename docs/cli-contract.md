@@ -593,10 +593,14 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `src-N.html` per source file in name order; inline CSS, no scripts, no external resources,
   no timestamp, so equal databases give equal bytes); sources are read from the paths in the
   database at report time and an unreadable one is `E0113` with nothing written. `--uncovered` prints instead one exclusion row per item that
-  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `toggle PATH SCALAR   # never
-  0->1|1->0 (FILE:LINE)`, or `# never toggled`); `--exclude FILE` takes the
+  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `toggle PATH SCALAR rise|fall
+  # never 0->1|1->0 (FILE:LINE)`, or `toggle PATH SCALAR   # never toggled` when both
+  directions never happened); `--uncovered=yaml` prints the same items as a YAML exclusion file
+  (`exclude:` list of `kind`/`instance`/`hash`/`line` or `signal`/`direction` maps); `--exclude FILE` takes the
   items such a file lists out of the summary and the Cobertura report and lists them under
-  "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/usage.rst` "Code coverage").
+  "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/usage.rst` "Code coverage");
+  the file is read as YAML when its name ends in `.yaml` or `.yml` (any case), else as text rows,
+  with the same meaning (`E0112` names the line of a bad entry).
   Exclusions apply when reporting; databases keep raw counts. `--cov-exclude-translate-off`
   (`run`) also leaves `translate_off`/`translate_on` regions out; unbalanced `-- coverage`
   pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle` (`run`, default all)

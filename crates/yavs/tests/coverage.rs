@@ -199,6 +199,15 @@ fn cov_run(tmp: &Path, src: &str) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// A report without the `[reason]` ends of its excluded lines: `--uncovered=yaml` leaves the
+/// reason to the user, the text rows carry the item's text as one.
+fn no_reasons(s: &str) -> String {
+    s.lines()
+        .map(|l| l.split("  [").next().unwrap_or(l))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
 fn report(tmp: &Path, args: &[&str]) -> (Option<i32>, String, String) {
     let o = yavs(tmp, &[&["cov", "report", "a.ycov"][..], args].concat());
     (
@@ -273,6 +282,36 @@ fn exclusions() {
     assert_eq!(code, Some(1));
     assert!(
         err.contains("error[E0112]") && err.contains("line 1"),
+        "{err}"
+    );
+
+    // The YAML form of the same exclusions gives the same report; extension picks the parser.
+    let (_, text_out, _) = report(&tmp, &["--exclude", "ex.txt"]);
+    let (_, yaml, _) = report(&tmp, &["--uncovered=yaml"]);
+    assert!(yaml.starts_with("exclude:\n  - kind: "), "{yaml}");
+    assert_eq!(yaml.matches("hash: \"").count(), 2, "{yaml}");
+    for name in ["ex.yaml", "ex.YML"] {
+        std::fs::write(tmp.join(name), &yaml).expect("write");
+        let (code, out, err) = report(&tmp, &["--exclude", name]);
+        assert_eq!((code, err.as_str()), (Some(0), ""), "{name}");
+        assert_eq!(out, no_reasons(&text_out), "{name}");
+    }
+    // Coarse kinds, a reason, and a hand-written string-typing trap (`on`).
+    std::fs::write(
+        tmp.join("ex6.yml"),
+        "exclude:\n  - {kind: instance, instance: ':cov_excl', reason: on}\n",
+    )
+    .expect("write");
+    let (code, out, err) = report(&tmp, &["--exclude", "ex6.yml"]);
+    // Everything ran, so the exclusion warns (W0114) but applies.
+    assert!(code == Some(0) && err.contains("warning[W0114]"), "{err}");
+    assert!(out.contains("[on]"), "{out}");
+    // A malformed YAML file names the line.
+    std::fs::write(tmp.join("ex7.yaml"), "exclude:\n  - kind: frob\n").expect("write");
+    let (code, _, err) = report(&tmp, &["--exclude", "ex7.yaml"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("error[E0112]") && err.contains("ex7.yaml") && err.contains("line 2"),
         "{err}"
     );
 
@@ -372,7 +411,7 @@ fn toggle_coverage() {
     );
     assert!(
         rows.lines()
-            .any(|l| l.starts_with("toggle :cov_toggle s   # never 1->0")),
+            .any(|l| l.starts_with("toggle :cov_toggle s fall   # never 1->0")),
         "{rows}"
     );
     assert_eq!(toggle_rows.len(), 6, "{rows}");
@@ -383,11 +422,32 @@ fn toggle_coverage() {
         String::from_utf8_lossy(&o.stderr),
     );
     assert!(err.is_empty(), "{err}");
-    // A row takes both directions out, the half-toggled scalars with it.
-    assert!(out.contains("toggles    4/4 100.0%"), "{out}");
+    // Each row takes out the missed direction only; what ran stays.
+    assert!(out.contains("toggles    8/8 100.0%"), "{out}");
+    // The same as YAML.
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered=yaml"]);
+    let y = String::from_utf8(o.stdout).expect("utf-8");
+    assert!(y.starts_with("exclude:\n  - kind: toggle"), "{y}");
+    assert!(y.contains("    direction: fall\n"), "{y}");
+    std::fs::write(tmp.join("ex.yaml"), &y).expect("write");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex.yaml"]);
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        no_reasons(&String::from_utf8_lossy(&o.stdout)),
+        no_reasons(&out)
+    );
     // A glob row over a scalar that toggled both ways warns.
     std::fs::write(tmp.join("ex2.txt"), "toggle * v(*)\n").expect("write");
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex2.txt"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.matches("warning[W0114]").count(), 2, "{err}");
+    // One direction: `s` fell never, so only the rise is excluded and it ran.
+    std::fs::write(tmp.join("ex3.txt"), "toggle * s rise\ntoggle * s fall\n").expect("write");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex3.txt"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(err.matches("warning[W0114]").count(), 1, "{err}");
     let _ = std::fs::remove_dir_all(&tmp);

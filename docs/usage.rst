@@ -272,7 +272,7 @@ ran, with the line number and the statement as a comment:
 
     statement :tb:dut:u_fsm  4d2f0a91c3be.0  src/fsm.vhd:61   # state <= idle;
     branch    :tb:dut:u_fsm  c41e09a7b3d2.0.3  src/fsm.vhd:88   # arm 3: case state is
-    toggle :tb:dut data(7)   # never 1->0 (src/dut.vhd:12)
+    toggle :tb:dut data(7) fall   # never 1->0 (src/dut.vhd:12)
 
 Copy the rows you want to exclude into a file, add a reason after ``#`` if you like, and give it
 to the report:
@@ -291,11 +291,45 @@ Cobertura report and lists them under "excluded" with their reasons. A row match
 stays excluded; the file and line are only there to read, and a line that is no longer right
 is warning ``W0110``. A row that matches nothing (the statement was edited) is ``W0111``, an
 excluded item that did run ``W0114``; ``-Werror`` makes them fail the report. Row types:
-``statement``, ``branch``, ``toggle PATH SCALAR`` (both directions of one scalar; ``*`` and
-``?`` allowed in both, so ``toggle :tb:dut data(*)`` takes the whole vector, and it warns
-``W0114`` only for a scalar that toggled both ways), ``instance`` (that instance and everything
-below), ``unit`` (a package) and ``file``; anything else is error ``E0112``. The database keeps
-the raw counts.
+``statement``, ``branch``, ``toggle PATH SCALAR [rise|fall]`` (both directions of one scalar,
+or only the 0->1 or only the 1->0 one; ``*`` and ``?`` allowed in path and scalar, so ``toggle
+:tb:dut data(*)`` takes the whole vector; ``W0114`` for each excluded direction that ran),
+``instance`` (that instance and everything below), ``unit`` (a package) and ``file``; anything
+else is error ``E0112``. ``--uncovered`` names the direction when only one never happened. The
+database keeps the raw counts.
+
+An exclusion file whose name ends in ``.yaml`` or ``.yml`` is read as YAML instead (any other
+name as the rows above; both mean the same). It is a list of entries with a ``kind`` and the
+fields of that kind, plus an optional ``reason``:
+
+.. code-block:: yaml
+
+    # exclusions.yaml
+    exclude:
+      - kind: branch
+        instance: ":tb:dut:u_fsm"
+        hash: "c41e09a7b3d2.0.3"     # HEX12.OCC, branch: HEX12.OCC.ARM
+        line: "src/fsm.vhd:88"       # optional, only shown when it moved
+        reason: unreachable, state is one-hot
+      - kind: toggle
+        instance: ":tb:dut"
+        signal: "data(*)"
+        direction: fall              # optional: rise or fall, default both
+      - kind: instance
+        instance: ":tb:u_debug*"
+        reason: debug logic
+      - kind: file
+        file: "*/generated/*.vhd"
+      - kind: unit
+        unit: work.pkg_tools
+
+``statement`` and ``branch`` take ``instance``, ``hash``, ``line``; ``toggle`` takes
+``instance``, ``signal``, ``direction``; ``instance``, ``unit`` and ``file`` take the key of
+the same name. Values are always read as text, so ``no``, ``on`` or a hash of digits only need
+no care, but quote globs that start with ``*`` or contain ``: ``. An unknown kind or key, a
+missing field or invalid YAML is error ``E0112`` with the line. ``yavs cov report --uncovered=yaml
+DB`` prints the misses as such a file (the statement as a comment, no reason); redirect it to
+a ``.yaml`` file and delete what must stay.
 
 Which tests cover what
 ~~~~~~~~~~~~~~~~~~~~~~

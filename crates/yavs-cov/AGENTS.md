@@ -23,7 +23,8 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 |---|---|
 | `src/lib.rs` | `Kind`, `Key`, `Entry` (with `tests`), `Database` (`tests`, `write`, `parse`, `merge`, `attribute`, `rank`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
 | `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
-| `src/exclude.rs` | Exclusion file `parse`, `apply` (W0110, W0111, W0114), `Database::uncovered`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
+| `src/exclude.rs` | Exclusion file `parse` (text rows), `apply` (W0110, W0111, W0114), `Database::uncovered` and `uncovered_yaml`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
+| `src/exclude/yaml.rs` | `parse_yaml`: `saphyr-parser` events to a small node tree to the same `Rule`s as the text rows; `quote` for `--uncovered=yaml`. A new rule kind: add its key lists and rule in `entry` (and its text row in `parse`) |
 | `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS, light/dark, no scripts, missed items carry their `exclude::miss_row`) |
 | `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd` and toggles on `tests/cli/cov_toggle.vhd`, thread identity, merge, reports |
 
@@ -41,6 +42,9 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | Exclusions match by instance glob + kind/arm + hash prefix + occurrence, never by line; pragma-excluded items are skipped when the key is added, after occurrences are numbered, so a pragma never renumbers its neighbours | Rows stay valid when code moves or pragmas change | `docs/decisions.md` "Coverage exclusions" |
 
 | HTML report: static files, no scripts and no external resources, no timestamp; a line shows the largest statement count on it, items listed under it; sources read by the CLI (`E0113` if unreadable), the crate only formats | Opens from disk, reproducible, the report rows are the exclusion format (user) | `docs/decisions.md` "Code coverage" |
+
+| YAML exclusion files read scalars as raw text through `saphyr-parser` events, never through a typed data model; unknown kinds, unknown keys (also of another kind), missing fields and duplicate keys are `E0112` with the line; `--uncovered=yaml` double-quotes every value | `no`, `on` and digit-only or float-like hashes must stay strings; line numbers in errors | `docs/decisions.md` "Coverage exclusions" |
+| A toggle exclusion has an optional direction (`rise`/`fall`); omitted is both; `W0114` per excluded direction that ran | Exclude exactly the missed direction | `docs/decisions.md` "Coverage exclusions" |
 
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 

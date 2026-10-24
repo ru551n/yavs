@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 yavs-diag.workspace = true
+saphyr-parser = "0.2.2"
 yavs-elab = { path = "../yavs-elab" }
 yavs-ir = { path = "../yavs-ir" }
 yavs-kernel = { path = "../yavs-kernel" }

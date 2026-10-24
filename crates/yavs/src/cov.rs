@@ -9,6 +9,14 @@ use yavs_diag::{Diagnostic, MessageFormat, SourceMap};
 
 use crate::analyze::Out;
 
+/// The form of `--uncovered`.
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum UncoveredFormat {
+    Text,
+    Yaml,
+}
+
 #[cfg_attr(test, derive(Debug))]
 #[derive(Subcommand)]
 pub enum Command {
@@ -29,12 +37,20 @@ pub enum Command {
         /// database) into DIR.
         #[arg(long, value_name = "DIR")]
         html: Option<PathBuf>,
-        /// Leave out the items an exclusion file lists (rows pasted from `--uncovered`).
+        /// Leave out the items an exclusion file lists (rows pasted from `--uncovered`; a
+        /// `.yaml` or `.yml` file is read as YAML).
         #[arg(long, value_name = "FILE")]
         exclude: Option<PathBuf>,
-        /// Print only the items that never ran, as exclusion rows.
-        #[arg(long)]
-        uncovered: bool,
+        /// Print only the items that never ran, as exclusion rows (`--uncovered=yaml`: as a
+        /// YAML exclusion file).
+        #[arg(
+            long,
+            value_name = "FORMAT",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "text"
+        )]
+        uncovered: Option<UncoveredFormat>,
         /// Print every item that ran, as an exclusion row with the tests that hit it.
         #[arg(long, conflicts_with = "uncovered")]
         tests: bool,
@@ -119,9 +135,18 @@ fn excluded(
             .with_note(m),
         )
     };
+    let yaml = p
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"));
     let rows = std::fs::read_to_string(p)
         .map_err(|e| e.to_string())
-        .and_then(|t| yavs_cov::exclude::parse(&t))
+        .and_then(|t| {
+            if yaml {
+                yavs_cov::exclude::parse_yaml(&t)
+            } else {
+                yavs_cov::exclude::parse(&t)
+            }
+        })
         .map_err(fail)?;
     let a = yavs_cov::exclude::apply(&db, &rows, &p.display().to_string());
     for w in &a.warnings {
@@ -163,12 +188,15 @@ fn report(
     cobertura: Option<PathBuf>,
     html: Option<PathBuf>,
     exclude: Option<PathBuf>,
-    uncovered: bool,
+    uncovered: Option<UncoveredFormat>,
     tests: bool,
 ) -> Result<(), Box<Diagnostic>> {
     let (db, excluded) = excluded(out, db, exclude)?;
-    if uncovered {
-        print!("{}", db.uncovered());
+    if let Some(f) = uncovered {
+        match f {
+            UncoveredFormat::Text => print!("{}", db.uncovered()),
+            UncoveredFormat::Yaml => print!("{}", db.uncovered_yaml()),
+        }
     } else if tests {
         print!("{}", db.hits_by_test());
     } else {

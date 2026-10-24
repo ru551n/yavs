@@ -2268,6 +2268,33 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   with their reasons. `cov merge` does not take exclusions. `unit` names packages only:
   entity and architecture items are excluded with `instance`.
 
+- **YAML exclusion files (#687, user, 2026-10-24):** `--exclude FILE` also reads YAML; the
+  one-line text rows stay, both are accepted. The parser is chosen by extension: `.yaml` and
+  `.yml` (any case) are YAML, anything else the text rows. Shape: `exclude:` is a list of maps
+  with `kind` (`statement`, `branch`, `toggle`, `instance`, `unit`, `file`) and the fields of
+  that kind: `instance` + `hash` (`HEX12.OCC`, branch `HEX12.OCC.ARM`) + optional `line`
+  (`FILE:LINE`, never matched) for statement and branch; `instance` + `signal` + optional
+  `direction` for toggle; `instance` for instance; `unit`; `file`; every kind takes an optional
+  `reason`. Same matching and warnings as the rows. An unknown kind, an unknown key (also a key
+  of another kind), a missing field, a duplicate key or malformed YAML is `E0112` naming the line.
+  Every value is read as the text it was written as (`no`, `on`, a hash of digits only, a hash
+  that looks like a float), never typed. `--uncovered=yaml` prints a standalone file of the
+  misses (`exclude:` header, every value double-quoted, the item's text as a YAML comment, no
+  `reason`); plain `--uncovered` stays the text rows. Why: reviewable files with reasons, tool
+  friendly. The HTML report keeps the text row. Why a new entry kind is cheap: add its key
+  list and rule in `exclude/yaml.rs::entry`.
+- **YAML crate: `saphyr-parser` (yavs-cov only).** Pure safe Rust, YAML 1.2, two tiny
+  dependencies, released 2026-10, and it yields events with line numbers and the raw scalar
+  text: that gives the `E0112` line and avoids typing. Rejected: `serde_yaml` (archived,
+  deprecated), `serde_yml` (deprecated shim), `serde_norway` (serde_yaml fork on `unsafe-libyaml`,
+  last release 2024-12), serde front ends (they type scalars, so `no` or `123456789012.0` need
+  workarounds, and give no line).
+- **Toggle direction (#687, user, 2026-10-24):** a `toggle` exclusion may name one direction:
+  text `toggle PATH SCALAR rise|fall`, YAML `direction: rise|fall` (`rise` is 0->1). Omitted
+  means both, so existing files stay valid. `--uncovered` prints the direction when only one
+  direction never happened (both missed: one row without it). `W0114` is now per excluded
+  direction that ran (it was once per scalar that toggled both ways).
+
 ## Toggle coverage (yavs-cov, CLI, #343, 2026-10-19)
 
 - **An observer, not IR:** `yavs_cov::toggle::Toggles` subscribes to the kernel's value-change
@@ -2289,8 +2316,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   are rarely toggle targets.
 - **Database version 3:** toggle lines; `yavs-coverage 2` is still read. Cobertura has no
   toggle notion: toggles are left out of it (text report only). Exclusion row `toggle PATH
-  SCALAR` (globs allowed) takes out both directions; `W0114` only when the scalar toggled both
-  ways.
+  SCALAR [rise|fall]` (globs allowed) takes out both directions or the named one; `W0114`
+  for each excluded direction that ran.
 
 ## Per-test coverage attribution (yavs-cov, CLI, #353, user, 2026-10-19)
 

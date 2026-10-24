@@ -7448,3 +7448,38 @@ candidate bench builds, core 12, `--compare`:
 
 The layer (about 155 instructions a call) is still as large as the native: it is spread over two prologues and epilogues, the table
 lookups, the result tuple and the argument slice. The remaining step is the native inline in compiled code.
+
+### `--tier=auto` decisions (yavs-llvm, #670, #673, #680, #681, 2026-10-24)
+
+Causes, the change and what is left: `docs/decisions.md` "`--tier=auto` decisions follow the looks of a sampler thread, prices are fixed".
+Method: a fresh world per sample (copy of the pristine world), `--threads 1` (the default 4 threads spin, 1.4 percent noise in
+instructions of the interpreter alone), `perf stat -e instructions:u` of the whole tree, warm = two untimed runs then the measured one,
+cold = the measured run in an empty compilation cache, 8 worlds per cell, the two binaries interleaved per world. Before = main with
+only the affinity fix (`m0`), after = this change (`v10`), same base. P1 = pinned to core 8 (the compile thread shares it), P2 = a mask
+of two CCD0 cores that other jobs share (instructions only; the host was loaded, load 20 to 30). Median G instructions, spread =
+(max - min) / median in percent, median wall seconds (P1 only; noisy).
+
+| Design, run | P1 before | P1 after | P2 before | P2 after |
+|---|---|---|---|---|
+| `sc5_fifo_repack` cold | 42.85 (0.2%) 2.74 s | 42.89 (0.8%) 2.73 s | 43.19 (8.3%) | 42.87 (7.4%) |
+| `sc5_fifo_repack` warm | 41.01 (3.9%) 2.52 s | 41.02 (0.1%) 2.50 s | 37.52 (13.2%) | 38.37 (19.7%) |
+| `poc_arith_addw` cold | 196.4 (1.2%) 16.1 s | 185.7 (2.5%) 16.4 s | 184.7 (8.2%) | 181.7 (5.5%) |
+| `poc_arith_addw` warm | 150.3 (0.4%) 11.9 s | 150.3 (0.4%) 11.3 s | 150.2 (0.8%) | 150.0 (0.9%) |
+| `vai_window_gen_interlock` cold | 246.6 (3.3%) 17.1 s | 254.4 (4.3%) 18.3 s | 245.8 (4.0%) | 254.1 (1.5%) |
+| `vai_window_gen_interlock` warm | 202.0 (8.0%) 14.1 s | 187.3 (10.3%) 12.8 s | 179.2 (10.7%) | 187.0 (12.3%) |
+| `hdlm_lfsr` cold / warm | 29.54 (4.3%) / 25.48 (0.2%) | 29.57 (4.7%) / 25.50 (0.2%) | 28.63 (7.8%) / 25.52 (6.0%) | 28.70 (6.8%) / 26.29 (6.1%) |
+| `neorv32_single_min` cold / warm | 40.75 (0.1%) / 38.71 (0.1%) | 40.75 (0.0%) / 38.71 (0.0%) | 40.76 / 38.72 (0.1%) | 40.76 / 38.73 (0.1%) |
+
+The spread the issues describe (10 to 80 percent) came mostly from the affinity bug: with the compile thread free on another core
+(2 CPUs allowed, before #681) `sc5_fifo_repack` warm was 40.2 to 45.5 G (12.5%), the window generator warm 16.5%, `hdlm_lfsr` 6.5%; with the
+thread on the simulation's core (#681) the same binary gives 0.2% for `sc5_fifo_repack` warm. What this change adds: the decisions
+of a run are the same function of the looks whatever the compile threads do (unit tests), the learned rate that made `sc5_fifo_repack`
+bimodal is gone, what `p_in` costs is a constant, and `Fast` code is priced for the budget. What it does not remove: the CPU speed of a loaded host (the same window generator run saw
+11.0 s or 13.4 s of simulation CPU for the same work) moves the time at which functions near their thresholds are compiled, and the
+compilation cache amplifies a flip in the first run (window generator warm: the three worlds with 195 to 198 G are those whose second run
+linked 61 to 65 modules where the others linked 96 to 99).
+
+Calibration data (cold, `YAVS_AUTO_TRACE` lines "cpu"): CPU per IR instruction of one compile, by module: frame-mode code 210 (lean)
+to 340 (full pipeline), native-frame code 445 (lean) to 620 (full), `Fast` code 90 to 115, cache hit 12 (frame) and 26 (native); native-frame
+compile time per IR instruction grows with the size of the function (360 at 15 IR, 570 at 100, 1160 at 300).
+

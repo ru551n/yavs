@@ -7692,3 +7692,55 @@ lifted:
   (`last_stage_proc`, `command_proc`: output has to come at every activation), a variable field read before it is assigned on some path
   (`vo` of a BusWriteBuffer process, `stage_v` of a pipeline barrel: they keep a value, so they are not pure), procedure calls.
 
+## `--tier=auto` decisions follow the looks of a sampler thread, prices are fixed (yavs-llvm, #670, #673, #680, #681, 2026-10-24)
+
+- **Causes found** (a fresh world per sample, `--threads 1`, instructions of the whole process tree, traces with `YAVS_AUTO_TRACE=1`):
+  1. The compile cost was a rate learned from the compiles of the run (`us_per_instr`: half the old value plus the wall time per IR
+     instruction of the last O2 compile that did not hit the cache). It started at 800, fell with the first compiles of a cold run and stayed
+     at 800 in a warm run (hits teach nothing), and it priced every function of a run with one number for native-frame code, frame-mode code,
+     full-pipeline compute loops and `Fast` code alike. What a function costs, so when it is compiled, depended on the order and the wall
+     times of the compiles before it: `sc5_fifo_repack` ended at 35 G or 47 G according to whether `p_in` and the clocked processes were
+     priced under their threshold when they crossed it (#673, #670).
+  2. The sampler ran on the compile thread, so while it compiled (10 ms to 600 ms) or measured a trial (250 ms) it saw nothing, and
+     the first look after that gave the whole gap to the one function it happened to catch: a function could be "seen" for 400 ms in a
+     sample. Which functions crossed their thresholds, and in which order, depended on how long the compile thread had been busy.
+  3. The clock was wall time. With the compile thread on the simulation's core (below) or a loaded host it counted the time the
+     simulation lost to the compile as time spent in the function.
+  4. `Worker::cost` priced `Fast` code like the rest (800 per IR instruction, real 70 to 130, #680).
+  5. The compile thread moved to every CPU outside the mask (#681), so the compile of a run overlapped the simulation on another run's core.
+  6. Smaller: a `HashSet` iterated in an order that differs in every process decided the order of callees in `tree`.
+- **Decision: a sampler thread (`yavs-sampler`, `sampler_loop`) sends looks (the CPU time of the simulation threads since the last look and
+  what they run) in batches of 8 to the compile thread, which takes one batch at a time and decides after each (`Worker::see`).** The
+  sampler runs during compiles and sends nothing during a trial (the swaps of a trial would show as the code running). So the sequence of
+  decisions depends on the sequence of looks and nothing else; no compile or trial duration reaches them. The clock is the CPU time of the
+  simulation threads (process less the sampler's and the compile thread's own clocks), wall time where there is no such clock (not Linux).
+  Why not the one thread of decisions.md "Tier-up (`--tier=auto`)": its reason (CPU) holds, the sampler wakes once per period as the compile
+  thread did.
+- **Decision: prices are constants.** `US_PER_INSTR` (800) is the price the learned rate started at and stayed near in cold runs with the
+  compile thread on the simulation's core (cold compiles of the 5 designs and 19 more of tools/realbench, per-function CPU: frame-mode
+  code 200 to 450 and native-frame code 350 to 1100 per IR instruction, rising with the size of the function; wall time on a shared core is
+  twice that). `Fast` code has its own, 110, in the budget (`Worker::price`), a module linked from the cache 20 (`US_PER_INSTR_HIT`).
+  `spent` is charged by the model, never by the time a compile took. The payback rule (`PAYBACK*`, the order of candidates) keeps 800 for
+  `Fast` code too (`payback_cost`): cheap prices for it made the 2 133 IR process of the window generator compile after 0.47 s instead of never
+  in a cold run and cost that design 8 to 16 percent of its cold wall time; whether big processes compile is the user's decision
+  (#679, 2026-10-24: allowed, no size cap yet), not a side effect of #680.
+- **Tried and not taken:** per-class and per-module prices from the measurements (`lean`, `full`, `Fast`, frame and native: 210/470, 450/720,
+  110/220 CPU per IR instruction, also doubled to wall time on a shared core): more small functions compile (the tiny ones cost 3 to 9
+  ms each), cold wall time of the window generator +14 to +27 percent against the learned rate, +5 percent against the flat 800. The
+  benefit of compiling a small native function is lower than the payback factors assume; the flat 800 happens to stand for both its cost
+  and its low benefit. A wall clock for the looks instead of CPU time: no better. Budget prices scaled 0.3 to 0.7: within 2 percent of each other, 1.0: 4 percent more
+  instructions.
+- **Affinity (#681, user, 2026-10-24):** the compile thread keeps the CPU mask of the process. Under single-core pinning it shares the core:
+  auto walls of `tools/bench` and `tools/realbench` include the compile CPU time from here on (`tools/bench/AGENTS.md`).
+- **What is still timing dependent** (measured, see docs/STATUS.md "`--tier=auto` decisions"): (a) the CPU speed of the host itself: the same
+  simulation costs 1.8 to 3.4 s of CPU on a busy host (SMT neighbours, frequency), and a function whose seen time sits near its
+  threshold flips (`rand_next` of `sc5_fifo_repack`, `push`, `check_axi_stream` of the window generator); (b) through the compilation
+  cache: what the first run compiled is linked early in the next ones, so a flip in the first run is amplified (window generator warm: 178
+  to 198 G with the same code); (c) the compile that is still running when the run ends is lost; (d) trial verdicts near their keep line. The
+  way to remove (a) and so (b) is a work clock (instructions retired of the simulation threads, `perf_event_open`, with the CPU time where
+  it is denied); it is not built: Linux only, a counter per simulation thread registered by the interpreter, and a warning where it is
+  refused. Open question for the user.
+- Tests: `what_is_hot_depends_on_the_looks_only`, `a_look_shares_its_time_between_the_running_functions` (`auto.rs`),
+  `compile_thread_keeps_the_affinity_of_the_process` (`tests/tier.rs`); the 510-test differential corpus under `yavs-auto`, with
+  `--tier-heat=1,0,0` and with 4 threads, passes.
+

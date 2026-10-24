@@ -14,6 +14,8 @@
 #![allow(unsafe_code)]
 
 #[cfg(feature = "llvm")]
+mod arena;
+#[cfg(feature = "llvm")]
 mod auto;
 #[cfg(feature = "llvm")]
 mod census;
@@ -30,6 +32,12 @@ mod regs;
 #[cfg(feature = "llvm")]
 pub mod spike;
 
+/// What the code arena has placed (`arena.rs`): code bytes, huge-page chunks made, collapses given
+/// up, sections that did not fit; `None` where the arena is not in use.
+#[cfg(feature = "llvm")]
+pub fn code_arena_stats() -> Option<[usize; 4]> {
+    arena::stats()
+}
 #[cfg(feature = "llvm")]
 pub use auto::{AutoTier, Heat, Note, exit_now};
 #[cfg(feature = "llvm")]

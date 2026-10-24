@@ -453,6 +453,14 @@ impl Jit {
             let jtmb = LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine(tm);
             let builder = LLVMOrcCreateLLJITBuilder();
             LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(builder, jtmb);
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            if crate::arena::enabled() {
+                LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator(
+                    builder,
+                    crate::arena::create_layer,
+                    ptr::null_mut(),
+                );
+            }
             let mut raw = ptr::null_mut();
             check(LLVMOrcCreateLLJIT(&mut raw, builder))?;
             let jit = Jit {

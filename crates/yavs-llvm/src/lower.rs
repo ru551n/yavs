@@ -2416,7 +2416,8 @@ fn huge_code(addrs: impl Iterator<Item = usize>) {
         fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
     }
     const HUGE: usize = 2 << 20;
-    if std::env::var("YAVS_LLVM_HUGE").is_ok_and(|v| v == "0") {
+    // The arena (`arena.rs`) places and backs the code itself where it is available.
+    if crate::arena::enabled() || std::env::var("YAVS_LLVM_HUGE").is_ok_and(|v| v == "0") {
         return;
     }
     let (lo, hi) = addrs.fold((usize::MAX, 0), |(lo, hi), a| (lo.min(a), hi.max(a)));
@@ -3833,6 +3834,43 @@ impl Gen {
         unsafe { LLVMConstInt(self.i32, u64::from(v), 0) }
     }
 
+    /// The entry switch of frame-mode code: a tree of range compares over the sorted entry pcs,
+    /// at most `LEAF` cases per `switch`. The unoptimised code generator lowers a `switch` to a
+    /// chain of compares, and a large process is entered at one of thousands of pcs at every
+    /// resume (a third of the instructions of a LEON3 `comb` copy were that chain, #679).
+    /// The builder is at the end of `from`.
+    unsafe fn entry_dispatch(
+        &self,
+        c: &Cur,
+        from: LLVMBasicBlockRef,
+        pc: LLVMValueRef,
+        cases: &[(u32, LLVMBasicBlockRef)],
+        default: LLVMBasicBlockRef,
+    ) {
+        const LEAF: usize = 4;
+        // SAFETY: blocks and values are of the function being generated; the builder is at the
+        // end of the block being filled.
+        unsafe {
+            if cases.len() <= LEAF {
+                let sw = LLVMBuildSwitch(self.b, pc, default, cases.len() as u32);
+                for &(v, bb) in cases {
+                    LLVMAddCase(sw, self.c32(v), bb);
+                }
+                return;
+            }
+            let (lo, hi) = cases.split_at(cases.len() / 2);
+            let (below, above) = (self.block(c), self.block(c));
+            LLVMMoveBasicBlockAfter(above, from);
+            LLVMMoveBasicBlockAfter(below, from);
+            let lt = LLVMBuildICmp(self.b, IP::LLVMIntULT, pc, self.c32(hi[0].0), c"".as_ptr());
+            LLVMBuildCondBr(self.b, lt, below, above);
+            LLVMPositionBuilderAtEnd(self.b, below);
+            self.entry_dispatch(c, below, pc, lo, default);
+            LLVMPositionBuilderAtEnd(self.b, above);
+            self.entry_dispatch(c, above, pc, hi, default);
+        }
+    }
+
     unsafe fn block(&self, c: &Cur) -> LLVMBasicBlockRef {
         // SAFETY: c.f is a function of our context.
         unsafe { LLVMAppendBasicBlockInContext(self.ctx, c.f, c"".as_ptr()) }
@@ -4848,8 +4886,7 @@ impl Gen {
                 LLVMPositionBuilderAtEnd(self.b, other);
                 LLVMBuildRet(self.b, pc_in);
                 LLVMPositionBuilderAtEnd(self.b, entry);
-                let nl = is_entry[..n].iter().filter(|&&l| l).count();
-                let sw = LLVMBuildSwitch(self.b, pc_in, other, nl as u32);
+                let mut cases = Vec::new();
                 for (i, &bb) in bbs.iter().enumerate() {
                     if !is_entry[i] {
                         continue;
@@ -4857,11 +4894,11 @@ impl Gen {
                     // The interpreter's registers are in the frame: a stub loads the ones the
                     // block takes as phis.
                     let Some(pl) = &plan else {
-                        LLVMAddCase(sw, self.c32(i as u32), bb);
+                        cases.push((i as u32, bb));
                         continue;
                     };
                     let stub = self.block(&c);
-                    LLVMAddCase(sw, self.c32(i as u32), stub);
+                    cases.push((i as u32, stub));
                     LLVMPositionBuilderAtEnd(self.b, stub);
                     for (&r, &phi) in pl.regs[i].iter().zip(&pl.phis[i]) {
                         let v = self.frame_load(&c, r);
@@ -4869,6 +4906,8 @@ impl Gen {
                     }
                     LLVMBuildBr(self.b, bb);
                 }
+                LLVMPositionBuilderAtEnd(self.b, entry);
+                self.entry_dispatch(&c, entry, pc_in, &cases, other);
             }
             if let Some(d) = &mut c.defer {
                 d.plan = plan;
@@ -8419,6 +8458,16 @@ impl Gen {
     ) {
         // SAFETY: blocks of the function being built.
         unsafe {
+            // The unoptimised code generator fuses a compare into the branch and falls through to
+            // the next block, but a condition it has to test (`ok = a & b`) becomes `jcc t; jmp f`
+            // with `t` the next block: a taken branch over a jump on the hot path. Branching on
+            // the negation sends the rare edge to the `jcc` and the hot one falls through (#679).
+            if likely && LLVMIsAICmpInst(cond).is_null() && LLVMIsAFCmpInst(cond).is_null() {
+                let not = LLVMBuildNot(self.b, cond, c"".as_ptr());
+                let br = LLVMBuildCondBr(self.b, not, f, t);
+                self.weights(br, (1, 2000));
+                return;
+            }
             let br = LLVMBuildCondBr(self.b, cond, t, f);
             self.weights(br, if likely { (2000, 1) } else { (1, 2000) });
         }

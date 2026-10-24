@@ -7145,3 +7145,33 @@ What was measured and gives nothing (all deterministic where `--tier=llvm`, `per
   of auto; with the lean pipeline everywhere 222.0 G; plus `loop-mssa(licm)` 226.4 G (+2.0 percent); `gvn` and `licm` 225.5 G (+1.6 percent).
   The loops of the codec do not hoist: their object look-ups sit behind calls and slow-path exits.
 - Compiling `bus_process` (2 133 IR) gives the same sampled time as interpreting it (3.0 s compiled, 3.4 s interpreted), as #679 says.
+
+## llvm: code arena in huge pages, entry dispatch tree, hot edge falls through (#679, 2026-10-24)
+
+(`docs/decisions.md` "llvm: code in one arena of huge pages, ...".) Bench builds, one timed run at a time on core 11, `perf stat
+--no-inherit` of the simulation thread, medians of 5 interleaved runs, `tools/realbench` worlds of a private cache. The host was
+shared with other builds and runs: cycles vary by 10 to 30 percent between identical runs, so the instruction, iTLB, L1i and
+branch-miss counts carry the comparison and cycles are shown with their minimum. `--tier-heat=1,0,0` compiles every hot function early and
+deterministically; `--tier=auto` alone compiles at times that depend on the host (instructions of `sc5_fifo_repack` and the writer
+differ by 8 and 1.3 percent between identical binaries), so its cycles are level within the noise.
+
+| case (base to arena+dispatch+branch) | instructions | iTLB misses | L1i misses | branch misses | cycles median (min) |
+|---|---:|---:|---:|---:|---:|
+| `neorv32_single_min`, heat | 40.93 G to 40.97 G | 15.6 M to 1.1 M | 46 M to 50 M | 143 M to 101 M | 30.2 G to 22.7 G (24.1 to 21.4) |
+| `fletcher_bufferreader`, heat | 30.97 G to 31.07 G | 3.8 M to 0.14 M | 65 M to 51 M | 60 M to 54 M | 20.8 G to 22.6 G (16.0 to 15.8) |
+| `fletcher_bufferwriter_512`, heat | 82.77 G to 82.87 G | 17.3 M to 0.34 M | 140 M to 117 M | 274 M to 226 M | 45.5 G to 42.6 G (43.3 to 41.3) |
+| `sc5_fifo_repack`, heat | 28.58 G to 28.44 G | 0.05 M to 0.02 M | 8.6 M to 7.3 M | 11.3 M to 11.3 M | 7.73 G to 7.41 G (7.52 to 7.38) |
+| LEON3 60 us, `iu:comb` forced | 87.1 G to 90.2 G (auto timing) | 4.8 M to 0.29 M | 72 M to 66 M | 143 M to 131 M | 37.1 G to 38.5 G (36.1 to 37.5) |
+| `neorv32_single_min`, auto | 44.6 G to 45.2 G | 1.0 M to 0.5 M | 20 M to 26 M | 81 M to 84 M | level |
+| `rtl_fan`, `--tier=llvm` | 13.59 G to 13.69 G | level | level | level | 4.61 G to 4.64 G (4.49 to 4.42) |
+| `rtl_ff`, `--tier=llvm` | 9.04 G to 9.06 G | level | level | level | 3.25 G to 3.24 G (3.10 to 3.09) |
+
+An earlier run of the same code (before one dropped experiment, a quieter host) had heat-mode cycles at 22.7 G to 22.8 G, 18.2 G to
+17.7 G, 47.9 G to 43.7 G and 7.78 G to 7.68 G for the four designs (medians, in that order): minus 3.4, 2.6, 8.7 and 1.2 percent. Reading:
+the instruction TLB misses are gone (92 to 99 percent fewer) and the branch misses of compiled code are 10 to 25 percent fewer, which
+is worth 1 to 9 percent of the cycles of the designs that spend their time in compiled code; the front-end loss of a large compiled
+process (#679: IPC 3.0 to 2.2) is not closed: the LEON3 window stays level. `perf stat -M PipelineL1` of that window: front-end
+latency is 13.6 percent of the dispatch slots with the default `--tier=auto` against 20.5 percent with `iu:comb` forced, retiring 43.1 against
+36.6, back-end 25.4 against 27.7; the compiled `comb` copy is 3.7 MB (158 bytes per IR instruction, a 319 KB stack frame) of which a
+sampled window touches about 150 KB, more than the L1i holds.
+Difftest 505/505 on `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0` at 1 and 4 threads, and with `YAVS_LLVM_ARENA=0`.

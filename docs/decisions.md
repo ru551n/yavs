@@ -7143,3 +7143,39 @@ Measurements in docs/STATUS.md "Window generator against sim1: where the time is
   75 M `get`, 40 M `set` and 13 M each of `length`, `unsafe_push`, `unsafe_pop` (call counts of #493), `get` at about 285 instructions per call. The four object look-ups and three dope tests of one `get` are the design of generational handles and bounds
   checked descriptors; the flat heap view (#655) and larger inlining (#493) were tried and lost. The option left is the one on #493 (native
   implementation of the test runner's pointer tables and queue), which is the maintainer's to decide.
+
+## llvm: code in one arena of huge pages, entry dispatch as a tree, the hot edge falls through (yavs-llvm, #679, 2026-10-24)
+
+- **Decision: on Linux x86_64 all compiled code lives in one contiguous region and is backed by huge pages** (`arena.rs`). ORC's
+  default linker (JITLink) maps each module wherever the kernel puts it, in 4 KiB pages, and its allocator cannot be replaced through
+  the C API; the object layer is now RuntimeDyld with our own section allocator (`LLVMOrcCreateRTDyldObjectLinkingLayerWithMCJITMemoryManagerLikeCallbacks`).
+  Code sections are bump allocated in compile order (the hot functions of a run are next to each other) in a 2 MiB-aligned 1 GiB
+  reservation that is read-write-execute (nothing to finalise, no instruction cache to flush on x86), data sections in a second zone of
+  the same reservation (code and data within 2 GiB). A 2 MiB chunk is asked to be a transparent huge page (`MADV_HUGEPAGE`, then
+  `MADV_COLLAPSE`) once it holds 256 KiB, so a small run keeps small pages and a big one has two or three iTLB entries for its code; a
+  collapse that fails is tried again at twice the fill. It replaces `huge_code` (the whole-program module only) where it applies. Every
+  other target, a failed reservation and `YAVS_LLVM_ARENA=0` keep LLJIT's default linker; `YAVS_LLVM_HUGE=0` keeps the arena without huge
+  pages. Memory of dropped JITs stays in the arena (a `ponytail:` in the code). Test: `crates/yavs-llvm/tests/arena.rs`.
+- **Decision: the entry switch of frame-mode code is a tree** (`Gen::entry_dispatch`): range compares on the sorted entry pcs with
+  `switch` leaves of at most four cases. The unoptimised code generator (`Fast`, every function of 1 000 IR instructions or more) lowers a
+  `switch` to a chain of `mov; sub; je; jmp` per case, and a process is entered at one of its resume pcs at every resume: 31 percent of the
+  instructions executed inside the compiled `iu:comb` copy of the LEON3 design (1 357 entries) were that chain. Heat-mode L1i misses of
+  `fletcher_bufferwriter_512` fell by a quarter with it.
+- **Decision: `Gen::cond_br` with `likely` branches on the negation of a condition that is not a compare**, so the rare edge is the
+  `jcc` and the hot path falls through. For `br (a & b), hot, cold` the code generator emits `jne hot; jmp cold` with `hot` the next
+  block: a taken branch over a jump at every such guard (a bounds check of every memory access). Compares keep their form (the code
+  generator fuses them and inverts the predicate itself). The 5 478 `jcc`-over-`jmp` pairs in the LEON3 `comb` copy are 1 879 now;
+  branch misses fall 10 to 25 percent, instructions rise 0.1 to 0.4 percent (the `xor`).
+- **Measured, not built (machine function splitting):** a made-up profile summary and an entry count per function make LLVM
+  (`-enable-split-machine-functions -mfs-count-threshold`) put the blocks its branch weights call rare into a second section, and the
+  arena can send a repeated section name to a cold zone. The hot part of the 24 000-instruction `comb` copy was 1.1 MB instead of
+  3.7 MB, but L1i misses rose by a fifth (neorv32 47 to 60 M, reader 64 to 74 M, writer 127 to 144 M, heat mode) and cycles did not
+  move: the rare edges are taken more often than 1:2000, and each trip lands in a far section. Not kept. The cold blocks of the
+  slow paths already sit at the end of their function (`Cur::cold`), about a tenth of the code. `zext(trunc x)` for the 32-bit masks
+  (a 2-byte `mov` instead of a 10-byte `movabs` and an `and`) was tried and dropped: instcombine turns it back into the mask.
+- **What the machine code of a large process is made of** (LEON3 `comb` copy, 23 641 IR instructions, 3.7 MB, 158 bytes per IR
+  instruction, `Fast`): 20.6 percent reloads from stack slots, 7.6 spills, 7.3 loads and 4.0 stores through pointers, 12.6 immediates
+  (40 000 `movabs`: 20 000 are the callee address of a `callq *%rax`, 10 000 a 32-bit mask), 2.4 register copies, 45.5 everything else;
+  the frame is 110 KB (one slot per value). Open: the small code model with position-independent code and RuntimeDyld stubs would
+  make a call 5 bytes instead of 12 (the arena keeps code and data within 2 GiB); values that live across the guards of one IR
+  instruction are what the fast register allocator spills at every block end.

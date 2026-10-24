@@ -7158,6 +7158,45 @@ index (`Known::ConstAny`: no site in these designs).
 
 ## Whole record signals: `SigGather` and `SigScatter` (#677, 2026-10-24)
 
+A record signal, or a part of one (a field that is a record or an array of records, an element or a slice of an array of records), is read by
+one `SigGather` (also the per-activation copy of #630) and driven by one waveform element by one `SigScatter` (`docs/decisions.md` "Whole record
+signals: gather and scatter"). Records may have arrays of records as fields, arrays of records may be nested; a value of other array lengths
+than the signal's is a length error (#703). Both instructions are in the IR, so every tier and a later code generator run them; the interpreter
+does a Rust loop over a plan made from the leaf table and the descriptor (kept by the machine: no lock on the hot path), the compiled tier steps
+them. Signal parameters and drives of several waveform elements keep the per-leaf code: the census over ten designs found no waveform of
+several elements in 515 drive sites, and a signal parameter in 9 (one hot: 12.7 percent of the executed ops of its statements in
+`osvvm_axi4_random`, about 1 percent of that test's instructions). Bench builds (`tools/build-bench.sh --features llvm`), the commit before
+(`fdef24b4`) and after, `--tier=interp --threads 1`, user instructions (`perf stat -e instructions:u`), steady state (five runs of each
+cell, the last counted: the first runs fill the compilation cache and differ by up to 100 percent on a small test):
+
+| test | before | after | change |
+|---|---:|---:|---:|
+| `grlib_leon3mp`, whole run | 780.77 G | 702.51 G | -10.0 % |
+| `fletcher_bufferwriter_prim32` | 1.136 G | 1.102 G | -3.0 % |
+| `fletcher_bufferwriter_512` (`stage_r`, an array of records, whole and by slice) | 74.17 G | 72.55 G | -2.2 % |
+| `fletcher_bufferreader` | 24.82 G | 24.50 G | -1.3 % |
+| `neorv32_single_cache` | 31.04 G | 30.74 G | -1.0 % |
+| `neorv32_single_min` | 38.33 G | 38.00 G | -0.9 % |
+| `neorv32_dual_full` | 26.36 G | 26.15 G | -0.8 % |
+| `hdlm_axi_fifo`, `hdlm_axi_crossbar`, `hdlm_register_file`, `vunit_axi_dma`, `osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_axistream_vvc`, `olo_axi_master_full`, `sc5_fifo_repack`, `poc_cache_cpu`, `hdlm_fifo_sync`, `hdlm_ring_buffer`, `poc_uart_rx` | | | within 0.2 % |
+
+`--tier=llvm`: `grlib_leon3mp` 796.45 G to 744.60 G (-6.5 %), `neorv32_single_min` 51.91 G to 50.57 G (-2.6 %), `fletcher_bufferwriter_512`
+80.68 G to 79.47 G (-1.5 %). A synthetic design of 32 instances with a record of 48 logic leaves (read and driven every clock): 120.39 G to 118.81 G
+at one thread; the contention of the plan cache's lock at `--threads 4` was not measurable on a host with a load average of 20 to 70.
+The commit before is the one with the record packs (#686) and the drive-deleting pass (#667): a part that another drive of the process
+overrides stays leaf by leaf (`neorv32_single_min` was +5.9 percent with a scatter of `port_req(i)`).
+
+The LEON3 gain comes from the machine's own plan list (no `RwLock` read, no clone of the plan and of the instance data at each instruction), from the
+records the table now takes (the `timers` and `p` records of two units, which have arrays of records as fields, `tlbcami(i)` and the record fields
+`r.f`) and from a leaner loop for a value without arrays of records; the shares are not separated. The census
+before the change (executed IR ops per statement of 25 us to a whole run, the share of the ops of the statements that still read or drive a
+record signal leaf by leaf, leaves above one): `fletcher_bufferwriter_512` 7.7 percent, `neorv32_single_min` 10.4 percent, `grlib_leon3mp` 0.4 percent,
+every other design below 0.1 percent; the 495 single-field reads of the LEON3 integer unit are one `SigVal` and one read each, which a gather
+cannot help. What is left in the LEON3 run is the kernel's per-leaf work (`assign_code_fast`, `commit_code`).
+
+
+### First step: whole record signals only (#677, 2026-10-24)
+
 A record signal whose fields are records, scalars or arrays of scalars is read as a whole by one `SigGather` (also the per-activation copy of #630) and
 driven as a whole by one waveform element by one `SigScatter` (`docs/decisions.md` "Whole record signals: gather and scatter"). Both are in the IR, so
 every tier and a later code generator run them; the interpreter does a Rust loop over a plan made from the leaf table and the signal's descriptor (kept

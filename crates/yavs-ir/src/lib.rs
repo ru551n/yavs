@@ -23,8 +23,8 @@ pub use build::{FuncBuilder, ProgramBuilder};
 pub use copies::{Copies, CopyBlob, CopyLoader, CopyStats, NoCopy, cap_percent};
 pub use inst::{
     AddrSpace, AttrKind, BoolOp, CheckKind, CmpOp, DriveMode, EdgeKind, ElabOp, FOp, FUnOp,
-    ForceKind, Inst, IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES,
-    Width,
+    ForceKind, Inst, IntOp, IntUnOp, LNumOp, LOp, Part, PhysOp, Reg, RegTy, Regs, Role,
+    SCATTER_PART, SCATTER_REJECT, SIG_PART_BYTES, Width,
 };
 pub use program::COV_INPUTS;
 pub use program::{

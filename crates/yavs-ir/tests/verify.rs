@@ -296,6 +296,7 @@ fn leaf_tables_are_checked() {
                 dst,
                 desc: dst,
                 tab,
+                part: None,
             });
             fb.emit(Inst::Br { to: BlockId(0) });
         })

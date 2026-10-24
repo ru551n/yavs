@@ -1,0 +1,49 @@
+exit	0
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 gr=000'1'0 010'1'2 011'0'11 100'1'12
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 rs1=000'1'40,001'0'41,010'1'42 rs2=010'1'50,011'0'51,100'1'52
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 rs12=010'1'42 010'1'50
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 cu=001'0'201,001'0'201,001'0'201 001'0'201,001'0'201,001'0'201 000'1'200,000'1'200,000'1'200 001'0'201
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 b3=110111/9
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 b2=111011/4
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 b1=111101/1
+diag	note	500000	0	:sigrec_arrays_nested:chk	1 b2=1010/5 0110/6
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 gr=000'1'0 010'1'2 011'0'11 100'1'12
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 rs1=000'1'40,001'0'41,010'1'42 rs2=010'1'50,011'0'51,100'1'52
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 rs12=010'1'42 010'1'50
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 cu=001'0'201,001'0'201,001'0'201 001'0'201,001'0'201,001'0'201 000'1'200,000'1'200,000'1'200 001'0'201
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 b3=110111/9
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 b2=111011/4
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 b1=111101/1
+diag	note	1000000	0	:sigrec_arrays_nested:chk	2 b2=1010/5 0110/6
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 gr=100'1'100 110'1'102 111'0'111 000'1'112
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 rs1=000'1'160,001'0'161,010'1'162 rs2=010'1'170,011'0'171,100'1'172
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 rs12=010'1'162 010'1'170
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 cu=001'0'201,001'0'201,001'0'201 001'0'201,001'0'201,001'0'201 000'1'200,000'1'200,000'1'200 001'0'201
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 b3=001000/-3
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 b2=000100/-2
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 b1=000010/-1
+diag	note	1500000	0	:sigrec_arrays_nested:chk	3 b2=1010/5 0110/6
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 gr=100'1'100 110'1'102 111'0'111 000'1'112
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 rs1=000'1'160,001'0'161,010'1'162 rs2=010'1'170,011'0'171,100'1'172
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 rs12=010'1'162 010'1'170
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 cu=001'0'201,001'0'201,001'0'201 001'0'201,001'0'201,001'0'201 000'1'200,000'1'200,000'1'200 001'0'201
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 b3=001000/-3
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 b2=000100/-2
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 b1=000010/-1
+diag	note	2000000	0	:sigrec_arrays_nested:chk	4 b2=1010/5 0110/6
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 gr=100'1'100 110'1'102 111'0'111 000'1'112
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 rs1=010'1'170,111'0'7,100'1'172 rs2=010'1'170,011'0'171,100'1'172
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 rs12=100'1'172 010'1'170
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 cu=001'0'201,001'0'201,001'0'201 001'0'201,001'0'201,001'0'201 000'1'200,000'1'200,000'1'200 001'0'201
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 b3=001000/-3
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 b2=000110/-2
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 b1=000010/-1
+diag	note	2500000	0	:sigrec_arrays_nested:chk	5 b2=1010/5 0110/6
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 gr=100'1'100 110'1'102 111'0'111 000'1'112
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 rs1=010'1'170,111'0'7,100'1'172 rs2=010'1'170,011'0'171,100'1'172
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 rs12=100'1'172 010'1'170
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 cu=001'0'201,001'0'201,001'0'201 001'0'201,001'0'201,001'0'201 000'1'200,000'1'200,000'1'200 001'0'201
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 b3=001000/-3
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 b2=000110/-2
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 b1=000010/-1
+diag	note	3000000	0	:sigrec_arrays_nested:chk	6 b2=1010/5 0110/6

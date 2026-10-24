@@ -1,0 +1,3 @@
+exit	1
+diag	note	3000000	0	:sigrec_length_error_waves:p	assigned 10100101 3
+diag	fatal	3000000	0	-	value length 4 does not match variable W length 8

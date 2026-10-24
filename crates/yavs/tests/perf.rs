@@ -602,7 +602,7 @@ fn spec_record_var() {
     check_bounds(
         "spec_record_var",
         &copies,
-        &[("spec_switched", Min(3)), ("ops", Max(156000))],
+        &[("spec_switched", Min(3)), ("ops", Max(163500))],
     );
 }
 

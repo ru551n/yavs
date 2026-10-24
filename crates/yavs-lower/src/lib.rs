@@ -412,7 +412,7 @@ pub(crate) struct Cx {
     pub const_dope: HashMap<DeclId, yavs_ir::ConstId>,
     /// The leaf table of a record signal read and driven as a whole (`gather.rs`), `None` when
     /// the record has none.
-    pub rec_tables: HashMap<DeclId, Option<yavs_ir::ConstId>>,
+    pub rec_tables: HashMap<(DeclId, Vec<u32>, yavs_ir::TyId), Option<yavs_ir::ConstId>>,
     /// `std.reflection` entries per subtype (`reflect.rs`).
     pub refl: HashMap<yavs_sem::SubtypeId, yavs_ir::ReflId>,
     /// Instance data of the architecture being lowered: bytes allocated so far, and the

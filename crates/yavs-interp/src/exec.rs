@@ -567,6 +567,8 @@ pub(crate) struct Machine {
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
+    /// The plans of record signal gathers and scatters this machine met (`gather.rs`).
+    pub(crate) plans: Vec<crate::gather::MPlan>,
     /// Argument cells of the call being made (`call_with`).
     cells: Vec<u64>,
     /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
@@ -1018,6 +1020,7 @@ impl Machine {
             ieee_stop: false,
             ieee_fallback: false,
             layouts: Vec::new(),
+            plans: Vec::new(),
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
@@ -8824,16 +8827,21 @@ impl Machine {
                 let v = self.sig_read_scalar(sig, ctx)?;
                 self.set(dst, v);
             }
-            Inst::SigGather { dst, desc, tab } => self.sig_gather(prog, dst, desc, tab, ctx)?,
+            Inst::SigGather {
+                dst,
+                desc,
+                tab,
+                part,
+            } => self.sig_gather(prog, dst, desc, tab, part, ctx)?,
             Inst::SigScatter {
                 driver,
                 src,
                 desc,
                 tab,
-                after,
+                ops,
                 mode,
-                reject,
-            } => self.sig_scatter(prog, driver, src, desc, tab, after, mode, reject, ctx)?,
+                has,
+            } => self.sig_scatter(prog, f, driver, src, desc, tab, ops, mode, has, ctx)?,
             Inst::Edge { dst, kind, sig } => {
                 let v = self.edge_inst(kind, sig, ctx)?;
                 self.set(dst, v);

@@ -909,15 +909,8 @@ impl Sink<'_> {
 }
 
 fn set_list(i: &mut Inst, l: crate::Regs) {
-    match i {
-        Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => *parts = l,
-        Inst::Call { args, .. }
-        | Inst::CallNative { args, .. }
-        | Inst::CallForeign { args, .. }
-        | Inst::CallIndirect { args, .. }
-        | Inst::CallProt { args, .. }
-        | Inst::Elab { args, .. } => *args = l,
-        _ => {}
+    if let Some(slot) = i.list_mut() {
+        *slot = l;
     }
 }
 

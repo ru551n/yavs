@@ -50,33 +50,29 @@ impl Machine {
     #[inline(never)]
     fn leaf_plan(&self, prog: &Program, tab: ConstId, desc: u64) -> R<Arc<Plan>> {
         let key = tab.0;
-        let known = self
-            .rt
-            .plans
-            .0
-            .read()
-            .ok()
-            .and_then(|m| m.get(&key).map(|e| e.0));
-        let ds = match known {
-            Some(ds) => ds,
-            None => {
-                let bytes = table(prog, tab)?;
-                let Some((ty, _)) = gather::entries(bytes) else {
-                    return Err(cold(|| ice("a leaf table that is not one")));
-                };
-                Ty::desc_size(&prog.types, ty).ok_or_else(|| {
-                    cold(|| ice("a leaf table of a type without a descriptor size"))
-                })?
-            }
-        };
-        let d = self.rd(desc, ds)?;
         if let Ok(m) = self.rt.plans.0.read()
-            && let Some((_, v)) = m.get(&key)
-            && let Some((_, p)) = v.iter().find(|(k, _)| **k == *d)
+            && let Some((ds, v)) = m.get(&key)
         {
-            return Ok(Arc::clone(p));
+            let d = self.rd(desc, *ds)?;
+            if let Some((_, p)) = v.iter().find(|(k, _)| **k == *d) {
+                return Ok(Arc::clone(p));
+            }
         }
-        let plan = match gather::plan(&prog.types, &prog.consts, table(prog, tab)?, d) {
+        self.new_leaf_plan(prog, tab, desc)
+    }
+
+    /// [`Machine::leaf_plan`] for a table and descriptor not seen before.
+    #[cold]
+    #[inline(never)]
+    fn new_leaf_plan(&self, prog: &Program, tab: ConstId, desc: u64) -> R<Arc<Plan>> {
+        let bytes = table(prog, tab)?;
+        let Some((ty, _)) = gather::entries(bytes) else {
+            return Err(cold(|| ice("a leaf table that is not one")));
+        };
+        let ds = Ty::desc_size(&prog.types, ty)
+            .ok_or_else(|| cold(|| ice("a leaf table of a type without a descriptor size")))?;
+        let d = self.rd(desc, ds)?;
+        let plan = match gather::plan(&prog.types, &prog.consts, bytes, d) {
             Ok(p) => Arc::new(p),
             Err(PlanError::Layout(yavs_ir::LayoutError::TooLarge)) => {
                 return cold(|| rt_err("object size exceeds 64 bits"));
@@ -84,7 +80,7 @@ impl Machine {
             Err(e) => return Err(cold(|| ice(format!("leaf table: {e:?}")))),
         };
         if let Ok(mut m) = self.rt.plans.0.write() {
-            m.entry(key)
+            m.entry(tab.0)
                 .or_insert_with(|| (ds, Vec::new()))
                 .1
                 .push((d.into(), Arc::clone(&plan)));
@@ -162,16 +158,16 @@ impl Machine {
             return cold(|| rt_err("signal or wait operation during elaboration"));
         };
         let data = self.rd(self.r(src), plan.size)?;
-        for (k, l) in plan.leaves.iter().enumerate() {
+        let ds = self
+            .drivers
+            .get(driver as usize..driver as usize + plan.leaves.len())
+            .ok_or_else(|| cold(|| ice(format!("no driver slots from {driver}"))))?;
+        for (l, d) in plan.leaves.iter().zip(ds) {
             let s = self
                 .inst
                 .sigs
                 .get(l.sig as usize)
                 .ok_or_else(|| cold(|| ice(format!("no instance signal {}", l.sig))))?;
-            let d = self
-                .drivers
-                .get(driver as usize + k)
-                .ok_or_else(|| cold(|| ice(format!("no driver slot {}", driver as usize + k))))?;
             let (at, vs) = (l.voff as usize, l.vsize as usize);
             let b = data
                 .get(at..at + vs)

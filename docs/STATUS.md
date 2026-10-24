@@ -7080,6 +7080,8 @@ the per-leaf code. Bench builds (`tools/build-bench.sh --features llvm`) of the 
 | `fletcher_bufferwriter_prim32` | 1.77 G | 1.65 G | -6.8 % |
 | `sc5_fifo_repack`, `osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_axistream_vvc`, `poc_cache_cpu`, `hdlm_axi_fifo`, `hdlm_axi_crossbar`, `hdlm_register_file`, `vunit_axi_dma`, `vai_window_gen_interlock` | | | within 0.3 % |
 
+Cycles of the whole LEON3 run on core 15 (`perf stat` cycles:u, bench builds, two interleaved pairs, difftest running on the other CCD): before 427.6 G and 379.5 G, after 364.7 G and 369.7 G (-4 to -15 percent, instructions 912.5 G to 806.5 G, -11.6 percent).
+
 The LEON3 integer unit's `comb` (VHDL-level `--profile`, 100 us, a loaded host so a hint): 1281 to 1011 samples (-21 %), 26 018 to 19 181 IR instructions;
 what is left in it are the reads and drives of single fields of other records (495 reads, 93 drives). `sigrec_copy` ops 52 919 to 29 817. In the
 233-leaf design the interpreter's two loops are now 32 % of the instructions and the kernel's per-leaf work (`assign_code_fast`, `commit_code`,

@@ -364,6 +364,7 @@ fn optimize_body_with(
         &mut layouts,
     );
     o.inst = inst;
+    let had_inst = o.inst.is_some();
     o.run();
     let mut loc = raw.loc.clone();
     let blocks = o.changed.then(|| o.compact(&mut loc, None));
@@ -405,6 +406,9 @@ fn optimize_body_with(
         if layout_slots_on() {
             layout_cache::run(prog, &mut f);
         }
+    }
+    if had_inst && f.kind == FuncKind::Process && f.via.is_empty() {
+        drop_declarations(prog, &mut f);
     }
     renumber(prog, &mut f);
     crate::build::number_func(&mut f, |c| {
@@ -471,6 +475,112 @@ fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Ve
     f.via = via;
     f.operands = operands;
     f.reg_ty.extend(new_regs);
+}
+
+/// A copy of a process, specialised to its instance data, starts after the declarative part:
+/// it takes over between two activations of the shared code (`Machine::specialise`), the
+/// variables are in their frame slots, and no registers carry over. The blocks of the
+/// declarative part (the descriptors and initial values of the variables, often the largest
+/// part of a process of records with generic bounds) are never run in it: the entry jumps
+/// to the body and the blocks nothing else reaches are emptied.
+fn drop_declarations(prog: &Program, f: &mut crate::Func) {
+    let Some(body) = f.body else { return };
+    let nb = f.blocks.len();
+    let body = body.0 as usize;
+    let blk = |f: &crate::Func, b: usize| f.blocks.values()[b];
+    if body == 0 || body >= nb || blk(f, 0).end <= blk(f, 0).start {
+        return;
+    }
+    // The graph with the entry going straight to the body.
+    let mut succ = memo::successors(prog, f);
+    succ[0] = vec![body];
+    let mut reach = vec![false; nb];
+    let mut stack = vec![0usize];
+    while let Some(b) = stack.pop() {
+        if !std::mem::replace(&mut reach[b], true) {
+            stack.extend(succ[b].iter().copied().filter(|&t| t < nb));
+        }
+    }
+    // Frames start with the registers defined once by a constant or an address, wherever the
+    // definition is: those the body reads keep their definition, in the entry block.
+    let mut defs = vec![0u32; f.reg_ty.len()];
+    let mut read = vec![false; f.reg_ty.len()];
+    for (b, &live) in reach.iter().enumerate() {
+        let r = blk(f, b);
+        for i in &f.code[r.start as usize..r.end as usize] {
+            for_defs_fast(i, |d| defs[d.0 as usize] += 1);
+            if live && b != 0 {
+                i.visit(&mut |x, role, _| {
+                    if role == Role::Use {
+                        read[x.0 as usize] = true;
+                    }
+                });
+                if let Some(l) = i.list() {
+                    for x in f
+                        .operands
+                        .get(l.start as usize..(l.start + l.len) as usize)
+                        .unwrap_or(&[])
+                    {
+                        read[x.0 as usize] = true;
+                    }
+                }
+            }
+        }
+    }
+    // The definitions to keep, from every block that is gone, in order.
+    let mut keep: Vec<(Inst, StmtId)> = Vec::new();
+    for (b, &live) in reach.iter().enumerate() {
+        if live && b != 0 {
+            continue;
+        }
+        let r = blk(f, b);
+        for pc in r.start as usize..r.end as usize {
+            if let Inst::Const { dst, .. } | Inst::ConstF { dst, .. } | Inst::AddrOf { dst, .. } =
+                f.code[pc]
+                && defs[dst.0 as usize] == 1
+                && read[dst.0 as usize]
+            {
+                keep.push((f.code[pc], f.loc[pc]));
+            }
+        }
+    }
+    let (mut code, mut loc) = (
+        Vec::with_capacity(f.code.len()),
+        Vec::with_capacity(f.code.len()),
+    );
+    let at = blk(f, 0).start as usize;
+    for (b, &live) in reach.iter().enumerate() {
+        let r = blk(f, b);
+        let start = code.len() as u32;
+        let range = r.start as usize..r.end as usize;
+        if b == 0 {
+            for (i, l) in &keep {
+                code.push(*i);
+                loc.push(*l);
+            }
+            code.push(Inst::Br {
+                to: BlockId(body as u32),
+            });
+            loc.push(f.loc[at]);
+        } else if live {
+            code.extend_from_slice(&f.code[range.clone()]);
+            loc.extend_from_slice(&f.loc[range]);
+        } else {
+            // Every block holds an instruction: a dead one jumps to itself.
+            code.push(Inst::Br {
+                to: BlockId(b as u32),
+            });
+            loc.push(f.loc[range.start]);
+        }
+        if let Some(x) = f.blocks.get_mut(BlockId(b as u32)) {
+            *x = crate::Block {
+                start,
+                end: code.len() as u32,
+            };
+        }
+    }
+    f.code = code;
+    f.loc = loc;
 }
 
 /// Drop the `Stmt` markers a pass left with nothing to free (`Opt::drop_statements`).

@@ -3968,9 +3968,11 @@ runs: `sc5_fifo_repack` +1.7% and `sc5_timestamp` +1.0% are within that, with eq
 (`tools/realbench --compare`, 42 tests, interpreter, core 8): instruction geometric mean 1.00 (only the writer moved), wall 0.98,
 no slowdown by the suite's own criterion. Head-to-head designs: instructions level (geometric mean 0.997), CPU time 0.998
 (9 interleaved runs of `xor_sig`, `compute_h2h`, `rtl_ff`, `rtl_chain`, `lfsr64`).
-Checks on the pushed commit: fmt, clippy with and without llvm, `cargo test --workspace` (1010), llvm tests (295), difftest 504 of
-504 on interp, auto and llvm at 1 and 4 threads, shuffled, auto with `--no-collapse-ports`, `YAVS_IDLE_SKIP=check` and
-`YAVS_LEAN_EVENTS=off`; the reference simulators' own tests (oracle) 992 and 455; OSVVM 314 of 314 (2008 and 2019), UVVM 131/0/6.
+Checks on the pushed tip: fmt, clippy with and without llvm, `cargo test --workspace` (1013), the llvm tests (298), difftest 504 of 504
+on interp, auto and llvm at 1 and 4 threads and on interp with `YAVS_LEAN_EVENTS=off` and with `YAVS_IDLE_SKIP=check` (debug build with
+the llvm feature). On the release bench build one rebase earlier (before the cache FORMAT bump): difftest shuffled and with
+`--no-collapse-ports`, the reference simulators' own tests (oracle) 992 and 455, OSVVM 314 of 314 (2008 and 2019), UVVM 131/0/6.
+The FST of `wide_bus_attributes` and `wide_bus_lean` is byte-identical lean and with `YAVS_LEAN_EVENTS=off`.
 Measured and not done: lazy unpruned records (instructions 0.999); no `last_value` blend for lean signals (-0.9% instructions,
 -0.7% cycles of the writer, no sound rule); leaning designs with OSVVM or UVVM (their utility packages apply `'last_event` to
 parameters: needs reachability over the lowered program).

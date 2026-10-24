@@ -4191,11 +4191,16 @@ cycles for the design.
 - **Tests.** `tests/corpus/rtl/wide_bus_attributes` (every attribute on wide buses through signal parameters: nothing lean, the full
   history) and `wide_bus_lean` (the attributes in the shapes the elaborator accepts, plus a bus per way to ask a part: element,
   slice, alias, record field, port formal that is a part of the bus), both equal to the reference simulator (`'last_value` of
-  vectors is left out: the references differ, catalogue `last-value-composite`); `crates/yavs-kernel/tests/lean_events.rs` and the
+  vectors is left out: the references differ, catalogue `last-value-composite`; the first reference also reports a signal
+  assigned in the same delta as active, catalogue `active-in-delta-of-assignment`); `crates/yavs-kernel/tests/lean_events.rs` and the
   signal unit test `lean_events_of_a_wide_signal` (a lean and a full signal give the same answers to every promised question, a
   mutation of the same-cycle merge is caught, refusals are internal errors); `yavs-elab` tests for the marking rules;
   `crates/yavs-sem/tests/history_facts.rs`; `perf.rs` `lean_events` (floor on `lean_signals`) and `lean_events_change_nothing`
   (same report lean, full, and under `--cov`, which keeps the history).
+- **Idea of the reference simulator's kernel used (rewritten for ours):** events are kept per net, a run of elements that move
+  together, not per element. Different: the reference refines a net lazily when a query covers part of it, so the history from
+  before the split stays the net's; ours keeps the exact history of every element a design can ask and the block's last event
+  of the others, decided at elaboration, with an internal error as the backstop.
 - **Measured and not taken.** Unpruned records with a compaction every four pushes (exact for every query, no analysis): instructions
   0.999 of the pruned lists, because the records of a random-data bus are inherently ~7. Also skipping the `last_value` blend of lean
   signals: a further -0.9% instructions and -0.7% cycles of the writer, but edge tests read those planes and signal parameters reach

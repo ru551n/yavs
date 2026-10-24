@@ -7130,8 +7130,8 @@ look-ups of about 18 instructions, 3 dope tests of about 25, 3 offset guards of 
 (`YAVS_COUNTERS=kinds`) are only 3 M in the whole run (`CallProt` 1.2 M, `Call` 0.5 M, `Drive` 0.4 M, `NewFill` 0.2 M, `LCopy` 0.15 M).
 
 Cold against warm: 241 to 245 G instructions against 171 to 191 G. The compile thread is 13 to 14 G of the difference (85 compiles, 2.9 s of
-compile thread time on the timing core, 12 microseconds of CPU per optimised LLVM instruction, 110 000 of them, codegen 70 percent and the
-lean passes 25; the profile of the compile thread is flat: instruction selection, register allocation, nothing above 2 percent), the other
+compile thread time on the timing core; the 45 compiles with `YAVS_LLVM_TIMES=1` took 3.8 s of wall time shared with the main thread for 110 000 LLVM
+instructions before the passes and 70 000 after, code generation 70 percent and the lean passes 25; the profile of the compile thread is flat: instruction selection, register allocation, nothing above 2 percent), the other
 45 G is the main thread interpreting what is not compiled yet: `bus_process` and `check_axi_stream` are never compiled in a cold run of 15 s,
 `encode` is first seen at 8 s (150 ms warm). On one pinned core the compile thread's CPU is wall time (cold 16.7 s against warm 14.3 s); a
 second core (9,10) gave 17 to 18 s against 19 to 22 s on the same loaded host, a hint only.

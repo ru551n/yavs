@@ -7113,7 +7113,7 @@ Measurements in docs/STATUS.md "Window generator against sim1: where the time is
   table (`keeps_objects`), as a known object across a loop, not a general pass.
 - **Compile policy facts for #680 and #673** (the policy is not changed here): forcing the 15 refused or interpreted functions leaves a warm run
   where it was; in a cold run the compile thread is 13 to 14 G instructions of the 55 to 70 G cold overhead and the rest is code that is not
-  compiled yet, so lower compile cost per LLVM instruction (110 000 optimised LLVM instructions for 85 compiles, a flat profile) helps the second
+  compiled yet, so lower compile cost per LLVM instruction (70 000 LLVM instructions after the passes in 45 timed compiles, a flat profile) helps the second
   half only through the latency.
 - **The remaining distance to sim1 is the pointer-table and codec chain of the test runner**: 36 percent of the instructions of a warm run are
   75 M `get`, 40 M `set` and 13 M each of `length`, `unsafe_push`, `unsafe_pop` (call counts of #493), `get` at about 285 instructions per call. The four object look-ups and three dope tests of one `get` are the design of generational handles and bounds

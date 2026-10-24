@@ -992,6 +992,22 @@ mod llvm {
         ]
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
+    // The memo of pure calls (#701) answers the compiled calls too: the same hits as the interpreter.
+    #[test]
+    fn llvm_pure_memo() {
+        check(
+            "pure_memo",
+            include_str!("perf/pure_memo.vhd"),
+            "q=9",
+            "llvm",
+            &[],
+            &[
+                ("pmemo_hits", Min(420)),
+                ("pmemo_runs", Max(14)),
+                ("cb_memo", Max(470)),
+            ],
+        );
+    }
     llvm_case!(
         llvm_ieee,
         "acc=",

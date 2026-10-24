@@ -10,7 +10,8 @@ use std::any::Any;
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use yavs_interp::{
-    Called, NativeCall, NativeFrame, Stepped, TIER_SUSPEND, TIER_UNWIND, TierFrame, TierHost, space,
+    Called, MemoLook, NativeCall, NativeFrame, Stepped, TIER_SUSPEND, TIER_UNWIND, TierFrame,
+    TierHost, space,
 };
 
 use yavs_ir::{AddrSpace, FOp, Func, FuncId, Inst, IntOp, Program, Reg, Width};
@@ -68,6 +69,10 @@ pub const NATIVE: &str = "yavs_rt_native";
 pub const PUT_SMALL_BYTES: u32 = 16 + yavs_ir::DOPE_DIM_BYTES as u32 + 32;
 
 pub const NATIVE_LIGHT: &str = "yavs_rt_native_light";
+
+pub const MEMO: &str = "yavs_rt_memo";
+
+pub const MEMO_KEEP: &str = "yavs_rt_memo_keep";
 
 pub const TROOT: &str = "yavs_rt_troot";
 
@@ -1135,6 +1140,102 @@ pub unsafe extern "C" fn yavs_rt_native_light(
             0
         }
     }
+}
+
+/// `TierHost::memo_probe` for a call of a memoised function from a native frame (`depth` its
+/// index) or a frame-mode function (`NATIVE_FRAME_MODE`): `cells` (`n`) are the argument cells.
+/// Returns 0 when the call is made as usual, 1 on a hit (the result is `out[0]`), 2 on a miss
+/// (the reports so far are `out[1]`: the call is made, then `yavs_rt_memo_keep`).
+pub unsafe extern "C" fn yavs_rt_memo(
+    env: *mut c_void,
+    mem: *mut Mem,
+    func: u32,
+    cells: *const u64,
+    n: u32,
+    depth: u64,
+    out: *mut u64,
+) -> u32 {
+    cb(Cb::Memo);
+    // SAFETY: as in `yavs_rt_native`; `out` is two words of the caller.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let cells = std::slice::from_raw_parts(cells, n as usize);
+        let env = &mut *envp;
+        let depth = (depth & NATIVE_FRAME_MODE == 0).then_some(depth);
+        if depth.is_some() {
+            let _ = env
+                .windows
+                .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        }
+        env.host
+            .memo_probe(&mut (*mem).fr, FuncId(func), cells, depth, &mut env.windows)
+    }));
+    // SAFETY: as above.
+    let m = unsafe { &mut *mem };
+    m.temp_seen = m.fr.temp_len;
+    m.forget_end();
+    match r {
+        Ok(MemoLook::Hit(v)) => {
+            unsafe { *out = v };
+            1
+        }
+        Ok(MemoLook::Miss(reports)) => {
+            unsafe { *out.add(1) = reports };
+            2
+        }
+        Ok(MemoLook::No) => 0,
+        Err(p) => {
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
+}
+
+/// `TierHost::memo_keep` for a call that `yavs_rt_memo` answered with 2: the result is `out[0]`,
+/// the reports then `out[1]`.
+pub unsafe extern "C" fn yavs_rt_memo_keep(
+    env: *mut c_void,
+    mem: *mut Mem,
+    func: u32,
+    cells: *const u64,
+    n: u32,
+    depth: u64,
+    out: *mut u64,
+) -> u32 {
+    cb(Cb::Memo);
+    // SAFETY: as `yavs_rt_memo`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let cells = std::slice::from_raw_parts(cells, n as usize);
+        let env = &mut *envp;
+        let depth = (depth & NATIVE_FRAME_MODE == 0).then_some(depth);
+        if depth.is_some() {
+            let _ = env
+                .windows
+                .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        }
+        let (v, reports) = (*out, *out.add(1));
+        env.host.memo_keep(
+            &mut (*mem).fr,
+            FuncId(func),
+            cells,
+            depth,
+            &mut env.windows,
+            reports,
+            v,
+        );
+    }));
+    // SAFETY: as above.
+    let m = unsafe { &mut *mem };
+    // The machine's temporary area has the length `sync` gave it.
+    m.temp_seen = m.fr.temp_len;
+    if let Err(p) = r {
+        // SAFETY: as above.
+        unsafe { (*envp).panic = Some(p) };
+    }
+    0
 }
 
 /// Write a native's result to `out` (one word of the caller); bit 8 says there was one.

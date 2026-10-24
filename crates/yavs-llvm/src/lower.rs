@@ -131,6 +131,8 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (PLANES, yavs_rt_planes as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
             (NATIVE_LIGHT, yavs_rt_native_light as *const () as usize),
+            (MEMO, yavs_rt_memo as *const () as usize),
+            (MEMO_KEEP, yavs_rt_memo_keep as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
             (XSTEP, yavs_rt_xstep as *const () as usize),
@@ -1287,6 +1289,9 @@ struct Gen {
     native: LLVMValueRef,
     /// `yavs_rt_native_light`: the type of `yavs_rt_native`.
     native_light: LLVMValueRef,
+    /// `yavs_rt_memo` and `yavs_rt_memo_keep`: the type of `yavs_rt_native`.
+    memo: LLVMValueRef,
+    memo_keep: LLVMValueRef,
     /// `yavs_rt_troot(env, mem, addr, ty, desc, n) -> u32`.
     troot_ty: LLVMTypeRef,
     troot: LLVMValueRef,
@@ -1574,6 +1579,8 @@ impl Gen {
                 native_ty,
                 native: add(NATIVE, native_ty),
                 native_light: add(NATIVE_LIGHT, native_ty),
+                memo: add(MEMO, native_ty),
+                memo_keep: add(MEMO_KEEP, native_ty),
                 troot_ty,
                 troot: add(TROOT, troot_ty),
                 endstmt_ty,
@@ -1641,6 +1648,8 @@ impl Gen {
                 self.deopt_end,
                 self.native,
                 self.native_light,
+                self.memo,
+                self.memo_keep,
                 self.troot,
                 self.endstmt,
                 self.xstep,
@@ -4395,7 +4404,10 @@ impl Gen {
                     {
                         let g = prog.func(func).ok_or("callee vanished")?;
                         let rs = f.regs(args).ok_or("operand list out of range")?;
-                        self.native_call(&c, pc, &inst, id, f, func, g, rs, dst, None);
+                        let memo = prog
+                            .memo_sig(func)
+                            .is_some_and(|m| m.cells as usize == rs.len());
+                        self.native_call(&c, pc, &inst, id, f, func, g, rs, dst, None, memo);
                     }
                     Inst::CallProt {
                         func,
@@ -4410,7 +4422,7 @@ impl Gen {
                     {
                         let g = prog.func(func).ok_or("callee vanished")?;
                         let rs = f.regs(args).ok_or("operand list out of range")?;
-                        self.native_call(&c, pc, &inst, id, f, func, g, rs, dst, Some(obj));
+                        self.native_call(&c, pc, &inst, id, f, func, g, rs, dst, Some(obj), false);
                     }
                     Inst::NewFrame {
                         dst,
@@ -5598,6 +5610,7 @@ impl Gen {
         args: &[Reg],
         dst: Option<Reg>,
         obj: Option<Reg>,
+        memo: bool,
     ) {
         // SAFETY: `Mem` fields, the callee's native type, well-formed blocks of c.f.
         unsafe {
@@ -5694,6 +5707,46 @@ impl Gen {
                     cells.push(self.ld(c, Reg(r.0 + 1)));
                 }
             }
+            // The memo of pure calls (`TierHost::memo_probe`): a hit is the result, a miss makes
+            // the call and keeps its result below.
+            let memo = if memo {
+                let n = args.len();
+                let (buf, out) = (self.entry_alloca(c, n as u64 * 8), self.entry_alloca(c, 16));
+                for (k, r) in args.iter().enumerate() {
+                    self.store(self.ld(c, *r), self.gep(buf, self.c64(k as i64 * 8)));
+                }
+                let dep = match &c.nat {
+                    Some(n) => n.depth,
+                    None => self.c64(NATIVE_FRAME_MODE as i64),
+                };
+                let mut a = [
+                    c.env,
+                    c.mem,
+                    self.c32(callee.0),
+                    buf,
+                    self.c32(n as u32),
+                    dep,
+                    out,
+                ];
+                let st = LLVMBuildCall2(
+                    self.b,
+                    self.native_ty,
+                    self.memo,
+                    a.as_mut_ptr(),
+                    7,
+                    c"".as_ptr(),
+                );
+                let (hit, go, merge) = (self.block(c), self.block(c), self.block(c));
+                let is_hit = self.icmp(IP::LLVMIntEQ, st, self.c32(1));
+                self.cond_br(is_hit, hit, go, true);
+                LLVMPositionBuilderAtEnd(self.b, hit);
+                let hv = LLVMBuildLoad2(self.b, self.i64, out, c"".as_ptr());
+                LLVMBuildBr(self.b, merge);
+                LLVMPositionBuilderAtEnd(self.b, go);
+                Some((st, buf, out, dep, n, hit, hv, merge))
+            } else {
+                None
+            };
             let v = LLVMBuildCall2(
                 self.b,
                 ty,
@@ -5726,6 +5779,42 @@ impl Gen {
                 }
             }
             LLVMPositionBuilderAtEnd(self.b, cont);
+            let v = match memo {
+                Some((st, buf, out, dep, n, hit, hv, merge)) => {
+                    let (keep, after) = (self.block(c), self.block(c));
+                    let miss = self.icmp(IP::LLVMIntEQ, st, self.c32(2));
+                    self.cond_br(miss, keep, after, false);
+                    LLVMPositionBuilderAtEnd(self.b, keep);
+                    self.store(v, out);
+                    let mut a = [
+                        c.env,
+                        c.mem,
+                        self.c32(callee.0),
+                        buf,
+                        self.c32(n as u32),
+                        dep,
+                        out,
+                    ];
+                    LLVMBuildCall2(
+                        self.b,
+                        self.native_ty,
+                        self.memo_keep,
+                        a.as_mut_ptr(),
+                        7,
+                        c"".as_ptr(),
+                    );
+                    LLVMBuildBr(self.b, after);
+                    LLVMPositionBuilderAtEnd(self.b, after);
+                    LLVMBuildBr(self.b, merge);
+                    LLVMPositionBuilderAtEnd(self.b, merge);
+                    let phi = LLVMBuildPhi(self.b, self.i64, c"".as_ptr());
+                    let mut vals = [v, hv];
+                    let mut from = [after, hit];
+                    LLVMAddIncoming(phi, vals.as_mut_ptr(), from.as_mut_ptr(), 2);
+                    phi
+                }
+                None => v,
+            };
             if let Some(d) = dst {
                 self.st(c, d, v);
             }

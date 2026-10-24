@@ -15,6 +15,7 @@ package ppmemo_cases_pkg is
   function txt(a : std_logic_vector) return string;
   function rep(n : integer; a : unsigned) return unsigned;
   function pw(a : unsigned; n : natural) return unsigned;
+  function bigsum(a : int_vec) return integer;
 end package;
 package body ppmemo_cases_pkg is
   function fib(n : natural) return natural is
@@ -73,6 +74,13 @@ package body ppmemo_cases_pkg is
     if n = 0 then return to_unsigned(1, a'length); end if;
     return resize(pw(a, n - 1) * a, a'length);
   end function;
+  -- An argument over the 1 KiB the memo keys: the call is made as usual, every time.
+  function bigsum(a : int_vec) return integer is
+    variable t : integer := 0;
+  begin
+    for i in a'range loop t := t + a(i) mod 7; end loop;
+    return t;
+  end function;
 end package body;
 
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.ppmemo_cases_pkg.all;
@@ -92,6 +100,7 @@ begin
     variable jv : int_vec(5 downto 2) := (1, 2, 3, 4);
     variable r : real := 0.0;
     variable u : unsigned(7 downto 0) := x"05";
+    variable big : int_vec(0 to 299) := (others => 3);
   begin
     for c in 1 to 150 loop
       wait until rising_edge(clk);
@@ -106,6 +115,8 @@ begin
       if c mod 10 = 0 then report txt(v) & " " & txt(w(2 to 5)); end if;
       u := rep(c mod 4, u);
       acc := acc + to_integer(pw(u, c mod 5));
+      big(c mod 300) := c;
+      acc := acc + bigsum(big);
     end loop;
     report "acc=" & integer'image(acc) & " r=" & real'image(r);
     done <= true;

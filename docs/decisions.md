@@ -7890,7 +7890,7 @@ The reference simulator folds a pure call with constant arguments once, before t
   (`Machine::call_to_end`: `exec` with the frame count as base), at most `NEST` = 8 deep (a recursive function memoises its top levels, the
   rest run as usual and the native stack stays small).
 - **Bounds.** Per process and function a direct-mapped table of 32 entries that doubles up to 256 while keys evict each other; a key or
-  result over 1 KiB is not kept. The first 64 calls of a function in a process decide: fewer than one in eight repeating switches it off
+  result over 1 KiB is not kept (a call whose key does not fit counts as a call that did not repeat). The first 64 calls of a function in a process decide: fewer than one in eight repeating switches it off
   for that process, and for every process when three have (`Pre::memo_off`); a function that is off costs a flag test in the call. Per
   process and without locks, so hits and counters are the same at every thread count. `YAVS_COUNTERS` shows `pmemo_hits` and `pmemo_runs`.
 - **Not done.** A function the tier compiled for native frames is called directly from compiled code and bypasses the memo (making it

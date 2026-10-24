@@ -132,6 +132,19 @@ impl State {
         self.memos.iter().any(|m| m.func == func && m.off)
     }
 
+    /// A call of `func` whose key could not be made (over `MAX_BYTES`): counted like a miss, so a
+    /// function whose calls never fit is given up too. True when it has just been.
+    pub fn unkeyed(&mut self, func: u32) -> bool {
+        let m = self.memo(func);
+        m.calls += 1;
+        let give_up = !m.off && m.calls == WARM && m.hits < WARM / RATE;
+        if give_up {
+            m.off = true;
+            m.slots = Vec::new();
+        }
+        give_up
+    }
+
     /// Look the call of `func` with the key in `self.key` up. Counts the call, and judges the
     /// function after `WARM` calls.
     pub fn look(&mut self, func: u32) -> Look {
@@ -242,7 +255,12 @@ impl Machine {
         let made = self.memo_key(sig, regs, &mut key);
         st.key = key;
         if !made {
+            // A call whose key is too big counts as a call that did not repeat.
+            let gave_up = st.unkeyed(func.0);
             self.pm = Some(st);
+            if gave_up {
+                self.memo_vote(prog, func);
+            }
             return Ok(Done::No);
         }
         let hash = match st.look(func.0) {

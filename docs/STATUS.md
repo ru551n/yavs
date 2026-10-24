@@ -6809,15 +6809,17 @@ signals; process variables read from compiled code (`Host::object`); `mux`/`ffdr
 (5 000 instructions an activation).
 
 Real-world suite after #630 (`tools/realbench/run.py --ref sim1 --cores 10 --runs 2 --phases elab,run --tiers interp,auto,auto-cold`, bench build
-with `llvm` at 20264d5e, medians of 2, host load 22 to 77 so the wall times are indicative and the instruction ratios are the reliable part;
-elaboration of the reference 0.42 to 0.47 s on the LEON3 and neorv32, yavs 0.05 to 0.25 s):
+with `llvm` at 20264d5e, medians of 2, host load 22 to 77 so the wall times are indicative and the instruction ratios are the reliable part).
+`--tier=auto` against the reference's elaboration plus run (the run cell of yavs includes its elaboration; the reference elaborates in 0.42 to 0.48 s
+on the LEON3 and neorv32, 0.16 s on the window generator):
 
-| test | reference run (s, G instr) | interp | auto warm | auto cold |
-|---|---|---|---|---|
-| `grlib_leon3mp` | 14.09, 171.1 | 79.65 s (5.65x, ins 5.45) | 82.64 s (5.87x, ins 5.51) | 94.58 s (6.71x, ins 5.71) |
-| `neorv32_single_min` | 3.88, 38.7 | 5.30 s (1.37x, ins 1.45) | 5.79 s (1.50x, ins 1.47) | 5.33 s (1.38x, ins 1.51) |
-| `vai_window_gen_interlock` | 5.91, 70.5 | 29.59 s (5.01x, ins 7.03) | 11.10 s (1.88x, ins 2.48) | 13.48 s (2.28x, ins 3.50) |
+| test | reference elab + run (s, G instr of the run) | auto warm | auto cold |
+|---|---|---|---|
+| `grlib_leon3mp` | 0.48 + 14.09, 171.1 | 82.64 s, 5.7x (ins 5.51) | 94.58 s, 6.5x (ins 5.71) |
+| `neorv32_single_min` | 0.45 + 3.88, 38.7 | 5.79 s, 1.34x (ins 1.47) | 5.33 s, 1.24x (ins 1.51) |
+| `vai_window_gen_interlock` | 0.16 + 5.91, 70.5 | 11.10 s, 1.83x (ins 2.48) | 13.48 s, 2.22x (ins 3.50) |
 
+Interpreter, before and after #630 on the LEON3 (own measure, `--threads 1`, user instructions): 1685.8 G, 150.8 s to 993.3 G, 91.3 s.
 The LEON3 was 150.2 s warm and 146.5 s cold under `--tier=auto` (11.25 times the reference's instructions) when #630 was filed. `--tier=llvm` on the
 whole design: 84 s of code generation (9.8 M LLVM instructions: generation 5.8 s, passes 50.6 s, code generation about 25 s), the run 174 s against 91 s
 interpreted (1520 G instructions against 993 G): the compiled frame-mode code of the design's processes does not execute fewer instructions than

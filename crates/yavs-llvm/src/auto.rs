@@ -2044,6 +2044,47 @@ mod tests {
         (pb.finish().unwrap(), f)
     }
 
+    /// A function of `n` frees whose last block loops on itself: a compute loop for
+    /// `compute`, whatever its size.
+    fn padded_loop(n: usize) -> (yavs_ir::Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", yavs_ir::FuncKind::Procedure, None);
+        let mut fb = pb.define(f);
+        let spin = fb.block();
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let ptr = fb.reg(yavs_ir::RegTy::Ptr);
+        fb.emit(Inst::AddrOf {
+            dst: ptr,
+            space: yavs_ir::AddrSpace::Frame,
+            off: 0,
+        });
+        for _ in 0..n {
+            fb.emit(Inst::Free { ptr });
+        }
+        fb.emit(Inst::Br { to: spin });
+        fb.at(spin);
+        fb.emit(Inst::Br { to: spin });
+        fb.finish();
+        (pb.finish().unwrap(), f)
+    }
+
+    /// A function of 1 500 IR instructions or more is compiled at `Fast` even when its loops make
+    /// it a compute loop: optimised code generation of such a function takes minutes (#630).
+    #[test]
+    fn a_huge_function_with_a_short_loop_is_compiled_fast() {
+        for (n, level) in [(400, crate::OptLevel::O2), (1_600, crate::OptLevel::Fast)] {
+            let (prog, f) = padded_loop(n);
+            let f = prog.func(f).unwrap();
+            assert!(f.code.len() >= n, "{n}");
+            assert!(compute(&prog, f), "{n}");
+            assert_eq!(
+                crate::lower::level_for(&prog, f, crate::OptLevel::O2),
+                level,
+                "{n}"
+            );
+        }
+    }
+
     #[test]
     fn an_unreachable_self_jump_is_no_loop() {
         for (reached, is_loop) in [(true, true), (false, false)] {

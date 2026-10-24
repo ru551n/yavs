@@ -6563,7 +6563,10 @@ one process on a loaded host). L: LLVM only; S: also a second code generator.
 - **Together with the smaller IR of "Composite signal reads: one copy per activation"**: the compile thread's time for the copy
   `--tier=auto` makes of the process (23 641 IR instructions, 406 000 LLVM instructions): generation 0.31 s, verification 0.10 s, passes
   0.57 s, code generation 1.56 s, 2.5 s in all, against 39.6 s for the shared function at `O2` codegen before (core 10, loaded host).
-  The object is 3.9 MB for 28 000 IR instructions (142 bytes an IR instruction).
+  The object is 3.9 MB for 28 000 IR instructions (142 bytes an IR instruction). The window generator's large processes at `Fast`
+  (copies, forced with `YAVS_AUTO_FORCE`): `control` 4 578 IR instructions 0.40 s, `walk_control` 2 563 0.28 s, `bus_process` 2 133 0.27 s
+  (80 to 130 us an IR instruction; the cost model prices them at 800, #680). `crates/yavs-llvm/tests/jit.rs`
+  `a_huge_module_matches_reference_semantics` (120 000 LLVM instructions through `LEAN_HUGE`) and `auto::tests::a_huge_function_with_a_short_loop_is_compiled_fast`.
 - **What the compile cost does not buy yet: compiled code of such a process is not faster than the interpreter.** Measured with
   `YAVS_AUTO_FORCE=comb@10000#1211` (the copy compiled at the first sample) against `--tier=interp`, same binary, `--threads 1`,
   `perf stat --no-inherit` user cycles and instructions of the simulation thread between 300 us and 500 us, core 10: interpreter 72.2 G

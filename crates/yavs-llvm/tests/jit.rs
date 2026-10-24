@@ -172,6 +172,28 @@ fn chain_matches_reference_semantics() {
     assert_eq!(got, want, "writes before the trap match the reference");
 }
 
+/// A module of more than 100 000 LLVM instructions takes the pipeline without `simplifycfg` and
+/// `adce` (quadratic in the module, #630); the code is the same function.
+#[test]
+fn a_huge_module_matches_reference_semantics() {
+    const STMTS: usize = 9_000; // about 120k LLVM instructions
+    let mut m = Module::new("chain");
+    spike::add_chain(&m, STMTS);
+    assert!(m.instruction_count() > 100_000, "{}", m.instruction_count());
+    m.verify().unwrap();
+    m.optimize(OptLevel::Fast).unwrap();
+    let mut jit = Jit::new(OptLevel::Fast, &runtime_symbols()).unwrap();
+    jit.add(m).unwrap();
+    // SAFETY: the symbol has the ChainFn signature.
+    let f: ChainFn = unsafe { std::mem::transmute(jit.lookup("chain").unwrap()) };
+    let init: [i64; CHAIN_FIELDS] = std::array::from_fn(|i| (i as i64) * 1_000_003 - 7);
+    let (mut got, mut want) = (init, init);
+    // SAFETY: got has CHAIN_FIELDS elements.
+    assert_eq!(unsafe { f(got.as_mut_ptr()) }, 0);
+    assert_eq!(spike::chain_reference(&mut want, STMTS), Ok(()));
+    assert_eq!(got, want);
+}
+
 /// The interpreter stand-in for `checked_sum`.
 unsafe extern "C" fn interp_sum(data: *const i64, n: i64, out: *mut i64) -> i32 {
     // SAFETY: same contract as the JIT version.

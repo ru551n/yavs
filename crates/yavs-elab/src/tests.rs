@@ -30,6 +30,7 @@ type Errs = Vec<(&'static str, String)>;
 const UNCOLLAPSED: ElabConfig = ElabConfig {
     max_depth: 1000,
     collapse_ports: false,
+    packs: true,
 };
 
 fn try_elab(
@@ -2680,4 +2681,73 @@ fn a_signal_parameter_marks_every_signal_unless_scalar_last_value() {
     // packages are that).
     let decls = "procedure p (signal s : in std_logic) is variable c : std_logic; begin c := s'last_value; end;";
     assert_eq!(lean_leaves(&wide_design(decls, "p(a(3));")), ABR);
+}
+
+/// Runs of logic leaves of a record signal share a kernel signal (#686); leaves of another kind,
+/// of more than 64 elements, past the 64-element cap, forced or with an implicit signal do not.
+#[test]
+fn record_leaves_share_kernel_signals() {
+    let src = "
+      library ieee; use ieee.std_logic_1164.all;
+      entity t is end; architecture a of t is
+        type rec is record
+          a : std_logic; b : std_ulogic; v : std_logic_vector(3 downto 0);
+          n : integer; c : bit; w : std_logic_vector(99 downto 0);
+          x, y : std_logic_vector(39 downto 0);
+        end record;
+        signal r, f, s : rec;
+      begin
+        process begin
+          f.a <= force '1';
+          report boolean'image(s'stable);
+          wait;
+        end process;
+      end;";
+    let locs = |cfg: &ElabConfig| {
+        let (_, e) = try_elab_cfg("packs", src, "t", &[], cfg);
+        let e = e.expect("elaborates");
+        let obj = |name: &str| {
+            (e.nets.objs.iter())
+                .find(|o| o.name.text.as_str() == name)
+                .expect("object")
+                .leaves
+        };
+        let at = |(a, b): (crate::LeafId, crate::LeafId)| -> Vec<(u32, u32)> {
+            (a.0..b.0)
+                .map(|l| {
+                    let at = e.nets.loc[l as usize];
+                    (at.signal.0, at.base)
+                })
+                .collect()
+        };
+        (at(obj("r")), at(obj("f")), at(obj("s")))
+    };
+    let (r, f, s) = locs(&ElabConfig::default());
+    let k = r[0].0;
+    // a, b, v together; n alone; c starts a pack that w (100 elements) cannot join; x, y apart.
+    assert_eq!(
+        r,
+        [
+            (k, 0),
+            (k, 1),
+            (k, 2),
+            (k + 1, 0),
+            (k + 2, 0),
+            (k + 3, 0),
+            (k + 4, 0),
+            (k + 5, 0)
+        ]
+    );
+    for (i, w) in f.windows(2).chain(s.windows(2)).enumerate() {
+        assert_ne!(
+            w[0].0, w[1].0,
+            "pair {i}: a forced leaf or an implicit prefix shares a signal"
+        );
+    }
+    let off = ElabConfig {
+        packs: false,
+        ..ElabConfig::default()
+    };
+    let (r, _, _) = locs(&off);
+    assert!(r.windows(2).all(|w| w[0].0 + 1 == w[1].0 && w[1].1 == 0));
 }

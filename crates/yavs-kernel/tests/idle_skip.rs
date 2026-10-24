@@ -35,11 +35,12 @@ fn wide(b: &mut Builder, name: &str, v: StdULogic) -> SignalId {
 /// to edge 30, and two registers: `q <= d` and `qe <= d` when `en = '1'`. Returns the value changes
 /// and phases of a run to 400 ns, with `ops` applied at the given times, and the statistics.
 fn run(skip: Skip, every: u64, ops: &[(u64, &str)], values: bool) -> (Vec<String>, Stats) {
-    run_in(skip, every, ops, values, 1, 0)
+    run_in(skip, every, ops, values, 1, 0, false)
 }
 
 /// `run` with `threads` and `extra` more registers `q <= d` (a batch of 32 or more processes
-/// runs in the pool when there are threads).
+/// runs in the pool when there are threads); with `noise`, element 1 of `d`, which no register
+/// reads, toggles at every edge.
 fn run_in(
     skip: Skip,
     every: u64,
@@ -47,6 +48,7 @@ fn run_in(
     values: bool,
     threads: usize,
     extra: usize,
+    noise: bool,
 ) -> (Vec<String>, Stats) {
     let mut b = Builder::new();
     let clk = logic(&mut b, "clk", StdULogic::Zero);
@@ -85,6 +87,11 @@ fn run_in(
                 if n.is_multiple_of(every) {
                     let v = StdULogic::from_bool(c.elem_code(d, 0)? != StdULogic::One as u8);
                     c.assign_code(dd, Some(zero1), Time::ZERO, v as u8, DelayMode::INERTIAL)?;
+                }
+                if noise {
+                    let v = StdULogic::from_bool(n % 2 == 1);
+                    let one = Some(Range::new(1, 1));
+                    c.assign_code(dd, one, Time::ZERO, v as u8, DelayMode::INERTIAL)?;
                 }
                 if n == 10 || n == 30 {
                     let v = StdULogic::from_bool(n == 10);
@@ -263,10 +270,10 @@ fn a_deposit_on_an_output_is_restored_at_the_next_edge() {
 #[test]
 fn skips_in_the_pool_are_those_of_the_serial_run() {
     for every in [3, 8, 1000] {
-        let (serial, st1) = run_in(Skip::On, every, &[], true, 1, 40);
-        let (pooled, st4) = run_in(Skip::On, every, &[], true, 4, 40);
-        let (check, stc) = run_in(Skip::Check, every, &[], true, 4, 40);
-        let (off, _) = run_in(Skip::Off, every, &[], true, 4, 40);
+        let (serial, st1) = run_in(Skip::On, every, &[], true, 1, 40, false);
+        let (pooled, st4) = run_in(Skip::On, every, &[], true, 4, 40, false);
+        let (check, stc) = run_in(Skip::Check, every, &[], true, 4, 40, false);
+        let (off, _) = run_in(Skip::Off, every, &[], true, 4, 40, false);
         assert_eq!(serial, pooled);
         assert_eq!(serial, check);
         assert_eq!(serial, off);
@@ -274,5 +281,21 @@ fn skips_in_the_pool_are_those_of_the_serial_run() {
         assert_eq!(st1.idle_skips, st4.idle_skips);
         assert_eq!(st1.idle_skips, stc.idle_skips);
         assert_eq!(st1.process_runs, st4.process_runs);
+    }
+}
+
+/// Events on elements of an input that a register does not read leave it skipped (#686: the
+/// fields of a record share a kernel signal).
+#[test]
+fn events_on_other_elements_do_not_arm() {
+    for every in [8, 1000] {
+        let (_, quiet) = run_in(Skip::On, every, &[], true, 1, 0, false);
+        let (on, st) = run_in(Skip::On, every, &[], true, 1, 0, true);
+        let (check, stc) = run_in(Skip::Check, every, &[], true, 1, 0, true);
+        let (off, _) = run_in(Skip::Off, every, &[], true, 1, 0, true);
+        assert_eq!(on, off);
+        assert_eq!(on, check);
+        assert_eq!(st.idle_skips, quiet.idle_skips);
+        assert_eq!(st.idle_skips, stc.idle_skips);
     }
 }

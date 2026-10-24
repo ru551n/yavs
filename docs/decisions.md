@@ -5754,7 +5754,6 @@ Decisions:
   generics as constants, so the slice bounds of an instance fold at elaboration. yavs keeps one function per unit (ir.md
   2) and computes the instance-constant parts once per instance instead.
 
-
 ## Host callbacks of compiled code: natives, concatenations, layouts, fat roots (yavs-llvm, yavs-ir, yavs-interp, #565, 2026-10-23)
 
 Counted on `poc_arith_addw` under `--tier=llvm` (callbacks by instruction kind, whole run): 117 million fat `TempRoot`
@@ -6394,7 +6393,6 @@ instance by pointer, which is what our one function per process of a design unit
   depends on the timing of the compile thread), so the cost above is not gated. `compiled_natives` checks the output of a
   record-heavy design under `--tier=auto --tier-heat=1,0,0`.
 
-
 ## Compiled protected-method accessors, round 2: closed frames (yavs-llvm, #626, 2026-10-23)
 
 Measured on `protected_queue` (`tools/bench`, `--tier=llvm` with the `LEAN` pipeline, so no inlining as in `--tier=auto`,
@@ -6437,8 +6435,6 @@ used by direct loads and stores to registers); ours differs in that a native fra
 - A closed frame must be decided on every operand: `Inst::visit` leaves out the operand lists of calls, natives and
   concatenations (`yavs_interp::inst_regs` has them). The first version missed `CallNative`'s argument list and the corpus
   caught it (`textio/std_logic_textio`, a frame address passed to a native `READ` helper).
-
-
 
 ## Compiled clocked RTL processes, round 5: the entry cost of a small process (yavs-interp, yavs-llvm, #634, 2026-10-23)
 
@@ -6558,8 +6554,6 @@ position check and the object lookup at every element: 95 instructions an elemen
   frame; native frames now do after a miss of the object table. `cb_host` 43.5 M to 5.3 M, main-thread instructions of the
   window generator (warm `--tier=auto`) about -2.5 percent. A table of 1024 objects instead of 256 halves `cb_fast`
   (13.7 M to 6.8 M) but moves `cb_host` by 8 percent and was not kept.
-
-
 
 ## `--tier=auto`: the callback count sees what leaves compiled code, and compiled code is measured and taken back (yavs-llvm, yavs-interp, yavs-kernel, #633, #596, #575, #573, 2026-10-23)
 
@@ -6711,7 +6705,6 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   loads 21 units outside its analysed closure while it elaborates: fixed by #671, see "Stage entries of a design that loads units late");
   `hdlm_lfsr` runs under a lowered library (`library_made`), whose closures have no entries of their own so that a suite does not fill the 96
   entries of a library directory, which a `spec` entry per long-running testbench would do too.
-
 
 ## A flat view of the heap slots for compiled `Deref`: built, measured, not landed (yavs-interp, yavs-llvm, #655, 2026-10-23)
 
@@ -6919,6 +6912,27 @@ Measured (bench builds, main thread; cycles of the simulation phase, minimum of 
 `--tier=auto --tier-heat=1,0,0`): see `docs/STATUS.md` "llvm: compiled clocked RTL, round 6". Fills from L3 of `rtl_fan`
 compiled 82 M to 65 M (interpreter 64 M to 59 M).
 
+## Record signals as packs of leaves, step 2 (yavs-elab, yavs-kernel, #686, user, 2026-10-24)
+
+- **Decision (user, 2026-10-24): option A of `docs/design/record-signal-layout.md`.** Runs of consecutive leaves of one signal object
+  share one kernel signal (a pack) when every signal-wide kernel property agrees; one byte blob per record in the IR layout (option B)
+  is not pursued, it would undo "bit-planes everywhere" (#83).
+- **The logical model stays:** `LeafId` per field, `NetGraph::select`, `DriverDecl` per leaf. A leaf is stored at `NetGraph::loc`
+  (kernel signal, base) and every consumer turns a leaf into a kernel reference through `NetGraph::kref`/`kpart`/`kelem`, never
+  `SignalId(leaf.0)`; `NetGraph::packs` lists the leaves of each kernel signal. Kernel signals are in first-leaf order.
+- **Which leaves pack (`NetGraph::packable`):** logic elements, unresolved or resolved by `resolved` (an unresolved leaf has at most one
+  source per element, elaboration checks it before, and `resolved` of one source is the identity), at most `PACK_MAX` = 64 elements in a
+  pack (one plane block: codes always kept, element stamps for compiled code, no block records or lean history), and none of: a guard, an
+  implicit signal on it or being one, a force or release target (no packs at all when one is untraceable), a port edge or converted port
+  (step 3), a composite resolved as a whole. A pack is named by the path of the innermost record holding all its leaves (hang reports).
+- **Drivers stay one per leaf** (several drivers of one process on disjoint ranges of a pack are one source per element as before), so a
+  whole-driver assignment (`Drive` without a target) still means the leaf. Merging them is step 4, with the bulk assignment.
+- **Idle skip reads carry their range:** a pure process is armed by an event in the elements it reads (the hull of its reads of the
+  signal), not by any event of the signal, so packing a record does not wake readers of one field for another; a signal whose changed
+  runs are not listed arms all its readers.
+- `YAVS_PACKS=off` (hidden test aid, `ElabConfig::packs`) gives every leaf a signal of its own; the work counter `signals` counts kernel
+  signals (`crates/yavs/tests/perf.rs` bounds it for the record designs).
+
 ## Composite signal reads: one copy per activation, scalar leaves read in place (yavs-lower, yavs-ir `FuncBuilder`, #630, #538, 2026-10-24)
 
 Shared layer: every tier and a second code generator see the smaller IR. Found with the LEON3 template of GRLIB (`grlib_leon3mp`,
@@ -7052,7 +7066,6 @@ percent between invocations, so the instruction counts are the reliable column a
   `llvm` crate tests, the perf work-counter tests with and without `llvm`, and the 502-test differential corpus under
   `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` green.
 
-
 ## Stage entries of a design that loads units late (yavs, yavs-sem, yavs-elab, #671, 2026-10-24)
 
 - **Decision: a stage entry (`low`, `init`, `ir`, `spec`, `ecall`) is keyed by the analysis' key, the stage's part and
@@ -7084,7 +7097,6 @@ percent between invocations, so the instruction counts are the reliable column a
   interpreter's object table and forgot the object again at the next host call (13 percent of `sc5_fifo_repack`). Native frames keep their
   own lookup (`Mem::nslots`). No alias tag: the bytes are the interpreter's own frame slots, reachable by other addresses too.
 
-
 ## Replayed entries: cells per page, decode ahead on reads in order (yavs-sem, #665, 2026-10-24)
 
 - **Decision: the entries of a replayed unit that are decoded one by one (`SlotPage`) live in one box of `PAGE` cells made when the
@@ -7099,7 +7111,6 @@ percent between invocations, so the instruction counts are the reliable column a
   `poc-2008` +0.2 % (the python runner is in the totals); peak RSS of that elab 78.7 to 77.2 MB. **Open:** the elaboration is still about 4
   percent above the whole-run decode of before #424; the rest is per-read cost (`Page::at` checks two cells) and the per-entry decode
   context in the kinds that read here and there; recovering it without costing cold analysis needs a hint from the caller.
-
 
 ## Predecode: one scan per waveform, not one per function (yavs-interp, #683, 2026-10-24)
 
@@ -7147,7 +7158,6 @@ instructions per leaf for a read and a drive (the integer unit of the GRLIB LEON
   internal error here, as the per-leaf code did); the plan cache takes a read lock per instruction; a gather reads every leaf (a
   per-leaf event stamp would skip the unchanged ones) and a scatter drives every leaf (dropping equal-value drives of unobserved
   signals is the kernel's, #677 comment of 2026-10-24).
-
 
 ## Window generator: no pass pipeline or forced compile changes the run; what is left is the accessor chain (#493, #679, #680, 2026-10-24)
 
@@ -7311,3 +7321,4 @@ of every PMP region) and assigned the constant again.
   q'length)` in PoC's `ffdre` (the other item of the hand-off) is a per-call computation inside a subprogram, not a read: it needs the
   call's constant arguments to reach the callee (#701).
 - **Measured**: see "IR optimiser round 13" in `docs/STATUS.md`.
+

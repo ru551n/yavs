@@ -479,6 +479,7 @@ case!(
         ("events", Max(650)),
         ("update_general", Max(2)),
         ("ops", Max(4370)),
+        ("signals", Max(6)),
     ]
 );
 case!(
@@ -489,6 +490,8 @@ case!(
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
         ("ops", Max(30700)),
+        // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
+        ("signals", Max(20)),
     ]
 );
 case!(

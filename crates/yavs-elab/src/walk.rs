@@ -627,7 +627,8 @@ pub(crate) fn elaborate(
         v.append(&mut e.errors);
         return Err(v);
     }
-    e.m.nets.place();
+    let forced = crate::collapse::forced(e.db, &e.m.sigs);
+    e.m.nets.place(e.cfg.packs, forced.as_ref());
     let lean = crate::lean::leaves(e.db, &e.m.nets);
     e.m.calls.flush();
     Ok(Elaborated {

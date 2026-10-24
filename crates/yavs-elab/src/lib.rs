@@ -134,6 +134,9 @@ pub struct ElabConfig {
     /// Collapse `in` ports whose actual is whole signal leaves into aliases of the actual
     /// (`collapse.rs`, plan rule 3): on by default, off with `--no-collapse-ports`.
     pub collapse_ports: bool,
+    /// Store runs of record leaves in one kernel signal (`NetGraph::place`, #686): on by
+    /// default; off (one signal per leaf) with the hidden test aid `YAVS_PACKS=off`.
+    pub packs: bool,
 }
 
 impl Default for ElabConfig {
@@ -141,6 +144,7 @@ impl Default for ElabConfig {
         ElabConfig {
             max_depth: 1000,
             collapse_ports: true,
+            packs: true,
         }
     }
 }

@@ -39,6 +39,22 @@ impl Elaborated {
         n
     }
 
+    /// The kernel name of a pack of leaves `a .. z` (#686): the path of the innermost record
+    /// that holds them all.
+    fn pack_name(&self, a: crate::LeafId, z: crate::LeafId) -> String {
+        let (first, last) = (self.leaf_name(a), self.leaf_name(crate::LeafId(z.0 - 1)));
+        let mut n = 0;
+        for (i, (x, y)) in first.bytes().zip(last.bytes()).enumerate() {
+            if x != y {
+                break;
+            }
+            if x == b'.' {
+                n = i;
+            }
+        }
+        first[..n].to_string()
+    }
+
     /// The kernel model. `make` creates the process object of each process instance, given
     /// its kernel drivers (in `ProcInst::drivers` order).
     pub fn build_with(
@@ -65,10 +81,27 @@ impl Elaborated {
         let nets = &self.nets;
         for (k, &(a, z)) in nets.packs.iter().enumerate() {
             if z.0 != a.0 + 1 {
-                return Err(SimError::new(yavs_kernel::ErrorKind::Internal(format!(
-                    "kernel signal {k} holds {} leaves",
-                    z.0 - a.0
-                ))));
+                // A pack of record leaves (#686): logic, unresolved or `resolved`, no guard.
+                let len = nets.signal_len(yavs_kernel::SignalId(k as u32));
+                let mut init = yavs_kernel::Value::Logic(yavs_kernel::LogicVec::new(
+                    len as usize,
+                    yavs_logic::StdULogic::U,
+                ));
+                let mut resolved = false;
+                for l in a.0..z.0 {
+                    let leaf = nets.leaf(crate::LeafId(l));
+                    let base = nets.loc[l as usize].base;
+                    crate::collapse::put_init(&mut init, base, &leaf.init, leaf.ty.len);
+                    resolved |= matches!(leaf.resolution, Some(LeafRes::StdLogic));
+                }
+                let name = self.pack_name(a, z);
+                let ty = yavs_kernel::SignalType::logic(len);
+                let id = match resolved {
+                    true => b.resolved_signal(&name, ty, &init, Resolution::StdLogic),
+                    false => b.signal(&name, ty, &init),
+                };
+                debug_assert_eq!(id.0 as usize, k, "kernel signals in pack order");
+                continue;
             }
             let i = a.index();
             let leaf = nets.leaf(a);
@@ -165,10 +198,10 @@ impl Elaborated {
                 .filter(|_| cfg.edge_triggers)
                 .and_then(|src| {
                     (src.iter().zip(p.lsps.first()?))
-                        .map(|(&(sl, sr), &(k, _, dr))| {
+                        .map(|(&(sl, sr), &(k, dl, dr))| {
                             let src = nets.kref(sl, sr);
                             let d = ds[p.drivers.iter().position(|&x| x == k)?];
-                            Some((src, d, dr))
+                            Some((src, d, nets.kpart(dl, dr).1))
                         })
                         .collect::<Option<Vec<_>>>()
                 });

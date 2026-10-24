@@ -8026,9 +8026,22 @@ little because only `rand_next` is compiled there and the plain policy's compile
 
 Change 2 (a copy splits `Pos` of an ascending instance descriptor into `Check` and `Bin Sub`; `docs/decisions.md` "A copy splits the position of an index ...", base c7f56056 plus change 1),
 `--tier=interp` (copies are made there too; shared code under `--tier=llvm` is unchanged): `sc5_fifo_repack` instructions 40.19 to 38.31 G (-4.7 percent), user cycles 11.31 to 10.95 G (-3.2 percent), medians of 5
-interleaved runs, core 12. Instructions of 17 other realbench designs, `--tier=interp`, one run each (the run is deterministic): `poc_cache_cpu`, `neorv32_single_min`, `fletcher_bufferwriter_512`, `fletcher_bufferreader`,
-`hdlm_lfsr`, `uvvm_sb_slv`, `osvvm_axi4_random`, `sc5_timestamp` 1.00 (within 0.1 percent), the small designs `hdlm_fifo_sync` 0.95, `poc_uart_rx` 0.98, `hdlm_ring_buffer` 0.98, `hdlm_axi_crossbar` 0.99 (their
-processes run too few activations to matter, the saving is in initialisation), `hdlm_register_file` 1.02, `olo_axi_master_full` 1.01 (a few thousand instructions).
+interleaved runs, core 12. The 17 realbench designs of the last table, `--tier=interp` (the run is deterministic): instructions 0.99 to 1.00 for every design that runs longer than 0.1 s (`poc_arith_addw`, `poc_cache_cpu`,
+`fletcher_bufferwriter_512`, `fletcher_bufferreader`, `hdlm_lfsr`, `uvvm_sb_slv`, `sc5_timestamp`); 0.96 to 1.03 for the small designs, whose initialisation is all there is to measure.
 
 Change 3 (functions and procedures that read signals run on native frames; "Functions that read signals run on native frames"), `--tier=llvm`, medians of 7 interleaved runs, user cycles / instructions:
 `sc5_fifo_repack` 7.25 to 6.15 G (-15.1 percent) / 27.91 to 23.22 G (-16.8 percent) with changes 1 and 3 together (base c7f56056); change 3 alone 6.68 to 6.23 G / 24.77 to 23.22 G.
+
+All three changes together, base c7f56056 (realbench `--compare`, 17 designs, run phase, core 12, medians of 3; wall ratio / instructions ratio, below 1 is faster):
+`sc5_fifo_repack` `--tier=interp` 0.98 / 0.95, `--tier=llvm` 0.84 / 0.83 (1.46 to 1.22 s, 27.95 to 23.25 G), default `--tier=auto` warm 0.91 / 0.89 (2.26 to 2.06 s), `auto-cold` 0.98 / 0.95; all 17 together: geometric mean wall 0.99 to
+1.01 in every tier, instructions 0.99 to 1.00 (`hdlm_lfsr` auto 1.06 is the compile outcome of #673).
+
+Against the reference simulator, `sc5_fifo_repack`, `--tier=auto`, medians of 5, core 12, whole phases of the realbench (analysis of the compile order one call per file, then elaboration plus run): run phase 2.71 to 2.47
+times (warm), 2.92 to 2.81 (cold); instructions 3.16 to 2.81 and 3.30 to 3.14 times. Total (analysis plus run; reference simulator 2.55 + 0.83 s warm, 2.50 + 0.83 s cold): warm 0.79 to 0.74, cold 1.00 to 0.98.
+The default `--tier=auto` is still 2.5 times the reference simulator's run: 60 percent of its time is the interpreted clocked processes `p_col`, `p_in`, `p_sreg`, `p_input`, `p_pre`, `p_pack`, which the policy does
+not compile (#675: the model price of `p_in` and `p_col` is 0.5 s against a 2 s run, and a world that never ran `--tier=llvm` never stores their code); compiled the run is 1.22 s.
+
+Left, for the lanes (comments on the issues): the policy (#675, #673); the drive and commit path, 27 percent of the compiled run (#521, #440, #676); the generated code of the processes, 40 percent (#715, #679); calls that are
+not native-frame calls cost 50 to 80 ns (#730); the native-frame code under `--tier-heat` stays at O0 (#729). Not done: a fused op for the element copy `sort_data(col + 1)(row) <= sort_data(col)(row)`
+(`SigVal`, `AllocReadVec`, `CopyDrive`: 2 to 4 percent of the interpreter, nothing compiled), loop-invariant signal reads (`reset_p` read per row, `SigRead1 -> NotL`: 2 percent of the ops), descending ranges in
+`pos_to_check` (needs a check message per direction at lowering).

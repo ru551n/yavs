@@ -6111,10 +6111,15 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   designs (`poc_arith_addw`, `sc5_fifo_repack`: 0.5 and 4.3 points of gain). The interpreter rule (instructions down, cycles not worse in
   the geometric mean) holds on `interp`: instructions 0.96 over ten realbench tests, interleaved cycle medians -2.5 to -10 % where measured;
   under `auto` the instructions are 0.98 and the two exceptions are filed.
-- **Open** (reported, not decided): processes with several wait statements stay shared (a mapping of the resume point by statement would
-  admit them); loads of pointer-typed instance data (array generics, descriptors) are not folded; designs whose lowering is not cached
-  (`ir` entry) re-optimise their copies in every run. (The tier policy for copies and the keys of compiled copies were settled in #661, the
-  cap is 2.5 since 2026-10-24.)
+- **Done after the first report (user, 2026-10-24):** the cap is 2.5; the tier policy counts copies by their process and compiled copies are
+  keyed by content (#661, `docs/design/specialisation.md` section 12). **Tried and not landed** (measured, no gain, the patches are on #661):
+  processes with several wait statements (a resume point mapped by statement admits 11 more processes over 42 realbench testbenches, +0.12 % to
+  -0.01 % instructions) and folding the loads of pointer-typed instance data (0 to 2 such loads left per copy, at most 0.14 % fewer
+  instructions). **Open**: designs the stage cache holds no entries of re-optimise their copies in every run, and no `spec` entry is made
+  for them: `fletcher_bufferwriter_512` loads 21 units outside its analysed closure while it elaborates, so the extent no longer matches and
+  `init`, `low`, `ir` and `spec` are never made (#671; the copies are 50 M of 99 G instructions, 0.05 %);
+  `hdlm_lfsr` runs under a lowered library (`library_made`), whose closures have no entries of their own so that a suite does not fill the 96
+  entries of a library directory, which a `spec` entry per long-running testbench would do too.
 
 
 ## A flat view of the heap slots for compiled `Deref`: built, measured, not landed (yavs-interp, yavs-llvm, #655, 2026-10-23)

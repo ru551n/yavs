@@ -491,3 +491,33 @@ timing-driven cells move by 5 to 10 percent): interpreter instructions equal wit
 
 Unit test: `tests/objcache.rs` compiles the copies of one process for `G = 3, 4` and then `G = 4, 3` (so with swapped function ids) and
 requires that the second compile stores nothing (it fails with the id in the symbol names: 8 stored against 6).
+
+### Wider specialisation, measured and not landed (2026-10-24)
+
+User decision 2026-10-24, item 3: measure what (a) processes with several wait statements and (b) folding of pointer-typed instance data
+add, and land each that gains.
+
+(a) A resume point maps to the copy's by statement (`Suspend` of the same `StmtId`; the process qualifies when every resume point is a
+`Suspend` and no two are at the same statement). Over the 42 realbench testbenches (`spec_planned` at time 0, a process that may switch)
+it admits 1 more process in `hdlm_ring_buffer` (16 to 17), 1 in `fletcher_bufferwriter_512` (118 to 119), 1 in
+`fletcher_bufferwriter_prim32` and 8 in `grlib_leon3mp` (454 to 462), none in the other 38 (`neorv32` 1169 to 1935, `poc_arith_addw` 356,
+`sc5_fifo_repack` 44, and so on are all single-wait): the clocked and combinational processes of RTL wait on a sensitivity list, and the processes with
+several waits are testbench stimuli that run a few times. Interpreter instructions of the four: -0.004 %, -0.007 %, +0.12 %
+(`grlib_leon3mp` 1688.42 to 1690.39 G, more copies optimised, none hot), +0.007 %; the other tests equal. It gains nothing, so it is not
+landed.
+
+(b) Folding the load of a pointer or handle register from instance data into a constant (the experiment replaced the load by its value in a
+pointer register, which the interpreter accepts and the verifier would not, for the instruction count only): the optimised copies keep 0 to 2
+such loads per process (`sc5_fifo_repack`: `p_col` 2 of 614 IR instructions, `p_pre` 2 of 124, the other seven processes of the design none), and the
+interpreter instructions of the whole run change by -0.00 % (`sc5_fifo_repack`), +0.01 % (`poc_cache_cpu`), +0.01 % (`neorv32_single_min`),
+-0.00 % (`hdlm_lfsr`), +0.02 % (`vai_pe_array`), -0.03 % (`hdlm_axi_fifo`), -0.14 % (`grlib_leon3mp`), -0.04 % (`fletcher_bufferwriter_prim32`),
++0.00 % (`fletcher_bufferwriter_512`). Descriptors and array bounds in instance data already fold (`const_dim`, the integer words of a
+descriptor); what is left is the handle of a heap object, whose contents the optimiser cannot see, so a constant handle saves one load and
+enables nothing. Not landed. The patches of both experiments are on #661.
+
+The copies of designs without a stage-cache entry: `fletcher_bufferwriter_512` has none because the extent of its `Db` grows while it elaborates
+(36 units at the image, 57 at the lowering, #671), `hdlm_lfsr` because it runs under a lowered library, whose closures have no entries of
+their own (`library_made`; a `spec` entry per closure would take one of the 96 entries of a library directory for each long-running
+testbench of a suite). The copies cost 72 times 0.7 M = 50 M instructions of 99 G in `fletcher_bufferwriter_512` each run (0.05 %), so a
+`spec` entry outside the stage cache's key was not made; #671 would give it one.
+

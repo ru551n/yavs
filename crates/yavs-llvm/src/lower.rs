@@ -5375,7 +5375,7 @@ impl Gen {
                             self.join(&c, join);
                         }
                         Some(sl) => {
-                            let (slow, join) = self.slow_path(&c, pc, &inst);
+                            let (slow, join) = self.slow_path_x(&c, pc, &inst, f);
                             let words = self.layout_words(&c, &sl, desc, fk(desc), slow);
                             let n = self.c64(words.len() as i64 * 8);
                             let (a, p) = self.temp_alloc(&c, n, slow);
@@ -5721,7 +5721,7 @@ impl Gen {
                     // A run of 1 to 64 elements inside one plane block set to one code; any other
                     // run is stepped.
                     Inst::LFill { base, idx, n, v } => {
-                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (slow, join) = self.slow_path_x(&c, pc, &inst, f);
                         let code = self.ld(&c, v);
                         self.guard(&c, self.icmp(IP::LLVMIntULE, code, self.c64(8)), slow);
                         let cnt = self.ld(&c, n);
@@ -5768,7 +5768,7 @@ impl Gen {
                     // Equality of two logic arrays of 1 to 64 elements: the four planes under the
                     // mask of the elements; any other count is stepped.
                     Inst::LEq { dst, a, b, n } => {
-                        let (slow, join) = self.slow_path(&c, pc, &inst);
+                        let (slow, join) = self.slow_path_x(&c, pc, &inst, f);
                         let cnt = self.ld(&c, n);
                         let n1 = LLVMBuildSub(self.b, cnt, self.c64(1), c"".as_ptr());
                         self.guard(&c, self.icmp(IP::LLVMIntULT, n1, self.c64(64)), slow);
@@ -8079,6 +8079,24 @@ impl Gen {
     ) -> (LLVMBasicBlockRef, LLVMBasicBlockRef) {
         // SAFETY: as `slow_path_then`.
         unsafe { self.slow_path_then(c, pc, i, |_, _| {}) }
+    }
+
+    /// `slow_path` for an instruction of the `xstep_ok` kinds: a native frame hands it to the
+    /// interpreter on a frame of its own (`slow_inst`) instead of materialising (#648).
+    unsafe fn slow_path_x(
+        &self,
+        c: &Cur,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+    ) -> (LLVMBasicBlockRef, LLVMBasicBlockRef) {
+        // SAFETY: as `slow_path_with`.
+        unsafe {
+            self.slow_path_with(c, pc, i, true, |g, _| {
+                g.slow_inst(c, pc, i, f)
+                    .expect("a native step only fails outside a native frame");
+            })
+        }
     }
 
     /// `slow_path`, with `after` generating code in the slow block once the instruction has

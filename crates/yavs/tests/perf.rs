@@ -701,6 +701,16 @@ mod llvm {
         ]
     );
     llvm_case!(
+        llvm_wide_fill,
+        "fills=",
+        [
+            ("cb_deopt", Max(3)),
+            ("cb_xstep", Min(390)),
+            ("ops", Max(100)),
+            ("llvm_native_frames", Min(3)),
+        ]
+    );
+    llvm_case!(
         llvm_clocked,
         "q=",
         [

@@ -4940,7 +4940,7 @@ Worst 10 by warm total ratio (seconds are medians; run = elaboration + run, sim1
 | neorv32_dual_full | 0.75 (1.40) | 0.80 (1.45) | run 4.89 vs 4.28 (faster than sim1 on the run now) | #521 |
 | poc_cache_cpu | 0.67 (0.96) | 0.87 (1.08) | run 0.85 vs 1.73 (cache controller FSM, interpreted) | none |
 
-`poc_stat_histogram` run got slower: 0.78 to 0.95 s warm, 17.6 to 20.4 G instructions (sim1 unchanged); see #518.
+`poc_stat_histogram` run got slower: 0.78 to 0.95 s warm, 17.6 to 20.4 G instructions (sim1 unchanged); see #518. Found and fixed afterwards, see "A native frame no longer materialises for a wide fill" (#648).
 
 Per test (total wall in seconds and ratio):
 
@@ -6580,3 +6580,24 @@ vhdl-compliance: as expected everywhere. Left, in order of weight: the index of 
 by every call (a quarter and a tenth of a warm call); the bodies of generic packages are cloned per instance at every cold `elab`
 (`fix_bodies`, 11 percent of `osvvm_axis_random`, #555); the entries of the closure are opened, checksummed and their heads parsed by every
 call (10 percent of a cold call).
+
+## llvm: a native frame no longer materialises for a wide fill or compare (#648, 2026-10-24)
+
+`poc_stat_histogram` (`--tier=auto`, warm) ran 17.3 G instructions at b40752eb and 20.3 G at
+337c5aa9 ("Compiled clocked RTL ... round 4"), found by bisecting main with `tools/build-bench.sh
+--features llvm` builds (the 65b7f573 to 9a8d8f50 window of the h2h2 report; later main hid +3 G
+of it behind other gains). Cause: that commit gave `LFill` and `LEq` an inline form for 1 to 64
+logic elements whose slow path is `Gen::step`; in a native frame (`Cur::nat`) a step materialises
+the whole frame (`deopt_here`) and the interpreter runs the rest of the call. The testbench's
+`to_slvv_8` (a 256 row matrix to a vector of rows, on every change of the matrix) fills 2048
+elements, so 9300 of its calls left compiled code at that `LFill` and interpreted the 256
+`get_row` calls that follow. Before the commit the instruction was an `xstep_ok` kind and went
+through `native_step` (the interpreter runs just it, on a frame of its own).
+Fix: the slow path of `LFill`, `LEq` and the static `LayoutOf` goes through `Gen::slow_path_x`,
+which uses `slow_inst` (native step in a native frame, plain step in frame mode). Counters
+(`llvm_wide_fill`, debug build): `cb_deopt` 401 to 2, interpreted `ops` 281483 to 95.
+Instructions, same warm world and `--tier=auto`, before to after: poc_stat_histogram 19.67 to 16.66 G, uvvm_axistream_vvc 58.0 to 49.8, uvvm_util_rand
+15.84 to 14.77, sc5_fifo_repack 49.5 to 46.2, vai_window_gen_interlock 193 to 181 (single counted
+runs of the realbench A/B on loaded cores; `--tier=auto` instruction counts move by several percent
+between two runs of the same binary because the compile thread finishes at another time: poc_arith_addw
+262 to 288 G for both binaries, and 327.9 G for both under `--tier=llvm`, which has no such timing).

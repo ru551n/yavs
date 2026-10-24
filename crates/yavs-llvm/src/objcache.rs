@@ -107,6 +107,12 @@ pub(crate) fn add(
     }
     prepare(&mut m)?;
     let obj = m.emit(opt)?;
+    if let Some(dir) = std::env::var_os("YAVS_LLVM_OBJ") {
+        // Tuning aid: the object files, for `objdump` next to a `perf` profile.
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let _ = std::fs::write(Path::new(&dir).join(format!("{n}.o")), &obj);
+    }
     store.put(KIND, &k, &obj);
     STORED.fetch_add(1, Ordering::Relaxed);
     debug("stored", &k);

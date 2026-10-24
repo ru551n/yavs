@@ -1555,6 +1555,31 @@ impl Worker {
     }
 }
 
+/// Measuring aid: `YAVS_AUTO_FORCE=name@min#first,...` compiles every function of that name with
+/// at least `min` IR instructions and an id of at least `first` (copies of processes have the
+/// last ids) the first time it is sampled, whatever the budget says.
+fn forced(prog: &yavs_ir::Program, id: FuncId) -> bool {
+    static LIST: std::sync::OnceLock<Vec<(String, usize, u32)>> = std::sync::OnceLock::new();
+    let list = LIST.get_or_init(|| {
+        std::env::var("YAVS_AUTO_FORCE")
+            .map(|v| {
+                v.split(',')
+                    .filter_map(|e| {
+                        let (n, rest) = e.split_once('@').unwrap_or((e, "0"));
+                        let (m, first) = rest.split_once('#').unwrap_or((rest, "0"));
+                        Some((n.to_string(), m.parse().ok()?, first.parse().ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    !list.is_empty()
+        && prog.func(id).is_some_and(|f| {
+            list.iter()
+                .any(|(n, m, first)| f.name == *n && f.code.len() >= *m && id.0 >= *first)
+        })
+}
+
 impl AutoTier {
     /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
     /// compiling the functions `heat` finds hot at `opt`, and those that stay hot compiled
@@ -1685,6 +1710,9 @@ impl AutoTier {
                                 }
                                 *t += dt;
                                 w.total += dt;
+                                if was == 0 && !compiled && forced(&w.prog, id) {
+                                    asked.push_back(id);
+                                }
                                 if compiled {
                                     let (now, at) = (*t, w.threshold(id, true));
                                     if was < at && now >= at && upgrade {

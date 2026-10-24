@@ -6481,3 +6481,38 @@ process), one for every call that passes `r` to a function or procedure (`dbgexc
   The process `iu:comb` fell from 37 percent of the samples at 150 us to 16. `crates/yavs/tests/perf/sigrec_copy.vhd` (a process that
   passes a record with nested records to four functions, in branches and a loop, and checks the results against field-wise reads):
   ops 105 380 to 52 919 (a bound with 3 percent), the other 29 work-counter designs unchanged.
+
+## llvm: the compile cost of a very large process (yavs-llvm, #630, #538, #532, 2026-10-24)
+
+Found with the integer unit of the GRLIB LEON3 (`iu3` `comb`, `--tier=llvm` spent 82 s in code generation for the design, 171 s for the
+one process on a loaded host). L: LLVM only; S: also a second code generator.
+
+- **Where the 171 s went** (one function of 147 760 IR instructions, 7.16 M LLVM instructions before the passes, `YAVS_LLVM_ONLY`,
+  `YAVS_LLVM_TIMES`, bench build, `Fast`): generation 5.8 s, verification 1.6 s, the `LEAN` passes 143.7 s, code generation 28 s. `opt
+  -time-passes` on the dumped module: `simplifycfg` 66 s, `adce` 31 s, `instcombine` 8.7 s, bitcode writer 6 s, `early-cse` 2 s; the same
+  passes took 0.69, 0.63 and 0.94 s on a 24 000-instruction process of a tenth of the size, so two passes are quadratic in the module and
+  the others linear. (L) A module of more than `HUGE_MIN` (100 000 LLVM instructions) gets `LEAN_HUGE`, `dce` instead of `simplifycfg` and
+  `adce`: 12 s for the passes of that function, the code 6 percent larger. A 520 000-instruction copy of the process: 8.0 s to 3.3 s
+  with the module read from text; the code generator takes 3.8 s of 3.4 MB of x86 either way.
+- **`auto::compute` called the process a compute loop** (two short `for` loops with nothing that leaves the compiled code), so
+  `level_for` kept `O2`: optimised code generation (the register allocator is more than linear in the size) took 35 s for 670 000 LLVM
+  instructions where `Fast` takes 8 s. (L) `COMPUTE_MAX` (1 500 IR instructions): from there on a function is `Fast` whatever its loops.
+  `auto::compute` itself is the policy's and is unchanged.
+- **Together with the smaller IR of "Composite signal reads: one copy per activation"**: the compile thread's time for the copy
+  `--tier=auto` makes of the process (23 641 IR instructions, 406 000 LLVM instructions): generation 0.31 s, verification 0.10 s, passes
+  0.57 s, code generation 1.56 s, 2.5 s in all, against 39.6 s for the shared function at `O2` codegen before (core 10, loaded host).
+  The object is 3.9 MB for 28 000 IR instructions (142 bytes an IR instruction).
+- **What the compile cost does not buy yet: compiled code of such a process is not faster than the interpreter.** Measured with
+  `YAVS_AUTO_FORCE=comb@10000#1211` (the copy compiled at the first sample) against `--tier=interp`, same binary, `--threads 1`,
+  `perf stat --no-inherit` user cycles and instructions of the simulation thread between 300 us and 500 us, core 10: interpreter 72.2 G
+  cycles / 162.4 G instructions, compiled copy 91.3 G / 168.2 G (before the smaller IR; the shared function of 147 760 IR instructions
+  was 2 to 3 times slower than the interpreter). The compiled body is not the cost: a profile of the window has `f1223_comb` at 1.2 percent
+  of the cycles and 15 percent in the callbacks it makes (`read_into` of `SigRead`, `lcopy`/`copy_bits` of `LCopy`, `Host::step` of
+  `LayoutOf`, `assign_code_fast` of `Drive`, `yavs_rt_host`), against 26 percent for the interpreter loop, so the leaf reads and the
+  233 drives per activation cost the same in both. The instruction mix of the compiled code (an `instructions:u` profile of the window
+  mapped to the object with `objdump`): 51 percent `mov`, `sub` 8, `cmp` 7, `je` 6; `Fast` spills every value. A shared
+  `neorv32_single_min` process of 4 994 IR instructions (`exec_comb`) compiled at `Fast` and at `O2` code generation (1.8 s against
+  0.35 s) runs level with the interpreter (cycles +1 to +5 percent, instructions -3 percent) either way. So raising the number of
+  large processes `--tier=auto` compiles needs the code to get cheaper first (callbacks per record leaf, the address resolution of
+  every memory access, spills), not the compile.
+

@@ -149,6 +149,17 @@ const FULL_MAX: usize = 3000;
 const LEAN: &CStr =
     c"function(sroa,early-cse,instcombine<max-iterations=1;no-verify-fixpoint>,simplifycfg,adce)";
 
+/// `LEAN` without the two passes whose time grows faster than the module for the modules that
+/// are all one function: `simplifycfg` (66 s) and `adce` (31 s) of the 115 s the 7 million LLVM
+/// instructions of a process of 147 000 IR instructions took, `dce` instead of them: 12 s, the
+/// code 6 percent larger (#630).
+const LEAN_HUGE: &CStr =
+    c"function(sroa,early-cse,instcombine<max-iterations=1;no-verify-fixpoint>,dce)";
+
+/// The module size from which `LEAN_HUGE` stands for `LEAN` (a process of about 5 000 IR
+/// instructions): below it the two passes cost less than 10 percent of the time of the module.
+const HUGE_MIN: usize = 100_000;
+
 /// Optimisation level for the new pass manager and for codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptLevel {
@@ -330,6 +341,11 @@ impl Module {
             let pipeline = match opt {
                 OptLevel::O2 if !full || self.instruction_count() > FULL_MAX => LEAN,
                 _ => opt.pipeline(),
+            };
+            let pipeline = if pipeline == LEAN && self.instruction_count() > HUGE_MIN {
+                LEAN_HUGE
+            } else {
+                pipeline
             };
             let err = LLVMRunPasses(
                 self.module,

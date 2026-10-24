@@ -7643,3 +7643,27 @@ freshly made descriptor back without loads), `realbench --compare`, core 14: `po
 What is left: a result chained into the next native (`to_integer (a + b)`) loads the three bounds of its descriptor (a three-word load op, or
 natives returning the bounds in registers, would remove that); the callback layer of the compiled tier is #698; sharing the two `to_integer`
 of a check is #520.
+
+## llvm: light `numeric_std` natives computed in compiled code (#698, 2026-10-24)
+
+`Gen::ieee_fast` (decisions.md "Light `numeric_std` natives computed in compiled code") on top of the operands as values (#697):
+the arithmetic of `ieee::small` and `put_small` emitted at the call site for 1 to 64 elements without a metavalue, the callback of
+the same site for everything else. Bench builds, core 12, `--compare` of main with #697 against this change, median of 3, wall seconds
+(instructions in brackets, G):
+
+| test | auto before | auto after | llvm before | llvm after |
+|---|---:|---:|---:|---:|
+| `poc_arith_addw` | 9.81 (136.5) | 8.49 (118.2) -13 % | 13.13 (191.6) | 11.74 (174.8) -11 % |
+| `vai_window_gen_interlock` | 11.12 (182.2) | 10.56 (179.1) -5 % | 15.11 (225.3) | 14.63 (219.6) -3 % |
+| `poc_cache_cpu` | 0.96 (12.35) | 0.90 (12.07) -6 % | 1.47 (16.28) | 1.46 (15.98) |
+| `neorv32_single_cache` | 2.73 (30.0) | 2.72 (30.0) | 5.28 (46.9) | 5.20 (46.6) |
+| `sc5_fifo_repack`, `sc5_timestamp` | level | level | level | level |
+
+Cold compile cost (empty compilation cache, `--tier=llvm`, run stopped at 1 us, instructions): `poc_arith_addw` world +1.0 %
+(29.6 G to 29.9 G), the window generator +0.3 %. The numeric natives of `poc_arith_addw` are gone from the profile; what is left
+there is the kernel, signal reads and concatenations. In the window generator the natives were a small share under
+`--tier=llvm` (about 3 percent of the instructions); the callbacks of its VHDL codec functions, `get`, `set`, `decode`, remain
+the bulk. Not understood: in a design whose functions take unconstrained vectors by reference from a process
+(`tests/perf/llvm_ieee.vhd`), `cb_host` rises (1416 to 2019 for 1695 natives saved): the operand reads of the inline code
+go through `yavs_rt_host` for addresses of kinds other than the temporary area, the instance data and the top frame
+(tested inline first in a trial, no change in instructions); `cb_native` of that design 1695 to 5.

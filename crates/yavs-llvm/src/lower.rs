@@ -58,6 +58,8 @@ const SCAN: &str = "yavs_rt_scan";
 const CODES: &str = "yavs_rt_codes";
 const PLANES: &str = "yavs_rt_planes";
 const NATIVE: &str = "yavs_rt_native";
+/// The bytes `ieee::put_small` writes: a fat pair, a descriptor and one block of planes.
+const PUT_SMALL_BYTES: u32 = 16 + yavs_ir::DOPE_DIM_BYTES as u32 + 32;
 const NATIVE_LIGHT: &str = "yavs_rt_native_light";
 const TROOT: &str = "yavs_rt_troot";
 const ENDSTMT: &str = "yavs_rt_endstmt";
@@ -2785,6 +2787,55 @@ fn native_kind(
     yavs_interp::edge_native(sym).map(NativeKind::Edge)
 }
 
+/// How a light `numeric_std` native takes its arguments: an array (four registers) or an integer.
+#[derive(Clone, Copy, PartialEq)]
+enum Arg {
+    Arr,
+    Int,
+}
+
+/// The light `numeric_std` natives compiled code computes itself on operands of at most 64
+/// elements without a metavalue (the native's own fast path, `ieee::small`; `Gen::ieee_fast`),
+/// and their arguments; any other operand, and every case that warns or fails, runs the callback.
+fn ieee_layout(op: yavs_ir::ieee::Op) -> Option<&'static [Arg]> {
+    use yavs_ir::ieee::{Form, Op};
+    Some(match op {
+        Op::ToInteger { .. } | Op::NumNot | Op::VecNot => &[Arg::Arr],
+        Op::Add { form, .. } | Op::Compare { form, .. } => match form {
+            Form::Vv => &[Arg::Arr, Arg::Arr],
+            Form::Vi => &[Arg::Arr, Arg::Int],
+            Form::Iv => &[Arg::Int, Arg::Arr],
+        },
+        Op::ToUnsigned | Op::ToSigned => &[Arg::Int, Arg::Int],
+        Op::Resize { .. } | Op::Shift(_) | Op::ShiftFn(_) => &[Arg::Arr, Arg::Int],
+        Op::NumGate(_) | Op::VecGate(_) => &[Arg::Arr, Arg::Arr],
+        _ => return None,
+    })
+}
+
+/// The native a `CallNative` is, when `Gen::ieee_fast` computes it, with its register count
+/// checked.
+fn ieee_fast(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+    dst: Option<Reg>,
+) -> Option<yavs_ir::ieee::Op> {
+    dst?;
+    let sym = &prog.natives.get(native)?.symbol;
+    let key = yavs_ir::ieee::symbol_key(sym)?;
+    let op = yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))?;
+    let want: usize = ieee_layout(op)?
+        .iter()
+        .map(|a| match a {
+            Arg::Arr => yavs_ir::ieee::ARRAY_REGS,
+            Arg::Int => 1,
+        })
+        .sum();
+    (f.regs(args)?.len() == want).then_some(op)
+}
+
 /// A `CallNative` of a frame-mode function that runs through `TierHost::native_frame`: a native
 /// `yavs_interp::direct_native` allows, its operands in the frame.
 fn frame_direct(prog: &Program, f: &Func, i: &Inst) -> bool {
@@ -2943,6 +2994,14 @@ pub(crate) fn leaves(
             kind: yavs_ir::AttrKind::Event,
             ..
         } => false,
+        // Computed in place on its usual operands (`Gen::ieee_fast`).
+        Inst::CallNative { native, args, dst }
+            if frame_direct(prog, f, i)
+                && yavs_interp::light_native(prog, f, *native, *args)
+                && ieee_fast(prog, f, *native, *args, *dst).is_some() =>
+        {
+            false
+        }
         Inst::CallNative { native, args, dst } => {
             !matches!(
                 native_kind(prog, f, *native, *args, *dst),
@@ -6798,28 +6857,19 @@ impl Gen {
                             {
                                 self.step(&c, pc, &inst)
                             }
-                            None if c.nat.is_some() && nat_inline(prog, f, &inst) => self
-                                .native_direct(
-                                    &c,
-                                    pc,
-                                    &inst,
-                                    f,
-                                    native,
-                                    args,
-                                    dst,
-                                    yavs_interp::light_native(prog, f, native, args),
-                                )?,
-                            None if c.nat.is_none() && frame_direct(prog, f, &inst) => self
-                                .native_direct(
-                                    &c,
-                                    pc,
-                                    &inst,
-                                    f,
-                                    native,
-                                    args,
-                                    dst,
-                                    yavs_interp::light_native(prog, f, native, args),
-                                )?,
+                            None if (c.nat.is_some() && nat_inline(prog, f, &inst))
+                                || (c.nat.is_none() && frame_direct(prog, f, &inst)) =>
+                            {
+                                let light = yavs_interp::light_native(prog, f, native, args);
+                                match ieee_fast(prog, f, native, args, dst).filter(|_| light) {
+                                    Some(op) => {
+                                        self.ieee_fast(&c, pc, &inst, f, native, args, dst, op)?
+                                    }
+                                    None => self.native_direct(
+                                        &c, pc, &inst, f, native, args, dst, light,
+                                    )?,
+                                }
+                            }
                             None => self.step(&c, pc, &inst),
                         }
                     }
@@ -8535,6 +8585,351 @@ impl Gen {
             LLVMPositionBuilderAtEnd(self.b, cont);
             self.join(c, join);
             Ok(())
+        }
+    }
+
+    /// A light `numeric_std` native computed in place (`ieee_fast`): operands of at most 64
+    /// elements without a metavalue and results the native's own fast path gives; every other
+    /// case, also each one that warns or fails, takes `slow`: the callback, which runs the
+    /// native as before.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn ieee_fast(
+        &self,
+        c: &Cur,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        op: yavs_ir::ieee::Op,
+    ) -> Result<(), String> {
+        use IP::*;
+        use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Gate, Op, Shift};
+        // SAFETY: integer arithmetic on registers, reads through `host`, a result written to a
+        // fresh temporary block; well-formed blocks of c.f.
+        unsafe {
+            let rs = f.regs(args).ok_or("operand list out of range")?;
+            let dst = dst.ok_or("a native without a result")?;
+            let layout = ieee_layout(op).ok_or("not a native computed in place")?;
+            let mut called = Ok(());
+            let (slow, join) = self.slow_path_with(c, pc, i, true, |g, _| {
+                called = g.native_direct(c, pc, i, f, native, args, Some(dst), true);
+            });
+            called?;
+            let b = self.b;
+            let (c0, c1) = (self.c64(0), self.c64(1));
+            let add = |x, y| LLVMBuildAdd(b, x, y, c"".as_ptr());
+            let sub = |x, y| LLVMBuildSub(b, x, y, c"".as_ptr());
+            let and = |x, y| LLVMBuildAnd(b, x, y, c"".as_ptr());
+            let or = |x, y| LLVMBuildOr(b, x, y, c"".as_ptr());
+            let xor = |x, y| LLVMBuildXor(b, x, y, c"".as_ptr());
+            let shl = |x, y| LLVMBuildShl(b, x, y, c"".as_ptr());
+            let lshr = |x, y| LLVMBuildLShr(b, x, y, c"".as_ptr());
+            let not = |x| LLVMBuildNot(b, x, c"".as_ptr());
+            let pick = |t, x, y| LLVMBuildSelect(b, t, x, y, c"".as_ptr());
+            let cmp = |p, x, y| self.icmp(p, x, y);
+            let umin = |x, y| pick(cmp(LLVMIntULT, x, y), x, y);
+            // `low(k)` for k from 0 to 64: the k low bits.
+            let lowk = |k| {
+                let m = sub(shl(c1, and(k, self.c64(63))), c1);
+                pick(cmp(LLVMIntEQ, k, self.c64(64)), self.c64(-1), m)
+            };
+            // The value of `bits` of `n` elements as a signed integer.
+            let sext = |x, n| {
+                let k = sub(self.c64(64), n);
+                LLVMBuildAShr(b, shl(x, k), k, c"".as_ptr())
+            };
+            let pure = matches!(op, Op::Resize { .. } | Op::Shift(_) | Op::ShiftFn(_));
+            // The operands in argument order.
+            let (mut arrs, mut ints) = (Vec::new(), Vec::new());
+            let mut at = 0;
+            for a in layout {
+                match a {
+                    Arg::Arr => {
+                        arrs.push(self.small_operand(c, &rs[at..at + ARRAY_REGS], pure, slow));
+                        at += ARRAY_REGS;
+                    }
+                    Arg::Int => {
+                        ints.push(self.ld(c, rs[at]));
+                        at += 1;
+                    }
+                }
+            }
+            // `natural`: a negative integer is the native's error.
+            let nonneg = |x| cmp(LLVMIntSGE, x, c0);
+            let ok = |x: LLVMValueRef| self.guard(c, x, slow);
+            // Unsigned or signed `size` low bits hold `v` (the native warns when they do not).
+            let fits = |v, n, mask, signed| {
+                if signed {
+                    cmp(LLVMIntEQ, sext(and(v, mask), n), v)
+                } else {
+                    and(nonneg(v), cmp(LLVMIntEQ, and(v, not(mask)), c0))
+                }
+            };
+            enum Out {
+                Scalar(LLVMValueRef),
+                // Count, bits, and whether the bounds are `1 to n` (else `n - 1 downto 0`).
+                Vector(LLVMValueRef, LLVMValueRef, bool),
+            }
+            let out = match op {
+                Op::ToInteger { signed } => {
+                    let (n, bits, mask) = arrs[0];
+                    let top = and(lshr(bits, sub(n, c1)), c1);
+                    let neg = if signed {
+                        cmp(LLVMIntNE, top, c0)
+                    } else {
+                        cmp(LLVMIntNE, c0, c0)
+                    };
+                    if signed {
+                        // `to_signed (1, 1)` truncates: the native words that warning.
+                        ok(not(and(cmp(LLVMIntEQ, n, c1), neg)));
+                    }
+                    let mag = pick(neg, and(not(bits), mask), bits);
+                    // Beyond `integer'high` of the shortest revision the callback decides.
+                    ok(cmp(LLVMIntULE, mag, self.c64(0x7fff_ffff)));
+                    Out::Scalar(pick(neg, not(mag), mag))
+                }
+                Op::Add {
+                    sub: is_sub,
+                    signed,
+                    form,
+                } => {
+                    let (n, x, y) = match form {
+                        Form::Vv => {
+                            let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                            let n = pick(cmp(LLVMIntUGT, n1, n2), n1, n2);
+                            let mask = lowk(n);
+                            let ext = |bits, k| {
+                                if signed {
+                                    and(sext(bits, k), mask)
+                                } else {
+                                    bits
+                                }
+                            };
+                            (n, ext(b1, n1), ext(b2, n2))
+                        }
+                        _ => {
+                            let (n, bits, mask) = arrs[0];
+                            let v = ints[0];
+                            ok(fits(v, n, mask, signed));
+                            let iv = and(v, mask);
+                            if form == Form::Vi {
+                                (n, bits, iv)
+                            } else {
+                                (n, iv, bits)
+                            }
+                        }
+                    };
+                    Out::Vector(n, if is_sub { sub(x, y) } else { add(x, y) }, false)
+                }
+                Op::Compare {
+                    cmp: k,
+                    signed,
+                    form,
+                } => {
+                    let (x, y) = match form {
+                        Form::Vv => {
+                            let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                            if signed {
+                                (sext(b1, n1), sext(b2, n2))
+                            } else {
+                                (b1, b2)
+                            }
+                        }
+                        _ => {
+                            let (n, bits, _) = arrs[0];
+                            let v = ints[0];
+                            if !signed {
+                                ok(nonneg(v));
+                            }
+                            let e = if signed { sext(bits, n) } else { bits };
+                            if form == Form::Vi { (e, v) } else { (v, e) }
+                        }
+                    };
+                    let p = match (k, signed) {
+                        (Cmp::Gt, false) => LLVMIntUGT,
+                        (Cmp::Lt, false) => LLVMIntULT,
+                        (Cmp::Le, false) => LLVMIntULE,
+                        (Cmp::Ge, false) => LLVMIntUGE,
+                        (Cmp::Gt, true) => LLVMIntSGT,
+                        (Cmp::Lt, true) => LLVMIntSLT,
+                        (Cmp::Le, true) => LLVMIntSLE,
+                        (Cmp::Ge, true) => LLVMIntSGE,
+                        (Cmp::Eq, _) => LLVMIntEQ,
+                        (Cmp::Ne, _) => LLVMIntNE,
+                    };
+                    Out::Scalar(self.zext(cmp(p, x, y)))
+                }
+                Op::ToUnsigned | Op::ToSigned => {
+                    let signed = op == Op::ToSigned;
+                    let (v, size) = (ints[0], ints[1]);
+                    ok(and(
+                        cmp(LLVMIntSGE, size, c1),
+                        cmp(LLVMIntSLE, size, self.c64(64)),
+                    ));
+                    let mask = lowk(size);
+                    ok(fits(v, size, mask, signed));
+                    Out::Vector(size, and(v, mask), false)
+                }
+                Op::Resize { signed } => {
+                    let (n, bits, _) = arrs[0];
+                    let new = ints[0];
+                    ok(and(
+                        cmp(LLVMIntSGE, new, c1),
+                        cmp(LLVMIntSLE, new, self.c64(64)),
+                    ));
+                    let res = if signed {
+                        let keep = sub(umin(n, new), c1);
+                        let sign = cmp(LLVMIntNE, and(lshr(bits, sub(n, c1)), c1), c0);
+                        let kept = and(bits, lowk(keep));
+                        let ext = and(lowk(new), not(lowk(keep)));
+                        or(kept, pick(sign, ext, c0))
+                    } else {
+                        and(bits, lowk(umin(n, new)))
+                    };
+                    Out::Vector(new, res, false)
+                }
+                Op::Shift(k) | Op::ShiftFn(k) => {
+                    let (n, bits, mask) = arrs[0];
+                    let count = ints[0];
+                    ok(nonneg(count));
+                    let big = cmp(LLVMIntUGE, count, n);
+                    let res = match k {
+                        Shift::Sll => pick(big, c0, shl(bits, pick(big, c0, count))),
+                        Shift::Srl => pick(big, c0, lshr(bits, pick(big, c0, count))),
+                        Shift::Sra => {
+                            // For 0 or 1 elements and a zero count the native keeps the
+                            // argument's own bounds.
+                            ok(and(cmp(LLVMIntUGT, n, c1), cmp(LLVMIntNE, count, c0)));
+                            let k = umin(count, sub(n, c1));
+                            and(LLVMBuildAShr(b, sext(bits, n), k, c"".as_ptr()), mask)
+                        }
+                        // A rotation by `count mod n`; by zero both shifts are by zero.
+                        Shift::Rol => {
+                            let k = LLVMBuildURem(b, count, n, c"".as_ptr());
+                            let inv = pick(cmp(LLVMIntEQ, k, c0), c0, sub(n, k));
+                            or(shl(bits, k), lshr(bits, inv))
+                        }
+                        Shift::Ror => {
+                            let k = LLVMBuildURem(b, count, n, c"".as_ptr());
+                            let inv = pick(cmp(LLVMIntEQ, k, c0), c0, sub(n, k));
+                            or(lshr(bits, k), shl(bits, inv))
+                        }
+                    };
+                    Out::Vector(n, res, false)
+                }
+                Op::NumGate(g) | Op::VecGate(g) => {
+                    let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                    ok(cmp(LLVMIntEQ, n1, n2));
+                    let res = match g {
+                        Gate::And => and(b1, b2),
+                        Gate::Nand => not(and(b1, b2)),
+                        Gate::Or => or(b1, b2),
+                        Gate::Nor => not(or(b1, b2)),
+                        Gate::Xor => xor(b1, b2),
+                        Gate::Xnor => not(xor(b1, b2)),
+                    };
+                    Out::Vector(n1, res, matches!(op, Op::VecGate(_)))
+                }
+                Op::NumNot | Op::VecNot => {
+                    let (n, bits, _) = arrs[0];
+                    Out::Vector(n, not(bits), op == Op::VecNot)
+                }
+                _ => return Err("not a native computed in place".into()),
+            };
+            match out {
+                Out::Scalar(v) => self.st(c, dst, v),
+                Out::Vector(n, bits, up) => {
+                    let mask = lowk(n);
+                    let (at, p) = self.temp_alloc(c, self.c64(i64::from(PUT_SMALL_BYTES)), slow);
+                    let (left, right, down) = if up {
+                        (c1, n, c0)
+                    } else {
+                        (sub(n, c1), c0, c1)
+                    };
+                    let words = [
+                        add(at, self.c64((16 + yavs_ir::DOPE_DIM_BYTES) as i64)),
+                        add(at, self.c64(16)),
+                        left,
+                        right,
+                        down,
+                        and(bits, mask),
+                        mask,
+                        c0,
+                        c0,
+                    ];
+                    for (k, w) in words.into_iter().enumerate() {
+                        self.store(w, self.gep(p, self.c64(8 * k as i64)));
+                    }
+                    self.st(c, dst, at);
+                }
+            }
+            self.join(c, join);
+            Ok(())
+        }
+    }
+
+    /// An array operand of a light native (`data, left, right, dir`) of 1 to 64 elements that
+    /// holds only `0 1 L H` (and, with `pure`, no `L` or `H`), as `ieee::small` reads it:
+    /// `(n, bits, mask)`, taking `slow` for any other.
+    unsafe fn small_operand(
+        &self,
+        c: &Cur,
+        r: &[Reg],
+        pure: bool,
+        slow: LLVMBasicBlockRef,
+    ) -> (LLVMValueRef, LLVMValueRef, LLVMValueRef) {
+        // SAFETY: integer arithmetic and a read of four words through `host`.
+        unsafe {
+            let b = self.b;
+            let (l, rt, d) = (self.ld(c, r[1]), self.ld(c, r[2]), self.ld(c, r[3]));
+            let down = self.icmp(IP::LLVMIntEQ, d, self.c64(1));
+            let hi = LLVMBuildSelect(b, down, l, rt, c"".as_ptr());
+            let lo = LLVMBuildSelect(b, down, rt, l, c"".as_ptr());
+            let diff = LLVMBuildSub(b, hi, lo, c"".as_ptr());
+            let ok = LLVMBuildAnd(
+                b,
+                self.icmp(IP::LLVMIntSGE, hi, lo),
+                self.icmp(IP::LLVMIntULT, diff, self.c64(64)),
+                c"".as_ptr(),
+            );
+            self.guard(c, ok, slow);
+            let n = LLVMBuildAdd(b, diff, self.c64(1), c"".as_ptr());
+            let mask = LLVMBuildSub(
+                b,
+                LLVMBuildShl(b, self.c64(2), diff, c"".as_ptr()),
+                self.c64(1),
+                c"".as_ptr(),
+            );
+            let p = self.host(
+                c,
+                self.ld(c, r[0]),
+                self.known_addr(c, r[0]),
+                self.c64(0),
+                self.c64(32),
+                false,
+                slow,
+            );
+            let w = |k: i64| self.load(self.i64, self.gep(p, self.c64(8 * k)));
+            let (p0, p1, p3) = (w(0), w(1), w(3));
+            let live = LLVMBuildAnd(b, LLVMBuildNot(b, p3, c"".as_ptr()), p1, c"".as_ptr());
+            // `0 L`: plane 1 only; `1 H`: planes 0 and 1.
+            let zero = LLVMBuildAnd(b, live, LLVMBuildNot(b, p0, c"".as_ptr()), c"".as_ptr());
+            let one = LLVMBuildAnd(b, live, p0, c"".as_ptr());
+            let all = LLVMBuildAnd(
+                b,
+                LLVMBuildOr(b, zero, one, c"".as_ptr()),
+                mask,
+                c"".as_ptr(),
+            );
+            self.guard(c, self.icmp(IP::LLVMIntEQ, all, mask), slow);
+            if pure {
+                // Plane 2 is the weak bit of `L` and `H`.
+                let weak = LLVMBuildAnd(b, w(2), mask, c"".as_ptr());
+                self.guard(c, self.icmp(IP::LLVMIntEQ, weak, self.c64(0)), slow);
+            }
+            (n, LLVMBuildAnd(b, one, mask, c"".as_ptr()), mask)
         }
     }
 

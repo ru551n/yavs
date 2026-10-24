@@ -991,6 +991,11 @@ mod llvm {
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
     llvm_case!(
+        llvm_ieee,
+        "acc=",
+        [("cb_native", Max(5)), ("llvm_native_frames", Min(1)),]
+    );
+    llvm_case!(
         llvm_drive_batch,
         "q=",
         [("cb_drive", Max(158)), ("llvm_interpreted_insts", Max(32)),]
@@ -1001,7 +1006,7 @@ mod llvm {
         [
             ("cb_signal", Max(4)),
             ("cb_step", Max(26)),
-            ("cb_native", Max(55)),
+            ("cb_native", Max(4)),
             ("cb_drive", Max(998)),
             ("cb_wait", Max(19)),
             ("cb_wait_same", Max(1018)),

@@ -154,6 +154,188 @@ fn light_natives_in_compiled_code_match_the_interpreter() {
     }
 }
 
+/// `numeric_std` operators and conversions computed in place by compiled code (small operands
+/// without a metavalue) and by the native (everything else): vectors of every length class
+/// (1 to 66 elements), with and without `L`, `H` and metavalues, ascending and descending, a lower
+/// bound other than zero, in a function (native frame) and in a process (frame mode).
+const INLINE: &str = r#"library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+entity n is end;
+architecture a of n is
+  -- A hash of the bounds and the elements of a result.
+  function h(u : unsigned) return integer is
+    variable r : integer := u'length * 7 + u'left * 3 + u'right;
+  begin
+    if u'ascending then r := r + 1; end if;
+    for k in u'range loop
+      case u(k) is
+        when '0' => r := (r * 3 + 1) mod 99991;
+        when '1' => r := (r * 3 + 2) mod 99991;
+        when 'L' => r := (r * 3 + 3) mod 99991;
+        when 'H' => r := (r * 3 + 4) mod 99991;
+        when 'X' => r := (r * 3 + 5) mod 99991;
+        when others => r := (r * 3 + 6) mod 99991;
+      end case;
+    end loop;
+    return r;
+  end function;
+  function h(s : signed) return integer is
+  begin
+    return h(unsigned(s));
+  end function;
+  function h(v : std_logic_vector) return integer is
+  begin
+    return h(unsigned(v));
+  end function;
+  function h(x : boolean) return integer is
+  begin
+    if x then return 1; else return 2; end if;
+  end function;
+  function gen(len : natural; seed : natural; meta : boolean) return unsigned is
+    variable r : unsigned(len + 2 downto 3);
+    variable s : natural := seed;
+  begin
+    for k in r'range loop
+      s := (s * 75 + 74) mod 65537;
+      case (s / 7) mod 8 is
+        when 0 | 1 | 2 => r(k) := '0';
+        when 3 | 4 | 5 => r(k) := '1';
+        when 6 => r(k) := 'L';
+        when others => r(k) := 'H';
+      end case;
+      if meta and s mod 29 = 0 then r(k) := 'X'; end if;
+    end loop;
+    return r;
+  end function;
+  function gen_up(len : natural; seed : natural) return unsigned is
+    variable r : unsigned(2 to len + 1);
+    variable s : natural := seed;
+  begin
+    for k in r'range loop
+      s := (s * 75 + 74) mod 65537;
+      if (s / 3) mod 2 = 0 then r(k) := '0'; else r(k) := '1'; end if;
+    end loop;
+    return r;
+  end function;
+  -- Comparisons, resizes, conversions from integers, shifts and logical operators.
+  function calc2(a, b : unsigned; k : natural) return integer is
+    variable sa : signed(a'length - 1 downto 0) := signed(a);
+    variable sb : signed(b'length - 1 downto 0) := signed(b);
+    variable la : std_logic_vector(a'length - 1 downto 0) := std_logic_vector(a);
+    variable lb : std_logic_vector(a'length - 1 downto 0) := std_logic_vector(resize(b, a'length));
+    variable same : unsigned(a'length - 1 downto 0);
+    variable c : natural := k mod 70;
+    variable r : integer := 0;
+    procedure mix(x : integer) is
+    begin
+      r := (r * 31 + x) mod 99991;
+    end procedure;
+  begin
+    same := resize(b, a'length);
+    mix(h(a = b)); mix(h(a /= b)); mix(h(a < b)); mix(h(a <= b)); mix(h(a > b)); mix(h(a >= b));
+    mix(h(a = k)); mix(h(a < k)); mix(h(a >= k)); mix(h(k = b)); mix(h(k > b)); mix(h(k <= b));
+    mix(h(sa = sb)); mix(h(sa < sb)); mix(h(sa >= sb)); mix(h(sa < (k - 40))); mix(h(sa >= (k - 40)));
+    mix(h((k - 40) = sb)); mix(h((k - 40) > sb));
+    mix(h(resize(a, c + 1))); mix(h(resize(sa, c + 1)));
+    mix(h(to_unsigned(k, c + 1))); mix(h(to_signed(k - 40, c + 1)));
+    mix(h(shift_left(a, c mod 9))); mix(h(shift_right(a, c mod 11)));
+    mix(h(rotate_left(a, c))); mix(h(rotate_right(sa, c)));
+    mix(h(shift_right(sa, c mod 5))); mix(h(a sll (c mod 7)));
+    mix(h(a srl (c mod 3))); mix(h(sa rol (c mod 13)));
+    mix(h(a and same)); mix(h(a or same)); mix(h(a xor same));
+    mix(h(a nand same)); mix(h(a nor same)); mix(h(sa xnor signed(same)));
+    mix(h(not a)); mix(h(not sb));
+    mix(h(la and lb)); mix(h(la xor lb)); mix(h(not la));
+    return r;
+  end function;
+  -- All the operations on one pair of operands, one line of text.
+  function calc(a, b : unsigned; k : natural) return string is
+    variable sa : signed(a'length - 1 downto 0) := signed(a);
+    variable sb : signed(b'length - 1 downto 0) := signed(b);
+    variable r : integer := 0;
+  begin
+    if a'length <= 31 then r := to_integer(a) / 4; end if;
+    if b'length <= 31 then r := r + to_integer(b) / 4; end if;
+    if a'length <= 32 then r := r + to_integer(sa) / 4; end if;
+    return integer'image(calc2(a, b, k)) & " " & integer'image(r) & " " & integer'image(h(a + b)) & " " &
+           integer'image(h(a - b)) & " " & integer'image(h(a + k)) & " " & integer'image(h(k + b)) & " " &
+           integer'image(h(a - k)) & " " & integer'image(h(k - b)) & " " & integer'image(h(sa + sb)) & " " &
+           integer'image(h(sa - sb)) & " " & integer'image(h(sa + (k - 40))) & " " &
+           integer'image(h((k - 40) + sb)) & " " & integer'image(h(sa - (k - 40)));
+  end function;
+begin
+  process
+    variable a, b : unsigned(70 downto 0);
+    variable n : integer := 0;
+    constant lens : integer_vector := (1, 2, 3, 8, 9, 16, 17, 32, 33, 63, 64, 65);
+  begin
+    for i in lens'range loop
+      for j in 0 to 2 loop
+        for seed in 0 to 4 loop
+          report integer'image(lens(i)) & "/" & integer'image(lens((i + j * 5) mod lens'length)) & "/" &
+                 integer'image(seed) & ": " &
+                 calc(gen(lens(i), seed, seed mod 3 = 0),
+                      gen(lens((i + j * 5) mod lens'length), seed + 11, seed mod 4 = 0),
+                      seed * 37 + j);
+        end loop;
+      end loop;
+    end loop;
+    for i in 1 to 20 loop
+      report "up " & integer'image(i) & ": " & calc(gen_up(i, i), gen_up(21 - i, i + 3), i) &
+             " " & integer'image(to_integer(gen_up(i mod 31 + 1, i)));
+    end loop;
+    -- In the process itself: constants and variables of the frame.
+    a(7 downto 0) := x"a5";
+    b(7 downto 0) := x"3c";
+    for k in 0 to 300 loop
+      a(7 downto 0) := a(7 downto 0) + k;
+      b(7 downto 0) := b(7 downto 0) - to_unsigned(k, 8);
+      n := n + to_integer(a(7 downto 0)) + to_integer(signed(b(7 downto 0)));
+      if k mod 50 = 0 then
+        report integer'image(n) & " " & integer'image(h(a(7 downto 0) + b(7 downto 0))) & " " &
+               integer'image(h(5 + b(7 downto 0)));
+      end if;
+    end loop;
+    report "done " & integer'image(n);
+    wait;
+  end process;
+end;
+"#;
+
+#[test]
+fn numeric_std_in_place_in_compiled_code_matches_the_interpreter() {
+    let dir = tempdir("compiled_inline");
+    std::fs::write(dir.join("n.vhd"), INLINE).expect("write");
+    let a = yavs(&dir, &["analyze", "--work=work:work", "n.vhd"]);
+    assert!(a.status.success(), "{a:?}");
+    let run = |tier: &str| {
+        let o = yavs(
+            &dir,
+            &[
+                "run",
+                "--work=work:work",
+                &format!("--tier={tier}"),
+                "--exit-severity=failure",
+                "n",
+            ],
+        );
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let want = run("interp");
+    assert!(want.1.contains("done "), "{want:?}");
+    assert!(
+        want.1.contains("metavalue"),
+        "the metavalue warnings are part of the test"
+    );
+    for tier in ["llvm", "auto"] {
+        assert_eq!(run(tier), want, "{tier}");
+    }
+}
+
 /// Vectors of every length class read from signals in a clocked process, among them the ones
 /// whose last group of eight codes is partly past the signal (1, 4, 9, 12 elements) and the
 /// ones that fill their plane block (64) or need two (65).

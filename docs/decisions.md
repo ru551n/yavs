@@ -7971,3 +7971,29 @@ part names: `Program::pkg_deps`, the `AddrOf Pkg` of the blocks before the body)
   ratio above 1.02. Work counters of the perf designs that call `ieee` natives fell by up to 29 percent (`reduce_idiom`), `slice_memo`
   rose by 1.4 percent (its bound has room); the bounds were lowered and `ieee_operands` added. Differential tests (510 designs, interp,
   llvm and auto, 1 and 4 threads) are identical.
+
+  (-7.3 percent), cycles 136.7 G to 130.2 G (-4.8 percent), output identical. Work counters of the perf designs that call `ieee` natives
+  fell by up to 29 percent (`reduce_idiom`), `slice_memo` rose by 1.4 percent (its bound has room); the bounds were lowered.
+
+## Light `numeric_std` natives computed in compiled code (yavs-llvm `ieee_fast`, #698, 2026-10-24)
+
+With the array operands of the `ieee` natives as values (#697) a call site has the data address and the bounds in
+registers. For the operations whose own fast path is plain integer arithmetic on one word (`ieee::small`: 1 to 64
+elements, only `0 1 L H`) the code generator now emits that arithmetic instead of the callback:
+
+- **Operations:** `to_integer`; `+`, `-` (vector and vector, vector and integer, integer and vector); the relational
+  operators (the same forms); `to_unsigned`, `to_signed`; `resize`; `shift_left`, `shift_right`, `rotate_left`,
+  `rotate_right` and the `sll`, `srl`, `sra`, `rol`, `ror` operators; `and`, `nand`, `or`, `nor`, `xor`, `xnor`
+  and `not` of `unsigned` and `signed` and of `std_ulogic_vector` (`ieee_layout` lists them).
+- **One rule for what is not computed here:** every case the native does not answer in a word (a longer or null
+  operand, a metavalue, `L`/`H` for the operations that move elements, a negative `natural`, an integer that does not
+  fit `to_unsigned`/`to_signed`/`+ integer` (the native warns), a `to_integer` result above 2147483647, `to_signed (1, 1)`,
+  `sra` of one element or by zero, a temporary area that must grow) takes the old callback (`yavs_rt_native_light`)
+  from the same site, which runs the native and gives its warnings and errors unchanged. Reports therefore come only
+  from the native: byte-identical output by construction. The bit tricks are the native's (`small_of`, `put_small`).
+- **The result** is built exactly as `put_small` builds it: a fat pair, a descriptor and one plane block (72 bytes) in
+  temporary memory, taken inline (`temp_alloc`).
+- **Policy:** the site no longer counts as a callback for `--tier=auto` (`lower::leaves`).
+- **Measured and not taken:** testing the temporary area, the instance data and the interpreter's top frame inline
+  before `host` (frame-mode code calls `yavs_rt_host` for an address of unknown space): no change in instructions
+  of `poc_arith_addw` or the window generator (within the run-to-run noise of 1 percent), so the plain `host` is used.

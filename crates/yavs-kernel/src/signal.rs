@@ -193,6 +193,18 @@ const MAX_TIDS: usize = 32;
 /// The most buckets a waiter is copied into before it goes to the wide list instead.
 const WAIT_NARROW: u32 = 4;
 
+/// Whether a range of `runs` (sorted, disjoint) shares an element with `r`.
+#[inline(always)]
+pub(crate) fn runs_hit(runs: &[Range], r: Range) -> bool {
+    match runs {
+        [x] => x.overlaps(r),
+        _ => {
+            let i = runs.partition_point(|x| x.end() <= r.offset);
+            runs.get(i).is_some_and(|x| x.overlaps(r))
+        }
+    }
+}
+
 /// The processes waiting on one signal, bucketed by chunk of 8 elements (64 for a signal over
 /// 4096 elements, one bucket for one of at most 8), so an event looks only at the waiters of
 /// the chunks it touches: one process per element of a wide vector costs O(1) per event, not
@@ -494,13 +506,7 @@ impl Waiters {
         hold: impl Fn(&Waiter) -> bool,
         out: &mut Vec<(u64, u32)>,
     ) {
-        let hit = |r: Range| match runs {
-            [x] => x.overlaps(r),
-            _ => {
-                let i = runs.partition_point(|x| x.end() <= r.offset);
-                runs.get(i).is_some_and(|x| x.overlaps(r))
-            }
-        };
+        let hit = |r: Range| runs_hit(runs, r);
         out.clear();
         let Some(wide) = self.lists.len().checked_sub(1) else {
             return;

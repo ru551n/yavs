@@ -16,7 +16,7 @@ use crate::process::{
     Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
+    DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters, runs_hit,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
@@ -1987,9 +1987,8 @@ impl SimControl {
                 sig.changed.sort_unstable_by_key(|r| r.offset);
             }
             let waiters = &mut self.waiters[s as usize];
-            let (procs, signals) = (&self.procs, &self.signals);
+            let signals = &self.signals;
             let runs = &signals[s as usize].changed;
-            let live = |w: &Waiter| alive(procs, w);
             // All waiters share one edge trigger: it holds for all or for none of them.
             let uniform = if self.cfg.edge_triggers {
                 waiters
@@ -2021,7 +2020,7 @@ impl SimControl {
             if let [r] = runs[..]
                 && r.len == 1
                 && let Some(w) = waiters.sole_resident(r.offset)
-                && live(w)
+                && alive(&self.procs, w)
             {
                 let (p, held) = (w.proc, uniform.is_none() && hold(w));
                 self.signals[s as usize].changed.clear();
@@ -2030,30 +2029,36 @@ impl SimControl {
                 }
                 continue;
             }
-            // One event on a signal with a few waiters, all resident and alive: the same wake as
-            // the scan below makes, in list order, with nothing to remove from the list.
-            if let [r] = runs[..]
+            // Events on a signal with a few waiters, those they hit resident and alive: the same wake
+            // as the scan below makes, in list order, with nothing to remove from the list. A waiter
+            // that is not (a plain one, a stale one) leaves the rest to the scan: waking is idempotent
+            // and in list order, so the scan wakes the others in the same order.
+            if !runs.is_empty()
                 && let Some(list) = waiters.small_list(8)
             {
-                let plain = list
-                    .iter()
-                    .filter(|w| w.range.overlaps(r))
-                    .all(|w| w.perm != 0 && live(w));
-                if plain {
-                    for w in list.iter().filter(|w| w.range.overlaps(r)) {
-                        if !(uniform.is_none() && hold(w)) {
-                            wake_proc(
-                                &mut self.procs,
-                                &mut self.postponed,
-                                &mut self.ready_several,
-                                &mut self.ready_mono,
-                                &mut self.ready,
-                                &mut self.stats.wakes,
-                                w.proc,
-                                false,
-                            );
-                        }
+                let mut plain = true;
+                for w in list {
+                    if !runs_hit(runs, w.range) {
+                        continue;
                     }
+                    if w.perm == 0 || !alive(&self.procs, w) {
+                        plain = false;
+                        break;
+                    }
+                    if !(uniform.is_none() && hold(w)) {
+                        wake_proc(
+                            &mut self.procs,
+                            &mut self.postponed,
+                            &mut self.ready_several,
+                            &mut self.ready_mono,
+                            &mut self.ready,
+                            &mut self.stats.wakes,
+                            w.proc,
+                            false,
+                        );
+                    }
+                }
+                if plain {
                     self.signals[s as usize].changed.clear();
                     continue;
                 }
@@ -2137,8 +2142,10 @@ impl SimControl {
             }
             let mut woken = std::mem::take(&mut self.woken_buf);
             match uniform {
-                Some(_) => waiters.take_woken(runs, live, |_| false, &mut woken),
-                None => waiters.take_woken(runs, live, hold, &mut woken),
+                Some(_) => {
+                    waiters.take_woken(runs, |w| alive(&self.procs, w), |_| false, &mut woken)
+                }
+                None => waiters.take_woken(runs, |w| alive(&self.procs, w), hold, &mut woken),
             }
             self.signals[s as usize].changed.clear();
             for &(_, p) in &woken {

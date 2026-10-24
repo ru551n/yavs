@@ -4035,7 +4035,12 @@ because of the host load, the ratio inside a session is the figure):
 | `fletcher_bufferwriter_512` | 3.20 / 3.29 | 3.07 / 3.22 | 1.90 / 2.04 | 1.79 / 1.98 |
 | `fletcher_bufferreader` | 1.96 / 1.87 | 1.82 / 1.82 | 0.94 / 1.01 | 1.01 / 1.11 |
 
-The reader's instruction count did not change in this round; its rows show session noise (the reference simulator's own run took
+After the idle skip of round 5 below and the record-signal work that landed meanwhile (main at `4d53f7a4`, same method, a third
+session): writer run phase 2.59 / 2.60 (warm / cold), total 1.56 / 1.61, instructions 62.2 G against the reference's 26.7 G (2.33, was
+3.15); reader run phase 1.73 / 1.73, total 0.83 / 0.90, instructions 23.2 G against 15.3 G (1.51, was 1.73). The change of this and the next
+two rounds is about half of that; the rest is the record gather and scatter of #677 and #686.
+
+The reader's instruction count did not change in the kernel round; its rows show session noise (the reference simulator's own run took
 1.15 s in the first session and 1.66 s in the second, yavs 2.25 s and 3.02 s), and the totals of the two sessions mix the reference's
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.

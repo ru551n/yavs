@@ -7678,7 +7678,7 @@ lifted:
   guarded reads) and the process is pure in every instance where one is false. Where it is true (`DEBUG => true`) the process runs at
   every wake as before. The condition itself must have no effect (`Db::effect_free`: no impure function, no protected method), since
   `f(x) and DEBUG` evaluates `f` first (the reference simulator folds `f(x) and false` and drops the call, a deviation from the LRM
-  that is why that case is only in `perf.rs`, not in the corpus).
+  (`tests/discrepancies/short-circuit-constant-false-effect`), which is why that case is only in `perf.rs`, not in the corpus).
 - **Why it is the same run.** The rule of round 2 holds unchanged: an activation does what the last one did when every signal it
   reads is unchanged and no variable carries a value from one activation to the next; the three changes only accept more processes
   that satisfy it. `YAVS_IDLE_SKIP=check` runs every skipped activation and fails when it assigns something else: the 511 tests of the

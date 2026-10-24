@@ -878,13 +878,13 @@ impl Inst {
 
     /// Every fixed register operand with its role and expected type (`None`: any cell that
     /// is not a signal; a `Handle` register is also an `I64`). List operands are not included (see [`Inst::list`]).
-    pub fn visit(&self, f: &mut dyn FnMut(Reg, Role, Option<RegTy>)) {
+    pub fn visit<F: FnMut(Reg, Role, Option<RegTy>) + ?Sized>(&self, f: &mut F) {
         let mut c = *self;
         c.visit_mut(&mut |r, role, t| f(*r, role, t));
     }
 
     /// [`Inst::visit`] with the operands writable (register renaming by the optimiser).
-    pub fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Reg, Role, Option<RegTy>)) {
+    pub fn visit_mut<F: FnMut(&mut Reg, Role, Option<RegTy>) + ?Sized>(&mut self, f: &mut F) {
         use RegTy::*;
         use Role::*;
         let i = Some(I64);

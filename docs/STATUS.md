@@ -638,6 +638,10 @@ budget, cost 12 percent more (the worst case), loops under it 1 to 2 percent mor
 tests: geometric mean cold 1.0001, warm 1.0005, no restart, output identical (`docs/decisions.md` "Elaboration-time calls run
 as lowered").
 
+`Inst::visit` and `visit_mut` are generic over the closure instead of `dyn FnMut` (the optimiser, the predecoder and the verifier
+call them for every operand): `yavs run --no-cache` to 0 fs, instructions over the 42 realbench tests, geometric mean 0.973
+(`neorv32_*` 0.92 to 0.93, most others 0.97 to 0.98, `grlib_leon3mp` 1.003); the binary grows by 0.5 percent.
+
 ### Compilation cache (#407)
 
 Cache keys name the build (a hash of all sources) and the optimiser and tier switches (#491, `docs/decisions.md`

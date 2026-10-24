@@ -13,7 +13,7 @@
 //! fails (re-executed by the interpreter, so messages are identical): compiled code never
 //! reports an error itself (rule 5).
 
-use std::ffi::{CString, c_void};
+use std::ffi::CString;
 use std::sync::Mutex;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyFunction};
@@ -649,7 +649,7 @@ unsafe fn layout(fv: LLVMValueRef, cold: &[LLVMBasicBlockRef]) {
 #[cfg(target_os = "linux")]
 fn huge_code(addrs: impl Iterator<Item = usize>) {
     unsafe extern "C" {
-        fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+        fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
     }
     const HUGE: usize = 2 << 20;
     // The arena (`arena.rs`) places and backs the code itself where it is available.
@@ -663,8 +663,8 @@ fn huge_code(addrs: impl Iterator<Item = usize>) {
     }
     // SAFETY: advice on the pages of our own JIT code; the call changes no content.
     unsafe {
-        madvise(start as *mut c_void, end - start, 14);
-        madvise(start as *mut c_void, end - start, 25);
+        madvise(start as *mut std::ffi::c_void, end - start, 14);
+        madvise(start as *mut std::ffi::c_void, end - start, 25);
     }
 }
 

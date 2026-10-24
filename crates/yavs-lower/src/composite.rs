@@ -1252,7 +1252,7 @@ impl Fx<'_, '_> {
     }
 
     /// The handle, data address and descriptor address of the heap object just allocated.
-    fn new_object_end(&mut self, h: Reg, ds: u32) -> R<(Reg, Reg, Reg)> {
+    pub(crate) fn new_object_end(&mut self, h: Reg, ds: u32) -> R<(Reg, Reg, Reg)> {
         let what = self.msg("object", Dir::To);
         let p = self.reg(RegTy::Ptr);
         self.emit(Inst::Deref {

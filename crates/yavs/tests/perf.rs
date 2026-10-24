@@ -413,6 +413,16 @@ case!(
     ]
 );
 case!(
+    sigrec_copy,
+    "errors=0",
+    &[],
+    [
+        ("cycles", Max(418)),
+        ("process_runs", Max(525)),
+        ("ops", Max(54500)),
+    ]
+);
+case!(
     delta_ring,
     "n=",
     &[],

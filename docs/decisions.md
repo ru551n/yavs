@@ -6450,3 +6450,34 @@ Measured (bench builds, main thread; cycles of the simulation phase, minimum of 
 `--tier=auto --tier-heat=1,0,0`): see `docs/STATUS.md` "llvm: compiled clocked RTL, round 6". Fills from L3 of `rtl_fan`
 compiled 82 M to 65 M (interpreter 64 M to 59 M).
 
+## Composite signal reads: one copy per activation, scalar leaves read in place (yavs-lower, yavs-ir `FuncBuilder`, #630, #538, 2026-10-24)
+
+Shared layer: every tier and a second code generator see the smaller IR. Found with the LEON3 template of GRLIB (`grlib_leon3mp`,
+`--std=93`): the integer unit's `comb` process was 147 760 IR instructions, 32 percent of the run, and no tier could take it. The IR
+showed what it was made of: 54 whole reads of the register record `r` (233 leaves, about 2 700 IR instructions each, 98 percent of the
+process), one for every call that passes `r` to a function or procedure (`dbgexc (r, ..)`, `npc_find (r)`, `sp_write (r, ..)`) and for
+`v := r`. A record signal has one kernel signal per leaf, so a whole read is a `SigRead` and a field address per leaf.
+
+- **A process with a sensitivity list keeps one copy of each record signal it reads as a whole in two places or more** (a read in a
+  loop counts twice; `Fx::whole_reads` over `Db::stmt_exprs`; a name that selects a field, an element or an attribute is no whole
+  read of its prefix). Such a process runs between two suspensions without a wait (LRM 11.3), so the signal has one value for the whole
+  activation. The copy is an object like a variable's (`NewFill` of zero bytes in the declarative part, `[data, desc, handle]` in a
+  frame slot that is a handle root); the leaves are read into it by one fill at the start of each activation (`SigCopies`,
+  `Fx::sigcopy_of`), and every whole read of the signal in the body is the address of the copy. The code of the copy is made at the
+  first read, in place: `FuncBuilder::{current, block_len, take, splice, set_stmt}` move the prologue before the jump that ends the
+  declarative part and the fill to the start of the first block, new blocks for control flow in the leaf copies (arrays of records)
+  included. A signal read as a whole once is read as before. Not for processes with explicit waits (a wait ends the activation) or
+  the processes of concurrent statements (their bodies are one statement).
+- **A `std_ulogic` field below records only is read with `SigReadScalar` and stored where it lies** (`read_leaves_into`), not through
+  a 32-byte plane buffer, `SigRead` and `LGet`, and the address of the records on the path is made once for the leaves that share
+  it. Every composite signal read gets this, in any function.
+- **Ceilings** (`ponytail:`): the fill reads every leaf at every activation, also when only a few leaves changed (a per-leaf event
+  stamp would skip them); a whole read in a branch that is almost never taken, in two places, still pays the fill; the drive side
+  of `rin <= v` is still one `Drive` per leaf (233 per activation, 4 400 IR instructions in `comb`); a procedure that reads the
+  signal as a whole keeps its own reads.
+- **Measured** (bench builds, `--tier=interp --threads 1`, core 10, the whole run to 1060.5 us, "Test passed"; `perf stat` user cycles
+  and instructions of the process): 1685.8 G instructions, 604.8 G cycles, 150.8 s before; 993.3 G, 428.1 G, 91.3 s after
+  (-41, -29, -39 percent). `comb` 147 760 to 30 605 IR instructions, the program 473.8 k to 354.3 k, `dctrl` 24 376 to 24 112.
+  The process `iu:comb` fell from 37 percent of the samples at 150 us to 16. `crates/yavs/tests/perf/sigrec_copy.vhd` (a process that
+  passes a record with nested records to four functions, in branches and a loop, and checks the results against field-wise reads):
+  ops 105 380 to 52 919 (a bound with 3 percent), the other 29 work-counter designs unchanged.

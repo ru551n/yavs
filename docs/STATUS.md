@@ -6753,3 +6753,11 @@ hdlm_lfsr 66.84 to 67.16 G (+0.5 percent) and poc_fifo_ic_assembly 2.280 to 2.28
 which are the layout of the dispatch loop (a variant with the branch out of line moved them and
 cost uvvm_func_cov 5 percent more). Cycles were not measured (no timing core free).
 
+## lower: one copy of a record signal per activation (#630, 2026-10-24)
+
+A process with a sensitivity list that reads a record signal as a whole in two places or more keeps one copy (made in the declarative
+part, filled at the start of each activation); a `std_ulogic` field of a record signal is read with `SigReadScalar` in place
+(`docs/decisions.md` "Composite signal reads: one copy per activation"). GRLIB LEON3 (`grlib_leon3mp`, `--std=93`, whole run, bench
+build, `--tier=interp --threads 1`, core 10): 1685.8 G instructions and 150.8 s before, 993.3 G and 91.3 s after; the integer unit's
+`comb` process 147 760 to 30 605 IR instructions. `sigrec_copy` in the work-counter tests: ops 105 380 to 52 919.
+

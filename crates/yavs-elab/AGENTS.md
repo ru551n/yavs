@@ -63,7 +63,7 @@ evaluation); decisions in `docs/decisions.md` "Elaboration (yavs-elab, M2)".
 | Logic leaves for `std_ulogic`, `bit`, `boolean` (scalars too); other enums 1 or 4 bytes, integers/physicals/reals 8; BIT/BOOLEAN codes are '0'/'1' (2/3) | Bit-planes everywhere (user, 2026-10-18) | `docs/decisions.md` "Elaboration", "Interpreter: BIT/BOOLEAN codes" |
 | Records are one leaf per field (arrays of records: struct of arrays) | Rule 2 storage | `docs/decisions.md` "Elaboration" |
 | Unlabeled processes are `_pN` per region | The reference simulator names, difftest paths match | same |
-| Ids in deterministic depth-first order; kernel `SignalId` = `LeafId`, `ProcId` = process index | Deterministic commit order | `src/hier.rs` docs |
+| Ids in deterministic depth-first order; a leaf is stored at `NetGraph::loc` (kernel signal and base, #686; every leaf turns into a kernel reference through `NetGraph::kref`/`kpart`/`kelem`, never `SignalId(leaf.0)`), `ProcId` = process index | Deterministic commit order | `src/hier.rs` docs |
 | Package constant calling a function of its own package before its body is elaborated: `E2114` with both spans | LRM 14.4.2, the reference simulators | `docs/decisions.md` "Elaboration" |
 | Default binding, selected entity names, block configuration of a default-bound instance | Permissive per LRM policy | `docs/decisions.md` "Design units and binding" |
 | A user resolution function declared in an entity or architecture runs with that instance's `InstData` (`Ir::res_regions`, its architecture lowered even without processes); declared in a block, generate or subprogram: E9999 | #164: it reads the region's constants and generics | this file |

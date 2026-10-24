@@ -6917,6 +6917,18 @@ Warm, instructions of auto against interp, main before / after: `rtl_ff` 1.041 /
 evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, trials of looping processes").
 
 
+## Record signals as packs of leaves: design (#686, 2026-10-24)
+
+`docs/design/record-signal-layout.md`: runs of up to 64 logic leaves of one record signal in one
+kernel signal, the physical leaf map, which leaves may share a signal, what changes per consumer,
+and six landable steps with expected gains. Measured on a 233-leaf register record (interp): 55% of
+the instructions are IR execution (#677's gather and scatter), 37% per-leaf kernel work (the target
+of the packs). Finding: sim1 keeps one runtime signal per leaf too.
+
+- Step 1: a leaf is stored at `NetGraph::loc` (kernel signal, base); the kernel build, instance
+  signal tables, waves, coverage toggles, VHPI and DAP reach kernel signals only through it
+  (`NetGraph::kref`, `kpart`, `kelem`). Every leaf still has a signal of its own.
+
 ## `yavs_rt_host` a leaf, and no cliff in the instance-constant memoisation (#663, #662, 2026-10-24)
 
 - #663: `hdlm_lfsr` under `--tier=auto` (warm, instructions of the process tree, bench builds, 8 fresh worlds interleaved) was 31.1 G before the
@@ -6936,13 +6948,11 @@ evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, t
   `fletcher_bufferwriter_512` 497.1 M to 263.3 M, `fletcher_bufferreader` 364.9 M to 214.8 M; whole runs 91.94 G to 91.57 G and
   36.74 G to 36.50 G. `hdlm_lfsr` has no late units (it waits for its own entries on the second run as before).
 
-### Record signals as packs of leaves: design (#686, 2026-10-24)
+- #665: replayed entries decoded one by one now live in a box of cells per page and a read directly after the last decoded run decodes
+  twice as many entries (`ids.rs` `SlotPage`). Cold `elab` of `neorv32_single_min` 685.6 M to 674.7 M instructions (-1.6 %); cold analysis
+  of `hdl-modules-2008` -0.2 %, `osvvm-2008` +0.3 %, `poc-2008` +0.2 %. About 4 percent of the #424 loss is still open (`docs/decisions.md`
+  "Replayed entries: cells per page").
 
-`docs/design/record-signal-layout.md`: runs of up to 64 logic leaves of one record signal in one
-kernel signal, the physical leaf map, which leaves may share a signal, what changes per consumer,
-and six landable steps with expected gains. Measured on a 233-leaf register record (interp): 55% of
-the instructions are IR execution (#677's gather and scatter), 37% per-leaf kernel work (the target
-of the packs). Finding: sim1 keeps one runtime signal per leaf too. Not implemented yet.
 - #665: replayed entries decoded one by one now live in a box of cells per page and a read directly after the last decoded run decodes
   twice as many entries (`ids.rs` `SlotPage`). Cold `elab` of `neorv32_single_min` 685.6 M to 674.7 M instructions (-1.6 %); cold analysis
   of `hdl-modules-2008` -0.2 %, `osvvm-2008` +0.3 %, `poc-2008` +0.2 %. About 4 percent of the #424 loss is still open (`docs/decisions.md`

@@ -8,7 +8,7 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 
 - **Ids** are indices in elaboration order: `SignalId`, `ProcId`, `DriverId` (all `u32`). They
   never change during a run, so DAP, VHPI, waves and coverage can store them. Kernel `SignalId`
-  order is the elaborator's `LeafId` order.
+  order is the order of the elaborator's first leaf of each signal (`NetGraph::loc`, #686).
 - **Signal types** (`value.rs`): `SignalType { elem: Elem, len }`. `Elem::Logic` signals store
   `std_ulogic` in yavs-logic's bit-plane layout (four `u64` planes per 64 elements, the same
   `Block` as `yavs_logic::Planes`). `Elem::Bytes(n)` signals store `n` opaque bytes per element

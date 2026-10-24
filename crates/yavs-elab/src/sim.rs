@@ -1383,10 +1383,11 @@ impl Elaborated {
                 sig: inst.sigs.len() as u32,
                 range,
             });
+            let at = self.nets.loc[leaf.index()];
             inst.sigs.push(InstSig {
-                signal: yavs_kernel::SignalId(leaf.0),
+                signal: at.signal,
                 ty: self.nets.leaf(leaf).ty,
-                off: 0,
+                off: at.base,
             });
         }
         InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)
@@ -1685,10 +1686,11 @@ impl Elaborated {
                 ty.len = r.len;
                 r.offset
             });
+            let at = self.nets.loc[leaf.index()];
             inst.sigs.push(InstSig {
-                signal: yavs_kernel::SignalId(leaf.0),
+                signal: at.signal,
                 ty,
-                off,
+                off: at.base + off,
             });
         }
         // Variable ports before the constants, whose thunks may call their methods. A port

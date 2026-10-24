@@ -62,11 +62,20 @@ impl Elaborated {
         res: impl Fn(yavs_sem::DeclId, crate::LeafId) -> Result<(yavs_kernel::Resolver, bool), SimError>,
     ) -> Result<SimControl, SimError> {
         let mut b = Builder::new();
-        for (i, leaf) in self.nets.leaves.iter().enumerate() {
-            let name = self.leaf_name(crate::LeafId(i as u32));
+        let nets = &self.nets;
+        for (k, &(a, z)) in nets.packs.iter().enumerate() {
+            if z.0 != a.0 + 1 {
+                return Err(SimError::new(yavs_kernel::ErrorKind::Internal(format!(
+                    "kernel signal {k} holds {} leaves",
+                    z.0 - a.0
+                ))));
+            }
+            let i = a.index();
+            let leaf = nets.leaf(a);
+            let name = self.leaf_name(a);
             let id = match (&leaf.resolution, leaf.implicit) {
                 (_, Some((k, src, r))) => {
-                    let src = yavs_kernel::SignalId(src.0).slice(r.offset, r.len);
+                    let src = nets.kref(src, r);
                     let id = match k {
                         ImplicitKind::Stable(t) => b.stable_signal(src, t),
                         ImplicitKind::Quiet(t) => b.quiet_signal(src, t),
@@ -74,7 +83,7 @@ impl Elaborated {
                         ImplicitKind::Transaction => b.transaction_signal(src),
                     };
                     for &(l, r) in &leaf.implicit_more {
-                        b.implicit_source(id, yavs_kernel::SignalId(l.0).slice(r.offset, r.len));
+                        b.implicit_source(id, nets.kref(l, r));
                     }
                     id
                 }
@@ -94,7 +103,7 @@ impl Elaborated {
                     id
                 }
             };
-            debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
+            debug_assert_eq!(id.0 as usize, k, "kernel signals in pack order");
             if self.lean.get(i) == Some(&true) {
                 b.lean_events(id);
             }
@@ -112,15 +121,11 @@ impl Elaborated {
             }
             let (f, _) = res(w.func, a)?;
             for parts in &w.instances {
-                let parts: Vec<_> = (parts.iter())
-                    .map(|&(l, r)| yavs_kernel::SignalId(l.0).slice(r.offset, r.len))
-                    .collect();
+                let parts: Vec<_> = (parts.iter()).map(|&(l, r)| nets.kref(l, r)).collect();
                 b.resolved_composite(&parts, f.clone());
             }
         }
-        let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| {
-            yavs_kernel::SignalId(l.0).slice(r.offset, r.len)
-        };
+        let sig = |&(l, r): &(crate::LeafId, yavs_kernel::Range)| nets.kref(l, r);
         let conv = |i: Option<u32>| -> Option<yavs_kernel::Converter> {
             let c = self.convs.get(i? as usize)?.clone();
             Some(std::sync::Arc::new(move |v: &[yavs_kernel::Value]| {
@@ -149,7 +154,7 @@ impl Elaborated {
                 .iter()
                 .map(|&d| {
                     let d = &self.nets.drivers[d];
-                    b.driver(yavs_kernel::SignalId(d.leaf.0).slice(d.range.offset, d.range.len))
+                    b.driver(nets.kref(d.leaf, d.range))
                 })
                 .collect();
             // A plain signal copy runs in the kernel when no one observes its activations
@@ -161,7 +166,7 @@ impl Elaborated {
                 .and_then(|src| {
                     (src.iter().zip(p.lsps.first()?))
                         .map(|(&(sl, sr), &(k, _, dr))| {
-                            let src = yavs_kernel::SignalId(sl.0).slice(sr.offset, sr.len);
+                            let src = nets.kref(sl, sr);
                             let d = ds[p.drivers.iter().position(|&x| x == k)?];
                             Some((src, d, dr))
                         })
@@ -177,8 +182,8 @@ impl Elaborated {
                 } else {
                     yavs_kernel::DelayMode::INERTIAL
                 };
-                let sig = yavs_kernel::SignalId(t.leaf.0);
-                Some(yavs_kernel::ToggleProcess::new(sig, t.elem, d, time, mode))
+                let (sig, elem) = nets.kelem(t.leaf, t.elem);
+                Some(yavs_kernel::ToggleProcess::new(sig, elem, d, time, mode))
             });
             let proc: Box<dyn Process> = match (copy, toggle) {
                 (Some(parts), _) => Box::new(yavs_kernel::CopyProcess::new(parts)),
@@ -200,22 +205,23 @@ impl Elaborated {
                 proc,
             );
             if let Some(reads) = &p.guard {
-                let r: Vec<_> = reads
-                    .iter()
-                    .map(|&(l, r)| (yavs_kernel::SignalId(l.0), r))
-                    .collect();
+                let r: Vec<_> = reads.iter().map(|&(l, r)| nets.kpart(l, r)).collect();
                 b.guard_process(pid, &r);
             }
             let trigger = p.trigger.filter(|t| !t.wait || !proc_waits);
             if let Some(t) = trigger {
+                let (signal, elem) = nets.kelem(t.leaf, t.elem);
                 b.edge_trigger(
                     pid,
                     EdgeTrigger {
-                        signal: yavs_kernel::SignalId(t.leaf.0),
-                        elem: t.elem,
+                        signal,
+                        elem,
                         rising: t.rising,
                         legacy: t.legacy,
-                        reset: t.reset.map(|(l, e, c)| (yavs_kernel::SignalId(l.0), e, c)),
+                        reset: t.reset.map(|(l, e, c)| {
+                            let (s, e) = nets.kelem(l, e);
+                            (s, e, c)
+                        }),
                     },
                 );
             }
@@ -229,17 +235,20 @@ impl Elaborated {
                 let r: Vec<_> = reads
                     .iter()
                     .map(|r| yavs_kernel::IdleRead {
-                        signal: yavs_kernel::SignalId(r.leaf.0),
-                        range: r.range,
+                        signal: nets.signal_of(r.leaf),
+                        range: nets.kpart(r.leaf, r.range).1,
                         guard: r.guard.as_ref().map(|alts| {
                             (alts.iter())
                                 .map(|conj| {
                                     (conj.iter())
-                                        .map(|l| yavs_kernel::IdleLit {
-                                            signal: yavs_kernel::SignalId(l.leaf.0),
-                                            elem: l.elem,
-                                            code: l.code,
-                                            eq: l.eq,
+                                        .map(|l| {
+                                            let (signal, elem) = nets.kelem(l.leaf, l.elem);
+                                            yavs_kernel::IdleLit {
+                                                signal,
+                                                elem,
+                                                code: l.code,
+                                                eq: l.eq,
+                                            }
                                         })
                                         .collect()
                                 })

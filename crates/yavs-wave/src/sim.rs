@@ -49,8 +49,8 @@ enum Conv {
 }
 
 enum Src {
-    /// Kernel leaf, offset and element count.
-    Sig { leaf: u32, offset: u32, len: u32 },
+    /// Kernel signal, offset and element count.
+    Sig { sig: u32, offset: u32, len: u32 },
     /// Sub-element of a variable: its place in the variable's value is `Var::plan`.
     Var,
 }
@@ -138,10 +138,10 @@ struct Entry {
 struct State {
     writer: Option<Box<dyn Sink>>,
     entries: Vec<Entry>,
-    /// Per kernel leaf: its entries in layers, each by offset and disjoint (a port collapsed
+    /// Per kernel signal: its entries in layers, each by offset and disjoint (a port collapsed
     /// into its actual shares the actual's elements: another layer).
-    by_leaf: Vec<Vec<Layer>>,
-    /// Per kernel leaf: its only entry (`NO_ENTRY`: none or several), the common case.
+    by_sig: Vec<Vec<Layer>>,
+    /// Per kernel signal: its only entry (`NO_ENTRY`: none or several), the common case.
     solo: Vec<u32>,
     /// Value bytes of the entry being written.
     bytes: Vec<u8>,
@@ -262,13 +262,13 @@ fn record_with(
     } = d;
     let h = b.finish();
     let writer = sink(&h)?;
-    let mut flat = vec![Vec::new(); e.nets.leaves.len()];
+    let mut flat = vec![Vec::new(); e.nets.signal_count()];
     for (i, en) in entries.iter().enumerate() {
-        if let Src::Sig { leaf, .. } = &en.src {
-            flat[*leaf as usize].push(i as u32);
+        if let Src::Sig { sig, .. } = &en.src {
+            flat[*sig as usize].push(i as u32);
         }
     }
-    let by_leaf: Vec<Vec<Layer>> = (flat.into_iter())
+    let by_sig: Vec<Vec<Layer>> = (flat.into_iter())
         .map(|mut v| {
             v.sort_by_key(|&i| entries[i as usize].span());
             let mut layers: Vec<Vec<u32>> = Vec::new();
@@ -300,10 +300,11 @@ fn record_with(
                 .collect()
         })
         .collect();
-    let solo = (by_leaf.iter().enumerate())
-        .map(|(leaf, l)| match &l[..] {
+    let solo = (by_sig.iter().enumerate())
+        .map(|(s, l)| match &l[..] {
             [Layer { ids, .. }] if ids.len() == 1 => {
-                let covers = entries[ids[0] as usize].span() == (0, e.nets.leaves[leaf].ty.len);
+                let n = e.nets.signal_len(yavs_kernel::SignalId(s as u32));
+                let covers = entries[ids[0] as usize].span() == (0, n);
                 if covers { ids[0] } else { NO_ENTRY }
             }
             _ => NO_ENTRY,
@@ -313,7 +314,7 @@ fn record_with(
     let st = State {
         writer: Some(writer),
         entries,
-        by_leaf,
+        by_sig,
         solo,
         bytes: Vec::new(),
         dirty: vec![false; n],
@@ -555,9 +556,9 @@ impl State {
         }
     }
 
-    /// Mark the entries that elements `range` of kernel leaf `leaf` touch.
-    fn mark_range(&mut self, leaf: u32, range: Range) {
-        let Some(layers) = self.by_leaf.get(leaf as usize) else {
+    /// Mark the entries that elements `range` of kernel signal `sig` touch.
+    fn mark_range(&mut self, sig: u32, range: Range) {
+        let Some(layers) = self.by_sig.get(sig as usize) else {
             return;
         };
         let (lo, hi) = (range.offset, range.offset + range.len);
@@ -613,10 +614,10 @@ impl State {
                 continue;
             }
             let en = &self.entries[i as usize];
-            let Src::Sig { leaf, offset, len } = en.src else {
+            let Src::Sig { sig, offset, len } = en.src else {
                 continue;
             };
-            let r = yavs_kernel::SignalId(leaf).slice(offset, len);
+            let r = yavs_kernel::SignalId(sig).slice(offset, len);
             let v = match read(r) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1177,18 +1178,22 @@ impl Design<'_> {
                         Conv::Logic { .. } | Conv::Bool => n - first - len,
                         _ => first,
                     };
+                let (sig, r) = self.e.nets.kpart(
+                    yavs_elab::LeafId(leaf),
+                    Range::new(offset as u32, len as u32),
+                );
                 Src::Sig {
-                    leaf,
-                    offset: offset as u32,
-                    len: len as u32,
+                    sig: sig.0,
+                    offset: r.offset,
+                    len: r.len,
                 }
             }
             At::Var => Src::Var,
         };
         let id = SignalId(self.entries.len() as u32);
         let mut key = None;
-        if let (Some(m), Src::Sig { leaf, offset, len }) = (&self.alias, &src) {
-            let kk = (*leaf, *offset, *len, conv, Arc::as_ptr(ty) as usize, class);
+        if let (Some(m), Src::Sig { sig, offset, len }) = (&self.alias, &src) {
+            let kk = (*sig, *offset, *len, conv, Arc::as_ptr(ty) as usize, class);
             if let Some(&first) = m.get(&kk) {
                 self.b.signal_shared(name, first, ty, port, class);
                 return;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use yavs_elab::{Elaborated, ObjKind, ScopeId, ScopeKind, Shape};
 use yavs_ir::{Program, StmtId, Ty, TyId};
-use yavs_kernel::{Elem, LogicVec, SigRef, SignalId, Value};
+use yavs_kernel::{Elem, LogicVec, Range, SigRef, SignalId, Value};
 use yavs_logic::StdULogic;
 use yavs_sem::Db;
 use yavs_sem::decl::{DeclKind, Designator, ObjRole};
@@ -191,16 +191,16 @@ pub(crate) struct Sig {
     pub ty: String,
     /// The type values are read and written in.
     pub lit: LitType,
-    leaf: u32,
-    leaves: u32,
+    /// Per leaf, the kernel signal and the elements that store it.
+    leaves: Vec<(SignalId, Range)>,
     fmt: Fmt,
 }
 
 impl Sig {
     /// The value, read through `read`; `None` when a leaf is not readable here.
     pub fn value(&self, read: &dyn Fn(SigRef) -> Option<Value>) -> Option<Lit> {
-        let vals: Vec<Option<Value>> = (self.leaf..self.leaf + self.leaves)
-            .map(|l| read(SignalId(l).into()))
+        let vals: Vec<Option<Value>> = (self.leaves.iter())
+            .map(|&(s, r)| read(s.slice(r.offset, r.len)))
             .collect();
         self.fmt.decode(&self.lit, &vals, 0)
     }
@@ -211,9 +211,9 @@ impl Sig {
             .map_or_else(|| "?".into(), |v| literal_image(&v, &self.lit))
     }
 
-    /// Its kernel leaf signals.
-    pub fn leaves(&self) -> impl Iterator<Item = SignalId> + use<> {
-        (self.leaf..self.leaf + self.leaves).map(SignalId)
+    /// The kernel signals that store it.
+    pub fn leaves(&self) -> impl Iterator<Item = SignalId> + use<'_> {
+        self.leaves.iter().map(|&(s, _)| s)
     }
 
     /// `text` as a value of the signal's type (`yavs_std::value::literal`).
@@ -242,19 +242,20 @@ impl Sig {
         elems
             .into_iter()
             .map(|(l, k)| {
-                let id = SignalId(self.leaf + l as u32);
+                let (id, at) = *self.leaves.get(l)?;
+                let id = |i: u32| id.slice(at.offset + i, 1);
                 Some(match vals.get(l)? {
                     // Kernel offset 0 is the rightmost element.
                     Value::Logic(lv) => {
                         let i = (lv.len() as u64).checked_sub(k + 1)? as usize;
                         let v = Value::Logic(LogicVec::new(1, lv.get(i)));
-                        (id.slice(i as u32, 1), whole.map(|_| v))
+                        (id(i as u32), whole.map(|_| v))
                     }
                     Value::Bytes(b) => {
                         let size = b.len() as u64 / self.reps(l)?;
                         let at = (k * size) as usize;
                         let v = Value::Bytes(b.get(at..at + size as usize)?.to_vec());
-                        (id.slice(k as u32, 1), whole.map(|_| v))
+                        (id(k as u32), whole.map(|_| v))
                     }
                 })
             })
@@ -394,8 +395,12 @@ impl Design {
                     name: obj.name.text.to_string(),
                     path: path.clone(),
                     ty: db.types[obj.shape.ty()].name.text.to_string(),
-                    leaf: obj.leaves.0.0,
-                    leaves: obj.leaves.1.0 - obj.leaves.0.0,
+                    leaves: (obj.leaves.0.0..obj.leaves.1.0)
+                        .map(|l| {
+                            let l = yavs_elab::LeafId(l);
+                            e.nets.kpart(l, Range::new(0, e.nets.leaf(l).ty.len))
+                        })
+                        .collect(),
                     lit: lit_type(db, &obj.shape),
                     fmt: fmt(db, &obj.shape),
                 });

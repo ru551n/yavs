@@ -28,8 +28,8 @@ mod tests;
 pub use callcache::stats as call_cache_stats;
 pub use eval::{Class, ConvFn, Enc, Model, ScopeVals, Side, Val, elem_of};
 pub use hier::{
-    Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafRes, NetGraph, ObjId,
-    ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
+    Bounds, Case, DriverDecl, Hierarchy, ImplicitKind, Leaf, LeafId, LeafLoc, LeafRes, NetGraph,
+    ObjId, ObjKind, PortEdge, ProcIdx, Scope, ScopeId, ScopeKind, Sel, Shape, SigObj,
 };
 pub use sim::{Built, Ir};
 pub use stuck::{ProcTable, StuckWhy};

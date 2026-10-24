@@ -9232,22 +9232,8 @@ impl Host<'_, '_, '_> {
             }
             // A register defined once by a constant or an address is preloaded (`Pre`): the
             // interpreter never executes its definition, compiled code may not have yet.
-            let mut defs = vec![0u8; regs.len()];
-            let mut fixed = vec![false; regs.len()];
-            for inst in &g.code {
-                let preload = matches!(inst, Inst::Const { .. } | Inst::ConstF { .. })
-                    || matches!(inst, Inst::AddrOf { space, .. } if !matches!(space, yavs_ir::AddrSpace::Up(_)));
-                inst.visit(&mut |r, role, _| {
-                    if role == yavs_ir::Role::Def
-                        && let Some(d) = defs.get_mut(r.0 as usize)
-                    {
-                        *d = d.saturating_add(1);
-                        fixed[r.0 as usize] = preload;
-                    }
-                });
-            }
             for (k, (d, &v)) in regs.iter_mut().zip(&nf.regs).enumerate() {
-                if !(defs[k] == 1 && fixed[k]) {
+                if !pre.preloaded.get(k).copied().unwrap_or(false) {
                     *d = v;
                 }
             }

@@ -49,6 +49,9 @@ pub(crate) struct Pre {
     pub memo_off: std::sync::atomic::AtomicBool,
     /// Processes that gave the memo of this function up.
     pub memo_votes: std::sync::atomic::AtomicU32,
+    /// Registers defined once by a constant or an address (not of an up-level frame): the
+    /// frame starts with their values, the interpreter never executes their definitions.
+    pub preloaded: Box<[bool]>,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
     /// For each pc (and one past the end), the first pc at or after it that is not a
@@ -93,6 +96,18 @@ impl Pre {
                     *d = d.saturating_add(1);
                 }
             });
+        }
+        let mut preloaded = vec![false; n];
+        for inst in &f.code {
+            if matches!(inst, Inst::Const { .. } | Inst::ConstF { .. })
+                || matches!(inst, Inst::AddrOf { space, .. } if !matches!(space, AddrSpace::Up(_)))
+            {
+                inst.visit(&mut |r, role, _| {
+                    if role == Role::Def && defs.get(r.0 as usize) == Some(&1) {
+                        preloaded[r.0 as usize] = true;
+                    }
+                });
+            }
         }
         let mut init = vec![0u64; n];
         let mut frame = Vec::new();
@@ -196,6 +211,7 @@ impl Pre {
             nested: f.parent.is_some(),
             memo_off: Default::default(),
             memo_votes: Default::default(),
+            preloaded: preloaded.into(),
             frame,
             next,
             code,

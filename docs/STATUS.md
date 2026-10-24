@@ -6496,6 +6496,56 @@ more `xor` terms, `--tier=auto` against interpreter, cycles): 144 IR lines 0.88,
 measured reason left. The interpreter's own cost steps up 2.7 times between 32 and 40 terms (#662).
 
 
+## llvm: compiled clocked RTL, round 6: the cache lines of an activation, 2026-10-24 (#634)
+
+Decisions: `docs/decisions.md` "Compiled clocked RTL processes, round 6". Exact instruction counts per function of one
+activation (`tools/stepcount`) showed the plumbing around a small compiled process at its floor for this structure (about 440
+of 1550 instructions of an `rtl_chain` activation; `view_again` is 68 loads and stores); `perf record -e ibs_op// -d` (the data
+source of each sampled load) showed what the floor costs: the compiled `rtl_fan` activation waited on L3 in `view_again` and
+`run_quick`, five cache lines of a machine and its instance data that nothing else in an activation reads. They are one line now
+(`Machine::vc`), and `spec_at` moved next to `execs` (both tiers read it at every activation).
+
+Cycles (G) of the simulation phase, bench builds with `--features llvm`, minimum of 7 interleaved runs (4 for the three large
+designs, 9 for the reader's `autoh`) on a quiet host, core 12 for the `rtl_*` designs and 13 for the others (the two CCD1 cores
+differ: compare rows, not cores); before = main at 70ba4d90, after = the same plus the commits 40686ab2 and 41d88a3b. `auto` is
+the default policy, `autoh` is `--tier=auto --tier-heat=1,0,0` (every executed function compiled); the ratio is to the
+interpreter of the same binary:
+
+| Design | interp before / after | auto before / after | autoh before / after | autoh / interp before / after |
+|---|---:|---:|---:|---:|
+| `rtl_fan` | 3.98 / 4.09 | 4.16 / 4.05 | 4.45 / 4.02 | 1.12 / 0.98 |
+| `rtl_chain` | 0.85 / 0.84 | 0.85 / 0.87 | 0.89 / 0.86 | 1.04 / 1.02 |
+| `rtl_ff` | 3.29 / 3.37 | 3.65 / 3.42 | 2.77 / 2.75 | 0.84 / 0.82 |
+| `rtl_lfsr` | 1.83 / 1.79 | 1.34 / 1.32 | 1.29 / 1.28 | 0.71 / 0.71 |
+| `fletcher_bufferreader` | 12.66 / 12.63 | 13.00 / 12.76 | 14.10 / 13.85 | 1.11 / 1.10 |
+| `neorv32_single_min` | 22.45 / 22.15 | 22.20 / 22.07 | 25.00 / 25.18 | 1.11 / 1.14 |
+| `fletcher_bufferwriter_512` | 31.58 / 32.03 | 32.42 / 32.43 | 38.50 / 38.27 | 1.22 / 1.20 |
+
+Instructions (G) of `autoh` before / after: `rtl_fan` 13.68 / 13.30, `rtl_chain` 3.17 / 3.13, `rtl_ff` 8.98 / 8.78, `rtl_lfsr` 4.38 /
+4.33, reader 30.44 / 30.33, `neorv32_single_min` 46.84 / 46.53, writer 80.64 / 81.14 (the interpreter: 13.2, 3.2, 11.4, 6.3, 36.7,
+57.2, 92.6). The fills from L3 of compiled `rtl_fan` fell from 82 M to 65 M (the interpreter's from 64 M to 59 M), the samples of
+loads that missed L1 in `view_again` and `run_quick` from 1.6 to 0.9 percent of the sampled operations. The scatter between batches on this shared host is
+2 to 3 percent for the small designs and up to 8 percent for the large ones: a change below that needs the counters of the
+tooling above (instructions, fills from L3, instruction-cache misses) to be believed.
+
+What is left, by the numbers. The large designs run 14 to 20 percent more cycles compiled with every function compiled although
+they execute 13 to 17 percent fewer instructions (`neorv32_single_min` IPC 1.9 against 2.6): L1 instruction-cache misses 1.6 G
+against 0.6 G, branch mispredictions 112 M against 64 M. In a single-stepped window of 1.5 M instructions of `neorv32_single_min` (about 15 clock cycles) the compiled code
+touched 933 KB of distinct cache lines (162756 distinct instruction addresses, each executed 2.7 times) and the runtime 102 KB;
+the interpreter touched 131 KB in all: the footprint of unique code per process, not the entry, is the cost. Sending the
+large expansions (`SigRead` of a known count, `LCopy`, variable `Alloc`) of every site through helpers cut the instruction-cache
+misses by 8 to 12 percent (one variant not at all), added 2 to 5 percent instructions and ran 3 to 8 percent slower
+(`neorv32_single_min`, four interleaved variants). `--tier=auto` leaves these designs interpreted (`auto` column), which is
+right while the compiled ones are slower. Remaining ideas, none cheap: a code size budget in the policy's decision (the
+footprint of what it compiles, not only the time it saves), profile-guided block layout for the processes of one clock edge, a
+fused vector assignment in compiled code (the interpreter has `LCopyDrive` and `CopyDrive`; running them through the
+interpreter's function was measured and costs more than the compiled group, the planes in registers and a lean callback are
+the version to try).
+
+Real-world suite (`tools/realbench`, 42 tests, interleaved A/B of the same two binaries, cores 12 and 13, 3 runs, tiers interp and
+auto): instructions overall 1.00 (interpreter) and 0.99 (auto), wall 0.98 and 1.02; the tests of one second or more: 0.95 and 0.97.
+Tests below 0.1 s vary by 30 percent run to run.
+
 ## `--tier=auto`: what leaves compiled code, and compiled clocked processes measured and taken back (#633, #596, 2026-10-23)
 
 The callback count of the policy now takes the signal reads, `'event`, the clock-edge tests, the wait that ends an activation and

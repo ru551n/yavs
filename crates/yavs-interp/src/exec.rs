@@ -3940,6 +3940,10 @@ impl Machine {
     /// is deallocated or edited in place.
     #[inline(always)]
     fn heap_epochs(&self) -> u64 {
+        // A `hot` process has no shared state: its line of the machine stays unread.
+        if self.hot {
+            return self.heap.epoch();
+        }
         let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
         self.heap
             .epoch()
@@ -7324,6 +7328,9 @@ impl Machine {
     /// interpreter first.
     fn reclaim_pending(&self) -> bool {
         let t = self.rt.limits.gc_threshold;
+        if self.hot {
+            return self.heap.gc_due(t) || self.heap.reclaim_due();
+        }
         let shared = self.sh.as_ref().and_then(|sh| sh.heap.as_deref());
         let started = self.sh.as_ref().is_none_or(|sh| sh.started);
         started && (self.heap.gc_due(t) || shared.is_some_and(|h| h.gc_due(t)))
@@ -9697,8 +9704,8 @@ impl crate::TierHost for Host<'_, '_, '_> {
         };
         // As `native_direct`, for the top frame: no native frames above it, so no slot windows;
         // the frame's own allocation mode is the view's.
-        if m.pkg_init.is_some()
-            || m.init_reports.is_some()
+        // A `hot` process is not initialising a package: the lines of those fields stay unread.
+        if !m.hot && (m.pkg_init.is_some() || m.init_reports.is_some())
             || self.ctx.is_some() && m.reclaim_pending()
         {
             return Slow;

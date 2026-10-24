@@ -4013,6 +4013,23 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::Unreachable { .. }
             | Inst::Deref { .. }
             | Inst::Cover { .. }
+            // Signal and time operations write registers and the kernel, never temporary memory.
+            // (Waits stay off the list: `static_wait` in the predecoder starts a wait at its
+            // `Stmt`, in both tiers.)
+            | Inst::SigVal { .. }
+            | Inst::SigSlice { .. }
+            | Inst::SigRead { .. }
+            | Inst::SigReadScalar { .. }
+            | Inst::SigLastValue { .. }
+            | Inst::SigAttr { .. }
+            | Inst::Edge { .. }
+            | Inst::Driving { .. }
+            | Inst::DrivingValue { .. }
+            | Inst::Drive { .. }
+            | Inst::DriveSlot { .. }
+            | Inst::TimedOut { .. }
+            | Inst::Now { .. }
+            | Inst::Delta { .. }
     ) && !is_dead(i)
 }
 

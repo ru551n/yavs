@@ -6333,3 +6333,79 @@ and the cycle geomean over many designs is not worse). The prototype is a patch 
   (31 tier tests with the cross-check) green; the differential corpus on a release `gc-stress` build with the cross-check on:
   499 of 499 tests on `yavs-interp`, `yavs-auto` and `yavs-llvm` (three tests added to the corpus while it ran need a newer build
   than the prototype's). The measured binaries are the same code without the check.
+
+## IR optimiser round 12: statement markers of signal statements, and what was tried for temporaries, checks and drives (yavs-ir `opt.rs`, #588, 2026-10-24)
+
+Decision (landed): **signal reads, signal references, edge and attribute tests and drives are on `may_allocate`'s list of instructions
+that never allocate temporary memory**, so `drop_statements` removes the `Stmt` marker of a statement made of them (a process that only
+reads and drives signals had a marker per statement; the marker frees temporaries, and there were none). Waits and `Suspend` stay off
+the list: a wait starts at its `Stmt` for `static_wait` (the predecoder's `WaitStatic`, compiled code's short cut), and with the markers
+dropped `neorv32_single_min` ran 446 M ops instead of 360 M (the static waits stopped matching). Host instructions (`perf stat`
+`instructions:u`, `--threads 1`, bench builds, warm world, deterministic to 0.05 percent), main at 35eec8cb before / after:
+
+| design | interp | llvm |
+|---|---|---|
+| `sc5_timestamp` | 6.928 / 6.850 G (-1.1 %) | 5.763 / 5.744 G (-0.3 %) |
+| `sc5_fifo_repack` | 46.085 / 45.794 (-0.6 %) | 35.636 / 35.605 (-0.1 %) |
+| `neorv32_dual_full` / `neorv32_single_min` | 45.805 / 45.580 (-0.5 %), 63.288 / 63.039 (-0.4 %) | 59.684 / 59.699 (0.0 %), 69.928 / 69.929 (0.0 %) |
+| `fletcher_bufferreader` / `fletcher_bufferwriter_512` | 38.353 / 38.170 (-0.5 %), 98.593 / 98.339 (-0.3 %) | 39.844 / 39.829 (0.0 %), 99.284 / 99.187 (-0.1 %) |
+| `poc_cache_cpu`, `poc_stat_histogram`, `poc_arith_addw`, `vai_window_gen_interlock` | -0.1 %, 0, 0, 0 | -0.1 % (a spread of 0.3 percent between runs), -0.1 %, 0, 0 |
+| `tools/bench` h2h: `rtl_fan` / `resolved_bus` / `rtl_ff` / `rtl_bus` / `rtl_lfsr` / `lfsr64` | -3.2 / -2.1 / -1.5 / -1.4 / -0.9 / -0.9 % | -1.0 / -0.5 / -0.7 / -0.4 / -0.9 / -0.4 % |
+
+No design is worse beyond the spread of the tier (0.3 percent under `--tier=llvm`, where `poc_cache_cpu` read +0.3 and -0.1 in two
+runs). Geometric mean of the instruction ratios, interpreter 0.9965 over the ten real testbenches and 0.9955 over the 24 h2h designs of
+over 0.1 G, `--tier=llvm` 0.9996 and 0.9983. `--tier=auto` counts vary between two runs of one binary (`poc_arith_addw` 255.9 and 252.3 G, `vai_window_gen_interlock` 195.4
+and 182.2 G on the same build: which functions are compiled when the run ends), so no auto figure is quoted. The `ops` bounds of five
+`tests/perf` designs fall by 1.6 to 4.6 percent (`reg_bytes`, `lfsr_array`, `delayed`, `wait_static`, `idle_regs`).
+
+What was measured and not landed (all deterministic instruction counts, `--threads 1`; why they lose, what would change the verdict):
+
+- **Constant-size temporaries in the frame** (the first item of #588): a pass for processes turned every `Alloc` of a constant size
+  whose pointer stays in its block (never stored but into another such temporary, never returned or rooted) into bytes of the process
+  frame (`AddrOf` of the frame, the blocks of one basic block that are not alive together sharing bytes, the zeroing as a new
+  `Inst::Zero` that the stores around it often make unnecessary), then `drop_statements` removed the markers. It was correct (the
+  differential corpus, OSVVM, UVVM) and **slower on the interpreter**: `neorv32_single_min` 63.28 to 75.25 G (+18.9 %), `sc5_fifo_repack`
+  +17.5 %, `fletcher_bufferwriter_512` +8.8 %, `poc_cache_cpu` +4.5 %, `sc5_timestamp` -3.3 %. Every common temporary has a fused op that
+  matches the `Alloc` (`WaveBuf`, `LSetDrive`, `CopyDrive`, `AllocReadVec`, `AllocLCopy`, `AllocCat`, `NewPair`) and the frame form
+  matches none: on `neorv32_single_min` 360 M ops became 413 M, 53 M of them `Zero` through the generic step and the `Drive` ops
+  doubled (17 M to 35 M) because the three-op wave sequences came apart. Under `--tier=llvm` the run took 116 G instructions
+  against 71 G, with the compiled code at 4 percent of the samples against 35 percent (so the compiled processes mostly did not run;
+  the cause was not examined, nor whether `Inst::Zero` or the lost `ScalarDrive` sites decided it). The static LLVM size is where the
+  gain would be (`YAVS_LLVM_KINDS`: `Alloc` 10 percent and `LCopy` 9 percent of the instructions generated for the neorv32 testbench,
+  `SigRead` 13), and the dynamic interpreter gain is small even for perfect temporaries: the ops involved are 50 M of 360 M and the
+  `Stmt` markers saved 7 M. The verdict would change with frame-address forms of the fused ops (predecoder) and of `ScalarDrive` and
+  `Zero` in the LLVM tier, which are the interpreter's and the tier's (#668, with the pass). The reference simulator lowers a scalar signal assignment to a call
+  with the value as an argument (no waveform buffer) and keeps constant-size temporaries as fixed stack slots of the unit: the
+  buffer-free drive is the first thing to try (below).
+- **A drive from a value block** (not built; the idea above): `Alloc`, header `Store`, `Index`, `Copy` or `LCopy`, `Drive` of one
+  transaction at time zero would be one instruction that drives from the block the value already is in. In `neorv32_single_min` the
+  sequence `WaveBuf`, `LCopy`, `Drive` (not fused) runs 9.0 M times in 300 us (2.5 percent of the ops; `op_wave_buf`, `lcopy` and the
+  copy are about 4 percent of the instructions), and `CopyDrive` (fused) 4.9 M times; statically 395 of 4065 drive sites are fed by
+  `LCopy` and 1490 by `Copy` in that design. A fused `LCopyDrive` op in the predecoder gets part of it without an IR change (#669).
+- **Inlining policy** (`inline.rs`): the cheap exit on the lowered size (120 instructions) rejects callees that shrink below the limit
+  once optimised (`assertion` of the simulation package, `get` of the pointer tables). With 400: `vai_window_gen_interlock` 495.0 to
+  489.6 G (-1.1 %), the others within 0.02 percent, ops +0.9 percent (a `Case` becomes compares and moves). With the body limit at 70 as
+  well: +0.02 percent. The two accessors that matter in the window generator are 61 and 66 instructions; the limit is tuned for
+  `--tier=auto` (above). Not changed.
+- **Signal values as available expressions and walks across joins**: `SigReadScalar`, `Edge` and `SigAttr` of a constant signal reference are
+  one value per activation (until a call or a force), so a repeat is the first read; the walk is over extended basic blocks, so the
+  value read before an `if` is read again after it. A first version keyed the three instructions; a second started the join blocks
+  from their dominator (pure values and signal values kept, memory facts and the versions of registers defined in between dropped).
+  Dynamic repeats of scalar reads in one activation: 8 percent on `neorv32_single_min`, 12 on `fletcher_bufferwriter_512`, 58 on
+  `sc5_fifo_repack`. Instructions: `poc_cache_cpu` -0.5 %, `sc5_fifo_repack` -0.3 %, `fletcher_bufferwriter_512` -0.2 %, `neorv32_single_min`
+  +0.1 %, the rest within 0.03 percent: not worth the dominator walk's complexity.
+- **Check removal by ranges** (second item of #588): `Check` and `BinRange` are 11 percent of the ops of `vai_window_gen_interlock`
+  but the hot ones compare a value loaded from memory against a subtype that is narrower than the one the field was declared with
+  (`index_t` to `natural`), which no interval proves; loop counters are already handled. Cheap ops: not pursued.
+- **Promotion between suspensions** (third item): `LoadSlot`/`StoreSlot` are under 1 percent of the ops of `neorv32_single_min` and about
+  1.5 percent of `fletcher_bufferwriter_512`. Not pursued.
+- **Eager messages** of `assert`-like procedures (`simAssertion` in `poc_arith_addw`: 43 percent of that run is the checker process, most of
+  it the message built for every call): moving the message into the failing branch is blocked by `to_integer` inside the message (a
+  warning on a metavalue is output the passing assertion would no longer print) and by the length check of the concatenation (a failure
+  only above 2 GiB, but not provable). Needs either a purity flag on natives or lazy arguments in lowering.
+- **Repeated drives** (outside the list of #588, the largest redundancy found): 17 percent of the drives of `neorv32_single_min` and 12
+  percent of `fletcher_bufferwriter_512` drive a driver that the same process already drove in the same activation (the default
+  assignment of a combinational process before the `if` that overrides it); `sc5_fifo_repack` none. In the IR only 2 of 2075 repeat
+  sites are in one block, so removing the first drive needs sinking it into the arms that do not override it (partial dead
+  store elimination) or a pending-drive merge in the runtime (#667). The frame temporaries are #668, the unfused vector drive #669,
+  the spread of `--tier=auto` counts #670.

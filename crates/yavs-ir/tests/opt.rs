@@ -513,6 +513,42 @@ fn a_marker_survives_only_for_a_statement_with_temporaries() {
 }
 
 #[test]
+fn a_statement_that_only_reads_signals_needs_no_marker() {
+    if !on() {
+        return;
+    }
+    let code = build(FuncKind::Procedure, |fb| {
+        for _ in 0..3 {
+            fb.stmt(StmtKind::VarAssign, sp());
+            let s = fb.reg(RegTy::Sig);
+            let (off, len) = (fb.int(0), fb.int(1));
+            fb.emit(Inst::SigVal {
+                dst: s,
+                sig: 0,
+                offset: off,
+                len,
+            });
+            let d = fb.reg(RegTy::I64);
+            fb.emit(Inst::SigReadScalar { dst: d, sig: s });
+        }
+        // The last statement allocates a temporary: its marker stays.
+        fb.stmt(StmtKind::VarAssign, sp());
+        let n = fb.int(8);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Alloc { dst: a, size: n });
+        let z = fb.int(0);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: z,
+            w: Width::B8,
+        });
+        fb.stmt(StmtKind::Return, sp());
+        fb.emit(Inst::Ret { v: None });
+    });
+    assert_eq!(count(&code, |i| matches!(i, Inst::Stmt)), 1, "{code:?}");
+}
+
+#[test]
 fn equal_constants_share_a_register_and_unused_registers_go() {
     if !on() {
         return;

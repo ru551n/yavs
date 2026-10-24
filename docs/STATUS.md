@@ -6708,3 +6708,30 @@ element, so a fill is a `memset` and a copy a `memmove`; ours are the same on th
 the plane words only at the ends. Compiled code (`yavs_rt_lcopy`, up to `LCOPY_BLOCKS` blocks) steps
 wider copies into this same function.
 
+
+## IR optimiser round 12: statement markers of signal statements; what was tried for temporaries, checks and drives (#588, 2026-10-24)
+
+`may_allocate` (the instructions after which a `Stmt` marker is not needed because they allocate no temporary memory) now lists signal
+references, signal reads, edge and attribute tests and drives, so a process statement that only reads and drives signals loses its
+marker; waits keep theirs (the predecoder's `static_wait` starts at the marker). Host instructions, bench builds, `--threads 1`, main at
+35eec8cb before / after (`docs/decisions.md` "IR optimiser round 12" has the whole table and the method):
+
+| design | `--tier=interp` | `--tier=llvm` |
+|---|---|---|
+| `sc5_timestamp` | -1.1 % | -0.3 % |
+| `sc5_fifo_repack` | -0.6 % | -0.1 % |
+| `neorv32_dual_full`, `neorv32_single_min` | -0.5 %, -0.4 % | 0.0 %, 0.0 % |
+| `fletcher_bufferreader`, `fletcher_bufferwriter_512` | -0.5 %, -0.3 % | 0.0 %, -0.1 % |
+| `poc_cache_cpu`, `poc_stat_histogram`, `poc_arith_addw`, `vai_window_gen_interlock` | -0.1 %, 0, 0, 0 | 0, -0.1 %, 0, 0 |
+| h2h `rtl_fan`, `resolved_bus`, `rtl_ff`, `rtl_bus` | -3.2 %, -2.1 %, -1.5 %, -1.4 % | -1.0 %, -0.5 %, -0.7 %, -0.4 % |
+
+Not landed, with numbers in the decisions entry: constant-size temporaries in the process frame (+4 to +19 percent interpreter
+instructions on four of five designs: the fused ops match `Alloc`; #668), a wider inlining cut-off (-1.1 percent on the window generator
+only), signal-value sharing across joins (within 0.5 percent), range-based check removal and promotion between suspensions (the ops they
+would remove are 1 to 11 percent of the ops, cheap ones, and the hot checks compare loaded values). Findings for others: 17 percent of
+the drives of `neorv32_single_min` are repeats within one activation (#667), the vector assignment is three unfused ops (#669), and
+`--tier=auto` instruction counts vary by up to 7 percent between runs of one binary (#670).
+
+Checked: `cargo test --workspace`, `-p yavs-llvm -p yavs --features llvm`, the `gc-stress` unit tests, clippy with and without `llvm`, the
+differential corpus (502/502) on `yavs-interp`, `yavs-llvm` and `yavs-auto` (also `--tier-heat=1,0,0`) at 1 and 4 threads, OSVVM (521
+files, 17 libraries) and UVVM (131 pass, 6 skipped) results equal to those of main, seven realbench outputs byte-identical to main (interpreter, 1 thread; three of them also at 4 threads and under `--tier=auto`).

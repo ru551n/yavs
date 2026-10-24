@@ -242,7 +242,7 @@ case!(
         ("update_general", Max(2)),
         ("direct_bytes", Min(195)),
         ("quick_applied", Min(194)),
-        ("ops", Max(6802)),
+        ("ops", Max(6489)),
     ]
 );
 case!(
@@ -255,7 +255,7 @@ case!(
         ("wakes", Max(841)),
         ("update_general", Max(2)),
         ("quick_applied", Min(494)),
-        ("ops", Max(7734)),
+        ("ops", Max(7523)),
     ]
 );
 case!(
@@ -318,7 +318,7 @@ case!(
         ("events", Max(1848)),
         ("update_general", Max(2)),
         ("direct_planes", Min(395)),
-        ("ops", Max(10427)),
+        ("ops", Max(10006)),
     ]
 );
 case!(
@@ -381,7 +381,7 @@ case!(
         ("wakes", Max(414)),
         ("update_general", Max(206)),
         ("events", Max(208)),
-        ("ops", Max(7977)),
+        ("ops", Max(7769)),
     ]
 );
 case!(
@@ -446,7 +446,7 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(34700)),
+        ("ops", Max(33981)),
     ]
 );
 

@@ -2158,11 +2158,19 @@ impl SimControl {
                 continue;
             }
             let mut woken = std::mem::take(&mut self.woken_buf);
+            // A shuffled run takes the order the processes are woken in.
+            let ordered = self.rng.is_some();
             match uniform {
-                Some(_) => {
-                    waiters.take_woken(runs, |w| alive(&self.procs, w), |_| false, &mut woken)
+                Some(_) => waiters.take_woken(
+                    runs,
+                    |w| alive(&self.procs, w),
+                    |_| false,
+                    &mut woken,
+                    ordered,
+                ),
+                None => {
+                    waiters.take_woken(runs, |w| alive(&self.procs, w), hold, &mut woken, ordered)
                 }
-                None => waiters.take_woken(runs, |w| alive(&self.procs, w), hold, &mut woken),
             }
             self.signals[s as usize].changed.clear();
             for &(_, p) in &woken {

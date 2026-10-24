@@ -505,6 +505,7 @@ impl Waiters {
         live: impl Fn(&Waiter) -> bool,
         hold: impl Fn(&Waiter) -> bool,
         out: &mut Vec<(u64, u32)>,
+        ordered: bool,
     ) {
         let hit = |r: Range| runs_hit(runs, r);
         out.clear();
@@ -616,8 +617,10 @@ impl Waiters {
         {
             self.build_cache();
         }
-        // Sorted and without repeats already (one list, or lists in registration order): leave it.
-        if scanned > 1 && out.len() > 1 && !out.is_sorted_by(|a, b| a.0 < b.0) {
+        // `ordered`: the wake order is the registration order, each waiter once. Otherwise a waiter in
+        // several lists comes up once per list and the order is that of the scan: waking is
+        // idempotent and the batch is ordered by process, whatever order it was woken in.
+        if ordered && scanned > 1 && out.len() > 1 && !out.is_sorted_by(|a, b| a.0 < b.0) {
             out.sort_unstable();
             out.dedup_by_key(|w| w.0);
         }
@@ -3213,14 +3216,15 @@ mod tests {
             all,
             none,
             &mut out,
+            true,
         );
         assert_eq!(procs(&out), [1, 2, 3]);
         // The woken processes resumed (their other copies are stale), and so did 4.
         let live = |w: &Waiter| w.proc > 4;
-        w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
+        w.take_woken(&[Range::new(0, 300)], live, none, &mut out, true);
         assert!(out.is_empty());
         w.add(6, Range::new(299, 1), Reg::default(), all);
-        w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
+        w.take_woken(&[Range::new(0, 300)], live, none, &mut out, true);
         assert_eq!(procs(&out), [6]);
     }
 
@@ -3240,7 +3244,7 @@ mod tests {
         w.add(2, Range::new(0, 1), Reg::default(), all);
         let mut out = Vec::new();
         for want in [vec![1, 2], vec![1]] {
-            w.take_woken(&[Range::new(0, 1)], all, |_| false, &mut out);
+            w.take_woken(&[Range::new(0, 1)], all, |_| false, &mut out, true);
             assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), want);
         }
         // Its process waited for something else: the resident waiter is stale.
@@ -3249,6 +3253,7 @@ mod tests {
             |w: &Waiter| w.perm == 0,
             |_| false,
             &mut out,
+            true,
         );
         assert!(out.is_empty());
     }
@@ -3263,10 +3268,43 @@ mod tests {
         w.add(2, Range::new(0, 8), Reg::default(), all);
         w.add(3, Range::new(5, 0), Reg::default(), all); // null: never woken
         let mut out = Vec::new();
-        w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
+        w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);
-        w.take_woken(&[Range::new(6, 1)], all, |_| false, &mut out);
+        w.take_woken(&[Range::new(6, 1)], all, |_| false, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn unordered_wake_list_holds_the_same_processes() {
+        let all = |_: &Waiter| true;
+        let mut w = Waiters::new(300);
+        for (p, r) in [
+            (1, Range::new(200, 1)),
+            (2, Range::new(0, 300)),
+            (3, Range::new(60, 10)),
+        ] {
+            w.add(p, r, Reg::default(), all);
+        }
+        let runs = [Range::new(65, 1), Range::new(200, 2)];
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        w.take_woken(&runs, all, |_| false, &mut a, true);
+        let mut w = Waiters::new(300);
+        for (p, r) in [
+            (1, Range::new(200, 1)),
+            (2, Range::new(0, 300)),
+            (3, Range::new(60, 10)),
+        ] {
+            w.add(p, r, Reg::default(), all);
+        }
+        w.take_woken(&runs, all, |_| false, &mut b, false);
+        let set = |o: &[(u64, u32)]| {
+            let mut v: Vec<u32> = o.iter().map(|x| x.1).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        assert_eq!(set(&a), set(&b));
+        assert_eq!(set(&a), [1, 2, 3]);
     }
 
     #[test]
@@ -3277,14 +3315,20 @@ mod tests {
         w.add(1, Range::new(0, 300), Reg::default(), all);
         let runs: Vec<Range> = (0..100).map(|i| Range::new(3 * i, 1)).collect();
         let mut out = Vec::new();
-        w.take_woken(&runs, all, none, &mut out);
+        w.take_woken(&runs, all, none, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
         // A waiter for one element: the lists of the runs are scanned again.
         w.add(2, Range::new(1, 299), Reg::default(), all);
         w.add(3, Range::new(150, 1), Reg::default(), all);
-        w.take_woken(&runs, all, none, &mut out);
+        w.take_woken(&runs, all, none, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2, 3]);
-        w.take_woken(&[Range::new(0, 1), Range::new(2, 1)], all, none, &mut out);
+        w.take_woken(
+            &[Range::new(0, 1), Range::new(2, 1)],
+            all,
+            none,
+            &mut out,
+            true,
+        );
         assert!(out.is_empty());
     }
 

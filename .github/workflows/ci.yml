@@ -119,7 +119,7 @@ jobs:
           YAVS_BIN="$PWD/target/debug/yavs" python3 tools/difftest/difftest.py --candidate yavs-llvm --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
           # --tier=auto with every function compiled from its first call or jump: swap-ins in the
           # middle of each test, at 1 and 4 threads.
-          YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=1,0,0 python3 tools/difftest/difftest.py --candidate yavs-auto --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics)/'
+          YAVS_BIN="$PWD/target/debug/yavs" YAVS_RUN_FLAGS=--tier-heat=1,0,0 python3 tools/difftest/difftest.py --candidate yavs-auto --threads 4 --no-sandbox --jobs 2 --filter '^(arith|delta|generics|ieee)/'
       - name: Simulation smoke with --tier=auto3 (LLVM and Cranelift together)
         if: runner.os == 'Linux'
         run: |

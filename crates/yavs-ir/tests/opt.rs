@@ -2109,3 +2109,81 @@ fn a_fat_pair_of_temporaries_needs_no_root() {
     assert_eq!(roots(false), 0);
     assert_eq!(roots(true), 1);
 }
+
+/// A function of two parameters that makes a descriptor `(l, r, 1)` in temporary memory,
+/// optionally writes a word of it, and loads its three words; the loads left.
+fn dope_loads_left(between: impl FnOnce(&mut FuncBuilder<'_>, Reg)) -> usize {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sl = fb.param("l", Width::B8, ParamClass::Value, Mode::In, None);
+    let sr = fb.param("r", Width::B8, ParamClass::Value, Mode::In, None);
+    fb.stmt(StmtKind::Return, sp());
+    let (l, r) = (load(&mut fb, sl), load(&mut fb, sr));
+    let one = fb.int(1);
+    let size = fb.int(24);
+    let dope = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Alloc { dst: dope, size });
+    let parts = fb.regs(&[l, r, one]);
+    fb.emit(Inst::MakeDope { at: dope, parts });
+    between(&mut fb, dope);
+    let mut sum = fb.int(0);
+    for off in [0, 8, 16] {
+        let at = fb.int(off);
+        let a = fb.reg(RegTy::Ptr);
+        fb.emit(Inst::Index {
+            dst: a,
+            base: dope,
+            pos: at,
+            stride: 1,
+        });
+        let w = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: w,
+            addr: a,
+            w: Width::B8,
+        });
+        sum = bin(&mut fb, IntOp::Add, sum, w);
+    }
+    fb.emit(Inst::Ret { v: Some(sum) });
+    fb.finish();
+    let p = pb.finish().expect("verifies");
+    let code = &p.func(f).expect("f").code;
+    count(code, |i| matches!(i, Inst::Load { w: Width::B8, .. })) - 2
+}
+
+#[test]
+fn a_made_descriptor_gives_its_bounds_back() {
+    if !on() {
+        return;
+    }
+    // (Two of the loads are the parameters.) The three words are the registers it was made from.
+    assert_eq!(dope_loads_left(|_, _| {}), 0);
+    // A statement marker keeps what is known of a block of this function.
+    assert_eq!(
+        dope_loads_left(|fb, _| {
+            fb.stmt(StmtKind::Null, sp());
+        }),
+        0
+    );
+    // A store into the descriptor changes the word it writes, and the optimiser cannot tell
+    // which: the loads stay.
+    assert!(
+        dope_loads_left(|fb, dope| {
+            let at = fb.int(8);
+            let a = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::Index {
+                dst: a,
+                base: dope,
+                pos: at,
+                stride: 1,
+            });
+            let v = fb.int(77);
+            fb.emit(Inst::Store {
+                addr: a,
+                src: v,
+                w: Width::B8,
+            });
+        }) > 0
+    );
+}

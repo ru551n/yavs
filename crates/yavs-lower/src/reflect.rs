@@ -20,6 +20,7 @@ use yavs_sem::types::{Direction, TypeKind};
 use yavs_sem::{ExprId, SubtypeId};
 
 use crate::R;
+use crate::expr::Conv;
 use crate::expr::V;
 use crate::func::Fx;
 
@@ -81,7 +82,7 @@ impl Fx<'_, '_> {
             ));
         };
         let mut cells = vec![self.scalar_expr(prefix)?];
-        cells.extend(self.cells(sp, args, span, true)?);
+        cells.extend(self.cells(sp, args, span, Conv::Fat)?);
         self.native(sym, None, &cells, sp.ret, span)
     }
 

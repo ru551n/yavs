@@ -524,6 +524,19 @@ fn wide_registers(direct: bool, cfg: Config) -> (Vec<String>, Stats) {
 /// the whole bus, on a part inside one block and on a part across two blocks, each reporting
 /// what woke it.
 fn wide_registers_with(direct: bool, lean: bool, cfg: Config) -> (Vec<String>, Stats) {
+    wide_registers_run(direct, lean, lean, false, cfg)
+}
+
+/// `wide_registers_with` with the watchers apart from `lean`, and with only the reports
+/// observed (`reports_only`: nobody asks for value changes, so a wide signal lists its changes
+/// per cell, `Config::cells`).
+fn wide_registers_run(
+    direct: bool,
+    lean: bool,
+    watch: bool,
+    reports_only: bool,
+    cfg: Config,
+) -> (Vec<String>, Stats) {
     let mut b = Builder::new();
     let same: Resolver = Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
         out.copy_from_slice(srcs[0]);
@@ -597,8 +610,14 @@ fn wide_registers_with(direct: bool, lean: bool, cfg: Config) -> (Vec<String>, S
             c.wait_for(ns(1))
         }),
     );
-    if lean {
-        for (name, off, len) in [("all", 0, 200), ("inner", 70, 10), ("across", 120, 20)] {
+    if watch {
+        for (name, off, len) in [
+            ("all", 0, 200),
+            ("inner", 70, 10),
+            ("across", 120, 20),
+            ("edge", 64, 1),
+            ("wide", 3, 190),
+        ] {
             let r = w.slice(off, len);
             b.process(
                 name,
@@ -612,11 +631,31 @@ fn wide_registers_with(direct: bool, lean: bool, cfg: Config) -> (Vec<String>, S
             );
         }
     }
-    let (mut sim, trace) = build(b, cfg);
+    let (mut sim, trace) = if reports_only {
+        let mut sim = b.build(cfg).unwrap();
+        let t = Trace::default();
+        sim.subscribe(Box::new(ReportsOnly(t.clone())));
+        (sim, t)
+    } else {
+        build(b, cfg)
+    };
     sim.run_until(ns(40)).unwrap();
     let mut lines = trace.take();
     lines.push(format!("final {}", sim.value(w).unwrap()));
     (lines, sim.stats())
+}
+
+/// `Trace` for the reports only: it does not ask for value changes.
+struct ReportsOnly(Trace);
+
+impl Observer for ReportsOnly {
+    fn report(&mut self, h: &mut Hook<'_>, r: &Report) {
+        self.0.report(h, r);
+    }
+
+    fn wants_value_changes(&self) -> bool {
+        false
+    }
 }
 
 #[test]
@@ -678,4 +717,38 @@ fn a_lean_wide_bus_wakes_and_changes_like_one_with_full_history() {
         ..quiet
     };
     assert_eq!(wide_registers_with(true, true, four).0, lean);
+}
+
+/// A wide bus that processes wait on parts of lists its changes per cell between the waited
+/// ranges, not per run: the same processes wake at the same times, with the value changes
+/// observed (exact runs) or not, on both update paths, lean or not, at 1 and 4 threads.
+#[test]
+fn a_wide_bus_wakes_the_same_per_cell_as_per_run() {
+    for (direct, lean) in [(true, true), (true, false), (false, true), (false, false)] {
+        let exact = Config {
+            cells: false,
+            ..Config::default()
+        };
+        let (want, _) = wide_registers_run(direct, lean, true, true, exact);
+        let woke = want.iter().filter(|l| l.contains(" woke")).count();
+        assert!(woke > 40, "direct={direct} lean={lean}: {woke}");
+        for threads in [1, 4] {
+            let cfg = Config {
+                threads,
+                ..Config::default()
+            };
+            let (got, _) = wide_registers_run(direct, lean, true, true, cfg.clone());
+            let at = got.iter().zip(&want).position(|(a, b)| a != b);
+            assert_eq!(
+                at.map(|i| (&got[i], &want[i])),
+                None,
+                "direct={direct} lean={lean} threads={threads}"
+            );
+            assert_eq!(got.len(), want.len());
+            // With value changes observed the runs are exact.
+            let (seen, _) = wide_registers_run(direct, lean, true, false, cfg);
+            let wokes = |l: &[String]| l.iter().filter(|x| x.contains(" woke")).count();
+            assert_eq!(wokes(&seen), woke, "direct={direct} lean={lean}");
+        }
+    }
 }

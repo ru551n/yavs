@@ -8,6 +8,7 @@ use yavs_sem::decl::DeclKind;
 use yavs_sem::implicit::{Family, Form, ImplicitOp};
 use yavs_sem::{DeclId, ScopeId};
 
+use crate::expr::Conv;
 use crate::expr::V;
 use crate::func::Fx;
 use crate::{Obj, R, Space};
@@ -160,7 +161,7 @@ impl Fx<'_, '_> {
         args: &[yavs_sem::hir::Arg],
         span: Span,
     ) -> R<Option<V>> {
-        let cells = self.cells(sp, args, span, true)?;
+        let cells = self.cells(sp, args, span, Conv::Fat)?;
         let tid = self.ty(op.ty, span)?;
         let sym = yavs_sem::mangle::implicit_native(self.db, op);
         let r = self.native(&sym, Some(tid), &cells, sp.ret, span)?;

@@ -19,6 +19,7 @@ mod env;
 mod exec;
 mod foreign;
 mod gather;
+mod pmemo;
 mod pre;
 mod scan;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
@@ -53,7 +54,8 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
-pub use pre::{ScalarDrive, scalar_drives, static_wait};
+pub use pmemo::pmemo_stats;
+pub use pre::{ScalarDrive, light_ieee as light_native, scalar_drives, static_wait};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 pub use tier_census::report as tier_census;
@@ -75,6 +77,29 @@ pub struct InstData {
     pub sigs: Vec<InstSig>,
     /// This instance's first counter in the runtime's coverage array.
     pub cov_base: u32,
+}
+
+impl AsRef<[u8]> for InstData {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+/// The package data a process copy is made with (`Program::copy_of_pkgs`).
+impl yavs_ir::PkgSource for Runtime {
+    fn package(&self, p: u32) -> Option<yavs_ir::PkgData> {
+        let d = self.pkgs.get(p as usize)?;
+        let digest = *self.pkg_digest.get(p as usize)?.get_or_init(|| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            d.data.hash(&mut h);
+            h.finish()
+        });
+        Some(yavs_ir::PkgData {
+            bytes: d.clone(),
+            digest,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -662,6 +687,21 @@ pub trait TierHost {
         cells: &[u64],
     ) -> NativeCall;
 
+    /// [`TierHost::native_direct`] (`at` is `None`, `depth` the frame index) or
+    /// [`TierHost::native_frame`] (`at` the pc) for a light native ([`light_native`]): the same
+    /// results. It allocates only temporary memory and never collects, so the collection check,
+    /// the allocation mode of the frame and most of the view update are left out; the caller
+    /// has the `ieee` flags taken as there.
+    fn native_light(
+        &mut self,
+        fr: &mut TierFrame,
+        native: u32,
+        cells: &[u64],
+        at: Option<u32>,
+        depth: u64,
+        slots: &mut Option<Box<dyn NativeSlots>>,
+    ) -> NativeCall;
+
     /// Instruction `pc` of function `func`, executed for a native frame by the interpreter's own
     /// code on a frame it makes for the purpose (`docs/decisions.md` "Compiled frames"):
     /// `ins` are the values of the registers `use_regs` (the registers [`inst_regs`] says it
@@ -883,6 +923,8 @@ pub struct Runtime {
     /// Where unbound foreign symbols were looked for, for the error at their call.
     pub(crate) searched: String,
     pub(crate) pkgs: Vec<Arc<InstData>>,
+    /// A digest of each package's data, made when a copy of a process first asks (`PkgSource`).
+    pkg_digest: Vec<std::sync::OnceLock<u64>>,
     pub(crate) cov: Vec<AtomicU64>,
     /// The rows each state of a condition covers (`CovCond::hits`), for the conditions with few
     /// inputs, filled as states occur (`u64::MAX`: not yet).
@@ -1180,6 +1222,9 @@ impl Runtime {
             foreign,
             models,
             searched: b.searched,
+            pkg_digest: (0..b.packages.len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
             cov_memo: prog
@@ -1282,6 +1327,23 @@ impl Runtime {
                 *l = Default::default();
             }
         }
+    }
+
+    /// Drop what was derived from functions that ran as lowered ([`yavs_ir::ElabRaw`]) and will
+    /// run optimised from now on: call it before a runtime that replayed elaboration-time calls
+    /// runs a simulation, or their lowered code and the optimised code of the same function
+    /// disagree on pcs and operand lists. `false` when something else holds the runtime.
+    pub fn forget_raw(rt: &mut Arc<Runtime>) -> bool {
+        let Some(r) = Arc::get_mut(rt) else {
+            return false;
+        };
+        for (p, l) in r.pre.iter_mut().zip(&mut r.live) {
+            if p.get().is_some_and(|p| p.raw) {
+                *p = Default::default();
+                *l = Default::default();
+            }
+        }
+        true
     }
 
     /// The facts of function `id` (`f`), computed once.

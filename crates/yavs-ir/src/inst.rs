@@ -24,6 +24,19 @@ impl fmt::Debug for Reg {
     }
 }
 
+/// `SigScatter::has`: the operand list has the rejection limit.
+pub const SCATTER_REJECT: u8 = 1;
+/// `SigScatter::has`: the operand list ends with a [`Part`].
+pub const SCATTER_PART: u8 = 2;
+
+/// The part of a signal of arrays of records that `SigGather`/`SigScatter` take: the first
+/// element and the number of elements of the outermost array of the whole signal (integers).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Part {
+    pub first: Reg,
+    pub outer: Reg,
+}
+
 /// A list of registers in `Func::operands[start .. start + len]`.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Regs {
@@ -702,29 +715,35 @@ pub enum Inst {
         kind: AttrKind,
         sig: Reg,
     },
-    /// Reads every leaf of a record signal into the record value at `dst`: the leaves are listed
-    /// in table `tab` (`gather`), one entry per leaf with the instance signal and how it is
-    /// stored; where it lies in the value follows from the record type and the signal's
-    /// descriptor at `desc`. The result is what `SigRead`/`SigReadScalar` of each leaf stored
-    /// into the value would give; how the kernel keeps the leaves does not show. One
-    /// instruction for a whole record (#677).
+    /// Reads every leaf of a record signal, or of an array of records, into the value at `dst`:
+    /// the leaves are listed in table `tab` (`gather`), one entry per leaf with the instance
+    /// signal and how it is stored; where it lies in the value follows from the value's type and
+    /// the descriptor of the part of the signal at `desc`. `part` is the part of a signal of
+    /// arrays of records that the value is (none: the whole signal). The result is what
+    /// `SigRead`/`SigReadScalar` of each leaf stored into the value would give; how the kernel
+    /// keeps the leaves does not show. One instruction for a whole record (#677).
     SigGather {
         dst: Reg,
         desc: Reg,
         tab: ConstId,
+        part: Option<Part>,
     },
-    /// Drives every leaf of a record signal from the record value at `src` (laid out by the
-    /// signal's descriptor at `desc`) with one waveform element at delay `after`: leaf `k` of
-    /// table `tab` through driver `driver + k`, in leaf order, as `Drive` of each leaf's
-    /// waveform would (#677).
+    /// Drives every leaf of a record signal, or of an array of records, from the value at `src`
+    /// (laid out by the descriptor of the part of the signal at `desc`, which the caller has
+    /// checked the value against) with one waveform element at delay `after`: leaf `k` of table
+    /// `tab` through driver `driver + k`, in leaf order, as `Drive` of each leaf's waveform
+    /// would (#677). `ops` lists the delay `after`, then the rejection limit if `has` has
+    /// [`SCATTER_REJECT`], then the first element and the element count of the signal's outermost
+    /// array (a [`Part`]: the part of a signal of arrays of records the value is) if `has` has
+    /// [`SCATTER_PART`]; the instruction stays 32 bytes.
     SigScatter {
         driver: u32,
         src: Reg,
         desc: Reg,
         tab: ConstId,
-        after: Reg,
+        ops: Regs,
         mode: DriveMode,
-        reject: Option<Reg>,
+        has: u8,
     },
     /// The clock-edge test `kind` (0 or 1) of the one element `sig` refers to, a `std_ulogic`,
     /// BIT or BOOLEAN signal: the one instruction every clock-edge idiom lowers to
@@ -866,6 +885,22 @@ impl Inst {
     pub fn list(&self) -> Option<Regs> {
         match *self {
             Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
+            Inst::SigScatter { ops, .. } => Some(ops),
+            Inst::Call { args, .. }
+            | Inst::CallNative { args, .. }
+            | Inst::CallForeign { args, .. }
+            | Inst::CallIndirect { args, .. }
+            | Inst::CallProt { args, .. }
+            | Inst::Elab { args, .. } => Some(args),
+            _ => None,
+        }
+    }
+
+    /// The operand list, writable (the optimiser moves it).
+    pub fn list_mut(&mut self) -> Option<&mut Regs> {
+        match self {
+            Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
+            Inst::SigScatter { ops, .. } => Some(ops),
             Inst::Call { args, .. }
             | Inst::CallNative { args, .. }
             | Inst::CallForeign { args, .. }
@@ -1225,23 +1260,19 @@ impl Inst {
                 d(dst, i);
                 f(sig, Use, s);
             }
-            Inst::SigGather { dst, desc, .. } => {
+            Inst::SigGather {
+                dst, desc, part, ..
+            } => {
                 f(dst, Use, p);
                 f(desc, Use, p);
+                if let Some(q) = part {
+                    f(&mut q.first, Use, i);
+                    f(&mut q.outer, Use, i);
+                }
             }
-            Inst::SigScatter {
-                src,
-                desc,
-                after,
-                reject,
-                ..
-            } => {
+            Inst::SigScatter { src, desc, .. } => {
                 f(src, Use, p);
                 f(desc, Use, p);
-                f(after, Use, i);
-                if let Some(r) = reject {
-                    f(r, Use, i);
-                }
             }
             Inst::Driving { dst, .. } => d(dst, i),
             Inst::DrivingValue { dst, .. } => f(dst, Use, p),

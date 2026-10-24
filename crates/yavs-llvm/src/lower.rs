@@ -14,24 +14,34 @@
 //! reports an error itself (rule 5).
 
 use std::ffi::CString;
+
 use std::sync::Mutex;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyFunction};
+
 use llvm_sys::core::*;
+
 use llvm_sys::prelude::*;
+
 use llvm_sys::{LLVMIntPredicate as IP, LLVMRealPredicate as RP};
+
 use yavs_interp::{Called, TIER_SUSPEND, Tier, TierHost, space};
+
 use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, EdgeKind, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp,
     IntUnOp, Program, Reg, Width,
 };
 
 use crate::generator::Generator;
+
 use crate::native::*;
+
 use crate::rt::*;
+
 use crate::{Error, Jit, Module, OptLevel};
 
 type Known = crate::rt::Known<LLVMValueRef>;
+
 type ObjRef = crate::rt::ObjRef<LLVMValueRef>;
 
 /// Ask the kernel to back the compiled code of a whole-program module with huge pages (Linux): the
@@ -243,10 +253,6 @@ impl Generator for LlvmGenerator {
         LOAD_US
     }
 
-    fn start_us(&self) -> f64 {
-        crate::auto::US_PER_INSTR
-    }
-
     fn level_for(&self, prog: &Program, f: &Func, level: OptLevel) -> OptLevel {
         level_for(prog, f, level)
     }
@@ -316,6 +322,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (CODES, yavs_rt_codes as *const () as usize),
             (PLANES, yavs_rt_planes as *const () as usize),
             (NATIVE, yavs_rt_native as *const () as usize),
+            (NATIVE_LIGHT, yavs_rt_native_light as *const () as usize),
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
             (XSTEP, yavs_rt_xstep as *const () as usize),
@@ -349,7 +356,7 @@ const COMPUTE_MAX: usize = 1500;
 pub(crate) fn level_for(prog: &Program, f: &Func, level: OptLevel) -> OptLevel {
     if level == OptLevel::O2
         && f.code.len() >= FAST_MIN
-        && (f.code.len() >= COMPUTE_MAX || !crate::auto::compute(prog, f))
+        && (f.code.len() >= COMPUTE_MAX || !crate::auto::compute(prog, f, true))
     {
         OptLevel::Fast
     } else {
@@ -424,7 +431,7 @@ pub(crate) fn compile_one(
     };
     let t1 = std::time::Instant::now();
     let ninst = if times { m.instruction_count() } else { 0 };
-    let full = crate::auto::compute(prog, f);
+    let full = crate::auto::compute(prog, f, true);
     let (mut t2, mut t3, mut nopt) = (t1, t1, 0);
     // Verified and optimised only when it is not linked from the compilation cache (#505).
     crate::objcache::add(jit, m, opt, full, |m| {
@@ -683,9 +690,91 @@ pub fn compile(prog: &Program, opt: OptLevel, max_size: usize) -> Result<LlvmTie
     })
 }
 
+/// Orders the blocks of `fv` so that the likelier successor of a block follows it (the
+/// unoptimised code generator emits blocks in this order and a branch to the next one is free);
+/// `cold` blocks go last. Creation order puts a join block before the fast path that leads to
+/// it, which costs two taken jumps per guarded instruction (#679).
+unsafe fn layout(fv: LLVMValueRef, cold: &[LLVMBasicBlockRef]) {
+    use std::collections::{HashMap, HashSet};
+    // SAFETY: plain walks over the blocks of a function being generated; moving a block keeps
+    // the function valid (the entry block stays first).
+    unsafe {
+        let mut blocks = Vec::new();
+        let mut b = LLVMGetFirstBasicBlock(fv);
+        while !b.is_null() {
+            blocks.push(b);
+            b = LLVMGetNextBasicBlock(b);
+        }
+        if blocks.len() < 3 {
+            for &b in cold {
+                LLVMMoveBasicBlockAfter(b, LLVMGetLastBasicBlock(fv));
+            }
+            return;
+        }
+        let cold: HashSet<_> = cold.iter().copied().collect();
+        let pos: HashMap<_, _> = blocks.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+        let prof = LLVMGetMDKindIDInContext(
+            LLVMGetModuleContext(LLVMGetGlobalParent(fv)),
+            c"prof".as_ptr(),
+            4,
+        );
+        let mut placed = HashSet::new();
+        let mut order = Vec::with_capacity(blocks.len());
+        for &start in blocks.iter().filter(|b| !cold.contains(*b)) {
+            let mut cur = start;
+            while placed.insert(cur) {
+                order.push(cur);
+                let t = LLVMGetBasicBlockTerminator(cur);
+                if t.is_null() {
+                    break;
+                }
+                // The heavier edge of a branch with weights, else the earliest successor.
+                let weights = {
+                    let md = LLVMGetMetadata(t, prof);
+                    let mut w = [0u64; 2];
+                    if !md.is_null() && LLVMGetMDNodeNumOperands(md) == 3 {
+                        let mut ops = [std::ptr::null_mut(); 3];
+                        LLVMGetMDNodeOperands(md, ops.as_mut_ptr());
+                        if !ops[1].is_null() && !ops[2].is_null() {
+                            w = [
+                                LLVMConstIntGetZExtValue(ops[1]),
+                                LLVMConstIntGetZExtValue(ops[2]),
+                            ];
+                        }
+                    }
+                    w
+                };
+                let n = LLVMGetNumSuccessors(t);
+                let mut best: Option<(LLVMBasicBlockRef, u64, usize)> = None;
+                for i in 0..n {
+                    let s = LLVMGetSuccessor(t, i);
+                    if placed.contains(&s) || cold.contains(&s) {
+                        continue;
+                    }
+                    let w = if n == 2 { weights[i as usize] } else { 0 };
+                    let at = pos[&s];
+                    if best.is_none_or(|(_, bw, bp)| w > bw || (w == bw && at < bp)) {
+                        best = Some((s, w, at));
+                    }
+                }
+                match best {
+                    Some((s, ..)) => cur = s,
+                    None => break,
+                }
+            }
+        }
+        order.extend(blocks.iter().filter(|b| cold.contains(*b)));
+        for w in order.windows(2) {
+            LLVMMoveBasicBlockAfter(w[1], w[0]);
+        }
+    }
+}
+
 /// `ModRef` of an LLVM `memory(...)` attribute: reads, writes, both.
 const REF: u64 = 1;
+
 const MODS: u64 = 2;
+
 const RW: u64 = 3;
 
 /// The value of a `memory(...)` attribute (LLVM 21 `MemoryEffects`: two bits per location,
@@ -765,6 +854,8 @@ struct Gen {
     /// `yavs_rt_native(env, mem, native, cells, n, depth, out) -> u32`.
     native_ty: LLVMTypeRef,
     native: LLVMValueRef,
+    /// `yavs_rt_native_light`: the type of `yavs_rt_native`.
+    native_light: LLVMValueRef,
     /// `yavs_rt_troot(env, mem, addr, ty, desc, n) -> u32`.
     troot_ty: LLVMTypeRef,
     troot: LLVMValueRef,
@@ -799,10 +890,15 @@ struct Gen {
 /// constants, the signals' code bytes. A pointer of a known kind gets alias scope metadata, so
 /// LLVM keeps values in registers across stores to the others.
 const AA_SLOTS: usize = 0;
+
 const AA_TEMP: usize = 1;
+
 const AA_INST: usize = 2;
+
 const AA_CONST: usize = 3;
+
 const AA_CODES: usize = 4;
+
 const AA_N: usize = 5;
 
 struct AaNodes {
@@ -1051,6 +1147,7 @@ impl Gen {
                 planes: add(PLANES, planes_ty),
                 native_ty,
                 native: add(NATIVE, native_ty),
+                native_light: add(NATIVE_LIGHT, native_ty),
                 troot_ty,
                 troot: add(TROOT, troot_ty),
                 endstmt_ty,
@@ -1117,6 +1214,7 @@ impl Gen {
                 self.deopt_slots,
                 self.deopt_end,
                 self.native,
+                self.native_light,
                 self.troot,
                 self.endstmt,
                 self.xstep,
@@ -1152,6 +1250,15 @@ impl Gen {
             self.attr(self.codes, false, "nofree", 0);
             self.attr(self.codes, false, "nosync", 0);
             self.attr(self.deopt_slots, false, "memory", mem_effects(REF, 0, 0));
+            if crate::jit::small_model() {
+                let mut f = LLVMGetFirstFunction(self.module);
+                while !f.is_null() {
+                    if LLVMGetIntrinsicID(f) == 0 {
+                        self.attr(f, false, "nonlazybind", 0);
+                    }
+                    f = LLVMGetNextFunction(f);
+                }
+            }
         }
     }
 
@@ -1845,7 +1952,11 @@ impl Gen {
         unsafe {
             let f = LLVMGetNamedFunction(self.module, cname.as_ptr());
             if f.is_null() {
-                LLVMAddFunction(self.module, cname.as_ptr(), ty)
+                let f = LLVMAddFunction(self.module, cname.as_ptr(), ty);
+                if crate::jit::small_model() {
+                    self.attr(f, false, "nonlazybind", 0);
+                }
+                f
             } else {
                 f
             }
@@ -3834,11 +3945,18 @@ impl Gen {
                             {
                                 self.step(&c, pc, &inst)
                             }
-                            None if c.nat.is_some() && nat_inline(prog, f, &inst) => {
-                                self.native_direct(&c, pc, &inst, f, native, args, dst)?
-                            }
-                            None if c.nat.is_none() && frame_direct(prog, f, &inst) => {
-                                self.native_direct(&c, pc, &inst, f, native, args, dst)?
+                            None if (c.nat.is_some() && nat_inline(prog, f, &inst))
+                                || (c.nat.is_none() && frame_direct(prog, f, &inst)) =>
+                            {
+                                let light = yavs_interp::light_native(prog, f, native, args);
+                                match ieee_fast(prog, f, native, args, dst).filter(|_| light) {
+                                    Some(op) => {
+                                        self.ieee_fast(&c, pc, &inst, f, native, args, dst, op)?
+                                    }
+                                    None => self.native_direct(
+                                        &c, pc, &inst, f, native, args, dst, light,
+                                    )?,
+                                }
                             }
                             None => self.step(&c, pc, &inst),
                         }
@@ -3992,9 +4110,7 @@ impl Gen {
                 }
                 LLVMBuildRet(self.b, self.c64(0));
             }
-            for &b in c.cold.borrow().iter() {
-                LLVMMoveBasicBlockAfter(b, LLVMGetLastBasicBlock(fv));
-            }
+            layout(fv, &c.cold.borrow());
             // A block nothing branches to (the generator and `regs::reach` agree on all but
             // dead code) has phis without incoming values.
             if let Some(pl) = c.defer.as_ref().and_then(|d| d.plan.as_ref()) {
@@ -5476,6 +5592,7 @@ impl Gen {
         native: yavs_ir::NativeId,
         args: yavs_ir::Regs,
         dst: Option<Reg>,
+        light: bool,
     ) -> Result<(), String> {
         // SAFETY: the arguments match `native_ty`; well-formed blocks of c.f.
         unsafe {
@@ -5511,7 +5628,11 @@ impl Gen {
             let st = LLVMBuildCall2(
                 self.b,
                 self.native_ty,
-                self.native,
+                if light {
+                    self.native_light
+                } else {
+                    self.native
+                },
                 a.as_mut_ptr(),
                 7,
                 c"".as_ptr(),
@@ -5552,6 +5673,351 @@ impl Gen {
             LLVMPositionBuilderAtEnd(self.b, cont);
             self.join(c, join);
             Ok(())
+        }
+    }
+
+    /// A light `numeric_std` native computed in place (`ieee_fast`): operands of at most 64
+    /// elements without a metavalue and results the native's own fast path gives; every other
+    /// case, also each one that warns or fails, takes `slow`: the callback, which runs the
+    /// native as before.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn ieee_fast(
+        &self,
+        c: &Cur,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        op: yavs_ir::ieee::Op,
+    ) -> Result<(), String> {
+        use IP::*;
+        use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Gate, Op, Shift};
+        // SAFETY: integer arithmetic on registers, reads through `host`, a result written to a
+        // fresh temporary block; well-formed blocks of c.f.
+        unsafe {
+            let rs = f.regs(args).ok_or("operand list out of range")?;
+            let dst = dst.ok_or("a native without a result")?;
+            let layout = ieee_layout(op).ok_or("not a native computed in place")?;
+            let mut called = Ok(());
+            let (slow, join) = self.slow_path_with(c, pc, i, true, |g, _| {
+                called = g.native_direct(c, pc, i, f, native, args, Some(dst), true);
+            });
+            called?;
+            let b = self.b;
+            let (c0, c1) = (self.c64(0), self.c64(1));
+            let add = |x, y| LLVMBuildAdd(b, x, y, c"".as_ptr());
+            let sub = |x, y| LLVMBuildSub(b, x, y, c"".as_ptr());
+            let and = |x, y| LLVMBuildAnd(b, x, y, c"".as_ptr());
+            let or = |x, y| LLVMBuildOr(b, x, y, c"".as_ptr());
+            let xor = |x, y| LLVMBuildXor(b, x, y, c"".as_ptr());
+            let shl = |x, y| LLVMBuildShl(b, x, y, c"".as_ptr());
+            let lshr = |x, y| LLVMBuildLShr(b, x, y, c"".as_ptr());
+            let not = |x| LLVMBuildNot(b, x, c"".as_ptr());
+            let pick = |t, x, y| LLVMBuildSelect(b, t, x, y, c"".as_ptr());
+            let cmp = |p, x, y| self.icmp(p, x, y);
+            let umin = |x, y| pick(cmp(LLVMIntULT, x, y), x, y);
+            // `low(k)` for k from 0 to 64: the k low bits.
+            let lowk = |k| {
+                let m = sub(shl(c1, and(k, self.c64(63))), c1);
+                pick(cmp(LLVMIntEQ, k, self.c64(64)), self.c64(-1), m)
+            };
+            // The value of `bits` of `n` elements as a signed integer.
+            let sext = |x, n| {
+                let k = sub(self.c64(64), n);
+                LLVMBuildAShr(b, shl(x, k), k, c"".as_ptr())
+            };
+            let pure = matches!(op, Op::Resize { .. } | Op::Shift(_) | Op::ShiftFn(_));
+            // The operands in argument order.
+            let (mut arrs, mut ints) = (Vec::new(), Vec::new());
+            let mut at = 0;
+            for a in layout {
+                match a {
+                    Arg::Arr => {
+                        arrs.push(self.small_operand(c, &rs[at..at + ARRAY_REGS], pure, slow));
+                        at += ARRAY_REGS;
+                    }
+                    Arg::Int => {
+                        ints.push(self.ld(c, rs[at]));
+                        at += 1;
+                    }
+                }
+            }
+            // `natural`: a negative integer is the native's error.
+            let nonneg = |x| cmp(LLVMIntSGE, x, c0);
+            let ok = |x: LLVMValueRef| self.guard(c, x, slow);
+            // Unsigned or signed `size` low bits hold `v` (the native warns when they do not).
+            let fits = |v, n, mask, signed| {
+                if signed {
+                    cmp(LLVMIntEQ, sext(and(v, mask), n), v)
+                } else {
+                    and(nonneg(v), cmp(LLVMIntEQ, and(v, not(mask)), c0))
+                }
+            };
+            enum Out {
+                Scalar(LLVMValueRef),
+                // Count, bits, and whether the bounds are `1 to n` (else `n - 1 downto 0`).
+                Vector(LLVMValueRef, LLVMValueRef, bool),
+            }
+            let out = match op {
+                Op::ToInteger { signed } => {
+                    let (n, bits, mask) = arrs[0];
+                    let top = and(lshr(bits, sub(n, c1)), c1);
+                    let neg = if signed {
+                        cmp(LLVMIntNE, top, c0)
+                    } else {
+                        cmp(LLVMIntNE, c0, c0)
+                    };
+                    if signed {
+                        // `to_signed (1, 1)` truncates: the native words that warning.
+                        ok(not(and(cmp(LLVMIntEQ, n, c1), neg)));
+                    }
+                    let mag = pick(neg, and(not(bits), mask), bits);
+                    // Beyond `integer'high` of the shortest revision the callback decides.
+                    ok(cmp(LLVMIntULE, mag, self.c64(0x7fff_ffff)));
+                    Out::Scalar(pick(neg, not(mag), mag))
+                }
+                Op::Add {
+                    sub: is_sub,
+                    signed,
+                    form,
+                } => {
+                    let (n, x, y) = match form {
+                        Form::Vv => {
+                            let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                            let n = pick(cmp(LLVMIntUGT, n1, n2), n1, n2);
+                            let mask = lowk(n);
+                            let ext = |bits, k| {
+                                if signed {
+                                    and(sext(bits, k), mask)
+                                } else {
+                                    bits
+                                }
+                            };
+                            (n, ext(b1, n1), ext(b2, n2))
+                        }
+                        _ => {
+                            let (n, bits, mask) = arrs[0];
+                            let v = ints[0];
+                            ok(fits(v, n, mask, signed));
+                            let iv = and(v, mask);
+                            if form == Form::Vi {
+                                (n, bits, iv)
+                            } else {
+                                (n, iv, bits)
+                            }
+                        }
+                    };
+                    Out::Vector(n, if is_sub { sub(x, y) } else { add(x, y) }, false)
+                }
+                Op::Compare {
+                    cmp: k,
+                    signed,
+                    form,
+                } => {
+                    let (x, y) = match form {
+                        Form::Vv => {
+                            let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                            if signed {
+                                (sext(b1, n1), sext(b2, n2))
+                            } else {
+                                (b1, b2)
+                            }
+                        }
+                        _ => {
+                            let (n, bits, _) = arrs[0];
+                            let v = ints[0];
+                            if !signed {
+                                ok(nonneg(v));
+                            }
+                            let e = if signed { sext(bits, n) } else { bits };
+                            if form == Form::Vi { (e, v) } else { (v, e) }
+                        }
+                    };
+                    let p = match (k, signed) {
+                        (Cmp::Gt, false) => LLVMIntUGT,
+                        (Cmp::Lt, false) => LLVMIntULT,
+                        (Cmp::Le, false) => LLVMIntULE,
+                        (Cmp::Ge, false) => LLVMIntUGE,
+                        (Cmp::Gt, true) => LLVMIntSGT,
+                        (Cmp::Lt, true) => LLVMIntSLT,
+                        (Cmp::Le, true) => LLVMIntSLE,
+                        (Cmp::Ge, true) => LLVMIntSGE,
+                        (Cmp::Eq, _) => LLVMIntEQ,
+                        (Cmp::Ne, _) => LLVMIntNE,
+                    };
+                    Out::Scalar(self.zext(cmp(p, x, y)))
+                }
+                Op::ToUnsigned | Op::ToSigned => {
+                    let signed = op == Op::ToSigned;
+                    let (v, size) = (ints[0], ints[1]);
+                    ok(and(
+                        cmp(LLVMIntSGE, size, c1),
+                        cmp(LLVMIntSLE, size, self.c64(64)),
+                    ));
+                    let mask = lowk(size);
+                    ok(fits(v, size, mask, signed));
+                    Out::Vector(size, and(v, mask), false)
+                }
+                Op::Resize { signed } => {
+                    let (n, bits, _) = arrs[0];
+                    let new = ints[0];
+                    ok(and(
+                        cmp(LLVMIntSGE, new, c1),
+                        cmp(LLVMIntSLE, new, self.c64(64)),
+                    ));
+                    let res = if signed {
+                        let keep = sub(umin(n, new), c1);
+                        let sign = cmp(LLVMIntNE, and(lshr(bits, sub(n, c1)), c1), c0);
+                        let kept = and(bits, lowk(keep));
+                        let ext = and(lowk(new), not(lowk(keep)));
+                        or(kept, pick(sign, ext, c0))
+                    } else {
+                        and(bits, lowk(umin(n, new)))
+                    };
+                    Out::Vector(new, res, false)
+                }
+                Op::Shift(k) | Op::ShiftFn(k) => {
+                    let (n, bits, mask) = arrs[0];
+                    let count = ints[0];
+                    ok(nonneg(count));
+                    let big = cmp(LLVMIntUGE, count, n);
+                    let res = match k {
+                        Shift::Sll => pick(big, c0, shl(bits, pick(big, c0, count))),
+                        Shift::Srl => pick(big, c0, lshr(bits, pick(big, c0, count))),
+                        Shift::Sra => {
+                            // For 0 or 1 elements and a zero count the native keeps the
+                            // argument's own bounds.
+                            ok(and(cmp(LLVMIntUGT, n, c1), cmp(LLVMIntNE, count, c0)));
+                            let k = umin(count, sub(n, c1));
+                            and(LLVMBuildAShr(b, sext(bits, n), k, c"".as_ptr()), mask)
+                        }
+                        // A rotation by `count mod n`; by zero both shifts are by zero.
+                        Shift::Rol => {
+                            let k = LLVMBuildURem(b, count, n, c"".as_ptr());
+                            let inv = pick(cmp(LLVMIntEQ, k, c0), c0, sub(n, k));
+                            or(shl(bits, k), lshr(bits, inv))
+                        }
+                        Shift::Ror => {
+                            let k = LLVMBuildURem(b, count, n, c"".as_ptr());
+                            let inv = pick(cmp(LLVMIntEQ, k, c0), c0, sub(n, k));
+                            or(lshr(bits, k), shl(bits, inv))
+                        }
+                    };
+                    Out::Vector(n, res, false)
+                }
+                Op::NumGate(g) | Op::VecGate(g) => {
+                    let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                    ok(cmp(LLVMIntEQ, n1, n2));
+                    let res = match g {
+                        Gate::And => and(b1, b2),
+                        Gate::Nand => not(and(b1, b2)),
+                        Gate::Or => or(b1, b2),
+                        Gate::Nor => not(or(b1, b2)),
+                        Gate::Xor => xor(b1, b2),
+                        Gate::Xnor => not(xor(b1, b2)),
+                    };
+                    Out::Vector(n1, res, matches!(op, Op::VecGate(_)))
+                }
+                Op::NumNot | Op::VecNot => {
+                    let (n, bits, _) = arrs[0];
+                    Out::Vector(n, not(bits), op == Op::VecNot)
+                }
+                _ => return Err("not a native computed in place".into()),
+            };
+            match out {
+                Out::Scalar(v) => self.st(c, dst, v),
+                Out::Vector(n, bits, up) => {
+                    let mask = lowk(n);
+                    let (at, p) = self.temp_alloc(c, self.c64(i64::from(PUT_SMALL_BYTES)), slow);
+                    let (left, right, down) = if up {
+                        (c1, n, c0)
+                    } else {
+                        (sub(n, c1), c0, c1)
+                    };
+                    let words = [
+                        add(at, self.c64((16 + yavs_ir::DOPE_DIM_BYTES) as i64)),
+                        add(at, self.c64(16)),
+                        left,
+                        right,
+                        down,
+                        and(bits, mask),
+                        mask,
+                        c0,
+                        c0,
+                    ];
+                    for (k, w) in words.into_iter().enumerate() {
+                        self.store(w, self.gep(p, self.c64(8 * k as i64)));
+                    }
+                    self.st(c, dst, at);
+                }
+            }
+            self.join(c, join);
+            Ok(())
+        }
+    }
+
+    /// An array operand of a light native (`data, left, right, dir`) of 1 to 64 elements that
+    /// holds only `0 1 L H` (and, with `pure`, no `L` or `H`), as `ieee::small` reads it:
+    /// `(n, bits, mask)`, taking `slow` for any other.
+    unsafe fn small_operand(
+        &self,
+        c: &Cur,
+        r: &[Reg],
+        pure: bool,
+        slow: LLVMBasicBlockRef,
+    ) -> (LLVMValueRef, LLVMValueRef, LLVMValueRef) {
+        // SAFETY: integer arithmetic and a read of four words through `host`.
+        unsafe {
+            let b = self.b;
+            let (l, rt, d) = (self.ld(c, r[1]), self.ld(c, r[2]), self.ld(c, r[3]));
+            let down = self.icmp(IP::LLVMIntEQ, d, self.c64(1));
+            let hi = LLVMBuildSelect(b, down, l, rt, c"".as_ptr());
+            let lo = LLVMBuildSelect(b, down, rt, l, c"".as_ptr());
+            let diff = LLVMBuildSub(b, hi, lo, c"".as_ptr());
+            let ok = LLVMBuildAnd(
+                b,
+                self.icmp(IP::LLVMIntSGE, hi, lo),
+                self.icmp(IP::LLVMIntULT, diff, self.c64(64)),
+                c"".as_ptr(),
+            );
+            self.guard(c, ok, slow);
+            let n = LLVMBuildAdd(b, diff, self.c64(1), c"".as_ptr());
+            let mask = LLVMBuildSub(
+                b,
+                LLVMBuildShl(b, self.c64(2), diff, c"".as_ptr()),
+                self.c64(1),
+                c"".as_ptr(),
+            );
+            let p = self.host(
+                c,
+                self.ld(c, r[0]),
+                self.known_addr(c, r[0]),
+                self.c64(0),
+                self.c64(32),
+                false,
+                slow,
+            );
+            let w = |k: i64| self.load(self.i64, self.gep(p, self.c64(8 * k)));
+            let (p0, p1, p3) = (w(0), w(1), w(3));
+            let live = LLVMBuildAnd(b, LLVMBuildNot(b, p3, c"".as_ptr()), p1, c"".as_ptr());
+            // `0 L`: plane 1 only; `1 H`: planes 0 and 1.
+            let zero = LLVMBuildAnd(b, live, LLVMBuildNot(b, p0, c"".as_ptr()), c"".as_ptr());
+            let one = LLVMBuildAnd(b, live, p0, c"".as_ptr());
+            let all = LLVMBuildAnd(
+                b,
+                LLVMBuildOr(b, zero, one, c"".as_ptr()),
+                mask,
+                c"".as_ptr(),
+            );
+            self.guard(c, self.icmp(IP::LLVMIntEQ, all, mask), slow);
+            if pure {
+                // Plane 2 is the weak bit of `L` and `H`.
+                let weak = LLVMBuildAnd(b, w(2), mask, c"".as_ptr());
+                self.guard(c, self.icmp(IP::LLVMIntEQ, weak, self.c64(0)), slow);
+            }
+            (n, LLVMBuildAnd(b, one, mask, c"".as_ptr()), mask)
         }
     }
 
@@ -6010,6 +6476,12 @@ impl Gen {
     ) {
         // SAFETY: well-formed blocks of c.f; the frame has the slot (`layout_cache`).
         unsafe {
+            // The step wrote `dst` to the frame: a value deferred for an earlier definition of
+            // it is stale here (#710).
+            let stale = c
+                .defer
+                .as_ref()
+                .and_then(|d| d.pend.borrow_mut()[dst.0 as usize].take());
             self.reg_in(c, dst);
             // Kept once: the address of a kept layout is handed out and lives as long as the
             // process, so a slot is never written again.
@@ -6046,6 +6518,9 @@ impl Gen {
             let w0 = self.gep(slot, self.c64(8 + i64::from(dsz)));
             LLVMBuildMemCpy(self.b, w0, 1, pw, 1, self.c64(8 * i64::from(nw)));
             self.store(self.c64(1), slot);
+            if let (Some(d), Some(v)) = (&c.defer, stale) {
+                d.pend.borrow_mut()[dst.0 as usize] = Some(v);
+            }
         }
     }
 

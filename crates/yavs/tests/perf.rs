@@ -262,7 +262,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(5040)),
+        ("ops", Max(4930)),
     ]
 );
 case!(
@@ -387,15 +387,17 @@ case!(
         ("wakes", Max(567)),
         ("events", Max(1846)),
         ("update_general", Max(0)),
-        ("ops", Max(13659)),
+        ("ops", Max(12420)),
     ]
 );
 case!(
     reduce_idiom,
     "n1=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(2098)),]
+    [("process_runs", Max(2)), ("ops", Max(1481)),]
 );
+case!(ieee_operands, "acc=", &[], [("ops", Max(4060))]);
+case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(1873000))]);
 case!(
@@ -417,6 +419,18 @@ case!(
     ]
 );
 case!(memo_wide, "q=64442", &[], [("ops", Max(75700))]);
+// Pure functions on vectors called with repeating arguments (PoC ffdre, resize, mux): the memo of
+// pure calls (#701) answers 436 of the 448 calls (ops 72600 without it).
+case!(
+    pure_memo,
+    "q=9",
+    &[],
+    [
+        ("pmemo_hits", Min(420)),
+        ("pmemo_runs", Max(14)),
+        ("ops", Max(17800))
+    ]
+);
 case!(
     edge_forms,
     "edges=",
@@ -449,7 +463,7 @@ case!(
 );
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
-case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6540))]);
+case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6234))]);
 // The defaults of a combinational process that a later drive deletes are not done on that path
 // (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass.
 case!(
@@ -478,7 +492,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(650)),
         ("update_general", Max(2)),
-        ("ops", Max(4370)),
+        ("ops", Max(4103)),
         ("signals", Max(6)),
     ]
 );
@@ -489,7 +503,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(30700)),
+        ("ops", Max(29292)),
         // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
         ("signals", Max(20)),
     ]
@@ -528,7 +542,7 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(33250)),
+        ("ops", Max(32819)),
     ]
 );
 
@@ -552,6 +566,20 @@ case!(
         ("process_runs", Max(4500)),
         ("idle_skips", Min(2850)),
         ("ops", Max(68500)),
+    ]
+);
+// Variables assigned on every path before they are read (the arms of an `if`/`case`, the fields
+// of a record variable one by one), and a `report` under a generic that is false in the instance:
+// the processes are skipped (77 of 497 wakes); the instance where it is true reports every time,
+// and a condition with an effect (an impure function) keeps its process running.
+case!(
+    idle_vars,
+    "o=",
+    &[],
+    [
+        ("process_runs", Max(433)),
+        ("idle_skips", Min(75)),
+        ("ops", Max(9180)),
     ]
 );
 
@@ -584,6 +612,28 @@ fn spec_copies() {
     );
 }
 
+/// The frame a process's declarative part makes (record, array-of-record and unconstrained array
+/// variables with bounds from generics, constants, a value a function made) is known to the
+/// copy, which folds the layouts and bounds it reads (#678): the same report, fewer ops.
+#[test]
+fn spec_record_var() {
+    let d = tempdir("spec_record_var");
+    let src = include_str!("perf/spec_record_var.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_record_var", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    check_bounds(
+        "spec_record_var",
+        &copies,
+        &[("spec_switched", Min(3)), ("ops", Max(163500))],
+    );
+}
+
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
 /// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent
@@ -594,6 +644,7 @@ fn idle_skip_changes_nothing() {
         ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
         ("idle_comb", include_str!("perf/idle_comb.vhd"), 2700),
         ("idle_when", include_str!("perf/idle_when.vhd"), 100),
+        ("idle_vars", include_str!("perf/idle_vars.vhd"), 60),
     ];
     for (design, src, floor) in designs {
         let d = tempdir(&format!("idle_equal_{design}"));
@@ -617,6 +668,21 @@ fn idle_skip_changes_nothing() {
         );
         assert_eq!(
             on.counters["idle_skips"], check.counters["idle_skips"],
+            "{design}"
+        );
+        // Coverage (user, 2026-10-24): counters count activations, so the skip is off with
+        // them; toggle coverage alone keeps it.
+        let cov = |kinds: &str| {
+            let kinds = format!("--cov-kind={kinds}");
+            run_design(&d, design, src, "interp", &["--cov=c.ycov", &kinds])
+        };
+        let (counted, toggle) = (cov("statement,branch,toggle"), cov("toggle"));
+        assert_eq!((counted.code, toggle.code), (0, 0), "{design}");
+        assert_eq!(counted.stdout, on.stdout, "{design}");
+        assert_eq!(toggle.stdout, on.stdout, "{design}");
+        assert_eq!(counted.counters["idle_skips"], 0, "{design}");
+        assert_eq!(
+            toggle.counters["idle_skips"], on.counters["idle_skips"],
             "{design}"
         );
     }
@@ -652,8 +718,9 @@ fn lean_events_change_nothing() {
 
 /// An assignment of the value a signal holds is dropped only when nothing can observe the
 /// signal's activity (user, 2026-10-24): `skip_signals` counts the signals that allow it. Each
-/// observer of activity (a coverage run, a plugin, a debugger, `'active`, `'last_active`,
-/// `'transaction`, `'quiet`) takes it away; a waveform file records values only.
+/// observer of activity (a plugin, a debugger, `'active`, `'last_active`, `'transaction`,
+/// `'quiet`) takes it away; a waveform file records values only, and coverage keeps the skip
+/// (it changes no count: user, 2026-10-24, #707).
 #[test]
 fn skipping_follows_observers() {
     let d = tempdir("skip_observers");
@@ -670,8 +737,20 @@ fn skipping_follows_observers() {
     let fst = d.join("w.fst");
     let wave = format!("--wave={}", fst.display());
     assert_eq!(run("", "", &[&wave]), 3);
-    // Coverage: statement counters see every activation.
-    assert_eq!(run("", "", &["--cov"]), 0);
+    // Coverage of every kind: the skip changes no count.
+    assert_eq!(run("", "", &["--cov=c.ycov"]), 3);
+    assert_eq!(run("", "", &["--cov=c.ycov", "--cov-kind=toggle"]), 3);
+    assert_eq!(
+        run(
+            "",
+            "",
+            &[
+                "--cov=c.ycov",
+                "--cov-kind=statement,branch,condition,expression,toggle"
+            ]
+        ),
+        3
+    );
     // `'active` and `'last_active` anywhere switch it off for the whole design.
     assert_eq!(
         run(
@@ -912,6 +991,11 @@ mod llvm {
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
     llvm_case!(
+        llvm_ieee,
+        "acc=",
+        [("cb_native", Max(5)), ("llvm_native_frames", Min(1)),]
+    );
+    llvm_case!(
         llvm_drive_batch,
         "q=",
         [("cb_drive", Max(158)), ("llvm_interpreted_insts", Max(32)),]
@@ -922,7 +1006,7 @@ mod llvm {
         [
             ("cb_signal", Max(4)),
             ("cb_step", Max(26)),
-            ("cb_native", Max(55)),
+            ("cb_native", Max(4)),
             ("cb_drive", Max(998)),
             ("cb_wait", Max(19)),
             ("cb_wait_same", Max(1018)),

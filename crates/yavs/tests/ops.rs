@@ -161,8 +161,8 @@ fn uniform_is_an_op_and_reports_bad_seeds() {
 
 /// A constant record assigned to a record signal (`r <= C`) drives all fields with one instruction
 /// (`SigScatter`, #677), whatever the length of a field (one block of planes or more), the delay and the
-/// values (`U`, `X`, `Z`, `-` ...). A part of a record signal (`q.i`)
-/// drives each field with one op (`LCopyDrive`).
+/// values (`U`, `X`, `Z`, `-` ...). So does a part of one that is a record (`q.i`), and a field
+/// of a signal that is no record is one op (`CopyDrive`).
 const FIELD_DRIVE: &str = "
 library ieee;
 use ieee.std_logic_1164.all;
@@ -294,11 +294,11 @@ fn a_constant_field_driven_onto_a_signal_is_one_op() {
     assert!(text.contains("fields bad=0"), "{text}");
     assert!(
         text.lines()
-            .any(|l| l.contains(" pc") && l.contains(" LCopyDrive {")),
-        "no op LCopyDrive\n{text}"
+            .any(|l| l.contains(" pc") && l.contains(" CopyDrive {")),
+        "no op CopyDrive\n{text}"
     );
     assert!(
-        text.lines().filter(|l| l.contains(" SigScatter {")).count() >= 3,
+        text.lines().filter(|l| l.contains(" SigScatter {")).count() >= 4,
         "no SigScatter\n{text}"
     );
     let _ = std::fs::remove_dir_all(&d);

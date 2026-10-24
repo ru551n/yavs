@@ -2,10 +2,10 @@
 //! processes.
 
 use yavs_diag::Span;
-use yavs_ir::CheckKind;
 use yavs_ir::{
     BlockId, CaseTable, CmpOp, Dir, DriveMode, Inst, IntOp, Reg, RegTy, StmtKind, Width,
 };
+use yavs_ir::{CheckKind, Ty};
 use yavs_sem::hir::{
     Choice, ChoiceSet, Delay, ExprKind, LoopScheme, Lsp, LspStep, ObjRoot, Rhs, StmtKind as H,
     Target, Waveform,
@@ -1509,6 +1509,100 @@ impl Fx<'_, '_> {
         exact.or_else(same).or_else(prefix)
     }
 
+    /// [`Fx::check_desc`] of a value's descriptor `vd` against the target's `want`; when the
+    /// check is more than one length (a record, or an array of records with array fields), the
+    /// descriptors that are the same bytes pass with one comparison.
+    fn check_value_desc(
+        &mut self,
+        t: yavs_sem::TypeId,
+        tid: yavs_ir::TyId,
+        vd: Reg,
+        want: Reg,
+        name: &str,
+        span: Span,
+    ) -> R<()> {
+        let types = self.fb.program().types();
+        let deep = match types.get(tid) {
+            Some(Ty::Array {
+                elem, elem_desc, ..
+            }) => elem_desc.is_none() && Ty::needs_desc(types, *elem),
+            _ => true,
+        };
+        let bytes = Ty::desc_size(types, tid).filter(|_| deep);
+        let Some(bytes) = bytes else {
+            return self.check_desc(t, tid, vd, want, name, span);
+        };
+        let (slow, join) = (self.block(), self.block());
+        let n = self.int(bytes as i64);
+        let same = self.reg(RegTy::I64);
+        self.emit(Inst::MemEq {
+            dst: same,
+            a: vd,
+            b: want,
+            n,
+        });
+        self.branch(same, join, slow);
+        self.at(slow);
+        self.check_desc(t, tid, vd, want, name, span)?;
+        self.jump(join);
+        self.at(join);
+        Ok(())
+    }
+
+    /// The leaf table of target `target` (selections `steps` of record signal `d`) and the first
+    /// driver slot of its leaves, when `SigScatter` drives all of it: a record or an array of
+    /// records of a shape the table takes, and its leaves are consecutive among the `covered` ones
+    /// of the driver that starts at slot `drv`.
+    fn scatter_table(
+        &mut self,
+        d: yavs_sem::DeclId,
+        steps: &[crate::expr::Step<'_>],
+        drv: u32,
+        covered: &[crate::RecLeaf],
+        target: ExprId,
+        span: Span,
+    ) -> R<Option<(yavs_ir::ConstId, u32)>> {
+        use crate::expr::Step;
+        let fi = |s: &[Step<'_>]| {
+            s.iter()
+                .all(|s| matches!(s, Step::Field(_) | Step::Index(_)))
+        };
+        let ok = match steps.split_last() {
+            Some((Step::Slice(_), rest)) => fi(rest),
+            _ => fi(steps),
+        };
+        if !ok {
+            return Ok(None);
+        }
+        let path: Vec<u32> = steps
+            .iter()
+            .filter_map(|s| match *s {
+                Step::Field(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        let all = self.leaves_under(d, &path);
+        let Some(first) = all.first() else {
+            return Ok(None);
+        };
+        let Some(pos) = covered.iter().position(|l| l.path == first.path) else {
+            return Ok(None);
+        };
+        let same = covered
+            .get(pos..pos + all.len())
+            .is_some_and(|c| c.iter().zip(&all).all(|(a, b)| a.path == b.path));
+        if !same {
+            return Ok(None);
+        }
+        let tid = self.ty(self.db.base(self.db.exprs[target].subtype), span)?;
+        if !self.part_value_ok(steps, tid) {
+            return Ok(None);
+        }
+        Ok(self
+            .table_for(d, &path, tid, span)?
+            .map(|t| (t, drv + pos as u32)))
+    }
+
     /// A composite signal part with records (or several leaves) as a target: each leaf is
     /// driven with its elements of every waveform value, through its own driver slot.
     #[allow(clippy::too_many_arguments)]
@@ -1524,25 +1618,17 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let db = self.db;
-        // A whole record signal driven by one waveform element through its own drivers, one
-        // per leaf in leaf order: one `SigScatter` instead of a drive per leaf (#677).
+        // A record signal, or a part of one that is a record or an array of records (a field, an
+        // element, a slice), driven by one waveform element through its own drivers, one per
+        // leaf in leaf order: one `SigScatter` instead of a drive per leaf (#677).
         let whole = match base {
-            Ok(_) if steps.is_empty() && elems.len() == 1 && !covered.is_empty() => {
-                let all = self.leaves_under(d, &[]);
-                match self.rec_table(d, span)? {
-                    Some(t)
-                        if all.len() == covered.len()
-                            && all.iter().zip(covered).all(|(a, b)| a.path == b.path) =>
-                    {
-                        Some(t)
-                    }
-                    _ => None,
-                }
+            Ok(drv) if elems.len() == 1 && !covered.is_empty() => {
+                self.scatter_table(d, steps, drv, covered, target.expr, span)?
             }
             _ => None,
         };
         let p = if whole.is_some() {
-            self.comp_head(d, span)?
+            self.comp_head(d, steps, span)?
         } else {
             self.comp_select(d, steps, span)?
         };
@@ -1561,14 +1647,15 @@ impl Fx<'_, '_> {
             };
             let x = self.expr(v)?;
             let (data, vd) = self.arr(x, span)?;
-            if let Some(dims) = dims {
-                let m = self.msg(&what, Dir::To);
-                self.emit(Inst::SubtypeCheck {
-                    dope: vd,
-                    want: p.desc,
-                    dims,
-                    what: m,
-                });
+            // The lengths of the value are those of the target, also in the fields of a record
+            // (the reference simulators name the object a value is, else the target, for a record).
+            if Ty::needs_desc(self.fb.program().types(), p.tid) {
+                let name = match (dims, &db.exprs[v].kind) {
+                    (None, ExprKind::Obj(o)) => ty::obj_desc(db, *o),
+                    (None, _) => "target".into(),
+                    (Some(_), _) => what.clone(),
+                };
+                self.check_value_desc(p.t, p.tid, vd, p.desc, &name, span)?;
             }
             vals.push((at, (data, vd)));
         }
@@ -1583,15 +1670,26 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
-        if let (Some(tab), Ok(driver), [(after, (src, _))]) = (whole, base, vals.as_slice()) {
+        if let (Some((tab, driver)), [(after, (src, _))]) = (whole, vals.as_slice()) {
+            let mut ops = vec![*after];
+            let mut has = 0;
+            if let Some(r) = reject {
+                ops.push(r);
+                has |= yavs_ir::SCATTER_REJECT;
+            }
+            if let Some(q) = p.part {
+                ops.extend([q.first, q.outer]);
+                has |= yavs_ir::SCATTER_PART;
+            }
+            let ops = self.fb.regs(&ops);
             self.emit(Inst::SigScatter {
                 driver,
                 src: *src,
                 desc: p.desc,
                 tab,
-                after: *after,
+                ops,
                 mode,
-                reject,
+                has,
             });
             return Ok(());
         }

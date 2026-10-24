@@ -39,8 +39,12 @@
 
 use super::*;
 
+mod calls;
+
 /// Fewest moved instructions that make the change worth its fresh registers.
 const MIN_SUNK: usize = 8;
+/// Fewest moved instructions in front of the replay of a call: the call is rarely made.
+const MIN_REPLAY: usize = 3;
 /// Longest straight run looked at.
 const MAX_SEQ: usize = 800;
 /// Registers times blocks above which the liveness bit sets are not made.
@@ -114,7 +118,12 @@ struct Sink<'a> {
     frame: Vec<bool>,
     /// Registers defined once by a constant.
     konst: Vec<Option<i64>>,
+    /// Registers defined once by an address: the space and offset.
+    addr: Vec<Option<(AddrSpace, u32)>>,
     live_in: Vec<Bits>,
+    /// Blocks `calls.rs` made to replay a call: their branch is worth a look for what a second
+    /// call's arguments left in front of it.
+    replay: Vec<usize>,
 }
 
 impl Sink<'_> {
@@ -393,6 +402,12 @@ impl Sink<'_> {
                     my_org = Org::Temp(p as u32);
                     layout[p] = true;
                 }
+                // Signal values do not change while a process runs.
+                Inst::SigVal { .. } | Inst::SigReadScalar { .. } => class = Class::Movable,
+                Inst::SigRead { .. } => {
+                    class = Class::Movable;
+                    wrote = Some(orgof(0));
+                }
                 Inst::MakeDope { .. }
                 | Inst::Store {
                     w: Width::B1 | Width::B4 | Width::B8,
@@ -401,12 +416,7 @@ impl Sink<'_> {
                     class = Class::Movable;
                     wrote = Some(orgof(0));
                 }
-                Inst::Cat {
-                    parts,
-                    scalars,
-                    logic: false,
-                    ..
-                } => {
+                Inst::Cat { parts, scalars, .. } => {
                     class = Class::Movable;
                     // Slots: dst, n, m, then the list (address and count per piece).
                     wrote = Some(orgof(0));
@@ -450,9 +460,7 @@ impl Sink<'_> {
                 | Inst::LCopy { .. }
                 | Inst::LSet { .. }
                 | Inst::LFill { .. }
-                | Inst::LogicOp { .. }
-                | Inst::SigRead { .. }
-                | Inst::Cat { .. } => wrote = Some(orgof(0)),
+                | Inst::LogicOp { .. } => wrote = Some(orgof(0)),
                 _ => {}
             }
             // What is not named writes memory nobody can place: it may reach any block.
@@ -577,7 +585,8 @@ impl Sink<'_> {
             }
         };
         let xlen = self.code[x].len() - 1;
-        if xlen < MIN_SUNK {
+        let replay = self.replay.contains(&t) || self.replay.contains(&e);
+        if xlen < if replay { MIN_REPLAY } else { MIN_SUNK } {
             return false;
         }
         let mut seq = Seq {
@@ -599,10 +608,12 @@ impl Sink<'_> {
         if seq.insts.len() > MAX_SEQ {
             return false;
         }
-        // (Only the straight runs that start a string have their liveness looked at.)
-        if !seq.insts[..xlen]
-            .iter()
-            .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
+        // (Only the straight runs that start a string, or end in the replay of a call, have
+        // their liveness looked at.)
+        if !replay
+            && !seq.insts[..xlen]
+                .iter()
+                .any(|i| matches!(i, Inst::Cat { logic: false, .. }))
         {
             return false;
         }
@@ -614,7 +625,7 @@ impl Sink<'_> {
             if target == x || blocks.contains(&target) || self.preds[target] != [cur as u32] {
                 continue;
             }
-            if let Some(lazy) = self.plan(&run, target, other) {
+            if let Some(lazy) = self.plan(&run, target, other, replay) {
                 self.apply(&run, &lazy, x, target);
                 return true;
             }
@@ -624,10 +635,18 @@ impl Sink<'_> {
 
     /// The set of positions of the run that can move to the start of `target` (`other` is the
     /// branch not taken), or `None` when it is too small.
-    fn plan(&self, r: &Run, target: usize, other: usize) -> Option<Vec<bool>> {
+    fn plan(&self, r: &Run, target: usize, other: usize, replay: bool) -> Option<Vec<bool>> {
         let n = r.seq.insts.len();
         let in_u = &self.live_in[other];
-        let out_t = self.live_out(target);
+        let mut out_t = self.live_out(target);
+        // What the target writes is not the moved value any more at its end.
+        for i in &self.code[target] {
+            for d in Self::writes(i) {
+                if let Some(w) = out_t.get_mut(d.0 as usize / 64) {
+                    *w &= !(1 << (d.0 % 64));
+                }
+            }
+        }
         let mut lazy: Vec<bool> = (0..n)
             .map(|p| p < r.xlen && r.class[p] == Class::Movable)
             .collect();
@@ -719,7 +738,7 @@ impl Sink<'_> {
             }
         }
         let count = lazy.iter().filter(|&&l| l).count();
-        (count >= MIN_SUNK).then_some(lazy)
+        (count >= if replay { MIN_REPLAY } else { MIN_SUNK }).then_some(lazy)
     }
 
     fn apply(&mut self, r: &Run, lazy: &[bool], x: usize, target: usize) {
@@ -761,7 +780,12 @@ impl Sink<'_> {
                     Some(reg) => reg,
                     None => {
                         self.reg_ty.push(ty);
-                        Reg(self.reg_ty.len() as u32 - 1)
+                        let reg = Reg(self.reg_ty.len() as u32 - 1);
+                        // A signal reference takes the next register as well.
+                        if ty == RegTy::Sig {
+                            self.reg_ty.push(RegTy::I64);
+                        }
+                        reg
                     }
                 };
                 fresh[p].push(reg);
@@ -908,16 +932,44 @@ impl Sink<'_> {
     }
 }
 
+impl Sink<'_> {
+    fn find_preds(&mut self) {
+        let nb = self.code.len();
+        self.preds = vec![Vec::new(); nb];
+        for b in 0..nb {
+            for t in self.succs(b) {
+                let t = t as usize;
+                if t < nb && !self.preds[t].contains(&(b as u32)) {
+                    self.preds[t].push(b as u32);
+                }
+            }
+        }
+    }
+
+    /// Sink what can be sunk, run by run, until nothing moves (at most 8 runs).
+    fn sink_all(&mut self) -> bool {
+        let mut changed = false;
+        for _ in 0..8 {
+            self.live_in.clear();
+            let mut any = false;
+            for x in 0..self.code.len() {
+                if self.code[x].len() > MIN_REPLAY && self.try_block(x) {
+                    any = true;
+                    break;
+                }
+            }
+            if !any {
+                break;
+            }
+            changed = true;
+        }
+        changed
+    }
+}
+
 fn set_list(i: &mut Inst, l: crate::Regs) {
-    match i {
-        Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => *parts = l,
-        Inst::Call { args, .. }
-        | Inst::CallNative { args, .. }
-        | Inst::CallForeign { args, .. }
-        | Inst::CallIndirect { args, .. }
-        | Inst::CallProt { args, .. }
-        | Inst::Elab { args, .. } => *args = l,
-        _ => {}
+    if let Some(slot) = i.list_mut() {
+        *slot = l;
     }
 }
 
@@ -960,12 +1012,16 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
     let mut ro = vec![false; f.reg_ty.len()];
     let mut frame = vec![false; f.reg_ty.len()];
     let mut konst = vec![None; f.reg_ty.len()];
+    let mut addr = vec![None; f.reg_ty.len()];
     for i in &f.code {
         i.visit(&mut |r, role, _| {
             if role == Role::Def {
                 defs[r.0 as usize] = defs[r.0 as usize].saturating_add(1);
             }
         });
+        if let Inst::AddrOf { dst, space, off } = *i {
+            addr[dst.0 as usize] = Some((space, off));
+        }
         match *i {
             Inst::AddrOf {
                 dst,
@@ -986,6 +1042,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
             ro[r] = false;
             frame[r] = false;
             konst[r] = None;
+            addr[r] = None;
         }
     }
     let mut s = Sink {
@@ -999,34 +1056,23 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
         ro,
         frame,
         konst,
+        addr,
         live_in: Vec::new(),
+        replay: Vec::new(),
     };
-    for b in 0..nb {
-        for t in s.succs(b) {
-            let t = t as usize;
-            if t < nb && !s.preds[t].contains(&(b as u32)) {
-                s.preds[t].push(b as u32);
-            }
-        }
-    }
-    let mut changed = false;
-    for _ in 0..8 {
-        s.live_in.clear();
-        let mut any = false;
-        for x in 0..nb {
-            if s.code[x].len() > MIN_SUNK && s.try_block(x) {
-                any = true;
-                break;
-            }
-        }
-        if !any {
-            break;
-        }
+    s.find_preds();
+    let mut changed = s.sink_all();
+    // A call repeated on the same value is made once (`calls.rs`); what its second argument
+    // built then sinks in front of the replay.
+    if s.share_calls() {
+        s.find_preds();
+        s.sink_all();
         changed = true;
     }
     if !changed {
         return false;
     }
+    let nb = s.code.len();
     let (mut code, mut locs, mut vias) = (Vec::new(), Vec::new(), Vec::new());
     let has_via = !f.via.is_empty() || s.via.iter().any(|v| !v.is_empty());
     for b in 0..nb {
@@ -1040,9 +1086,15 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) -> bool {
                 vias.extend_from_slice(&s.via[b]);
             }
         }
-        if let Some(blk) = f.blocks.get_mut(BlockId(b as u32)) {
-            blk.start = start;
-            blk.end = code.len() as u32;
+        let end = code.len() as u32;
+        match f.blocks.get_mut(BlockId(b as u32)) {
+            Some(blk) => {
+                blk.start = start;
+                blk.end = end;
+            }
+            None => {
+                f.blocks.push(crate::Block { start, end });
+            }
         }
     }
     f.code = code;

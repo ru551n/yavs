@@ -398,6 +398,39 @@ pub fn collect(
     (out, warns)
 }
 
+/// `v` in decimal.
+fn push_num(s: &mut String, mut v: u64) {
+    let mut b = [0u8; 20];
+    let mut i = b.len();
+    loop {
+        i -= 1;
+        b[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    s.extend(b[i..].iter().map(|&c| c as char));
+}
+
+/// The ids of `tests` (renumbered by `id`) in sorted order, comma-separated; `-` for none.
+fn push_tests(s: &mut String, tests: &[u32], id: &[usize]) {
+    match tests {
+        [] => s.push('-'),
+        [one] => push_num(s, id[*one as usize] as u64),
+        _ => {
+            let mut t: Vec<usize> = tests.iter().map(|&i| id[i as usize]).collect();
+            t.sort_unstable();
+            for (n, v) in t.iter().enumerate() {
+                if n > 0 {
+                    s.push(',');
+                }
+                push_num(s, *v as u64);
+            }
+        }
+    }
+}
+
 impl Database {
     /// The text form: a header line, the tests section (`test`, id, name; ids number the
     /// names in sorted order), then one tab-separated line per item, sorted by key.
@@ -415,14 +448,30 @@ impl Database {
             id[old] = new;
             let _ = writeln!(s, "test\t{new}\t{}", self.tests[old]);
         }
+        // About 150 bytes a line: one allocation for the database of a large design.
+        s.reserve(self.items.len() * 150);
         for (k, e) in &self.items {
-            let mut t: Vec<usize> = e.tests.iter().map(|&i| id[i as usize]).collect();
-            t.sort_unstable();
-            let t = if t.is_empty() {
-                "-".to_string()
-            } else {
-                t.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
-            };
+            if let Kind::Toggle(r) = k.kind {
+                // The common line, written without the formatting machinery.
+                s.push('t');
+                s.push(if r { '1' } else { '0' });
+                s.push('\t');
+                s.push_str(&k.path);
+                s.push('\t');
+                s.push_str(&k.sig);
+                s.push('\t');
+                push_num(&mut s, e.count);
+                s.push('\t');
+                push_tests(&mut s, &e.tests, &id);
+                s.push('\t');
+                push_num(&mut s, u64::from(e.line));
+                s.push('\t');
+                s.push_str(&e.file);
+                s.push('\n');
+                continue;
+            }
+            let mut t = String::new();
+            push_tests(&mut t, &e.tests, &id);
             let kind = match k.kind {
                 Kind::Statement => "s".to_string(),
                 Kind::Branch(a) => format!("b{a}"),
@@ -439,19 +488,7 @@ impl Database {
                     );
                     continue;
                 }
-                Kind::Toggle(r) => {
-                    let _ = writeln!(
-                        s,
-                        "t{}\t{}\t{}\t{}\t{t}\t{}\t{}",
-                        u8::from(r),
-                        k.path,
-                        k.sig,
-                        e.count,
-                        e.line,
-                        e.file
-                    );
-                    continue;
-                }
+                Kind::Toggle(_) => continue,
             };
             let _ = writeln!(
                 s,

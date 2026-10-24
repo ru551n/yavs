@@ -520,3 +520,19 @@ their own (`library_made`; a `spec` entry per closure would take one of the 96 e
 testbench of a suite). The copies cost 72 times 0.7 M = 50 M instructions of 99 G in `fletcher_bufferwriter_512` each run (0.05 %), so a
 `spec` entry outside the stage cache's key was not made; #671 would give it one.
 
+
+## 13. What the declarative part leaves in the frame (#678, 2026-10-24)
+
+Section 12 lists "folding the loads of pointer-typed instance data" as not worth it, because the body of a process reads its variables'
+descriptors through frame slots the declarative part filled, not through instance data. The frame is the next thing the copy can know:
+the copy takes over between two activations, and the declarative part is a function of the instance's data. `opt/decl.rs` runs it per
+copy on an abstract machine and gives the walk the words the body never writes (`docs/decisions.md` "Facts the declarative part leaves
+in a process copy", measurements in `docs/STATUS.md`). The copy of the LEON3 integer unit's `comb` loses all 551 `LayoutOf` and 653 `Field`
+of the interpreter's version; the interpreter gains little on most designs (`fletcher_bufferwriter_512` -9.0 %, `grlib_leon3mp` -4.8 %
+over the whole run) because it keeps a per-type layout memo and fuses `LayoutOf` with `Field`; the compiled tier, which answers each of
+them with a callback or a compare of the descriptor bytes, is where the IR count is the figure that matters (the copies exist under
+`--tier=auto`, not under `--tier=llvm`).
+
+The same machine is the natural place for the evaluation of pure calls with constant arguments at specialisation time that the reference
+simulator does (its elaboration folds calls of pure functions with constant arguments by running them), which `resize(INIT, q'length)` of
+PoC's `ffdre` (#701) needs; it has no model of a call yet (an unknown result, the arguments' memory unknown for good).

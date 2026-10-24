@@ -193,6 +193,9 @@ pub(crate) struct Fx<'a, 'b> {
     pub local_files: Vec<(u32, String, TyId)>,
     /// A process with a sensitivity list: its whole-value reads of composite signals (#630).
     pub sigcopy: Option<SigCopies>,
+    /// The bounds `(left, right, dir)` a one-dimensional descriptor was made from in a block
+    /// (`Inst::MakeDope`; only valid in that block), so a native `ieee` call takes them as values (#697).
+    pub made_dopes: Vec<(BlockId, Reg, (Reg, Reg, Reg))>,
 }
 
 /// The whole-value reads of record signals in a process with a sensitivity list. Such a process
@@ -245,6 +248,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             writeback_parts: Vec::new(),
             local_files: Vec::new(),
             sigcopy: None,
+            made_dopes: Vec::new(),
         }
     }
 
@@ -256,6 +260,18 @@ impl<'a, 'b> Fx<'a, 'b> {
             let b = self.fb.block();
             self.fb.at(b);
             self.live = true;
+        }
+        match i {
+            Inst::MakeDope { at, parts } if parts.len == 3 => {
+                if let Some(&[l, r, d]) = self.fb.list(parts) {
+                    let here = self.fb.current();
+                    self.made_dopes.retain(|e| e.0 == here);
+                    self.made_dopes.push((here, at, (l, r, d)));
+                }
+            }
+            // A register the bounds were read from may change.
+            Inst::Move { .. } => self.made_dopes.clear(),
+            _ => {}
         }
         self.fb.emit(i);
     }
@@ -1059,6 +1075,10 @@ pub(crate) fn subprogram(
         fx.fb.flag(FuncFlags::PURE);
     }
     fx.ret = sp.ret;
+    if let (SubprogramKind::Function { .. }, Some(r)) = (&sp.kind, sp.ret) {
+        let t = fx.ty(db.base(r), decl.span)?;
+        fx.fb.ret_ty(t);
+    }
     fx.stmt_start(StmtKind::Subprogram, decl.span);
     fx.method_prologue(d, *scope, depth, decl.span)?;
     // The body's own parameter declarations (a body completing a specification has its own
@@ -1203,6 +1223,8 @@ pub(crate) fn subprogram(
                 if dope != off + 8 {
                     return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
                 }
+                let t = fx.ty(db.base(p.subtype), decl.span)?;
+                fx.fb.param_array(off, t);
                 fx.fb.root(off, RootKind::Addr);
                 fx.fb.root(dope, RootKind::Addr);
                 Obj::Array {

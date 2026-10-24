@@ -1767,10 +1767,9 @@ fn strings_on_native_frames() {
     }
 }
 
-/// `inner(c)` keeps a four-element `std_ulogic_vector` of the code `c` and its descriptor in its
-/// own slots, makes the fat pair in temporary memory and calls the native `is_x` on it: the
-/// native reads the native frame's slots through the pair (indirect addresses, which only the
-/// frame windows resolve). `outer(c)` calls `inner(c)`. `half(a)` is `ceil(a / 4)` through a
+/// `inner(c)` keeps a four-element `std_ulogic_vector` of the code `c` in its own slots and calls
+/// the native `is_x` on it with the array as values: the native reads the native frame's slots
+/// through the data address (indirect addresses, which only the frame windows resolve). `outer(c)` calls `inner(c)`. `half(a)` is `ceil(a / 4)` through a
 /// real native and `FToI`.
 fn native_calls() -> (Program, FuncId, FuncId) {
     let mut pb = ProgramBuilder::new();
@@ -1786,7 +1785,6 @@ fn native_calls() -> (Program, FuncId, FuncId) {
         let mut fb = pb.define(inner);
         let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
         let planes = fb.slot(32, 8);
-        let dope_s = fb.slot(24, 8);
         stmt(&mut fb);
         let pc = fb.addr(AddrSpace::Frame, sc);
         let c = load(&mut fb, pc, Width::B8);
@@ -1825,26 +1823,9 @@ fn native_calls() -> (Program, FuncId, FuncId) {
             });
             q = next;
         }
-        // The descriptor 0 to 3 and the fat pair [data, dope].
-        let dp = fb.addr(AddrSpace::Frame, dope_s);
+        // The array as values: data, left 0, right 3, direction 0.
         let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
-        let parts = fb.regs(&[l, r, d]);
-        fb.emit(Inst::MakeDope { at: dp, parts });
-        let sixteen = fb.int(16);
-        let fat = alloc(&mut fb, sixteen);
-        fb.emit(Inst::Store {
-            addr: fat,
-            src: pl,
-            w: Width::B8,
-        });
-        let eight = fb.int(8);
-        let f8 = index(&mut fb, fat, eight);
-        fb.emit(Inst::Store {
-            addr: f8,
-            src: dp,
-            w: Width::B8,
-        });
-        let args = fb.regs(&[fat]);
+        let args = fb.regs(&[pl, l, r, d]);
         let x = fb.reg(RegTy::I64);
         fb.emit(Inst::CallNative {
             native: is_x,
@@ -2625,7 +2606,6 @@ fn frame_mode_ops() -> (Program, FuncId) {
     let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
     let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
     let planes = fb.slot(32, 8);
-    let dope_s = fb.slot(24, 8);
     stmt(&mut fb);
     let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
     let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
@@ -2672,25 +2652,8 @@ fn frame_mode_ops() -> (Program, FuncId) {
             w: Width::B8,
         });
     }
-    let dp = fb.addr(AddrSpace::Frame, dope_s);
     let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
-    let parts = fb.regs(&[l, r, d]);
-    fb.emit(Inst::MakeDope { at: dp, parts });
-    let sixteen = fb.int(16);
-    let fat = alloc(&mut fb, sixteen);
-    fb.emit(Inst::Store {
-        addr: fat,
-        src: pl,
-        w: Width::B8,
-    });
-    let eight = fb.int(8);
-    let f8 = index(&mut fb, fat, eight);
-    fb.emit(Inst::Store {
-        addr: f8,
-        src: dp,
-        w: Width::B8,
-    });
-    let args = fb.regs(&[fat]);
+    let args = fb.regs(&[pl, l, r, d]);
     let isx = fb.reg(RegTy::I64);
     fb.emit(Inst::CallNative {
         native: is_x,
@@ -2723,6 +2686,7 @@ fn frame_mode_ops() -> (Program, FuncId) {
     let stride = load(&mut fb, sp, Width::B8);
     // s := the byte at `cell`, then c.
     let total = fb.int(2);
+    let eight = fb.int(8);
     let cell = alloc(&mut fb, eight);
     fb.emit(Inst::Store {
         addr: cell,
@@ -2787,6 +2751,121 @@ fn natives_strings_and_layouts_in_frame_mode() {
         assert_eq!(a, b, "n {n} c {c}");
         assert!(a.is_ok() || n == 0, "{a:?}");
         assert_eq!(entries, 1, "n {n} c {c}");
+    }
+}
+
+/// A loop that redefines a register with a cached `LayoutOf` right after a deferred definition
+/// of it (#710): the layout the interpreter made must be what the frame keeps, not the value
+/// the earlier definition deferred.
+fn redefined_by_cached_layout() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let byte = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let arr = pb.ty(Ty::Array {
+        elem: byte,
+        elem_desc: None,
+        dims: 1,
+    });
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+    // The kept layout: a flag word, the 24-byte descriptor, the four layout words.
+    let kept = fb.slot(64, 8);
+    let sz = fb.param("z", Width::B8, ParamClass::Value, Mode::In, None);
+    let (head, body, done) = (fb.block(), fb.block(), fb.block());
+    stmt(&mut fb);
+    let pn = fb.addr(AddrSpace::Frame, sn);
+    let n = load(&mut fb, pn, Width::B8);
+    let pz = fb.addr(AddrSpace::Frame, sz);
+    let z = load(&mut fb, pz, Width::B8);
+    let (zero, one, dir, sixty4) = (fb.int(0), fb.int(1), fb.int(0), fb.int(64));
+    // Four words the layout is not, for the register to point at.
+    let junk = alloc(&mut fb, sixty4);
+    let junk_word = fb.int(7777);
+    for k in 0..4 {
+        let at = fb.int(8 * k);
+        let to = index(&mut fb, junk, at);
+        fb.emit(Inst::Store {
+            addr: to,
+            src: junk_word,
+            w: Width::B8,
+        });
+    }
+    let eight = fb.int(8);
+    let junk8 = index(&mut fb, junk, eight);
+    let last = fb.reg(RegTy::I64);
+    fb.emit(Inst::Bin {
+        op: IntOp::Sub,
+        dst: last,
+        a: n,
+        b: one,
+    });
+    let desc = dope(&mut fb, zero, last, dir);
+    let (i, acc, three) = (fb.int(0), fb.int(0), fb.int(2));
+    let lay = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Le,
+        dst: c,
+        a: i,
+        b: three,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: body,
+        f: done,
+    });
+    fb.at(body);
+    fb.emit(Inst::Select {
+        dst: lay,
+        c: z,
+        a: junk8,
+        b: junk,
+    });
+    // The register is live here, so its definition stays.
+    let jv = load(&mut fb, lay, Width::B8);
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: acc,
+        a: acc,
+        b: jv,
+    });
+    fb.emit(Inst::LayoutOf {
+        dst: lay,
+        ty: arr,
+        desc,
+        cache: Some(kept),
+    });
+    let size = load(&mut fb, lay, Width::B8);
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: acc,
+        a: acc,
+        b: size,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: i,
+        a: i,
+        b: one,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.at(done);
+    fb.emit(Inst::Ret { v: Some(acc) });
+    fb.finish();
+    (pb.finish().unwrap(), f)
+}
+
+#[test]
+fn cached_layout_replaces_a_deferred_value_of_its_register() {
+    let (prog, f) = redefined_by_cached_layout();
+    let p = Both::new(prog);
+    for n in [1u64, 5, 100] {
+        let (a, b, entries) = p.both(f, &[n, 0]);
+        assert_ne!(a, Ok(6 * 7777), "n {n}");
+        assert_eq!(a, b, "n {n}");
+        assert_eq!(entries, 1, "n {n}");
     }
 }
 

@@ -45,13 +45,13 @@ pub struct Config {
     /// A report of this severity or higher ends the simulation.
     pub stop_severity: Severity,
     /// Leave a process with an edge trigger suspended on an event that does not make its
-    /// edge true (`Builder::edge_trigger`). Off where every activation is observable:
-    /// statement coverage, a debugger, foreign callbacks.
+    /// edge true (`Builder::edge_trigger`). Off where every activation is observable: a
+    /// debugger, foreign callbacks (statement coverage counts the edges only, #707).
     pub edge_triggers: bool,
     /// A zero-delay assignment that gives an unguarded, not user-resolved signal the value it
     /// already has, when its driver has nothing pending, queues no transaction (the delta
     /// still happens). Only set where nothing reads activity: the design uses neither
-    /// `'active` nor `'last_active`, and no observer, coverage run or debugger sees it
+    /// `'active` nor `'last_active`, and no plugin or debugger sees it (coverage runs keep it: it changes no count, #707)
     /// (`docs/design/performance.md` R2b).
     pub skip_unchanged: bool,
     /// Leave a clocked process whose activation depends on nothing but signals suspended at an
@@ -62,6 +62,10 @@ pub struct Config {
     /// Run the activations `idle_skip` would skip anyway and panic when one does not do what
     /// the last one did (tests).
     pub idle_check: bool,
+    /// A signal of more than 64 elements that processes wait on parts of lists the changes
+    /// per cell (the stretch between two boundaries of the waited ranges), not per run of
+    /// changed elements (`Signal::watch_part`). Value-change observers still get exact runs.
+    pub cells: bool,
 }
 
 impl Default for Config {
@@ -76,6 +80,7 @@ impl Default for Config {
             skip_unchanged: false,
             idle_skip: true,
             idle_check: false,
+            cells: true,
         }
     }
 }
@@ -1105,7 +1110,7 @@ impl SimControl {
                     let sig = &mut signals[readers_start.len() - 1];
                     if r != Range::new(0, sig.ty.len) {
                         sig.watched = true;
-                        sig.fine = true;
+                        sig.watch_part(r, cfg.cells);
                     }
                     let g = g.map_or(NO_GUARD, |g| {
                         reader_guards.push(g);
@@ -1512,6 +1517,7 @@ impl SimControl {
             self.signals.iter_mut().for_each(|s| {
                 s.watched = true;
                 s.fine = true;
+                s.cuts = Box::default();
             });
         }
         let bits = |o: &dyn Observer, f: &dyn Fn(&dyn Observer, Phase) -> bool| {
@@ -1926,8 +1932,11 @@ impl SimControl {
                 sig.changed.clear();
                 continue;
             }
-            // Update order is element order, mostly: sort only when it is not.
-            if !sig.changed.is_sorted_by_key(|r| r.offset) {
+            // Update order is element order, mostly: sort only when it is not. Cells of one
+            // update overlap the runs of another: join them.
+            if !sig.cuts.is_empty() {
+                sig.canonical_changed();
+            } else if !sig.changed.is_sorted_by_key(|r| r.offset) {
                 sig.changed.sort_unstable_by_key(|r| r.offset);
             }
             let waiters = &mut self.waiters[s as usize];
@@ -3555,7 +3564,9 @@ impl SimControl {
             for &(s, range) in list {
                 let sig = &mut self.signals[s.0 as usize];
                 sig.watched = true;
-                sig.fine |= range != Range::new(0, sig.ty.len);
+                if range != Range::new(0, sig.ty.len) {
+                    sig.watch_part(range, self.cfg.cells && !self.watch_changes);
+                }
                 let procs = &self.procs;
                 self.waiters[s.0 as usize].add(
                     p,

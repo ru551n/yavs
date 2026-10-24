@@ -18,6 +18,17 @@ use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
 use crate::func::{Fx, Shape, func_of, shape};
 use crate::{Failed, Obj, R, Space, ty};
 
+/// How the array arguments of a call are passed.
+#[derive(Clone, Copy)]
+pub(crate) enum Conv {
+    /// A subprogram body: data and descriptor.
+    Body,
+    /// A native: the address of a fat pair `[data, descriptor]`.
+    Fat,
+    /// A native `ieee` subprogram: `data, left, right, dir` (`yavs_ir::ieee::ARRAY_REGS`).
+    Flat,
+}
+
 /// A value: a scalar cell, or an array as `(data address, descriptor address)`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum V {
@@ -86,6 +97,10 @@ pub(crate) struct Walk {
     offset: Reg,
     count: Reg,
     inst: Option<(TypeId, Reg)>,
+    /// The instances of the arrays an index or slice passed, `offset`'s units (all of them).
+    outer: Reg,
+    /// An index or slice was passed.
+    selected: bool,
 }
 
 /// The part of a composite signal that a name selects (`Fx::comp_select`).
@@ -97,19 +112,9 @@ pub(crate) struct SigPart {
     pub path: Vec<u32>,
     /// Each leaf below it, a reference to its selected elements and their count.
     pub leaves: Vec<(crate::RecLeaf, Reg, Reg)>,
-}
-
-impl SigPart {
-    /// The type and descriptor of a whole signal, with no leaves (`Fx::comp_head`).
-    fn head(t: TypeId, tid: TyId, desc: Reg) -> SigPart {
-        SigPart {
-            t,
-            tid,
-            desc,
-            path: Vec::new(),
-            leaves: Vec::new(),
-        }
-    }
+    /// For `SigGather`/`SigScatter`: the first element and the number of elements of the
+    /// outermost array of the part, and of the signal it is a part of (`None`: the whole signal).
+    pub part: Option<yavs_ir::Part>,
 }
 
 fn dir_cell(d: Direction) -> i64 {
@@ -473,13 +478,14 @@ impl<'a> Fx<'a, '_> {
                     return Ok(V::A(data, desc));
                 }
                 if let Some(tab) = self.rec_table(d, span)? {
-                    let p = self.comp_head(d, span)?;
+                    let p = self.comp_head(d, &[], span)?;
                     let size = self.size_of(p.tid, p.desc);
                     let val = self.alloc(size);
                     self.emit(Inst::SigGather {
                         dst: val,
                         desc: p.desc,
                         tab,
+                        part: None,
                     });
                     return Ok(V::A(val, p.desc));
                 }
@@ -1346,10 +1352,38 @@ impl<'a> Fx<'a, '_> {
 
     /// The type and descriptor of record signal `d` as a whole, without its leaves (a read or
     /// drive through a leaf table, `rec_table`).
-    pub(crate) fn comp_head(&mut self, d: DeclId, span: Span) -> R<SigPart> {
-        let (_, _, w) = self.comp_walk(d, &[], span)?;
+    pub(crate) fn comp_head(&mut self, d: DeclId, steps: &[Step<'_>], span: Span) -> R<SigPart> {
+        let (_, _, w) = self.comp_walk(d, steps, span)?;
         let tid = self.ty(w.t, span)?;
-        Ok(SigPart::head(w.t, tid, w.desc))
+        let part = self.part_regs(&w, tid);
+        Ok(SigPart {
+            t: w.t,
+            tid,
+            desc: w.desc,
+            path: w.path,
+            leaves: Vec::new(),
+            part,
+        })
+    }
+
+    /// The first element and the number of elements of the outermost array of a walk's part and
+    /// of the signal it is a part of, in the units of the elements of the part's value: `None`
+    /// for a part no index or slice selected (the whole signal or a field of it).
+    fn part_regs(&mut self, w: &Walk, tid: TyId) -> Option<yavs_ir::Part> {
+        if !w.selected {
+            return None;
+        }
+        let (first, outer) = if w.inst.is_none() && ty::is_array(self.db, w.t) {
+            // The whole value of an array field: its elements are the units.
+            let u = self.elems(tid, w.desc);
+            (
+                self.bin(IntOp::Mul, w.offset, u),
+                self.bin(IntOp::Mul, w.outer, u),
+            )
+        } else {
+            (w.offset, w.outer)
+        };
+        Some(yavs_ir::Part { first, outer })
     }
 
     /// The part of composite signal `d` that `steps` select, with a reference to the selected
@@ -1360,6 +1394,8 @@ impl<'a> Fx<'a, '_> {
         let db = self.db;
         let root_t = db.base(ty::obj_subtype(db, d).ok_or(Failed)?);
         let (param, root, w) = self.comp_walk(d, steps, span)?;
+        let tid = self.ty(w.t, span)?;
+        let part = self.part_regs(&w, tid);
         let (t, desc, path, offset, count) = (w.t, w.desc, w.path, w.offset, w.count);
         let (it, idesc) = w.inst.unwrap_or((t, desc));
         let mut leaves = Vec::new();
@@ -1386,13 +1422,13 @@ impl<'a> Fx<'a, '_> {
             };
             leaves.push((l, r, len));
         }
-        let tid = self.ty(t, span)?;
         Ok(SigPart {
             t,
             tid,
             desc,
             path,
             leaves,
+            part,
         })
     }
 
@@ -1409,6 +1445,8 @@ impl<'a> Fx<'a, '_> {
         let (mut t, mut desc) = (root_t, root);
         let mut path = Vec::new();
         let (mut offset, mut count) = (self.int(0), self.int(1));
+        let mut outer = self.int(1);
+        let mut selected = false;
         let mut inst: Option<(TypeId, Reg)> = None;
         for s in steps {
             let tid = self.ty(t, span)?;
@@ -1432,7 +1470,9 @@ impl<'a> Fx<'a, '_> {
                         let n = self.elems(tid, desc);
                         let o = self.bin(IntOp::Mul, offset, n);
                         offset = self.bin(IntOp::Add, o, lin);
+                        outer = self.bin(IntOp::Mul, outer, n);
                     }
+                    selected = true;
                     desc = self.elem_desc(tid, desc)?.1;
                     t = db.base(ty::array_of(db, t).ok_or(Failed)?.0);
                 }
@@ -1445,9 +1485,11 @@ impl<'a> Fx<'a, '_> {
                         let n = self.elems(tid, desc);
                         let o = self.bin(IntOp::Mul, offset, n);
                         offset = self.bin(IntOp::Add, o, p);
+                        outer = self.bin(IntOp::Mul, outer, n);
                         let ed = self.elem_desc(tid, desc)?.1;
                         inst = Some((db.base(ty::array_of(db, t).ok_or(Failed)?.0), ed));
                     }
+                    selected = true;
                     count = len;
                     desc = self.slice_desc(tid, desc, nd);
                 }
@@ -1460,6 +1502,8 @@ impl<'a> Fx<'a, '_> {
             offset,
             count,
             inst,
+            outer,
+            selected,
         })
     }
 
@@ -1705,7 +1749,7 @@ impl<'a> Fx<'a, '_> {
         self.fb.at(head);
         self.live = true;
         let table = self.rec_table(d, span)?;
-        let p = self.comp_head(d, span)?;
+        let p = self.comp_head(d, &[], span)?;
         let ds = self.desc_size(p.tid);
         let size = self.size_of(p.tid, p.desc);
         let h = self.reg(RegTy::Handle);
@@ -1749,6 +1793,7 @@ impl<'a> Fx<'a, '_> {
                 dst: data,
                 desc: cdesc,
                 tab,
+                part: None,
             }),
             None => {
                 let p = self.comp_select(d, &[], span)?;
@@ -2853,7 +2898,7 @@ impl<'a> Fx<'a, '_> {
         match &sp.body {
             Body::Implicit(op) => self.implicit(op, sp, args, span),
             Body::Native(sym) => {
-                let cells = self.cells(sp, args, span, true)?;
+                let cells = self.cells(sp, args, span, Conv::Fat)?;
                 let r = self.native(sym.as_str(), None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
@@ -2879,7 +2924,7 @@ impl<'a> Fx<'a, '_> {
                     (true, Some(p)) => Some(self.ty(db.base(p.subtype), span)?),
                     _ => None,
                 };
-                let cells = self.cells(sp, args, span, true)?;
+                let cells = self.cells(sp, args, span, Conv::Flat)?;
                 let r = self.native(&sym, ty, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
@@ -2893,14 +2938,14 @@ impl<'a> Fx<'a, '_> {
             {
                 let gate = crate::reduce::reduction(db, callee)
                     .ok_or_else(|| self.cx.ice(span, "reduction idiom"))?;
-                let cells = self.cells(sp, args, span, true)?;
+                let cells = self.cells(sp, args, span, Conv::Flat)?;
                 let r = self.native(&crate::reduce::symbol(gate), None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
             }
             Body::Hir { scope, .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
-                let mut cells = self.cells(sp, args, span, false)?;
+                let mut cells = self.cells(sp, args, span, Conv::Body)?;
                 self.named_return_cells(callee, *scope, res, span, &mut cells)?;
                 let args = self.fb.regs(&cells);
                 let Some(ret) = sp.ret else {
@@ -3002,14 +3047,36 @@ impl<'a> Fx<'a, '_> {
         fat
     }
 
+    /// An array argument as the cells of `conv`.
+    pub(crate) fn array_cells(&mut self, conv: Conv, data: Reg, dope: Reg, cells: &mut Vec<Reg>) {
+        match conv {
+            Conv::Body => cells.extend([data, dope]),
+            Conv::Fat => cells.push(self.make_fat(data, dope)),
+            Conv::Flat => {
+                let (l, r, d) = self.dope_bounds(dope);
+                cells.extend([data, l, r, d]);
+            }
+        }
+    }
+
+    /// Left, right and direction of the one-dimensional descriptor `dope`: the registers it was
+    /// made from in this block, else loaded from it.
+    fn dope_bounds(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
+        let here = self.fb.current();
+        match (self.made_dopes.iter().rev()).find(|(b, at, _)| *b == here && *at == dope) {
+            Some(&(_, _, bounds)) => bounds,
+            None => self.dope_parts(dope),
+        }
+    }
+
     /// Argument cells in formal order (DESIGN.md "Subprograms"); natives take arrays as the
-    /// address of a fat pair.
+    /// address of a fat pair, or as values for `ieee` natives ([`Conv`]).
     pub(crate) fn cells(
         &mut self,
         sp: &Subprogram,
         args: &[Arg],
         span: Span,
-        native: bool,
+        conv: Conv,
     ) -> R<Vec<Reg>> {
         let db = self.db;
         let mut cells = Vec::new();
@@ -3018,7 +3085,7 @@ impl<'a> Fx<'a, '_> {
                 return Err(self.cx.ice(span, "argument for a missing formal"));
             };
             if let Actual::Individual(parts) = &a.actual {
-                self.individual_cells(p, parts, native, span, &mut cells)?;
+                self.individual_cells(p, parts, conv, span, &mut cells)?;
                 continue;
             }
             if let Actual::Converted {
@@ -3028,7 +3095,7 @@ impl<'a> Fx<'a, '_> {
                 ..
             } = &a.actual
             {
-                self.converted_cells(p, *actual, *copy_in, *out, native, span, &mut cells)?;
+                self.converted_cells(p, *actual, *copy_in, *out, conv, span, &mut cells)?;
                 continue;
             }
             let e = self.actual(a, p, span)?;
@@ -3166,11 +3233,7 @@ impl<'a> Fx<'a, '_> {
                     if ty::array_of(db, db.base(p.subtype)).is_some() {
                         dope = self.param_dope(p.subtype, dope, &p.name.text.to_string(), es)?;
                     }
-                    if native {
-                        cells.push(self.make_fat(data, dope));
-                    } else {
-                        cells.extend([data, dope]);
-                    }
+                    self.array_cells(conv, data, dope, &mut cells);
                 }
             }
         }
@@ -4745,11 +4808,22 @@ impl<'a> Fx<'a, '_> {
         let Some((d, steps)) = self.comp_steps(e) else {
             return Ok(None);
         };
-        // ponytail: slices of an array of records still read all of it.
-        if !steps
-            .iter()
-            .all(|s| matches!(s, Step::Field(_) | Step::Index(_)))
-        {
+        let fi = |s: &[Step<'_>]| {
+            s.iter()
+                .all(|s| matches!(s, Step::Field(_) | Step::Index(_)))
+        };
+        let last_slice = match steps.split_last() {
+            Some((Step::Slice(_), rest)) => fi(rest),
+            _ => false,
+        };
+        if !fi(&steps) && !last_slice {
+            return Ok(None);
+        }
+        if let Some(v) = self.gather_part(e, d, &steps, span)? {
+            return Ok(Some(v));
+        }
+        // ponytail: slices of an array of records without a leaf table still read all of it.
+        if last_slice {
             return Ok(None);
         }
         let p = self.comp_select(d, &steps, span)?;
@@ -4775,6 +4849,43 @@ impl<'a> Fx<'a, '_> {
             return Ok(Some(V::S(f)));
         }
         Ok(Some(V::S(dst)))
+    }
+
+    /// A part of record signal `d` that is a record or an array of records with more than a
+    /// scalar leaf below it, read by one `SigGather` (`None`: not such a part, or no leaf table).
+    fn gather_part(
+        &mut self,
+        e: ExprId,
+        d: DeclId,
+        steps: &[Step<'_>],
+        span: Span,
+    ) -> R<Option<V>> {
+        let db = self.db;
+        let tid = self.ty(db.base(db.exprs[e].subtype), span)?;
+        let path: Vec<u32> = steps
+            .iter()
+            .filter_map(|s| match *s {
+                Step::Field(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        let leaves = self.leaves_under(d, &path);
+        if matches!(leaves.as_slice(), [l] if l.path == path) || !self.part_value_ok(steps, tid) {
+            return Ok(None);
+        }
+        let Some(tab) = self.table_for(d, &path, tid, span)? else {
+            return Ok(None);
+        };
+        let h = self.comp_head(d, steps, span)?;
+        let size = self.size_of(h.tid, h.desc);
+        let val = self.alloc(size);
+        self.emit(Inst::SigGather {
+            dst: val,
+            desc: h.desc,
+            tab,
+            part: h.part,
+        });
+        Ok(Some(V::A(val, h.desc)))
     }
 
     /// `s(i)` of an array signal `s` of this unit with scalar elements: read that element

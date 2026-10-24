@@ -100,19 +100,6 @@ fn operands(f: &crate::Func, i: &Inst, mut g: impl FnMut(Reg, Role)) {
     }
 }
 
-fn list_mut(i: &mut Inst) -> Option<&mut crate::Regs> {
-    match i {
-        Inst::MakeDope { parts, .. } | Inst::Cat { parts, .. } => Some(parts),
-        Inst::Call { args, .. }
-        | Inst::CallNative { args, .. }
-        | Inst::CallForeign { args, .. }
-        | Inst::CallIndirect { args, .. }
-        | Inst::CallProt { args, .. }
-        | Inst::Elab { args, .. } => Some(args),
-        _ => None,
-    }
-}
-
 pub(super) fn successors(prog: &Program, f: &crate::Func) -> Vec<Vec<usize>> {
     f.blocks
         .values()
@@ -1114,7 +1101,7 @@ pub(super) fn run(prog: &Program, f: &mut crate::Func) {
                     rs.iter()
                         .map(|r| Reg(map.get(&r.0).copied().unwrap_or(r.0))),
                 );
-                if let Some(slot) = list_mut(&mut ins) {
+                if let Some(slot) = ins.list_mut() {
                     *slot = crate::Regs {
                         start,
                         len: rs.len() as u32,

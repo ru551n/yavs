@@ -48,10 +48,6 @@ pub trait Generator: Send {
         0
     }
 
-    /// Microseconds of compile time per IR instruction to start with; the thread replaces it by
-    /// what it measures.
-    fn start_us(&self) -> f64;
-
     /// The level this generator compiles `f` at when `level` is asked for.
     fn level_for(&self, _prog: &Program, _f: &Func, level: OptLevel) -> OptLevel {
         level

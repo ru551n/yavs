@@ -27,6 +27,8 @@ use crate::types::{Resolution, TypeKind};
 
 /// The reads of a pure body, each with the literals that hold whenever it is read.
 type GReads = Vec<(Lsp, Vec<GuardLit>)>;
+/// Guards under which a pure process does something impure (`PureRead::lsp` `None`).
+type Dead = Vec<Vec<GuardLit>>;
 
 /// What a name denotes at its root, after following object aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -941,6 +943,7 @@ impl Db {
             }
         }
         let mut reads = GReads::new();
+        let mut dead = Dead::new();
         for &c in conds {
             if !self.pure_tree(c) {
                 return None;
@@ -951,37 +954,140 @@ impl Db {
         }
         for body in bodies {
             if !self.vars_assigned_first(body, &vars)
-                || !self.pure_stmts(body, &vars, &mut Vec::new(), &mut reads)
+                || !self.pure_stmts(body, &vars, &mut Vec::new(), &mut reads, &mut dead)
             {
                 return None;
             }
         }
-        Some(self.coarse_reads(reads))
+        let mut out = self.coarse_reads(reads);
+        out.extend(dead.into_iter().map(|g| PureRead {
+            lsp: None,
+            guard: Some(vec![g]),
+        }));
+        Some(out)
     }
 
-    /// Whether every variable of `vars` that `body` mentions is assigned as a whole by a
-    /// top-level statement before any statement mentions it otherwise.
+    /// Whether every variable of `vars` that `body` mentions is assigned on every path before any
+    /// statement mentions it otherwise: no value of a variable outlives an activation. `v := ...;`
+    /// assigns the whole variable and `v.f := ...;` (a chain of record fields) that field; a
+    /// mention of a field is met by an assignment of the field or of what contains it. An `if` or
+    /// `case` assigns what all its arms assign, a loop nothing (it may run no iteration).
     fn vars_assigned_first(&self, body: &[StmtId], vars: &[DeclId]) -> bool {
-        let mut defined: Vec<DeclId> = Vec::new();
+        self.defined_before_use(body, vars, &mut Vec::new())
+    }
+
+    /// A variable of `vars` and the record fields (element numbers) down from it, when `e` is a
+    /// chain of field selections from such a variable.
+    fn var_path(&self, e: ExprId, vars: &[DeclId]) -> Option<(DeclId, Vec<u32>)> {
+        match &self.exprs[e].kind {
+            ExprKind::Obj(d) if vars.contains(d) => Some((*d, Vec::new())),
+            ExprKind::Field { prefix, elem } => {
+                let (d, mut path) = self.var_path(*prefix, vars)?;
+                path.push(*elem);
+                Some((d, path))
+            }
+            _ => None,
+        }
+    }
+
+    /// `vars_assigned_first` of a statement list, with `defined` the variables and fields assigned
+    /// on every path to it; on return, those assigned on every path through it.
+    fn defined_before_use(
+        &self,
+        body: &[StmtId],
+        vars: &[DeclId],
+        defined: &mut Vec<(DeclId, Vec<u32>)>,
+    ) -> bool {
+        // `(v, path)` is assigned when it, or a prefix of it, is.
+        let covered = |defined: &[(DeclId, Vec<u32>)], v: DeclId, path: &[u32]| {
+            defined.iter().any(|(d, q)| *d == v && path.starts_with(q))
+        };
         for &s in body {
-            // The target of a whole-variable assignment is not a mention that reads.
+            // The target of an assignment of a variable or one of its fields is not a mention
+            // that reads.
             let def = match &self.stmts[s].kind {
-                StmtKind::VarAssign { target, .. } => match self.exprs[target.expr].kind {
-                    ExprKind::Obj(v) if vars.contains(&v) => Some((v, target.expr)),
-                    _ => None,
-                },
+                StmtKind::VarAssign { target, .. } => {
+                    self.var_path(target.expr, vars).map(|p| (target.expr, p))
+                }
                 _ => None,
             };
-            let mut used = Vec::new();
-            self.stmt_var_uses(s, vars, def.map(|(_, e)| e), &mut used);
-            // What the statement mentions (the target of a defining one apart) is assigned.
-            if !used.iter().all(|u| defined.contains(u)) {
+            // What the statement itself mentions (not its nested statements): the longest chain
+            // of field selections from each variable.
+            let mut used: Vec<(DeclId, Vec<u32>)> = Vec::new();
+            let mut inner: Vec<ExprId> = Vec::new();
+            self.stmt_exprs(s, &mut |e, _| {
+                if Some(e) == def.as_ref().map(|(t, _)| *t) {
+                    return;
+                }
+                self.walk_expr(e, &mut |x| {
+                    if inner.contains(&x) {
+                        return;
+                    }
+                    if let Some(p) = self.var_path(x, vars) {
+                        used.push(p);
+                        // The selections inside the chain are part of it.
+                        let mut n = x;
+                        while let ExprKind::Field { prefix, .. } = &self.exprs[n].kind {
+                            inner.push(*prefix);
+                            n = *prefix;
+                        }
+                    }
+                });
+            });
+            if !used.iter().all(|(v, path)| covered(defined, *v, path)) {
                 return false;
             }
-            if let Some((v, _)) = def
-                && !defined.contains(&v)
-            {
-                defined.push(v);
+            // The arms start from what is assigned now; what follows is what all of them assign.
+            let arms: Vec<&[StmtId]> = match &self.stmts[s].kind {
+                StmtKind::If { branches, else_ } => branches
+                    .iter()
+                    .map(|(_, b)| &b[..])
+                    .chain(else_.as_deref())
+                    .collect(),
+                StmtKind::Case { alts, .. } => alts.iter().map(|(_, b)| &b[..]).collect(),
+                _ => Vec::new(),
+            };
+            let mut after: Option<Vec<(DeclId, Vec<u32>)>> = None;
+            for arm in &arms {
+                let mut d = defined.clone();
+                if !self.defined_before_use(arm, vars, &mut d) {
+                    return false;
+                }
+                after = Some(match after {
+                    None => d,
+                    Some(a) => {
+                        let mut both: Vec<(DeclId, Vec<u32>)> = Vec::new();
+                        for (v, path) in a.iter().chain(d.iter()) {
+                            if covered(&a, *v, path)
+                                && covered(&d, *v, path)
+                                && !both.contains(&(*v, path.clone()))
+                            {
+                                both.push((*v, path.clone()));
+                            }
+                        }
+                        both
+                    }
+                });
+            }
+            match &self.stmts[s].kind {
+                // No `else`: the path that takes no branch assigns nothing more.
+                StmtKind::If { else_: None, .. } => {}
+                StmtKind::If { .. } | StmtKind::Case { .. } => {
+                    if let Some(a) = after {
+                        *defined = a;
+                    }
+                }
+                // Any other statement with nested ones (a loop may run no iteration): checked
+                // from here, and assigning nothing afterwards.
+                _ => {
+                    let nested = self.stmt_children(s);
+                    if !self.defined_before_use(&nested, vars, &mut defined.clone()) {
+                        return false;
+                    }
+                }
+            }
+            if let Some((_, p)) = def {
+                defined.push(p);
             }
         }
         true
@@ -1028,7 +1134,10 @@ impl Db {
                 .unwrap_or(l.path.len());
             l.path = l.path[..k].into();
             let g = (!g.is_empty()).then_some(g);
-            match out.iter_mut().find(|r| self.same_lsp(&r.lsp, &l)) {
+            match out
+                .iter_mut()
+                .find(|r| r.lsp.as_ref().is_some_and(|x| self.same_lsp(x, &l)))
+            {
                 Some(r) => {
                     r.guard = match (r.guard.take(), g) {
                         (Some(mut a), Some(b)) => {
@@ -1041,7 +1150,7 @@ impl Db {
                     }
                 }
                 None => out.push(PureRead {
-                    lsp: l,
+                    lsp: Some(l),
                     guard: g.map(|g| vec![g]),
                 }),
             }
@@ -1179,8 +1288,10 @@ impl Db {
         vars: &[DeclId],
         g: &mut Vec<GuardLit>,
         reads: &mut GReads,
+        dead: &mut Dead,
     ) -> bool {
-        body.iter().all(|&s| self.pure_stmt(s, vars, g, reads))
+        body.iter()
+            .all(|&s| self.pure_stmt(s, vars, g, reads, dead))
     }
 
     /// `g` is the conjunction of literals that every activation reaching `s` satisfies (from the
@@ -1191,6 +1302,7 @@ impl Db {
         vars: &[DeclId],
         g: &mut Vec<GuardLit>,
         reads: &mut GReads,
+        dead: &mut Dead,
     ) -> bool {
         use crate::hir::Delay;
         let kind_ok = match &self.stmts[s].kind {
@@ -1221,29 +1333,42 @@ impl Db {
             return false;
         }
         // An `if`: each branch is read under its own condition and the negation of the earlier
-        // ones when those are single literals.
+        // ones when those are single literals. A branch that is not pure (its condition or its
+        // body) but can only run where a condition of constants and generics holds (debug code:
+        // `if rising_edge(clk) and DEBUG then report ...`) is a guard under which the process is
+        // not pure, not a failure: it is pure in the instances where that condition is false.
         if let StmtKind::If { branches, else_ } = &self.stmts[s].kind {
             let mark = g.len();
             let mut ok = true;
             for (c, body) in branches.iter() {
-                if !self.pure_tree_in(*c, vars) {
-                    ok = false;
-                    break;
-                }
-                let mut r = Vec::new();
-                self.reads(*c, &mut r);
-                reads.extend(r.into_iter().map(|l| (l, g.clone())));
                 let lits = self.cond_lits(*c, true);
+                let (mut r2, mut d2) = (GReads::new(), Dead::new());
                 let at = g.len();
-                match &lits {
-                    Some(l) => g.extend(l.iter().cloned()),
-                    None => g.extend(self.cond_lits(*c, false).into_iter().flatten()),
+                let mut branch_ok = self.pure_tree_in(*c, vars);
+                if branch_ok {
+                    let mut r = Vec::new();
+                    self.reads(*c, &mut r);
+                    r2.extend(r.into_iter().map(|l| (l, g.clone())));
+                    match &lits {
+                        Some(l) => g.extend(l.iter().cloned()),
+                        None => g.extend(self.cond_lits(*c, false).into_iter().flatten()),
+                    }
+                    branch_ok = self.pure_stmts(body, vars, g, &mut r2, &mut d2);
+                    g.truncate(at);
                 }
-                let body_ok = self.pure_stmts(body, vars, g, reads);
-                g.truncate(at);
-                if !body_ok {
-                    ok = false;
-                    break;
+                if branch_ok {
+                    reads.extend(r2);
+                    dead.extend(d2);
+                } else {
+                    let mut gc = g.clone();
+                    gc.extend(self.cond_lits(*c, false).into_iter().flatten());
+                    // The condition is evaluated whatever the constants say: it must have no effect.
+                    if !gc.iter().any(|l| l.pos == crate::hir::GUARD_CONST) || !self.effect_free(*c)
+                    {
+                        ok = false;
+                        break;
+                    }
+                    dead.push(gc);
                 }
                 if let Some([l]) = lits.as_deref() {
                     g.push(GuardLit {
@@ -1252,10 +1377,17 @@ impl Db {
                     });
                 }
             }
-            ok = ok
-                && else_
-                    .as_ref()
-                    .is_none_or(|b| self.pure_stmts(b, vars, g, reads));
+            if ok && let Some(b) = else_ {
+                let (mut r2, mut d2) = (GReads::new(), Dead::new());
+                if self.pure_stmts(b, vars, g, &mut r2, &mut d2) {
+                    reads.extend(r2);
+                    dead.extend(d2);
+                } else if g.iter().any(|l| l.pos == crate::hir::GUARD_CONST) {
+                    dead.push(g.clone());
+                } else {
+                    ok = false;
+                }
+            }
             g.truncate(mark);
             return ok;
         }
@@ -1267,7 +1399,7 @@ impl Db {
         let mut r = Vec::new();
         self.stmt_reads(s, &mut r);
         reads.extend(r.into_iter().map(|l| (l, g.clone())));
-        self.pure_stmts(&self.stmt_children(s), vars, g, reads)
+        self.pure_stmts(&self.stmt_children(s), vars, g, reads, dead)
     }
 
     /// The literals whose conjunction `c` is, when it is made of `x = c`, `x /= c`, a BIT or
@@ -1374,6 +1506,26 @@ impl Db {
             };
         });
         ok && named
+    }
+
+    /// Evaluating `e` changes nothing: it calls no impure function and no method of a protected
+    /// object.
+    fn effect_free(&self, e: ExprId) -> bool {
+        let mut ok = true;
+        self.walk_expr(e, &mut |x| {
+            if let ExprKind::Call {
+                callee, method_of, ..
+            } = &self.exprs[x].kind
+            {
+                let d = &self.decls[*callee];
+                ok &= method_of.is_none()
+                    && (d.implicit
+                        || d.kind.subprogram().is_some_and(|sp| {
+                            matches!(sp.kind, SubprogramKind::Function { pure: true })
+                        }));
+            }
+        });
+        ok
     }
 
     /// Every node of `e` is a constant, a signal, or a pure operation on them.

@@ -815,6 +815,124 @@ fn tiers_agree() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Under `--cov` the simulation replays the elaboration-time calls of package functions; those
+/// ran as lowered, and the process calls after them run the optimised code (#705).
+#[test]
+fn replayed_calls_run_optimised() {
+    let tmp = tempdir("replay");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_replay.vhd");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = yavs(
+        &tmp,
+        &["analyze", "--std=2008", &lib, src.to_str().expect("utf-8")],
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = yavs(
+        &tmp,
+        &[
+            "run",
+            "--std=2008",
+            &lib,
+            "cov_replay",
+            "--cov=r.ycov",
+            "--cov-kind=statement",
+            "--tier=interp",
+            "--no-cache",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// Clocked processes keep their edge triggers under coverage (#707): a process whose only wake-up
+/// condition is an edge runs at initialisation and at that edge, so the `if` of a pure edge test
+/// counts those runs and its false arm only the initial one. Every edge form behaves alike, at one
+/// and four threads.
+#[test]
+fn edge_triggers_count_their_edges() {
+    // (kind, line, count) of `tests/cli/cov_edge.vhd`: four rising and four falling edges.
+    const WANT: &[(&str, u32, u64)] = &[
+        // The clock generator: the loop body four times.
+        ("b0", 16, 4),
+        ("s", 16, 1),
+        ("s", 17, 4),
+        ("s", 18, 4),
+        ("s", 19, 4),
+        ("s", 20, 4),
+        ("s", 22, 1),
+        // `rising_edge`, `falling_edge` and `'event and = '1'`: one run at start and one per edge.
+        ("b0", 27, 4),
+        ("b1", 27, 1),
+        ("s", 27, 5),
+        ("s", 28, 4),
+        ("b0", 34, 4),
+        ("b1", 34, 1),
+        ("s", 34, 5),
+        ("s", 35, 4),
+        ("b0", 41, 4),
+        ("b1", 41, 1),
+        ("s", 41, 5),
+        ("s", 42, 4),
+        // `wait until` on an edge function and on a level.
+        ("s", 48, 5),
+        ("s", 49, 4),
+        ("s", 54, 5),
+        ("s", 55, 4),
+        // The checker.
+        ("s", 60, 1),
+        ("s", 61, 1),
+        ("s", 65, 1),
+        // A plain copy of the clock stays an interpreted process: once at start, once per event.
+        ("s", 69, 9),
+    ];
+    let tmp = tempdir("edge");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_edge.vhd");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = yavs(
+        &tmp,
+        &["analyze", "--std=2008", &lib, src.to_str().expect("utf-8")],
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let mut dbs = Vec::new();
+    for threads in ["1", "4"] {
+        let db = format!("e{threads}.ycov");
+        let o = yavs(
+            &tmp,
+            &[
+                "run",
+                "--std=2008",
+                &lib,
+                "cov_edge",
+                &format!("--cov={db}"),
+                "--cov-kind=statement,branch",
+                "--tier=interp",
+                "--threads",
+                threads,
+            ],
+        );
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        dbs.push(std::fs::read(tmp.join(&db)).expect("db"));
+    }
+    assert!(dbs[0] == dbs[1], "counts differ between 1 and 4 threads");
+    let mut got: Vec<(String, u32, u64)> = read(&tmp.join("e1.ycov"))
+        .items
+        .iter()
+        .map(|(k, e)| {
+            let kind = match k.kind {
+                Kind::Statement => "s".to_string(),
+                Kind::Branch(a) => format!("b{a}"),
+                _ => panic!("unexpected {:?}", k.kind),
+            };
+            (kind, e.line, e.count)
+        })
+        .collect();
+    got.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+    let want: Vec<_> = WANT
+        .iter()
+        .map(|&(k, l, c)| (k.to_string(), l, c))
+        .collect();
+    assert_eq!(got, want);
+}
+
 /// Per-instance copies, memoised blocks and inlined functions count exactly what the shared
 /// code counts: byte-identical databases for every kind, at one and four threads (#699).
 #[test]

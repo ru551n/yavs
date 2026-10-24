@@ -236,9 +236,10 @@ parts, in this order, each landing separately with byte-identical output at 1, 4
   "event" requirement, or a pure function call with signal and literal arguments) and
   `yavs-kernel` evaluates it in the serial wake step before scheduling the process. A false
   trigger means the process would have executed an `if` with a false condition and
-  re-suspended on the same list: no visible effect except statement counters, so triggers are
-  off whenever statement or branch coverage is on or a debugger is attached (the same rule the
-  reference simulator applies for coverage). Evaluating in the serial wake step keeps
+  re-suspended on the same list: no visible effect except statement counters. Triggers are off
+  while a debugger is attached; with coverage they stay on (user, 2026-10-24, #707): the
+  statement of a pure edge test counts the runs at initialisation and at its edge only.
+  Evaluating in the serial wake step keeps
   determinism trivial. Crates: `yavs-lower` (shape recognition), `yavs-ir` (descriptor),
   `yavs-kernel` (evaluation), `yavs-interp` (provide the descriptor through `Process`).
   Expected: about half the activations of a single-clock design disappear; with R2a to R2c the

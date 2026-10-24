@@ -351,9 +351,22 @@ fn check_inst(
         Inst::CallProt {
             func, args, dst, ..
         } => call(func, args.len + 1, dst.is_some(), err),
-        Inst::CallNative { native, .. } if prog.natives.get(native).is_none() => {
-            err(format!("missing native {native}"))
-        }
+        Inst::CallNative { native, args, .. } => match prog.natives.get(native) {
+            None => err(format!("missing native {native}")),
+            // An `ieee` native takes its array arguments as values (`ieee::ARRAY_REGS`).
+            Some(n) => {
+                if let Some(key) = crate::ieee::symbol_key(&n.symbol)
+                    && crate::ieee::arg_regs(key) != args.len as usize
+                {
+                    err(format!(
+                        "native `{}` takes {} argument registers, {} given",
+                        n.symbol,
+                        crate::ieee::arg_regs(key),
+                        args.len
+                    ));
+                }
+            }
+        },
         Inst::CallForeign { foreign, args, .. } => match prog.foreign.get(foreign) {
             None => err(format!("missing foreign subprogram {foreign}")),
             Some(x) if x.args.iter().map(|a| a.cells()).sum::<usize>() != args.len as usize => {

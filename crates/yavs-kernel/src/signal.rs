@@ -710,6 +710,11 @@ pub(crate) struct Signal {
     /// an observer wants the value changes. Else `changed` holds the cover of the runs
     /// (one range) and `nruns` counts them.
     pub fine: bool,
+    /// Ascending element offsets, strictly inside the signal, where a waited range starts or
+    /// ends (`watch_part`). Any: the signal is `fine` and `changed` lists per cell, not per run,
+    /// for a signal of more than 64 elements whose waiters wait for unions of the cells between
+    /// them: a change of a cell is any non-empty part of it.
+    pub cuts: Box<[u32]>,
     pub nruns: u64,
     /// Elements whose driving value a direct transaction wrote for the next update
     /// (`commit_code`, `commit_planes`),
@@ -783,6 +788,47 @@ fn cover(changed: &mut Vec<Range>, nruns: &mut u64, e: usize, len: u32, runs: u6
             *nruns -= 1;
         }
     }
+}
+
+/// Elements `m` (bit `i` is element `base + i`) of a block changed, on a signal that lists
+/// cells (`Signal::cells`): one note in each cell with a change. A waiter of a part waits for
+/// whole cells, so a note anywhere in a changed cell wakes it exactly when the exact runs
+/// would. A few runs are noted as they are; more are noted as the hull of the changes cut at
+/// the cuts, which are rare in a block.
+#[inline(always)]
+fn note_cells(changed: &mut Vec<Range>, nruns: &mut u64, cuts: &[u32], base: usize, m: u64) {
+    let runs = u64::from((m & !(m << 1)).count_ones());
+    if runs <= 2 {
+        let mut v = m;
+        while v != 0 {
+            let s = v.trailing_zeros();
+            let run = (v >> s).trailing_ones();
+            note_run(changed, nruns, true, true, base + s as usize, run);
+            v &= !(nmask(run as usize) << s);
+        }
+        return;
+    }
+    let (a, z) = (
+        base + m.trailing_zeros() as usize,
+        base + 64 - m.leading_zeros() as usize,
+    );
+    let before = changed.len();
+    let mut i = cuts.partition_point(|&c| c as usize <= a);
+    if cuts.get(i).is_none_or(|&c| c as usize >= z) {
+        note_run(changed, nruns, true, true, a, (z - a) as u32);
+    } else {
+        let mut lo = a;
+        while lo < z {
+            let hi = cuts.get(i).map_or(z, |&c| (c as usize).min(z));
+            if m & (nmask(hi - lo) << (lo - base)) != 0 {
+                note_run(changed, nruns, true, true, lo, (hi - lo) as u32);
+            }
+            lo = hi;
+            i += 1;
+        }
+    }
+    // The count of events stays the number of runs (the notes count themselves).
+    *nruns += runs.saturating_sub((changed.len() - before) as u64);
 }
 
 /// The longest logic signal that keeps `Signal::codes`.
@@ -913,6 +959,7 @@ impl Signal {
             fused_event: false,
             watched: false,
             fine: false,
+            cuts: Box::default(),
             nruns: 0,
             pend: Vec::new(),
             pend_words: Vec::new(),
@@ -942,6 +989,25 @@ impl Signal {
         }
     }
 
+    /// A process waits for, or reads, the part `r` (not the whole) of the signal: `changed` lists
+    /// what changed in it. With `cells` (and more than 64 elements) it lists per cell: the ends of
+    /// `r` become cuts, so every waited range stays a union of cells.
+    pub fn watch_part(&mut self, r: Range, cells: bool) {
+        self.fine = true;
+        if cells && self.ty.len > 64 {
+            for p in [r.offset, r.end()] {
+                if p > 0
+                    && p < self.ty.len
+                    && let Err(i) = self.cuts.binary_search(&p)
+                {
+                    let mut v = std::mem::take(&mut self.cuts).into_vec();
+                    v.insert(i, p);
+                    self.cuts = v.into_boxed_slice();
+                }
+            }
+        }
+    }
+
     /// Element run `e .. e + len` changed (`note_run`).
     #[inline(always)]
     fn note_run(&mut self, e: usize, len: u32) {
@@ -955,7 +1021,9 @@ impl Signal {
         );
     }
 
-    /// Put `changed` in ascending order and join the runs that touch.
+    /// Put `changed` in ascending order and join the runs that touch or overlap (cells overlap
+    /// the exact runs of other updates of the cycle).
+    #[inline(never)]
     pub fn canonical_changed(&mut self) {
         let runs = &mut self.changed;
         if runs.len() < 2 {
@@ -966,8 +1034,8 @@ impl Signal {
         }
         let mut k = 0;
         for i in 1..runs.len() {
-            if runs[k].end() == runs[i].offset {
-                runs[k].len += runs[i].len;
+            if runs[i].offset <= runs[k].end() {
+                runs[k].len = runs[k].end().max(runs[i].end()) - runs[k].offset;
             } else {
                 k += 1;
                 runs[k] = runs[i];
@@ -1427,6 +1495,7 @@ impl Signal {
             (&self.driving, off)
         };
         let mut any = false;
+        let cells = !self.cuts.is_empty();
         for c in (0..n).step_by(64) {
             let k = (n - c).min(64);
             let m = self.cur.diff_chunk(off + c, src, soff + c, k);
@@ -1461,15 +1530,20 @@ impl Signal {
                     *c = cycle;
                     *t = stamp(now);
                 }
-                note_run(
-                    &mut self.changed,
-                    &mut self.nruns,
-                    self.watched,
-                    self.fine,
-                    e,
-                    len,
-                );
+                if !cells {
+                    note_run(
+                        &mut self.changed,
+                        &mut self.nruns,
+                        self.watched,
+                        self.fine,
+                        e,
+                        len,
+                    );
+                }
                 w &= !(nmask(len as usize) << s);
+            }
+            if cells {
+                note_cells(&mut self.changed, &mut self.nruns, &self.cuts, off + c, m);
             }
             let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
             if k == 1 {
@@ -1569,7 +1643,9 @@ impl Signal {
                 st[2 * len + e] = t;
             }
         }
-        if self.watched && self.fine {
+        if self.watched && !self.cuts.is_empty() {
+            note_cells(&mut self.changed, &mut self.nruns, &self.cuts, base, m);
+        } else if self.watched && self.fine {
             let mut v = m;
             while v != 0 {
                 let s = v.trailing_zeros();
@@ -1899,8 +1975,9 @@ impl Signal {
                 return None;
             }
             let mut words = std::mem::take(&mut self.pend_words);
-            // Runs are listed in element order for the waiters of parts.
-            if self.fine && !words.is_sorted() {
+            // Runs are listed in element order for the waiters of parts (cells are sorted and
+            // joined by `canonical_changed`).
+            if self.fine && self.cuts.is_empty() && !words.is_sorted() {
                 words.sort_unstable();
             }
             let any = self.finish_words_lean(&words, now, cycle);
@@ -2059,6 +2136,7 @@ impl Signal {
             nruns,
             watched,
             fine,
+            cuts,
             ..
         } = self;
         let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
@@ -2097,7 +2175,9 @@ impl Signal {
             }
             any = true;
             let base = w * 64;
-            if *watched && *fine {
+            if *watched && !cuts.is_empty() {
+                note_cells(changed, nruns, cuts, base, m);
+            } else if *watched && *fine {
                 let mut v = m;
                 while v != 0 {
                     let s = v.trailing_zeros();

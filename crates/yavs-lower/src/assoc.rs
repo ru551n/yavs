@@ -12,7 +12,7 @@ use yavs_sem::hir::{IndividualPart as Part, LspStep, Mode};
 use yavs_sem::types::{Constrainedness, TypeKind};
 use yavs_sem::{DeclId, ExprId};
 
-use crate::expr::Place;
+use crate::expr::{Conv, Place};
 use crate::func::{Fx, Shape, shape};
 use crate::{Obj, R, Space};
 
@@ -22,7 +22,7 @@ impl Fx<'_, '_> {
         &mut self,
         p: &Param,
         parts: &[Part],
-        native: bool,
+        conv: Conv,
         span: Span,
         cells: &mut Vec<Reg>,
     ) -> R<()> {
@@ -93,11 +93,7 @@ impl Fx<'_, '_> {
                 if p.mode != Mode::In {
                     self.writeback_parts.push((obj, f, parts.into()));
                 }
-                if native {
-                    cells.push(self.make_fat(tmp, dope));
-                } else {
-                    cells.extend([tmp, dope]);
-                }
+                self.array_cells(conv, tmp, dope, cells);
             }
             _ => {
                 return Err(self
@@ -119,7 +115,7 @@ impl Fx<'_, '_> {
         actual: ExprId,
         copy_in: Option<ExprId>,
         copy_out: ExprId,
-        native: bool,
+        conv: Conv,
         span: Span,
         cells: &mut Vec<Reg>,
     ) -> R<()> {
@@ -191,11 +187,7 @@ impl Fx<'_, '_> {
                         self.default_into(st, &c, tmp, dope, span)?;
                     }
                 }
-                if native {
-                    cells.push(self.make_fat(tmp, dope));
-                } else {
-                    cells.extend([tmp, dope]);
-                }
+                self.array_cells(conv, tmp, dope, cells);
                 Obj::Array {
                     space: Space::Frame(self.depth),
                     off: slot,

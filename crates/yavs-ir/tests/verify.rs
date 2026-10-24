@@ -258,6 +258,38 @@ fn file_natives_make_callers_serial() {
     assert_eq!(serial, [true, true, true, true, false, false]);
 }
 
+/// An `ieee` native takes `data, left, right, dir` for each array argument (#697).
+#[test]
+fn ieee_array_arguments_are_four_registers() {
+    let call = |n: usize| {
+        errors(FuncKind::Process, move |fb| {
+            fb.stmt(StmtKind::Null, sp());
+            let native = fb
+                .program()
+                .native("yavs.ieee.numeric_std.to_integer(unsigned)integer", None);
+            let regs: Vec<Reg> = (0..n).map(|i| fb.int(i as i64)).collect();
+            let args = fb.regs(&regs);
+            let dst = fb.reg(RegTy::I64);
+            fb.emit(Inst::CallNative {
+                native,
+                args,
+                dst: Some(dst),
+            });
+            fb.emit(Inst::Ret { v: None });
+        })
+    };
+    assert!(call(4).is_empty(), "{:#?}", call(4));
+    for n in [1, 2, 5] {
+        let e = call(n);
+        assert!(
+            e.iter()
+                .any(|m| m.contains("takes 4 argument registers")
+                    && m.contains(&format!("{n} given"))),
+            "{n}: {e:#?}"
+        );
+    }
+}
+
 #[test]
 fn leaf_tables_are_checked() {
     use yavs_ir::gather::{LeafKind, TabLeaf, encode};
@@ -296,6 +328,7 @@ fn leaf_tables_are_checked() {
                 dst,
                 desc: dst,
                 tab,
+                part: None,
             });
             fb.emit(Inst::Br { to: BlockId(0) });
         })

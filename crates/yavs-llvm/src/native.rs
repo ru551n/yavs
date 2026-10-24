@@ -73,7 +73,13 @@ pub fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
 /// answered from the kernel's views, the `WaitOn` that ends an activation, and the calls of
 /// functions that run on native frames (`nc`, `native_set`). Keep in step with `Gen::func`; the
 /// `cb_*` counters (`YAVS_COUNTERS=1`) show what really leaves.
-pub fn leaves(prog: &Program, f: &Func, pc: usize, nc: &std::collections::HashSet<FuncId>) -> bool {
+pub fn leaves(
+    prog: &Program,
+    f: &Func,
+    pc: usize,
+    nc: &std::collections::HashSet<FuncId>,
+    light: bool,
+) -> bool {
     let Some(i) = f.code.get(pc) else {
         return false;
     };
@@ -86,6 +92,15 @@ pub fn leaves(prog: &Program, f: &Func, pc: usize, nc: &std::collections::HashSe
             kind: yavs_ir::AttrKind::Event,
             ..
         } => false,
+        // Computed in place on its usual operands (`light`: by the generator, `Gen::ieee_fast`).
+        Inst::CallNative { native, args, dst }
+            if light
+                && frame_direct(prog, f, i)
+                && yavs_interp::light_native(prog, f, *native, *args)
+                && ieee_fast(prog, f, *native, *args, *dst).is_some() =>
+        {
+            false
+        }
         Inst::CallNative { native, args, dst } => {
             !matches!(
                 native_kind(prog, f, *native, *args, *dst),
@@ -342,4 +357,53 @@ pub fn closed_frame(prog: &Program, f: &Func, id: FuncId) -> Option<Vec<(u64, u6
         .iter()
         .all(|&(_, hi)| hi <= u64::from(f.frame))
         .then_some(merged)
+}
+
+/// How a light `numeric_std` native takes its arguments: an array (four registers) or an integer.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Arg {
+    Arr,
+    Int,
+}
+
+/// The light `numeric_std` natives compiled code computes itself on operands of at most 64
+/// elements without a metavalue (the native's own fast path, `ieee::small`; `Gen::ieee_fast`),
+/// and their arguments; any other operand, and every case that warns or fails, runs the callback.
+pub fn ieee_layout(op: yavs_ir::ieee::Op) -> Option<&'static [Arg]> {
+    use yavs_ir::ieee::{Form, Op};
+    Some(match op {
+        Op::ToInteger { .. } | Op::NumNot | Op::VecNot => &[Arg::Arr],
+        Op::Add { form, .. } | Op::Compare { form, .. } => match form {
+            Form::Vv => &[Arg::Arr, Arg::Arr],
+            Form::Vi => &[Arg::Arr, Arg::Int],
+            Form::Iv => &[Arg::Int, Arg::Arr],
+        },
+        Op::ToUnsigned | Op::ToSigned => &[Arg::Int, Arg::Int],
+        Op::Resize { .. } | Op::Shift(_) | Op::ShiftFn(_) => &[Arg::Arr, Arg::Int],
+        Op::NumGate(_) | Op::VecGate(_) => &[Arg::Arr, Arg::Arr],
+        _ => return None,
+    })
+}
+
+/// The native a `CallNative` is, when `Gen::ieee_fast` computes it, with its register count
+/// checked.
+pub fn ieee_fast(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+    dst: Option<Reg>,
+) -> Option<yavs_ir::ieee::Op> {
+    dst?;
+    let sym = &prog.natives.get(native)?.symbol;
+    let key = yavs_ir::ieee::symbol_key(sym)?;
+    let op = yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))?;
+    let want: usize = ieee_layout(op)?
+        .iter()
+        .map(|a| match a {
+            Arg::Arr => yavs_ir::ieee::ARRAY_REGS,
+            Arg::Int => 1,
+        })
+        .sum();
+    (f.regs(args)?.len() == want).then_some(op)
 }

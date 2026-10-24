@@ -567,6 +567,8 @@ pub(crate) struct Machine {
     /// The last `LayoutOf` of each type (indexed by `TyId`): descriptor size, descriptor bytes
     /// and the layout words written. Layouts are pure functions of type and descriptor.
     layouts: Vec<Option<LayoutMemo>>,
+    /// The plans of record signal gathers and scatters this machine met (`gather.rs`).
+    pub(crate) plans: Vec<crate::gather::MPlan>,
     /// Argument cells of the call being made (`call_with`).
     cells: Vec<u64>,
     /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
@@ -580,6 +582,8 @@ pub(crate) struct Machine {
     /// The process may switch to a copy specialised to its instance data (`specialise`): the
     /// parameters of `for` generates in its data, which the copy does not fold.
     spec: Option<Arc<[(u32, u32)]>>,
+    /// The memo of pure calls this process keeps (`pmemo.rs`), made at its first memoised call.
+    pub(crate) pm: Option<Box<crate::pmemo::State>>,
 }
 
 /// The fields of a machine that `view_root` reads and the interpreter does not (see
@@ -1018,6 +1022,7 @@ impl Machine {
             ieee_stop: false,
             ieee_fallback: false,
             layouts: Vec::new(),
+            plans: Vec::new(),
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
@@ -1028,6 +1033,7 @@ impl Machine {
             root_process: false,
             quick_fault: None,
             spec: None,
+            pm: None,
             spec_at: u32::MAX,
             hot: false,
             execs: 0,
@@ -1376,7 +1382,7 @@ impl Machine {
             self.spec_at = u32::try_from(self.execs.saturating_mul(2)).unwrap_or(u32::MAX);
             return;
         }
-        let Ok(id) = prog.copy_of(base, &self.inst.data, &holes) else {
+        let Ok(id) = prog.copy_of_pkgs(base, &self.inst.data, &holes, &*rt) else {
             return;
         };
         let (Some(old), Some(new), Some(raw)) = (prog.func(base), prog.func(id), prog.raw(base))
@@ -1455,6 +1461,11 @@ impl Machine {
             self.resident_bytes = bytes;
         }
         self.root_process = true;
+    }
+
+    /// Whether a debugger is attached.
+    pub(crate) fn has_debugger(&self) -> bool {
+        self.dbg.is_some()
     }
 
     /// Whether `run_quick` applies (no debugger).
@@ -1845,7 +1856,7 @@ impl Machine {
     }
 
     #[inline(always)]
-    fn set(&mut self, r: Reg, v: u64) {
+    pub(crate) fn set(&mut self, r: Reg, v: u64) {
         self.regs[r.0 as usize] = v;
     }
 
@@ -4554,7 +4565,7 @@ impl Machine {
                                 t.hot(func);
                             }
                         }
-                        st & NAT_CODE != 0
+                        st & NAT_CODE != 0 && !self.is_memo_frame(top)
                     }
                     None => false,
                 }
@@ -4767,6 +4778,70 @@ impl Machine {
             && self.pause.is_none()
         {
             k = to as usize;
+        }
+        // `Op::Call`, and `Op::CallM` for a callee the memo of pure calls may answer (`$memo`).
+        macro_rules! call_arm {
+            ($callee:expr, $start:expr, $len:expr, $dst:expr, $memo:expr) => {{
+                let (callee, start, len, dst) = ($callee, $start, $len, $dst);
+                self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                callee_look!(callee);
+                let args = yavs_ir::Regs { start, len };
+                let dst = (dst != pre::NONE).then_some(Reg(dst));
+                let cid = FuncId(callee);
+                let cf = prog
+                    .func(cid)
+                    .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
+                let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                // A function the compiled tier calls on a native frame (`Tier::call`).
+                if TIER
+                    && let Some(t) = tier
+                    && rt.native.callable(callee)
+                    && let Some(flow) = self.tier_call(t, rt, f, cid, cf, args, dst, None, ctx)?
+                {
+                    if let Flow::Next = flow {
+                        k = entry!(self.frames[top].pc + 1)? as usize;
+                        continue;
+                    }
+                    return Ok(flow);
+                }
+                if $memo
+                    && !cpre.memo_off.load(Ordering::Relaxed)
+                    && let Some(sig) = prog.memo_sig(cid)
+                {
+                    match t!(self.memo_call(prog, f, cid, sig, args, dst, ctx)) {
+                        crate::pmemo::Done::Yes => {
+                            k += 1;
+                            enter!();
+                            continue;
+                        }
+                        crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
+                        crate::pmemo::Done::No => {}
+                    }
+                }
+                if !TIER && cpre.lean {
+                    let regs = f
+                        .regs(args)
+                        .ok_or_else(|| ice_s!("operand list out of range"))?;
+                    self.call_lean(cf, cid, cpre, regs, dst, None)?;
+                } else {
+                    self.call_pre(f, cf, cid, cpre, args, dst, None)?;
+                }
+                save_caller!();
+                // The callee's ops go on in this loop.
+                top += 1;
+                func = cid;
+                f = cf;
+                code = &cpre.code;
+                ops = &code.ops;
+                k = match code.first {
+                    pre::NONE => entry!(0)? as usize,
+                    // The parameters are in their registers (`call_pre`): not loaded again.
+                    _ if !TIER && code.skip != pre::NONE => code.skip as usize,
+                    first => first as usize,
+                };
+                rebind!();
+                tick!();
+            }};
         }
         enter!();
         loop {
@@ -5526,53 +5601,13 @@ impl Machine {
                     start,
                     len,
                     dst,
-                } => {
-                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                    callee_look!(callee);
-                    let args = yavs_ir::Regs { start, len };
-                    let dst = (dst != pre::NONE).then_some(Reg(dst));
-                    let cid = FuncId(callee);
-                    let cf = prog
-                        .func(cid)
-                        .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
-                    let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
-                    // A function the compiled tier calls on a native frame (`Tier::call`).
-                    if TIER
-                        && let Some(t) = tier
-                        && rt.native.callable(callee)
-                        && let Some(flow) =
-                            self.tier_call(t, rt, f, cid, cf, args, dst, None, ctx)?
-                    {
-                        if let Flow::Next = flow {
-                            k = entry!(self.frames[top].pc + 1)? as usize;
-                            continue;
-                        }
-                        return Ok(flow);
-                    }
-                    if !TIER && cpre.lean {
-                        let regs = f
-                            .regs(args)
-                            .ok_or_else(|| ice_s!("operand list out of range"))?;
-                        self.call_lean(cf, cid, cpre, regs, dst, None)?;
-                    } else {
-                        self.call_pre(f, cf, cid, cpre, args, dst, None)?;
-                    }
-                    save_caller!();
-                    // The callee's ops go on in this loop.
-                    top += 1;
-                    func = cid;
-                    f = cf;
-                    code = &cpre.code;
-                    ops = &code.ops;
-                    k = match code.first {
-                        pre::NONE => entry!(0)? as usize,
-                        // The parameters are in their registers (`call_pre`): not loaded again.
-                        _ if !TIER && code.skip != pre::NONE => code.skip as usize,
-                        first => first as usize,
-                    };
-                    rebind!();
-                    tick!();
-                }
+                } => call_arm!(callee, start, len, dst, false),
+                Op::CallM {
+                    func: callee,
+                    start,
+                    len,
+                    dst,
+                } => call_arm!(callee, start, len, dst, true),
                 Op::CallProt {
                     func: callee,
                     obj,
@@ -5969,11 +6004,11 @@ impl Machine {
                     let regs = f
                         .regs(yavs_ir::Regs { start, len })
                         .ok_or_else(|| ice_s!("operand list out of range"))?;
-                    let mut cells = [0u64; 4];
+                    let mut cells = [0u64; pre::IEEE_CELLS];
                     for (c, &r) in cells.iter_mut().zip(regs) {
                         *c = self.regs[r.0 as usize];
                     }
-                    let cells = &cells[..regs.len().min(4)];
+                    let cells = &cells[..regs.len().min(pre::IEEE_CELLS)];
                     let v = fun(self, ctx, n.ty, cells)?;
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     if std::mem::take(&mut self.ieee_fallback) {
@@ -7754,14 +7789,29 @@ impl Machine {
             id.parse()
                 .map_err(|_| ice_s!("ieee fallback function id"))?,
         );
-        let mut out = Vec::with_capacity(cells.len() + 2);
-        for (i, &c) in cells.iter().enumerate() {
+        let mut out = Vec::with_capacity(cells.len());
+        let (mut pos, mut i) = (0, 0);
+        while pos < cells.len() {
             if yavs_ir::ieee::array_param(key, i) {
-                out.push(self.load(c, Width::B8)?);
-                out.push(self.load(add_addr(c, 8)?, Width::B8)?);
+                let &[data, left, right, dir] = cells
+                    .get(pos..pos + yavs_ir::ieee::ARRAY_REGS)
+                    .ok_or_else(|| ice_s!("ieee fallback array argument"))?
+                else {
+                    return Err(ice_s!("ieee fallback array argument"));
+                };
+                // The body takes the descriptor in memory.
+                let dope = self.temp_alloc(yavs_ir::DOPE_DIM_BYTES)?;
+                let w = self.wr(dope, yavs_ir::DOPE_DIM_BYTES)?;
+                for (d, v) in w.as_chunks_mut::<8>().0.iter_mut().zip([left, right, dir]) {
+                    d.copy_from_slice(&v.to_le_bytes());
+                }
+                out.extend([data, dope]);
+                pos += yavs_ir::ieee::ARRAY_REGS;
             } else {
-                out.push(c);
+                out.push(cells[pos]);
+                pos += 1;
             }
+            i += 1;
         }
         self.call(prog, func, &out, dst)
     }
@@ -7974,6 +8024,23 @@ impl Machine {
             .and_then(|()| self.call(prog, func, &cells, dst));
         self.cells = cells;
         r
+    }
+
+    /// Push the frame of the call `func(args)` and run it until it returns (`Outcome::Returned`
+    /// with its value, the frame popped but `dst` not written) or the process stops inside it
+    /// (a report at the stop severity: the frames stay).
+    pub(crate) fn call_to_end(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Outcome> {
+        let base = self.frames.len();
+        self.call_with(prog, f, func, None, args, dst)?;
+        self.exec::<false>(ctx, base)
     }
 
     fn push_args(
@@ -8824,16 +8891,21 @@ impl Machine {
                 let v = self.sig_read_scalar(sig, ctx)?;
                 self.set(dst, v);
             }
-            Inst::SigGather { dst, desc, tab } => self.sig_gather(prog, dst, desc, tab, ctx)?,
+            Inst::SigGather {
+                dst,
+                desc,
+                tab,
+                part,
+            } => self.sig_gather(prog, dst, desc, tab, part, ctx)?,
             Inst::SigScatter {
                 driver,
                 src,
                 desc,
                 tab,
-                after,
+                ops,
                 mode,
-                reject,
-            } => self.sig_scatter(prog, driver, src, desc, tab, after, mode, reject, ctx)?,
+                has,
+            } => self.sig_scatter(prog, f, driver, src, desc, tab, ops, mode, has, ctx)?,
             Inst::Edge { dst, kind, sig } => {
                 let v = self.edge_inst(kind, sig, ctx)?;
                 self.set(dst, v);
@@ -8990,6 +9062,9 @@ impl Machine {
                 self.set(dst, v.into());
             }
             Inst::Report { msg, len, severity } => {
+                if let Some(p) = self.pm.as_mut() {
+                    p.reports += 1;
+                }
                 let s = sev(self.r(severity))?;
                 let text: String = self
                     .rd(self.r(msg), self.r(len))?
@@ -10029,6 +10104,61 @@ impl crate::TierHost for Host<'_, '_, '_> {
         // A native run this way pushes no frame (it would be `Slow`): the stacks stay.
         debug_assert!(m.regs.v.as_ptr() == tf.stack && m.slots_ptr() == tf.slots);
         m.tier_temp(tf);
+        match r {
+            Ok(v) if !fallback && stop => {
+                self.stop = true;
+                Stop(v)
+            }
+            Ok(v) if !fallback => Done(v),
+            _ => Slow,
+        }
+    }
+
+    fn native_light(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        native: u32,
+        cells: &[u64],
+        at: Option<u32>,
+        depth: u64,
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+    ) -> crate::NativeCall {
+        use crate::NativeCall::{Done, Slow, Stop};
+        let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        let (Some(n), Some(fun)) = (
+            prog.natives.get(yavs_ir::NativeId(native)),
+            rt.natives.get(native as usize).copied().flatten(),
+        ) else {
+            return Slow;
+        };
+        // Reports of package initialisation and elaboration are noted (as in `native_frame`);
+        // a `hot` process has neither, and its lines stay unread. No collection check: a light
+        // native allocates only temporary memory, as for `Op::CallIeee`.
+        let top = m.frames.len();
+        if !m.hot && (m.pkg_init.is_some() || m.init_reports.is_some()) {
+            return Slow;
+        }
+        match at {
+            Some(pc) => m.top().pc = pc,
+            None => {
+                if (depth as usize) < top {
+                    return Slow;
+                }
+                // The native frames' slots are reached by address while the native runs.
+                m.nwin = slots.take();
+                (m.nwin_from, m.nwin_to) = (top, depth as usize);
+            }
+        }
+        let r = fun(m, self.ctx, n.ty, cells);
+        if at.is_none() {
+            *slots = m.nwin.take();
+        }
+        let fallback = std::mem::take(&mut m.ieee_fallback);
+        let stop = std::mem::take(&mut m.ieee_stop);
+        // Only the temporary area can have moved or grown.
+        tf.temp = m.temp.as_mut_ptr();
+        tf.temp_len = m.temp.len() as u64;
+        tf.temp_cap = m.temp.capacity() as u64;
         match r {
             Ok(v) if !fallback && stop => {
                 self.stop = true;

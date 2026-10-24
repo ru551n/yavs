@@ -1,0 +1,8 @@
+exit	0
+diag	note	3000000	0	:sigrec_array_fn_width:stim	first 00001/-2147483648 10110/7 00000/-2147483648 
+diag	note	5000000	0	:sigrec_array_fn_width:stim	1 00001/-2147483648 10110/1 00000/-2147483648 
+diag	note	6000000	0	:sigrec_array_fn_width:stim	1 01010/10 01010/11 01010/12 
+diag	note	8000000	0	:sigrec_array_fn_width:stim	2 01010/10 10111/2 01010/12 
+diag	note	9000000	0	:sigrec_array_fn_width:stim	2 01010/20 01010/21 01010/22 
+diag	note	11000000	0	:sigrec_array_fn_width:stim	3 01010/20 10110/3 01011/22 
+diag	note	12000000	0	:sigrec_array_fn_width:stim	3 01010/30 01010/31 01010/32 

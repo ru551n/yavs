@@ -225,6 +225,21 @@ pub fn add_checked_sum(m: &Module) {
     }
 }
 
+/// Adds `low_half(p: *const i64) -> i64`: the low 32 bits of `*p`, written as a load and a mask
+/// (the form the generator makes of the low half of a fat address).
+pub fn add_low_half(m: &Module) {
+    let g = Gen::new(m);
+    // SAFETY: well-formed IR; the verifier runs in the tests.
+    unsafe {
+        let f = g.function(c"low_half", g.i64, &mut [g.ptr]);
+        let entry = g.block(f);
+        LLVMPositionBuilderAtEnd(g.b, entry);
+        let v = LLVMBuildLoad2(g.b, g.i64, LLVMGetParam(f, 0), c"".as_ptr());
+        let lo = LLVMBuildAnd(g.b, v, g.c64(0xffff_ffff), c"".as_ptr());
+        LLVMBuildRet(g.b, lo);
+    }
+}
+
 /// Adds `process_body`, a process touching signal state through a pointer:
 /// `next = cur * 2 + 2` (checked, statements 1 and 2), `event = next != cur`,
 /// `runs += 1`.

@@ -1,0 +1,4 @@
+exit	1
+diag	note	1000000	0	:sigrec_length_error:p	before: 01011010 2
+diag	note	2000000	0	:sigrec_length_error:p	same: 01011010 1
+diag	fatal	2000000	0	-	value length 4 does not match variable V length 8

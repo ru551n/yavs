@@ -94,10 +94,6 @@ impl First {
 
 #[cfg(feature = "clift")]
 impl yavs_llvm::Generator for First {
-    fn start_us(&self) -> f64 {
-        45.0
-    }
-
     fn compile(
         &mut self,
         prog: &yavs_ir::Program,

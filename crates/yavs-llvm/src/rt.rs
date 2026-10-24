@@ -43,6 +43,9 @@ pub const CODES: &str = "yavs_rt_codes";
 pub const PLANES: &str = "yavs_rt_planes";
 pub const MEMEQ: &str = "yavs_rt_memeq";
 pub const NATIVE: &str = "yavs_rt_native";
+/// The bytes `ieee::put_small` writes: a fat pair, a descriptor and one block of planes.
+pub const PUT_SMALL_BYTES: u32 = 16 + yavs_ir::DOPE_DIM_BYTES as u32 + 32;
+pub const NATIVE_LIGHT: &str = "yavs_rt_native_light";
 pub const TROOT: &str = "yavs_rt_troot";
 pub const ENDSTMT: &str = "yavs_rt_endstmt";
 pub const XSTEP: &str = "yavs_rt_xstep";
@@ -1016,6 +1019,60 @@ pub extern "C" fn yavs_rt_native(
             0
         }
     }
+}
+
+/// `yavs_rt_native` for a light native (`yavs_interp::light_native`, `TierHost::native_light`):
+/// same arguments and results. The native allocates only temporary memory, so no heap object
+/// the compiled code found can have moved; the volatile ones are forgotten when any are held.
+pub unsafe extern "C" fn yavs_rt_native_light(
+    env: *mut c_void,
+    mem: *mut Mem,
+    native: u32,
+    cells: *const u64,
+    n: u32,
+    depth: u64,
+    out: *mut u64,
+) -> u32 {
+    cb(Cb::Native);
+    // SAFETY: as in `yavs_rt_native`.
+    let envp = env as *mut Env<'_>;
+    unsafe { (*mem).sync(&mut *(*envp).host) };
+    let r = catch_unwind(AssertUnwindSafe(|| unsafe {
+        let cells = std::slice::from_raw_parts(cells, n as usize);
+        let env = &mut *envp;
+        let at = (depth & NATIVE_FRAME_MODE != 0).then_some(depth as u32);
+        if at.is_none() {
+            let _ = env
+                .windows
+                .get_or_insert_with(|| Box::new(TabSlots((*mem).nslots)));
+        }
+        env.host
+            .native_light(&mut (*mem).fr, native, cells, at, depth, &mut env.windows)
+    }));
+    // SAFETY: as above.
+    let m = unsafe { &mut *mem };
+    m.temp_seen = m.fr.temp_len;
+    m.forget_end();
+    match r {
+        Ok(NativeCall::Done(v)) => 1 | put_out(v, out),
+        Ok(NativeCall::Stop(v)) => 2 | put_out(v, out),
+        Ok(NativeCall::Slow) => 0,
+        Err(p) => {
+            // SAFETY: as above.
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
+}
+
+/// Write a native's result to `out` (one word of the caller); bit 8 says there was one.
+#[inline(always)]
+pub fn put_out(v: Option<u64>, out: *mut u64) -> u32 {
+    if let Some(v) = v {
+        // SAFETY: `out` is one word of the caller.
+        unsafe { *out = v };
+    }
+    u32::from(v.is_some()) << 8
 }
 
 /// `TierHost::temp_root` for a `TempRoot` of a native frame: `ty` is `u32::MAX` for a fat pair,

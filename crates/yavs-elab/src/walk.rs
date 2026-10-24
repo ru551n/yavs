@@ -2939,6 +2939,10 @@ impl Elab<'_> {
                 self.idle_dead = true;
                 continue;
             }
+            // Not a read but something impure under a condition that holds here: not pure.
+            let Some(lsp) = &r.lsp else {
+                return None;
+            };
             let guard = r_guard.and_then(|alts| {
                 let alts = alts
                     .iter()
@@ -2960,7 +2964,7 @@ impl Elab<'_> {
                     .collect::<Vec<_>>();
                 (alts.iter().all(|c| !c.is_empty())).then_some(alts)
             });
-            let (o, sels) = self.m.lsp_ref(self.db, &r.lsp, s).ok()?;
+            let (o, sels) = self.m.lsp_ref(self.db, lsp, s).ok()?;
             for (leaf, range) in self.m.nets.select(o, &sels).ok()?.0 {
                 match out.iter_mut().find(|x| (x.leaf, x.range) == (leaf, range)) {
                     // Read twice: under either condition, or unconditionally.

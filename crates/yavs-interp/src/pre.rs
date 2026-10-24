@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
 pub(crate) struct Pre {
+    /// Made from the function as lowered, under elaboration-time evaluation (`Runtime::forget_raw`).
+    pub raw: bool,
     /// Initial registers: the preloaded values, zero elsewhere.
     init: Vec<u64>,
     /// The function's frame size in bytes (`Func::frame`), its parameters' slots and widths and
@@ -42,6 +44,11 @@ pub(crate) struct Pre {
     /// A call writes these registers itself and goes on at `Code::skip`.
     pub pro: Box<[u32]>,
     pub nested: bool,
+    /// The memo of pure calls is off for this function in every process (`pmemo::State::look`
+    /// found too few repeats in several processes).
+    pub memo_off: std::sync::atomic::AtomicBool,
+    /// Processes that gave the memo of this function up.
+    pub memo_votes: std::sync::atomic::AtomicU32,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
     /// For each pc (and one past the end), the first pc at or after it that is not a
@@ -179,6 +186,7 @@ impl Pre {
             f.frame
         };
         Pre {
+            raw: budget,
             init,
             slots: f.frame,
             lean,
@@ -186,6 +194,8 @@ impl Pre {
             params,
             pro,
             nested: f.parent.is_some(),
+            memo_off: Default::default(),
+            memo_votes: Default::default(),
             frame,
             next,
             code,
@@ -909,6 +919,13 @@ pub(crate) enum Op {
         len: u32,
         dst: u32,
     },
+    /// `Inst::Call` of a function the memo of pure calls may answer (`pmemo.rs`).
+    CallM {
+        func: u32,
+        start: u32,
+        len: u32,
+        dst: u32,
+    },
     /// `Inst::CallNative`; `dst` is `NONE` without a result.
     CallNative {
         native: u32,
@@ -935,7 +952,7 @@ pub(crate) enum Op {
         q: u16,
         l: u16,
     },
-    /// `Inst::CallNative` of a native `ieee` subprogram with at most four arguments, none a signal:
+    /// `Inst::CallNative` of a native `ieee` subprogram with at most [`IEEE_CELLS`] cells, none a signal:
     /// the call without the bookkeeping other natives need (they may reach the heap, files and
     /// the like; these work on temporary memory only).
     CallIeee {
@@ -1242,9 +1259,18 @@ fn scalar_image(
     .then_some((a, ty))
 }
 
-/// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most four arguments, none a
-/// signal, not the procedure `uniform` (which writes through its arguments).
-fn light_ieee(prog: &Program, f: &Func, native: yavs_ir::NativeId, args: yavs_ir::Regs) -> bool {
+/// The most argument cells of an `Op::CallIeee`: two arrays of `yavs_ir::ieee::ARRAY_REGS`.
+pub(crate) const IEEE_CELLS: usize = 8;
+
+/// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most [`IEEE_CELLS`] argument
+/// cells, none a signal, not the procedure `uniform` (which writes through its arguments). Such a
+/// native allocates only temporary memory and never collects ([`crate::TierHost::native_light`]).
+pub fn light_ieee(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+) -> bool {
     let Some(sym) = prog.natives.get(native).map(|n| &n.symbol) else {
         return false;
     };
@@ -1254,7 +1280,7 @@ fn light_ieee(prog: &Program, f: &Func, native: yavs_ir::NativeId, args: yavs_ir
     let Some(regs) = f.regs(args) else {
         return false;
     };
-    regs.len() <= 4
+    regs.len() <= IEEE_CELLS
         && regs
             .iter()
             .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig))
@@ -4107,12 +4133,25 @@ impl Code {
                     dope: dope.0,
                     dim,
                 },
-                Inst::Call { func, args, dst } => Op::Call {
-                    func: func.0,
-                    start: args.start,
-                    len: args.len,
-                    dst: dst.map_or(NONE, |d| d.0),
-                },
+                Inst::Call { func, args, dst } => {
+                    let (func, start, len, dst) =
+                        (func.0, args.start, args.len, dst.map_or(NONE, |d| d.0));
+                    if prog.memo_sig(yavs_ir::FuncId(func)).is_some() {
+                        Op::CallM {
+                            func,
+                            start,
+                            len,
+                            dst,
+                        }
+                    } else {
+                        Op::Call {
+                            func,
+                            start,
+                            len,
+                            dst,
+                        }
+                    }
+                }
                 Inst::CallProt {
                     func,
                     obj,

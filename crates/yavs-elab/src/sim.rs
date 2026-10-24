@@ -971,7 +971,7 @@ impl Elaborated {
         // Cells of instance-level constants and shared variables, computed once per instance.
         let mut once: HashMap<(ScopeId, yavs_sem::DeclId), CallVal> = HashMap::new();
         // Package data, created once in order: each initialisation sees the packages before it.
-        let rt = crate::pkgcall::init_packages(
+        let mut rt = crate::pkgcall::init_packages(
             &ir.program,
             self.cov_rows() * ir.program.cov.len(),
             &ir.packages,
@@ -1025,6 +1025,12 @@ impl Elaborated {
             None => {
                 let vars = crate::pkgcall::replay(&rt, &shared, &ir.elab, &self.elab_calls)
                     .map_err(|m| SimError::new(ErrorKind::Runtime(m)))?;
+                // The replay ran functions as lowered: the simulation runs them optimised (#705).
+                if !yavs_interp::Runtime::forget_raw(&mut rt) {
+                    return Err(sim_err(
+                        "internal error: the runtime is shared after the replay of elaboration-time calls; this is a bug in yavs".into(),
+                    ));
+                }
                 for (k, h) in vars {
                     once.insert(k, CallVal::Cell(h));
                 }

@@ -216,7 +216,11 @@ database ``FILE`` (default ``yavs.ycov``) at the end of the run, whatever its ou
 ``--cov`` there are no counters and no cost. ``--cov-kind=LIST`` counts only some kinds
 (``statement``, ``branch``, ``toggle``, ``condition``, ``expression``, comma separated; default
 ``statement,branch,toggle``; ``condition`` and ``expression`` cost extra instructions in
-every evaluation of a multi-input condition, so they are asked for).
+every evaluation of a multi-input condition, so they are asked for). Coverage never changes a
+count by skipping work: assignments of the value a signal already holds queue no transaction
+(as without ``--cov``), and a clocked process whose inputs did not change is left suspended
+only when no statement, branch, condition or expression counter is on, so toggle coverage alone
+runs nearly as fast as a plain run plus the toggle database.
 
 * **Statements**: every sequential statement and every concurrent statement (each time it
   runs). Declarations are not counted.
@@ -262,6 +266,14 @@ every evaluation of a multi-input condition, so they are asked for).
 * Items are identified by their path and the text of their statement, not by its position in
   the file, so a database stays mergeable after edits elsewhere in the file. Counts are the same
   for any ``--threads``.
+* **Clocked processes count only their edges.** A process that does nothing unless an edge
+  happens (``if rising_edge(clk) then ... end if``, ``falling_edge``, ``clk'event and clk = '1'``,
+  ``wait until rising_edge(clk)``, ``wait until clk = '1'``, also with an asynchronous reset) is
+  resumed only at that edge, with or without ``--cov``. Its edge test therefore counts one run at
+  initialisation and one per edge, not one per event on the clock, and the arm "no condition
+  held" of a test that is only an edge shows one run (the initialisation), not the falling
+  edges. The statements inside the ``if`` count exactly the same as when the process also ran
+  at the other edge.
 
 ``yavs cov merge A.ycov B.ycov ... -o OUT.ycov`` adds up the counts of several runs: write one
 database per run (one ``--cov=FILE`` each) and merge them. ``yavs cov report DB ...`` merges its

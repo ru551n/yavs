@@ -286,6 +286,27 @@ fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
     }
 }
 
+/// The smallest clocked process a first-level generator takes (`YAVS_FIRST_RTL_MIN` to try
+/// another; `RTL_MIN` is LLVM's): the way into compiled code costs the same, the code is cheaper
+/// to make, and Cranelift's code ran `rtl_ff`'s 136-instruction process in fewer instructions
+/// than the interpreter.
+fn first_rtl_min() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("YAVS_FIRST_RTL_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(RTL_MIN)
+    })
+}
+
+/// Whether a first-level generator takes processes outside `RTL_BAND` at once
+/// (`YAVS_FIRST_BAND=1`; the LLVM rule otherwise).
+fn first_band() -> bool {
+    static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *B.get_or_init(|| std::env::var("YAVS_FIRST_BAND").is_ok_and(|v| v != "0"))
+}
+
 /// The largest process `rtl` takes.
 const RTL_MAX: usize = 600;
 
@@ -757,11 +778,32 @@ impl Worker {
             .unwrap_or(id)
     }
 
+    /// `rtl`, with the shorter processes a first-level generator takes (`FIRST_RTL_MIN`): its
+    /// code costs a fifth of LLVM's to make and the trial takes it back when it does not gain.
+    fn rtl(&self, f: &yavs_ir::Func) -> bool {
+        if self.first.is_some() {
+            f.kind == FuncKind::Process
+                && (first_rtl_min()..=RTL_MAX).contains(&f.code.len())
+                && !loops(&self.prog, f)
+        } else {
+            rtl(&self.prog, f)
+        }
+    }
+
+    /// `band_wait`; none for a first-level generator (the trial judges every process).
+    fn band_wait(&self, len: usize) -> u64 {
+        if self.first.is_some() && first_band() {
+            0
+        } else {
+            band_wait(len)
+        }
+    }
+
     /// The microseconds of compile time to expect for `f`.
     fn cost(&self, f: &yavs_ir::Func) -> u64 {
         let per = if self.first.is_some() {
             self.first_us
-        } else if rtl(&self.prog, f) {
+        } else if self.rtl(f) {
             US_PER_INSTR_RTL
         } else {
             self.us_per_instr
@@ -802,8 +844,8 @@ impl Worker {
         let at = self.heat.threshold(f);
         if self.heat.budget == 0 {
             at
-        } else if rtl(&self.prog, f) {
-            at.max(band_wait(f.code.len()))
+        } else if self.rtl(f) {
+            at.max(self.band_wait(f.code.len()))
         } else if self.is_compute(id) {
             at.max(PAYBACK_COMPUTE * self.cost(f))
         } else if self.natively(id) {
@@ -1032,8 +1074,8 @@ impl Worker {
             return false;
         };
         let k = id.0 as usize;
-        let wait = if rtl(&self.prog, f) {
-            band_wait(f.code.len())
+        let wait = if self.rtl(f) {
+            self.band_wait(f.code.len())
         } else {
             0
         };
@@ -1065,7 +1107,7 @@ impl Worker {
     fn factor(&self, id: FuncId) -> u64 {
         match self.prog.func(id) {
             _ if self.is_compute(id) => COMPUTE_BUDGET,
-            Some(f) if rtl(&self.prog, f) => RTL_BUDGET,
+            Some(f) if self.rtl(f) => RTL_BUDGET,
             Some(_) if self.natively(id) => NATIVE_BUDGET,
             _ => 1,
         }
@@ -1126,7 +1168,7 @@ impl Worker {
         // clocked process. A procedure or a process that loops between its waits does its work in
         // stretches the counter does not see (`poc_arith_addw`'s checker, 15 s in a few hundred
         // thousand runs: verdicts 0.89 to 0.96 for code that makes the run a fifth faster).
-        if !rtl(&self.prog, f)
+        if !self.rtl(f)
             || self.heat.budget == 0
             || self.heat.eager()
             || self.unmeasurable
@@ -1244,7 +1286,8 @@ impl Worker {
         let via_first = !o2 && self.first.is_some();
         let level = if o2 { OptLevel::O2 } else { self.opt };
         let level = crate::lower::level_for(&self.prog, f, level);
-        let few = rtl(&self.prog, f)
+        let few = self
+            .rtl(f)
             .then(|| {
                 let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
                 cold(

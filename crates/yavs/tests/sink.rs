@@ -2,7 +2,10 @@
 //! message is built from images, lengths and a concatenation builds it only for a failing call,
 //! and everything the message does that anyone can see (a failure, a report, a call) still
 //! happens at every call. Each design runs with the optimiser and without it and must print
-//! the same, failures included.
+//! the same, failures included. The second half is the `to_integer` of a check's condition
+//! and of its message (`opt/sink/calls.rs`): a second call on the same value is made again
+//! only when the first returned 0, and the warnings of a vector with `U` or of a null vector
+//! come twice, in the same place among the other output.
 
 mod common;
 use common::tempdir as tmp;
@@ -105,12 +108,48 @@ const CASES: &[(&str, &str)] = &[
         "for k in 0 to 5 loop i := k; check(i /= 3, \"i=\" & integer'image(i) & integer'image(acc)); i := i + 1; acc := acc + i; end loop;",
     ),
     (
+        "the same to_integer in the condition and the message",
+        "for k in 40 to 44 loop check(to_integer(unsigned(v)) = k, \"q\" & integer'image(to_integer(unsigned(v))) & integer'image(k)); end loop;",
+    ),
+    (
+        "a vector with U: both calls warn",
+        "for k in 0 to 3 loop check(to_integer(unsigned(w)) = k, \"m\" & integer'image(to_integer(unsigned(w))) & integer'image(k)); end loop;",
+    ),
+    (
+        "a vector of zeros: both calls run",
+        "for k in 0 to 2 loop check(to_integer(unsigned(z)) = k, \"z\" & integer'image(to_integer(unsigned(z))) & integer'image(k)); end loop;",
+    ),
+    (
+        "a null vector warns twice",
+        "for k in 0 to 2 loop check(to_integer(unsigned(w(0 downto 1))) = k, \"n\" & integer'image(to_integer(unsigned(w(0 downto 1)))) & integer'image(k)); end loop;",
+    ),
+    (
+        "another warning between the two calls",
+        "for k in 0 to 2 loop check(to_integer(unsigned(w)) = k, \"b\" & integer'image(to_integer(unsigned(u))) & integer'image(to_integer(unsigned(w)))); end loop;",
+    ),
+    (
+        "another warning between two calls of a valid vector",
+        "for k in 40 to 43 loop check(to_integer(unsigned(v)) = k, \"b\" & integer'image(to_integer(unsigned(u))) & integer'image(to_integer(unsigned(v)))); end loop;",
+    ),
+    (
+        "three calls on one value",
+        "for k in 0 to 2 loop check(to_integer(unsigned(w)) = k, \"t\" & integer'image(to_integer(unsigned(w))) & integer'image(to_integer(unsigned(w)) + k)); end loop;",
+    ),
+    (
+        "a signed vector is left alone",
+        "for k in -1 to 1 loop check(to_integer(signed(one)) = k, \"s\" & integer'image(to_integer(signed(one))) & integer'image(to_integer(signed(w)))); end loop;",
+    ),
+    (
+        "the signal changes between statements",
+        "for k in 0 to 1 loop check(to_integer(unsigned(w)) = k, \"p\" & integer'image(to_integer(unsigned(w)))); end loop; w <= \"0110\"; wait for 1 ns; for k in 5 to 7 loop check(to_integer(unsigned(w)) = k, \"r\" & integer'image(to_integer(unsigned(w)))); end loop; w <= \"0U10\"; wait for 1 ns; check(to_integer(unsigned(w)) = 6, \"s\" & integer'image(to_integer(unsigned(w))));",
+    ),
+    (
         "nested loops, some checks failing",
         "for k in 0 to 3 loop for j in 0 to 2 loop check(k /= j, \"k\" & integer'image(k) & \"j\" & integer'image(j) & color'image(color'val(j)) & integer'image(to_integer(unsigned(v)) + k)); end loop; end loop;",
     ),
 ];
 
-fn run(dir: &std::path::Path, env: &[(&str, &str)], top: &str) -> (i32, String) {
+fn run(dir: &std::path::Path, env: &[(&str, &str)], top: &str, tier: &str) -> (i32, String) {
     let yavs = env!("CARGO_BIN_EXE_yavs");
     let work = format!("work:{}", dir.join("lib").display());
     let a = Command::new(yavs)
@@ -132,7 +171,7 @@ fn run(dir: &std::path::Path, env: &[(&str, &str)], top: &str) -> (i32, String) 
             "--work",
             &work,
         ])
-        .args(["--tier=interp", top])
+        .args([&format!("--tier={tier}"), top])
         .output()
         .expect("run");
     (
@@ -145,8 +184,7 @@ fn run(dir: &std::path::Path, env: &[(&str, &str)], top: &str) -> (i32, String) 
     )
 }
 
-#[test]
-fn a_message_built_for_a_check_changes_nothing_anyone_sees() {
+fn same_output_with_and_without_the_optimiser(tier: &str) {
     for (what, body) in CASES {
         let d = tmp("sink");
         let text = format!(
@@ -161,6 +199,9 @@ architecture a of t is
   type arr_t is array (0 to 3) of integer;
   signal v : std_logic_vector(7 downto 0) := x\"2a\";
   signal w : std_logic_vector(3 downto 0) := \"01U0\";
+  signal u : std_logic_vector(1 downto 0) := \"1X\";
+  signal z : std_logic_vector(3 downto 0) := \"0000\";
+  signal one : std_logic_vector(0 downto 0) := \"1\";
 begin
   process
     variable zero : integer := 0;
@@ -179,8 +220,54 @@ end;
 "
         );
         std::fs::write(d.join("t.vhd"), text).expect("write");
-        let with = run(&d, &[], "t");
-        let without = run(&d, &[("YAVS_NO_IROPT", "1")], "t");
-        assert_eq!(with, without, "{what}");
+        let with = run(&d, &[], "t", tier);
+        let without = run(&d, &[("YAVS_NO_IROPT", "1")], "t", "interp");
+        assert_eq!(with, without, "{what} ({tier})");
     }
+}
+
+#[test]
+fn a_message_built_for_a_check_changes_nothing_anyone_sees() {
+    same_output_with_and_without_the_optimiser("interp");
+}
+
+#[cfg(feature = "llvm")]
+#[test]
+fn the_same_in_compiled_code() {
+    same_output_with_and_without_the_optimiser("llvm");
+}
+
+#[test]
+fn the_second_to_integer_is_a_replay_behind_a_guard() {
+    let d = tmp("sink");
+    let text = format!(
+        "{PACKAGE}
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+use work.chk.all;
+entity t is end;
+architecture a of t is
+  signal v : std_logic_vector(7 downto 0) := x\"2a\";
+begin
+  process
+  begin
+    for k in 40 to 43 loop check(to_integer(unsigned(v)) = k, \"q\" & integer'image(to_integer(unsigned(v)))); end loop;
+    wait;
+  end process;
+end;
+"
+    );
+    std::fs::write(d.join("t.vhd"), text).expect("write");
+    // The replay: the second call is alone in a block that jumps on.
+    let replays = |env: &[(&str, &str)]| {
+        let (_, dump) = run(&d, env, "t", "interp");
+        let lines: Vec<&str> = dump.lines().collect();
+        lines
+            .windows(2)
+            .filter(|w| w[0].contains("CallNative { native: n0") && w[1].contains(" Br {"))
+            .count()
+    };
+    assert_eq!(replays(&[("YAVS_DUMPIR", "1")]), 1);
+    assert_eq!(replays(&[("YAVS_DUMPIR", "1"), ("YAVS_NO_IROPT", "1")]), 0);
 }

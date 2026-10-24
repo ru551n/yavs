@@ -7769,3 +7769,48 @@ lifted:
   `compile_thread_keeps_the_affinity_of_the_process` (`tests/tier.rs`); the 510-test differential corpus under `yavs-auto`, with
   `--tier-heat=1,0,0` and with 4 threads, passes.
 
+## IR optimiser round 14: a repeated `to_integer` is made once, the second call replays only when it can warn (yavs-ir `opt/sink/calls.rs`, `opt/sink.rs`, #520, 2026-10-24)
+
+User decision 2026-10-24 (#520): share the `to_integer` of a check's condition and message. `simAssertion(to_integer(unsigned(a & b)) = x,
+"..." & image(to_integer(unsigned(a & b))))` converts one value twice; the lowering builds each argument as a signal read, a
+concatenation and a fat pair of its own, so the optimiser's value numbering (which forgets memory facts at every call) never sees one
+value. After the message was sunk (round 16) the second chain and call were what remained of the message on the passing path.
+
+- **Decision: after `sink::run` has moved the message, `Sink::share_calls` finds, in one block, a later `to_integer (unsigned)` whose
+  argument is the same value as an earlier one's, and turns the later call into a branch on the earlier call's result:
+  `r1 = call(x); ...; CondBr r1, FAST, R`, `FAST: r2 = r1`, `R: r2 = call(x')` (the original second call), both to `J`, the rest
+  of the block. A second `sink` run then moves what built the second argument into `R`. Why: the native returns 0 exactly for a
+  null or a metavalue argument (both with a warning) and for the value 0, so a first result other than 0 proves that the second call
+  is silent and returns the same; for 0 the real second call runs and warns or not by itself, so message text, count, order and
+  time of every warning are those of the unshared code.** The guard is the result itself (`CondBr` tests `!= 0`): no `LNum`, no new
+  instruction, no change to the natives. Only `ieee::Op::ToInteger { signed: false }` qualifies (`numeric_bit` included: it warns
+  only for a null vector); `signed` warns with a result other than 0 for a one-element `'1'` (`TO_SIGNED: vector truncated`, result
+  -1), so it stays as it is (a test checks that).
+- **"The same value" is value numbering of one block (`calls.rs`, `Vn`).** Scalars are numbered by operation and operands (a register
+  the function defines once by a constant or an address is that constant or address, so `r13` and `r40` that both hold 1 are one
+  number); a block `Alloc` makes is numbered by what is written into it, in order (stores, `MakeDope`, `SigRead`, `Cat`), compared
+  by structure at the call (nested blocks included, depth 6). A call qualifies only when its argument is a fat pair this block
+  allocated. Everything that may change what was numbered forgets it and the first calls with it: a statement marker, a suspension, a
+  call other than `'image` and the light `ieee` natives (they write only a block of their own, and warn, which the replay keeps in
+  order), a store through a pointer that is not a numbered block, a copy, fill, free or any instruction `writes_nothing` does not
+  list. Signal reads of one block are of one value because nothing in the block can end an activation.
+- `sink.rs` changes that make the second chain movable: `SigVal`, `SigReadScalar` and `SigRead` into a block the moved set made
+  and `Cat` of logic vectors are movable like the string `Cat`; a moved `SigVal` takes two fresh registers (a signal reference is
+  two cells); a branch made by `calls.rs` (a "replay" block) is looked at although no string `Cat` is in front of it and moves from
+  3 instructions on (the call is rare); a result the target overwrites is not live out of it (the first version refused to move a
+  definition of the register the replayed call writes). Moved code writes fresh registers as before.
+- Tests (`crates/yavs/tests/sink.rs`, with the optimiser and without, interp and llvm): the same value in condition and message with
+  every check passing and failing; a vector with `U` (both calls warn, twice per check); a vector of zeros (the replay runs and is
+  silent); a null vector; another warning between the two calls; three calls of one value; a signed vector (left alone); the signal
+  changing between statements; and the dump has the replay. 1300 random programs of checks over vectors of 0 to 8 elements with
+  `0 1 U X Z W L H -`, concatenations, slices, `signed` and `unsigned`, signal changes between checks, compared with the build
+  without the optimiser on the interpreter (and 350 under `--tier=llvm`): identical output.
+- Not done: signed `to_integer` (a guard on the length and the sign bit would do); other natives that warn for a metavalue
+  (`+`, `-` and compares of `numeric_std` return a metavalue result, so their result cannot be the guard); sharing across blocks
+  (a call in a loop body and one after it); sharing the first chain with chains that other code built (`/ ` of numeric_std etc.).
+- **Measured** (`poc_arith_addw`, bench builds, core 10): instructions 0.92 in the interpreter and under `--tier=auto`, cycles 0.89
+  (window of 300 us), wall 0.95 (full length); 42 tests of `tools/realbench`, interpreter and compiled: instructions geometric mean
+  1.00. Details in `docs/STATUS.md` "IR optimiser round 14: a repeated `to_integer` is made once".
+- **Coordination (#697, #520):** the pass takes a native with one argument that is a fat pair the block allocated and stored
+  the data address and the descriptor into. A native whose arguments are in registers (#697) is not shared until
+  `Sink::shareable` and the argument test in `find_pairs` know that form; nothing else in the pass depends on the pair layout.

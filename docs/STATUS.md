@@ -7493,3 +7493,39 @@ Calibration data (cold, `YAVS_AUTO_TRACE` lines "cpu"): CPU per IR instruction o
 to 340 (full pipeline), native-frame code 445 (lean) to 620 (full), `Fast` code 90 to 115, cache hit 12 (frame) and 26 (native); native-frame
 compile time per IR instruction grows with the size of the function (360 at 15 IR, 570 at 100, 1160 at 300).
 
+## IR optimiser round 14: a repeated `to_integer` is made once (#520, 2026-10-24)
+
+`docs/decisions.md` "IR optimiser round 14". A check such as `simAssertion(to_integer(unsigned(c & s)) = x, "..." &
+image(to_integer(unsigned(c & s))))` converts one vector twice. After the message sank into the failing branch (round 16)
+the second argument (signal read, concatenation, fat pair) and the second native call were what was left of the message
+on the passing path. `opt/sink/calls.rs` finds two `to_integer` calls of an `unsigned` on the same value in one block
+(value numbering of scalars and of the blocks the run allocates; forgotten at statement markers, suspensions, unknown
+calls and stores) and makes the later one a branch on the earlier result: a result other than 0 is shared, 0 (also what
+a null vector or a metavalue returns, with a warning) runs the second call as it was, so every warning keeps its text,
+count, order and time. A second sinking round moves the second argument next to the replayed call.
+
+Measured on `poc_arith_addw` (aligned bench builds, main at e0b51352 against the change, core 10; `perf stat` user counters of
+a 300 us window, two untimed runs and the median of 5 interleaved runs; full length with `tools/realbench`, 3 runs):
+
+| | before | after | ratio |
+|---|---:|---:|---:|
+| window, instructions G / cycles G | 25.61 / 7.94 | 23.65 / 7.07 | 0.923 / 0.89 |
+| full, `--tier=interp` instructions G, wall s | 220.8, 14.00 | 203.6, 13.27 | 0.92, 0.95 |
+| full, `--tier=auto` warm, instructions G, wall s | 151.1, 11.05 | 140.8, 10.71 | 0.93, 0.97 |
+| full, `--tier=auto` cold, wall s | 14.89 | 14.43 | 0.97 |
+
+Against the reference simulator (5.78 s, same run, host load about 20): `--tier=auto` warm 1.91x before, 1.85x after; cold 2.58x
+before, 2.50x after. The checker process is 20 percent of the samples of the profile now; the 32 adder instances are the rest.
+Whole suite (`tools/realbench --compare`, 42 tests, `--tier=interp` and `--tier=llvm`, one run each, core 10): geometric mean of
+the instructions ratio 1.00 in both, no test above 1.01 but `poc_arith_addw` (0.921 interp, 0.929 llvm) and two short llvm cells
+(`uvvm_func_cov` 1.067, `uvvm_sb_slv` 1.033) whose instructions include the compile thread; five runs of those two: 0.99 to 1.01.
+
+
+- Tests: `crates/yavs/tests/sink.rs` (every case with and without the optimiser; interpreter and, with the `llvm`
+  feature, compiled code): vectors with `U`, all zeros, null, another warning between the two calls, three calls, signed
+  (not shared), signals changing between statements; the dump has the replay. Random programs: 1300 programs of checks over vectors of 0 to 8 elements with `0 1 U X Z W L H -`, concatenations, slices, `signed` and `unsigned`, three calls of one value, another conversion between the two calls and signal changes between the checks, output identical to the build without the optimiser (interpreter, and 350 of them under `--tier=llvm`).
+- Left: signed `to_integer` (warns with a nonzero result for a one-element `'1'`); the other `numeric_std` natives (their
+  result is a metavalue, not a sentinel the guard can test); calls in different blocks; the first call's own argument
+  code (`AllocReadVec`, `SigReadVec`, `NewDope`, `MakeDope`, `AllocCat`, `Cat`, `NewPair`, two stores per call) is the
+  calling convention of the natives (#697). A native whose arguments are not one fat pair (#697) is not shared until
+  `shareable` and the pair test in `find_pairs` know its form.

@@ -7228,3 +7228,18 @@ real-world designs, `cargo test --workspace` and `-p yavs-llvm -p yavs --feature
 What is left: the repeats behind a join (tail duplication), a repeat across a loop's iterations of dynamic offsets that are not one
 register, the `LayoutOf` and `Field` of the process variables in the copies (#678), PoC `ffdre` (#701), sharing the two `to_integer` of
 a check's condition and message (#520, a comment with the plan).
+
+## llvm: scalar drives kept for one host call (#676, 2026-10-24)
+
+A process that assigns the elements of a vector one by one in a loop (`state(i) <= x`, the usual shift register, bit reversal or sorting
+network) no longer makes a callback per element under `--tier=auto` and `--tier=llvm`: compiled code appends each zero-delay scalar logic drive
+to a stack buffer and hands the buffer to the kernel in one call before it waits, calls, drives another way or leaves the function
+(`docs/decisions.md` "Compiled clocked RTL processes, round 7"). Bench builds (`tools/build-bench.sh --features llvm`) of main before and
+after, `--tier=auto` warm, core 12, user instructions and cycles of the process tree:
+
+| test | instructions before | after | cycles before (median) | after |
+|---|---:|---:|---:|---:|
+| `hdlm_lfsr` | 28.09 G | 25.69 G (-8.5 %) | 8.53 G | 8.01 G (-6 %) |
+
+Instructions over all 42 realbench tests: geometric mean 0.99 (CPU time 0.99; the changes beyond 1 % elsewhere are `--tier=auto` noise,
+#673). The interpreter is unchanged (a deferred buffer there would save about 3 percent of `hdlm_lfsr`, recorded in the decision).

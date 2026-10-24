@@ -9163,6 +9163,39 @@ impl Host<'_, '_, '_> {
 }
 
 impl Host<'_, '_, '_> {
+    /// The assignment of a fused scalar logic drive through the kernel's general entry
+    /// (`Ctx::assign_code`): false (nothing done) where that is not the case (a code that is no
+    /// code, a reference of several parts, a signal that is not a scalar logic one).
+    fn drive_bit_try(
+        &mut self,
+        driver: u32,
+        target: [u64; 2],
+        delay: i64,
+        code: u64,
+        inertial: bool,
+    ) -> R<bool> {
+        let m = &mut *self.m;
+        if code > 8 || target[0] >> 32 == MULTI {
+            return Ok(false);
+        }
+        let d = m.driver(driver)?;
+        let (sr, ty) = m.sigref_words(target[0], target[1])?;
+        if ty.elem != Elem::Logic || sr.range.map_or(0, |r| r.len) != 1 {
+            return Ok(false);
+        }
+        let t = to_time(delay)?;
+        let mode = if inertial {
+            DelayMode::INERTIAL
+        } else {
+            DelayMode::Transport
+        };
+        let Some(c) = self.ctx.as_deref_mut() else {
+            return rt_err_s!("signal or wait operation during elaboration");
+        };
+        c.assign_code(d.id, sr.range, t, code as u8, mode)?;
+        Ok(true)
+    }
+
     /// The assignment of a fused scalar logic drive (`pre::ScalarDrive`) whose `Drive` is at
     /// `at`, as the five instructions it stands for would do it: the registers they read get
     /// the values compiled code computed, the waveform is made, the `LSet` and the `Drive` are
@@ -9597,29 +9630,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         inertial: bool,
     ) -> crate::Stepped {
         crate::tier_census::note("drive_bit", &self.f.name, at, self.f.code.get(at as usize));
-        let r = (|| -> R<bool> {
-            let m = &mut *self.m;
-            if code > 8 || target[0] >> 32 == MULTI {
-                return Ok(false);
-            }
-            let d = m.driver(driver)?;
-            let (sr, ty) = m.sigref_words(target[0], target[1])?;
-            if ty.elem != Elem::Logic || sr.range.map_or(0, |r| r.len) != 1 {
-                return Ok(false);
-            }
-            let t = to_time(delay)?;
-            let mode = if inertial {
-                DelayMode::INERTIAL
-            } else {
-                DelayMode::Transport
-            };
-            let Some(c) = self.ctx.as_deref_mut() else {
-                return rt_err_s!("signal or wait operation during elaboration");
-            };
-            c.assign_code(d.id, sr.range, t, code as u8, mode)?;
-            Ok(true)
-        })();
-        match r {
+        match self.drive_bit_try(driver, target, delay, code, inertial) {
             Ok(true) => crate::Stepped::Next,
             Ok(false) => self.drive_bit_replay(tf, at, target, delay, code),
             Err(e) => {
@@ -9627,6 +9638,49 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 crate::Stepped::Fault
             }
         }
+    }
+
+    fn drive_bits(&mut self, entries: &[[u64; 2]]) -> Option<u32> {
+        let mut at = 0;
+        while at < entries.len() {
+            let rest = &entries[at..];
+            let [t, w] = rest[0];
+            let (driver, pc) = ((w & 0xffff) as u32, (w >> 32) as u32);
+            let m = &*self.m;
+            // The fast case takes a run of elements of one driver at once.
+            if let (Some(d), Some(s), Some(c)) = (
+                m.drivers.get(driver as usize),
+                m.inst.sigs.get((t >> 32) as usize),
+                self.ctx.as_deref_mut(),
+            ) && s.ty.elem == Elem::Logic
+            {
+                let n = rest
+                    .iter()
+                    .take_while(|e| e[0] >> 32 == t >> 32 && e[1] & 0xffff == u64::from(driver))
+                    .count();
+                let taken = c.assign_codes_now(d.id, n, |k| {
+                    (s.off + rest[k][0] as u32, (rest[k][1] >> 16 & 0xff) as u8)
+                });
+                if taken > 0 {
+                    at += taken;
+                    continue;
+                }
+            }
+            // The kernel's general path, as `drive_bit` takes it.
+            let (inertial, code) = (w >> 24 & 1 != 0, w >> 16 & 0xff);
+            match self.drive_bit_try(driver, [t, 1], 0, code, inertial) {
+                Ok(true) => at += 1,
+                Ok(false) => {
+                    self.fault = Some(ice_s!("a kept scalar drive is no scalar logic assignment"));
+                    return Some(pc);
+                }
+                Err(e) => {
+                    self.fault = Some(e);
+                    return Some(pc);
+                }
+            }
+        }
+        None
     }
 
     fn wait_on_again(&mut self, sig: [u64; 2]) -> bool {

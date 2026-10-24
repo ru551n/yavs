@@ -61,6 +61,7 @@ const NATIVE: &str = "yavs_rt_native";
 const TROOT: &str = "yavs_rt_troot";
 const ENDSTMT: &str = "yavs_rt_endstmt";
 const XSTEP: &str = "yavs_rt_xstep";
+const DRIVE_FLUSH: &str = "yavs_rt_drive_flush";
 
 /// The most plane blocks an inline `LCopy` reads or writes (`yavs_rt_lcopy`'s stack copy).
 const LCOPY_BLOCKS: u64 = 8;
@@ -868,6 +869,30 @@ extern "C" fn yavs_rt_drive_bit_slow(
         )
     }));
     stepped(envp, mem, pc, r)
+}
+
+/// The scalar logic assignments compiled code kept (`Batch`): `n` entries of two words, for
+/// `TierHost::drive_bits`. `GO`, or the pc of the `Drive` of an entry that failed.
+extern "C" fn yavs_rt_drive_flush(
+    env: *mut c_void,
+    _mem: *mut Mem,
+    entries: *const [u64; 2],
+    n: u32,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_step`; compiled code passes `n` entries it wrote.
+    let envp = env as *mut Env<'_>;
+    let ents = unsafe { std::slice::from_raw_parts(entries, n as usize) };
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.drive_bits(ents)
+    })) {
+        Ok(None) => GO,
+        Ok(Some(pc)) => pc,
+        Err(p) => {
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
 }
 
 /// `TierHost::wait_suspend` for the `WaitOn` at `pc` and the `Suspend` after it.
@@ -2007,6 +2032,7 @@ pub(crate) fn new_jit(opt: OptLevel) -> Result<Jit, Error> {
             (TROOT, yavs_rt_troot as *const () as usize),
             (ENDSTMT, yavs_rt_endstmt as *const () as usize),
             (XSTEP, yavs_rt_xstep as *const () as usize),
+            (DRIVE_FLUSH, yavs_rt_drive_flush as *const () as usize),
         ],
     )
 }
@@ -2659,6 +2685,101 @@ pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
             !inline_regs(f, i).is_empty()
                 || matches!(i, Inst::Br { .. } | Inst::Stmt | Inst::Cover { .. })
         }
+    }
+}
+
+/// The scalar logic assignments of the process `f` (`yavs_interp::scalar_drives`) and the pcs of
+/// those `Gen::drive_bit` keeps for one host call (`Batch`): no delay, a driver index the entry has
+/// room for, and another such assignment (or itself, in a loop) can follow it within the
+/// activation. A process that drives once per activation gains nothing and keeps the direct call.
+pub(crate) fn batched_drives(
+    prog: &Program,
+    f: &Func,
+    fixed: &[Option<i64>],
+) -> (
+    Vec<yavs_interp::ScalarDrive>,
+    std::collections::HashSet<u32>,
+) {
+    let all = yavs_interp::scalar_drives(prog, f);
+    let cand: std::collections::HashSet<u32> = all
+        .iter()
+        .filter(|d| fixed.get(d.time.0 as usize) == Some(&Some(0)) && d.driver <= 0xffff)
+        .map(|d| d.drive)
+        .collect();
+    let n = f.code.len();
+    // ponytail: a search per candidate, quadratic; above the cap every candidate stays.
+    if cand.len() * n > 4_000_000 {
+        return (all, cand);
+    }
+    let kept = cand
+        .iter()
+        .copied()
+        .filter(|&d| {
+            let mut seen = vec![false; n];
+            let mut work = vec![d as usize];
+            let mut first = true;
+            while let Some(pc) = work.pop() {
+                if !std::mem::replace(&mut first, false) && cand.contains(&(pc as u32)) {
+                    return true;
+                }
+                if pc >= n || std::mem::replace(&mut seen[pc], true) {
+                    continue;
+                }
+                let i = &f.code[pc];
+                if matches!(i, Inst::Suspend { .. }) {
+                    continue;
+                }
+                match crate::regs::succs(prog, f, pc, i) {
+                    Some(s) => work.extend(s.into_iter().map(|t| t as usize)),
+                    None => return true,
+                }
+            }
+            false
+        })
+        .collect();
+    (all, kept)
+}
+
+/// Instructions that neither drive a signal, look at a driver, wait nor run other code, on any
+/// path (a slow path steps the same instruction): scalar drives kept in `Batch` stay kept
+/// across them. Everything else hands them over first.
+fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
+    match *i {
+        Inst::CallNative { native, args, dst } => native_kind(prog, f, native, args, dst).is_some(),
+        _ => matches!(
+            i,
+            Inst::Const { .. }
+                | Inst::ConstF { .. }
+                | Inst::Move { .. }
+                | Inst::Select { .. }
+                | Inst::Bin { .. }
+                | Inst::BinRange { .. }
+                | Inst::Un { .. }
+                | Inst::FBin { .. }
+                | Inst::FUn { .. }
+                | Inst::IToF { .. }
+                | Inst::Cmp { .. }
+                | Inst::FCmp { .. }
+                | Inst::Bool { .. }
+                | Inst::Check { .. }
+                | Inst::FCheck { .. }
+                | Inst::Index { .. }
+                | Inst::Pos { .. }
+                | Inst::AddrOf { .. }
+                | Inst::Load { .. }
+                | Inst::Store { .. }
+                | Inst::Alloc { .. }
+                | Inst::Br { .. }
+                | Inst::CondBr { .. }
+                | Inst::Case { .. }
+                | Inst::Stmt
+                | Inst::LGet { .. }
+                | Inst::LSet { .. }
+                | Inst::SigVal { .. }
+                | Inst::SigReadScalar { .. }
+                | Inst::SigRead { .. }
+                | Inst::Edge { .. }
+        ),
     }
 }
 
@@ -3464,6 +3585,9 @@ struct Gen {
     /// `yavs_rt_xstep(env, mem, func, pc, depth, use_idx, ins, nin, def_idx, outs, nout, temp_base) -> u32`.
     xstep_ty: LLVMTypeRef,
     xstep: LLVMValueRef,
+    /// `yavs_rt_drive_flush(env, mem, entries, n) -> u32`: the kept scalar drives (`Batch`).
+    flush_ty: LLVMTypeRef,
+    flush: LLVMValueRef,
     /// `llvm.frameaddress.p0(i32) -> ptr`.
     frame_addr: (LLVMTypeRef, LLVMValueRef),
     /// Native callees are called by symbol (one module, `compile`), else through `Mem::ntab`.
@@ -3534,6 +3658,19 @@ struct Cur<'p> {
     /// The object the instruction being generated found for its result register (`ObjRef`):
     /// entered in `known` once `track` has run for it.
     objnew: std::cell::Cell<Option<(Reg, ObjRef)>>,
+    /// The scalar drives of this activation kept for one host call, when the function has any.
+    batch: Option<Batch>,
+}
+
+/// Zero-delay scalar logic drives (`yavs_interp::ScalarDrive`) are not handed to the kernel one
+/// by one: the function appends `(signal reference, driver | code | pc)` to `entries`
+/// (`yavs_interp::DRIVE_BATCH` of them, `count` in use) and `Gen::batch_flush` hands them over in
+/// one `TierHost::drive_bits` call before anything that could look at a driver or run other
+/// code (every instruction but `batch_pure` ones) and at every exit of the function.
+#[derive(Clone, Copy)]
+struct Batch {
+    entries: LLVMValueRef,
+    count: LLVMValueRef,
 }
 
 /// Deferred register stores (`regs.rs`): a definition of a pure instruction is kept as a value
@@ -3665,6 +3802,8 @@ impl Gen {
                 LLVMFunctionType(LLVMVoidTypeInContext(ctx), eparams.as_mut_ptr(), 3, 0);
             let mut xparams = [ptr, ptr, i32, i32, i64, ptr, ptr, i32, ptr, ptr, i32, i64];
             let xstep_ty = LLVMFunctionType(i32, xparams.as_mut_ptr(), 12, 0);
+            let mut fl_params = [ptr, ptr, ptr, i32];
+            let flush_ty = LLVMFunctionType(i32, fl_params.as_mut_ptr(), 4, 0);
             let add = |name: &str, ty| {
                 let n = CString::new(name).expect("no NUL");
                 LLVMAddFunction(module, n.as_ptr(), ty)
@@ -3729,6 +3868,8 @@ impl Gen {
                 endstmt: add(ENDSTMT, endstmt_ty),
                 xstep_ty,
                 xstep: add(XSTEP, xstep_ty),
+                flush_ty,
+                flush: add(DRIVE_FLUSH, flush_ty),
                 frame_addr,
                 direct: false,
                 cold_depth: Default::default(),
@@ -3791,6 +3932,7 @@ impl Gen {
                 self.endstmt,
                 self.xstep,
                 self.scan,
+                self.flush,
             ] {
                 self.attr(f, false, "nounwind", 0);
             }
@@ -3960,7 +4102,9 @@ impl Gen {
                 let blk = self.block(c);
                 LLVMPositionBuilderAtEnd(self.b, blk);
                 let phi = LLVMBuildPhi(self.b, self.i32, c"".as_ptr());
-                if c.nat.is_none() {
+                if c.batch.is_some() {
+                    self.ret_exit(c, phi);
+                } else if c.nat.is_none() {
                     LLVMBuildRet(self.b, phi);
                 } else {
                     // The native frame's one exit (materialisation) takes the chunks' values.
@@ -3975,6 +4119,67 @@ impl Gen {
             LLVMAddIncoming(x.1, &mut { v }, &mut { from }, 1);
             x.2 += 1;
             x.0
+        }
+    }
+
+    /// End the exit block the builder is in (its phi `v`): hand over the kept scalar drives, if
+    /// any, then return `v`, or the pc of a drive the kernel refused when that failed.
+    unsafe fn ret_exit(&self, c: &Cur, v: LLVMValueRef) {
+        // SAFETY: well-formed blocks of c.f; `batch` is set.
+        unsafe {
+            let b = c.batch.expect("batch");
+            let (here, flush, done) = (LLVMGetInsertBlock(self.b), self.block(c), self.block(c));
+            let n = self.load(self.i32, b.count);
+            let any = self.icmp(IP::LLVMIntNE, n, self.c32(0));
+            self.cond_br(any, flush, done, false);
+            LLVMPositionBuilderAtEnd(self.b, flush);
+            let r = self.batch_call(c, n);
+            let bad = self.icmp(IP::LLVMIntNE, r, self.c32(GO));
+            let w = LLVMBuildSelect(self.b, bad, r, v, c"".as_ptr());
+            LLVMBuildBr(self.b, done);
+            LLVMPositionBuilderAtEnd(self.b, done);
+            let out = LLVMBuildPhi(self.b, self.i32, c"".as_ptr());
+            LLVMAddIncoming(out, &mut { v }, &mut { here }, 1);
+            LLVMAddIncoming(out, &mut { w }, &mut { flush }, 1);
+            LLVMBuildRet(self.b, out);
+        }
+    }
+
+    /// `yavs_rt_drive_flush` of the `n` kept entries.
+    unsafe fn batch_call(&self, c: &Cur, n: LLVMValueRef) -> LLVMValueRef {
+        // SAFETY: the arguments match `flush_ty`.
+        unsafe {
+            let b = c.batch.expect("batch");
+            let mut args = [c.env, c.mem, b.entries, n];
+            let r = LLVMBuildCall2(
+                self.b,
+                self.flush_ty,
+                self.flush,
+                args.as_mut_ptr(),
+                4,
+                c"".as_ptr(),
+            );
+            self.attr(r, true, "cold", 0);
+            r
+        }
+    }
+
+    /// Hand over the kept scalar drives before the instruction being generated, when there are
+    /// some; a refused one leaves the function.
+    unsafe fn batch_flush(&self, c: &Cur) {
+        // SAFETY: well-formed blocks of c.f; `batch` is set.
+        unsafe {
+            let b = c.batch.expect("batch");
+            let (flush, cont) = (self.block(c), self.block(c));
+            c.cold.borrow_mut().push(flush);
+            let n = self.load(self.i32, b.count);
+            self.cond_br(self.icmp(IP::LLVMIntNE, n, self.c32(0)), flush, cont, false);
+            LLVMPositionBuilderAtEnd(self.b, flush);
+            let r = self.batch_call(c, n);
+            LLVMBuildStore(self.b, self.c32(0), b.count);
+            let exit = self.exit_for(c, r);
+            self.cond_br(self.icmp(IP::LLVMIntEQ, r, self.c32(GO)), cont, exit, true);
+            LLVMPositionBuilderAtEnd(self.b, cont);
         }
     }
 
@@ -4487,10 +4692,19 @@ impl Gen {
             for &i in restrict {
                 LLVMAddAttributeAtIndex(fv, i, LLVMCreateEnumAttribute(self.ctx, kind, 0));
             }
+            // The scalar logic assignments the interpreter runs as one op: the waveform is not
+            // made here either (its instructions are `skipped`, the `Drive` is the step). Those
+            // without a delay are kept and handed over together (`Batch`).
+            let fixed = fixed_consts(f);
+            let (scalar_drives, batched) = if !native && f.kind == FuncKind::Process {
+                batched_drives(prog, f, &fixed)
+            } else {
+                Default::default()
+            };
             let exit = LLVMAppendBasicBlockInContext(self.ctx, fv, c"".as_ptr());
             LLVMPositionBuilderAtEnd(self.b, exit);
             let exit_pc = LLVMBuildPhi(self.b, self.i32, c"".as_ptr());
-            if !native {
+            if !native && batched.is_empty() {
                 LLVMBuildRet(self.b, exit_pc);
             }
             let entry = LLVMAppendBasicBlockInContext(self.ctx, fv, c"".as_ptr());
@@ -4534,13 +4748,6 @@ impl Gen {
             } else {
                 Vec::new()
             };
-            // The scalar logic assignments the interpreter runs as one op: the waveform is not
-            // made here either (its instructions are `skipped`, the `Drive` is the step).
-            let scalar_drives = if !native && f.kind == FuncKind::Process {
-                yavs_interp::scalar_drives(prog, f)
-            } else {
-                Vec::new()
-            };
             let skipped: std::collections::HashSet<u32> = scalar_drives
                 .iter()
                 .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
@@ -4553,7 +4760,7 @@ impl Gen {
                 regs,
                 mem,
                 known: std::cell::RefCell::new(vec![None; f.reg_ty.len()]),
-                fixed: fixed_consts(f),
+                fixed,
                 exits: std::cell::RefCell::new(if native {
                     Vec::new()
                 } else {
@@ -4567,7 +4774,22 @@ impl Gen {
                 joins: Default::default(),
                 cold: Default::default(),
                 objnew: Default::default(),
+                batch: None,
             };
+            if !batched.is_empty() {
+                // At the start of the entry block: every way in passes it.
+                let entries = LLVMBuildAlloca(
+                    self.b,
+                    LLVMArrayType2(self.i64, 2 * yavs_interp::DRIVE_BATCH as u64),
+                    c"".as_ptr(),
+                );
+                let count = LLVMBuildAlloca(self.b, self.i32, c"".as_ptr());
+                LLVMBuildStore(self.b, self.c32(0), count);
+                c.batch = Some(Batch { entries, count });
+                LLVMPositionBuilderAtEnd(self.b, exit);
+                self.ret_exit(&c, exit_pc);
+                LLVMPositionBuilderAtEnd(self.b, entry);
+            }
             // Registers the interpreter starts the frame with hold the same address everywhere.
             let mut base_known: Vec<Option<Known>> = vec![None; nregs];
             {
@@ -5158,12 +5380,15 @@ impl Gen {
                     LLVMAddCase(sw, self.c64(2), block_bb(l.end)?);
                     LLVMPositionBuilderAtEnd(self.b, generic);
                 }
+                if c.batch.is_some() && !batched.contains(&pc) && !batch_pure(prog, f, &inst) {
+                    self.batch_flush(&c);
+                }
                 match inst {
                     _ if skipped.contains(&pc) => {}
                     Inst::Drive { .. }
                         if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) =>
                     {
-                        self.drive_bit(&c, pc, d)
+                        self.drive_bit(&c, pc, d, &inst)
                     }
                     Inst::Const { dst, v } => self.std(&c, dst, self.c64(v)),
                     Inst::ConstF { dst, v } => self.std(&c, dst, self.c64(v.to_bits() as i64)),
@@ -7368,8 +7593,81 @@ impl Gen {
     }
 
     /// The `Drive` of a scalar logic assignment the interpreter fuses (`yavs_interp::ScalarDrive`):
-    /// the waveform is never made, the delay and the code go to the kernel in registers.
-    unsafe fn drive_bit(&self, c: &Cur, pc: u32, s: &yavs_interp::ScalarDrive) {
+    /// the waveform is never made, the delay and the code go to the kernel in registers. With
+    /// no delay (`batch`) it is kept in `Batch::entries` when it is a plain logic element of a
+    /// signal the kernel offers (`TierSig::codes` or `planes`), else it goes at once, after the
+    /// ones kept before it.
+    unsafe fn drive_bit(&self, c: &Cur, pc: u32, s: &yavs_interp::ScalarDrive, inst: &Inst) {
+        // SAFETY: the arguments match `drive_bit_ty`; well-formed blocks of c.f.
+        unsafe {
+            let Some(b) = c.batch.filter(|_| self.kint(c, s.time) == Some(0)) else {
+                return self.drive_bit_now(c, pc, s);
+            };
+            let (slow, join) = self.slow_path_with(c, pc, inst, true, |g, _| {
+                g.batch_flush(c);
+                g.drive_bit_now(c, pc, s);
+            });
+            let (v, l) = (self.ld(c, s.target), self.ld(c, Reg(s.target.0 + 1)));
+            let base = LLVMBuildLShr(self.b, v, self.c64(32), c"".as_ptr());
+            let n = self.mem_ld(c, MEM_SIGTAB_LEN, self.i64);
+            let code = self.ld(c, s.value);
+            let ok = LLVMBuildAnd(
+                self.b,
+                self.icmp(IP::LLVMIntULT, base, n),
+                LLVMBuildAnd(
+                    self.b,
+                    self.icmp(IP::LLVMIntEQ, l, self.c64(1)),
+                    self.icmp(IP::LLVMIntULE, code, self.c64(8)),
+                    c"".as_ptr(),
+                ),
+                c"".as_ptr(),
+            );
+            self.guard(c, ok, slow);
+            let tab = self.mem_ld(c, MEM_SIGTAB, self.ptr);
+            let at = LLVMBuildMul(self.b, base, self.c64(SIG_ENT), c"".as_ptr());
+            let ent = self.gep(tab, at);
+            let logic = LLVMBuildOr(
+                self.b,
+                self.load(self.i64, self.gep(ent, self.c64(SIG_CODES))),
+                self.load(self.i64, self.gep(ent, self.c64(SIG_PLANES))),
+                c"".as_ptr(),
+            );
+            let n = self.load(self.i32, b.count);
+            let room = self.icmp(IP::LLVMIntULT, n, self.c32(yavs_interp::DRIVE_BATCH as u32));
+            let fits = LLVMBuildAnd(
+                self.b,
+                self.icmp(IP::LLVMIntNE, logic, self.c64(0)),
+                room,
+                c"".as_ptr(),
+            );
+            self.guard(c, fits, slow);
+            let at = LLVMBuildMul(
+                self.b,
+                LLVMBuildZExt(self.b, n, self.i64, c"".as_ptr()),
+                self.c64(16),
+                c"".as_ptr(),
+            );
+            let p = self.gep(b.entries, at);
+            self.store(v, p);
+            let info = u64::from(s.driver) | u64::from(s.inertial) << 24 | u64::from(pc) << 32;
+            let w = LLVMBuildOr(
+                self.b,
+                LLVMBuildShl(self.b, code, self.c64(16), c"".as_ptr()),
+                self.c64(info as i64),
+                c"".as_ptr(),
+            );
+            self.store(w, self.gep(p, self.c64(8)));
+            LLVMBuildStore(
+                self.b,
+                LLVMBuildAdd(self.b, n, self.c32(1), c"".as_ptr()),
+                b.count,
+            );
+            self.join(c, join);
+        }
+    }
+
+    /// The scalar logic assignment of `s` as one callback.
+    unsafe fn drive_bit_now(&self, c: &Cur, pc: u32, s: &yavs_interp::ScalarDrive) {
         // SAFETY: the arguments match `drive_bit_ty`; well-formed blocks of c.f.
         unsafe {
             let code = LLVMBuildOr(

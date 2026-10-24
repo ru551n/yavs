@@ -912,6 +912,11 @@ mod llvm {
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
     llvm_case!(
+        llvm_drive_batch,
+        "q=",
+        [("cb_drive", Max(158)), ("llvm_interpreted_insts", Max(32)),]
+    );
+    llvm_case!(
         llvm_clocked,
         "q=",
         [

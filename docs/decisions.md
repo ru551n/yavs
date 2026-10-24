@@ -4433,6 +4433,48 @@ cycles for the design.
   signals: a further -0.9% instructions and -0.7% cycles of the writer, but edge tests read those planes and signal parameters reach
   `rising_edge`, so no static rule is sound.
 
+## Compiled clocked RTL processes, round 7: scalar drives kept for one host call (yavs-llvm, yavs-interp, yavs-kernel, #676, 2026-10-24)
+
+Decisions (agent drvbatch; the interpreter verdict is the open question at the end):
+
+- **A zero-delay scalar logic assignment in compiled code is appended to a buffer, not sent to the kernel.** `Gen::drive_bit` (the
+  `Drive` of a `yavs_interp::ScalarDrive` with a time register that is a constant 0) checks inline that the target is a one-element
+  reference into a signal the kernel offers (`TierSig::codes` or `planes` set, so a logic signal; the reference is not `MULTI`) and
+  that the code is at most 8, then writes `(reference word, driver | code << 16 | inertial << 24 | pc << 32)` to a per-activation
+  stack buffer (`Batch`, `yavs_interp::DRIVE_BATCH` = 32 entries) and increments a count. Anything else (a full buffer, a case the
+  kernel's fastest path does not know) hands the buffer over first and then drives as before, so the order of drives is the program's.
+- **The buffer is handed over by `yavs_rt_drive_flush` (`TierHost::drive_bits`, `Ctx::assign_codes_now`) before every instruction that
+  could look at a driver, drive another way, wait or run other code (`batch_pure` is the whitelist: constants, arithmetic, compares,
+  memory, `SigVal`, `SigReadScalar`, `SigRead`, `Edge`, the table natives) and at every exit of the function** (`ret_exit`: the exit
+  blocks `exit_for` makes, so a guard that leaves for the interpreter, a suspension and a fault all pass it). The kernel takes a run
+  of one driver in one pass: the driver, its waveform and the idle test once, then one `Out` entry per element, the entries
+  `assign_code_fast` would have made; an element the fast case refuses goes through the general entry as `drive_bit` did. No frame
+  is left at the flush, so only cases whose general path needs none are kept; `drive_bit_replay` stays for the unkept ones.
+- **A site is kept only when a second kept drive can follow it in the same activation** (`batched_drives`: it is in a loop, or another
+  kept site is reachable without passing a `Suspend`). A process that drives once per activation (`rtl_ff`) keeps the direct call: the
+  flush costs more than it saves for one entry.
+- **Why not coalescing adjacent drives or a Rust-side buffer.** The drives of `hdlm_lfsr` are one `Drive` in a loop (`state(i) <= x`),
+  with signal reads between the iterations, so no two are adjacent in the IR. A buffer in the compiled function's own stack needs no
+  layout shared with the host and no check in every callback; the flush points are the generator's, by instruction kind.
+- **Interpreter: not done** (considered, as the issue asks). `LSetDrive` is one op there already and the fast kernel entry is one call;
+  a deferred buffer would need a flush at every op that suspends, calls, reads a driver or ends the activation, and the saving is the
+  lookups of `assign_code_fast` (about 27 instructions an element, as measured for the compiled tier): about 3 percent of `hdlm_lfsr` in
+  the interpreter (22 drives per clock, 4.2 M clocks, 67 G instructions), less elsewhere. Not worth the flush points.
+- **Measured** (bench builds with `--features llvm`, `--tier=auto` warm, user instructions and cycles of the whole process tree, core 12,
+  the host at load 20 to 40, main before and after, three alternating pairs of five runs): `hdlm_lfsr` 28.09 G -> 25.69 G instructions
+  (-8.5 percent), median cycles 8.53 G -> 8.01 G (-6 percent). `perf` of the warm run: `Ctx::assign_code_fast`, `drive_bit_now` and
+  `yavs_rt_drive_bit` were 11.3 percent of the cycles, `assign_codes_now` and `drive_bits` are 4.3 percent now, and the compiled
+  process itself went from 20.5 to 16.5 percent. `tools/realbench/run.py --compare` over 42 tests (first version, before the
+  "second drive can follow" rule): instructions geometric mean 0.99 (`hdlm_lfsr` 0.91, the rest within `--tier=auto` noise,
+  #673), CPU time 0.99. `rtl_lfsr`, `lfsr64`, `lfsr64_xor`, `rtl_ram`, `sc5_fifo_repack`, `neorv32_single_min` do not change:
+  their processes drive once per activation or run interpreted under auto. `rtl_ff` (one drive per activation) is not
+  kept, by the rule above.
+- **Tried, not landed:** not counting kept drives as ways out in the policy (`auto::callbacks`, `too_many_callbacks`): instructions
+  geometric mean 1.00 over the 42 realbench tests (no process crossed the line), so the policy stays.
+- Tests: `compiled_drives::element_drives_in_loops_match_the_interpreter` (element drives in loops against vector drives, delayed
+  drives, a wait and a report in the loop, a procedure that drives the same signal, two drivers, a run longer than the buffer; with
+  the flush before non-pure instructions switched off it fails), `perf` `llvm_drive_batch` (`cb_drive`).
+
 ## Kernel round 19: single-bit drives, Signal layout, record leaves; assignment skipping and observers (yavs-kernel, #676, #519, #677, 2026-10-24)
 
 No kernel speed-up landed this round: each of the three ranked ideas was built and measured (bench builds, `tools/stepcount`

@@ -395,6 +395,9 @@ pub struct TierState {
 /// on with the top frame.
 pub const TIER_UNWIND: u32 = u32::MAX - 1;
 
+/// The most scalar drives compiled code keeps before it hands them to [`TierHost::drive_bits`].
+pub const DRIVE_BATCH: usize = 32;
+
 /// [`Tier::run`] returns it when a stepped instruction suspended the process (`wait`, a
 /// report or native at the stop severity): the top frame's pc is that instruction's.
 pub const TIER_SUSPEND: u32 = u32::MAX - 2;
@@ -564,6 +567,13 @@ pub trait TierHost {
         code: u64,
         inertial: bool,
     ) -> Stepped;
+
+    /// The scalar logic assignments of [`ScalarDrive`]s with a zero delay that compiled code kept
+    /// since the last call, oldest first: each entry is the signal reference's first word and
+    /// `driver | code << 16 | inertial << 24 | pc << 32` (`pc`: the `Drive`). They are what
+    /// `drive_bit_now` and, where the kernel's fastest path refuses one, `drive_bit` would have
+    /// done at their time. `Some(pc)` after a fault (recorded), the entry's.
+    fn drive_bits(&mut self, entries: &[[u64; 2]]) -> Option<u32>;
 
     /// `WaitOn` of the signal reference `sig` (its two words) for compiled code that waits on
     /// more signals after it: `true` when the kernel took it as the same registration as at the

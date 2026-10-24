@@ -1079,6 +1079,52 @@ impl Ctx<'_> {
         self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
     }
 
+    /// `assign_code_now` for `n` elements, `run(k)` being the offset in the signal and the code of
+    /// the `k`th, in order, with the driver and its waveform looked up once: how many of them,
+    /// from the front, the usual fast case took (the caller runs `assign_code` for the next one).
+    /// A driver that is not direct takes one element at most: the first leaves a quick transaction.
+    pub fn assign_codes_now(
+        &mut self,
+        d: DriverId,
+        n: usize,
+        run: impl Fn(usize) -> (u32, u8),
+    ) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return 0;
+        };
+        if !info.direct {
+            let (elem, code) = run(0);
+            return usize::from(self.assign_code_now(d, Range::new(elem, 1), code));
+        }
+        let w = &self.st.waveforms[info.local as usize];
+        if info.owner != self.pid || !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 2)
+        {
+            return 0;
+        }
+        let (sig, slot, range) = (info.signal.0, info.slot, info.range);
+        let mut taken = 0;
+        while taken < n {
+            let (elem, code) = run(taken);
+            if code >= 9 || !range.contains(Range::new(elem, 1)) {
+                break;
+            }
+            self.st.out.push(Out {
+                sig,
+                slot,
+                elem,
+                code: u32::from(code),
+            });
+            taken += 1;
+        }
+        if taken > 0 {
+            self.mark_entries(info, 1);
+        }
+        taken
+    }
+
     /// `assign_bytes` of one element with zero delay (transport or inertial without rejection):
     /// true when the usual fast case took it, false (nothing done) where `assign_bytes` must
     /// run, which also produces every error.

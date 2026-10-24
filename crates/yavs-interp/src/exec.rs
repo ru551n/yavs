@@ -675,6 +675,18 @@ fn simple_words(n: u64, d: &[u8]) -> Option<[u64; 4]> {
     Some([n.checked_mul(count)?, n, n, count])
 }
 
+/// Word `k` of layout words.
+fn word_of(words: &[u8], k: u32) -> R<u64> {
+    let o = k as usize * 8;
+    match words.get(o..o + 8) {
+        Some(b) => Ok(le_bytes(b)),
+        None => Err(ice_f!(
+            "read of 8 bytes at {o} outside a temporary object of {} bytes",
+            words.len()
+        )),
+    }
+}
+
 fn sev(v: u64) -> R<Severity> {
     Ok(match v {
         0 => Severity::Note,
@@ -1848,6 +1860,21 @@ impl Machine {
             .ok_or_else(|| ice_s!("shared state accessed by a process that is not marked serial"))
     }
 
+    /// Constant `idx` as bytes: stored as bytes, or once `obj` has expanded a compact one.
+    #[inline(always)]
+    fn const_mem(&self, idx: u32) -> Option<&[u8]> {
+        match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
+            Some(ConstData::Bytes(b)) => Some(b),
+            Some(_) => self
+                .rt
+                .expanded
+                .get(idx as usize)
+                .and_then(|c| c.get())
+                .map(Vec::as_slice),
+            None => None,
+        }
+    }
+
     /// The object of the spaces that are accessed all the time, without error paths.
     #[inline(always)]
     fn mem_fast(&self, sp: u8, idx: u32) -> Option<&[u8]> {
@@ -1857,16 +1884,7 @@ impl Machine {
             INST => Some(&self.inst.data),
             HEAP => self.heap.data(idx),
             // Constants stored as bytes; compact ones once `obj` has expanded them.
-            CONST => match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
-                Some(ConstData::Bytes(b)) => Some(b),
-                Some(_) => self
-                    .rt
-                    .expanded
-                    .get(idx as usize)
-                    .and_then(|c| c.get())
-                    .map(Vec::as_slice),
-                None => None,
-            },
+            CONST => self.const_mem(idx),
             // The state of protected objects and shared variables, and package data.
             SHARED_HEAP => self.sh.as_ref()?.heap.as_ref()?.data(idx),
             SHARED => Some(&self.sh.as_ref()?.vars),
@@ -2062,9 +2080,34 @@ impl Machine {
         self.load_slow(a, w)
     }
 
-    /// `load` from the other spaces, and every error.
+    /// `load` from the instance data, package data, byte constants and shared variables
+    /// (dope pointers of unconstrained parameters point there): each checked in place, everything
+    /// else and every error in `load_cold`. Short on purpose: no error building, so no saved
+    /// registers (#674).
     #[inline(never)]
     fn load_slow(&self, a: u64, w: Width) -> R<u64> {
+        let (sp, idx, off) = split(a);
+        crate::census::slow_load(sp);
+        let mem = match sp {
+            INST => Some(&self.inst.data[..]),
+            PKG => match &self.pkg_init {
+                Some((p, data)) if *p == idx => Some(&data[..]),
+                _ => self.rt.pkgs.get(idx as usize).map(|p| &p.data[..]),
+            },
+            CONST => self.const_mem(idx),
+            SHARED => self.sh.as_ref().map(|s| &s.vars[..]),
+            _ => None,
+        };
+        let n = w.bytes().min(8) as usize;
+        match mem.and_then(|m| m.get(off as usize..off as usize + n)) {
+            Some(b) => Ok(cell_w(b, w)),
+            None => self.load_cold(a, w),
+        }
+    }
+
+    /// `load_slow` for the remaining spaces and every error.
+    #[inline(never)]
+    fn load_cold(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
         let (sp, idx, off) = split(a);
         // Package data is not in `mem_fast`: read here.
@@ -2916,6 +2959,17 @@ impl Machine {
                 return Ok(&m.words);
             }
         }
+        self.layout_build(prog, ty, desc)
+    }
+
+    /// `layout_words` for a descriptor the memo of `ty` is known not to answer: the memo is made
+    /// again from it.
+    #[inline(never)]
+    fn layout_build(&mut self, prog: &Program, ty: TyId, desc: u64) -> R<&[u8]> {
+        let t = ty.0 as usize;
+        if self.layouts.len() <= t {
+            self.layouts.resize_with(t + 1, || None);
+        }
         let mut memo = self.layouts[t].take();
         let dsz = match &memo {
             Some(m) => m.dsz,
@@ -3006,24 +3060,35 @@ impl Machine {
         {
             return Ok(le_bytes(b));
         }
-        // A memoized array of scalars: the word straight from the bounds.
         if let Some(Some(m)) = self.layouts.get(ty.0 as usize)
-            && let Some(n) = m.simple
             && let Ok(d) = self.rd_hot(desc, m.dsz)
-            && let Some(w) = simple_words(n, d)
-            && let Some(&v) = w.get(k as usize)
         {
-            return Ok(v);
+            match m.simple {
+                // A memoized array of scalars: the word straight from the bounds.
+                Some(n) => {
+                    if let Some(w) = simple_words(n, d)
+                        && let Some(&v) = w.get(k as usize)
+                    {
+                        return Ok(v);
+                    }
+                }
+                // The same descriptor bytes as the memo: its word, without `layout_words`
+                // (a constant descriptor goes there once, to set `ckey`) (#518).
+                None if split(desc).0 != CONST => {
+                    if m.desc == d {
+                        if let Some(b) = m.words.get(k as usize * 8..k as usize * 8 + 8) {
+                            return Ok(le_bytes(b));
+                        }
+                    } else {
+                        // Another descriptor than the memo's: no second comparison.
+                        let words = self.layout_build(prog, ty, desc)?;
+                        return word_of(words, k);
+                    }
+                }
+                None => {}
+            }
         }
-        let words = self.layout_words(prog, ty, desc)?;
-        let o = k as usize * 8;
-        match words.get(o..o + 8) {
-            Some(b) => Ok(le_bytes(b)),
-            None => Err(ice_f!(
-                "read of 8 bytes at {o} outside a temporary object of {} bytes",
-                words.len()
-            )),
-        }
+        word_of(self.layout_words(prog, ty, desc)?, k)
     }
 
     /// `Inst::LGet`: the std_ulogic code of element `i` of the logic vector at `base`.

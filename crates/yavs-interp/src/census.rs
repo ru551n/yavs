@@ -25,6 +25,16 @@ pub(crate) fn tick(ops: &[Op], k: usize, insts: &[Inst]) {
     }
 }
 
+/// A `Machine::load_slow` of this address space, counted against the op that is running
+/// (`op-census`: the table "slow loads").
+#[inline(always)]
+pub(crate) fn slow_load(sp: u8) {
+    #[cfg(feature = "op-census")]
+    table::slow(sp);
+    #[cfg(not(feature = "op-census"))]
+    let _ = sp;
+}
+
 /// The ops executed so far in this process; `None` in a release build without `op-census`.
 pub fn ops_executed() -> Option<u64> {
     #[cfg(any(debug_assertions, feature = "op-census"))]
@@ -85,6 +95,8 @@ mod table {
         falls: Map<(Key, Key)>,
         /// A sample of each key, to name it when the table is printed.
         names: HashMap<Key, String>,
+        /// `load_slow` calls by running op and address space.
+        slow: Map<(Key, u8)>,
     }
 
     /// The tables of every thread that executed ops (ponytail: a mutex per op, uncontended with
@@ -143,6 +155,15 @@ mod table {
         LAST.set(Some(Instant::now()));
     }
 
+    pub(super) fn slow(sp: u8) {
+        if let Some(k) = PREV.get() {
+            MINE.with(|m| {
+                let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+                *m.slow.entry((k, sp & 7)).or_default() += 1;
+            });
+        }
+    }
+
     /// The clock reads and the table update that sit in every op's time, per op.
     fn overhead_ns() -> f64 {
         let mut tot = 0u128;
@@ -175,6 +196,7 @@ mod table {
         let mut pairs: HashMap<(Key, Key), u64> = HashMap::new();
         let mut falls: HashMap<(Key, Key), u64> = HashMap::new();
         let mut names: HashMap<Key, String> = HashMap::new();
+        let mut slow: HashMap<(Key, u8), u64> = HashMap::new();
         for l in ALL.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             let l = l.lock().unwrap_or_else(|e| e.into_inner());
             for (k, n) in &l.ops {
@@ -188,6 +210,9 @@ mod table {
             }
             for (k, n) in &l.falls {
                 *falls.entry(*k).or_default() += n;
+            }
+            for (k, n) in &l.slow {
+                *slow.entry(*k).or_default() += n;
             }
             for (k, s) in &l.names {
                 names.entry(*k).or_insert_with(|| s.clone());
@@ -218,6 +243,27 @@ mod table {
         rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         print_rows(
             "falls (the second op follows the first in the code: fusible)",
+            &rows,
+            total,
+            top,
+        );
+        const SPACES: [&str; 8] = [
+            "frame",
+            "inst",
+            "pkg",
+            "const",
+            "heap",
+            "temp",
+            "shared",
+            "shared_heap",
+        ];
+        let mut rows: Vec<(String, u64)> = slow
+            .iter()
+            .map(|((k, sp), n)| (format!("{} from {}", name(k), SPACES[usize::from(*sp)]), *n))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        print_rows(
+            "slow loads (Machine::load_slow by running op and space)",
             &rows,
             total,
             top,

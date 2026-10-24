@@ -5971,6 +5971,46 @@ cycle geometric mean over the designs of `tools/bench` and `tools/realbench` (32
   the same time, same list), and, to make `poc_arith_addw` cheaper, `to_integer` of the message (its warning for a vector
   with `U` is an effect at every call: not skipped, not shared with the identical call of the condition).
 
+## Interpreter round 17: loads from the other address spaces (yavs-interp, #674, #518, 2026-10-24)
+
+Measured as in round 16 (aligned bench builds, `tools/realbench/run.py --compare` with per-binary worlds on one core of the
+quiet CCD, `tools/bench/run.py --compare`); the cycles of single designs move by percents with the code layout (#576) and
+with host load, so the rule is: instructions drop, the geometric mean does not get worse.
+
+- **`load_slow` checks the spaces it is called for in place (#674).** The op census has a new table, `slow loads`
+  (`Machine::load_slow` calls by running op and address space). It shows what the issue guessed only partly: the loads
+  that leave the inline match of `Machine::load` are plain `Load`s and `LoadOff`s through a register that holds an
+  address only at run time. `poc_cache_cpu` (9.3 M of them, all instance data) reads the descriptor of a vector
+  parameter, whose address the caller passed: `reverse`, `mux` and the other unconstrained-vector functions load the
+  three words of the descriptor of a signal's vector, which lives in the instance data. `uvvm_func_cov` (5.5 M, constants)
+  and `poc_arith_addw` (17 M, package data) read descriptors of constants and package variables the same way. A register
+  defined once by an `AddrOf` is already a `LoadInst`/`LoadSlot`; the others have no address space known at predecode,
+  so the specialisation by space at predecode that the issue proposed has nothing to specialise on, and the body of
+  `load_slow` was the cost: 30 instructions with six saved registers (the error paths of the match were in it). It now
+  has one short match on INST, PKG, CONST (stored as bytes or expanded, the same lookup as `mem_fast`) and SHARED and
+  a slice of the right width; everything else and every error go to `load_cold`, the old body. The call sites in
+  `run_ops` are unchanged (an arm that calls an out-of-line function does not move the layout). INST in the
+  inline `load` match stay rejected (round 14, #674: +0.0 to +1.0 percent of instructions of the designs that never
+  read instance data through a pointer). Instructions: `uvvm_func_cov` 0.973, `poc_cache_cpu` 0.994, the rest within 0.2
+  percent.
+- **A layout the memo already holds is read without `layout_words` (#518).** `FieldOf` (25.7 M per `fletcher_bufferwriter_512`
+  run) and `LayoutWord` ask for one word of the layout of a record whose unconstrained fields keep their descriptor in a
+  process variable; the memo (one per type) is compared with the descriptor bytes at every call. `layout_word` now does that
+  comparison itself and returns the word, instead of calling `layout_words`, which looked the memo up again and wrote
+  `ckey`; a constant descriptor still goes through `layout_words` once (it sets `ckey`, after which the `ckey` test in
+  `layout_word` answers without reading the descriptor). A descriptor that differs from the memo's goes straight to
+  `layout_build` (the old tail of `layout_words`), so a record type used with several descriptors does not compare twice.
+  Not done: an associative memo keyed by descriptor, or a layout kept in frame bytes beside a variable whose descriptor is
+  fixed after its declaration; only 1 percent of the calls miss, and the remaining cost is the comparison itself.
+  Instructions: `fletcher_bufferwriter_512` 0.982, `fletcher_bufferreader` 0.980. `SubtypeCheck` as an out-of-line
+  `op_*` method was tried: +0.1 percent instructions on `poc_arith_addw`, no gain elsewhere, dropped.
+- **Not landed.** `AddrUp` followed by the `Uniform` op (1.8 percent of the ops of `sc5_fifo_repack`; the `AddrUp -> Load`
+  fusion of the task is `LoadUp`, round 16, and the census shows no other `AddrUp` pair); the `mux`/`ffdre` functions of
+  PoC (about 50 operations per call, mostly `NewPair`, `FatRoot`, `CallIeee` and `Alloc` for the fat pairs of the
+  `numeric_std` natives: an IR-level change of the calling convention, not a fusion); the second `to_integer` of
+  `poc_arith_addw`'s checks (a native that warns at every call cannot be evaluated once without knowing whether the
+  first call warned: it needs the native to report that, and the optimiser to give a call two results).
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

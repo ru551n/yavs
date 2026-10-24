@@ -6473,6 +6473,18 @@ load average 38 while measuring, so the ratios are inflated): `poc_arith_addw` 3
   dropped buffer and the op that drives it. `olo_axi_master_full` 0.865, `neorv32_single_min` 0.974, `poc_cache_cpu`
   0.981, geometric mean over 45 designs 0.9935.
 
+## Interpreter round 17: loads from the other address spaces (#674, #518, 2026-10-24)
+
+Details and the measurements in `docs/decisions.md` "Interpreter round 17". `op-census` has a table of `Machine::load_slow`
+calls by running op and address space. `load_slow` (loads from instance data, package data, constants and shared variables
+through a register that holds the address only at run time: descriptors of vector parameters) is a short match instead of a
+30-instruction body: `uvvm_func_cov` instructions 0.973, `poc_cache_cpu` 0.994. `layout_word` answers from the memo itself:
+`fletcher_bufferwriter_512` 0.982, `fletcher_bufferreader` 0.980 of the instructions. Over 41 designs of `tools/realbench`
+(interpreter, one core of the quiet CCD, host load 25 to 30): wall geometric mean 0.98, instructions 1.00 (none above 1.01
+but the short `fletcher_bufferwriter_prim32`, whose front-end work moves by 1 to 3 percent between worlds), CPU time of
+`tools/bench` 0.979 (internal) and 0.997 (h2h). Left: `AddrUp -> Uniform`, the fat-pair calling convention of the vector
+natives (`mux`), the repeated `to_integer` of the `poc_arith_addw` checks.
+
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 
 `frame_end` hashed every table of `Db` (33 maps, sets and values) before and after each unit analysed from source, to find what the

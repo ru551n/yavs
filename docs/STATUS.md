@@ -7907,3 +7907,42 @@ loads (four object look-ups, three positions); the call and return are about 55 
   `PAYBACK_RA` in its own constants.
 
 The object table has 1 024 entries (#719): the shared-heap and package host calls of the window generator were conflict misses; `--tier=auto` warm 149.3 to 148.3 G instructions, 44.1 to 43.4 G cycles (decisions.md "llvm: 1 024 entries in the object table").
+
+## Short clocked RTL runs and the fixed cost of tiny tests (#725, 2026-10-25)
+
+Two gaps of head-to-head 4 that no lane owned. Bench builds with `llvm`, tiny and designs on cores 13 and 14 (SMT siblings idle),
+`tools/stepcount` for exact instructions, `perf stat` for the rest; the numbers are of cf616672 unless stated.
+
+**Tiny corpus 5.3 to 5.7 ms per test (yavs warm).** Fixed. A bisect by user instructions and a look at `perf stat` found two
+things. (1) Wall time, not CPU: since #670 the sampler thread slept in 1 ms steps and the end of the run joined it, so a short run
+waited for the rest of a sleep (equal `task-clock`, longer elapsed time; `tests/corpus/delta/concurrent_assign.vhd` warm: 3.2 ms
+elapsed to 1.9 ms). The compile thread now starts the sampler after `START_AFTER` and unparks and joins it when it ends (cf616672;
+a run under 5 ms creates no sampler thread at all). (2) User instructions +171 k of 3.0 M (5.7 percent): the image decoding of a
+bigger analysed unit (ae1826dd, 12a37bc7), 0.03 ms. Corpus (456 tests, warm analyze plus run, interleaved, geometric mean of the
+per-test time): 4b80445d 1.00, head-to-head 4 build 1.065, with the fix 0.916; median test 5.1 ms to 4.3 ms. What is left of the
+1.9 ms of a `run` is process start: `yavs --version` takes 1.1 ms against 0.67 ms for `true`; the kernel has 70 percent of the
+cycles (exec, 435 page faults, thread creation); the dynamic loader is 0.05 ms by `LD_DEBUG=statistics`. Linking without PIE
+saves 0.2 to 0.3 ms per process (-66 page faults, -7.7 percent of the corpus, no change in runs of 0.1 to 0.7 s): a decision for
+the user, #727.
+
+**h2h designs still slower than sim1 warm** (rtl_lfsr 1.63, lfsr64 1.44, rtl_ff 1.33, rtl_chain 1.20, medians of 10, total wall;
+unchanged by this work). Nothing in the start-up dominates: analysis, elaboration and init are 2 to 4 percent of the wall of each
+(`--time-report`), the clock generator is 2000 to 20000 edges. The simulate phase is the whole difference, per process activation:
+
+| design | yavs instructions per activation | sim1 | where (exact, `--threads 1`) |
+|---|---:|---:|---|
+| rtl_ff (4096 one-bit processes) interpreted | 1511 (run_ops 930 for 12 ops, 17 per op in the dispatch alone) | 960 | kernel and drive about 400, run_quick and Process::run 170 |
+| lfsr64 interpreted | 2460 (run_ops 1369, `cat_words` + `cat_block` 320) | 1300 | the slice is copied to a temporary and concatenated: three block copies per shift |
+| rtl_lfsr, `--tier=llvm` | 1800 (compiled body 565) | 1100 | entry plumbing 620 (run_quick 175, enter 140, begin_kept 76, view_again 72, Process::run 60, load_objs 54, run_cached 28, save_objs 16), kernel and drive 550 |
+| rtl_chain interpreted (per delta) | 1600 (run_ops 544 for 10 ops) | 1020 | kernel 830 (run_batch 193, finish_direct 176, wake_sole 118, cycle 113, assign_code_fast 96, commit_code 82) |
+
+Wall of `--tier=auto` against all-compiled-at-first-call (`--tier-heat=1,0,0`, warm cache): rtl_ff 0.659 s to 0.593, lfsr64 0.170
+to 0.143, rtl_lfsr 0.281 to 0.275, rtl_chain 0.188 to 0.202 (compiled is slower there). The default compiles rtl_ff at 370 ms of 647,
+rtl_lfsr at 79 ms of 306 (refused at 23 ms by a price of 50.6 ms for a compile that is a 3 ms cache hit) and lfsr64 never: the
+price of a function whose object is in the cache is the open question #728 (decision for the user). Every other lever is in a lane:
+the kernel numbers are on #521, the policy on #675, the compiled-entry plumbing was taken to its floor for this structure in rounds
+5 and 6 of #634 (a process-direct entry that skips the interpreter's `Machine`, `view` and the thread's object cache would be the next
+step: about 400 of the 620 instructions, not started). Left alone on purpose: a `Cat` of a slice copied to a temporary (the optimiser
+would have to give `Inst::Cat` parts an offset: cross-crate), unchecked register access (tried and dropped in round 10).
+Not verified: cold tiny numbers after the change (only warm), Windows and aarch64 start-up, whether a non-PIE binary changes
+`--tier=auto` instruction counts (it did not change the cycles of the head-to-head designs).

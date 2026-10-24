@@ -8345,5 +8345,12 @@ shows the misses of new objects.
 - **Measured** (warm `tests/corpus/delta/concurrent_assign.vhd`, `perf stat -r 300`, core 14, bench builds): elapsed
   3.23 ms to 1.87 ms; `task-clock` 1.81 to 1.44 ms; user instructions equal (3.20 M). The binary of head-to-head 3
   (4b80445d) takes 2.30 ms on the same core and test.
-- **Not fixed here:** +171 k user instructions (5.7 percent of a 3 M-instruction run) since 4b80445d: 12a37bc7 +80 k
-  (`stage_extent` keys of the stage cache), ae1826dd +156 k (idle skip analysis of concurrent conditional assignments).
+- **Tiny-test corpus** (456 tests of `tests/corpus`, warm analyze plus run per test, 15 interleaved rounds, cores 13 and
+  14, `true` subtracted, bench builds with `llvm`): geometric mean of the per-test time 1.065 for the build of head-to-head
+  4 (46e827ad) against the one of head-to-head 3 (4b80445d), 0.916 with this change; median test 5.1 ms to 4.3 ms. The
+  head-to-head 4 figure of 5.7 ms against 5.3 ms was this, not a slower start-up: process start (the dynamic loader,
+  about 460 page faults) is 1.0 of the 1.9 ms of a `run`.
+- **Not fixed here:** +171 k user instructions (5.7 percent of a 3 M-instruction run) since 4b80445d: ae1826dd about +90 k
+  on the main thread (the analysed image holds more per declaration: `Decl`, `Symbol` and `Span` decoding), 12a37bc7 about
+  +80 k of which the main thread's functions show +5 k (not located); 0.03 ms. Position-independent linking costs 0.2 to 0.3 ms per process start: #727 (a
+  decision for the user).

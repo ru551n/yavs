@@ -426,10 +426,23 @@ milestone users care about works.
   time), frame-mode natives (`yavs_rt_native`), and the object table for heap accesses outside the frame. Before this a clocked process
   made 4800 `yavs_rt_signal` callbacks and 960 steps per 1000 activations (4 and 8 under LLVM) and ran twice the interpreter's
   instructions; now it is level with LLVM in callbacks and 1.0 to 1.4 times the interpreter's instructions (STATUS.md "clift").
-- **Cranelift as the first tier (2026-10-24):** `--tier=auto3` keeps the LLVM `Worker`'s policy, with the first-level cost model
-  (`first_us`) and, for a first-level generator only, the clocked-process length floor `RTL_MIN` and the one-second wait outside the
-  band as tunable (`YAVS_FIRST_RTL_MIN`, `YAVS_FIRST_BAND=1`); the defaults are LLVM's. Measured results and the reason they stay:
-  STATUS.md "clift".
+- **Native-frame helpers (2026-10-24):** a native-frame variant (`n<id>`) is no longer limited to code that needs no step: `CallProt`
+  (with the shared-state flags of `Machine::call_prot`), `Deref`, `TempRoot` (`yavs_rt_troot`) with the statement end
+  (`yavs_rt_endstmt`), `direct_native` natives (`yavs_rt_native`), and any instruction the host can step on a frame of its own
+  (`yavs_rt_xstep`: heap, fills and compares, layouts, reports, `Cat`, `NewFrame`, `SlicePos`, `MemEq`) are lowered in it, and every
+  native frame registers its slots in `Mem::nslots` at entry, so an address in a caller's frame is a valid argument (the access test of
+  a native frame is its own frame, the frames between the interpreter's top frame and it, then the object table). The window
+  generator testbench went from 42 to 261 variants and from 139 million `CallProt` steps to 5 million. Not built: the LLVM
+  generator's closed frames and held objects, adapters for calls from the interpreter into variants (`Tier::call`, `ntab`), nested
+  subprograms and signal parameters.
+- **Cranelift as the first tier (2026-10-24):** `--tier=auto3` keeps the LLVM `Worker`'s policy with the first-level cost model
+  (`first_us`). Measured knobs, none changes a default: `YAVS_FIRST_ONLY=1` (no recompile at O2: the native ABIs of the two generators differ,
+  so LLVM-compiled callers cannot call Cranelift variants and step instead; the window generator makes 445 G instructions with the
+  upgrade and 380 G without), `YAVS_FIRST_RTL_MIN` and `YAVS_FIRST_BAND=1` (the clocked-process floor and the second of waiting outside
+  `RTL_BAND`: `rtl_ff` 10.7 G instead of 12.3 G, the other clocked designs within 5 percent). Tried and not built: LLVM's rule that a
+  function leaving the compiled code for more than one instruction in ten stays interpreted (`CALLBACKS`) applied after the Cranelift
+  translation: the window generator made 826 to 846 G with it and 563 to 627 G without (the call-heavy functions are the ones that gain).
+  Results and the reasons the defaults stay: STATUS.md "clift".
 - **Result (STATUS.md "clift", issue #481 comment):** correct (corpus identical at 1 and 4 threads, collection
   stress). Performance: interpreter-relative geometric mean on the library testbenches 1.14 for `auto`, 1.07 for
   `auto3`, 1.15 to 1.16 for Cranelift alone; on the kernel designs no configuration moves and Cranelift code runs

@@ -820,6 +820,10 @@ impl yavs_llvm::Generator for Mixed {
         self.llvm.open()
     }
 
+    fn tree(&mut self, ids: &[yavs_ir::FuncId]) {
+        self.clift.tree(ids);
+    }
+
     fn compile(
         &mut self,
         prog: &yavs_ir::Program,

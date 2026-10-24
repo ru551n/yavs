@@ -13,7 +13,7 @@
 mod lower;
 
 #[cfg(feature = "clift")]
-pub use lower::{Error, Jit, compile};
+pub use lower::{BREAK, Error, Jit, compile};
 
 #[cfg(feature = "clift")]
 use std::sync::Mutex;
@@ -94,6 +94,10 @@ impl First {
 
 #[cfg(feature = "clift")]
 impl yavs_llvm::Generator for First {
+    fn tree(&mut self, ids: &[FuncId]) {
+        self.jit.allow(ids);
+    }
+
     fn compile(
         &mut self,
         prog: &yavs_ir::Program,

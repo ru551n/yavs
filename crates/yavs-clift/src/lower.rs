@@ -86,6 +86,9 @@ extern "C" fn clift_move(d: *mut u8, s: *const u8, n: u64) {
 /// Cranelift error text.
 pub type Error = String;
 
+/// A function in the perf map: name, definition, size, and the IR pc of each stretch of its code.
+type PerfEntry = (String, ClifId, usize, Vec<(u32, u32, u32)>);
+
 /// A Cranelift JIT module with the runtime callbacks compiled code calls.
 pub struct Jit {
     module: JITModule,
@@ -120,7 +123,10 @@ pub struct Jit {
     via_ntab: bool,
     /// `YAVS_CLIFT_PERFMAP=1`: the functions defined and not yet written to `/tmp/perf-<pid>.map`
     /// (name, id, code size), so that `perf report` names the generated code.
-    perfmap: Option<Vec<(String, ClifId, usize)>>,
+    perfmap: Option<Vec<PerfEntry>>,
+    /// The functions the policy compiles with the one being compiled: other callees get no variant
+    /// of their own here (they are called through `Mem::ntab`); none: all (`compile`).
+    allowed: Option<HashSet<FuncId>>,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -153,6 +159,16 @@ unsafe impl Send for Jit {}
 /// Measurement knobs: `YAVS_CLIFT_OPT` (`speed` by default, or `none`), `YAVS_CLIFT_VERIFY` (`1`
 /// runs the Cranelift verifier; on in debug builds only), `YAVS_CLIFT_RA` (`backtracking` by
 /// default, or `single_pass`).
+/// Test aid for debug builds: every function gets a type error only the verifier sees.
+#[doc(hidden)]
+pub static BREAK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the machine code carries the IR pc of each stretch (`YAVS_CLIFT_CODEDIR` set).
+fn srcmap() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("YAVS_CLIFT_CODEDIR").is_some())
+}
+
 fn flag(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
@@ -286,6 +302,7 @@ impl Jit {
             nsets: HashMap::new(),
             via_ntab: flag("YAVS_CLIFT_NTAB", "0") == "1",
             perfmap: (flag("YAVS_CLIFT_PERFMAP", "0") == "1").then(Vec::new),
+            allowed: None,
         })
     }
 
@@ -313,6 +330,11 @@ impl Jit {
         )
     }
 
+    /// Compile only these functions' variants as dependencies from now on (`Generator::tree`).
+    pub fn allow(&mut self, ids: &[FuncId]) {
+        self.allowed = Some(ids.iter().copied().collect());
+    }
+
     /// `native_set` of `id` alone.
     fn nset(&mut self, prog: &Program, id: FuncId) -> Rc<HashSet<FuncId>> {
         self.nsets
@@ -328,6 +350,9 @@ impl Jit {
         }
         if let Some(r) = self.natives.get(&id) {
             return r.clone().map_or(NatVar::No, NatVar::Direct);
+        }
+        if self.allowed.as_ref().is_some_and(|a| !a.contains(&id)) {
+            return NatVar::Indirect;
         }
         // A function calling itself, directly or not, calls through `Mem::ntab`.
         if !self.building.insert(id) {
@@ -433,9 +458,16 @@ impl Jit {
                 &ctx.func.signature,
             )
             .map_err(|e| e.to_string())?;
-        self.module
-            .define_function(fid, &mut ctx)
-            .map_err(|e| format!("Cranelift: {e:?} (a bug in yavs)"))?;
+        if let Err(e) = self.module.define_function(fid, &mut ctx) {
+            if cfg!(debug_assertions) {
+                panic!(
+                    "Cranelift rejected the adapter of f{}: {e:?}\n{}",
+                    nat.as_u32(),
+                    ctx.func.display()
+                );
+            }
+            return Err(format!("Cranelift: {e:?} (a bug in yavs)"));
+        }
         self.module.clear_context(&mut ctx);
         Ok(fid)
     }
@@ -667,9 +699,23 @@ impl Jit {
         let asm = std::env::var("YAVS_CLIFT_ASM")
             .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n == id.0));
         ctx.set_disasm(asm);
-        self.module
-            .define_function(fid, &mut ctx)
-            .map_err(|e| format!("Cranelift: {e:?} (a bug in yavs)"))?;
+        if let Err(e) = self.module.define_function(fid, &mut ctx) {
+            // A Cranelift error (the verifier is on in debug builds) is a bug of the lowering:
+            // debug builds stop with the function, release builds leave it interpreted.
+            if cfg!(debug_assertions) {
+                panic!(
+                    "Cranelift rejected f{}{}: {e:?}\n{}",
+                    id.0,
+                    if native {
+                        " (native-frame variant)"
+                    } else {
+                        ""
+                    },
+                    ctx.func.display()
+                );
+            }
+            return Err(format!("Cranelift: {e:?} (a bug in yavs)"));
+        }
         if let Some(v) = ctx
             .compiled_code()
             .and_then(|c| c.vcode.as_ref())
@@ -683,10 +729,28 @@ impl Jit {
         }
         if let (Some(list), Some(c)) = (self.perfmap.as_mut(), ctx.compiled_code()) {
             let kind = if native { "n" } else { "f" };
+            // IR pc of each stretch of machine code (`YAVS_CLIFT_CODEDIR`: `<name>.srcmap`).
+            let map = if srcmap() {
+                c.buffer
+                    .get_srclocs_sorted()
+                    .iter()
+                    .map(|m| {
+                        let at = if m.loc.is_rel() {
+                            m.loc.relocate(ctx.func.params.base_srcloc())
+                        } else {
+                            m.loc.as_abs()
+                        };
+                        (m.start, m.end, if at.is_default() { 0 } else { at.bits() })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             list.push((
                 format!("{kind}{}_{}", id.0, f.name.replace(' ', "_")),
                 fid,
                 c.code_info().total_size as usize,
+                map,
             ));
         }
         self.module.clear_context(&mut ctx);
@@ -708,7 +772,7 @@ impl Jit {
                 // `YAVS_CLIFT_CODEDIR=<dir>`: the machine code of each function as `<name>.bin`,
                 // for `objdump -D -b binary -mi386:x86-64` against `perf script` addresses.
                 let dir = std::env::var_os("YAVS_CLIFT_CODEDIR");
-                for (name, id, size) in &list {
+                for (name, id, size, map) in &list {
                     let at = self.module.get_finalized_function(*id) as usize;
                     let _ = writeln!(out, "{at:x} {size:x} {name}");
                     if let Some(d) = &dir {
@@ -721,6 +785,14 @@ impl Jit {
                         let _ = std::fs::write(
                             std::path::Path::new(d).join(format!("{file}.bin")),
                             code,
+                        );
+                        let text: String = map
+                            .iter()
+                            .map(|(a, b, l)| format!("{a} {b} {l}\n"))
+                            .collect();
+                        let _ = std::fs::write(
+                            std::path::Path::new(d).join(format!("{file}.srcmap")),
+                            text,
                         );
                     }
                 }
@@ -1314,6 +1386,9 @@ fn gen_func(
     let mut prev = None;
     for (i, &inst) in f.code.iter().enumerate() {
         let pc = i as u32;
+        if srcmap() {
+            g.b.set_srcloc(ir::SourceLoc::new(pc + 1));
+        }
         if let Some(p) = prev.replace(inst) {
             track(&mut g.known, &fixed, &p);
             // `track` forgets the register after a definition too (a signal reference is two):
@@ -2368,6 +2443,9 @@ fn gen_func(
         next_slow += 1;
         g.b.set_cold_block(s.block);
         g.b.switch_to_block(s.block);
+        if srcmap() {
+            g.b.set_srcloc(ir::SourceLoc::new(s.pc + 1));
+        }
         g.clear();
         if s.xstep && g.nat.is_some() {
             let inst = f.code[s.pc as usize];
@@ -2398,7 +2476,13 @@ fn gen_func(
         g.b.ins().jump(s.join, &[]);
     }
     // The exit block.
+    g.b.set_srcloc(ir::SourceLoc::default());
     g.b.switch_to_block(g.exit);
+    if cfg!(debug_assertions) && BREAK.load(std::sync::atomic::Ordering::Relaxed) {
+        // Test aid (`tests/verifier.rs`): a type error only the verifier sees.
+        let (a, b) = (g.c64(1), g.c32(1));
+        g.b.ins().iadd(a, b);
+    }
     if g.nat.is_some() {
         // (`yavs_rt_deopt` set `Mem::ndeopt`: the caller sees the frames recorded.)
         g.record_frame(f, exit_pc);
@@ -3171,6 +3255,19 @@ impl Gen<'_> {
             return self.b.ins().iadd(slots, off);
         }
         let (extra, n) = (self.op(extra), self.op(n));
+        if self.nat.is_none() {
+            // Frame-mode code asks the runtime (`Mem::find`): the chain of tests inline at every
+            // access was most of the code of a process (the reference lowering does the same, #634).
+            let w = self.c32(u32::from(write));
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
+            let p = self.b.inst_results(c)[0];
+            let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
+            self.guard(nn, slow);
+            return p;
+        }
         let hi = self.b.ins().ushr_imm_s(a, 32);
         let lo = self.lo32(a);
         let off = self.b.ins().iadd(lo, extra);
@@ -3215,7 +3312,7 @@ impl Gen<'_> {
         let p1 = self.b.ins().iadd(base, off);
         self.b.ins().jump(done, &[BlockArg::Value(p1)]);
         self.b.switch_to_block(call);
-        if self.nat.is_some() {
+        {
             // A native frame's own slots, and the slots of the native frames below it, registered
             // at their entry in `Mem::nslots` (a frame above the interpreter's top frame and
             // below this one).

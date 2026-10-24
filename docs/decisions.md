@@ -8318,3 +8318,72 @@ and `--tier=auto` compiled every adder process with the full `O2` pipeline, one 
   Both are the auto policy's (#673, #675); the native operand convention (#697) and the callback layer (#698) own the two
   `ieee` calls per adder activation (228 instructions of callback per call); `enter`/`view_again` cost 217 instructions per compiled
   activation (compiled frame views).
+
+## Cranelift tier, round 3: frame-mode host accesses, first-level rules per generator, variants charged to the budget (yavs-clift, yavs-llvm, #481, user, 2026-10-24)
+
+The user asked for the policy constants tuned for Cranelift's cheaper translation, so that `clift-auto` ends clearly below the
+interpreter on the window generator, `neorv32_single_min`, `fletcher_bufferwriter_512` and `poc_arith_addw`, and for the registers of
+frame-mode code across blocks. Instructions of the whole process tree (`perf stat`, `--no-cache`, so every run is as cold as the first
+one and the figures repeat), one `clift`-only release binary built with `tools/build-bench.sh`; 51 designs of `tools/bench` and
+`tools/realbench` of 1 G instructions or more (the geometric mean is over them).
+
+- **Decision: frame-mode code reaches an address of unknown space through `yavs_rt_host`, as the reference lowering does (#634); the
+  inline chain of tests stays in native-frame variants.** Why: the chain (frame, temporary area, instance data by the high half of the
+  address, then the object table) was 38 instructions and about 60 Cranelift instructions per access. It was 29 percent of the
+  Cranelift instructions of `fletcher`'s frame-mode code (69 000 to 49 000), 18 percent of the compile time (2.89 to 2.36 G
+  instructions on the compile thread), and 20 percent of the instructions executed in the two hot processes of `poc_arith_addw`
+  (8 800 to 6 960 samples of a perf run). Measured against the same binary with the chain (`HOSTCALL=0`, panel of 51): geometric mean
+  0.912 against 0.920, `xor_sig` 0.627 against 0.694, `xor_types` 0.598 against 0.686, `rtl_ff` 0.900 against 0.939. The earlier claim
+  that those two processes ran 2.5 times the instructions of the LLVM code compared the generated code only: the reference
+  lowering makes such accesses in a callback (and `Cat` of unknown length, which Cranelift does inline), which that count did not
+  include; in whole-run instructions `poc_arith_addw` was 125 G before this round, 114 G after, and 115 G for warm LLVM `auto`.
+- **Decision: the clocked-process rules that depend on what the code costs to make are one struct (`Tune`), `Tune::MAIN` with the
+  LLVM values and `Tune::FIRST` for a first-level generator: at least 64 IR instructions (was 120), no wait outside the 160 to 300
+  band (was a quarter of a second), four instances (was 16) and a thirty-second of the run (was an eighth).** Why: Cranelift
+  translates a fifth as slowly as LLVM and the trial takes back what does not gain. Sweeps of the three rules together (the panel;
+  geometric mean 0.915 for the old values, 0.912, 0.910 and 0.908 for 2/64, 1/none and 4/32 instances/share, differences within
+  the run-to-run noise of the policy): the designs that gain are those whose processes the old rules kept interpreted:
+  `poc_arith_addw` 0.784 to 0.736 (eight processes of 86 IR instructions made eight times), `rtl_ff` 0.962 to 0.902, the stream
+  repacker 0.842 to 0.816; no design got worse beyond its run-to-run spread (the verification-library testbenches spread most:
+  1.2 to 1.5 of the interpreter's instructions in every setting, with the old binary too, #673). The payback factor, the budget
+  percent, the callback limit and the budget factors of native and clocked functions were swept too and none moved a result
+  beyond that noise, so they stay; a price of 33 microseconds per IR instruction (the measured mean) made `poc_arith_addw` 8
+  percent worse (the big process was compiled earlier), so 45 stays. `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N`
+  replaces `YAVS_FIRST_RTL_MIN` and `YAVS_FIRST_BAND` (measuring aid).
+- **Decision: under `--tier=auto3` a function compiled by Cranelift is compiled again by LLVM after 300 times its first-level
+  threshold of running compiled (`Tune::o2_after`; was 30, and `YAVS_O2_AFTER`).** Why: the second level does not pay on these
+  designs, it only adds LLVM's compile time to the run. `auto3` cold (`--no-cache`), instructions in G, window generator /
+  `poc_arith_addw` / `fletcher_bufferwriter_512` / `neorv32_single_min`: 30 times 199.7 / 114.0 / 55.0 / 38.4, 100 times 195.8 /
+  115.1 / 55.0 / 38.3, 300 times 191.0 / 113.9 / 55.0 / 38.3, 1000 times 190.5 / 112.5 / 53.9 / 38.2, no second level 188.1 /
+  114.1 / 54.9 / 38.2; Cranelift alone is 188 / 114 / 55 / 38 and cold LLVM `auto` 230.1 / 115.9 / 56.5 / 38.3. 300 keeps the
+  upgrade for what stays hot for a long run, at 1.5 percent over no second level on the window generator; the compute designs
+  of `tools/bench` run for under a second and never reach it with either value (3.9 G for `compute_h2h`).
+- **Decision: the policy tells its generators which functions it compiles together (`Generator::tree`), and the Cranelift generator builds
+  native-frame variants of those only (`Jit::allow`); the variants a root's compile made are charged to the budget.** Why: building
+  a function made a variant of every function in its native set. `peek` of the verification library (201 IR instructions, 9 ms in the
+  model) took 112 ms: 26 variants of `log`, `alert`, `check_value` and the like, none of them seen running, which the policy had
+  left out of its tree (`left_out`). Those variants were then also never charged: the callee's own compile found its variant
+  and charged nothing, so the budget (2 percent times a factor of 16 for functions called natively) was spent more than three
+  times over.
+- **Decision: a Cranelift error from `define_function` (the verifier is on in debug builds) panics in debug builds with the function's
+  Cranelift IR, and the panic of the compile thread is re-raised when the tier stops.** Why: a function that was silently left
+  interpreted hid a dominance error in the previous round until the verifier was switched on by hand. A release build still leaves
+  the function interpreted and says so with `--verbose`. `tests/verifier.rs` checks both paths.
+- **Not done: registers kept in Cranelift variables across blocks of frame-mode code.** Measured first, with the machine code of the
+  hot processes attributed to the IR instructions (`YAVS_CLIFT_CODEDIR` writes the IR pc of every stretch of machine code next to
+  it; `perf script` addresses give the executed instructions per IR instruction): in the loop-free processes of `poc_arith_addw`
+  (87 IR instructions in one block on the hot path) the stores to the register array are 6 percent of the instructions generated
+  code executes, which is 1 percent of the run, and the model of the reference lowering stores at once outside loops for the same
+  reason (a deferred store must be written in every failing guard's exit block: code and compile time grow with guards times live
+  registers). What remains in those processes is `Cat` of unknown length (22 percent), the entry and exit (19), two `CallNative`
+  (15), `SubtypeCheck` (10): the work itself. The frame-mode loops of `xor_types` are 0.58 of the interpreter's instructions against 0.33
+  for warm LLVM `auto`; its hot loop is a `CallNative` (a conversion), a `SubtypeCheck` and an `LCopy` per iteration (25, 27 and
+  20 percent of the generated code, and 16 percent of the run in `yavs_rt_host`), so the gap there is in what is lowered
+  inline, not in registers. No design of the four targets has a hot frame-mode loop; a design that has one decides whether the
+  loop-only form (variables as phis in loops, as the reference lowering does) is worth its code.
+- **Finding: the floor of `neorv32_single_min` is the tier, not the policy.** With nothing compiled (an experiment build that made every
+  price huge) `clift-auto` runs 38.2 G against 37.7 G for `--tier=interp`: 0.43 G in the interpreter loop of a run with a tier
+  (the watch bookkeeping of `run_ops::<_, true>`) and 0.07 G on the tier-up thread (#544). Compiling single functions changes it by at
+  most +-0.3 G: only `counter_increment` pays (-0.6 G) and the callback rule keeps it interpreted (53 of its 399 IR instructions leave
+  the compiled code, the limit is one in ten). A policy that picks by measured benefit (the work in progress on main) can get the
+  design level; constants cannot.

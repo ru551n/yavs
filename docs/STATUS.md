@@ -3482,6 +3482,60 @@ Gap list after this round (days of one person; the first two items of the earlie
 | Test sharing | `yavs-clift/tests/tier.rs` is still a trimmed copy | S, 2 | no |
 | Maintenance | Cranelift pinned `=0.137.0`; +57 s clean release build, +5 MB binary | S per bump | the reason for doing it |
 
+### clift: round 3, frame-mode host accesses, first-level rules per generator (2026-10-24, #481)
+
+`spike/clift2` merged with main at f838c299 (the build with `llvm` needed one line: the twin path of `compile_one` reports no
+`extra`). Decisions: `docs/decisions.md` "Cranelift tier, round 3". Method: instructions of the whole process tree (`perf stat`,
+compile thread included), `--no-cache` so that every run is as cold as the first and the numbers repeat, one release binary per
+row from `tools/build-bench.sh`, simulation and compile thread on two cores of CCD0 (no timing cores: cycles were not measured, so
+nothing here says how the changed code runs, only how much it executes), the panel is 51 designs of `tools/bench` and
+`tools/realbench` of 1 G instructions or more. Instructions in G (ratio to the interpreter of this main):
+
+| design | interp | clift-auto before | clift-auto now | auto3 now | LLVM `auto` cold |
+|---|---:|---:|---:|---:|---:|
+| window generator | 450.4 | 194.1 (0.431) | 189.1 (0.420) | 191.0 (0.424) | 230.1 (0.511) |
+| neorv32_single_min | 37.7 | 40.9 (1.086) | 38.3 (1.015) | 38.3 (1.016) | 38.3 (1.016) |
+| fletcher_bufferwriter_512 | 55.6 | 56.7 (1.020) | 54.9 (0.988) | 55.0 (0.989) | 56.5 (1.016) |
+| poc_arith_addw | 154.9 | 124.9 (0.806) | 113.7 (0.734) | 113.9 (0.735) | 115.9 (0.748) |
+| geometric mean of the panel | | 0.931 | 0.912 | | |
+
+(Warm LLVM `auto`, three runs with a populated cache, on the previous binary: 190.9 / 38.4 / 56.5 / 115.0.) Level or below the
+interpreter on three of the four, 57 percent below it on the window generator and 27 percent on `poc_arith_addw`, which is
+at warm LLVM `auto`. `neorv32_single_min` stays 1.5 percent above: with nothing compiled the same run is 38.2 G (0.43 G in the
+interpreter loop of a run with a tier, 0.07 G on the tier-up thread, #544), so the floor is above the interpreter by the tier
+itself; compiling single functions moves it by at most 0.3 G and only `counter_increment` pays (-0.6 G), which the callback rule
+refuses (53 of its 399 IR instructions leave the compiled code; the limit is one in ten).
+
+What changed: (1) frame-mode accesses of unknown address space call `yavs_rt_host` instead of testing frame, temporary area and
+instance data inline (fletcher: 69 000 to 49 000 Cranelift instructions, compile thread 2.89 to 2.36 G; panel 0.920 to 0.912).
+(2) `Tune`: the clocked-process rules per generator (64 IR instructions, no wait outside the band, four instances, a thirty-second
+of the run; second level after 300 times the first-level threshold). (3) The policy tells the generator which functions it compiles
+(`Generator::tree`) and charges the variants a root's compile made (`peek` of a verification library: 112 ms for 26 variants
+never seen running). (4) A Cranelift error is a panic in debug builds (`tests/verifier.rs`). (5) A measuring aid:
+`YAVS_CLIFT_CODEDIR` also writes `<name>.srcmap`, the IR pc of every stretch of machine code, and with `perf script` addresses
+gives the instructions executed per IR instruction (`perf record -e instructions:u` samples land on the instruction after a slow one,
+so they weigh stalls: use counts as a guide and `perf stat` for totals).
+
+Panel remainder. Designs that run above the interpreter under `clift-auto` in the final binary, ratio to the interpreter's
+instructions: `rtl_fan` 1.09 (processes of 160 to 300 IR instructions made many times, level in the trial), `uvvm_sb_slv`
+1.3 to 1.5, `uvvm_util_rand` 1.2 to 1.5 and `poc_cache_cpu` 1.2 (library testbenches: the compile thread spends 4 G of a 13 G run
+on native variants of utility functions whose compiled code executes the instructions the interpreter does; the spread between
+runs is the policy's timing dependence, #673), `poc_fifo_ic_assembly` 1.16, `ieee_heavy` 1.10. `compute_h2h` is 0.15, `xor_types`
+0.58, `xor_sig` 0.62 of the interpreter's instructions (warm LLVM `auto` in the same cache mode 0.10, 0.33, 0.36).
+
+Registers across blocks in frame mode, measured and not built (decisions.md): in the two hot processes of `poc_arith_addw` the
+stores to the register array are 6 percent of the instructions generated code runs; the rest is `Cat` of unknown length (22 percent),
+entry and exit (19), `CallNative` (15), `SubtypeCheck` (10). The frame-mode loops that remain above warm LLVM `auto` (`xor_types`) spend their instructions in a conversion `CallNative`, a `SubtypeCheck` and an `LCopy` per iteration, not in register traffic.
+
+Gap list after this round:
+
+| gap | evidence | effort | blocks replacing LLVM? |
+|---|---|---:|---|
+| Policy by measured benefit instead of share and callback count (the work on main: work clock, benefit model) | neorv32 floor above the interpreter; UVVM testbenches 1.2 to 1.5; `counter_increment` refused although it pays | M | no |
+| Loop bodies of the compute designs: the conversion `CallNative`, `SubtypeCheck` and `LCopy` of `xor_types`, then registers and slot variables as phis in loops | `compute_h2h` 3.9 G against 2.6 G (warm LLVM `auto`), `xor_types` 7.1 G against 4.0 G, `xor_sig` 8.3 G against 4.8 G | M for the instructions, L for the phis | only for compute-bound testbenches |
+| Compile cost: 6 percent of the window generator's run is translation (11 G), 4 percent of fletcher's | native variants: 30 Cranelift instructions per IR `Load`, 53 per `DopeLen`, 57 per `NewFrame`; frame mode 195 per `LCopy` | M | no |
+| Compiled-code cache, Windows and aarch64 numbers, test sharing, Cranelift upgrades | as before | S to M | no |
+
 ## performance (tiers against two reference simulators, 2026-10-19)
 
 Measurement only (#125, #383, #385, #386, #395). yavs at `d76a08b5`, release build with the

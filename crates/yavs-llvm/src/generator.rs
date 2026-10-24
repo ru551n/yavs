@@ -53,6 +53,11 @@ pub trait Generator: Send {
         level
     }
 
+    /// The functions the policy is about to compile together, the root first. A generator that
+    /// compiles the callees of a function in the same module makes only these (the policy leaves
+    /// out callees that were never seen running: their compile time is not in its prices).
+    fn tree(&mut self, _ids: &[FuncId]) {}
+
     /// Compile the `part` of `f` (`id`) at `level`.
     fn compile(
         &mut self,

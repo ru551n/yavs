@@ -6,7 +6,7 @@
 //! [`Heat::period`] microseconds and compiles a function once it was seen for about as long
 //! as compiling it takes ([`Heat`]); the function is compiled in a module of its own and
 //! published through an atomic entry. A function then seen running its compiled code 30
-//! times as long is compiled again at O2 ([`Heat::o2_threshold`]) and its entry replaced (#432).
+//! times as long is compiled again at O2 ([`Heat::o2_threshold`]) and its entry replaced (#432); a Cranelift first level waits ten times longer ([`Tune`]).
 //! The interpreter asks the tier on entry and now and then at
 //! jumps, so the swap-in happens there in any frame of that function: compiled code runs on
 //! the interpreter frame's registers and enters at any pc (an instruction that is not an entry
@@ -67,10 +67,10 @@ impl Heat {
     }
 
     /// The time `f` must be seen running its first-tier code before it is compiled again at
-    /// O2: `O2_AFTER` times `threshold`, about ten times its O2 compile time (O2 costs
-    /// about seven times O0).
-    pub fn o2_threshold(self, f: &yavs_ir::Func) -> u64 {
-        self.threshold(f).saturating_mul(o2_after())
+    /// O2: `after` (`Tune::o2_after`) times `threshold`, about ten times its O2 compile time (O2
+    /// costs about seven times O0).
+    pub fn o2_threshold(self, f: &yavs_ir::Func, after: u64) -> u64 {
+        self.threshold(f).saturating_mul(after)
     }
 
     /// Whether every function is compiled when the interpreter enters it.
@@ -315,14 +315,14 @@ const RTL_INSTANCES: u32 = 16;
 const RTL_SHARE: u64 = 8;
 
 /// Why an `rtl` process made `n` times and seen for `seen` of `total` sampled microseconds would
-/// run its compiled code cold, so slower than interpreted (`RTL_INSTANCES`, `RTL_SHARE`).
-fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
-    if n < RTL_INSTANCES {
+/// run its compiled code cold, so slower than interpreted (`Tune::instances`, `Tune::share`).
+fn cold(n: u32, seen: u64, total: u64, t: Tune) -> Option<String> {
+    if n < t.instances {
         Some(format!(
             "a clocked process made {n} times: compiled code of few instances ran slower (its \
              code does not stay in the caches)"
         ))
-    } else if seen.saturating_mul(RTL_SHARE) < total {
+    } else if seen.saturating_mul(t.share) < total {
         Some(format!(
             "a clocked process seen for {seen} of {total} us: compiled code of a process that is \
              a small part of the run ran slower (its code does not stay in the caches)"
@@ -332,25 +332,64 @@ fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
     }
 }
 
-/// The smallest clocked process a first-level generator takes (`YAVS_FIRST_RTL_MIN` to try
-/// another; `RTL_MIN` is LLVM's): the way into compiled code costs the same, the code is cheaper
-/// to make, and Cranelift's code ran `rtl_ff`'s 136-instruction process in fewer instructions
-/// than the interpreter.
-fn first_rtl_min() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("YAVS_FIRST_RTL_MIN")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(RTL_MIN)
-    })
+/// The rules for clocked processes (`rtl`) that depend on the code generator. LLVM's are the values
+/// the rules were measured with. A first-level generator (Cranelift) makes its code in a fifth of
+/// the time and the trial takes back what does not gain, so it takes shorter processes at once and
+/// processes of fewer instances and of a smaller part of the run: on the CPU-like designs these
+/// compile when they are seen long enough to repay the translation, which the payback rule
+/// decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Tune {
+    /// The smallest process `rtl` takes (`RTL_MIN`): the way into compiled code costs the same
+    /// for both, and Cranelift's code ran `rtl_ff`'s 136-instruction process in fewer
+    /// instructions than the interpreter.
+    rtl_min: usize,
+    /// Whether a process outside `RTL_BAND` waits `BAND_WAIT` (`band_wait`).
+    band: bool,
+    /// `RTL_INSTANCES` and `RTL_SHARE` (`cold`).
+    instances: u32,
+    share: u64,
+    /// `O2_AFTER`: how many times its first-level threshold a function runs compiled before the
+    /// optimising generator makes it again (`Heat::o2_threshold`).
+    o2_after: u64,
 }
 
-/// Whether a first-level generator takes processes outside `RTL_BAND` at once
-/// (`YAVS_FIRST_BAND=1`; the LLVM rule otherwise).
-fn first_band() -> bool {
-    static B: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *B.get_or_init(|| std::env::var("YAVS_FIRST_BAND").is_ok_and(|v| v != "0"))
+impl Tune {
+    const MAIN: Tune = Tune {
+        rtl_min: RTL_MIN,
+        band: true,
+        instances: RTL_INSTANCES,
+        share: RTL_SHARE,
+        o2_after: O2_AFTER,
+    };
+    const FIRST: Tune = Tune {
+        rtl_min: 64,
+        band: false,
+        instances: 4,
+        share: 32,
+        o2_after: 300,
+    };
+
+    /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,o2_after=N` changes of
+    /// it (a measuring aid; an entry that is not understood is ignored).
+    fn first() -> Tune {
+        static T: std::sync::OnceLock<Tune> = std::sync::OnceLock::new();
+        *T.get_or_init(|| {
+            let mut t = Tune::FIRST;
+            let spec = std::env::var("YAVS_FIRST_TUNE").unwrap_or_default();
+            for (k, v) in spec.split(',').filter_map(|e| e.split_once('=')) {
+                match (k, v.parse::<u64>()) {
+                    ("rtl_min", Ok(n)) => t.rtl_min = n as usize,
+                    ("band", Ok(n)) => t.band = n != 0,
+                    ("instances", Ok(n)) => t.instances = n as u32,
+                    ("share", Ok(n)) => t.share = n,
+                    ("o2_after", Ok(n)) => t.o2_after = n,
+                    _ => {}
+                }
+            }
+            t
+        })
+    }
 }
 
 /// The largest process `rtl` takes.
@@ -680,17 +719,6 @@ fn first_fit(
 /// See `Heat::o2_threshold`.
 const O2_AFTER: u64 = 30;
 
-/// `O2_AFTER`, or `YAVS_O2_AFTER` (a tuning aid).
-fn o2_after() -> u64 {
-    static N: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("YAVS_O2_AFTER")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(O2_AFTER)
-    })
-}
-
 /// What happened to a hot function: compiled at that level (with the time it took), or why
 /// it stays interpreted (or at its first level).
 pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
@@ -858,6 +886,8 @@ const NATIVE_MAX: usize = 3000;
 
 /// The compile thread's state.
 struct Worker {
+    /// The rules of the generator that makes the first code of a function (`Tune`).
+    tune: Tune,
     prog: Arc<yavs_ir::Program>,
     table: Arc<[Entry]>,
     /// Native-frame code per function (`Mem::ntab`), published before the entry.
@@ -1031,6 +1061,11 @@ impl Worker {
     ) -> Worker {
         let nfuncs = prog.funcs.len();
         Worker {
+            tune: if first.is_some() {
+                Tune::first()
+            } else {
+                Tune::MAIN
+            },
             time: vec![[0; 2]; nfuncs],
             group: vec![0; nfuncs],
             asked_for: vec![false; nfuncs],
@@ -1114,13 +1149,13 @@ impl Worker {
 
     /// Whether `id` is a clocked process (`rtl`). A copy of a process (`Program::copy_of`) counts
     /// as the process it is a copy of, so every copy gets the decisions the process would get.
-    /// A first-level generator takes shorter processes (`first_rtl_min`): its code costs a fifth
+    /// A first-level generator takes shorter processes (`Tune::rtl_min`): its code costs a fifth
     /// of LLVM's to make and the trial takes it back when it does not gain.
     fn is_rtl(&self, id: FuncId) -> bool {
         self.prog.func(self.prog.base_of(id)).is_some_and(|f| {
             if self.first.is_some() {
                 f.kind == FuncKind::Process
-                    && (first_rtl_min()..=RTL_MAX).contains(&f.code.len())
+                    && (self.tune.rtl_min..=RTL_MAX).contains(&f.code.len())
                     && !loops(&self.prog, f)
             } else {
                 rtl(&self.prog, f)
@@ -1128,14 +1163,10 @@ impl Worker {
         })
     }
 
-    /// `band_wait`; none for a first-level generator when `YAVS_FIRST_BAND=1` (the trial judges
-    /// every process).
+    /// `band_wait`; none for a first-level generator (`Tune::band`: the trial judges every
+    /// process).
     fn band_wait(&self, len: usize) -> u64 {
-        if self.first.is_some() && first_band() {
-            0
-        } else {
-            band_wait(len)
-        }
+        if !self.tune.band { 0 } else { band_wait(len) }
     }
 
     /// The modules `tree` makes of `id` as a root: native-frame code for a function that runs on
@@ -1239,7 +1270,7 @@ impl Worker {
             return u64::MAX;
         };
         if compiled {
-            return self.heat.o2_threshold(f);
+            return self.heat.o2_threshold(f, self.tune.o2_after);
         }
         // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
         let at = self
@@ -1398,6 +1429,14 @@ impl Worker {
             .collect();
         out.extend(natives);
         out
+    }
+
+    /// Tell the generators which functions are about to be compiled together (`Generator::tree`).
+    fn announce(&mut self, ids: &[(FuncId, Part)]) {
+        let ids: Vec<FuncId> = ids.iter().map(|&(i, _)| i).collect();
+        for g in self.main.iter_mut().chain(self.first.iter_mut()) {
+            g.tree(&ids);
+        }
     }
 
     /// `root` compiled again by the optimising generator, with the functions it calls on native
@@ -1592,6 +1631,7 @@ impl Worker {
         let Some(&(root, part)) = ids.first() else {
             return false;
         };
+        self.announce(&ids);
         self.probing = true;
         self.cached_only(true);
         let hit = self.compile(root, false, true, part);
@@ -1812,6 +1852,7 @@ impl Worker {
                     self.native.instances(self.prog.base_of(id)),
                     seen,
                     self.total,
+                    self.tune,
                 )
             })
             .flatten();
@@ -1903,6 +1944,9 @@ impl Worker {
                 for &(g, native, call) in &entry.extra {
                     let k = g.0 as usize;
                     if native != 0 && self.nat.get(k).is_some_and(|n| n.0 == 0) {
+                        // Made with the root, so its compile call later finds nothing to do and
+                        // charges nothing.
+                        self.spent += self.price(g, Part::Native);
                         self.nat[k] = (native, false);
                         self.nat_by[k] = rank;
                         self.calls[k] = call;
@@ -2030,7 +2074,7 @@ fn sampler_loop(
 impl AutoTier {
     /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
     /// compiling the functions `heat` finds hot at `opt`, and those that stay hot compiled
-    /// again at O2 (`Heat::o2_threshold`; at once with an eager `heat`); functions over
+    /// again at O2 (`Heat::o2_threshold`, `Tune::o2_after`; at once with an eager `heat`); functions over
     /// `max_size` IR instructions stay interpreted. `note` is called on the compile thread for
     /// every compile.
     pub fn start_with(
@@ -2177,6 +2221,7 @@ impl AutoTier {
                             continue;
                         }
                         let first = ids.first().map(|&(id, _)| id);
+                        w.announce(&ids);
                         let mut root_done = false;
                         for (i, (id, part)) in ids.into_iter().enumerate() {
                             let done = w.compile(id, o2, sampled && i == 0, part);
@@ -2430,8 +2475,8 @@ impl Tier for AutoTier {
 #[cfg(test)]
 mod tests {
     use super::{
-        BY_ENTRIES, BY_RUNS, COMPUTE_BUDGET, NATIVE_BUDGET, UNSEEN_MIN, band_wait, cold, compute,
-        decide, first_fit, fused_search, left_out, loops, must_calls, run_trial,
+        BY_ENTRIES, BY_RUNS, COMPUTE_BUDGET, NATIVE_BUDGET, Tune, UNSEEN_MIN, band_wait, cold,
+        compute, decide, first_fit, fused_search, left_out, loops, must_calls, run_trial,
         too_many_callbacks, within_budget,
     };
     use yavs_diag::{FileId, Span};
@@ -2918,10 +2963,16 @@ mod tests {
     /// the run: the processes of a CPU design are a few percent of it each (#532).
     #[test]
     fn a_clocked_process_that_is_a_small_part_of_the_run_stays_interpreted() {
-        assert!(cold(4096, 44_000, 44_000).is_none());
-        assert!(cold(64, 23_000, 44_000).is_none());
-        assert!(cold(32, 11_700, 310_000).is_some());
-        assert!(cold(1, 44_000, 44_000).is_some());
+        let main = Tune::MAIN;
+        assert!(cold(4096, 44_000, 44_000, main).is_none());
+        assert!(cold(64, 23_000, 44_000, main).is_none());
+        assert!(cold(32, 11_700, 310_000, main).is_some());
+        assert!(cold(1, 44_000, 44_000, main).is_some());
+        // A first-level generator takes four instances and a thirty-second of the run.
+        let first = Tune::FIRST;
+        assert!(cold(4, 10_000, 310_000, first).is_none());
+        assert!(cold(3, 44_000, 44_000, first).is_some());
+        assert!(cold(32, 9_000, 310_000, first).is_some());
     }
 
     /// A clocked process outside the band of bodies that gained is tried only in a run that used it

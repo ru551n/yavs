@@ -8071,3 +8071,40 @@ elements, only `0 1 L H`) the code generator now emits that arithmetic instead o
 - **Test:** `tests/sink.rs` `a_call_inside_inlined_code_is_inlined_with_the_calls_it_came_through` (the method is above
   the plain size limit until the optimiser folds a false constant away, so only the `wide` round takes it); it fails
   in a debug build without the change.
+
+## llvm: liveness per basic block, the deferral cap is a memory guard, and the optimised register allocator measured (yavs-llvm, #710, #679, 2026-10-24)
+
+- **Decision: `regs::Live::new` solves liveness per basic block and sweeps each block once for the rows** (it iterated over every
+  instruction, up to 64 passes over `n * words` words). With the old cap lifted the LEON3 `iu:comb` copy (17 600 IR instructions, 11 100
+  registers) made `Live::new` 11.8 percent of the instructions of the simulation thread of a run with a WARM compilation cache (the code of
+  every function is generated for the cache key before the object is found), 2.8 percent of them without the cap raised; with the
+  per-block solution it is not in the profile. `MAX_WORDS` is 1 << 25 words (256 MiB of rows), a memory guard only: a function over it
+  gets no deferral. The rows are the same bits as before (checked on the 844 functions of a LEON3 run and by the unit test
+  `rows_match_plain_iteration_for_a_function_over_the_old_cap` against plain iteration).
+- **What the lifted cap gives (measured, LEON3 60 us, `iu:comb` forced, `--tier=auto --tier-heat=1,0,0`, core 11, medians of 7 interleaved,
+  simulation thread):** instructions 86.59 G to 86.35 G (-0.3 percent), cycles level within the noise of the host (32.6 G against 31.7 G in
+  one session, 37.3 G against 33.8 G in another: identical builds differ by that much between sessions). No gain to speak of because
+  `Gen::std` defers a result only inside a loop (`Defer::loopy`; outside loops a deferred value would be stored at every guard exit it is live
+  at), and `iu:comb` has hardly a loop. The neorv32 `exec_comb` (a loop) was under the cap already. `neorv32_single_min`,
+  `fletcher_bufferreader`, `fletcher_bufferwriter_512`, `sc5_fifo_repack` with `--tier-heat=1,0,0`: instructions identical to the
+  last digit, cycles within 0.5 percent. Default `--tier=auto` (`realbench --compare`, medians of 3): wall within 0.96 to 1.01, the whole
+  LEON3 run 55.78 s to 55.80 s (instructions 665.97 G to 663.81 G).
+- **The reloads of the three function arguments (task of #679): measured, and the lever is the register allocator, not the IR.** Machine code
+  of the `comb` copy as `llc -O0` makes it with the generator's own switches (`Fast`: FastISel and the fast register allocator):
+  20 306 basic blocks for 17 614 IR instructions, 308 884 of 812 000 instructions are `(%rbp)` accesses (38 percent), 46 977 of them the
+  reloads of the three arguments (`env` 10 548, `regs` 13 869, `mem` 22 560: 5.8 percent of the instructions). They are not alias
+  reloads: the fast register allocator spills every value that is live across a block at its definition and reloads it at its first use in
+  each block, and the code has one block per IR instruction (every guard and every slow path's join start a block), so nothing the IR says
+  (`noalias`, `readonly`, loading once in the entry block, passing through phis, calling conventions on the cold callbacks) changes that: a
+  value in a phi or an argument is a live-across value all the same. x86 has no reserved-register switch to pin the views.
+  **Measured lever: the optimised register allocation path at the same code generation level** (`-optimize-regalloc -regalloc=greedy` in
+  `YAVS_LLVM_ARGS` on top of `CODEGEN_ARGS`; FastISel stays): static `(%rbp)` accesses -25 percent (216 008 against 289 193), instructions
+  -7 percent; **dynamically, LEON3 60 us window, simulation thread: instructions 86.36 G to 78.62 G (-9.0 percent), cycles 30.9 G to 27.0 G
+  (-12.8 percent)**, output identical to the interpreter's over the whole 1060 us run; the same switch with `--tier-heat=1,0,0` on the other designs (simulation thread, medians of 5): cycles `neorv32_single_min` -5.9 percent (instructions -2.2), `fletcher_bufferreader` -6.1 (-1.1), `fletcher_bufferwriter_512` -7.0 (-2.6), `sc5_fifo_repack` -1.2 (-0.3). Cost: the code generation of the 17 600-instruction
+  function goes from 1.2 s to 10.8 s (2.1 s to 12 s the first compile), small functions at the `O0` level +45 percent. It is process-wide
+  (an LLVM command line option), so a per-function choice needs the option set around the code generation of those modules only
+  (`Module::emit`, under a lock the default code generations share) and a policy for which functions pay it (the hot large frame-mode
+  functions the O2 recompile skips today: `level_for` sends them to `Fast`). That is a compile-cost policy decision, not made here;
+  see #715.
+- **Measured and not kept:** `-regalloc=basic` (static `(%rbp)` accesses +7 percent), `llc -O1` (35 s code generation for the function,
+  553 000 instructions: -32 percent, `(%rbp)` accesses 107 702).

@@ -7685,3 +7685,16 @@ go through `yavs_rt_host` for addresses of kinds other than the temporary area, 
 The moves and jumps inlining adds at the site of a call that is itself inlined code kept `via` 0 (#709); a debug build's
 IR verifier rejected `procChecker` of `poc_arith_addw` ("statement belongs to another function") and the design could not
 run in a debug build. Fixed in `opt/inline.rs`; release builds ran the design unchanged. Regression test in `tests/sink.rs`.
+
+## llvm: #710 fixed, liveness per basic block, the deferral cap lifted; the optimised register allocator measured (#710, #679, 2026-10-24)
+
+- **#710 (a cached `LayoutOf` read the register's stale deferred value after its slow path stepped the instruction) is fixed** with a regression test
+  (`cached_layout_replaces_a_deferred_value_of_its_register`); the cap that hid it from the large processes is lifted: `Live::new` is per
+  basic block (no 64 passes over every instruction: 11.8 percent of a warm-cache LEON3 run's instructions with the cap raised on the old code,
+  nothing now), `MAX_WORDS` is a memory guard of 1 << 25 words. Instructions of the LEON3 comb window -0.3 percent, the other four designs
+  level (decisions.md "llvm: liveness per basic block ...").
+- **The argument reloads of #679 are fast-register-allocator spills at the 20 000 block boundaries of the comb copy**, 5.8 percent of its instructions,
+  not something the IR can mark away. With the optimised register allocation path (`-optimize-regalloc -regalloc=greedy`, an LLVM option) the
+  LEON3 window runs -9.0 percent instructions and -12.8 percent cycles (neorv32, the two fletcher designs -6 to -7 percent cycles), at about 10 s more code generation for that function. Not enabled: a
+  compile-cost policy for the hot large functions is the user's decision (#715).
+- Checks: difftest 520/520 at 1 and 4 threads for `yavs-interp`, `yavs-llvm`, `yavs-auto`, and `yavs-llvm`/`yavs-auto` with `YAVS_LLVM_ARENA=0`.

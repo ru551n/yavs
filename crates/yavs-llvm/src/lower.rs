@@ -1261,9 +1261,24 @@ extern "C" fn yavs_rt_host(
     cb(Cb::Host);
     // SAFETY: as in `yavs_rt_step`.
     let m = unsafe { &*mem };
+    // The view's bytes are a leaf: no register saves for the common hit (the slow path is apart).
     if let Some(p) = m.find(a, extra, n, write != 0) {
         return p;
     }
+    host_miss(env, mem, a, extra, n, write)
+}
+
+/// `yavs_rt_host` where the view does not hold the bytes: the interpreter's object table.
+#[cold]
+#[inline(never)]
+extern "C" fn host_miss(
+    env: *mut c_void,
+    mem: *mut Mem,
+    a: u64,
+    extra: u64,
+    n: u64,
+    write: u32,
+) -> *mut u8 {
     if yavs_rt_obj(env, mem, a, write) == 0 {
         return std::ptr::null_mut();
     }

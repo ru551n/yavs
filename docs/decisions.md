@@ -6060,6 +6060,11 @@ to 4.56 G; cycles on core 12 (median of 3 interleaved runs): `rtl_ff` 3.31 G to 
   the kernel's bytes (`TierSig::bytes`, `es`, as `Buf::write_to` copies them) are copied with one `memcpy` of
   `count * element size`; it was a 220-instruction callback (800 thousand in `fletcher_bufferreader`, one per
   integer field of a record read from signals). Instructions of that testbench -2.4 percent.
+- **`yavs_rt_host` is a leaf on a hit** (L, #663): the view and object-table lookup is the function, the interpreter's
+  object table (`yavs_rt_obj`) is a cold function behind it, so the common hit pushes and pops no callee-saved registers
+  (7 pushes, 7 pops and their moves per call before). `hdlm_lfsr` under `--tier=auto`, warm, instructions: 32.7 G with
+  the call (+5 percent over before the two #634 commits), 30.7 G now (before them 31.1 G); the other #634 designs are
+  within noise (`hdlm_lfsr` spends it on the instance-data read of a loop over a table).
 
 ## Search loops in compiled code: one shared scan (yavs-interp `scan.rs`, yavs-llvm, #578, 2026-10-23)
 

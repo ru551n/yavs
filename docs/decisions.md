@@ -5612,7 +5612,7 @@ the IR and one that only the interpreter's dispatch gains from is marked interpr
 `op-census` (crates/yavs-interp/AGENTS.md section 5), which now also has a time column (nanoseconds from the end of one op
 to the start of the next, the clock reads subtracted; ops that suspend or return include the kernel) and
 `YAVS_CENSUS_TOP=N` for the length of the tables. Each change lands only if the executed instructions drop and the
-cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` (windows of 50 to 200 us) is not worse.
+cycle geometric mean over the designs of `tools/bench` and `tools/realbench` (32, later 45; windows of 50 to 200 us for the long ones; one core of the quiet CCD, median of 5 to 7 interleaved runs with per-binary copies of the worlds) is not worse.
 
 - **`LoadUp` and `StoreUp` (interpreter only).** An `AddrUp` (the address of a variable of an enclosing subprogram, up the
   static chain) followed by the `Load` or `Store` through that address, which nothing else reads, is one op that walks the
@@ -5688,6 +5688,29 @@ cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` 
   `olo_axi_master_full` 0.865, `rtl_ram` 0.933, `neorv32_single_min` 0.974, `poc_cache_cpu` 0.981, `fletcher_bufferwriter_512`
   0.988, `fletcher_bufferreader` 0.990, `poc_uart_rx` 0.969, geometric mean over 45 designs 0.9935; `poc_arith_addw` does
   not change (its drives use a waveform made once per instance, not one per activation).
+
+- **What the census says about the six tests, and what was measured and not landed.** Instructions per executed op are
+  150 to 220 on the clocked designs (kernel and the bodies of the heavy ops), the dispatch of one op about 14: a fusion
+  of two cheap ops is worth 0.2 to 0.3 percent of a design whose ops are heavy and 2 to 5 percent of one whose ops are
+  cheap (`sc5_fifo_repack`, `poc_cache_cpu`), so the ranking is by time per op (the census time column), not by pair
+  counts. `poc_arith_addw`: 31 percent of the instructions were the messages of passing checks (sink, above); the rest is
+  `CallIeee` 9.5 percent of the time, `Drive` 5.3, `AllocCat` 5.0, `AllocReadVec` 4.5 and the kernel (20, `Suspend`).
+  `neorv32_single_min`: kernel and process entry (`Suspend`, `Ret`, `WaitSuspend`) about half of the census time, then
+  `SigRead1` 4.3, `Drive` 3.2, `AllocReadVec` 3.2, `LSetDrive` 2.8, `CallIeee` 2.6 percent; flat, so only `LCopyDrive`,
+  `LEq` and the buffer drop landed. `fletcher_bufferwriter_512`: `finish_direct` 10 to 17 percent of the cycles (the
+  kernel's wide commit, #519), `run_ops` 29, then `layout_words`, `layout_word`, the `SubtypeCheck` closure and `memcmp`
+  together 7 percent (records with vector fields: the layout memo holds one descriptor per type). `fletcher_bufferreader`:
+  `SigVal`, `Field`, `FieldOf` and `SigReadVec` chains of records, 3 percent of the time each. `sc5_fifo_repack`: 49 percent
+  of its time was `rand_next` (`Uniform`, `LoadUp`, `LEq`). `poc_cache_cpu`: flat; `Load` is 7.5 percent of the time and
+  7.6 M of its 8.1 M plain `Load`s read instance data through `load_slow` (#674).
+  Measured and not landed (aligned bench builds, `--tier=interp`, instructions): `SigVal` pairs (static neighbours are
+  rare: `SigVal -> SigVal` is 8.5 percent of the executed pairs of `fletcher_bufferreader` and 262 pairs next to each
+  other in its code; +0.09 percent on `neorv32`), `SigRead1` with the compare-branch on it (-0.2 percent), a latch whose
+  step is not the next op (`sc5_fifo_repack` -1.5 percent, the geometric mean 0.9998; the arm moved `compute_h2h` by
+  +0.5), instance data in the inline match of `Machine::load` (`poc_cache_cpu` -3.7 percent, every other design +0.0 to
+  +1.0, 45 designs 1.0022: the entry cost of `run_ops`), the statement markers of signal statements (landed by #588 at
+  the same time, same list), and, to make `poc_arith_addw` cheaper, `to_integer` of the message (its warning for a vector
+  with `U` is an effect at every call: not skipped, not shared with the identical call of the condition).
 
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 

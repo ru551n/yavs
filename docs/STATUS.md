@@ -6362,9 +6362,15 @@ their cycles waiting for lines of the process. Tried and not kept: `k` in a regi
 
 ## Interpreter round 16: superinstructions from the op census (#520, #518, 2026-10-24)
 
-Details and the ranking in `docs/decisions.md` "Interpreter round 16". One commit per fusion, each measured by
-`perf stat` user instructions and cycles on 32 designs of `tools/bench` and `tools/realbench` (aligned bench builds, one
-core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median of 5 interleaved runs).
+Details, the ranking and what was measured and not landed in `docs/decisions.md` "Interpreter round 16". One commit per
+change, each measured by `perf stat` user instructions and cycles on 32 designs of `tools/bench` and `tools/realbench`
+(45 for the last two; aligned bench builds, one core of the quiet CCD, per-binary copies of the worlds, two untimed runs,
+median of 5 to 7 interleaved runs). Together `LoadUp`, `Uniform`, the sunk messages and `LCopyDrive` against main at
+cf32383b: instructions 0.982, cycles 0.983 (32 designs); `poc_arith_addw` 0.720 and 0.763, `sc5_fifo_repack` 0.852 and
+0.856, `neorv32_single_min` 0.947 and 0.988. `LEq` 0.997 and 1.010 (the cycles of designs with identical instructions
+move by up to 10 percent, #576), the buffer drop 0.9935 and 0.9974. Full-length tests under `--tier=auto` against sim1 (host
+load average 38 while measuring, so the ratios are inflated): `poc_arith_addw` 3.1x to 2.4x, `sc5_fifo_repack` 2.7x to 2.0x,
+`neorv32_single_min` 1.5x to 1.4x, `fletcher_bufferwriter_512` 4.1x to 3.9x, `fletcher_bufferreader` 2.5x to 2.4x.
 
 - `LoadUp`/`StoreUp` (interpreter only): a variable of an enclosing subprogram is read or written in one op instead of
   `AddrUp` and `Load`/`Store`. `sc5_fifo_repack` instructions 0.969.

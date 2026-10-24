@@ -1,0 +1,4 @@
+exit	0
+diag	note	3000000	0	:record_pack_signals:drv	v=0101 v'last_value=0000 a='1' n=9
+diag	note	4000000	0	:record_pack_signals:drv	a'last_value='1' a'last_event=1000000 fs v'last_event=3000000 fs
+diag	note	10000000	0	:record_pack_signals:check	q.w=10100101 q.b='1' q.c='1' d.v=0101 d.n=9 a_events=2 v_events=1 e.v=1010 e.c='0' e.w=10100101

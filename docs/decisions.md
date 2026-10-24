@@ -6933,6 +6933,31 @@ compiled 82 M to 65 M (interpreter 64 M to 59 M).
 - `YAVS_PACKS=off` (hidden test aid, `ElabConfig::packs`) gives every leaf a signal of its own; the work counter `signals` counts kernel
   signals (`crates/yavs/tests/perf.rs` bounds it for the record designs).
 
+## Record signals as packs of leaves, step 4: one driver and one assignment per pack (yavs-elab, yavs-interp, yavs-kernel, #686, #677, 2026-10-24)
+
+- **Drivers of one process on adjacent elements of one kernel signal that one target names together** (the leaves of a pack in a whole
+  record assignment) are one kernel driver (`build.rs`); fields assigned one by one keep a driver each, because a direct driver takes
+  either single-element or vector entries in one run and a mix sends every assignment to the general path (measured: +3.7 percent
+  instructions on `grlib_leon3mp` when all adjacent drivers of a process were merged).
+- `ProcDriver::range` holds kernel elements (the leaf's base added once, at the build; not offset again by `InstSig::off`), and a `Drive`
+  without a target passes that range, since the kernel driver may be wider than the slot; `'driving_value` takes the slot's part
+  (`Ctx::driving_value_of`).
+- `SigScatter` (#677) collects logic leaves that are adjacent in one kernel driver into one plane block and assigns it once (one `OutV`
+  entry, one commit, one finish word per pack); `SigGather` reads a logic vector leaf inside one plane block from the signal's planes
+  (`Ctx::planes`); a scalar leaf keeps `elem_code` (a plane extract per scalar was slower).
+- Measured (bench builds, `--tier=interp`, instructions, warm): synthetic 233-leaf register record 5.20 G to 3.40 G; `grlib_leon3mp`
+  809.6 G to 801.4 G; `neorv32_single_min` 42.79 G to 42.26 G (steps 2 and 4 together on top of #677).
+- **Step 3 measured, not landed:** packing port leaves too (leaves with the same port edges: mode, side and the other side's object; no
+  conversion; their port components free of anything that stops skipping) with coalesced edges took `grlib_leon3mp` from 2516 to 1826
+  kernel signals but its idle skips from 2.09 M to 1.75 M (+2 percent instructions; `neorv32_single_min` level, 2021 to 1596 signals),
+  also with reader ranges kept apart per read. The processes that lost skips are the combinational TLB tag comparators that read a few
+  fields of a record in-port fed from an element of an array of records (not collapsed); why their arming grew is open.
+- **Idle skip reads carry their range:** a pure process is armed by an event in the elements it reads (the hull of its reads of the
+  signal), not by any event of the signal, so packing a record does not wake readers of one field for another; a signal whose changed
+  runs are not listed arms all its readers.
+- `YAVS_PACKS=off` (hidden test aid, `ElabConfig::packs`) gives every leaf a signal of its own; the work counter `signals` counts kernel
+  signals (`crates/yavs/tests/perf.rs` bounds it for the record designs).
+
 ## Composite signal reads: one copy per activation, scalar leaves read in place (yavs-lower, yavs-ir `FuncBuilder`, #630, #538, 2026-10-24)
 
 Shared layer: every tier and a second code generator see the smaller IR. Found with the LEON3 template of GRLIB (`grlib_leon3mp`,

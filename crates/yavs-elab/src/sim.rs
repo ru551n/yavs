@@ -1241,14 +1241,14 @@ impl Elaborated {
                     )));
                 }
                 let mut drivers = Vec::with_capacity(pir.drivers.len());
-                for (&sig, (d, _, range)) in pir.drivers.iter().zip(entries) {
+                for (&sig, (d, leaf, range)) in pir.drivers.iter().zip(entries) {
                     let pos = p.drivers.iter().position(|x| x == d).ok_or_else(|| {
                         SimError::new(ErrorKind::Internal("driver not owned".into()))
                     })?;
                     drivers.push(ProcDriver {
                         id: ds[pos],
                         sig,
-                        range: *range,
+                        range: self.nets.kpart(*leaf, *range).1,
                     });
                 }
                 let serial = ir.program.is_serial(pir.func);
@@ -1381,7 +1381,7 @@ impl Elaborated {
             drivers.push(ProcDriver {
                 id,
                 sig: inst.sigs.len() as u32,
-                range,
+                range: self.nets.kpart(leaf, range).1,
             });
             let at = self.nets.loc[leaf.index()];
             inst.sigs.push(InstSig {

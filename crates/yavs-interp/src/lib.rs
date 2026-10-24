@@ -92,6 +92,7 @@ pub struct ProcDriver {
     pub id: DriverId,
     /// Index into `InstData::sigs`.
     pub sig: u32,
+    /// The elements of the kernel signal it drives (not offset by `InstSig::off`).
     pub range: Range,
 }
 

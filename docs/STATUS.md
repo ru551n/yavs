@@ -7022,6 +7022,13 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too.
 - Step 1: a leaf is stored at `NetGraph::loc` (kernel signal, base); the kernel build, instance
   signal tables, waves, coverage toggles, VHPI and DAP reach kernel signals only through it
   (`NetGraph::kref`, `kpart`, `kelem`). Every leaf still has a signal of its own.
+- Step 2: runs of logic leaves of a record signal (at most 64 elements, no port, guard, force or
+  implicit signal) share one kernel signal; idle-skip readers are armed by their elements.
+- Step 4: one kernel driver per pack a whole record assignment names; `SigScatter` assigns a pack in
+  one plane block, `SigGather` reads vector leaves from the planes. Instructions (interp, warm,
+  on top of #677): 233-leaf register record 5.20 G to 3.40 G, `grlib_leon3mp` 809.6 G to 801.4 G,
+  `neorv32_single_min` 42.79 G to 42.26 G. Step 3 (packs with ports) measured and not landed
+  (`docs/decisions.md`). Not done: the whole-record wait, step 5 (the cap), step 6 (byte leaves).
 
 ## `yavs_rt_host` a leaf, and no cliff in the instance-constant memoisation (#663, #662, 2026-10-24)
 

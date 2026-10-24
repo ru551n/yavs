@@ -1,6 +1,6 @@
 # Record signal layout: packs of leaves in one kernel signal
 
-Status: design, 2026-10-24, #686; option A chosen (user, 2026-10-24); steps 1 and 2 implemented. Phase 1 of the "struct layout for
+Status: design, 2026-10-24, #686; option A chosen (user, 2026-10-24); steps 1, 2 and 4 implemented (step 4 without `Ctx::codes` and the whole-record wait). Phase 1 of the "struct layout for
 record signals" task: what changes, what stays, and the steps to land it.
 
 ## 1. Problem

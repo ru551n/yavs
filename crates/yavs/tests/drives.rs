@@ -181,8 +181,9 @@ fn a_default_drive_that_is_overridden_changes_nothing_anyone_sees() {
     for (what, body) in CASES {
         let d = tmp("drives");
         std::fs::write(d.join("t.vhd"), HEAD.replace("BODY", body)).expect("write");
-        let with = run(&d, &[]);
-        let without = run(&d, &[("YAVS_NO_DRIVES", "1")]);
+        // One kernel signal per leaf: record packs (#686) merge drives of fields by themselves.
+        let with = run(&d, &[("YAVS_PACKS", "off")]);
+        let without = run(&d, &[("YAVS_NO_DRIVES", "1"), ("YAVS_PACKS", "off")]);
         assert_eq!((&with.0, &with.1), (&without.0, &without.1), "{what}");
         assert_eq!(with.0, 0, "{what}: {}", with.1);
         if let (Some(a), Some(b)) = (with.2, without.2) {

@@ -182,14 +182,33 @@ impl Elaborated {
             b.port_parts(&f, &a, e.mode, pc);
         }
         for p in &self.procs {
-            let ds: Vec<DriverId> = p
-                .drivers
-                .iter()
-                .map(|&d| {
-                    let d = &self.nets.drivers[d];
-                    b.driver(nets.kref(d.leaf, d.range))
-                })
+            // Drivers of one process on adjacent elements of one kernel signal that one target
+            // names together (a whole record of a pack, #686) are one kernel driver; `ds` has
+            // one entry per declaration. Fields assigned one by one keep a driver each: a
+            // direct driver takes either single-element or vector entries in one run.
+            let mut ds: Vec<DriverId> = Vec::with_capacity(p.drivers.len());
+            let parts: Vec<_> = (p.drivers.iter())
+                .map(|&d| nets.kpart(nets.drivers[d].leaf, nets.drivers[d].range))
                 .collect();
+            let target_of = |d: usize| p.lsps.iter().position(|l| l.iter().any(|e| e.0 == d));
+            let mut i = 0;
+            while i < parts.len() {
+                let (s, mut r) = parts[i];
+                let mut j = i + 1;
+                while let Some(&(t, q)) = parts.get(j)
+                    && t == s
+                    && q.offset == r.offset + r.len
+                    && target_of(p.drivers[j]) == target_of(p.drivers[i])
+                {
+                    r.len += q.len;
+                    j += 1;
+                }
+                let id = b.driver(s.slice(r.offset, r.len));
+                ds.extend(std::iter::repeat_n(id, j - i));
+                i = j;
+            }
+            let mut own = ds.clone();
+            own.dedup();
             // A plain signal copy runs in the kernel when no one observes its activations
             // (coverage, a debugger, foreign callbacks: `Config::edge_triggers` is off then).
             let copy = p
@@ -234,7 +253,7 @@ impl Elaborated {
                     several_waits: false,
                     concurrent_call: false,
                 },
-                &ds,
+                &own,
                 proc,
             );
             if let Some(reads) = &p.guard {

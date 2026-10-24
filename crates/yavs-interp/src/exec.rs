@@ -2509,7 +2509,7 @@ impl Machine {
             let b = self.rd(add_addr(w, 8)?, 32)?;
             let code = (0..4).fold(0u8, |c, p| c | (b[p * 8] & 1) << p);
             let mode = self.delay_mode(mode, reject)?;
-            let range = target.map(|_| sr.range).unwrap_or(None);
+            let range = sr.range;
             let Some(c) = ctx.as_deref_mut() else {
                 return rt_err_s!("signal or wait operation during elaboration");
             };
@@ -2520,7 +2520,7 @@ impl Machine {
         if n == 1 {
             let t = to_time(self.load(w, Width::B8)? as i64)?;
             let mode = self.delay_mode(mode, reject)?;
-            let range = target.map(|_| sr.range).unwrap_or(None);
+            let range = sr.range;
             if elem == Elem::Logic {
                 // The plane blocks go to the kernel as they are in memory: no value is built.
                 let b = self.rd(add_addr(w, 8)?, u64::from(len).div_ceil(64) * 32)?;
@@ -2557,7 +2557,7 @@ impl Machine {
         }
         let refs: Vec<(Time, ValueRef<'_>)> = items.iter().map(|(t, v)| (*t, v.as_ref())).collect();
         let mode = self.delay_mode(mode, reject)?;
-        let range = target.map(|_| sr.range).unwrap_or(None);
+        let range = sr.range;
         let Some(c) = ctx.as_deref_mut() else {
             return rt_err_s!("signal or wait operation during elaboration");
         };
@@ -2833,10 +2833,7 @@ impl Machine {
             .sigs
             .get(d.sig as usize)
             .ok_or_else(|| ice_f!("no instance signal {}", d.sig))?;
-        Ok((
-            s.signal.slice(s.off + d.range.offset, d.range.len),
-            s.ty.elem,
-        ))
+        Ok((s.signal.slice(d.range.offset, d.range.len), s.ty.elem))
     }
 
     fn msg(&self, m: yavs_ir::CheckMsgId) -> yavs_ir::CheckMsg {
@@ -8852,7 +8849,10 @@ impl Machine {
             }
             Inst::DrivingValue { dst, driver } => {
                 let d = self.driver(driver)?;
-                let v = kc!().driving_value(d.id)?;
+                // The slot's elements of its kernel driver (one driver serves the leaves of a
+                // pack a process drives, #686).
+                let (sr, _) = self.driver_ref(&d)?;
+                let v = kc!().driving_value_of(d.id, sr.range)?;
                 self.put_value(self.r(dst), &v)?;
             }
             Inst::Drive {

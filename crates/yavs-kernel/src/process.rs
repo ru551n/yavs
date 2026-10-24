@@ -611,6 +611,15 @@ impl Ctx<'_> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
     }
 
+    /// The plane blocks of the current value of logic signal `s` and its element count: whole
+    /// record packs are read from them a block at a time (#686).
+    pub fn planes(&self, s: SignalId) -> Option<(&[yavs_logic::Block], u32)> {
+        match &self.sh.signals.get(s.0 as usize)?.cur {
+            crate::value::Buf::Planes { len, b } => Some((b, *len as u32)),
+            _ => None,
+        }
+    }
+
     /// The bytes of the current value of signal `s`, the element size and the element count
     /// (`Signal::bytes_view`).
     pub fn bytes_view(&self, s: SignalId) -> Option<(*const u8, usize, usize)> {
@@ -843,6 +852,24 @@ impl Ctx<'_> {
                 .to_value());
         }
         Ok(s.drivers[info.slot as usize].value.to_value())
+    }
+
+    /// [`Ctx::driving_value`] of elements `target` of driver `d` (the whole driver when `None`).
+    pub fn driving_value_of(&self, d: DriverId, target: Option<Range>) -> Result<Value, SimError> {
+        let v = self.driving_value(d)?;
+        let (_, r) = self.target(d, target)?;
+        let info = self.own(d)?;
+        if r == info.range {
+            return Ok(v);
+        }
+        let (at, n) = ((r.offset - info.range.offset) as usize, r.len as usize);
+        Ok(match v {
+            Value::Logic(l) => Value::Logic(l.slice(at, n)),
+            Value::Bytes(b) => {
+                let es = b.len() / info.range.len.max(1) as usize;
+                Value::Bytes(b[at * es..(at + n) * es].to_vec())
+            }
+        })
     }
 
     /// `now + delay` after truncating `delay` to the resolution limit.

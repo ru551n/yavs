@@ -241,20 +241,24 @@ of its most executed statement, and how many of its branches ran) for CI service
 coverage. Cobertura has no notion of toggles, so they are only in the text report. A database that cannot be read
 is error ``E0111``, a file that cannot be written ``E0110``.
 
-``--html DIR`` writes an HTML report into ``DIR``: static files with inline styles, no scripts
-and no external resources, so ``index.html`` opens straight from disk, in a light or dark
-theme as the browser asks. The index has the totals, one line per instance or package with its
-statement, branch and toggle percentages, and a link per source file. A file page shows the
-source with the hit count of each line, missed lines in red and lines with a missed branch arm
-or toggle in yellow; under a line, each of its items (statement, branch arm, toggle per signal
-and direction) with its instance, count and, when the database has test names, the tests that
-hit it. A missed item shows its ``--uncovered`` row, so it can be copied into an exclusion file.
+``--html DIR`` writes an HTML report into ``DIR``: static files with inline styles and one small
+inline script and no external resources, so ``index.html`` opens straight from disk, in a light or
+dark theme as the browser asks. The index has the totals, one line per instance or package with
+its statement, branch and toggle percentages, and a link per source file. A file page shows the
+source with the hit count of each line: missed lines in red, lines that ran in some instances
+and not in others in purple with a ``1/2`` marker (instances it ran in out of all), and lines
+with a missed branch arm or toggle in yellow; a legend explains the colours. Hover a line, or
+focus it with the keyboard, to see a popup with its items (statement, branch arm, toggle per
+signal and direction) per instance with the count and, when the database has test names, the
+tests that hit it; click the line to pin the popup so its text can be selected. A missed item
+shows its ``--uncovered`` row with a copy button, ready for an exclusion file.
 Each file also has ``src-N-missed.html`` (linked from the index and the file page), the same page
-reduced to the lines with a missed or excluded item, to find the gaps in a big design without
-scripts. Items taken out by ``--exclude`` stay visible, greyed, with the reason of their row. The
-sources are read at report time from the paths in the database, so run the command where they
-resolve; a source that cannot be read is error ``E0113`` and nothing is written. The same
-database always gives the same bytes.
+reduced to the lines with a missed or excluded item, to find the gaps in a big design. Items
+taken out by ``--exclude`` stay visible, greyed, with the reason of their row. Source paths are
+shown relative to the current directory; ``--root DIR`` strips another prefix instead (a path
+without it is shown as it is). The sources are read at report time from the paths in the
+database, so run the command where they resolve; a source that cannot be read is error ``E0113``
+and nothing is written. The same database always gives the same bytes.
 
 Excluding code from coverage
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

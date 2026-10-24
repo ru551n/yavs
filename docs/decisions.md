@@ -2227,15 +2227,23 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   per run (`--cov=FILE`, default `yavs.ycov`, overwritten), written whatever the run's outcome;
   `yavs cov merge` adds counts per key and keeps items only one input has. Cobertura output has
   timestamp 0 so equal databases give byte-identical reports.
-- **HTML (#344):** `cov report --html DIR`: static files (inline CSS, no scripts, no external
-  resources, light and dark by `prefers-color-scheme`, no timestamp so equal databases give equal
-  bytes). `index.html` has totals and a row per instance or package and per file; `src-N.html`
-  (N in file-name order) shows the source with the largest statement count per line and, under
-  it, every item with its count, tests and, if missed, its `--uncovered` row (the report is the
-  exclusion format); excluded items stay, greyed, with their reason. Sources are read at report
-  time from the database's paths; an unreadable one is `E0113`, nothing is written, rather than
-  a silently thinner report. No script filters or sorts: a hand-written template keeps the
-  crate free of dependencies.
+- **HTML (#344, reworked #689):** `cov report --html DIR`: static files (inline CSS and one
+  small inline script, no external resources, light and dark by `prefers-color-scheme`, no
+  timestamp so equal databases give equal bytes). `index.html` has totals and a row per instance
+  or package and per file; `src-N.html` (N in file-name order) shows the source with the largest
+  statement count per line. Sources are read at report time from the database's paths; an
+  unreadable one is `E0113`, nothing is written, rather than a silently thinner report. A
+  hand-written template keeps the crate free of dependencies.
+- **HTML interaction (user, 2026-10-24, #689; replaces the earlier "no scripts" rule):** (1)
+  source paths are shown relative to the current directory (`--root DIR` strips another prefix),
+  in headings, the index and exclusion rows; matching never uses the path. (2) No item lists
+  under source lines: a line with items is hoverable and keyboard-focusable and its popup lists
+  the items per instance with count and tests (covered-only lines too); a click pins the popup
+  so its text can be selected. Without the script, hover and focus still work (CSS). (3) A line
+  that ran in some instances and not in others has its own colour and a `ran/total` instance
+  marker, explained by the legend. (4) A missed item's exclusion row in the popup has a copy
+  button (the script only adds the buttons and the pin). The popup is a list of groups (title,
+  table), so a new item kind (condition rows, #688) adds groups without a new layout.
 - **Not yet:** the LLVM tier does not lower IR yet, so the interpreter is
   the only tier today.
 
@@ -2267,6 +2275,9 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   exclusion files); excluded items are out of the totals and the Cobertura report and are listed
   with their reasons. `cov merge` does not take exclusions. `unit` names packages only:
   entity and architecture items are excluded with `instance`.
+- **In the HTML report (user, 2026-10-24, #689):** a missed item's popup shows its exclusion row
+  with a copy button (the text row; the YAML entry once #687 lands), so the workflow stays
+  "copy the row from the report".
 
 - **YAML exclusion files (#687, user, 2026-10-24):** `--exclude FILE` also reads YAML; the
   one-line text rows stay, both are accepted. The parser is chosen by extension: `.yaml` and

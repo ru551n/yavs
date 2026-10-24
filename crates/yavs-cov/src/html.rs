@@ -1,11 +1,14 @@
-//! The HTML report (`yavs cov report --html DIR`): static files with inline CSS, no scripts and
-//! no external resources, so a page opens from disk. `index.html` has the totals, one line per
-//! instance or package and one per source file; `src-N.html` (N numbers the files in name
-//! order) shows a file's source with the hit count of each line and, under a line, its items
-//! (statements, branch arms, toggles) with their paths, counts and tests. A missed item shows
-//! its `--uncovered` row, ready to copy into an exclusion file; an excluded one is greyed with
-//! the reason of its row. `src-N-missed.html` lists only the lines with a missed or excluded
-//! item (no scripts needed to find them in a big file). No timestamp: equal inputs give byte-identical files.
+//! The HTML report (`yavs cov report --html DIR`): static files with inline CSS and one small
+//! inline script, no external resources, so a page opens from disk. `index.html` has the totals,
+//! one line per instance or package and one per source file; `src-N.html` (N numbers the files
+//! in name order) shows a file's source with the hit count of each line. A line with items
+//! (statements, branch arms, toggles) is hoverable and keyboard-focusable: its popup lists the
+//! items per instance with counts and tests; a click pins it. A line hit in some instances and
+//! missed in others has its own colour and an `hit/total` instance marker. A missed item shows
+//! its `--uncovered` row with a copy button; an excluded one is greyed with the reason of its
+//! row. `src-N-missed.html` lists only the lines with a missed or excluded item. No timestamp:
+//! equal inputs give byte-identical files. The popup is a list of groups (title, table), so
+//! other item kinds add groups without a new layout.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -15,9 +18,10 @@ use crate::{Database, Entry, Key, Kind, arrow};
 
 const CSS: &str = "\
 :root{--bg:#fff;--fg:#1f2328;--dim:#6e7781;--line:#d0d7de;--miss:#ffdce0;--part:#fff5b1;\
---ok:#dafbe1;--ex:#eaeef2;--bar:#2da44e}\
+--inst:#e3d8ff;--ok:#dafbe1;--ex:#eaeef2;--bar:#2da44e;--pop:#f6f8fa}\
 @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--dim:#8b949e;\
---line:#30363d;--miss:#5a1d24;--part:#4d3d00;--ok:#12361f;--ex:#21262d;--bar:#3fb950}}\
+--line:#30363d;--miss:#5a1d24;--part:#4d3d00;--inst:#3b2a66;--ok:#12361f;--ex:#21262d;\
+--bar:#3fb950;--pop:#161b22}}\
 body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;margin:1rem 1.5rem}\
 a{color:inherit}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem}\
 table{border-collapse:collapse}th,td{padding:.15rem .7rem;text-align:left;\
@@ -26,11 +30,43 @@ code,pre,.src td{font:13px/1.4 ui-monospace,monospace}\
 .bar{display:inline-block;width:5rem;height:.6rem;background:var(--miss);vertical-align:middle;\
 margin-right:.4rem}.bar i{display:block;height:100%;background:var(--bar)}\
 .src{width:100%}.src td{border:0;padding:0 .5rem;white-space:pre}\
-.src td.ln,.src td.c{text-align:right;color:var(--dim);width:1%}\
+.src td.ln,.src td.c,.src td.m{text-align:right;color:var(--dim);width:1%}\
 tr.hit td{background:var(--ok)}tr.miss td{background:var(--miss)}tr.part td{background:var(--part)}\
-.it td{white-space:normal;color:var(--dim);padding-left:6rem}\
-.it.miss td{color:var(--fg)}.it.ex td{background:var(--ex);color:var(--dim)}\
-.it code{user-select:all}.dim{color:var(--dim)}";
+tr.inst td{background:var(--inst)}tr.ex td{background:var(--ex)}\
+tr[tabindex]{cursor:pointer}tr[tabindex]:focus{outline:2px solid var(--dim);outline-offset:-2px}\
+.src td.t{position:relative}\
+.pop{display:none;position:absolute;left:2rem;top:100%;z-index:5;min-width:24rem;max-width:56rem;\
+white-space:normal;cursor:auto;background:var(--pop);color:var(--fg);border:1px solid var(--dim);\
+padding:.4rem .7rem;box-shadow:0 4px 14px rgba(0,0,0,.3)}\
+tr:hover .pop,tr:has(:focus-visible) .pop,tr:focus-visible .pop,tr.pin .pop{display:block}\
+body.pinned tr:not(.pin) .pop{display:none}\
+.pop table{width:100%}.pop td.n{width:3rem;padding-right:1rem}.pop h4{margin:.4rem 0 .1rem;font-size:.85rem}.pop p{margin:.2rem 0}\
+.pop table td{white-space:normal;padding:.05rem .5rem .05rem 0;border:0;background:none}\
+.pop tr.miss td:first-child{border-left:.3rem solid #cf222e;padding-left:.3rem}\
+.pop tr.x td{padding-bottom:.4rem}.pop code,.pop pre{user-select:all}.pop pre{margin:.1rem 0}\
+.pop .ex{color:var(--dim)}\
+.cp{display:none;margin-left:.5rem;font:12px system-ui,sans-serif}.js .cp{display:inline}\
+.legend span{padding:0 .5rem;margin-right:.3rem;color:var(--fg)}\
+.legend .hit{background:var(--ok)}.legend .miss{background:var(--miss)}\
+.legend .inst{background:var(--inst)}.legend .part{background:var(--part)}\
+.legend .ex{background:var(--ex)}.dim{color:var(--dim)}";
+
+const JS: &str = "\
+(function(){var d=document,pin=null;d.documentElement.className+=' js';\
+function set(t){if(pin)pin.classList.remove('pin');pin=t==pin?null:t;\
+if(pin)pin.classList.add('pin');d.body.classList.toggle('pinned',!!pin)}\
+function fb(s){var a=d.createElement('textarea');a.value=s;d.body.appendChild(a);a.select();\
+try{d.execCommand('copy')}catch(x){}d.body.removeChild(a)}\
+function copy(s,b){var o=b.textContent;function ok(){b.textContent='copied';\
+setTimeout(function(){b.textContent=o},1200)}\
+if(navigator.clipboard&&navigator.clipboard.writeText)\
+navigator.clipboard.writeText(s).then(ok,function(){fb(s);ok()});else{fb(s);ok()}}\
+d.addEventListener('click',function(e){var t=e.target,b=t.closest('.cp');\
+if(b){copy(b.previousElementSibling.textContent,b);return}\
+if(!t.closest('.pop'))set(t.closest('tr[tabindex]'))});\
+d.addEventListener('keydown',function(e){\
+if(e.key=='Escape'&&pin)set(pin);\
+else if(e.key=='Enter'&&e.target.matches('tr[tabindex]'))set(e.target)})})();";
 
 fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
@@ -51,7 +87,7 @@ fn page(title: &str, body: &str) -> String {
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
-         <title>{}</title>\n<style>{CSS}</style>\n</head>\n<body>\n{body}</body>\n</html>\n",
+         <title>{}</title>\n<style>{CSS}</style>\n</head>\n<body>\n{body}<script>{JS}</script>\n</body>\n</html>\n",
         esc(title)
     )
 }
@@ -189,8 +225,87 @@ pub fn pages(
 /// An item of a line with the reason of the exclusion row that took it out, if any.
 type LineItem<'a> = (&'a Key, &'a Entry, Option<&'a str>);
 
+const LEGEND: &str = "<p class=\"legend dim\">hover, focus or click a line for details \
+(click pins the popup): <span class=\"hit\">hit</span><span class=\"miss\">missed</span>\
+<span class=\"inst\">hit in some instances only (hit/total)</span>\
+<span class=\"part\">branch arm or toggle missed</span><span class=\"ex\">excluded</span></p>\n";
+
+/// What an item counts, as a popup group title.
+fn what(k: &Key) -> String {
+    match k.kind {
+        Kind::Statement => "statement".to_string(),
+        Kind::Branch(a) => format!("branch arm {a}"),
+        Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
+    }
+}
+
+/// The popup of a line: one group (title, table of instances) per item kind, each instance
+/// with its count and tests; a missed item has its exclusion row with a copy button, an
+/// excluded one the row that excluded it and the reason.
+fn popup(db: &Database, n: usize, its: &[LineItem], summary: &str) -> String {
+    let mut b = format!(
+        "<div class=\"pop\" id=\"p{n}\" role=\"group\" aria-label=\"coverage of line {n}\">"
+    );
+    if !summary.is_empty() {
+        let _ = write!(b, "<p>{summary}</p>");
+    }
+    let mut title = String::new();
+    for (k, e, why) in its {
+        let t = what(k);
+        if t != title {
+            if !title.is_empty() {
+                b.push_str("</table>");
+            }
+            let _ = write!(b, "<h4>{}</h4><table>", esc(&t));
+            title = t;
+        }
+        let class = match (why, e.count) {
+            (Some(_), _) => "ex",
+            (None, 0) => "miss",
+            _ => "",
+        };
+        let tests: Vec<String> = e
+            .tests
+            .iter()
+            .map(|&t| esc(&db.tests[t as usize]))
+            .collect();
+        let tests = if tests.is_empty() {
+            String::new()
+        } else {
+            format!("tests: {}", tests.join(", "))
+        };
+        let reason = why.map_or(String::new(), |w| {
+            format!("excluded{}{}", if w.is_empty() { "" } else { ": " }, esc(w))
+        });
+        let _ = write!(
+            b,
+            "<tr class=\"{class}\"><td>{}</td><td class=\"n\">{}</td><td class=\"dim\">{tests}{reason}</td></tr>",
+            esc(&k.path),
+            e.count
+        );
+        if let Some(r) = miss_row(db, k, e).filter(|_| why.is_none()) {
+            let _ = write!(
+                b,
+                "<tr class=\"x\"><td colspan=\"3\"><code>{}</code><button type=\"button\" class=\"cp\">copy row</button></td></tr>",
+                esc(r.trim_end())
+            );
+        } else if why.is_some() {
+            let _ = write!(
+                b,
+                "<tr class=\"x ex\"><td colspan=\"3\"><code>{}</code></td></tr>",
+                esc(&head(k, e))
+            );
+        }
+    }
+    if !title.is_empty() {
+        b.push_str("</table>");
+    }
+    b.push_str("</div>");
+    b
+}
+
 /// `view` is the file's number and whether the page lists only the lines with a missed or
-/// excluded item (`src-N-missed.html`), which keeps big designs usable without scripts.
+/// excluded item (`src-N-missed.html`), which keeps big designs usable.
 fn file_page(
     db: &Database,
     ex: &[(Key, Entry, String)],
@@ -213,79 +328,71 @@ fn file_page(
         format!("<a href=\"src-{num}-missed.html\">missed only</a>")
     };
     let mut b = format!(
-        "<p><a href=\"index.html\">index</a> {other}</p>\n<h1>{}</h1>\n<table class=\"src\">\n",
-        esc(file)
+        "<p><a href=\"index.html\">index</a> {other}</p>\n<h1>{}</h1>\n{}<table class=\"src\">\n",
+        esc(file),
+        LEGEND
     );
     let lines: Vec<&str> = text.lines().collect();
     let last = by.keys().next_back().copied().unwrap_or(0) as usize;
     for n in 1..=lines.len().max(last) {
         let mut its = by.remove(&(n as u32)).unwrap_or_default();
+        // Groups: statement, branch arms, then toggles by signal and direction.
+        let order = |i: &LineItem| (matches!(i.0.kind, Kind::Toggle(_)), i.0.sig.clone());
         its.sort_by(|a, b| {
-            (&a.0.path, &a.0.sig, a.0.kind, a.0).cmp(&(&b.0.path, &b.0.sig, b.0.kind, b.0))
+            (order(a), a.0.kind, &a.0.path, a.0).cmp(&(order(b), b.0.kind, &b.0.path, b.0))
         });
         let live = || its.iter().filter(|i| i.2.is_none());
         if missed && !its.iter().any(|i| i.2.is_some() || i.1.count == 0) {
             continue;
         }
-        let stmts: Vec<u64> = live()
-            .filter(|i| i.0.kind == Kind::Statement)
-            .map(|i| i.1.count)
-            .collect();
-        let miss_stmt = stmts.contains(&0);
+        // Statements per instance: the line ran there if all its statements did.
+        let mut inst: BTreeMap<&str, bool> = BTreeMap::new();
+        for i in live().filter(|i| i.0.kind == Kind::Statement) {
+            *inst.entry(&i.0.path).or_insert(true) &= i.1.count > 0;
+        }
+        let ran = inst.values().filter(|&&r| r).count();
         let miss_other = live().any(|i| i.1.count == 0 && i.0.kind != Kind::Statement);
-        let class = if miss_stmt {
+        let class = if !inst.is_empty() && ran == 0 {
             "miss"
+        } else if ran < inst.len() {
+            "inst"
         } else if miss_other {
             "part"
         } else if live().next().is_some() {
             "hit"
+        } else if !its.is_empty() {
+            "ex"
         } else {
             ""
         };
-        let count = stmts.iter().max().map_or(String::new(), u64::to_string);
+        let max = live()
+            .filter(|i| i.0.kind == Kind::Statement)
+            .map(|i| i.1.count)
+            .max();
+        let count = max.map_or(String::new(), |c| c.to_string());
+        let partial = ran > 0 && ran < inst.len();
+        let (marker, summary) = if partial {
+            (
+                format!("{ran}/{}", inst.len()),
+                format!("executed in {ran} of {} instances", inst.len()),
+            )
+        } else {
+            (String::new(), String::new())
+        };
+        let (attrs, pop) = if its.is_empty() {
+            (String::new(), String::new())
+        } else {
+            (
+                format!(" tabindex=\"0\" aria-describedby=\"p{n}\""),
+                popup(db, n, &its, &summary),
+            )
+        };
         let _ = writeln!(
             b,
-            "<tr id=\"L{n}\" class=\"{class}\"><td class=\"ln\">{n}</td><td class=\"c\">{count}</td><td>{}</td></tr>",
+            "<tr id=\"L{n}\" class=\"{class}\"{attrs}><td class=\"ln\">{n}</td><td class=\"c\">{count}</td>\
+<td class=\"m\" title=\"{summary}\">{marker}</td><td class=\"t\">{}{pop}</td></tr>",
             esc(lines.get(n - 1).copied().unwrap_or(""))
         );
-        for (k, e, why) in its {
-            let what = match k.kind {
-                Kind::Statement => "statement".to_string(),
-                Kind::Branch(a) => format!("branch arm {a}"),
-                Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
-            };
-            let mut d = format!("{} in {}: {}", esc(&what), esc(&k.path), e.count);
-            if !db.tests.is_empty() && !e.tests.is_empty() {
-                let t: Vec<String> = e
-                    .tests
-                    .iter()
-                    .map(|&t| esc(&db.tests[t as usize]))
-                    .collect();
-                let _ = write!(d, " (hit by tests: {})", t.join(", "));
-            }
-            let class = match (why, e.count) {
-                (Some(_), _) => "ex",
-                (None, 0) => "miss",
-                _ => "",
-            };
-            if let Some(w) = why {
-                let _ = write!(
-                    d,
-                    " (excluded{}{})",
-                    if w.is_empty() { "" } else { ": " },
-                    esc(w)
-                );
-            }
-            if let Some(r) = miss_row(db, k, e).filter(|_| why.is_none()) {
-                let _ = write!(d, "<br><code>{}</code>", esc(r.trim_end()));
-            } else if why.is_some() {
-                let _ = write!(d, "<br><code>{}</code>", esc(&head(k, e)));
-            }
-            let _ = writeln!(
-                b,
-                "<tr class=\"it {class}\"><td colspan=\"3\">{d}</td></tr>"
-            );
-        }
     }
     b.push_str("</table>\n");
     page(file, &b)

@@ -1,6 +1,6 @@
 //! `yavs cov merge`, `yavs cov report` and `yavs cov rank` (docs/cli-contract.md section 5).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Subcommand;
@@ -37,6 +37,10 @@ pub enum Command {
         /// database) into DIR.
         #[arg(long, value_name = "DIR")]
         html: Option<PathBuf>,
+        /// Strip DIR from the front of the source paths the HTML report shows (default: the
+        /// current directory). Sources are still read from the paths in the database.
+        #[arg(long, value_name = "DIR", requires = "html")]
+        root: Option<PathBuf>,
         /// Leave out the items an exclusion file lists (rows pasted from `--uncovered`; a
         /// `.yaml` or `.yml` file is read as YAML).
         #[arg(long, value_name = "FILE")]
@@ -155,8 +159,21 @@ fn excluded(
     Ok((a.kept, a.excluded))
 }
 
+/// `file` without the prefix `root`, if it starts with it.
+fn relative(file: &str, root: &Path) -> String {
+    Path::new(file)
+        .strip_prefix(root)
+        .map_or_else(|_| file.to_string(), |p| p.display().to_string())
+}
+
 /// Write the HTML report into `dir`; every source file the database names must be readable.
-fn write_html(dir: &PathBuf, db: &Database, excluded: &Excluded) -> Result<(), Box<Diagnostic>> {
+/// Pages show the paths without the prefix `root` (default the current directory).
+fn write_html(
+    dir: &PathBuf,
+    root: Option<PathBuf>,
+    db: &Database,
+    excluded: &Excluded,
+) -> Result<(), Box<Diagnostic>> {
     let mut sources = std::collections::BTreeMap::new();
     for f in yavs_cov::html::files(db, excluded) {
         let t = std::fs::read_to_string(f).map_err(|e| {
@@ -170,6 +187,28 @@ fn write_html(dir: &PathBuf, db: &Database, excluded: &Excluded) -> Result<(), B
         })?;
         sources.insert(f.to_string(), t);
     }
+    let root = match root {
+        Some(r) => r,
+        None => std::env::current_dir().map_err(|e| {
+            Box::new(
+                Diagnostic::error(SOURCE_ERROR, "cannot find the current directory")
+                    .with_note(e.to_string())
+                    .with_help("pass `--root DIR`"),
+            )
+        })?,
+    };
+    let mut db = db.clone();
+    let mut excluded = excluded.clone();
+    let shown = db
+        .items
+        .values_mut()
+        .chain(excluded.iter_mut().map(|x| &mut x.1));
+    shown.for_each(|e| e.file = relative(&e.file, &root));
+    let sources = sources
+        .into_iter()
+        .map(|(f, t)| (relative(&f, &root), t))
+        .collect();
+    let (db, excluded) = (&db, &excluded);
     std::fs::create_dir_all(dir).map_err(|e| {
         Box::new(
             Diagnostic::error(WRITE_ERROR, format!("cannot write `{}`", dir.display()))
@@ -186,7 +225,7 @@ fn report(
     out: &mut Out,
     db: Database,
     cobertura: Option<PathBuf>,
-    html: Option<PathBuf>,
+    html: Option<(PathBuf, Option<PathBuf>)>,
     exclude: Option<PathBuf>,
     uncovered: Option<UncoveredFormat>,
     tests: bool,
@@ -203,8 +242,8 @@ fn report(
         print!("{}", db.summary());
         print!("{}", yavs_cov::exclude::excluded_text(&excluded));
     }
-    if let Some(d) = &html {
-        write_html(d, &db, &excluded)?;
+    if let Some((d, root)) = html {
+        write_html(&d, root, &db, &excluded)?;
     }
     match cobertura {
         Some(p) => write(&p, db.cobertura()),
@@ -221,6 +260,7 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
         Command::Report {
             cobertura,
             html,
+            root,
             exclude,
             uncovered,
             tests,
@@ -229,7 +269,10 @@ pub fn run(c: Command, format: MessageFormat, color: bool) -> ExitCode {
         } => out
             .set_warn(&warn)
             .and_then(|()| merged(&inputs))
-            .and_then(|db| report(&mut out, db, cobertura, html, exclude, uncovered, tests)),
+            .and_then(|db| {
+                let html = html.map(|d| (d, root));
+                report(&mut out, db, cobertura, html, exclude, uncovered, tests)
+            }),
         Command::Rank {
             exclude,
             warn,

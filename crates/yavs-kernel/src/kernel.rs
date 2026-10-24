@@ -1813,7 +1813,7 @@ impl SimControl {
         }
     }
 
-    #[inline(never)]
+    #[inline(always)]
     fn arm_readers_of(&mut self, s: u32) {
         let (a, b) = (
             self.readers_start[s as usize] as usize,

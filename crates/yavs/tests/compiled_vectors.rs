@@ -12,6 +12,7 @@ use std::process::{Command, Output};
 
 const SRC: &str = r#"library ieee;
 use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
 entity v is end;
 architecture a of v is
   subtype slv is std_logic_vector;
@@ -49,6 +50,33 @@ architecture a of v is
   begin
     return a(l downto r)'length;
   end;
+  -- Only 0, 1, L and H, for the unsigned arithmetic that has no metavalue to stop it.
+  function mk01(n : natural; k : natural) return unsigned is
+    variable r : unsigned(n - 1 downto 0);
+    constant c : string(1 to 4) := "01LH";
+  begin
+    for i in r'range loop
+      r(i) := std_logic'val(2 + ((i * k + i / 3) mod 4) + 0);
+    end loop;
+    return r;
+  end;
+  function u_add(a, b : unsigned) return unsigned is begin return a + b; end;
+  function u_sub(a, b : unsigned) return unsigned is begin return a - b; end;
+  function u_int(a : unsigned) return integer is begin return to_integer(a); end;
+  procedure num_ops(n, m, k : natural) is
+    variable a : unsigned(n - 1 downto 0);
+    variable b : unsigned(m - 1 downto 0);
+    variable w : unsigned(minimum(n, 31) - 1 downto 0);
+  begin
+    a := mk01(n, k);
+    b := mk01(m, k + 1);
+    w := a(w'range);
+    report integer'image(n) & "," & integer'image(m) & " " & to_string(u_add(a, b)) & " " & to_string(u_sub(a, b))
+           & " " & integer'image(u_int(w));
+    -- A metavalue goes the general way (a warning, a result of unknowns).
+    a(0) := 'X';
+    report to_string(u_add(a, b)) & " " & integer'image(u_int(w));
+  end;
   procedure all_ops(n, k : natural) is
     variable a, b : slv(n - 1 downto 0);
   begin
@@ -72,8 +100,32 @@ begin
     for li in lens'range loop
       for k in 1 to 3 loop
         all_ops(lens(li), k);
+        num_ops(lens(li), lens((li + 3) mod lens'length), k);
+        num_ops(lens(li), lens(li), k);
       end loop;
     end loop;
+    wait;
+  end process;
+  -- Copies of a constant number of elements at every offset class, one block or two, overlapping.
+  process
+    variable x, y : slv(127 downto 0);
+  begin
+    y := mk(128, 5);
+    x := mk(128, 7);
+    x(70 downto 60) := y(10 downto 0);
+    report to_string(x);
+    x(127 downto 100) := x(63 downto 36);
+    report to_string(x);
+    x(30 downto 3) := x(33 downto 6);
+    report to_string(x);
+    x(64 downto 63) := y(1 downto 0);
+    report to_string(x);
+    x(20 downto 20) := y(100 downto 100);
+    report to_string(x);
+    x(127 downto 64) := y(63 downto 0);
+    report to_string(x);
+    x(40 downto 0) := y(127 downto 87);
+    report to_string(x);
     wait;
   end process;
 end;

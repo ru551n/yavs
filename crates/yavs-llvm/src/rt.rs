@@ -1147,6 +1147,38 @@ pub unsafe extern "C" fn yavs_rt_lcopy(
     n: u64,
 ) {
     cb(Cb::Lcopy);
+    // Up to 64 elements in at most two blocks each side (the usual copy): the planes are shifted
+    // as 128-bit words in place.
+    if (1..=64).contains(&n) && ns <= 2 && nd <= 2 && s0 < 64 && d0 < 64 {
+        // SAFETY: compiled code checked `ns` readable blocks at `src` and `nd` writable blocks at
+        // `dst` (`Gen::host`); a plane is 8 bytes of a block of 32.
+        unsafe {
+            let rd = |p: *const u8, blk: usize, plane: usize| -> u128 {
+                u128::from(std::ptr::read_unaligned(
+                    p.add(blk * 32 + plane * 8).cast::<u64>(),
+                ))
+            };
+            let mask: u64 = if n == 64 { !0 } else { (1u64 << n) - 1 };
+            let mut v = [0u64; 4];
+            for (plane, x) in v.iter_mut().enumerate() {
+                let hi = if ns == 2 { rd(src, 1, plane) } else { 0 };
+                *x = (((hi << 64 | rd(src, 0, plane)) >> s0) as u64) & mask;
+            }
+            let keep = !(u128::from(mask) << d0);
+            for (plane, &x) in v.iter().enumerate() {
+                let hi = if nd == 2 { rd(dst, 1, plane) } else { 0 };
+                let out = ((hi << 64 | rd(dst, 0, plane)) & keep) | (u128::from(x) << d0);
+                std::ptr::write_unaligned(dst.add(plane * 8).cast::<u64>(), out as u64);
+                if nd == 2 {
+                    std::ptr::write_unaligned(
+                        dst.add(32 + plane * 8).cast::<u64>(),
+                        (out >> 64) as u64,
+                    );
+                }
+            }
+        }
+        return;
+    }
     let blocks = |b: &[u8], out: &mut [[u64; 4]]| {
         for (o, c) in out.iter_mut().zip(b.as_chunks::<32>().0) {
             *o = std::array::from_fn(|k| u64::from_le_bytes(std::array::from_fn(|j| c[k * 8 + j])));

@@ -33,6 +33,7 @@ const I64: Type = types::I64;
 const I32: Type = types::I32;
 const I8: Type = types::I8;
 const F64: Type = types::F64;
+const I128: Type = types::I128;
 
 /// Zero `n` bytes (`Inst::Alloc`).
 extern "C" fn clift_zero(p: *mut u8, n: u64) {
@@ -523,6 +524,36 @@ impl Jit {
                 tabs.insert(t, gv);
             }
         }
+        // Copies of the constants this function takes the address of.
+        let mut cons = HashMap::new();
+        for i in &f.code {
+            if let Inst::AddrOf {
+                space: AddrSpace::Const(k),
+                ..
+            } = *i
+                && !cons.contains_key(&k)
+                && let Some(yavs_ir::ConstData::Bytes(bytes)) = prog.consts.get(k)
+                && bytes.len() <= 4096
+            {
+                let did = match self.tables.get(bytes) {
+                    Some(&d) => d,
+                    None => {
+                        let name = format!("t{}", self.tables.len());
+                        let d = self
+                            .module
+                            .declare_data(&name, Linkage::Local, false, false)
+                            .map_err(|e| e.to_string())?;
+                        let mut dd = DataDescription::new();
+                        dd.define(bytes.clone().into_boxed_slice());
+                        self.module.define_data(d, &dd).map_err(|e| e.to_string())?;
+                        self.tables.insert(bytes.clone(), d);
+                        d
+                    }
+                };
+                let gv = self.module.declare_data_in_func(did, &mut ctx.func);
+                cons.insert(k, (gv, bytes.len() as u64));
+            }
+        }
         ctx.func.signature = if native {
             native_sig(self.sig.call_conv, f)
         } else {
@@ -592,6 +623,7 @@ impl Jit {
                 .module
                 .declare_func_in_func(self.kernel[11], &mut ctx.func),
             tables: tabs,
+            consts: cons,
             natives,
             cc: self.sig.call_conv,
         };
@@ -710,6 +742,9 @@ struct Imports {
     endstmt: FuncRef,
     xstep: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
+    /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
+    /// never change: reads of them need no lookup.
+    consts: HashMap<yavs_ir::ConstId, (GlobalValue, u64)>,
     natives: HashMap<FuncId, NatRef>,
     /// The calling convention of the variants (`native_sig`).
     cc: CallConv,
@@ -1666,7 +1701,9 @@ fn gen_func(
                 ..
             } => {
                 let rs = ok(f.regs(parts), "operand list out of range")?;
-                if !g.cat_block(pc, &inst, dst, n, m, rs, scalars, bias) {
+                if !g.cat_block(pc, &inst, dst, n, m, rs, scalars, bias)
+                    && !g.cat_dyn(pc, &inst, f, dst, n, m, rs, scalars, bias)
+                {
                     if g.nat.is_some() && xstep_wide(f, &inst) {
                         g.native_step(pc, &inst, f)
                     } else {
@@ -2094,6 +2131,19 @@ fn gen_func(
                 let (sa, da) = (g.ld(src), g.ld(dst));
                 let ps = g.host(sa, Some(src), Op::V(sb), Op::V(sn), false, slow);
                 let pd = g.host(da, Some(dst), Op::V(db), Op::V(dn), true, slow);
+                // Up to 64 elements: at most two blocks each side, shifted in registers. In a
+                // process, whose copy count is a constant (a subprogram's body is not worth the
+                // code it saves a call for, nor is it for a count known at run time only: the
+                // 128-bit shifts cost more than the call).
+                if f.kind == FuncKind::Process && g.kint(n).is_some_and(|v| v <= 64) {
+                    let few = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, k, 64);
+                    let (inl, call) = (g.b.create_block(), g.b.create_block());
+                    g.b.ins().brif(few, inl, &[], call, &[]);
+                    g.b.switch_to_block(inl);
+                    g.lcopy_inline(pd, nd, d0, ps, ns, s0, k);
+                    g.b.ins().jump(join, &[]);
+                    g.b.switch_to_block(call);
+                }
                 g.b.ins().call(g.imp.lcopy, &[pd, nd, d0, ps, ns, s0, k]);
                 g.join(join);
             }
@@ -2217,6 +2267,25 @@ fn gen_func(
                             }
                             _ => g.signal(pc, e),
                         }
+                    }
+                    None if frame_direct(prog, f, &inst)
+                        && dst.is_some()
+                        && prog
+                            .natives
+                            .get(native)
+                            .and_then(|n| numeric_kind(&n.symbol))
+                            .is_some_and(|k| {
+                                f.regs(args).is_some_and(|rs| {
+                                    rs.len() == if k == NumKind::ToInteger { 1 } else { 2 }
+                                })
+                            }) =>
+                    {
+                        let k = prog
+                            .natives
+                            .get(native)
+                            .and_then(|n| numeric_kind(&n.symbol))
+                            .expect("numeric native");
+                        g.numeric_native(pc, &inst, f, k, native, args, dst)?
                     }
                     None if frame_direct(prog, f, &inst) => {
                         g.native_direct(pc, &inst, f, native, args, dst)?
@@ -2344,6 +2413,21 @@ impl Gen<'_> {
 
     fn c64(&mut self, v: i64) -> Value {
         self.b.ins().iconst(I64, v)
+    }
+
+    /// The value of `v` when it is an integer constant.
+    fn const_of(&self, v: Value) -> Option<i64> {
+        let dfg = &self.b.func.dfg;
+        match dfg.value_def(v) {
+            ir::ValueDef::Result(inst, 0) => match dfg.insts[inst] {
+                ir::InstructionData::UnaryImm {
+                    opcode: ir::Opcode::Iconst,
+                    imm,
+                } => Some(imm.bits()),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The low 32 bits of `a`, as an i64.
@@ -2971,6 +3055,47 @@ impl Gen<'_> {
             self.guard(nn, slow);
             return p;
         }
+        // A constant never changes: a read is from a copy of its own.
+        if !write
+            && let Some(r) = reg
+            && let Some(Some(Known::Const(k, o))) = self.known.get(r.0 as usize).copied()
+            && let Some(&(gv, len)) = self.imp.consts.get(&k)
+        {
+            let (ev, nv) = (self.op(extra), self.op(n));
+            let off = self.b.ins().iadd_imm_s(ev, o as i64);
+            let lenv = self.c64(len as i64);
+            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, lenv);
+            let rest = self.b.ins().isub(lenv, nv);
+            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
+            let okc = self.b.ins().band(fits, inside);
+            self.guard(okc, slow);
+            let base = self.b.ins().symbol_value(I64, gv);
+            return self.b.ins().iadd(base, off);
+        }
+        // The temporary area, the instance data (reading) and the frames of enclosing
+        // subprograms (frame-mode code), whose space is known: the view's bytes, no lookup.
+        let area = reg.and_then(|r| match self.known.get(r.0 as usize) {
+            Some(Some(Known::Temp)) => Some((MEM_TEMP, MEM_TEMP_LEN)),
+            Some(Some(Known::Inst(_) | Known::InstAny)) if !write => Some((MEM_INST, MEM_INST_LEN)),
+            Some(Some(Known::Up(d))) if self.nat.is_none() => Some((
+                MEM_UP_SLOTS + 8 * u64::from(*d - 1),
+                MEM_UP_LEN + 8 * u64::from(*d - 1),
+            )),
+            _ => None,
+        });
+        if let Some((base_f, len_f)) = area {
+            let (ev, nv) = (self.op(extra), self.op(n));
+            let lo = self.lo32(a);
+            let off = self.b.ins().iadd(lo, ev);
+            let len = self.mem_ld(len_f);
+            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, nv, len);
+            let rest = self.b.ins().isub(len, nv);
+            let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
+            let okc = self.b.ins().band(fits, inside);
+            self.guard(okc, slow);
+            let base = self.mem_ld(base_f);
+            return self.b.ins().iadd(base, off);
+        }
         if let Some(o) = frame {
             // Within the frame whatever the frame: no check.
             if let (Op::C(e), Op::C(k)) = (extra, n)
@@ -3211,6 +3336,77 @@ impl Gen<'_> {
         (p, self.b.ins().band_imm_s(i, 63))
     }
 
+    /// `Inst::LCopy` of `k` (1 to 64) elements from bit `s0` of the one or two plane blocks at
+    /// `ps` (`ns` of them) to bit `d0` of those at `pd` (`nd`), as `copy_bits` does: the source
+    /// planes are read first (the ranges may overlap), the destination bits outside the copied
+    /// range stay.
+    #[allow(clippy::too_many_arguments)]
+    fn lcopy_inline(
+        &mut self,
+        pd: Value,
+        nd: Value,
+        d0: Value,
+        ps: Value,
+        ns: Value,
+        s0: Value,
+        k: Value,
+    ) {
+        let gf = self.gf;
+        let full = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, k, 64);
+        let one = self.c64(1);
+        let sh = self.b.ins().ishl(one, k);
+        let low = self.b.ins().iadd_imm_s(sh, -1);
+        let ones = self.c64(-1);
+        let mask = self.b.ins().select(full, ones, low);
+        let two_s = self.b.ins().icmp_imm_s(IntCC::Equal, ns, 2);
+        let two_d = self.b.ins().icmp_imm_s(IntCC::Equal, nd, 2);
+        let zero = self.c64(0);
+        let wide = |g: &mut Self, p: Value, plane: i32, two: Value| -> Value {
+            let l = g.b.ins().load(I64, gf, p, plane * 8);
+            // Block 1 is only read when there is one.
+            let b1 = g.b.ins().iadd_imm_s(p, 32);
+            let hp = g.b.ins().select(two, b1, p);
+            let h = g.b.ins().load(I64, gf, hp, plane * 8);
+            let h = g.b.ins().select(two, h, zero);
+            let (l, h) = (g.b.ins().uextend(I128, l), g.b.ins().uextend(I128, h));
+            let hs = g.b.ins().ishl_imm_s(h, 64);
+            g.b.ins().bor(l, hs)
+        };
+        let s128 = self.b.ins().uextend(I128, s0);
+        let d128 = self.b.ins().uextend(I128, d0);
+        let mut vals = [zero; 4];
+        for (plane, v) in vals.iter_mut().enumerate() {
+            let w = wide(self, ps, plane as i32, two_s);
+            let sh = self.b.ins().ushr(w, s128);
+            let low = self.b.ins().ireduce(I64, sh);
+            *v = self.b.ins().band(low, mask);
+        }
+        let m128 = self.b.ins().uextend(I128, mask);
+        let hole = self.b.ins().ishl(m128, d128);
+        let keep = self.b.ins().bnot(hole);
+        for (plane, v) in vals.iter().enumerate() {
+            let w = wide(self, pd, plane as i32, two_d);
+            let v128 = self.b.ins().uextend(I128, *v);
+            let put = self.b.ins().ishl(v128, d128);
+            let kept = self.b.ins().band(w, keep);
+            let out = self.b.ins().bor(kept, put);
+            let lo = self.b.ins().ireduce(I64, out);
+            self.b.ins().store(gf, lo, pd, plane as i32 * 8);
+            // The second block: the high half, when the destination has one.
+            let (hi_bb, done) = (self.b.create_block(), self.b.create_block());
+            self.b.ins().brif(two_d, hi_bb, &[], done, &[]);
+            self.b.switch_to_block(hi_bb);
+            let top = self.b.ins().ushr_imm_s(out, 64);
+            let hi = self.b.ins().ireduce(I64, top);
+            self.b.ins().store(gf, hi, pd, 32 + plane as i32 * 8);
+            self.b.ins().jump(done, &[]);
+            self.b.switch_to_block(done);
+        }
+    }
+
     /// `n` zeroed bytes of temporary memory as `Machine::temp_alloc` makes them: the address,
     /// taking `slow` when the area must grow or exceeds 4 GiB.
     fn temp_alloc(&mut self, n: Value, slow: Block) -> (Value, Value) {
@@ -3231,7 +3427,28 @@ impl Gen<'_> {
         let temp = self.mem_ld(MEM_TEMP);
         let at = self.b.ins().iadd(temp, len);
         let fill = self.b.ins().isub(end, len);
-        self.b.ins().call(self.imp.zero, &[at, fill]);
+        match self.const_of(n) {
+            // A known size at an aligned end is zeroed by stores, not a call.
+            Some(k) if (1..=128).contains(&k) => {
+                let (even, odd, merge) = (
+                    self.b.create_block(),
+                    self.b.create_block(),
+                    self.b.create_block(),
+                );
+                let aligned = self.b.ins().icmp(IntCC::Equal, off, len);
+                self.b.ins().brif(aligned, even, &[], odd, &[]);
+                self.b.switch_to_block(even);
+                self.zero_range(at, 0, k as u64);
+                self.b.ins().jump(merge, &[]);
+                self.b.switch_to_block(odd);
+                self.b.ins().call(self.imp.zero, &[at, fill]);
+                self.b.ins().jump(merge, &[]);
+                self.b.switch_to_block(merge);
+            }
+            _ => {
+                self.b.ins().call(self.imp.zero, &[at, fill]);
+            }
+        }
         self.mem_st(MEM_TEMP_LEN, end);
         let tag = (u64::from(space::TEMP) << 61) as i64;
         let addr = self.b.ins().bor_imm_s(off, tag);
@@ -3300,6 +3517,139 @@ impl Gen<'_> {
         };
         self.guard(okv, slow);
         vec![size, align, stride, count]
+    }
+}
+
+/// The `numeric_std` natives on unsigned vectors that are lowered here on their `small` path
+/// (operands of 1 to 64 elements without a metavalue, as the interpreter's own fast path); any
+/// other operand goes to the native.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NumKind {
+    ToInteger,
+    Add,
+    Sub,
+}
+
+fn numeric_kind(symbol: &str) -> Option<NumKind> {
+    match symbol {
+        "yavs.ieee.numeric_std.to_integer(unsigned)integer" => Some(NumKind::ToInteger),
+        "yavs.ieee.numeric_std.\"+\"(unsigned,unsigned)unsigned" => Some(NumKind::Add),
+        "yavs.ieee.numeric_std.\"-\"(unsigned,unsigned)unsigned" => Some(NumKind::Sub),
+        _ => None,
+    }
+}
+
+impl Gen<'_> {
+    /// The elements and bits of the metavalue-free vector of 1 to 64 elements whose fat pair
+    /// (data and descriptor addresses) is at the address in register `r`, as `yavs_interp`'s
+    /// `small` reads it; takes `fb` for anything else.
+    fn num_operand(&mut self, r: Reg, fb: Block) -> (Value, Value) {
+        let a = self.ld(r);
+        let fat = self.host(a, Some(r), Op::C(0), Op::C(16), false, fb);
+        let nf = self.gf;
+        let data = self.b.ins().load(I64, nf, fat, 0);
+        let dope = self.b.ins().load(I64, nf, fat, 8);
+        let dp = self.host(dope, None, Op::C(0), Op::C(24), false, fb);
+        let (l, rr, d) = self.dope_words(dp);
+        let down = self.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
+        let lo = self.b.ins().select(down, rr, l);
+        let hi = self.b.ins().select(down, l, rr);
+        let diff = self.b.ins().isub(hi, lo);
+        // Unsigned: a null range and a difference that wraps are far above 63.
+        let okn = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, diff, 63);
+        self.guard(okn, fb);
+        let n = self.b.ins().iadd_imm_s(diff, 1);
+        let pl = self.host(data, None, Op::C(0), Op::C(32), false, fb);
+        let p: Vec<Value> = (0..4)
+            .map(|k| self.b.ins().load(I64, nf, pl, 8 * k))
+            .collect();
+        // `0` or `L`: plane 1 only (plane 2 is the weak bit); `1` or `H`: planes 0 and 1.
+        let b1 = self.b.ins().band_not(p[1], p[3]);
+        let one = self.b.ins().band(b1, p[0]);
+        let zero = self.b.ins().band_not(b1, p[0]);
+        let low = self.low_mask(n);
+        let both = self.b.ins().bor(zero, one);
+        let cover = self.b.ins().band(both, low);
+        let okc = self.b.ins().icmp(IntCC::Equal, cover, low);
+        self.guard(okc, fb);
+        let bits = self.b.ins().band(one, low);
+        (n, bits)
+    }
+
+    /// The low `n` bits (0 to 64) as a mask.
+    fn low_mask(&mut self, n: Value) -> Value {
+        let full = self.b.ins().icmp_imm_s(IntCC::Equal, n, 64);
+        let one = self.c64(1);
+        let sh = self.b.ins().ishl(one, n);
+        let low = self.b.ins().iadd_imm_s(sh, -1);
+        let ones = self.c64(-1);
+        self.b.ins().select(full, ones, low)
+    }
+
+    /// A `numeric_std` native on its fast path inline, else the native itself (`native_direct`).
+    #[allow(clippy::too_many_arguments)]
+    fn numeric_native(
+        &mut self,
+        pc: u32,
+        inst: &Inst,
+        f: &Func,
+        k: NumKind,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+    ) -> Result<(), String> {
+        let rs = ok(f.regs(args), "operand list out of range")?.to_vec();
+        let d = ok(dst, "numeric native without a result")?;
+        let (fb, done) = (self.b.create_block(), self.b.create_block());
+        let (n1, b1) = self.num_operand(rs[0], fb);
+        let v = match k {
+            NumKind::ToInteger => {
+                // Below INTEGER'HIGH (the general path words the rest).
+                let hi = self.b.ins().ushr_imm_s(b1, 31);
+                let okh = self.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
+                self.guard(okh, fb);
+                b1
+            }
+            NumKind::Add | NumKind::Sub => {
+                let (n2, b2) = self.num_operand(rs[1], fb);
+                let n = self.b.ins().umax(n1, n2);
+                let s = if k == NumKind::Add {
+                    self.b.ins().iadd(b1, b2)
+                } else {
+                    self.b.ins().isub(b1, b2)
+                };
+                let mask = self.low_mask(n);
+                let bits = self.b.ins().band(s, mask);
+                // The fat pair, the descriptor `(n - 1 downto 0)` and one block of planes, as
+                // `put_down` makes them.
+                let sz = self.c64(72);
+                let (at, p) = self.temp_alloc(sz, fb);
+                let gf = self.gf;
+                let data = self.b.ins().iadd_imm_s(at, 40);
+                let dope = self.b.ins().iadd_imm_s(at, 16);
+                let left = self.b.ins().iadd_imm_s(n, -1);
+                let zero = self.c64(0);
+                let down = self.c64(1);
+                for (k, w) in [data, dope, left, zero, down, bits, mask, zero, zero]
+                    .into_iter()
+                    .enumerate()
+                {
+                    self.b.ins().store(gf, w, p, 8 * k as i32);
+                }
+                at
+            }
+        };
+        self.st(d, v);
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(fb);
+        self.clear();
+        self.native_direct(pc, inst, f, native, args, dst)?;
+        self.b.ins().jump(done, &[]);
+        self.start(done);
+        Ok(())
     }
 }
 
@@ -4328,6 +4678,145 @@ impl Gen<'_> {
         self.start(cont);
         self.join(join);
         Ok(())
+    }
+
+    /// `Inst::Cat` of a logic array whose element size is known and whose lengths are known only at
+    /// run time: the same one-block form as `cat_block` for a result of at most 64 elements, the
+    /// instruction's own form otherwise. `false` (nothing generated) where the element size is not
+    /// known.
+    #[allow(clippy::too_many_arguments)]
+    fn cat_dyn(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        dst: Reg,
+        n: Reg,
+        m: Reg,
+        parts: &[Reg],
+        scalars: u16,
+        bias: u8,
+    ) -> bool {
+        let Some(mv) = self.kint(m).and_then(|v| u64::try_from(v).ok()) else {
+            return false;
+        };
+        if !parts.len().is_multiple_of(2) || parts.len() > 16 || mv == 0 || mv > 64 {
+            return false;
+        }
+        let (slow, join) = self.slow_path_x(pc, i, f);
+        let nv = self.ld(n);
+        let okn = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, nv, 64);
+        self.guard(okn, slow);
+        let total = self.b.ins().imul_imm_s(nv, mv as i64);
+        let okt = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, total, 64);
+        self.guard(okt, slow);
+        let zero = self.c64(0);
+        let ones = self.c64(-1);
+        let mut words = [zero; 4];
+        let mut mask = zero;
+        let mut at_k = zero;
+        for (j, pr) in parts.as_chunks::<2>().0.iter().enumerate() {
+            let scalar = scalars >> j & 1 == 1;
+            let units = if scalar {
+                self.c64(1)
+            } else {
+                let l = self.ld(pr[1]);
+                let okl = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, 64);
+                self.guard(okl, slow);
+                let u = self.b.ins().imul_imm_s(l, mv as i64);
+                let oku = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, u, 64);
+                self.guard(oku, slow);
+                u
+            };
+            // The pieces fill the result from its top end.
+            let end = self.b.ins().iadd(at_k, units);
+            let fits = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, end, total);
+            self.guard(fits, slow);
+            let off0 = self.b.ins().isub(total, at_k);
+            let off = self.b.ins().isub(off0, units);
+            let full = self.b.ins().icmp_imm_s(IntCC::Equal, units, 64);
+            let one = self.c64(1);
+            let sh = self.b.ins().ishl(one, units);
+            let low = self.b.ins().iadd_imm_s(sh, -1);
+            let pm = self.b.ins().select(full, ones, low);
+            let bits: [Value; 4] = if scalar {
+                let v = self.ld(pr[0]);
+                let code = self.b.ins().iadd_imm_s(v, i64::from(bias));
+                // A code beyond 'U' to '-' is the interpreter's error.
+                let okc = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+                self.guard(okc, slow);
+                std::array::from_fn(|p| {
+                    let b = self.b.ins().ushr_imm_s(code, p as i64);
+                    self.b.ins().band_imm_s(b, 1)
+                })
+            } else {
+                // An empty piece names no memory.
+                let (load, after) = (self.b.create_block(), self.b.create_block());
+                let ws: Vec<Value> = (0..4)
+                    .map(|_| self.b.append_block_param(after, I64))
+                    .collect();
+                let nz = self.b.ins().icmp_imm_s(IntCC::NotEqual, units, 0);
+                self.b
+                    .ins()
+                    .brif(nz, load, &[], after, &[BlockArg::Value(zero); 4]);
+                self.b.switch_to_block(load);
+                let a = self.ld(pr[0]);
+                let ptr = self.host(a, Some(pr[0]), Op::C(0), Op::C(32), false, slow);
+                let nf = self.gf;
+                let vs: Vec<BlockArg> = (0..4)
+                    .map(|p| {
+                        let w = self.b.ins().load(I64, nf, ptr, 8 * p);
+                        BlockArg::Value(self.b.ins().band(w, pm))
+                    })
+                    .collect();
+                self.b.ins().jump(after, &vs);
+                self.b.switch_to_block(after);
+                [ws[0], ws[1], ws[2], ws[3]]
+            };
+            for p in 0..4 {
+                let sh = self.b.ins().ishl(bits[p], off);
+                words[p] = self.b.ins().bor(words[p], sh);
+            }
+            let pmo = self.b.ins().ishl(pm, off);
+            mask = self.b.ins().bor(mask, pmo);
+            at_k = end;
+        }
+        // Nothing covered: no memory is touched.
+        let (put, done) = (self.b.create_block(), self.b.create_block());
+        self.b.ins().brif(mask, put, &[], done, &[]);
+        self.b.switch_to_block(put);
+        let d = self.ld(dst);
+        let pd = self.host(d, Some(dst), Op::C(0), Op::C(32), true, slow);
+        let nf = self.gf;
+        let keepm = self.b.ins().bnot(mask);
+        for (p, &word) in words.iter().enumerate() {
+            let cur = self.b.ins().load(I64, nf, pd, 8 * p as i32);
+            let keep = self.b.ins().band(cur, keepm);
+            let v = self.b.ins().bor(keep, word);
+            self.b.ins().store(nf, v, pd, 8 * p as i32);
+        }
+        self.b.ins().jump(done, &[]);
+        self.b.switch_to_block(done);
+        self.join(join);
+        true
     }
 
     /// `Inst::Cat` of a logic array of at most 64 elements whose piece lengths are known here: the

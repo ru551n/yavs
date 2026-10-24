@@ -10021,6 +10021,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         {
             return Slow;
         }
+        crate::tier_census::note("native", &n.symbol, at, None);
         m.top().pc = at;
         let r = fun(m, self.ctx, n.ty, cells);
         let fallback = std::mem::take(&mut m.ieee_fallback);

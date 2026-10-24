@@ -151,9 +151,11 @@ All name objects and fields by the logical model, so only the lookups change, th
   (they ignore `SigObj::part` today; the same helper fixes that if it is a bug, see 7); DAP signal
   watches compare the leaf's range, not the whole kernel signal;
 - coverage toggles: per leaf base plus the bit, re-keyed to the kernel signal;
-- kernel names: a pack's kernel name is the object path; the elaborator maps `(signal, element)`
-  back to the leaf path wherever it renders a signal (hang and stuck reports, kernel error
-  context), so every rendered message and snapshot stays byte-identical.
+- kernel names: a pack's kernel name is the path of the innermost record holding its leaves; the
+  elaborator names its fields as parts (`SimControl::name_parts`), and the hang, stuck and delta
+  loop reports work per part (waits, drivers, values and events of the field), so they read as
+  before packs (#704). Kernel errors that print a signal's name do not reach a pack (they are
+  about user resolution functions, guards and ports with several sources, which do not pack).
 
 ### 3.6 Bulk access: what gather and scatter map onto (#677)
 

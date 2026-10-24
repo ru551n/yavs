@@ -2,8 +2,8 @@
 //! number of times on the same design (in-process restart, rule 4).
 
 use yavs_kernel::{
-    Builder, Config, DriverId, EdgeTrigger, PortConv, ProcFlags, Process, Resolution, SimControl,
-    SimError,
+    Builder, Config, DriverId, EdgeTrigger, PortConv, ProcFlags, Process, Range, Resolution,
+    SimControl, SimError,
 };
 
 use crate::hier::{Case, ImplicitKind, LeafRes};
@@ -318,6 +318,22 @@ impl Elaborated {
             let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
             b.process(&p.name, ProcFlags::default(), &ds, idle);
         }
-        b.build(cfg)
+        let mut sim = b.build(cfg)?;
+        // Hang and loop reports name the fields of a pack, not the pack.
+        for (k, &(a, z)) in nets.packs.iter().enumerate() {
+            if z.0 > a.0 + 1 {
+                let parts = (a.0..z.0)
+                    .map(|l| {
+                        let l = crate::LeafId(l);
+                        (
+                            nets.kpart(l, Range::new(0, nets.leaf(l).ty.len)).1,
+                            self.leaf_name(l),
+                        )
+                    })
+                    .collect();
+                sim.name_parts(yavs_kernel::SignalId(k as u32), parts);
+            }
+        }
+        Ok(sim)
     }
 }

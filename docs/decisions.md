@@ -7032,6 +7032,14 @@ compiled 82 M to 65 M (interpreter 64 M to 59 M).
 - `YAVS_PACKS=off` (hidden test aid, `ElabConfig::packs`) gives every leaf a signal of its own; the work counter `signals` counts kernel
   signals (`crates/yavs/tests/perf.rs` bounds it for the record designs).
 
+## Hang and loop reports per part of a signal (yavs-kernel `hang.rs`, yavs-elab, #704, 2026-10-24)
+
+- **Decision: the stuck report and the delta loop cause work on parts of signals, not whole signals.** The elaborator names the
+  leaves of a record pack as parts (`SimControl::name_parts`); waits, drivers, pending transactions, port links, values and the last
+  event are taken per part, and the report's `SignalId`s number the parts (`StuckReport::parts` maps them to the kernel signal and
+  elements). With whole signals, a process waiting for one field was reported against the whole pack, with another field's value,
+  event and driver. Output for designs without packs is unchanged.
+
 ## Composite signal reads: one copy per activation, scalar leaves read in place (yavs-lower, yavs-ir `FuncBuilder`, #630, #538, 2026-10-24)
 
 Shared layer: every tier and a second code generator see the smaller IR. Found with the LEON3 template of GRLIB (`grlib_leon3mp`,

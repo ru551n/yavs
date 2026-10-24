@@ -891,6 +891,8 @@ pub struct SimControl {
     indep_buf: Vec<(u32, u32)>,
     /// The distinct edge triggers of the processes (`ProcMeta::tid`).
     triggers: Vec<crate::EdgeTrigger>,
+    /// Named parts of signals (record packs) for hang and loop reports (`name_parts`).
+    part_names: HashMap<u32, Vec<(Range, String)>>,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -1188,6 +1190,7 @@ impl SimControl {
             failed: None,
             observers: Vec::new(),
             live_sink: None,
+            part_names: HashMap::new(),
             live_mask: 0,
             phase_mask: 0,
             phase_always: 0,

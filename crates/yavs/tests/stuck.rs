@@ -275,3 +275,12 @@ fn sigint_ends_a_process_that_never_suspends() {
     }
     let _ = std::fs::remove_dir_all(&t);
 }
+
+/// The fields of a record pack (#686) are reported one by one: the field waited on has no driver
+/// and no event, though another field of the same kernel signal has both.
+#[test]
+fn a_field_of_a_record_is_reported_alone() {
+    let e = snapshot("stuck_record", &["--hang-report"], "stuck_record", 0);
+    assert!(e.contains("waits for an event on :stuck_record:r.b"), "{e}");
+    assert!(e.contains("never had an event; it has no driver"), "{e}");
+}

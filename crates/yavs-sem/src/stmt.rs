@@ -1596,6 +1596,11 @@ impl Db {
             stack.extend(self.stmt_children(s));
         }
         found.sort_by_key(|(s, _)| s.start);
+        if !found.is_empty()
+            && let DeclKind::Subprogram(sp) = &mut self.decls[f].kind
+        {
+            sp.impure_reads = true;
+        }
         for (span, msg) in found {
             let d = if self.opts.relaxed {
                 Diagnostic::warning(diag::W_PURE_IMPURE, msg)

@@ -4125,9 +4125,10 @@ data inputs, the edge was false) and, as a spelling of a clocked process, no idl
   before anything else mentions it (the first statement of the branch that does is a top-level `v := ...;` that does not read
   it: `Db::vars_assigned_first`), so that no value is kept from one activation to the next. A process that counts in a variable, or
   assigns it in one arm of an `if` and reads it after, is not pure and runs every time (`tests/corpus/delta/idle_comb.vhd`).
-- **Functions**: a pure function declared in an entity, architecture, block or generate is accepted like a package function when
-  the run is not `--relaxed` (E1830 stops a pure function from reading a signal or variable outside it; under `--relaxed` it is only
-  a warning, and then such a function is not trusted).
+- **Functions**: a pure function declared in an entity, architecture, block or generate is accepted like a package function, when
+  its body passed the purity check: E1830 stops a pure function from reading a signal or variable outside it, but under
+  `--relaxed` it is only a warning (W1830), so the check records the failure in `Subprogram::impure_reads` (analysed-unit cache
+  format 6) and a function with it is not trusted, in a package either (it was, since round 16: #682).
 - **The same run**: `YAVS_IDLE_SKIP=check` runs the activations the kernel would skip and fails when one assigns something else;
   the corpus (503 tests; interpreter, `--tier=auto`, `--tier=llvm`; 1 and 4 threads; checked) and the output of the 41
   real-world testbenches (also checked) are the same as without. `tests/corpus/delta/idle_comb.vhd` (blessed from the reference

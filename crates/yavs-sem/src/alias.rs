@@ -705,6 +705,7 @@ pub(crate) mod fixture {
                 body,
                 mangled: Symbol::intern(""),
                 ret_mark: None,
+                impure_reads: false,
             }),
         )
     }

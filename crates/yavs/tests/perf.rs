@@ -794,3 +794,98 @@ mod llvm {
         ]
     );
 }
+
+/// A pure function that reads a signal outside it (a warning under `--relaxed`) is not a function of
+/// its arguments: the idle skip must not trust it. The process that calls it runs again when that
+/// signal changes, with the skip off, on and checked.
+#[test]
+fn idle_skip_ignores_impure_pure_function() {
+    let d = tempdir("idle_relaxed");
+    std::fs::write(d.join("idle_relaxed_reads.vhd"), IDLE_RELAXED).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(
+        &d,
+        &[],
+        &[
+            "analyze",
+            "--relaxed",
+            "--work",
+            &work,
+            "idle_relaxed_reads.vhd",
+        ],
+    );
+    assert_eq!(a.code, 0, "analyze: {}", a.stderr);
+    for mode in ["off", "on", "check"] {
+        let r = yavs(
+            &d,
+            &[("YAVS_IDLE_SKIP", mode)],
+            &[
+                "run",
+                "--relaxed",
+                "--work",
+                &work,
+                "--tier=interp",
+                "--no-cache",
+                "idle_relaxed_reads",
+            ],
+        );
+        assert_eq!(r.code, 0, "{mode}: {}", r.all());
+        let last = r.stdout.lines().rfind(|l| l.contains("o="));
+        assert!(
+            last.is_some_and(|l| l.ends_with("o='1'")),
+            "{mode}: the last report is {last:?}: {}",
+            r.all()
+        );
+    }
+}
+
+/// Not under `perf/`: other tests analyse every design there without `--relaxed`.
+const IDLE_RELAXED: &str = r#"-- A pure function that reads a signal outside it (--relaxed makes that a warning) is not a function
+-- of its arguments: a process that calls it runs again when that signal changes, though the signals
+-- it names have no event (the idle skip must not trust it).
+library ieee;
+use ieee.std_logic_1164.all;
+
+package pk is
+  signal pxs : std_ulogic := '0';
+  function f(x : std_ulogic) return std_ulogic;
+end package;
+
+package body pk is
+  function f(x : std_ulogic) return std_ulogic is
+  begin
+    return x and pxs;
+  end function;
+end package body;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use work.pk.all;
+
+entity idle_relaxed_reads is end;
+
+architecture t of idle_relaxed_reads is
+  signal a, o, c : std_ulogic := '0';
+begin
+  p : process (a, c)
+  begin
+    o <= f(a);
+  end process;
+
+  stim : process
+  begin
+    a <= '1';
+    wait for 1 ns;
+    for i in 1 to 10 loop
+      c <= not c;
+      wait for 1 ns;
+    end loop;
+    report "o=" & std_ulogic'image(o);
+    pxs <= '1';
+    c <= not c;
+    wait for 1 ns;
+    report "o=" & std_ulogic'image(o);
+    wait;
+  end process;
+end architecture;
+"#;

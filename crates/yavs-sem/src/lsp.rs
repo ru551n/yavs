@@ -1284,19 +1284,16 @@ impl Db {
                         || d.kind.subprogram().is_some_and(|sp| {
                             matches!(sp.kind, SubprogramKind::Function { pure: true })
                                 && !sp.params.iter().any(|p| p.class == ObjClass::Signal)
-                                // In a package, or in a design unit or block (which a pure
-                                // function cannot read signals of, E1830, but under `--relaxed`).
-                                && (matches!(
+                                && !sp.impure_reads
+                                && matches!(
                                     self.scopes[d.scope].kind,
-                                    ScopeKind::Package | ScopeKind::PackageBody
-                                ) || !self.opts.relaxed
-                                    && matches!(
-                                        self.scopes[d.scope].kind,
-                                        ScopeKind::Entity
-                                            | ScopeKind::Architecture
-                                            | ScopeKind::Block
-                                            | ScopeKind::Generate
-                                    ))
+                                    ScopeKind::Package
+                                        | ScopeKind::PackageBody
+                                        | ScopeKind::Entity
+                                        | ScopeKind::Architecture
+                                        | ScopeKind::Block
+                                        | ScopeKind::Generate
+                                )
                         })
                 }
                 ExprKind::Attr { attr, .. } => matches!(

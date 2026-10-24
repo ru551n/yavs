@@ -845,6 +845,7 @@ mod tests {
                 body: Body::Native(sym),
                 mangled: sym,
                 ret_mark: None,
+                impure_reads: false,
             }),
             scope: root,
             span: Span::default(),

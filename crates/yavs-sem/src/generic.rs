@@ -1463,6 +1463,7 @@ impl Db {
             body: Body::Instance(inst),
             mangled,
             ret_mark: None,
+            impure_reads: false,
         });
         if !kept.is_empty() {
             self.generic.implicit.insert(d, kept.into());
@@ -3420,6 +3421,7 @@ impl Db {
             body,
             mangled,
             ret_mark: None,
+            impure_reads: false,
         }
     }
 

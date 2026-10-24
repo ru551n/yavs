@@ -266,6 +266,10 @@ pub struct Subprogram {
     pub mangled: Symbol,
     /// The result's type mark as written (`integer`, not `INTEGER`), for messages (8.3).
     pub ret_mark: Option<Span>,
+    /// A pure function whose body reads or calls something outside it (E1830, a warning under
+    /// `--relaxed`): its result is not a function of its arguments, so no process that calls it is
+    /// skipped when the signals it reads have no event (`Db::pure_comb_reads`).
+    pub impure_reads: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1345,6 +1349,7 @@ impl Db {
             body,
             mangled,
             ret_mark: s.return_type.as_ref().map(|n| n.span),
+            impure_reads: false,
         });
         if !anon_params.is_empty() {
             self.generic.implicit.insert(decl, anon_params.into());

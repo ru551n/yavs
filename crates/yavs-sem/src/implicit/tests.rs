@@ -861,6 +861,7 @@ fn explicit_declaration_hides_the_implicit_one() {
             body: Body::Pending,
             mangled: Symbol::intern("x"),
             ret_mark: None,
+            impure_reads: false,
         }),
         scope: p,
         span: sp(),

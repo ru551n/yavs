@@ -448,6 +448,9 @@ impl<'a> Fx<'a, '_> {
             Some(Obj::RecSignal(_)) => {
                 // ponytail: any name below a composite signal reads all of it, then selects;
                 // read only the selected part (`comp_select`) if large memories need it.
+                if let Some((data, desc)) = self.sigcopy_of(d, span)? {
+                    return Ok(V::A(data, desc));
+                }
                 let p = self.comp_select(d, &[], span)?;
                 self.read_comp(&p, span)
             }
@@ -1610,9 +1613,146 @@ impl<'a> Fx<'a, '_> {
     fn read_leaves(&mut self, p: &SigPart, last: bool, span: Span) -> R<V> {
         let size = self.size_of(p.tid, p.desc);
         let val = self.alloc(size);
+        self.read_leaves_into(p, last, val, span)?;
+        Ok(V::A(val, p.desc))
+    }
+
+    /// The whole value of record signal `d` for a process with a sensitivity list, from the copy
+    /// the process keeps ([`SigCopies`]), made at the first read. `None` outside such processes
+    /// and for a signal the process reads as a whole once.
+    fn sigcopy_of(&mut self, d: DeclId, span: Span) -> R<Option<(Reg, Reg)>> {
+        let Some(sc) = self.sigcopy.as_mut() else {
+            return Ok(None);
+        };
+        if let Some(&(_, off)) = sc.copies.iter().find(|c| c.0 == d) {
+            return Ok(Some(self.copy_slot(off)));
+        }
+        if !sc.wanted.contains(&d) {
+            return Ok(None);
+        }
+        let (decl_end, top, (pstmt, pspan)) = (sc.decl_end, sc.top, sc.stmt);
+        let (here, live, cur) = (self.fb.current(), self.live, self.cur);
+        let old = self.fb.set_stmt(Some(pstmt));
+        // The object once, in the declarative part (before the jump that ends it), in a slot
+        // like a variable's: it lives as long as the process (temporaries end with the statement).
+        let code = self.fb.take(decl_end);
+        let Some(((jump, js), keep)) = code.split_last() else {
+            return Err(self.cx.ice(span, "empty end of a declarative part"));
+        };
+        self.fb.splice(decl_end, 0, keep.to_vec());
+        let head = self.fb.block();
+        self.fb.at(decl_end);
+        self.fb.emit(Inst::Br { to: head });
+        self.fb.at(head);
+        self.live = true;
+        let p = self.comp_select(d, &[], span)?;
+        let ds = self.desc_size(p.tid);
+        let size = self.size_of(p.tid, p.desc);
+        let h = self.reg(RegTy::Handle);
+        let zero = self.bytes_addr(vec![0]);
+        self.emit(Inst::NewFill {
+            dst: h,
+            ty: p.tid,
+            desc: p.desc,
+            dsize: ds,
+            data: zero,
+            size,
+            fill: 1,
+            shared: false,
+        });
+        let (h, data, desc) = self.new_object_end(h, ds)?;
+        let off = self.fb.slot(24, 8);
+        self.fb.root(off + 16, yavs_ir::RootKind::Handle);
+        let slot = self.addr(Space::Frame(self.depth), off);
+        self.store(slot, data, Width::B8);
+        let at = self.offset(slot, 8);
+        self.store(at, desc, Width::B8);
+        let at = self.offset(slot, 16);
+        self.store(at, h, Width::B8);
+        self.fb.set_stmt(*js);
+        self.fb.emit(*jump);
+        // Each activation fills it again, before the first statement of the body; the
+        // statement marker frees the leaf buffers.
+        self.fb.set_stmt(Some(pstmt));
+        let first = self.fb.take(top);
+        let rest = self.fb.block();
+        self.fb.splice(rest, 0, first);
+        let head = self.fb.block();
+        self.fb.at(top);
+        self.fb.emit(Inst::Br { to: head });
+        self.fb.at(head);
+        self.live = true;
+        self.fb.stmt(yavs_ir::StmtKind::Implicit, pspan);
+        let p = self.comp_select(d, &[], span)?;
+        let (data, _) = self.copy_slot(off);
+        self.read_leaves_into(&p, false, data, span)?;
+        self.fb.emit(Inst::Br { to: rest });
+        self.fb.set_stmt(old);
+        self.fb.at(if here == top { rest } else { here });
+        self.live = live;
+        self.cur = cur;
+        if let Some(sc) = self.sigcopy.as_mut() {
+            sc.copies.push((d, off));
+        }
+        Ok(Some(self.copy_slot(off)))
+    }
+
+    /// The data and descriptor addresses of a process's copy of a signal in frame slot `off`.
+    fn copy_slot(&mut self, off: u32) -> (Reg, Reg) {
+        let slot = self.addr(Space::Frame(self.depth), off);
+        let data = self.load(slot, Width::B8, RegTy::Ptr);
+        let at = self.offset(slot, 8);
+        let desc = self.load(at, Width::B8, RegTy::Ptr);
+        (data, desc)
+    }
+
+    /// [`Fx::read_leaves`] into the value at `val`.
+    fn read_leaves_into(&mut self, p: &SigPart, last: bool, val: Reg, span: Span) -> R<()> {
+        // The addresses of the records on the path to the leaf last made, to share with the next
+        // leaf: (field, address and descriptor of what the field selects, its type).
+        let mut walked: Vec<(u32, Reg, Reg, TypeId)> = Vec::new();
         for (l, sref, len) in &p.leaves {
             let facts = self.leaf_facts(l, span)?;
             let rel = &l.path[p.path.len()..];
+            // A `std_ulogic` field below records only: its code, stored where it lies.
+            if !last
+                && facts.0
+                && ty::array_of(self.db, self.db.base(l.st)).is_none()
+                && !rel.is_empty()
+            {
+                let (mut at, mut keep) = ((val, p.desc), 0);
+                let mut t = p.t;
+                let mut ok = true;
+                for (i, &n) in rel.iter().enumerate() {
+                    if !matches!(self.db.types[t].kind, TypeKind::Record { .. }) {
+                        ok = false;
+                        break;
+                    }
+                    if keep == i && walked.get(i).is_some_and(|w| w.0 == n) {
+                        let w = walked[i];
+                        (at, t) = ((w.1, w.2), w.3);
+                        keep = i + 1;
+                        continue;
+                    }
+                    let tid = self.ty(t, span)?;
+                    let a = self.field_addr(tid, at.0, at.1, n, span)?;
+                    t = self.db.base(self.field_subtype(t, n)?);
+                    walked.truncate(i);
+                    walked.push((n, a.0, a.1, t));
+                    at = a;
+                    keep = i + 1;
+                }
+                if ok {
+                    let raw = self.reg(RegTy::I64);
+                    self.emit(Inst::SigReadScalar {
+                        dst: raw,
+                        sig: *sref,
+                    });
+                    let v = self.dec(raw, facts.1);
+                    self.store(at.0, v, facts.3);
+                    continue;
+                }
+            }
             // A logic vector that is a field of nested records: read it where it lies.
             if facts.0 && self.plain_vector_field(p.t, rel, span)? {
                 let (mut a, mut d, mut t) = (val, p.desc, p.t);
@@ -1644,7 +1784,7 @@ impl<'a> Fx<'a, '_> {
             let k = self.int(0);
             self.leaf_walk(p.t, val, p.desc, rel, k, (buf, *len), facts, true, span)?;
         }
-        Ok(V::A(val, p.desc))
+        Ok(())
     }
 
     /// Does the field path `rel` from record type `t` lead through records only to an array

@@ -119,6 +119,8 @@ fn add_subprogram(db: &mut Db, name: &str, kind: SubprogramKind) -> (DeclId, Sco
             scope: Some(scope),
             body: Body::Pending,
             mangled: Symbol::intern(name),
+            ret_mark: None,
+            impure_reads: false,
         }),
         scope: outer,
         span: Span::default(),
@@ -941,6 +943,8 @@ fn process_info_drivers_and_all() {
                 stmts: Box::new([qa]),
             },
             mangled: Symbol::intern("q"),
+            ret_mark: None,
+            impure_reads: false,
         }),
         scope: pscope,
         span: Span::default(),
@@ -992,6 +996,7 @@ fn procedure_call_actuals_drive_and_read() {
         subtype: bit,
         default: None,
         decl: None,
+        mark: None,
     };
     let params = Box::new([param(&mut fx, Mode::In), param(&mut fx, Mode::Out)]);
     let pr = fx.db.decls.push(Decl {
@@ -1004,6 +1009,8 @@ fn procedure_call_actuals_drive_and_read() {
             scope: None,
             body: Body::Pending,
             mangled: Symbol::intern("pr"),
+            ret_mark: None,
+            impure_reads: false,
         }),
         scope: fx.scope,
         span: Span::default(),

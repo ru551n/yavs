@@ -176,6 +176,9 @@ pub struct Stats {
     /// Activations of clocked processes skipped (or, with `Config::idle_check`, checked) because
     /// none of the signals they read had an event since the last one.
     pub idle_skips: u64,
+    /// Signals of more than 64 elements that keep only each block's last event
+    /// (`Builder::lean_events`); fixed when the model is built.
+    pub lean_signals: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -827,7 +830,9 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
-    readers: Vec<u32>,
+    /// A reader and the index in `reader_guards` of the condition of its read, or `NO_GUARD`.
+    readers: Vec<(u32, u32)>,
+    reader_guards: Vec<ReaderGuard>,
     idle_active: bool,
     /// Processes with `idle_ok` now: `idle_active` is off when none is left, until `idle_reprobe`.
     idle_live: u32,
@@ -942,7 +947,7 @@ impl SimControl {
         mut slots: Vec<Mutex<Slot>>,
         mut procs: Vec<ProcMeta>,
         names: Vec<String>,
-        idles: Vec<Option<Vec<(SignalId, Range)>>>,
+        idles: Vec<Option<Vec<crate::builder::IdleRead>>>,
         guards: Vec<Option<Vec<(SignalId, Range)>>>,
     ) -> Result<SimControl, SimError> {
         if let Some(pr) = crate::profile::installed() {
@@ -1036,7 +1041,7 @@ impl SimControl {
         // event: pure ones (`Builder::idle_skip`) that drive signals allowing skipped assignments.
         let mut idle_active = false;
         let mut idle_live = 0u32;
-        let mut readers_of: Vec<Vec<u32>> = Vec::new();
+        let mut readers_of: Vec<Vec<(u32, Option<ReaderGuard>)>> = Vec::new();
         if cfg.idle_skip && cfg.skip_unchanged && cfg.edge_triggers {
             let mut bad = vec![false; procs.len()];
             for d in &drivers {
@@ -1046,7 +1051,6 @@ impl SimControl {
                 let Some(reads) = reads else { continue };
                 let m = &mut procs[p];
                 if bad[p]
-                    || m.trigger.is_none()
                     || m.flags.postponed
                     || m.flags.several_waits
                     || m.flags.serial
@@ -1061,20 +1065,38 @@ impl SimControl {
                 m.idle_static = true;
                 idle_active = true;
                 idle_live += 1;
-                for (s, _) in reads {
-                    let l = &mut readers_of[s.0 as usize];
-                    if l.last() != Some(&(p as u32)) {
-                        l.push(p as u32);
+                for r in reads {
+                    let l = &mut readers_of[r.signal.0 as usize];
+                    match l.last_mut() {
+                        // Read twice (two parts of the signal, or under two conditions): the
+                        // read happens when either condition holds.
+                        Some((q, g)) if *q == p as u32 => {
+                            *g = match (g.take(), &r.guard) {
+                                (Some(mut a), Some(b)) => {
+                                    a.extend(b.iter().cloned());
+                                    Some(a)
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => l.push((p as u32, r.guard.clone())),
                     }
                 }
             }
         }
         let mut readers_start = Vec::new();
         let mut readers = Vec::new();
+        let mut reader_guards = Vec::new();
         if idle_active {
-            for l in &readers_of {
+            for l in readers_of {
                 readers_start.push(readers.len() as u32);
-                readers.extend_from_slice(l);
+                for (p, g) in l {
+                    let g = g.map_or(NO_GUARD, |g| {
+                        reader_guards.push(g);
+                        reader_guards.len() as u32 - 1
+                    });
+                    readers.push((p, g));
+                }
             }
             readers_start.push(readers.len() as u32);
         }
@@ -1093,12 +1115,14 @@ impl SimControl {
                 }
             }
         }
+        let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
         let mut sim = SimControl {
             guard_procs,
             guard_readers,
             guard_due: Vec::new(),
             readers_start,
             readers,
+            reader_guards,
             idle_active,
             idle_live,
             idle_live_possible: idle_live != 0,
@@ -1157,7 +1181,10 @@ impl SimControl {
             wakes: Wakes::default(),
             pool,
             interrupt: Interrupt::default(),
-            stats: Stats::default(),
+            stats: Stats {
+                lean_signals,
+                ..Stats::default()
+            },
             live: false,
             callouts: Vec::new(),
             empty_delta: false,
@@ -1703,8 +1730,24 @@ impl SimControl {
             self.readers_start[s as usize + 1] as usize,
         );
         for i in a..b {
-            self.procs[self.readers[i] as usize].armed = true;
+            let (p, g) = self.readers[i];
+            if g == NO_GUARD || self.procs[p as usize].armed || self.guard_holds(g) {
+                self.procs[p as usize].armed = true;
+            }
         }
+    }
+
+    /// Whether one of the conjunctions of reader guard `g` holds now. A literal on a signal that
+    /// is not logic holds (the read counts), so does one on an element out of range.
+    fn guard_holds(&self, g: u32) -> bool {
+        self.reader_guards[g as usize].iter().any(|conj| {
+            conj.iter().all(|l| {
+                let s = &self.signals[l.signal.0 as usize];
+                !matches!(s.ty.elem, Elem::Logic)
+                    || l.elem >= s.ty.len
+                    || (s.cur_code(l.elem as usize) == l.code) == l.eq
+            })
+        })
     }
 
     /// Take the clocked processes out of `pids` that need not run at this edge: none of the
@@ -3831,6 +3874,12 @@ fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
         || t.reset
             .is_some_and(|(r, e, c)| signals[r.0 as usize].cur_code(e as usize) == c)
 }
+
+/// The condition of a read: alternatives of conjunctions of literals.
+type ReaderGuard = Vec<Vec<crate::builder::IdleLit>>;
+
+/// `SimControl::readers`: the read has no condition.
+const NO_GUARD: u32 = u32::MAX;
 
 /// The activations over which `note_idle` counts a process's skips (`ProcMeta::idle_win`).
 const IDLE_WINDOW: u16 = 128;

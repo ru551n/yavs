@@ -13,6 +13,7 @@ mod callcache;
 mod collapse;
 mod eval;
 mod hier;
+mod lean;
 pub mod libstage;
 mod pkgcall;
 mod sim;
@@ -180,7 +181,7 @@ pub struct ProcInst {
     /// listed here and constants alone (`Db::pure_clocked_reads`): the kernel may skip an
     /// activation when none of them had an event since the last one
     /// (`yavs_kernel::Builder::idle_skip`).
-    pub idle: Option<Vec<(LeafId, yavs_kernel::Range)>>,
+    pub idle: Option<Vec<IdleRead>>,
     /// The `_guard` process of a guarded block: the signal parts its condition reads. The kernel
     /// runs it in the update phase of the cycle in which one of them has an event, so GUARD
     /// changes in that cycle (LRM 11.2; `yavs_kernel::Builder::guard_process`).
@@ -195,6 +196,25 @@ pub struct ProcToggle {
     /// The delay in femtoseconds, positive.
     pub delay: i64,
     pub transport: bool,
+}
+
+/// A signal part a pure process reads ([`ProcInst::idle`]) and, when it reads it only under some
+/// conditions, those: a disjunction of conjunctions of literals, each of which holds in every
+/// activation that reads it.
+#[derive(Clone, Debug)]
+pub struct IdleRead {
+    pub leaf: LeafId,
+    pub range: yavs_kernel::Range,
+    pub guard: Option<Vec<Vec<IdleLit>>>,
+}
+
+/// An element of a logic signal compared with a `std_ulogic` code (`eq`: equal, else not equal).
+#[derive(Clone, Copy, Debug)]
+pub struct IdleLit {
+    pub leaf: LeafId,
+    pub elem: u32,
+    pub code: u8,
+    pub eq: bool,
 }
 
 /// The trigger of a clocked process ([`ProcInst::trigger`]).
@@ -257,6 +277,10 @@ pub struct Elaborated {
     pub ext_procs: Vec<ExtProc>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<ScopeVals>,
+    /// Per leaf: nothing asks for the event history of single elements of this wide signal, so
+    /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
+    /// of every signal; empty means the same.
+    pub lean: Vec<bool>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
     /// The declarative regions (yavs-sem scopes) of each elaborated scope, in elaboration

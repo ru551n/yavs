@@ -607,6 +607,36 @@ impl FuncBuilder<'_> {
         self.cur = b.0 as usize;
     }
 
+    /// The block instructions go to now.
+    pub fn current(&self) -> BlockId {
+        BlockId(self.cur as u32)
+    }
+
+    /// Instructions emitted so far into `b`.
+    pub fn block_len(&self, b: BlockId) -> usize {
+        self.blocks.get(b.0 as usize).map_or(0, Vec::len)
+    }
+
+    /// Take the instructions out of `b`, with their statements (for `splice` into another block).
+    pub fn take(&mut self, b: BlockId) -> Vec<(Inst, Option<StmtId>)> {
+        self.blocks
+            .get_mut(b.0 as usize)
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+
+    /// Put `code` into block `b` before its instruction number `at`.
+    pub fn splice(&mut self, b: BlockId, at: usize, code: Vec<(Inst, Option<StmtId>)>) {
+        if let Some(blk) = self.blocks.get_mut(b.0 as usize) {
+            blk.splice(at..at, code);
+        }
+    }
+
+    /// The statement new instructions belong to; returns the previous one.
+    pub fn set_stmt(&mut self, s: Option<StmtId>) -> Option<StmtId> {
+        std::mem::replace(&mut self.stmt, s)
+    }
+
     /// Start a statement: records it in the program's statement table and emits `Stmt`.
     pub fn stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
         let id = self.pb.prog.stmts.push(StmtInfo {

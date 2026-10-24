@@ -12,16 +12,16 @@ use yavs_ir::Inst;
 #[cfg(any(debug_assertions, feature = "op-census"))]
 static OPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// One op about to execute; `insts` is the function's IR, which a generic `Op::Step` names.
+/// Op `k` of `ops` about to execute; `insts` is the function's IR, which a generic `Op::Step` names.
 #[cfg_attr(not(any(debug_assertions, feature = "op-census")), allow(dead_code))]
 #[inline(always)]
-pub(crate) fn tick(op: &Op, insts: &[Inst]) {
-    let _ = (op, insts);
+pub(crate) fn tick(ops: &[Op], k: usize, insts: &[Inst]) {
+    let _ = (ops, k, insts);
     #[cfg(any(debug_assertions, feature = "op-census"))]
     {
         OPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         #[cfg(feature = "op-census")]
-        table::hit(op, insts);
+        table::hit(ops, k, insts);
     }
 }
 
@@ -50,6 +50,7 @@ mod table {
     use std::hash::{BuildHasherDefault, Hasher};
     use std::mem::{Discriminant, discriminant};
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     /// An op by its variant; a generic step by the variant of the IR instruction it runs.
     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,7 +77,12 @@ mod table {
     #[derive(Default)]
     struct Local {
         ops: Map<Key>,
+        /// Nanoseconds from the end of the census work of an op to the start of the next one's
+        /// (the op's own work, plus the clock reads), by op.
+        ns: Map<Key>,
         pairs: Map<(Key, Key)>,
+        /// The pairs where the second op follows the first in the code.
+        falls: Map<(Key, Key)>,
         /// A sample of each key, to name it when the table is printed.
         names: HashMap<Key, String>,
     }
@@ -92,9 +98,14 @@ mod table {
             l
         };
         static PREV: Cell<Option<Key>> = const { Cell::new(None) };
+        /// Where the last op was: the code (address of its ops) and the index.
+        static PREV_AT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+        static LAST: Cell<Option<Instant>> = const { Cell::new(None) };
     }
 
-    pub(super) fn hit(op: &Op, insts: &[Inst]) {
+    pub(super) fn hit(ops: &[Op], k: usize, insts: &[Inst]) {
+        let now = Instant::now();
+        let op = &ops[k];
         let step = match *op {
             Op::Step(pc) => insts.get(pc as usize),
             _ => None,
@@ -104,11 +115,23 @@ mod table {
             None => Key::Op(discriminant(op)),
         };
         let prev = PREV.replace(Some(key));
+        // The next op of the same code, not a jump: a fusion of the two is possible.
+        let here = (ops.as_ptr() as usize, k);
+        // (A fused op skips up to three ops that follow it.)
+        let (pp, pk) = PREV_AT.replace(here);
+        let fall = pp == here.0 && (1..=3).contains(&k.wrapping_sub(pk));
+        let spent = LAST.get().map(|t| now.duration_since(t).as_nanos() as u64);
         MINE.with(|m| {
             let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
             *m.ops.entry(key).or_default() += 1;
+            if let (Some(p), Some(ns)) = (prev, spent) {
+                *m.ns.entry(p).or_default() += ns;
+            }
             if let Some(p) = prev {
                 *m.pairs.entry((p, key)).or_default() += 1;
+                if fall {
+                    *m.falls.entry((p, key)).or_default() += 1;
+                }
             }
             m.names.entry(key).or_insert_with(|| {
                 name_of(&match step {
@@ -117,6 +140,20 @@ mod table {
                 })
             });
         });
+        LAST.set(Some(Instant::now()));
+    }
+
+    /// The clock reads and the table update that sit in every op's time, per op.
+    fn overhead_ns() -> f64 {
+        let mut tot = 0u128;
+        let n = 200_000;
+        let mut last = Instant::now();
+        for _ in 0..n {
+            let now = Instant::now();
+            tot += now.duration_since(last).as_nanos();
+            last = Instant::now();
+        }
+        tot as f64 / n as f64
     }
 
     /// `Step:Load { .. }` to `Step:Load`, `LoadSlot8 { .. }` to `LoadSlot8`.
@@ -128,16 +165,29 @@ mod table {
     }
 
     pub(super) fn dump(top: usize) {
+        // `YAVS_CENSUS_TOP=N`: print N rows of each table instead of the default.
+        let top = std::env::var("YAVS_CENSUS_TOP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(top);
         let mut ops: HashMap<Key, u64> = HashMap::new();
+        let mut ns: HashMap<Key, u64> = HashMap::new();
         let mut pairs: HashMap<(Key, Key), u64> = HashMap::new();
+        let mut falls: HashMap<(Key, Key), u64> = HashMap::new();
         let mut names: HashMap<Key, String> = HashMap::new();
         for l in ALL.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             let l = l.lock().unwrap_or_else(|e| e.into_inner());
             for (k, n) in &l.ops {
                 *ops.entry(*k).or_default() += n;
             }
+            for (k, n) in &l.ns {
+                *ns.entry(*k).or_default() += n;
+            }
             for (k, n) in &l.pairs {
                 *pairs.entry(*k).or_default() += n;
+            }
+            for (k, n) in &l.falls {
+                *falls.entry(*k).or_default() += n;
             }
             for (k, s) in &l.names {
                 names.entry(*k).or_insert_with(|| s.clone());
@@ -161,6 +211,43 @@ mod table {
             .collect();
         rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         print_rows("pairs", &rows, total, top);
+        let mut rows: Vec<(String, u64)> = falls
+            .iter()
+            .map(|((a, b), n)| (format!("{} -> {}", name(a), name(b)), *n))
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        print_rows(
+            "falls (the second op follows the first in the code: fusible)",
+            &rows,
+            total,
+            top,
+        );
+        // Time by op. The clock reads are subtracted (a constant per op); ops whose time includes
+        // the kernel (`Suspend`, `Ret` of a process) show it.
+        let oh = overhead_ns();
+        let mut trows: Vec<(String, f64, u64)> = ops
+            .iter()
+            .map(|(k, n)| {
+                (
+                    name(k).to_string(),
+                    ns.get(k).copied().unwrap_or(0) as f64 - oh * *n as f64,
+                    *n,
+                )
+            })
+            .collect();
+        let ttot: f64 = trows.iter().map(|r| r.1.max(0.0)).sum();
+        trows.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        eprintln!(
+            "op-census: time (clock overhead {oh:.1} ns per op subtracted): ms, percent, ns per op, count"
+        );
+        for (name, t, n) in trows.iter().take(top) {
+            eprintln!(
+                "op-census: {:>10.1} {:>6.2}% {:>8.1}  {n:>12}  {name}",
+                t / 1e6,
+                t.max(0.0) * 100.0 / ttot.max(1.0),
+                t / (*n).max(1) as f64
+            );
+        }
     }
 
     fn print_rows(what: &str, rows: &[(String, u64)], total: u64, top: usize) {

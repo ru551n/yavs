@@ -79,6 +79,7 @@ pub struct Mem {
     pub objs: [Obj; OBJS],
     /// Entries of `objs` in use, at most (0: none, nothing to forget).
     pub live: u64,
+    /// Entries of the table `nslots` points at (the thread's table never shrinks).
     /// Which entries of `objs` are in use: the walks (`retain`, `save_objs`, `begin`) visit only
     /// those.
     pub occ: [u64; OBJS / 64],
@@ -100,6 +101,8 @@ pub struct Mem {
     /// Per frame index, the slots of the native frame living there (`NSlot`): a native callee
     /// reaches the frames of its native callers through it.
     pub nslots: *mut NSlot,
+    /// Entries of the table `nslots` points at (the thread's table never shrinks).
+    nslots_len: usize,
 }
 
 /// The slots of a native frame, registered at its entry in `Mem::nslots`.
@@ -291,6 +294,16 @@ impl Mem {
             ntab: std::ptr::null(),
             stack_lo: 0,
             nslots: std::ptr::null_mut(),
+            nslots_len: 0,
+        }
+    }
+
+    /// Point `nslots` at this thread's table of at least `depth` entries.
+    #[inline(always)]
+    fn set_nslots(&mut self, depth: usize) {
+        if self.nslots_len < depth {
+            self.nslots = nslots(depth);
+            self.nslots_len = depth;
         }
     }
 
@@ -344,9 +357,13 @@ impl Mem {
     }
 
     /// The end of an activation or call: what `begin` checks next time.
+    #[inline(always)]
     pub fn end(&mut self) {
-        self.objs_owner = self.fr.owner;
-        self.objs_epoch = self.fr.heap_epoch;
+        // `begin` looks at these only while objects are kept.
+        if self.live != 0 {
+            self.objs_owner = self.fr.owner;
+            self.objs_epoch = self.fr.heap_epoch;
+        }
     }
 
     /// Enter object `o` at its entry.
@@ -674,7 +691,7 @@ pub unsafe extern "C" fn yavs_rt_deopt_end(env: *mut c_void, mem: *mut Mem, pc: 
 /// caller) holds the time and the first block of planes of its one waveform element.
 pub unsafe extern "C" fn yavs_rt_drive(
     env: *mut c_void,
-    _regs: *mut u64,
+    regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
     driver: u32,
@@ -687,21 +704,48 @@ pub unsafe extern "C" fn yavs_rt_drive(
     // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`, 16 where
     // the target keeps bytes (bit 1 of `flags`: one scalar, whose cell is the first word).
     let envp = env as *mut Env<'_>;
+    if flags & 4 == 0 {
+        let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
+        let (delay, block) = if flags & 2 != 0 {
+            (word(0) as i64, [word(1), 0, 0, 0])
+        } else {
+            (word(0) as i64, [word(1), word(2), word(3), word(4)])
+        };
+        // The usual case, taken by the host without a frame view or a result.
+        if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
+            return GO;
+        }
+    }
+    yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+}
+
+/// `yavs_rt_drive` for a wide target and for the assignments the kernel's fastest path does not
+/// take.
+#[cold]
+#[inline(never)]
+extern "C" fn yavs_rt_drive_slow(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    wave: *const u8,
+    flags: u32,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_drive`.
+    let envp = env as *mut Env<'_>;
     let inertial = flags & 1;
     if flags & 4 != 0 {
         return yavs_rt_drive_wide(envp, mem, pc, driver, lo, len, wave, inertial);
     }
     let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
-    let bytes = flags & 2 != 0;
-    let (delay, block) = if bytes {
+    let (delay, block) = if flags & 2 != 0 {
         (word(0) as i64, [word(1), 0, 0, 0])
     } else {
         (word(0) as i64, [word(1), word(2), word(3), word(4)])
     };
-    // The usual case, taken by the host without a frame view or a result.
-    if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
-        return GO;
-    }
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.drive_block(
@@ -766,7 +810,7 @@ fn yavs_rt_drive_wide(
 /// `code` holds the logic code and, in bit 8, whether the assignment is inertial.
 pub unsafe extern "C" fn yavs_rt_drive_bit(
     env: *mut c_void,
-    _regs: *mut u64,
+    regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
     driver: u32,
@@ -778,10 +822,29 @@ pub unsafe extern "C" fn yavs_rt_drive_bit(
     cb(Cb::Drive);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
-    let (inertial, code) = (code & 0x100 != 0, code & !0x100);
-    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code) } {
+    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code & !0x100) } {
         return GO;
     }
+    yavs_rt_drive_bit_slow(env, regs, mem, pc, driver, lo, len, delay, code)
+}
+
+/// `yavs_rt_drive_bit` when the kernel's fastest path does not take the assignment.
+#[cold]
+#[inline(never)]
+extern "C" fn yavs_rt_drive_bit_slow(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    delay: u64,
+    code: u64,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    let (inertial, code) = (code & 0x100 != 0, code & !0x100);
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.drive_bit(
@@ -1262,9 +1325,24 @@ pub unsafe extern "C" fn yavs_rt_host(
     cb(Cb::Host);
     // SAFETY: as in `yavs_rt_step`.
     let m = unsafe { &*mem };
+    // The view's bytes are a leaf: no register saves for the common hit (the slow path is apart).
     if let Some(p) = m.find(a, extra, n, write != 0) {
         return p;
     }
+    host_miss(env, mem, a, extra, n, write)
+}
+
+/// `yavs_rt_host` where the view does not hold the bytes: the interpreter's object table.
+#[cold]
+#[inline(never)]
+extern "C" fn host_miss(
+    env: *mut c_void,
+    mem: *mut Mem,
+    a: u64,
+    extra: u64,
+    n: u64,
+    write: u32,
+) -> *mut u8 {
     // SAFETY: the pointers are the ones compiled code was given.
     if unsafe { yavs_rt_obj(env, mem, a, write) } == 0 {
         return std::ptr::null_mut();
@@ -1697,7 +1775,7 @@ pub fn enter_on(
     mem.stack_lo = env.stack_lo as u64;
     // The frames of native calls are at most `max_depth` deep: their slots are registered here.
     let depth = mem.fr.max_depth.min(1 << 20) as usize;
-    mem.nslots = nslots(depth);
+    mem.set_nslots(depth);
     // SAFETY: `f` was generated for this function with `nregs` registers and only
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.
@@ -1793,7 +1871,7 @@ pub fn call_on(
     };
     mem.ntab = ntab;
     mem.stack_lo = env.stack_lo as u64;
-    mem.nslots = nslots(mem.fr.max_depth.min(1 << 20) as usize);
+    mem.set_nslots(mem.fr.max_depth.min(1 << 20) as usize);
     // SAFETY: `adapter` is a `CallFn` generated for this function (`Gen::adapter`), which reads
     // one cell per parameter (two for a signal): `cells` holds them, checked by the caller.
     let v = unsafe {

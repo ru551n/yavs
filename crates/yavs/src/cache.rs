@@ -251,6 +251,11 @@ pub struct Units {
     dirs: std::collections::HashMap<String, std::path::PathBuf>,
     work: std::path::PathBuf,
     writable: bool,
+    /// The mapped libraries but the work library, in path order: where a `std`/`ieee` unit the
+    /// work library lacks may have been stored.
+    others: Vec<std::path::PathBuf>,
+    /// The one of `others` that last had such a unit, which the next is looked for in first.
+    hit: std::sync::atomic::AtomicUsize,
 }
 
 impl Units {
@@ -265,15 +270,20 @@ impl Units {
         if opts.stdlib != Path::new(yavs_sem::stdlib::EMBEDDED) {
             return None;
         }
-        let dirs = opts
+        let dirs: std::collections::HashMap<String, std::path::PathBuf> = opts
             .libraries
             .names()
             .filter_map(|n| Some((n.to_string(), opts.libraries.get(n)?.dir.clone())))
             .collect();
+        let mut others: Vec<std::path::PathBuf> =
+            dirs.values().filter(|d| *d != work).cloned().collect();
+        others.sort();
         Some(std::sync::Arc::new(Units {
             dirs,
             work: work.to_path_buf(),
             writable,
+            others,
+            hit: Default::default(),
         }))
     }
 
@@ -298,12 +308,16 @@ impl yavs_sem::UnitStore for Units {
         if !matches!(lib, "std" | "ieee") {
             return None;
         }
-        let mut dirs: Vec<&std::path::PathBuf> = self.dirs.values().collect();
-        dirs.sort();
-        dirs.into_iter()
-            .filter(|d| **d != self.work)
-            .find_map(|d| Store::units_of_library(d).get("unit", &k))
-            .map(yavs_diag::Buffer::new)
+        // A project of thirty libraries has one entry of each `std`/`ieee` unit, in the library
+        // analysed first: look where the last one was found before the rest (a failed `open` of
+        // a path five directories deep is two microseconds, and a call asks for a dozen units).
+        let n = self.others.len();
+        let from = self.hit.load(std::sync::atomic::Ordering::Relaxed);
+        (0..n).map(|i| (from + i) % n.max(1)).find_map(|i| {
+            let e = Store::units_of_library(&self.others[i]).get("unit", &k)?;
+            self.hit.store(i, std::sync::atomic::Ordering::Relaxed);
+            Some(yavs_diag::Buffer::new(e))
+        })
     }
 
     fn has(&self, lib: &str, identity: &[u8; 32]) -> bool {
@@ -318,7 +332,7 @@ impl yavs_sem::UnitStore for Units {
             return;
         }
         if let Some((s, k)) = self.store(lib, identity) {
-            self.note(&format!("store {lib} {} ({} bytes)", k.hex(), bytes.len()));
+            self.note(&|| format!("store {lib} {} ({} bytes)", k.hex(), bytes.len()));
             s.put("unit", &k, bytes);
         }
     }
@@ -327,15 +341,21 @@ impl yavs_sem::UnitStore for Units {
         self.writable
     }
 
-    fn note(&self, msg: &str) {
-        if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
-            eprintln!("debug: units: {msg}");
+    fn note(&self, msg: &dyn Fn() -> String) {
+        if debug_on() {
+            eprintln!("debug: units: {}", msg());
         }
     }
 }
 
+/// Whether `YAVS_LOG=debug` (read once: a note is asked for per unit replayed).
+fn debug_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug"))
+}
+
 fn debug(msg: String) {
-    if std::env::var("YAVS_LOG").is_ok_and(|v| v == "debug") {
+    if debug_on() {
         eprintln!("debug: cache: {msg}");
     }
 }

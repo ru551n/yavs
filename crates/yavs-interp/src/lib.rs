@@ -892,6 +892,10 @@ pub struct NativeFlags {
     func: Box<[std::sync::atomic::AtomicU8]>,
     /// Per process function: the processes made of it (`InterpProcess::new`).
     instances: Box<[std::sync::atomic::AtomicU32]>,
+    /// Activations of the one process function a trial of the tier counts (`count_on`).
+    entered: std::sync::atomic::AtomicU64,
+    /// Some function is counted (`NAT_COUNT`).
+    counting: std::sync::atomic::AtomicBool,
 }
 
 impl NativeFlags {
@@ -900,6 +904,63 @@ impl NativeFlags {
         self.instances
             .get(func.0 as usize)
             .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
+    /// Count the activations of the process function `func` from now on (`entries`). One function
+    /// at a time; the tier counts to judge the compiled code of a process that loops by the work
+    /// done per CPU second (#652).
+    pub fn count_on(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            self.entered.store(0, Ordering::Relaxed);
+            self.counting.store(true, Ordering::Release);
+            n.fetch_or(NAT_COUNT, Ordering::Release);
+            self.any.store(true, Ordering::Release);
+        }
+    }
+
+    /// Stop counting `func` (`count_on`).
+    pub fn count_off(&self, func: FuncId) {
+        if let Some(n) = self.func.get(func.0 as usize) {
+            n.fetch_and(!NAT_COUNT, Ordering::Release);
+            self.counting.store(false, Ordering::Release);
+            self.refresh();
+        }
+    }
+
+    /// The entries counted so far (`count_on`).
+    pub fn entries(&self) -> u64 {
+        self.entered.load(Ordering::Relaxed)
+    }
+
+    #[inline(always)]
+    pub(crate) fn bump(&self) {
+        self.entered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// An activation of a process of `func` starts.
+    #[inline(always)]
+    pub(crate) fn activated(&self, func: FuncId) {
+        if self.counting.load(Ordering::Relaxed)
+            && self
+                .func
+                .get(func.0 as usize)
+                .is_some_and(|n| n.load(Ordering::Acquire) & NAT_COUNT != 0)
+        {
+            self.bump();
+        }
+    }
+
+    /// Nothing compiled, asked for or counted any more: the fast loop goes back to the one
+    /// without the tier's bookkeeping. Only the thread that calls `set` calls this, so the two do
+    /// not race.
+    fn refresh(&self) {
+        if !self
+            .func
+            .iter()
+            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK | NAT_COUNT) != 0)
+        {
+            self.any.store(false, Ordering::Release);
+        }
     }
 
     /// The tier calls `func` from the interpreter now (`Tier::call`).
@@ -930,15 +991,7 @@ impl NativeFlags {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_and(!NAT_CODE, Ordering::Release);
         }
-        // Nothing compiled any more: the fast loop goes back to the one without the tier's
-        // bookkeeping. Only the thread that calls `set` calls this, so the two do not race.
-        if !self
-            .func
-            .iter()
-            .any(|n| n.load(Ordering::Relaxed) & (NAT_CODE | NAT_ASK) != 0)
-        {
-            self.any.store(false, Ordering::Release);
-        }
+        self.refresh();
     }
 
     /// `func` has compiled code now.
@@ -956,6 +1009,8 @@ pub(crate) const NAT_CODE: u8 = 1;
 pub(crate) const NAT_ASK: u8 = 2;
 /// `NativeFlags::func`: the tier calls the function on a native frame (`Tier::call`).
 pub(crate) const NAT_CALL: u8 = 4;
+/// `NativeFlags::func`: the activations of the process function are counted (`NativeFlags::count_on`).
+pub(crate) const NAT_COUNT: u8 = 8;
 
 /// What each simulation thread interprets, for the sampler of a compiled tier
 /// (`Runtime::sampler`): `runtime id << 32 | function`, 0 while it interprets nothing. One
@@ -1108,6 +1163,8 @@ impl Runtime {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 instances: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                entered: Default::default(),
+                counting: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             prog,
@@ -1663,7 +1720,7 @@ impl Process for InterpProcess {
         if self.m.hot {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
-            if self.m.execs == self.m.spec_at {
+            if self.m.execs == u64::from(self.m.spec_at) {
                 self.m.specialise();
             }
             if let Err(e) = self.m.borrow_scratch() {

@@ -16,13 +16,17 @@ use crate::db::Db;
 use crate::decl::{Alias, DeclKind, ObjClass, ObjRole, SubprogramKind};
 use crate::diag;
 use crate::hir::{
-    Actual, AttrPrefix, Call, Choice, ExprKind, InstTarget, LoopScheme, Lsp, LspStep, Mode,
-    NewInit, ObjRoot, PredefAttr, ProcessInfo, RangeC, Rhs, StmtKind, Target, UnitHir, Waveform,
+    Actual, AttrPrefix, Call, Choice, ExprKind, GuardLit, InstTarget, LoopScheme, Lsp, LspStep,
+    Mode, NewInit, ObjRoot, PredefAttr, ProcessInfo, PureRead, RangeC, Rhs, StmtKind, Target,
+    UnitHir, Waveform,
 };
 use crate::ids::{DeclId, ExprId, ScopeId, StmtId, SubtypeId};
 use crate::scope::ScopeKind;
 use crate::stat::Staticness;
 use crate::types::{Resolution, TypeKind};
+
+/// The reads of a pure body, each with the literals that hold whenever it is read.
+type GReads = Vec<(Lsp, Vec<GuardLit>)>;
 
 /// What a name denotes at its root, after following object aliases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,7 +243,7 @@ impl Db {
         }
     }
 
-    fn is_param(&self, root: ObjRoot) -> bool {
+    pub(crate) fn is_param(&self, root: ObjRoot) -> bool {
         matches!(root, ObjRoot::Decl(d) if matches!(
             &self.decls[d].kind,
             DeclKind::Object(o) if o.role == ObjRole::Param
@@ -891,59 +895,232 @@ impl Db {
         ProcessInfo { drivers, reads_all }
     }
 
-    /// The signals read by a clocked process (a branch of its statement, `conds` the other
-    /// branches' conditions, such as a reset) when what an activation does is a function of
-    /// those signals and constants alone: no variable or file in `scope`, only signal
-    /// assignments without delay, `if`, `case`, `for` loops and `null`, and expressions of
-    /// constants, signals, predefined operators and pure package functions without signal
-    /// parameters. `None` for anything else. An activation of such a process with none of the
-    /// signals changed since the last one does what that one did.
+    /// The signals read by a clocked process (`bodies` the branches of its statement that one
+    /// activation can run, `conds` the other branches' conditions, such as a reset) when what an
+    /// activation does is a function of those signals and constants alone: no shared variable or
+    /// file in `scope`, only signal and variable assignments without delay, `if`, `case`, `for`
+    /// loops and `null`, and expressions of constants, signals, variables, predefined operators
+    /// and pure package functions without signal parameters. A variable of the process is
+    /// allowed when each branch assigns all of it before anything else mentions it (the first
+    /// statement of the branch that does is a top-level `v := ...;` that does not read it), so
+    /// that no value is kept from one activation to the next. `None` for anything else. An
+    /// activation of such a process with none of the signals changed since the last one does
+    /// what that one did.
     pub fn pure_clocked_reads(
         &self,
         scope: ScopeId,
         conds: &[ExprId],
-        body: &[StmtId],
-    ) -> Option<Vec<Lsp>> {
+        bodies: &[&[StmtId]],
+    ) -> Option<Vec<PureRead>> {
+        self.pure_process_reads(scope, conds, bodies)
+    }
+
+    /// The signals read by a combinational process (`process (a, b) begin ... end process;` or
+    /// `process (all)`) when what an activation does is a function of those signals and
+    /// constants alone, as for [`Db::pure_clocked_reads`]. An activation of such a process with
+    /// none of the signals it reads changed since the last one does what that one did, which a
+    /// wider sensitivity list does not see.
+    pub fn pure_comb_reads(&self, scope: ScopeId, body: &[StmtId]) -> Option<Vec<PureRead>> {
+        self.pure_process_reads(scope, &[], &[body])
+    }
+
+    fn pure_process_reads(
+        &self,
+        scope: ScopeId,
+        conds: &[ExprId],
+        bodies: &[&[StmtId]],
+    ) -> Option<Vec<PureRead>> {
+        let mut vars = Vec::new();
         for &d in &self.scopes[scope].order {
-            if let DeclKind::Object(o) = &self.decls[d].kind
-                && matches!(
-                    o.class,
-                    ObjClass::Variable | ObjClass::SharedVariable | ObjClass::File
-                )
-            {
-                return None;
+            if let DeclKind::Object(o) = &self.decls[d].kind {
+                match o.class {
+                    ObjClass::Variable => vars.push(d),
+                    ObjClass::SharedVariable | ObjClass::File => return None,
+                    _ => {}
+                }
             }
         }
-        let mut reads = Vec::new();
+        let mut reads = GReads::new();
         for &c in conds {
             if !self.pure_tree(c) {
                 return None;
             }
-            self.reads(c, &mut reads);
+            let mut r = Vec::new();
+            self.reads(c, &mut r);
+            reads.extend(r.into_iter().map(|l| (l, Vec::new())));
         }
-        if !self.pure_stmts(body, &mut reads) {
-            return None;
+        for body in bodies {
+            if !self.vars_assigned_first(body, &vars)
+                || !self.pure_stmts(body, &vars, &mut Vec::new(), &mut reads)
+            {
+                return None;
+            }
         }
-        // Whole objects and record fields: an index or a slice would be worked out once per
-        // instance of the process, for little (the reader wakes for a change anywhere in the array).
-        let mut coarse = Vec::new();
-        for mut l in reads {
+        Some(self.coarse_reads(reads))
+    }
+
+    /// Whether every variable of `vars` that `body` mentions is assigned as a whole by a
+    /// top-level statement before any statement mentions it otherwise.
+    fn vars_assigned_first(&self, body: &[StmtId], vars: &[DeclId]) -> bool {
+        let mut defined: Vec<DeclId> = Vec::new();
+        for &s in body {
+            // The target of a whole-variable assignment is not a mention that reads.
+            let def = match &self.stmts[s].kind {
+                StmtKind::VarAssign { target, .. } => match self.exprs[target.expr].kind {
+                    ExprKind::Obj(v) if vars.contains(&v) => Some((v, target.expr)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let mut used = Vec::new();
+            self.stmt_var_uses(s, vars, def.map(|(_, e)| e), &mut used);
+            // What the statement mentions (the target of a defining one apart) is assigned.
+            if !used.iter().all(|u| defined.contains(u)) {
+                return false;
+            }
+            if let Some((v, _)) = def
+                && !defined.contains(&v)
+            {
+                defined.push(v);
+            }
+        }
+        true
+    }
+
+    /// The variables of `vars` named in `s` and its nested statements, except in the expression
+    /// `skip`.
+    fn stmt_var_uses(
+        &self,
+        s: StmtId,
+        vars: &[DeclId],
+        skip: Option<ExprId>,
+        out: &mut Vec<DeclId>,
+    ) {
+        self.stmt_exprs(s, &mut |e, _| {
+            if Some(e) != skip {
+                self.walk_expr(e, &mut |x| {
+                    if let ExprKind::Obj(d) = self.exprs[x].kind
+                        && vars.contains(&d)
+                    {
+                        out.push(d);
+                    }
+                });
+            }
+        });
+        for c in self.stmt_children(s) {
+            self.stmt_var_uses(c, vars, None, out);
+        }
+    }
+
+    /// Whole objects and record fields: an index or a slice would be worked out once per
+    /// instance of the process, for little (the reader wakes for a change anywhere in the array).
+    /// The conditions of the reads of one object are joined: a read that may happen in every
+    /// activation makes the object an unconditional read.
+    fn coarse_reads(&self, reads: GReads) -> Vec<PureRead> {
+        /// The most alternatives a join keeps: more make the read unconditional.
+        const MAX_ALTS: usize = 4;
+        let mut out: Vec<PureRead> = Vec::new();
+        for (mut l, g) in reads {
             let k = l
                 .path
                 .iter()
                 .position(|st| !matches!(st, LspStep::Field(_)))
                 .unwrap_or(l.path.len());
             l.path = l.path[..k].into();
-            push_unique(self, &mut coarse, l);
+            let g = (!g.is_empty()).then_some(g);
+            match out.iter_mut().find(|r| self.same_lsp(&r.lsp, &l)) {
+                Some(r) => {
+                    r.guard = match (r.guard.take(), g) {
+                        (Some(mut a), Some(b)) => {
+                            if !a.contains(&b) {
+                                a.push(b);
+                            }
+                            (a.len() <= MAX_ALTS).then_some(a)
+                        }
+                        _ => None,
+                    }
+                }
+                None => out.push(PureRead {
+                    lsp: l,
+                    guard: g.map(|g| vec![g]),
+                }),
+            }
         }
-        Some(coarse)
+        out
     }
 
-    fn pure_stmts(&self, body: &[StmtId], reads: &mut Vec<Lsp>) -> bool {
-        body.iter().all(|&s| self.pure_stmt(s, reads))
+    /// The signals read by a concurrent clocked assignment `target <= wave when <edge>;` (no
+    /// `else`, not guarded or postponed; `conds` what the edge test also reads) when what an
+    /// activation does is a function of those signals and constants alone: the waveform has no
+    /// `after`, the delay is the default or `transport`, and the expressions are as for
+    /// [`Db::pure_clocked_reads`]. The edge itself is not one of them. `None` for anything else.
+    pub fn pure_conc_reads(&self, st: StmtId, conds: &[ExprId]) -> Option<Vec<PureRead>> {
+        use crate::hir::Delay;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            delay: Delay::Default | Delay::Transport,
+            rhs: Rhs::Conditional(alts),
+            ..
+        } = &self.stmts[st].kind
+        else {
+            return None;
+        };
+        let [(Waveform::Elements(els), Some(edge))] = &alts[..] else {
+            return None;
+        };
+        if !els.iter().all(|e| e.after.is_none() && e.value.is_some()) {
+            return None;
+        }
+        let mut reads = GReads::new();
+        for &c in conds {
+            if !self.pure_tree(c) {
+                return None;
+            }
+            let mut r = Vec::new();
+            self.reads(c, &mut r);
+            reads.extend(r.into_iter().map(|l| (l, Vec::new())));
+        }
+        let mut uses = Vec::new();
+        self.stmt_exprs(st, &mut |e, u| {
+            if e != *edge {
+                uses.push((e, u));
+            }
+        });
+        for (e, u) in uses {
+            if !self.pure_tree(e) {
+                return None;
+            }
+            let mut r = Vec::new();
+            match u {
+                Use::Value => self.reads(e, &mut r),
+                Use::Target => self.name_reads(e, &mut r),
+                Use::Actual(_) => return None,
+            }
+            reads.extend(r.into_iter().map(|l| (l, Vec::new())));
+        }
+        Some(self.coarse_reads(reads))
     }
 
-    fn pure_stmt(&self, s: StmtId, reads: &mut Vec<Lsp>) -> bool {
+    fn pure_stmts(
+        &self,
+        body: &[StmtId],
+        vars: &[DeclId],
+        g: &mut Vec<GuardLit>,
+        reads: &mut GReads,
+    ) -> bool {
+        body.iter().all(|&s| self.pure_stmt(s, vars, g, reads))
+    }
+
+    /// `g` is the conjunction of literals that every activation reaching `s` satisfies (from the
+    /// `if`s around it); the reads of `s` are listed with it.
+    fn pure_stmt(
+        &self,
+        s: StmtId,
+        vars: &[DeclId],
+        g: &mut Vec<GuardLit>,
+        reads: &mut GReads,
+    ) -> bool {
         use crate::hir::Delay;
         let kind_ok = match &self.stmts[s].kind {
             StmtKind::SignalAssign { delay, rhs, .. } => {
@@ -961,6 +1138,7 @@ impl Db {
                     }
             }
             StmtKind::If { .. } | StmtKind::Case { .. } | StmtKind::Null => true,
+            StmtKind::VarAssign { .. } => !vars.is_empty(),
             StmtKind::Loop {
                 scheme: LoopScheme::For { .. },
                 ..
@@ -971,17 +1149,109 @@ impl Db {
         if !kind_ok {
             return false;
         }
+        // An `if`: each branch is read under its own condition and the negation of the earlier
+        // ones when those are single literals.
+        if let StmtKind::If { branches, else_ } = &self.stmts[s].kind {
+            let mark = g.len();
+            let mut ok = true;
+            for (c, body) in branches.iter() {
+                if !self.pure_tree_in(*c, vars) {
+                    ok = false;
+                    break;
+                }
+                let mut r = Vec::new();
+                self.reads(*c, &mut r);
+                reads.extend(r.into_iter().map(|l| (l, g.clone())));
+                let lits = self.cond_lits(*c);
+                let at = g.len();
+                g.extend(lits.iter().flatten().cloned());
+                let body_ok = self.pure_stmts(body, vars, g, reads);
+                g.truncate(at);
+                if !body_ok {
+                    ok = false;
+                    break;
+                }
+                if let Some([l]) = lits.as_deref() {
+                    g.push(GuardLit {
+                        eq: !l.eq,
+                        ..l.clone()
+                    });
+                }
+            }
+            ok = ok
+                && else_
+                    .as_ref()
+                    .is_none_or(|b| self.pure_stmts(b, vars, g, reads));
+            g.truncate(mark);
+            return ok;
+        }
         let mut ok = true;
-        self.stmt_exprs(s, &mut |e, _| ok &= self.pure_tree(e));
+        self.stmt_exprs(s, &mut |e, _| ok &= self.pure_tree_in(e, vars));
         if !ok {
             return false;
         }
-        self.stmt_reads(s, reads);
-        self.pure_stmts(&self.stmt_children(s), reads)
+        let mut r = Vec::new();
+        self.stmt_reads(s, &mut r);
+        reads.extend(r.into_iter().map(|l| (l, g.clone())));
+        self.pure_stmts(&self.stmt_children(s), vars, g, reads)
+    }
+
+    /// The literals whose conjunction `c` is, when it is made of `x = c`, `x /= c`, a BIT or
+    /// BOOLEAN signal name, `not` of one and `and`s of those (`x` a signal name).
+    fn cond_lits(&self, c: ExprId) -> Option<Vec<GuardLit>> {
+        if let Some((sig, pos, eq)) = self.level_cmp(c) {
+            return Some(vec![GuardLit { sig, pos, eq }]);
+        }
+        match &self.exprs[c].kind {
+            ExprKind::Obj(_) | ExprKind::Index { .. } | ExprKind::Field { .. } => {
+                let t = Some(self.base(self.exprs[c].subtype));
+                ((t == self.well_known.bit || t == self.well_known.boolean)
+                    && self.signal_lsp(c).is_some())
+                .then(|| {
+                    vec![GuardLit {
+                        sig: c,
+                        pos: 3,
+                        eq: true,
+                    }]
+                })
+            }
+            ExprKind::Call {
+                callee,
+                args,
+                method_of: None,
+                ..
+            } if self.decls[*callee].implicit => {
+                let arg = |a: &crate::hir::Arg| match a.actual {
+                    Actual::Expr(x) => Some(x),
+                    _ => None,
+                };
+                match (self.decls[*callee].name.key().as_str(), &args[..]) {
+                    ("\"not\"", [a]) => match self.cond_lits(arg(a)?)?.as_slice() {
+                        [l] => Some(vec![GuardLit {
+                            eq: !l.eq,
+                            ..l.clone()
+                        }]),
+                        _ => None,
+                    },
+                    ("\"and\"", [a, b]) => {
+                        let mut l = self.cond_lits(arg(a)?)?;
+                        l.extend(self.cond_lits(arg(b)?)?);
+                        Some(l)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Every node of `e` is a constant, a signal, or a pure operation on them.
     fn pure_tree(&self, e: ExprId) -> bool {
+        self.pure_tree_in(e, &[])
+    }
+
+    /// [`Db::pure_tree`] where the variables `vars` of the process are allowed too.
+    fn pure_tree_in(&self, e: ExprId, vars: &[DeclId]) -> bool {
         use PredefAttr::*;
         let mut ok = true;
         self.walk_expr(e, &mut |x| {
@@ -999,6 +1269,7 @@ impl Db {
                     DeclKind::Object(o) => match o.class {
                         ObjClass::Constant => true,
                         ObjClass::Signal => matches!(o.role, ObjRole::Plain | ObjRole::Port),
+                        ObjClass::Variable => vars.contains(d),
                         _ => false,
                     },
                     _ => false,
@@ -1013,9 +1284,15 @@ impl Db {
                         || d.kind.subprogram().is_some_and(|sp| {
                             matches!(sp.kind, SubprogramKind::Function { pure: true })
                                 && !sp.params.iter().any(|p| p.class == ObjClass::Signal)
+                                && !sp.impure_reads
                                 && matches!(
                                     self.scopes[d.scope].kind,
-                                    ScopeKind::Package | ScopeKind::PackageBody
+                                    ScopeKind::Package
+                                        | ScopeKind::PackageBody
+                                        | ScopeKind::Entity
+                                        | ScopeKind::Architecture
+                                        | ScopeKind::Block
+                                        | ScopeKind::Generate
                                 )
                         })
                 }

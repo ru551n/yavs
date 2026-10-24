@@ -35,7 +35,7 @@ Benchmarks (`run.py --list`):
 | `uvvm_util_rand_tb` | external | The utility library's random testbench (`rand_basic`) |
 | `uvvm_util_queue_tb`, `uvvm_sb_slv_tb` | external | The utility library's generic queue testbench and the scoreboard library's `generic_sb_slv_tb` (the queue and scoreboard maintenance testbenches) |
 | `osvvm_axistream` | external | One AXI-stream testbench (`TbStream_AxiSendGetRandomParam2`) of the other verification library's `.pro` scripts |
-| `vai_pe_array`, `vai_window_gen` | external | Two long testbenches of a local, read-only testbench repository; needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset |
+| `vai_pe_array`, `vai_window_gen` | external | Two testbenches of a local, read-only testbench repository (the same test cases and generics as the realbench tests `vai_pe_array` and `vai_window_gen_interlock`; `VAI_TBS` in `run.py`); needs `YAVS_BENCH_VHDL_AI_TEST=<checkout>`; skipped when unset, or when the testbench does not analyse against the checkout (the reason names the marker file listing the files left over). The file lists follow realbench's: when the checkout moves, change both |
 
 Head-to-head designs (group `h2h`, run by `--ref`; written for yavs, each has a header comment). The old names are the
 ones used in `docs/STATUS.md` (performance sections of 2026-10-20 and 2026-10-21) and in issues:

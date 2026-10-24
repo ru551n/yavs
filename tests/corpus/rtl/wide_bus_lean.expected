@@ -1,0 +1,1066 @@
+exit	0
+diag	note	0	0	:rtl_wide_bus_lean:part:_p0	part event=false never=true last_event=1000000
+diag	note	2000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s1 stable=true quiet=true slice=true tr=false delayed=000000000000000000000000000000000000000000000000000 now=000000000000000000000000000000000000000000000000000
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s a le=14ns la=14ns ev=false act=false s90=14ns e70=14ns
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s b le=never la=14ns
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s c le=16ns la=16ns
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s d le=14ns p130_60=14ns e0=14ns e63=14ns e64=14ns e70=14ns e199=14ns
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s e le=14ns part=14ns eq=14ns
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s f le=14ns fa=14ns
+diag	note	16000000	0	:rtl_wide_bus_lean:sample	s g le=14ns n=14ns
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=false
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=true
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w b event=false le=never e100=false s=false
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w c event=false le=18ns la=18ns e70=false
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=16ns blk=0ns
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=16ns
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	18000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	18000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=16ns blk=0ns
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	18000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s2 stable=true quiet=true slice=true tr=true delayed=101H010010100100101U010X101001001010010H1010010L001 now=101H010010100100101U010X101001001010010H1010010L001
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=24ns
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=24ns e63=24ns e64=24ns e70=24ns e199=24ns
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	26000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=26ns blk=0ns
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	28000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	28000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=26ns blk=0ns
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	28000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s3 stable=true quiet=true slice=true tr=true delayed=101H010010100100101U010X101001001010010H1010010L001 now=101H010010100100101U010X101001001010010H1010010L001
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=34ns
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=34ns e63=34ns e64=8ns e70=34ns e199=8ns
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s f le=18ns fa=18ns
+diag	note	36000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=true
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=true r63=false
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	38000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	38000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s4 stable=true quiet=true slice=true tr=true delayed=0-1H0H1010000111100U010X001111000Z101-0H1H10001L000 now=0-1H0H1010000111100U010X001111000Z101-0H1H10001L000
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=8ns e63=8ns e64=8ns e70=8ns e199=8ns
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s e le=18ns part=18ns eq=18ns
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	46000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w a edges r=true f=false ev1=true r64=false r63=false
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=10ns blk=10ns
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	48000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	48000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=10ns blk=10ns
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	48000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s5 stable=true quiet=true slice=true tr=true delayed=1X-010H1010110L0001U10UX01X000001XZ10-0000H1000111L now=1X-010H1010110L0001U10UX01X000001XZ10-0000H1000111L
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s d le=18ns p130_60=18ns e0=18ns e63=18ns e64=18ns e70=18ns e199=18ns
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	56000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w a event=false active=true le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=10ns fa_ev=false
+diag	note	58000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	58000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	58000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s6 stable=true quiet=true slice=true tr=true delayed=1X-010H1010110L0001U10UX01X000001XZ10-0000H1000111L now=1X-010H1010110L0001U10UX01X000001XZ10-0000H1000111L
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s a le=18ns la=8ns ev=false act=false s90=18ns e70=18ns
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s b le=18ns la=18ns
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=28ns e63=8ns e64=8ns e70=8ns e199=8ns
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=18ns
+diag	note	66000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=true r63=true
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w b event=false le=20ns e100=false s=false
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=10ns blk=0ns
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=10ns eq=false eq_le=10ns
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	68000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=10ns blk=0ns
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=10ns eq=false eq_le=10ns
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	68000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s7 stable=true quiet=true slice=true tr=true delayed=ZXX1-101H1110010L00U10UX01X000001XZ10-0000H10011011 now=ZXX1-101H1110010L00U10UX01X000001XZ10-0000H10011011
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=38ns e63=18ns e64=18ns e70=18ns e199=18ns
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=18ns eq=18ns
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	76000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=10ns e70_le=20ns blk=10ns
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	78000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	78000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=20ns blk=10ns
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	78000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w b event=false le=2ns e100=false s=false
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=12ns e70_le=22ns blk=12ns
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	80000000	1	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=false
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=12ns e70_le=22ns blk=12ns
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	80000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s8 stable=true quiet=true slice=true tr=false delayed=ZXX0X101H11100101L0U10UX01X110001XZ10-001-H10011011 now=ZXX0X101H11100101L0U10UX01X110001XZ10-001-H10011011
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s a le=6ns la=6ns ev=false act=false s90=8ns e70=18ns
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s b le=6ns la=6ns
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s d le=6ns p130_60=18ns e0=48ns e63=28ns e64=28ns e70=28ns e199=28ns
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	86000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w b event=false le=8ns e100=false s=false
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=30ns blk=0ns
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	88000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	88000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=false
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=30ns blk=0ns
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	88000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s9 stable=true quiet=true slice=true tr=true delayed=ZXZ1X101H11100101L0U10UX01X110001XZ10-001-H10011011 now=ZXZ1X101H11100101L0U10UX01X110001XZ10-001-H10011011
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=18ns e70=28ns
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=58ns e63=38ns e64=38ns e70=38ns e199=38ns
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s f le=18ns fa=18ns
+diag	note	96000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	98000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	98000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s10 stable=true quiet=true slice=true tr=true delayed=ZXZ1X101H0110010110U10UX01X110001XX10-001-H10011011 now=ZXZ1X101H0110010110U10UX01X110001XX10-001-H10011011
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=8ns e63=8ns e64=8ns e70=8ns e199=48ns
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s e le=18ns part=18ns eq=18ns
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	106000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=10ns blk=10ns
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	108000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	108000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=10ns blk=10ns
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	108000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s11 stable=true quiet=true slice=true tr=true delayed=WXZ0Z100H0000100000UL0UX11X01110XXX0W-111-010111H01 now=WXZ0Z100H0000100000UL0UX11X01110XXX0W-111-010111H01
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s d le=18ns p130_60=18ns e0=18ns e63=18ns e64=18ns e70=18ns e199=58ns
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	116000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w a event=false active=true le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=20ns blk=0ns
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	118000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	118000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=20ns blk=0ns
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	118000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s12 stable=true quiet=true slice=true tr=true delayed=WXZ0Z100H0000100000UL0UX11X01110XXX0W-111-010111H01 now=WXZ0Z100H0000100000UL0UX11X01110XXX0W-111-010111H01
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s a le=18ns la=8ns ev=false act=false s90=18ns e70=18ns
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s b le=18ns la=18ns
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=28ns e63=8ns e64=28ns e70=28ns e199=8ns
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	126000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=true
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w b event=false le=20ns e100=false s=false
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	128000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	128000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	128000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s13 stable=true quiet=true slice=true tr=true delayed=XXW0X10000010001010UL1UX111001U0XXX0X-W11X000010H11 now=XXW0X10000010001010UL1UX111001U0XXX0X-W11X000010H11
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=8ns e63=8ns e64=8ns e70=8ns e199=8ns
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	136000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=true r64=true r63=false
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=10ns
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	138000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	138000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=10ns
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	138000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s14 stable=true quiet=true slice=true tr=true delayed=XXXWX01Z111-011H101010UX000110UUXXXXXXXW0X1Z100-000 now=XXXWX01Z111-011H101010UX000110UUXXXXXXXW0X1Z100-000
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=18ns e63=18ns e64=18ns e70=8ns e199=18ns
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	146000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	148000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	148000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	148000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w b event=false le=12ns e100=false s=false
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=2ns e70_le=2ns blk=2ns
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	150000000	1	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=false
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=2ns e70_le=2ns blk=2ns
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	150000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s15 stable=true quiet=true slice=true tr=false delayed=XXXWX01Z111-011H101010UX000110UUXXXXXXXW0X1Z100-000 now=XXXWX01Z111-011H101010UX000110UUXXXXXXXW0X1Z100-000
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s a le=6ns la=6ns ev=false act=false s90=18ns e70=8ns
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s b le=6ns la=6ns
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s d le=6ns p130_60=8ns e0=8ns e63=8ns e64=8ns e70=8ns e199=8ns
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	156000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=true
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w b event=false le=8ns e100=false s=false
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=10ns blk=0ns
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	158000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	158000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=10ns blk=0ns
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	158000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s16 stable=true quiet=true slice=true tr=true delayed=XXXXXW0X0Z0X0-0H0H0000UX1L1001UUXUXXXXXW1W1X0Z1X1-1 now=XXXXXW0X0Z0X0-0H0H0000UX1L1001UUXUXXXXXW1W1X0Z1X1-1
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=8ns e63=8ns e64=18ns e70=18ns e199=18ns
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	166000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=false
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=true r64=false r63=true
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=20ns blk=10ns
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	168000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	168000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=20ns blk=10ns
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	168000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s17 stable=true quiet=true slice=true tr=true delayed=XXXXXW0X0Z0X0-0H0H0010UX1L1000UUXUXXXXXW1WWX0Z1X1-1 now=XXXXXW0X0Z0X0-0H0H0010UX1L1000UUXUXXXXXW1WWX0Z1X1-1
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=18ns
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=18ns e63=18ns e64=8ns e70=28ns e199=28ns
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	176000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=true r63=false
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	178000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	178000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	178000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s18 stable=true quiet=true slice=true tr=true delayed=XXXXXW0X0Z0X0-0H0H0010UX1L1000UUXUXXXXXW1WWX0Z1X1-1 now=XXXXXW0X0Z0X0-0H0H0010UX1L1000UUXUXXXXXW1WWX0Z1X1-1
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=18ns e70=28ns
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=28ns e63=28ns e64=18ns e70=8ns e199=38ns
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s f le=18ns fa=18ns
+diag	note	186000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	188000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	188000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s19 stable=true quiet=true slice=true tr=true delayed=XXXXXW0X0Z1XZ-0H0H0010UX011000UUXUXXXXXXXWWX0Z1X1-1 now=XXXXXW0X0Z1XZ-0H0H0010UX011000UUXUXXXXXXXWWX0Z1X1-1
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=8ns e63=8ns e64=8ns e70=8ns e199=8ns
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s e le=18ns part=18ns eq=18ns
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	196000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=true
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=10ns blk=10ns
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	198000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	198000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=10ns blk=10ns
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	198000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s20 stable=true quiet=true slice=true tr=true delayed=XXXXXW0X0W1XZZ000-010HUX10011LUUX1XXXUXXXXXX1W0X0Z0 now=XXXXXW0X0W1XZZ000-010HUX10011LUUX1XXXUXXXXXX1W0X0Z0
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s d le=18ns p130_60=18ns e0=18ns e63=18ns e64=18ns e70=18ns e199=18ns
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s f le=18ns fa=18ns
+diag	note	206000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w a event=false active=true le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=20ns blk=0ns
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=20ns fa_ev=false
+diag	note	208000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=20ns blk=0ns
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=20ns fa_ev=false
+diag	note	208000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s21 stable=true quiet=true slice=true tr=true delayed=XXXXXW0X0W1XZZ000-010HUX10011LUUX1XXXUXXXXXX1W0X0Z0 now=XXXXXW0X0W1XZZ000-010HUX10011LUUX1XXXUXXXXXX1W0X0Z0
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s a le=18ns la=8ns ev=false act=false s90=18ns e70=18ns
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s b le=18ns la=18ns
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=28ns e63=8ns e64=28ns e70=28ns e199=8ns
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s e le=18ns part=18ns eq=18ns
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=28ns
+diag	note	216000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	218000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=true r64=false r63=false
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w b event=false le=20ns e100=false s=false
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=30ns blk=10ns
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	218000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=30ns blk=10ns
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	218000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w b event=false le=2ns e100=false s=false
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=12ns e70_le=32ns blk=12ns
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	220000000	1	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=12ns e70_le=32ns blk=12ns
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	220000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s22 stable=true quiet=true slice=true tr=false delayed=XXXXXW1X1X1XZX100-1-10UX11101LULX0XXXUXUXXXX0X0X0X1 now=XXXXXW1X1X1XZX100-1-10UX11101LULX0XXXUXUXXXX0X0X0X1
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s a le=6ns la=6ns ev=false act=false s90=8ns e70=8ns
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s b le=6ns la=6ns
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s d le=18ns p130_60=18ns e0=38ns e63=18ns e64=38ns e70=38ns e199=18ns
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	226000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w a event=false active=false le=8ns la=8ns s=falsefalse e5=false e199=false
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w b event=false le=8ns e100=false s=false
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=40ns blk=20ns
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	228000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	228000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=8ns la=8ns s=falsefalse e5=false e199=false
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w b event=false le=8ns e100=false s=false
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=false
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=40ns blk=20ns
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	228000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s23 stable=true quiet=true slice=true tr=false delayed=XXXXXW1X1X1XZX100-1-10UX11101LULX0XXXUXUXXXX0X0X0X1 now=XXXXXW1X1X1XZX100-1-10UX11101LULX0XXXUXUXXXX0X0X0X1
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s a le=16ns la=16ns ev=false act=false s90=18ns e70=18ns
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s b le=16ns la=16ns
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=48ns e63=28ns e64=48ns e70=48ns e199=28ns
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	236000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w b event=false le=18ns e100=false s=false
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=50ns blk=0ns
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	238000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	238000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=false
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=50ns blk=0ns
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	238000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s24 stable=true quiet=true slice=true tr=true delayed=XXXXXW1X1X1XZX100-1-10UX11101LULX0XXXUXUXXXX0X0X1X1 now=XXXXXW1X1X1XZX100-1-10UX11101LULX0XXXUXUXXXX0X0X1X1
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=28ns e70=28ns
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=8ns e63=8ns e64=8ns e70=58ns e199=8ns
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	246000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=60ns blk=0ns
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	248000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	248000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=60ns blk=0ns
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	248000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s25 stable=true quiet=true slice=true tr=true delayed=XX1XXXUX0XXXXX111XZX01-X00H10101X1LXXU1UXXUX1XXX0X1 now=XX1XXXUX0XXXXX111XZX01-X00H10101X1LXXU1UXXUX1XXX0X1
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=18ns e63=8ns e64=18ns e70=68ns e199=18ns
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	256000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	258000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	258000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	258000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s26 stable=true quiet=true slice=true tr=true delayed=XX1XXXUX1XXXXX011XZZ01--01HH0001X0LXXU0UXXUX0XXX1X1 now=XX1XXXUX1XXXXX011XZZ01--01HH0001X0LXXU0UXXUX0XXX1X1
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=18ns
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=28ns e63=8ns e64=8ns e70=8ns e199=28ns
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	266000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=10ns blk=0ns
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	268000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	268000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=10ns blk=0ns
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	268000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s27 stable=true quiet=true slice=true tr=true delayed=XX1XXXUX1XXXXX011XZZ01--01HH0001X0LXXU0UXXUX0XXX1X1 now=XX1XXXUX1XXXXX011XZZ01--01HH0001X0LXXU0UXXUX0XXX1X1
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=38ns e63=18ns e64=18ns e70=18ns e199=8ns
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	276000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=true
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=true r64=false r63=false
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=20ns blk=0ns
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=10ns eq=false eq_le=10ns
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	278000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=20ns blk=0ns
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=10ns eq=false eq_le=10ns
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	278000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s28 stable=true quiet=true slice=true tr=true delayed=XX1XXXUX1UXXXX001XZZ11--0-HH1000X0LXXU0UX1UX1XXX1X1 now=XX1XXXUX1UXXXX001XZZ11--0-HH1000X0LXXU0UX1UX1XXX1X1
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=48ns e63=28ns e64=28ns e70=28ns e199=8ns
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=18ns eq=18ns
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	286000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=10ns e70_le=30ns blk=10ns
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	288000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	288000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=30ns blk=10ns
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	288000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w b event=false le=2ns e100=false s=false
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=12ns e70_le=32ns blk=12ns
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	290000000	1	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=12ns e70_le=32ns blk=12ns
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	290000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s29 stable=true quiet=true slice=true tr=false delayed=XXLXXX1X0UXXXXX11XWX10Z-1X-00101X00XXULUX01X0XUX0X1 now=XXLXXX1X0UXXXXX11XWX10Z-1X-00101X00XXULUX01X0XUX0X1
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s a le=6ns la=6ns ev=false act=false s90=8ns e70=8ns
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s b le=6ns la=6ns
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s d le=6ns p130_60=18ns e0=58ns e63=38ns e64=38ns e70=38ns e199=18ns
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	296000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w b event=false le=8ns e100=false s=false
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=10ns fa_ev=false
+diag	note	298000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	298000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w b event=false le=8ns e100=false s=false
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	298000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s30 stable=true quiet=true slice=true tr=true delayed=XXLXXX1X0UXXXXX11XWX10Z-1X-00101X00XXULUX01X0XUX0X1 now=XXLXXX1X0UXXXXX11XWX10Z-1X-00101X00XXULUX01X0XUX0X1
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=18ns e70=18ns
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s b le=16ns la=8ns
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=68ns e63=48ns e64=48ns e70=8ns e199=8ns
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=18ns
+diag	note	306000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=true
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w b event=false le=18ns e100=false s=false
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=10ns blk=0ns
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=10ns eq=false eq_le=10ns
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=20ns fa_ev=false
+diag	note	308000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=10ns n_le=0ns e=false
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=10ns blk=0ns
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=10ns eq=false eq_le=10ns
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=20ns fa_ev=false
+diag	note	308000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=10ns n_le=0ns e=false
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s31 stable=true quiet=true slice=true tr=true delayed=0XLXLX0X0UXXUXX11XXXW0Z-ZXX00110H10XXU1UL01X1XUX0X0 now=0XLXLX0X0UXXUXX11XXXW0Z-ZXX00110H10XXU1UL01X1XUX0X0
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=78ns e63=58ns e64=58ns e70=18ns e199=18ns
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=18ns eq=18ns
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s f le=18ns fa=28ns
+diag	note	316000000	0	:rtl_wide_bus_lean:sample	s g le=18ns n=8ns
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=10ns e70_le=20ns blk=10ns
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=20ns eq=false eq_le=20ns
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	318000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=20ns blk=10ns
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=20ns eq=false eq_le=20ns
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	318000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s32 stable=true quiet=true slice=true tr=true delayed=10LXLX0X0UXXUXX11XXXW0Z-ZXX01-00H10XXU1UL01X1XUX0X0 now=10LXLX0X0UXXUXX11XXXW0Z-ZXX01-00H10XXU1UL01X1XUX0X0
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=18ns
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=18ns e0=88ns e63=68ns e64=68ns e70=28ns e199=28ns
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s e le=18ns part=28ns eq=28ns
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	326000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=20ns e70_le=30ns blk=20ns
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=30ns
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	328000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	328000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=false
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=20ns e70_le=30ns blk=20ns
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	328000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s33 stable=true quiet=true slice=true tr=true delayed=10LXLX0X0UXXUXU00XXXW0Z-ZXX01-00H10XXU1UL01X1XUX0X0 now=10LXLX0X0UXXUXU00XXXW0Z-ZXX01-00H10XXU1UL01X1XUX0X0
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=18ns e70=28ns
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s d le=18ns p130_60=28ns e0=98ns e63=78ns e64=78ns e70=38ns e199=38ns
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	336000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w a event=false active=true le=10ns la=0ns s=falsetrue e5=false e199=false
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	338000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	338000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=10ns la=0ns s=falsefalse e5=false e199=false
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	338000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s34 stable=true quiet=true slice=true tr=true delayed=10LXLX0X0UXXUXU00XXXW0Z-ZXX01-00H10XXU1UL01X1XUX0X0 now=10LXLX0X0UXXUXU00XXXW0Z-ZXX01-00H10XXU1UL01X1XUX0X0
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s a le=18ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s b le=18ns la=18ns
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=108ns e63=88ns e64=88ns e70=8ns e199=48ns
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	346000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=true ev1=false r64=false r63=false
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w b event=false le=20ns e100=false s=false
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=10ns blk=0ns
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	348000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	348000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=10ns blk=0ns
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	348000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s35 stable=true quiet=true slice=true tr=true delayed=H0LXLX1X0UXX1XU00XXXW0ZXWXX01X11H10XHU0UL10X1XUX1X1 now=H0LXLX1X0UXX1XU00XXXW0ZXWXX01X11H10XHU0UL10X1XUX1X1
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=118ns e63=98ns e64=98ns e70=18ns e199=58ns
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	356000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=20ns blk=0ns
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	358000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	358000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=false
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=20ns blk=0ns
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	358000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w a event=false active=true le=2ns la=0ns s=falsefalse e5=false e199=false
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w b event=false le=2ns e100=false s=false
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w c event=false le=2ns la=2ns e70=false
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=2ns e70_le=22ns blk=2ns
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w e event=false le=2ns part_le=2ns eq=false eq_le=2ns
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=2ns fa_ev=false
+diag	note	360000000	1	:rtl_wide_bus_lean:watch	w g event=false data_le=2ns n_le=2ns e=false
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s36 stable=true quiet=true slice=true tr=false delayed=H0LXLX1X0UXX1XU00XXXXXXXXWX00Z000-1XHH1U101X1LUX010 now=H0LXLX1X0UXX1XU00XXXXXXXXWX00Z000-1XHH1U101X1LUX010
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=6ns ev=false act=false s90=8ns e70=18ns
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s d le=6ns p130_60=8ns e0=128ns e63=108ns e64=108ns e70=28ns e199=8ns
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	366000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	368000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	368000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	368000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s37 stable=true quiet=true slice=true tr=true delayed=H0HXLX1X1UXX1XU10XUXXXXXXWX11ZZ10X-XH01U001X1LLX011 now=H0HXLX1X1UXX1XU10XUXXXXXXWX11ZZ10X-XH01U001X1LLX011
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=138ns e63=8ns e64=118ns e70=8ns e199=8ns
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	376000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=true
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w a edges r=true f=false ev1=false r64=false r63=false
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=10ns
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	378000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	378000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=10ns
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	378000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s38 stable=true quiet=true slice=true tr=true delayed=010X1X101UXX0XU10XUUXXXXXXXW0XXZ1XX-010U1100111L110 now=010X1X101UXX0XU10XUUXXXXXXXW0XXZ1XX-010U1100111L110
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=148ns e63=18ns e64=128ns e70=8ns e199=18ns
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	386000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=true ev1=false r64=false r63=false
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=0ns blk=0ns
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=10ns
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	388000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	388000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=0ns blk=0ns
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=10ns fa_ev=false
+diag	note	388000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s39 stable=true quiet=true slice=true tr=true delayed=010X1X101UXX0XU10XUUXXXXXXXW0XXZ1XX-010U1100111L110 now=010X1X101UXX0XU10XUUXXXXXXXW0XXZ1XX-010U1100111L110
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=18ns e70=8ns
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=158ns e63=8ns e64=138ns e70=8ns e199=28ns
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s e le=8ns part=8ns eq=8ns
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s f le=18ns fa=18ns
+diag	note	396000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=true e199=false
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w a edges r=true f=false ev1=false r64=false r63=false
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w d event=true part_le=0ns e70_le=10ns blk=0ns
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	398000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=true s=true
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=0ns e70_le=10ns blk=0ns
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w e event=false le=10ns part_le=10ns eq=false eq_le=10ns
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	398000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s40 stable=true quiet=true slice=true tr=true delayed=0-1X0H000UXX1LU011UUXUXXXXXX1XXZ0XXX1-1U1H0110010L1 now=0-1X0H000UXX1LU011UUXUXXXXXX1XXZ0XXX1-1U1H0110010L1
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s a le=8ns la=8ns ev=false act=false s90=8ns e70=8ns
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s b le=8ns la=8ns
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s c le=8ns la=8ns
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s d le=8ns p130_60=8ns e0=168ns e63=8ns e64=148ns e70=18ns e199=38ns
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s e le=18ns part=18ns eq=18ns
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s f le=8ns fa=8ns
+diag	note	406000000	0	:rtl_wide_bus_lean:sample	s g le=8ns n=8ns
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w a event=true active=true le=0ns la=0ns s=truetrue e5=false e199=false
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=true
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w b event=false le=10ns e100=false s=false
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w c event=false le=10ns la=10ns e70=false
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=20ns blk=10ns
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w e event=true le=0ns part_le=0ns eq=false eq_le=20ns
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w f event=true fa_le=0ns fa_ev=true
+diag	note	408000000	1	:rtl_wide_bus_lean:watch	w g event=true data_le=0ns n_le=0ns e=true
+diag	note	408000000	1	:rtl_wide_bus_lean:part:_p0	part event=true never=false last_event=0
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w a event=false active=false le=0ns la=0ns s=falsefalse e5=false e199=false
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w a edges r=false f=false ev1=false r64=false r63=false
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w b event=true le=0ns e100=false s=true
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w c event=true le=0ns la=0ns e70=true
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w d event=false part_le=10ns e70_le=20ns blk=10ns
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w e event=false le=0ns part_le=0ns eq=true eq_le=0ns
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w f event=false fa_le=0ns fa_ev=false
+diag	note	408000000	2	:rtl_wide_bus_lean:watch	w g event=false data_le=0ns n_le=0ns e=false

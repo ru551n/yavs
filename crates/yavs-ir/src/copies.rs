@@ -118,14 +118,14 @@ pub enum NoCopy {
 }
 
 /// The growth cap: the optimised IR of all copies stays within this percent of the shared
-/// process code (`YAVS_SPEC_CAP`, default 150, 0: no cap).
+/// process code (`YAVS_SPEC_CAP`, default 250, 0: no cap).
 pub fn cap_percent() -> u64 {
     static CAP: OnceLock<u64> = OnceLock::new();
     *CAP.get_or_init(|| {
         std::env::var("YAVS_SPEC_CAP")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(150)
+            .unwrap_or(250)
     })
 }
 
@@ -312,6 +312,13 @@ impl Program {
     /// The process a function is a copy of, else the function itself.
     pub fn base_of(&self, f: FuncId) -> FuncId {
         self.copies.get(f).map_or(f, |c| c.base)
+    }
+
+    /// A number that names the copy `f` by what it is for, the same in every run: a hash of its
+    /// process and masked instance data (`None` for any other function). Copy ids depend on
+    /// which process switched first, so compiled code is named and keyed by this.
+    pub fn copy_tag(&self, f: FuncId) -> Option<u64> {
+        self.copies.get(f).map(|c| key_hash(c.base, &c.data))
     }
 
     /// The function's lowered code and header: that of the process for a copy.

@@ -42,6 +42,7 @@ mod live;
 mod memo;
 mod range;
 mod share;
+mod sink;
 
 pub use inline::FwdCache;
 
@@ -271,7 +272,7 @@ fn optimize_func_with(
     inst: Option<InstView<'_>>,
 ) -> Option<Box<crate::Func>> {
     let mut f = optimize_body_with(prog, id, inst)?;
-    if inline::run(prog, id, &mut f, 1) {
+    if inline::run(prog, id, &mut f, 1) | inline::run_wide(prog, id, &mut f) {
         // The inlined bodies are code of this function now: what is known at the call decides
         // their branches and repeated reads are shared.
         if matches!(f.kind, FuncKind::Function | FuncKind::Procedure) {
@@ -282,6 +283,8 @@ fn optimize_func_with(
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             tidy(prog, &mut f, &mut layouts);
         }
+        // What the inlined callees read only on one branch is computed there.
+        sink::run(prog, &mut f);
         crate::build::number_func(&mut f, |c| {
             prog.funcs
                 .get(c)
@@ -4010,6 +4013,23 @@ fn may_allocate(i: &Inst) -> bool {
             | Inst::Unreachable { .. }
             | Inst::Deref { .. }
             | Inst::Cover { .. }
+            // Signal and time operations write registers and the kernel, never temporary memory.
+            // (Waits stay off the list: `static_wait` in the predecoder starts a wait at its
+            // `Stmt`, in both tiers.)
+            | Inst::SigVal { .. }
+            | Inst::SigSlice { .. }
+            | Inst::SigRead { .. }
+            | Inst::SigReadScalar { .. }
+            | Inst::SigLastValue { .. }
+            | Inst::SigAttr { .. }
+            | Inst::Edge { .. }
+            | Inst::Driving { .. }
+            | Inst::DrivingValue { .. }
+            | Inst::Drive { .. }
+            | Inst::DriveSlot { .. }
+            | Inst::TimedOut { .. }
+            | Inst::Now { .. }
+            | Inst::Delta { .. }
     ) && !is_dead(i)
 }
 

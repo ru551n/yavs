@@ -33,7 +33,6 @@
 //! what it held when the entry was made) run during the replay; a failed one undoes the
 //! replay and the unit is analysed from source.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -57,7 +56,7 @@ use crate::{LangRev, UnitStore};
 pub type Hash = [u8; 32];
 
 /// The layout of entries; part of every identity.
-const FORMAT: u32 = 3;
+const FORMAT: u32 = 6;
 
 /// Entries of `Db::new` (index 0 of these arenas): the same in every session.
 const BASE: [u32; KINDS] = [0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0];
@@ -689,12 +688,6 @@ impl Db {
             Some((c, s)) => (Some(c), s),
             None => (None, Vec::new()),
         };
-        if let Some(s) = &f.snap {
-            self.forget(s);
-        }
-        if self.frames.is_empty() {
-            self.track(false);
-        }
         if f.capture && unit.is_some() && (full.is_none() || address.is_none()) {
             self.note_miss(&f, "what it was made from is not known");
         }
@@ -712,6 +705,14 @@ impl Db {
             } else if let Some(why) = &f.why_not {
                 self.note_miss(&f, why);
             }
+        }
+        // The log holds the writes of the unit until its entry is made (a removed key is found
+        // there); the frame around it is told them through `changes`.
+        if let Some(s) = &f.snap {
+            self.forget(s);
+        }
+        if self.frames.is_empty() {
+            self.track(false);
         }
         // Where the unit sits among the writes of the frame around it.
         let at: Vec<usize> = tables().iter().map(|t| (t.loglen)(&*self)).collect();
@@ -788,17 +789,19 @@ impl Db {
     /// Say (debug log) that `path` was registered from the entries of its units, not parsed.
     pub(crate) fn note_warm_file(&self, path: &Path) {
         if let Some(s) = self.store() {
-            s.note(&format!("file {} not parsed", path.display()));
+            s.note(&|| format!("file {} not parsed", path.display()));
         }
     }
 
     fn note_miss(&self, f: &Frame, why: &str) {
         if let Some(s) = self.store() {
-            s.note(&format!(
-                "unit {}.{} not stored: {why}",
-                self.libs[f.lib].name.key,
-                key_text(f.key)
-            ));
+            s.note(&|| {
+                format!(
+                    "unit {}.{} not stored: {why}",
+                    self.libs[f.lib].name.key,
+                    key_text(f.key)
+                )
+            });
         }
     }
 
@@ -1155,8 +1158,8 @@ impl Db {
                             if k == Kind::Lib {
                                 return Err("library entries outside a library step".into());
                             }
-                            // A run of a page or more says how long each entry is, so that the
-                            // reader can keep whole pages as bytes (`Arena::push_page`).
+                            // The length of each entry comes first, so that the reader can keep
+                            // every entry as bytes until it is read (`Arena::push_run`).
                             let mut entries = Vec::new();
                             let mut lens = Vec::new();
                             macro_rules! m {
@@ -1169,10 +1172,8 @@ impl Db {
                                 };
                             }
                             by_kind!(k, m);
-                            if lens.len() >= PAGE {
-                                let raw: Vec<u8> =
-                                    lens.iter().flat_map(|l| l.to_le_bytes()).collect();
-                                body.extend_from_slice(&raw);
+                            for l in lens {
+                                put_varint(&mut body, l);
                             }
                             body.extend_from_slice(&entries);
                         }
@@ -1248,8 +1249,11 @@ impl Db {
                 put(&mut body, &reenc_entry(self, k, &before)?)?;
                 put(&mut body, &entry_rel(self, k, i as usize)?)?;
             }
-            // Table changes not made by the units it loaded. A unit adds keys of its own; one that
-            // changes or removes a key another unit made is not stored.
+            // Table changes not made by the units it loaded. A unit adds keys of its own and may
+            // remove keys of a set (a package body, the generics its declaration made, whether the
+            // declaration was loaded before the body or inside it: the removals are read from the
+            // log, not from the net change); one that changes a key another unit made, or removes
+            // one of a map, is not stored.
             let mut keys: FxHashMap<u8, FxHashSet<H>> = FxHashMap::default();
             let mut vals = Vec::new();
             for c in changes {
@@ -1264,6 +1268,7 @@ impl Db {
                 }
                 match &c.val {
                     Some(v) => vals.push((c.t, v)),
+                    None if c.pre.is_some() && c.post.is_none() && tables()[c.t as usize].set => {}
                     None if c.pre.is_some() => {
                         return Err(format!("a key of table {name} that existed changed"));
                     }
@@ -1272,16 +1277,25 @@ impl Db {
                     }
                 }
             }
-            let n = keys.values().map(|k| k.len()).sum::<usize>() + vals.len();
-            put(&mut body, &(n as u32))?;
+            let mut n = keys.values().map(|k| k.len()).sum::<usize>() + vals.len();
+            let mut tab = Vec::new();
             let mut ts: Vec<u8> = keys.keys().copied().collect();
             ts.sort_unstable();
             for t in ts {
-                (tables()[t as usize].write)(self, t, Some(&keys[&t]), None, &mut body)?;
+                (tables()[t as usize].write)(self, t, Some(&keys[&t]), None, &mut tab)?;
+            }
+            for (t, d) in tables().iter().enumerate() {
+                if let Some(TabSnap::Mark(m)) = f.snap.as_ref().map(|s| &s.tabs[t])
+                    && d.set
+                {
+                    n += (d.write_removed)(self, t as u8, *m, &mut tab)?;
+                }
             }
             for (t, v) in vals {
-                (tables()[t as usize].write)(self, t, None, Some(v), &mut body)?;
+                (tables()[t as usize].write)(self, t, None, Some(v), &mut tab)?;
             }
+            put(&mut body, &(n as u32))?;
+            body.extend_from_slice(&tab);
             put(&mut body, &facts)?;
             Ok(())
         })();
@@ -1369,7 +1383,7 @@ mod erased {
 #[derive(Default)]
 struct Owners {
     list: std::cell::RefCell<Vec<Owner>>,
-    index: std::cell::RefCell<HashMap<Owner, u32>>,
+    index: std::cell::RefCell<FxHashMap<Owner, u32>>,
 }
 
 impl Owners {
@@ -1398,8 +1412,9 @@ struct Enc {
     libs: Vec<Symbol>,
     lib_decls: FxHashMap<u32, usize>,
     owners: Rc<Owners>,
+    /// Per load and kind: its owner number and its runs (`with_bases`), found once.
     #[allow(clippy::type_complexity)]
-    by_owner: std::cell::RefCell<FxHashMap<(u32, Kind), Rc<Vec<(u32, u32, u32)>>>>,
+    by_owner: std::cell::RefCell<FxHashMap<(u32, Kind), Rc<(u32, Vec<(u32, u32, u32)>)>>>,
     /// Each file of an allowed load: the load's owner and the file's position among its steps.
     files: Rc<FxHashMap<FileId, (Owner, u32)>>,
     failed: Rc<std::cell::RefCell<Option<String>>>,
@@ -1524,26 +1539,25 @@ impl Reloc for Enc {
         let Some(o) = self.loads.get(&s) else {
             return self.fail(format!("a {kind:?} entry of a unit it did not load"));
         };
-        let o = self.owner(o.clone());
-        let runs = self
-            .by_owner
-            .borrow_mut()
-            .entry((s, kind))
-            .or_insert_with(|| {
-                let all = &self.runs[kind as usize];
-                let len = self.lens[kind as usize];
-                let mut mine = Vec::new();
-                for (k, r) in all.iter().enumerate() {
-                    if r.1 == s {
-                        let end = all.get(k + 1).map_or(len, |n| n.0);
-                        if end > r.0 {
-                            mine.push((r.0, end - r.0));
-                        }
+        let hit = self.by_owner.borrow().get(&(s, kind)).cloned();
+        let found = hit.unwrap_or_else(|| {
+            let o = self.owner(o.clone());
+            let all = &self.runs[kind as usize];
+            let len = self.lens[kind as usize];
+            let mut mine = Vec::new();
+            for (k, r) in all.iter().enumerate() {
+                if r.1 == s {
+                    let end = all.get(k + 1).map_or(len, |n| n.0);
+                    if end > r.0 {
+                        mine.push((r.0, end - r.0));
                     }
                 }
-                Rc::new(with_bases(mine))
-            })
-            .clone();
+            }
+            let found = Rc::new((o, with_bases(mine)));
+            self.by_owner.borrow_mut().insert((s, kind), found.clone());
+            found
+        });
+        let (o, runs) = (found.0, &found.1);
         let k = runs.partition_point(|r| r.0 <= index);
         let (start, len, base) = *runs.get(k.checked_sub(1)?)?;
         if index >= start + len {
@@ -1773,11 +1787,13 @@ impl Db {
             return None;
         }
         if let Some(s) = self.store() {
-            s.note(&format!(
-                "verified {name}.{} ({} units)",
-                key_text(keys[0]),
-                p.units.len()
-            ));
+            s.note(&|| {
+                format!(
+                    "verified {name}.{} ({} units)",
+                    key_text(keys[0]),
+                    p.units.len()
+                )
+            });
         }
         Some(recs)
     }
@@ -1976,7 +1992,7 @@ impl Db {
         let e = match self.entry_for(lib, key) {
             Ok(e) => e,
             Err(why) => {
-                store.note(&format!("miss {name}.{}: {why}", key_text(key)));
+                store.note(&|| format!("miss {name}.{}: {why}", key_text(key)));
                 return None;
             }
         };
@@ -1991,7 +2007,7 @@ impl Db {
             srcs: Default::default(),
         };
         if let Err(why) = self.plan(&mut p, name, key, e) {
-            store.note(&format!("miss {name}.{}: {why}", key_text(key)));
+            store.note(&|| format!("miss {name}.{}: {why}", key_text(key)));
             return None;
         }
         let mark = self.mark();
@@ -2010,17 +2026,19 @@ impl Db {
         match self.replay(&p, name, key) {
             Ok(u) => {
                 self.undo.truncate(mark.undo);
-                store.note(&format!(
-                    "hit {name}.{} ({} units, {} bytes)",
-                    key_text(key),
-                    p.units.len(),
-                    p.units.values().map(|u| u.entry.buf.len()).sum::<usize>()
-                ));
+                store.note(&|| {
+                    format!(
+                        "hit {name}.{} ({} units, {} bytes)",
+                        key_text(key),
+                        p.units.len(),
+                        p.units.values().map(|u| u.entry.buf.len()).sum::<usize>()
+                    )
+                });
                 Some(u)
             }
             Err(why) => {
                 self.rollback(mark);
-                store.note(&format!("undone {name}.{}: {why}", key_text(key)));
+                store.note(&|| format!("undone {name}.{}: {why}", key_text(key)));
                 None
             }
         }
@@ -2146,45 +2164,33 @@ impl Db {
                                 return Err(format!("{k:?} entries out of step"));
                             }
                         }
-                        // Whole pages stay bytes until an entry of them is read.
-                        // The length of each entry, 4 bytes each, when there is a page or more.
-                        let lens: &[u8] = if n as usize >= PAGE {
-                            let (l, r) = rest
-                                .split_at_checked(4 * n as usize)
-                                .ok_or("entry lengths")?;
-                            rest = r;
-                            l
-                        } else {
-                            &[]
-                        };
-                        let len_of = |j: usize| {
-                            u32::from_le_bytes(lens[4 * j..4 * j + 4].try_into().expect("4 bytes"))
-                                as usize
+                        if n == 0 {
+                            continue;
+                        }
+                        // Every entry stays bytes until it is read.
+                        let mut after = rest;
+                        let mut total = 0usize;
+                        for _ in 0..n {
+                            total += take_varint(&mut after).ok_or("entry lengths")? as usize;
+                        }
+                        let lens = &rest[..rest.len() - after.len()];
+                        if total > after.len() {
+                            return Err("short entries".into());
+                        }
+                        let start = e.buf.len() - after.len();
+                        let data = yavs_diag::Slice::of(&e.buf, start, start + total);
+                        rest = &after[total..];
+                        // Expressions and statements are read in runs (lowering takes a body whole);
+                        // declarations, regions and types here and there.
+                        let window = match k {
+                            Kind::Expr | Kind::Stmt => PAGE,
+                            _ => 1,
                         };
                         macro_rules! m {
-                            ($f:ident) => {{
-                                let mut j = 0usize;
-                                while j < n as usize {
-                                    let at = self.$f.len();
-                                    let left = n as usize - j;
-                                    if !lens.is_empty() && at.is_multiple_of(PAGE) && left >= PAGE {
-                                        let bytes: usize = (j..j + PAGE).map(len_of).sum();
-                                        if bytes > rest.len() {
-                                            return Err("short page".into());
-                                        }
-                                        let start = e.buf.len() - rest.len();
-                                        let data =
-                                            yavs_diag::Slice::of(&e.buf, start, start + bytes);
-                                        self.$f.push_page(data, ctx.clone());
-                                        rest = &rest[bytes..];
-                                        j += PAGE;
-                                    } else {
-                                        let v = take(&mut rest)?;
-                                        self.$f.push(v);
-                                        j += 1;
-                                    }
-                                }
-                            }};
+                            ($f:ident) => {
+                                self.$f
+                                    .push_run(n as usize, lens, data, ctx.clone(), window)?
+                            };
                         }
                         by_kind!(k, m);
                     }
@@ -2283,8 +2289,8 @@ impl Db {
             let after: Vec<u8> = take(&mut rest)?;
             macro_rules! m {
                 ($f:ident) => {{
-                    let want = canon::canon(&rel_like(&self.$f, &before)?)?;
-                    if canon::canon(self.$f.get_at(i))? != want {
+                    let want = rel_like(&self.$f, &before)?;
+                    if !same_content(self.$f.get_at(i), &want)? {
                         return Err(format!("{k:?} entry changed since"));
                     }
                     let v = rel_like(&self.$f, &after)?;
@@ -2547,8 +2553,9 @@ impl Db {
             return Some("libraries".into());
         }
         let (a, b) = (self.facts(), other.facts());
-        if (a.reads_activity, &a.forces, &a.package_paths)
-            != (b.reads_activity, &b.forces, &b.package_paths)
+        if (a.reads_activity, &a.forces, &a.package_paths, a.history_all)
+            != (b.reads_activity, &b.forces, &b.package_paths, b.history_all)
+            || (&a.history_parts, &a.history_wholes) != (&b.history_parts, &b.history_wholes)
         {
             return Some("facts".into());
         }
@@ -2589,6 +2596,11 @@ struct Desc {
         Option<&(Vec<u8>, Vec<u8>)>,
         &mut Vec<u8>,
     ) -> Result<(), String>,
+    /// Whether the table is a set: its removals are written by `write_removed`.
+    set: bool,
+    /// Write the removal of every key of a set that was there at a log position and is gone
+    /// now, as `write` writes a change; how many.
+    write_removed: fn(&Db, u8, usize, &mut Vec<u8>) -> Result<usize, String>,
     /// Read a change written by `write` and make it, if the table holds the value before; the
     /// undo, and the raw key and value set when asked (`raw`).
     #[allow(clippy::type_complexity)]
@@ -2611,9 +2623,15 @@ fn put<T: Serialize>(v: &T, out: &mut Vec<u8>) -> Result<(), String> {
 fn same<V: Serialize>(now: Option<&V>, pre: Option<&V>) -> Result<bool, String> {
     Ok(match (now, pre) {
         (None, None) => true,
-        (Some(a), Some(b)) => canon::canon(a)? == canon::canon(b)?,
+        (Some(a), Some(b)) => same_content(a, b)?,
         _ => false,
     })
+}
+
+/// Whether `a` and `b` have the same content: equal bytes say so at once, else the canonical
+/// forms decide (they sort the keys of maps, whose order differs between equal maps).
+fn same_content<T: Serialize>(a: &T, b: &T) -> Result<bool, String> {
+    Ok(raw_bytes(a) == raw_bytes(b) || canon::canon(a)? == canon::canon(b)?)
 }
 
 trait MapLike: 'static {
@@ -2624,6 +2642,10 @@ trait MapLike: 'static {
     /// A write of a replay, not logged when `quiet` (the frame records it another way).
     fn put(&mut self, k: Self::K, v: Self::V, quiet: bool) -> Option<Self::V>;
     fn del(&mut self, k: &Self::K, quiet: bool) -> Option<Self::V>;
+    /// The keys of the table at log position `mark` that are gone now (sets only: a map's
+    /// removal would have to record the value it removed), and the value of a set's key.
+    fn removed_since(&self, mark: usize) -> Vec<Self::K>;
+    fn removed_value() -> Option<Self::V>;
 }
 
 impl<K, V> MapLike for TrackedMap<K, V>
@@ -2652,6 +2674,12 @@ where
         } else {
             self.remove(k)
         }
+    }
+    fn removed_since(&self, _: usize) -> Vec<K> {
+        Vec::new()
+    }
+    fn removed_value() -> Option<V> {
+        None
     }
 }
 
@@ -2683,6 +2711,17 @@ where
         };
         had.then_some(())
     }
+    fn removed_since(&self, mark: usize) -> Vec<K> {
+        TrackedSet::removed_since(self, mark)
+    }
+    fn removed_value() -> Option<()> {
+        Some(())
+    }
+}
+
+/// Whether the table `acc` reaches is a set.
+fn set_of<M: MapLike>(_: fn(&Db) -> &M) -> bool {
+    M::removed_value().is_some()
 }
 
 fn map_snap<M: MapLike>(m: &M) -> TabSnap {
@@ -2719,6 +2758,28 @@ fn map_write<M: MapLike>(
         return Err("a changed key is gone".into());
     }
     Ok(())
+}
+
+/// The keys of a set that were there at log position `mark` and are gone now: each as table,
+/// key, the value it had and none. How many.
+fn map_write_removed<M: MapLike>(
+    acc: fn(&Db) -> &M,
+    db: &Db,
+    t: u8,
+    mark: usize,
+    out: &mut Vec<u8>,
+) -> Result<usize, String> {
+    let Some(v) = M::removed_value() else {
+        return Ok(0);
+    };
+    let removed = acc(db).removed_since(mark);
+    for k in &removed {
+        put(&t, out)?;
+        put(k, out)?;
+        put(&Some(&v), out)?;
+        put(&None::<&M::V>, out)?;
+    }
+    Ok(removed.len())
 }
 
 fn map_replay<M: MapLike>(
@@ -2828,6 +2889,10 @@ macro_rules! tables {
             loglen: |db| db.$($f).+.mark(),
             touched: |db, m| db.$($f).+.touched_since(m),
             write: |db, t, k, v, out| map_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
+            set: set_of(|db: &Db| &db.$($f).+),
+            write_removed: |db, t, m, out| {
+                map_write_removed(|db: &Db| &db.$($f).+, db, t, m, out)
+            },
             replay: |db, rest, raw| map_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| map_canon(&db.$($f).+),
         }
@@ -2842,6 +2907,8 @@ macro_rules! tables {
             loglen: |_| 0,
             touched: |_, _| Vec::new(),
             write: |db, t, k, v, out| val_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
+            set: false,
+            write_removed: |_, _, _, _| Ok(0),
             replay: |db, rest, raw| val_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| canon::canon(&db.$($f).+),
         }
@@ -2863,7 +2930,6 @@ tables! {
     map tainted;
     map ext_uses;
     map pkg_targets;
-    map written_marks;
     val validated;
     map config_specs;
     map range_records;

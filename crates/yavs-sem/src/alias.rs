@@ -671,6 +671,7 @@ pub(crate) mod fixture {
             subtype: st,
             default: None,
             decl: None,
+            mark: None,
         }
     }
 
@@ -703,6 +704,8 @@ pub(crate) mod fixture {
                 scope: None,
                 body,
                 mangled: Symbol::intern(""),
+                ret_mark: None,
+                impure_reads: false,
             }),
         )
     }

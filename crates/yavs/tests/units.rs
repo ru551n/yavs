@@ -423,3 +423,83 @@ entity ftb is end;\narchitecture a of ftb is\n  signal t : std_logic;\nbegin\n  
     assert_eq!(r.code, 0, "{r:?}");
     assert!(r.stdout.contains("S=") || r.stderr.contains("S="), "{r:?}");
 }
+
+#[test]
+fn a_package_body_removes_the_generics_its_declaration_made() {
+    // The body of a generic package takes the generics of its declaration out of the set of unused
+    // ones (and warns about those left): a change of a key another unit made, which the entry of
+    // the body records, so that `run` reads the body back instead of analysing it again.
+    let e = Env::new("units_generic_body");
+    let gp = "package gp is\n  generic (used : integer; unused : integer := 0);\n  \
+function twice (x : integer) return integer;\nend;\n\
+package body gp is\n  function twice (x : integer) return integer is begin return x * used; end;\nend;\n";
+    let tb = "entity gtb is end;\narchitecture a of gtb is\n  package ip is new work.gp generic map (used => 3);\n\
+begin\n  process\n  begin\n    report \"twice=\" & integer'image(ip.twice(5));\n    wait;\n  end process;\nend;\n";
+    std::fs::write(e.tmp.join("gp.vhd"), gp).expect("write");
+    std::fs::write(e.tmp.join("gtb.vhd"), tb).expect("write");
+    let plain = Env::new("units_generic_body_plain");
+    std::fs::write(plain.tmp.join("gp.vhd"), gp).expect("write");
+    std::fs::write(plain.tmp.join("gtb.vhd"), tb).expect("write");
+    // By absolute path, as integrations pass them (the closure of `run` names its files so).
+    let abs = |e: &Env| -> Vec<String> {
+        ["gp.vhd", "gtb.vhd"]
+            .iter()
+            .map(|f| e.tmp.join(f).display().to_string())
+            .collect()
+    };
+    let (files, pfiles) = (abs(&e), abs(&plain));
+    let files: Vec<&str> = files.iter().map(String::as_str).collect();
+    let pfiles: Vec<&str> = pfiles.iter().map(String::as_str).collect();
+    let cold = e.analyze(&files, &[]);
+    assert_eq!(cold[0].notes("not stored"), 0, "{:?}", cold[0]);
+    assert!(cold[0].stderr.contains("W1501"), "{:?}", cold[0]);
+    let work = e.lib("work");
+    let r = e.yavs(&["run", "--work", &work, "gtb"]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("twice=15"), "{r:?}");
+    assert_eq!(r.notes("hit work.gp/body"), 1, "{r:?}");
+    assert_eq!(r.notes("miss work.gp/body"), 0, "{r:?}");
+    // Without the cache the same output comes out.
+    plain.analyze(&pfiles, &["--no-cache"]);
+    let pwork = plain.lib("work");
+    let p = plain.yavs(&["run", "--work", &pwork, "--no-cache", "gtb"]);
+    let strip = |o: &Out, e: &Env| o.visible().2.replace(&e.tmp.display().to_string(), "T");
+    assert_eq!(strip(&r, &e), strip(&p, &plain));
+    assert_eq!(r.stdout, p.stdout);
+}
+
+#[test]
+fn a_package_body_in_a_file_of_its_own_removes_the_generics_too() {
+    // The declaration is loaded inside the analysis of the body here, so the generics it made are
+    // put in and taken out again within one unit: the entry of the body still has to take them
+    // out after the declaration is replayed (the check mode compares the two analyses).
+    let e = Env::new("units_generic_body_split");
+    let decl = "package gp is\n  generic (used : integer; unused : integer := 0);\n  \
+function twice (x : integer) return integer;\nend;\n";
+    let body = "package body gp is\n  function twice (x : integer) return integer is begin return x * used; end;\nend;\n";
+    let tb = "entity gtb is end;\narchitecture a of gtb is\n  package ip is new work.gp generic map (used => 3);\n\
+begin\n  process\n  begin\n    report \"twice=\" & integer'image(ip.twice(5));\n    wait;\n  end process;\nend;\n";
+    for (f, t) in [("gp.vhd", decl), ("gpb.vhd", body), ("gtb.vhd", tb)] {
+        std::fs::write(e.tmp.join(f), t).expect("write");
+    }
+    let paths: Vec<String> = ["gp.vhd", "gpb.vhd", "gtb.vhd"]
+        .iter()
+        .map(|f| e.tmp.join(f).display().to_string())
+        .collect();
+    let files: Vec<&str> = paths.iter().map(String::as_str).collect();
+    e.analyze(&files, &[]);
+    for _ in 0..2 {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.current_dir(&e.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_UNIT_CHECK", "1")
+            .args(["analyze", "--work", &e.lib("work")])
+            .args(&files);
+        let o = c.output().expect("run");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let work = e.lib("work");
+    let r = e.yavs(&["run", "--work", &work, "gtb"]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("twice=15"), "{r:?}");
+}

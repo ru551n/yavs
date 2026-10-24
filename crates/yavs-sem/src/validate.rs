@@ -830,6 +830,7 @@ mod tests {
                 subtype: db.types[ty].first_subtype,
                 default: None,
                 decl: None,
+                mark: None,
             })
             .collect();
         let sym = Symbol::intern("f");
@@ -843,6 +844,8 @@ mod tests {
                 scope: None,
                 body: Body::Native(sym),
                 mangled: sym,
+                ret_mark: None,
+                impure_reads: false,
             }),
             scope: root,
             span: Span::default(),

@@ -59,9 +59,29 @@ struct ProcDecl {
     trigger: Option<EdgeTrigger>,
     /// The signal parts a clocked process reads, when an activation is a function of them alone
     /// (`Builder::idle_skip`).
-    idle: Option<Vec<(SignalId, Range)>>,
+    idle: Option<Vec<IdleRead>>,
     /// The signal parts the condition of a guarded block reads (`Builder::guard_process`).
     guard: Option<Vec<(SignalId, Range)>>,
+}
+
+/// An element of a logic signal compared with a code: `eq` it is equal to it, else it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IdleLit {
+    pub signal: SignalId,
+    pub elem: u32,
+    pub code: u8,
+    pub eq: bool,
+}
+
+/// A signal part a pure process reads (`Builder::idle_skip_guarded`). With a `guard`, a
+/// disjunction of conjunctions of literals, every activation that reads the part satisfies one
+/// of the conjunctions: while none holds, an event on the part cannot change what the process
+/// does at its next activation, because the signals that decide are read too.
+#[derive(Clone, Debug)]
+pub struct IdleRead {
+    pub signal: SignalId,
+    pub range: Range,
+    pub guard: Option<Vec<Vec<IdleLit>>>,
 }
 
 /// The one condition under which an event resumes a process to any effect: the process is
@@ -211,6 +231,16 @@ impl Builder {
     pub fn serial_resolution(&mut self, s: SignalId) {
         if let Some((s, _)) = self.chk(s.into()) {
             self.signals[s.0 as usize].serial_res = true;
+        }
+    }
+
+    /// Keep only the last event of each block of 64 elements of `s` (more than 64 elements), not
+    /// the history of its single elements: cheaper updates of a wide bus. `'last_event` and
+    /// `'last_value` of a range that is not whole blocks then fail with an internal error, so
+    /// call it only for a signal that no process asks those of. Everything else is exact.
+    pub fn lean_events(&mut self, s: SignalId) {
+        if let Some((s, _)) = self.chk(s.into()) {
+            self.signals[s.0 as usize].set_lean_events();
         }
     }
 
@@ -381,17 +411,29 @@ impl Builder {
         }
     }
 
-    /// Process `p`, which has an edge trigger, does nothing but assign signals without delay
-    /// as a function of `reads` (and constants) when it runs. The kernel may then leave it
-    /// suspended at an edge when none of those had an event since its last activation
-    /// (`Config::idle_skip`); the caller guarantees the shape (`Db::pure_clocked_reads`).
+    /// Process `p` does nothing but assign signals without delay as a function of `reads` (and
+    /// constants) when it runs. The kernel may then leave it suspended when it is woken and
+    /// none of those had an event since its last activation (`Config::idle_skip`; a clocked
+    /// process, with an edge trigger, at an edge); the caller guarantees the shape
+    /// (`Db::pure_clocked_reads`, `Db::pure_comb_reads`, `Db::pure_conc_reads`).
     pub fn idle_skip(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
+        let reads = reads
+            .iter()
+            .map(|&(signal, range)| IdleRead {
+                signal,
+                range,
+                guard: None,
+            })
+            .collect();
+        self.idle_skip_guarded(p, reads);
+    }
+
+    /// [`Builder::idle_skip`] where a read can have a condition (`IdleRead::guard`): an event
+    /// on the signal then matters only while the condition holds.
+    pub fn idle_skip_guarded(&mut self, p: ProcId, reads: Vec<IdleRead>) {
         match self.procs.get_mut(p.0 as usize) {
-            Some(d) if d.trigger.is_some() => d.idle = Some(reads.to_vec()),
-            _ => self.usage(format!(
-                "idle skip of process {} without an edge trigger",
-                p.0
-            )),
+            Some(d) => d.idle = Some(reads),
+            None => self.usage(format!("idle skip of process {} that does not exist", p.0)),
         }
     }
 

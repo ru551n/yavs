@@ -98,6 +98,44 @@ fn clock_and_counter() {
     assert!(!has(&lines, "40 ns"), "{lines:#?}");
 }
 
+/// A trial of the compiled tier counts the activations of one process function
+/// (`NativeFlags::count_on`, #652), with a tier set that compiles nothing, and stops when asked.
+#[test]
+fn activations_of_a_process_are_counted_while_a_trial_asks() {
+    struct Idle;
+    impl yavs_interp::Tier for Idle {
+        fn run(&self, _: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            None
+        }
+    }
+    let mut pb = ProgramBuilder::new();
+    let proc_ = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(proc_);
+        wait_for(&mut fb, 10 * NS);
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: proc_,
+        drives: vec![],
+    }];
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    assert!(rt.set_tier(std::sync::Arc::new(Idle)));
+    let flags = rt.native_flags();
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    assert_eq!(flags.entries(), 0);
+    flags.count_on(proc_);
+    sim.run_until(Time::ns(100)).unwrap();
+    let n = flags.entries();
+    flags.count_off(proc_);
+    sim.run_until(Time::ns(200)).unwrap();
+    assert!((9..=11).contains(&n), "{n}");
+    assert_eq!(flags.entries(), n);
+}
+
 /// Counters of rising edges, one small (its registers stay with the process between
 /// activations) and one whose temporaries outgrow what a process keeps (it hands its vectors
 /// to the thread's scratch), both run for many activations with identical results.

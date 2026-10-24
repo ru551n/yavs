@@ -206,7 +206,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(5245)),
+        ("ops", Max(5040)),
     ]
 );
 case!(
@@ -221,6 +221,17 @@ case!(
     ]
 );
 case!(
+    lean_events,
+    "events=",
+    &[],
+    [
+        ("cycles", Max(312)),
+        ("lean_signals", Min(2)),
+        ("update_general", Max(2)),
+        ("ops", Max(14435)),
+    ]
+);
+case!(
     reg_bytes,
     "n=",
     &[],
@@ -231,7 +242,7 @@ case!(
         ("update_general", Max(2)),
         ("direct_bytes", Min(195)),
         ("quick_applied", Min(194)),
-        ("ops", Max(6802)),
+        ("ops", Max(6489)),
     ]
 );
 case!(
@@ -244,7 +255,7 @@ case!(
         ("wakes", Max(841)),
         ("update_general", Max(2)),
         ("quick_applied", Min(494)),
-        ("ops", Max(7734)),
+        ("ops", Max(7523)),
     ]
 );
 case!(
@@ -307,7 +318,7 @@ case!(
         ("events", Max(1848)),
         ("update_general", Max(2)),
         ("direct_planes", Min(395)),
-        ("ops", Max(10427)),
+        ("ops", Max(10006)),
     ]
 );
 case!(
@@ -330,6 +341,7 @@ case!(
     [("process_runs", Max(2)), ("ops", Max(2098)),]
 );
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(1873000))]);
 case!(
     licm_loop,
     "acc=",
@@ -348,6 +360,7 @@ case!(
         ("ops", Max(6934)),
     ]
 );
+case!(memo_wide, "q=64442", &[], [("ops", Max(75700))]);
 case!(
     edge_forms,
     "edges=",
@@ -369,7 +382,7 @@ case!(
         ("wakes", Max(414)),
         ("update_general", Max(206)),
         ("events", Max(208)),
-        ("ops", Max(7977)),
+        ("ops", Max(7769)),
     ]
 );
 case!(
@@ -378,11 +391,14 @@ case!(
     &[],
     [("process_runs", Max(2)), ("ops", Max(3320)),]
 );
+// The message of a check is built after the branch that reads it: images, lengths and the
+// concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
+case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6540))]);
 case!(
     static_chain,
     "acc=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(6520)),]
+    [("process_runs", Max(2)), ("ops", Max(5080)),]
 );
 case!(
     record_sig,
@@ -394,7 +410,17 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(650)),
         ("update_general", Max(2)),
-        ("ops", Max(4579)),
+        ("ops", Max(4370)),
+    ]
+);
+case!(
+    sigrec_copy,
+    "errors=0",
+    &[],
+    [
+        ("cycles", Max(418)),
+        ("process_runs", Max(525)),
+        ("ops", Max(54500)),
     ]
 );
 case!(
@@ -431,7 +457,18 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(34700)),
+        ("ops", Max(33250)),
+    ]
+);
+
+case!(
+    idle_comb,
+    "o=",
+    &[],
+    [
+        ("process_runs", Max(4500)),
+        ("idle_skips", Min(2850)),
+        ("ops", Max(68500)),
     ]
 );
 
@@ -466,36 +503,67 @@ fn spec_copies() {
 
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
+/// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent
+/// assignments and variables.
 #[test]
 fn idle_skip_changes_nothing() {
-    let d = tempdir("idle_equal");
-    let src = include_str!("perf/idle_regs.vhd");
+    let designs = [
+        ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
+        ("idle_comb", include_str!("perf/idle_comb.vhd"), 2700),
+    ];
+    for (design, src, floor) in designs {
+        let d = tempdir(&format!("idle_equal_{design}"));
+        let run = |mode: &str| {
+            run_design_env(&d, design, src, "interp", &[], &[("YAVS_IDLE_SKIP", mode)])
+        };
+        let (off, on, check) = (run("off"), run("on"), run("check"));
+        assert_eq!(
+            (off.code, on.code, check.code),
+            (0, 0, 0),
+            "{design}: {}",
+            check.all()
+        );
+        assert_eq!(off.stdout, on.stdout, "{design}");
+        assert_eq!(off.stdout, check.stdout, "{design}");
+        assert_eq!(off.counters["idle_skips"], 0, "{design}");
+        assert!(
+            on.counters["idle_skips"] > floor,
+            "{design}: the skip did not fire: {:?}",
+            on.counters
+        );
+        assert_eq!(
+            on.counters["idle_skips"], check.counters["idle_skips"],
+            "{design}"
+        );
+    }
+}
+
+/// Wide signals that keep only each block's last event give the report of the full history.
+#[test]
+fn lean_events_change_nothing() {
+    let d = tempdir("lean_equal");
+    let src = include_str!("perf/lean_events.vhd");
     let run = |mode: &str| {
         run_design_env(
             &d,
-            "idle_regs",
+            "lean_events",
             src,
             "interp",
             &[],
-            &[("YAVS_IDLE_SKIP", mode)],
+            &[("YAVS_LEAN_EVENTS", mode)],
         )
     };
-    let (off, on, check) = (run("off"), run("on"), run("check"));
-    assert_eq!(
-        (off.code, on.code, check.code),
-        (0, 0, 0),
-        "{}",
-        check.all()
-    );
+    let (off, on) = (run("off"), run("on"));
+    assert_eq!((off.code, on.code), (0, 0), "{}", on.all());
+    assert!(on.stdout.contains("events="), "{}", on.all());
     assert_eq!(off.stdout, on.stdout);
-    assert_eq!(off.stdout, check.stdout);
-    assert_eq!(off.counters["idle_skips"], 0);
-    assert!(
-        on.counters["idle_skips"] > 4000,
-        "the skip did not fire: {:?}",
-        on.counters
-    );
-    assert_eq!(on.counters["idle_skips"], check.counters["idle_skips"]);
+    assert_eq!(off.counters["lean_signals"], 0);
+    assert_eq!(on.counters["lean_signals"], 2, "{:?}", on.counters);
+    // Coverage observes the run: every signal keeps its history.
+    let cov = run_design_env(&d, "lean_events", src, "interp", &["--cov"], &[]);
+    assert_eq!(cov.code, 0, "{}", cov.all());
+    assert_eq!(cov.stdout, on.stdout);
+    assert_eq!(cov.counters["lean_signals"], 0);
 }
 
 /// The third run of a design in one library (the first notes the closure, the second stores, the
@@ -701,6 +769,16 @@ mod llvm {
         ]
     );
     llvm_case!(
+        llvm_wide_fill,
+        "fills=",
+        [
+            ("cb_deopt", Max(3)),
+            ("cb_xstep", Min(390)),
+            ("ops", Max(100)),
+            ("llvm_native_frames", Min(3)),
+        ]
+    );
+    llvm_case!(
         llvm_clocked,
         "q=",
         [
@@ -788,3 +866,98 @@ mod clift {
         ]
     );
 }
+
+/// A pure function that reads a signal outside it (a warning under `--relaxed`) is not a function of
+/// its arguments: the idle skip must not trust it. The process that calls it runs again when that
+/// signal changes, with the skip off, on and checked.
+#[test]
+fn idle_skip_ignores_impure_pure_function() {
+    let d = tempdir("idle_relaxed");
+    std::fs::write(d.join("idle_relaxed_reads.vhd"), IDLE_RELAXED).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(
+        &d,
+        &[],
+        &[
+            "analyze",
+            "--relaxed",
+            "--work",
+            &work,
+            "idle_relaxed_reads.vhd",
+        ],
+    );
+    assert_eq!(a.code, 0, "analyze: {}", a.stderr);
+    for mode in ["off", "on", "check"] {
+        let r = yavs(
+            &d,
+            &[("YAVS_IDLE_SKIP", mode)],
+            &[
+                "run",
+                "--relaxed",
+                "--work",
+                &work,
+                "--tier=interp",
+                "--no-cache",
+                "idle_relaxed_reads",
+            ],
+        );
+        assert_eq!(r.code, 0, "{mode}: {}", r.all());
+        let last = r.stdout.lines().rfind(|l| l.contains("o="));
+        assert!(
+            last.is_some_and(|l| l.ends_with("o='1'")),
+            "{mode}: the last report is {last:?}: {}",
+            r.all()
+        );
+    }
+}
+
+/// Not under `perf/`: other tests analyse every design there without `--relaxed`.
+const IDLE_RELAXED: &str = r#"-- A pure function that reads a signal outside it (--relaxed makes that a warning) is not a function
+-- of its arguments: a process that calls it runs again when that signal changes, though the signals
+-- it names have no event (the idle skip must not trust it).
+library ieee;
+use ieee.std_logic_1164.all;
+
+package pk is
+  signal pxs : std_ulogic := '0';
+  function f(x : std_ulogic) return std_ulogic;
+end package;
+
+package body pk is
+  function f(x : std_ulogic) return std_ulogic is
+  begin
+    return x and pxs;
+  end function;
+end package body;
+
+library ieee;
+use ieee.std_logic_1164.all;
+use work.pk.all;
+
+entity idle_relaxed_reads is end;
+
+architecture t of idle_relaxed_reads is
+  signal a, o, c : std_ulogic := '0';
+begin
+  p : process (a, c)
+  begin
+    o <= f(a);
+  end process;
+
+  stim : process
+  begin
+    a <= '1';
+    wait for 1 ns;
+    for i in 1 to 10 loop
+      c <= not c;
+      wait for 1 ns;
+    end loop;
+    report "o=" & std_ulogic'image(o);
+    pxs <= '1';
+    c <= not c;
+    wait for 1 ns;
+    report "o=" & std_ulogic'image(o);
+    wait;
+  end process;
+end architecture;
+"#;

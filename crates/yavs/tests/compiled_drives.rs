@@ -2,7 +2,7 @@
 //! once; a build with the `llvm` feature): the fused drive (`yavs_interp::scalar_drives`, the
 //! waveform never made) against the interpreter, for every shape of assignment: all nine values,
 //! zero and positive delays, inertial, transport and reject, a resolved signal with two drivers,
-//! a computed element of a vector, a signal assigned in a loop and in a procedure.
+//! a computed element of a vector, a signal assigned in a loop and in a procedure; reads of integer, enumeration and time signals.
 #![cfg(feature = "llvm")]
 
 mod common;
@@ -25,6 +25,16 @@ architecture a of drives is
   signal en : boolean := false;
   signal idx : natural range 0 to 8 := 0;
   signal cnt : integer := 0;
+  type st_t is (idle, run, done_st);
+  signal st : st_t := idle;
+  signal ia : integer_vector(0 to 3) := (others => 0);
+  signal tm : time := 0 ns;
+  function isum (v : integer_vector) return integer is
+    variable r : integer := 0;
+  begin
+    for k in v'range loop r := r + v(k) * (k + 1); end loop;
+    return r;
+  end function;
   procedure put (signal s : out std_logic; x : std_logic) is
   begin
     s <= x;
@@ -57,6 +67,13 @@ begin
   p8: process (clk) begin
     if rising_edge(clk) then put(s6, tab((idx + 2) mod 9)); end if;
   end process;
+  p9: process (clk) begin
+    if rising_edge(clk) then
+      ia(idx mod 4) <= cnt * 3 - 7;
+      if idx = 4 then st <= run; elsif idx = 8 then st <= done_st; else st <= idle; end if;
+      tm <= tm + 3 ns;
+    end if;
+  end process;
   s4 <= s0 xor s1;
   s5 <= '1' when en else s2;
   process begin
@@ -70,7 +87,9 @@ begin
     if falling_edge(clk) then
       report integer'image(cnt) & " " & std_logic'image(s0) & std_logic'image(s1) & std_logic'image(s2)
         & std_logic'image(s3) & std_logic'image(s4) & std_logic'image(s5) & std_logic'image(s6)
-        & " " & std_logic'image(r) & " " & to_string(v) & " " & bit'image(b) & " " & std_ulogic'image(u1);
+        & " " & std_logic'image(r) & " " & to_string(v) & " " & bit'image(b) & " " & std_ulogic'image(u1)
+        & " " & st_t'image(st) & " " & integer'image(isum(ia))
+        & " " & time'image(tm);
     end if;
   end process;
 end;

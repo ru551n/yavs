@@ -217,3 +217,61 @@ fn copies_compile_under_auto() {
         assert!(copies.counters["spec_switched"] >= 6, "{heat:?}");
     }
 }
+
+/// Compiled code is kept in the compilation cache under a key made of the generated code. A copy
+/// is named by what it is for, not by its function id (which follows the order in which the
+/// processes switched, and that differs between thread counts), so a second run that switches in
+/// another order links every module from the cache instead of compiling any (#661).
+#[cfg(feature = "llvm")]
+#[test]
+fn compiled_copies_are_cached_by_content() {
+    let d = tempdir("spec_objcache");
+    let src = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/perf/spec_copies.vhd"),
+    )
+    .expect("design");
+    std::fs::write(d.join("spec_copies.vhd"), src).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let a = yavs(&d, &[], &["analyze", "--work", &work, "spec_copies.vhd"]);
+    assert_eq!(a.code, 0, "{}", a.stderr);
+    // (A shuffled run, its seed chosen at random, starts the processes of a cycle in another order,
+    // so they switch in another.)
+    let go = |threads: &str| {
+        yavs(
+            &d,
+            &[("YAVS_SPEC_AFTER", "2"), ("YAVS_LOG", "debug")],
+            &[
+                "run",
+                "--work",
+                &work,
+                "--tier=auto",
+                "--tier-heat=1,0,0",
+                "--threads",
+                threads,
+                "--shuffle",
+                "spec_copies",
+            ],
+        )
+    };
+    let count = |r: &Run, what: &str| {
+        r.stderr
+            .lines()
+            .filter(|l| l.starts_with(&format!("debug: cache: obj {what} ")))
+            .count()
+    };
+    let first = go("1");
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    assert!(first.counters["spec_switched"] >= 6);
+    assert!(count(&first, "stored") > 0, "{}", first.stderr);
+    for threads in ["4", "1", "4", "4"] {
+        let again = go(threads);
+        assert_eq!(again.code, 0, "{}", again.stderr);
+        assert_eq!(
+            count(&again, "stored"),
+            0,
+            "--threads {threads}: {}",
+            again.stderr
+        );
+        assert!(count(&again, "hit") >= count(&first, "stored"));
+    }
+}

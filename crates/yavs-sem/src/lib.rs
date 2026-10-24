@@ -108,8 +108,8 @@ pub trait UnitStore: Send + Sync + std::fmt::Debug {
     fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]);
     /// Whether units analysed from source are written (`yavs analyze`; never `yavs run`).
     fn writable(&self) -> bool;
-    /// A hit, a miss and why, for `YAVS_LOG=debug`.
-    fn note(&self, _msg: &str) {}
+    /// A hit, a miss and why, for `YAVS_LOG=debug` (the message is made only when it is shown).
+    fn note(&self, _msg: &dyn Fn() -> String) {}
 }
 
 /// A store for what later stages derive from an analyzed `Db` (#407): the lowered run-time

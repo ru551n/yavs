@@ -264,6 +264,12 @@ pub struct Subprogram {
     pub body: Body,
     /// Long readable mangled name (sem.md 5.3).
     pub mangled: Symbol,
+    /// The result's type mark as written (`integer`, not `INTEGER`), for messages (8.3).
+    pub ret_mark: Option<Span>,
+    /// A pure function whose body reads or calls something outside it (E1830, a warning under
+    /// `--relaxed`): its result is not a function of its arguments, so no process that calls it is
+    /// skipped when the signals it reads have no event (`Db::pure_comb_reads`).
+    pub impure_reads: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -275,6 +281,9 @@ pub struct Param {
     pub default: Option<ExprId>,
     /// The parameter's object declaration; `None` for implicit operations.
     pub decl: Option<DeclId>,
+    /// The type mark as written, for messages in the user's spelling (8.3); `None` for anything
+    /// but a parameter of a subprogram the user wrote.
+    pub mark: Option<Span>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1288,9 +1297,6 @@ impl Db {
             )?),
             None => None,
         };
-        if let Some(n) = &s.return_type {
-            self.written_marks.insert(decl, n.span);
-        }
         if let (true, Some(r), Some(n)) = (method_2008, ret, &s.return_type) {
             self.check_not_access_or_file("protected method result", r, n.span)?;
         }
@@ -1342,6 +1348,8 @@ impl Db {
             scope: Some(pscope),
             body,
             mangled,
+            ret_mark: s.return_type.as_ref().map(|n| n.span),
+            impure_reads: false,
         });
         if !anon_params.is_empty() {
             self.generic.implicit.insert(decl, anon_params.into());
@@ -1846,9 +1854,10 @@ impl Db {
                 name.span,
             );
             self.declare(pscope, decl);
-            if let Some(ast::IncompleteSubtype::Subtype(si)) = &o.subtype {
-                self.written_marks.insert(decl, si.type_mark.span);
-            }
+            let mark = match &o.subtype {
+                Some(ast::IncompleteSubtype::Subtype(si)) => Some(si.type_mark.span),
+                _ => None,
+            };
             out.push(Param {
                 name,
                 class,
@@ -1856,6 +1865,7 @@ impl Db {
                 subtype,
                 default,
                 decl: Some(decl),
+                mark,
             });
         }
         Ok(out)

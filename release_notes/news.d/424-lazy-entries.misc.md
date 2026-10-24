@@ -1,0 +1,1 @@
+Analysing a library file by file, and the first elaboration of a library testbench, read much less of the stored analysis of the units they depend on: an entry is decoded when it is used, and the bodies of generic packages are stored too.

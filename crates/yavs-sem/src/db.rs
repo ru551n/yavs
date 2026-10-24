@@ -88,6 +88,15 @@ pub struct Facts {
     pub reads_activity: bool,
     /// The force and release statements, in order.
     pub forces: Vec<StmtId>,
+    /// `'last_event` or `'last_value` (of more than one element) of something other than a
+    /// whole signal object: a signal parameter, an external name, a non-name (#519).
+    pub history_all: bool,
+    /// The signal objects of which a part (an element, slice or field, or a non-static selection)
+    /// is the prefix of such an attribute.
+    pub history_parts: Vec<DeclId>,
+    /// The signal objects that are whole such a prefix (the elaborator checks they are whole
+    /// kernel signals).
+    pub history_wholes: Vec<DeclId>,
     /// The expressions that were package-path external names (`@lib.pkg.obj`) with their names.
     pub(crate) package_paths: Vec<(ExprId, ExternalId)>,
 }
@@ -227,9 +236,6 @@ pub struct Db {
     /// The package object each resolved package-path external name denotes, made by
     /// [`Db::bind_package_paths`] (#255).
     pub(crate) pkg_targets: TrackedMap<ExternalId, DeclId>,
-    /// The type mark as written of a parameter (by its object decl) and of a function's
-    /// result (by the subprogram decl), for messages in the user's spelling (8.3).
-    pub(crate) written_marks: TrackedMap<DeclId, Span>,
     /// A type mark may name an incomplete type: the designated subtype of an
     /// access type definition is being analyzed (alloc.rs, 5.4.2).
     #[serde(skip)]
@@ -344,7 +350,6 @@ impl Db {
             ext_memo,
             ext_uses,
             pkg_targets,
-            written_marks,
             config_specs,
             range_records,
             time_units,
@@ -466,11 +471,18 @@ impl Db {
         for u in self.unit_facts.values() {
             f.reads_activity |= u.reads_activity;
             f.forces.extend_from_slice(&u.forces);
+            f.history_all |= u.history_all;
+            f.history_parts.extend_from_slice(&u.history_parts);
+            f.history_wholes.extend_from_slice(&u.history_wholes);
             f.package_paths.extend_from_slice(&u.package_paths);
         }
         if !self.unit_facts.is_empty() {
             f.forces.sort_unstable_by_key(|s| s.index());
             f.package_paths.sort_unstable_by_key(|p| p.0.index());
+        }
+        for v in [&mut f.history_parts, &mut f.history_wholes] {
+            v.sort_unstable_by_key(|d| d.index());
+            v.dedup();
         }
         f.exprs = self.exprs.len();
         f.stmts = self.stmts.len();
@@ -497,18 +509,48 @@ impl Db {
 
     /// Add what expression `id` contributes to `f`.
     pub(crate) fn note_expr(&self, id: ExprId, f: &mut Facts) {
-        use crate::hir::{ExprKind, PredefAttr};
+        use crate::hir::{AttrPrefix, ExprKind, PredefAttr};
         match self.exprs[id].kind {
             ExprKind::Attr {
                 attr: PredefAttr::Active | PredefAttr::LastActive,
                 ..
             } => f.reads_activity = true,
+            ExprKind::Attr {
+                attr: attr @ (PredefAttr::LastEvent | PredefAttr::LastValue),
+                prefix: AttrPrefix::Expr(p),
+                ..
+            } => self.note_history(p, matches!(attr, PredefAttr::LastValue), f),
             ExprKind::External(x)
                 if self.externals[x].path_kind == yavs_syntax::ast::PathKind::Package =>
             {
                 f.package_paths.push((id, x));
             }
             _ => {}
+        }
+    }
+
+    /// Add what `p'last_event` (or `p'last_value`) contributes to `f`: what the kernel must keep
+    /// of the event history of the signal `p` names. `'last_value` of a scalar is the value
+    /// before the element's own last change, which needs no history.
+    fn note_history(&self, p: ExprId, last_value: bool, f: &mut Facts) {
+        use crate::hir::ObjRoot;
+        if last_value
+            && self.types[self.base(self.exprs[p].subtype)]
+                .kind
+                .is_scalar()
+        {
+            return;
+        }
+        match self.lsp_parts(p) {
+            Some((ObjRoot::ImplicitSignal(_), ..)) => {}
+            Some((ObjRoot::Decl(d), path, _, cut)) if !self.is_param(ObjRoot::Decl(d)) => {
+                if path.is_empty() && !cut {
+                    f.history_wholes.push(d)
+                } else {
+                    f.history_parts.push(d)
+                }
+            }
+            _ => f.history_all = true,
         }
     }
 
@@ -625,7 +667,6 @@ impl Db {
             ext_memo: HashMap::default(),
             ext_uses: Default::default(),
             pkg_targets: Default::default(),
-            written_marks: Default::default(),
             incomplete_ok: false,
             context_subtype: None,
             relaxed_target: None,

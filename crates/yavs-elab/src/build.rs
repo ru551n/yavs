@@ -95,6 +95,9 @@ impl Elaborated {
                 }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
+            if self.lean.get(i) == Some(&true) {
+                b.lean_events(id);
+            }
             if let Some(g) = leaf.guard {
                 b.guard(id, g, leaf.disconnect);
             }
@@ -203,7 +206,8 @@ impl Elaborated {
                     .collect();
                 b.guard_process(pid, &r);
             }
-            if let Some(t) = p.trigger.filter(|t| !t.wait || !proc_waits) {
+            let trigger = p.trigger.filter(|t| !t.wait || !proc_waits);
+            if let Some(t) = trigger {
                 b.edge_trigger(
                     pid,
                     EdgeTrigger {
@@ -214,14 +218,36 @@ impl Elaborated {
                         reset: t.reset.map(|(l, e, c)| (yavs_kernel::SignalId(l.0), e, c)),
                     },
                 );
-                // A pure clocked process: the kernel may skip an edge no input had an event for.
-                if let Some(reads) = &p.idle {
-                    let r: Vec<_> = reads
-                        .iter()
-                        .map(|&(l, r)| (yavs_kernel::SignalId(l.0), r))
-                        .collect();
-                    b.idle_skip(pid, &r);
-                }
+            }
+            // A pure process: the kernel may skip a wake no input had an event for (a clocked one
+            // only when its edge trigger stands).
+            if let Some(reads) = p
+                .idle
+                .as_ref()
+                .filter(|_| p.trigger.is_none() || trigger.is_some())
+            {
+                let r: Vec<_> = reads
+                    .iter()
+                    .map(|r| yavs_kernel::IdleRead {
+                        signal: yavs_kernel::SignalId(r.leaf.0),
+                        range: r.range,
+                        guard: r.guard.as_ref().map(|alts| {
+                            (alts.iter())
+                                .map(|conj| {
+                                    (conj.iter())
+                                        .map(|l| yavs_kernel::IdleLit {
+                                            signal: yavs_kernel::SignalId(l.leaf.0),
+                                            elem: l.elem,
+                                            code: l.code,
+                                            eq: l.eq,
+                                        })
+                                        .collect()
+                                })
+                                .collect()
+                        }),
+                    })
+                    .collect();
+                b.idle_skip_guarded(pid, r);
             }
         }
         // The processes of foreign architectures' models: drivers only (#330).

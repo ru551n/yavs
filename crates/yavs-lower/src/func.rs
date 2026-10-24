@@ -188,6 +188,26 @@ pub(crate) struct Fx<'a, 'b> {
     /// Files declared in this subprogram (frame offset of the cell, `file_close` symbol and
     /// type), closed when it returns (LRM 14.6).
     pub local_files: Vec<(u32, String, TyId)>,
+    /// A process with a sensitivity list: its whole-value reads of composite signals (#630).
+    pub sigcopy: Option<SigCopies>,
+}
+
+/// The whole-value reads of record signals in a process with a sensitivity list. Such a process
+/// runs between two suspensions without a wait, so a signal has one value for the whole
+/// activation: a signal the body reads as a whole in two places or more has a copy that the
+/// process keeps (made once in the declarative part, filled at the start of each activation)
+/// instead of reading every leaf again at each read. `iu3` of GRLIB passes its register record
+/// to dozens of functions; each call read about a thousand leaves.
+pub(crate) struct SigCopies {
+    /// The block that ends the declarative part, and the block of an activation's start.
+    pub decl_end: BlockId,
+    pub top: BlockId,
+    /// The process statement, which the instructions of the copies belong to.
+    pub stmt: (yavs_ir::StmtId, Span),
+    /// The record signals the body reads as a whole in two places or more (`Fx::whole_reads`).
+    pub wanted: Vec<DeclId>,
+    /// The copy of a signal read twice: the frame slot of its `[data, desc, handle]`.
+    pub copies: Vec<(DeclId, u32)>,
 }
 
 impl<'a, 'b> Fx<'a, 'b> {
@@ -220,6 +240,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             writeback: Vec::new(),
             writeback_parts: Vec::new(),
             local_files: Vec::new(),
+            sigcopy: None,
         }
     }
 
@@ -442,6 +463,56 @@ impl<'a, 'b> Fx<'a, 'b> {
     // ---- declarations ----
 
     /// Objects declared in `scope` (variables, constants), initialised in order.
+    /// The record signals the statements `body` read as a whole in at least two places (a read
+    /// in a loop counts twice): a name that selects a field, an element or an attribute reads
+    /// less, and is no whole read of its prefix.
+    fn whole_reads(&self, body: &[StmtId]) -> Vec<DeclId> {
+        use yavs_sem::hir::{AttrPrefix, ExprKind};
+        use yavs_sem::lsp::Use;
+        fn walk(fx: &Fx<'_, '_>, body: &[StmtId], weight: u32, counts: &mut Vec<(DeclId, u32)>) {
+            for &s in body {
+                fx.db.stmt_exprs(s, &mut |e, u| {
+                    if u == Use::Target {
+                        return;
+                    }
+                    let mut parts: Vec<yavs_sem::ExprId> = Vec::new();
+                    fx.db.walk_expr(e, &mut |x| match &fx.db.exprs[x].kind {
+                        ExprKind::Field { prefix, .. }
+                        | ExprKind::Index { prefix, .. }
+                        | ExprKind::Slice { prefix, .. }
+                        | ExprKind::Attr {
+                            prefix: AttrPrefix::Expr(prefix),
+                            ..
+                        } => parts.push(*prefix),
+                        ExprKind::Obj(d)
+                            if !parts.contains(&x)
+                                && matches!(fx.cx.objs.get(d), Some(Obj::RecSignal(_))) =>
+                        {
+                            match counts.iter_mut().find(|c| c.0 == *d) {
+                                Some(c) => c.1 += weight,
+                                None => counts.push((*d, weight)),
+                            }
+                        }
+                        _ => {}
+                    });
+                });
+                let w = if matches!(fx.db.stmts[s].kind, HStmt::Loop { .. }) {
+                    2
+                } else {
+                    weight
+                };
+                walk(fx, &fx.db.stmt_children(s), w, counts);
+            }
+        }
+        let mut counts = Vec::new();
+        walk(self, body, 1, &mut counts);
+        counts
+            .into_iter()
+            .filter(|c| c.1 >= 2)
+            .map(|c| c.0)
+            .collect()
+    }
+
     pub fn decls(&mut self, scope: ScopeId) -> R<()> {
         let mut ok = true;
         for d in self.db.decls_with_instances(scope) {
@@ -1918,7 +1989,7 @@ fn process(
     fx.driver_base = bases;
     fx.guard = guard;
     fx.postponed = postponed;
-    fx.stmt_start(StmtKind::Process, st.span);
+    let pstmt = fx.stmt_start(StmtKind::Process, st.span);
     let mut r = Ok(());
     if let Some(sc) = scope {
         r = fx.decls(sc);
@@ -1927,6 +1998,7 @@ fn process(
     if scope.is_some() {
         fx.fb.body(top);
     }
+    let decl_end = fx.fb.current();
     fx.jump(top);
     fx.at(top);
     if matches!(
@@ -1937,6 +2009,18 @@ fn process(
         }
     ) {
         fx.fb.flag(FuncFlags::SENS_LIST);
+        if let (Some(_), HStmt::Process { body, .. }) = (scope, &st.kind) {
+            let wanted = fx.whole_reads(body);
+            if !wanted.is_empty() {
+                fx.sigcopy = Some(SigCopies {
+                    decl_end,
+                    top,
+                    stmt: (pstmt, st.span),
+                    wanted,
+                    copies: Vec::new(),
+                });
+            }
+        }
     }
     let body = match &st.kind {
         HStmt::Process { body, .. } => fx.stmts(body),

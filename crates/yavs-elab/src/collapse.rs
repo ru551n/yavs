@@ -253,8 +253,17 @@ pub(crate) fn ports(
         if let Some(c) = &mut p.copy {
             c.iter_mut().for_each(mr);
         }
-        for v in [&mut p.idle, &mut p.guard].into_iter().flatten() {
+        if let Some(v) = &mut p.guard {
             v.iter_mut().for_each(mr);
+        }
+        for r in p.idle.iter_mut().flatten() {
+            let mut q = (r.leaf, r.range);
+            mr(&mut q);
+            (r.leaf, r.range) = q;
+            for l in r.guard.iter_mut().flatten().flatten() {
+                let (n, off) = m(l.leaf);
+                (l.leaf, l.elem) = (n, l.elem + off);
+            }
         }
         if let Some(t) = &mut p.toggle {
             let (l, off) = m(t.leaf);

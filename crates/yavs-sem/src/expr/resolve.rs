@@ -1992,7 +1992,7 @@ impl Db {
     ) -> Option<Diagnostic> {
         use super::names::{Slot, assoc_map};
         // Per candidate, the formal (decl, subtype) of each association.
-        let mut per: Vec<Vec<(Option<DeclId>, crate::ids::SubtypeId)>> = Vec::new();
+        let mut per: Vec<Vec<(Option<Span>, crate::ids::SubtypeId)>> = Vec::new();
         for &c in cands {
             let s = self.decls[self.entity(c)].kind.subprogram()?;
             let keys: Vec<yavs_syntax::Symbol> = s.params.iter().map(|p| p.name.key).collect();
@@ -2005,7 +2005,7 @@ impl Db {
                     Slot::Parts(v) => v,
                 };
                 for &a in at {
-                    f[a] = (s.params[k].decl, s.params[k].subtype);
+                    f[a] = (s.params[k].mark, s.params[k].subtype);
                 }
             }
             per.push(f);
@@ -2066,11 +2066,11 @@ impl Db {
         )
     }
 
-    /// The type mark of parameter or function `d` as its declaration wrote it
+    /// The type mark of a parameter or function result as its declaration wrote it
     /// (`integer`, not `INTEGER`), else the name of subtype `st`.
-    fn written(&self, d: Option<DeclId>, st: crate::ids::SubtypeId) -> String {
-        match d.and_then(|d| self.written_marks.get(&d)) {
-            Some(&sp) => self.source_text(sp),
+    fn written(&self, mark: Option<Span>, st: crate::ids::SubtypeId) -> String {
+        match mark {
+            Some(sp) => self.source_text(sp),
             None => self.subtype_name(st),
         }
     }
@@ -2085,14 +2085,14 @@ impl Db {
         let params: Vec<String> = s
             .params
             .iter()
-            .map(|p| format!("{}: {}", p.name.text, self.written(p.decl, p.subtype)))
+            .map(|p| format!("{}: {}", p.name.text, self.written(p.mark, p.subtype)))
             .collect();
         let mut out = decl.name.to_string();
         if !params.is_empty() {
             out += &format!(" ({})", params.join("; "));
         }
         if let Some(r) = s.ret {
-            out += &format!(" return {}", self.written(Some(e), r));
+            out += &format!(" return {}", self.written(s.ret_mark, r));
         }
         out
     }

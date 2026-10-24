@@ -346,24 +346,32 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   the hot paths changed (`Program::func` is byte for byte what it was; the instruction count of a
   design with copies off is within 0.1 percent of before). A design that runs out of slots keeps
   the rest shared (`spec_full`). Slots are never stored with a program.
-- **Growth cap 1.5 times** the optimised IR of the shared process functions that ran
-  (`YAVS_SPEC_CAP` percent, 0: none); a copy that would go over is refused and its process stays
-  shared (`spec_capped`). It binds on generate-heavy designs of small units (section 12).
+- **Growth cap 2.5 times** (user, 2026-10-24; 1.5 times at first) the optimised IR of the shared process
+  functions that ran (`YAVS_SPEC_CAP` percent, 0: none); a copy that would go over is refused and its
+  process stays shared (`spec_capped`). It bound on two designs at 1.5 and binds on one of the realbench
+  set at 2.5 (`poc_arith_addw`: 244 of 312 candidates; section 12, "The cap raised").
 - **Shared code is kept** under `--dap` and anything that keeps variables (`keep_variables`), with
   `--vhpi` and `--wave-variables` (`external_variables`), with coverage counters (functions with
   `HAS_COVER`), under `--tier=llvm` (the whole program is compiled before a copy exists),
   with `YAVS_NO_IROPT`, and for serial processes (shared variables, protected objects).
-- **Tiers.** Under `--tier=auto` a copy is a function with its own id: the sampler sees it, the
-  policy compiles it when it is hot (the instance count of the rule for clocked processes is the
-  one of its process, `Program::base_of`), and a process whose shared code is compiled already
-  does not switch. A process also waits 150 ms after the tier is set before its first try
-  (`SPEC_TIER_WAIT`, then again at twice the activations): the tier takes about 30 ms of samples to
-  compile a process, and a compiled process beats its interpreted copy by far (`hdlm_lfsr`: 31.7 G
-  compiled shared code against 66.9 G interpreted copy); without the wait the processes had moved to
-  copies before they were sampled long enough (`hdlm_lfsr` auto 32.7 G, against 30.5 G with the wait). The
-  copies of a process of many instances are each too small a share of the run for the tier's rule, and
-  `sc5_fifo_repack` still runs 8 to 10 percent above the compiled shared code of main (#661). Copies whose shared code is compiled at once (`--tier-heat=1,0,0`, tests) are
-  compiled at their first entry.
+- **Tiers.** Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
+  policy compiles it like any function, but every decision about it is the process's (#661, 2026-10-24):
+  the sampled time of a process and all its copies is one number (`Worker::group`, by `Program::base_of`),
+  and the threshold, the payback rule, the band wait of clocked processes, the share and instance rules
+  (`cold`) and the budget factor go by that number and by the length and class of the process's shared
+  code, so a process of many instances with distinct data is as hot as the same process without copies and
+  is classified as it. When the process is hot every copy that was seen running is a candidate (and one
+  that starts running later, as its instance switches), each compiled from its own code, so the copy that
+  runs is the copy that is compiled; a trial that takes the compiled code of one copy back keeps the copies
+  not compiled yet interpreted too. A process whose shared code is compiled already does not switch. A
+  process also waits 150 ms after the tier is set before its first try (`SPEC_TIER_WAIT`, then again at twice
+  the activations): the tier takes about 30 ms of samples to compile a process, and a compiled process
+  beats its interpreted copy by far (`hdlm_lfsr`: 31.7 G compiled shared code against 66.9 G interpreted
+  copy). Compiled copies are named, and so keyed in the compilation cache, by what they are for
+  (`Program::copy_tag`: a hash of the process and the masked instance data, `f<process>c<tag>` in the
+  module), not by their function ids, which follow the order the processes switched in and so differ between
+  runs with `--threads` above 1: the same copy is the same module in every run and is linked from the cache.
+  Copies whose shared code is compiled at once (`--tier-heat=1,0,0`, tests) are compiled at their first entry.
 - **Stage cache, kind `spec`**: one entry per lowering (the key of the `ir` entry, which holds the
   program, and with it the optimiser switches, the tier configuration and the build) with the
   serialised optimised copies of all runs of that design, read when the first copy of a run is
@@ -408,7 +416,7 @@ Interleaved three-pair medians of cycles (`--tier=interp`): `hdlm_lfsr` 29.30 / 
 Note 2: with copies the tier does not compile these two designs' clocked processes the way it does without them (`sc5_fifo_repack`: 45.1 G
 with `YAVS_NO_SPEC=1`, 49.6 G with copies, against 57.6 G interpreted without copies; `hdlm_lfsr` single process: 30.5 to 32.7 G against
 31.7 to 31.9 G, the copy of its one process compiles late). #661 holds the analysis; the wait of `SPEC_TIER_WAIT` (150 ms) is the first
-step and made `hdlm_lfsr` better than main in the interleaved run (30.46 against 31.66 G) but not `sc5_fifo_repack`.
+step and made `hdlm_lfsr` better than main in the interleaved run (30.46 against 31.66 G) but not `sc5_fifo_repack`. (Settled by counting copies by their process, section 12 "The tier policy by process".)
 
 - **Copies off** (`YAVS_NO_SPEC=1`): 68.931, 106.301, 372.809 and 64.935 G for `hdlm_lfsr`, `fletcher_bufferwriter_512`,
   `poc_arith_addw` and `neorv32_single_min` against 68.926, 106.243, 372.683 and 64.913 before (+0.0 to +0.1 percent): the plumbing (one compare
@@ -437,3 +445,79 @@ step and made `hdlm_lfsr` better than main in the interleaved run (30.46 against
   cached (`fletcher_bufferwriter_512`, `hdlm_lfsr`: no `ir` entry) store none and optimise their copies in every run (0.7 M instructions
   each, 50 M of 100 G for fletcher). A warm run reads the copies of the earlier runs instead of optimising them (`spec_loaded` =
   `spec_copies`, `spec_fresh` = 0; `tests/spec.rs`).
+
+### The cap raised from 1.5 to 2.5 (2026-10-24, user decision)
+
+Bench builds with `llvm` (`tools/build-bench.sh`), `tools/realbench/run.py --compare` of main at cf32383b and the same with
+the default cap changed, core 9, medians of 3, user instructions of the whole process tree in G (exact); RSS is the peak of the
+whole tree in MB. The cap binds only on `poc_arith_addw` now (244 copies of 312 candidates, 68 refused; 8722 shared and 21766 copy IR
+instructions; its interpreter run 331.2 G against 331.5 G with no cap at all). Interpreter: `sc5_fifo_repack` 48.63 / 46.12 (-5.2 %,
+i.e. -20.0 % against 57.64 without copies; with no cap at all it was 46.6), `poc_arith_addw` 331.80 / 330.70 (-0.3 %, -11.3 % against
+none), the other eight within +-0.3 % (`olo_fix_cordic_rot` +1.1 % is the noise of its 3.7 G). Peak RSS (interp): `sc5_fifo_repack`
+21 / 23 MB, every other test within 1 MB. Initialisation (`--stop-time=0fs`, warm, instructions): equal within 0.5 % on nine tests
+(`neorv32_single_min` 1410 / 1417 M, the extra slots); `fletcher_bufferwriter_512` 492 / 532 M, which is not the slots (the same with
+`YAVS_NO_SPEC=1`, with `YAVS_SPEC_CAP=150`, and in every later build; deterministic per binary, not understood, 0.04 % of the run).
+Under `--tier=auto` the instructions depend on what the tier compiled when, so they move with the policy and not with the cap
+(`poc_arith_addw` warm 285.1 / 259.2, `sc5_fifo_repack` warm 43.2 / 47.2: #661).
+
+### The tier policy by process (#661, 2026-10-24)
+
+`Worker::group` (`auto.rs`) adds the sampled interpreted time of a process and of all its copies; the threshold, the payback rule,
+`wants_probe`, the band wait and `cold` (share and instance rules) read it, and `is_rtl`, `base_len` and `cost` classify and price a copy as
+the shared code of its process. Every copy seen running is a candidate once the process is hot. Compiled copies are named by
+`Program::copy_tag`. Measured with `--tier=auto` as the user's tool runs it (a world per sample made fresh, two untimed runs, then the
+timed one; samples of the binaries interleaved so that the load of the host falls on all; bench builds with `llvm`; core 10; instructions of the
+whole process tree in G), because a single run says little: the state the warm-up leaves in the compilation cache is bimodal (about 35 or
+about 47 G on `sc5_fifo_repack`, whatever the binary or the policy) and which one a world reaches depends on how long the compile thread
+took in its first runs.
+
+| design (8 samples) | before the change, old policy | this change | the same without copies (`YAVS_NO_SPEC=1`) |
+|---|---|---|---|
+| `sc5_fifo_repack` warm | median 35.6 (mean 38.8) | median 35.6 (mean 38.5) | median 38.4 (mean 38.9) |
+| `hdlm_lfsr` warm | 31.95 (31.94 to 31.97, two samples 33.9) | 31.96 (two samples 33.9) | 33.1 |
+| `sc5_fifo_repack` cold (6) | 52.5 | 53.4 | |
+| `poc_cache_cpu` cold (6) | 27.0 | 26.7 | |
+
+The first column is main at 01c2f0b7 (the cap change on top of the #634 commits 2f07eb62 and f313b146). On the base this change was written
+on, before those commits, the old policy ran `sc5_fifo_repack` warm at 46.9 G in six of eight worlds (median 46.9, mean 46.2; the case of the issue:
+copies worse than no copies, 45 G), and a world of the new policy on that base ran 35.5 G in each
+of five timed runs; on the current base the old policy has caught up by itself and the new one is equal to it (two sets of eight with
+the new build: median 36.1 and 35.6, its no-copies variant 44.5 and 38.4: the spread between sets is the host's load). The policy no longer
+depends on that luck: the copies of a process are compiled once the process is hot, whichever of them the sampler saw first. `hdlm_lfsr`
+compiles its testbench's `main`, which is not a copy, and is not changed by the policy (its +5 percent against the 30.44 G of cf32383b
+comes from the #634 commits, #663). `tools/realbench/run.py --compare` (medians of 3, one run per cell on a host at load 20 to 30, so the
+timing-driven cells move by 5 to 10 percent): interpreter instructions equal within 0.1 % on all ten tests (the change touches
+`--tier=auto` only), peak RSS equal within 2 MB.
+
+Unit test: `tests/objcache.rs` compiles the copies of one process for `G = 3, 4` and then `G = 4, 3` (so with swapped function ids) and
+requires that the second compile stores nothing (it fails with the id in the symbol names: 8 stored against 6).
+
+### Wider specialisation, measured and not landed (2026-10-24)
+
+User decision 2026-10-24, item 3: measure what (a) processes with several wait statements and (b) folding of pointer-typed instance data
+add, and land each that gains.
+
+(a) A resume point maps to the copy's by statement (`Suspend` of the same `StmtId`; the process qualifies when every resume point is a
+`Suspend` and no two are at the same statement). Over the 42 realbench testbenches (`spec_planned` at time 0, a process that may switch)
+it admits 1 more process in `hdlm_ring_buffer` (16 to 17), 1 in `fletcher_bufferwriter_512` (118 to 119), 1 in
+`fletcher_bufferwriter_prim32` and 8 in `grlib_leon3mp` (454 to 462), none in the other 38 (`neorv32` 1169 to 1935, `poc_arith_addw` 356,
+`sc5_fifo_repack` 44, and so on are all single-wait): the clocked and combinational processes of RTL wait on a sensitivity list, and the processes with
+several waits are testbench stimuli that run a few times. Interpreter instructions of the four: -0.004 %, -0.007 %, +0.12 %
+(`grlib_leon3mp` 1688.42 to 1690.39 G, more copies optimised, none hot), +0.007 %; the other tests equal. It gains nothing, so it is not
+landed.
+
+(b) Folding the load of a pointer or handle register from instance data into a constant (the experiment replaced the load by its value in a
+pointer register, which the interpreter accepts and the verifier would not, for the instruction count only): the optimised copies keep 0 to 2
+such loads per process (`sc5_fifo_repack`: `p_col` 2 of 614 IR instructions, `p_pre` 2 of 124, the other seven processes of the design none), and the
+interpreter instructions of the whole run change by -0.00 % (`sc5_fifo_repack`), +0.01 % (`poc_cache_cpu`), +0.01 % (`neorv32_single_min`),
+-0.00 % (`hdlm_lfsr`), +0.02 % (`vai_pe_array`), -0.03 % (`hdlm_axi_fifo`), -0.14 % (`grlib_leon3mp`), -0.04 % (`fletcher_bufferwriter_prim32`),
++0.00 % (`fletcher_bufferwriter_512`). Descriptors and array bounds in instance data already fold (`const_dim`, the integer words of a
+descriptor); what is left is the handle of a heap object, whose contents the optimiser cannot see, so a constant handle saves one load and
+enables nothing. Not landed. The patches of both experiments are on #661.
+
+The copies of designs without a stage-cache entry: `fletcher_bufferwriter_512` has none because the extent of its `Db` grows while it elaborates
+(36 units at the image, 57 at the lowering, #671), `hdlm_lfsr` because it runs under a lowered library, whose closures have no entries of
+their own (`library_made`; a `spec` entry per closure would take one of the 96 entries of a library directory for each long-running
+testbench of a suite). The copies cost 72 times 0.7 M = 50 M instructions of 99 G in `fletcher_bufferwriter_512` each run (0.05 %), so a
+`spec` entry outside the stage cache's key was not made; #671 would give it one.
+

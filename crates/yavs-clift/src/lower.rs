@@ -104,7 +104,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 12],
+    kernel: [ClifId; 14],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -220,6 +220,8 @@ impl Jit {
             (TROOT, yavs_rt_troot as *const u8),
             (ENDSTMT, yavs_rt_endstmt as *const u8),
             (XSTEP, yavs_rt_xstep as *const u8),
+            (MEMO, yavs_rt_memo as *const u8),
+            (MEMO_KEEP, yavs_rt_memo_keep as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -273,6 +275,8 @@ impl Jit {
                 &[I64, I64, I32, I32, I64, I64, I64, I32, I64, I64, I32, I64],
                 Some(I32),
             )?,
+            imp(MEMO, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
+            imp(MEMO_KEEP, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -659,6 +663,12 @@ impl Jit {
             xstep: self
                 .module
                 .declare_func_in_func(self.kernel[11], &mut ctx.func),
+            memo: self
+                .module
+                .declare_func_in_func(self.kernel[12], &mut ctx.func),
+            memo_keep: self
+                .module
+                .declare_func_in_func(self.kernel[13], &mut ctx.func),
             tables: tabs,
             consts: cons,
             natives,
@@ -834,6 +844,9 @@ struct Imports {
     troot: FuncRef,
     endstmt: FuncRef,
     xstep: FuncRef,
+    /// `yavs_rt_memo` and `yavs_rt_memo_keep`: the memo of pure calls.
+    memo: FuncRef,
+    memo_keep: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     /// Copies of the constants (up to 4 KiB of bytes) the function takes the address of, which
     /// never change: reads of them need no lookup.
@@ -2288,7 +2301,10 @@ fn gen_func(
                 let callee = prog.func(func);
                 match (nr, callee) {
                     (Some(nr), Some(callee)) if call_fits(f, id, callee, args, false) => {
-                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, None)
+                        let memo = prog.memo_sig(func).is_some_and(|m| {
+                            m.cells as usize == f.regs(args).map_or(0, <[_]>::len)
+                        });
+                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, None, memo)
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -2306,7 +2322,19 @@ fn gen_func(
                         if call_fits(f, id, callee, args, true)
                             && obj.0 < f.reg_ty.len() as u32 =>
                     {
-                        g.native_call(pc, &inst, id, f, nr, func, callee, args, dst, Some(obj))
+                        g.native_call(
+                            pc,
+                            &inst,
+                            id,
+                            f,
+                            nr,
+                            func,
+                            callee,
+                            args,
+                            dst,
+                            Some(obj),
+                            false,
+                        )
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -2820,6 +2848,7 @@ impl Gen<'_> {
         args: yavs_ir::Regs,
         dst: Option<Reg>,
         obj: Option<Reg>,
+        memo: bool,
     ) {
         let (slow, join) = self.slow_path(pc, inst);
         // A protected call: the process must be allowed the shared state (else the interpreter's
@@ -2915,6 +2944,49 @@ impl Gen<'_> {
                 cargs.push(self.ld(Reg(r.0 + 1)));
             }
         }
+        // The memo of pure calls (`TierHost::memo_probe`): a hit is the result, a miss makes the
+        // call and keeps its result below.
+        let memo = memo.then(|| {
+            let n = rs.len();
+            let slot = |s: &mut Self, bytes: u32| {
+                let ss = s.b.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    bytes,
+                    3,
+                ));
+                s.b.ins().stack_addr(I64, ss, 0)
+            };
+            let (buf, out) = (slot(self, n as u32 * 8), slot(self, 16));
+            for (k, r) in rs.iter().enumerate() {
+                let v = self.ld(*r);
+                self.b
+                    .ins()
+                    .store(MemFlagsData::trusted(), v, buf, (k * 8) as i32);
+            }
+            let dep = match &self.nat {
+                Some(n) => n.depth,
+                None => self.c64(NATIVE_FRAME_MODE as i64),
+            };
+            let (cv, nv) = (self.c32(callee.0), self.c32(n as u32));
+            let c = self
+                .b
+                .ins()
+                .call(self.imp.memo, &[self.env, self.mem, cv, buf, nv, dep, out]);
+            let st = self.b.inst_results(c)[0];
+            let (hit, go, merge) = (
+                self.b.create_block(),
+                self.b.create_block(),
+                self.b.create_block(),
+            );
+            self.b.append_block_param(merge, I64);
+            let is_hit = self.b.ins().icmp_imm_s(IntCC::Equal, st, 1);
+            self.b.ins().brif(is_hit, hit, &[], go, &[]);
+            self.b.switch_to_block(hit);
+            let hv = self.b.ins().load(I64, MemFlagsData::trusted(), out, 0);
+            self.b.ins().jump(merge, &[BlockArg::Value(hv)]);
+            self.b.switch_to_block(go);
+            (st, buf, out, dep, n, merge)
+        });
         let call = match (nr.fr, target) {
             (Some(fr), _) => self.b.ins().call(fr, &cargs),
             (None, Some(at)) => {
@@ -2946,6 +3018,27 @@ impl Gen<'_> {
             self.leave(r);
         }
         self.b.switch_to_block(cont);
+        let val = match memo {
+            Some((st, buf, out, dep, n, merge)) => {
+                let (keep, after) = (self.b.create_block(), self.b.create_block());
+                let miss = self.b.ins().icmp_imm_s(IntCC::Equal, st, 2);
+                self.b.ins().brif(miss, keep, &[], after, &[]);
+                self.b.switch_to_block(keep);
+                self.b.ins().store(MemFlagsData::trusted(), val, out, 0);
+                let (cv, nv) = (self.c32(callee.0), self.c32(n as u32));
+                self.b.ins().call(
+                    self.imp.memo_keep,
+                    &[self.env, self.mem, cv, buf, nv, dep, out],
+                );
+                self.b.ins().jump(after, &[]);
+                self.b.switch_to_block(after);
+                self.b.ins().jump(merge, &[BlockArg::Value(val)]);
+                self.b.switch_to_block(merge);
+                self.clear();
+                self.b.block_params(merge)[0]
+            }
+            None => val,
+        };
         if let Some(d) = dst {
             self.st(d, val);
         }

@@ -82,6 +82,12 @@ fn memoised_calls_change_nothing_but_the_work() {
             ),
         ]);
     }
+    if cfg!(feature = "clift") {
+        cases.extend([
+            (vec!["--tier=clift", "--threads", "1"], vec![]),
+            (vec!["--tier=clift", "--threads", "4"], vec![]),
+        ]);
+    }
     for (args, env) in cases {
         let (c0, o0, e0) = run(&d, true, &args, &env);
         let (c1, o1, e1) = run(&d, false, &args, &env);

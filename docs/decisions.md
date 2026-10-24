@@ -8385,6 +8385,15 @@ one and the figures repeat), one `clift`-only release binary built with `tools/b
   Cranelift IR, and the panic of the compile thread is re-raised when the tier stops.** Why: a function that was silently left
   interpreted hid a dominance error in the previous round until the verifier was switched on by hand. A release build still leaves
   the function interpreted and says so with `--verbose`. `tests/verifier.rs` checks both paths.
+- **Decision: compiled calls of memoised pure functions ask the memo (`yavs_rt_memo` before, `yavs_rt_memo_keep` after), as the
+  LLVM lowering has since #701.** Why: Cranelift code made every such call; the window generator did 8 percent more instructions
+  than with the memo (174 G against 189 G), `pure_memo` answered 0 of its 435 repeated calls (`clift::pure_memo` in `perf.rs`,
+  and the Cranelift cases of `tests/pmemo.rs`). The probe and the keep are the shared callbacks of `rt.rs`; `CallProt` stays out, as there.
+- **Tried and dropped: counting the `WaitOn`s of a wait that names the same signals every time as one callback in the callback rule
+  of a first-level generator (`yavs_rt_wait_same` runs the whole list as one call).** Why it looked right: `counter_increment` of
+  `neorv32_single_min` (45 `WaitOn`s of 399 IR instructions) is refused as "53 leave the compiled code" and pays when forced
+  (-0.6 G). Measured with the rule: no panel gain (geometric mean 0.927 with it against 0.921 without, medians of 3 runs) and the
+  neorv32 testbench 38.9 G against 38.3 G (medians of 5), so it was removed again; the benefit model on main decides such cases.
 - **Not done: registers kept in Cranelift variables across blocks of frame-mode code.** Measured first, with the machine code of the
   hot processes attributed to the IR instructions (`YAVS_CLIFT_CODEDIR` writes the IR pc of every stretch of machine code next to
   it; `perf script` addresses give the executed instructions per IR instruction): in the loop-free processes of `poc_arith_addw`

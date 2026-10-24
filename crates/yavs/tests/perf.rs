@@ -1094,6 +1094,17 @@ mod clift {
             ("cb_wait_same", Max(1570)),
         ]
     );
+    // The memo of pure calls (#701) answers the compiled calls of this tier too.
+    clift_case!(
+        pure_memo,
+        "pure_memo",
+        "q=9",
+        [
+            ("pmemo_hits", Min(420)),
+            ("pmemo_runs", Max(14)),
+            ("cb_memo", Max(470)),
+        ]
+    );
     clift_case!(
         reg_planes,
         "reg_planes",

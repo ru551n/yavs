@@ -7363,10 +7363,18 @@ impl Machine {
         tf.flags = self.tier_flags();
         tf.owner = self.vc.owner;
         let mut link = self.frames[top].link;
-        for u in &mut tf.up {
-            *u = match link {
+        for k in 0..2 {
+            tf.up_len[k] = 0;
+            tf.up[k] = match link {
                 Some(i) if i < 1 << 29 => {
                     link = self.frames.get(i as usize).and_then(|f| f.link);
+                    // Not the slots of a frame a native window holds elsewhere.
+                    let native = self.nwin.is_some()
+                        && (self.nwin_from..=self.nwin_to).contains(&(i as usize));
+                    if !native && let Some(s) = self.fslots_mut(i as usize) {
+                        tf.up_slots[k] = s.as_mut_ptr();
+                        tf.up_len[k] = s.len() as u64;
+                    }
                     u64::from(FRAME) << 29 | u64::from(i)
                 }
                 _ => {

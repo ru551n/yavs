@@ -6736,3 +6736,18 @@ percent between invocations, so the instruction counts are the reliable column a
   made in every run). Test: `units_loaded_late_do_not_block_the_stage_entries` (`tests/cache.rs`, with an edit of the late unit).
 - `hdlm_lfsr` (the lowered-library case) has no late units: its first runs find `a package body follows the prefix` (`vunit_lib.run_pkg`)
   and the closure's own entries are made on the second run as before; nothing to change there.
+
+## llvm: address spaces across blocks, and enclosing frames from the view (#684, #685, 2026-10-24)
+
+- Frame-mode code reset its facts about address registers to the preloaded ones at every block start, and an `Index` by a run-time position
+  lost the space of its base, so a loop over a table of the instance data called `yavs_rt_host` for every element. `Known::InstAny` is
+  an instance-data address at an unknown offset (an `Index` of an instance address keeps the space, as `Temp` and `Heap` did), and
+  `regs::spaces` computes a forward dataflow over the blocks (meet: both sides agree, entry: the preloaded instance addresses) of the
+  registers that hold an instance, temporary or heap address at a block start; `Gen::func` seeds `known` with them where it
+  used to take only the preloaded ones. Sound because the facts are properties of the IR (a register whose definitions all give the
+  space, on every path from the start), not of the code compiled; the entry points the interpreter jumps into see the same
+  values. A function whose blocks times candidates exceed 2^27 bits keeps block-local facts (`ponytail:` in `spaces`).
+- `TierFrame::up_slots`/`up_len` give the slots of the frames one and two static links up (0 length: a frame a native window holds elsewhere);
+  frame-mode code reads and writes a variable of an enclosing subprogram in place (`Known::Up`), where it asked `yavs_rt_host` and the
+  interpreter's object table and forgot the object again at the next host call (13 percent of `sc5_fifo_repack`). Native frames keep their
+  own lookup (`Mem::nslots`). No alias tag: the bytes are the interpreter's own frame slots, reachable by other addresses too.

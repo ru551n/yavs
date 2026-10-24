@@ -1924,7 +1924,10 @@ fn natives_called_from_native_frames() {
 /// `top(n)` keeps `v := n`, calls its nested `bump(k)` (adds `k` to the parent's `v` through
 /// `Up(1)` and calls `deeper`, nested in it, which reads both `v` through `Up(2)` and `bump`'s
 /// own local through `Up(1)`), and returns `v`.
-fn nested() -> (Program, FuncId) {
+///
+/// With `big` the nested procedure has a frame too large for a native frame, so it runs as
+/// frame-mode code that reads the enclosing frames from the view.
+fn nested(big: bool) -> (Program, FuncId) {
     let mut pb = ProgramBuilder::new();
     let top = pb.declare("top", FuncKind::Function, None);
     let bump = pb.declare("bump", FuncKind::Procedure, Some(top));
@@ -1965,6 +1968,9 @@ fn nested() -> (Program, FuncId) {
         let mut fb = pb.define(bump);
         let sk = fb.param("k", Width::B8, ParamClass::Value, Mode::In, None);
         b_local = fb.slot(8, 8);
+        if big {
+            fb.slot(8192, 8);
+        }
         stmt(&mut fb);
         let pk = fb.addr(AddrSpace::Frame, sk);
         let k = load(&mut fb, pk, Width::B8);
@@ -2046,7 +2052,7 @@ fn nested() -> (Program, FuncId) {
 /// the frames of the enclosing subprograms (also when those are native frames themselves).
 #[test]
 fn nested_subprograms_on_native_frames() {
-    let (prog, top) = nested();
+    let (prog, top) = nested(false);
     let p = Both::new(prog);
     assert_eq!(p.tier.0.native_frames(), 3);
     for n in [0u64, 1, 7, 1000, 1 << 40] {
@@ -2054,6 +2060,20 @@ fn nested_subprograms_on_native_frames() {
         assert!(a.is_ok(), "{a:?}");
         assert_eq!(a, b, "n {n}");
         assert!(entries <= 3, "n {n}: {entries} entries");
+    }
+}
+
+/// The same in frame-mode code: a variable of the enclosing subprogram one or two links up is
+/// read and written in place from the view, whatever is stored there.
+#[test]
+fn enclosing_frames_in_frame_mode_code() {
+    let (prog, top) = nested(true);
+    let p = Both::new(prog);
+    assert_eq!(p.tier.0.native_frames(), 1);
+    for n in [0u64, 1, 7, 1000, 1 << 40] {
+        let (a, b, _) = p.both(top, &[n]);
+        assert!(a.is_ok(), "{a:?}");
+        assert_eq!(a, b, "n {n}");
     }
 }
 

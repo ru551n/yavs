@@ -734,6 +734,10 @@ pub struct TierFrame {
     /// The high halves of the addresses of the frames one and two static links up
     /// (`AddrOf` of `Up(1)`, `Up(2)`); `u64::MAX` where there is none.
     pub up: [u64; 2],
+    /// The slots of those frames and their lengths (0: not offered, ask the host), so compiled
+    /// code reads a variable of an enclosing subprogram in place.
+    pub up_slots: [*mut u8; 2],
+    pub up_len: [u64; 2],
     /// Per instance signal (`Inst::SigVal`), where compiled code reads the `std_ulogic` codes
     /// of the current value itself: [`TierSig`]. `sigtab_len` entries; none when the machine
     /// runs without a kernel (elaboration). Filled once per entry, by [`TierHost::view`].
@@ -824,6 +828,8 @@ impl Default for TierFrame {
             frame: 0,
             stack: std::ptr::null(),
             up: [u64::MAX; 2],
+            up_slots: [std::ptr::null_mut(); 2],
+            up_len: [0; 2],
             sigtab: std::ptr::null(),
             sigtab_len: 0,
             known: u64::MAX,

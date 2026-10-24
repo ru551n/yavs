@@ -256,6 +256,8 @@ const MEM_TEMP_LEN: u64 = std::mem::offset_of!(Mem, fr.temp_len) as u64;
 const MEM_TEMP_CAP: u64 = std::mem::offset_of!(Mem, fr.temp_cap) as u64;
 const MEM_TEMP_BASE: u64 = std::mem::offset_of!(Mem, fr.temp_base) as u64;
 const MEM_UP: u64 = std::mem::offset_of!(Mem, fr.up) as u64;
+const MEM_UP_SLOTS: u64 = std::mem::offset_of!(Mem, fr.up_slots) as u64;
+const MEM_UP_LEN: u64 = std::mem::offset_of!(Mem, fr.up_len) as u64;
 const MEM_INST: u64 = std::mem::offset_of!(Mem, fr.inst) as u64;
 const MEM_INST_LEN: u64 = std::mem::offset_of!(Mem, fr.inst_len) as u64;
 const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
@@ -3170,6 +3172,12 @@ enum Known {
     Const(yavs_ir::ConstId, u64),
     /// The address of byte `.0` of the instance data.
     Inst(u64),
+    /// An address in the instance data at an offset the generator does not know (an `Index` by a
+    /// run-time position, or a fact carried from another block, `regs::spaces`).
+    InstAny,
+    /// An address in the slots of the frame `.0` static links up (1 or 2), at an offset the
+    /// generator does not track: frame-mode code reads them from the view (`TierFrame::up_slots`).
+    Up(u8),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
     /// An address in a heap object (what a `Deref` makes, or an index into it): not in a frame, the
@@ -3302,6 +3310,11 @@ fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
             space: AddrSpace::Inst,
             off,
         } => Some((dst, Known::Inst(off.into()))),
+        Inst::AddrOf {
+            dst,
+            space: AddrSpace::Up(d @ 1..=2),
+            ..
+        } => Some((dst, Known::Up(d))),
         Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
         Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
@@ -3329,6 +3342,8 @@ fn track(known: &mut [Option<Known>], fixed: &[Option<i64>], i: &Inst) {
                     at(o, p).map(|a| (dst, Known::Inst(a)))
                 }
                 // An offset past 4 GiB leaves the block through the instruction's own exit.
+                (Some(Known::Inst(_) | Known::InstAny), _) => Some((dst, Known::InstAny)),
+                (Some(Known::Up(d)), _) => Some((dst, Known::Up(d))),
                 (Some(Known::Temp), _) => Some((dst, Known::Temp)),
                 (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
                 _ => None,
@@ -4596,6 +4611,9 @@ impl Gen {
             // What the generator knows about registers holds until the next block: the
             // interpreter enters after a call only having run the block up to it.
             let block_start = leader.clone();
+            // Address spaces that hold at the start of a block, whatever path reached it (#684).
+            let space_facts = crate::regs::spaces(prog, f, &block_start)
+                .unwrap_or_else(|| vec![Vec::new(); n + 1]);
             for (i, inst) in f.code.iter().enumerate() {
                 if resumes(prog, f, inst) {
                     leader[i + 1] = true;
@@ -4971,7 +4989,21 @@ impl Gen {
                 if block_start[i] {
                     match inherit[i].take() {
                         Some(k) if native && ways[i] == 1 => *c.known.borrow_mut() = k,
-                        _ => c.known.borrow_mut().clone_from(&base_known),
+                        _ => {
+                            let mut k = c.known.borrow_mut();
+                            k.clone_from(&base_known);
+                            for &(r, sp) in &space_facts[i] {
+                                if let Some(x) = k.get_mut(r as usize)
+                                    && x.is_none()
+                                {
+                                    *x = Some(match sp {
+                                        crate::regs::Sp::Inst => Known::InstAny,
+                                        crate::regs::Sp::Temp => Known::Temp,
+                                        crate::regs::Sp::Heap => Known::Heap(None),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 if native {
@@ -8665,11 +8697,25 @@ impl Gen {
                 self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
                 return self.gep(self.tag(self.own_slots_cached(c), AA_SLOTS), o);
             }
+            // A variable of an enclosing subprogram, from the view (frame-mode code; a native
+            // frame finds the frames of its callers below).
+            if let (Some(Known::Up(d)), None) = (at, &c.nat) {
+                let k = 8 * u64::from(d - 1);
+                let base = self.mem_ld(c, MEM_UP_SLOTS + k, self.ptr);
+                let len = self.mem_ld(c, MEM_UP_LEN + k, self.i64);
+                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                let fits = self.icmp(IP::LLVMIntULE, n, len);
+                let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+                let inside = self.icmp(IP::LLVMIntULE, o, rest);
+                self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
+                return self.gep(base, o);
+            }
             // The temporary area and (reading) the instance data, whose space the generator
             // knows: the bytes the view holds, bounds checked, no call.
             let area = match at {
                 Some(Known::Temp) => Some((MEM_TEMP, MEM_TEMP_LEN)),
-                Some(Known::Inst(_)) if !write => Some((MEM_INST, MEM_INST_LEN)),
+                Some(Known::Inst(_) | Known::InstAny) if !write => Some((MEM_INST, MEM_INST_LEN)),
                 _ => None,
             };
             if let Some((base, len)) = area {

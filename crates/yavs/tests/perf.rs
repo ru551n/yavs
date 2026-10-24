@@ -778,6 +778,7 @@ mod llvm {
             ("llvm_native_frames", Min(3)),
         ]
     );
+    llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
     llvm_case!(
         llvm_clocked,
         "q=",

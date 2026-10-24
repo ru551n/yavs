@@ -3277,18 +3277,18 @@ a dynamic `Cat` of one block, the `numeric_std` unsigned `+`, `-` and `to_intege
 (a copy in the code), the temporary area, instance data and enclosing frames without a lookup, zeroing of temporaries by
 stores, and the interpreter's own `xstep` as the slow path of those in a variant (decisions "Cranelift code quality").
 Instructions of the whole process in G (compile thread included), one run each at the commit named, hosts shared, so
-`auto` rows move by several percent from run to run; the interpreter is 493.8 / 39.9 / 74.5 / 221.0:
+`auto` rows move by several percent from run to run; the interpreter (main of 2026-10-24 evening) is 450.0 / 37.5 / 56.4 / 188.0:
 
-| design | clift-auto | auto3 | LLVM auto cold / warm | `--tier=clift` eager |
-|---|---:|---:|---:|---:|
-| window generator (`vai_window_gen_interlock`) | 216.0 | 222.1 | 243.2 / 191.3 | 275 (389.5 before) |
-| neorv32_single_min | 41.0 | 41.3 | 38.8 / 38.8 | 91.7 |
-| fletcher_bufferwriter_512 | 75.7 | 78.3 | 74.8 / 74.7 | 107.7 |
-| poc_arith_addw | 172.5 | 176.8 | 188.4 / 151.8 | 183.6 (234.5 before) |
+| design | clift-auto | auto3 | LLVM auto cold / warm |
+|---|---:|---:|---:|
+| window generator (`vai_window_gen_interlock`) | 195.9 | 204.1 | 235.5 / 188.4 |
+| neorv32_single_min | 38.4 | 38.8 | 36.4 / 36.4 |
+| fletcher_bufferwriter_512 | 57.5 | 57.7 | 56.9 / 56.9 |
+| poc_arith_addw | 148.1 | 145.4 | 152.7 / 115.0 |
 
-Where it stands: on the testbenches that run library code and numeric_std (window generator, poc) Cranelift is 54 and 22
+Where it stands: on the testbenches that run library code and numeric_std (window generator, poc) Cranelift is 56 and 21
 percent below the interpreter and level with or below LLVM `auto` cold. On neorv32 and fletcher it does not beat the
-interpreter and neither does LLVM: the kernel is 35 to 47 percent of the instructions and the compiled clocked processes
+interpreter (2 percent above; LLVM is 3 percent below on neorv32 and level on fletcher): the kernel is 35 to 47 percent of the instructions and the compiled clocked processes
 cost what the interpreted ones do (eager Cranelift runs neorv32 in 39.3 G against 38.8 G interpreted, plus 51 G of
 translation of all 1900 functions; with `YAVS_CLIFT_OPT=none YAVS_CLIFT_RA=single_pass` the translation is 27 G). Tools:
 `YAVS_CLIFT_PERFMAP=1` with `perf record -e instructions:u` and `perf report` names the generated functions;

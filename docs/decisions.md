@@ -7381,9 +7381,11 @@ by `YAVS_COUNTERS=pc`) showed which instructions still left compiled code: `Slic
   `LogicOp` (`and`, `or`, `xor`, their negations, `not`, `to_x01`, `to_ux01`; block by block, the planes beyond the length
   zero), `NewFrame` and `Fill` (a call `clift_fill` for the repeat) are inline. `Cat` of a logic array whose piece lengths are
   known only at run time is one block of at most 64 elements (`cat_dyn`), else the instruction's own form.
-- **`numeric_std` natives on their small path** (`+`, `-` of two unsigned vectors, `to_integer` of one): operands of 1 to 64
-  elements without a metavalue, as `yavs_interp::ieee::small` reads them and `put_down` writes the result (fat pair, descriptor and
-  plane block in temporary memory); any other operand runs the native (`native_direct`) with no side effect made before.
+- **Light `numeric_std` natives in place** (`ieee_native`, the LLVM generator's `ieee_fast` ported: `native::ieee_fast`, `ieee_layout`
+  and `Arg` are shared): operands of 1 to 64 elements without a metavalue as `yavs_interp::ieee::small` reads them, results
+  as `put_small` writes them (fat pair, descriptor and plane block in temporary memory); any other operand, and every case that
+  warns or fails, runs the native (`native_direct`) with nothing done before. `native::leaves` counts such a call as not
+  leaving the compiled code for both generators.
 - **Reads without a lookup** (`host`): a constant (up to 4 KiB, `ConstData::Bytes`) from a copy in the generated code,
   `Known::Temp` from the temporary area, `Known::Inst`/`InstAny` from instance data, `Known::Up` from the view's enclosing
   frames (frame mode): the bounds test and a load, as the LLVM generator does. A temporary of known size is zeroed by stores

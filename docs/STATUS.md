@@ -7098,3 +7098,50 @@ The LEON3 integer unit's `comb` (VHDL-level `--profile`, 100 us, a loaded host s
 what is left in it are the reads and drives of single fields of other records (495 reads, 93 drives). `sigrec_copy` ops 52 919 to 29 817. In the
 233-leaf design the interpreter's two loops are now 32 % of the instructions and the kernel's per-leaf work (`assign_code_fast`, `commit_code`,
 `run_batch`, `commit_out`) 54 %, which `docs/design/record-signal-layout.md` and the equal-value drop of the kernel lane address.
+
+## Window generator against sim1: where the time is now, measured by layer (#493, #520, #673, #680, 2026-10-24)
+
+`vai_window_gen_interlock`, bench build of main at 8a9cf87e, world of `tools/realbench`, core 9, host load average 20 to 30 (wall and cycles
+swing by up to 50 percent between identical runs, instructions by 7 percent under `--tier=auto`, so instruction shares are quoted).
+`tools/realbench/run.py --ref sim1 --runs 3 --tiers interp,auto,auto-cold`: sim1 7.52 s (68.2 G instructions), interp 47.2 s (6.3x wall, 7.3x
+instructions), auto warm 14.3 s (1.90x, 2.63x), auto cold 16.7 s (2.22x, 3.64x). `perf stat` user counters on a quieter pass: sim1 20.2 G cycles
+and 65.7 G instructions in 5.4 s, auto warm 61 G cycles and 171 to 191 G instructions in 12.8 s.
+
+Layers of a warm `--tier=auto` run (`perf record -e instructions:u` with `YAVS_PERFMAP=1 YAVS_LLVM_PERFMAP=1`, share of instructions / of cycles):
+
+| layer | instructions | cycles |
+|---|---:|---:|
+| compiled code (`[JIT]`), of which the pointer-table accessors `get` `set` `length` 18.3, `unsafe_push` `unsafe_pop` 5.3, the codec loops (`encode` `decode` `to_byte_array` `from_byte_array` `"and"` `"srl"` `pop_fix_string` `push_variable_string`) 12.5 | 37.9 | 35.5 |
+| interpreter loops (`run_ops`, two instantiations) | 25.8 | 28.6 |
+| interpreter helpers (`lcopy`, `copy_bits`, `subtype_check`, `obj_mut`, `drive`, `Pre::fill`) | 11.8 | about 8 |
+| `TierHost` (`native_direct` 2.8, `native_step` 1.5, `object` 1.2) and `yavs_rt_*` callbacks | 9.7 | about 6 |
+| kernel (`cycle`, `finish_direct`, `run_batch`, `commit_out`) | 4.3 | about 4 |
+| libc (`malloc`, `free`, `memmove`, `memset`) | 3.6 | about 3 |
+| `ieee` natives (`put_small`, `small`, `fat_dim`, `to_unsigned`) | 3.4 | about 2.5 |
+| compile thread (links of cached objects and the few compiles of a warm run) | 1.9 | 2.8 |
+
+The reference simulator on the same test: 61 percent compiled code (about 40 G instructions), 23 percent runtime, 12 percent code generation
+(about 8 G); its compiled code is about 12 G cycles, ours about 22 G in the pointer-table accessors and the codec loops alone.
+The VHDL-level profile (`--profile`): `bus_process` of the stream slave (with `check_axi_stream`) 35 percent of the samples, the testbench
+`main` 30, `walk_control` 5, `window_hold_check` 5; 457 000 clock cycles, 2.9 M process runs, 19 M events: about 417 000 instructions per clock
+cycle, nearly all of it testbench-side message passing (a 576-bit expected window per beat pushed through the queue byte by byte). The compiled
+tier makes 75 M `get` calls of 285 instructions and about 130 cycles each (instruction histogram of `f46_n`, approximate: 30 instructions of frame entry, 4 object
+look-ups of about 18 instructions, 3 dope tests of about 25, 3 offset guards of about 10); callbacks to the host by instruction kind
+(`YAVS_COUNTERS=kinds`) are only 3 M in the whole run (`CallProt` 1.2 M, `Call` 0.5 M, `Drive` 0.4 M, `NewFill` 0.2 M, `LCopy` 0.15 M).
+
+Cold against warm: 241 to 245 G instructions against 171 to 191 G. The compile thread is 13 to 14 G of the difference (85 compiles, 2.9 s of
+compile thread time on the timing core, 12 microseconds of CPU per optimised LLVM instruction, 110 000 of them, codegen 70 percent and the
+lean passes 25; the profile of the compile thread is flat: instruction selection, register allocation, nothing above 2 percent), the other
+45 G is the main thread interpreting what is not compiled yet: `bus_process` and `check_axi_stream` are never compiled in a cold run of 15 s,
+`encode` is first seen at 8 s (150 ms warm). On one pinned core the compile thread's CPU is wall time (cold 16.7 s against warm 14.3 s); a
+second core (9,10) gave 17 to 18 s against 19 to 22 s on the same loaded host, a hint only.
+
+What was measured and gives nothing (all deterministic where `--tier=llvm`, `perf stat` user instructions, second run on a filled cache):
+
+- Forcing the interpreted processes and subprograms the policy refuses (`YAVS_AUTO_FORCE` on 15 names: `walk_control`, `window_hold_check`,
+  `main`, `assemble`, `present`, `control`, `enqueue_frame_expected`, `check_equal`, `put_message`, `LocalRandInt`, `push_tile`, `random_frame`,
+  `check_field`, `_p3`, `bus_process`): 173 to 178 G instructions against 175 G, cycles level.
+- `--tier=llvm` (everything compiled before time 0): 236 G instructions and 87.5 G cycles in 18.4 s (init 1.8 s warm), against 191 G and 61 G
+  of auto; with the lean pipeline everywhere 222.0 G; plus `loop-mssa(licm)` 226.4 G (+2.0 percent); `gvn` and `licm` 225.5 G (+1.6 percent).
+  The loops of the codec do not hoist: their object look-ups sit behind calls and slow-path exits.
+- Compiling `bus_process` (2 133 IR) gives the same sampled time as interpreting it (3.0 s compiled, 3.4 s interpreted), as #679 says.

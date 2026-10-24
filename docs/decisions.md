@@ -7102,3 +7102,20 @@ instructions per leaf for a read and a drive (the integer unit of the GRLIB LEON
   per-leaf event stamp would skip the unchanged ones) and a scatter drives every leaf (dropping equal-value drives of unobserved
   signals is the kernel's, #677 comment of 2026-10-24).
 
+
+## Window generator: no pass pipeline or forced compile changes the run; what is left is the accessor chain (#493, #679, #680, 2026-10-24)
+
+Measurements in docs/STATUS.md "Window generator against sim1: where the time is now". Decisions (none changes code):
+
+- **No `licm` or `gvn` in the lean pipeline.** Whole program under `--tier=llvm` with `YAVS_LLVM_PIPELINE`: lean 222.0 G instructions, with
+  `loop-mssa(licm)` 226.4 G, with `gvn` and `licm` 225.5 G. The loop-invariant object look-ups of the codec loops are not hoisted because the
+  calls and slow-path exits of the loop body may change the object table. A hoist needs the generator to know which instructions keep the
+  table (`keeps_objects`), as a known object across a loop, not a general pass.
+- **Compile policy facts for #680 and #673** (the policy is not changed here): forcing the 15 refused or interpreted functions leaves a warm run
+  where it was; in a cold run the compile thread is 13 to 14 G instructions of the 55 to 70 G cold overhead and the rest is code that is not
+  compiled yet, so lower compile cost per LLVM instruction (110 000 optimised LLVM instructions for 85 compiles, a flat profile) helps the second
+  half only through the latency.
+- **The remaining distance to sim1 is the pointer-table and codec chain of the test runner**: 36 percent of the instructions of a warm run are
+  75 M `get`, 40 M `set` and 13 M each of `length`, `unsafe_push`, `unsafe_pop` (call counts of #493), `get` at about 285 instructions per call. The four object look-ups and three dope tests of one `get` are the design of generational handles and bounds
+  checked descriptors; the flat heap view (#655) and larger inlining (#493) were tried and lost. The option left is the one on #493 (native
+  implementation of the test runner's pointer tables and queue), which is the maintainer's to decide.

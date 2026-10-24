@@ -7887,3 +7887,57 @@ part names: `Program::pkg_deps`, the `AddrOf Pkg` of the blocks before the body)
 - **Folds also in the body** of a copy for a read of the same packages' constants, into integer registers only (the rule for instance data).
 - **Measured**: `docs/STATUS.md` "Package constants in specialised copies"; unit case `a_copy_knows_what_a_package_constant_made`
   (`crates/yavs-ir/tests/copies.rs`).
+
+## Native ieee calls: array operands as values (#697, 2026-10-24)
+
+- **Decision (user, 2026-10-24: "IR-level operand convention for native calls"): a `CallNative` of a native `yavs.ieee.*` takes each array
+  argument as four registers `data, left, right, dir` (`yavs_ir::ieee::ARRAY_REGS`: the address of the first plane block, the bounds of
+  the one dimension and its direction as the descriptor stores them) and each scalar as one. The argument list is the formals in order, so
+  `a + b` of two vectors has 8 registers, `resize (a, n)` 5. The verifier checks the register count from the key of the symbol
+  (`ieee::arg_regs`; the `@<function id>` of a native that may give the call back is ignored); every other native keeps the fat pair.**
+  Why: the fat pair `[data, dope]` in temporary memory cost `NewPair` + `FatRoot` per operand (the root is recorded until the statement
+  ends: the interpreter keeps the temporary and `Stmt` does more work while one is recorded, and compiled code made a host callback for it),
+  `NewDope` where lowering had to build the descriptor, and three dependent reads in the native (pair, descriptor, planes). With values,
+  nothing is built and the native reads only the planes; the registers are live at the call, so the heap objects an operand points into stay
+  pinned as for any `Ptr` register and no `TempRoot` is needed.
+- Lowering (`expr.rs` `Conv::{Body, Fat, Flat}`, `Fx::array_cells`): `Flat` for the `ieee` natives and the user reduction idiom (which runs
+  the `Reduce` native), `Fat` for every other native, `Body` for subprograms. The bounds of an operand are the registers its descriptor was
+  made from when the `MakeDope` is in the same block (`Fx::made_dopes`, cleared by a `Move`, so a part register is never stale), else three
+  loads from the descriptor (`dope_parts`). A descriptor that only the native read was a block that only a `MakeDope` writes: the existing
+  dead-code sweep (`opt.rs` `dce`) removes the `Alloc` and the `MakeDope` once the call no longer reads them, so lowering does not have to
+  know whether something else reads the descriptor.
+- The old path is not kept next to the new one for "unusual" operands: an operand without a known descriptor (a parameter, a variable, the
+  result of another native, an individually associated or converted formal) takes the three loads, so there is one convention to implement in
+  every tier and in a Cranelift backend; a call that gives the body back (`Syn`, `Str`, `Div`, `NumGate` natives) makes the descriptors the
+  body needs in temporary memory (`Machine::ieee_body`).
+- Interpreter: `Op::CallIeee` copies up to `pre::IEEE_CELLS` (8) cells (was 4). `ieee::small` reads only the planes (it took the pair and
+  the descriptor too), `dim_at` replaces `fat_dim`; the positions after an array operand are `A1` (4). `small_fat` is the fat-pair form the
+  implicit `to_string`-family natives still use. The compiled tier needed nothing: it passes the cells of the registers to the same functions
+  (`native_direct`, `step`), and a call of at most 8 registers still qualifies for the direct form.
+- Optimiser: a `Load` of a word of a block that a `MakeDope` wrote on the path is the register the word was made from (`Key::Part`,
+  `Opt::iat` finds the block and offset of an `Index` at a constant offset, killed by stores and calls like the other memory facts, `opt.rs`
+  `forward`). Without it the loads that lowering emits for the bounds of a concatenation (a `Select` between two descriptors folded away)
+  stayed in the code; with it the bounds of a freshly made vector are the registers or constants they were made from.
+- The sharing of a repeated `to_integer` (#520, `opt/sink/calls.rs`) keys a call on `native, canon(data), left, right, dir` instead of the one
+  fat-pair argument, so it still finds the pairs. The dump-shape test in `tests/sink.rs` does not tell (it passed with the sharing lost);
+  the work-counter design `ieee_share` (ceiling 3630 ops, 3920 without the sharing, 4720 before both) does.
+- Results stay a fat pair (the natives that give the call back return what the VHDL body does, somewhere else). Tried and dropped: a
+  lowering that takes the data and descriptor addresses of the result block (`dst + 40`, `dst + 16`, the contiguous layout `put` writes)
+  instead of loading them: the op count is the same (two `IndexImm` for `Load` + `LoadOff`) and the instruction count moved by -0.5 percent
+  only, for a layout contract between lowering and the natives. A result chained into the next native (`to_integer (a + b)`) now costs the
+  three loads of its descriptor (the bounds a fat pair let the native read); a three-word load op or natives returning the bounds in
+  registers would remove them, not done (see STATUS.md).
+- Not done: the result written into a buffer of the caller (the native allocates and appends its result block in one go, 15 to 25
+  instructions with `put_small`, and the size is dynamic for most natives, so the caller would need arithmetic to size it), natives
+  returning the bounds in registers (needs a multi-register result in the IR), and a three-word load op for the bounds of a result that is
+  chained into the next native.
+- Measured, `poc_arith_addw`, interpreter, first 300 us, `op-census` bench build before and after: ops 200.1 M to 185.8 M (`NewPair`
+  11.9 M, `NewDope` 7.8 M and `FatRoot` 2.3 M gone; 5.2 M `Load`, 1.8 M `LoadOff`, 2.8 M `IndexImm` added), instructions 281.6 G to 261.1 G
+  (-7.3 percent), output identical. Whole test, bench build, warm cache, core 14: interpreter instructions 220.5 G to 202.7 G (-8.1 percent),
+  cycles (median of 3) 67.0 G to 61.7 G (-7.9 percent); `--tier=auto` instructions 150.4 G to 139.2 G (-7.5 percent), cycles 54.6 G to
+  48.9 G; `realbench --compare` wall, interp 14.12 s to 12.66 s, llvm 15.96 s to 15.38 s, auto 10.99 s to 10.07 s. `neorv32_single_min`
+  interp -1.4 percent, llvm -2.5 percent instructions; `poc_cache_cpu`, `sc5_fifo_repack`, `uvvm_util_rand`, `en_cl_fix_pkg` within 0.5
+  percent (their `ieee` calls are few). Over all 42 realbench tests (interp and llvm): instruction geomean 1.00 and 0.99, no instruction
+  ratio above 1.02. Work counters of the perf designs that call `ieee` natives fell by up to 29 percent (`reduce_idiom`), `slice_memo`
+  rose by 1.4 percent (its bound has room); the bounds were lowered and `ieee_operands` added. Differential tests (510 designs, interp,
+  llvm and auto, 1 and 4 threads) are identical.

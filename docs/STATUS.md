@@ -7579,3 +7579,32 @@ Instructions of the whole run (interp, memo of #701 off in both columns, so only
 to 137.79 G (+0.2 %), 1060.5 us 673.55 G to 670.57 G (-0.4 %): the processes it helps are a small part of the run, the memo of #701 is the
 larger change there. `comb` 1252 keeps 42 `LayoutOf` (its cause was not looked into); the unit case is
 `a_copy_knows_what_a_package_constant_made` (`crates/yavs-ir/tests/copies.rs`).
+
+## Native `ieee` calls take array operands as values (#697, 2026-10-24)
+
+(`docs/decisions.md` "Native ieee calls: array operands as values".) A call of a `numeric_std`, `std_logic_1164`, `numeric_bit` or
+`math_real` native used to pass each array as the address of a fat pair built in temporary memory (`NewPair`, `FatRoot`, `NewDope`) that the
+native read back through three dependent reads. An array argument is now four registers (`data, left, right, dir`), the verifier checks the
+count from the symbol's key, lowering takes the bounds from the registers the descriptor was made from (else loads them), the write-only
+descriptor goes away in the existing dead-code sweep, `Op::CallIeee` takes 8 cells and `ieee::small` reads only the planes. Other natives keep the
+fat pair; results stay a fat pair. Bench builds (`tools/build-bench.sh --features llvm`) of main before and after, warm cache, core 14:
+
+| test | instructions before | after | cycles before | after |
+|---|---:|---:|---:|---:|
+| `poc_arith_addw` interp | 220.5 G | 202.7 G (-8.1 %) | 67.0 G | 61.7 G (-7.9 %) |
+| `poc_arith_addw` `--tier=auto` | 150.4 G | 139.2 G (-7.5 %) | 54.6 G | 48.9 G (-10 %) |
+| `poc_arith_addw` `--tier=llvm` | 210.2 G | 196.7 G (-6.4 %) | | |
+| `neorv32_single_min` interp / llvm | 38.3 G / 52.6 G | 37.8 G / 51.3 G | | |
+
+`realbench --compare` wall, `poc_arith_addw`: interp 14.12 s to 12.66 s, llvm 15.96 s to 15.38 s, auto 10.99 s to 10.07 s. `poc_cache_cpu`,
+`sc5_fifo_repack`, `uvvm_util_rand` and `en_cl_fix_pkg` move by less than 0.5 percent (few `ieee` calls; the PoC `ffdre` cost is #701). All 42
+tests, interp and llvm: instruction geomean 1.00 and 0.99, no ratio above 1.02. The differential corpus (510 designs; interp, llvm, auto; 1 and 4
+threads), `cargo test --workspace` and `-p yavs-llvm -p yavs --features llvm` are green; output is byte-identical.
+
+Against main with the sharing of the repeated `to_integer` (#520, adapted to the value form; the optimiser now also gives the bounds of a
+freshly made descriptor back without loads), `realbench --compare`, core 14: `poc_arith_addw` wall interp 12.19 s to 11.48 s (instructions
+-7 %), llvm -6 %, auto 10.09 s to 9.33 s (-7 %); `poc_cache_cpu` llvm -7 % instructions, `neorv32_single_min` -1 to -3 %; the others within 1 %.
+
+What is left: a result chained into the next native (`to_integer (a + b)`) loads the three bounds of its descriptor (a three-word load op, or
+natives returning the bounds in registers, would remove that); the callback layer of the compiled tier is #698; sharing the two `to_integer`
+of a check is #520.

@@ -952,7 +952,7 @@ pub(crate) enum Op {
         q: u16,
         l: u16,
     },
-    /// `Inst::CallNative` of a native `ieee` subprogram with at most four arguments, none a signal:
+    /// `Inst::CallNative` of a native `ieee` subprogram with at most [`IEEE_CELLS`] cells, none a signal:
     /// the call without the bookkeeping other natives need (they may reach the heap, files and
     /// the like; these work on temporary memory only).
     CallIeee {
@@ -1259,9 +1259,12 @@ fn scalar_image(
     .then_some((a, ty))
 }
 
-/// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most four arguments, none a
-/// signal, not the procedure `uniform` (which writes through its arguments). Such a native
-/// allocates only temporary memory and never collects ([`crate::TierHost::native_light`]).
+/// The most argument cells of an `Op::CallIeee`: two arrays of `yavs_ir::ieee::ARRAY_REGS`.
+pub(crate) const IEEE_CELLS: usize = 8;
+
+/// Whether the native is an `ieee` one that `Op::CallIeee` runs: at most [`IEEE_CELLS`] argument
+/// cells, none a signal, not the procedure `uniform` (which writes through its arguments). Such a
+/// native allocates only temporary memory and never collects ([`crate::TierHost::native_light`]).
 pub fn light_ieee(
     prog: &Program,
     f: &Func,
@@ -1277,7 +1280,7 @@ pub fn light_ieee(
     let Some(regs) = f.regs(args) else {
         return false;
     };
-    regs.len() <= 4
+    regs.len() <= IEEE_CELLS
         && regs
             .iter()
             .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig))

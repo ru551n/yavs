@@ -11,6 +11,7 @@ use yavs_sem::types::TypeKind;
 use yavs_sem::{Db, DeclId, ExprId, ScopeId, SubtypeId, TypeId};
 
 use crate::composite::scalar_w;
+use crate::expr::Conv;
 use crate::expr::V;
 use crate::func::{Fx, func_of};
 use crate::{Obj, R, Space};
@@ -211,7 +212,7 @@ impl Fx<'_, '_> {
                 self.load(a, Width::B8, RegTy::Handle)
             }
         };
-        let mut cells = self.cells(sp, args, span, false)?;
+        let mut cells = self.cells(sp, args, span, Conv::Body)?;
         self.named_return_cells(callee, scope, res, span, &mut cells)?;
         let args = self.fb.regs(&cells);
         let Some(ret) = sp.ret else {

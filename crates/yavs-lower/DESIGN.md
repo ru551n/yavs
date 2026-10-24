@@ -106,7 +106,9 @@ a call into your module in a small commit.
   operated type as `NativeRef::ty`; `'image` is `yavs.attr.image` (type mark and 2019 object
   forms; a 2019 array or record value as a fat pair, formatted by the interpreter), `'value`
   `yavs.attr.value` (taking the string as a fat pair address). Array and record arguments to
-  natives are fat pair addresses.
+  natives are fat pair addresses, except for the `ieee` natives, whose arrays are the values
+  `data, left, right, dir` (`Conv::Flat`, #697): the bounds are the registers the descriptor was made
+  from in the same block (`Fx::made_dopes`, filled by `Inst::MakeDope`), else loaded from it.
 - `PackageIr` per package with run-time objects (`Lowerer::package`, before the
   architectures): package data `AddrSpace::Pkg(index)` written once by its `init` thunk under
   `yavs_interp::init_package` (constants that are not locally static, composites of static

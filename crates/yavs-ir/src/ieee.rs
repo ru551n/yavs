@@ -464,17 +464,43 @@ fn short(ty: &str) -> Option<String> {
     Some(name.strip_prefix("unresolved_").unwrap_or(name).to_string())
 }
 
-/// Whether the parameter `i` of the subprogram with this reduced key is an array (passed to a
-/// native as the address of a fat pair, to the body as data and descriptor).
-pub fn array_param(key: &str, i: usize) -> bool {
-    let params = key
-        .split_once('(')
+/// The parameter types of the subprogram with this reduced key (a `@<function id>` suffix of a
+/// symbol's key is ignored).
+fn param_types(key: &str) -> impl Iterator<Item = &str> {
+    let key = key.split_once('@').map_or(key, |k| k.0);
+    key.split_once('(')
         .and_then(|(_, r)| r.split_once(')'))
-        .map_or("", |(p, _)| p);
-    params
+        .map_or("", |(p, _)| p)
         .split(',')
-        .nth(i)
-        .is_some_and(|t| ["unsigned", "signed", "std_ulogic_vector", "bit_vector"].contains(&t))
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether the parameter `i` of the subprogram with this reduced key is an array (passed to a
+/// native as `data, left, right, dir`, to the body as data and descriptor).
+pub fn array_param(key: &str, i: usize) -> bool {
+    param_types(key).nth(i).is_some_and(|t| {
+        [
+            "unsigned",
+            "signed",
+            "std_ulogic_vector",
+            "std_logic_vector",
+            "bit_vector",
+        ]
+        .contains(&t)
+    })
+}
+
+/// The registers of an array argument of a native `ieee` call, as values: the address of the
+/// first plane block, `left`, `right` and the direction (`0` to, `1` downto; the descriptor's
+/// cells). No fat pair or descriptor is built for the call (#697).
+pub const ARRAY_REGS: usize = 4;
+
+/// Argument registers of a `CallNative` of the native with this reduced key: one per scalar
+/// parameter and [`ARRAY_REGS`] per array parameter (the verifier checks it).
+pub fn arg_regs(key: &str) -> usize {
+    (0..param_types(key).count())
+        .map(|i| if array_param(key, i) { ARRAY_REGS } else { 1 })
+        .sum()
 }
 
 /// Whether the native of `op` may hand the call back to the VHDL body.
@@ -514,5 +540,28 @@ mod tests {
         );
         // A type of a user package keeps the subprogram VHDL.
         assert_eq!(key("ieee.numeric_std.f(work.p.t)work.p.t"), None);
+    }
+
+    #[test]
+    fn argument_registers() {
+        // Four registers per array, one per scalar; the 1993 `std_logic_vector` is an array too.
+        for (k, n) in [
+            ("numeric_std.\"+\"(unsigned,unsigned)unsigned", 8),
+            ("numeric_std.\"+\"(unsigned,integer)unsigned", 5),
+            ("numeric_std.\"+\"(integer,signed)signed", 5),
+            ("numeric_std.to_unsigned(integer,integer)unsigned", 2),
+            (
+                "std_logic_1164.\"and\"(std_logic_vector,std_logic_vector)std_logic_vector@7",
+                8,
+            ),
+            (
+                "std_logic_1164.to_01(std_ulogic_vector,std_ulogic)std_ulogic_vector",
+                5,
+            ),
+            ("std_logic_1164.rising_edge(std_ulogic)boolean", 1),
+            ("math_real.uniform(integer,integer,real)", 3),
+        ] {
+            assert_eq!(arg_regs(k), n, "{k}");
+        }
     }
 }

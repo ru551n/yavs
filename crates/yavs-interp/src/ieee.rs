@@ -4,9 +4,9 @@
 //! Each function is a port of the body it replaces: same result bounds, same handling of
 //! metavalues, same warning texts and severities. `lib/ieee/*/` is the reference; the
 //! differential test (`tests/ieee_native.rs`) runs both on the same operands. Calling
-//! convention: `native.rs` (arrays as the address of a fat pair, scalars as cells).
+//! convention: array arguments are four cells (`data, left, right, dir`), scalars one (#697).
 
-use yavs_ir::ieee::{Cmp, Form, Gate, Math, Op, Shift, Syn};
+use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Gate, Math, Op, Shift, Syn};
 use yavs_ir::{DOPE_DIM_BYTES, TyId, Width, dim_len};
 use yavs_kernel::{Ctx, LogicVec, Severity};
 use yavs_logic::{BitVec, StdULogic};
@@ -74,14 +74,17 @@ fn int(a: &[u64], i: usize) -> R<i64> {
     Ok(arg(a, i)? as i64)
 }
 
-/// The data address, bounds and direction of the array operand `i` (the address of its fat pair).
-#[inline]
-fn fat_dim(m: &Machine, a: &[u64], i: usize) -> R<(u64, i64, i64, bool)> {
-    let fat = arg(a, i)?;
-    let w = m.rd_hot(fat, 16)?;
-    let (data, dope) = (le8(&w[0..8]), le8(&w[8..16]));
-    let (left, right, d) = m.dim_of(dope, 0)?;
-    Ok((data, left, right, d == 1))
+/// Cell of the second array operand: an array argument is [`ARRAY_REGS`] cells, `data, left,
+/// right, dir` (`yavs_ir::ieee`); this is where the next argument after one array starts.
+const A1: usize = ARRAY_REGS;
+
+/// The data address, bounds and direction of the array operand at cell `i`.
+#[inline(always)]
+fn dim_at(a: &[u64], i: usize) -> R<(u64, i64, i64, bool)> {
+    match a.get(i..i + ARRAY_REGS) {
+        Some(&[data, left, right, d]) => Ok((data, left as i64, right as i64, d == 1)),
+        _ => Err(ice(format!("native array argument at {i} missing"))),
+    }
 }
 
 #[inline(always)]
@@ -90,7 +93,7 @@ fn le8(b: &[u8]) -> u64 {
 }
 
 fn vh(m: &Machine, a: &[u64], i: usize) -> R<Vh> {
-    let (data, left, right, down) = fat_dim(m, a, i)?;
+    let (data, left, right, down) = dim_at(a, i)?;
     let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
     Ok(Vh {
         v: m.planes(data, n)?,
@@ -160,13 +163,25 @@ fn words_slow<const N: usize>(m: &Machine, addr: u64) -> Option<[u64; N]> {
     Some(std::array::from_fn(|k| le8(&b[k * 8..k * 8 + 8])))
 }
 
-/// [`Small`] of the array operand `i`, or `None` for anything else (empty, longer, a
+/// [`Small`] of the array operand at cell `i`, or `None` for anything else (empty, longer, a
 /// metavalue, an unreadable operand), which the general path handles.
 #[inline(always)]
 pub(crate) fn small(m: &Machine, a: &[u64], i: usize) -> Option<Small> {
+    let &[data, left, right, d] = a.get(i..i + ARRAY_REGS)? else {
+        return None;
+    };
+    small_of(m, data, left as i64, right as i64, d == 1)
+}
+
+/// [`small`] of the array operand `i` of a native that takes arrays as fat pairs.
+pub(crate) fn small_fat(m: &Machine, a: &[u64], i: usize) -> Option<Small> {
     let [data, dope] = words::<2>(m, *a.get(i)?)?;
     let [left, right, d] = words::<3>(m, dope)?;
-    let (left, right, down) = (left as i64, right as i64, d == 1);
+    small_of(m, data, left as i64, right as i64, d == 1)
+}
+
+#[inline(always)]
+fn small_of(m: &Machine, data: u64, left: i64, right: i64, down: bool) -> Option<Small> {
     let (lo, hi) = if down { (right, left) } else { (left, right) };
     let n = usize::try_from(hi.checked_sub(lo)?).ok()?.checked_add(1)?;
     if n > 64 {
@@ -367,7 +382,7 @@ const GATES: [Gate; 6] = [
 
 fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let g = GATES[G as usize];
-    if let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, 1))
+    if let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1))
         && l.n == r.n
     {
         let bits = match g {
@@ -380,7 +395,7 @@ fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, 
         };
         return put_small(m, l.n, bits, 1, l.n as i64, false).map(Some);
     }
-    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     if l.v.len() != r.v.len() {
         let n = gate_name(g);
         report(
@@ -408,7 +423,7 @@ fn vec_gate<const G: u8>(m: &mut Machine, ctx: Cx<'_, '_, '_>, _: Option<TyId>, 
 /// with the bounds `(n-1 downto 0)`. Unequal lengths go back to the body.
 fn num_gate<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let g = GATES[G as usize];
-    if let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, 1))
+    if let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1))
         && l.n == r.n
     {
         let bits = match g {
@@ -421,7 +436,7 @@ fn num_gate<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a:
         };
         return put_down(m, l.n, bits).map(Some);
     }
-    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     if l.v.len() != r.v.len() {
         return fallback(m);
     }
@@ -525,7 +540,7 @@ fn to_01(v: &LogicVec, xmap: StdULogic) -> LogicVec {
 
 fn to_01_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     let l = vh(m, a, 0)?;
-    let x = sul(a, 1)?;
+    let x = sul(a, A1)?;
     put(m, &Vh::down(to_01(&l.v, x)))
 }
 
@@ -535,7 +550,7 @@ fn to_01_vec(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> 
 /// `or` the same with `1` and `0` swapped; `xor` `U` if any is `U`, else `X` if any is not
 /// `0 1 L H`, else the parity of the ones. The bodies fold the same tables element by element.
 fn reduce<const G: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    let (data, left, right, down) = fat_dim(m, a, 0)?;
+    let (data, left, right, down) = dim_at(a, 0)?;
     let n = dim_len(left, right, down).ok_or_else(|| Fault::Runtime("array too long".into()))?;
     let n = usize::try_from(n).map_err(|_| Fault::Runtime("array too long".into()))?;
     let b = match n {
@@ -848,7 +863,7 @@ fn syn_add<const SUB: bool, const SIGNED: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
-    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     let (Some(x), Some(y)) = (bin_down(&l), bin_down(&r)) else {
         return fallback(m);
     };
@@ -865,7 +880,7 @@ fn syn_mult<const SIGNED: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
-    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     let (Some(x), Some(y)) = (bin_down(&l), bin_down(&r)) else {
         return fallback(m);
     };
@@ -882,7 +897,7 @@ fn syn_less<const OR_EQUAL: bool, const SIGNED: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
-    let (l, r) = (vh(m, a, 0)?, vh(m, a, 1)?);
+    let (l, r) = (vh(m, a, 0)?, vh(m, a, A1)?);
     let plain = |v: &Vh| {
         let b = bin_down(v)?;
         (LogicVec::from_bitvec(&b) == v.v).then_some(b)
@@ -924,7 +939,7 @@ fn conv_vec<const FROM_SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     let l = vh(m, a, 0)?;
-    let size = int(a, 1)?;
+    let size = int(a, A1)?;
     let Some(b) = l.v.to_bitvec() else {
         return fallback(m);
     };
@@ -1151,7 +1166,7 @@ fn add_small<const SUB: bool, const SIGNED: bool, const FORM: u8>(
 ) -> R<Option<u64>> {
     let (n, x, y) = match FORM {
         0 => {
-            let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, 1)) else {
+            let (Some(l), Some(r)) = (small(m, a, 0), small(m, a, A1)) else {
                 return Ok(None);
             };
             let n = l.n.max(r.n);
@@ -1165,7 +1180,7 @@ fn add_small<const SUB: bool, const SIGNED: bool, const FORM: u8>(
             let Some(l) = small(m, a, 0) else {
                 return Ok(None);
             };
-            let i = int(a, 1)?;
+            let i = int(a, A1)?;
             let i = if SIGNED { i } else { natural(m, i)? };
             (l.n, l.bits, int_bits(m, ctx, i, l.n, SIGNED, bit)?)
         }
@@ -1197,10 +1212,10 @@ fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
         return Ok(Some(r));
     }
     let out = match FORM {
-        0 => add_vv(&vh(m, a, 0)?.v, &vh(m, a, 1)?.v, SUB, SIGNED),
+        0 => add_vv(&vh(m, a, 0)?.v, &vh(m, a, A1)?.v, SUB, SIGNED),
         1 => {
             let l = vh(m, a, 0)?;
-            let i = int(a, 1)?;
+            let i = int(a, A1)?;
             let i = if SIGNED { i } else { natural(m, i)? };
             let r = from_int(m, ctx, i, l.v.len() as i64, SIGNED, bit)?;
             add_vv(&l.v, &r.v, SUB, SIGNED)
@@ -1217,7 +1232,7 @@ fn add<const SUB: bool, const SIGNED: bool, const FORM: u8>(
 }
 
 fn mul<const SIGNED: bool>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
-    let (l, r) = (vh(m, a, 0)?.v, vh(m, a, 1)?.v);
+    let (l, r) = (vh(m, a, 0)?.v, vh(m, a, A1)?.v);
     if l.is_empty() || r.is_empty() {
         return put(m, &Vh::null());
     }
@@ -1261,7 +1276,7 @@ fn divide<const KIND: u8, const SIGNED: bool>(
     _: Option<TyId>,
     a: &[u64],
 ) -> Ret {
-    let (l, r) = (vh(m, a, 0)?.v, vh(m, a, 1)?.v);
+    let (l, r) = (vh(m, a, 0)?.v, vh(m, a, A1)?.v);
     if l.is_empty() || r.is_empty() {
         return put(m, &Vh::null());
     }
@@ -1352,7 +1367,7 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
     };
     // Operands of at most 64 elements without a metavalue: plain integers.
     let ord = match FORM {
-        0 => match (small(m, a, 0), small(m, a, 1)) {
+        0 => match (small(m, a, 0), small(m, a, A1)) {
             (Some(l), Some(r)) if SIGNED => {
                 Some(signed_of(l.bits, l.n).cmp(&signed_of(r.bits, r.n)))
             }
@@ -1361,7 +1376,7 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
         },
         _ => match small(m, a, usize::from(FORM != 1)) {
             Some(v) => {
-                let i = int(a, usize::from(FORM == 1))?;
+                let i = int(a, if FORM == 1 { A1 } else { 0 })?;
                 let i = if SIGNED { i } else { natural(m, i)? };
                 let o = if SIGNED {
                     signed_of(v.bits, v.n).cmp(&i)
@@ -1377,7 +1392,7 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
         return Ok(Some(u64::from(holds(c, o))));
     }
     let (l, r) = match FORM {
-        0 => (vh(m, a, 0)?.v, Some(vh(m, a, 1)?.v)),
+        0 => (vh(m, a, 0)?.v, Some(vh(m, a, A1)?.v)),
         1 => (vh(m, a, 0)?.v, None),
         _ => (vh(m, a, 1)?.v, None),
     };
@@ -1392,7 +1407,7 @@ fn compare<const C: u8, const SIGNED: bool, const FORM: u8>(
     let ord = if let Some(Some(rb)) = rb {
         lb.cmp_ext(&rb, SIGNED)
     } else if FORM == 1 {
-        let i = int(a, 1)?;
+        let i = int(a, A1)?;
         let i = if SIGNED { i } else { natural(m, i)? };
         vec_vs_int(&lb, SIGNED, i)
     } else {
@@ -1503,7 +1518,7 @@ fn resize<const SIGNED: bool>(
     a: &[u64],
 ) -> Ret {
     if let Some(v) = small(m, a, 0).filter(|v| v.pure) {
-        let new = natural(m, int(a, 1)?)? as usize;
+        let new = natural(m, int(a, A1)?)? as usize;
         if (1..=64).contains(&new) {
             let bits = if SIGNED {
                 // The top element is the argument's sign element; below it the low elements.
@@ -1518,7 +1533,7 @@ fn resize<const SIGNED: bool>(
         }
     }
     let l = vh(m, a, 0)?.v;
-    let new = natural(m, int(a, 1)?)? as usize;
+    let new = natural(m, int(a, A1)?)? as usize;
     if new < 1 {
         return put(m, &Vh::null());
     }
@@ -1576,11 +1591,11 @@ fn shift_small<const K: u8>(m: &mut Machine, v: &Small, count: usize) -> R<Optio
 
 fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     if let Some(v) = small(m, a, 0).filter(|v| v.pure) {
-        let count = natural(m, int(a, 1)?)? as usize;
+        let count = natural(m, int(a, A1)?)? as usize;
         return shift_small::<K>(m, &v, count);
     }
     let l = vh(m, a, 0)?;
-    let count = natural(m, int(a, 1)?)? as usize;
+    let count = natural(m, int(a, A1)?)? as usize;
     shift_of::<K>(m, l, count)
 }
 
@@ -1588,11 +1603,11 @@ fn shift<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[
 /// local function (`XSLL` ...) the body calls.
 fn shift_fn<const K: u8>(m: &mut Machine, _: Cx<'_, '_, '_>, _: Option<TyId>, a: &[u64]) -> Ret {
     if let Some(v) = small(m, a, 0).filter(|v| v.pure) {
-        let count = natural(m, int(a, 1)?)? as usize;
+        let count = natural(m, int(a, A1)?)? as usize;
         return shift_small::<K>(m, &v, count);
     }
     let l = vh(m, a, 0)?;
-    let count = natural(m, int(a, 1)?)? as usize;
+    let count = natural(m, int(a, A1)?)? as usize;
     if l.v.is_empty() {
         return put(m, &Vh::null());
     }

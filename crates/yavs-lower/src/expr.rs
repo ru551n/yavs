@@ -18,6 +18,17 @@ use yavs_sem::{Db, DeclId, ExprId, SubtypeId, TypeId};
 use crate::func::{Fx, Shape, func_of, shape};
 use crate::{Failed, Obj, R, Space, ty};
 
+/// How the array arguments of a call are passed.
+#[derive(Clone, Copy)]
+pub(crate) enum Conv {
+    /// A subprogram body: data and descriptor.
+    Body,
+    /// A native: the address of a fat pair `[data, descriptor]`.
+    Fat,
+    /// A native `ieee` subprogram: `data, left, right, dir` (`yavs_ir::ieee::ARRAY_REGS`).
+    Flat,
+}
+
 /// A value: a scalar cell, or an array as `(data address, descriptor address)`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum V {
@@ -2887,7 +2898,7 @@ impl<'a> Fx<'a, '_> {
         match &sp.body {
             Body::Implicit(op) => self.implicit(op, sp, args, span),
             Body::Native(sym) => {
-                let cells = self.cells(sp, args, span, true)?;
+                let cells = self.cells(sp, args, span, Conv::Fat)?;
                 let r = self.native(sym.as_str(), None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
@@ -2913,7 +2924,7 @@ impl<'a> Fx<'a, '_> {
                     (true, Some(p)) => Some(self.ty(db.base(p.subtype), span)?),
                     _ => None,
                 };
-                let cells = self.cells(sp, args, span, true)?;
+                let cells = self.cells(sp, args, span, Conv::Flat)?;
                 let r = self.native(&sym, ty, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
@@ -2927,14 +2938,14 @@ impl<'a> Fx<'a, '_> {
             {
                 let gate = crate::reduce::reduction(db, callee)
                     .ok_or_else(|| self.cx.ice(span, "reduction idiom"))?;
-                let cells = self.cells(sp, args, span, true)?;
+                let cells = self.cells(sp, args, span, Conv::Flat)?;
                 let r = self.native(&crate::reduce::symbol(gate), None, &cells, sp.ret, span)?;
                 self.copy_out(span)?;
                 Ok(r)
             }
             Body::Hir { scope, .. } => {
                 let f = func_of(db, self.fb.program(), self.cx, callee, span)?;
-                let mut cells = self.cells(sp, args, span, false)?;
+                let mut cells = self.cells(sp, args, span, Conv::Body)?;
                 self.named_return_cells(callee, *scope, res, span, &mut cells)?;
                 let args = self.fb.regs(&cells);
                 let Some(ret) = sp.ret else {
@@ -3036,14 +3047,36 @@ impl<'a> Fx<'a, '_> {
         fat
     }
 
+    /// An array argument as the cells of `conv`.
+    pub(crate) fn array_cells(&mut self, conv: Conv, data: Reg, dope: Reg, cells: &mut Vec<Reg>) {
+        match conv {
+            Conv::Body => cells.extend([data, dope]),
+            Conv::Fat => cells.push(self.make_fat(data, dope)),
+            Conv::Flat => {
+                let (l, r, d) = self.dope_bounds(dope);
+                cells.extend([data, l, r, d]);
+            }
+        }
+    }
+
+    /// Left, right and direction of the one-dimensional descriptor `dope`: the registers it was
+    /// made from in this block, else loaded from it.
+    fn dope_bounds(&mut self, dope: Reg) -> (Reg, Reg, Reg) {
+        let here = self.fb.current();
+        match (self.made_dopes.iter().rev()).find(|(b, at, _)| *b == here && *at == dope) {
+            Some(&(_, _, bounds)) => bounds,
+            None => self.dope_parts(dope),
+        }
+    }
+
     /// Argument cells in formal order (DESIGN.md "Subprograms"); natives take arrays as the
-    /// address of a fat pair.
+    /// address of a fat pair, or as values for `ieee` natives ([`Conv`]).
     pub(crate) fn cells(
         &mut self,
         sp: &Subprogram,
         args: &[Arg],
         span: Span,
-        native: bool,
+        conv: Conv,
     ) -> R<Vec<Reg>> {
         let db = self.db;
         let mut cells = Vec::new();
@@ -3052,7 +3085,7 @@ impl<'a> Fx<'a, '_> {
                 return Err(self.cx.ice(span, "argument for a missing formal"));
             };
             if let Actual::Individual(parts) = &a.actual {
-                self.individual_cells(p, parts, native, span, &mut cells)?;
+                self.individual_cells(p, parts, conv, span, &mut cells)?;
                 continue;
             }
             if let Actual::Converted {
@@ -3062,7 +3095,7 @@ impl<'a> Fx<'a, '_> {
                 ..
             } = &a.actual
             {
-                self.converted_cells(p, *actual, *copy_in, *out, native, span, &mut cells)?;
+                self.converted_cells(p, *actual, *copy_in, *out, conv, span, &mut cells)?;
                 continue;
             }
             let e = self.actual(a, p, span)?;
@@ -3200,11 +3233,7 @@ impl<'a> Fx<'a, '_> {
                     if ty::array_of(db, db.base(p.subtype)).is_some() {
                         dope = self.param_dope(p.subtype, dope, &p.name.text.to_string(), es)?;
                     }
-                    if native {
-                        cells.push(self.make_fat(data, dope));
-                    } else {
-                        cells.extend([data, dope]);
-                    }
+                    self.array_cells(conv, data, dope, &mut cells);
                 }
             }
         }

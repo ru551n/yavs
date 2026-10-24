@@ -110,7 +110,8 @@ rule 24).
 - Lowering a unit with errors is an ICE: callers must stop after sem errors.
 - Every function goes through the yavs-ir verifier; a verifier error is an ICE of this crate,
   never "fixed" by relaxing the verifier.
-- The calling and native conventions (fat pair `[data, dope]`, cells per parameter, signal
+- The calling and native conventions (fat pair `[data, dope]`, `ieee` natives' array values
+  `data, left, right, dir` (`expr.rs` `Conv`), cells per parameter, signal
   parameter = two cells) are shared with `yavs-interp`: change both, note it in DESIGN.md and
   `crates/yavs-ir/README.md`.
 - Kernel offsets of non-static indices must use the same rule as `yavs_elab::NetGraph::select`.

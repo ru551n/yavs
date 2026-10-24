@@ -6004,11 +6004,11 @@ impl Machine {
                     let regs = f
                         .regs(yavs_ir::Regs { start, len })
                         .ok_or_else(|| ice_s!("operand list out of range"))?;
-                    let mut cells = [0u64; 4];
+                    let mut cells = [0u64; pre::IEEE_CELLS];
                     for (c, &r) in cells.iter_mut().zip(regs) {
                         *c = self.regs[r.0 as usize];
                     }
-                    let cells = &cells[..regs.len().min(4)];
+                    let cells = &cells[..regs.len().min(pre::IEEE_CELLS)];
                     let v = fun(self, ctx, n.ty, cells)?;
                     let dst = (dst != pre::NONE).then_some(Reg(dst));
                     if std::mem::take(&mut self.ieee_fallback) {
@@ -7789,14 +7789,29 @@ impl Machine {
             id.parse()
                 .map_err(|_| ice_s!("ieee fallback function id"))?,
         );
-        let mut out = Vec::with_capacity(cells.len() + 2);
-        for (i, &c) in cells.iter().enumerate() {
+        let mut out = Vec::with_capacity(cells.len());
+        let (mut pos, mut i) = (0, 0);
+        while pos < cells.len() {
             if yavs_ir::ieee::array_param(key, i) {
-                out.push(self.load(c, Width::B8)?);
-                out.push(self.load(add_addr(c, 8)?, Width::B8)?);
+                let &[data, left, right, dir] = cells
+                    .get(pos..pos + yavs_ir::ieee::ARRAY_REGS)
+                    .ok_or_else(|| ice_s!("ieee fallback array argument"))?
+                else {
+                    return Err(ice_s!("ieee fallback array argument"));
+                };
+                // The body takes the descriptor in memory.
+                let dope = self.temp_alloc(yavs_ir::DOPE_DIM_BYTES)?;
+                let w = self.wr(dope, yavs_ir::DOPE_DIM_BYTES)?;
+                for (d, v) in w.as_chunks_mut::<8>().0.iter_mut().zip([left, right, dir]) {
+                    d.copy_from_slice(&v.to_le_bytes());
+                }
+                out.extend([data, dope]);
+                pos += yavs_ir::ieee::ARRAY_REGS;
             } else {
-                out.push(c);
+                out.push(cells[pos]);
+                pos += 1;
             }
+            i += 1;
         }
         self.call(prog, func, &out, dst)
     }

@@ -1767,10 +1767,9 @@ fn strings_on_native_frames() {
     }
 }
 
-/// `inner(c)` keeps a four-element `std_ulogic_vector` of the code `c` and its descriptor in its
-/// own slots, makes the fat pair in temporary memory and calls the native `is_x` on it: the
-/// native reads the native frame's slots through the pair (indirect addresses, which only the
-/// frame windows resolve). `outer(c)` calls `inner(c)`. `half(a)` is `ceil(a / 4)` through a
+/// `inner(c)` keeps a four-element `std_ulogic_vector` of the code `c` in its own slots and calls
+/// the native `is_x` on it with the array as values: the native reads the native frame's slots
+/// through the data address (indirect addresses, which only the frame windows resolve). `outer(c)` calls `inner(c)`. `half(a)` is `ceil(a / 4)` through a
 /// real native and `FToI`.
 fn native_calls() -> (Program, FuncId, FuncId) {
     let mut pb = ProgramBuilder::new();
@@ -1786,7 +1785,6 @@ fn native_calls() -> (Program, FuncId, FuncId) {
         let mut fb = pb.define(inner);
         let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
         let planes = fb.slot(32, 8);
-        let dope_s = fb.slot(24, 8);
         stmt(&mut fb);
         let pc = fb.addr(AddrSpace::Frame, sc);
         let c = load(&mut fb, pc, Width::B8);
@@ -1825,26 +1823,9 @@ fn native_calls() -> (Program, FuncId, FuncId) {
             });
             q = next;
         }
-        // The descriptor 0 to 3 and the fat pair [data, dope].
-        let dp = fb.addr(AddrSpace::Frame, dope_s);
+        // The array as values: data, left 0, right 3, direction 0.
         let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
-        let parts = fb.regs(&[l, r, d]);
-        fb.emit(Inst::MakeDope { at: dp, parts });
-        let sixteen = fb.int(16);
-        let fat = alloc(&mut fb, sixteen);
-        fb.emit(Inst::Store {
-            addr: fat,
-            src: pl,
-            w: Width::B8,
-        });
-        let eight = fb.int(8);
-        let f8 = index(&mut fb, fat, eight);
-        fb.emit(Inst::Store {
-            addr: f8,
-            src: dp,
-            w: Width::B8,
-        });
-        let args = fb.regs(&[fat]);
+        let args = fb.regs(&[pl, l, r, d]);
         let x = fb.reg(RegTy::I64);
         fb.emit(Inst::CallNative {
             native: is_x,
@@ -2625,7 +2606,6 @@ fn frame_mode_ops() -> (Program, FuncId) {
     let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
     let sc = fb.param("c", Width::B8, ParamClass::Value, Mode::In, None);
     let planes = fb.slot(32, 8);
-    let dope_s = fb.slot(24, 8);
     stmt(&mut fb);
     let (pn, pc) = (fb.addr(AddrSpace::Frame, sn), fb.addr(AddrSpace::Frame, sc));
     let (n, c) = (load(&mut fb, pn, Width::B8), load(&mut fb, pc, Width::B8));
@@ -2672,25 +2652,8 @@ fn frame_mode_ops() -> (Program, FuncId) {
             w: Width::B8,
         });
     }
-    let dp = fb.addr(AddrSpace::Frame, dope_s);
     let (l, r, d) = (fb.int(0), fb.int(3), fb.int(0));
-    let parts = fb.regs(&[l, r, d]);
-    fb.emit(Inst::MakeDope { at: dp, parts });
-    let sixteen = fb.int(16);
-    let fat = alloc(&mut fb, sixteen);
-    fb.emit(Inst::Store {
-        addr: fat,
-        src: pl,
-        w: Width::B8,
-    });
-    let eight = fb.int(8);
-    let f8 = index(&mut fb, fat, eight);
-    fb.emit(Inst::Store {
-        addr: f8,
-        src: dp,
-        w: Width::B8,
-    });
-    let args = fb.regs(&[fat]);
+    let args = fb.regs(&[pl, l, r, d]);
     let isx = fb.reg(RegTy::I64);
     fb.emit(Inst::CallNative {
         native: is_x,
@@ -2723,6 +2686,7 @@ fn frame_mode_ops() -> (Program, FuncId) {
     let stride = load(&mut fb, sp, Width::B8);
     // s := the byte at `cell`, then c.
     let total = fb.int(2);
+    let eight = fb.int(8);
     let cell = alloc(&mut fb, eight);
     fb.emit(Inst::Store {
         addr: cell,

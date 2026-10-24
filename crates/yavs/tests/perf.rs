@@ -262,7 +262,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(5040)),
+        ("ops", Max(4930)),
     ]
 );
 case!(
@@ -387,15 +387,17 @@ case!(
         ("wakes", Max(567)),
         ("events", Max(1846)),
         ("update_general", Max(0)),
-        ("ops", Max(13659)),
+        ("ops", Max(12420)),
     ]
 );
 case!(
     reduce_idiom,
     "n1=",
     &[],
-    [("process_runs", Max(2)), ("ops", Max(2098)),]
+    [("process_runs", Max(2)), ("ops", Max(1481)),]
 );
+case!(ieee_operands, "acc=", &[], [("ops", Max(4060))]);
+case!(ieee_share, "n=", &[], [("ops", Max(3630))]);
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
 case!(wide_vec, "wide=0", &[], [("ops", Max(1873000))]);
 case!(
@@ -461,7 +463,7 @@ case!(
 );
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
-case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6540))]);
+case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6234))]);
 // The defaults of a combinational process that a later drive deletes are not done on that path
 // (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass.
 case!(
@@ -490,7 +492,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(650)),
         ("update_general", Max(2)),
-        ("ops", Max(4370)),
+        ("ops", Max(4103)),
         ("signals", Max(6)),
     ]
 );
@@ -501,7 +503,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(30700)),
+        ("ops", Max(29292)),
         // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
         ("signals", Max(20)),
     ]
@@ -540,7 +542,7 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(33250)),
+        ("ops", Max(32819)),
     ]
 );
 

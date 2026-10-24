@@ -196,6 +196,9 @@ pub(crate) struct Fx<'a, 'b> {
     /// The record signals whose parts the statements of this process drive more than once, so
     /// that one drive may override another (`Fx::overridden_signals`).
     pub overridden: Vec<DeclId>,
+    /// The bounds `(left, right, dir)` a one-dimensional descriptor was made from in a block
+    /// (`Inst::MakeDope`; only valid in that block), so a native `ieee` call takes them as values (#697).
+    pub made_dopes: Vec<(BlockId, Reg, (Reg, Reg, Reg))>,
 }
 
 /// The whole-value reads of record signals in a process with a sensitivity list. Such a process
@@ -249,6 +252,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             local_files: Vec::new(),
             sigcopy: None,
             overridden: Vec::new(),
+            made_dopes: Vec::new(),
         }
     }
 
@@ -260,6 +264,18 @@ impl<'a, 'b> Fx<'a, 'b> {
             let b = self.fb.block();
             self.fb.at(b);
             self.live = true;
+        }
+        match i {
+            Inst::MakeDope { at, parts } if parts.len == 3 => {
+                if let Some(&[l, r, d]) = self.fb.list(parts) {
+                    let here = self.fb.current();
+                    self.made_dopes.retain(|e| e.0 == here);
+                    self.made_dopes.push((here, at, (l, r, d)));
+                }
+            }
+            // A register the bounds were read from may change.
+            Inst::Move { .. } => self.made_dopes.clear(),
+            _ => {}
         }
         self.fb.emit(i);
     }

@@ -1,9 +1,9 @@
 //! Sharing the result of a repeated `to_integer` (round 17 of #520).
 //!
 //! A check `check(x = to_integer(unsigned(a & b)), "..." & image(to_integer(unsigned(a & b))))`
-//! converts the same vector twice: the lowering builds each argument as its own signal read,
-//! concatenation and fat pair. The second call is the same function of the same value, so its
-//! result is the first one's, except that the second call warns again when the vector is null
+//! converts the same vector twice: the lowering builds each argument as its own signal read
+//! and concatenation, and passes it as data address and bounds. The second call is the same
+//! function of the same value, so its result is the first one's, except that the second call warns again when the vector is null
 //! or holds a metavalue. `to_integer` of an `unsigned` returns 0 exactly then (and for the
 //! value 0), so a first result other than 0 proves the second call silent. The code becomes
 //!
@@ -238,7 +238,7 @@ impl Sink<'_> {
             uniq: 0,
             budget: 4000,
         };
-        let mut first: HashMap<(crate::NativeId, V), usize> = HashMap::new();
+        let mut first: HashMap<(crate::NativeId, [V; 4]), usize> = HashMap::new();
         let mut pairs = Vec::new();
         for (p, i) in code.iter().enumerate().take(code.len().saturating_sub(1)) {
             match *i {
@@ -348,18 +348,20 @@ impl Sink<'_> {
                 Inst::CallNative { native, dst, .. }
                     if self.is_image(native, self.list(i).len()) || self.light_native(native) =>
                 {
+                    // `data, left, right, dir` (`ieee::ARRAY_REGS`): the same planes and bounds.
                     if self.shareable(native)
-                        && let ([a], Some(_)) = (self.list(i), dst)
+                        && let ([a, l, r, d], Some(_)) = (self.list(i), dst)
                     {
                         let av = vn.val(*a);
                         // Only a fresh block: the content of any other pointer is not known.
                         if matches!(vn.kinds[av as usize], K::Blk(_)) {
                             let c = vn.canon(av, 0);
                             if !matches!(vn.kinds[c as usize], K::Uniq(_)) {
-                                match first.get(&(native, c)) {
+                                let key = (native, [c, vn.val(*l), vn.val(*r), vn.val(*d)]);
+                                match first.get(&key) {
                                     Some(&p1) => pairs.push((p1, p)),
                                     None => {
-                                        first.insert((native, c), p);
+                                        first.insert(key, p);
                                     }
                                 }
                             }

@@ -22,7 +22,9 @@ textual dump.
   one cell, a string/unconstrained array result is the address of a fat pair `[data, dope]`.
 - Native argument convention (ir.md 9): `in` scalars by value; `out`/`inout` scalars and
   access variables (`line`) by the address of the cell; an unconstrained array (`string`,
-  `bit_vector`) as the address of a fat pair `[data, dope]`; a file object as the address of
+  `bit_vector`) as the address of a fat pair `[data, dope]` (the natives of `ieee`, `yavs.ieee.*`, take
+  each array as four registers `data, left, right, dir`, `yavs_ir::ieee::ARRAY_REGS`: no pair or
+  descriptor in memory, #697; the verifier checks the register count); a file object as the address of
   its 4-byte cell (`yavs_interp::FILE_INPUT` / `FILE_OUTPUT` are textio's pre-opened files);
   a record (`directory`, `time_record`) as a fat pair like an array (its data address first; a
   record result is returned the same way). A heap array object is `[descriptor][elements]`. BIT

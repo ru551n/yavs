@@ -826,6 +826,9 @@ enum Key {
     Index(Opn, Opn, u32),
     Check(CheckKind, Opn, Opn, Opn),
     Load(Opn, Width),
+    /// The 8-byte word at the byte offset in the block of the operand that a `MakeDope` wrote:
+    /// the register it was made from (a `Load` of the descriptor gives that back).
+    Part(Opn, u32),
     Dope(Opn, u8),
     Pos(Opn, u8, Opn),
     Field(Opn, Opn, u32),
@@ -838,6 +841,7 @@ impl Key {
     fn region(&self) -> Option<(Opn, i64, i64)> {
         match *self {
             Key::Load(a, w) => Some((a, 0, i64::from(w.bytes()))),
+            Key::Part(a, o) => Some((a, i64::from(o), 8)),
             Key::Dope(a, d) | Key::Pos(a, d, ..) => Some((a, i64::from(d) * 24, 24)),
             Key::Field(_, l, n) => Some((l, 16 + 8 * i64::from(n), 8)),
             Key::Layout(_, d) => Some((d, 0, 24 * 8)),
@@ -1012,6 +1016,9 @@ struct Opt<'a> {
     /// is the same under every descriptor: that stride.
     lstride: FxMap<Reg, u64>,
     lat: FxMap<Reg, (Reg, i64)>,
+    /// `Index` results at a constant offset from a once-defined register: (that register, byte
+    /// offset), so a `Load` finds the `MakeDope` word it reads (`Key::Part`).
+    iat: FxMap<Reg, (Reg, i64)>,
     /// Field offsets of the static record layouts met so far (shared by the functions of one
     /// batch).
     layouts: &'a mut FxMap<TyId, Option<Vec<u64>>>,
@@ -1090,6 +1097,7 @@ impl<'a> Opt<'a> {
             lstride: FxMap::default(),
             lwords: FxMap::default(),
             lat: FxMap::default(),
+            iat: FxMap::default(),
             layouts,
             uses: Vec::new(),
             reach: Vec::new(),
@@ -2540,6 +2548,18 @@ impl<'a> Opt<'a> {
             Inst::MakeDope { at, parts } => {
                 let a = self.opn(at);
                 self.kill(a, 8 * i64::from(parts.len));
+                for j in 0..parts.len {
+                    let part = self.operands.get((parts.start + j) as usize).copied();
+                    let v = match part.map(|r| self.opn(r)) {
+                        Some(Opn::K(v)) => Some(Val::K(v)),
+                        Some(Opn::R(r)) if self.single(r) => Some(Val::R(r)),
+                        Some(Opn::R(r)) if self.multi(r) => Some(Val::V(r, self.vsn[r.0 as usize])),
+                        _ => None,
+                    };
+                    if let (Some(v), Some(k)) = (v, self.part_key(a, 8 * i64::from(j))) {
+                        self.tbl.put(k, v);
+                    }
+                }
                 if let Some(k) = self.kopn(at) {
                     for d in 0..parts.len / 3 {
                         let w = |j: u32| match self.operands.get((parts.start + 3 * d + j) as usize)
@@ -2727,6 +2747,39 @@ impl<'a> Opt<'a> {
         match self.opn(r) {
             Opn::R(x) if self.multi(x) => Some(Opn::V(x, self.vsn[x.0 as usize])),
             o => self.key_ok(o).then_some(o),
+        }
+    }
+
+    /// The key of the descriptor word `off` bytes into the block at `a` (`None`: not a
+    /// stable address).
+    fn part_key(&self, a: Opn, off: i64) -> Option<Key> {
+        match a {
+            Opn::A(s, o) => Some(Key::Part(
+                Opn::A(s, u32::try_from(i64::from(o).checked_add(off)?).ok()?),
+                0,
+            )),
+            Opn::R(r) if self.single(r) => Some(Key::Part(a, u32::try_from(off).ok()?)),
+            _ => None,
+        }
+    }
+
+    /// Replace the definition of `d` at `pc` by the value a fact holds, if there is one.
+    fn forward(&mut self, pc: usize, d: Reg, key: &Key) -> bool {
+        match self.tbl.get(key) {
+            Some(Val::R(x)) if self.alias(pc, d, x) => true,
+            Some(Val::K(v)) if self.single(d) && self.rty(d) == Some(RegTy::I64) => {
+                self.make_const(pc, d, v);
+                true
+            }
+            Some(Val::R(x)) if self.copy_ok(d, x, None) => {
+                self.copy(pc, d, x);
+                true
+            }
+            Some(Val::V(x, ver)) if self.copy_ok(d, x, Some(ver)) => {
+                self.copy(pc, d, x);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -3095,6 +3148,18 @@ impl<'a> Opt<'a> {
                         self.lat.insert(dst, (l, o));
                     }
                 }
+                if let (Opn::R(x), Opn::K(c)) = (self.opn(base), self.opn(pos))
+                    && self.single(dst)
+                    && self.single(x)
+                {
+                    let (root, off) = self.iat.get(&x).copied().unwrap_or((x, 0));
+                    if let Some(o) = c
+                        .checked_mul(i64::from(stride))
+                        .and_then(|d| off.checked_add(d))
+                    {
+                        self.iat.insert(dst, (root, o));
+                    }
+                }
                 if let (Some(x), Some(y)) = (self.kopn(base), self.kopn(pos)) {
                     self.cse(pc, Some(dst), Key::Index(x, y, stride));
                 }
@@ -3197,6 +3262,21 @@ impl<'a> Opt<'a> {
                         u64::from_le_bytes(x) as i64
                     };
                     return self.make_const(pc, dst, v);
+                }
+                // A word of a descriptor that a `MakeDope` wrote on this path.
+                if w == Width::B8 {
+                    let (root, off) = match a {
+                        Opn::R(x) => match self.iat.get(&x) {
+                            Some(&(r, o)) => (Opn::R(r), o),
+                            None => (a, 0),
+                        },
+                        _ => (a, 0),
+                    };
+                    if let Some(k) = self.part_key(root, off)
+                        && self.forward(pc, dst, &k)
+                    {
+                        return;
+                    }
                 }
                 if let Some(a) = self.kopn(addr) {
                     self.cse(pc, Some(dst), Key::Load(a, w));
@@ -3618,6 +3698,7 @@ impl<'a> Opt<'a> {
         self.lwords.clear();
         self.lstride.clear();
         self.lat.clear();
+        self.iat.clear();
         self.esc = None;
         self.analyse();
     }

@@ -690,6 +690,12 @@ impl FuncBuilder<'_> {
         }
     }
 
+    /// The registers of an operand list made by [`FuncBuilder::regs`].
+    pub fn list(&self, r: Regs) -> Option<&[Reg]> {
+        self.operands
+            .get(r.start as usize..r.start as usize + r.len as usize)
+    }
+
     pub fn emit(&mut self, i: Inst) {
         let s = self.stmt;
         if let Some(b) = self.blocks.get_mut(self.cur) {

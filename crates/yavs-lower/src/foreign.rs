@@ -14,6 +14,7 @@ use yavs_sem::stat::{ConstValue, Elems};
 use yavs_sem::types::{Constraint, Direction, RangeC, TypeKind};
 use yavs_sem::{DeclId, ExprId, SubtypeId};
 
+use crate::expr::Conv;
 use crate::expr::V;
 use crate::func::Fx;
 use crate::{NOT_IMPLEMENTED, R};
@@ -78,7 +79,7 @@ impl Fx<'_, '_> {
         // signal parameter of a VHPI model takes `signal_cells`.
         let mut cells = Vec::new();
         for (a, p) in args.iter().zip(&sp.params) {
-            let mut c = self.cells(sp, std::slice::from_ref(a), span, true)?;
+            let mut c = self.cells(sp, std::slice::from_ref(a), span, Conv::Fat)?;
             if p.class == ObjClass::Signal {
                 if c.len() != signal_cells(self.db, p) {
                     return Err(self.cx.error(

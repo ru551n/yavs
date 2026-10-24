@@ -2237,6 +2237,12 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   statement count per line. Sources are read at report time from the database's paths; an
   unreadable one is `E0113`, nothing is written, rather than a silently thinner report. A
   hand-written template keeps the crate free of dependencies.
+- **Report paths are compared as strings (#693):** `cov.rs::relative` strips the root from
+  report paths lexically after folding `\` and `/`, drive letter and directory case on Windows
+  style paths, `\\?\` prefixes and `.`/`..` components; a path outside the root stays as it
+  is. Why: `Path::strip_prefix` failed when one side had `..` (a root built from
+  `CARGO_MANIFEST_DIR`) and the other was normalised by Windows, so Windows reports showed
+  absolute paths. Symlinks are not resolved.
 - **HTML interaction (user, 2026-10-24, #689; replaces the earlier "no scripts" rule):** (1)
   source paths are shown relative to the current directory (`--root DIR` strips another prefix),
   in headings, the index and exclusion rows; matching never uses the path. (2) No item lists

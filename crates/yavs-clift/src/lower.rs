@@ -821,6 +821,14 @@ fn gen_func(
             };
         }
     }
+    // The registers a `Const` defines once are preloaded, so they hold the value everywhere
+    // (lengths and counts that `cat_block` and others need to know).
+    let fixed = fixed_consts(f);
+    for (r, v) in fixed.iter().enumerate() {
+        if let (Some(v), None) = (v, &base_known[r]) {
+            base_known[r] = Some(Known::Int(*v));
+        }
+    }
     let mut g = Gen {
         known: base_known.clone(),
         frame_len: u64::from(f.frame),
@@ -879,7 +887,7 @@ fn gen_func(
     for (i, &inst) in f.code.iter().enumerate() {
         let pc = i as u32;
         if let Some(p) = prev.replace(inst) {
-            track(&mut g.known, &[], &p);
+            track(&mut g.known, &fixed, &p);
         }
         if leader[i] {
             g.known.clone_from(&base_known);
@@ -1175,6 +1183,25 @@ fn gen_func(
                 }
             }
             Inst::Deref { dst, handle, .. } => g.deref(pc, &inst, dst, handle),
+            Inst::Cat {
+                dst,
+                n,
+                m,
+                parts,
+                scalars,
+                bias,
+                logic: true,
+                ..
+            } => {
+                let rs = ok(f.regs(parts), "operand list out of range")?;
+                if !g.cat_block(pc, &inst, dst, n, m, rs, scalars, bias) {
+                    if g.nat.is_some() && xstep_wide(f, &inst) {
+                        g.native_step(pc, &inst, f)
+                    } else {
+                        g.step(pc, &inst)
+                    }
+                }
+            }
             Inst::TempRoot { addr, desc, ty } => g.temp_root(prog, pc, &inst, addr, desc, ty)?,
             Inst::Alloc { dst, size } => {
                 let (slow, join) = g.slow_path(pc, &inst);
@@ -3150,6 +3177,117 @@ impl Gen<'_> {
         self.start(cont);
         self.join(join);
         Ok(())
+    }
+
+    /// `Inst::Cat` of a logic array of at most 64 elements whose piece lengths are known here: the
+    /// planes of all pieces are combined in registers and stored once, as `Machine::cat_block`
+    /// does. `false` (nothing generated) where a length is not known or does not fit that pattern;
+    /// a runtime case it does not take (a code beyond 'U' to '-', memory compiled code does not
+    /// reach) steps the whole instruction before any store.
+    #[allow(clippy::too_many_arguments)]
+    fn cat_block(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        dst: Reg,
+        n: Reg,
+        m: Reg,
+        parts: &[Reg],
+        scalars: u16,
+        bias: u8,
+    ) -> bool {
+        let (Some(n), Some(m)) = (self.kint(n), self.kint(m)) else {
+            return false;
+        };
+        let Some(total) = u64::try_from(n)
+            .ok()
+            .zip(u64::try_from(m).ok())
+            .and_then(|(n, m)| n.checked_mul(m))
+            .filter(|&t| t <= 64)
+        else {
+            return false;
+        };
+        // (register, units, scalar) per piece, empty ones dropped, as `cat_block` skips them.
+        let mut pieces = Vec::new();
+        let mut k = 0u64;
+        for (j, pr) in parts.as_chunks::<2>().0.iter().enumerate() {
+            if scalars >> j & 1 == 1 {
+                pieces.push((pr[0], 1u64, true));
+                k += 1;
+            } else {
+                let Some(len) = self.kint(pr[1]).and_then(|l| u64::try_from(l).ok()) else {
+                    return false;
+                };
+                let Some(units) = len.checked_mul(m as u64).filter(|&u| u <= 64) else {
+                    return false;
+                };
+                if units == 0 {
+                    continue;
+                }
+                pieces.push((pr[0], units, false));
+                k += units;
+            }
+            if k > total {
+                return false;
+            }
+        }
+        let pmask = |units: u64| {
+            if units == 64 {
+                !0u64
+            } else {
+                (1u64 << units) - 1
+            }
+        };
+        let (slow, join) = self.slow_path(pc, i);
+        let mut words: [Value; 4] = std::array::from_fn(|_| self.b.ins().iconst(I64, 0));
+        let mut mask = 0u64;
+        let mut at_k = 0u64;
+        for &(r, units, scalar) in &pieces {
+            let bits: [Value; 4] = if scalar {
+                let v = self.ld(r);
+                let code = self.b.ins().iadd_imm_s(v, i64::from(bias));
+                // A code beyond 'U' to '-' is the interpreter's error.
+                let okc = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+                self.guard(okc, slow);
+                std::array::from_fn(|p| {
+                    let b = self.b.ins().ushr_imm_s(code, p as i64);
+                    self.b.ins().band_imm_s(b, 1)
+                })
+            } else {
+                let a = self.ld(r);
+                let ptr = self.host(a, self.fk(r), Op::C(0), Op::C(32), false, slow);
+                let nf = self.gf;
+                std::array::from_fn(|p| {
+                    let w = self.b.ins().load(I64, nf, ptr, 8 * p as i32);
+                    self.b.ins().band_imm_s(w, pmask(units) as i64)
+                })
+            };
+            let off = total - at_k - units;
+            for p in 0..4 {
+                let sh = self.b.ins().ishl_imm_s(bits[p], off as i64);
+                words[p] = self.b.ins().bor(words[p], sh);
+            }
+            mask |= pmask(units) << off;
+            at_k += units;
+        }
+        if mask == 0 {
+            self.join(join);
+            return true;
+        }
+        let d = self.ld(dst);
+        let pd = self.host(d, self.fk(dst), Op::C(0), Op::C(32), true, slow);
+        let nf = self.gf;
+        for (p, &word) in words.iter().enumerate() {
+            let cur = self.b.ins().load(I64, nf, pd, 8 * p as i32);
+            let keep = self.b.ins().band_imm_s(cur, !mask as i64);
+            let v = self.b.ins().bor(keep, word);
+            self.b.ins().store(nf, v, pd, 8 * p as i32);
+        }
+        self.join(join);
+        true
     }
 
     /// `Inst::Deref` of an access value a `Deref` found before: its object's entry in `Mem::objs`

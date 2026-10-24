@@ -418,6 +418,18 @@ milestone users care about works.
   Measured effect: call-heavy code 8x faster, everything else unchanged (STATUS.md "clift: native frames and inlining").
   `YAVS_CLIFT_NATIVE`, `YAVS_CLIFT_INLINE`, `YAVS_CLIFT_NATIVE_MAX`, `YAVS_CLIFT_DUMP`, `YAVS_CLIFT_TRACE` are
   measurement knobs.
+- **Kernel-facing instructions (2026-10-24):** after the merge with main (#632 `Inst::Edge`, #634 scalar drives, #565 natives, #493 the object table) the generator lowers the signal instructions the way the LLVM generator does,
+  through the same `rt.rs` callbacks: the clock-edge test (the kernel's resume key, else the event stamp and the codes), signal reads
+  (`TierSig` table entries: codes, plane blocks, the bytes of integer, enumeration and real signals; `yavs_rt_codes` and
+  `yavs_rt_planes` for vectors), `'event`, the fused scalar logic assignment (`yavs_rt_drive_bit`), other single-element drives
+  (`yavs_rt_drive`), `wait on` with its suspension (`yavs_rt_wait`, `_wait_on`, `_wait_same` for a wait that names the same signals every
+  time), frame-mode natives (`yavs_rt_native`), and the object table for heap accesses outside the frame. Before this a clocked process
+  made 4800 `yavs_rt_signal` callbacks and 960 steps per 1000 activations (4 and 8 under LLVM) and ran twice the interpreter's
+  instructions; now it is level with LLVM in callbacks and 1.0 to 1.4 times the interpreter's instructions (STATUS.md "clift").
+- **Cranelift as the first tier (2026-10-24):** `--tier=auto3` keeps the LLVM `Worker`'s policy, with the first-level cost model
+  (`first_us`) and, for a first-level generator only, the clocked-process length floor `RTL_MIN` and the one-second wait outside the
+  band as tunable (`YAVS_FIRST_RTL_MIN`, `YAVS_FIRST_BAND=1`); the defaults are LLVM's. Measured results and the reason they stay:
+  STATUS.md "clift".
 - **Result (STATUS.md "clift", issue #481 comment):** correct (corpus identical at 1 and 4 threads, collection
   stress). Performance: interpreter-relative geometric mean on the library testbenches 1.14 for `auto`, 1.07 for
   `auto3`, 1.15 to 1.16 for Cranelift alone; on the kernel designs no configuration moves and Cranelift code runs

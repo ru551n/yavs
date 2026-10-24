@@ -257,3 +257,53 @@ fn file_natives_make_callers_serial() {
     let serial: Vec<bool> = procs.iter().map(|&p| prog.is_serial(p)).collect();
     assert_eq!(serial, [true, true, true, true, false, false]);
 }
+
+#[test]
+fn leaf_tables_are_checked() {
+    use yavs_ir::gather::{LeafKind, TabLeaf, encode};
+    let leaf = |sig| TabLeaf {
+        sig,
+        kind: LeafKind::Scalar,
+        bias: 0,
+        sw: 8,
+        ew: 8,
+    };
+    // A record of two integers, a table with `n` leaves (or bytes that are no table).
+    let gather = |n: Option<u32>| {
+        errors(FuncKind::Process, |fb| {
+            fb.stmt(StmtKind::Null, sp());
+            let int = fb.program().ty(Ty::Int { lo: 0, hi: 9 });
+            let field = |name: &str| Field {
+                name: name.into(),
+                ty: int,
+                desc: None,
+            };
+            let rec = fb.program().ty(Ty::Record {
+                fields: vec![field("a"), field("b")],
+            });
+            let c = match n {
+                Some(n) => encode(rec, &(0..n).map(leaf).collect::<Vec<_>>()),
+                None => ConstData::Bytes(vec![1, 2, 3]),
+            };
+            let tab = fb.program().konst(c);
+            let dst = fb.reg(RegTy::Ptr);
+            fb.emit(Inst::AddrOf {
+                dst,
+                space: AddrSpace::Frame,
+                off: 0,
+            });
+            fb.emit(Inst::SigGather {
+                dst,
+                desc: dst,
+                tab,
+            });
+            fb.emit(Inst::Br { to: BlockId(0) });
+        })
+    };
+    let leafy = |e: &[String]| e.iter().any(|m| m.contains("is not a leaf table"));
+    assert!(!leafy(&gather(Some(2))), "a table that fits its type");
+    for bad in [Some(1), Some(3), None] {
+        let e = gather(bad);
+        assert!(leafy(&e), "{bad:?}: {e:#?}");
+    }
+}

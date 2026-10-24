@@ -702,6 +702,30 @@ pub enum Inst {
         kind: AttrKind,
         sig: Reg,
     },
+    /// Reads every leaf of a record signal into the record value at `dst`: the leaves are listed
+    /// in table `tab` (`gather`), one entry per leaf with the instance signal and how it is
+    /// stored; where it lies in the value follows from the record type and the signal's
+    /// descriptor at `desc`. The result is what `SigRead`/`SigReadScalar` of each leaf stored
+    /// into the value would give; how the kernel keeps the leaves does not show. One
+    /// instruction for a whole record (#677).
+    SigGather {
+        dst: Reg,
+        desc: Reg,
+        tab: ConstId,
+    },
+    /// Drives every leaf of a record signal from the record value at `src` (laid out by the
+    /// signal's descriptor at `desc`) with one waveform element at delay `after`: leaf `k` of
+    /// table `tab` through driver `driver + k`, in leaf order, as `Drive` of each leaf's
+    /// waveform would (#677).
+    SigScatter {
+        driver: u32,
+        src: Reg,
+        desc: Reg,
+        tab: ConstId,
+        after: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    },
     /// The clock-edge test `kind` (0 or 1) of the one element `sig` refers to, a `std_ulogic`,
     /// BIT or BOOLEAN signal: the one instruction every clock-edge idiom lowers to
     /// (`rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...).
@@ -1200,6 +1224,24 @@ impl Inst {
             | Inst::Edge { dst, sig, .. } => {
                 d(dst, i);
                 f(sig, Use, s);
+            }
+            Inst::SigGather { dst, desc, .. } => {
+                f(dst, Use, p);
+                f(desc, Use, p);
+            }
+            Inst::SigScatter {
+                src,
+                desc,
+                after,
+                reject,
+                ..
+            } => {
+                f(src, Use, p);
+                f(desc, Use, p);
+                f(after, Use, i);
+                if let Some(r) = reject {
+                    f(r, Use, i);
+                }
             }
             Inst::Driving { dst, .. } => d(dst, i),
             Inst::DrivingValue { dst, .. } => f(dst, Use, p),

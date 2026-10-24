@@ -11,6 +11,7 @@
 mod build;
 mod copies;
 mod dump;
+pub mod gather;
 pub mod ieee;
 mod inst;
 pub mod opt;

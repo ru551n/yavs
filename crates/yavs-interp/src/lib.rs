@@ -18,6 +18,7 @@ mod debug;
 mod env;
 mod exec;
 mod foreign;
+mod gather;
 mod pre;
 mod scan;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
@@ -895,6 +896,8 @@ pub struct Runtime {
     native: Arc<NativeFlags>,
     /// Live registers at the safepoints of each function a collection met (`roots`).
     live: Vec<std::sync::OnceLock<roots::LiveRefs>>,
+    /// The places of the leaves of record signals, per leaf table and descriptor (`gather.rs`).
+    pub(crate) plans: gather::Plans,
 }
 
 /// Which functions have compiled code, for the fast loop (`Runtime::native_flags`).
@@ -1197,6 +1200,7 @@ impl Runtime {
                 counting: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            plans: Default::default(),
             prog,
         }))
     }

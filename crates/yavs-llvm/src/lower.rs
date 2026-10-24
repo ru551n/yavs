@@ -3048,6 +3048,8 @@ fn keeps_objects(i: &Inst) -> bool {
             | Inst::Edge { .. }
             | Inst::Driving { .. }
             | Inst::DrivingValue { .. }
+            | Inst::SigGather { .. }
+            | Inst::SigScatter { .. }
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }
             | Inst::WaitOn { .. }

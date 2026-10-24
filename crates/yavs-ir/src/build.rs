@@ -199,6 +199,10 @@ impl ProgramBuilder {
         &self.prog.types
     }
 
+    pub fn consts(&self) -> &IdVec<ConstId, ConstData> {
+        &self.prog.consts
+    }
+
     /// [`Ty::layout`] against the types and constants built so far (static layouts of
     /// constants).
     pub fn layout(

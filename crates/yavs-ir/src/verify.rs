@@ -6,7 +6,7 @@
 use std::fmt;
 
 use crate::inst::Role;
-use crate::{AddrSpace, FuncFlags, FuncId, FuncKind, Inst, Program, RegTy};
+use crate::{AddrSpace, ConstData, FuncFlags, FuncId, FuncKind, Inst, Program, RegTy};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifyError {
@@ -300,6 +300,15 @@ fn check_inst(
         },
         Inst::CopyConst { c, .. } if prog.consts.get(c).is_none() => {
             err(format!("missing constant {c}"))
+        }
+        Inst::SigGather { tab, .. } | Inst::SigScatter { tab, .. } => {
+            let ok = matches!(
+                prog.consts.get(tab),
+                Some(ConstData::Bytes(b)) if crate::gather::valid(&prog.types, b)
+            );
+            if !ok {
+                err(format!("constant {tab} is not a leaf table"));
+            }
         }
         Inst::Pos { what, .. }
         | Inst::Check { what, .. }

@@ -686,7 +686,7 @@ fn sev(v: u64) -> R<Severity> {
 }
 
 #[inline(always)]
-fn to_time(v: i64) -> R<Time> {
+pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
 }
 
@@ -1819,7 +1819,7 @@ impl Machine {
     }
 
     #[inline]
-    fn ri(&self, r: Reg) -> i64 {
+    pub(crate) fn ri(&self, r: Reg) -> i64 {
         self.r(r) as i64
     }
 
@@ -2405,7 +2405,7 @@ impl Machine {
     }
 
     #[inline(always)]
-    fn delay_mode(&self, mode: DriveMode, reject: Option<Reg>) -> R<DelayMode> {
+    pub(crate) fn delay_mode(&self, mode: DriveMode, reject: Option<Reg>) -> R<DelayMode> {
         Ok(match mode {
             DriveMode::Transport => DelayMode::Transport,
             DriveMode::Inertial => DelayMode::Inertial {
@@ -8590,6 +8590,16 @@ impl Machine {
                 let v = self.sig_read_scalar(sig, ctx)?;
                 self.set(dst, v);
             }
+            Inst::SigGather { dst, desc, tab } => self.sig_gather(prog, dst, desc, tab, ctx)?,
+            Inst::SigScatter {
+                driver,
+                src,
+                desc,
+                tab,
+                after,
+                mode,
+                reject,
+            } => self.sig_scatter(prog, driver, src, desc, tab, after, mode, reject, ctx)?,
             Inst::Edge { dst, kind, sig } => {
                 let v = self.edge_inst(kind, sig, ctx)?;
                 self.set(dst, v);

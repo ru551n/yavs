@@ -226,6 +226,23 @@ pub(crate) enum Op {
         tab: u32,
     },
     Stmt,
+    /// `Inst::Cover`: count item `item` of the instance (`Machine::op_cover`).
+    Cover {
+        item: u32,
+    },
+    /// `Inst::CoverIn`.
+    CoverIn {
+        dst: u32,
+        acc: u32,
+        src: u32,
+        shift: u8,
+        ulogic: bool,
+    },
+    /// `Inst::CoverCond`.
+    CoverCond {
+        cond: u32,
+        state: u32,
+    },
     Move {
         dst: u32,
         src: u32,
@@ -3387,6 +3404,24 @@ impl Code {
                     aff.push((ops.len() as u32, pc as u32, tail.1));
                     tail.0
                 }
+                Inst::Cover { item } => Op::Cover { item: item.0 },
+                Inst::CoverIn {
+                    dst,
+                    acc,
+                    src,
+                    shift,
+                    ulogic,
+                } => Op::CoverIn {
+                    dst: dst.0,
+                    acc: acc.0,
+                    src: src.0,
+                    shift,
+                    ulogic,
+                },
+                Inst::CoverCond { cond, state } => Op::CoverCond {
+                    cond,
+                    state: state.0,
+                },
                 Inst::Move { dst, src } => match fusable {
                     Some(Inst::Br { to }) if target(to).is_some() => {
                         last = nx;

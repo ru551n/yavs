@@ -767,3 +767,31 @@ fn toggles_of_collapsed_ports() {
     );
     assert_eq!(collapsed, run("b.ycov", &["--no-collapse-ports"]));
 }
+
+/// Every kind counts the same in the interpreter and the LLVM tier (compiled counters), at any
+/// number of threads.
+#[cfg(feature = "llvm")]
+#[test]
+fn tiers_agree() {
+    let tmp = tempdir("tiers");
+    let kinds = "--cov-kind=statement,branch,toggle,condition,expression";
+    cov_dbs(
+        &tmp,
+        "cov_run.vhd",
+        "cov_run",
+        &[
+            ("i.ycov", &["--tier=interp", kinds]),
+            ("l.ycov", &["--tier=llvm", kinds]),
+            ("l4.ycov", &["--tier=llvm", "--threads=4", kinds]),
+            ("a.ycov", &["--tier=auto", kinds]),
+        ],
+    );
+    let want = std::fs::read(tmp.join("i.ycov")).expect("i");
+    for db in ["l.ycov", "l4.ycov", "a.ycov"] {
+        assert!(
+            want == std::fs::read(tmp.join(db)).expect("db"),
+            "{db} differs from the interpreter's"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}

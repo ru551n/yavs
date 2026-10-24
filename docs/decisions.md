@@ -2434,6 +2434,30 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   instructions each; the covered rows of a state are remembered for conditions of up to 5
   inputs), the same path statement counters use. Not small enough to make default; a predecoded
   op for the counters would cut all coverage kinds (#692).
+- **Counter ops (#692):** `Inst::Cover`, `CoverIn` and `CoverCond` are predecoded ops
+  (`Op::Cover`, `Op::CoverIn`, `Op::CoverCond`) whose bodies are `#[inline(never)]`
+  `Machine::op_cover*` methods that `step` shares, so the arms in `run_ops` are a call and a step
+  of `k` (the loop grew by 0.15 percent, designs without coverage move by less than 0.2 percent of
+  instructions). Counting costs about 14 instructions per statement counter instead of about 130.
+  The LLVM tier compiles `Cover` as one atomic add (monotonic) on the counters of the instance
+  (`TierFrame::cov`, `cov_len`: the pointer with `cov_base` applied, filled by `tier_view` and
+  `view_root`, never a constant in the module, so the object cache is unaffected) and `CoverIn` as
+  arithmetic on the register; `CoverCond` calls the interpreter's own function through the signal
+  callback. A missing counter leaves to the interpreter, which reports it. A function with a
+  `Cover` is still not native-frame code (`nat_inline`). Counts are the same in every tier and at
+  any `--threads` (`coverage.rs` `tiers_agree`, `coverage_fec.rs` `tiers_agree`). Remaining cost of
+  coverage runs is mostly not the counters: processes with counters get no specialised per-instance
+  copies and functions with counters are not inlined (#699).
+  Measured as user-mode instructions (`perf stat`, bench builds; the LLVM tier minus its compile),
+  in millions, before / after; plain run, default kinds, `condition,expression` alone:
+  `fecbench` (a condition-dense loop, 300000 iterations) HEAVY=1 interp 414, 911 / 598, 1029 / 776,
+  llvm 30, 1099 / 50, 1114 / 295; HEAVY=0 interp 326, 830 / 511, 739 / 582, llvm 25, 1109 / 48,
+  724 / 269; `rtl_ff` (CYC=500) interp 3055, 7421 / 6823, 5890 / 5319, llvm 2246, 6238 / 4510,
+  5884 / 4223; `rtl_lfsr` (CYC=1000) interp 1311, 4111 / 3901, llvm 919, 3746 / 3130;
+  `compute_loop` interp 1051, 1980 / 1685, llvm 235, 2047 / 302; neorv32 single-core minimal,
+  30 us, interp 5515, 17464 / 16425, llvm 3996, 13276 / 10053; one OSVVM AXI-stream test
+  (`TbStream_AxiSendGetRandomParam2`) interp 3613, 4756 / 4429, llvm 3413, 4184 / 3141. Plain runs
+  moved by 0.0 to 0.1 percent (interpreter) and 0.0 to 0.4 percent (LLVM). No cycles were taken.
 
 ## GUI (M10, #384, #388, user, 2026-10-19)
 
@@ -3654,7 +3678,7 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   materialised before them and the precise roots (#422) see interpreter frames only, at the pcs they wait
   in. Error messages and VHDL stack traces come from the interpreter on materialised frames. A debugger,
   coverage and VHPI see only interpreter frames: debugged processes are never compiled, `Cover` is stepped
-  (so a function with coverage counters is frame-mode). Output is independent of which frames were native
+  (so a function with coverage counters is frame-mode; the counters themselves are compiled since #692). Output is independent of which frames were native
   (rule 5).
 - **Helpers without the generic step:** `Free`, `Fill` and `CallProt` run through direct arms of
   `TierHost::step` (the interpreter's own `deallocate`, fill and `call_with` bodies).

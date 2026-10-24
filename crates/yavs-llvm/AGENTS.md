@@ -13,7 +13,7 @@ in `crates/yavs-llvm/WINDOWS.md`; measurements in `docs/STATUS.md` "llvm".
   interpreter".
 - Compiled code runs on the interpreter frame's registers, slots and temporary area
   (`yavs_interp::TierFrame`, a `#[repr(C)]` view of the machine's stacks the interpreter keeps
-  current). Inline: `Const`, `ConstF`, `Move`, `Bin`/`BinRange` (not `**`), `Un`, `FBin` (not
+  current). Inline: `Cover` (one atomic add on `TierFrame::cov`, #692), `CoverIn`, `Const`, `ConstF`, `Move`, `Bin`/`BinRange` (not `**`), `Un`, `FBin` (not
   `**`), `FUn`, `IToF`, `Cmp`, `FCmp`, `Bool`, `Check`, `FCheck`, `Index`, `Br`, `CondBr`,
   `Case`, and with a slow path that steps the instruction: `AddrOf` (`Up` one or two levels
   through the view), `Load`, `Store`, `Copy`, `Alloc`, `Stmt`, `MakeDope`, `DopeLen`, `Pos`,

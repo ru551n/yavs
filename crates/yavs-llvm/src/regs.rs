@@ -297,6 +297,8 @@ impl Scalars {
                 | Inst::ConstF { .. }
                 | Inst::Move { .. }
                 | Inst::Select { .. }
+                | Inst::Cover { .. }
+                | Inst::CoverIn { .. }
                 | Inst::Cmp { .. }
                 | Inst::FCmp { .. }
                 | Inst::Bool { .. }

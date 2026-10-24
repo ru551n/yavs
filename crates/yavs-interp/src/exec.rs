@@ -4753,6 +4753,24 @@ impl Machine {
                     self.end_stmt();
                     k += 1;
                 }
+                Op::Cover { item } => {
+                    t!(self.op_cover(item));
+                    k += 1;
+                }
+                Op::CoverIn {
+                    dst,
+                    acc,
+                    src,
+                    shift,
+                    ulogic,
+                } => {
+                    self.op_cover_in(dst, acc, src, shift, ulogic);
+                    k += 1;
+                }
+                Op::CoverCond { cond, state } => {
+                    t!(self.op_cover_cond(prog, cond, state));
+                    k += 1;
+                }
                 Op::Move { dst, src } => {
                     self.regs[dst as usize] = self.regs[src as usize];
                     k += 1;
@@ -6445,6 +6463,72 @@ impl Machine {
         Ok(())
     }
 
+    /// `Inst::Cover`, out of line: one relaxed add on the counter of the instance.
+    #[inline(never)]
+    fn op_cover(&mut self, item: u32) -> R<()> {
+        let i = self.inst.cov_base as usize + item as usize;
+        self.rt
+            .cov
+            .get(i)
+            .ok_or_else(|| ice_f!("no coverage counter {i}"))?
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// `Inst::CoverIn`, out of line.
+    #[inline(never)]
+    fn op_cover_in(&mut self, dst: u32, acc: u32, src: u32, shift: u8, ulogic: bool) {
+        let p = self.regs[src as usize];
+        let code = match (ulogic, p) {
+            (true, 2 | 6) | (false, 0) => 1,
+            (true, 3 | 7) | (false, 1) => 2,
+            _ => 3,
+        };
+        let before = if shift == 0 {
+            0
+        } else {
+            self.regs[acc as usize]
+        };
+        self.regs[dst as usize] = before | code << shift;
+    }
+
+    /// `Inst::CoverCond`, out of line: count the rows the state covers.
+    #[inline(never)]
+    fn op_cover_cond(&mut self, prog: &Program, cond: u32, state: u32) -> R<()> {
+        let c = prog
+            .cov_conds
+            .get(cond as usize)
+            .ok_or_else(|| ice_f!("no coverage condition {cond}"))?;
+        let st = self.regs[state as usize];
+        let mut hits = match self
+            .rt
+            .cov_memo
+            .get(cond as usize)
+            .and_then(|m| m.get(st as usize))
+        {
+            Some(m) => match m.load(Ordering::Relaxed) {
+                u64::MAX => {
+                    let h = c.hits(st);
+                    m.store(h, Ordering::Relaxed);
+                    h
+                }
+                h => h,
+            },
+            None => c.hits(st),
+        };
+        while hits != 0 {
+            let row = hits.trailing_zeros();
+            hits &= hits - 1;
+            let i = self.inst.cov_base as usize + c.first.0 as usize + row as usize;
+            self.rt
+                .cov
+                .get(i)
+                .ok_or_else(|| ice_f!("no coverage counter {i}"))?
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// `Op::WaveBuf`, out of line.
     #[inline(never)]
     fn op_wave_buf(&mut self, w: u32, size: u32, time: u32, e: u32) -> R<()> {
@@ -7365,6 +7449,7 @@ impl Machine {
         tf.stack = m.regs.v.as_ptr();
         tf.max_depth = m.vc.max_depth;
         tf.owner = m.vc.owner;
+        m.tier_cov(tf);
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         if m.hot {
@@ -7403,6 +7488,21 @@ impl Machine {
             || shared.is_some_and(Heap::reclaim_due)
     }
 
+    /// The coverage counters of this machine's instance in the view.
+    fn tier_cov(&self, tf: &mut crate::TierFrame) {
+        // Compiled `Inst::Cover` exists only with counters, so without them the view is not read.
+        if self.rt.cov.is_empty() {
+            return;
+        }
+        let cov = self
+            .rt
+            .cov
+            .get(self.inst.cov_base as usize..)
+            .unwrap_or(&[]);
+        tf.cov = cov.as_ptr().cast();
+        tf.cov_len = cov.len() as u64;
+    }
+
     /// Make `tf` the top frame's view (`TierFrame`).
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
         let top = self.frames.len() - 1;
@@ -7427,6 +7527,13 @@ impl Machine {
         tf.heap_epoch = self.heap_epochs();
         tf.flags = self.tier_flags();
         tf.owner = self.vc.owner;
+        let cov = self
+            .rt
+            .cov
+            .get(self.inst.cov_base as usize..)
+            .unwrap_or(&[]);
+        tf.cov = cov.as_ptr().cast();
+        tf.cov_len = cov.len() as u64;
         let mut link = self.frames[top].link;
         for k in 0..2 {
             tf.up_len[k] = 0;
@@ -8867,63 +8974,15 @@ impl Machine {
                 let b = self.rd(self.r(addr), self.r(len))?.to_vec();
                 kc!().output(&b);
             }
-            Inst::Cover { item } => {
-                let i = self.inst.cov_base as usize + item.0 as usize;
-                self.rt
-                    .cov
-                    .get(i)
-                    .ok_or_else(|| ice_f!("no coverage counter {i}"))?
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+            Inst::Cover { item } => self.op_cover(item.0)?,
             Inst::CoverIn {
                 dst,
                 acc,
                 src,
                 shift,
                 ulogic,
-            } => {
-                let p = self.r(src);
-                let code = match (ulogic, p) {
-                    (true, 2 | 6) | (false, 0) => 1,
-                    (true, 3 | 7) | (false, 1) => 2,
-                    _ => 3,
-                };
-                let before = if shift == 0 { 0 } else { self.r(acc) };
-                self.set(dst, before | code << shift);
-            }
-            Inst::CoverCond { cond, state } => {
-                let c = prog
-                    .cov_conds
-                    .get(cond as usize)
-                    .ok_or_else(|| ice_f!("no coverage condition {cond}"))?;
-                let st = self.r(state);
-                let mut hits = match self
-                    .rt
-                    .cov_memo
-                    .get(cond as usize)
-                    .and_then(|m| m.get(st as usize))
-                {
-                    Some(m) => match m.load(Ordering::Relaxed) {
-                        u64::MAX => {
-                            let h = c.hits(st);
-                            m.store(h, Ordering::Relaxed);
-                            h
-                        }
-                        h => h,
-                    },
-                    None => c.hits(st),
-                };
-                while hits != 0 {
-                    let row = hits.trailing_zeros();
-                    hits &= hits - 1;
-                    let i = self.inst.cov_base as usize + c.first.0 as usize + row as usize;
-                    self.rt
-                        .cov
-                        .get(i)
-                        .ok_or_else(|| ice_f!("no coverage counter {i}"))?
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-            }
+            } => self.op_cover_in(dst.0, acc.0, src.0, shift, ulogic),
+            Inst::CoverCond { cond, state } => self.op_cover_cond(prog, cond, state.0)?,
             Inst::Stmt => self.end_stmt(),
             Inst::Elab { op, .. } => {
                 return rt_err_f!(
@@ -9673,6 +9732,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 m.tier_temp(tf);
                 Ok(())
             }
+            Some(&Inst::CoverCond { cond, state }) => m.op_cover_cond(self.prog, cond, state.0),
             Some(&Inst::NewFrame {
                 dst,
                 desc,

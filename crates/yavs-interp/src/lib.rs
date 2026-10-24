@@ -770,6 +770,10 @@ pub struct TierFrame {
     /// code reads a variable of an enclosing subprogram in place.
     pub up_slots: [*mut u8; 2],
     pub up_len: [u64; 2],
+    /// The coverage counters of this instance (`Inst::Cover`; `cov_len` of them, 8 bytes each),
+    /// null and 0 without coverage.
+    pub cov: *const u8,
+    pub cov_len: u64,
 }
 
 /// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
@@ -845,6 +849,8 @@ impl Default for TierFrame {
             heap_epoch: 0,
             owner: 0,
             flags: 0,
+            cov: std::ptr::null(),
+            cov_len: 0,
         }
     }
 }

@@ -273,6 +273,8 @@ const MEM_NTAB: u64 = std::mem::offset_of!(Mem, ntab) as u64;
 const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;
 const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
+const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
+const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
 const OBJ_SIZE: u64 = std::mem::size_of::<Obj>() as u64;
 const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
@@ -2495,6 +2497,7 @@ fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => vec![dst],
         Inst::Move { dst, src } | Inst::IToF { dst, src } => vec![dst, src],
         Inst::Select { dst, c, a, b } => vec![dst, c, a, b],
+        Inst::CoverIn { dst, acc, src, .. } => vec![dst, acc, src],
         Inst::Bin { dst, a, b, .. }
         | Inst::FBin { dst, a, b, .. }
         | Inst::Cmp { dst, a, b, .. }
@@ -2651,7 +2654,10 @@ pub(crate) fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
         Inst::AddrOf { space, .. } => {
             addr_const(*space, 0).is_some() || matches!(space, AddrSpace::Up(1..=2))
         }
-        _ => !inline_regs(f, i).is_empty() || matches!(i, Inst::Br { .. } | Inst::Stmt),
+        _ => {
+            !inline_regs(f, i).is_empty()
+                || matches!(i, Inst::Br { .. } | Inst::Stmt | Inst::Cover { .. })
+        }
     }
 }
 
@@ -5123,6 +5129,58 @@ impl Gen {
                     Inst::Const { dst, v } => self.std(&c, dst, self.c64(v)),
                     Inst::ConstF { dst, v } => self.std(&c, dst, self.c64(v.to_bits() as i64)),
                     Inst::Move { dst, src } => self.std(&c, dst, self.ld(&c, src)),
+                    // Coverage counters: one atomic add on the instance's counters (the view's
+                    // pointer, so the module holds no address); a missing counter is the
+                    // interpreter's error.
+                    Inst::Cover { item } => {
+                        let len = self.mem_ld(&c, MEM_COV_LEN, self.i64);
+                        let bad = self.icmp(IP::LLVMIntULE, len, self.c64(i64::from(item.0)));
+                        self.exit_if(&c, bad, pc);
+                        let base = self.mem_ld(&c, MEM_COV, self.ptr);
+                        let p = self.gep(base, self.c64(8 * i64::from(item.0)));
+                        LLVMBuildAtomicRMW(
+                            self.b,
+                            llvm_sys::LLVMAtomicRMWBinOp::LLVMAtomicRMWBinOpAdd,
+                            p,
+                            self.c64(1),
+                            llvm_sys::LLVMAtomicOrdering::LLVMAtomicOrderingMonotonic,
+                            0,
+                        );
+                    }
+                    Inst::CoverIn {
+                        dst,
+                        acc,
+                        src,
+                        shift,
+                        ulogic,
+                    } => {
+                        // 1 for false, 2 for true, 3 for another value (`Inst::CoverIn`).
+                        let p = self.ld(&c, src);
+                        let (f0, t0) = if ulogic {
+                            let q = LLVMBuildOr(self.b, p, self.c64(4), c"".as_ptr());
+                            (
+                                self.icmp(IP::LLVMIntEQ, q, self.c64(6)),
+                                self.icmp(IP::LLVMIntEQ, q, self.c64(7)),
+                            )
+                        } else {
+                            (
+                                self.icmp(IP::LLVMIntEQ, p, self.c64(0)),
+                                self.icmp(IP::LLVMIntEQ, p, self.c64(1)),
+                            )
+                        };
+                        let hi =
+                            LLVMBuildSelect(self.b, t0, self.c64(2), self.c64(3), c"".as_ptr());
+                        let code = LLVMBuildSelect(self.b, f0, self.c64(1), hi, c"".as_ptr());
+                        let code =
+                            LLVMBuildShl(self.b, code, self.c64(i64::from(shift)), c"".as_ptr());
+                        let v = if shift == 0 {
+                            code
+                        } else {
+                            LLVMBuildOr(self.b, self.ld(&c, acc), code, c"".as_ptr())
+                        };
+                        // The state is read by the host's `CoverCond`: in the frame at once.
+                        self.st(&c, dst, v);
+                    }
                     Inst::Select { dst, c: cond, a, b } => {
                         let t = self.icmp(IP::LLVMIntNE, self.ld(&c, cond), self.c64(0));
                         let v = LLVMBuildSelect(
@@ -7061,6 +7119,7 @@ impl Gen {
             Inst::TempRoot { .. }
                 | Inst::NewFrame { .. }
                 | Inst::Stmt
+                | Inst::CoverCond { .. }
                 | Inst::Deref { .. }
                 | Inst::MemEq { .. }
                 | Inst::Cat { .. }

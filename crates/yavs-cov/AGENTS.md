@@ -12,7 +12,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
   keyed per plan rule 10, reads and writes its text form, merges databases, and renders the
   text summary and Cobertura XML.
 - Does not: emit counters (yavs-lower, `LowerOptions::coverage`), count them (yavs-interp
-  `Inst::Cover`), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
+  `Op::Cover*`, yavs-llvm compiled `Cover`, #692), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
   (the `yavs` CLI: `run --cov`, `cov merge`, `cov report`).
 - Depends on: `yavs-diag`, `yavs-elab`, `yavs-ir`, `yavs-kernel` (observer), `yavs-sem`.
   Called by: `yavs`.

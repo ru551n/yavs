@@ -7184,7 +7184,7 @@ latency is 13.6 percent of the dispatch slots with the default `--tier=auto` aga
 36.6, back-end 25.4 against 27.7; the compiled `comb` copy is 3.7 MB (158 bytes per IR instruction, a 319 KB stack frame) of which a
 sampled window touches about 150 KB, more than the L1i holds.
 Difftest 505/505 on `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0` at 1 and 4 threads, and with `YAVS_LLVM_ARENA=0`.
-## IR optimiser round 13: repeated drives (#667, 2026-10-24)
+
 ## IR optimiser round 13: repeated drives, copies without the declarative part, conditional assignments that idle (#667, #678, #521, 2026-10-24)
 
 Three changes (`docs/decisions.md` "IR optimiser round 13", "Specialised copies start after the declarative part", "Idle skip, round 4"):
@@ -7200,11 +7200,14 @@ Three changes (`docs/decisions.md` "IR optimiser round 13", "Specialised copies 
   (`neorv32` `... when TRACE_PORT_EN else ...`, the PMP `... and NAP_EN else '0'`): an arm that cannot be taken leaves no read. Tests:
   perf `idle_when`, `tests/corpus/delta/idle_when.vhd` (blessed from the reference simulator).
 
-Host instructions, bench builds, `--threads 1`, G, main at da793761 / drives / drives and copies / all three (`neorv32_single_min`
-interp 44.85 / 42.76 / 42.78 / 41.66, llvm 61.35 / 59.14 / 59.16 / 57.7; `neorv32_dual_full` interp 29.94 / 29.61 / 29.62 / 29.23,
-llvm 50.59 / 50.77 / 50.59 / 50.07; `fletcher_bufferwriter_512` interp 91.54 / 90.37 / 90.40 / 90.44; `poc_cache_cpu` interp 15.10 /
-15.01 / 15.00 / 15.0; `poc_arith_addw` interp 235.89 / 235.89 / 235.89 / 236.4 (+0.2 percent: tracked assignments that never skip);
-`grlib_leon3mp` interp 891.98 / 892.53; the others within 0.1 percent). Checked: the 505-test differential corpus (interp, llvm, auto
+Host instructions, bench builds, `--threads 1`, G, main at c9abf712 / with the three changes: `neorv32_single_min` interp 42.55 / 39.74
+(-6.6 %), llvm 55.99 / 52.91 (-5.5 %); `neorv32_dual_full` interp 28.40 / 28.02, llvm 45.81 / 45.76; `fletcher_bufferwriter_512` interp
+84.41 / 83.27, llvm 88.71 / 88.74; `fletcher_bufferreader` interp 26.01 / 26.11; `poc_cache_cpu` interp 15.00 / 14.91; `sc5_fifo_repack`,
+`sc5_timestamp`, `poc_stat_histogram` unchanged. One at a time on da793761 (before the record gather and scatter of #677): drives
+44.85 to 42.76, copies without the declarative part 42.78 (nothing, it is code size), idle skip 41.66; `poc_arith_addw` +0.2 percent
+(tracked assignments that never skip), `grlib_leon3mp` interp 891.98 / 892.53. Cycles (core 10, median of 3, interpreter):
+`neorv32_single_min` 20.4 to 19.6 G, `neorv32_dual_full` 15.3 to 14.6, `fletcher_bufferwriter_512` 38.6 to 38.1, `poc_cache_cpu` 5.29 to
+5.47 (+3 percent for -0.6 percent instructions, within the spread of a run of 5 G). Checked: the 505-test differential corpus (interp, llvm, auto
 at 1 and 4 threads), UVVM (131 pass, 6 skipped) and OSVVM (521 files, 314 tests pass) as on main, `YAVS_IDLE_SKIP=check` on five
 real-world designs, `cargo test --workspace` and `-p yavs-llvm -p yavs --features llvm`.
 

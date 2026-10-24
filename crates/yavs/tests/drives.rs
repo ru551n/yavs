@@ -192,7 +192,9 @@ fn a_default_drive_that_is_overridden_changes_nothing_anyone_sees() {
     }
     // Counters are printed by release and debug builds alike.
     assert!(
-        fewer >= 8,
+        // The designs that drive a whole record do it with one instruction (`SigScatter`), which the
+        // pass leaves alone.
+        fewer >= 7,
         "only {fewer} of {} designs drive less",
         CASES.len()
     );

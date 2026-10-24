@@ -7222,7 +7222,8 @@ whatever pulse-rejection limit the second has (it only deletes more). Hence:
   delayed into a block that did not join gets a copy at its end (a `CondBr` edge is split by a new block, a `Case` cannot be split, so
   its arms all take the drive or the copy goes in front of the `Case`). The copy goes before the first instruction that can see or change
   the driver's transactions: a drive onto elements that may overlap (different instance signals, or constant disjoint ranges, are passed),
-  `DriveSlot`, `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, a call of a procedure, a protected method, an indirect or
+  `DriveSlot`, `SigScatter` (a whole record driven by one instruction, #677: a barrier, and not recognised as the drive that
+  deletes the earlier one, so a record default driven that way stays), `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, a call of a procedure, a protected method, an indirect or
   foreign call; before a wait it goes in front of the wait's `Stmt` (`static_wait` wants the marker first). Reports and function calls do not
   matter. At most six copies per drive, and the drive must be dropped on at least one path, so code never grows for nothing. Each path
   still does the drive exactly once or not at all, and never later than the instruction that could tell.
@@ -7267,8 +7268,7 @@ blocks before `Func::body` are not walked). For a process of records with generi
 descriptors and initial values of the variables (the LEON3 integer unit's `comb`: 34 164 lines of IR dump in the copy, 24 486 without;
 `spec_copy_ir` of 72 copies at 20 us of the LEON3 run 143 387 to 120 115, 16 percent; `neorv32_dual_full` 39 013 to 38 262).
 Registers a frame starts with (defined once by a constant or an address) that the body reads keep their definition, moved to the
-entry block, since the frame template is built from the definitions. No instruction counts of the interpreter change (c1 / c2 in
-`docs/STATUS.md`): the gain is code the tiers need not compile and the predecoder need not scan, and a copy under the memo's 6000
+entry block, since the frame template is built from the definitions. No instruction counts of the interpreter change (`docs/STATUS.md`): the gain is code the tiers need not compile and the predecoder need not scan, and a copy under the memo's 6000
 instructions.
 
 What this does **not** do (#678 stays open): the 1 127 `LayoutOf` and 1 570 `Field` that remain in the copy of the LEON3 `comb` are

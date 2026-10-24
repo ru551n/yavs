@@ -24,7 +24,7 @@
 //!
 //! What it may be delayed past: everything except an instruction that can see or change the
 //! transactions of the driver (a drive onto elements that may overlap the target, `DriveSlot`,
-//! `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, calls of procedures, protected
+//! `SigScatter`, `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, calls of procedures, protected
 //! methods and foreign code), a suspension (the copy goes before the `Stmt` of the wait, which
 //! `static_wait` wants first) and a join that some path enters without the drive pending (the
 //! copy goes to the end of the pending predecessors, an edge of a `CondBr` is split). The blocks
@@ -343,6 +343,7 @@ impl Dr<'_> {
                     zero: self.zero_drive(b, idx as usize).is_some(),
                 }),
                 Inst::DriveSlot { .. }
+                | Inst::SigScatter { .. }
                 | Inst::Disconnect { .. }
                 | Inst::Force { .. }
                 | Inst::Release { .. }

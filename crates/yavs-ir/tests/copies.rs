@@ -177,3 +177,220 @@ fn a_copy_has_no_declarative_part() {
     assert_eq!(reports_of(&p, c), 0, "the copy has not");
     assert_eq!(branches(&p, c), 0, "and folds the statements as before");
 }
+
+/// A process whose declarative part fills a frame word with `G + 1` (G at instance offset 0) and
+/// makes a record variable the way lowering does (`[data, desc, handle]` at slot 0, the heap
+/// object's descriptor copied from the instance data at 8: three elements). The body tests the
+/// word against 6 and the descriptor's length against 3. With `rewrites` it also writes the word
+/// (after reading it), so that test cannot fold.
+fn decl_process(rewrites: bool) -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let int = pb.ty(Ty::Int {
+        lo: i64::MIN,
+        hi: i64::MAX,
+    });
+    let arr = pb.ty(Ty::Array {
+        elem: int,
+        elem_desc: None,
+        dims: 1,
+    });
+    let rec = pb.ty(Ty::Record {
+        fields: vec![Field {
+            name: "a".into(),
+            ty: arr,
+            desc: None,
+        }],
+    });
+    let zero = pb.konst(ConstData::Bytes(vec![0]));
+    let what = pb.check_msg("object", Dir::To);
+    let f = pb.declare("p", FuncKind::Process, None);
+    let mut fb = pb.define(f);
+    fb.slot(32, 8);
+    fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+    let (head, body) = (fb.block(), fb.block());
+    fb.body(head);
+    // The declarative part.
+    let (desc, z) = (
+        fb.addr(AddrSpace::Inst, 8),
+        fb.addr(AddrSpace::Const(zero), 0),
+    );
+    let (h, p, data) = (
+        fb.reg(RegTy::Handle),
+        fb.reg(RegTy::Ptr),
+        fb.reg(RegTy::Ptr),
+    );
+    let size = fb.int(24);
+    fb.emit(Inst::NewFill {
+        dst: h,
+        ty: rec,
+        desc,
+        dsize: 24,
+        data: z,
+        size,
+        fill: 1,
+        shared: false,
+    });
+    fb.emit(Inst::Deref {
+        dst: p,
+        handle: h,
+        what,
+    });
+    let ds = fb.int(24);
+    fb.emit(Inst::Index {
+        dst: data,
+        base: p,
+        pos: ds,
+        stride: 1,
+    });
+    for (off, v) in [(0, data), (8, p), (16, h)] {
+        let a = fb.addr(AddrSpace::Frame, off);
+        fb.emit(Inst::Store {
+            addr: a,
+            src: v,
+            w: Width::B8,
+        });
+    }
+    let (ga, g, one, s) = (
+        fb.addr(AddrSpace::Inst, 0),
+        fb.reg(RegTy::I64),
+        fb.int(1),
+        fb.reg(RegTy::I64),
+    );
+    fb.emit(Inst::Load {
+        dst: g,
+        addr: ga,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: s,
+        a: g,
+        b: one,
+    });
+    let a24 = fb.addr(AddrSpace::Frame, 24);
+    fb.emit(Inst::Store {
+        addr: a24,
+        src: s,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    fb.emit(Inst::Br { to: body });
+    // The body.
+    fb.at(body);
+    let (a8, d, n) = (
+        fb.addr(AddrSpace::Frame, 8),
+        fb.reg(RegTy::Ptr),
+        fb.reg(RegTy::I64),
+    );
+    fb.emit(Inst::Load {
+        dst: d,
+        addr: a8,
+        w: Width::B8,
+    });
+    fb.emit(Inst::DopeLen {
+        dst: n,
+        dope: d,
+        dim: 0,
+    });
+    let (three, c1, t1, e1) = (fb.int(3), fb.reg(RegTy::I64), fb.block(), fb.block());
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c1,
+        a: n,
+        b: three,
+    });
+    fb.emit(Inst::CondBr {
+        c: c1,
+        t: t1,
+        f: e1,
+    });
+    fb.at(t1);
+    fb.emit(Inst::Br { to: e1 });
+    fb.at(e1);
+    let (w, six, c2, t2, e2) = (
+        fb.reg(RegTy::I64),
+        fb.int(6),
+        fb.reg(RegTy::I64),
+        fb.block(),
+        fb.block(),
+    );
+    let a24 = fb.addr(AddrSpace::Frame, 24);
+    fb.emit(Inst::Load {
+        dst: w,
+        addr: a24,
+        w: Width::B8,
+    });
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c2,
+        a: w,
+        b: six,
+    });
+    fb.emit(Inst::CondBr {
+        c: c2,
+        t: t2,
+        f: e2,
+    });
+    fb.at(t2);
+    fb.emit(Inst::Br { to: e2 });
+    fb.at(e2);
+    if rewrites {
+        let (a, k) = (fb.addr(AddrSpace::Frame, 24), fb.int(9));
+        fb.emit(Inst::Store {
+            addr: a,
+            src: k,
+            w: Width::B8,
+        });
+    }
+    // (A process that registers no wait never resumes: its slots are dead.)
+    let t = fb.int(1);
+    fb.emit(Inst::WaitFor { t });
+    fb.emit(Inst::Suspend { resume: 0 });
+    fb.emit(Inst::Br { to: head });
+    fb.finish();
+    (pb.finish().expect("verifies"), f)
+}
+
+/// Instance data of `decl_process`: G = 5 and a descriptor of 3 elements (`0 to 2`).
+fn decl_data() -> Vec<u8> {
+    let mut d = 5i64.to_le_bytes().to_vec();
+    for w in [0i64, 2, 0] {
+        d.extend(w.to_le_bytes());
+    }
+    d
+}
+
+/// The declarative part runs once per instance and the body only reads what it made: the copy
+/// knows the word and the length of the heap object's descriptor (#678).
+#[test]
+fn a_copy_knows_what_the_declarative_part_made() {
+    if !yavs_ir::opt::specialise_on() {
+        return;
+    }
+    let (mut p, f) = decl_process(false);
+    p.reserve_copies(1);
+    let c = p.copy_of(f, &decl_data(), &[]).expect("a copy");
+    assert_eq!(branches(&p, f), 2);
+    assert_eq!(branches(&p, c), 0);
+    assert!(
+        !p.func(c)
+            .expect("c")
+            .code
+            .iter()
+            .any(|i| matches!(i, Inst::DopeLen { .. })),
+        "the length of the descriptor is a constant"
+    );
+}
+
+/// What the body writes is not known: it keeps the test of the word, the descriptor still folds.
+#[test]
+fn a_word_the_body_writes_is_not_known() {
+    if !yavs_ir::opt::specialise_on() {
+        return;
+    }
+    let (mut p, f) = decl_process(true);
+    p.reserve_copies(1);
+    let c = p.copy_of(f, &decl_data(), &[]).expect("a copy");
+    assert_eq!(branches(&p, c), 1);
+}

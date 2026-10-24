@@ -7289,7 +7289,7 @@ at 1 and 4 threads), UVVM (131 pass, 6 skipped) and OSVVM (521 files, 314 tests 
 real-world designs, `cargo test --workspace` and `-p yavs-llvm -p yavs --features llvm`.
 
 What is left: the repeats behind a join (tail duplication), a repeat across a loop's iterations of dynamic offsets that are not one
-register, the `LayoutOf` and `Field` of the process variables in the copies (#678), PoC `ffdre` (#701), sharing the two `to_integer` of
+register, PoC `ffdre` (#701), sharing the two `to_integer` of
 a check's condition and message (#520, a comment with the plan).
 
 ## llvm: scalar drives kept for one host call (#676, 2026-10-24)
@@ -7306,3 +7306,36 @@ after, `--tier=auto` warm, core 12, user instructions and cycles of the process 
 
 Instructions over all 42 realbench tests: geometric mean 0.99 (CPU time 0.99; the changes beyond 1 % elsewhere are `--tier=auto` noise,
 #673). The interpreter is unchanged (a deferred buffer there would save about 3 percent of `hdlm_lfsr`, recorded in the decision).
+
+## Facts the declarative part leaves in a process copy (#678, 2026-10-24)
+
+A copy of a process (#651) takes over between two activations, so what the declarative part made is in the frame and is a function of the
+instance's data. `opt/decl.rs` runs that part per copy on an abstract machine and hands the walk the frame bytes, the address words and the
+descriptors of the record variables' heap objects that the body never writes (`docs/decisions.md` "Facts the declarative part leaves in a
+process copy"). The body's `DopeLen`, `Pos`, `SlicePos`, `SubtypeCheck`, descriptor loads, `LayoutOf` and `Field` of a process variable fold
+like those of an object in the constant pool; `LayoutOf` also folds in shared code whenever the descriptor is a pool constant or instance data.
+
+Bench builds with `llvm` (`tools/build-bench.sh`), `--threads 1`, user instructions of the whole process in G (`perf stat -e
+instructions:u`, equal to 0.02 percent between runs), warm compilation cache (two untimed runs first), main at 0694dbe1 before / after:
+
+| design | `--tier=interp` before / after |
+|---|---|
+| `fletcher_bufferwriter_512` | 83.23 / 75.72 (-9.0 %) |
+| `grlib_leon3mp`, whole run (1060.5 us) | 781.65 / 744.47 (-4.8 %) |
+| `grlib_leon3mp`, first 100 us | 135.83 / 133.66 (-1.6 %) |
+| `neorv32_dual_full` (200 us), `sc5_fifo_repack`, `poc_cache_cpu` | within 0.05 % |
+
+`--tier=llvm` is unchanged by design (no copies exist when the program is compiled before the run: `poc_cache_cpu` 16.901 / 16.897);
+under `--tier=auto` the copies (and their gain) exist, but instruction counts there are not deterministic (the compile thread), so none are
+claimed. The IR of the copy of the LEON3 integer unit's `comb` (`iu3.vhd`, interpreter): 9 656 to 8 539 instructions, `LayoutOf` 551 to 0,
+`Field` 653 to 0; the copy of `dctrl`: 13 258 to 12 025, `LayoutOf` 372 to 10. The shared code of that process is 18 378 instructions
+(1 235 `LayoutOf`). Initialisation and the cold (`--no-cache`) cost of making the copies are within 1 percent (41 copies of the LEON3
+system, 100 us: 145.44 G before, 143.68 G after). `spec_record_var` (`tests/perf.rs`): 239 313 ops with the shared code, 151 530 with copies.
+
+Not done: processes that branch on a package constant in the declarative part (6 of the 16 large processes of the LEON3 system:
+`AddrSpace::Pkg` reads are not instance facts and the copies are stored across runs) keep their `LayoutOf`; a value a function call made
+is unknown (its descriptor is not when the bounds are known).
+
+Checked: output of `fletcher_bufferwriter_512`, `sc5_fifo_repack`, `poc_cache_cpu`, `neorv32_dual_full` (100 us) and `grlib_leon3mp` (300 us)
+byte-identical (stdout and stderr) with copies off and with every process switching at its second activation; `cargo test --workspace`
+plain and with `YAVS_SPEC_AFTER=2`; `-p yavs-llvm -p yavs --features llvm`.

@@ -584,6 +584,28 @@ fn spec_copies() {
     );
 }
 
+/// The frame a process's declarative part makes (record, array-of-record and unconstrained array
+/// variables with bounds from generics, constants, a value a function made) is known to the
+/// copy, which folds the layouts and bounds it reads (#678): the same report, fewer ops.
+#[test]
+fn spec_record_var() {
+    let d = tempdir("spec_record_var");
+    let src = include_str!("perf/spec_record_var.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_record_var", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    check_bounds(
+        "spec_record_var",
+        &copies,
+        &[("spec_switched", Min(3)), ("ops", Max(156000))],
+    );
+}
+
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
 /// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent

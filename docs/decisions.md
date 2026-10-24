@@ -7491,3 +7491,30 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   aligned `Buf::write_to` (0.0% instructions each). Neither design compiles anything under `--tier=auto`; the layers of the
   interpreter side (dispatch 24 to 33%, record layout and copies 15 to 16%) and the shares of the kernel are in `docs/STATUS.md`
   "Fletcher writer and reader against the reference simulator".
+
+
+## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
+
+- **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame
+  and is a function of the instance's frozen data. The optimiser runs that part per copy on a small abstract machine (`Ev`: registers as
+  unknown, constant, address, pointer into a tracked block or heap handle; frame bytes, temporary blocks and heap objects as known or
+  unknown bytes; pure arithmetic, `Load`/`Store`/`Copy`/`MakeDope`/`DopeLen`/`Pos`/`LayoutOf`/`Field`/`Alloc`/`New`/`NewFill`/`Deref`,
+  and the branches those decide) and reports the frame bytes, the words that hold an address and the words that point to the
+  descriptor of a heap object (`[data, desc, handle]` of a record variable) that the body never writes. The walk (`Opt::wf`,
+  `Opt::rdesc`) answers the body's loads of those: a scalar word is a constant, an address word is an `AddrOf`, a descriptor pointer is
+  a register whose bytes are known, so `DopeLen`, `Pos`, `SlicePos`, `SubtypeCheck`, the loads of descriptor words, `LayoutOf` (every
+  record or array type whose descriptor bytes are known, in shared code too: the pool's and the instance's descriptors) and `Field` fold.
+  The facts are keyed by frame offset, not by register, so they hold after every suspension without being re-made.
+- **Why it is sound**: a fact needs the word to be unwritten by the body (a direct store, copy or `MakeDope` to a frame address in a
+  body block, or an address of it used other than by a load, anywhere: `frame_writes`) and every unmodelled instruction, call or store
+  of a pointer into memory the machine cannot see makes what its pointer operands reach unknown for good (`Mem::poison`: the bytes stay
+  unknown whatever is stored later); a branch or `Case` on an unknown value, an unknown word loaded out of memory that holds pointers, or
+  more than 50 000 instructions give no facts. A check that fails would have stopped the run in initialisation, so after the switch every
+  check passed. Reads of the bytes of a `for` generate's parameter are unknown, as before. The one fact taken on the language's word is
+  that the descriptor of a heap object (the constraint of an object) is never written after the object is made, and that of an array
+  variable in the frame (`in_descriptor`) likewise; a pointer to either may go anywhere.
+- **Not done**: a branch on a package constant (`AddrSpace::Pkg`) stops the machine (6 of the 16 big processes of the GRLIB LEON3 system
+  have one); a value read from a package is not an instance fact. Calls are unknown, so a variable initialised by a function call has
+  no fact (its descriptor does when the bounds are known).
+- **Measured**: `docs/STATUS.md` "Facts the declarative part leaves in a process copy". `spec_record_var` (`crates/yavs/tests/perf.rs`) is
+  the work-counter case (239 313 ops with the shared code, 151 530 with copies), `crates/yavs-ir/tests/copies.rs` the unit cases.

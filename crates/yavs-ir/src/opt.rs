@@ -35,6 +35,7 @@
 //! pass off (differential testing).
 
 mod cfg;
+mod decl;
 mod drives;
 mod inline;
 mod layout_cache;
@@ -49,6 +50,7 @@ pub use inline::FwdCache;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::{
@@ -951,6 +953,11 @@ struct Opt<'a> {
     /// the byte ranges of it that are not to be folded; reads of the data fold like reads of
     /// the constant pool.
     inst: Option<InstView<'a>>,
+    /// What the declarative part of the process left in its frame (`decl.rs`), for a copy.
+    wf: Option<decl::Facts>,
+    /// Registers that point into the descriptor of a heap object whose bytes are known: the
+    /// bytes and the pointer's offset in them.
+    rdesc: FxMap<Reg, (Rc<[u8]>, u32)>,
     code: Vec<Inst>,
     operands: Vec<Reg>,
     blocks: Vec<(u32, u32)>,
@@ -1040,6 +1047,8 @@ impl<'a> Opt<'a> {
             prog,
             f,
             inst: None,
+            wf: None,
+            rdesc: FxMap::default(),
             code,
             operands,
             blocks: f.blocks.values().iter().map(|b| (b.start, b.end)).collect(),
@@ -1430,6 +1439,9 @@ impl<'a> Opt<'a> {
             self.drop_statements();
         }
         self.analyse();
+        if self.inst.is_some() && self.f.kind == FuncKind::Process && self.f.body.is_some() {
+            self.wf = self.decl_facts();
+        }
         if self.frame_objects() {
             self.reanalyse();
         }
@@ -2315,6 +2327,7 @@ impl<'a> Opt<'a> {
         let mut visited = vec![false; n];
         let mut work: Vec<Step> = Vec::new();
         self.mval.clear();
+        self.rdesc.clear();
         self.pend = None;
         // The declarative part of a process runs once: its blocks come before the body.
         let cold = self.f.body.map_or(0, |b| b.0 as usize);
@@ -2452,45 +2465,7 @@ impl<'a> Opt<'a> {
         if self.nested {
             return vec![(0, i64::MAX)];
         }
-        let frame = i64::from(self.f.frame);
-        // The object at `o` ends at the next named local, or at the end of the frame; the
-        // descriptor of an array variable `[data, dope, handle, descriptor]` is its last
-        // `24 * dims` bytes.
-        let objs = |o: i64| {
-            self.f
-                .locals
-                .iter()
-                .map(|l| (i64::from(l.slot), i64::from(l.size), l.ty))
-                .chain(self.f.params.iter().map(|p| {
-                    (
-                        i64::from(p.slot),
-                        i64::from(p.width.bytes()),
-                        TyId(u32::MAX),
-                    )
-                }))
-                .filter(move |&(s, z, _)| s <= o && o < s + z)
-        };
-        let range = |o: i64, n: Option<i64>| match n {
-            Some(n) => (o, n),
-            None => match objs(o).next() {
-                Some((s, z, t)) => match self.prog.types.get(t) {
-                    Some(Ty::Array { dims, .. }) if o == s + 24 => (o, 24 * i64::from(*dims)),
-                    _ => (s, z),
-                },
-                None => {
-                    let end = self
-                        .f
-                        .locals
-                        .iter()
-                        .map(|l| i64::from(l.slot))
-                        .chain(self.f.params.iter().map(|p| i64::from(p.slot)))
-                        .filter(|&s| s > o)
-                        .min()
-                        .unwrap_or(frame);
-                    (o, (end - o).max(1))
-                }
-            },
-        };
+        let range = |o: i64, n: Option<i64>| self.frame_range(o, n);
         let mut esc = Vec::new();
         let mut mark = |r: Reg, n: Option<i64>| {
             if let Some(Some((AddrSpace::Frame, o))) = self.ka.get(self.resolve(r).0 as usize) {
@@ -2841,8 +2816,25 @@ impl<'a> Opt<'a> {
             .copied()
     }
 
-    /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded).
+    /// Read pool constant bytes at `a` into `out` (compact ones in place, not expanded), and
+    /// what a copy knows of its frame and of the descriptors of its heap objects (`decl.rs`).
     fn const_read(&self, a: Opn, out: &mut [u8]) -> bool {
+        if let Opn::R(r) = a {
+            return self.rdesc_read(r, 0, out);
+        }
+        if let (Opn::A(AddrSpace::Frame, o), Some(wf)) = (a, &self.wf) {
+            let o = o as usize;
+            let Some(b) = o.checked_add(out.len()).and_then(|e| wf.bytes.get(o..e)) else {
+                return false;
+            };
+            if b.iter().any(Option::is_none) {
+                return false;
+            }
+            for (d, s) in out.iter_mut().zip(b) {
+                *d = s.unwrap_or(0);
+            }
+            return true;
+        }
         if let (Opn::A(AddrSpace::Inst, o), Some((data, holes))) = (a, self.inst) {
             let (o, n) = (o as usize, out.len());
             if holes
@@ -2865,11 +2857,33 @@ impl<'a> Opt<'a> {
             .is_some_and(|d| d.read(o as usize, out))
     }
 
+    /// Read `out.len()` bytes at `delta` bytes from the descriptor at `a`: a pool constant or
+    /// instance data, or a pointer to the known descriptor of a heap object.
+    fn read_at(&self, a: Opn, delta: u32, out: &mut [u8]) -> bool {
+        match a {
+            Opn::A(sp, o) => o
+                .checked_add(delta)
+                .is_some_and(|o| self.const_read(Opn::A(sp, o), out)),
+            Opn::R(r) => self.rdesc_read(r, delta, out),
+            _ => false,
+        }
+    }
+
+    fn rdesc_read(&self, r: Reg, delta: u32, out: &mut [u8]) -> bool {
+        let Some((bytes, off)) = self.rdesc.get(&r) else {
+            return false;
+        };
+        let o = (*off + delta) as usize;
+        o.checked_add(out.len())
+            .and_then(|e| bytes.get(o..e))
+            .map(|b| out.copy_from_slice(b))
+            .is_some()
+    }
+
     /// `(left, right, direction)` of dimension `dim` of a descriptor in the constant pool.
     fn const_dim(&self, dope: Opn, dim: u8) -> Option<(i64, i64, u64)> {
-        let Opn::A(sp, o) = dope else { return None };
         let mut b = [0u8; 24];
-        if !self.const_read(Opn::A(sp, o + 24 * u32::from(dim)), &mut b) {
+        if !self.read_at(dope, 24 * u32::from(dim), &mut b) {
             return None;
         }
         let w = |k: usize| u64::from_le_bytes(b[k * 8..k * 8 + 8].try_into().unwrap_or([0; 8]));
@@ -2892,6 +2906,17 @@ impl<'a> Opt<'a> {
     /// layout depends on the length alone.
     fn known_layout(&self, ty: TyId, desc: Reg) -> Option<Vec<u64>> {
         let types = &self.prog.types;
+        // A descriptor whose bytes are all known (the pool, instance data, a heap object's)
+        // fixes every word of the layout.
+        if let Some(ds) = Ty::desc_size(types, ty).filter(|&d| 0 < d && d <= 4096)
+            && matches!(types.get(ty), Some(Ty::Record { .. } | Ty::Array { .. }))
+        {
+            let mut b = vec![0u8; ds as usize];
+            if self.read_at(self.opn(desc), 0, &mut b) {
+                let (l, _) = Ty::layout(types, &self.prog.consts, ty, &b).ok()?;
+                return Some(decl::layout_words(&l));
+            }
+        }
         if Ty::desc_size(types, ty) != Some(24) || !matches!(types.get(ty), Some(Ty::Array { .. }))
         {
             return None;
@@ -3034,6 +3059,17 @@ impl<'a> Opt<'a> {
                 }
                 if let (Opn::R(x), Opn::K(c)) = (self.opn(base), self.opn(pos))
                     && self.single(dst)
+                    && let Some((b, o)) = self.rdesc.get(&x)
+                    && let Some(at) = c
+                        .checked_mul(i64::from(stride))
+                        .and_then(|d| d.checked_add(i64::from(*o)))
+                        .and_then(|v| u32::try_from(v).ok())
+                {
+                    let b = b.clone();
+                    self.rdesc.insert(dst, (b, at));
+                }
+                if let (Opn::R(x), Opn::K(c)) = (self.opn(base), self.opn(pos))
+                    && self.single(dst)
                 {
                     let (l, off) = self.lat.get(&x).copied().unwrap_or((x, 0));
                     if (self.lwords.contains_key(&l) || self.lstride.contains_key(&l))
@@ -3115,12 +3151,28 @@ impl<'a> Opt<'a> {
                         return self.make_const(pc, dst, v as i64);
                     }
                 }
+                // A word of the frame the declarative part fixed (`decl.rs`).
+                if w == Width::B8
+                    && let Opn::A(AddrSpace::Frame, o) = a
+                    && let Some(wf) = &self.wf
+                {
+                    if let Some(&(sp, off)) = wf.addrs.get(&o)
+                        && self.rty(dst) == Some(RegTy::Ptr)
+                    {
+                        return self.make_addr(pc, dst, sp, off);
+                    }
+                    if let Some(d) = wf.descs.get(&o).cloned()
+                        && self.single(dst)
+                    {
+                        self.rdesc.insert(dst, d);
+                    }
+                }
                 let n = w.bytes() as usize;
                 let mut x = [0u8; 8];
                 // (Instance data folds into integer registers only: a pointer or a handle
                 // register keeps its load, the collector's roots rule.)
                 let folds = self.inst.is_none()
-                    || !matches!(a, Opn::A(AddrSpace::Inst, _))
+                    || !matches!(a, Opn::A(AddrSpace::Inst | AddrSpace::Frame, _) | Opn::R(_))
                     || self.rty(dst) == Some(RegTy::I64);
                 if folds && self.const_read(a, &mut x[..n]) {
                     // A 4-byte load sign-extends (narrow integer elements, #415).
@@ -3234,6 +3286,20 @@ impl<'a> Opt<'a> {
                 if let Opn::R(l) = self.opn(layout)
                     && let Some(&ty) = self.slay.get(&l)
                     && let Some(off) = self.static_offset(ty, n)
+                {
+                    let c = self.const_reg(self.cur, pc, off as i64);
+                    self.code[pc] = Inst::Index {
+                        dst,
+                        base,
+                        pos: c,
+                        stride: 1,
+                    };
+                    self.changed = true;
+                    return self.simplify(pc);
+                }
+                // The words of this layout are known (a descriptor of known bounds).
+                if let Opn::R(l) = self.opn(layout)
+                    && let Some(&off) = self.lwords.get(&l).and_then(|w| w.get(2 + n as usize))
                 {
                     let c = self.const_reg(self.cur, pc, off as i64);
                     self.code[pc] = Inst::Index {

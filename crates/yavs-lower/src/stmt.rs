@@ -1524,7 +1524,28 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let db = self.db;
-        let p = self.comp_select(d, steps, span)?;
+        // A whole record signal driven by one waveform element through its own drivers, one
+        // per leaf in leaf order: one `SigScatter` instead of a drive per leaf (#677).
+        let whole = match base {
+            Ok(_) if steps.is_empty() && elems.len() == 1 && !covered.is_empty() => {
+                let all = self.leaves_under(d, &[]);
+                match self.rec_table(d, span)? {
+                    Some(t)
+                        if all.len() == covered.len()
+                            && all.iter().zip(covered).all(|(a, b)| a.path == b.path) =>
+                    {
+                        Some(t)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let p = if whole.is_some() {
+            self.comp_head(d, span)?
+        } else {
+            self.comp_select(d, steps, span)?
+        };
         let what = self.target_name(target.expr);
         let dims = ty::array_of(db, p.t).map(|x| x.1);
         let mut vals = Vec::new();
@@ -1562,6 +1583,18 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
+        if let (Some(tab), Ok(driver), [(after, (src, _))]) = (whole, base, vals.as_slice()) {
+            self.emit(Inst::SigScatter {
+                driver,
+                src: *src,
+                desc: p.desc,
+                tab,
+                after: *after,
+                mode,
+                reject,
+            });
+            return Ok(());
+        }
         for (leaf, sref, len) in &p.leaves {
             let pos = covered.iter().position(|l| l.path == leaf.path);
             let rel = &leaf.path[p.path.len()..];

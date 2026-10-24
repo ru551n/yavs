@@ -1,0 +1,7 @@
+exit	0
+diag	note	40000000	0	:sigrec_whole_generic:u3:_p1	u3 cnt=4 flag='0' v=4 n=121 u=4 m=010 b=false
+diag	note	40000000	0	:sigrec_whole_generic:u9:_p1	u9 cnt=4 flag='0' v=00C n=121 u=014 m=000010000 b=false
+diag	note	40000000	0	:sigrec_whole_generic:u70:_p1	u70 cnt=4 flag='0' v=00000000000000000C n=121 u=000000000000000014 m=0000000000000000000000000000000000000000000000000000000000000000010000 b=false
+diag	note	80000000	0	:sigrec_whole_generic:u3:_p1	u3 cnt=8 flag='0' v=0 n=841 u=8 m=100 b=false
+diag	note	80000000	0	:sigrec_whole_generic:u9:_p1	u9 cnt=8 flag='0' v=018 n=841 u=028 m=100000000 b=false
+diag	note	80000000	0	:sigrec_whole_generic:u70:_p1	u70 cnt=8 flag='0' v=000000000000000018 n=841 u=000000000000000028 m=0000000000000000000000000000000000000000000000000000000000000100000000 b=false

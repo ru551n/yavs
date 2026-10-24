@@ -159,9 +159,10 @@ fn uniform_is_an_op_and_reports_bad_seeds() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A constant record assigned to a record signal (`r <= C`) drives each field with one op (`LCopyDrive`), whatever
-/// the length of the field (one block of planes or more), the delay and the values (`U`, `X`, `Z`,
-/// `-` ...).
+/// A constant record assigned to a record signal (`r <= C`) drives all fields with one instruction
+/// (`SigScatter`, #677), whatever the length of a field (one block of planes or more), the delay and the
+/// values (`U`, `X`, `Z`, `-` ...). A part of a record signal (`q.i`)
+/// drives each field with one op (`LCopyDrive`).
 const FIELD_DRIVE: &str = "
 library ieee;
 use ieee.std_logic_1164.all;
@@ -187,6 +188,16 @@ architecture a of fd is
   signal de : std_ulogic_vector(0 to 6);
   signal dt : std_ulogic_vector(31 downto 0);
   signal r, r2, r3 : rec_t;
+  type inner_t is record
+    f : std_ulogic_vector(69 downto 0);
+    g : std_ulogic_vector(3 downto 0);
+  end record;
+  type outer_t is record
+    i : inner_t;
+    z : std_ulogic;
+  end record;
+  constant CI : inner_t := (f => \"DDDD\", g => \"0101\");
+  signal q : outer_t;
 begin
   process
     variable bad : integer := 0;
@@ -208,6 +219,8 @@ begin
     r <= C;
     r2 <= C after 2 ns;
     r3 <= transport C after 1 ns;
+    q.i <= CI;
+    q.z <= '1';
     wait for 1 ns;
     same(\"a\", da, C.a);
     same(\"b\", db, C.b);
@@ -219,6 +232,8 @@ begin
     same(\"r.c\", r.c, C.c);
     same(\"r.d\", r.d, C.d);
     same(\"r.e\", r.e, C.e);
+    same(\"q.i.f\", q.i.f, CI.f);
+    same(\"q.i.g\", q.i.g, CI.g);
     same(\"r3.a\", r3.a, C.a);
     same(\"r3.d\", r3.d, C.d);
     wait for 2 ns;
@@ -281,6 +296,10 @@ fn a_constant_field_driven_onto_a_signal_is_one_op() {
         text.lines()
             .any(|l| l.contains(" pc") && l.contains(" LCopyDrive {")),
         "no op LCopyDrive\n{text}"
+    );
+    assert!(
+        text.lines().filter(|l| l.contains(" SigScatter {")).count() >= 3,
+        "no SigScatter\n{text}"
     );
     let _ = std::fs::remove_dir_all(&d);
 }

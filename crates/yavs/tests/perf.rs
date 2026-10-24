@@ -426,7 +426,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(54500)),
+        ("ops", Max(30700)),
     ]
 );
 case!(

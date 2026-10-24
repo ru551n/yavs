@@ -6926,3 +6926,36 @@ percent between invocations, so the instruction counts are the reliable column a
 - Measured (bench build, `--tier=interp --stop-time=0fs`, steady state, instructions): `olo_axi_master_full` 703.5 M to 660.0 M (-6.2 %;
   `Pre::new` was 15.8 % of the run, 7.9 % after); a generated process of 1600 vector assignments in a row 64.7 M to 60.8 M. The
   remaining `live_after` callers in `Code::new` scan once per candidate too and were not measurable on these designs.
+
+## Whole record signals: gather and scatter (yavs-ir, yavs-interp, yavs-lower, #677, 2026-10-24)
+
+Shared layer: every tier and a second code generator see two instructions instead of a sequence per leaf. A record signal has one
+kernel signal per leaf; a read of the whole record was a signal reference, a read, a field address and a store per leaf, a drive of
+the whole record a load, a signal reference and a drive per leaf with the kernel's assignment path behind it: about 680 host
+instructions per leaf for a read and a drive (the integer unit of the GRLIB LEON3 has 233 leaves).
+
+- **`Inst::SigGather { dst, desc, tab }` reads every leaf of a record signal into the record value at `dst`; `Inst::SigScatter
+  { driver, src, desc, tab, after, mode, reject }` drives every leaf from the record value at `src` with one waveform element at
+  delay `after`, leaf `k` through driver slot `driver + k`, in leaf order.** Their meaning is that of the `SigRead`/`SigReadScalar`
+  of each leaf stored into the value, and of the `Drive` of each leaf's waveform: values, delay mode, reject limit, errors and the
+  order of the kernel's assignments are those of the per-leaf code. They say nothing about how the kernel keeps the leaves: this is
+  the IR access path of a whole record signal, and a storage of record signals as one object (a contiguous layout, planned)
+  can serve the same instructions without a change in lowering or in the tiers.
+- **The leaf table** (`yavs_ir::gather`, a byte constant): the record type and, per leaf in leaf order, the instance signal and how the
+  leaf is stored (`LogicScalar`: a `std_ulogic`, BIT or BOOLEAN position with its code bias; `LogicVec`: plane blocks; `Scalar`: one
+  element of a byte signal, a narrow integer sign extended; `Bytes`: an array of scalars as the kernel keeps them). Where a leaf lies in
+  the value and its element count are not in the table: they follow from the record type and the descriptor of the signal at `desc`
+  (`gather::plan`, from `Ty::layout`), so a record whose field widths come from generics or constants of the design is served like a
+  static one. The interpreter makes the plan the first time for a table and descriptor and keeps it in the runtime (`Plans`,
+  compared by the descriptor's bytes), so a gather costs one lookup besides its leaves.
+- **Shapes** (`gather::shape`, `Fx::rec_table`): a record whose fields are records, scalars or arrays of scalars (logic arrays of any
+  nesting included). Not covered, and read and driven leaf by leaf as before: an array of records or of arrays of a byte type as a
+  field, a signal parameter, a signal read or driven in parts (`r.a`, `r(i)`: only the whole signal), a drive of one record by
+  several waveform elements, and a drive of a record from processes that each drive a part. A whole read goes through `read_obj`'s
+  callers as before: the per-activation copy of #630 is filled by one `SigGather`.
+- **Ceilings** (`ponytail:`): the instructions do not check the descriptor of the value against the signal's (a record value of
+  another layout than the signal's is a length error the reference simulators report; the bounds-checked memory accesses make it an
+  internal error here, as the per-leaf code did); the plan cache takes a read lock per instruction; a gather reads every leaf (a
+  per-leaf event stamp would skip the unchanged ones) and a scatter drives every leaf (dropping equal-value drives of unobserved
+  signals is the kernel's, #677 comment of 2026-10-24).
+

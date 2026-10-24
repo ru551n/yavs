@@ -6951,3 +6951,26 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too. Not implemen
   rest of the function twice for liveness). `olo_axi_master_full` at time 0 (interp, steady state): 703.5 M to 660.0 M instructions (-6.2 %),
   a generated process of 1600 assignments 64.7 M to 60.8 M; outputs and work counters unchanged (`docs/decisions.md` "Predecode: one scan
   per waveform").
+
+## llvm: address spaces across blocks, enclosing frames from the view (#684, #685, #679, 2026-10-24)
+
+(`docs/decisions.md` "llvm: address spaces across blocks, and enclosing frames from the view".) Bench builds, `--tier=auto`, core 11,
+`tools/realbench/run.py --compare` (medians of 3): instructions B/A `sc5_fifo_repack` 0.81 (45.7 G to 37.1 G, wall 2.79 s to 2.29 s),
+`hdlm_lfsr` 0.92 (30.7 G to 28.2 G), `neorv32_single_min` 1.00, `fletcher_bufferreader` 1.00, `fletcher_bufferwriter_512` 1.00. With
+`--tier-heat=1,0,0` (every hot function compiled early, instructions of the simulation thread): `sc5_fifo_repack` 34.8 G to 29.3 G (cycles
+10.3 G to 7.8 G), `hdlm_lfsr` 33.8 G to 32.4 G. The head-to-head designs under `--tier=llvm` execute the same instructions
+(`rtl_ff` 9.04 G, `rtl_lfsr` 4.66 G, `rtl_chain` 3.22 G, `rtl_fan` 13.59 G; cycles within the noise of the host, 5 percent either way
+between identical runs of `rtl_fan`). Calls of compiled code into `yavs_rt_host` (`YAVS_COUNTERS=1` on an `op-census` build, `--tier-heat=1,0,0`), with the `Index` rule alone
+and with the dataflow too: `hdlm_lfsr` 101.9 M and 1.3 M (its loop's address register is made in the pre-header block), `sc5_fifo_repack`
+25.6 M and 23.8 M, `neorv32_single_min` 20.0 M and 17.3 M. The enclosing-frame accesses of `sc5_fifo_repack` went through the
+interpreter's object table (13 percent of its cycles) and now read the view.
+
+What is left of #679 (measured, not done). LEON3 60 us window, `iu:comb` forced (`YAVS_AUTO_FORCE=comb@1000#0`), instructions of the
+simulation thread: interpreter 125.5 G, compiled 93 to 96 G (-24 percent), cycles level (IPC 3.0 against 2.2); branch misses 85 M to 154 M,
+iTLB misses 0.09 M to 4.6 M, L1i misses 38.6 M to 47 M. The same instructions with `Fast` and with the optimised code generator
+(`YAVS_LLVM_FAST_MIN`), so the quality of the machine code of the body is not the lever; callbacks are 6 percent of the cycles
+(`yavs_rt_lcopy` 2.0, `native_direct` 1.5, `yavs_rt_host` 0.9, `forget_since` 0.5) and 1.4 M stepped `LayoutOf` without a cache (373 per
+activation, #678) are the largest block of steps. `yavs_rt_host` is 2.5 percent of `fletcher_bufferwriter_512` (157 M calls: the addresses
+are fat pairs returned by calls and natives and pointers loaded from slots, which have no static space). Tried and dropped because they moved
+nothing: `Field` keeping the space of its base (reader 78 M to 68 M calls, instructions 0.995, writer level), constant tables read by a run-time
+index (`Known::ConstAny`: no site in these designs).

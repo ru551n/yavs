@@ -1896,6 +1896,17 @@ impl Machine {
         }
     }
 
+    /// [`Machine::mem_fast`] with temporary memory tested first: the operands and results of
+    /// the native `ieee` subprograms live there (no jump table on the way).
+    #[inline(always)]
+    pub(crate) fn mem_temp_first(&self, sp: u8, idx: u32) -> Option<&[u8]> {
+        if sp == TEMP {
+            Some(&self.temp)
+        } else {
+            self.mem_fast(sp, idx)
+        }
+    }
+
     /// The shared heap object `idx` (`SHARED_HEAP`) or the shared variables (`SHARED`) for
     /// writing, without the error paths of `obj_mut`.
     #[inline(always)]
@@ -2269,6 +2280,20 @@ impl Machine {
         }
         self.temp.resize(end as usize, 0);
         mk_addr(TEMP, 0, off)
+    }
+
+    /// The words `f(addr)` in temporary memory, where `addr` is the address of the first one.
+    #[inline(always)]
+    pub(crate) fn temp_words<const N: usize>(&mut self, f: impl FnOnce(u64) -> [u64; N]) -> R<u64> {
+        let off = (self.temp.len() as u64).next_multiple_of(8);
+        if off + 8 * N as u64 > u64::from(u32::MAX) {
+            return rt_err_s!("temporary memory of one statement exceeds 4 GiB");
+        }
+        let addr = mk_addr(TEMP, 0, off)?;
+        self.temp.resize(off as usize, 0);
+        self.temp
+            .extend_from_slice(f(addr).map(u64::to_le_bytes).as_flattened());
+        Ok(addr)
     }
 
     /// A fat pair `[a, b]` in temporary memory.

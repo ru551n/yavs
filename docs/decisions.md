@@ -7350,3 +7350,28 @@ of every PMP region) and assigned the constant again.
   call's constant arguments to reach the callee (#701).
 - **Measured**: see "IR optimiser round 13" in `docs/STATUS.md`.
 
+
+
+## Native ieee calls: one-word operands read and written in place (yavs-interp `ieee.rs`, `exec.rs`, yavs-lib `closure.rs`, #691, 2026-10-24)
+
+- **Decision: `ieee::small` (the one-word view of an array operand of 1 to 64 elements without a metavalue) returns `Option`, not
+  `R<Option>`, and reads the fat pair, the descriptor and the first plane block with `words` (three bounds-checked reads of the
+  common spaces, temporary memory tested before the jump table, `Machine::mem_temp_first`). `None` for anything unusual (unreadable
+  address, longer array, metavalue, a missing argument): the general path then reads the operand again and words the error, so the
+  fast path has no error plumbing and no `Fault` in its return value.** `put_small` writes the 72 bytes of the result (fat pair,
+  descriptor, one plane block) with one append to temporary memory (`Machine::temp_words`: the addresses follow from the start of
+  the block) instead of `temp_alloc` (zero fill), two address additions and a `wr` through `obj_mut`. Results and warnings are
+  unchanged (`ieee_native.rs` differential tests); the interpreter's op sequence and the work counters are unchanged.
+- Per call, stepped instructions of `a + b` on two 9-element `unsigned` (`poc_arith_addw`, interpreter): `ieee::add` with its two
+  operand reads, `fat_dim` and the result write 537 to 177; `to_integer` of one operand about 200 to 109. The rest of a native call
+  is outside the function: about 60 instructions of `Op::CallIeee` (argument cells, function lookup, result and flag handling) and, on
+  the compiled tier, about 190 of the callback layer (`yavs_rt_native`, `native_frame`) per call.
+- **#691: `closure()` keeps a `HashSet` next to the ordered `Vec` of files (discovered, done) and of the files on the DFS stack
+  (cycle check only when the file is on the stack).** The output order is unchanged. `olo_axi_master_full` at time 0 (interp, steady
+  state): 623.4 M to 605.8 M instructions (-2.8 %).
+- Not done, with the reason: (1) `std_match` and `to_hstring` as natives: none of the measured designs (`uvvm_util_rand`,
+  `osvvm_axis_random`, `sc5_fifo_repack`) spends time in them, their time is in the libraries' own VHDL string code and `textio`
+  natives. (2) The operand convention (a fat pair in temporary memory built by `NewDope` + `NewPair` from the `AllocReadVec` /
+  `AllocCat` result: `NewPair` and `NewDope` are 10 percent of the ops of `poc_arith_addw`): a native taking data address and
+  bounds in registers would save those ops and the two dependent reads in the native; that is an IR change (#697). The callback layer of the compiled tier is #698.
+

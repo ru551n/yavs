@@ -7063,6 +7063,12 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too.
   rest of the function twice for liveness). `olo_axi_master_full` at time 0 (interp, steady state): 703.5 M to 660.0 M instructions (-6.2 %),
   a generated process of 1600 assignments 64.7 M to 60.8 M; outputs and work counters unchanged (`docs/decisions.md` "Predecode: one scan
   per waveform").
+- #691 and the native `ieee` call path: `ieee::small` returns `Option` and reads with one bounds check per word, `put_small` appends the
+  72 bytes of its result to temporary memory in one go, `closure()` uses sets for files seen, done and on the DFS stack. Instructions,
+  bench build, warm cache, `realbench --compare` over all 42 tests (interp and llvm): `poc_arith_addw` interp 236.1 G to 220.2 G (-6.7 %),
+  llvm 224.7 G to 208.7 G; cycles on core 14 interp 70.8 G to 68.4 G (-3.4 %), `--tier=auto` 57.0 G to 53.4 G (-6.5 %); `poc_cache_cpu` interp
+  15.12 G to 14.51 G; `neorv32_single_min` 42.9 G to 42.3 G; `olo_axi_master_full` at time 0 623.4 M to 605.8 M; every other test within 1 %
+  (no instruction ratio above 1.01). `tools/bench --compare` (31 designs) CPU geomean 0.991 (`docs/decisions.md` "Native ieee calls").
 
 ## llvm: address spaces across blocks, enclosing frames from the view (#684, #685, #679, 2026-10-24)
 

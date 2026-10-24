@@ -5,6 +5,8 @@
 //! ```text
 //! statement <instance|glob> <12hex>.<occ> [file:line]
 //! branch    <instance|glob> <12hex>.<occ>.<arm> [file:line]
+//! condition <instance|glob> <12hex>.<occ> <row> [file:line]   a row of a condition (2 * input + value)
+//! expression <instance|glob> <12hex>.<occ> <row> [file:line]  the same for a logic expression
 //! toggle    <instance|glob> <scalar|glob> [rise|fall]   a signal's scalar, both directions unless one is named
 //! instance  <glob>          that instance and everything below it
 //! unit      <lib.package>   a package's items
@@ -28,13 +30,35 @@ pub const STALE: &str = "W0111";
 /// A row excludes an item that ran.
 pub const HIT: &str = "W0114";
 
+/// What an item rule excludes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemKind {
+    Statement,
+    Branch,
+    Condition,
+    Expression,
+}
+
+impl ItemKind {
+    fn word(word: &str) -> Option<ItemKind> {
+        Some(match word {
+            "statement" => ItemKind::Statement,
+            "branch" => ItemKind::Branch,
+            "condition" => ItemKind::Condition,
+            "expression" => ItemKind::Expression,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum Rule {
     Item {
-        branch: bool,
+        kind: ItemKind,
         glob: String,
         hex: String,
         occ: u32,
+        /// The branch arm, or the row of a condition or expression.
         arm: u32,
         at: Option<(String, u32)>,
     },
@@ -87,15 +111,19 @@ fn direction(d: &str, bad: &dyn Fn(&str) -> String) -> Result<bool, String> {
     }
 }
 
-/// A `statement` or `branch` rule from its fields (shared by the text and YAML formats).
+/// A `statement`, `branch`, `condition` or `expression` rule from its fields (shared by the text
+/// and YAML formats): `id` is `HEX12.OCC`, with `.ARM` for a branch; `row` is the row of a
+/// condition or expression.
 fn item_rule(
-    branch: bool,
+    kind: ItemKind,
     glob: &str,
     id: &str,
+    row: Option<&str>,
     at: Option<&str>,
     bad: &dyn Fn(&str) -> String,
 ) -> Result<Rule, String> {
     let p: Vec<&str> = id.split('.').collect();
+    let branch = kind == ItemKind::Branch;
     let n = if branch { 3 } else { 2 };
     if p.len() != n || p[0].len() != 12 || !p[0].bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(bad(if branch {
@@ -114,12 +142,18 @@ fn item_rule(
             Some((f.to_string(), num(n)?))
         }
     };
+    let arm = match (kind, row) {
+        (ItemKind::Branch, _) => num(p[2])?,
+        (ItemKind::Condition | ItemKind::Expression, Some(r)) => num(r)?,
+        (ItemKind::Condition | ItemKind::Expression, None) => return Err(bad("missing row")),
+        _ => 0,
+    };
     Ok(Rule::Item {
-        branch,
+        kind,
         glob: glob.to_string(),
         hex: p[0].to_ascii_lowercase(),
         occ: num(p[1])?,
-        arm: if branch { num(p[2])? } else { 0 },
+        arm,
         at,
     })
 }
@@ -138,8 +172,23 @@ pub fn parse(text: &str) -> Result<Vec<Row>, String> {
         }
         let bad = |m: &str| format!("line {}: {m}: `{}`", i + 1, body.trim());
         let rule = match w[..] {
-            [t @ ("statement" | "branch"), glob, id, ref at @ ..] if at.len() <= 1 => {
-                item_rule(t == "branch", glob, id, at.first().copied(), &bad)?
+            [t @ ("statement" | "branch"), glob, id, ref at @ ..] if at.len() <= 1 => item_rule(
+                ItemKind::word(t).unwrap_or(ItemKind::Statement),
+                glob,
+                id,
+                None,
+                at.first().copied(),
+                &bad,
+            )?,
+            [t @ ("condition" | "expression"), glob, id, row, ref at @ ..] if at.len() <= 1 => {
+                item_rule(
+                    ItemKind::word(t).unwrap_or(ItemKind::Condition),
+                    glob,
+                    id,
+                    Some(row),
+                    at.first().copied(),
+                    &bad,
+                )?
             }
             ["toggle", g, sig] => Rule::Toggle(g.to_string(), sig.to_string(), None),
             ["toggle", g, sig, d] => {
@@ -149,7 +198,8 @@ pub fn parse(text: &str) -> Result<Vec<Row>, String> {
             ["unit", u] => Rule::Unit(u.to_string()),
             ["file", g] => Rule::File(g.to_string()),
             [
-                "statement" | "branch" | "toggle" | "instance" | "unit" | "file",
+                "statement" | "branch" | "condition" | "expression" | "toggle" | "instance"
+                | "unit" | "file",
                 ..,
             ] => {
                 return Err(bad("wrong number of fields"));
@@ -169,7 +219,7 @@ pub fn parse(text: &str) -> Result<Vec<Row>, String> {
 fn matches(r: &Rule, k: &Key, e: &Entry) -> bool {
     match r {
         Rule::Item {
-            branch,
+            kind,
             glob: g,
             hex,
             occ,
@@ -177,8 +227,10 @@ fn matches(r: &Rule, k: &Key, e: &Entry) -> bool {
             ..
         } => {
             let kind_ok = match k.kind {
-                Kind::Statement => !branch,
-                Kind::Branch(a) => *branch && a == *arm,
+                Kind::Statement => *kind == ItemKind::Statement,
+                Kind::Branch(a) => *kind == ItemKind::Branch && a == *arm,
+                Kind::Condition(r) => *kind == ItemKind::Condition && r == *arm,
+                Kind::Expression(r) => *kind == ItemKind::Expression && r == *arm,
                 Kind::Toggle(_) => false,
             };
             kind_ok
@@ -290,6 +342,8 @@ pub fn head(k: &Key, e: &Entry) -> String {
         Kind::Statement => format!("statement {} {id} {}:{}", k.path, e.file, e.line),
         Kind::Branch(a) => format!("branch {} {id}.{a} {}:{}", k.path, e.file, e.line),
         Kind::Toggle(r) => format!("toggle {} {} {}", k.path, k.sig, dir_word(r)),
+        Kind::Condition(r) => format!("condition {} {id} {r} {}:{}", k.path, e.file, e.line),
+        Kind::Expression(r) => format!("expression {} {id} {r} {}:{}", k.path, e.file, e.line),
     }
 }
 
@@ -304,6 +358,7 @@ pub fn comment(k: &Key, e: &Entry) -> String {
         Kind::Statement => e.text.clone(),
         Kind::Branch(a) => format!("arm {a}: {}", e.text),
         Kind::Toggle(r) => format!("{} ({}:{})", crate::arrow(r), e.file, e.line),
+        Kind::Condition(_) | Kind::Expression(_) => crate::fec_text(k, e),
     }
 }
 
@@ -353,6 +408,16 @@ pub fn miss_yaml(db: &Database, k: &Key, e: &Entry) -> Option<String> {
             "  - kind: branch   # {c}\n    instance: {}\n    hash: {}\n    line: {at}\n",
             q(&k.path),
             q(&format!("{id}.{a}"))
+        ),
+        Kind::Condition(r) | Kind::Expression(r) => format!(
+            "  - kind: {}   # {c}\n    instance: {}\n    hash: {}\n    row: {r}\n    line: {at}\n",
+            if matches!(k.kind, Kind::Condition(_)) {
+                "condition"
+            } else {
+                "expression"
+            },
+            q(&k.path),
+            q(&id)
         ),
         Kind::Toggle(r) => format!(
             "  - kind: toggle   # {c}\n    instance: {}\n    signal: {}\n{}",

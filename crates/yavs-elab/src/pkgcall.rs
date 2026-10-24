@@ -1007,7 +1007,7 @@ pub(crate) fn init_key(
     opts: &LowerOptions,
     lib: Option<&crate::libstage::LibUse>,
 ) -> Option<InitKey> {
-    let cache = db.stages().filter(|_| !opts.coverage)?;
+    let cache = db.stages().filter(|_| !opts.any_coverage())?;
     Some(InitKey {
         cache: cache.clone(),
         extent: db.stage_extent(),
@@ -1037,7 +1037,7 @@ pub(crate) fn package_lowerer<'a>(
         let (l, lib) = r?;
         return Ok((l, Some(lib)));
     }
-    let cache = db.stages().filter(|_| !opts.coverage);
+    let cache = db.stages().filter(|_| !opts.any_coverage());
     let extent = db.stage_extent();
     let part = stage_part(packages, &opts);
     if let Some(c) = cache

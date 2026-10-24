@@ -180,6 +180,14 @@ impl<'a> Fx<'a, '_> {
     }
 
     pub fn expr(&mut self, id: ExprId) -> R<V> {
+        let v = self.expr_value(id)?;
+        if !self.cov_inputs.is_empty() {
+            self.cov_input(id, v);
+        }
+        Ok(v)
+    }
+
+    fn expr_value(&mut self, id: ExprId) -> R<V> {
         let db = self.db;
         let e = &db.exprs[id];
         let span = e.span;
@@ -2838,7 +2846,7 @@ impl<'a> Fx<'a, '_> {
             // unary operator (#531).
             Body::Hir { .. }
                 if !self.cx.opts.no_native_ieee
-                    && !self.cx.opts.coverage
+                    && !self.cx.opts.any_coverage()
                     && crate::reduce::reduction(db, callee).is_some() =>
             {
                 let gate = crate::reduce::reduction(db, callee)

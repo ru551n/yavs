@@ -594,7 +594,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   resources, no timestamp, so equal databases give equal bytes; source paths shown relative to
   the current directory or to `--root DIR`); sources are read from the paths in the
   database at report time and an unreadable one is `E0113` with nothing written. `--uncovered` prints instead one exclusion row per item that
-  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `toggle PATH SCALAR rise|fall
+  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `condition|expression INSTANCE HEX12.OCC ROW FILE:LINE   # input, value, result, condition`, `toggle PATH SCALAR rise|fall
   # never 0->1|1->0 (FILE:LINE)`, or `toggle PATH SCALAR   # never toggled` when both
   directions never happened); `--uncovered=yaml` prints the same items as a YAML exclusion file
   (`exclude:` list of `kind`/`instance`/`hash`/`line` or `signal`/`direction` maps); `--exclude FILE` takes the
@@ -604,8 +604,10 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   with the same meaning (`E0112` names the line of a bad entry).
   Exclusions apply when reporting; databases keep raw counts. `--cov-exclude-translate-off`
   (`run`) also leaves `translate_off`/`translate_on` regions out; unbalanced `-- coverage`
-  pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle` (`run`, default all)
-  chooses what is counted; `--cov-toggle-max=N` (default 65536) leaves signals with more
+  pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle,condition,expression` (`run`, default `statement,branch,toggle`)
+  chooses what is counted (`condition` and `expression` are focused expression coverage, #688:
+  one row per input and value of a boolean condition or logic expression with 2 or more inputs;
+  `docs/decisions.md` "Condition and expression coverage"); `--cov-toggle-max=N` (default 65536) leaves signals with more
   `bit`/`std_ulogic` scalars out of toggle coverage with `W0115`. `--cov-test=NAME` (`run`)
   names the run's test in the database; the default is the `enabled_test_cases` field of a
   `-grunner_cfg=...` generic (`,,` is a comma), else `TOP` or `TOP(g1=v1,g2=v2)` with the `-g`
@@ -616,13 +618,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   ...`) and per test its items and the items no other test hit. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
   read), `E0112` (an exclusion file cannot be read or has a malformed row) or `E0110` (a file
   cannot be written), or when `-Werror` makes a warning an error; `run` exits at least 1 when the database cannot be written (`E0110`). The
-  database format (a `yavs-coverage 4` line, a tests section of `test`, id, name lines with
+  database format (a `yavs-coverage 5` line, a tests section of `test`, id, name lines with
   ids numbering the names in sorted order, then one tab-separated item per line: kind `s` or
   `bN`, path, statement text hash, occurrence, count, tests, line, file, statement text for
-  display; toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, tests, line,
+  display; conditions and expressions: kind `cN` or `eN` (N = 2 * input + value), the same fields with the
+  input's text before the display text (the result the input decides alone, a space, the whole
+  condition); toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, tests, line,
   file; tests is the comma-separated ids of the tests that hit the item, `-` for none) is
-  yavs's own and may change with its version line; versions 2 and 3 are still read (without
-  tests). Cobertura output has no toggles.
+  yavs's own and may change with its version line; versions 2 to 4 are still read (2 and 3 without
+  tests, 2 to 4 without conditions). Cobertura output has no toggles.
 
 ## 6. GUI and waves
 

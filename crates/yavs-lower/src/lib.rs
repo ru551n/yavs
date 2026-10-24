@@ -12,6 +12,7 @@
 mod access;
 mod assoc;
 mod composite;
+mod covcond;
 mod edge;
 mod expr;
 mod file;
@@ -50,8 +51,19 @@ pub const INTERNAL: &str = "E9999";
 pub struct LowerOptions {
     /// Emit statement and branch coverage counters (`Cover`, rule 10).
     pub coverage: bool,
+    /// Emit condition coverage (`Inst::CoverIn`, `Inst::CoverCond`).
+    pub cov_condition: bool,
+    /// Emit expression coverage of the values of assignments.
+    pub cov_expression: bool,
     /// Run the subprograms of `yavs_ir::ieee` from their VHDL bodies (the environment variable `YAVS_NO_NATIVE_IEEE`).
     pub no_native_ieee: bool,
+}
+
+impl LowerOptions {
+    /// Any counters at all: code lowered for a run without them is not the code to reuse.
+    pub fn any_coverage(&self) -> bool {
+        self.coverage || self.cov_condition || self.cov_expression
+    }
 }
 
 impl Default for LowerOptions {
@@ -60,6 +72,8 @@ impl Default for LowerOptions {
     fn default() -> Self {
         Self {
             coverage: false,
+            cov_condition: false,
+            cov_expression: false,
             no_native_ieee: std::env::var_os("YAVS_NO_NATIVE_IEEE").is_some(),
         }
     }
@@ -552,6 +566,33 @@ impl Cx {
         )
     }
 
+    /// Whether a condition (`expr`: an expression) in file `file` is measured.
+    pub fn cov_cond_on(&self, expr: bool, file: yavs_diag::FileId) -> bool {
+        let on = if expr {
+            self.opts.cov_expression
+        } else {
+            self.opts.cov_condition
+        };
+        on && !self.cov_skip.contains(&file)
+    }
+
+    /// The counter of row `kind` of a condition or expression at `span`.
+    pub fn cover_cond(
+        &mut self,
+        pb: &mut ProgramBuilder,
+        stmt: yavs_ir::StmtId,
+        span: Span,
+        kind: CovKind,
+        row: yavs_ir::CovRow,
+    ) -> CovItem {
+        let _ = span;
+        pb.cov(CovInfo {
+            stmt,
+            kind,
+            row: Some(row),
+        })
+    }
+
     pub fn cover(
         &mut self,
         pb: &mut ProgramBuilder,
@@ -559,8 +600,13 @@ impl Cx {
         span: Span,
         kind: CovKind,
     ) -> Option<CovItem> {
-        (self.opts.coverage && !self.cov_skip.contains(&span.file))
-            .then(|| pb.cov(CovInfo { stmt, kind }))
+        (self.opts.coverage && !self.cov_skip.contains(&span.file)).then(|| {
+            pb.cov(CovInfo {
+                stmt,
+                kind,
+                row: None,
+            })
+        })
     }
 }
 

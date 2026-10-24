@@ -342,7 +342,7 @@ impl Elaborated {
         let session = self
             .start
             .take()
-            .filter(|s| !opts.coverage && s.pkgs == packages && !s.lowerer.externals_early());
+            .filter(|s| !opts.any_coverage() && s.pkgs == packages && !s.lowerer.externals_early());
         let key = self.lowering_key(db, &opts, &packages, &archs, session.as_ref());
         let (program, rest, start, learn, lib) =
             match key.as_ref().and_then(|k| k.get().map(|l| (k, l))) {
@@ -623,7 +623,7 @@ impl Elaborated {
         }
         let cache = db
             .stages()
-            .filter(|c| !opts.coverage && c.closure())?
+            .filter(|c| !opts.any_coverage() && c.closure())?
             .clone();
         // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
         // on the same analysis give the same program, ids and all.

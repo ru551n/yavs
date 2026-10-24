@@ -25,10 +25,12 @@ pub use inst::{
     ForceKind, Inst, IntOp, IntUnOp, LNumOp, LOp, PhysOp, Reg, RegTy, Regs, Role, SIG_PART_BYTES,
     Width,
 };
+pub use program::COV_INPUTS;
 pub use program::{
-    Block, CaseTable, CheckMsg, ConstData, CovInfo, CovKind, Dir, ForeignArg, ForeignMode,
-    ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef, OptCopy, Param, ParamClass,
-    Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel, VhpiParam, ViaNode,
+    Block, CaseTable, CheckMsg, ConstData, CovCond, CovInfo, CovKind, CovNode, CovRow, Dir,
+    ForeignArg, ForeignMode, ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef,
+    OptCopy, Param, ParamClass, Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel,
+    VhpiParam, ViaNode,
 };
 pub use program::{bytes, lazy_bodies};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};

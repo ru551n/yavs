@@ -791,6 +791,24 @@ pub enum Inst {
     Cover {
         item: CovItem,
     },
+    /// Condition coverage, one input: `dst = acc | code(src) << shift`, where the code is
+    /// 1 for a false input, 2 for a true one and 3 for anything else (`ulogic`: a `std_ulogic`
+    /// position, `0`/`L` false, `1`/`H` true; else a `bit`/`boolean` position). An input
+    /// never evaluated leaves its two bits 0. With `shift` 0 (the first input of a condition,
+    /// which always runs) `acc` is not read: the state starts there.
+    CoverIn {
+        dst: Reg,
+        acc: Reg,
+        src: Reg,
+        shift: u8,
+        ulogic: bool,
+    },
+    /// Condition coverage, end of an evaluation: count the rows of condition `cond`
+    /// (`Program::cov_conds`) that the inputs collected in `state` cover.
+    CoverCond {
+        cond: u32,
+        state: Reg,
+    },
     /// Statement boundary: the debugger hook, and the end of the previous statement's
     /// temporaries.
     Stmt,
@@ -1081,6 +1099,12 @@ impl Inst {
                 f(want, Use, p);
             }
             Inst::Br { .. } | Inst::Unreachable { .. } | Inst::Stmt | Inst::Cover { .. } => {}
+            Inst::CoverIn { dst, acc, src, .. } => {
+                d(dst, i);
+                f(acc, Use, i);
+                f(src, Use, i);
+            }
+            Inst::CoverCond { state, .. } => f(state, Use, i),
             Inst::CondBr { c, .. } => f(c, Use, i),
             Inst::Case { v, .. } => f(v, Use, i),
             Inst::Ret { v } => {

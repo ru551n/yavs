@@ -282,6 +282,8 @@ pub enum CovKindArg {
     Statement,
     Branch,
     Toggle,
+    Condition,
+    Expression,
 }
 
 #[cfg_attr(test, derive(Debug))]
@@ -296,7 +298,7 @@ pub enum SeverityArg {
 /// The elaborated design, or the exit code of the failed stage.
 fn elaborate(
     c: &Common,
-    coverage: bool,
+    lowering: yavs_elab::LowerOptions,
     compile_all: bool,
     collapse_ports: bool,
     format: MessageFormat,
@@ -404,11 +406,7 @@ fn elaborate(
             for d in &e.warnings {
                 out.emit(&db.sources, d);
             }
-            let opts = yavs_elab::LowerOptions {
-                coverage,
-                ..yavs_elab::LowerOptions::default()
-            };
-            if let Err(ds) = e.lower_with(&mut db, opts) {
+            if let Err(ds) = e.lower_with(&mut db, lowering) {
                 for d in &ds {
                     out.emit(&db.sources, d);
                 }
@@ -552,7 +550,15 @@ pub fn elab(
     color: bool,
     encoding: yavs_syntax::Encoding,
 ) -> ExitCode {
-    match elaborate(&a, false, false, true, format, color, encoding) {
+    match elaborate(
+        &a,
+        yavs_elab::LowerOptions::default(),
+        false,
+        true,
+        format,
+        color,
+        encoding,
+    ) {
         Ok((out, db, e)) => {
             if a.print_hierarchy {
                 print_hierarchy(&db, &e);
@@ -765,12 +771,17 @@ pub fn run(
         }
     }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
-    let counters = kind(CovKindArg::Statement) || kind(CovKindArg::Branch);
+    let lowering = yavs_elab::LowerOptions {
+        coverage: kind(CovKindArg::Statement) || kind(CovKindArg::Branch),
+        cov_condition: kind(CovKindArg::Condition),
+        cov_expression: kind(CovKindArg::Expression),
+        ..yavs_elab::LowerOptions::default()
+    };
     // A debugger or VHPI plugin may force or deposit any port: those runs keep ports apart.
     let collapse = a.dap.is_none() && a.vhpi.is_empty();
     let (mut out, mut db, e) = match elaborate(
         &a.common,
-        counters,
+        lowering,
         a.tier() == TierArg::Llvm,
         collapse,
         format,
@@ -1190,6 +1201,8 @@ pub fn run(
             yavs_cov::Kind::Statement => kind(CovKindArg::Statement),
             yavs_cov::Kind::Branch(_) => kind(CovKindArg::Branch),
             yavs_cov::Kind::Toggle(_) => false,
+            yavs_cov::Kind::Condition(_) => kind(CovKindArg::Condition),
+            yavs_cov::Kind::Expression(_) => kind(CovKindArg::Expression),
         });
         if let Some(t) = &toggles {
             t.add_to(&mut cov);

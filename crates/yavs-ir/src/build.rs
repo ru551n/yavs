@@ -85,6 +85,12 @@ impl ProgramBuilder {
         self.prog.cov.push(c)
     }
 
+    /// A condition tree for `Inst::CoverCond`: its index.
+    pub fn cov_cond(&mut self, c: crate::CovCond) -> u32 {
+        self.prog.cov_conds.push(c);
+        self.prog.cov_conds.len() as u32 - 1
+    }
+
     pub fn reflect(&mut self, r: Refl) -> ReflId {
         self.prog.reflect.push(r)
     }
@@ -429,7 +435,9 @@ fn propagate(prog: &mut Program, first: usize) {
                 {
                     fl.insert(FuncFlags::TOUCHES_SHARED)
                 }
-                Inst::Cover { .. } => fl.insert(FuncFlags::HAS_COVER),
+                Inst::Cover { .. } | Inst::CoverIn { .. } | Inst::CoverCond { .. } => {
+                    fl.insert(FuncFlags::HAS_COVER)
+                }
                 _ => {}
             }
             if let Some(c) = callee(inst)

@@ -33,6 +33,7 @@ margin-right:.4rem}.bar i{display:block;height:100%;background:var(--bar)}\
 .src{width:100%}.src td{border:0;padding:0 .5rem;white-space:pre}\
 .src td.ln,.src td.c,.src td.m{text-align:right;color:var(--dim);width:1%}\
 tr.hit td{background:var(--ok)}tr.miss td{background:var(--miss)}tr.part td{background:var(--part)}\
+.pop th{text-align:left;font-weight:normal;color:var(--dim);padding-right:.8rem}\
 tr.inst td{background:var(--inst)}tr.ex td{background:var(--ex)}\
 tr[tabindex]{cursor:pointer}tr[tabindex]:hover td{filter:brightness(.93)}tr[tabindex]:focus{outline:2px solid var(--dim);outline-offset:-2px}\
 .src td.t{position:relative}\
@@ -103,7 +104,7 @@ fn cell(h: usize, t: usize) -> String {
 
 /// Hit and total of statements, branches and toggles.
 #[derive(Default, Clone, Copy)]
-struct Tally([usize; 6]);
+struct Tally([usize; 10]);
 
 impl Tally {
     fn add(&mut self, k: &Key, e: &Entry) {
@@ -111,21 +112,30 @@ impl Tally {
             Kind::Statement => 0,
             Kind::Branch(_) => 2,
             Kind::Toggle(_) => 4,
+            Kind::Condition(_) => 6,
+            Kind::Expression(_) => 8,
         };
         self.0[o + 1] += 1;
         self.0[o] += usize::from(e.count > 0);
     }
-    fn cells(&self) -> String {
-        (0..3)
-            .map(|i| cell(self.0[2 * i], self.0[2 * i + 1]))
+    /// The cells of the kinds shown: conditions and expressions only when `fec` says so.
+    fn cells(&self, fec: [bool; 2]) -> String {
+        (0..3 + usize::from(fec[0]) + usize::from(fec[1]))
+            .map(|i| {
+                // Skip a column the report has no rows for.
+                let i = if i == 3 && !fec[0] { 4 } else { i };
+                cell(self.0[2 * i], self.0[2 * i + 1])
+            })
             .collect()
     }
 }
 
-const HEAD: &str = "<tr><th>{}</th><th>statements</th><th>branches</th><th>toggles</th></tr>\n";
-
-fn table_head(first: &str) -> String {
-    HEAD.replace("{}", first)
+fn table_head(first: &str, fec: [bool; 2]) -> String {
+    format!(
+        "<tr><th>{first}</th><th>statements</th><th>branches</th><th>toggles</th>{}{}</tr>\n",
+        if fec[0] { "<th>conditions</th>" } else { "" },
+        if fec[1] { "<th>expressions</th>" } else { "" }
+    )
 }
 
 /// The source files the report needs: every file of the database and of the excluded items.
@@ -151,12 +161,13 @@ pub fn pages(
         per_path.entry(&k.path).or_default().add(k, e);
         per_file.entry(&e.file).or_default().add(k, e);
     }
+    let fec = [total.0[7] > 0, total.0[9] > 0];
     let mut b = String::from("<h1>Coverage report</h1>\n");
     let _ = write!(
         b,
         "<table>\n{}<tr><th>total</th>{}</tr>\n</table>\n",
-        table_head(""),
-        total.cells()
+        table_head("", fec),
+        total.cells(fec)
     );
     if !ex.is_empty() {
         let _ = writeln!(
@@ -177,7 +188,7 @@ pub fn pages(
     let _ = writeln!(
         b,
         "<h2>Instances and packages</h2>\n<table>\n{}",
-        table_head("path")
+        table_head("path", fec)
     );
     for (p, t) in &per_path {
         // Instance paths indent by depth.
@@ -191,13 +202,13 @@ pub fn pages(
             "<tr><td style=\"padding-left:{}rem\">{}</td>{}</tr>",
             0.7 + depth as f64,
             esc(p),
-            t.cells()
+            t.cells(fec)
         );
     }
     let _ = writeln!(
         b,
         "</table>\n<h2>Source files</h2>\n<table>\n{}",
-        table_head("file")
+        table_head("file", fec)
     );
     for (i, f) in names.iter().enumerate() {
         let t = per_file.get(f).copied().unwrap_or_default();
@@ -205,7 +216,7 @@ pub fn pages(
             b,
             "<tr><td><a href=\"src-{i}.html\">{}</a> <a class=\"dim\" href=\"src-{i}-missed.html\">missed only</a></td>{}</tr>",
             esc(f),
-            t.cells()
+            t.cells(fec)
         );
     }
     b.push_str("</table>\n");
@@ -235,6 +246,7 @@ fn what(k: &Key) -> String {
         Kind::Statement => "statement".to_string(),
         Kind::Branch(a) => format!("branch arm {a}"),
         Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
+        Kind::Condition(_) | Kind::Expression(_) => String::new(),
     }
 }
 
@@ -250,12 +262,32 @@ fn popup(db: &Database, n: usize, its: &[LineItem], summary: &str) -> String {
     }
     let mut title = String::new();
     for (k, e, why) in its {
-        let t = what(k);
+        let fec = k.kind.is_fec();
+        // A condition or expression: one table of its rows (row, input, result, hit).
+        let t = if fec {
+            let w = if matches!(k.kind, Kind::Condition(_)) {
+                "condition"
+            } else {
+                "expression"
+            };
+            format!(
+                "{w} in {}: {}",
+                k.path,
+                e.text.split_once(' ').map_or(&e.text[..], |x| x.1)
+            )
+        } else {
+            what(k)
+        };
         if t != title {
             if !title.is_empty() {
                 b.push_str("</table>");
             }
             let _ = write!(b, "<h4>{}</h4><table>", esc(&t));
+            if fec {
+                b.push_str(
+                    "<tr><th>row</th><th>input</th><th>result</th><th>hit</th><th></th></tr>",
+                );
+            }
             title = t;
         }
         let class = match (why, e.count) {
@@ -276,17 +308,33 @@ fn popup(db: &Database, n: usize, its: &[LineItem], summary: &str) -> String {
         let reason = why.map_or(String::new(), |w| {
             format!("excluded{}{}", if w.is_empty() { "" } else { ": " }, esc(w))
         });
-        let _ = write!(
-            b,
-            "<tr class=\"{class}\"><td>{}</td><td class=\"n\">{}</td><td class=\"dim\">{tests}{reason}</td></tr>",
-            esc(&k.path),
-            e.count
-        );
+        if let Some((_, v)) = k.kind.row() {
+            let row = match k.kind {
+                Kind::Condition(r) | Kind::Expression(r) => r,
+                _ => 0,
+            };
+            let _ = write!(
+                b,
+                "<tr class=\"{class}\"><td>{row}</td><td>{} = {}</td><td>{}</td><td class=\"n\">{}</td><td class=\"dim\">{tests}{reason}</td></tr>",
+                esc(&k.sig),
+                u8::from(v),
+                esc(e.text.split_once(' ').map_or("?", |x| x.0)),
+                e.count
+            );
+        } else {
+            let _ = write!(
+                b,
+                "<tr class=\"{class}\"><td>{}</td><td class=\"n\">{}</td><td class=\"dim\">{tests}{reason}</td></tr>",
+                esc(&k.path),
+                e.count
+            );
+        }
+        let span = if fec { 5 } else { 3 };
         if let Some(r) = miss_row(db, k, e).filter(|_| why.is_none()) {
             let y = miss_yaml(db, k, e).unwrap_or_default();
             let _ = write!(
                 b,
-                "<tr class=\"x\"><td colspan=\"3\"><div><code>{}</code><button type=\"button\" class=\"cp\">copy row</button></div>\
+                "<tr class=\"x\"><td colspan=\"{span}\"><div><code>{}</code><button type=\"button\" class=\"cp\">copy row</button></div>\
 <div><pre>{}</pre><button type=\"button\" class=\"cp\">copy YAML</button></div></td></tr>",
                 esc(r.trim_end()),
                 esc(y.trim_end())
@@ -294,7 +342,7 @@ fn popup(db: &Database, n: usize, its: &[LineItem], summary: &str) -> String {
         } else if why.is_some() {
             let _ = write!(
                 b,
-                "<tr class=\"x ex\"><td colspan=\"3\"><code>{}</code></td></tr>",
+                "<tr class=\"x ex\"><td colspan=\"{span}\"><code>{}</code></td></tr>",
                 esc(&head(k, e))
             );
         }
@@ -340,8 +388,23 @@ fn file_page(
         let mut its = by.remove(&(n as u32)).unwrap_or_default();
         // Groups: statement, branch arms, then toggles by signal and direction.
         let order = |i: &LineItem| (matches!(i.0.kind, Kind::Toggle(_)), i.0.sig.clone());
+        // Rows of one condition together, in row order.
+        let group = |i: &LineItem| {
+            let k = i.0;
+            if k.kind.is_fec() {
+                (true, k.hash, k.occ, k.path.clone())
+            } else {
+                (false, 0, 0, String::new())
+            }
+        };
         its.sort_by(|a, b| {
-            (order(a), a.0.kind, &a.0.path, a.0).cmp(&(order(b), b.0.kind, &b.0.path, b.0))
+            (order(a), group(a), a.0.kind, &a.0.path, a.0).cmp(&(
+                order(b),
+                group(b),
+                b.0.kind,
+                &b.0.path,
+                b.0,
+            ))
         });
         let live = || its.iter().filter(|i| i.2.is_none());
         if missed && !its.iter().any(|i| i.2.is_some() || i.1.count == 0) {

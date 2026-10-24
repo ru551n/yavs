@@ -3057,6 +3057,8 @@ fn keeps_objects(i: &Inst) -> bool {
             | Inst::Now { .. }
             | Inst::Delta { .. }
             | Inst::Cover { .. }
+            | Inst::CoverIn { .. }
+            | Inst::CoverCond { .. }
             | Inst::Stmt
     )
 }

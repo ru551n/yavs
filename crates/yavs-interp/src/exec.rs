@@ -8800,6 +8800,55 @@ impl Machine {
                     .ok_or_else(|| ice_f!("no coverage counter {i}"))?
                     .fetch_add(1, Ordering::Relaxed);
             }
+            Inst::CoverIn {
+                dst,
+                acc,
+                src,
+                shift,
+                ulogic,
+            } => {
+                let p = self.r(src);
+                let code = match (ulogic, p) {
+                    (true, 2 | 6) | (false, 0) => 1,
+                    (true, 3 | 7) | (false, 1) => 2,
+                    _ => 3,
+                };
+                let before = if shift == 0 { 0 } else { self.r(acc) };
+                self.set(dst, before | code << shift);
+            }
+            Inst::CoverCond { cond, state } => {
+                let c = prog
+                    .cov_conds
+                    .get(cond as usize)
+                    .ok_or_else(|| ice_f!("no coverage condition {cond}"))?;
+                let st = self.r(state);
+                let mut hits = match self
+                    .rt
+                    .cov_memo
+                    .get(cond as usize)
+                    .and_then(|m| m.get(st as usize))
+                {
+                    Some(m) => match m.load(Ordering::Relaxed) {
+                        u64::MAX => {
+                            let h = c.hits(st);
+                            m.store(h, Ordering::Relaxed);
+                            h
+                        }
+                        h => h,
+                    },
+                    None => c.hits(st),
+                };
+                while hits != 0 {
+                    let row = hits.trailing_zeros();
+                    hits &= hits - 1;
+                    let i = self.inst.cov_base as usize + c.first.0 as usize + row as usize;
+                    self.rt
+                        .cov
+                        .get(i)
+                        .ok_or_else(|| ice_f!("no coverage counter {i}"))?
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+            }
             Inst::Stmt => self.end_stmt(),
             Inst::Elab { op, .. } => {
                 return rt_err_f!(

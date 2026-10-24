@@ -20,6 +20,8 @@ pub struct Program {
     pub natives: IdVec<NativeId, NativeRef>,
     pub foreign: IdVec<ForeignId, ForeignRef>,
     pub cov: IdVec<CovItem, CovInfo>,
+    /// The condition trees of `Inst::CoverCond`.
+    pub cov_conds: Vec<CovCond>,
     pub checks: IdVec<CheckMsgId, CheckMsg>,
     pub cases: IdVec<CaseTableId, CaseTable>,
     /// Subtype descriptions for `std.reflection` mirrors (`yavs.attr.reflect`).
@@ -866,12 +868,124 @@ pub enum CovKind {
     /// Arm `n` of a branching statement, in source order (an `if` without `else` and a
     /// conditional assignment without a final `else` get one more arm: no choice taken).
     Branch(u32),
+    /// Row `row` of a condition (`if`, `elsif`, `when`, `while`, `exit`, `next`): row
+    /// `2 * i + v` is input `i` at value `v` (focused expression coverage).
+    Condition(u32),
+    /// The same for a logic expression on the right side of an assignment.
+    Expression(u32),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct CovInfo {
     pub stmt: StmtId,
     pub kind: CovKind,
+    /// A condition or expression row: what it is about.
+    pub row: Option<CovRow>,
+}
+
+/// The source of a condition or expression row.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct CovRow {
+    /// The whole condition or expression.
+    pub whole: Span,
+    /// The input.
+    pub input: Span,
+    /// `'0'` or `'1'` when the row's input at its value decides the result alone (no `xor`
+    /// between the input and the result), the result then; `'?'` when it depends on the
+    /// other inputs.
+    pub result: char,
+}
+
+/// A node of a condition tree in postfix order.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CovNode {
+    /// Input `n`.
+    Input(u8),
+    Not,
+    And,
+    Or,
+    Nand,
+    Nor,
+    Xor,
+    Xnor,
+}
+
+/// The tree of one condition: its first row's counter is `first`, the row of input `i` at
+/// value `v` is `first + 2 * i + v`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct CovCond {
+    pub first: CovItem,
+    /// The number of inputs, at most [`COV_INPUTS`].
+    pub inputs: u8,
+    pub nodes: Vec<CovNode>,
+}
+
+/// The most inputs of a condition that is measured (two bits of the state each).
+pub const COV_INPUTS: usize = 31;
+
+impl CovCond {
+    /// The rows (bit `2 * i + v`) one evaluation covers. `state` holds two bits per input:
+    /// 0 not evaluated (short-circuit), 1 false, 2 true, 3 another value (nothing is counted
+    /// then). Input `i` at value `v` is covered when flipping it alone changes the result
+    /// while the other evaluated inputs keep their values; an input not evaluated is masked:
+    /// it may take any value.
+    pub fn hits(&self, state: u64) -> u64 {
+        let n = usize::from(self.inputs);
+        let code = |i: usize| (state >> (2 * i)) & 3;
+        if (0..n).any(|i| code(i) == 3) {
+            return 0;
+        }
+        let r = self.reach(state, None);
+        if r != 1 && r != 2 {
+            return 0;
+        }
+        let mut hits = 0;
+        for i in (0..n).filter(|&i| code(i) != 0) {
+            if self.reach(state, Some(i)) & (3 ^ r) != 0 {
+                hits |= 1 << (2 * i + usize::from(code(i) == 2));
+            }
+        }
+        hits
+    }
+
+    /// The results the tree can have: bit 0 false, bit 1 true. Input `flip` has the other
+    /// value, an input not evaluated either.
+    fn reach(&self, state: u64, flip: Option<usize>) -> u8 {
+        let mut st = [0u8; 64];
+        let mut sp = 0;
+        for &n in &self.nodes {
+            if let CovNode::Input(i) = n {
+                let c = (state >> (2 * u32::from(i))) & 3;
+                st[sp] = match c {
+                    0 => 3,
+                    _ if flip == Some(usize::from(i)) => 3 ^ c as u8,
+                    c => c as u8,
+                };
+                sp += 1;
+                continue;
+            }
+            let not = |a: u8| (a & 1) << 1 | (a >> 1) & 1;
+            if n == CovNode::Not {
+                st[sp - 1] = not(st[sp - 1]);
+                continue;
+            }
+            sp -= 1;
+            let (a, b) = (st[sp - 1], st[sp]);
+            let and = (a | b) & 1 | a & b & 2;
+            let or = a & b & 1 | (a | b) & 2;
+            let xor = u8::from((a & b & 1 != 0) || (a & b & 2 != 0))
+                | u8::from((a & 1 != 0 && b & 2 != 0) || (a & 2 != 0 && b & 1 != 0)) << 1;
+            st[sp - 1] = match n {
+                CovNode::And => and,
+                CovNode::Nand => not(and),
+                CovNode::Or => or,
+                CovNode::Nor => not(or),
+                CovNode::Xor => xor,
+                _ => not(xor),
+            };
+        }
+        st[0]
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -960,5 +1074,161 @@ mod lazy_verify_tests {
         }));
         assert!(caught.is_err(), "the broken function must not run");
         assert!(prog.verify_pending().is_err());
+    }
+}
+
+#[cfg(test)]
+mod cov_tests {
+    use super::*;
+
+    fn cond(nodes: &[CovNode], inputs: u8) -> CovCond {
+        CovCond {
+            first: CovItem(0),
+            inputs,
+            nodes: nodes.to_vec(),
+        }
+    }
+
+    /// State of the inputs `v` (`None`: not evaluated), two bits each.
+    fn state(v: &[Option<bool>]) -> u64 {
+        v.iter().enumerate().fold(0, |s, (i, x)| {
+            s | match x {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            } << (2 * i)
+        })
+    }
+
+    #[test]
+    fn and_or_rows() {
+        use CovNode::*;
+        // a and b
+        let c = cond(&[Input(0), Input(1), And], 2);
+        // Both true: each input flips the result.
+        assert_eq!(c.hits(state(&[Some(true), Some(true)])), 0b1010);
+        // a false, b true: a decides (row a=0), b does not.
+        assert_eq!(c.hits(state(&[Some(false), Some(true)])), 0b0001);
+        // a false, b not evaluated (short-circuit): b is masked, a decides.
+        assert_eq!(c.hits(state(&[Some(false), None])), 0b0001);
+        // Both false: neither flips alone.
+        assert_eq!(c.hits(state(&[Some(false), Some(false)])), 0);
+        // a true, b false: b decides (row b=0).
+        assert_eq!(c.hits(state(&[Some(true), Some(false)])), 0b0100);
+        // a or (b and c)
+        let c = cond(&[Input(0), Input(1), Input(2), And, Or], 3);
+        assert_eq!(
+            c.hits(state(&[Some(false), Some(true), Some(true)])),
+            1 << 3 | 1 << 5
+        );
+        // a true: the right side is not evaluated and masked; a decides.
+        assert_eq!(c.hits(state(&[Some(true), None, None])), 1 << 1);
+    }
+
+    #[test]
+    fn xor_not_and_other_values() {
+        use CovNode::*;
+        // not (a xor b): every input decides alone, in every evaluation.
+        let c = cond(&[Input(0), Input(1), Xor, Not], 2);
+        assert_eq!(c.hits(state(&[Some(true), Some(false)])), 0b0110);
+        assert_eq!(c.hits(state(&[Some(true), Some(true)])), 0b1010);
+        // An input with another value (code 3) counts nothing.
+        assert_eq!(c.hits(1 | 3 << 2), 0);
+        // nand and nor invert the result, not the rows.
+        let c = cond(&[Input(0), Input(1), Nand], 2);
+        assert_eq!(c.hits(state(&[Some(true), Some(true)])), 0b1010);
+        let c = cond(&[Input(0), Input(1), Nor], 2);
+        assert_eq!(c.hits(state(&[Some(false), Some(false)])), 0b0101);
+    }
+
+    /// The rows by brute force over the unevaluated inputs, for every tree shape and state of
+    /// three inputs.
+    #[test]
+    fn brute_force() {
+        use CovNode::*;
+        let ops = [And, Or, Nand, Nor, Xor, Xnor];
+        let mut trees = Vec::new();
+        for &o1 in &ops {
+            for &o2 in &ops {
+                trees.push(vec![Input(0), Input(1), o1, Input(2), o2]);
+                trees.push(vec![Input(0), Input(1), Input(2), o1, o2]);
+                trees.push(vec![Input(0), Input(1), o1, Not, Input(2), o2]);
+            }
+        }
+        let eval = |nodes: &[CovNode], v: [bool; 3]| {
+            let mut st: Vec<bool> = Vec::new();
+            for n in nodes {
+                match n {
+                    Input(i) => st.push(v[usize::from(*i)]),
+                    Not => {
+                        let a = st.pop().unwrap();
+                        st.push(!a);
+                    }
+                    _ => {
+                        let (b, a) = (st.pop().unwrap(), st.pop().unwrap());
+                        st.push(match n {
+                            And => a & b,
+                            Nand => !(a & b),
+                            Or => a | b,
+                            Nor => !(a | b),
+                            Xor => a ^ b,
+                            _ => !(a ^ b),
+                        });
+                    }
+                }
+            }
+            st[0]
+        };
+        for t in &trees {
+            let c = cond(t, 3);
+            for s in 0..4u64.pow(3) {
+                let code = |i: u32| (s >> (2 * i)) & 3;
+                let want = if (0..3).any(|i| code(i) == 3) {
+                    0
+                } else {
+                    // Free inputs: the result must not depend on them.
+                    let all = |f: &dyn Fn([bool; 3]) -> bool| {
+                        let mut r = Vec::new();
+                        for m in 0..8u32 {
+                            let v = [m & 1 != 0, m & 2 != 0, m & 4 != 0];
+                            // Inputs with a value keep it.
+                            if (0..3).all(|i| code(i) == 0 || v[i as usize] == (code(i) == 2)) {
+                                r.push(f(v));
+                            }
+                        }
+                        r
+                    };
+                    let orig = all(&|v| eval(t, v));
+                    if orig.iter().any(|&x| x != orig[0]) {
+                        0
+                    } else {
+                        let mut h = 0u64;
+                        for i in (0..3u32).filter(|&i| code(i) != 0) {
+                            // Flip input i, keep the other evaluated inputs.
+                            let mut r = Vec::new();
+                            for m in 0..8u32 {
+                                let v = [m & 1 != 0, m & 2 != 0, m & 4 != 0];
+                                let ok = (0..3).all(|j| {
+                                    code(j) == 0
+                                        || if j == i {
+                                            v[j as usize] != (code(j) == 2)
+                                        } else {
+                                            v[j as usize] == (code(j) == 2)
+                                        }
+                                });
+                                if ok {
+                                    r.push(eval(t, v));
+                                }
+                            }
+                            if r.iter().any(|&x| x != orig[0]) {
+                                h |= 1 << (2 * i + u32::from(code(i) == 2));
+                            }
+                        }
+                        h
+                    }
+                };
+                assert_eq!(c.hits(s), want, "{t:?} state {s:#b}");
+            }
+        }
     }
 }

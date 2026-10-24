@@ -2357,6 +2357,65 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   is within a log factor of the minimal set; an exact set cover is NP-hard. Items no test hit
   are not counted; `--exclude` applies before ranking.
 
+## Condition and expression coverage (yavs-lower, yavs-ir, yavs-cov, CLI, #688, user, 2026-10-24)
+
+- **Requirement (user):** focused expression coverage (FEC) with exclusion per row. For every
+  boolean condition with two or more inputs, one row per input and value; input X at value v is
+  covered when, in some evaluation, flipping X alone would flip the result while the other inputs
+  hold their values (focused, masking per input, like MC/DC unique cause with masking).
+- **What is measured:** a *condition* is the boolean of an `if`/`elsif`, a conditional
+  (`when ... else`) signal or variable assignment, `while`, `exit when`, `next when`; an
+  *expression* is the whole value of a signal or variable assignment (each waveform element) of
+  type `bit`, `boolean` or `std_ulogic`. Only a tree of `and`/`or`/`nand`/`nor`/`xor`/`xnor`/`not`
+  (the predefined ones, and the `std_logic_1164` gates on `std_ulogic`) with 2 to 31 inputs
+  counts; every operand that is not such an operator (relation, name, function call, edge idiom
+  such as `rising_edge(clk)` or `clk'event and clk = '1'`, literal) is one input. An inserted
+  `??` is looked through. Vector operands, conditions of `assert`, `wait until`, 2019
+  conditional expressions and logic expressions nested in other expressions (arguments, indices)
+  are not measured.
+- **Values:** `bit`/`boolean` false and true; `std_ulogic` `'0'`/`'L'` are 0 and `'1'`/`'H'` are 1.
+  An evaluation in which an evaluated input has another value (`'U'`, `'X'`, `'Z'`, `'W'`, `'-'`)
+  counts no row. Why: the focused definition needs two-valued inputs.
+- **Short-circuit:** `and`/`or`/`nand`/`nor` on `bit` and `boolean` do not evaluate the right
+  operand when the left decides (LRM 9.2.2), and lowering keeps that. An input that was not
+  evaluated is masked: it may take any value, so it never blocks another input's row. `a and b`
+  with `a` false and `b` not evaluated covers row `a = 0` (flipping `a` could change the
+  result). Evaluation order and side effects are the ones of the code without coverage: a
+  function-call input is evaluated once, when the program would, never extra.
+- **Counting:** `Inst::CoverIn` adds each evaluated input to a state register (2 bits: not
+  evaluated, 0, 1, other) and `Inst::CoverCond` counts the covered rows from the tree
+  (`CovCond::hits`, in `yavs-ir`; rows computed with the set of results each subtree can have,
+  unevaluated inputs free). Rows are ordinary coverage counters (`CovKind::Condition(row)` and
+  `Expression(row)`, row `2 * input + value`), so counts are the same at any `--threads` and in
+  every tier (the LLVM tier steps the two instructions in the interpreter). Without the kinds
+  there is no code and no cost. Lowered code is not cached with any coverage kind on.
+- **Identity:** (path, kind with row, FNV-1a of the *condition's* source text, occurrence among
+  same-text conditions of the unit), not the statement's: an edit of an `if` body keeps its
+  exclusions. All rows of a condition share hash and occurrence; the row is the last number.
+  The input's text is part of the key (`Key::sig`); the entry text is the result the input
+  decides alone (`0`, `1`, or `?` when an `xor` lies between) and the whole condition.
+- **Database version 5:** lines `c<row>` (condition) and `e<row>` (expression): path, hash,
+  occurrence, count, tests, line, file, input, text. Versions 2 to 4 are still read.
+- **Reports:** the text summary adds `conditions` and `expressions` lines and columns when the
+  database has such rows; `--uncovered` gives one row per missed row (`condition INSTANCE
+  HEX12.OCC ROW FILE:LINE   # a is 0 (result 0) in a and b`); HTML shows, under the line of a
+  condition, a table `row input result hit`; Cobertura counts the rows of a line as conditions of
+  the line (`condition-coverage`), together with its branch arms.
+- **Exclusions:** per row, `condition INSTANCE HEX12.OCC ROW [FILE:LINE]` (and `expression`), or
+  YAML `kind: condition|expression` with `hash: HEX12.OCC` and `row: N`; matching, `W0110`,
+  `W0111`, `W0114` as for statements. `instance`, `unit` and `file` rules take rows out too.
+- **Default of `--cov-kind`:** unchanged (`statement,branch,toggle`); `condition` and
+  `expression` are asked for. Measured (user-mode instructions, interpreter, release build, one
+  run each): over the default kinds, `condition` costs +27 percent and `expression` +17 percent
+  (both +44 percent) on a loop where every iteration has two multi-input conditions and one
+  expression among about 14 statements; designs without multi-input conditions or expressions
+  cost +0.0 percent (compute loop, LFSR array), one with a logic expression in its main process
+  +17 percent for `expression` (4096 flip-flop processes). Each evaluation runs one `CoverIn` per
+  evaluated input and one `CoverCond` through the interpreter's generic step (about 100
+  instructions each; the covered rows of a state are remembered for conditions of up to 5
+  inputs), the same path statement counters use. Not small enough to make default; a predecoded
+  op for the counters would cut all coverage kinds (#692).
+
 ## GUI (M10, #384, #388, user, 2026-10-19)
 
 Design: `docs/design/gui.md` (section 12 lists the same decisions).

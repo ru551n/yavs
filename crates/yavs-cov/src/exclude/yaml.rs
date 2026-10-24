@@ -2,19 +2,20 @@
 //!
 //! ```yaml
 //! exclude:
-//!   - kind: statement          # statement | branch | toggle | instance | unit | file
+//!   - kind: statement          # statement | branch | condition | expression | toggle | instance | unit | file
 //!     instance: ":tb:dut:u_fsm"
 //!     hash: "4d2f0a91c3be.0"   # branch: HEX12.OCC.ARM
 //!     line: "src/fsm.vhd:61"   # optional, never matched
 //!     reason: free text        # optional
 //! ```
 //!
+//! A `condition` or `expression` entry has `hash: "HEX12.OCC"` and `row: N` (2 * input + value).
 //! A `toggle` entry has `signal` instead of `hash` and an optional `direction: rise|fall`.
 //!
 //! Every value is read as the text it was written as, so `no`, `on` and a hash of digits only
 //! stay strings. The parser is `saphyr-parser` (events with line numbers), not a data model.
 
-use super::{Row, Rule, direction, item_rule};
+use super::{ItemKind, Row, Rule, direction, item_rule};
 use saphyr_parser::{Event, Parser};
 
 enum Node {
@@ -134,6 +135,10 @@ fn entry(line: usize, n: Node) -> Result<Row, String> {
             &["kind", "instance", "hash", "line", "reason"],
             &["instance", "hash"],
         ),
+        "condition" | "expression" => (
+            &["kind", "instance", "hash", "row", "line", "reason"],
+            &["instance", "hash", "row"],
+        ),
         "toggle" => (
             &["kind", "instance", "signal", "direction", "reason"],
             &["instance", "signal"],
@@ -158,10 +163,11 @@ fn entry(line: usize, n: Node) -> Result<Row, String> {
     }
     let bad = |m: &str| err(line, &format!("{m}: kind `{kind}`"));
     let rule = match kind {
-        "statement" | "branch" => item_rule(
-            kind == "branch",
+        "statement" | "branch" | "condition" | "expression" => item_rule(
+            ItemKind::word(kind).unwrap_or(ItemKind::Statement),
             find("instance").unwrap_or_default(),
             find("hash").unwrap_or_default(),
+            find("row"),
             find("line").filter(|s| !s.is_empty()),
             &bad,
         )?,

@@ -853,6 +853,9 @@ pub mod space {
     pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, SHARED_HEAP, TEMP};
 }
 
+/// The most inputs of a condition whose covered rows are remembered per state (4^n states).
+const COV_MEMO_INPUTS: u8 = 5;
+
 /// A program bound for execution, shared by all processes of a simulation.
 pub struct Runtime {
     pub prog: Arc<Program>,
@@ -863,6 +866,9 @@ pub struct Runtime {
     pub(crate) searched: String,
     pub(crate) pkgs: Vec<Arc<InstData>>,
     pub(crate) cov: Vec<AtomicU64>,
+    /// The rows each state of a condition covers (`CovCond::hits`), for the conditions with few
+    /// inputs, filled as states occur (`u64::MAX`: not yet).
+    pub(crate) cov_memo: Vec<Box<[AtomicU64]>>,
     /// Compact constants expanded on first use by address.
     pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
     /// Per-function facts, computed on the first call (`pre.rs`).
@@ -1156,6 +1162,18 @@ impl Runtime {
             searched: b.searched,
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
+            cov_memo: prog
+                .cov_conds
+                .iter()
+                .map(|c| {
+                    let states = if c.inputs <= COV_MEMO_INPUTS && n > 0 {
+                        1usize << (2 * c.inputs)
+                    } else {
+                        0
+                    };
+                    (0..states).map(|_| AtomicU64::new(u64::MAX)).collect()
+                })
+                .collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
             pre: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             limits: b.limits,

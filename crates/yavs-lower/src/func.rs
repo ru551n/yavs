@@ -170,6 +170,9 @@ pub(crate) struct Fx<'a, 'b> {
     pub cur: Option<(yavs_ir::StmtId, Span)>,
     /// Emit coverage counters (off in the implicit processes of port actuals and guards).
     pub cov: bool,
+    /// The inputs of the conditions being lowered (`covcond.rs`): the state register, the
+    /// shift of the input in it and whether it is a `std_ulogic`.
+    pub cov_inputs: std::collections::HashMap<yavs_sem::ExprId, (Reg, u8, bool)>,
     /// In a protected type method: the frame depth and slot of `self`.
     pub prot_self: Option<(u8, u32)>,
     /// `default_into` gives protected subelements new objects (2019 composites of
@@ -234,6 +237,7 @@ impl<'a, 'b> Fx<'a, 'b> {
             driver_base: Vec::new(),
             cur: None,
             cov: true,
+            cov_inputs: std::collections::HashMap::new(),
             prot_self: None,
             prot_defaults: true,
             guard: None,

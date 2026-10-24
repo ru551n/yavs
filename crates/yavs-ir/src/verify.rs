@@ -360,6 +360,9 @@ fn check_inst(
         Inst::Cover { item } if prog.cov.get(item).is_none() => {
             err(format!("missing coverage item {item}"))
         }
+        Inst::CoverCond { cond, .. } if prog.cov_conds.get(cond as usize).is_none() => {
+            err(format!("missing coverage condition {cond}"))
+        }
         Inst::Suspend { resume } => {
             if is_fn {
                 err(format!("{:?} cannot suspend", f.kind));

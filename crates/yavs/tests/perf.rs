@@ -1011,7 +1011,11 @@ mod llvm {
     llvm_case!(
         llvm_ieee,
         "acc=",
-        [("cb_native", Max(5)), ("llvm_native_frames", Min(1)),]
+        [
+            ("cb_native", Max(5)),
+            ("cb_host", Max(9)),
+            ("llvm_native_frames", Min(1)),
+        ]
     );
     llvm_case!(
         llvm_drive_batch,

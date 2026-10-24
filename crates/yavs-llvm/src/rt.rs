@@ -188,7 +188,7 @@ pub fn nslots_grow(depth: usize) -> *mut NSlot {
 /// (`yavs_rt_obj` keeps the permission of an entry it replaces for the same object), so a
 /// `Deref` needs one compare.
 #[derive(Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(64))]
 pub struct Obj {
     pub hi: u64,
     pub ptr: *mut u8,
@@ -196,6 +196,10 @@ pub struct Obj {
     pub w: u64,
     pub h: u64,
 }
+
+/// An entry is one cache line, so generated code scales the key by a shift.
+pub const OBJ_SHIFT: u32 = 6;
+const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
 /// object index xor its space (`obj_at`: a private and a shared heap object of the same index
@@ -269,7 +273,7 @@ pub const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
 pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
-pub const OBJ_SIZE: u64 = std::mem::size_of::<Obj>() as u64;
+
 pub const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
 pub const OBJ_LEN: u64 = std::mem::offset_of!(Obj, len) as u64;
 pub const OBJ_W: u64 = std::mem::offset_of!(Obj, w) as u64;
@@ -2454,6 +2458,13 @@ pub enum Known<V = ()> {
     Up(u8),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
+    /// A guess, not a fact: probably an address in the temporary area (the fat pair a call
+    /// returned, the words loaded from it). Frame-mode code tests it at run time and asks the
+    /// runtime when wrong (`Gen::host`).
+    LikelyTemp,
+    /// A guess: probably an address in a heap object (a pointer loaded from the slot of a
+    /// variable). Only frame-mode code uses it, as `LikelyTemp`.
+    LikelyHeap,
     /// An address in a heap object (what a `Deref` makes, or an index into it): not in a frame, the
     /// temporary area, the instance data or a constant. In a native frame, the object itself while
     /// nothing that could free or move it ran (`ObjRef`).
@@ -2507,6 +2518,56 @@ pub fn fixed_consts(f: &Func) -> Vec<Option<i64>> {
         .collect()
 }
 
+/// Multiplications by a small constant whose product only feeds the `Index` right after them
+/// (the element offset `pos * size` of an array access): the operand and the constant factor.
+/// Compiled code tests the operand once for both the overflow of the product and the address
+/// bound, instead of an overflow test of its own and the `Index` guards.
+pub fn index_muls(f: &Func, fixed: &[Option<i64>]) -> Vec<Option<(Reg, u64)>> {
+    let n = f.reg_ty.len();
+    let (mut defs, mut uses) = (vec![0u32; n + 2], vec![0u32; n + 2]);
+    for i in &f.code {
+        let (u, d) = yavs_interp::inst_regs(f, i);
+        for r in u {
+            if let Some(x) = uses.get_mut(r.0 as usize) {
+                *x += 1;
+            }
+        }
+        for r in d {
+            if let Some(x) = defs.get_mut(r.0 as usize) {
+                *x += 1;
+            }
+        }
+    }
+    let k = |r: Reg| fixed.get(r.0 as usize).copied().flatten();
+    (0..f.code.len())
+        .map(|pc| {
+            let Inst::Bin {
+                op: IntOp::Mul,
+                dst,
+                a,
+                b,
+            } = f.code[pc]
+            else {
+                return None;
+            };
+            let Some(&Inst::Index { pos, stride, .. }) = f.code.get(pc + 1) else {
+                return None;
+            };
+            let once =
+                |r: Reg| defs.get(r.0 as usize) == Some(&1) && uses.get(r.0 as usize) == Some(&1);
+            if pos != dst || stride == 0 || !once(dst) {
+                return None;
+            }
+            let (x, m) = match (k(a), k(b)) {
+                (None, Some(m)) => (a, m),
+                (Some(m), None) => (b, m),
+                _ => return None,
+            };
+            (1..=1 << 16).contains(&m).then_some((x, m as u64))
+        })
+        .collect()
+}
+
 /// A preloaded register: its value, or the address space and offset of its address.
 pub type Preload = (Reg, Option<(AddrSpace, u32)>, i64);
 
@@ -2546,7 +2607,7 @@ pub fn preloads(f: &Func) -> Vec<Preload> {
 }
 
 /// Update `known` for what `i` writes.
-pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: &Inst) {
+pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], f: &Func, i: &Inst) {
     let get = |r: Reg| known.get(r.0 as usize).copied().flatten();
     // Before the definitions clear what they overwrite.
     let len_known = match *i {
@@ -2590,6 +2651,24 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: 
             ..
         } => Some((dst, Known::Up(d))),
         Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
+        // A result that is an array or a record is the address of a fat pair in the temporary
+        // area, and the words of a layout are made there too.
+        Inst::Call { dst: Some(dst), .. }
+        | Inst::CallNative { dst: Some(dst), .. }
+        | Inst::LayoutOf { dst, .. } => Some((dst, Known::LikelyTemp)),
+        Inst::Load {
+            dst,
+            addr,
+            w: yavs_ir::Width::B8,
+        } => match get(addr) {
+            Some(Known::LikelyTemp) => Some((dst, Known::LikelyTemp)),
+            // A variable's object, not the address a caller passed: that is in any space.
+            Some(Known::Frame(o)) if !f.params.iter().any(|p| u64::from(p.slot) == o) => {
+                Some((dst, Known::LikelyHeap))
+            }
+            Some(Known::Up(_)) => Some((dst, Known::LikelyHeap)),
+            _ => None,
+        },
         Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
         // As the interpreter computes it when it is no error.
@@ -2619,15 +2698,19 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: 
                 (Some(Known::Inst(_) | Known::InstAny), _) => Some((dst, Known::InstAny)),
                 (Some(Known::Up(d)), _) => Some((dst, Known::Up(d))),
                 (Some(Known::Temp), _) => Some((dst, Known::Temp)),
+                (Some(Known::LikelyTemp), _) => Some((dst, Known::LikelyTemp)),
+                (Some(Known::LikelyHeap), _) => Some((dst, Known::LikelyHeap)),
                 (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
                 _ => None,
             }
         }
         _ => None,
     };
-    i.visit(&mut |r, role, _| {
+    i.visit(&mut |r, role, ty| {
         if role == yavs_ir::Role::Def {
-            for k in [r.0, r.0.saturating_add(1)] {
+            // (A signal reference takes two cells, any other value one.)
+            let w = 1 + u32::from(ty == Some(yavs_ir::RegTy::Sig));
+            for k in r.0..r.0.saturating_add(w) {
                 if let Some(x) = known.get_mut(k as usize) {
                     *x = None;
                 }

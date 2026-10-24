@@ -1403,7 +1403,7 @@ fn gen_func(
             g.b.set_srcloc(ir::SourceLoc::new(pc + 1));
         }
         if let Some(p) = prev.replace(inst) {
-            track(&mut g.known, &fixed, &p);
+            track(&mut g.known, &fixed, f, &p);
             // `track` forgets the register after a definition too (a signal reference is two):
             // what holds everywhere stays known.
             for &r in &always {
@@ -3251,6 +3251,9 @@ impl Gen<'_> {
         let frame = reg.and_then(|r| self.frame_of(r));
         let heap = reg.and_then(|r| match self.known.get(r.0 as usize) {
             Some(Some(Known::Heap(o))) => Some(*o),
+            // A guess, used in frame-mode code only (a native frame finds its own slots by
+            // their address): the object table first, the runtime when it is wrong.
+            Some(Some(Known::LikelyHeap)) if self.nat.is_none() => Some(None),
             _ => None,
         });
         if let Some(Some(o)) = heap
@@ -3350,13 +3353,45 @@ impl Gen<'_> {
         let (extra, n) = (self.op(extra), self.op(n));
         if self.nat.is_none() {
             // Frame-mode code asks the runtime (`Mem::find`): the chain of tests inline at every
-            // access was most of the code of a process (the reference lowering does the same, #634).
+            // access was most of the code of a process (the reference lowering does the same,
+            // #634). An address that is probably in the temporary area (a call's result, the words
+            // loaded from it) gets that one test first, as there (#711).
+            let likely = reg.is_some_and(|r| {
+                matches!(self.known.get(r.0 as usize), Some(Some(Known::LikelyTemp)))
+            });
+            let done = self.b.create_block();
+            let p = self.b.append_block_param(done, I64);
             let w = self.c32(u32::from(write));
+            if likely {
+                let hi = self.b.ins().ushr_imm_s(a, 32);
+                let lo = self.lo32(a);
+                let off = self.b.ins().iadd(lo, extra);
+                let is_t = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::Equal, hi, i64::from(space::TEMP) << 29);
+                let len = self.mem_ld(MEM_TEMP_LEN);
+                let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
+                let rest = self.b.ins().isub(len, n);
+                let inside = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, off, rest);
+                let okc = self.b.ins().band(fits, inside);
+                let okc = self.b.ins().band(okc, is_t);
+                let (fast, miss) = (self.b.create_block(), self.b.create_block());
+                self.b.set_cold_block(miss);
+                self.b.ins().brif(okc, fast, &[], miss, &[]);
+                self.b.switch_to_block(fast);
+                let base = self.mem_ld(MEM_TEMP);
+                let pf = self.b.ins().iadd(base, off);
+                self.b.ins().jump(done, &[BlockArg::Value(pf)]);
+                self.b.switch_to_block(miss);
+            }
             let c = self
                 .b
                 .ins()
                 .call(self.imp.host, &[self.env, self.mem, a, extra, n, w]);
-            let p = self.b.inst_results(c)[0];
+            let ph = self.b.inst_results(c)[0];
+            self.b.ins().jump(done, &[BlockArg::Value(ph)]);
+            self.b.switch_to_block(done);
             let nn = self.b.ins().icmp_imm_s(IntCC::NotEqual, p, 0);
             self.guard(nn, slow);
             return p;
@@ -3486,7 +3521,7 @@ impl Gen<'_> {
         let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
         let key = self.b.ins().bxor(hi, flag);
         let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
-        let eo = self.b.ins().imul_imm_s(key, OBJ_SIZE as i64);
+        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
         let ent = self.b.ins().iadd(self.mem, eo);
         let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
         let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, hi);
@@ -5438,7 +5473,7 @@ impl Gen<'_> {
         let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
         let key = self.b.ins().bxor(hi, flag);
         let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
-        let eo = self.b.ins().imul_imm_s(key, OBJ_SIZE as i64);
+        let eo = self.b.ins().ishl_imm_s(key, i64::from(OBJ_SHIFT));
         let ent = self.b.ins().iadd(self.mem, eo);
         // An entry with an access value is writable, and a null handle is no entry's value.
         let eh = self

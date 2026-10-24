@@ -7485,3 +7485,9 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   bus with a waiter on a part keeps a run list: ~8 runs a word with random data, sorted, merged and scanned by the waiters three
   times a cycle; ~4% of the writer in all). Exact run lists could only be replaced by a split of the signal at the waiters'
   boundaries (nexus splitting in the reference simulator), a larger change that also touches ports and observers: not started.
+- **Measured and not taken (whole-picture round, same designs):** fat LTO with one codegen unit (writer +0.6% instructions, cycles
+  level, reader level), `-C target-cpu=x86-64-v3` (writer -2.8% instructions and 1 to 2% cycles, reader level or +5% cycles: not
+  shippable to generic hosts, not a clear win), `--threads 2/4/8` (6.5 s to 7.6/8.3/8.3 s), a single-pass `canonical_changed` and an
+  aligned `Buf::write_to` (0.0% instructions each). Neither design compiles anything under `--tier=auto`; the layers of the
+  interpreter side (dispatch 24 to 33%, record layout and copies 15 to 16%) and the shares of the kernel are in `docs/STATUS.md`
+  "Fletcher writer and reader against the reference simulator".

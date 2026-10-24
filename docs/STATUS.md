@@ -3975,6 +3975,60 @@ elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130
 `Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
 look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
 
+### Fletcher writer and reader against the reference simulator: the whole picture (#519, #523, 2026-10-24)
+
+Measured on `ae1826dd` plus the kernel round 20 below (bench builds with `--features llvm`; `perf record` of the whole run;
+`tools/stepcount` windows of 60 (writer) and 300 (reader) delta cycles for the exact shares; `YAVS_COUNTERS`; `op-census`; core 13
+for every timed run, the host at load 19 to 32). Under `--tier=auto` neither design compiles anything (`YAVS_AUTO_TRACE`: the hot
+processes are combinational and the policy takes none; `ctrl_comb_proc` of the reshaper, 2238 IR, is 10% of the run interpreted),
+so auto equals the interpreter.
+
+**What the design does** (writer): 795 K delta cycles for 69.5 K clock cycles (11.4 deltas a clock), 12 process runs and 64 plane-word
+updates (43 of them changing) a delta; about 35 wide signals (each a 512-bit bus or a record carrying one) change once a clock
+(some twice: concatenations), so 4.2 M bus changes in all. The reference simulator moves the same values: 2.9 K instructions a bus
+change with the kernel at 45% of its 26.7 G, the compiled processes 50%.
+
+Share of the instructions of one delta cycle (stepcount, user instructions of the program file; libc is another 2.5%):
+
+| layer | writer (99 K a delta) | reader (12.6 K a delta) |
+|---|---:|---:|
+| interpreter dispatch (`run_ops`) | 33.0% | 23.7% |
+| kernel: commit and finish of signals | 21.6% | 17.8% |
+| record layout, copies, gather and scatter in the interpreter (`layout_word(s)`, `lcopy`, `subtype_check`, `sig_gather/scatter`) | 15.9% | 14.7% |
+| kernel: cycle, wake-up, process dispatch (`cycle`, `run_batch`, `run_quick`, `arm_readers`, ...) | 11.6% | 27.9% |
+| process-side signal I/O (`assign_*`, `read_into`, `Buf::write_to`) | 10.6% | 10.0% |
+| native `ieee` calls | 3.7% | 1.7% |
+| hashing (record gather plans) | 0.3% | 0.7% |
+
+Against the reference simulator (writer, instructions): signal commit and finish 19 G (before round 20) against 9 G, cycle and
+wake-up 8.6 G against 2.8 G, processes 38 G interpreted against 13 G compiled. The op census of an 8 us writer window (12.2 M ops, the
+interpreter's side): `Stmt` 7.1%, `SigVal` 5.0%, `FieldOf` 4.9%, `DopeLen` 4.4%, `CmpBr` 4.1%, `NewPair` 3.7%, `SubtypeCheck` 3.5%,
+`BinRangeK` 3.2%, `LCopy` 2.9%, `FatRoot` 2.8%, `LayoutWord` 2.7%, `CallIeee` 2.4%; the pairs `FieldOf -> SubtypeCheck -> DopeLen -> LCopy`
+(a record variable with array fields copied field by field: `v := ctrl_r;`) and `NewPair -> FatRoot -> CallIeee` (the operand
+convention of the native `ieee` calls, #697) are 1.6 to 2.8% of the ops each. Records with generic-bounded array fields keep their
+layout in descriptors, so every access is a `LayoutOf`/`FieldOf` where the reference simulator has a constant offset: folding them
+in the specialised copies of processes (#678) is the largest item of the interpreter side (the layout layer alone is 14 to 16%).
+
+Measured and not taken (all with exact instruction counts, `perf stat` on core 13): fat LTO with one codegen unit (writer +0.6%
+instructions, cycles level; reader level), `-C target-cpu=x86-64-v3` (writer -2.8% instructions, -1 to 2% cycles; reader -0.1 to
+-2% instructions, cycles +5% in one set: not shippable for generic hosts and not a clear win), `--threads 2/4/8` (6.5 s to 7.6 / 8.3 /
+8.3 s: the 12 runs a delta, 0.6 us each, do not pay for a hand-off), a single-pass `canonical_changed` and an aligned `Buf::write_to`
+(each 0.0% instructions: the compiler's loops were as short), a skip of plane entries that hold the value (see "Kernel round 20").
+
+Totals against the reference simulator, `tools/realbench` with analysis (library part and own files), elaboration and run, core 13,
+medians of 5, warm and cold cache, the two sessions with sim1 timed in each (yavs / sim1; the wall times of the two sessions differ
+because of the host load, the ratio inside a session is the figure):
+
+| test | run phase before (warm / cold) | run phase after | total before (warm / cold) | total after |
+|---|---:|---:|---:|---:|
+| `fletcher_bufferwriter_512` | 3.20 / 3.29 | 3.07 / 3.22 | 1.90 / 2.04 | 1.79 / 1.98 |
+| `fletcher_bufferreader` | 1.96 / 1.87 | 1.82 / 1.82 | 0.94 / 1.01 | 1.01 / 1.11 |
+
+The reader's instruction count did not change in this round; its rows show session noise (the reference simulator's own run took
+1.15 s in the first session and 1.66 s in the second, yavs 2.25 s and 3.02 s), and the totals of the two sessions mix the reference's
+1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
+Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
+
 ### Kernel round 20: a lean wide bus is finished in one pass (#519, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 20".) `Signal::finish_words_lean` finishes the pending words of a lean bus with no codes and no

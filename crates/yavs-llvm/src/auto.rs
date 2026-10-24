@@ -2982,6 +2982,7 @@ mod tests {
         assert_eq!(first_fit(&[small], 2, 60_000, 220_000), Ok(0));
     }
     /// A worker over the program of `padded_loop(n)`.
+    #[cfg(feature = "llvm")]
     fn worker(n: usize) -> (super::Worker, yavs_ir::FuncId) {
         let (prog, f) = padded_loop(n);
         let rt = yavs_interp::Runtime::new(std::sync::Arc::new(prog), Default::default()).unwrap();
@@ -3013,6 +3014,7 @@ mod tests {
     /// of nothing else (#670): not of how fast the looks are worked through, how they are batched,
     /// or what was compiled meanwhile. The compile cost is a fixed price of the function.
     #[test]
+    #[cfg(feature = "llvm")]
     fn what_is_hot_depends_on_the_looks_only() {
         let look = |ms: u64| super::Look {
             dt: ms * 1000,
@@ -3051,6 +3053,7 @@ mod tests {
     /// The CPU time of a look is shared by the functions running in it, and the time seen running
     /// compiled code is kept apart.
     #[test]
+    #[cfg(feature = "llvm")]
     fn a_look_shares_its_time_between_the_running_functions() {
         let (mut w, f) = worker(100);
         let mut pending = super::Pending::default();

@@ -531,18 +531,18 @@ fn periodic_flush_without_calling_flush() {
     assert_eq!(changes(&mut full, &["t"], "n").len(), 2000);
 }
 
-/// Without a flush interval the bytes depend on the changes only, however long the run takes
-/// (#666: a cold compiled run is slower than a warm one and crossed the 5 s flush differently).
+/// By default the bytes depend on the changes only, however long the run takes (#666: a cold
+/// compiled run is slower than a warm one and crossed a wall-clock flush differently); a flush
+/// interval is opt-in and then does split blocks by the clock.
 #[test]
 fn file_bytes_do_not_depend_on_the_speed_of_the_run() {
     let (h, n) = small_design();
     let dir = tempfile::tempdir().unwrap();
     let write = |name: &str, interval: Option<Duration>, slow: bool| {
         let path = dir.path().join(name);
-        let cfg = WaveConfig {
-            flush_interval: interval,
-            ..WaveConfig::default()
-        };
+        let mut cfg = WaveConfig::default();
+        assert_eq!(cfg.flush_interval, None, "the default is reproducible");
+        cfg.flush_interval = interval;
         let mut w = WaveWriter::create(&path, &h, cfg).unwrap();
         for t in 0..2000u64 {
             if slow && t == 1000 {

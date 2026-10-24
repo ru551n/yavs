@@ -154,18 +154,21 @@ milestone users care about works.
   Value chains are LZ4-compressed (until then they were stored raw; the hierarchy block was
   LZ4 already, so a viewer needs it anyway): neorv32 50 percent, a 512-bit bus testbench 62
   percent smaller, 0 to 6 percent more instructions with waves. Read-back is identical.
-- **Durability:** a block is flushed on the next time advance after `flush_interval` (default
-  5 s) or `block_change_limit` changes, and the header is patched each time, so a killed run is
-  readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel
+- **Durability:** a block is flushed on the next time advance after `block_change_limit` changes
+  (and after `flush_interval` of wall clock, off by default, see below), and the header is
+  patched each time, so a killed run is readable up to the last block. SIGINT/SIGTERM only set a flag (`interrupt::install`); the kernel
   stops between time steps and calls `finish`, which is also done on drop. With `--dap` the
   recorder also flushes (`Recorder::sync`, through the `yavs_dap::Sync` hook) before every
   `stopped` event, so a viewer reading the file at a stop sees every completed time step; the
   step in progress at a stop inside a process appears when it ends (#423).
-  Because the clock splits blocks, a run longer than `flush_interval` writes a file whose bytes
-  (block layout, not the changes) depend on its speed: a cold `--tier=auto` run and a warm one
-  differ, and so do two interpreter runs (#666). `YAVS_WAVE_FLUSH=never` (`WaveConfig::flush_interval`
-  `None`) ends blocks by `block_change_limit` only, for byte-identical files; the default stays
-  the clock (durability of a killed run). Which default wins is the user's call (open, #666).
+  Reproducible by default (user decision 2026-10-24, #666): `WaveConfig::flush_interval` is
+  `None`, so blocks end by `block_change_limit` only and the bytes depend on the recorded
+  changes alone. A wall-clock interval would split blocks by run speed (a cold `--tier=auto`
+  run and a warm one, or two interpreter runs, would differ). `YAVS_WAVE_FLUSH=5s` or `500ms`
+  opts in to the clock for durability of a killed run (the bytes then depend on speed);
+  `never` is the default spelled out; any other value is E0801. A run that is stopped (SIGINT,
+  SIGTERM, `--stop-time`) still finishes the file; only a run killed with SIGKILL or a crash
+  loses the changes since the last block.
 
 ## Packed logic vectors: bit-planes (yavs-logic)
 

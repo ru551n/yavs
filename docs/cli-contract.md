@@ -336,7 +336,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   enum table, integers, reals and time as numbers (an integer with its subtype's name and
   the width its range needs; a generate alternative with a label is scope `label.alt`). Several deltas at one time step
   give one value change (the final value). The file is the same at any
-  `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
+  `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed when a block fills (or every `YAVS_WAVE_FLUSH` interval, off by default), on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
   `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).
@@ -652,9 +652,10 @@ tree (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
 from asking for transparent huge pages on its heap at start (Linux with glibc and the system's
-transparent huge pages in `madvise` mode only; on any other system it does nothing). `YAVS_WAVE_FLUSH=never` stops
-`--wave` from ending a waveform block every five seconds of run time (blocks end by size only),
-so the file's bytes depend on the recorded changes alone; any other value is error E0801.
+transparent huge pages in `madvise` mode only; on any other system it does nothing). `--wave` ends a waveform block by size only, so the
+file's bytes depend on the recorded changes alone; `YAVS_WAVE_FLUSH=5s` (or `500ms`) also ends a
+block after that much run time, so a killed run leaves more of the file (the bytes then depend on
+the run's speed); `never` is the default; any other value is error E0801.
 
 ## 8. Not covered yet
 

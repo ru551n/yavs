@@ -382,27 +382,39 @@ fn wave_unwritable() {
     );
 }
 
-/// `YAVS_WAVE_FLUSH=never` ends blocks by size only (reproducible bytes, #666); another value
-/// is an error.
+/// Blocks end by size only unless `YAVS_WAVE_FLUSH` is a duration (reproducible bytes by
+/// default, #666); `never` is the default spelled out; another value is an error.
 #[test]
 fn wave_flush_never() {
     let d = design("flush");
-    let go = |v: &str, f: &str| {
+    let go = |v: Option<&str>, f: &str| {
         let work = format!("--work=work:{}", d.join("lib").display());
-        yavs()
-            .current_dir(&*d)
-            .env("YAVS_WAVE_FLUSH", v)
-            .args(["run", &work, &format!("--wave={f}"), "wave_tb"])
+        let mut c = yavs();
+        c.current_dir(&*d).env_remove("YAVS_WAVE_FLUSH");
+        if let Some(v) = v {
+            c.env("YAVS_WAVE_FLUSH", v);
+        }
+        c.args(["run", &work, &format!("--wave={f}"), "wave_tb"])
             .output()
             .expect("yavs")
     };
-    let (a, b) = (go("never", "a.fst"), go("never", "b.fst"));
-    assert!(a.status.success() && b.status.success());
-    assert_eq!(
-        std::fs::read(d.join("a.fst")).unwrap(),
-        std::fs::read(d.join("b.fst")).unwrap()
-    );
-    let bad = go("sometimes", "c.fst");
+    let bytes = |f: &str| std::fs::read(d.join(f)).unwrap();
+    let ok = |o: &std::process::Output| assert!(o.status.success(), "{o:?}");
+    // The default and `never` are the same, run after run.
+    for (v, f) in [(None, "a.fst"), (None, "b.fst"), (Some("never"), "n.fst")] {
+        ok(&go(v, f));
+    }
+    assert_eq!(bytes("a.fst"), bytes("b.fst"));
+    assert_eq!(bytes("a.fst"), bytes("n.fst"));
+    // A duration is accepted and the file still reads back with the same changes.
+    for (v, f) in [("0s", "z.fst"), ("500ms", "m.fst"), ("5s", "s.fst")] {
+        ok(&go(Some(v), f));
+        assert_eq!(dump(&d.join(f)), dump(&d.join("a.fst")), "{v}");
+    }
+    for v in ["5", "s", "-1s", "1.5s", "5m"] {
+        assert_eq!(go(Some(v), "x.fst").status.code(), Some(2), "{v}");
+    }
+    let bad = go(Some("sometimes"), "c.fst");
     assert_eq!(bad.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&bad.stderr);
     assert!(
@@ -411,11 +423,25 @@ fn wave_flush_never() {
     );
 }
 
-/// Ctrl-C ends the run between cycles and leaves a finished file.
+/// Ctrl-C ends the run between cycles and leaves a finished file, with the default (no
+/// wall-clock flush) and with one.
 #[cfg(unix)]
 #[test]
 fn wave_sigint() {
-    let d = scratch("sigint");
+    wave_signal("sigint", "-INT", None);
+    wave_signal("sigint-flush", "-INT", Some("1s"));
+}
+
+/// SIGTERM does the same (the file is finished, the run ends between cycles).
+#[cfg(unix)]
+#[test]
+fn wave_sigterm() {
+    wave_signal("sigterm", "-TERM", None);
+}
+
+#[cfg(unix)]
+fn wave_signal(tag: &str, sig: &str, flush: Option<&str>) {
+    let d = scratch(tag);
     let src = d.join("clock.vhd");
     std::fs::write(
         &src,
@@ -427,7 +453,12 @@ fn wave_sigint() {
     .unwrap();
     assert!(analyze(&d, &src, "2008"));
     let fst = d.join("a.fst");
-    let child = yavs()
+    let mut cmd = yavs();
+    cmd.env_remove("YAVS_WAVE_FLUSH");
+    if let Some(v) = flush {
+        cmd.env("YAVS_WAVE_FLUSH", v);
+    }
+    let child = cmd
         .args(["run", &format!("--work=work:{}", d.join("lib").display())])
         .arg(format!("--wave={}", fst.display()))
         .arg("clock")
@@ -443,7 +474,7 @@ fn wave_sigint() {
     }
     std::thread::sleep(std::time::Duration::from_secs(2));
     let kill = Command::new("kill")
-        .args(["-INT", &child.id().to_string()])
+        .args([sig, &child.id().to_string()])
         .status()
         .expect("kill");
     assert!(kill.success());

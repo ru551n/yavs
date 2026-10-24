@@ -196,6 +196,15 @@ pub struct RunArgs {
     plusargs: Vec<String>,
 }
 
+/// `YAVS_WAVE_FLUSH` duration: whole `s` or `ms` (`5s`, `500ms`).
+fn parse_flush_interval(s: &str) -> Option<std::time::Duration> {
+    let (n, unit): (&str, fn(u64) -> std::time::Duration) = match s.strip_suffix("ms") {
+        Some(n) => (n, std::time::Duration::from_millis),
+        None => (s.strip_suffix('s')?, std::time::Duration::from_secs),
+    };
+    n.parse().ok().map(unit)
+}
+
 /// `4194304`, `4m`, `64K`, `1g`: a byte count of at least 1.
 fn parse_size(s: &str) -> Result<u64, String> {
     let t = s.trim();
@@ -1316,19 +1325,23 @@ fn observers(
                 max_array_elems: a.wave_max_array,
             };
             let mut cfg = yavs_wave::WaveConfig::default();
-            // Reproducible bytes (a regression suite that compares files): no flush by the clock.
+            // Default: no flush by the clock (reproducible bytes); a duration opts in (#666).
             match std::env::var("YAVS_WAVE_FLUSH").as_deref() {
-                Err(_) => {}
-                Ok("never") => cfg.flush_interval = None,
-                Ok(v) => {
-                    return Err(Box::new(
-                        Diagnostic::error(
-                            "E0801",
-                            format!("cannot write the waveform file `{path}`"),
-                        )
-                        .with_note(format!("`YAVS_WAVE_FLUSH={v}`: the only value is `never`")),
-                    ));
-                }
+                Err(_) | Ok("never") => {}
+                Ok(v) => match parse_flush_interval(v) {
+                    Some(d) => cfg.flush_interval = Some(d),
+                    None => {
+                        return Err(Box::new(
+                            Diagnostic::error(
+                                "E0801",
+                                format!("cannot write the waveform file `{path}`"),
+                            )
+                            .with_note(format!(
+                                "`YAVS_WAVE_FLUSH={v}`: use `never` or a duration such as `5s` or `500ms`"
+                            )),
+                        ));
+                    }
+                },
             }
             match yavs_wave::record(
                 db,

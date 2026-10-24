@@ -187,10 +187,15 @@ Waveforms
   are known only when the simulation runs (warning ``W0802``).
 * Arrays and vectors with more elements than ``--wave-max-array`` (default 65536) are left out
   with warning ``W0802``.
-* The file is written out periodically while simulating and finished at the end of the
-  simulation, at ``--stop-time`` and on Ctrl-C: the first Ctrl-C ends the run after the current
+* The file is written in blocks of 250000 changes and finished at the end of the simulation, at
+  ``--stop-time`` and on Ctrl-C or SIGTERM: the first Ctrl-C ends the run after the current
   cycle and exits with status 1, a second one exits at once (the file is then readable up to
-  its last periodic write). A path that cannot be written is error ``E0801``.
+  its last block). The bytes depend only on the recorded changes, so two runs of the same design
+  write identical files. To make a run that is killed (SIGKILL, a crash) leave more of the
+  file, set ``YAVS_WAVE_FLUSH`` to a duration such as ``5s`` or ``500ms``: a block then also ends
+  after that much run time, and the bytes depend on the speed of the run. ``YAVS_WAVE_FLUSH=never``
+  is the default; any other value is error ``E0801``. A path that cannot be written is error
+  ``E0801``.
 
 Code coverage
 -------------

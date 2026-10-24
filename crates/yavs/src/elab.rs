@@ -896,6 +896,8 @@ pub fn run(
         // `check` runs the ones the kernel would skip and fails when one does something else.
         idle_skip: idle_mode != "off" && !cov_counters,
         idle_check: idle_mode == "check",
+        // `YAVS_CELLS=off` lists the exact runs of changed elements for every waited part.
+        cells: !std::env::var("YAVS_CELLS").is_ok_and(|v| v == "off"),
     };
     if let Some(seed) = a.shuffle {
         out.emit(&none, &shuffle_note(seed));

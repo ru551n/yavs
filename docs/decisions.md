@@ -7663,6 +7663,55 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   "Fletcher writer and reader against the reference simulator".
 
 
+## Kernel round 21: a wide bus with a waiter on a part lists its changes per cell; the split of a leaf at the waiters' boundaries is not built (yavs-kernel, #519, 2026-10-24)
+
+Task (user, 2026-10-24): split signals that have a waiter on a part into kernel signals along the union of the boundaries that waiters,
+drivers and port maps use (`NetGraph::loc`), so each piece is waited on whole and the `fine` run lists go away. Source of the numbers:
+`fletcher_bufferwriter_512`, `tools/build-bench.sh --features llvm` builds, `perf stat` on core 13 at a load of 20 to 40, minimum of 6
+alternating runs after the compilation cache of each binary was warm (the first two runs of a new binary still pay cache work: read
+instruction counts from the third on).
+
+- **What the design does.** Five wide signals get `fine` in the writer: three of 578 elements (a stream word of one flag bit, 512 data bits, a
+  64-bit strobe and one more bit, cut at 1, 513 and 577, waited on by three concurrent statements each) and two of 74 elements (cut at 64 and 73). Every one
+  is driven whole (`0+578`, `0+74`) by one process (a `CopyProcess` of a stream slice, or the interpreted `reg_proc` of the FIFO); no
+  port edge and no idle read touches them. So the pieces would each have a whole-signal waiter, but the driver writes all pieces and
+  the other readers read the bus whole.
+- **Decision: the split is not built.** A leaf is stored in exactly one kernel signal in every layer: `LeafLoc` is one signal and a
+  base, `kref`/`kpart`/`kelem` return one signal, `InstSig` is `{signal, ty, off}`, `ProcDriver` names one `DriverId`, the compiled
+  tier's `TierSig` is the same, and waves, VHPI, DAP and coverage resolve an object through those (69 call sites outside the
+  tests). Packs (#686) only join leaves into a signal, the opposite direction. A split turns each whole-bus drive, read, wait and
+  `'event` in the interpreter and in compiled code into a loop over pieces, in exchange for at most the `fine` cost below, and moves
+  the small pieces off the lean no-codes path of the bus. Not worth the risk to
+  waves, ports, force and resolution for a bound of 5%.
+- **The bound.** A temporary kernel build that noted the hull of the changed elements of a word (inexact: 0.14% more wake-ups) in
+  place of its runs: 62.08 G to 58.62 G instructions (-5.6%), 25.9 G to 24.4 G cycles. That is the most any removal of the run lists
+  can give on this design, and a split cannot reach it (it adds the drives and reads above).
+- **Decision: cells (`Signal::cuts`, `Signal::watch_part`, `note_cells`, `Config::cells`, `YAVS_CELLS=off`).** The kernel keeps the
+  signal whole but registers the offsets where a waited range (or an idle reader's range) starts or ends. They cut the signal into
+  cells; every waited range is a union of cells. A word update that changes more than two runs notes the hull of its changed elements
+  once per cell it changes (`note_cells`: a binary search over the few cuts, one note when the word holds none), and a waiter wakes
+  when a note overlaps its range, which is exactly when an element of one of its cells changed. Exactness: a note lies in one cell and
+  a cell with a change gets a note, so overlap with a union of cells means the cell changed. Notes of one cycle may overlap the exact
+  runs another path noted (a release or deposit and plane entries), which the wake scan (`Waiters::take_woken`: sorted, disjoint runs)
+  cannot take, so a signal with cuts joins overlapping runs once a cycle (`canonical_changed` now joins runs that overlap, not only
+  those that touch; the first version of the new test failed there). The `events` counter keeps counting runs per word. Signals of
+  64 elements or fewer, and every signal once an observer wants value changes (waves, coverage, VHPI, DAP: `Observer::wants_value_changes`),
+  keep the exact runs (`Signal::cuts` cleared, never filled). Lean events (round 18) are independent: they decide what history a
+  block keeps, cells decide what `changed` lists.
+- **Tests:** `delta_paths::a_wide_bus_wakes_the_same_per_cell_as_per_run` (five waiters including a one-element one at a block edge and
+  one across all blocks, direct and resolved buses, lean and not, forces and deposits, 1 and 4 threads, against `cells: false`, with
+  and without a value-change observer); difftest 520/520 on interp, llvm and auto at 1 and 4 threads; the OSVVM and UVVM suites give
+  the same results as before (UVVM 131 passed 6 skipped, OSVVM identical); an FST of the writer is byte-identical with and without
+  `YAVS_CELLS=off`.
+- **Result** (bench builds, core 13): writer 61.47 G to 58.74 G instructions (0.956), 35.4 G to 33.5 G cycles (0.946); reader 22.63 G
+  to 22.67 G (1.002), cycles level. The update path of a resolved bus with few runs per word keeps its runs (the cutoff of two runs):
+  without it the reader paid +0.6% instructions for hulls it did not need.
+- **Left:** the writer's remaining `fine`-related cost is the cell notes and `canonical_changed` (~1%). The elaboration split would
+  remove only the waiter side, and only if the interpreter, the compiled tier and the observers took pieces; revisit if a design
+  appears whose waited parts are driven by separate processes at exactly the cuts (then the pieces would be whole signals with whole
+  drivers and no one-to-many path is needed).
+
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame

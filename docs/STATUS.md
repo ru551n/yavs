@@ -4045,6 +4045,18 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Kernel round 21: cells for a wide bus with a waiter on a part (#519, 2026-10-24)
+
+(`docs/decisions.md` "Kernel round 21".) The split of such a bus into kernel signals at the waiters' boundaries (the user's task) was
+investigated and not built: the five buses concerned in `fletcher_bufferwriter_512` are driven whole by one process each, so a leaf
+would map to several kernel signals in the drive, read and wait paths of the interpreter and the compiled tier, waves, VHPI, DAP and
+coverage. Instead the kernel keeps the signal whole and lists its changes per cell (`Signal::cuts`, `note_cells`): the offsets where
+waited ranges start and end cut the signal, and a changed word notes the hull of its changes once per cell. Wake-ups are those of
+the exact runs; value-change observers still get exact runs; `YAVS_CELLS=off` restores the run lists. Bench builds, core 13, minimum
+of 6 alternating runs: writer 0.956 instructions, 0.946 cycles (61.5 G to 58.7 G); reader 1.002 / 0.990; `realbench --compare`
+(interpreter and auto, run phase): see decisions. Difftest 520/520 on interp, llvm and auto at 1 and 4 threads; OSVVM and UVVM suites
+unchanged; the writer's FST byte-identical.
+
 ### Kernel round 20: a lean wide bus is finished in one pass (#519, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 20".) `Signal::finish_words_lean` finishes the pending words of a lean bus with no codes and no

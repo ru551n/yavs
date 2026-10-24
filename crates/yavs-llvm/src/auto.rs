@@ -842,6 +842,21 @@ fn first_fit(
 /// See `Heat::o2_threshold`.
 const O2_AFTER: u64 = 30;
 
+/// The microseconds of CPU time a compile at `OptLevel::FastRa` takes (the optimised register
+/// allocator over thousands of blocks is more than linear): 100 per IR instruction and 0.05 more
+/// for every instruction of the function. 400 instructions took 50 ms, 4 500 1.4 s, 17 500 17 s
+/// (`Fast`: 0.1 to 0.15 s per thousand; #715).
+fn ra_cost(ir: usize) -> u64 {
+    let n = ir as f64;
+    (n * (100.0 + 0.05 * n)) as u64
+}
+
+/// A function that ran at `OptLevel::Fast` is compiled again at `FastRa` once it was seen running
+/// compiled for this many times that compile: its code is 6 to 13 percent faster, and the rest of
+/// the run is expected to be as long as the past (`PAYBACK`), so the compile repays at about
+/// twelve times its cost. A run too short for that never pays for it.
+const PAYBACK_RA: u64 = 12;
+
 /// What happened to a hot function: compiled at that level (with the time it took), or why
 /// it stays interpreted (or at its first level).
 pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
@@ -1018,8 +1033,12 @@ struct Worker {
     jit2: Option<Jit>,
     /// For functions at `OptLevel::Fast`.
     jitf: Option<Jit>,
+    /// For functions recompiled at `OptLevel::FastRa`.
+    jitr: Option<Jit>,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
+    /// Per function: its first-level code is `OptLevel::Fast`, so the second compile is `FastRa`.
+    fast: Vec<bool>,
     /// Per function: the address of its native-frame code once compiled (0: none), and whether
     /// `ntab` names it. Published once everything it calls natively is compiled too: a missing
     /// callee would materialise the frames at every call.
@@ -1130,7 +1149,7 @@ impl Worker {
             }
             if compiled {
                 let (now, at) = (*t, self.threshold(id, true));
-                if was < at && now >= at && upgrade {
+                if was < at && now >= at && (upgrade || self.fast[id.0 as usize]) {
                     pending.later.push(id);
                 }
                 continue;
@@ -1173,6 +1192,7 @@ impl Worker {
             group: vec![0; nfuncs],
             asked_for: vec![false; nfuncs],
             done: vec![[false; 2]; nfuncs],
+            fast: vec![false; nfuncs],
             nat: vec![(0, false); nfuncs],
             calls: vec![0; nfuncs],
             prog,
@@ -1186,6 +1206,7 @@ impl Worker {
             jit: None,
             jit2: None,
             jitf: None,
+            jitr: None,
             total: 0,
             spent: 0,
             compute: vec![Default::default(); nfuncs],
@@ -1355,6 +1376,10 @@ impl Worker {
             return u64::MAX;
         };
         if compiled {
+            // A function that ran at `Fast` is compiled again at `FastRa` once it repays (#715).
+            if self.fast[id.0 as usize] && self.heat.budget != 0 {
+                return PAYBACK_RA.saturating_mul(ra_cost(f.code.len()));
+            }
             return self.heat.o2_threshold(f);
         }
         // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
@@ -1867,6 +1892,12 @@ impl Worker {
         };
         let level = if o2 { OptLevel::O2 } else { self.opt };
         let level = crate::lower::level_for(&self.prog, f, level);
+        // The second compile of a function that ran at `Fast` (#715).
+        let level = if o2 && level == OptLevel::Fast {
+            OptLevel::FastRa
+        } else {
+            level
+        };
         let few = self
             .is_rtl(id)
             .then(|| {
@@ -1908,6 +1939,8 @@ impl Worker {
         }
         let j = if level == OptLevel::Fast {
             &mut self.jitf
+        } else if level == OptLevel::FastRa {
+            &mut self.jitr
         } else if o2 {
             &mut self.jit2
         } else {
@@ -1959,6 +1992,11 @@ impl Worker {
                         self.spent,
                         self.total
                     ));
+                }
+                // Only frame-mode code is recompiled (#715): a function called natively runs its
+                // native-frame code.
+                if level == OptLevel::Fast && part != Part::Native && !self.natively(id) {
+                    self.fast[id.0 as usize] = true;
                 }
                 let key = (f.name.clone(), f.code.len() as u32);
                 if !hit && crate::objcache::enabled() && self.listed.insert(key) {
@@ -2218,7 +2256,7 @@ impl AutoTier {
                                 break;
                             }
                             // Eager (tests): swap the O2 code in during the run too.
-                            if done && heat.eager() && upgrade && !o2 {
+                            if done && heat.eager() && (upgrade || w.fast[id.0 as usize]) && !o2 {
                                 pending.later.push(id);
                             }
                         }
@@ -2255,8 +2293,13 @@ impl AutoTier {
                         w.total, w.spent
                     ));
                 }
-                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) =
-                    w.jit.into_iter().chain(w.jit2).chain(w.jitf).collect();
+                *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
+                    .jit
+                    .into_iter()
+                    .chain(w.jit2)
+                    .chain(w.jitf)
+                    .chain(w.jitr)
+                    .collect();
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
@@ -3071,5 +3114,29 @@ mod tests {
         w.see(&look, false, &mut pending);
         assert_eq!(w.time[f.0 as usize], [500, 500]);
         assert_eq!(w.total, 1000);
+    }
+    /// A function that ran at `Fast` is compiled again at `FastRa` once it was seen running compiled
+    /// for `PAYBACK_RA` times that compile, in a run that does not recompile at O2 (#715); one that
+    /// did not run at `Fast` is not.
+    #[test]
+    fn a_fast_function_is_recompiled_when_the_register_allocator_repays() {
+        let (mut w, f) = worker(1_600);
+        let at = super::PAYBACK_RA * super::ra_cost(w.prog.func(f).unwrap().code.len());
+        let look = |us: u64| super::Look {
+            dt: us,
+            running: vec![(f, true)],
+        };
+        let mut pending = super::Pending::default();
+        w.see(&look(at), false, &mut pending);
+        assert!(pending.later.is_empty(), "not a function that ran at Fast");
+        w.time[f.0 as usize] = [0, 0];
+        w.fast[f.0 as usize] = true;
+        assert_eq!(w.threshold(f, true), at);
+        w.see(&look(at - 1), false, &mut pending);
+        assert!(pending.later.is_empty());
+        w.see(&look(1), false, &mut pending);
+        assert_eq!(pending.later, [f]);
+        w.see(&look(at), false, &mut pending);
+        assert_eq!(pending.later, [f], "asked once");
     }
 }

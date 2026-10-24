@@ -8270,3 +8270,47 @@ So both the length of the chain and the number of instructions matter, and what 
   memory-aware CSE in the pass pipeline, which costs compile time); the address of a by-reference parameter in a native frame
   (a variable of a caller) is looked up again at every access (about 25 instructions), a held-pointer fact for registers that hold such an address
   is the next candidate.
+
+## llvm: `OptLevel::FastRa`, the optimised register allocator for hot large frame-mode functions (yavs-llvm, #715, 2026-10-24)
+
+- **Decision (maintainer, 2026-10-24):** a large frame-mode function that `--tier=auto` compiled at `Fast` (FastISel and the fast register
+  allocator) is compiled again in the background with the optimised register allocator (greedy, FastISel kept) once it has run compiled long
+  enough to repay the compile (payback rule); only those functions, never the first compile and never a short run.
+- **How it is made: per target machine, not by an LLVM option.** `-optimize-regalloc` and `-regalloc` are process-wide command line options,
+  and `-optimize-regalloc` is tri-state: a later parse can set it true or false but not back to "unset", which the other levels need (unset
+  means "by code generation level"). Toggling them would also need a lock around every code generation of the process. `OptLevel::FastRa`
+  instead is a target machine at code generation level `Less` (the optimised allocator is chosen by the level) with `LLVMSetTargetMachineFastISel`
+  on, and `Module::optimize_as` marks every function `optnone noinline` after the passes (`jit::no_opt`) so that the machine passes `Less`
+  adds over `None` (block placement, tail merging, peepholes) skip it. Without `optnone` `Less` was worse: 27 s of code generation for the
+  17 600-instruction function and +5 percent instructions against `Fast` on the LEON3 window (the extra passes lengthen the hot path), with it
+  15.9 s and the same instructions as the option route (whole LEON3 program: 122.7 G and 127.4 G instructions in two runs against 122.8 G and
+  127.0 G with the options on; `llc` object 4.80 MB against 5.14 MB). ORC cannot be given the FastISel setting, so a `FastRa` module is always
+  emitted to an object (`Module::emit`) and added with `Jit::add_object` (`objcache::add`), also without a compilation cache; the object is
+  stored under its own key (`{opt:?}` is in it), so a warm run links it. A `FastRa` module has its own `Jit` in the worker (`jitr`): the O2 and
+  `Fast` modules of a function use the same symbol names.
+- **Policy hook (auto.rs; constants are autoclk's to tune with the pricing, #670):** `Worker::fast[id]` is set when a frame-mode function
+  that does not run on native frames (`natively`) was compiled at `Fast`; `Worker::threshold(id, true)` for it is `PAYBACK_RA` (12) times
+  `ra_cost` of its IR instructions (`n * (100 + 0.05 n)` microseconds of CPU time), in microseconds of CPU time seen running compiled: the 6
+  to 13 percent the allocator gives is expected for the rest of the run, which is expected to be as long as the past, so the compile repays at
+  about twelve times its cost. For a 17 600-instruction process that is about 210 s of compiled running; for 400 instructions 0.6 s. The look
+  that crosses it asks for the second compile (`pending.later`, the O2 recompile's queue), `compile(.., o2 = true)` makes it `FastRa`
+  instead of `Fast`. With a heat of budget 0 (`--tier-heat`, tests) the O2 threshold applies as before and every second compile of a function
+  of `FAST_MIN` IR instructions or more is `FastRa` (it was `Fast` again, a wasted compile): the differential tests with
+  `--tier-heat=1,0,0` run the new level on every big process. `spent` is charged the `Fast` price as before (the budget is for first
+  compiles; the payback rule is the stricter test here).
+- **Cost (CPU time of the compile thread, `YAVS_AUTO_TRACE`, LEON3 with every function compiled, host loaded so SMT-shared; these fit
+  `ra_cost`):** 350 to 700 IR instructions 13 to 90 ms; 1 000 to 1 900 0.11 to 0.33 s; 3 600 to 7 000 1.2 to 2.3 s; 9 000 to 13 000 2.6 to
+  5.7 s; 17 500 to 19 900 17.5 s (`Fast` for the 17 500: 2.6 s on that host, #715 measured 1.2 s against 10.8 s unloaded). One function of 1 767 instructions took
+  2.2 s that the model does not see.
+- **Gain (forced: `--tier=auto --tier-heat=1,0,0`, bench builds, core 11, medians of 5 interleaved, simulation thread `perf stat --no-inherit`,
+  warm cache; `FastRa` against `Fast` for every function of 300 IR instructions or more):**
+  `neorv32_single_min` cycles -3.8 percent (instructions -1.5), `fletcher_bufferreader` -5.0 (-0.9), `fletcher_bufferwriter_512` -4.3 (-2.0),
+  `grlib_leon3mp` whole run -7.8 (-2.2), `vai_window_gen_interlock` -2.0 (-0.5), `sc5_fifo_repack` and `poc_arith_addw` +0.6 and +1.7
+  (no function over the size: noise). The 6 to 13 percent of #715 were measured with the option on from the start and with only the hot
+  function forced; here every big function is recompiled and the hot ones are a part of the run.
+- **Default `--tier=auto`:** a run that does not keep a big process compiled for the payback time compiles exactly what it did before
+  (nothing of the realbench tests above reaches a payback of 12 times the compile within its length); the gain is for long simulations
+  of big processes. Comparison of default `--tier=auto` before and after: see docs/STATUS.md "llvm: FastRa".
+- **Not done:** the warm run does not look the `FastRa` object up before the payback time (that generates the module a second time, 0.3 s for the
+  largest process); a `Part::Native` function does not get it (it runs its native-frame code); the compile is not charged at its true price
+  to `spent`.

@@ -172,6 +172,11 @@ pub enum OptLevel {
     /// instruction at a time, no live-variable analysis): for functions so large that
     /// optimised code generation takes longer than linear time (`lower::level_for`).
     Fast,
+    /// `Fast` with the optimised register allocator (#715): for the hot large functions that ran
+    /// at `Fast`. Made per target machine, not by a command line option (those are process-wide):
+    /// the machine is created at `Less` (greedy allocation) with FastISel on, and the functions
+    /// are `optnone` (`Module::optimize_as`) so the passes `Less` adds over `None` skip them.
+    FastRa,
 }
 
 impl OptLevel {
@@ -180,7 +185,7 @@ impl OptLevel {
             OptLevel::O0 => c"default<O0>",
             OptLevel::O1 => c"default<O1>",
             OptLevel::O2 => c"default<O2>",
-            OptLevel::Fast => LEAN,
+            OptLevel::Fast | OptLevel::FastRa => LEAN,
         }
     }
 
@@ -190,6 +195,7 @@ impl OptLevel {
             OptLevel::O1 => LLVMCodeGenOptLevel::LLVMCodeGenLevelLess,
             OptLevel::O2 => LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault,
             OptLevel::Fast => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
+            OptLevel::FastRa => LLVMCodeGenOptLevel::LLVMCodeGenLevelLess,
         }
     }
 }
@@ -289,6 +295,29 @@ unsafe fn narrow_masks(module: LLVMModuleRef) {
     }
 }
 
+/// Marks every function `optnone noinline`: the machine passes that `Less` adds over `None` (block
+/// placement, tail merging, peepholes) skip them, and the instruction selection stays the fast one,
+/// so `OptLevel::FastRa` differs from `Fast` in the register allocator alone (#715).
+unsafe fn no_opt(module: LLVMModuleRef) {
+    // SAFETY: plain walk over a module that is finished; attributes of a known kind are added.
+    unsafe {
+        let ctx = LLVMGetModuleContext(module);
+        let kinds = [c"optnone", c"noinline"].map(|n| {
+            let k = LLVMGetEnumAttributeKindForName(n.as_ptr(), n.to_bytes().len());
+            LLVMCreateEnumAttribute(ctx, k, 0)
+        });
+        let mut f = LLVMGetFirstFunction(module);
+        while !f.is_null() {
+            if LLVMCountBasicBlocks(f) > 0 {
+                for a in kinds {
+                    LLVMAddAttributeAtIndex(f, llvm_sys::LLVMAttributeFunctionIndex, a);
+                }
+            }
+            f = LLVMGetNextFunction(f);
+        }
+    }
+}
+
 /// Whether the generated code is the small model (calls to the runtime go through the GOT).
 pub(crate) fn small_model() -> bool {
     model().1 != LLVMCodeModel::LLVMCodeModelJITDefault
@@ -319,6 +348,9 @@ fn target_machine(opt: OptLevel) -> Result<LLVMTargetMachineRef> {
         LLVMDisposeMessage(triple);
         if tm.is_null() {
             return Err(Error("cannot create target machine".into()));
+        }
+        if opt == OptLevel::FastRa {
+            LLVMSetTargetMachineFastISel(tm, 1);
         }
         Ok(tm)
     }
@@ -457,8 +489,12 @@ impl Module {
                 opts,
             );
             // The unoptimised code generator does not do this itself.
-            if opt.codegen() == LLVMCodeGenOptLevel::LLVMCodeGenLevelNone {
+            if opt.codegen() == LLVMCodeGenOptLevel::LLVMCodeGenLevelNone || opt == OptLevel::FastRa
+            {
                 narrow_masks(self.module);
+            }
+            if opt == OptLevel::FastRa {
+                no_opt(self.module);
             }
             dump(self.module, "post");
             LLVMDisposePassBuilderOptions(opts);

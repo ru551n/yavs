@@ -7878,3 +7878,30 @@ and the wide-vector designs: instructions within 1 percent, wall within the spre
 Not taken, with the numbers in decisions.md: LLVM inlining of the native callee (instructions -2.5 to -4.7 percent, cycles level), an
 inline limit above 60 in the IR inliner, the full `O2` pipeline for the accessors. A protected `get` waits for a chain of dependent
 loads (four object look-ups, three positions); the call and return are about 55 of its instructions and overlap with the chain.
+
+## llvm: FastRa, the optimised register allocator for hot large frame-mode functions (#715, 2026-10-24)
+
+- `OptLevel::FastRa` (user decision 2026-10-24): `Fast` code generation with the greedy register allocator, made per target machine
+  (level `Less`, FastISel on, functions `optnone` after the passes), not by a process-wide LLVM option. A frame-mode function that
+  `--tier=auto` compiled at `Fast` is compiled again in the background once it was seen running compiled for `PAYBACK_RA` (12) times the
+  modelled cost of that compile (`ra_cost`, about 17 s of CPU time for a 17 500-instruction process); the O2 recompile queue carries the
+  request. With `--tier-heat` every second compile of a function of 300 IR instructions or more is `FastRa` (it was a second `Fast` compile).
+  Details, the rejected ways (the LLVM options; `Less` without `optnone`) and the cost table: decisions.md "llvm: `OptLevel::FastRa` ...".
+- Forced (every function of 300 IR instructions or more compiled `FastRa` after `Fast`, `--tier=auto --tier-heat=1,0,0`, bench builds, core 11,
+  medians of 5 interleaved, simulation thread, warm): cycles `neorv32_single_min` -3.8 percent, `fletcher_bufferreader` -5.0,
+  `fletcher_bufferwriter_512` -4.3, `grlib_leon3mp` (whole run) -7.8, `vai_window_gen_interlock` -2.0, `sc5_fifo_repack` +0.6 and
+  `poc_arith_addw` +1.7 (nothing over the size: noise); the LEON3 window alone (#715): -12.8 percent with the option route.
+- Default `--tier=auto` (`realbench --compare`, `--phases run --tiers auto,auto-cold`, 7 tests, medians of 5, core 11, main at 3df7bc44 against
+  the same plus this): geometric mean of wall 1.00 warm and 0.99 cold, instructions 0.99 and 1.00; per test warm `grlib_leon3mp` 1.03 (cold
+  0.93), `fletcher_bufferwriter_512` 1.03, `vai_window_gen_interlock` 0.93, the others 0.99 to 1.01. The default runs compile nothing at `Fast` or
+  `FastRa` in these tests (LEON3: 6 compiles, none of them over 300 instructions at `Fast`), so the differences are the host (load 12 to 15, other
+  agents on the neighbouring cores). The gain is for runs that keep a big process compiled for minutes: with the threshold at 1 instead of 12 a
+  LEON3 run with `YAVS_AUTO_FORCE` on its big `comb` processes compiled `f1222` (7 785 IR instructions) at `FastRa` after 4.8 s of compiled
+  running, output identical.
+- Checks: difftest 523/523 at 1 and 4 threads for `yavs-interp`, `yavs-llvm`, `yavs-auto`, `yavs-auto` with `--tier-heat=1,0,0`, and `yavs-llvm`,
+  `yavs-auto`, `yavs-auto` with `--tier-heat=1,0,0` under `YAVS_LLVM_ARENA=0`; `cargo test --workspace` and `-p yavs-llvm -p yavs --features
+  llvm` green; new tests `fast_ra_makes_smaller_correct_code`, `auto_tier_recompiles_a_big_function_at_fast_ra`,
+  `a_fast_function_is_recompiled_when_the_register_allocator_repays`.
+- Not done: a warm run waits for the payback time before it links the `FastRa` object from the cache; no trial after the swap (the first
+  compile's trial measures the `Fast` code only); the price in `spent` is that of `Fast`; autoclk's pricing (#670) may want `ra_cost` and
+  `PAYBACK_RA` in its own constants.

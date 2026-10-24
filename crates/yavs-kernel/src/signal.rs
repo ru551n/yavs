@@ -170,6 +170,8 @@ pub(crate) struct Waiter {
     pub tid: u32,
     /// Registration number on its signal: the order in which waiters wake.
     seq: u64,
+    /// The elements it waits for as bits, on a signal of at most 64 elements (else 0).
+    mask: u64,
 }
 
 /// What a waiter takes from its process when it is registered.
@@ -192,6 +194,36 @@ const MAX_TIDS: usize = 32;
 
 /// The most buckets a waiter is copied into before it goes to the wide list instead.
 const WAIT_NARROW: u32 = 4;
+
+/// The changed runs of an event, ready to be tested against waiters: as bits on a signal of at
+/// most 64 elements, else as the sorted runs.
+pub(crate) enum Hits<'a> {
+    Mask(u64),
+    Runs(&'a [Range]),
+}
+
+impl<'a> Hits<'a> {
+    #[inline(always)]
+    pub(crate) fn of(len: u32, runs: &'a [Range]) -> Hits<'a> {
+        if len <= 64 {
+            Hits::Mask(
+                runs.iter()
+                    .fold(0, |m, r| m | nmask(r.len as usize) << r.offset),
+            )
+        } else {
+            Hits::Runs(runs)
+        }
+    }
+
+    /// Whether the event touches an element `w` waits for.
+    #[inline(always)]
+    pub(crate) fn hit(&self, w: &Waiter) -> bool {
+        match self {
+            Hits::Mask(m) => w.mask & m != 0,
+            Hits::Runs(runs) => runs_hit(runs, w.range),
+        }
+    }
+}
 
 /// Whether a range of `runs` (sorted, disjoint) shares an element with `r`.
 #[inline(always)]
@@ -464,6 +496,11 @@ impl Waiters {
                 perm,
                 tid,
                 seq,
+                mask: if self.len <= 64 {
+                    nmask(range.len as usize) << range.offset
+                } else {
+                    0
+                },
             });
         }
     }
@@ -508,6 +545,7 @@ impl Waiters {
         ordered: bool,
     ) {
         let hit = |r: Range| runs_hit(runs, r);
+        let hits = Hits::of(self.len, runs);
         out.clear();
         let Some(wide) = self.lists.len().checked_sub(1) else {
             return;
@@ -552,7 +590,7 @@ impl Waiters {
             // touched for it.
             let mut remove = false;
             for w in l.iter() {
-                if !hit(w.range) {
+                if !hits.hit(w) {
                     continue;
                 }
                 if !live(w) {
@@ -563,7 +601,7 @@ impl Waiters {
                 }
             }
             if remove {
-                l.retain(|w| !hit(w.range) || (live(w) && (hold(w) || w.perm != 0)));
+                l.retain(|w| !hits.hit(w) || (live(w) && (hold(w) || w.perm != 0)));
                 emptied |= l.is_empty();
             }
             *n = l.len();

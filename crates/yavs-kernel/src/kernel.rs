@@ -16,7 +16,7 @@ use crate::process::{
     Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters, runs_hit,
+    DelayMode, DriverId, ForceMode, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
@@ -2054,8 +2054,9 @@ impl SimControl {
                 && let Some(list) = waiters.small_list(8)
             {
                 let mut plain = true;
+                let hits = Hits::of(signals[s as usize].ty.len, runs);
                 for w in list {
-                    if !runs_hit(runs, w.range) {
+                    if !hits.hit(w) {
                         continue;
                     }
                     if w.perm == 0 || !alive(&self.procs, w) {

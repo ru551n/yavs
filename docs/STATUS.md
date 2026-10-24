@@ -7698,3 +7698,9 @@ run in a debug build. Fixed in `opt/inline.rs`; release builds ran the design un
   LEON3 window runs -9.0 percent instructions and -12.8 percent cycles (neorv32, the two fletcher designs -6 to -7 percent cycles), at about 10 s more code generation for that function. Not enabled: a
   compile-cost policy for the hot large functions is the user's decision (#715).
 - Checks: difftest 520/520 at 1 and 4 threads for `yavs-interp`, `yavs-llvm`, `yavs-auto`, and `yavs-llvm`/`yavs-auto` with `YAVS_LLVM_ARENA=0`.
+
+### A shared constant keeps its definition (#714, 2026-10-24)
+
+`kill_unreachable` no longer removes the only definition of a constant or address another block reads; before, inlining
+a procedure with a constant argument could leave such a register undefined (VUnit `exit_gate` wrote element 0 instead of
+20; a debug build stopped with "read before it is written"). `vai_window_gen_interlock` runs in a debug build again.

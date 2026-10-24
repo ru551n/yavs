@@ -8108,3 +8108,14 @@ elements, only `0 1 L H`) the code generator now emits that arithmetic instead o
   see #715.
 - **Measured and not kept:** `-regalloc=basic` (static `(%rbp)` accesses +7 percent), `llc -O1` (35 s code generation for the function,
   553 000 instructions: -32 percent, `(%rbp)` accesses 107 702).
+
+## The optimiser keeps the one definition of a constant that another block reads (yavs-ir `opt.rs` `kill_unreachable`, #714, 2026-10-24)
+
+- **Rule:** `merge_consts` makes registers defined once by the same constant or address one register, wherever the
+  definition is (frames start with such registers), so a `Const` in the `then` branch of a callee can be the register
+  the `else` branch reads. When `tidy` after inlining folded the branch condition, `kill_unreachable` emptied the block
+  with the only definition and the register was never defined: it read 0 (`put 0=0` for `put 20=0` in a release build,
+  a verifier error in a debug build). A `Const`, `ConstF` or `AddrOf` of the frame, instance data or a constant that
+  is the register's only definition in the function now stays while a reachable instruction (also in an operand list)
+  reads the register; `drop_declarations` does the same for the declarative part.
+- **Test:** `tests/sink.rs` `a_constant_shared_by_two_branches_survives_the_folding_of_one`.

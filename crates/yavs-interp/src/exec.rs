@@ -10058,6 +10058,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let Some(&inst) = f.code.get(pc as usize) else {
             return Slow;
         };
+        crate::tier_census::note("xstep", &f.name, pc, Some(&inst));
         let top = m.frames.len();
         let (uses, defs) = regs;
         let gc = matches!(

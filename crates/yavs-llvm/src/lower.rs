@@ -454,6 +454,7 @@ pub(crate) fn compile_one(
                 nregs: f.reg_ty.len(),
                 native: naddr,
                 call: caddr,
+                extra: Vec::new(),
             });
         }
         let stem = format!("t{}", &key[..16]);

@@ -271,3 +271,72 @@ end;
     assert_eq!(replays(&[("YAVS_DUMPIR", "1")]), 1);
     assert_eq!(replays(&[("YAVS_DUMPIR", "1"), ("YAVS_NO_IROPT", "1")]), 0);
 }
+
+/// A call inside inlined code (the method of a protected type, called by a wrapper the process
+/// inlines) is inlined in its turn, with its message built in the caller: the instructions the
+/// inlining adds at the call keep the call's statement and the calls it came through. (The IR
+/// verifier of a debug build rejects a statement of another function.) The method is larger
+/// than a plain callee allows before the optimiser folds `verbose` away.
+#[test]
+fn a_call_inside_inlined_code_is_inlined_with_the_calls_it_came_through() {
+    let d = tmp("sink");
+    let text = "
+package chk is
+  type status_t is protected
+    procedure assertion(condition : boolean; message : string := \"\");
+    impure function failed return natural;
+  end protected;
+  procedure check(condition : boolean; message : string := \"\");
+  impure function failures return natural;
+end package;
+
+package body chk is
+  constant verbose : boolean := false;
+  type status_t is protected body
+    variable total, failed_n, streak : natural := 0;
+    procedure fail(message : string := \"\") is
+    begin
+      if message'length > 0 then report message severity warning; end if;
+    end procedure;
+    procedure assertion(condition : boolean; message : string := \"\") is
+    begin
+      total := total + 1;
+      if verbose then
+        report \"total=\" & integer'image(total) & \" failed=\" & integer'image(failed_n) & \" streak=\" & integer'image(streak) severity note;
+      end if;
+      if not condition then
+        fail(message);
+        failed_n := failed_n + 1;
+        if failed_n >= 100 then streak := 0; end if;
+      end if;
+    end procedure;
+    impure function failed return natural is begin return failed_n; end function;
+  end protected body;
+  shared variable st : status_t;
+  procedure check(condition : boolean; message : string := \"\") is
+  begin
+    st.assertion(condition, message);
+  end procedure;
+  impure function failures return natural is begin return st.failed; end function;
+end package body;
+
+use work.chk.all;
+entity t is end;
+architecture a of t is
+begin
+  process
+  begin
+    for k in 1 to 6 loop
+      check(k mod 3 /= 0, \"k=\" & integer'image(k) & \" of \" & integer'image(k * 7));
+    end loop;
+    report \"failed=\" & integer'image(failures);
+    wait;
+  end process;
+end;
+";
+    std::fs::write(d.join("t.vhd"), text).expect("write");
+    let with = run(&d, &[], "t", "interp");
+    let without = run(&d, &[("YAVS_NO_IROPT", "1")], "t", "interp");
+    assert_eq!(with.0, 0, "{}", with.1);
+    assert_eq!(with, without);
+}

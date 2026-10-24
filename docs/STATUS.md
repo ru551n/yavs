@@ -7679,3 +7679,9 @@ the bulk. Not understood: in a design whose functions take unconstrained vectors
 (`tests/perf/llvm_ieee.vhd`), `cb_host` rises (1416 to 2019 for 1695 natives saved): the operand reads of the inline code
 go through `yavs_rt_host` for addresses of kinds other than the temporary area, the instance data and the top frame
 (tested inline first in a trial, no change in instructions); `cb_native` of that design 1695 to 5.
+
+### Inlining and the verifier (#709, 2026-10-24)
+
+The moves and jumps inlining adds at the site of a call that is itself inlined code kept `via` 0 (#709); a debug build's
+IR verifier rejected `procChecker` of `poc_arith_addw` ("statement belongs to another function") and the design could not
+run in a debug build. Fixed in `opt/inline.rs`; release builds ran the design unchanged. Regression test in `tests/sink.rs`.

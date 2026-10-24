@@ -8047,3 +8047,14 @@ elements, only `0 1 L H`) the code generator now emits that arithmetic instead o
 - **Measured and not taken:** testing the temporary area, the instance data and the interpreter's top frame inline
   before `host` (frame-mode code calls `yavs_rt_host` for an address of unknown space): no change in instructions
   of `poc_arith_addw` or the window generator (within the run-to-run noise of 1 percent), so the plain `host` is used.
+
+## Inlining: the instructions added at a call site keep the call's `via` (yavs-ir `opt/inline.rs`, #709, 2026-10-24)
+
+- **Rule:** a call inside code that was itself inlined (a `CallProt` in the body of a wrapper the process inlined,
+  taken by the second round `run_wide`) is inlined with the instructions it adds at the site (parameter moves, the
+  result move, the jump into the body and the jump out) carrying the call's statement and the call's own `via`, not 0.
+  With 0 the verifier saw a statement of the callee's function in code with no inlined call around it: a debug build
+  could not run `poc_arith_addw`. The body's own instructions were right already.
+- **Test:** `tests/sink.rs` `a_call_inside_inlined_code_is_inlined_with_the_calls_it_came_through` (the method is above
+  the plain size limit until the optimiser folds a false constant away, so only the `wide` round takes it); it fails
+  in a debug build without the change.

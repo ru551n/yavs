@@ -690,6 +690,7 @@ fn run_with(
                 cur.push((f.code[pc], f.loc[pc], old_via(pc)));
                 continue;
             };
+            let sv = old_via(pc);
             let at = place(site, &mut reg_ty);
             let map = |r: Reg| at.get(&r.0).copied().unwrap_or(r);
             let fw = &site.fw;
@@ -722,7 +723,7 @@ fn run_with(
                                 src: site.args[k],
                             },
                             loc,
-                            0,
+                            sv,
                         ));
                     }
                 }
@@ -755,7 +756,7 @@ fn run_with(
                 for &(inst, l, v) in &fw.blocks[0] {
                     if let Inst::Ret { .. } = inst {
                         if let Some(m) = ret_move(&inst) {
-                            cur.push((m, loc, 0));
+                            cur.push((m, loc, sv));
                         }
                         continue;
                     }
@@ -772,7 +773,7 @@ fn run_with(
                     to: BlockId(base as u32),
                 },
                 loc,
-                0,
+                sv,
             ));
             blocks[cur_id] = Some(std::mem::take(&mut cur));
             for (i, cb) in fw.blocks.iter().enumerate() {
@@ -781,9 +782,9 @@ fn run_with(
                     match inst {
                         Inst::Ret { .. } => {
                             if let Some(m) = ret_move(&inst) {
-                                ents.push((m, loc, 0));
+                                ents.push((m, loc, sv));
                             }
-                            ents.push((Inst::Br { to: cont }, loc, 0));
+                            ents.push((Inst::Br { to: cont }, loc, sv));
                         }
                         Inst::Br { to } => {
                             let to = BlockId(base as u32 + to.0);

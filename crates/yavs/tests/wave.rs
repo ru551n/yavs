@@ -382,6 +382,35 @@ fn wave_unwritable() {
     );
 }
 
+/// `YAVS_WAVE_FLUSH=never` ends blocks by size only (reproducible bytes, #666); another value
+/// is an error.
+#[test]
+fn wave_flush_never() {
+    let d = design("flush");
+    let go = |v: &str, f: &str| {
+        let work = format!("--work=work:{}", d.join("lib").display());
+        yavs()
+            .current_dir(&*d)
+            .env("YAVS_WAVE_FLUSH", v)
+            .args(["run", &work, &format!("--wave={f}"), "wave_tb"])
+            .output()
+            .expect("yavs")
+    };
+    let (a, b) = (go("never", "a.fst"), go("never", "b.fst"));
+    assert!(a.status.success() && b.status.success());
+    assert_eq!(
+        std::fs::read(d.join("a.fst")).unwrap(),
+        std::fs::read(d.join("b.fst")).unwrap()
+    );
+    let bad = go("sometimes", "c.fst");
+    assert_eq!(bad.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&bad.stderr);
+    assert!(
+        stderr.contains("error[E0801]") && stderr.contains("YAVS_WAVE_FLUSH=sometimes"),
+        "{stderr}"
+    );
+}
+
 /// Ctrl-C ends the run between cycles and leaves a finished file.
 #[cfg(unix)]
 #[test]

@@ -510,7 +510,7 @@ fn periodic_flush_without_calling_flush() {
     let path = dir.path().join("p.fst");
     let snap = dir.path().join("snap.fst");
     let cfg = WaveConfig {
-        flush_interval: Duration::ZERO,
+        flush_interval: Some(Duration::ZERO),
         ..WaveConfig::default()
     };
     let mut w = WaveWriter::create(&path, &h, cfg).unwrap();
@@ -529,6 +529,34 @@ fn periodic_flush_without_calling_flush() {
     drop(w); // finish on drop
     let mut full = read(&path).unwrap();
     assert_eq!(changes(&mut full, &["t"], "n").len(), 2000);
+}
+
+/// Without a flush interval the bytes depend on the changes only, however long the run takes
+/// (#666: a cold compiled run is slower than a warm one and crossed the 5 s flush differently).
+#[test]
+fn file_bytes_do_not_depend_on_the_speed_of_the_run() {
+    let (h, n) = small_design();
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, interval: Option<Duration>, slow: bool| {
+        let path = dir.path().join(name);
+        let cfg = WaveConfig {
+            flush_interval: interval,
+            ..WaveConfig::default()
+        };
+        let mut w = WaveWriter::create(&path, &h, cfg).unwrap();
+        for t in 0..2000u64 {
+            if slow && t == 1000 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            w.change(t, n, &int(t as i64)).unwrap();
+        }
+        drop(w);
+        std::fs::read(path).unwrap()
+    };
+    let steady = write("a.fst", None, false);
+    assert_eq!(steady, write("b.fst", None, true));
+    // The clock does split blocks when a flush interval is set.
+    assert_ne!(steady, write("c.fst", Some(Duration::ZERO), false));
 }
 
 #[test]

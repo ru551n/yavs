@@ -161,6 +161,11 @@ milestone users care about works.
   recorder also flushes (`Recorder::sync`, through the `yavs_dap::Sync` hook) before every
   `stopped` event, so a viewer reading the file at a stop sees every completed time step; the
   step in progress at a stop inside a process appears when it ends (#423).
+  Because the clock splits blocks, a run longer than `flush_interval` writes a file whose bytes
+  (block layout, not the changes) depend on its speed: a cold `--tier=auto` run and a warm one
+  differ, and so do two interpreter runs (#666). `YAVS_WAVE_FLUSH=never` (`WaveConfig::flush_interval`
+  `None`) ends blocks by `block_change_limit` only, for byte-identical files; the default stays
+  the clock (durability of a killed run). Which default wins is the user's call (open, #666).
 
 ## Packed logic vectors: bit-planes (yavs-logic)
 

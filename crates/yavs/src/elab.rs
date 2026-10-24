@@ -1315,7 +1315,21 @@ fn observers(
                 exclude: a.wave_exclude.clone(),
                 max_array_elems: a.wave_max_array,
             };
-            let cfg = yavs_wave::WaveConfig::default();
+            let mut cfg = yavs_wave::WaveConfig::default();
+            // Reproducible bytes (a regression suite that compares files): no flush by the clock.
+            match std::env::var("YAVS_WAVE_FLUSH").as_deref() {
+                Err(_) => {}
+                Ok("never") => cfg.flush_interval = None,
+                Ok(v) => {
+                    return Err(Box::new(
+                        Diagnostic::error(
+                            "E0801",
+                            format!("cannot write the waveform file `{path}`"),
+                        )
+                        .with_note(format!("`YAVS_WAVE_FLUSH={v}`: the only value is `never`")),
+                    ));
+                }
+            }
             match yavs_wave::record(
                 db,
                 e,

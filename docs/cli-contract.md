@@ -647,7 +647,9 @@ tree (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
 from asking for transparent huge pages on its heap at start (Linux with glibc and the system's
-transparent huge pages in `madvise` mode only; on any other system it does nothing).
+transparent huge pages in `madvise` mode only; on any other system it does nothing). `YAVS_WAVE_FLUSH=never` stops
+`--wave` from ending a waveform block every five seconds of run time (blocks end by size only),
+so the file's bytes depend on the recorded changes alone; any other value is error E0801.
 
 ## 8. Not covered yet
 

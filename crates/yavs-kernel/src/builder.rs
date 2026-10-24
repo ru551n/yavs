@@ -214,6 +214,16 @@ impl Builder {
         }
     }
 
+    /// Keep only the last event of each block of 64 elements of `s` (more than 64 elements), not
+    /// the history of its single elements: cheaper updates of a wide bus. `'last_event` and
+    /// `'last_value` of a range that is not whole blocks then fail with an internal error, so
+    /// call it only for a signal that no process asks those of. Everything else is exact.
+    pub fn lean_events(&mut self, s: SignalId) {
+        if let Some((s, _)) = self.chk(s.into()) {
+            self.signals[s.0 as usize].set_lean_events();
+        }
+    }
+
     /// Make a resolved signal guarded (`bus` or `register`) with the disconnection time of
     /// its disconnection specification (0 if none).
     pub fn guard(&mut self, s: SignalId, kind: GuardKind, disconnect: Time) {

@@ -624,8 +624,10 @@ pub(crate) fn elaborate(
         v.append(&mut e.errors);
         return Err(v);
     }
+    let lean = crate::lean::leaves(e.db, &e.m.nets);
     e.m.calls.flush();
     Ok(Elaborated {
+        lean,
         top,
         hier: e.m.hier,
         nets: e.m.nets,

@@ -221,6 +221,17 @@ case!(
     ]
 );
 case!(
+    lean_events,
+    "events=",
+    &[],
+    [
+        ("cycles", Max(312)),
+        ("lean_signals", Min(2)),
+        ("update_general", Max(2)),
+        ("ops", Max(15600)),
+    ]
+);
+case!(
     reg_bytes,
     "n=",
     &[],
@@ -496,6 +507,34 @@ fn idle_skip_changes_nothing() {
         on.counters
     );
     assert_eq!(on.counters["idle_skips"], check.counters["idle_skips"]);
+}
+
+/// Wide signals that keep only each block's last event give the report of the full history.
+#[test]
+fn lean_events_change_nothing() {
+    let d = tempdir("lean_equal");
+    let src = include_str!("perf/lean_events.vhd");
+    let run = |mode: &str| {
+        run_design_env(
+            &d,
+            "lean_events",
+            src,
+            "interp",
+            &[],
+            &[("YAVS_LEAN_EVENTS", mode)],
+        )
+    };
+    let (off, on) = (run("off"), run("on"));
+    assert_eq!((off.code, on.code), (0, 0), "{}", on.all());
+    assert!(on.stdout.contains("events="), "{}", on.all());
+    assert_eq!(off.stdout, on.stdout);
+    assert_eq!(off.counters["lean_signals"], 0);
+    assert_eq!(on.counters["lean_signals"], 2, "{:?}", on.counters);
+    // Coverage observes the run: every signal keeps its history.
+    let cov = run_design_env(&d, "lean_events", src, "interp", &["--cov"], &[]);
+    assert_eq!(cov.code, 0, "{}", cov.all());
+    assert_eq!(cov.stdout, on.stdout);
+    assert_eq!(cov.counters["lean_signals"], 0);
 }
 
 /// The third run of a design in one library (the first notes the closure, the second stores, the

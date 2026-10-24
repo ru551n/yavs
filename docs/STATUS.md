@@ -3948,6 +3948,33 @@ elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130
 `Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
 look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
 
+### Kernel round 18: lean event bookkeeping of wide signals, exact-instruction tools (#519, #440, 2026-10-24)
+
+(`docs/decisions.md` "Kernel round 18".) The user's decisions from round 17's questions: `RESIDENT_REGS` stays 2048, no kernel
+forwarding of plain signal copies for now, a different event bookkeeping for wide buses, the measuring tools committed.
+`tools/stepcount` (a ptrace single-stepper in C, a Python report with `nm` and `addr2line`; `tools/stepcount/AGENTS.md`) counts the
+user instructions of a window of a run per function and per source line on a `tools/build-bench.sh` build; its first use here: a
+bare clock edge of `examples/clk.rs` is 943 instructions, the 3 M-instruction window of `fletcher_bufferwriter_512` put 18% in
+`finish_direct` and showed the event records of `update_word` (the pruned `SmallVec` list, ~7 records per block with random data) as
+the cost to remove (an upper bound with no records and no `last_value` blend: -6.2% instructions, -9% cycles).
+
+| Change | Commit | Instructions | Cycles |
+|---|---|---:|---:|
+| A wide signal that no `'last_event`/`'last_value` can ask the history of single elements of keeps only each block's last event | LEAN_COMMIT | `fletcher_bufferwriter_512` 0.963, `fletcher_bufferreader` 0.999, `sc5_fifo_repack` 0.996, `neorv32_single_min` 1.001 | 0.921, 1.000, 1.017, 0.972 |
+
+Core 8 (bench builds, minimum of 5 alternating runs; the host was loaded, cycles of single designs move by a few percent between
+runs: `sc5_fifo_repack` +1.7% and `sc5_timestamp` +1.0% are within that, with equal instructions): `sc5_timestamp` 1.000 / 1.010,
+`poc_cache_cpu` 1.000 / 1.004, `hdlm_lfsr` 1.000 / 1.011; cycle geometric mean of the seven 0.990. Whole real-world suite
+(`tools/realbench --compare`, 42 tests, interpreter, core 8): instruction geometric mean 1.00 (only the writer moved), wall 0.98,
+no slowdown by the suite's own criterion. Head-to-head designs: instructions level (geometric mean 0.997), CPU time 0.998
+(9 interleaved runs of `xor_sig`, `compute_h2h`, `rtl_ff`, `rtl_chain`, `lfsr64`).
+Checks on the pushed commit: fmt, clippy with and without llvm, `cargo test --workspace` (1010), llvm tests (295), difftest 504 of
+504 on interp, auto and llvm at 1 and 4 threads, shuffled, auto with `--no-collapse-ports`, `YAVS_IDLE_SKIP=check` and
+`YAVS_LEAN_EVENTS=off`; the reference simulators' own tests (oracle) 992 and 455; OSVVM 314 of 314 (2008 and 2019), UVVM 131/0/6.
+Measured and not done: lazy unpruned records (instructions 0.999); no `last_value` blend for lean signals (-0.9% instructions,
+-0.7% cycles of the writer, no sound rule); leaning designs with OSVVM or UVVM (their utility packages apply `'last_event` to
+parameters: needs reachability over the lowered program).
+
 ### Idle activations of pure clocked processes, GUARD in the update phase (#440, #464, 2026-10-23)
 
 (`docs/decisions.md` "Kernel round 16", "GUARD changes in the cycle of its condition".) A clocked process whose activation is a

@@ -504,7 +504,28 @@ impl Ctx<'_> {
     /// `'last_event`: time since the most recent event, `TIME'HIGH` if none.
     pub fn last_event(&self, r: impl Into<SigRef>) -> Result<Time, SimError> {
         let (s, r) = self.sig(r)?;
+        self.history(s, r, false)?;
         Ok(s.last_event(r, self.sh.now))
+    }
+
+    /// A lean signal (`Builder::lean_events`) cannot answer `'last_event` or `'last_value` of a
+    /// range that is not whole blocks: the elaborator found no such use, so this is a bug.
+    fn history(&self, s: &Signal, r: Range, last_value: bool) -> Result<(), SimError> {
+        if s.history_exact(r, last_value) {
+            return Ok(());
+        }
+        Err(self.error(ErrorKind::Internal(format!(
+            "'{} of elements {}..{} of signal {}, which keeps only each block's last event \
+             (this is a bug in yavs: the use was not found at elaboration)",
+            if last_value {
+                "last_value"
+            } else {
+                "last_event"
+            },
+            r.offset,
+            r.end(),
+            s.name
+        ))))
     }
 
     /// `'last_active`.
@@ -516,6 +537,7 @@ impl Ctx<'_> {
     /// `'last_value` of the range as a whole.
     pub fn last_value(&self, r: impl Into<SigRef>) -> Result<Value, SimError> {
         let (s, r) = self.sig(r)?;
+        self.history(s, r, true)?;
         Ok(s.last_value_of(r).to_value())
     }
 

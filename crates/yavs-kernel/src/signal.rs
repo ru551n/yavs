@@ -640,6 +640,14 @@ pub(crate) struct Signal {
     /// is the later of its own stamps and the record that lists it: a wide bus that changes in
     /// most cycles writes no element stamps (#519).
     blk_event: Vec<SmallVec<[EvRec; 4]>>,
+    /// Lean event bookkeeping (`set_lean_events`): per block of 64 elements, only the last
+    /// event of the block (its cycle and time, and the elements that changed in it), in place
+    /// of `blk_event`. Empty unless `lean`.
+    blk_last: Vec<EvRec>,
+    /// The event history of the elements is not kept: only each block's last event
+    /// (`blk_last`). `'last_event` and `'last_value` of a range that is not whole blocks
+    /// cannot be answered (`history_exact`); `'event`, edge tests and the rest are exact.
+    lean: bool,
     /// Sources: process drivers and out-ports, in creation order.
     pub drivers: Vec<DriverSlot>,
     pub segments: SmallVec<[Segment; 1]>,
@@ -726,7 +734,7 @@ pub(crate) struct Signal {
 
 /// The elements of a block of 64 whose last event was one `update_word`, with its cycle and
 /// time stamp (`Signal::blk_event`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct EvRec {
     cycle: u64,
     time: u64,
@@ -874,6 +882,8 @@ impl Signal {
             } else {
                 Vec::new()
             },
+            blk_last: Vec::new(),
+            lean: false,
             drivers: Vec::new(),
             segments: SmallVec::new(),
             resolution,
@@ -1522,7 +1532,20 @@ impl Signal {
         let st = self.stamps.as_mut_slice();
         let t = stamp(now);
         // Event cycle and time of the changed elements, then the runs.
-        if let Some(b) = self.blk_event.get_mut(w) {
+        if self.lean {
+            // Only the block's last event: this cycle's grows, an older one is replaced.
+            if let Some(r) = self.blk_last.get_mut(w) {
+                if r.cycle == cycle {
+                    r.mask |= m;
+                } else {
+                    *r = EvRec {
+                        cycle,
+                        time: t,
+                        mask: m,
+                    };
+                }
+            }
+        } else if let Some(b) = self.blk_event.get_mut(w) {
             // The changed elements leave the older records, which go once empty; records
             // stay in cycle order, so this cycle's, if any, is the last.
             b.retain(|r| {
@@ -2282,25 +2305,50 @@ impl Signal {
     fn event_cycle(&self, e: usize) -> u64 {
         let own = self.stamps[e];
         let bit = 1 << (e % 64);
-        self.blk_event.get(e / 64).map_or(own, |b| {
+        self.block_recs(e / 64).map_or(own, |b| {
             b.iter()
                 .find(|x| x.mask & bit != 0)
                 .map_or(own, |x| own.max(x.cycle))
         })
     }
 
+    /// The event records of block `k` (at most one when lean), `None` for a signal of up to 64
+    /// elements.
+    #[inline]
+    fn block_recs(&self, k: usize) -> Option<&[EvRec]> {
+        if self.lean {
+            let r = self.blk_last.get(k)?;
+            Some(if r.mask != 0 {
+                std::slice::from_ref(r)
+            } else {
+                &[]
+            })
+        } else {
+            self.blk_event.get(k).map(SmallVec::as_slice)
+        }
+    }
+
+    /// Whether the signal keeps records per block (more than 64 elements).
+    #[inline]
+    fn has_blocks(&self) -> bool {
+        !(self.blk_event.is_empty() && self.blk_last.is_empty())
+    }
+
     /// The event records of the blocks of `r` that list an element of `r`.
     fn block_events(&self, r: Range) -> impl Iterator<Item = &EvRec> {
         let (lo, hi) = (r.offset as usize, r.end() as usize);
-        let span = if self.blk_event.is_empty() {
-            0..0
-        } else {
+        let span = if self.has_blocks() {
             block_span(r)
+        } else {
+            0..0
         };
         span.flat_map(move |k| {
             let (a, b) = (lo.max(k * 64) - k * 64, hi.min(k * 64 + 64) - k * 64);
             let m = nmask(b - a) << a;
-            self.blk_event[k].iter().filter(move |x| x.mask & m != 0)
+            self.block_recs(k)
+                .unwrap_or_default()
+                .iter()
+                .filter(move |x| x.mask & m != 0)
         })
     }
 
@@ -2311,6 +2359,32 @@ impl Signal {
             || self.stamps[n..2 * n][r.elems()].contains(&cycle)
     }
 
+    /// Keep only the last event of each block of 64 elements (`lean`), for a signal of more
+    /// than 64 elements nothing asks the history of single elements of (`'last_event`, and
+    /// `'last_value` of more than one element, of a part of a block). Before the first event.
+    pub fn set_lean_events(&mut self) {
+        if self.ty.len > 64 && !self.lean {
+            self.lean = true;
+            self.blk_event = Vec::new();
+            self.blk_last = vec![EvRec::default(); (self.ty.len as usize).div_ceil(64)];
+        }
+    }
+
+    /// Whether the signal keeps only each block's last event (`set_lean_events`).
+    pub fn is_lean(&self) -> bool {
+        self.lean
+    }
+
+    /// Whether `'last_event` and `'last_value` of `r` are exact: always, unless the signal is
+    /// lean and `r` is not whole blocks (a one-element `'last_value` is the plane's).
+    pub fn history_exact(&self, r: Range, last_value: bool) -> bool {
+        !self.lean
+            || (last_value && r.len == 1)
+            || r.len == 0
+            || (r.offset.is_multiple_of(64)
+                && (r.end().is_multiple_of(64) || r.end() == self.ty.len))
+    }
+
     #[inline]
     pub fn event_in(&self, r: Range, cycle: u64) -> bool {
         // One element (an edge test): a load and a compare, not a scan.
@@ -2318,7 +2392,7 @@ impl Signal {
             self.stamps[r.offset as usize] == cycle
         } else {
             self.stamps[r.elems()].contains(&cycle)
-        }) || (!self.blk_event.is_empty() && self.block_events(r).any(|x| x.cycle == cycle))
+        }) || (self.has_blocks() && self.block_events(r).any(|x| x.cycle == cycle))
     }
 
     /// `'last_event` of `r`: time since the most recent event, `TIME'HIGH` if none.
@@ -2979,6 +3053,107 @@ mod tests {
         sig.mark_active(r(64, 64), Time::ns(3), 7);
         assert_eq!(sig.idle_elems(r(64, 64), 7), None);
         assert_eq!(sig.last_active(r(100, 1), Time::ns(4)), Time::ns(1));
+    }
+
+    /// A lean signal (only each block's last event) answers what it promises like one that
+    /// keeps every element's: `'event` of any range, `'last_event` and `'last_value` of whole
+    /// blocks, `'last_value` of one element; for other ranges `history_exact` says no.
+    #[test]
+    fn lean_events_of_a_wide_signal() {
+        let ty = SignalType::logic(200);
+        let mk = |lean: bool| {
+            let mut s = Signal::new("s".into(), ty, Buf::zeroed(ty.elem, 200), None);
+            if lean {
+                s.set_lean_events();
+            }
+            s
+        };
+        let (mut full, mut lean) = (mk(false), mk(true));
+        assert!(lean.is_lean() && !full.is_lean());
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        for c in 1..80u64 {
+            let now = Time::ns(c);
+            for e in 0..200usize {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                // Busy and quiet stretches per block, and some elements never change.
+                if e % 17 != 3 && x % 5 < (c / 8 + (e as u64 / 64)) % 4 {
+                    for s in [&mut full, &mut lean] {
+                        let v = if s.driving.code(e) == 2 { 3 } else { 2 };
+                        s.driving.put_code(e, v);
+                    }
+                }
+            }
+            // Whole signal at once, or word by word (a partial update of a block is possible).
+            let parts: &[(u32, u32)] = if c % 3 == 0 {
+                &[(0, 64), (64, 64), (128, 72)]
+            } else {
+                &[(0, 200)]
+            };
+            for &(o, l) in parts {
+                let (a, b) = (
+                    full.update_effective(Range::new(o, l), now, c),
+                    lean.update_effective(Range::new(o, l), now, c),
+                );
+                assert_eq!(a, b, "cycle {c}");
+            }
+            // More elements settle later in the same cycle (another part of the signal).
+            if c % 5 == 0 {
+                for e in (c as usize % 7..200).step_by(9) {
+                    for s in [&mut full, &mut lean] {
+                        let v = if s.driving.code(e) == 2 { 3 } else { 2 };
+                        s.driving.put_code(e, v);
+                    }
+                }
+                for (o, l) in [(64, 136), (0, 64)] {
+                    let r = Range::new(o, l);
+                    let (a, b) = (
+                        full.update_effective(r, now, c),
+                        lean.update_effective(r, now, c),
+                    );
+                    assert_eq!(a, b, "cycle {c}");
+                }
+            }
+            for (o, l) in [(0, 200), (0, 64), (64, 64), (128, 72), (0, 128), (64, 136)] {
+                let r = Range::new(o, l);
+                assert!(lean.history_exact(r, false) && lean.history_exact(r, true));
+                assert_eq!(lean.event_in(r, c), full.event_in(r, c));
+                assert_eq!(lean.last_event(r, now), full.last_event(r, now), "{o}+{l}");
+                let (a, b) = (lean.last_value_of(r), full.last_value_of(r));
+                assert!((0..l as usize).all(|i| a.code(i) == b.code(i)), "{o}+{l}");
+            }
+            for (o, l) in [
+                (60, 10),
+                (63, 2),
+                (100, 100),
+                (130, 1),
+                (1, 199),
+                (0, 199),
+                (5, 64),
+            ] {
+                let r = Range::new(o, l);
+                assert_eq!(lean.event_in(r, c), full.event_in(r, c), "{o}+{l}");
+                assert!(!lean.history_exact(r, false), "{o}+{l}");
+                assert_eq!(lean.history_exact(r, true), l == 1, "{o}+{l}");
+            }
+            for e in 0..200u32 {
+                let r = Range::new(e, 1);
+                assert_eq!(lean.event_in(r, c), full.event_in(r, c), "element {e}");
+                assert!(lean.history_exact(r, true));
+                let (a, b) = (lean.last_value_of(r), full.last_value_of(r));
+                assert_eq!(a.code(0), b.code(0), "cycle {c} element {e}");
+            }
+        }
+        // A signal of up to 64 elements is not lean: it keeps its stamps.
+        let mut small = Signal::new(
+            "t".into(),
+            SignalType::logic(64),
+            Buf::zeroed(Elem::Logic, 64),
+            None,
+        );
+        small.set_lean_events();
+        assert!(!small.is_lean());
     }
 
     #[test]

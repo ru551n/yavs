@@ -13,6 +13,7 @@ mod callcache;
 mod collapse;
 mod eval;
 mod hier;
+mod lean;
 pub mod libstage;
 mod pkgcall;
 mod sim;
@@ -257,6 +258,10 @@ pub struct Elaborated {
     pub ext_procs: Vec<ExtProc>,
     /// Values of generics, generate parameters and constants per scope (for lowering).
     pub model_vals: Vec<ScopeVals>,
+    /// Per leaf: nothing asks for the event history of single elements of this wide signal, so
+    /// the kernel keeps only each block's last event (`lean.rs`). Clear it to keep the history
+    /// of every signal; empty means the same.
+    pub lean: Vec<bool>,
     /// Signal objects by (scope, declaration).
     pub sigs: std::collections::HashMap<(ScopeId, yavs_sem::DeclId), ObjId>,
     /// The declarative regions (yavs-sem scopes) of each elaborated scope, in elaboration

@@ -2536,3 +2536,148 @@ fn stored_run_time_packages_are_not_used_with_external_names() {
     let after = db.run_time_package_set();
     assert!(after.len() > before.len(), "{before:?} {after:?}");
 }
+
+/// The names of the wide leaves that keep only each block's last event (`lean.rs`).
+fn lean_leaves(src: &str) -> Vec<String> {
+    let (_, e) = elab("lean", src, "t", &[]);
+    let mut v: Vec<String> = e
+        .lean
+        .iter()
+        .enumerate()
+        .filter(|&(_, &l)| l)
+        .map(|(i, _)| e.leaf_name(crate::LeafId(i as u32)))
+        .collect();
+    v.sort();
+    v
+}
+
+/// A design of wide signals `a`, `b` and `r` (100 elements); `decls` are architecture
+/// declarations, `stmts` the statements of a process with variables `t1`, `e`, `s` and `v`.
+fn wide_design(decls: &str, stmts: &str) -> String {
+    format!(
+        "library ieee; use ieee.std_logic_1164.all;
+entity t is end;
+architecture x of t is
+  signal a, b, r : std_logic_vector(99 downto 0);
+  signal i : integer range 0 to 99 := 0;
+  {decls}
+begin
+  process
+    variable t1 : time;
+    variable e : boolean;
+    variable s : std_logic;
+    variable v : std_logic_vector(7 downto 0);
+    variable w : std_logic_vector(99 downto 0);
+  begin
+    {stmts}
+    wait;
+  end process;
+end;"
+    )
+}
+
+const ABR: [&str; 3] = [":t:a", ":t:b", ":t:r"];
+
+#[test]
+fn wide_signals_nothing_asks_the_history_of_are_lean() {
+    assert_eq!(lean_leaves(&wide_design("", "null;")), ABR);
+    // Attributes that need no history of single elements.
+    let ok = lean_leaves(&wide_design(
+        "",
+        "t1 := a'last_event; e := a'event or a(5)'event or a(8 downto 2)'active or b'stable(1 ns);
+         t1 := a(7 downto 3)'last_active; s := a(5)'last_value; t1 := b'last_event;",
+    ));
+    assert_eq!(ok, ABR);
+    // The last value of a whole signal.
+    assert_eq!(lean_leaves(&wide_design("", "w := a'last_value;")), ABR);
+}
+
+#[test]
+fn a_part_asked_the_history_of_is_not_lean() {
+    for (stmts, who) in [
+        ("t1 := a(5)'last_event;", ":t:a"),
+        ("t1 := a(7 downto 3)'last_event;", ":t:a"),
+        ("t1 := a(i)'last_event;", ":t:a"),
+        ("v := a(7 downto 0)'last_value;", ":t:a"),
+        ("t1 := b'last_event; t1 := r(0 to 0)'last_event;", ":t:r"),
+    ] {
+        let l = lean_leaves(&wide_design("", stmts));
+        let want: Vec<_> = ABR.into_iter().filter(|&s| s != who).collect();
+        assert_eq!(l, want, "{stmts}");
+    }
+}
+
+#[test]
+fn history_through_an_alias_a_field_or_a_port_part() {
+    let decls = "alias al : std_logic_vector(49 downto 0) is a(49 downto 0);
+      alias whole is r;
+      type rec is record n : integer; d : std_logic_vector(99 downto 0); end record;
+      signal g : rec;";
+    let l = lean_leaves(&wide_design(
+        decls,
+        "t1 := al'last_event; t1 := whole'last_event; t1 := g.d'last_event;",
+    ));
+    // The alias of a part marks a, the alias of the whole signal does not mark r, a field marks
+    // the record.
+    assert_eq!(l, [":t:b", ":t:r"]);
+    // An alias with a subtype indication re-bases the index range: marked like a part.
+    let l = lean_leaves(&wide_design(
+        "alias w2 : std_logic_vector(99 downto 0) is b;",
+        "t1 := w2'last_event;",
+    ));
+    assert_eq!(l, [":t:a", ":t:r"]);
+    // A whole formal that is part of its actual marks the actual.
+    let src = "library ieee; use ieee.std_logic_1164.all;
+entity child is port (d : in std_logic_vector(99 downto 0)); end;
+architecture c of child is begin
+  process (d) variable t1 : time; begin t1 := d'last_event; end process;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity t is end;
+architecture x of t is
+  signal a, b : std_logic_vector(199 downto 0);
+begin
+  u1 : entity work.child port map (d => a(199 downto 100));
+  u2 : entity work.child port map (d => b(99 downto 0));
+end;";
+    assert_eq!(lean_leaves(src), Vec::<String>::new());
+    // Whole signals through ports are whole: the formal is the actual.
+    let src = "library ieee; use ieee.std_logic_1164.all;
+entity child is port (d : in std_logic_vector(99 downto 0)); end;
+architecture c of child is begin
+  process (d) variable t1 : time; begin t1 := d'last_event; end process;
+end;
+library ieee; use ieee.std_logic_1164.all;
+entity t is end;
+architecture x of t is
+  signal a, b : std_logic_vector(99 downto 0);
+begin
+  u1 : entity work.child port map (d => a);
+end;";
+    assert_eq!(lean_leaves(src), [":t:a", ":t:b"]);
+}
+
+#[test]
+fn a_whole_array_of_composites_is_asked_part_by_part() {
+    // `m'last_event` of an array of vectors or records is one query per element.
+    let decls = "type mem is array (0 to 3) of std_logic_vector(31 downto 0);
+      type rec is record n : integer; d : std_logic_vector(99 downto 0); end record;
+      type recs is array (0 to 1) of rec;
+      signal m : mem; signal rs : recs; signal g : rec;";
+    let l = lean_leaves(&wide_design(
+        decls,
+        "t1 := m'last_event; t1 := rs'last_event; t1 := g'last_event;",
+    ));
+    // m has 128 elements in one leaf, marked; rs is marked; g is a record of whole leaves.
+    assert_eq!(l, [":t:a", ":t:b", ":t:g.d", ":t:r"]);
+}
+
+#[test]
+fn a_signal_parameter_marks_every_signal_unless_scalar_last_value() {
+    let decls = "procedure p (signal s : in std_logic_vector) is variable t1 : time; begin t1 := s'last_event; end;";
+    assert!(lean_leaves(&wide_design(decls, "p(a);")).is_empty());
+    // The last value of a scalar parameter needs no history (the edge functions of the standard
+    // packages are that).
+    let decls = "procedure p (signal s : in std_logic) is variable c : std_logic; begin c := s'last_value; end;";
+    assert_eq!(lean_leaves(&wide_design(decls, "p(a(3));")), ABR);
+}

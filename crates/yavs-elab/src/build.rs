@@ -95,6 +95,9 @@ impl Elaborated {
                 }
             };
             debug_assert_eq!(id.0 as usize, i, "kernel SignalId equals LeafId");
+            if self.lean.get(i) == Some(&true) {
+                b.lean_events(id);
+            }
             if let Some(g) = leaf.guard {
                 b.guard(id, g, leaf.disconnect);
             }

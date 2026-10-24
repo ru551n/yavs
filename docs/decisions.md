@@ -4151,6 +4151,56 @@ general update path for every cycle where two clocks edge together (`update_gene
   4 threads skip the same activations as runs with 1 (`idle_skips` and `process_runs` equal; `tests/idle_skip.rs`
   `skips_in_the_pool_are_those_of_the_serial_run`, a mutation that drops the call fails it).
 
+## Kernel round 18: lean event bookkeeping of wide signals (yavs-kernel, yavs-elab, yavs-sem, #519, #440, 2026-10-24)
+
+User decisions of this round (2026-10-24, from round 17's questions): `RESIDENT_REGS` stays 2048; the kernel does not forward plain
+signal copies for now; wide buses get a different event bookkeeping (below); the exact-instruction measuring tools are committed
+(`tools/stepcount`, `tools/stepcount/AGENTS.md`).
+
+The cost left in `fletcher_bufferwriter_512` after round 17 was the per-word update of its 512-bit bus (`Signal::update_word`): a
+stepped window of 3 M instructions puts ~100 instructions per changed word in the event records of a block (`blk_event`: the
+record list of a block with random data holds ~7 records, each changed word walks, masks and prunes it, and the `SmallVec` spills to
+the heap past four) and ~12 in the blend of `last_value`. Removing both gave an upper bound of -6.2% instructions and -9% to -11%
+cycles for the design.
+
+- **A wide signal can be lean** (`Builder::lean_events`, `Signal::lean`): it keeps one record per block of 64 elements, the block's
+  last event (cycle, time stamp, the elements that changed in it, `Signal::blk_last`), instead of the pruned list. Everything but two
+  questions stays exact: `'event` and `'active` of any range, `'last_active`, edge tests, `'last_value` of one element (the plane
+  holds it per element) and the answers of the other signals. `'last_event` of a range and `'last_value` of more than one element
+  are exact for whole blocks (and so for the whole signal); for other ranges the kernel cannot answer, and `Ctx::last_event` and
+  `Ctx::last_value` return an internal error naming the signal (`Signal::history_exact`): lean is the elaborator's promise that no
+  such use exists, and a wrong promise is a bug that shows, not a wrong answer.
+- **The elaborator decides** (`yavs-elab/src/lean.rs`, `Elaborated::lean`, from `Db::facts()`): a wide leaf (more than 64
+  elements) is lean unless `'last_event` or `'last_value` (of more than one element) is applied to a part of its object (an
+  element, slice, field or non-static selection, also through an alias, which follows to its object; an alias with a subtype
+  indication counts as a part), to a whole object that a port collapse made part of its actual's leaf or that is an array of
+  composites (the interpreter asks those element by element), or to something that cannot be traced to an object: a signal
+  parameter or an external name, which turns the cheap path off for every signal of the design. `'last_value` of a scalar needs
+  nothing (the standard packages' edge functions are that), so the IEEE packages leave everything lean. The facts cover every unit
+  analysed into the design, used or not: the OSVVM and UVVM utility packages apply `'last_event` to parameters, so designs that
+  load them keep every history (`lean_signals` 0 in `uvvm_axistream_vvc` and `osvvm_axi4_random`; 56 in `neorv32_single_min`, 14 in
+  `hdlm_axi_fifo`, 8 in `fletcher_bufferreader`, 6 in `sc5_fifo_repack`). Only the subprograms a design can reach would lift that
+  (a call graph over the lowered program); not done. Coverage, a debugger or a VHPI plugin (`observed_free` false) keep every
+  history too, and `YAVS_LEAN_EVENTS=off` does (hidden test aid, like `YAVS_IDLE_SKIP`).
+- **Measured** (bench builds, core 8, minimum of 5 alternating runs, instructions / cycles of `main` before against this round):
+  `fletcher_bufferwriter_512` 0.963 / 0.921 (98.6 G to 95.0 G instructions), `fletcher_bufferreader` 0.999 / 1.000,
+  `sc5_fifo_repack` 0.996 / 1.017, `sc5_timestamp` 1.000 / 1.010, `neorv32_single_min` 1.001 / 0.972, `poc_cache_cpu` 1.000 / 1.004,
+  `hdlm_lfsr` 1.000 / 1.011 (cycle geometric mean of the seven 0.990); the whole real-world suite (42 tests, interpreter) has an
+  instruction geometric mean of 1.00 and only the writer moved; the head-to-head designs are level in instructions (geometric
+  mean 0.997) and in CPU time (0.998 over 9 interleaved runs of five designs).
+- **Tests.** `tests/corpus/rtl/wide_bus_attributes` (every attribute on wide buses through signal parameters: nothing lean, the full
+  history) and `wide_bus_lean` (the attributes in the shapes the elaborator accepts, plus a bus per way to ask a part: element,
+  slice, alias, record field, port formal that is a part of the bus), both equal to the reference simulator (`'last_value` of
+  vectors is left out: the references differ, catalogue `last-value-composite`); `crates/yavs-kernel/tests/lean_events.rs` and the
+  signal unit test `lean_events_of_a_wide_signal` (a lean and a full signal give the same answers to every promised question, a
+  mutation of the same-cycle merge is caught, refusals are internal errors); `yavs-elab` tests for the marking rules;
+  `crates/yavs-sem/tests/history_facts.rs`; `perf.rs` `lean_events` (floor on `lean_signals`) and `lean_events_change_nothing`
+  (same report lean, full, and under `--cov`, which keeps the history).
+- **Measured and not taken.** Unpruned records with a compaction every four pushes (exact for every query, no analysis): instructions
+  0.999 of the pruned lists, because the records of a random-data bus are inherently ~7. Also skipping the `last_value` blend of lean
+  signals: a further -0.9% instructions and -0.7% cycles of the writer, but edge tests read those planes and signal parameters reach
+  `rising_edge`, so no static rule is sound.
+
 ## GUARD changes in the cycle of its condition (yavs-kernel, yavs-elab, #464, 2026-10-23)
 
 LRM 11.2 and 14.7.5: the implicit GUARD signal is updated in the cycle where a signal of its condition has an event. The

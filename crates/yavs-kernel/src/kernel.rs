@@ -176,6 +176,9 @@ pub struct Stats {
     /// Activations of clocked processes skipped (or, with `Config::idle_check`, checked) because
     /// none of the signals they read had an event since the last one.
     pub idle_skips: u64,
+    /// Signals of more than 64 elements that keep only each block's last event
+    /// (`Builder::lean_events`); fixed when the model is built.
+    pub lean_signals: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -1093,6 +1096,7 @@ impl SimControl {
                 }
             }
         }
+        let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
         let mut sim = SimControl {
             guard_procs,
             guard_readers,
@@ -1157,7 +1161,10 @@ impl SimControl {
             wakes: Wakes::default(),
             pool,
             interrupt: Interrupt::default(),
-            stats: Stats::default(),
+            stats: Stats {
+                lean_signals,
+                ..Stats::default()
+            },
             live: false,
             callouts: Vec::new(),
             empty_delta: false,

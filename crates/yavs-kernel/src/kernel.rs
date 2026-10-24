@@ -854,6 +854,8 @@ pub struct SimControl {
     last_ran: Vec<u32>,
     /// The commit list of `run_batch`, kept between batches.
     late: Vec<u32>,
+    /// The sort keys of `order`, kept between batches.
+    order_keys: Vec<u64>,
     now: Time,
     delta: u32,
     cycle: u64,
@@ -1197,6 +1199,7 @@ impl SimControl {
             postponed: Vec::new(),
             last_ran: Vec::new(),
             late: Vec::new(),
+            order_keys: Vec::new(),
             now: Time::ZERO,
             delta: 0,
             cycle: 1,
@@ -3114,7 +3117,7 @@ impl SimControl {
     /// 2026-10-19): at initialisation elaboration order; afterwards the processes with one
     /// suspension point in elaboration order, then the others in reverse elaboration order,
     /// those resumed by a signal before those resumed by a timeout.
-    fn order(&self, pids: &mut [u32], init: bool) {
+    fn order(&mut self, pids: &mut [u32], init: bool) {
         if pids.len() < 2 {
             return;
         }
@@ -3127,10 +3130,12 @@ impl SimControl {
         }
         // One packed word per process, looked up once (not per comparison): the flags in the
         // high bits, then the hierarchy depth (settled processes), the elaboration index
-        // (reversed for several-wait processes except the settled ones) in the low 32.
+        // (reversed for several-wait processes except the settled ones) in the low 32. A key
+        // names its process, so equal keys are equal processes and the sort need not be stable.
         const SETTLED: u64 = 1;
+        let procs = &self.procs;
         let key = |p: u32| {
-            let m = &self.procs[p as usize];
+            let m = &procs[p as usize];
             if !m.flags.several_waits {
                 return u64::from(p);
             }
@@ -3147,19 +3152,20 @@ impl SimControl {
             };
             1 << 51 | u64::from(m.by_timeout) << 50 | rank << 48 | depth << 32 | u64::from(idx)
         };
-        if pids.is_sorted_by_key(|&p| key(p)) {
-            return;
+        let mut keyed = std::mem::take(&mut self.order_keys);
+        keyed.clear();
+        keyed.extend(pids.iter().map(|&p| key(p)));
+        if !keyed.is_sorted() {
+            keyed.sort_unstable();
+            for (p, &k) in pids.iter_mut().zip(&keyed) {
+                *p = if k >> 51 != 0 && (k >> 48) & 3 != SETTLED {
+                    !(k as u32)
+                } else {
+                    k as u32
+                };
+            }
         }
-        let mut keyed: Vec<u64> = pids.iter().map(|&p| key(p)).collect();
-        // Stable sort: it follows the sorted runs a batch mostly consists of.
-        keyed.sort();
-        for (p, k) in pids.iter_mut().zip(keyed) {
-            *p = if k >> 51 != 0 && (k >> 48) & 3 != SETTLED {
-                !(k as u32)
-            } else {
-                k as u32
-            };
-        }
+        self.order_keys = keyed;
     }
 
     /// Run `pids` (in parallel where allowed), then commit their effects and waits in

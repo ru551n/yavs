@@ -8330,3 +8330,20 @@ interleaved) 149.3 to 148.3 G instructions and 44.1 to 43.4 G cycles, `--tier=ll
 180.7 G (not taken: 256 KiB to clear for every nested activation). A key that separates the spaces (package, shared, private) needs
 more operations in every look-up of an address of unknown space and every `Deref`; ways or a victim entry are the next step if a profile
 shows the misses of new objects.
+
+## The sampler thread starts after `START_AFTER` and ends with the compile thread (`yavs-llvm` `auto.rs`, #725, 2026-10-25)
+
+- **Finding:** since #670 `--tier=auto` ran a sampler thread that slept in 1 ms steps for the first 5 ms and then for the
+  sampling period, and `AutoTier::stop` joined it: a run that ended while the sampler slept waited for the sleep (up to
+  1 ms of wall time with no CPU use). On the tiny-test corpus that is 0.4 ms of 5.3 ms per test on average, and 1 ms of
+  1.9 ms for a test that runs 1 ms. `perf stat` showed it as equal `task-clock` and a longer elapsed time.
+- **Decision:** the compile thread starts the sampler once its first wait (`START_AFTER`) is over and the run has not
+  ended, so a run shorter than that never creates the thread (about 0.1 ms less: a `clone3`, a stack and a context
+  switch); the sampler waits with `park_timeout` (`nap`), and the compile thread unparks and joins it when it ends. `stop`
+  joins the compile thread only. Test: `auto_tier_stops_without_waiting_for_the_sampler` (a sampling period of half a
+  minute).
+- **Measured** (warm `tests/corpus/delta/concurrent_assign.vhd`, `perf stat -r 300`, core 14, bench builds): elapsed
+  3.23 ms to 1.87 ms; `task-clock` 1.81 to 1.44 ms; user instructions equal (3.20 M). The binary of head-to-head 3
+  (4b80445d) takes 2.30 ms on the same core and test.
+- **Not fixed here:** +171 k user instructions (5.7 percent of a 3 M-instruction run) since 4b80445d: 12a37bc7 +80 k
+  (`stage_extent` keys of the stage cache), ae1826dd +156 k (idle skip analysis of concurrent conditional assignments).

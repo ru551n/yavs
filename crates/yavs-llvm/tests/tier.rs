@@ -215,6 +215,30 @@ fn auto_tier_compiles_within_its_budget() {
     tier.stop(true);
 }
 
+/// Ending the tier does not wait for the sampler to wake: a sampling period of half a minute
+/// costs a stop right after the start, and one after the sampler began to sleep, no time at all
+/// (a short run ended up to a period late).
+#[test]
+fn auto_tier_stops_without_waiting_for_the_sampler() {
+    for wait in [Duration::ZERO, Duration::from_millis(300)] {
+        let (prog, _) = sum();
+        let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+        let note: Note = Box::new(|_, _, _| {});
+        let heat = Heat {
+            period: 30_000_000,
+            ..Heat::DEFAULT
+        };
+        let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+        std::thread::sleep(wait);
+        let t0 = Instant::now();
+        tier.stop(true);
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "stop waited for the sampler (after {wait:?})"
+        );
+    }
+}
+
 /// One call that never returns to the kernel (a process that runs its loop to the end without
 /// suspending) is seen by the sampler only, and the big loop is still compiled within the
 /// default budget and swapped in while it runs (#432). The budget decision itself is tested

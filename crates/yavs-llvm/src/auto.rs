@@ -903,7 +903,6 @@ pub struct AutoTier {
     queue: Mutex<Option<Sender<Msg>>>,
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    sampler: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What the compile thread is told.
@@ -2059,32 +2058,41 @@ fn forced(prog: &yavs_ir::Program, id: FuncId) -> bool {
         })
 }
 
+/// Sleep for `d`, or until the thread is unparked and `halt` is set (the compile thread does that when
+/// it ends): ending a run must not wait out a sampling period.
+fn nap(sh: &Shared, d: Duration) {
+    let end = std::time::Instant::now() + d;
+    while !sh.halt.load(Ordering::SeqCst) {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::park_timeout(left);
+    }
+}
+
 /// The sampler thread (#670): every `period` it reads which function each simulation thread runs and
 /// the CPU time they used since the last look, and sends the looks to the compile thread in batches
 /// of `BATCH`. It runs while the compile thread compiles or measures a trial (no looks are sent
 /// during a trial), so the compile thread's view of the run does not depend on how long it was busy.
 /// The CPU time of the simulation threads is the clock of the sampling, not the wall time: a host
 /// under load, and the compile thread sharing the core, do not make a function look hot sooner.
+/// The compile thread starts it after `START_AFTER` (#426) and ends it.
 fn sampler_loop(
     sample: impl Fn(&mut Vec<(FuncId, bool)>),
     period: Duration,
     tx: Sender<Msg>,
     sh: &Shared,
 ) {
-    // Nothing a run of a few milliseconds samples pays for a compile (#426).
-    let start = std::time::Instant::now();
-    while start.elapsed() < START_AFTER {
-        if sh.halt.load(Ordering::SeqCst) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
     let clock = || sim_cpu_sampler(sh.compile_clock.load(Ordering::Acquire));
     // Without a CPU clock (not Linux) the wall time between looks is the time.
     let (mut last_cpu, mut last_wall) = (clock(), std::time::Instant::now());
     let mut batch = Vec::with_capacity(BATCH);
     while !sh.halt.load(Ordering::SeqCst) {
-        std::thread::sleep(period);
+        nap(sh, period);
+        if sh.halt.load(Ordering::SeqCst) {
+            return;
+        }
         let (cpu, wall) = (clock(), std::time::Instant::now());
         let dt = match (cpu, last_cpu) {
             (Some(c), Some(l)) => c.saturating_sub(l),
@@ -2133,7 +2141,7 @@ impl AutoTier {
         let ntab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let ctab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let (table, sh) = (funcs.clone(), shared.clone());
-        let (sample, sampler_tx, sampler_sh) = (rt.sampler(), tx.clone(), shared.clone());
+        let (sample, sampler_tx) = (rt.sampler(), tx.clone());
         let native = rt.native_flags();
         // How long the compile thread waits for news before it looks at `halt`.
         let period = if heat.eager() {
@@ -2162,6 +2170,7 @@ impl AutoTier {
                 sh.compile_clock.store(own_cpu_clock(), Ordering::Release);
                 let mut pending = Pending::default();
                 let mut looks: Vec<Look> = Vec::new();
+                let t0 = std::time::Instant::now();
                 match rx.recv_timeout(if heat.eager() {
                     Duration::ZERO
                 } else {
@@ -2172,6 +2181,19 @@ impl AutoTier {
                     Ok(Msg::Looks(l)) => looks = l,
                     Err(RecvTimeoutError::Timeout) => {}
                 }
+                // The sampler of a run that ends within `START_AFTER` is never started.
+                let sampler = (!heat.eager() && !sh.halt.load(Ordering::SeqCst)).then(|| {
+                    let sh = sh.clone();
+                    std::thread::Builder::new()
+                        .name("yavs-sampler".into())
+                        .spawn(move || {
+                            nap(&sh, START_AFTER.saturating_sub(t0.elapsed()));
+                            if !sh.halt.load(Ordering::SeqCst) {
+                                sampler_loop(sample, sample_every, sampler_tx, &sh);
+                            }
+                        })
+                        .unwrap_or_else(|e| panic!("cannot start the sampler thread: {e}"))
+                });
                 w.listed = crate::objcache::compiled_list();
                 let upgrade = opt != OptLevel::O2;
                 // Batches of looks not worked through yet, oldest first.
@@ -2274,6 +2296,12 @@ impl AutoTier {
                         break;
                     }
                 }
+                if let Some(s) = sampler {
+                    s.thread().unpark();
+                    if let Err(p) = s.join() {
+                        resume_unwind(p);
+                    }
+                }
                 if let Some(tr) = &w.trace {
                     let mut v: Vec<usize> = (0..w.time.len()).collect();
                     v.sort_by_key(|&k| std::cmp::Reverse(w.time[k][0] + w.time[k][1]));
@@ -2303,16 +2331,6 @@ impl AutoTier {
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| Error(format!("cannot start the compile thread: {e}")))?;
-        let sampler = (!heat.eager())
-            .then(|| {
-                std::thread::Builder::new()
-                    .name("yavs-sampler".into())
-                    .spawn(move || {
-                        sampler_loop(sample, sample_every, sampler_tx, &sampler_sh);
-                    })
-                    .map_err(|e| Error(format!("cannot start the sampler thread: {e}")))
-            })
-            .transpose()?;
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
@@ -2321,7 +2339,6 @@ impl AutoTier {
             queue: Mutex::new(Some(tx)),
             shared,
             worker: Mutex::new(Some(worker)),
-            sampler: Mutex::new(sampler),
         });
         if !rt.set_tier(tier.clone()) {
             tier.stop(true);
@@ -2359,20 +2376,9 @@ impl AutoTier {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let sampler = self
-            .sampler
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        // (The sampler sees `halt` within a period; the compile thread reads its clock no more then.)
-        let ended = [sampler, worker]
-            .into_iter()
-            .flatten()
-            .map(JoinHandle::join);
-        for r in ended {
-            if let Err(p) = r {
-                resume_unwind(p);
-            }
+        // (The compile thread ends the sampler.)
+        if let Some(Err(p)) = worker.map(JoinHandle::join) {
+            resume_unwind(p);
         }
         true
     }

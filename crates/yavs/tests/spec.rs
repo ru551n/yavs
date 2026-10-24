@@ -263,6 +263,16 @@ fn compiled_copies_are_cached_by_content() {
     assert_eq!(first.code, 0, "{}", first.stderr);
     assert!(first.counters["spec_switched"] >= 6);
     assert!(count(&first, "stored") > 0, "{}", first.stderr);
+    // The compile thread's queue ends where the simulation does, and a run that links from the
+    // cache gets further down it than the one that compiled (#672: the second run stored a module
+    // the first never reached). Repeat until a run stores nothing: the cache then holds every
+    // module a run can reach, and from here the order and thread count must not matter.
+    let settled = ["4", "1", "4", "1", "4"].iter().any(|t| {
+        let r = go(t);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        count(&r, "stored") == 0
+    });
+    assert!(settled, "the cache never held every module");
     for threads in ["4", "1", "4", "4"] {
         let again = go(threads);
         assert_eq!(again.code, 0, "{}", again.stderr);

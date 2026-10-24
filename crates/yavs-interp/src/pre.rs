@@ -1040,6 +1040,10 @@ pub(crate) struct Code {
     /// For each `Aff` op (sorted by op index): the IR pcs of the `Bin` run it stands for, from
     /// its first instruction to the one defining the op's result.
     pub aff: Vec<(u32, u32, u32)>,
+    /// Ranges of ops (first, last; sorted) where compiled code may not take over the frame:
+    /// between a waveform buffer that is not run and the op that drives it, where the buffer's
+    /// registers are undefined.
+    pub no_tier: Vec<(u32, u32)>,
     /// The `Case` tables of the `Op::Case`s, with op indices as targets.
     pub cases: Vec<CaseOps>,
     /// The element loops that `Op::Loop` enters.
@@ -1670,51 +1674,16 @@ fn waveform_is_private(
         && !live_after(f, to, yavs_ir::Reg(base))
 }
 
-/// Whether compiled code may take over the frame at the instruction after `i`
-/// (`yavs_llvm`'s `resumes`; broader is safe, narrower is not): a call that is not run inline, a
-/// report, a suspension. Natives the tier does as tables or edge tests are inline.
-fn tier_resumes(prog: &Program, f: &Func, i: &Inst) -> bool {
-    match *i {
-        Inst::CallNative { native, args, dst } => {
-            let Some(sym) = prog.natives.get(native).map(|n| n.symbol.as_str()) else {
-                return true;
-            };
-            let (Some(rs), Some(d)) = (f.regs(args), dst) else {
-                return true;
-            };
-            if let Some(t) = crate::code_table(sym) {
-                let nregs = f.reg_ty.len() as u32;
-                let fits = t.len() == 9usize.pow(rs.len() as u32)
-                    && rs.iter().chain([&d]).all(|r| r.0 < nregs)
-                    && rs
-                        .iter()
-                        .all(|r| f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig));
-                return !fits;
-            }
-            crate::edge_native(sym).is_none()
-        }
-        _ => matches!(
-            i,
-            Inst::Call { .. }
-                | Inst::CallForeign { .. }
-                | Inst::CallIndirect { .. }
-                | Inst::CallProt { .. }
-                | Inst::Report { .. }
-                | Inst::Suspend { .. }
-        ),
-    }
-}
-
 /// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
 /// first op's pc stays an entry, the others' pcs are not).
 #[allow(clippy::too_many_arguments)]
 fn peephole(
-    prog: &Program,
     f: &Func,
     ops: &mut Vec<Op>,
     at: &mut Vec<u32>,
     start: &mut [u32],
     aff: &mut Vec<(u32, u32, u32)>,
+    no_tier: &mut Vec<(u32, u32)>,
     block_start: &[bool],
     uses: &[u32],
     known: &[Known],
@@ -1723,7 +1692,7 @@ fn peephole(
     // The waveform starts `WaveBuf` made so far: wave register, the register 8 bytes in and
     // the IR pc of the `Alloc`.
     // The `Copy` positions where a `CopyDrive` goes, and the op.
-    let mut dropped: Vec<(usize, Op)> = Vec::new();
+    let mut dropped: Vec<(usize, Op, u32)> = Vec::new();
     // What the dropped waveform was filled with.
     enum Val {
         /// `Copy` of a block: its address and byte count.
@@ -1765,111 +1734,102 @@ fn peephole(
             ) if addr == w && base == w && free(i + 1) && free(i + 2) => {
                 // The `Copy` into the waveform and the `Drive` of it, later in the block, with
                 // nothing else using it: both become one op there and these three are not run.
-                // Not across an instruction after which compiled code may take over the frame
-                // (`Tier::run` at a call's return): it would find the waveform's registers
-                // undefined.
-                let hands_over = |k: usize| {
-                    old_at
-                        .get(k)
-                        .is_some_and(|&p| tier_resumes(prog, f, &f.code[p as usize]))
-                };
-                let pair = (i + 3..old.len())
-                    .take_while(|&j| free(j) && !(i + 3..j).any(hands_over))
-                    .find_map(|j| {
-                        let Some(&Op::Drive {
-                            driver,
-                            target,
-                            wave,
-                            n,
-                            reject: NONE,
-                            inertial,
-                        }) = old.get(j + 1)
-                        else {
-                            return None;
-                        };
-                        let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
-                        let value = match old[j] {
-                            Op::Copy { dst, src, bytes } if dst == e => Some(Val::Copy(src, bytes)),
-                            Op::LSet { base, idx, v } if base == e && int(idx) == Some(0) => {
-                                Some(Val::LSet(v))
-                            }
-                            Op::LCopy {
-                                dst,
-                                doff,
-                                src,
-                                soff,
-                                n: cnt,
-                            } if dst == e && int(doff) == Some(0) => {
-                                Some(Val::LCopy(src, soff, cnt))
-                            }
-                            _ => None,
-                        }?;
-                        let clean = wave == w
-                            && int(n) == Some(1)
-                            && free(j + 1)
-                            && waveform_is_private(f, block_start, from, to, w, e)
-                            && !(from + 3..to).any(|p| {
-                                let mut def = false;
-                                f.code[p].visit(&mut |r, role, _| {
-                                    def |= role == Role::Def && (r.0 == time || r.0 == size)
-                                });
-                                def
-                            });
-                        let r = |x: u32| u16::try_from(x).ok();
-                        match (r(driver), r(target), r(time), r(size), r(w), r(e), r(n)) {
-                            (
-                                Some(driver),
-                                Some(target),
-                                Some(time),
-                                Some(size),
-                                Some(w16),
-                                Some(e16),
-                                Some(n),
-                            ) if clean => Some((
-                                j,
-                                match value {
-                                    Val::Copy(a, b) => Op::CopyDrive {
-                                        driver,
-                                        target,
-                                        src: r(a)?,
-                                        bytes: r(b)?,
-                                        time,
-                                        size,
-                                        w: w16,
-                                        n,
-                                        inertial,
-                                    },
-                                    Val::LSet(v) => Op::LSetDrive {
-                                        v,
-                                        driver,
-                                        target,
-                                        time,
-                                        size,
-                                        w: w16,
-                                        e: e16,
-                                        inertial,
-                                    },
-                                    Val::LCopy(a, b, c) => Op::LCopyDrive {
-                                        driver,
-                                        target,
-                                        src: r(a)?,
-                                        soff: r(b)?,
-                                        cnt: r(c)?,
-                                        time,
-                                        size,
-                                        w: w16,
-                                        e: e16,
-                                        n,
-                                        inertial,
-                                    },
-                                },
-                            )),
-                            _ => None,
+                // (Compiled code may take over the frame after a call that is not run inline, and
+                // would find the waveform's registers undefined: the ops from here to the fused
+                // one are no entry for it, `Code::no_tier`.)
+                let pair = (i + 3..old.len()).take_while(|&j| free(j)).find_map(|j| {
+                    let Some(&Op::Drive {
+                        driver,
+                        target,
+                        wave,
+                        n,
+                        reject: NONE,
+                        inertial,
+                    }) = old.get(j + 1)
+                    else {
+                        return None;
+                    };
+                    let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
+                    let value = match old[j] {
+                        Op::Copy { dst, src, bytes } if dst == e => Some(Val::Copy(src, bytes)),
+                        Op::LSet { base, idx, v } if base == e && int(idx) == Some(0) => {
+                            Some(Val::LSet(v))
                         }
-                    });
+                        Op::LCopy {
+                            dst,
+                            doff,
+                            src,
+                            soff,
+                            n: cnt,
+                        } if dst == e && int(doff) == Some(0) => Some(Val::LCopy(src, soff, cnt)),
+                        _ => None,
+                    }?;
+                    let clean = wave == w
+                        && int(n) == Some(1)
+                        && free(j + 1)
+                        && waveform_is_private(f, block_start, from, to, w, e)
+                        && !(from + 3..to).any(|p| {
+                            let mut def = false;
+                            f.code[p].visit(&mut |r, role, _| {
+                                def |= role == Role::Def && (r.0 == time || r.0 == size)
+                            });
+                            def
+                        });
+                    let r = |x: u32| u16::try_from(x).ok();
+                    match (r(driver), r(target), r(time), r(size), r(w), r(e), r(n)) {
+                        (
+                            Some(driver),
+                            Some(target),
+                            Some(time),
+                            Some(size),
+                            Some(w16),
+                            Some(e16),
+                            Some(n),
+                        ) if clean => Some((
+                            j,
+                            match value {
+                                Val::Copy(a, b) => Op::CopyDrive {
+                                    driver,
+                                    target,
+                                    src: r(a)?,
+                                    bytes: r(b)?,
+                                    time,
+                                    size,
+                                    w: w16,
+                                    n,
+                                    inertial,
+                                },
+                                Val::LSet(v) => Op::LSetDrive {
+                                    v,
+                                    driver,
+                                    target,
+                                    time,
+                                    size,
+                                    w: w16,
+                                    e: e16,
+                                    inertial,
+                                },
+                                Val::LCopy(a, b, c) => Op::LCopyDrive {
+                                    driver,
+                                    target,
+                                    src: r(a)?,
+                                    soff: r(b)?,
+                                    cnt: r(c)?,
+                                    time,
+                                    size,
+                                    w: w16,
+                                    e: e16,
+                                    n,
+                                    inertial,
+                                },
+                            },
+                        )),
+                        _ => None,
+                    }
+                });
                 match pair {
                     Some((j, op)) => {
-                        dropped.push((j, op));
+                        dropped.push((j, op, ops.len() as u32));
                         remap[i] = ops.len() as u32;
                         i += 3;
                         continue;
@@ -1878,7 +1838,8 @@ fn peephole(
                 }
             }
             _ if let Some(p) = dropped.iter().position(|d| d.0 == i) => {
-                let (_, op) = dropped.swap_remove(p);
+                let (_, op, first) = dropped.swap_remove(p);
+                no_tier.push((first, here));
                 (Some(op), 2)
             }
             (
@@ -4148,17 +4109,28 @@ impl Code {
         start[n] = ops.len() as u32;
         ops.push(Op::Step(n as u32));
         at.push(n as u32);
+        let mut no_tier = Vec::new();
         peephole(
-            prog,
             f,
             &mut ops,
             &mut at,
             &mut start,
             &mut aff,
+            &mut no_tier,
             &block_start,
             &uses,
             known,
         );
+        // Disjoint, in order: a search by either end finds the range of an op.
+        no_tier.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::new();
+        for r in no_tier {
+            match merged.last_mut() {
+                Some(m) if r.0 <= m.1 => m.1 = m.1.max(r.1),
+                _ => merged.push(r),
+            }
+        }
+        let no_tier = merged;
         let entry: Vec<u32> = next
             .iter()
             .map(|&p| start.get(p as usize).copied().unwrap_or(NONE))
@@ -4274,6 +4246,7 @@ impl Code {
             entry,
             first,
             aff,
+            no_tier,
             cases,
             loops,
             trace: std::env::var_os("YAVS_DUMPIR").is_some(),

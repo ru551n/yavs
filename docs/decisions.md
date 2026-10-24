@@ -5674,6 +5674,21 @@ cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` 
   them) in an out-of-line function. `osvvm_axis_random` 0.949 of the instructions, `fletcher_bufferwriter_512` 0.965,
   `neorv32_single_min` 0.982, the others within 1 percent.
 
+- **A waveform buffer is dropped across calls too (interpreter; `Code::no_tier`).** The peephole that does not run the
+  `WaveBuf` of a drive whose value is copied in (`CopyDrive`, `LSetDrive`, `LCopyDrive`) refused any run with an
+  instruction in it after which compiled code may take over the frame (a call, a native that can hand its call to a VHDL
+  body: `CallIeee`, a protected call), because the registers of the buffer are undefined there. That was every drive of a
+  value that a native computes (`s <= a + b`, `x <= f(y)`, 133 sites in the neorv32 testbench). The ops from the dropped
+  buffer to the op that drives it are now a range in which `tier_go` does not enter compiled code (the entry is asked
+  again after the next jump; one comparison of two numbers, only on the way into compiled code), and the fusion goes
+  across the call. The guard is needed: without it `generics/generic_blocks_2019`, `rtl/wide_bus_attributes` and
+  `rtl/wide_bus_lean` fail under `--tier=auto --tier-heat=1,0,0` (compile everything at its first call, hand over at
+  every return); the CI smoke runs that on `generics/`. The old rule also left one case open: a call directly before the
+  dropped buffer returns at the buffer's first instruction, which is no op any more; the range starts there. Instructions
+  `olo_axi_master_full` 0.865, `rtl_ram` 0.933, `neorv32_single_min` 0.974, `poc_cache_cpu` 0.981, `fletcher_bufferwriter_512`
+  0.988, `fletcher_bufferreader` 0.990, `poc_uart_rx` 0.969, geometric mean over 45 designs 0.9935; `poc_arith_addw` does
+  not change (its drives use a waveform made once per instance, not one per activation).
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

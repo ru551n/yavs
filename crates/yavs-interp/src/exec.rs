@@ -7011,6 +7011,12 @@ impl Machine {
         k: usize,
         ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<u64> {
+        // The registers of a waveform buffer that is not run are undefined until the op that
+        // drives it: not an entry for compiled code (it is asked again after the next jump).
+        let at = code.no_tier.partition_point(|r| r.1 < k as u32);
+        if code.no_tier.get(at).is_some_and(|r| r.0 <= k as u32) {
+            return Ok((k as u64) << 1);
+        }
         let pc = code.at.get(k).copied().unwrap_or(0) as usize;
         let prog = &*rt.prog;
         let (next, ran) = self.run_tier(tier, rt, f, pc, ctx)?;

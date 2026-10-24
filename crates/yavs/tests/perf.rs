@@ -206,7 +206,7 @@ case!(
         ("wakes", Max(418)),
         ("update_general", Max(2)),
         ("direct_planes", Min(195)),
-        ("ops", Max(5245)),
+        ("ops", Max(5040)),
     ]
 );
 case!(
@@ -228,7 +228,7 @@ case!(
         ("cycles", Max(312)),
         ("lean_signals", Min(2)),
         ("update_general", Max(2)),
-        ("ops", Max(15600)),
+        ("ops", Max(14435)),
     ]
 );
 case!(
@@ -409,7 +409,7 @@ case!(
         ("wakes", Max(212)),
         ("events", Max(650)),
         ("update_general", Max(2)),
-        ("ops", Max(4579)),
+        ("ops", Max(4370)),
     ]
 );
 case!(
@@ -456,7 +456,7 @@ case!(
     [
         ("process_runs", Max(3100)),
         ("idle_skips", Min(4050)),
-        ("ops", Max(33981)),
+        ("ops", Max(33250)),
     ]
 );
 

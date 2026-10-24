@@ -6382,6 +6382,9 @@ core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median
   0.956, `fletcher_bufferwriter_512` 0.995; the others within 0.2 percent.
 - `LEq` (interpreter only): `=` of logic vectors compares the planes in place instead of making both vectors:
   `osvvm_axis_random` 0.949, `fletcher_bufferwriter_512` 0.965, `neorv32_single_min` 0.982 of the instructions.
+- The waveform buffer of a drive is dropped across calls (`Code::no_tier`): compiled code is not entered between the
+  dropped buffer and the op that drives it. `olo_axi_master_full` 0.865, `neorv32_single_min` 0.974, `poc_cache_cpu`
+  0.981, geometric mean over 45 designs 0.9935.
 
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 

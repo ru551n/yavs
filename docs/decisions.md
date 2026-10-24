@@ -8216,3 +8216,57 @@ and `--tier=auto` compiled every adder process with the full `O2` pipeline, one 
 - **Not done:** native frames of the window generator miss in `Mem::find` for package and protected-object addresses
   (`PKG`, `SHARED_HEAP`: about 3 000 `host_miss` per us). The test sequences could be smaller (the `hi == TEMP` test
   and the mask as one subtraction and compare).
+
+## llvm: element access in native frames, and what the cycles of a protected accessor are (yavs-llvm `lower.rs`, #493, 2026-10-24)
+
+Where the cycles of the test runner's pointer-table accessors go (window generator, `get` of the string table, about 130 cycles
+and 285 instructions per call before this round): the instructions of the call and return are about 55, and the rest is four
+object look-ups (access value, key, entry, pointer), three array positions (descriptor, direction, range test, scaled offset,
+bounds) and the load, one after the other: each hop of `st.idxs(ref)`, `st.ptrs(s.id)`, `ptrs(id)(index)` waits for the load
+of the access value before its key can be made, for the entry before the object is known and for the descriptor before the
+position is known. Sampled, the stalls sit on the compare of the entry after each access value loaded from a heap object.
+So both the length of the chain and the number of instructions matter, and what shortens neither does not pay (below).
+
+- **`Pos` has one arm per direction** (L, `Gen` `Inst::Pos`): upwards `i - l` against `r - l` and `l <= r`, downwards `l - i`
+  against `l - r` and `r <= l` plus `dir == 1`, a phi for the position, instead of selects over both and the three tests
+  of the generic form (`dir <= 1`, `lo <= hi`, range). Any other direction still leaves for the interpreter. The two forms
+  accept exactly the same positions (the null range, the full `i64` range and the extremes included). Test:
+  `crates/yavs/tests/compiled_arrays.rs` runs ascending, descending, null and one-element ranges, records and
+  the errors of an index outside the range in every tier (the same text and status). Measured alone: window generator
+  `--tier=auto` warm 171.9 to 165.9 G instructions, 52.6 to 50.6 G cycles.
+- **A multiplication by a constant that only feeds the `Index` after it is one test of its operand** (L, `index_muls`,
+  `Cur::imul`, `Cur::fused`): the offset `pos * size` of an element was a checked multiply (the overflow test is six instructions
+  for a power of two) followed by the 4 GiB guard of `Index`. With the operand at most `(0xffff_ffff - held offset) /
+  (factor * stride)` neither can fail, so the test is the only one and the `Index` after it has none; the operand outside the
+  bound (also a negative one) leaves for the interpreter at the multiplication, where the `Index` would have left anyway. Without
+  a held object of known offset the operand is held to `0xffff_ffff / factor` and the `Index` keeps its test of the sum alone.
+  Only a product defined once and used once, by the next instruction, which is no entry point; a stride of 0 never.
+- **An entry of the object table is one cache line, and its key is built from the whole value** (L, `Obj` aligned to 64
+  bytes, `OBJ_SHIFT`, `Gen::obj_entry`): the index sits at bits 32 and up of an address and of an access value, the shared-heap
+  flag at bit 61 and bit 57, so `((v >> 26) & 0x3fc0) ^ ((v >> 52 or 48) & 0x200)` is the offset of the entry: two chains
+  side by side and one exclusive or, no scale by 40, and an entry never straddles two lines. Same entry as `obj_at`
+  (test `obj_entry_expression_is_obj_at`). The table is 16 KiB per machine instead of 10.
+- **Measured** (bench builds; the window generator in the world of `tools/realbench`, core 9, `perf stat` of the main thread,
+  medians of interleaved runs). `--tier=llvm` (deterministic): window generator 218.39 G instructions and 76.6 G cycles, then
+  214.33 G / 76.9 (descriptor), 211.54 G / 76.1 (multiplication), 210.98 G / 73.9 (entry); `protected_queue` 5.329 G and 1.361 G
+  cycles, then 4.932 / 1.247, 4.748 / 1.229, 4.655 / 1.165. `--tier=auto`, 12 untimed runs of a private world before the timed
+  ones (the set of compiled functions keeps growing for about ten runs: fewer warm-up runs compare a settled build with an
+  unsettled one), 5 interleaved runs: 159.8 to 152.1 G instructions and 50.6 to 48.3 G cycles. `tools/realbench --compare`
+  (same worlds, warm): wall 11.77 to 10.84 s (0.92), instructions 0.93; cold 15.69 to 15.75 s (instructions 0.96); against the
+  reference simulator, instructions warm 2.47 to 2.26 times, cold 3.31 to 3.12. Regression set (17 tests: the verification
+  libraries' queues and scoreboards, `neorv32_single_min`, `poc_arith_addw`, `fletcher_bufferwriter_512`, `sc5_fifo_repack`):
+  instructions within 1 percent of the base, wall within the run-to-run spread (`poc_arith_addw` 8.61 s both, 7 runs).
+- **Measured and not taken: LLVM inlines the native callee** (a private `alwaysinline` copy of each small callee in the caller's
+  module, same code and exits, so no new semantics; `always-inline` ahead of the pipeline). Protected accessors of
+  at most 100 IR instructions inlined into their callers: `protected_queue` `--tier=llvm` -4.7 percent instructions, cycles level;
+  window generator `--tier=auto` warm -2.5 percent instructions, cycles +1 percent (limits 70 and 120 alike); callees under 45
+  instructions (`"and"`, `"srl"`, wrappers): nothing. Every small callee inlined in `--tier=llvm` (limits 60 and 100): +15 and +66
+  percent instructions, +30 percent and 2.6 times the cycles (the bigger module is generated and hashed in the main thread).
+  The accessors wait for loads, not for the call and return, so removing 55
+  instructions of overlapped work buys nothing; a larger unit costs compile time and instruction cache. The IR inliner's
+  limit of 60 (above) and the full `O2` pipeline for the accessors (`YAVS_LLVM_PIPELINE`): no change either.
+- **Left**: the chain itself. Ideas that would shorten it need the interpreter's heap (a handle that carries its slot, #655 was
+  slower with a flat view), or lookups kept across calls (needs inlining and alias scopes for object bytes against `Mem`, and a
+  memory-aware CSE in the pass pipeline, which costs compile time); the address of a by-reference parameter in a native frame
+  (a variable of a caller) is looked up again at every access (about 25 instructions), a held-pointer fact for registers that hold such an address
+  is the next candidate.

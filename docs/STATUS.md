@@ -7853,3 +7853,28 @@ Cycles (core 12, medians of 5): `--tier=llvm` -0.8, -2.4 and -1.0 percent on tho
 `osvvm_axis_random`, `neorv32_single_min`, `fletcher_bufferwriter_512`. The price is code: +2 to +13 percent LLVM
 instructions under `--tier=llvm` (`docs/decisions.md` "Frame-mode code tests the temporary area ..."). Open: package
 and protected-object addresses in native frames still end in `host_miss`.
+
+## llvm: element access in native frames (#493, 2026-10-24)
+
+(`docs/decisions.md` "llvm: element access in native frames, and what the cycles of a protected accessor are".) Three changes in
+the code `Gen` makes for array elements and heap objects, each measured alone on the window generator and on `protected_queue`
+(`--tier=llvm`, main-thread `perf stat`, core 9, bench builds; instructions G / cycles G):
+
+| step | window generator | `protected_queue` |
+|---|---:|---:|
+| main at 2fbfd7ee | 218.39 / 76.6 | 5.329 / 1.361 |
+| `Pos` with one arm per direction | 214.33 / 76.9 | 4.932 / 1.247 |
+| + a multiplication that feeds an `Index` is one test | 211.54 / 76.1 | 4.748 / 1.229 |
+| + entries of the object table one cache line, key from the whole value | 210.98 / 73.9 | 4.655 / 1.165 |
+
+`--tier=auto`, window generator, a private world after 12 untimed runs (fewer compare a settled build with an unsettled one:
+with 4 untimed runs the same two builds differed by 10 percent in the other direction), 5 interleaved runs: 159.8 to 152.1 G
+instructions, 50.6 to 48.3 G cycles. `tools/realbench --compare` warm: wall 11.77 to 10.84 s, cold 15.69 to 15.75 s (instructions
+0.96); instructions against the reference simulator warm 2.47 to 2.26 times, cold 3.31 to 3.12. Seventeen tests that use the test
+runner's queues, the other verification libraries' queues and scoreboards, `neorv32_single_min`, `poc_arith_addw`
+and the wide-vector designs: instructions within 1 percent, wall within the spread. Difftest 520 of 520 on `yavs-interp`,
+`yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0`, each at 1 and 4 threads.
+
+Not taken, with the numbers in decisions.md: LLVM inlining of the native callee (instructions -2.5 to -4.7 percent, cycles level), an
+inline limit above 60 in the IR inliner, the full `O2` pipeline for the accessors. A protected `get` waits for a chain of dependent
+loads (four object look-ups, three positions); the call and return are about 55 of its instructions and overlap with the chain.

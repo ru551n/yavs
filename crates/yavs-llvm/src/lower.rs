@@ -1350,6 +1350,11 @@ struct Cur<'p> {
     mem: LLVMValueRef,
     /// What the generator knows about each register at the current instruction (`track`).
     known: std::cell::RefCell<Vec<Option<Known>>>,
+    /// Per pc, a multiplication fused with the `Index` after it (`index_muls`).
+    imul: Vec<Option<(Reg, u64)>>,
+    /// What the fused multiplication just generated settled for the `Index` at this pc: 1, its
+    /// position is under 2^32; 2, its offset is within 32 bits too (the `Index` handler).
+    fused: std::cell::Cell<(u32, u8)>,
     /// Registers the function defines once, by a `Const`: that value wherever they are read
     /// (the interpreter's loop skips such a definition and relies on the same).
     fixed: Vec<Option<i64>>,
@@ -2495,6 +2500,8 @@ impl Gen {
                 regs,
                 mem,
                 known: std::cell::RefCell::new(vec![None; f.reg_ty.len()]),
+                imul: index_muls(f, &fixed),
+                fused: Default::default(),
                 fixed,
                 exits: std::cell::RefCell::new(if native {
                     Vec::new()
@@ -3191,6 +3198,37 @@ impl Gen {
                         );
                         self.std(&c, dst, v);
                     }
+                    Inst::Bin {
+                        op: IntOp::Mul,
+                        dst,
+                        ..
+                    } if let Some((r, m)) = c.imul[pc as usize] => {
+                        // The operand is at most `max`, or the interpreter multiplies and
+                        // indexes. Then the product is under 2^32, and when the `Index` after
+                        // it has a constant offset in an object the held offset plus the
+                        // product is too: that `Index` has nothing left to test.
+                        let Some(&Inst::Index { base, stride, .. }) = f.code.get(pc as usize + 1)
+                        else {
+                            return Err("a fused multiplication without its index".into());
+                        };
+                        let off = match self.known_addr(&c, base) {
+                            Some(Known::Heap(Some(o))) if LLVMIsConstant(o.off) != 0 => {
+                                Some(LLVMConstIntGetZExtValue(o.off))
+                            }
+                            _ => None,
+                        };
+                        let (max, kind) = match off {
+                            Some(o) if o <= 0xffff_ffff => {
+                                ((0xffff_ffff - o) / (m * u64::from(stride)), 2)
+                            }
+                            _ => (0xffff_ffff / m, 1),
+                        };
+                        let x = self.ld(&c, r);
+                        self.exit_if(&c, self.icmp(IP::LLVMIntUGT, x, self.c64(max as i64)), pc);
+                        let v = LLVMBuildMul(self.b, x, self.c64(m as i64), c"".as_ptr());
+                        self.std(&c, dst, v);
+                        c.fused.set((pc + 1, kind));
+                    }
                     Inst::Bin { op, dst, a, b } => {
                         let (x, y) = (self.ld(&c, a), self.ld(&c, b));
                         match self.int_op(&c, op, x, y, pc) {
@@ -3364,16 +3402,23 @@ impl Gen {
                             None => LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr()),
                         };
                         let sum = LLVMBuildAdd(self.b, lo, off, c"".as_ptr());
-                        let wide = if stride == 0 {
+                        // What the multiplication before tested (`Cur::fused`).
+                        let fused = match c.fused.get() {
+                            (at, k) if at == pc && bbs[pc as usize].is_null() => k,
+                            _ => 0,
+                        };
+                        let wide = if stride == 0 || fused == 1 {
                             sum
                         } else {
                             LLVMBuildOr(self.b, p, sum, c"".as_ptr())
                         };
-                        self.exit_if(
-                            &c,
-                            self.icmp(IP::LLVMIntUGT, wide, self.c64(0xffff_ffff)),
-                            pc,
-                        );
+                        if fused != 2 {
+                            self.exit_if(
+                                &c,
+                                self.icmp(IP::LLVMIntUGT, wide, self.c64(0xffff_ffff)),
+                                pc,
+                            );
+                        }
                         let hi = match known_obj {
                             Some(o) => o.hi,
                             None => LLVMBuildAnd(self.b, a, self.c64(!0xffff_ffff), c"".as_ptr()),
@@ -3873,25 +3918,48 @@ impl Gen {
                         );
                         let (l, r, dir) = self.dope_words(p);
                         let i = self.ld(&c, idx);
-                        // With the range `lo <= hi` (upwards `l..r`, downwards `r..l`), `i` is in
-                        // it exactly when `i - lo` is at most `hi - lo` as unsigned numbers.
+                        // Upwards `l..r` (dir 0) or downwards `r..l` (dir 1): `i` is in the
+                        // range exactly when `i - lo` is at most `hi - lo` as unsigned numbers,
+                        // and a null range (`lo > hi`) holds no `i`. One arm per direction with
+                        // the tests of that arm only (any other `dir` is the interpreter's):
+                        // fewer instructions on the chain from the descriptor to the address.
                         let sub = |a, b| LLVMBuildSub(self.b, a, b, c"".as_ptr());
+                        let (up_bb, dn_bb, done) = (self.block(&c), self.block(&c), self.block(&c));
                         let up = self.icmp(IP::LLVMIntEQ, dir, self.c64(0));
-                        let sel = |a, b| LLVMBuildSelect(self.b, up, a, b, c"".as_ptr());
-                        let (lo, hi) = (sel(l, r), sel(r, l));
+                        self.cond_br(up, up_bb, dn_bb, true);
+                        LLVMPositionBuilderAtEnd(self.b, up_bb);
+                        let pu = sub(i, l);
+                        let ok = LLVMBuildAnd(
+                            self.b,
+                            self.icmp(IP::LLVMIntSLE, l, r),
+                            self.icmp(IP::LLVMIntULE, pu, sub(r, l)),
+                            c"".as_ptr(),
+                        );
+                        self.guard(&c, ok, slow);
+                        let up_end = LLVMGetInsertBlock(self.b);
+                        LLVMBuildBr(self.b, done);
+                        LLVMPositionBuilderAtEnd(self.b, dn_bb);
+                        let pd = sub(l, i);
                         let ok = LLVMBuildAnd(
                             self.b,
                             LLVMBuildAnd(
                                 self.b,
-                                self.icmp(IP::LLVMIntULE, dir, self.c64(1)),
-                                self.icmp(IP::LLVMIntSLE, lo, hi),
+                                self.icmp(IP::LLVMIntEQ, dir, self.c64(1)),
+                                self.icmp(IP::LLVMIntSLE, r, l),
                                 c"".as_ptr(),
                             ),
-                            self.icmp(IP::LLVMIntULE, sub(i, lo), sub(hi, lo)),
+                            self.icmp(IP::LLVMIntULE, pd, sub(l, r)),
                             c"".as_ptr(),
                         );
                         self.guard(&c, ok, slow);
-                        self.st(&c, dst, sel(sub(i, l), sub(l, i)));
+                        let dn_end = LLVMGetInsertBlock(self.b);
+                        LLVMBuildBr(self.b, done);
+                        LLVMPositionBuilderAtEnd(self.b, done);
+                        let pos = LLVMBuildPhi(self.b, self.i64, c"".as_ptr());
+                        let mut vals = [pu, pd];
+                        let mut from = [up_end, dn_end];
+                        LLVMAddIncoming(pos, vals.as_mut_ptr(), from.as_mut_ptr(), 2);
+                        self.st(&c, dst, pos);
                         self.join(&c, join);
                     }
                     Inst::Field {
@@ -4072,11 +4140,7 @@ impl Gen {
                     Inst::Deref { dst, handle, .. } => {
                         let (slow, join) = self.slow_path(&c, pc, &inst);
                         let h = self.ld(&c, handle);
-                        let e = self.obj_entry(
-                            &c,
-                            LLVMBuildLShr(self.b, h, self.c64(32), c"".as_ptr()),
-                            true,
-                        );
+                        let e = self.obj_entry(&c, h, true);
                         let eh = self.load(self.i64, self.gep(e, self.c64(OBJ_H as i64)));
                         // An entry with an access value is writable, and a null handle is no
                         // entry's value (`NO_H`).
@@ -7096,21 +7160,36 @@ impl Gen {
         unsafe { LLVMBuildZExt(self.b, v, self.i64, c"".as_ptr()) }
     }
 
-    /// The address of the entry of `Mem::objs` for high half `hi` (`obj_at`).
-    unsafe fn obj_entry(&self, c: &Cur, hi: LLVMValueRef, handle: bool) -> LLVMValueRef {
+    /// The address of the entry of `Mem::objs` of the object that `v` (an address, or with
+    /// `handle` an access value) points to: `obj_at` of its high half, already scaled by the
+    /// entry size. The index sits at bits 32 and up of both, and the shared-heap flag at bit 61
+    /// of an address and bit 57 of an access value (`obj_keys_agree`); two shifts and masks
+    /// whose chains run side by side, then an exclusive or.
+    unsafe fn obj_entry(&self, c: &Cur, v: LLVMValueRef, handle: bool) -> LLVMValueRef {
         // SAFETY: integer arithmetic on values of c.f; the entry lies inside `Mem`.
         unsafe {
-            // The key of `obj_at`; the constants are shared with `handle_at` (`obj_keys_agree`).
-            let shift = if handle {
-                KEY_SHIFT_HANDLE
-            } else {
-                KEY_SHIFT_ADDR
-            };
-            let flag = LLVMBuildLShr(self.b, hi, self.c64(shift as i64), c"".as_ptr());
-            let flag = LLVMBuildAnd(self.b, flag, self.c64(KEY_FLAG as i64), c"".as_ptr());
-            let k = LLVMBuildXor(self.b, hi, flag, c"".as_ptr());
-            let k = LLVMBuildAnd(self.b, k, self.c64(OBJS as i64 - 1), c"".as_ptr());
-            let off = LLVMBuildMul(self.b, k, self.c64(OBJ_SIZE as i64), c"".as_ptr());
+            let idx_shift = 32 - OBJ_SHIFT;
+            let flag_shift = 32 - OBJ_SHIFT
+                + if handle {
+                    KEY_SHIFT_HANDLE
+                } else {
+                    KEY_SHIFT_ADDR
+                };
+            let idx = LLVMBuildLShr(self.b, v, self.c64(i64::from(idx_shift)), c"".as_ptr());
+            let idx = LLVMBuildAnd(
+                self.b,
+                idx,
+                self.c64(((OBJS as i64) - 1) << OBJ_SHIFT),
+                c"".as_ptr(),
+            );
+            let flag = LLVMBuildLShr(self.b, v, self.c64(i64::from(flag_shift)), c"".as_ptr());
+            let flag = LLVMBuildAnd(
+                self.b,
+                flag,
+                self.c64((KEY_FLAG as i64) << OBJ_SHIFT),
+                c"".as_ptr(),
+            );
+            let off = LLVMBuildXor(self.b, idx, flag, c"".as_ptr());
             let off = LLVMBuildAdd(self.b, off, self.c64(MEM_OBJS as i64), c"".as_ptr());
             self.gep(c.mem, off)
         }
@@ -7434,7 +7513,7 @@ impl Gen {
                 let hi = LLVMBuildLShr(self.b, a, self.c64(32), c"".as_ptr());
                 let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
                 let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
-                let e = self.obj_entry(c, hi, false);
+                let e = self.obj_entry(c, a, false);
                 let mut hit = self.icmp(IP::LLVMIntEQ, self.load(self.i64, e), hi);
                 if write {
                     let w = self.load(self.i64, self.gep(e, self.c64(OBJ_W as i64)));
@@ -7742,6 +7821,32 @@ mod tests {
                 obj_at(u64::from(space::HEAP) << 29 | idx),
                 obj_at(u64::from(space::SHARED_HEAP) << 29 | idx)
             );
+        }
+    }
+
+    /// The key `obj_entry` builds (shifts and masks of the whole address or access value)
+    /// is `obj_at` of the high half, scaled by the entry size.
+    #[test]
+    fn obj_entry_expression_is_obj_at() {
+        let expr = |v: u64, handle: bool| {
+            let idx = (v >> (32 - OBJ_SHIFT)) & (((OBJS as u64) - 1) << OBJ_SHIFT);
+            let sh = 32 - OBJ_SHIFT
+                + if handle {
+                    KEY_SHIFT_HANDLE
+                } else {
+                    KEY_SHIFT_ADDR
+                };
+            (idx ^ ((v >> sh) & (KEY_FLAG << OBJ_SHIFT))) >> OBJ_SHIFT
+        };
+        for idx in [0u64, 1, 7, 8, 15, 255, 256, 1000, 0xff_ffff] {
+            for off in [0u64, 24, 0xffff_ffff] {
+                for (space, tag) in [(space::HEAP, 1u64), (space::SHARED_HEAP, 2)] {
+                    let addr = (u64::from(space) << 29 | idx) << 32 | off;
+                    assert_eq!(expr(addr, false) as usize, obj_at(addr >> 32));
+                    let handle = tag << 56 | idx << 32 | 0xdead_beef;
+                    assert_eq!(expr(handle, true) as usize, obj_at(addr >> 32));
+                }
+            }
         }
     }
 

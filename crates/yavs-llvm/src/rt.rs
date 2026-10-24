@@ -216,7 +216,7 @@ pub fn nslots_grow(depth: usize) -> *mut NSlot {
 /// (`yavs_rt_obj` keeps the permission of an entry it replaces for the same object), so a
 /// `Deref` needs one compare.
 #[derive(Clone, Copy)]
-#[repr(C)]
+#[repr(C, align(64))]
 pub struct Obj {
     pub hi: u64,
     pub ptr: *mut u8,
@@ -224,6 +224,10 @@ pub struct Obj {
     pub w: u64,
     pub h: u64,
 }
+
+/// An entry is one cache line, so generated code scales the key by a shift.
+pub const OBJ_SHIFT: u32 = 6;
+const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 
 /// Entries of `Mem::objs`, a power of two. ponytail: direct-mapped by the low bits of the
 /// object index xor its space (`obj_at`: a private and a shared heap object of the same index
@@ -327,8 +331,6 @@ pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
-
-pub const OBJ_SIZE: u64 = std::mem::size_of::<Obj>() as u64;
 
 pub const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
 
@@ -2588,6 +2590,56 @@ pub fn fixed_consts(f: &Func) -> Vec<Option<i64>> {
     }
     (0..n)
         .map(|r| if defs[r] == 1 { val[r] } else { None })
+        .collect()
+}
+
+/// Multiplications by a small constant whose product only feeds the `Index` right after them
+/// (the element offset `pos * size` of an array access): the operand and the constant factor.
+/// Compiled code tests the operand once for both the overflow of the product and the address
+/// bound, instead of an overflow test of its own and the `Index` guards.
+pub fn index_muls(f: &Func, fixed: &[Option<i64>]) -> Vec<Option<(Reg, u64)>> {
+    let n = f.reg_ty.len();
+    let (mut defs, mut uses) = (vec![0u32; n + 2], vec![0u32; n + 2]);
+    for i in &f.code {
+        let (u, d) = yavs_interp::inst_regs(f, i);
+        for r in u {
+            if let Some(x) = uses.get_mut(r.0 as usize) {
+                *x += 1;
+            }
+        }
+        for r in d {
+            if let Some(x) = defs.get_mut(r.0 as usize) {
+                *x += 1;
+            }
+        }
+    }
+    let k = |r: Reg| fixed.get(r.0 as usize).copied().flatten();
+    (0..f.code.len())
+        .map(|pc| {
+            let Inst::Bin {
+                op: IntOp::Mul,
+                dst,
+                a,
+                b,
+            } = f.code[pc]
+            else {
+                return None;
+            };
+            let Some(&Inst::Index { pos, stride, .. }) = f.code.get(pc + 1) else {
+                return None;
+            };
+            let once =
+                |r: Reg| defs.get(r.0 as usize) == Some(&1) && uses.get(r.0 as usize) == Some(&1);
+            if pos != dst || stride == 0 || !once(dst) {
+                return None;
+            }
+            let (x, m) = match (k(a), k(b)) {
+                (None, Some(m)) => (a, m),
+                (Some(m), None) => (b, m),
+                _ => return None,
+            };
+            (1..=1 << 16).contains(&m).then_some((x, m as u64))
+        })
         .collect()
 }
 

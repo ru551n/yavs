@@ -220,6 +220,8 @@ fn run_with(
     trace: Option<&mut yavs_interp::CallTrace>,
 ) -> Result<Val, Fail> {
     let prog = rt.prog.clone();
+    // A one-shot evaluation: functions run as lowered until they prove hot (`promote_hot`).
+    let _raw = yavs_ir::ElabRaw::on();
     let mut cvs = Vec::with_capacity(args.len());
     for (v, &t) in args.iter().zip(&s.params) {
         let scalar = prog.types.get(t).is_some_and(|t| t.scalar_size().is_some());
@@ -888,6 +890,9 @@ impl Session {
         trace: Option<&mut yavs_interp::CallTrace>,
     ) -> Result<Val, Fail> {
         self.ensure(db, d, constant)?;
+        if let Some(live) = self.live.as_mut() {
+            yavs_interp::Runtime::promote_hot(&mut live.rt);
+        }
         let live = self
             .live
             .as_ref()

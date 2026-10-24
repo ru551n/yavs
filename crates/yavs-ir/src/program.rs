@@ -49,6 +49,10 @@ pub struct Program {
     /// program starts without them.
     #[serde(skip)]
     pub copies: crate::Copies,
+    /// Functions elaboration-time code asked for often ([`ElabRaw`]).
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub hot: HotList,
 }
 
 /// An optimised copy of a function, serialised (see [`Program::export_optimized`]).
@@ -94,6 +98,30 @@ impl Program {
     #[cold]
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
+        if ELAB_RAW.with(std::cell::Cell::get)
+            && matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
+            && !raw.flags.contains(FuncFlags::MAY_SUSPEND)
+            && !raw.spare
+        {
+            let n = raw
+                .fetches
+                .0
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == 0 {
+                self.verify_lazily(f, raw);
+            }
+            // A stored optimised copy costs a decode, less than running the lowered code.
+            if n > 0 || !self.stored_opt.map().contains_key(&f.0) {
+                if (n + 1).is_multiple_of(HOT) {
+                    self.hot
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(f);
+                }
+                return raw.full();
+            }
+        }
         let o = raw
             .opt
             .get_or_init(|| {
@@ -104,19 +132,14 @@ impl Program {
                 if raw.spare {
                     return None;
                 }
-                if self.lazy_verify.is_some_and(|from| f.0 >= from) {
-                    let mut errs = Vec::new();
-                    crate::verify::verify_func(self, f, raw.full(), &mut errs);
-                    // A producer bug: the kernel turns the panic into an internal error.
-                    assert!(
-                        errs.is_empty(),
-                        "internal error: {}; this is a bug in yavs",
-                        errs[0]
-                    );
+                // Verified already when elaboration-time code ran it as lowered.
+                if raw.fetches.0.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                    self.verify_lazily(f, raw);
                 }
-                let o = self
-                    .stored_copy(f)
-                    .or_else(|| crate::opt::optimize_func(self, f));
+                let o = self.stored_copy(f).or_else(|| {
+                    OPTIMISED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    crate::opt::optimize_func(self, f)
+                });
                 if raw.kind == FuncKind::Process {
                     self.copies
                         .shared(o.as_ref().map_or(raw.full().code.len(), |o| o.code.len()));
@@ -130,6 +153,32 @@ impl Program {
             eprintln!("{}", self.dump_func(f));
         }
         o
+    }
+
+    /// Verify `raw` (function `f`) when the program was not verified as a whole (`lazy_verify`).
+    fn verify_lazily(&self, f: FuncId, raw: &Func) {
+        if self.lazy_verify.is_some_and(|from| f.0 >= from) {
+            let mut errs = Vec::new();
+            crate::verify::verify_func(self, f, raw.full(), &mut errs);
+            // A producer bug: the kernel turns the panic into an internal error.
+            assert!(
+                errs.is_empty(),
+                "internal error: {}; this is a bug in yavs",
+                errs[0]
+            );
+        }
+    }
+
+    /// The functions elaboration-time code asked for [`HOT`] times since the last call, to
+    /// optimise before the next call ([`ElabRaw`]).
+    pub fn take_hot(&self) -> Vec<FuncId> {
+        std::mem::take(
+            &mut *self
+                .hot
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Is the optimised copy of `f` valid only while nothing outside writes process variables
@@ -415,6 +464,68 @@ pub struct Func {
     /// (see [`lazy_bodies`]): these four are empty here and [`Func::full`] decodes them.
     #[serde(skip)]
     pub(crate) lazy: Option<Box<LazyBody>>,
+    /// How often elaboration-time code asked for this function before it was optimised
+    /// ([`ElabRaw`]).
+    #[serde(skip)]
+    pub(crate) fetches: Fetches,
+}
+
+/// A counter that a clone of its function starts again.
+#[derive(Debug, Default)]
+pub(crate) struct Fetches(std::sync::atomic::AtomicU32);
+
+impl Clone for Fetches {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// The functions elaboration-time code asked for [`HOT`] times (`Program::take_hot`).
+#[derive(Debug, Default)]
+pub struct HotList(std::sync::Mutex<Vec<FuncId>>);
+
+impl Clone for HotList {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// Elaboration-time calls run a function as lowered, without the optimiser, until it has been
+/// asked for this many times ([`ElabRaw`]).
+const HOT: u32 = 64;
+
+static OPTIMISED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many functions the optimiser ran on in this process (a work counter: `YAVS_COUNTERS`).
+pub fn optimised_functions() -> u64 {
+    OPTIMISED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+thread_local! {
+    static ELAB_RAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, [`Program::func`] hands out a subprogram as lowered instead of optimising it at
+/// its first use (the call is a one-shot elaboration-time evaluation: most functions of a
+/// library run once or twice there and the optimiser costs more than it saves). Functions asked
+/// for [`HOT`] times are listed ([`Program::take_hot`]); the caller optimises them between two
+/// calls, when no frame runs their lowered code (`yavs_interp::Runtime::promote_hot`).
+///
+/// ponytail: a function with a long loop that runs once stays as lowered (the interpreter runs
+/// it about 1.75 times slower than optimised); counting loop iterations would need a switch of
+/// the running frame.
+pub struct ElabRaw(bool);
+
+impl ElabRaw {
+    pub fn on() -> ElabRaw {
+        ElabRaw(ELAB_RAW.with(|c| c.replace(true)))
+    }
+}
+
+impl Drop for ElabRaw {
+    fn drop(&mut self) {
+        ELAB_RAW.with(|c| c.set(self.0));
+    }
 }
 
 /// A function body not decoded yet.
@@ -548,6 +659,7 @@ impl Func {
             spare: false,
             opt: Default::default(),
             lazy: None,
+            fetches: Default::default(),
         }
     }
 
@@ -578,6 +690,7 @@ impl Func {
             spare: true,
             opt: Default::default(),
             lazy: None,
+            fetches: Default::default(),
         }
     }
 

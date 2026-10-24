@@ -29,11 +29,11 @@ pub use inst::{
 pub use program::COV_INPUTS;
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovCond, CovInfo, CovKind, CovNode, CovRow, Dir,
-    ForeignArg, ForeignMode, ForeignRef, Func, FuncFlags, FuncKind, Local, Mode, NativeRef,
-    OptCopy, Param, ParamClass, Program, RootKind, StmtInfo, StmtKind, VhpiIndex, VhpiModel,
-    VhpiParam, ViaNode,
+    ElabRaw, ForeignArg, ForeignMode, ForeignRef, Func, FuncFlags, FuncKind, Local, Mode,
+    NativeRef, OptCopy, Param, ParamClass, Program, RootKind, StmtInfo, StmtKind, VhpiIndex,
+    VhpiModel, VhpiParam, ViaNode,
 };
-pub use program::{bytes, lazy_bodies};
+pub use program::{bytes, lazy_bodies, optimised_functions};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;
 pub use yavs_kernel::StmtId;

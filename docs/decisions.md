@@ -5395,6 +5395,43 @@ every elaboration, and again for every instance. Decisions:
 - **Ideas from the reference simulator (read, nothing copied):** it evaluates a package constant once, at the
   elaboration of its package, and every use reads that object.
 
+## Elaboration-time calls run as lowered; a function asked for often is optimised between two calls (yavs-ir `ElabRaw`, yavs-interp, yavs-elab, #539, 2026-10-24)
+
+- **Problem:** the optimiser runs on a function at its first use. Elaboration-time evaluation (constants, generics and
+  ranges computed by library functions; the creation of a verification library's loggers and queues) runs most
+  functions once or twice, and the optimiser's time (about 2.4 microseconds per instruction of the function, 17 ms for
+  the 134 functions of a small FIFO testbench) was a fifth of a cold `yavs elab` there and three quarters of what the
+  calls themselves cost (`olo_base_cam`, `osvvm_axis_random`, `hdlm_fifo_sync`, `poc_uart_rx`).
+- **Decision:** the machines of `pkgcall::run_with` (the calls of `Model::call`: a function lowered on its own and a
+  call of the session) run under `yavs_ir::ElabRaw`. While it is alive `Program::func` hands out a function or procedure
+  that cannot suspend as lowered and does not set its optimised copy; the function's `fetches` count how often it was
+  asked for. At 64 (and every 64 after) it is listed (`Program::take_hot`), and `Runtime::promote_hot` optimises the
+  listed functions and drops what the runtime derived from their lowered code (`pre`, `live`) at the start of the next
+  call, when no frame runs that code (`Arc::get_mut` of the runtime: nothing happens while something else holds it).
+  A function whose first request finds an optimised copy stored by an earlier run (`libopt`, the stage cache) takes it
+  as before. Verification at first use is kept (`verify_lazily`). The run that follows elaboration optimises what it
+  calls at its first call, as before.
+- **Why not everywhere, why not on a loop count:** the version of a function must not change while a frame of it
+  exists (frames hold a pc into one version, and `Runtime::pre` is a `OnceLock` per function), so a switch can only
+  happen between two calls. Package initialisation and the thunks of the design's own build run as before (one
+  machine runs them all: a function called thousands of times inside it could not be promoted, which a first
+  measurement of running everything lowered showed as 2.5 times the instructions of `poc_uart_rx` before #539's fix).
+  A loop that runs a long time inside one call of a function nothing asked for before stays lowered: the interpreter
+  runs the code about 1.75 times slower than optimised (a 60-operation loop body, 1 000 000 iterations: 763 M to
+  1334 M instructions; 4096 iterations: +9 percent). `ponytail:` in `program.rs`; the way out would be a switch of the
+  running frame at a back edge.
+- **Measured** (`tools/realbench` worlds of 40 tests, `yavs elab` user instructions, bench builds, cold = empty cache,
+  warm = third run; main with the package-constant change before, after): geometric mean cold 0.974, warm 0.918;
+  `poc_uart_rx` cold 0.217 G to 0.182 G, `olo_base_cam` 0.991 G to 0.949 G and warm 0.380 G to 0.299 G,
+  `osvvm_axis_random` 0.598 G to 0.565 G and 0.287 G to 0.234 G, `hdlm_fifo_sync` warm 0.122 G to 0.105 G,
+  `hdlm_axi_fifo` warm 0.360 G to 0.264 G, `fletcher_bufferwriter_prim32` cold 0.335 G to 0.240 G; nothing above +1 percent
+  except two tiny designs (`sc5_timestamp` +2 percent cold, 0.8 M instructions). Output of `yavs elab` and of a run to
+  1 us byte-identical on all 40. Work counters: `opt_funcs` (functions the optimiser ran on), design `elab_raw`.
+- **Test changes:** `cache_prefix.rs` got its `libopt` from functions optimised by an elaboration-time call; its
+  testbenches now call a library function with a loop at run time.
+- Ideas from the reference simulator (read, nothing copied): it too does not generate code for what elaboration runs
+  once; it evaluates it in its interpreter.
+
 ## The watching loop's tick is out of line (yavs-interp, #521, #544, 2026-10-22)
 
 - **`watch_tick` (name the running function for the sampler, look for compiled code) is a cold function** called every

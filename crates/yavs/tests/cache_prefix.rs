@@ -49,12 +49,15 @@ struct Libs {
 }
 
 const COUNTER: &str = "package pa4 is\n  constant k4 : integer := 4;\n  function f4 (x : integer) return integer;\n  \
-impure function next_id return integer;\n  signal sg : integer := 3;\nend;\n\
+impure function next_id return integer;\n  function lsum (x : integer) return integer;\n  signal sg : integer := 3;\nend;\n\
 package body pa4 is\n  type counter_t is protected\n    impure function bump return integer;\n  end protected;\n  \
 type counter_t is protected body\n    variable n : integer := 10;\n    \
 impure function bump return integer is begin n := n + 1; return n; end;\n  end protected body;\n  \
 shared variable ctr : counter_t;\n  function f4 (x : integer) return integer is begin return x + k4; end;\n  \
-impure function next_id return integer is begin return ctr.bump; end;\nend;\n";
+impure function next_id return integer is begin return ctr.bump; end;\n  \
+function lsum (x : integer) return integer is\n    variable a : integer := 0;\n  begin\n    for i in 1 to x loop\n      if i mod 2 = 0 then a := a + i; elsif i mod 3 = 0 then a := a - 1; else a := a + 2; end if;\n      \
+if a > 1000000 then a := 0; end if;\n      if i mod 5 = 0 then a := a + 7; elsif i mod 7 = 0 then a := a + 3; end if;\n      \
+if i mod 11 = 0 then a := a + 1; elsif i mod 13 = 0 then a := a + 2; end if;\n    end loop;\n    return a;\n  end;\nend;\n";
 
 impl Drop for Libs {
     fn drop(&mut self) {
@@ -180,8 +183,8 @@ impl Libs {
             ""
         };
         let text = format!(
-            "library liba; use liba.pa9.all; use liba.pa4.all;\n{}entity {name} is end;\narchitecture a of {name} is\n  {decl}begin\n  process\n  begin\n    \
-             report \"k=\" & integer'image(k9 + {n}) & \" f=\" & integer'image(f9({n}) + f4({n})) & \" id=\" & integer'image({id}) & \" next=\" & integer'image(next_id) & \" sg=\" & integer'image(sg){late};\n    \
+            "library liba; use liba.pa9.all; use liba.pa4.all;\n{}entity {name} is end;\narchitecture a of {name} is\n  {decl}begin\n  process\n    variable v : integer := {n};\n  begin\n    \
+             report \"k=\" & integer'image(k9 + {n}) & \" f=\" & integer'image(f9({n}) + f4({n})) & \" id=\" & integer'image({id}) & \" next=\" & integer'image(next_id) & \" sg=\" & integer'image(sg) & \" ls=\" & integer'image(lsum(v)){late};\n    \
              wait;\n  end process;\nend;\n",
             if late.is_empty() {
                 ""

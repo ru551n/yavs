@@ -240,6 +240,7 @@ impl ProgramBuilder {
             spare: false,
             opt: Default::default(),
             lazy: None,
+            fetches: Default::default(),
         });
         if let Some(p) = parent.and_then(|p| self.prog.funcs.get_mut(p)) {
             p.nested = true;

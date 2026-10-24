@@ -177,6 +177,16 @@ case!(
     [("ops_elab", Max(480)), ("ops", Max(50))]
 );
 case!(
+    elab_raw,
+    "n=",
+    &[],
+    [
+        ("opt_funcs", Max(3)),
+        ("opt_funcs", Min(2)),
+        ("ops_elab", Max(960))
+    ]
+);
+case!(
     clk_toggle,
     "q=",
     &[],

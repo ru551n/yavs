@@ -623,6 +623,16 @@ elaboration-time calls come from the package state"); pure ones are kept in the 
 (`tools/realbench` worlds, bench builds): `poc_uart_rx` 1.787 G to 0.221 G, `olo_base_cam` 1.029 G to 0.999 G, the other six
 tests of the set unchanged; warm `poc_uart_rx` 0.035 G both, `olo_base_cam` 0.410 G to 0.380 G.
 
+### Elaboration-time calls run as lowered (#539)
+
+Functions called while elaborating run as lowered and are optimised only when asked for 64 times, between two calls
+(`docs/decisions.md` "Elaboration-time calls run as lowered; a function asked for often is optimised between two calls").
+`yavs elab` user instructions, 40 `tools/realbench` tests, bench builds, main with the package-constant change before and
+after: geometric mean cold 0.974, warm 0.918; `olo_base_cam` warm 0.380 G to 0.299 G, `hdlm_axi_fifo` warm 0.360 G to
+0.264 G, `osvvm_axis_random` cold 0.598 G to 0.565 G; output unchanged on all 40. Open: a long loop in a function nothing
+asked for before runs 1.75 times slower than optimised (an elaboration-time table generator of a million iterations
+costs +570 M instructions; 4096 iterations +9 percent).
+
 ### Compilation cache (#407)
 
 Cache keys name the build (a hash of all sources) and the optimiser and tier switches (#491, `docs/decisions.md`

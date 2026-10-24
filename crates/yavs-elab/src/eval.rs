@@ -813,6 +813,7 @@ impl Model {
             .or_insert_with(|| lower_one(db, callee, true))
         {
             Ok(l) => {
+                yavs_interp::Runtime::promote_hot(&mut l.rt);
                 let (rt, sig, free, size) =
                     (l.rt.clone(), l.sig.clone(), l.free.clone(), l.inst_size);
                 let inst = self.free_data(db, &rt, &free, size, scope, ex.span)?;

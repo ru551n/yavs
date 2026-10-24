@@ -1248,6 +1248,25 @@ impl Runtime {
         Ok(())
     }
 
+    /// Optimise the functions that elaboration-time calls asked for often ([`yavs_ir::ElabRaw`])
+    /// and drop what was derived from their lowered code. Only between two calls, when no
+    /// frame runs that code; nothing happens while something else holds the runtime.
+    pub fn promote_hot(rt: &mut Arc<Runtime>) {
+        let Some(r) = Arc::get_mut(rt) else {
+            return;
+        };
+        for f in r.prog.take_hot() {
+            // Outside `ElabRaw`: this optimises.
+            let _ = r.prog.func(f);
+            if let Some(p) = r.pre.get_mut(f.0 as usize) {
+                *p = Default::default();
+            }
+            if let Some(l) = r.live.get_mut(f.0 as usize) {
+                *l = Default::default();
+            }
+        }
+    }
+
     /// The facts of function `id` (`f`), computed once.
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {

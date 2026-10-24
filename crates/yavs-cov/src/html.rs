@@ -2,8 +2,9 @@
 //! inline script, no external resources, so a page opens from disk. `index.html` has the totals,
 //! one line per instance or package and one per source file; `src-N.html` (N numbers the files
 //! in name order) shows a file's source with the hit count of each line. A line with items
-//! (statements, branch arms, toggles) is hoverable and keyboard-focusable: its popup lists the
-//! items per instance with counts and tests; a click pins it. A line hit in some instances and
+//! (statements, branch arms, toggles) is clickable and keyboard-focusable: its popup lists the
+//! items per instance with counts and tests and opens only on a click (Enter or Space on a
+//! focused line); hover and focus open nothing. A line hit in some instances and
 //! missed in others has its own colour and a `ran/total` instance marker. A missed item shows
 //! its `--uncovered` row and YAML entry, each with a copy button; an excluded one is greyed with
 //! the reason of its row. `src-N-missed.html` lists only the lines with a missed or excluded
@@ -33,13 +34,12 @@ margin-right:.4rem}.bar i{display:block;height:100%;background:var(--bar)}\
 .src td.ln,.src td.c,.src td.m{text-align:right;color:var(--dim);width:1%}\
 tr.hit td{background:var(--ok)}tr.miss td{background:var(--miss)}tr.part td{background:var(--part)}\
 tr.inst td{background:var(--inst)}tr.ex td{background:var(--ex)}\
-tr[tabindex]{cursor:pointer}tr[tabindex]:focus{outline:2px solid var(--dim);outline-offset:-2px}\
+tr[tabindex]{cursor:pointer}tr[tabindex]:hover td{filter:brightness(.93)}tr[tabindex]:focus{outline:2px solid var(--dim);outline-offset:-2px}\
 .src td.t{position:relative}\
 .pop{display:none;position:absolute;left:2rem;top:100%;z-index:5;min-width:24rem;max-width:56rem;\
 white-space:normal;cursor:auto;background:var(--pop);color:var(--fg);border:1px solid var(--dim);\
 padding:.4rem .7rem;box-shadow:0 4px 14px rgba(0,0,0,.3)}\
-tr:hover .pop,tr:has(:focus-visible) .pop,tr:focus-visible .pop,tr.pin .pop{display:block}\
-body.pinned tr:not(.pin) .pop{display:none}\
+tr.pin .pop{display:block}\
 .pop table{width:100%}.pop td.n{width:3rem;padding-right:1rem}.pop h4{margin:.4rem 0 .1rem;font-size:.85rem}.pop p{margin:.2rem 0}\
 .pop table td{white-space:normal;padding:.05rem .5rem .05rem 0;border:0;background:none}\
 .pop tr.miss td:first-child{border-left:.3rem solid #cf222e;padding-left:.3rem}\
@@ -54,7 +54,7 @@ body.pinned tr:not(.pin) .pop{display:none}\
 const JS: &str = "\
 (function(){var d=document,pin=null;d.documentElement.className+=' js';\
 function set(t){if(pin)pin.classList.remove('pin');pin=t==pin?null:t;\
-if(pin)pin.classList.add('pin');d.body.classList.toggle('pinned',!!pin)}\
+if(pin)pin.classList.add('pin')}\
 function fb(s){var a=d.createElement('textarea');a.value=s;d.body.appendChild(a);a.select();\
 try{d.execCommand('copy')}catch(x){}d.body.removeChild(a)}\
 function copy(s,b){var o=b.textContent;function ok(){b.textContent='copied';\
@@ -66,7 +66,7 @@ if(b){copy(b.previousElementSibling.textContent,b);return}\
 if(!t.closest('.pop'))set(t.closest('tr[tabindex]'))});\
 d.addEventListener('keydown',function(e){\
 if(e.key=='Escape'&&pin)set(pin);\
-else if(e.key=='Enter'&&e.target.matches('tr[tabindex]'))set(e.target)})})();";
+else if((e.key=='Enter'||e.key==' ')&&e.target.matches('tr[tabindex]')){e.preventDefault();set(e.target)}})})();";
 
 fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
@@ -225,8 +225,7 @@ pub fn pages(
 /// An item of a line with the reason of the exclusion row that took it out, if any.
 type LineItem<'a> = (&'a Key, &'a Entry, Option<&'a str>);
 
-const LEGEND: &str = "<p class=\"legend dim\">hover, focus or click a line for details \
-(click pins the popup): <span class=\"hit\">hit</span><span class=\"miss\">missed</span>\
+const LEGEND: &str = "<p class=\"legend dim\">click a line (or focus it and press Enter) for details: <span class=\"hit\">hit</span><span class=\"miss\">missed</span>\
 <span class=\"inst\">hit in some instances only (hit/total)</span>\
 <span class=\"part\">branch arm or toggle missed</span><span class=\"ex\">excluded</span></p>\n";
 

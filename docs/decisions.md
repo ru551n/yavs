@@ -2240,12 +2240,11 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
 - **HTML interaction (user, 2026-10-24, #689; replaces the earlier "no scripts" rule):** (1)
   source paths are shown relative to the current directory (`--root DIR` strips another prefix),
   in headings, the index and exclusion rows; matching never uses the path. (2) No item lists
-  under source lines: a line with items is hoverable and keyboard-focusable and its popup lists
-  the items per instance with count and tests (covered-only lines too); a click pins the popup
-  so its text can be selected. Without the script, hover and focus still work (CSS). (3) A line
+  under source lines: a line with items is clickable and keyboard-focusable and its popup lists
+  the items per instance with count and tests (covered-only lines too). (3) A line
   that ran in some instances and not in others has its own colour and a `ran/total` instance
   marker, explained by the legend. (4) A missed item's exclusion row and YAML entry in the popup
-  each have a copy button (the script only adds the buttons and the pin). The popup is a list of groups (title,
+  each have a copy button (the script adds the buttons and the open/close). The popup is a list of groups (title,
   table), so a new item kind (condition rows, #688) adds groups without a new layout.
 - **Not yet:** the LLVM tier does not lower IR yet, so the interpreter is
   the only tier today.
@@ -2278,6 +2277,12 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   exclusion files); excluded items are out of the totals and the Cobertura report and are listed
   with their reasons. `cov merge` does not take exclusions. `unit` names packages only:
   entity and architecture items are excluded with `instance`.
+- **HTML popups open on click only (user, 2026-10-24, #689; supersedes hover/focus popups):** a
+  popup never opens on hover or focus. A click on a line opens it, a click on another line moves
+  it, a click on the open line or outside any line closes it; a focused line (`tabindex`) opens
+  and closes it with Enter or Space, Escape closes. Hover only shows a pointer cursor and a
+  light highlight. Without the script nothing opens (accepted); the popup text stays selectable
+  because clicks inside it change nothing.
 - **In the HTML report (user, 2026-10-24, #689):** a missed item's popup shows its exclusion row
   with a copy button (the text row and the YAML entry of `--uncovered=yaml`), so the workflow stays
   "copy the row from the report".

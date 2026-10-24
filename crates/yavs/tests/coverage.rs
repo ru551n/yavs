@@ -602,6 +602,15 @@ fn html_report() {
         src.contains("<pre>  - kind: statement") && src.contains("class=\"cp\">copy YAML</button>"),
         "{src}"
     );
+    // Popups open only on click: no hover or focus rule shows one, Enter and Space toggle.
+    assert!(
+        src.contains("tr.pin .pop{display:block}")
+            && !src.contains("tr:hover .pop")
+            && !src.contains("focus-visible")
+            && src.contains("e.key==' '")
+            && src.contains("click a line"),
+        "{src}"
+    );
     // No inline item lists, and a line without items is not focusable.
     assert!(!src.contains("class=\"it ") && !src.contains("<tr id=\"L1\" class=\"\" tabindex"));
     // Counts per instance and tests in the popup.

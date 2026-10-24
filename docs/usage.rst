@@ -252,10 +252,12 @@ dark theme as the browser asks. The index has the totals, one line per instance 
 its statement, branch and toggle percentages, and a link per source file. A file page shows the
 source with the hit count of each line: missed lines in red, lines that ran in some instances
 and not in others in purple with a ``1/2`` marker (instances it ran in out of all), and lines
-with a missed branch arm or toggle in yellow; a legend explains the colours. Hover a line, or
-focus it with the keyboard, to see a popup with its items (statement, branch arm, toggle per
+with a missed branch arm or toggle in yellow; a legend explains the colours. Click a line, or
+focus it with the keyboard and press Enter or Space, to open a popup with its items (statement, branch arm, toggle per
 signal and direction) per instance with the count and, when the database has test names, the
-tests that hit it; click the line to pin the popup so its text can be selected. A missed item
+tests that hit it. The popup opens only on a click, never on hover; clicking another line moves
+it, clicking outside or pressing Escape closes it, and its text can be selected. It needs the
+inline script: with scripts disabled nothing opens. A missed item
 shows its ``--uncovered`` row and its ``--uncovered=yaml`` entry, each with a copy button, ready
 for an exclusion file.
 Each file also has ``src-N-missed.html`` (linked from the index and the file page), the same page

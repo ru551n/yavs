@@ -3458,7 +3458,7 @@ allocator would keep resident through the rest of the run (peak 224 MB of a cold
   2.7 times the instructions of one with 32 (22.6 G to 60.9 G for 1024 instances and 4000 cycles in the interpreter):
   the pass gave up and every activation recomputed the positions. With 256 values and 4096 instructions the cost is
   linear (26.7 G at 40 taps, 39.3 G at 64, 73.8 G at 128). A long block of a long process that runs few activations
-  loses by the second copy (the predecoder is superlinear in the size of the code: `olo_axi_master_full` +12 percent
+  loses by the second copy (predecoding a long process costs more per instruction, #683: `olo_axi_master_full` +12 percent
   instructions with the caps alone), so a block over 800 instructions is copied only when the fast copy saves a
   fifth of it (the taps: 26 percent; the testbench processes there: 9 to 15). Work-counter test `memo_wide`.
 - The slow copy renames the registers only it uses, so the fast copy keeps the register read and

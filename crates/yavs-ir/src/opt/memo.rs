@@ -55,8 +55,8 @@ const MAX_ROOTS: usize = 256;
 const MIN_GAIN: usize = 3;
 const MIN_GAIN_COMPILED: usize = 6;
 /// Longest block the pass copies at the usual gain, and the longest at all. Over `COPY_BLOCK` the
-/// fast copy has to save a fifth of the block: the predecoder's cost grows faster than the
-/// code, and a long process that runs few activations loses by the second copy (#662).
+/// fast copy has to save a fifth of the block: predecoding a long process costs more per
+/// instruction (#683), and one that runs few activations loses by the second copy (#662).
 const COPY_BLOCK: usize = 800;
 const MAX_BLOCK: usize = 4096;
 

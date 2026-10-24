@@ -6867,4 +6867,4 @@ evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, t
   60.9 G at 40, 92.7 G at 64). Caps now 256 values and 4096 instructions, a block over 800 instructions copied only when the fast copy saves a
   fifth of it: 22.5 G, 26.7 G, 39.3 G, 73.8 G at 128 taps (linear, 0.53 G a tap). Every real-world and head-to-head design
   executes the same instructions as before (within 1 percent); with the caps alone `olo_axi_master_full` executed 12 percent more (its three
-  processes of 1400 to 1600 instructions save 9 to 15 percent of their block and the predecoder pays for the second copy), hence the fifth.
+  processes of 1400 to 1600 instructions save 9 to 15 percent of their block and predecoding the second copy is dear, #683), hence the fifth.

@@ -466,7 +466,7 @@ impl Ctx<'_> {
     /// Current value of `r` copied into `out` without allocating: the bytes of a byte signal,
     /// or the bit-plane blocks of a logic signal (four little-endian `u64` planes per 64
     /// elements, unused bits zero, as `LogicVec`'s blocks). `out` must be exactly that size.
-    #[inline]
+    #[inline(always)]
     pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
         let (s, r) = self.sig(r)?;
         // A logic value of one word (a register read): copied here, no call.
@@ -965,6 +965,7 @@ impl Ctx<'_> {
 
     /// `assign` of one `std_ulogic` code (`std_ulogic'pos`) with one waveform element: the
     /// scalar case without building a value or a waveform list.
+    #[inline]
     pub fn assign_code(
         &mut self,
         d: DriverId,
@@ -976,6 +977,18 @@ impl Ctx<'_> {
         if self.assign_code_fast(d, target, delay, code, mode) {
             return Ok(());
         }
+        self.assign_code_slow(d, target, delay, code, mode)
+    }
+
+    #[inline(never)]
+    fn assign_code_slow(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        code: u8,
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
         let mut one = self
             .st
             .one
@@ -991,7 +1004,7 @@ impl Ctx<'_> {
     /// element to a driver with nothing pending (and nothing skipped) has nothing to preempt,
     /// so the transaction is appended as it is. False when the general path must run (it also
     /// produces every error).
-    #[inline]
+    #[inline(always)]
     fn assign_code_fast(
         &mut self,
         d: DriverId,
@@ -1211,6 +1224,7 @@ impl Ctx<'_> {
     /// `assign` of a logic value of at most 64 elements given as the plane blocks `read_into`
     /// produces for it: four little-endian `u64` planes (`blocks` is exactly 32 bytes for up to
     /// 64 elements, 32 per 64 more), unused bits zero. No `LogicVec` or `Value` is needed.
+    #[inline]
     pub fn assign_blocks(
         &mut self,
         d: DriverId,
@@ -1226,6 +1240,18 @@ impl Ctx<'_> {
         {
             return Ok(());
         }
+        self.assign_blocks_slow(d, target, delay, blocks, mode)
+    }
+
+    #[inline(never)]
+    fn assign_blocks_slow(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        blocks: &[u8],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
         if blocks.len() > 32 && self.assign_wide_fast(d, target, delay, blocks, mode) {
             return Ok(());
         }
@@ -1245,6 +1271,7 @@ impl Ctx<'_> {
     /// `assign` of one element of a byte signal (an enum, an integer, a boolean, a real: at
     /// most 8 bytes) with one waveform element, given as its bytes: the usual scalar assignment
     /// without building a value or a waveform list.
+    #[inline]
     pub fn assign_bytes(
         &mut self,
         d: DriverId,
@@ -1256,13 +1283,25 @@ impl Ctx<'_> {
         if self.assign_bytes_fast(d, target, delay, bytes, mode) {
             return Ok(());
         }
+        self.assign_bytes_slow(d, target, delay, bytes, mode)
+    }
+
+    #[inline(never)]
+    fn assign_bytes_slow(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        bytes: &[u8],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
         self.assign(d, target, &[(delay, bytes)], mode)
     }
 
     /// The common scalar byte case of `assign` in one pass: one element to a driver with nothing
     /// pending is kept as a `BQuick` (an unchanged zero-delay one is skipped as in `assign`).
     /// False when the general path must run (it also produces every error).
-    #[inline]
+    #[inline(always)]
     fn assign_bytes_fast(
         &mut self,
         d: DriverId,
@@ -1339,7 +1378,7 @@ impl Ctx<'_> {
     /// logic elements (`planes`, `len` elements) to a driver with nothing pending is kept as a
     /// `VQuick`, no list entry and no value buffer. False when the general path must run (it
     /// also produces every error).
-    #[inline]
+    #[inline(always)]
     fn assign_planes_fast(
         &mut self,
         d: DriverId,

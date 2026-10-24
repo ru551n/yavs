@@ -2771,7 +2771,7 @@ impl SimControl {
     /// chain), as the reference simulator wakes the waiters of a value when it changes. False
     /// (nothing done) otherwise: `cycle` looks at the signal. Only with no observer of value
     /// changes, which must see the change before any process is resumed.
-    #[inline]
+    #[inline(always)]
     fn wake_sole(&mut self, s: u32) -> bool {
         // A GUARD that other guards read stays in `changed_sigs` (`run_guards`).
         if !self.guard_readers.is_empty() && self.guard_readers.contains_key(&s) {

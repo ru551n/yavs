@@ -3975,6 +3975,15 @@ elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130
 `Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
 look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
 
+### Kernel round 20: a lean wide bus is finished in one pass (#519, 2026-10-24)
+
+(`docs/decisions.md` "Kernel round 20".) `Signal::finish_words_lean` finishes the pending words of a lean bus with no codes and no
+activity stamps in one loop, and a whole plane-word entry is committed without shifts. `fletcher_bufferwriter_512`, bench builds,
+core 13, minimum of 5 alternating runs: 83.8 G to 77.1 G instructions (0.918), 30.1 G to 28.6 G cycles (0.951); `realbench
+--compare` (auto, warm and cold, 5 runs): the writer 6.44 s to 6.25 s warm, the other five tests level (instructions 1.00; the host
+ran at load 19 to 32, so wall time of the others is noise); all 42 tests, interpreter: instructions geometric mean 0.98, only the
+wide-vector category moves. Skipping a plane entry that holds its value already was built and measured: it costs as much as it saves.
+
 ### Kernel round 19: single-bit drives, Signal layout, record leaves, skipping and observers (#676, #519, #677, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 19".) No speed-up landed: the three ranked ideas were built and measured and none lowered the

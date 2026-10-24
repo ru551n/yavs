@@ -517,6 +517,13 @@ fn assign_blocks_longer_than_a_word_and_wrong_sizes() {
 /// assignments as one plane-word entry per 64 elements; with an identity resolution function
 /// (no direct driver) the same run takes the general path and must give the same trace.
 fn wide_registers(direct: bool, cfg: Config) -> (Vec<String>, Stats) {
+    wide_registers_with(direct, false, cfg)
+}
+
+/// `wide_registers`, with the bus lean (`Builder::lean_events`) and three processes that wait on
+/// the whole bus, on a part inside one block and on a part across two blocks, each reporting
+/// what woke it.
+fn wide_registers_with(direct: bool, lean: bool, cfg: Config) -> (Vec<String>, Stats) {
     let mut b = Builder::new();
     let same: Resolver = Arc::new(|srcs: &[&[u8]], out: &mut [u8]| {
         out.copy_from_slice(srcs[0]);
@@ -534,6 +541,9 @@ fn wide_registers(direct: bool, cfg: Config) -> (Vec<String>, Stats) {
         }
     };
     let w = sig("w", 200);
+    if lean {
+        b.lean_events(w);
+    }
     for (k, (off, len)) in [(0u32, 130u32), (130, 70)].into_iter().enumerate() {
         let d = b.driver(w.slice(off, len));
         let mut t = 0u32;
@@ -587,6 +597,21 @@ fn wide_registers(direct: bool, cfg: Config) -> (Vec<String>, Stats) {
             c.wait_for(ns(1))
         }),
     );
+    if lean {
+        for (name, off, len) in [("all", 0, 200), ("inner", 70, 10), ("across", 120, 20)] {
+            let r = w.slice(off, len);
+            b.process(
+                name,
+                NONE,
+                &[],
+                p(move |c| {
+                    let e = c.event(r)?;
+                    c.report(Severity::Note, format!("{name} woke, event={e}"));
+                    c.wait_on(r)
+                }),
+            );
+        }
+    }
     let (mut sim, trace) = build(b, cfg);
     sim.run_until(ns(40)).unwrap();
     let mut lines = trace.take();
@@ -622,4 +647,35 @@ fn wide_registers_are_direct_entries_per_plane_word() {
         ..Config::default()
     };
     assert_eq!(wide_registers(true, four).0, direct);
+}
+
+/// A lean bus (one event record per block) driven through plane-word entries wakes the same
+/// processes at the same times and lists the same changed ranges as one with every element's
+/// history, whole-signal waiters and waiters of parts alike.
+#[test]
+fn a_lean_wide_bus_wakes_and_changes_like_one_with_full_history() {
+    let (full, _) = wide_registers_with(true, false, Config::default());
+    // Nothing reads the activity (`skip_unchanged`): the lean bus is finished a pass for all its words.
+    let quiet = Config {
+        skip_unchanged: true,
+        ..Config::default()
+    };
+    let (lean, st) = wide_registers_with(true, true, quiet.clone());
+    assert_eq!(st.lean_signals, 1);
+    assert_eq!(wide_registers_with(true, true, Config::default()).0, lean);
+    let woke = lean.iter().filter(|l| l.contains(" woke")).count();
+    assert!(woke > 20, "{woke}");
+    // The full-history run has no watchers: compare the ranges and values only.
+    let rest = |l: &[String]| {
+        l.iter()
+            .filter(|x| !x.contains(" woke"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rest(&lean), full);
+    let four = Config {
+        threads: 4,
+        ..quiet
+    };
+    assert_eq!(wide_registers_with(true, true, four).0, lean);
 }

@@ -3875,7 +3875,7 @@ fn commit_out(
         return;
     }
     let mut i = 0;
-    while let Some(&o) = outv.get(i) {
+    while let Some(o) = outv.get(i) {
         let n = if outv.get(i + 1).is_some_and(|x| x.sig == o.sig) {
             outv[i..].iter().take_while(|x| x.sig == o.sig).count()
         } else {

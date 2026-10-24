@@ -7417,3 +7417,34 @@ of every PMP region) and assigned the constant again.
   `AllocCat` result: `NewPair` and `NewDope` are 10 percent of the ops of `poc_arith_addw`): a native taking data address and
   bounds in registers would save those ops and the two dependent reads in the native; that is an IR change (#697). The callback layer of the compiled tier is #698.
 
+## Kernel round 20: a lean wide bus is finished in one pass; whole-word entries; what a skip of unchanged plane entries costs (yavs-kernel, #519, 2026-10-24)
+
+Source of the numbers: `fletcher_bufferwriter_512` (512-bit buses through ~35 signals that each change about once a clock), bench
+builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction counts are exact, cycles are those of a host at load 20 to 30.
+
+- **Where the kernel time of a wide bus went.** Counters (a temporary build, not kept): 34 M plane words change over the run
+  (43 per delta cycle), 80% of them on a lean signal that keeps no codes and no activity stamps (`lean`, `codes` empty, `inactive`).
+  `finish_pend` finished each of them through `finish_word` and `update_word`: ~250 instructions a changed word, of which the real
+  work (xor, two blends, the block's event record) is ~40. The rest was per-word dispatch on flags that do not change within a bus
+  (`lean`, `watched`, `fine`, `codes.is_empty()`), three `SmallVec` derefs and `Option` bounds checks per word, a sort check of the
+  pending words, and a `cover` per word.
+- **Decision:** `Signal::finish_words_lean` finishes every pending word of such a signal in one loop (slices taken once, flags tested
+  once, the words in pending order unless a waiter of a part needs the runs in element order, one `cover` for the whole bus when
+  only whole-signal waiters exist; the runs of a part-waited bus are noted per word as before). The cover of the words is the hull
+  and the run counts add up, so `changed`, `nruns` (the `events` counter) and the wake-ups are those of the per-word path. A plane
+  word entry (element 64k, 64 elements) in `commit_planes_run` is stored and marked whole, without the shift and mask paths.
+  Test: `delta_paths::a_lean_wide_bus_wakes_and_changes_like_one_with_full_history` (changes, wake-ups of whole-bus, inner and
+  block-crossing waiters, at 1 and 4 threads, against a bus that keeps every element's history).
+- **Result:** writer 83.8 G to 77.1 G instructions (-8.2%), 30.1 G to 28.6 G cycles (-4.9%); the rest of the realbench set is
+  unchanged in instructions (geometric mean 0.99, only the wide-vector tests move). `lean` stays an elaboration decision (round 18).
+- **Measured and not taken: skipping a plane entry that holds the value already** (as `commit_code` does for one element, #420):
+  at commit time 37% of the writer's plane entries (21 M of 58 M) and 49% of the reader's find the driving and effective value equal
+  (`skip_ok` signals). Skipping them costs a block compare on every entry and saves little, because the `m == 0` path of
+  `update_word` was already cheap (~35 instructions): writer +0.8% instructions, reader -1.6%, cycles level. Not kept.
+- **Measured, not changed:** 6 M of the writer's 58 M plane entries repeat an entry of the same driver within one batch (10%; a
+  default and its override): removing them at commit is worth ~0.7%; at the source that is #667 (IR optimiser).
+- **Remaining kernel cost of a bus** (writer, per delta cycle of 100 K instructions): `finish_words_lean` 7.8%, `commit_planes_run` 4.0%,
+  `finish_direct` 3.1%, `cycle` 3.0%, `assign_wide_fast` 2.7%, `commit_out` 2.7%, `Buf::write_to` 2.5%, `canonical_changed` 1.8% (a
+  bus with a waiter on a part keeps a run list: ~8 runs a word with random data, sorted, merged and scanned by the waiters three
+  times a cycle; ~4% of the writer in all). Exact run lists could only be replaced by a split of the signal at the waiters'
+  boundaries (nexus splitting in the reference simulator), a larger change that also touches ports and observers: not started.

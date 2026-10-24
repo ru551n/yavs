@@ -7322,8 +7322,8 @@ percent between invocations, so the instruction counts are the reliable column a
 
 - **Decision.** In a build with the `clift` feature and without `llvm`, `--tier=auto` means `--tier=clift-auto` (`Common::tier`).
   The default tier of such a build stays `interp` (the user decision covers the explicit `auto` only; whether the default
-  becomes `auto` there waits for Cranelift beating the interpreter on the benchmark designs). `layout_slots` stays off for it
-  (Cranelift ignores the layout slots).
+  becomes `auto` there waits for Cranelift beating the interpreter on the benchmark designs; user, 2026-10-24, asked again after
+  the first measurements: it keeps `interp` for now). `layout_slots` stays off for it (Cranelift ignores the layout slots).
 - **Why.** The user asked that `auto` mean the real policy wherever it can run; the policy is generic over the generator.
 
 ## Tier-up policy generic over the code generator (yavs-llvm, #481, user, 2026-10-24)
@@ -8366,8 +8366,8 @@ one and the figures repeat), one `clift`-only release binary built with `tools/b
   repacker 0.842 to 0.816; no design got worse beyond its run-to-run spread (the verification-library testbenches spread most:
   1.2 to 1.5 of the interpreter's instructions in every setting, with the old binary too, #673). The payback factor, the budget
   percent, the callback limit and the budget factors of native and clocked functions were swept too and none moved a result
-  beyond that noise, so they stay; a price of 33 microseconds per IR instruction (the measured mean) made `poc_arith_addw` 8
-  percent worse (the big process was compiled earlier), so 45 stays. `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N`
+  beyond that noise, so they stay; a price of 33 microseconds per IR instruction (the measured mean) moved nothing beyond the
+  spread of `poc_arith_addw` (its trial of `_p8` decides between 112 G and 119 to 151 G), so 45 stays. `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N`
   replaces `YAVS_FIRST_RTL_MIN` and `YAVS_FIRST_BAND` (measuring aid).
 - **Decision: under `--tier=auto3` a function compiled by Cranelift is compiled again by LLVM after 300 times its first-level
   threshold of running compiled (`Tune::o2_after`; was 30, and `YAVS_O2_AFTER`).** Why: the second level does not pay on these

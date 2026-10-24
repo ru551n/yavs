@@ -3956,6 +3956,17 @@ elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130
 `Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
 look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
 
+### Kernel round 19: single-bit drives, Signal layout, record leaves, skipping and observers (#676, #519, #677, 2026-10-24)
+
+(`docs/decisions.md` "Kernel round 19".) No speed-up landed: the three ranked ideas were built and measured and none lowered the
+instructions of the set (output identical, counters equal but the entry kinds): neighbouring one-element drives of a driver as one
+vector entry (`hdlm_lfsr` -0.9% instructions, `sc5_fifo_repack` +1.9%), the same at commit time (-0.07% / +0.5%), lean `*_now`
+entries (-0.25% / +0.15%), `Signal` fields ordered hot first with `repr(C)` (L1 data misses -3%, instructions +0.1 to 0.3%, cycles
+within the noise of a loaded host). The kernel is ~5% of the cycles of a `grlib_leon3mp` window; the 680 instructions a record
+leaf are interpreter work (gather and scatter instructions, #677). Added: the counter `skip_signals` and tests that the skipping
+of assignments of the held value follows the observers (`--cov`, a VHPI plugin, `'active`, `'last_active`, `'transaction`,
+`'quiet`; a waveform file does not observe activity and keeps it: open question for the user).
+
 ### Kernel round 18: lean event bookkeeping of wide signals, exact-instruction tools (#519, #440, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 18".) The user's decisions from round 17's questions: `RESIDENT_REGS` stays 2048, no kernel

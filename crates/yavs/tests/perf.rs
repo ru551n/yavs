@@ -572,6 +572,54 @@ fn lean_events_change_nothing() {
     assert_eq!(cov.counters["lean_signals"], 0);
 }
 
+/// An assignment of the value a signal holds is dropped only when nothing can observe the
+/// signal's activity (user, 2026-10-24): `skip_signals` counts the signals that allow it. Each
+/// observer of activity (a coverage run, a plugin, a debugger, `'active`, `'last_active`,
+/// `'transaction`, `'quiet`) takes it away; a waveform file records values only.
+#[test]
+fn skipping_follows_observers() {
+    let d = tempdir("skip_observers");
+    let src = include_str!("perf/skip_observers.vhd");
+    let run = |decl: &str, extra: &str, more: &[&str]| {
+        let src = src.replace("--EXTRA_DECL", decl).replace("--EXTRA", extra);
+        let r = run_design(&d, "skip_observers", &src, "interp", more);
+        assert_eq!(r.code, 0, "{}", r.all());
+        r.counters["skip_signals"]
+    };
+    // a, b and n, and nothing else.
+    assert_eq!(run("", "", &[]), 3);
+    // A waveform records values, not activity.
+    let fst = d.join("w.fst");
+    let wave = format!("--wave={}", fst.display());
+    assert_eq!(run("", "", &[&wave]), 3);
+    // Coverage: statement counters see every activation.
+    assert_eq!(run("", "", &["--cov"]), 0);
+    // `'active` and `'last_active` anywhere switch it off for the whole design.
+    assert_eq!(
+        run(
+            "",
+            "process (a) begin assert a'active or true; end process;",
+            &[]
+        ),
+        0
+    );
+    assert_eq!(
+        run(
+            "",
+            "process (a) begin assert a'last_active >= 0 ns; end process;",
+            &[]
+        ),
+        0
+    );
+    // An implicit signal makes its prefix an observer (`'transaction`, `'quiet`): that signal
+    // and the implicit one are out, the others stay.
+    assert_eq!(
+        run("", "process (a'transaction) begin null; end process;", &[]),
+        2
+    );
+    assert_eq!(run("signal q : boolean;", "q <= a'quiet(5 ns);", &[]), 3);
+}
+
 /// The third run of a design in one library (the first notes the closure, the second stores, the
 /// third hits the cache).
 #[test]

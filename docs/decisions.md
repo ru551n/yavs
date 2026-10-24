@@ -4406,6 +4406,59 @@ cycles for the design.
   signals: a further -0.9% instructions and -0.7% cycles of the writer, but edge tests read those planes and signal parameters reach
   `rising_edge`, so no static rule is sound.
 
+## Kernel round 19: single-bit drives, Signal layout, record leaves; assignment skipping and observers (yavs-kernel, #676, #519, #677, 2026-10-24)
+
+No kernel speed-up landed this round: each of the three ranked ideas was built and measured (bench builds, `tools/stepcount`
+windows, `perf stat` on core 9, minimum of alternating runs; the host ran at load 20 to 30 with the SMT sibling of core 9 busy, so
+cycle differences below about 5% are noise and only the instruction counts, which are exact, decide). What was found is recorded so
+the next round does not repeat it.
+
+- **Single-element drives of one vector in a loop (#676).** Three designs of the idea, all with identical output and the same
+  counters except `direct_codes`/`direct_planes`: (1) at assignment time, neighbouring one-element `Out` entries of a driver become
+  one `OutV` (a pair, the third of a run, extension of the driver's last `OutV` upwards or downwards, a one-element `OutV` behind
+  other vector entries instead of the general path): `hdlm_lfsr` 67.05 G to 66.45 G instructions (-0.9%, interpreter; its ten
+  codes per edge become one plane entry), `sc5_fifo_repack` 41.62 G to 42.43 G (+1.9%: its runs are short, 5.6 M of the 10.7 M codes
+  became plane entries that commit singly, and the entry lists grew, which the linear `has_entries` scans pay for); with pairs
+  promoted too, +8%. (2) At commit time, `Signal::commit_codes` writes neighbouring entries as one plane block (the skip test on the
+  block): `hdlm_lfsr` -0.07%, `sc5_fifo_repack` +0.5%. (3) A lean `assign_code_now` / `assign_planes_now` / `assign_bytes_now`
+  that skips the `Option<Range>` argument and the time of the general fast path (a store-forwarding stall showed on that load in a
+  `perf annotate` of the compiled tier): -0.25% on `hdlm_lfsr`, +0.15% on the CPU and fletcher designs. None meets the landing rule
+  (instructions down on the set), none was taken. Why the ticket's 21% does not turn into instructions: it is cycles of the compiled
+  tier, where `Ctx::assign_code_fast` alone is 8% of the cycles for ~40 instructions a call (latency of the driver, waveform and
+  signal look-ups behind each call, three layers deep from the compiled code), and `commit_codes` is 1.6% of the instructions
+  (5.6% of the cycles) of the interpreter and compiled runs; the batching has to happen in the compiled code (one host call per
+  run of the loop), not behind the host call.
+- **Signal layout (#519).** `Signal` is 744 bytes (the three value buffers are 56 bytes each, inline for up to 64 elements, the
+  stamps 40 more). With `#[repr(C, align(64))]` and the fields ordered by how often `commit_code`, `finish_pend`, `update_word`
+  and `finish_code` touch them (flags, `last_commit`, `ty`, the force options, then `driving`, `cur`, `last_value`, `stamps`,
+  `codes`, `pend`, the cold lists last), L1 data misses fell by 3% (`neorv32_single_min` 1.539 G to 1.485 G, the 512-bit writer
+  2.178 G to 2.123 G) and instructions rose by 0.1 to 0.3% (larger displacements); cycles moved by less than the noise (-6% to +2%
+  between runs of the same binary). A second ordering with the force options and `ty` in the first line: the same. Not taken. A
+  split into a hot struct and a boxed cold one would not change the lines the hot paths touch (the reorder already leaves the cold
+  lines unread), so it was not built.
+- **Record leaves (#677), the kernel part.** A 40 us window of `grlib_leon3mp` (interpreter) has the kernel at ~5% of the cycles
+  (`update` 1.0, `commit_out` 0.7, `finish_direct` 0.7, `commit_code` 0.6, `assign_code_fast` 0.4, `read_into` 0.4) and
+  `run_ops` 48%, `copy_bits` 5%, `lcopy` 4%, `memmove` 4%: the ~680 instructions a leaf are the interpreter's. Per-leaf event
+  stamps in the kernel would skip at most a third of the 5%; the gather and scatter instructions of the issue (and the use of the
+  stamps by a skipping gather) are interpreter work. Nothing started in the kernel.
+- **Assignment skipping and observers (user decision of 2026-10-24: drop an assignment of the value a driver holds only when nobody
+  observes the signal's activity).** The mechanism already exists and has been on by default since #420 ("Skipped unchanged
+  assignments"): `Signal::skip_ok` (decided by `Builder::mark_skippable` from the signal's guard, resolution function, composite
+  group, implicit signals and port conversions) and `Config::skip_unchanged`, which `yavs` sets only when no coverage, debugger or
+  VHPI plugin is attached and no `'active` or `'last_active` exists in the analysed units; the direct paths (`commit_code`,
+  `assign_*_fast` phantoms) are those that drop. `grlib_leon3mp` runs with it on (`idle_skips` > 0). This round only adds the
+  evidence: the counter `skip_signals` (signals that allow it, printed by `YAVS_COUNTERS=1`) and tests that show it goes to 0 with
+  `--cov`, a VHPI plugin (`vhpi_run.rs`) and `'active` or `'last_active`, and drops by the prefix and the implicit signal for
+  `'transaction` and `'quiet` (`perf.rs` `skipping_follows_observers`). A debugger session (`--dap`) shares the `observed_free`
+  expression with coverage and VHPI but cannot be tested this way: the DAP path ends without printing counters.
+  **Open: waves.** A waveform file (`--wave`) is not in `observed_free` and keeps the skipping and the edge triggers: it records
+  value changes, which an equal-value drop does not change (the FST of the design is identical). Making it an observer of
+  activity, as the user's list of 2026-10-24 reads, is one condition (`a.wave.is_none()` in `skip_unchanged`) and costs wave runs
+  the idle skip (10 to 15% of the instructions of a CPU testbench); it was not made.
+  A per-signal 'activity read' flag instead of the global `Facts::reads_activity` would only help designs that use `'active` or
+  `'last_active` somewhere: of the corpora only the UVVM SPI BFM package (one file) and the conformance suites do, not OSVVM, VUnit,
+  hdl-modules, Open Logic, PoC, neorv32, GRLIB or fletcher; not done.
+
 ## GUARD changes in the cycle of its condition (yavs-kernel, yavs-elab, #464, 2026-10-23)
 
 LRM 11.2 and 14.7.5: the implicit GUARD signal is updated in the cycle where a signal of its condition has an event. The

@@ -179,6 +179,8 @@ pub struct Stats {
     /// Signals of more than 64 elements that keep only each block's last event
     /// (`Builder::lean_events`); fixed when the model is built.
     pub lean_signals: u64,
+    /// Signals that allow skipping an assignment of the value they hold (`Signal::skip_ok`).
+    pub skip_signals: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -1116,6 +1118,7 @@ impl SimControl {
             }
         }
         let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
+        let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
         let mut sim = SimControl {
             guard_procs,
             guard_readers,
@@ -1183,6 +1186,7 @@ impl SimControl {
             interrupt: Interrupt::default(),
             stats: Stats {
                 lean_signals,
+                skip_signals,
                 ..Stats::default()
             },
             live: false,

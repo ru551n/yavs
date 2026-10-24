@@ -6670,3 +6670,16 @@ nothing, so its entry recorded nothing and a replay left the keys in; #664, the 
 set are read from its write log now (`TrackedSet::removed_since`), whatever the net change; two tests in `tests/units.rs`.
 `YAVS_UNIT_CHECK=1` cold and warm over 34 corpus selections (the 21 of the previous section, grlib-2008, vests-1993, the tool-check, ideas,
 interfaces, vunit-tests, yavs-lib and compliance sets) is as expected.
+
+Also: a lookup of a `std`/`ieee` unit that the work library lacks walked the mapped libraries in path order, sorted afresh each time
+(190 failed `open` calls per cold call of UVVM, 30 libraries); it starts at the library that had the last one now (cold UVVM 9.72 to
+9.30 G instructions, kernel cycles 4.38 to 3.90 G over the 235 calls). A cold `analyze` call spends about as many cycles in the kernel
+as in user mode (UVVM: 4.4 G against 6.7 G, 730 page faults and 545 system calls per call, 230 faults and 3 M kernel instructions of them
+for an empty call): instruction counts of user mode alone understate the wall time.
+
+Final numbers after both pushes (cold analysis, whole manifest one file per call, G instructions before / after): osvvm 10.94 / 5.40,
+Open Logic 21.93 / 10.94, PoC 4.86 / 2.68, vunit 7.53 / 4.26, UVVM 16.93 / 9.30, hdl-modules 1.56 / 0.92, satcat5 6.22 / 3.70, neorv32 2.00 / 1.41,
+grlib-1993 19.14 / 14.21. Warm analysis: satcat5 1.51 / 0.90, Open Logic 3.06 / 2.55, UVVM 4.32 / 1.75, OSVVM 1.48 / 1.20, hdl-modules 0.25 / 0.19.
+Cold `elab`: `uvvm_sb_slv` 0.40 / 0.28, `osvvm_axis_random` 0.65 / 0.60, `olo_base_cam` 1.09 / 1.04, `hdlm_fifo_sync` 0.64 / 0.58, `en_cl_fix_pkg`
+0.50 / 0.43, `vunit_logging` 0.20 / 0.16, `neorv32_single_min` 0.63 / 0.67 (#665), `poc_uart_rx` 1.78 / 1.77 (90 percent of it evaluates
+constants in the interpreter, a quarter of that in the IR optimiser at the first call of each function: not front end).

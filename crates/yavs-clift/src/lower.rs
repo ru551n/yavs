@@ -2078,6 +2078,48 @@ impl Gen<'_> {
         let p1 = self.b.ins().iadd(base, off);
         self.b.ins().jump(done, &[BlockArg::Value(p1)]);
         self.b.switch_to_block(call);
+        // The object's entry of `Mem::objs` (the objects found before: heap objects a `Deref`
+        // found, a process's heap variables): one load and compare, as the LLVM generator does;
+        // else `yavs_rt_host` (`Mem::find`, then the interpreter is asked for the object).
+        let flag = self.b.ins().ushr_imm_s(a, 32 + i64::from(KEY_SHIFT_ADDR));
+        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
+        let key = self.b.ins().bxor(hi, flag);
+        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
+        let eo = self.b.ins().imul_imm_s(key, OBJ_SIZE as i64);
+        let ent = self.b.ins().iadd(self.mem, eo);
+        let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let mut hit = self.b.ins().icmp(IntCC::Equal, ehi, hi);
+        if write {
+            let w = self
+                .b
+                .ins()
+                .load(I64, self.mf, ent, (MEM_OBJS + OBJ_W) as i32);
+            let w = self.b.ins().icmp_imm_s(IntCC::NotEqual, w, 0);
+            hit = self.b.ins().band(hit, w);
+        }
+        let optr = self
+            .b
+            .ins()
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_PTR) as i32);
+        let olen = self
+            .b
+            .ins()
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_LEN) as i32);
+        let ofits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, olen);
+        let orest = self.b.ins().isub(olen, n);
+        let oinside = self
+            .b
+            .ins()
+            .icmp(IntCC::UnsignedLessThanOrEqual, off, orest);
+        let ok = self.b.ins().band(ofits, oinside);
+        let ok = self.b.ins().band(hit, ok);
+        let (obj, miss) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(miss);
+        self.b.ins().brif(ok, obj, &[], miss, &[]);
+        self.b.switch_to_block(obj);
+        let p3 = self.b.ins().iadd(optr, off);
+        self.b.ins().jump(done, &[BlockArg::Value(p3)]);
+        self.b.switch_to_block(miss);
         let w = self.c32(u32::from(write));
         let c = self
             .b

@@ -1299,6 +1299,23 @@ impl Runtime {
         }
     }
 
+    /// Drop what was derived from functions that ran as lowered ([`yavs_ir::ElabRaw`]) and will
+    /// run optimised from now on: call it before a runtime that replayed elaboration-time calls
+    /// runs a simulation, or their lowered code and the optimised code of the same function
+    /// disagree on pcs and operand lists. `false` when something else holds the runtime.
+    pub fn forget_raw(rt: &mut Arc<Runtime>) -> bool {
+        let Some(r) = Arc::get_mut(rt) else {
+            return false;
+        };
+        for (p, l) in r.pre.iter_mut().zip(&mut r.live) {
+            if p.get().is_some_and(|p| p.raw) {
+                *p = Default::default();
+                *l = Default::default();
+            }
+        }
+        true
+    }
+
     /// The facts of function `id` (`f`), computed once.
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {

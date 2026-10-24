@@ -815,6 +815,34 @@ fn tiers_agree() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Under `--cov` the simulation replays the elaboration-time calls of package functions; those
+/// ran as lowered, and the process calls after them run the optimised code (#705).
+#[test]
+fn replayed_calls_run_optimised() {
+    let tmp = tempdir("replay");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_replay.vhd");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    let a = yavs(
+        &tmp,
+        &["analyze", "--std=2008", &lib, src.to_str().expect("utf-8")],
+    );
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = yavs(
+        &tmp,
+        &[
+            "run",
+            "--std=2008",
+            &lib,
+            "cov_replay",
+            "--cov=r.ycov",
+            "--cov-kind=statement",
+            "--tier=interp",
+            "--no-cache",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+}
+
 /// Per-instance copies, memoised blocks and inlined functions count exactly what the shared
 /// code counts: byte-identical databases for every kind, at one and four threads (#699).
 #[test]

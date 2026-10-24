@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
 pub(crate) struct Pre {
+    /// Made from the function as lowered, under elaboration-time evaluation (`Runtime::forget_raw`).
+    pub raw: bool,
     /// Initial registers: the preloaded values, zero elsewhere.
     init: Vec<u64>,
     /// The function's frame size in bytes (`Func::frame`), its parameters' slots and widths and
@@ -179,6 +181,7 @@ impl Pre {
             f.frame
         };
         Pre {
+            raw: budget,
             init,
             slots: f.frame,
             lean,

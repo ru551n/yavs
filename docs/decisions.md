@@ -6087,8 +6087,15 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
 - **Shared code is kept** with `--dap` (`keep_variables`), `--vhpi` and `--wave-variables` (`external_variables`), with coverage
   counters, under `--tier=llvm`, with `YAVS_NO_IROPT`, for serial processes and for processes with several waits; the
   stage cache holds copies only where optimised copies are portable (`copies_are_portable`).
-- **Tiers**: under `--tier=auto` a copy is compiled like any function; the instance-count rule for clocked processes counts
-  the instances of the process it is a copy of; a process whose shared code is compiled already does not switch, and none switches in the 150 ms
+- **Tiers**: under `--tier=auto` a copy is a function like any, sampled under its own id, but every policy decision about it is its
+  process's (#661, user, 2026-10-24: "the auto tier counts samples, and the instance and share rules, by base process, so all copies of one
+  process are treated as one for policy decisions, then compiles the copy that runs"): `Worker::group` is the interpreted time of the
+  process and all its copies and the threshold, payback, band wait, probe and share and instance rules (`cold`) read it, a copy is
+  classified (`rtl`, band, budget factor) and its threshold taken from the shared code of its process, every copy seen running is a candidate once
+  the process is hot and is compiled from its own code, and a trial that takes one copy's compiled code back keeps the other copies not compiled
+  yet interpreted. Compiled copies are named by `Program::copy_tag` (a hash of process and masked data) in the symbol names, so the
+  compilation cache key (the bitcode) is the same in every run, whatever order the processes switched in (it used the function id, which
+  follows the order, and so differed between runs with `--threads` above 1). A process whose shared code is compiled already does not switch, and none switches in the 150 ms
   after the tier is set (`SPEC_TIER_WAIT`: the tier needs about 30 ms of samples of a process before it compiles it, and a compiled process beats
   its interpreted copy by far); `YAVS_SPEC_AFTER` forces the switch, for tests, which also compile copies at once under `--tier-heat=1,0,0`.
 - **Stage cache**: kind `spec`, one entry per lowering with the copies of all runs, read when the first copy is optimised and
@@ -6104,11 +6111,10 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   designs (`poc_arith_addw`, `sc5_fifo_repack`: 0.5 and 4.3 points of gain). The interpreter rule (instructions down, cycles not worse in
   the geometric mean) holds on `interp`: instructions 0.96 over ten realbench tests, interleaved cycle medians -2.5 to -10 % where measured;
   under `auto` the instructions are 0.98 and the two exceptions are filed.
-- **Open** (reported, not decided): the tier policy for processes that run copies (#661); (the cap is 2.5 since 2026-10-24); processes
-  with several wait statements stay shared (a mapping of the resume point by statement would admit them); loads of pointer-typed instance
-  data (array generics, descriptors) are not folded; copy ids depend on the order of the switches, so with `--threads` above 1 the compiled-code
-  cache keys of copies (which name the function id) can differ between runs; designs whose lowering is not cached (`ir` entry) re-optimise
-  their copies in every run.
+- **Open** (reported, not decided): processes with several wait statements stay shared (a mapping of the resume point by statement would
+  admit them); loads of pointer-typed instance data (array generics, descriptors) are not folded; designs whose lowering is not cached
+  (`ir` entry) re-optimise their copies in every run. (The tier policy for copies and the keys of compiled copies were settled in #661, the
+  cap is 2.5 since 2026-10-24.)
 
 
 ## A flat view of the heap slots for compiled `Deref`: built, measured, not landed (yavs-interp, yavs-llvm, #655, 2026-10-23)

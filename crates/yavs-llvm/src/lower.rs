@@ -1996,10 +1996,17 @@ pub(crate) fn compile_one(
         prog,
         std::iter::once(id).chain(f.code.iter().filter_map(call_of).map(|c| c.0)),
     );
-    let name = format!("f{}", id.0);
-    let nname = format!("f{}_n", id.0);
+    // A copy of a process (`Program::copy_of`) is named by what it is for, not by its id, which
+    // depends on the order the processes switched in: the same copy is the same module in every
+    // run, so the compilation cache finds it (#661).
+    let stem = prog.copy_tag(id).map_or_else(
+        || format!("f{}", id.0),
+        |t| format!("f{}c{t:016x}", prog.base_of(id).0),
+    );
+    let nname = format!("{stem}_n");
     let llvm = |e: Error| format!("LLVM: {e} (a bug in yavs)");
-    let cname = format!("f{}_c", id.0);
+    let cname = format!("{stem}_c");
+    let name = stem;
     let mut native = nc.contains(&id) && part != Part::Frame;
     if part == Part::Native && !native {
         return Err("no native-frame code for the function".into());

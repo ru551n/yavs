@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use yavs_diag::{FileId, Span};
-use yavs_interp::{Bindings, InstData, Runtime};
+use yavs_interp::{Bindings, InstData, Runtime, Tier};
 use yavs_ir::*;
 use yavs_llvm::{AutoTier, Heat, Note, OptLevel, cache_stats, set_cache};
 
@@ -53,6 +53,84 @@ fn sum() -> (Program, FuncId) {
     fb.emit(Inst::Ret { v: Some(acc) });
     fb.finish();
     (pb.finish().unwrap(), f)
+}
+
+/// A process that reads generic `G` (instance offset 0) and stores 1 or 2 in a frame slot
+/// depending on `G == 3`, with room for two copies.
+fn process_with_copies() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let f = pb.declare("p", FuncKind::Process, None);
+    let mut fb = pb.define(f);
+    fb.slot(16, 8);
+    fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
+    let (head, body, yes, no, end) = (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+    fb.body(head);
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    fb.emit(Inst::Br { to: body });
+    fb.at(body);
+    let a = fb.addr(AddrSpace::Inst, 0);
+    let g = fb.reg(RegTy::I64);
+    fb.emit(Inst::Load {
+        dst: g,
+        addr: a,
+        w: Width::B8,
+    });
+    let three = fb.int(3);
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Eq,
+        dst: c,
+        a: g,
+        b: three,
+    });
+    fb.emit(Inst::CondBr { c, t: yes, f: no });
+    for (blk, v) in [(yes, 1), (no, 2)] {
+        fb.at(blk);
+        let s = fb.addr(AddrSpace::Frame, 0);
+        let k = fb.int(v);
+        fb.emit(Inst::Store {
+            addr: s,
+            src: k,
+            w: Width::B8,
+        });
+        fb.emit(Inst::Br { to: end });
+    }
+    fb.at(end);
+    fb.emit(Inst::Suspend { resume: 0 });
+    fb.emit(Inst::Br { to: head });
+    fb.finish();
+    let mut p = pb.finish().unwrap();
+    p.reserve_copies(2);
+    (p, f)
+}
+
+/// Compiles the copies of `process_with_copies` for `G` = `order` (in that order, so the first
+/// gets the first reserved function id) with the eager tier.
+fn compile_copies(order: [i64; 2]) {
+    let (prog, f) = process_with_copies();
+    let ids: Vec<FuncId> = order
+        .iter()
+        .map(|&g| {
+            let mut d = g.to_le_bytes().to_vec();
+            d.extend([0; 8]);
+            prog.copy_of(f, &d, &[]).expect("a copy")
+        })
+        .collect();
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let note: Note = Box::new(|_, _, _| {});
+    let heat = Heat {
+        base: 0,
+        per_instr: 0,
+        period: 0,
+        budget: 0,
+    };
+    let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+    for id in ids {
+        tier.hot(id);
+    }
+    assert_eq!(tier.compiled(), 2);
+    tier.stop(true);
 }
 
 fn objects(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -128,6 +206,20 @@ fn compiled_code_is_kept_and_linked_again() {
     assert_eq!(stored, 4, "cold: compiled and stored");
     run_auto(&prog, f);
     assert_eq!(cache_stats(), (hits + 2, stored), "warm: linked");
+
+    // The copies of a process are named and keyed by what they are for, not by their function
+    // ids, which follow the order the processes switched in: the same copies asked for in the
+    // other order are linked from the cache (#661).
+    if yavs_ir::opt::specialise_on() {
+        let (_, before) = cache_stats();
+        compile_copies([3, 4]);
+        let (hits, stored) = cache_stats();
+        assert!(stored > before, "cold: compiled and stored");
+        compile_copies([4, 3]);
+        let (more, again) = cache_stats();
+        assert_eq!(again, stored, "the other order compiles nothing");
+        assert!(more >= hits + 2, "and links both copies");
+    }
 
     // A directory that cannot be written: compiled, nothing kept, no error.
     let file = dir.path().join("plain-file");

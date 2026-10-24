@@ -314,6 +314,13 @@ impl Program {
         self.copies.get(f).map_or(f, |c| c.base)
     }
 
+    /// A number that names the copy `f` by what it is for, the same in every run: a hash of its
+    /// process and masked instance data (`None` for any other function). Copy ids depend on
+    /// which process switched first, so compiled code is named and keyed by this.
+    pub fn copy_tag(&self, f: FuncId) -> Option<u64> {
+        self.copies.get(f).map(|c| key_hash(c.base, &c.data))
+    }
+
     /// The function's lowered code and header: that of the process for a copy.
     pub fn raw(&self, f: FuncId) -> Option<&Func> {
         self.funcs.get(self.base_of(f)).map(Func::full)

@@ -824,6 +824,11 @@ struct Worker {
     calls: Vec<usize>,
     /// Microseconds each function was seen interpreted, and running compiled.
     time: Vec<[u64; 2]>,
+    /// Per process (by `Program::base_of`), the microseconds it and all its copies were seen
+    /// interpreted: the time every policy decision about a copy goes by (#661).
+    group: Vec<u64>,
+    /// Per function: it became a candidate (`start`).
+    asked_for: Vec<bool>,
     /// Microseconds the simulation threads were seen running, and the compile thread spent
     /// compiling.
     total: u64,
@@ -929,14 +934,22 @@ impl Worker {
             .unwrap_or(id)
     }
 
-    /// The microseconds of compile time to expect for `f`.
-    fn cost(&self, f: &yavs_ir::Func) -> u64 {
-        let per = if rtl(&self.prog, f) {
+    /// Whether `id` is a clocked process (`rtl`). A copy of a process (`Program::copy_of`) counts
+    /// as the process it is a copy of, so every copy gets the decisions the process would get.
+    fn is_rtl(&self, id: FuncId) -> bool {
+        self.prog
+            .func(self.prog.base_of(id))
+            .is_some_and(|f| rtl(&self.prog, f))
+    }
+
+    /// The microseconds of compile time to expect for `id`.
+    fn cost(&self, id: FuncId) -> u64 {
+        let per = if self.is_rtl(id) {
             US_PER_INSTR_RTL
         } else {
             self.us_per_instr
         };
-        (per * f.code.len() as f64) as u64
+        (per * self.prog.func(id).map_or(0, |f| f.code.len()) as f64) as u64
     }
 
     /// `native_set` of `id` alone (the functions it reaches on native frames, `id` among them
@@ -961,6 +974,14 @@ impl Worker {
             .get_or_init(|| self.prog.func(id).is_some_and(|f| compute(&self.prog, f)))
     }
 
+    /// IR instructions of the process `id` is, or is a copy of: what the policy goes by, so the
+    /// copies of a process all get the decision the process gets.
+    fn base_len(&self, id: FuncId) -> usize {
+        self.prog
+            .func(self.prog.base_of(id))
+            .map_or(0, |f| f.code.len())
+    }
+
     /// The time `id` must be seen at its level before it is compiled (again).
     fn threshold(&self, id: FuncId, compiled: bool) -> u64 {
         let Some(f) = self.prog.func(id) else {
@@ -969,17 +990,21 @@ impl Worker {
         if compiled {
             return self.heat.o2_threshold(f);
         }
-        let at = self.heat.threshold(f);
+        // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
+        let at = self
+            .prog
+            .func(self.prog.base_of(id))
+            .map_or(u64::MAX, |b| self.heat.threshold(b));
         if self.heat.budget == 0 {
             at
-        } else if rtl(&self.prog, f) {
-            at.max(band_wait(f.code.len()))
+        } else if self.is_rtl(id) {
+            at.max(band_wait(self.base_len(id)))
         } else if self.is_compute(id) {
-            at.max(PAYBACK_COMPUTE * self.cost(f))
+            at.max(PAYBACK_COMPUTE * self.cost(id))
         } else if self.natively(id) {
-            at.max(PAYBACK_NATIVE * self.cost(f))
+            at.max(PAYBACK_NATIVE * self.cost(id))
         } else {
-            at.max(PAYBACK * self.cost(f))
+            at.max(PAYBACK * self.cost(id))
         }
     }
 
@@ -1127,7 +1152,7 @@ impl Worker {
             return None;
         }
         let heat = |w: &Self, id: FuncId| {
-            let cost = w.prog.func(id).map_or(1, |f| w.cost(f).max(1));
+            let cost = w.cost(id).max(1);
             w.time[id.0 as usize][0] * 1000 / cost
         };
         let mut order: Vec<usize> = (0..cands.len()).collect();
@@ -1136,12 +1161,7 @@ impl Worker {
         let mut prices = Vec::new();
         for &i in &order {
             let ids = self.tree(cands[i]);
-            let cost: u64 = ids
-                .iter()
-                .filter_map(|&(i, _)| self.prog.func(i))
-                .map(|f| self.cost(f))
-                .sum::<u64>()
-                + self.load_cost();
+            let cost: u64 = ids.iter().map(|&(i, _)| self.cost(i)).sum::<u64>() + self.load_cost();
             prices.push((cost, self.factor(cands[i])));
             trees.push(ids);
         }
@@ -1202,12 +1222,16 @@ impl Worker {
             return false;
         };
         let k = id.0 as usize;
-        let wait = if rtl(&self.prog, f) {
-            band_wait(f.code.len())
+        let wait = if self.is_rtl(id) {
+            band_wait(self.base_len(id))
         } else {
             0
         };
-        if self.probed[k] || self.done[k][0] || seen < self.heat.threshold(f).max(wait) {
+        let at = self
+            .prog
+            .func(self.prog.base_of(id))
+            .map_or(u64::MAX, |b| self.heat.threshold(b));
+        if self.probed[k] || self.done[k][0] || seen < at.max(wait) {
             return false;
         }
         // The look-up generates the function's code: within the budget, as a compile is, with at
@@ -1219,7 +1243,7 @@ impl Worker {
                 self.heat.budget,
                 self.factor(id).max(NATIVE_BUDGET),
                 self.spent,
-                self.load_cost() + self.cost(f) / PROBE_PART,
+                self.load_cost() + self.cost(id) / PROBE_PART,
                 self.total,
             );
         self.probed[k] = go;
@@ -1230,7 +1254,7 @@ impl Worker {
     fn factor(&self, id: FuncId) -> u64 {
         match self.prog.func(id) {
             _ if self.is_compute(id) => COMPUTE_BUDGET,
-            Some(f) if rtl(&self.prog, f) => RTL_BUDGET,
+            Some(_) if self.is_rtl(id) => RTL_BUDGET,
             Some(_) if self.natively(id) => NATIVE_BUDGET,
             _ => 1,
         }
@@ -1291,7 +1315,7 @@ impl Worker {
         // clocked process. A procedure or a process that loops between its waits does its work in
         // stretches the counter does not see (`poc_arith_addw`'s checker, 15 s in a few hundred
         // thousand runs: verdicts 0.89 to 0.96 for code that makes the run a fifth faster).
-        if !rtl(&self.prog, f)
+        if !self.is_rtl(id)
             || self.heat.budget == 0
             || self.heat.eager()
             || self.unmeasurable
@@ -1353,6 +1377,14 @@ impl Worker {
         }
         if let Some(Verdict::Drop(x)) = r {
             self.lost[k] = true;
+            // The copies of a process are one process to the policy (#661): the ones not compiled
+            // yet stay interpreted too.
+            let base = self.prog.base_of(id);
+            for j in 0..self.lost.len() {
+                if self.prog.base_of(FuncId(j as u32)) == base && !self.done[j][0] {
+                    self.lost[j] = true;
+                }
+            }
             (self.note)(
                 id,
                 self.opt,
@@ -1401,9 +1433,10 @@ impl Worker {
         };
         let level = if o2 { OptLevel::O2 } else { self.opt };
         let level = crate::lower::level_for(&self.prog, f, level);
-        let few = rtl(&self.prog, f)
+        let few = self
+            .is_rtl(id)
             .then(|| {
-                let seen = self.time.get(id.0 as usize).map_or(0, |t| t[0]);
+                let seen = self.group[self.prog.base_of(id).0 as usize];
                 cold(
                     self.native.instances(self.prog.base_of(id)),
                     seen,
@@ -1559,6 +1592,8 @@ impl AutoTier {
         let nfuncs = prog.funcs.len();
         let mut w = Worker {
             time: vec![[0; 2]; prog.funcs.len()],
+            group: vec![0; prog.funcs.len()],
+            asked_for: vec![false; prog.funcs.len()],
             done: vec![[false; 2]; prog.funcs.len()],
             nat: vec![(0, false); prog.funcs.len()],
             calls: vec![0; prog.funcs.len()],
@@ -1650,20 +1685,30 @@ impl AutoTier {
                                 }
                                 *t += dt;
                                 w.total += dt;
-                                let (now, at) = (*t, w.threshold(id, compiled));
-                                if !compiled && w.wants_probe(id, now) {
+                                if compiled {
+                                    let (now, at) = (*t, w.threshold(id, true));
+                                    if was < at && now >= at && upgrade {
+                                        later.push(id);
+                                    }
+                                    continue;
+                                }
+                                // The time of a process counts for every copy of it (#661): the
+                                // process is hot when its copies together are, and each copy that
+                                // runs is a candidate then.
+                                let g = w.prog.base_of(id).0 as usize;
+                                w.group[g] += dt;
+                                let (now, at) = (w.group[g], w.threshold(id, false));
+                                if w.wants_probe(id, now) {
                                     probes.push(id);
                                 }
-                                if was < at && now >= at {
-                                    if !compiled {
-                                        cands.push(id);
-                                        w.pick_at = 0;
-                                        if let Some(tr) = &mut w.trace {
-                                            let now = tr.ms();
-                                            tr.cand.insert(id, now);
-                                        }
-                                    } else if upgrade {
-                                        later.push(id);
+                                if now >= at
+                                    && !std::mem::replace(&mut w.asked_for[id.0 as usize], true)
+                                {
+                                    cands.push(id);
+                                    w.pick_at = 0;
+                                    if let Some(tr) = &mut w.trace {
+                                        let now = tr.ms();
+                                        tr.cand.insert(id, now);
                                     }
                                 }
                             }

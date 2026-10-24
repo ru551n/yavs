@@ -109,3 +109,30 @@ fn nothing_is_stored_for_the_slots() {
     assert_eq!(postcard::to_stdvec(&p).expect("stored").len(), before);
     assert!(p.export_optimized().iter().all(|c| c.func == f));
 }
+
+/// The tag that names a copy (compiled code is named and keyed by it, #661) depends on the
+/// process and the data alone, not on the order in which the copies were asked for.
+#[test]
+fn a_copy_tag_does_not_depend_on_the_order_of_the_copies() {
+    if !yavs_ir::opt::specialise_on() {
+        return;
+    }
+    let (mut p, f) = process();
+    p.reserve_copies(3);
+    let (a3, a4) = (
+        p.copy_of(f, &data(3, 0), &[]).expect("copy"),
+        p.copy_of(f, &data(4, 0), &[]).expect("copy"),
+    );
+    let (mut q, g) = process();
+    q.reserve_copies(3);
+    let (b4, b3) = (
+        q.copy_of(g, &data(4, 0), &[]).expect("copy"),
+        q.copy_of(g, &data(3, 7), &[(8, 8)]).expect("copy"),
+    );
+    assert_ne!((a3, a4), (b3, b4), "the ids follow the order");
+    assert_eq!(p.copy_tag(a3), q.copy_tag(b3));
+    assert_eq!(p.copy_tag(a4), q.copy_tag(b4));
+    assert_ne!(p.copy_tag(a3), p.copy_tag(a4));
+    assert!(p.copy_tag(a3).is_some());
+    assert_eq!(p.copy_tag(f), None);
+}

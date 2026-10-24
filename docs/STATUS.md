@@ -6511,8 +6511,9 @@ Geometric mean over ten tests: instructions 0.96 (`interp`), 0.98 (`auto`), 0.97
 (`--tier=interp`) `poc_arith_addw` -10.4 %, `hdlm_lfsr` -4.6 %, `neorv32_single_min` -2.5 %. `tools/bench` h2h designs: geometric mean of CPU
 1.01 (noise; instructions equal). Copies off (`YAVS_NO_SPEC=1`) and initialisation (`--stop-time=0fs`) within 0.1 and 0.4 percent of before.
 The cap costs 0.5 percent on `poc_arith_addw` and 4.3 points on `sc5_fifo_repack` (-19.6 % without it). The prototype's
-`neorv32_single_min` gain (-3.3 %) is -2.5 % now. #661: under `--tier=auto` the tier compiles the clocked processes of
-`sc5_fifo_repack` (and the late copy of `hdlm_lfsr`) less well once their processes run copies.
+`neorv32_single_min` gain (-3.3 %) is -2.5 % now. #661 (2026-10-24): the tier counts the copies of a process as that
+process (time, share and instance rules, classification, a trial's verdict) and keys compiled copies by what they are for, not by function id;
+`sc5_fifo_repack` warm with copies is no worse than without (`docs/design/specialisation.md` section 12, "The tier policy by process").
 
 Checked: `cargo test --workspace` (also with `YAVS_SPEC_AFTER=2`, every process switching at its second activation), the differential
 corpus (499/499) on `yavs-interp`, `yavs-auto` and `yavs-llvm`, plain and with `YAVS_SPEC_AFTER=2`, at 1 and 4 threads; 38 realbench

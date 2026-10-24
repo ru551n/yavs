@@ -215,9 +215,12 @@ pub const GUARD_CONST: u32 = u32::MAX;
 /// A signal a pure process reads (`Db::pure_comb_reads`, ...) and, when it reads it only under
 /// some conditions, those: `None` when it may read it in every activation, else a disjunction of
 /// conjunctions of literals, each of which has to hold for an activation to read the signal.
+/// With `lsp` `None` it is no read but a condition: what the process does there is not pure
+/// (a `report`, a call of a procedure, an edge test), and it is pure for an instance in which
+/// the guard cannot hold (a literal of constants and generics that is false there: debug code).
 #[derive(Clone, Debug)]
 pub struct PureRead {
-    pub lsp: Lsp,
+    pub lsp: Option<Lsp>,
     pub guard: Option<Vec<Vec<GuardLit>>>,
 }
 

@@ -554,6 +554,20 @@ case!(
         ("ops", Max(68500)),
     ]
 );
+// Variables assigned on every path before they are read (the arms of an `if`/`case`, the fields
+// of a record variable one by one), and a `report` under a generic that is false in the instance:
+// the processes are skipped (77 of 497 wakes); the instance where it is true reports every time,
+// and a condition with an effect (an impure function) keeps its process running.
+case!(
+    idle_vars,
+    "o=",
+    &[],
+    [
+        ("process_runs", Max(433)),
+        ("idle_skips", Min(75)),
+        ("ops", Max(9180)),
+    ]
+);
 
 /// Processes of instances with their own generics switch to copies specialised to their instance
 /// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
@@ -616,6 +630,7 @@ fn idle_skip_changes_nothing() {
         ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
         ("idle_comb", include_str!("perf/idle_comb.vhd"), 2700),
         ("idle_when", include_str!("perf/idle_when.vhd"), 100),
+        ("idle_vars", include_str!("perf/idle_vars.vhd"), 60),
     ];
     for (design, src, floor) in designs {
         let d = tempdir(&format!("idle_equal_{design}"));

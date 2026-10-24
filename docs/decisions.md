@@ -7655,3 +7655,40 @@ Counted with `tools/stepcount` on `poc_arith_addw` under `--tier=llvm` (1078 cal
   epilogues, the table lookups, the result tuple and the argument slice); instructions of `poc_arith_addw` -1.2 percent
   under `--tier=llvm`, -0.8 percent on the window generator. The callback layer is now about as large as the native;
   removing it needs the native inline in compiled code (#698 idea 2).
+
+## Idle skip, round 5: variables assigned on every path, fields one by one, debug code under a false generic (yavs-sem, yavs-elab, #521, #519, 2026-10-24)
+
+Found with the whole-picture profile of `fletcher_bufferwriter_512`: its hottest process (`ctrl_comb_proc` of the reshaper, 11.6% of
+the run, a finite-state machine in the two-process style) was not pure for the idle skip, so it ran at every wake, 139 K of them
+(it is woken by `clk`, which it names "for debugging", and by every input); each skipped activation saves the 13 drives and the bus
+updates it would make (41 K instructions an activation). Doing it by hand in the source (assign the helper variable first, drop the
+debug `report`s) took the writer from 74.2 G to 68.5 G instructions (-7.7%). Three limits of the purity analysis were the cause, and are
+lifted:
+
+- **Definite assignment, not "first statement".** A variable of the process is allowed when it is assigned on every path before it is
+  mentioned otherwise (`Db::vars_assigned_first`, now `defined_before_use`): a flow analysis over `if`, `case` (what all arms assign),
+  loops (nothing, they may run no iteration) and sequences, where round 2 asked for a top-level `v := ...;` first in the statement list.
+  `variable t : ...; if c then t := a; x <= t; end if;` and `if a then v := 1; else v := 2; end if; y <= v;` are pure now.
+- **Fields of a record variable one by one.** `v.f := ...;` (a chain of field selections from a variable) assigns that field and a
+  mention of `v.f.g` is met by an assignment of `v.f.g` or of a prefix of it; a mention of the whole `v` needs a whole assignment. A
+  partial update `v.f(3) := ...` is a mention (it reads the rest). `vo.a := ...; vo.b := ...;` followed by reads of single fields is pure.
+- **Debug code under a condition of generics.** An `if` branch (condition and body) that is not pure, but can only run where a
+  boolean of constants and generics holds (`if rising_edge(clk) and DEBUG then report ...`), is no longer a failure but a guard under
+  which the process is not pure (`PureRead` with `lsp` `None`): the elaborator works the literals out per instance (as it does for
+  guarded reads) and the process is pure in every instance where one is false. Where it is true (`DEBUG => true`) the process runs at
+  every wake as before. The condition itself must have no effect (`Db::effect_free`: no impure function, no protected method), since
+  `f(x) and DEBUG` evaluates `f` first (the reference simulator folds `f(x) and false` and drops the call, a deviation from the LRM
+  that is why that case is only in `perf.rs`, not in the corpus).
+- **Why it is the same run.** The rule of round 2 holds unchanged: an activation does what the last one did when every signal it
+  reads is unchanged and no variable carries a value from one activation to the next; the three changes only accept more processes
+  that satisfy it. `YAVS_IDLE_SKIP=check` runs every skipped activation and fails when it assigns something else: the 511 tests of the
+  differential corpus in check mode, the new `delta/idle_vars` (blessed from the reference simulator; five pure shapes, three that
+  must run every time, and an instance with the debug report on and one off), `perf.rs` `idle_vars` (off, on and check print the same,
+  an impure condition reports at every wake), and the 42 real-world designs in check mode.
+- **Result** (bench builds, exact instructions, interpreter): `fletcher_bufferwriter_512` 74.17 G to 69.0 G (0.93), `poc_fifo_ic_assembly`
+  0.82, `fletcher_bufferwriter_prim32` 0.91, `neorv32_dual_full` 0.97, `neorv32_single_cache` 0.98, `neorv32_single_min` 0.99, the rest of the
+  42 within 0.5%.
+- **Left (blocks of the other hot processes of the writer):** a `report`/`assert` that is not under a condition of generics
+  (`last_stage_proc`, `command_proc`: output has to come at every activation), a variable field read before it is assigned on some path
+  (`vo` of a BusWriteBuffer process, `stage_v` of a pipeline barrel: they keep a value, so they are not pure), procedure calls.
+

@@ -3975,6 +3975,17 @@ elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130
 `Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
 look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
 
+### Idle skip, round 5: definite assignment, record variables by field, debug code under a false generic (#521, #519, 2026-10-24)
+
+(`docs/decisions.md` "Idle skip, round 5".) The hottest process of `fletcher_bufferwriter_512` (the reshaper's `ctrl_comb_proc`) is a
+two-process-style state machine that the purity analysis refused for three reasons, now lifted: a helper variable assigned in the
+branch that uses it, a record variable assigned field by field, and `report`s under `if rising_edge(clk) and DEBUG` with `DEBUG` a
+constant false. Exact instructions, interpreter, bench builds: writer 74.17 G to 69.0 G (0.93; 139 K of its 600 K wakes skipped, each
+worth ~41 K instructions with the drives and bus updates it avoids), `poc_fifo_ic_assembly` 0.82, `fletcher_bufferwriter_prim32` 0.91,
+`neorv32_dual_full` 0.97, `neorv32_single_cache` 0.98, `neorv32_single_min` 0.99; no design worse (the small ones read 1.2 on a first run
+of a new binary, which fills the compilation cache: three runs give 1.00). Checked with `YAVS_IDLE_SKIP=check` over the differential corpus
+(511 tests) and the 42 real-world designs; new corpus test `delta/idle_vars`, perf design `idle_vars`.
+
 ### Fletcher writer and reader against the reference simulator: the whole picture (#519, #523, 2026-10-24)
 
 Measured on `ae1826dd` plus the kernel round 20 below (bench builds with `--features llvm`; `perf record` of the whole run;

@@ -134,7 +134,7 @@ fn fused_search(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> Option<String> {
 /// about 1.3 times faster compiled (the interpreter spends its time dispatching them), so it
 /// is worth compiling earlier than testbench code, whose time goes to what the interpreter's
 /// own functions do (#432).
-pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func, light: bool) -> bool {
+pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     let mut inside = vec![false; f.code.len()];
     if loops(prog, f) {
         for r in back_edges(prog, f) {
@@ -146,7 +146,7 @@ pub(crate) fn compute(prog: &yavs_ir::Program, f: &yavs_ir::Func, light: bool) -
     let total = inside.iter().filter(|&&b| b).count();
     let nc = calls_native(prog, f);
     let stepped = (0..f.code.len())
-        .filter(|&pc| inside[pc] && crate::native::leaves(prog, f, pc, &nc, light))
+        .filter(|&pc| inside[pc] && crate::native::leaves(prog, f, pc, &nc))
         .count();
     stepped * 20 <= total
 }
@@ -213,7 +213,7 @@ fn calls_native(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> std::collections:
 /// compiled code for a callback into the interpreter's functions: every instruction it does not
 /// run inline (`is_inline`: steps, natives, signal operations), and each `Stmt` where
 /// temporaries are recorded as roots (it is stepped then).
-fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func, light: bool) -> (usize, usize) {
+fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> (usize, usize) {
     use yavs_ir::Inst;
     let n = f.code.len();
     let mut seen = vec![false; n];
@@ -238,7 +238,7 @@ fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func, light: bool) -> (usize,
     let out = (0..n)
         .filter(|&pc| {
             seen[pc]
-                && (crate::native::leaves(prog, f, pc, &nc, light)
+                && (crate::native::leaves(prog, f, pc, &nc)
                     || roots && matches!(f.code[pc], Inst::Stmt))
         })
         .count();
@@ -250,14 +250,9 @@ fn callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func, light: bool) -> (usize,
 /// than interpreting the instruction, so the compiled process ran slower than the interpreted
 /// one (#507). ponytail: a static count over every path of the body, not weighted by what runs;
 /// a measured comparison of both forms if a process near the line needs it.
-fn too_many_callbacks(
-    prog: &yavs_ir::Program,
-    f: &yavs_ir::Func,
-    id: FuncId,
-    light: bool,
-) -> Option<String> {
+fn too_many_callbacks(prog: &yavs_ir::Program, f: &yavs_ir::Func, id: FuncId) -> Option<String> {
     if f.kind == FuncKind::Process {
-        let (out, total) = callbacks(prog, f, light);
+        let (out, total) = callbacks(prog, f);
         return (out * CALLBACKS > total).then(|| {
             format!(
                 "{out} of the {total} IR instructions an activation runs leave the compiled \
@@ -272,7 +267,7 @@ fn too_many_callbacks(
     }
     let nc = calls_native(prog, f);
     let out = (0..f.code.len())
-        .filter(|&pc| crate::native::leaves(prog, f, pc, &nc, light))
+        .filter(|&pc| crate::native::leaves(prog, f, pc, &nc))
         .count();
     (out * CALLBACKS > f.code.len()).then(|| {
         format!(
@@ -1173,7 +1168,9 @@ impl Worker {
             US_PER_INSTR_RTL
         } else if fast
             && self.prog.func(id).is_some_and(|f| {
-                crate::lower::level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast
+                self.main
+                    .as_ref()
+                    .is_some_and(|m| m.level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast)
             })
         {
             US_PER_INSTR_FAST
@@ -1206,12 +1203,6 @@ impl Worker {
         }) as u64
     }
 
-    /// Whether the generator computes the light `numeric_std` natives in place (`native::leaves`):
-    /// the LLVM generator alone does (a first level of another generator does not).
-    fn light(&self) -> bool {
-        self.first.is_none() && self.main.is_some()
-    }
-
     /// `native_set` of `id` alone (the functions it reaches on native frames, `id` among them
     /// when it runs on one), worked out once: the worker asks for it at every look at its
     /// candidates.
@@ -1231,7 +1222,7 @@ impl Worker {
     /// Whether `id` is a compute loop (`compute`), worked out once.
     fn is_compute(&self, id: FuncId) -> bool {
         *self.compute[id.0 as usize]
-            .get_or_init(|| self.prog.func(id).is_some_and(|f| compute(&self.prog, f, self.light())))
+            .get_or_init(|| self.prog.func(id).is_some_and(|f| compute(&self.prog, f)))
     }
 
     /// IR instructions of the process `id` is, or is a copy of: what the policy goes by, so the
@@ -1828,13 +1819,13 @@ impl Worker {
             .then(|| {
                 too_short(&self.prog, f, id)
                     .or_else(|| fused_search(&self.prog, f))
-                    .or_else(|| too_many_callbacks(&self.prog, f, id, self.light()))
+                    .or_else(|| too_many_callbacks(&self.prog, f, id))
                     .or(few)
             })
             .flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();
         let refused = too_big(f, self.max_size).or(short);
-        let (model, model_cost, light) = (self.price(id, part), self.cost(id), self.light());
+        let (model, model_cost) = (self.price(id, part), self.cost(id));
         let k = usize::from(via_first);
         let Some(gen_) = (if via_first {
             &mut self.first
@@ -1886,7 +1877,7 @@ impl Worker {
                 if let Some(tr) = &self.trace {
                     let seen = self.time.get(id.0 as usize).map_or([0, 0], |t| *t);
                     let leave = (f.kind == FuncKind::Process)
-                        .then(|| callbacks(&self.prog, f, light))
+                        .then(|| callbacks(&self.prog, f))
                         .map_or(String::new(), |(o, t)| format!(", {o} of {t} leave"));
                     tr.line(format!(
                         "{id} compiled `{}` ({} IR{leave}) {level:?} {part:?}{} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
@@ -2500,7 +2491,7 @@ mod tests {
             let (prog, f) = padded_loop(n);
             let f = prog.func(f).unwrap();
             assert!(f.code.len() >= n, "{n}");
-            assert!(compute(&prog, f, true), "{n}");
+            assert!(compute(&prog, f), "{n}");
             assert_eq!(
                 crate::lower::level_for(&prog, f, crate::OptLevel::O2),
                 level,
@@ -2641,7 +2632,7 @@ mod tests {
         fb.emit(Inst::Br { to: head });
         fb.finish();
         let prog = pb.finish().unwrap();
-        assert!(compute(&prog, prog.func(f).unwrap(), true));
+        assert!(compute(&prog, prog.func(f).unwrap()));
     }
 
     /// A process whose activation (after its `Suspend`) runs `ops` inline additions, an address
@@ -2781,7 +2772,7 @@ mod tests {
     fn a_process_that_leaves_its_compiled_code_often_stays_interpreted() {
         for (ops, outs, refused) in [(100, 5, false), (50, 9, true), (0, 1, true)] {
             let (prog, f) = process(ops, outs);
-            let why = too_many_callbacks(&prog, prog.func(f).unwrap(), f, true);
+            let why = too_many_callbacks(&prog, prog.func(f).unwrap(), f);
             assert_eq!(why.is_some(), refused, "{ops} {outs}: {why:?}");
         }
     }
@@ -2831,7 +2822,7 @@ mod tests {
             fb.emit(Inst::Br { to: body });
             fb.finish();
             let prog = pb.finish().unwrap();
-            let why = too_many_callbacks(&prog, prog.func(f).unwrap(), f, true);
+            let why = too_many_callbacks(&prog, prog.func(f).unwrap(), f);
             assert_eq!(why.is_some(), refused, "{inplace}: {why:?}");
         }
     }

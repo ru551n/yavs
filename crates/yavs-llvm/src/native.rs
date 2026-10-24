@@ -73,13 +73,7 @@ pub fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
 /// answered from the kernel's views, the `WaitOn` that ends an activation, and the calls of
 /// functions that run on native frames (`nc`, `native_set`). Keep in step with `Gen::func`; the
 /// `cb_*` counters (`YAVS_COUNTERS=1`) show what really leaves.
-pub fn leaves(
-    prog: &Program,
-    f: &Func,
-    pc: usize,
-    nc: &std::collections::HashSet<FuncId>,
-    light: bool,
-) -> bool {
+pub fn leaves(prog: &Program, f: &Func, pc: usize, nc: &std::collections::HashSet<FuncId>) -> bool {
     let Some(i) = f.code.get(pc) else {
         return false;
     };
@@ -92,10 +86,9 @@ pub fn leaves(
             kind: yavs_ir::AttrKind::Event,
             ..
         } => false,
-        // Computed in place on its usual operands (`light`: by the generator, `Gen::ieee_fast`).
+        // Computed in place on its usual operands (each generator's `ieee_fast`).
         Inst::CallNative { native, args, dst }
-            if light
-                && frame_direct(prog, f, i)
+            if frame_direct(prog, f, i)
                 && yavs_interp::light_native(prog, f, *native, *args)
                 && ieee_fast(prog, f, *native, *args, *dst).is_some() =>
         {

@@ -46,6 +46,7 @@ architecture a of v is
     return s;
   end;
   function cat(a, b : slv) return slv is begin return a & '1' & b; end;
+  function rep4(a : slv) return slv is begin return a & a & a & a; end;
   function mid(a : slv; l, r : integer) return natural is
   begin
     return a(l downto r)'length;
@@ -63,6 +64,21 @@ architecture a of v is
   function u_add(a, b : unsigned) return unsigned is begin return a + b; end;
   function u_sub(a, b : unsigned) return unsigned is begin return a - b; end;
   function u_int(a : unsigned) return integer is begin return to_integer(a); end;
+  function u_misc(a, b : unsigned; k : natural) return string is
+    constant sa : signed(a'length - 1 downto 0) := signed(a);
+    constant sb : signed(b'length - 1 downto 0) := signed(b);
+  begin
+    return boolean'image(a < b) & boolean'image(a >= b) & boolean'image(a = b) & boolean'image(a /= b)
+           & boolean'image(sa < sb) & boolean'image(sa > sb) & boolean'image(sa <= sb)
+           & boolean'image(a > k) & boolean'image(k <= b) & boolean'image(sa = k - 3)
+           & " " & to_string(resize(a, k + 1)) & " " & to_string(resize(sa, k + 1))
+           & " " & to_string(shift_left(a, k mod 5)) & " " & to_string(shift_right(a, k mod 4))
+           & " " & to_string(shift_right(sa, 1 + k mod 3)) & " " & to_string(rotate_left(a, k)) & " " & to_string(rotate_right(a, k + 1))
+           & " " & to_string(to_unsigned(k * 37, a'length)) & " " & to_string(to_signed(k * 11 - 17, a'length))
+           & " " & to_string(a + k) & " " & to_string(k + b) & " " & to_string(sa - 1)
+           & " " & to_string(not a) & " " & to_string(a xor a) & " " & to_string(a or a)
+           & " " & integer'image(to_integer(sa(minimum(a'length, 31) - 1 downto 0)));
+  end;
   procedure num_ops(n, m, k : natural) is
     variable a : unsigned(n - 1 downto 0);
     variable b : unsigned(m - 1 downto 0);
@@ -74,6 +90,7 @@ architecture a of v is
     report integer'image(n) & "," & integer'image(m) & " " & to_string(u_add(a, b)) & " " & to_string(u_sub(a, b))
            & " " & integer'image(u_int(w));
     -- A metavalue goes the general way (a warning, a result of unknowns).
+    report u_misc(a, b, k);
     a(0) := 'X';
     report to_string(u_add(a, b)) & " " & integer'image(u_int(w));
   end;
@@ -88,7 +105,7 @@ architecture a of v is
     report to_string(f_nand(a, b)) & " " & to_string(f_nor(a, b)) & " " & to_string(f_xnor(a, b));
     report to_string(f_not(a)) & " " & to_string(f_x01(a)) & " " & to_string(f_ux01(a)) & " " & to_string(f_x01z(b));
     report to_string(fl(n, 'Z')) & " " & to_string(fl(n, '-')) & " " & to_string(fl(n, '1'));
-    report to_string(cat(a, b)) & " " & integer'image(cat(a, b)'length);
+    report to_string(cat(a, b)) & " " & integer'image(cat(a, b)'length) & " " & to_string(rep4(a));
     report boolean'image(a = b) & boolean'image(a = a) & boolean'image(f_and(a, b) = f_and(b, a))
            & boolean'image(eq_int((1, n, 3), (1, n, k))) & boolean'image(eq_int((n, k), (n, k)));
     if n > 2 then

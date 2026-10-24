@@ -356,7 +356,7 @@ const COMPUTE_MAX: usize = 1500;
 pub(crate) fn level_for(prog: &Program, f: &Func, level: OptLevel) -> OptLevel {
     if level == OptLevel::O2
         && f.code.len() >= FAST_MIN
-        && (f.code.len() >= COMPUTE_MAX || !crate::auto::compute(prog, f, true))
+        && (f.code.len() >= COMPUTE_MAX || !crate::auto::compute(prog, f))
     {
         OptLevel::Fast
     } else {
@@ -431,7 +431,7 @@ pub(crate) fn compile_one(
     };
     let t1 = std::time::Instant::now();
     let ninst = if times { m.instruction_count() } else { 0 };
-    let full = crate::auto::compute(prog, f, true);
+    let full = crate::auto::compute(prog, f);
     let (mut t2, mut t3, mut nopt) = (t1, t1, 0);
     // Verified and optimised only when it is not linked from the compilation cache (#505).
     crate::objcache::add(jit, m, opt, full, |m| {

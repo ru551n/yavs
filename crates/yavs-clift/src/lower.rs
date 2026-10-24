@@ -25,7 +25,7 @@ use yavs_ir::{
     AddrSpace, BoolOp, CheckKind, CmpOp, FOp, FUnOp, Func, FuncId, FuncKind, Inst, IntOp, IntUnOp,
     Program, Reg, Width,
 };
-use yavs_llvm::native::{call_fits, closed_frame, native_set};
+use yavs_llvm::native::{Arg, call_fits, closed_frame, ieee_fast, ieee_layout, native_set};
 use yavs_llvm::regs::Live;
 use yavs_llvm::rt::*;
 
@@ -2330,23 +2330,10 @@ fn gen_func(
                         }
                     }
                     None if frame_direct(prog, f, &inst)
-                        && dst.is_some()
-                        && prog
-                            .natives
-                            .get(native)
-                            .and_then(|n| numeric_kind(&n.symbol))
-                            .is_some_and(|k| {
-                                f.regs(args).is_some_and(|rs| {
-                                    rs.len() == if k == NumKind::ToInteger { 1 } else { 2 }
-                                })
-                            }) =>
+                        && yavs_interp::light_native(prog, f, native, args)
+                        && let Some(op) = ieee_fast(prog, f, native, args, dst) =>
                     {
-                        let k = prog
-                            .natives
-                            .get(native)
-                            .and_then(|n| numeric_kind(&n.symbol))
-                            .expect("numeric native");
-                        g.numeric_native(pc, &inst, f, k, native, args, dst)?
+                        g.ieee_native(pc, &inst, f, op, native, args, dst)?
                     }
                     None if frame_direct(prog, f, &inst) => {
                         g.native_direct(pc, &inst, f, native, args, dst)?
@@ -3581,63 +3568,49 @@ impl Gen<'_> {
     }
 }
 
-/// The `numeric_std` natives on unsigned vectors that are lowered here on their `small` path
-/// (operands of 1 to 64 elements without a metavalue, as the interpreter's own fast path); any
-/// other operand goes to the native.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NumKind {
-    ToInteger,
-    Add,
-    Sub,
-}
-
-fn numeric_kind(symbol: &str) -> Option<NumKind> {
-    match symbol {
-        "yavs.ieee.numeric_std.to_integer(unsigned)integer" => Some(NumKind::ToInteger),
-        "yavs.ieee.numeric_std.\"+\"(unsigned,unsigned)unsigned" => Some(NumKind::Add),
-        "yavs.ieee.numeric_std.\"-\"(unsigned,unsigned)unsigned" => Some(NumKind::Sub),
-        _ => None,
-    }
-}
-
+/// A light `numeric_std` native computed in place (`yavs_llvm::native::ieee_fast`): the
+/// native's own fast path (`ieee::small`) on operands of 1 to 64 elements without a metavalue,
+/// as the LLVM generator computes it (`Gen::ieee_fast`); any other operand, and every case that
+/// warns or fails, runs the native.
 impl Gen<'_> {
-    /// The elements and bits of the metavalue-free vector of 1 to 64 elements whose fat pair
-    /// (data and descriptor addresses) is at the address in register `r`, as `yavs_interp`'s
-    /// `small` reads it; takes `fb` for anything else.
-    fn num_operand(&mut self, r: Reg, fb: Block) -> (Value, Value) {
-        let a = self.ld(r);
-        let fat = self.host(a, Some(r), Op::C(0), Op::C(16), false, fb);
-        let nf = self.gf;
-        let data = self.b.ins().load(I64, nf, fat, 0);
-        let dope = self.b.ins().load(I64, nf, fat, 8);
-        let dp = self.host(dope, None, Op::C(0), Op::C(24), false, fb);
-        let (l, rr, d) = self.dope_words(dp);
+    /// An array operand (`data, left, right, dir` as values) of 1 to 64 elements that holds only
+    /// `0 1 L H` (and, with `pure`, no `L` or `H`): `(n, bits, mask)`, taking `fb` for any other.
+    fn small_operand(&mut self, r: &[Reg], pure: bool, fb: Block) -> (Value, Value, Value) {
+        let (l, rt, d) = (self.ld(r[1]), self.ld(r[2]), self.ld(r[3]));
         let down = self.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
-        let lo = self.b.ins().select(down, rr, l);
-        let hi = self.b.ins().select(down, l, rr);
+        let hi = self.b.ins().select(down, l, rt);
+        let lo = self.b.ins().select(down, rt, l);
         let diff = self.b.ins().isub(hi, lo);
-        // Unsigned: a null range and a difference that wraps are far above 63.
-        let okn = self
-            .b
-            .ins()
-            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, diff, 63);
+        let ge = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, hi, lo);
+        let small = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, diff, 64);
+        let okn = self.b.ins().band(ge, small);
         self.guard(okn, fb);
         let n = self.b.ins().iadd_imm_s(diff, 1);
-        let pl = self.host(data, None, Op::C(0), Op::C(32), false, fb);
-        let p: Vec<Value> = (0..4)
-            .map(|k| self.b.ins().load(I64, nf, pl, 8 * k))
+        let two = self.c64(2);
+        let sh = self.b.ins().ishl(two, diff);
+        let mask = self.b.ins().iadd_imm_s(sh, -1);
+        let a = self.ld(r[0]);
+        let p = self.host(a, Some(r[0]), Op::C(0), Op::C(32), false, fb);
+        let gf = self.gf;
+        let w: Vec<Value> = (0..4)
+            .map(|k| self.b.ins().load(I64, gf, p, 8 * k))
             .collect();
-        // `0` or `L`: plane 1 only (plane 2 is the weak bit); `1` or `H`: planes 0 and 1.
-        let b1 = self.b.ins().band_not(p[1], p[3]);
-        let one = self.b.ins().band(b1, p[0]);
-        let zero = self.b.ins().band_not(b1, p[0]);
-        let low = self.low_mask(n);
+        let live = self.b.ins().band_not(w[1], w[3]);
+        // `0 L`: plane 1 only; `1 H`: planes 0 and 1.
+        let zero = self.b.ins().band_not(live, w[0]);
+        let one = self.b.ins().band(live, w[0]);
         let both = self.b.ins().bor(zero, one);
-        let cover = self.b.ins().band(both, low);
-        let okc = self.b.ins().icmp(IntCC::Equal, cover, low);
-        self.guard(okc, fb);
-        let bits = self.b.ins().band(one, low);
-        (n, bits)
+        let all = self.b.ins().band(both, mask);
+        let oka = self.b.ins().icmp(IntCC::Equal, all, mask);
+        self.guard(oka, fb);
+        if pure {
+            // Plane 2 is the weak bit of `L` and `H`.
+            let weak = self.b.ins().band(w[2], mask);
+            let okw = self.b.ins().icmp_imm_s(IntCC::Equal, weak, 0);
+            self.guard(okw, fb);
+        }
+        let bits = self.b.ins().band(one, mask);
+        (n, bits, mask)
     }
 
     /// The low `n` bits (0 to 64) as a mask.
@@ -3650,60 +3623,330 @@ impl Gen<'_> {
         self.b.ins().select(full, ones, low)
     }
 
-    /// A `numeric_std` native on its fast path inline, else the native itself (`native_direct`).
+    /// The value of `bits` of `n` elements as a signed integer.
+    fn sext_bits(&mut self, x: Value, n: Value) -> Value {
+        let sixty4 = self.c64(64);
+        let k = self.b.ins().isub(sixty4, n);
+        let up = self.b.ins().ishl(x, k);
+        self.b.ins().sshr(up, k)
+    }
+
     #[allow(clippy::too_many_arguments)]
-    fn numeric_native(
+    fn ieee_native(
         &mut self,
         pc: u32,
         inst: &Inst,
         f: &Func,
-        k: NumKind,
+        op: yavs_ir::ieee::Op,
         native: yavs_ir::NativeId,
         args: yavs_ir::Regs,
         dst: Option<Reg>,
     ) -> Result<(), String> {
+        use yavs_ir::ieee::{ARRAY_REGS, Cmp, Form, Gate, Op, Shift};
         let rs = ok(f.regs(args), "operand list out of range")?.to_vec();
-        let d = ok(dst, "numeric native without a result")?;
+        let d = ok(dst, "a native without a result")?;
+        let layout = ok(ieee_layout(op), "not a native computed in place")?;
         let (fb, done) = (self.b.create_block(), self.b.create_block());
-        let (n1, b1) = self.num_operand(rs[0], fb);
-        let v = match k {
-            NumKind::ToInteger => {
-                // Below INTEGER'HIGH (the general path words the rest).
-                let hi = self.b.ins().ushr_imm_s(b1, 31);
-                let okh = self.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
-                self.guard(okh, fb);
-                b1
+        let pure = matches!(op, Op::Resize { .. } | Op::Shift(_) | Op::ShiftFn(_));
+        let (mut arrs, mut ints) = (Vec::new(), Vec::new());
+        let mut at = 0;
+        for a in layout {
+            match a {
+                Arg::Arr => {
+                    arrs.push(self.small_operand(&rs[at..at + ARRAY_REGS], pure, fb));
+                    at += ARRAY_REGS;
+                }
+                Arg::Int => {
+                    ints.push(self.ld(rs[at]));
+                    at += 1;
+                }
             }
-            NumKind::Add | NumKind::Sub => {
-                let (n2, b2) = self.num_operand(rs[1], fb);
-                let n = self.b.ins().umax(n1, n2);
-                let s = if k == NumKind::Add {
-                    self.b.ins().iadd(b1, b2)
+        }
+        let c0 = self.c64(0);
+        let c1 = self.c64(1);
+        // `natural`: a negative integer is the native's error.
+        let nonneg =
+            |g: &mut Self, x: Value| g.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, x, c0);
+        // Unsigned or signed `size` low bits hold `v` (the native warns when they do not).
+        let fits = |g: &mut Self, v: Value, n: Value, mask: Value, signed: bool| {
+            if signed {
+                let m = g.b.ins().band(v, mask);
+                let e = g.sext_bits(m, n);
+                g.b.ins().icmp(IntCC::Equal, e, v)
+            } else {
+                let nn = nonneg(g, v);
+                let hi = g.b.ins().band_not(v, mask);
+                let z = g.b.ins().icmp_imm_s(IntCC::Equal, hi, 0);
+                g.b.ins().band(nn, z)
+            }
+        };
+        enum Out {
+            Scalar(Value),
+            // Count, bits, and whether the bounds are `1 to n` (else `n - 1 downto 0`).
+            Vector(Value, Value, bool),
+        }
+        let out = match op {
+            Op::ToInteger { signed } => {
+                let (n, bits, mask) = arrs[0];
+                let nm1 = self.b.ins().isub(n, c1);
+                let sh = self.b.ins().ushr(bits, nm1);
+                let top = self.b.ins().band(sh, c1);
+                let neg = if signed {
+                    self.b.ins().icmp_imm_s(IntCC::NotEqual, top, 0)
                 } else {
-                    self.b.ins().isub(b1, b2)
+                    self.b.ins().icmp(IntCC::NotEqual, c0, c0)
                 };
+                if signed {
+                    // `to_signed (1, 1)` truncates: the native words that warning.
+                    let one_el = self.b.ins().icmp_imm_s(IntCC::Equal, n, 1);
+                    let bad = self.b.ins().band(one_el, neg);
+                    let okb = self.b.ins().bxor_imm_s(bad, 1);
+                    self.guard(okb, fb);
+                }
+                let nb = self.b.ins().band_not(mask, bits);
+                let mag = self.b.ins().select(neg, nb, bits);
+                // Beyond `integer'high` of the shortest revision the native decides.
+                let okm = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, mag, 0x7fff_ffff);
+                self.guard(okm, fb);
+                let nm = self.b.ins().bnot(mag);
+                Out::Scalar(self.b.ins().select(neg, nm, mag))
+            }
+            Op::Add { sub, signed, form } => {
+                let (n, x, y) = match form {
+                    Form::Vv => {
+                        let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                        let n = self.b.ins().umax(n1, n2);
+                        let mask = self.low_mask(n);
+                        let ext = |g: &mut Self, bits: Value, k: Value| {
+                            if signed {
+                                let e = g.sext_bits(bits, k);
+                                g.b.ins().band(e, mask)
+                            } else {
+                                bits
+                            }
+                        };
+                        (n, ext(self, b1, n1), ext(self, b2, n2))
+                    }
+                    _ => {
+                        let (n, bits, mask) = arrs[0];
+                        let v = ints[0];
+                        let okf = fits(self, v, n, mask, signed);
+                        self.guard(okf, fb);
+                        let iv = self.b.ins().band(v, mask);
+                        if form == Form::Vi {
+                            (n, bits, iv)
+                        } else {
+                            (n, iv, bits)
+                        }
+                    }
+                };
+                let r = if sub {
+                    self.b.ins().isub(x, y)
+                } else {
+                    self.b.ins().iadd(x, y)
+                };
+                Out::Vector(n, r, false)
+            }
+            Op::Compare {
+                cmp: k,
+                signed,
+                form,
+            } => {
+                let (x, y) = match form {
+                    Form::Vv => {
+                        let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                        if signed {
+                            (self.sext_bits(b1, n1), self.sext_bits(b2, n2))
+                        } else {
+                            (b1, b2)
+                        }
+                    }
+                    _ => {
+                        let (n, bits, _) = arrs[0];
+                        let v = ints[0];
+                        if !signed {
+                            let nn = nonneg(self, v);
+                            self.guard(nn, fb);
+                        }
+                        let e = if signed {
+                            self.sext_bits(bits, n)
+                        } else {
+                            bits
+                        };
+                        if form == Form::Vi { (e, v) } else { (v, e) }
+                    }
+                };
+                let cc = match (k, signed) {
+                    (Cmp::Gt, false) => IntCC::UnsignedGreaterThan,
+                    (Cmp::Lt, false) => IntCC::UnsignedLessThan,
+                    (Cmp::Le, false) => IntCC::UnsignedLessThanOrEqual,
+                    (Cmp::Ge, false) => IntCC::UnsignedGreaterThanOrEqual,
+                    (Cmp::Gt, true) => IntCC::SignedGreaterThan,
+                    (Cmp::Lt, true) => IntCC::SignedLessThan,
+                    (Cmp::Le, true) => IntCC::SignedLessThanOrEqual,
+                    (Cmp::Ge, true) => IntCC::SignedGreaterThanOrEqual,
+                    (Cmp::Eq, _) => IntCC::Equal,
+                    (Cmp::Ne, _) => IntCC::NotEqual,
+                };
+                let r = self.b.ins().icmp(cc, x, y);
+                Out::Scalar(self.b.ins().uextend(I64, r))
+            }
+            Op::ToUnsigned | Op::ToSigned => {
+                let signed = op == Op::ToSigned;
+                let (v, size) = (ints[0], ints[1]);
+                let ge = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, size, c1);
+                let le = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::SignedLessThanOrEqual, size, 64);
+                let okr = self.b.ins().band(ge, le);
+                self.guard(okr, fb);
+                let mask = self.low_mask(size);
+                let okf = fits(self, v, size, mask, signed);
+                self.guard(okf, fb);
+                let bits = self.b.ins().band(v, mask);
+                Out::Vector(size, bits, false)
+            }
+            Op::Resize { signed } => {
+                let (n, bits, _) = arrs[0];
+                let new = ints[0];
+                let ge = self.b.ins().icmp(IntCC::SignedGreaterThanOrEqual, new, c1);
+                let le = self
+                    .b
+                    .ins()
+                    .icmp_imm_s(IntCC::SignedLessThanOrEqual, new, 64);
+                let okr = self.b.ins().band(ge, le);
+                self.guard(okr, fb);
+                let res = if signed {
+                    let m = self.b.ins().umin(n, new);
+                    let keep = self.b.ins().isub(m, c1);
+                    let nm1 = self.b.ins().isub(n, c1);
+                    let sh = self.b.ins().ushr(bits, nm1);
+                    let sb = self.b.ins().band(sh, c1);
+                    let sign = self.b.ins().icmp_imm_s(IntCC::NotEqual, sb, 0);
+                    let lk = self.low_mask(keep);
+                    let kept = self.b.ins().band(bits, lk);
+                    let ln = self.low_mask(new);
+                    let ext = self.b.ins().band_not(ln, lk);
+                    let pickext = self.b.ins().select(sign, ext, c0);
+                    self.b.ins().bor(kept, pickext)
+                } else {
+                    let m = self.b.ins().umin(n, new);
+                    let lm = self.low_mask(m);
+                    self.b.ins().band(bits, lm)
+                };
+                Out::Vector(new, res, false)
+            }
+            Op::Shift(k) | Op::ShiftFn(k) => {
+                let (n, bits, mask) = arrs[0];
+                let count = ints[0];
+                let nn = nonneg(self, count);
+                self.guard(nn, fb);
+                let big = self
+                    .b
+                    .ins()
+                    .icmp(IntCC::UnsignedGreaterThanOrEqual, count, n);
+                let cnt = self.b.ins().select(big, c0, count);
+                let res = match k {
+                    Shift::Sll => {
+                        let r = self.b.ins().ishl(bits, cnt);
+                        self.b.ins().select(big, c0, r)
+                    }
+                    Shift::Srl => {
+                        let r = self.b.ins().ushr(bits, cnt);
+                        self.b.ins().select(big, c0, r)
+                    }
+                    Shift::Sra => {
+                        // For 0 or 1 elements and a zero count the native keeps the argument's
+                        // own bounds.
+                        let gt = self.b.ins().icmp(IntCC::UnsignedGreaterThan, n, c1);
+                        let nz = self.b.ins().icmp_imm_s(IntCC::NotEqual, count, 0);
+                        let okb = self.b.ins().band(gt, nz);
+                        self.guard(okb, fb);
+                        let nm1 = self.b.ins().isub(n, c1);
+                        let kk = self.b.ins().umin(count, nm1);
+                        let se = self.sext_bits(bits, n);
+                        let r = self.b.ins().sshr(se, kk);
+                        self.b.ins().band(r, mask)
+                    }
+                    // A rotation by `count mod n`; by zero both shifts are by zero.
+                    Shift::Rol | Shift::Ror => {
+                        let kk = self.b.ins().urem(count, n);
+                        let zero = self.b.ins().icmp_imm_s(IntCC::Equal, kk, 0);
+                        let nmk = self.b.ins().isub(n, kk);
+                        let inv = self.b.ins().select(zero, c0, nmk);
+                        let (first, second) = if k == Shift::Rol {
+                            (kk, inv)
+                        } else {
+                            (inv, kk)
+                        };
+                        let l = self.b.ins().ishl(bits, first);
+                        let r = self.b.ins().ushr(bits, second);
+                        self.b.ins().bor(l, r)
+                    }
+                };
+                Out::Vector(n, res, false)
+            }
+            Op::NumGate(g) | Op::VecGate(g) => {
+                let ((n1, b1, _), (n2, b2, _)) = (arrs[0], arrs[1]);
+                let same = self.b.ins().icmp(IntCC::Equal, n1, n2);
+                self.guard(same, fb);
+                let res = match g {
+                    Gate::And => self.b.ins().band(b1, b2),
+                    Gate::Nand => {
+                        let a = self.b.ins().band(b1, b2);
+                        self.b.ins().bnot(a)
+                    }
+                    Gate::Or => self.b.ins().bor(b1, b2),
+                    Gate::Nor => {
+                        let a = self.b.ins().bor(b1, b2);
+                        self.b.ins().bnot(a)
+                    }
+                    Gate::Xor => self.b.ins().bxor(b1, b2),
+                    Gate::Xnor => {
+                        let a = self.b.ins().bxor(b1, b2);
+                        self.b.ins().bnot(a)
+                    }
+                };
+                Out::Vector(n1, res, matches!(op, Op::VecGate(_)))
+            }
+            Op::NumNot | Op::VecNot => {
+                let (n, bits, _) = arrs[0];
+                let r = self.b.ins().bnot(bits);
+                Out::Vector(n, r, op == Op::VecNot)
+            }
+            _ => return Err("not a native computed in place".into()),
+        };
+        match out {
+            Out::Scalar(v) => self.st(d, v),
+            Out::Vector(n, bits, up) => {
                 let mask = self.low_mask(n);
-                let bits = self.b.ins().band(s, mask);
-                // The fat pair, the descriptor `(n - 1 downto 0)` and one block of planes, as
-                // `put_down` makes them.
-                let sz = self.c64(72);
+                let sz = self.c64(i64::from(PUT_SMALL_BYTES));
                 let (at, p) = self.temp_alloc(sz, fb);
-                let gf = self.gf;
-                let data = self.b.ins().iadd_imm_s(at, 40);
+                let (left, right, down) = if up {
+                    (c1, n, c0)
+                } else {
+                    (self.b.ins().iadd_imm_s(n, -1), c0, c1)
+                };
+                let data = self
+                    .b
+                    .ins()
+                    .iadd_imm_s(at, (16 + yavs_ir::DOPE_DIM_BYTES) as i64);
                 let dope = self.b.ins().iadd_imm_s(at, 16);
-                let left = self.b.ins().iadd_imm_s(n, -1);
-                let zero = self.c64(0);
-                let down = self.c64(1);
-                for (k, w) in [data, dope, left, zero, down, bits, mask, zero, zero]
+                let masked = self.b.ins().band(bits, mask);
+                let gf = self.gf;
+                for (k, w) in [data, dope, left, right, down, masked, mask, c0, c0]
                     .into_iter()
                     .enumerate()
                 {
                     self.b.ins().store(gf, w, p, 8 * k as i32);
                 }
-                at
+                self.st(d, at);
             }
-        };
-        self.st(d, v);
+        }
         self.b.ins().jump(done, &[]);
         self.b.switch_to_block(fb);
         self.clear();
@@ -4850,6 +5093,8 @@ impl Gen<'_> {
                     .collect();
                 self.b.ins().jump(after, &vs);
                 self.b.switch_to_block(after);
+                // What the load block cached does not dominate the code after it.
+                self.clear();
                 [ws[0], ws[1], ws[2], ws[3]]
             };
             for p in 0..4 {

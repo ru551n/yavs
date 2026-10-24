@@ -78,6 +78,9 @@ pub(crate) struct State {
     pub key: Vec<u8>,
     /// Calls run to their end that are still running.
     pub depth: u8,
+    /// The frames of those calls: compiled code does not run in them (it would return into the
+    /// caller's frame without telling the loop that waits for the call to end).
+    pub frames: Vec<usize>,
     /// Reports made so far: a call during which it moved is not remembered.
     pub reports: u64,
 }
@@ -292,10 +295,12 @@ impl Machine {
         let key = std::mem::take(&mut st.key);
         let reports = st.reports;
         st.depth += 1;
+        st.frames.push(self.frames.len());
         self.pm = Some(st);
         let r = self.call_to_end(prog, f, func, args, Some(dst), ctx);
         let mut st = self.pm.take().unwrap_or_default();
         st.depth = st.depth.saturating_sub(1);
+        st.frames.pop();
         let out = match r {
             Ok(Outcome::Returned(Some(v))) => {
                 if st.reports == reports
@@ -414,5 +419,13 @@ impl Memo {
             self.slots[i] = Some(s);
         }
         self.evicted = 0;
+    }
+}
+
+impl Machine {
+    /// Whether frame `top` is the frame of a call the memo runs to its end.
+    #[inline(never)]
+    pub(crate) fn is_memo_frame(&self, top: usize) -> bool {
+        self.pm.as_ref().is_some_and(|p| p.frames.contains(&top))
     }
 }

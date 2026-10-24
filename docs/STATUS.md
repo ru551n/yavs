@@ -7588,7 +7588,7 @@ loaded). The internal and head-to-head designs of `tools/bench` (25, `interp`): 
 1.005. An instruction count from one run after a change of the compilation cache can differ by tens of percent for a short test
 (`en_cl_fix_pkg` read 1.39 in the first run and 0.92 in the steady state): look at the steady state before believing a ratio above 1.
 
-What the memo does not reach: calls of functions the tier compiled for native frames (`--tier=llvm` with everything compiled: the PoC run is
+What the memo does not reach: calls made by compiled code (`--tier=llvm` with everything compiled: the PoC run is
 unchanged there), records, access types and out parameters, and elaboration-time calls. Idea taken from the reference simulator: folding
 a pure call with constant arguments once (here a runtime memo, because the PoC registers' arguments are values that repeat, not constants);
 ours differs in keeping nothing across runs and verifying every hit by the argument bytes.

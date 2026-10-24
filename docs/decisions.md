@@ -7885,17 +7885,18 @@ The reference simulator folds a pure call with constant arguments once, before t
   it moved is not kept, so a function that reports reports on every call, and a call that fails or stops is never kept.
 - **Where.** Only simulation code in the interpreter: not elaboration-time evaluation (`ctx` is `None`), not under a debugger or with
   coverage counters, and `YAVS_NO_PMEMO=1` turns it off. The predecoder makes `Op::CallM` of an `Inst::Call` whose callee qualifies and runs
-  every other call as before (one macro, `call_arm!`, is both arms, so an ordinary call has no test); `Machine::step` and `call_regs`
-  (calls from compiled code that the host steps) ask the memo too. A miss runs the call to its end from inside the call
-  (`Machine::call_to_end`: `exec` with the frame count as base), at most `NEST` = 8 deep (a recursive function memoises its top levels, the
-  rest run as usual and the native stack stays small).
+  every other call as before (one macro, `call_arm!`, is both arms, so an ordinary call has no test). A miss runs the call to its end
+  from inside the call (`Machine::call_to_end`: `exec` with the frame count as base), at most `NEST` = 8 deep (a recursive function
+  memoises its top levels, the rest run as usual and the native stack stays small). Compiled code does not run in the frame of such a
+  call (`Machine::is_memo_frame`): its return pops the frame and goes on in the caller without telling the loop that waits for the end.
+  Calls that compiled code makes (`call_regs`, the host's step) do not use the memo: a version that did corrupted the host's view of the
+  frames (`--tier=auto --tier-heat=1,0,0` at 4 threads, `generics/generic_blocks_2019`).
 - **Bounds.** Per process and function a direct-mapped table of 32 entries that doubles up to 256 while keys evict each other; a key or
   result over 1 KiB is not kept (a call whose key does not fit counts as a call that did not repeat). The first 64 calls of a function in a process decide: fewer than one in eight repeating switches it off
   for that process, and for every process when three have (`Pre::memo_off`); a function that is off costs a flag test in the call. Per
   process and without locks, so hits and counters are the same at every thread count. `YAVS_COUNTERS` shows `pmemo_hits` and `pmemo_runs`.
-- **Not done.** A function the tier compiled for native frames is called directly from compiled code and bypasses the memo (making it
-  step the call would slow a function whose calls do not repeat, and the tier decides statically); the memo applies to every call the
-  interpreter makes, also from compiled callers that call interpreted code. Records, access types, signal parameters and out parameters
+- **Not done.** Calls made by compiled code (a process the tier compiled, a function on native frames) bypass the memo; the memo applies
+  to every call the interpreter makes. A call from compiled code would need the host's step to run a nested loop safely. Records, access types, signal parameters and out parameters
   are not keyed. A table shared by the processes of one design unit would save the first call of each (about 4 percent of the PoC run is
   misses).
 - **Measured** (bench builds, instructions of `--tier=interp`, `perf stat`): numbers in `docs/STATUS.md` "Memo of pure calls".

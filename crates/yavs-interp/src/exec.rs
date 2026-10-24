@@ -4565,7 +4565,7 @@ impl Machine {
                                 t.hot(func);
                             }
                         }
-                        st & NAT_CODE != 0
+                        st & NAT_CODE != 0 && !self.is_memo_frame(top)
                     }
                     None => false,
                 }
@@ -7875,7 +7875,6 @@ impl Machine {
     }
 
     /// `Inst::Call` of a function by its IR id (compiled code's calls, `TierHost::step`).
-    #[allow(clippy::too_many_arguments)]
     fn call_regs(
         &mut self,
         prog: &Program,
@@ -7884,15 +7883,7 @@ impl Machine {
         args: yavs_ir::Regs,
         dst: Option<Reg>,
         rt: &Runtime,
-        ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
-        if let Some(sig) = prog.memo_sig(func) {
-            match self.memo_call(prog, f, func, sig, args, dst, ctx)? {
-                crate::pmemo::Done::Yes => return Ok(Flow::Next),
-                crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
-                crate::pmemo::Done::No => {}
-            }
-        }
         let callee = prog
             .func(func)
             .ok_or_else(|| ice_f!("call of missing function {func}"))?;
@@ -8704,13 +8695,6 @@ impl Machine {
                 return rt_err(w);
             }
             Inst::Call { func, args, dst } => {
-                if let Some(sig) = prog.memo_sig(func) {
-                    match self.memo_call(prog, f, func, sig, args, dst, ctx)? {
-                        crate::pmemo::Done::Yes => return Ok(Flow::Next),
-                        crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
-                        crate::pmemo::Done::No => {}
-                    }
-                }
                 return self.call_with(prog, f, func, None, args, dst);
             }
             Inst::CallIndirect { func, args, dst } => {
@@ -9442,7 +9426,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let r = match f.code.get(at as usize) {
             // As the fast loop calls (`Op::Call`).
             Some(&Inst::Call { func, args, dst }) => {
-                m.call_regs(self.prog, f, func, args, dst, self.rt, self.ctx)
+                m.call_regs(self.prog, f, func, args, dst, self.rt)
             }
             // Without the generic dispatch of `step`.
             Some(&Inst::CallNative { native, args, dst }) => {

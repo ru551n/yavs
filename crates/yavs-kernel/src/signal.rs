@@ -1813,7 +1813,7 @@ impl Signal {
     /// update (`finish_pend`). True for the signal's first one. `None`: the driver and the
     /// signal already have the value and the signal allows skipping (`skip_ok`): nothing to
     /// write or finish, only the delta it causes.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> Option<bool> {
         if self.exact {
             let d = &mut self.drivers[slot as usize];

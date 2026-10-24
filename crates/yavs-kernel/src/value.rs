@@ -403,6 +403,7 @@ impl Buf {
     }
 
     /// Elements `off .. off + n` as bytes, for byte storage.
+    #[inline]
     pub fn bytes(&self, off: usize, n: usize) -> Option<&[u8]> {
         match self {
             Buf::Bytes { es, data } => Some(&data[off * es..(off + n) * es]),

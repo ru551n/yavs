@@ -400,26 +400,31 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    #[inline]
     pub fn now(&self) -> Time {
         self.sh.now
     }
 
+    #[inline]
     pub fn delta(&self) -> u32 {
         self.sh.delta
     }
 
     /// `Config::stop_severity`: a report at this severity ends the simulation after the
     /// current cycle, so the process should not execute past it.
+    #[inline]
     pub fn stop_severity(&self) -> Severity {
         self.sh.stop_severity
     }
 
+    #[inline]
     pub fn process(&self) -> ProcId {
         self.pid
     }
 
     /// `Interrupt::stop` was called (Ctrl-C): a process that never suspends polls it at the
     /// jump back of its loop, because the kernel only looks between cycles.
+    #[inline]
     pub fn stop_requested(&self) -> bool {
         crate::kernel::Interrupt::stopped(self.sh.interrupt)
     }
@@ -601,6 +606,7 @@ impl Ctx<'_> {
     /// itself. `None` for a signal that keeps no codes (bytes, over `CODES_MAX` elements, or a bus: `CODES_SOURCE_MAX`).
     /// The pointer stays valid for the whole simulation; the bytes change only in the update
     /// phase, while no process runs.
+    #[inline]
     pub fn code_view(&self, s: SignalId) -> Option<(*const u8, usize)> {
         let sig = self.sh.signals.get(s.0 as usize)?;
         sig.codes_view()
@@ -608,18 +614,21 @@ impl Ctx<'_> {
 
     /// The event stamps of signal `s` (`Signal::event_view`) for `'event` and `rising_edge` of
     /// compiled code.
+    #[inline]
     pub fn event_view(&self, s: SignalId) -> Option<*const u64> {
         self.sh.signals.get(s.0 as usize)?.event_view()
     }
 
     /// The plane blocks of the current value of signal `s` and its element count
     /// (`Signal::planes_view`).
+    #[inline]
     pub fn planes_view(&self, s: SignalId) -> Option<(*const yavs_logic::Block, usize)> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
     }
 
     /// The plane blocks of the current value of logic signal `s` and its element count: whole
     /// record packs are read from them a block at a time (#686).
+    #[inline]
     pub fn planes(&self, s: SignalId) -> Option<(&[yavs_logic::Block], u32)> {
         match &self.sh.signals.get(s.0 as usize)?.cur {
             crate::value::Buf::Planes { len, b } => Some((b, *len as u32)),
@@ -629,21 +638,25 @@ impl Ctx<'_> {
 
     /// The bytes of the current value of signal `s`, the element size and the element count
     /// (`Signal::bytes_view`).
+    #[inline]
     pub fn bytes_view(&self, s: SignalId) -> Option<(*const u8, usize, usize)> {
         self.sh.signals.get(s.0 as usize)?.bytes_view()
     }
 
     /// The plane block of the `'last_value` of signal `s` (`Signal::last_view`).
+    #[inline]
     pub fn last_view(&self, s: SignalId) -> Option<*const yavs_logic::Block> {
         self.sh.signals.get(s.0 as usize)?.last_view()
     }
 
     /// The number of the current simulation cycle (an event stamp equal to it is an event now).
+    #[inline]
     pub fn cycle(&self) -> u64 {
         self.sh.cycle
     }
 
     /// The bytes of `code_view(s)` that may be read (`Signal::codes_cap`), 0 without codes.
+    #[inline]
     pub fn code_cap(&self, s: SignalId) -> usize {
         self.sh
             .signals
@@ -653,6 +666,7 @@ impl Ctx<'_> {
 
     /// The edge the kernel resumed this process for in this activation as an `edge_key`
     /// (`u64::MAX`: none).
+    #[inline]
     pub fn resumed_edge_key(&self) -> u64 {
         self.st.known
     }
@@ -831,6 +845,7 @@ impl Ctx<'_> {
     }
 
     /// `'driving`: false if any element of this process's driver is disconnected.
+    #[inline]
     pub fn driving(&self, d: DriverId) -> Result<bool, SimError> {
         let info = self.own(d)?;
         let slot = &self.sh.signals[info.signal.0 as usize].drivers[info.slot as usize];
@@ -1825,6 +1840,7 @@ impl Ctx<'_> {
 
     /// Timeout of the coming wait, relative to now.
     /// A timeout past TIME'HIGH never expires (lrm-checks.md).
+    #[inline]
     pub fn wait_for(&mut self, delay: Time) -> Result<(), SimError> {
         self.st.deadline = self.after(delay).ok();
         Ok(())
@@ -1832,6 +1848,7 @@ impl Ctx<'_> {
 
     /// Timeout of the coming wait as an absolute time, to re-suspend a `wait until` with its
     /// original deadline.
+    #[inline]
     pub fn wait_at(&mut self, deadline: Time) -> Result<(), SimError> {
         if deadline < self.sh.now {
             return Err(self.error(ErrorKind::DeadlineInPast { deadline }));
@@ -1841,6 +1858,7 @@ impl Ctx<'_> {
     }
 
     /// The process resumed because its timeout expired.
+    #[inline]
     pub fn timed_out(&self) -> bool {
         self.st.timed_out
     }

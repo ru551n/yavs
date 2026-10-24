@@ -7028,7 +7028,8 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too.
   one plane block, `SigGather` reads vector leaves from the planes. Instructions (interp, warm,
   on top of #677): 233-leaf register record 5.20 G to 3.40 G, `grlib_leon3mp` 809.6 G to 801.4 G,
   `neorv32_single_min` 42.79 G to 42.26 G. Step 3 (packs with ports) measured and not landed
-  (`docs/decisions.md`). Not done: the whole-record wait, step 5 (the cap), step 6 (byte leaves).
+  (`docs/decisions.md`); step 5 measured, the cap stays 64. Not done: the whole-record wait, step 6
+  (byte leaves).
 
 ## `yavs_rt_host` a leaf, and no cliff in the instance-constant memoisation (#663, #662, 2026-10-24)
 

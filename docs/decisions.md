@@ -6952,6 +6952,9 @@ compiled 82 M to 65 M (interpreter 64 M to 59 M).
   kernel signals but its idle skips from 2.09 M to 1.75 M (+2 percent instructions; `neorv32_single_min` level, 2021 to 1596 signals),
   also with reader ranges kept apart per read. The processes that lost skips are the combinational TLB tag comparators that read a few
   fields of a record in-port fed from an element of an array of records (not collapsed); why their arming grew is open.
+- **Step 5 measured: the cap stays 64.** `PACK_MAX` 256 (a pack beyond one plane block keeps no codes once a whole-record driver
+  covers it, and compiled code gets no element stamps) took the synthetic 233-leaf register record from 3.30 G to 3.46 G instructions
+  and `neorv32_single_min` from 41.94 G to 41.89 G.
 - **Idle skip reads carry their range:** a pure process is armed by an event in the elements it reads (the hull of its reads of the
   signal), not by any event of the signal, so packing a record does not wake readers of one field for another; a signal whose changed
   runs are not listed arms all its readers.

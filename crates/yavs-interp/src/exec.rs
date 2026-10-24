@@ -1824,10 +1824,16 @@ impl Machine {
             TEMP => Some(&self.temp),
             INST => Some(&self.inst.data),
             HEAP => self.heap.data(idx),
-            // Constants stored as bytes (compact ones are expanded by `obj`).
+            // Constants stored as bytes; compact ones once `obj` has expanded them.
             CONST => match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
                 Some(ConstData::Bytes(b)) => Some(b),
-                _ => None,
+                Some(_) => self
+                    .rt
+                    .expanded
+                    .get(idx as usize)
+                    .and_then(|c| c.get())
+                    .map(Vec::as_slice),
+                None => None,
             },
             // The state of protected objects and shared variables, and package data.
             SHARED_HEAP => self.sh.as_ref()?.heap.as_ref()?.data(idx),

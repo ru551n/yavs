@@ -6735,3 +6735,19 @@ the drives of `neorv32_single_min` are repeats within one activation (#667), the
 Checked: `cargo test --workspace`, `-p yavs-llvm -p yavs --features llvm`, the `gc-stress` unit tests, clippy with and without `llvm`, the
 differential corpus (502/502) on `yavs-interp`, `yavs-llvm` and `yavs-auto` (also `--tier-heat=1,0,0`) at 1 and 4 threads, OSVVM (521
 files, 17 libraries) and UVVM (131 pass, 6 skipped) results equal to those of main, seven realbench outputs byte-identical to main (interpreter, 1 thread; three of them also at 4 threads and under `--tier=auto`).
+
+## Compact constants are read through the fast memory lookup (2026-10-24)
+
+`uvvm_func_cov` spent 6 percent of its instructions in `Machine::load_slow`, 4 percent in
+`const_bytes` and 3 percent in `rd_slow`: a load from a compact constant (`ConstData::Repeat`,
+`Runs`, `Logic`) found nothing in `mem_fast` (only byte constants are there), went on through
+`load_slow` and `rd_slow` to `obj`, and `const_bytes` looked the constant and its expanded copy up
+again on every load. `mem_fast` now also answers for a compact constant whose expanded copy exists
+(the first access still expands it through `obj`).
+Instructions, `--tier=interp` (deterministic), warm, main thread: uvvm_func_cov 3.052 to 2.396 G
+(-21.5 percent), osvvm_axi4_random 7.608 to 7.543 G, uvvm_sb_slv 12.700 to 12.662 G, sc5_fifo_repack
+42.43 to 42.30 G, uvvm_util_rand and fletcher_bufferreader unchanged within 0.1 percent;
+hdlm_lfsr 66.84 to 67.16 G (+0.5 percent) and poc_fifo_ic_assembly 2.280 to 2.285 G (+0.2 percent),
+which are the layout of the dispatch loop (a variant with the branch out of line moved them and
+cost uvvm_func_cov 5 percent more). Cycles were not measured (no timing core free).
+

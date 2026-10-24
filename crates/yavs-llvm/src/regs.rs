@@ -18,19 +18,7 @@ pub struct Live {
 }
 
 /// Functions whose rows would take more than this many words get no deferral.
-const MAX_WORDS: usize = 1 << 20;
-
-fn mark(f: &Func, row: &mut [u64], r: Reg) {
-    let mut set = |k: usize| {
-        if let Some(w) = row.get_mut(k / 64) {
-            *w |= 1 << (k % 64);
-        }
-    };
-    set(r.0 as usize);
-    if f.reg_ty.get(r.0 as usize) == Some(&RegTy::Sig) {
-        set(r.0 as usize + 1);
-    }
-}
+const MAX_WORDS: usize = 1 << 25;
 
 impl Live {
     pub fn row(&self, pc: usize) -> &[u64] {
@@ -38,43 +26,57 @@ impl Live {
     }
 
     /// Backward liveness over the instructions of `f`; `None` for a function too big for it.
+    ///
+    /// Solved per basic block (a few hundred times fewer sets than instructions), the rows of
+    /// the instructions then come from one backward sweep of each block (#710).
     pub fn new(prog: &Program, f: &Func, sc: Option<&Scalars>) -> Option<Live> {
         let n = f.code.len();
         let nv = sc.map_or(0, |s| s.slots.len());
         // One bit past the slot variables is the frame base (`Gen`), never live.
         let words = (f.reg_ty.len() + nv + 1).div_ceil(64).max(1);
-        if n.checked_mul(words)? > MAX_WORDS {
+        if (n + 1).checked_mul(words)? > MAX_WORDS {
             return None;
         }
-        // Uses and definitions of each instruction, and its successors.
-        let mut uses = vec![0u64; n * words];
-        let mut defs = vec![0u64; n * words];
+        // The bits each instruction uses and defines, and its successors.
+        let (mut uses, mut defs): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
+        let (mut uat, mut dat) = (Vec::with_capacity(n + 1), Vec::with_capacity(n + 1));
         let mut succ: Vec<Vec<u32>> = Vec::with_capacity(n);
         for (pc, i) in f.code.iter().enumerate() {
-            let (u, d) = (
-                &mut uses[pc * words..(pc + 1) * words],
-                &mut defs[pc * words..(pc + 1) * words],
-            );
+            uat.push(uses.len());
+            dat.push(defs.len());
+            let mark = |v: &mut Vec<u32>, r: Reg| {
+                // (A register beyond the frame is no bit, as before.)
+                if (r.0 as usize) < words * 64 {
+                    v.push(r.0);
+                }
+                if f.reg_ty.get(r.0 as usize) == Some(&RegTy::Sig)
+                    && ((r.0 + 1) as usize) < words * 64
+                {
+                    v.push(r.0 + 1);
+                }
+            };
             i.visit(&mut |r, role, _| {
-                mark(f, if role == Role::Def { &mut *d } else { &mut *u }, r)
+                mark(
+                    if role == Role::Def {
+                        &mut defs
+                    } else {
+                        &mut uses
+                    },
+                    r,
+                )
             });
             if let Some(l) = i.list() {
                 for &r in f.regs(l)? {
-                    mark(f, &mut *u, r);
+                    mark(&mut uses, r);
                 }
             }
             if let Some(sc) = sc {
-                let set = |row: &mut [u64], k: usize| {
-                    let bit = f.reg_ty.len() + k;
-                    row[bit / 64] |= 1 << (bit % 64);
-                };
+                let bit = |k: usize| (f.reg_ty.len() + k) as u32;
                 match (sc.at[pc], i) {
-                    (Some(k), Inst::Load { .. }) => set(&mut *u, k as usize),
-                    (Some(k), Inst::Store { .. }) => set(&mut *d, k as usize),
+                    (Some(k), Inst::Load { .. }) => uses.push(bit(k as usize)),
+                    (Some(k), Inst::Store { .. }) => defs.push(bit(k as usize)),
                     (_, i) if sc.observes(i) => {
-                        for k in (0..nv).filter(|&k| sc.stored[k]) {
-                            set(&mut *u, k);
-                        }
+                        uses.extend((0..nv).filter(|&k| sc.stored[k]).map(bit));
                     }
                     _ => {}
                 }
@@ -85,30 +87,106 @@ impl Live {
             }
             succ.push(s);
         }
-        let mut bits = vec![0u64; (n + 1) * words];
-        let mut out = vec![0u64; words];
-        for _ in 0..64 {
-            let mut changed = false;
-            for pc in (0..n).rev() {
-                out.fill(0);
-                for &s in &succ[pc] {
-                    for (o, b) in out.iter_mut().zip(&bits[s as usize * words..]) {
-                        *o |= b;
+        uat.push(uses.len());
+        dat.push(defs.len());
+        let (uses_of, defs_of) = (
+            |pc: usize| &uses[uat[pc]..uat[pc + 1]],
+            |pc: usize| &defs[dat[pc]..dat[pc + 1]],
+        );
+        // Basic blocks: a block ends at an instruction that is not followed by its only successor.
+        let mut start = vec![false; n + 1];
+        start[0] = true;
+        for (pc, s) in succ.iter().enumerate() {
+            if s.as_slice() != [pc as u32 + 1] {
+                start[pc + 1] = true;
+                for &t in s {
+                    start[t as usize] = true;
+                }
+            }
+        }
+        let starts: Vec<usize> = (0..n).filter(|&pc| start[pc]).collect();
+        let nb = starts.len();
+        let mut block_of = vec![0u32; n + 1];
+        for (b, &s) in starts.iter().enumerate() {
+            let end = starts.get(b + 1).copied().unwrap_or(n);
+            block_of[s..end].fill(b as u32);
+        }
+        let bsucc: Vec<Vec<u32>> = (0..nb)
+            .map(|b| {
+                let last = starts.get(b + 1).copied().unwrap_or(n) - 1;
+                succ[last].iter().map(|&t| block_of[t as usize]).collect()
+            })
+            .collect();
+        // Upward exposed uses and definitions of each block.
+        let (mut gen_, mut kill) = (vec![0u64; nb * words], vec![0u64; nb * words]);
+        for b in 0..nb {
+            let end = starts.get(b + 1).copied().unwrap_or(n);
+            let (g, k) = (
+                &mut gen_[b * words..(b + 1) * words],
+                &mut kill[b * words..(b + 1) * words],
+            );
+            for pc in starts[b]..end {
+                for &u in uses_of(pc) {
+                    if k[u as usize / 64] >> (u % 64) & 1 == 0 {
+                        g[u as usize / 64] |= 1 << (u % 64);
                     }
                 }
-                for w in 0..words {
-                    let v = uses[pc * words + w] | (out[w] & !defs[pc * words + w]);
-                    if bits[pc * words + w] != v {
-                        bits[pc * words + w] = v;
+                for &d in defs_of(pc) {
+                    k[d as usize / 64] |= 1 << (d % 64);
+                }
+            }
+        }
+        let mut live_in = gen_;
+        let mut out = vec![0u64; words];
+        let mut converged = false;
+        for _ in 0..64 {
+            let mut changed = false;
+            for b in (0..nb).rev() {
+                out.fill(0);
+                for &s in &bsucc[b] {
+                    for (o, x) in out.iter_mut().zip(&live_in[s as usize * words..]) {
+                        *o |= x;
+                    }
+                }
+                for (w, o) in out.iter().enumerate() {
+                    let at = b * words + w;
+                    // `live_in` starts as the block's own uses and only grows.
+                    let v = live_in[at] | (o & !kill[at]);
+                    if v != live_in[at] {
+                        live_in[at] = v;
                         changed = true;
                     }
                 }
             }
             if !changed {
-                return Some(Live { words, bits });
+                converged = true;
+                break;
             }
         }
-        None
+        if !converged {
+            return None;
+        }
+        // The rows: from the live-out set of each block back through its instructions.
+        let mut bits = vec![0u64; (n + 1) * words];
+        for b in 0..nb {
+            out.fill(0);
+            for &s in &bsucc[b] {
+                for (o, x) in out.iter_mut().zip(&live_in[s as usize * words..]) {
+                    *o |= x;
+                }
+            }
+            let end = starts.get(b + 1).copied().unwrap_or(n);
+            for pc in (starts[b]..end).rev() {
+                for &d in defs_of(pc) {
+                    out[d as usize / 64] &= !(1 << (d % 64));
+                }
+                for &u in uses_of(pc) {
+                    out[u as usize / 64] |= 1 << (u % 64);
+                }
+                bits[pc * words..(pc + 1) * words].copy_from_slice(&out);
+            }
+        }
+        Some(Live { words, bits })
     }
 }
 
@@ -667,4 +745,147 @@ pub fn spaces(prog: &Program, f: &Func, starts: &[bool]) -> Option<Vec<Vec<(u32,
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yavs_diag::{FileId, Span};
+    use yavs_ir::{CmpOp, FuncKind, IntOp, Mode, ParamClass, ProgramBuilder, StmtKind};
+
+    /// The liveness of `f` by plain iteration over its instructions: bit sets per instruction.
+    fn reference(prog: &Program, f: &Func) -> Vec<Vec<u64>> {
+        let (n, words) = (f.code.len(), (f.reg_ty.len() + 1).div_ceil(64).max(1));
+        let (mut uses, mut defs) = (vec![vec![0u64; words]; n], vec![vec![0u64; words]; n]);
+        for (pc, i) in f.code.iter().enumerate() {
+            i.visit(&mut |r, role, _| {
+                let row = if role == Role::Def {
+                    &mut defs[pc]
+                } else {
+                    &mut uses[pc]
+                };
+                row[r.0 as usize / 64] |= 1 << (r.0 % 64);
+                if f.reg_ty.get(r.0 as usize) == Some(&RegTy::Sig) {
+                    row[(r.0 as usize + 1) / 64] |= 1 << ((r.0 + 1) % 64);
+                }
+            });
+        }
+        let mut bits = vec![vec![0u64; words]; n + 1];
+        loop {
+            let mut changed = false;
+            for pc in (0..n).rev() {
+                let mut out = vec![0u64; words];
+                for s in succs(prog, f, pc, &f.code[pc]).unwrap() {
+                    for (o, b) in out.iter_mut().zip(&bits[s as usize]) {
+                        *o |= b;
+                    }
+                }
+                for w in 0..words {
+                    let v = uses[pc][w] | (out[w] & !defs[pc][w]);
+                    changed |= std::mem::replace(&mut bits[pc][w], v) != v;
+                }
+            }
+            if !changed {
+                return bits;
+            }
+        }
+    }
+
+    /// A function of `len` straight-line instructions that each define a register, then a loop
+    /// with an early exit and a nested branch.
+    fn big(len: usize) -> (Program, yavs_ir::FuncId) {
+        let mut pb = ProgramBuilder::new();
+        let f = pb.declare("f", FuncKind::Function, None);
+        let mut fb = pb.define(f);
+        let sx = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        let (head, body, odd, step, done) =
+            (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
+        fb.stmt(StmtKind::Return, Span::new(FileId(0), 0, 1));
+        let px = fb.addr(AddrSpace::Frame, sx);
+        let x = fb.reg(RegTy::I64);
+        fb.emit(Inst::Load {
+            dst: x,
+            addr: px,
+            w: Width::B8,
+        });
+        let mut acc = x;
+        for k in 0..len {
+            let r = fb.reg(RegTy::I64);
+            let op = [IntOp::Add, IntOp::Mul, IntOp::Sub][k % 3];
+            fb.emit(Inst::Bin {
+                op,
+                dst: r,
+                a: acc,
+                b: if k % 7 == 0 { x } else { acc },
+            });
+            acc = r;
+        }
+        let (i, one, three) = (fb.int(0), fb.int(1), fb.int(3));
+        fb.emit(Inst::Br { to: head });
+        fb.at(head);
+        let c = fb.reg(RegTy::I64);
+        fb.emit(Inst::Cmp {
+            op: CmpOp::Lt,
+            dst: c,
+            a: i,
+            b: x,
+        });
+        fb.emit(Inst::CondBr {
+            c,
+            t: body,
+            f: done,
+        });
+        fb.at(body);
+        let b = fb.reg(RegTy::I64);
+        fb.emit(Inst::Bin {
+            op: IntOp::Rem,
+            dst: b,
+            a: i,
+            b: one,
+        });
+        fb.emit(Inst::CondBr {
+            c: b,
+            t: odd,
+            f: step,
+        });
+        fb.at(odd);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: acc,
+            a: acc,
+            b: three,
+        });
+        fb.emit(Inst::Br { to: step });
+        fb.at(step);
+        fb.emit(Inst::Bin {
+            op: IntOp::Add,
+            dst: i,
+            a: i,
+            b: one,
+        });
+        fb.emit(Inst::Br { to: head });
+        fb.at(done);
+        fb.emit(Inst::Ret { v: Some(acc) });
+        fb.finish();
+        (pb.finish().unwrap(), f)
+    }
+
+    #[test]
+    fn rows_match_plain_iteration_for_a_function_over_the_old_cap() {
+        // 12 000 registers of 188 words each: 2.2 million words, over the 1 << 20 of before #710.
+        let (prog, id) = big(12_000);
+        // (The function as built: `Program::func` hands out the optimised one, which folds this.)
+        let f = prog.funcs.get(id).unwrap();
+        let live = Live::new(&prog, f, None).expect("a function this size gets a liveness matrix");
+        assert!(
+            f.code.len() * live.words > 1 << 20,
+            "under the old cap: {} instructions of {} words",
+            f.code.len(),
+            live.words
+        );
+        let want = reference(&prog, f);
+        for (pc, w) in want.iter().enumerate() {
+            assert_eq!(&live.row(pc)[..w.len()], &w[..], "row {pc}");
+        }
+    }
 }

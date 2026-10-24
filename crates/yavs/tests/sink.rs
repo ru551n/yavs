@@ -340,3 +340,53 @@ end;
     assert_eq!(with.0, 0, "{}", with.1);
     assert_eq!(with, without);
 }
+
+/// A constant two branches share (one register, defined once, in the first branch) keeps its
+/// definition when inlining folds that branch away (#714): the index read 0 in a release build
+/// and the IR verifier of a debug build rejected the function.
+#[test]
+fn a_constant_shared_by_two_branches_survives_the_folding_of_one() {
+    let d = tmp("sink");
+    let text = "
+package pk is
+  procedure put(i : natural; v : integer);
+  procedure setg(flag : boolean);
+  procedure gate;
+end package;
+package body pk is
+  procedure put(i : natural; v : integer) is
+  begin
+    report \"put \" & integer'image(i) & \"=\" & integer'image(v) severity note;
+  end procedure;
+  procedure setg(flag : boolean) is
+  begin
+    if flag then put(20, 1); else put(20, 0); end if;
+  end procedure;
+  procedure gate is
+  begin
+    report \"gate a\" & integer'image(1) severity note;
+    report \"gate b\" & integer'image(2) severity note;
+    report \"gate c\" & integer'image(3) severity note;
+    report \"gate d\" & integer'image(4) severity note;
+    setg(false);
+    report \"gate e\" & integer'image(5) severity note;
+  end procedure;
+end package body;
+use work.pk.all;
+entity t is end;
+architecture a of t is
+begin
+  process
+  begin
+    gate;
+    wait;
+  end process;
+end;
+";
+    std::fs::write(d.join("t.vhd"), text).expect("write");
+    let with = run(&d, &[], "t", "interp");
+    let without = run(&d, &[("YAVS_NO_IROPT", "1")], "t", "interp");
+    assert_eq!(with.0, 0, "{}", with.1);
+    assert!(with.1.contains("put 20=0"), "{}", with.1);
+    assert_eq!(with, without);
+}

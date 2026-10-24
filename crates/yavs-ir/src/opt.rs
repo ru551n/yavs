@@ -2243,6 +2243,38 @@ impl<'a> Opt<'a> {
             return;
         }
         let reach = self.reachable();
+        // A constant or address defined once, here, that a reachable instruction reads keeps its
+        // definition: frames start with it (`merge_consts` made the blocks share it, #714). As
+        // `drop_declarations` keeps the definitions the body reads.
+        let (mut read, mut ndefs) = (vec![false; self.defs.len()], vec![0u8; self.defs.len()]);
+        for (b, &r) in reach.iter().enumerate() {
+            for i in &self.code[self.range(b)] {
+                for_defs(i, |d| {
+                    if let Some(n) = ndefs.get_mut(d.0 as usize) {
+                        *n = n.saturating_add(1);
+                    }
+                });
+                if !r || is_dead(i) {
+                    continue;
+                }
+                let list = i.list().and_then(|l| {
+                    self.operands
+                        .get(l.start as usize..(l.start + l.len) as usize)
+                });
+                // (A rename not applied yet counts as a read of the register it names.)
+                let mut mark = |x: Reg| {
+                    if let Some(m) = read.get_mut(self.resolve(x).0 as usize) {
+                        *m = true;
+                    }
+                };
+                i.visit(&mut |x, role, _| {
+                    if role == Role::Use {
+                        mark(x);
+                    }
+                });
+                list.unwrap_or(&[]).iter().for_each(|&x| mark(x));
+            }
+        }
         for (b, &r) in reach.iter().enumerate() {
             if r {
                 continue;
@@ -2250,6 +2282,18 @@ impl<'a> Opt<'a> {
             let rg = self.range(b);
             let last = rg.end.saturating_sub(1);
             for pc in rg.start..last {
+                if let Inst::Const { dst, .. }
+                | Inst::ConstF { dst, .. }
+                | Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Frame | AddrSpace::Inst | AddrSpace::Const(_),
+                    ..
+                } = self.code[pc]
+                    && read.get(dst.0 as usize) == Some(&true)
+                    && ndefs.get(dst.0 as usize) == Some(&1)
+                {
+                    continue;
+                }
                 if !is_dead(&self.code[pc]) {
                     self.code[pc] = dead();
                     self.changed = true;

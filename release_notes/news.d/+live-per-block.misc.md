@@ -1,0 +1,1 @@
+Generating compiled code for a process of tens of thousands of instructions no longer spends seconds on finding which registers are live, and the limit on the process size for keeping register values out of the frame is gone.

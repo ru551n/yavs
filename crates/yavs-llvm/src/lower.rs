@@ -115,6 +115,8 @@ pub(crate) struct Mem {
     /// Per frame index, the slots of the native frame living there (`NSlot`): a native callee
     /// reaches the frames of its native callers through it.
     nslots: *mut NSlot,
+    /// Entries of the table `nslots` points at (the thread's table never shrinks).
+    nslots_len: usize,
 }
 
 /// The slots of a native frame, registered at its entry in `Mem::nslots`.
@@ -305,6 +307,16 @@ impl Mem {
             ntab: std::ptr::null(),
             stack_lo: 0,
             nslots: std::ptr::null_mut(),
+            nslots_len: 0,
+        }
+    }
+
+    /// Point `nslots` at this thread's table of at least `depth` entries.
+    #[inline(always)]
+    fn set_nslots(&mut self, depth: usize) {
+        if self.nslots_len < depth {
+            self.nslots = nslots(depth);
+            self.nslots_len = depth;
         }
     }
 
@@ -358,9 +370,13 @@ impl Mem {
     }
 
     /// The end of an activation or call: what `begin` checks next time.
+    #[inline(always)]
     fn end(&mut self) {
-        self.objs_owner = self.fr.owner;
-        self.objs_epoch = self.fr.heap_epoch;
+        // `begin` looks at these only while objects are kept.
+        if self.live != 0 {
+            self.objs_owner = self.fr.owner;
+            self.objs_epoch = self.fr.heap_epoch;
+        }
     }
 
     /// Enter object `o` at its entry.
@@ -773,7 +789,7 @@ fn yavs_rt_drive_wide(
 /// `code` holds the logic code and, in bit 8, whether the assignment is inertial.
 extern "C" fn yavs_rt_drive_bit(
     env: *mut c_void,
-    _regs: *mut u64,
+    regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
     driver: u32,
@@ -785,10 +801,29 @@ extern "C" fn yavs_rt_drive_bit(
     cb(Cb::Drive);
     // SAFETY: as in `yavs_rt_step`.
     let envp = env as *mut Env<'_>;
-    let (inertial, code) = (code & 0x100 != 0, code & !0x100);
-    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code) } {
+    if delay == 0 && unsafe { (*envp).host.drive_bit_now(driver, [lo, len], code & !0x100) } {
         return GO;
     }
+    yavs_rt_drive_bit_slow(env, regs, mem, pc, driver, lo, len, delay, code)
+}
+
+/// `yavs_rt_drive_bit` when the kernel's fastest path does not take the assignment.
+#[cold]
+#[inline(never)]
+extern "C" fn yavs_rt_drive_bit_slow(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    delay: u64,
+    code: u64,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_step`.
+    let envp = env as *mut Env<'_>;
+    let (inertial, code) = (code & 0x100 != 0, code & !0x100);
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.drive_bit(
@@ -1778,7 +1813,7 @@ fn enter_on(
     mem.stack_lo = env.stack_lo as u64;
     // The frames of native calls are at most `max_depth` deep: their slots are registered here.
     let depth = mem.fr.max_depth.min(1 << 20) as usize;
-    mem.nslots = nslots(depth);
+    mem.set_nslots(depth);
     // SAFETY: `f` was generated for this function with `nregs` registers and only
     // indexes `regs` below that (checked at compile time); it accesses memory only
     // within the bounds in `mem`; `env` and `mem` outlive the call.
@@ -1874,7 +1909,7 @@ fn call_on(
     };
     mem.ntab = ntab;
     mem.stack_lo = env.stack_lo as u64;
-    mem.nslots = nslots(mem.fr.max_depth.min(1 << 20) as usize);
+    mem.set_nslots(mem.fr.max_depth.min(1 << 20) as usize);
     // SAFETY: `adapter` is a `CallFn` generated for this function (`Gen::adapter`), which reads
     // one cell per parameter (two for a signal): `cells` holds them, checked by the caller.
     let v = unsafe {

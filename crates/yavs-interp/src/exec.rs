@@ -511,11 +511,6 @@ pub(crate) struct Machine {
     /// Bumped whenever the machine runs or a variable is written: unchanged means every
     /// variable of the process has its last value (the waveform recorder skips it).
     pub(crate) execs: u64,
-    /// A native `ieee` subprogram made a report at the stop severity: the process ends after
-    /// the call, as after `Inst::Report`.
-    pub ieee_stop: bool,
-    /// A native `ieee` subprogram gives its call back to the VHDL body (`ieee::fallback`).
-    pub ieee_fallback: bool,
     /// `regs` and `temp` went to the thread's scratch at the last suspension
     /// ([`Machine::release_scratch`]) and are empty until [`Machine::borrow_scratch`].
     released: bool,
@@ -530,9 +525,20 @@ pub(crate) struct Machine {
     /// Started, not ended, no shared state and no debugger: `InterpProcess::run` goes straight
     /// to `run_quick`.
     pub(crate) hot: bool,
+    /// The activation (`execs`, as a 32-bit count; `u32::MAX`: never) at which
+    /// `InterpProcess::run` tries the switch to a specialised copy: in the first lines with
+    /// `execs`, which it is compared with at every activation.
+    pub(crate) spec_at: u32,
+    /// What the frame view of compiled code reads besides the fields above, one cache line
+    /// (`view_root`; it was scattered over five lines of a machine and its instance data,
+    /// which cost a design of thousands of processes three cache misses per activation).
+    vc: ViewCache,
     pub heap: Heap,
-    /// This machine for compiled code (`TierFrame::owner`): unique in the process.
-    owner: u64,
+    /// A native `ieee` subprogram made a report at the stop severity: the process ends after
+    /// the call, as after `Inst::Report`.
+    pub ieee_stop: bool,
+    /// A native `ieee` subprogram gives its call back to the VHDL body (`ieee::fallback`).
+    pub ieee_fallback: bool,
     /// The slots of the native frames of compiled code, for the frame indices `nwin_from` to
     /// `nwin_to`, while a call from a native frame runs (`TierHost::native_direct`).
     nwin: Option<Box<dyn crate::NativeSlots>>,
@@ -562,9 +568,6 @@ pub(crate) struct Machine {
     cells: Vec<u64>,
     /// The staging buffer of `Copy` and `Fill` (`take_bytes`), reused.
     bytes: Vec<u8>,
-    /// The instance signals as compiled code reads them (`TierFrame::sigtab`), made at the first
-    /// entry of compiled code from the kernel's signals (this machine belongs to one kernel).
-    tier_sigs: Vec<crate::TierSig>,
     /// `to_string` / `'image` texts of enumeration literals made so far: (type, image, text of each literal).
     pub(crate) enum_text: Vec<EnumText>,
     /// What this process added to [`RESIDENT_USED`], given back when it is dropped.
@@ -574,8 +577,22 @@ pub(crate) struct Machine {
     /// The process may switch to a copy specialised to its instance data (`specialise`): the
     /// parameters of `for` generates in its data, which the copy does not fold.
     spec: Option<Arc<[(u32, u32)]>>,
-    /// The activation (`execs`) at which `InterpProcess::run` tries the switch.
-    pub(crate) spec_at: u64,
+}
+
+/// The fields of a machine that `view_root` reads and the interpreter does not (see
+/// `Machine::vc`).
+#[repr(C, align(64))]
+struct ViewCache {
+    /// The instance signals as compiled code reads them (`TierFrame::sigtab`), made at the first
+    /// entry of compiled code from the kernel's signals (this machine belongs to one kernel).
+    tier_sigs: Vec<crate::TierSig>,
+    /// This machine for compiled code (`TierFrame::owner`): unique in the process.
+    owner: u64,
+    /// The instance data (`TierFrame::inst`, `inst_len`) and the number of its signals, as
+    /// numbers (an `Arc<InstData>` never changes its vectors).
+    inst_data: usize,
+    inst_len: usize,
+    nsigs: usize,
 }
 
 /// Registers of a process's root frame up to which it keeps its working vectors
@@ -950,7 +967,13 @@ impl Machine {
     ) -> Machine {
         static OWNERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Machine {
-            owner: OWNERS.fetch_add(1, Ordering::Relaxed),
+            vc: ViewCache {
+                tier_sigs: Vec::new(),
+                owner: OWNERS.fetch_add(1, Ordering::Relaxed),
+                inst_data: inst.data.as_ptr() as usize,
+                inst_len: inst.data.len(),
+                nsigs: inst.sigs.len(),
+            },
             nwin: None,
             nwin_from: 0,
             nwin_to: 0,
@@ -979,7 +1002,6 @@ impl Machine {
             cells: Vec::new(),
             bytes: Vec::new(),
             released: false,
-            tier_sigs: Vec::new(),
             tier_state: None,
             resident: false,
             enum_text: Vec::new(),
@@ -987,7 +1009,7 @@ impl Machine {
             root_process: false,
             quick_fault: None,
             spec: None,
-            spec_at: u64::MAX,
+            spec_at: u32::MAX,
             hot: false,
             execs: 0,
         }
@@ -1082,7 +1104,7 @@ impl Machine {
 
     pub(crate) fn attach(&mut self, session: Arc<DebugSession>, index: usize) {
         self.spec = None;
-        self.spec_at = u64::MAX;
+        self.spec_at = u32::MAX;
         self.dbg = Some(Box::new(Dbg {
             session,
             index,
@@ -1284,7 +1306,7 @@ impl Machine {
         if self.dbg.is_none() && self.rt.prog.specialisable(self.entry) {
             self.rt.prog.note_planned();
             self.spec = Some(holes);
-            self.spec_at = at;
+            self.spec_at = u32::try_from(at).unwrap_or(u32::MAX);
         }
     }
 
@@ -1300,7 +1322,7 @@ impl Machine {
         let Some(holes) = self.spec.take() else {
             return;
         };
-        self.spec_at = u64::MAX;
+        self.spec_at = u32::MAX;
         let rt = self.rt.clone();
         let prog = &rt.prog;
         let base = self.entry;
@@ -1331,7 +1353,7 @@ impl Machine {
                 .is_some_and(|t| t.elapsed() < crate::SPEC_TIER_WAIT)
         {
             self.spec = Some(holes);
-            self.spec_at = self.execs.saturating_mul(2);
+            self.spec_at = u32::try_from(self.execs.saturating_mul(2)).unwrap_or(u32::MAX);
             return;
         }
         let Ok(id) = prog.copy_of(base, &self.inst.data, &holes) else {
@@ -7198,7 +7220,7 @@ impl Machine {
     /// fields (`TierHost::view_again`); `false` (nothing written) when it is not one.
     fn view_root(&mut self, tf: &mut crate::TierFrame, c: &Ctx<'_>) -> bool {
         let m = self;
-        if m.frames.len() != 1 || m.tier_sigs.len() != m.inst.sigs.len() {
+        if m.frames.len() != 1 || m.vc.tier_sigs.len() != m.vc.nsigs {
             return false;
         }
         let fr = &m.frames[0];
@@ -7208,11 +7230,11 @@ impl Machine {
         tf.frame = 0;
         tf.frame_hi = u64::from(FRAME) << 29;
         tf.up = [u64::MAX; 2];
-        tf.inst = m.inst.data.as_ptr();
-        tf.inst_len = m.inst.data.len() as u64;
-        tf.nsigs = m.inst.sigs.len() as u64;
-        tf.sigtab = m.tier_sigs.as_ptr();
-        tf.sigtab_len = m.tier_sigs.len() as u64;
+        tf.inst = m.vc.inst_data as *const u8;
+        tf.inst_len = m.vc.inst_len as u64;
+        tf.nsigs = m.vc.nsigs as u64;
+        tf.sigtab = m.vc.tier_sigs.as_ptr();
+        tf.sigtab_len = m.vc.tier_sigs.len() as u64;
         tf.temp = m.temp.as_mut_ptr();
         tf.temp_len = m.temp.len() as u64;
         tf.temp_cap = m.temp.capacity() as u64;
@@ -7224,7 +7246,7 @@ impl Machine {
         tf.max_depth = u64::from(m.rt.limits.max_depth);
         tf.heap_epoch = m.heap_epochs();
         tf.flags = m.tier_flags();
-        tf.owner = m.owner;
+        tf.owner = m.vc.owner;
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
         true
@@ -7273,7 +7295,7 @@ impl Machine {
         tf.max_depth = u64::from(self.rt.limits.max_depth);
         tf.heap_epoch = self.heap_epochs();
         tf.flags = self.tier_flags();
-        tf.owner = self.owner;
+        tf.owner = self.vc.owner;
         let mut link = self.frames[top].link;
         for u in &mut tf.up {
             *u = match link {
@@ -8903,8 +8925,8 @@ impl crate::TierHost for Host<'_, '_, '_> {
             tf.known = u64::MAX;
             return;
         };
-        if m.tier_sigs.len() != m.inst.sigs.len() {
-            m.tier_sigs = m
+        if m.vc.tier_sigs.len() != m.vc.nsigs {
+            m.vc.tier_sigs = m
                 .inst
                 .sigs
                 .iter()
@@ -8953,8 +8975,8 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 })
                 .collect();
         }
-        tf.sigtab = m.tier_sigs.as_ptr();
-        tf.sigtab_len = m.tier_sigs.len() as u64;
+        tf.sigtab = m.vc.tier_sigs.as_ptr();
+        tf.sigtab_len = m.vc.tier_sigs.len() as u64;
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
     }
@@ -9911,6 +9933,38 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What an activation of a small process reads is in the first four cache lines of a
+    /// machine: the hot three, and the line `view_root` reads for compiled code (#634). A new
+    /// field goes after `heap` unless an activation reads it.
+    #[test]
+    fn activation_fields_are_in_the_first_lines() {
+        use std::mem::offset_of;
+        for (name, at, size) in [
+            ("frames", offset_of!(Machine, frames), 24),
+            ("regs", offset_of!(Machine, regs), 32),
+            ("root", offset_of!(Machine, root), 24),
+            ("temp", offset_of!(Machine, temp), 24),
+            ("rt", offset_of!(Machine, rt), 8),
+            ("inst", offset_of!(Machine, inst), 8),
+            ("tier_state", offset_of!(Machine, tier_state), 8),
+            ("execs", offset_of!(Machine, execs), 8),
+            ("hot", offset_of!(Machine, hot), 1),
+            ("spec_at", offset_of!(Machine, spec_at), 4),
+        ] {
+            assert!(
+                at + size <= 192,
+                "{name} is at {at}, past the third cache line"
+            );
+        }
+        assert_eq!(
+            offset_of!(Machine, vc),
+            192,
+            "the view cache is the fourth line"
+        );
+        assert!(size_of::<ViewCache>() <= 64);
+        assert!(offset_of!(Machine, heap) >= 256);
+    }
 
     /// A suspension of a process without the shared state builds no roots (#356).
     #[test]

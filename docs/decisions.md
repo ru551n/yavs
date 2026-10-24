@@ -6414,3 +6414,32 @@ What was measured and not landed (all deterministic instruction counts, `--threa
   sites are in one block, so removing the first drive needs sinking it into the arms that do not override it (partial dead
   store elimination) or a pending-drive merge in the runtime (#667). The frame temporaries are #668, the unfused vector drive #669,
   the spread of `--tier=auto` counts #670.
+
+## Compiled clocked RTL processes, round 6: the cache lines of an activation (yavs-interp, yavs-llvm, #634, 2026-10-24)
+
+The entry plumbing of round 5 was measured in instructions; this round measured it in cache lines, because `rtl_fan` (4000
+near-idle processes) ran 1.2 times the interpreter's cycles with the same instructions. `perf record -e ibs_op// -d` (the
+data source of each sampled load: L1, L2, L3) showed where the compiled activation waits: loads that hit L3 in `view_again`
+and `run_quick` (92 and 93 samples against 20 for the whole interpreted activation), and
+`ls_any_fills_from_sys.local_ccx` (fills from L3) 82 M against 64 M. `view_root` read machine state from five cache lines that
+nothing else in an activation touches (the heap's epoch line, `owner`, `troots`, `tier_sigs` and the instance data's vectors,
+reached through the `Arc`), and `InterpProcess::run` read `spec_at` from the thirteenth line of the machine at every
+activation (both tiers). Decisions, tagged shared (S, any code generator) or LLVM only (L):
+
+- **A fourth line, `Machine::vc`, holds what compiled code's frame view reads and the interpreter does not** (S,
+  `ViewCache`, `repr(C, align(64))`: the instance signal table `tier_sigs`, `owner`, the instance data's pointer and
+  length, the number of signals; the heap starts at the fifth line as it started at the fourth). The instance data pointer
+  and length are numbers copied at `Machine::new` (an `Arc<InstData>` never changes its vectors). A new read of machine
+  state in `view_root` goes in `vc`, or its line is counted first (`activation_fields_are_in_the_first_lines` pins the
+  offsets).
+- **`spec_at` is a `u32` next to `execs`** (S): the comparison `InterpProcess::run` makes at every activation read a line of its own;
+  it is `u32::MAX` for "never" (`specialise` ignores a switch it did not plan).
+- **The scalar drive's slow path is out of line** (L, `yavs_rt_drive_bit_slow`): inline, it gave the hot function a six-register
+  prologue and `catch_unwind` set-up for the case that never happens (one `drive_bit_now` call, 43 instructions to 38).
+- **`Mem::end` stores the owner and epoch only while objects are kept, and `nslots` is looked up once** (L): two stores and a
+  thread-local read fewer per activation of a process that keeps no objects.
+
+Measured (bench builds, main thread; cycles of the simulation phase, minimum of 7 interleaved runs, core 12; `autoh` is
+`--tier=auto --tier-heat=1,0,0`): see `docs/STATUS.md` "llvm: compiled clocked RTL, round 6". Fills from L3 of `rtl_fan`
+compiled 82 M to 65 M (interpreter 64 M to 59 M).
+

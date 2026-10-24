@@ -1663,7 +1663,7 @@ impl Process for InterpProcess {
         if self.m.hot {
             // Started, running, no shared state, no debugger: the activation of a process.
             self.m.execs += 1;
-            if self.m.execs == self.m.spec_at {
+            if self.m.execs == u64::from(self.m.spec_at) {
                 self.m.specialise();
             }
             if let Err(e) = self.m.borrow_scratch() {

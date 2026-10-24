@@ -5516,6 +5516,27 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::LCopyDrive {
+                    driver,
+                    target,
+                    src,
+                    soff,
+                    cnt,
+                    time,
+                    size,
+                    w,
+                    e,
+                    n,
+                    inertial,
+                } => {
+                    t!(self.op_lcopy_drive(
+                        ctx,
+                        [driver, target, src, soff, cnt, time, size, w, e, n],
+                        inertial
+                    ));
+                    k += 1;
+                    enter!();
+                }
                 Op::LSetDrive {
                     v,
                     driver,
@@ -6258,6 +6279,62 @@ impl Machine {
         self.store(a, Width::B8, self.regs[time as usize])?;
         self.regs[e as usize] = add_addr(a, 8)?;
         Ok(())
+    }
+
+    /// `Op::LCopyDrive`, out of line. `r` is `driver, target, src, soff, cnt, time, size, w, e,
+    /// n` of the op.
+    #[inline(never)]
+    fn op_lcopy_drive(
+        &mut self,
+        ctx: &mut Option<&mut Ctx<'_>>,
+        r: [u16; 10],
+        inertial: bool,
+    ) -> R<()> {
+        let [driver, target, src, soff, cnt, time, size, w, e, n] = r;
+        let mode = if inertial {
+            DriveMode::Inertial
+        } else {
+            DriveMode::Transport
+        };
+        let tg = Reg(target.into());
+        let multi = self.is_multi(tg);
+        let (count, from) = (self.regs[cnt as usize], self.regs[soff as usize]);
+        if !multi && self.regs[time as usize] == 0 && (2..=64).contains(&count) {
+            let (s0, base) = (from % 64, from / 64);
+            let (sr, ty) = self.sigref(tg)?;
+            if ty.elem == Elem::Logic
+                && u64::from(sr.range.map_or(0, |r| r.len)) == count
+                && s0 + count <= 64
+            {
+                let d = self.driver(driver.into())?;
+                let a = add_addr(self.regs[src as usize], base * 32)?;
+                if let Ok(b) = self.rd_hot(a, 32) {
+                    let mask = if count == 64 { !0 } else { (1u64 << count) - 1 };
+                    let planes: [u64; 4] = std::array::from_fn(|p| plane_word(b, p) >> s0 & mask);
+                    let Some(c) = ctx.as_deref_mut() else {
+                        return rt_err_s!("signal or wait operation during elaboration");
+                    };
+                    if c.assign_planes_now(d.id, sr.range, planes) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        // The waveform as the three dropped instructions made it.
+        self.waveform_head(size, time, w, e)?;
+        self.lcopy(
+            self.regs[e as usize],
+            0,
+            self.regs[src as usize],
+            from,
+            count,
+        )?;
+        if multi {
+            self.drive_parts(ctx, tg, Reg(w.into()), Reg(n.into()), mode, None)
+        } else {
+            let d = self.driver(driver.into())?;
+            self.drive(ctx, d, Some(tg), Reg(w.into()), Reg(n.into()), mode, None)
+        }
     }
 
     /// `Op::BinRange`, out of line.

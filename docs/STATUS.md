@@ -6377,6 +6377,9 @@ core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median
   the branch that reads it. `poc_arith_addw` instructions 25.57 G to 18.41 G (0.720), cycles 0.76; the other designs
   within 0.2 percent of instructions. What can be seen of a message (a failure, a report, `to_integer` warning of a vector
   with `U`) is still done at every call; the one thing skipped that could fail is the length of a string of 2^31 elements.
+- `LCopyDrive` (interpreter only): a constant, or anything else copied element by element into a waveform, goes to the
+  kernel without the waveform. Instructions of `neorv32_single_min` 0.946, `fletcher_bufferreader` 0.977, `sc5_fifo_repack`
+  0.956, `fletcher_bufferwriter_512` 0.995; the others within 0.2 percent.
 
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 

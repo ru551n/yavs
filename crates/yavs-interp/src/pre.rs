@@ -483,6 +483,25 @@ pub(crate) enum Op {
         e: u16,
         inertial: bool,
     },
+    /// A `WaveBuf` that is not run, the `LCopy` of `cnt` elements from element `soff` of the
+    /// logic array at `src` into element 0 of that waveform and the one-element `Drive` of it,
+    /// which nothing else reads, without delay limit (`a <= b(7 downto 3)`): at zero delay and as
+    /// long as the target, within one block, the planes go to the kernel as they are. `size`,
+    /// `time`, `w` and `e` are the registers of the waveform for the cases the fast path does
+    /// not take.
+    LCopyDrive {
+        driver: u16,
+        target: u16,
+        src: u16,
+        soff: u16,
+        cnt: u16,
+        time: u16,
+        size: u16,
+        w: u16,
+        e: u16,
+        n: u16,
+        inertial: bool,
+    },
     /// `AffPL` / `AffPR` (the second with the register's coefficient 1) and the `SigRead1` of
     /// the element it computes (nothing else reads the offset).
     ReadPL {
@@ -1698,6 +1717,15 @@ fn peephole(
     // the IR pc of the `Alloc`.
     // The `Copy` positions where a `CopyDrive` goes, and the op.
     let mut dropped: Vec<(usize, Op)> = Vec::new();
+    // What the dropped waveform was filled with.
+    enum Val {
+        /// `Copy` of a block: its address and byte count.
+        Copy(u32, u32),
+        /// `LSet` of element 0: the code.
+        LSet(u32),
+        /// `LCopy` into element 0: the source, its first element, the count.
+        LCopy(u32, u32, u32),
+    }
     let int = |r: u32| match known.get(r as usize) {
         Some(&Known::Int(v)) => Some(v),
         _ => None,
@@ -1754,9 +1782,18 @@ fn peephole(
                         };
                         let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
                         let value = match old[j] {
-                            Op::Copy { dst, src, bytes } if dst == e => Some((src, bytes, true)),
+                            Op::Copy { dst, src, bytes } if dst == e => Some(Val::Copy(src, bytes)),
                             Op::LSet { base, idx, v } if base == e && int(idx) == Some(0) => {
-                                Some((v, 0, false))
+                                Some(Val::LSet(v))
+                            }
+                            Op::LCopy {
+                                dst,
+                                doff,
+                                src,
+                                soff,
+                                n: cnt,
+                            } if dst == e && int(doff) == Some(0) => {
+                                Some(Val::LCopy(src, soff, cnt))
                             }
                             _ => None,
                         }?;
@@ -1781,39 +1818,45 @@ fn peephole(
                                 Some(w16),
                                 Some(e16),
                                 Some(n),
-                            ) if clean => {
-                                let (a, b, copy) = value;
-                                if copy {
-                                    Some((
-                                        j,
-                                        Op::CopyDrive {
-                                            driver,
-                                            target,
-                                            src: r(a)?,
-                                            bytes: r(b)?,
-                                            time,
-                                            size,
-                                            w: w16,
-                                            n,
-                                            inertial,
-                                        },
-                                    ))
-                                } else {
-                                    Some((
-                                        j,
-                                        Op::LSetDrive {
-                                            v: a,
-                                            driver,
-                                            target,
-                                            time,
-                                            size,
-                                            w: w16,
-                                            e: e16,
-                                            inertial,
-                                        },
-                                    ))
-                                }
-                            }
+                            ) if clean => Some((
+                                j,
+                                match value {
+                                    Val::Copy(a, b) => Op::CopyDrive {
+                                        driver,
+                                        target,
+                                        src: r(a)?,
+                                        bytes: r(b)?,
+                                        time,
+                                        size,
+                                        w: w16,
+                                        n,
+                                        inertial,
+                                    },
+                                    Val::LSet(v) => Op::LSetDrive {
+                                        v,
+                                        driver,
+                                        target,
+                                        time,
+                                        size,
+                                        w: w16,
+                                        e: e16,
+                                        inertial,
+                                    },
+                                    Val::LCopy(a, b, c) => Op::LCopyDrive {
+                                        driver,
+                                        target,
+                                        src: r(a)?,
+                                        soff: r(b)?,
+                                        cnt: r(c)?,
+                                        time,
+                                        size,
+                                        w: w16,
+                                        e: e16,
+                                        n,
+                                        inertial,
+                                    },
+                                },
+                            )),
                             _ => None,
                         }
                     });

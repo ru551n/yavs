@@ -5595,6 +5595,16 @@ cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` 
   `crates/yavs/tests/sink.rs`), and on 850 random programs of checks with messages of up to eight pieces in nested loops
   against the build without the optimiser (no difference).
 
+- **`LCopyDrive` (interpreter only).** An assignment of a constant, or of anything else the compiler copies element by
+  element into the waveform (`ctrl <= ctrl_zero_c` field by field in a reset branch: 589 K times in 20 us of
+  `neorv32_single_min`, 355 K in 50 us of `fletcher_bufferreader`), was a `WaveBuf`, an `LCopy` into it and a `Drive`
+  that reads it: the waveform is built in temporary memory and read back. The peephole that already drops the
+  waveform for a `Copy` or an `LSet` of element 0 (`CopyDrive`, `LSetDrive`) takes the `LCopy` of element 0 too; at zero
+  delay, for a target that is a logic signal of exactly the copied length within one block of planes (2 to 64
+  elements), the planes of the source go to the kernel as they are (`assign_planes_now`, the kernel's fast case);
+  anything else (a delay, a longer vector, one element, a reference of several parts) is the three instructions as
+  the IR has them, made from the registers of the dropped ones. The arm calls an out-of-line function.
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

@@ -616,7 +616,8 @@ impl Waiters {
         {
             self.build_cache();
         }
-        if scanned > 1 && out.len() > 1 {
+        // Sorted and without repeats already (one list, or lists in registration order): leave it.
+        if scanned > 1 && out.len() > 1 && !out.is_sorted_by(|a, b| a.0 < b.0) {
             out.sort_unstable();
             out.dedup_by_key(|w| w.0);
         }
@@ -877,6 +878,26 @@ const SPREAD: [u64; 256] = {
     }
     t
 };
+
+/// `codes` of the groups of eight elements of block `c` (elements `base ..`) that hold a changed
+/// element `m`: a sparse change leaves the groups between its ends alone.
+#[inline]
+fn refresh_changed_codes(codes: &mut [u8], c: &Block, base: usize, m: u64) {
+    if codes.is_empty() {
+        return;
+    }
+    let Some(out) = codes.get_mut(base..base + 64) else {
+        return;
+    };
+    let mut left = m;
+    while left != 0 {
+        let sh = (left.trailing_zeros() & !7) as usize;
+        left &= !(0xff << sh);
+        let at = |p: usize| SPREAD[(c[p] >> sh & 0xff) as usize] << p;
+        let v = at(0) | at(1) | at(2) | at(3);
+        out[sh..sh + 8].copy_from_slice(&v.to_le_bytes());
+    }
+}
 
 /// Recompute `codes` for elements `lo .. hi` of `cur`, in groups of eight.
 #[inline]
@@ -1690,8 +1711,7 @@ impl Signal {
                     | (c[3] >> i & 1) << 3) as u8;
             }
         } else {
-            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
-            refresh_block_codes(&mut self.codes, cur, base + lo, base + hi);
+            refresh_changed_codes(&mut self.codes, &c, base, m);
         }
         true
     }

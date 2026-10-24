@@ -35,6 +35,7 @@
 //! pass off (differential testing).
 
 mod cfg;
+mod drives;
 mod inline;
 mod layout_cache;
 mod licm;
@@ -83,6 +84,17 @@ fn cfg_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         std::env::var("YAVS_NO_CFG")
+            .map(|v| v.is_empty() || v == "0")
+            .unwrap_or(true)
+    })
+}
+
+/// Are repeated drives of one driver in a process delayed (`drives.rs`)? Off with `YAVS_NO_DRIVES`
+/// set to anything but `0` or the empty string (differential testing).
+fn drives_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("YAVS_NO_DRIVES")
             .map(|v| v.is_empty() || v == "0")
             .unwrap_or(true)
     })
@@ -174,12 +186,13 @@ pub fn fingerprint() -> String {
         compiled(),
         external(),
         layout_slots_on(),
+        drives_enabled(),
     ])
 }
 
-fn fingerprint_of(f: [bool; 8]) -> String {
+fn fingerprint_of(f: [bool; 9]) -> String {
     let names = [
-        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts",
+        "iropt", "memo", "cfg", "inline", "keep", "compiled", "external", "layouts", "drives",
     ];
     let parts: Vec<String> = names
         .iter()
@@ -196,9 +209,9 @@ mod fingerprint_tests {
     /// Every switch is part of the fingerprint (#491).
     #[test]
     fn each_switch_changes_the_fingerprint() {
-        let base = fingerprint_of([false; 8]);
-        for i in 0..8 {
-            let mut f = [false; 8];
+        let base = fingerprint_of([false; 9]);
+        for i in 0..9 {
+            let mut f = [false; 9];
             f[i] = true;
             assert_ne!(fingerprint_of(f), base, "switch {i}");
         }
@@ -381,6 +394,11 @@ fn optimize_body_with(
         // Loops of a process that do not suspend (#541).
         licm::run(prog, &mut f);
     }
+    // A default drive that a later drive of the same driver deletes is done only where none
+    // follows; the statements it leaves empty lose their markers.
+    if drives_enabled() && f.kind == FuncKind::Process && drives::run(prog, &mut f) {
+        drop_markers(prog, &mut f, &mut layouts);
+    }
     if memo_enabled() {
         memo::run(prog, &mut f);
         // Frame bytes only a compiled tier uses (`--tier=interp` has none).
@@ -453,6 +471,33 @@ fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Ve
     f.via = via;
     f.operands = operands;
     f.reg_ty.extend(new_regs);
+}
+
+/// Drop the `Stmt` markers a pass left with nothing to free (`Opt::drop_statements`).
+fn drop_markers(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Vec<u64>>>) {
+    let mut o = Opt::new(
+        prog,
+        f,
+        f.code.clone(),
+        f.operands.clone(),
+        f.nested,
+        layouts,
+    );
+    o.drop_statements();
+    if !o.changed {
+        return;
+    }
+    let mut loc = f.loc.clone();
+    let blocks = o.compact(&mut loc, None);
+    let code = o.code;
+    for (i, nb) in blocks.iter().enumerate() {
+        if let Some(b) = f.blocks.get_mut(BlockId(i as u32)) {
+            b.start = nb.0;
+            b.end = nb.1;
+        }
+    }
+    f.code = code;
+    f.loc = loc;
 }
 
 /// Give the registers the code uses consecutive numbers: lowering and the passes leave gaps

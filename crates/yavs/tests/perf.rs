@@ -450,6 +450,18 @@ case!(
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
 case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6540))]);
+// The defaults of a combinational process that a later drive deletes are not done on that path
+// (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass.
+case!(
+    drive_defaults,
+    "sum=260",
+    &[],
+    [
+        ("direct_codes", Max(312)),
+        ("direct_planes", Max(63)),
+        ("ops", Max(4300)),
+    ]
+);
 case!(
     static_chain,
     "acc=",

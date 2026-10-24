@@ -7201,3 +7201,57 @@ Measurements in docs/STATUS.md "Window generator against sim1: where the time is
   the frame is 110 KB (one slot per value). Open: the small code model with position-independent code and RuntimeDyld stubs would
   make a call 5 bytes instead of 12 (the arena keeps code and data within 2 GiB); values that live across the guards of one IR
   instruction are what the fast register allocator spills at every block end.
+## IR optimiser round 13: repeated drives of one driver are done once (yavs-ir `opt/drives.rs`, #667, 2026-10-24)
+
+Decision (landed): **a process's zero-delay drive that a later zero-delay drive of the same elements deletes is delayed down the control
+flow and dropped on the paths that drive again** (partial dead code elimination, `opt/drives.rs`, after the walk and the loop motion of
+processes and before `memo`; processes only, off under a debugger, `YAVS_NO_DRIVES=1` turns it off, a switch of the fingerprint). The
+LRM reading (10.5.2.2): a new transaction deletes the transactions of its driver at or after its time, so with both drives at delay zero
+and the second reached in the same activation the first never reaches the update phase, whatever the modes (transport, inertial) and
+whatever pulse-rejection limit the second has (it only deletes more). Hence:
+
+- **What is dropped and copied.** The drive and the instructions that build its waveform (the allocated block, the stores and copies into
+  it, the temporaries and constants only they read; none of them can fail) move as a unit. A drive is a candidate when its waveform is one
+  element whose first word is a stored constant 0, it has no `reject`, and its target is a `SigVal` of a constant length and an offset
+  that is a constant or a register defined once (a loop over the elements of a signal array has its offsets in such registers: the
+  second drive of an iteration uses the same register). Registers defined once that the unit reads stay where they are. Two drives are
+  the same when instance signal, offset (the same constant or the same register) and length are, **without the driver slot**: a record
+  assigned whole and then by field gets two slots of one kernel driver.
+- **Where the copies go.** The blocks in which the drive is still delayed are found like a topological order (a block joins when every
+  predecessor joined and passes the drive on, so cycles and joins entered by an undelayed path never join); a block that ends with the drive
+  delayed into a block that did not join gets a copy at its end (a `CondBr` edge is split by a new block, a `Case` cannot be split, so
+  its arms all take the drive or the copy goes in front of the `Case`). The copy goes before the first instruction that can see or change
+  the driver's transactions: a drive onto elements that may overlap (different instance signals, or constant disjoint ranges, are passed),
+  `DriveSlot`, `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, a call of a procedure, a protected method, an indirect or
+  foreign call; before a wait it goes in front of the wait's `Stmt` (`static_wait` wants the marker first). Reports and function calls do not
+  matter. At most six copies per drive, and the drive must be dropped on at least one path, so code never grows for nothing. Each path
+  still does the drive exactly once or not at all, and never later than the instruction that could tell.
+- **What stays.** Drives with a delay, a `reject` limit, several waveform elements, a target of a dynamic offset not held in a register
+  defined once, a drive after which the same block drives other elements through a shared waveform block, a drive whose statement reads
+  memory (a variable, a loaded value). A default followed by an override after a join (`if a then ..; end if; if b then x <= ..`) is
+  a mixed join: the drive is done on the path that did not skip it (tail duplication would be needed).
+- **Cost.** The pass runs on a process only when two drives of it have the same static target, over blocks that are cut into per-block
+  event lists (drives, barriers) so that a drive costs one walk over the blocks it is still delayed in: +0.08 G host instructions in
+  start-up of `neorv32_dual_full` (4.5 G for 1 us of simulated time), none of it per activation.
+
+Host instructions (`perf stat` `instructions:u`, `--threads 1`, bench builds, warm world, deterministic), main at 4b80445d before / after:
+
+| design | interp | llvm |
+|---|---|---|
+| `neorv32_single_min` | 47.42 / 45.08 G (-4.9 %) | 61.96 / 60.11 (-3.0 %) |
+| `neorv32_dual_full` | 34.67 / 34.27 (-1.1 %) | 51.97 / 51.88 (-0.2 %) |
+| `fletcher_bufferwriter_512` | 92.05 / 90.82 (-1.3 %) | 92.31 / 92.40 (+0.1 %) |
+| `fletcher_bufferreader` | 36.83 / 36.81 (-0.1 %) | 38.06 / 38.15 (+0.2 %) |
+| `sc5_fifo_repack` | 41.89 / 41.62 (-0.7 %) | 34.46 / 34.46 (0.0 %) |
+| `sc5_timestamp` | 6.844 / 6.844 (0.0 %) | 5.690 / 5.690 (0.0 %) |
+| `poc_cache_cpu` | 15.63 / 14.80 (-5.3 %) | 16.83 / 16.79 (-0.2 %) |
+| `poc_stat_histogram` | 25.53 / 25.22 (-1.2 %) | 31.19 / 31.20 (0.0 %) |
+| `vai_window_gen_interlock` | 497.73 / 495.32 (-0.5 %) | 237.69 / 237.72 (0.0 %) |
+| `poc_arith_addw` | 236.38 / 235.91 (-0.2 %) | 225.12 / 225.11 (0.0 %) |
+
+Why less than the 2 to 4 percent #667 estimated: the 17 percent repeated drives it counted were by driver, not by element. In
+`neorv32_single_min` 5.6 M of the 5.7 M repeats are one process (the bus gateway's `request`, a loop over five ports with ten field
+drives each, enabled ports drive twice) and this pass removes them; `counter_increment` drives the elements of one vector driver one by
+one (not repeats, the kernel's marks cannot tell), `exec_comb` keeps the repeats behind joins. After the pass 4.8 M of 16 M scalar
+drives of `neorv32_single_min` still count as repeats by the kernel's marks, almost all of them element-wise drives of one vector driver.
+The kernel side (a pending-drive merge, option 2 of #667) was not touched: a repeat there already costs one push.

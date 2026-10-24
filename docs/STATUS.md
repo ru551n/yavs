@@ -7184,3 +7184,12 @@ latency is 13.6 percent of the dispatch slots with the default `--tier=auto` aga
 36.6, back-end 25.4 against 27.7; the compiled `comb` copy is 3.7 MB (158 bytes per IR instruction, a 319 KB stack frame) of which a
 sampled window touches about 150 KB, more than the L1i holds.
 Difftest 505/505 on `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0` at 1 and 4 threads, and with `YAVS_LLVM_ARENA=0`.
+## IR optimiser round 13: repeated drives (#667, 2026-10-24)
+
+`opt/drives.rs`: in a process, a zero-delay drive (with the waveform it builds) that a later zero-delay drive of the same elements deletes
+is delayed down the control flow and dropped on the paths that drive again (copies at the end of the paths that do not; before any
+instruction that can see the driver's transactions; never into a cycle). `YAVS_NO_DRIVES=1` turns it off. Host instructions, bench builds,
+`--threads 1`, main at 4b80445d (`docs/decisions.md` "IR optimiser round 13" has the table and the limits):
+`neorv32_single_min` -4.9 % interpreter / -3.0 % llvm, `poc_cache_cpu` -5.3 %, `fletcher_bufferwriter_512` -1.3 %, `neorv32_dual_full`
+-1.1 %, `poc_stat_histogram` -1.2 %, `sc5_fifo_repack` -0.7 %, the others within 0.5 %. Tests: `crates/yavs/tests/drives.rs` (14 designs,
+output and exit status equal with and without the pass, fewer kernel drives), perf design `drive_defaults`.

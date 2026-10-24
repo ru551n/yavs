@@ -77,6 +77,7 @@ architecture a of v is
     a(0) := 'X';
     report to_string(u_add(a, b)) & " " & integer'image(u_int(w));
   end;
+  function eq_int(a, b : integer_vector) return boolean is begin return a = b; end;
   procedure all_ops(n, k : natural) is
     variable a, b : slv(n - 1 downto 0);
   begin
@@ -88,6 +89,8 @@ architecture a of v is
     report to_string(f_not(a)) & " " & to_string(f_x01(a)) & " " & to_string(f_ux01(a)) & " " & to_string(f_x01z(b));
     report to_string(fl(n, 'Z')) & " " & to_string(fl(n, '-')) & " " & to_string(fl(n, '1'));
     report to_string(cat(a, b)) & " " & integer'image(cat(a, b)'length);
+    report boolean'image(a = b) & boolean'image(a = a) & boolean'image(f_and(a, b) = f_and(b, a))
+           & boolean'image(eq_int((1, n, 3), (1, n, k))) & boolean'image(eq_int((n, k), (n, k)));
     if n > 2 then
       report to_string(part(a, n - 1, 1)) & "|" & to_string(part(a, n - 2, 0)) & "|" & to_string(part(a, 0, 1));
       report integer'image(mid(a, n - 1, 1)) & " " & integer'image(mid(b, 1, n - 1));

@@ -96,6 +96,7 @@ pub struct Jit {
     zero: ClifId,
     mov: ClifId,
     fill: ClifId,
+    memeq: ClifId,
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
@@ -190,6 +191,7 @@ impl Jit {
             ("clift_zero", clift_zero as *const u8),
             ("clift_move", clift_move as *const u8),
             ("clift_fill", clift_fill as *const u8),
+            (MEMEQ, yavs_rt_memeq as *const u8),
             (WAIT, yavs_rt_wait as *const u8),
             (WAIT_ON, yavs_rt_wait_on as *const u8),
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
@@ -221,6 +223,7 @@ impl Jit {
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
         let fill = imp("clift_fill", &[I64, I64, I64, I64], None)?;
+        let memeq = imp(MEMEQ, &[I64, I64, I64], Some(I64))?;
         let deopt = imp(
             DEOPT,
             &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
@@ -268,6 +271,7 @@ impl Jit {
             zero,
             mov,
             fill,
+            memeq,
             deopt,
             deopt_slots,
             deopt_end,
@@ -579,6 +583,7 @@ impl Jit {
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
             mov: self.module.declare_func_in_func(self.mov, &mut ctx.func),
             fill: self.module.declare_func_in_func(self.fill, &mut ctx.func),
+            memeq: self.module.declare_func_in_func(self.memeq, &mut ctx.func),
             deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
             deopt_slots: self
                 .module
@@ -700,9 +705,24 @@ impl Jit {
                 .append(true)
                 .open(path)
             {
+                // `YAVS_CLIFT_CODEDIR=<dir>`: the machine code of each function as `<name>.bin`,
+                // for `objdump -D -b binary -mi386:x86-64` against `perf script` addresses.
+                let dir = std::env::var_os("YAVS_CLIFT_CODEDIR");
                 for (name, id, size) in &list {
                     let at = self.module.get_finalized_function(*id) as usize;
                     let _ = writeln!(out, "{at:x} {size:x} {name}");
+                    if let Some(d) = &dir {
+                        // SAFETY: the finalized function owns `size` bytes of code at `at`.
+                        let code = unsafe { std::slice::from_raw_parts(at as *const u8, *size) };
+                        let file: String = name
+                            .chars()
+                            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                            .collect();
+                        let _ = std::fs::write(
+                            std::path::Path::new(d).join(format!("{file}.bin")),
+                            code,
+                        );
+                    }
                 }
             }
             self.perfmap = Some(Vec::new());
@@ -726,6 +746,7 @@ struct Imports {
     zero: FuncRef,
     mov: FuncRef,
     fill: FuncRef,
+    memeq: FuncRef,
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
@@ -1924,6 +1945,46 @@ fn gen_func(
                     let w = g.b.ins().bor(w, set);
                     g.b.ins().store(g.gf, w, p, k * 8);
                 }
+                g.join(join);
+            }
+            // Equality of two logic arrays of 1 to 64 elements: the four planes under the mask of
+            // the elements; any other count is the interpreter's.
+            Inst::LEq { dst, a, b, n } => {
+                let (slow, join) = g.slow_path_x(pc, &inst, f);
+                let cnt = g.ld(n);
+                let n1 = g.b.ins().iadd_imm_s(cnt, -1);
+                let okn = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, n1, 64);
+                g.guard(okn, slow);
+                let av = g.ld(a);
+                let pa = g.host(av, Some(a), Op::C(0), Op::C(32), false, slow);
+                let bv = g.ld(b);
+                let pb = g.host(bv, Some(b), Op::C(0), Op::C(32), false, slow);
+                let gf = g.gf;
+                let mut diff = g.c64(0);
+                for k in 0..4 {
+                    let x = g.b.ins().load(I64, gf, pa, k * 8);
+                    let y = g.b.ins().load(I64, gf, pb, k * 8);
+                    let d = g.b.ins().bxor(x, y);
+                    diff = g.b.ins().bor(diff, d);
+                }
+                let mask = g.low_mask(cnt);
+                let masked = g.b.ins().band(diff, mask);
+                let eq = g.b.ins().icmp_imm_s(IntCC::Equal, masked, 0);
+                let v = g.b.ins().uextend(I64, eq);
+                g.st(dst, v);
+                g.join(join);
+            }
+            // The bytes of two ranges compared.
+            Inst::MemEq { dst, a, b, n } => {
+                let (slow, join) = g.slow_path_x(pc, &inst, f);
+                let k = g.ld(n);
+                let av = g.ld(a);
+                let pa = g.host(av, Some(a), Op::C(0), Op::V(k), false, slow);
+                let bv = g.ld(b);
+                let pb = g.host(bv, Some(b), Op::C(0), Op::V(k), false, slow);
+                let c = g.b.ins().call(g.imp.memeq, &[pa, pb, k]);
+                let v = g.b.inst_results(c)[0];
+                g.st(dst, v);
                 g.join(join);
             }
             Inst::LogicOp { op, dst, a, b, n } if logic_inline(op) => {

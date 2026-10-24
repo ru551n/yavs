@@ -430,7 +430,7 @@ struct ScanLoop {
     delta: i64,
 }
 
-enum Flow {
+pub(crate) enum Flow {
     Next,
     Jump(yavs_ir::BlockId),
     /// The callee's frame was pushed.
@@ -4792,6 +4792,27 @@ impl Machine {
                     .func(cid)
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                 let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                // The memo of pure calls answers a repeated call before the call is made, by the
+                // compiled tier or not (out of line: it keeps this loop's frame as it was).
+                if $memo
+                    && !cpre.memo_off.load(Ordering::Relaxed)
+                    && let Some(sig) = prog.memo_sig(cid)
+                {
+                    let tier = if TIER { tier } else { None };
+                    match t!(self.memo_call(prog, rt, tier, f, cid, cf, sig, args, dst, ctx)) {
+                        crate::pmemo::Memoed::No => {}
+                        crate::pmemo::Memoed::Hit => {
+                            k += 1;
+                            enter!();
+                            continue;
+                        }
+                        crate::pmemo::Memoed::Tiered => {
+                            k = entry!(self.frames[top].pc + 1)? as usize;
+                            continue;
+                        }
+                        crate::pmemo::Memoed::Flow(flow) => return Ok(flow),
+                    }
+                }
                 // A function the compiled tier calls on a native frame (`Tier::call`).
                 if TIER
                     && let Some(t) = tier
@@ -4803,20 +4824,6 @@ impl Machine {
                         continue;
                     }
                     return Ok(flow);
-                }
-                if $memo
-                    && !cpre.memo_off.load(Ordering::Relaxed)
-                    && let Some(sig) = prog.memo_sig(cid)
-                {
-                    match t!(self.memo_call(prog, f, cid, sig, args, dst, ctx)) {
-                        crate::pmemo::Done::Yes => {
-                            k += 1;
-                            enter!();
-                            continue;
-                        }
-                        crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
-                        crate::pmemo::Done::No => {}
-                    }
                 }
                 if !TIER && cpre.lean {
                     let regs = f
@@ -7396,7 +7403,7 @@ impl Machine {
     /// interpreter makes the call.
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
-    fn tier_call(
+    pub(crate) fn tier_call(
         &mut self,
         tier: &dyn crate::Tier,
         rt: &Runtime,
@@ -10166,6 +10173,89 @@ impl crate::TierHost for Host<'_, '_, '_> {
             }
             Ok(v) if !fallback => Done(v),
             _ => Slow,
+        }
+    }
+
+    fn memo_probe(
+        &mut self,
+        tf: &mut crate::TierFrame,
+        func: FuncId,
+        cells: &[u64],
+        depth: Option<u64>,
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+    ) -> crate::MemoLook {
+        use crate::MemoLook::No;
+        let (m, prog, rt) = (&mut *self.m, self.prog, self.rt);
+        let (Some(sig), Some(c)) = (prog.memo_sig(func), prog.func(func)) else {
+            return No;
+        };
+        if m.pkg_init.is_some()
+            || rt
+                .pre(func, c)
+                .is_none_or(|p| p.memo_off.load(Ordering::Relaxed))
+        {
+            return No;
+        }
+        let top = m.frames.len();
+        if let Some(d) = depth {
+            if (d as usize) < top {
+                return No;
+            }
+            m.nwin = slots.take();
+            (m.nwin_from, m.nwin_to) = (top, d as usize);
+        }
+        let r = m.memo_probe(
+            prog,
+            func,
+            sig,
+            cells.len(),
+            |_, i| cells[i],
+            self.ctx.is_some(),
+        );
+        if depth.is_some() {
+            *slots = m.nwin.take();
+        }
+        // Only the temporary area can have moved or grown.
+        tf.temp = m.temp.as_mut_ptr();
+        tf.temp_len = m.temp.len() as u64;
+        tf.temp_cap = m.temp.capacity() as u64;
+        match r {
+            Ok(crate::pmemo::Probe::Hit(v)) => crate::MemoLook::Hit(v),
+            Ok(crate::pmemo::Probe::Miss(n)) => crate::MemoLook::Miss(n),
+            Ok(crate::pmemo::Probe::No) => No,
+            // Recorded: the run ends with it when compiled code returns.
+            Err(e) => {
+                self.fault = Some(e);
+                No
+            }
+        }
+    }
+
+    fn memo_keep(
+        &mut self,
+        _tf: &mut crate::TierFrame,
+        func: FuncId,
+        cells: &[u64],
+        depth: Option<u64>,
+        slots: &mut Option<Box<dyn crate::NativeSlots>>,
+        reports: u64,
+        v: u64,
+    ) {
+        let (m, prog) = (&mut *self.m, self.prog);
+        let Some(sig) = prog.memo_sig(func) else {
+            return;
+        };
+        let top = m.frames.len();
+        if let Some(d) = depth {
+            if (d as usize) < top {
+                return;
+            }
+            m.nwin = slots.take();
+            (m.nwin_from, m.nwin_to) = (top, d as usize);
+        }
+        m.memo_keep(func, sig, cells.len(), |_, i| cells[i], reports, v);
+        if depth.is_some() {
+            *slots = m.nwin.take();
         }
     }
 

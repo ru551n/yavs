@@ -8106,18 +8106,34 @@ The reference simulator folds a pure call with constant arguments once, before t
   it moved is not kept, so a function that reports reports on every call, and a call that fails or stops is never kept.
 - **Where.** Only simulation code in the interpreter: not elaboration-time evaluation (`ctx` is `None`), not under a debugger or with
   coverage counters, and `YAVS_NO_PMEMO=1` turns it off. The predecoder makes `Op::CallM` of an `Inst::Call` whose callee qualifies and runs
-  every other call as before (one macro, `call_arm!`, is both arms, so an ordinary call has no test). A miss runs the call to its end
-  from inside the call (`Machine::call_to_end`: `exec` with the frame count as base), at most `NEST` = 8 deep (a recursive function
+  every other call as before (one macro, `call_arm!`, is both arms, so an ordinary call has no test). The fast loop asks the memo
+  (`Machine::memo_probe`) before it offers the call to the compiled tier (`Tier::call`): a hit is the result, a miss makes the call as before
+  (compiled callee or not) and keeps the result when it returns (`memo_keep`); a call the tier does not take runs to its end from inside
+  the call (`Machine::memo_run`, `call_to_end`: `exec` with the frame count as base), at most `NEST` = 8 deep (a recursive function
   memoises its top levels, the rest run as usual and the native stack stays small). Compiled code does not run in the frame of such a
   call (`Machine::is_memo_frame`): its return pops the frame and goes on in the caller without telling the loop that waits for the end.
-  Calls that compiled code makes (`call_regs`, the host's step) do not use the memo: a version that did corrupted the host's view of the
-  frames (`--tier=auto --tier-heat=1,0,0` at 4 threads, `generics/generic_blocks_2019`).
+  Calls that compiled code makes through the host's step (`call_regs`) do not use the memo: a version that ran a nested loop there
+  corrupted the host's view of the frames (`--tier=auto --tier-heat=1,0,0` at 4 threads, `generics/generic_blocks_2019`). Compiled calls
+  between compiled functions have their own path, below.
 - **Bounds.** Per process and function a direct-mapped table of 32 entries that doubles up to 256 while keys evict each other; a key or
   result over 1 KiB is not kept (a call whose key does not fit counts as a call that did not repeat). The first 64 calls of a function in a process decide: fewer than one in eight repeating switches it off
   for that process, and for every process when three have (`Pre::memo_off`); a function that is off costs a flag test in the call. Per
   process and without locks, so hits and counters are the same at every thread count. `YAVS_COUNTERS` shows `pmemo_hits` and `pmemo_runs`.
-- **Not done.** Calls made by compiled code (a process the tier compiled, a function on native frames) bypass the memo; the memo applies
-  to every call the interpreter makes. A call from compiled code would need the host's step to run a nested loop safely. Records, access types, signal parameters and out parameters
+- **Compiled code (user, 2026-10-24: "a compiled-code counterpart of the pure-call memo"; #701).** A call that compiled code makes to a
+  native-callable function with a memo signature (`Gen::native_call`, from a native frame or a frame-mode function) is wrapped by two
+  callbacks, and never runs interpreter code inside a host step: `yavs_rt_memo` (`TierHost::memo_probe`) builds the key from the argument
+  cells (the arrays are read through the native frames' slot windows as for `native_direct`), looks it up and returns 1 with the result
+  (a hit; an array result is allocated in temporary memory, the view is brought up to date as for a light native), 2 with the number of
+  reports so far (a miss) or 0 (the call is made as usual and not kept); on a miss compiled code makes the call as it always did and,
+  on the normal return edge only (not when the callee unwound for materialisation), calls `yavs_rt_memo_keep` (`TierHost::memo_keep`),
+  which makes the key again from the same cells (the arguments are `in` and the function is pure, so the bytes are the ones the probe read;
+  nothing is carried from the probe but the report count, so a call that never returns to its caller leaves nothing behind) and keeps the
+  result unless a report ran meanwhile. The table, the give-up rule and the counters are the interpreter's (`pm`, `Pre::memo_off`,
+  `pmemo_hits`); a key that cannot be read is no miss (it counts nowhere). The keep callback leaves `Mem::temp_seen` equal to the length
+  its `sync` gave the machine's temporary area, as every callback must. Not done for calls compiled code makes through the host's step
+  (a callee without native code); and the memo is asked on every compiled call of a function whose memo is off, which costs the
+  callback (not visible in the measured case, `docs/STATUS.md`; an inline test of the global off flag would remove it).
+- **Not done.** Records, access types, signal parameters and out parameters
   are not keyed. A table shared by the processes of one design unit would save the first call of each (about 4 percent of the PoC run is
   misses).
 - **Measured** (bench builds, instructions of `--tier=interp`, `perf stat`): numbers in `docs/STATUS.md` "Memo of pure calls".

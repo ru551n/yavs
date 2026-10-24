@@ -59,14 +59,30 @@ fn counter(s: &str, name: &str) -> u64 {
 #[test]
 fn memoised_calls_change_nothing_but_the_work() {
     let d = tmp("pmemo");
-    for (args, env) in [
+    let mut cases = vec![
         (vec!["--tier=interp", "--threads", "1"], vec![]),
         (vec!["--tier=interp", "--threads", "4"], vec![]),
         (
             vec!["--tier=interp", "--threads", "1"],
             vec![("YAVS_SPEC_AFTER", "2")],
         ),
-    ] {
+    ];
+    // Compiled code asks the memo too (a probe before the call, a keep after it).
+    if cfg!(feature = "llvm") {
+        cases.extend([
+            (vec!["--tier=llvm", "--threads", "1"], vec![]),
+            (vec!["--tier=llvm", "--threads", "4"], vec![]),
+            (
+                vec!["--tier=llvm", "--threads", "1"],
+                vec![("YAVS_SPEC_AFTER", "2")],
+            ),
+            (
+                vec!["--tier=auto", "--tier-heat=1,0,0", "--threads", "4"],
+                vec![],
+            ),
+        ]);
+    }
+    for (args, env) in cases {
         let (c0, o0, e0) = run(&d, true, &args, &env);
         let (c1, o1, e1) = run(&d, false, &args, &env);
         assert_eq!(c0, 0, "{e0}");

@@ -1,6 +1,6 @@
 //! The memo of pure calls (#701): the results of the calls a process made of the functions
 //! `Program::memo_sig` allows, kept by the bytes of their arguments, so a call with arguments
-//! it has seen before is answered without running the function (`Machine::memo_call`).
+//! it has seen before is answered without running the function (`Machine::memo_probe`).
 //!
 //! One memo per function and process (no locks, and the same hits on every thread count): a
 //! direct-mapped table of `SLOTS` entries, each the key (the argument words and, for an array,
@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use yavs_ir::{Func, FuncId, MemoArg, MemoArr, MemoSig, Program, Reg, Regs};
 use yavs_kernel::Ctx;
 
-use crate::exec::{Machine, Outcome, R, add_addr, cold, ice};
+use crate::Runtime;
+use crate::Tier;
+use crate::exec::{Flow, Machine, Outcome, R, add_addr, cold, ice};
 
 /// Entries of the table of a function: it starts at `FIRST` and doubles up to `LAST` while
 /// calls keep evicting each other's entries (both powers of two).
@@ -83,6 +85,8 @@ pub(crate) struct State {
     pub frames: Vec<usize>,
     /// Reports made so far: a call during which it moved is not remembered.
     pub reports: u64,
+    /// The hash of the key in `key` after a lookup that missed.
+    pub miss_hash: u64,
 }
 
 /// A hash of `key`: eight bytes a step.
@@ -106,8 +110,8 @@ pub(crate) enum Look {
     GaveUp,
     /// A call with this key was made: slot `.0` holds its result.
     Hit(usize),
-    /// None was: remember the call when it ends ([`State::keep`]); `.0` is the hash of the key.
-    Miss(u64),
+    /// None was: remember the call when it ends ([`State::keep`]).
+    Miss,
 }
 
 impl State {
@@ -174,7 +178,8 @@ impl State {
                 m.slots = Vec::new();
                 Look::GaveUp
             } else {
-                Look::Miss(hash)
+                self.miss_hash = hash;
+                Look::Miss
             }
         };
         self.key = key;
@@ -209,9 +214,9 @@ impl State {
     }
 }
 
-/// What [`Machine::memo_call`] did.
+/// What [`Machine::memo_run`] did.
 pub(crate) enum Done {
-    /// The call is made as usual.
+    /// The call is made as usual (too deep inside others run this way).
     No,
     /// The result is in the destination register.
     Yes,
@@ -219,62 +224,78 @@ pub(crate) enum Done {
     Suspend,
 }
 
+/// What [`Machine::memo_call`] did.
+pub(crate) enum Memoed {
+    /// The loop makes the call as usual.
+    No,
+    /// The result is in the destination register: go on after the call.
+    Hit,
+    /// The compiled tier made the call: its result is in the destination register and the frame
+    /// goes on after it as the tier call leaves it.
+    Tiered,
+    /// What the loop returns (a frame pushed, a suspension).
+    Flow(Flow),
+}
+
+/// What [`Machine::memo_probe`] found.
+pub(crate) enum Probe {
+    /// The call is made as usual and not kept.
+    No,
+    /// The call was made before: its result (a fat pair in temporary memory for an array).
+    Hit(u64),
+    /// It was not: make it, then keep its result with [`Machine::memo_keep`] unless the number
+    /// of reports (`.0`) has moved.
+    Miss(u64),
+}
+
 impl Machine {
-    /// `Inst::Call` of a function with a memo signature: the result of an earlier call with the
-    /// same arguments, or the call run to its end and its result kept. The call is made as usual
-    /// (`Done::No`) when the memo cannot be used: elaboration-time code, a debugger or coverage,
-    /// a key or a result over `MAX_BYTES`, a function the memo gave up on, or a call inside
-    /// `NEST` others being run this way.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn memo_call(
+    /// The memo's answer for the call of `func` whose argument cells are `cell(self, i)`, for
+    /// `n` cells. Runs no VHDL code. `No` where the memo cannot be used: elaboration-time code
+    /// (`sim` false), a debugger or coverage, a function the memo gave up on, a key over
+    /// `MAX_BYTES`, or a call inside `NEST` others being run this way.
+    #[inline(always)]
+    pub(crate) fn memo_probe(
         &mut self,
         prog: &Program,
-        f: &Func,
         func: FuncId,
         sig: &MemoSig,
-        args: Regs,
-        dst: Option<Reg>,
-        ctx: &mut Option<&mut Ctx<'_>>,
-    ) -> R<Done> {
-        let Some(dst) = dst else {
-            return Ok(Done::No);
-        };
-        if ctx.is_none() || !enabled() || self.has_debugger() || !self.rt.cov.is_empty() {
-            return Ok(Done::No);
+        n: usize,
+        cell: impl Fn(&Machine, usize) -> u64,
+        sim: bool,
+    ) -> R<Probe> {
+        if !sim || !enabled() || self.has_debugger() || !self.rt.cov.is_empty() {
+            return Ok(Probe::No);
         }
-        let regs = f
-            .regs(args)
-            .ok_or_else(|| cold(|| ice("operand list out of range")))?;
-        if regs.len() != sig.cells as usize {
-            return Ok(Done::No);
+        if n != sig.cells as usize {
+            return Ok(Probe::No);
         }
         let mut st = self.pm.take().unwrap_or_default();
         if st.depth >= NEST || st.is_off(func.0) {
             self.pm = Some(st);
-            return Ok(Done::No);
+            return Ok(Probe::No);
         }
         let mut key = std::mem::take(&mut st.key);
         key.clear();
-        let made = self.memo_key(sig, regs, &mut key);
+        let made = self.memo_key(sig, n, &cell, &mut key);
         st.key = key;
         if !made {
-            // A call whose key is too big counts as a call that did not repeat.
+            // A key too big, or one that cannot be read, counts as a call that did not repeat.
             let gave_up = st.unkeyed(func.0);
             self.pm = Some(st);
             if gave_up {
                 self.memo_vote(prog, func);
             }
-            return Ok(Done::No);
+            return Ok(Probe::No);
         }
-        let hash = match st.look(func.0) {
+        match st.look(func.0) {
             Look::Off => {
                 self.pm = Some(st);
-                return Ok(Done::No);
+                Ok(Probe::No)
             }
             Look::GaveUp => {
                 self.pm = Some(st);
                 self.memo_vote(prog, func);
-                return Ok(Done::No);
+                Ok(Probe::No)
             }
             Look::Hit(i) => {
                 let r = match st.val(func.0, i) {
@@ -286,13 +307,159 @@ impl Machine {
                     None => Err(cold(|| ice("memo: a hit on an empty slot"))),
                 };
                 self.pm = Some(st);
-                self.set(dst, r?);
-                return Ok(Done::Yes);
+                Ok(Probe::Hit(r?))
             }
-            Look::Miss(h) => h,
+            Look::Miss => {
+                let reports = st.reports;
+                self.pm = Some(st);
+                Ok(Probe::Miss(reports))
+            }
+        }
+    }
+
+    /// Keep the result `v` of a call whose [`Probe::Miss`] saw `reports` reports, if none ran
+    /// since. The key is made again from the argument cells (the arguments are `in`, so their
+    /// bytes are as the probe read them).
+    pub(crate) fn memo_keep(
+        &mut self,
+        func: FuncId,
+        sig: &MemoSig,
+        n: usize,
+        cell: impl Fn(&Machine, usize) -> u64,
+        reports: u64,
+        v: u64,
+    ) {
+        let Some(mut st) = self.pm.take() else {
+            return;
         };
-        // Run the call to its end from here, then keep its result.
-        let key = std::mem::take(&mut st.key);
+        if st.reports == reports && !st.is_off(func.0) {
+            let mut key = std::mem::take(&mut st.key);
+            key.clear();
+            if self.memo_key(sig, n, &cell, &mut key)
+                && let Some(val) = self.memo_result(sig.ret, v)
+            {
+                st.keep(func.0, hash(&key), &key, val);
+            }
+            st.key = key;
+        }
+        self.pm = Some(st);
+    }
+
+    /// `Inst::Call` of a function with a memo signature, from the interpreter's fast loop: the
+    /// memo's answer, else the call made by the compiled tier when it takes the call
+    /// (`Tier::call`) and its result kept, else run to its end (`memo_run`) and kept.
+    /// [`Memoed::No`]: the loop makes the call (and offers it to the tier) as usual.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    pub(crate) fn memo_call(
+        &mut self,
+        prog: &Program,
+        rt: &Runtime,
+        tier: Option<&dyn Tier>,
+        f: &Func,
+        func: FuncId,
+        cf: &Func,
+        sig: &MemoSig,
+        args: Regs,
+        dst: Option<Reg>,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Memoed> {
+        let reports = match self.memo_probe_regs(prog, f, func, sig, args, dst, ctx)? {
+            Probe::No => return Ok(Memoed::No),
+            Probe::Hit(v) => {
+                if let Some(d) = dst {
+                    self.set(d, v);
+                }
+                return Ok(Memoed::Hit);
+            }
+            Probe::Miss(reports) => reports,
+        };
+        let Some(dst) = dst else {
+            return Ok(Memoed::No);
+        };
+        if let Some(t) = tier
+            && rt.native.callable(func.0)
+            && let Some(flow) = self.tier_call(t, rt, f, func, cf, args, Some(dst), None, ctx)?
+        {
+            if let Flow::Next = flow {
+                let v = self.r(dst);
+                self.memo_keep_regs(f, func, sig, args, reports, v);
+                return Ok(Memoed::Tiered);
+            }
+            return Ok(Memoed::Flow(flow));
+        }
+        Ok(match self.memo_run(prog, f, func, sig, args, dst, ctx)? {
+            Done::Yes => Memoed::Hit,
+            Done::Suspend => Memoed::Flow(Flow::Suspend),
+            Done::No => Memoed::No,
+        })
+    }
+
+    /// The probe of the call of `func` at `args` of `f` for the interpreter's fast loop, which
+    /// then makes the call itself (compiled callee or not) and gives its result to
+    /// [`Machine::memo_keep_regs`].
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    pub(crate) fn memo_probe_regs(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        sig: &MemoSig,
+        args: Regs,
+        dst: Option<Reg>,
+        ctx: &Option<&mut Ctx<'_>>,
+    ) -> R<Probe> {
+        if dst.is_none() {
+            return Ok(Probe::No);
+        }
+        let regs = f
+            .regs(args)
+            .ok_or_else(|| cold(|| ice("operand list out of range")))?;
+        self.memo_probe(
+            prog,
+            func,
+            sig,
+            regs.len(),
+            |m, i| m.r(regs[i]),
+            ctx.is_some(),
+        )
+    }
+
+    /// [`Machine::memo_keep`] for the call at `args` of `f` whose result is `v`.
+    pub(crate) fn memo_keep_regs(
+        &mut self,
+        f: &Func,
+        func: FuncId,
+        sig: &MemoSig,
+        args: Regs,
+        reports: u64,
+        v: u64,
+    ) {
+        if let Some(regs) = f.regs(args) {
+            self.memo_keep(func, sig, regs.len(), |m, i| m.r(regs[i]), reports, v);
+        }
+    }
+
+    /// Run the call to its end from here and keep its result (after a [`Probe::Miss`]).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn memo_run(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        sig: &MemoSig,
+        args: Regs,
+        dst: Reg,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Done> {
+        let mut st = self.pm.take().unwrap_or_default();
+        if st.depth >= NEST {
+            self.pm = Some(st);
+            return Ok(Done::No);
+        }
+        // The key and hash the probe just left (nothing ran since: `Tier::call` made no call).
+        let (key, hash) = (std::mem::take(&mut st.key), st.miss_hash);
         let reports = st.reports;
         st.depth += 1;
         st.frames.push(self.frames.len());
@@ -334,21 +501,31 @@ impl Machine {
     /// The key of a call: the argument words, and for an array its descriptor and element
     /// bytes. `false` when the key would pass `MAX_BYTES` or an argument cannot be read (the
     /// call is then made as usual and reports what is wrong).
-    fn memo_key(&self, sig: &MemoSig, regs: &[Reg], key: &mut Vec<u8>) -> bool {
-        let mut cells = regs.iter();
+    fn memo_key(
+        &self,
+        sig: &MemoSig,
+        n: usize,
+        cell: &impl Fn(&Machine, usize) -> u64,
+        key: &mut Vec<u8>,
+    ) -> bool {
+        let mut at = 0;
+        let mut next = || {
+            at += 1;
+            (at <= n).then(|| cell(self, at - 1))
+        };
         for arg in &sig.args {
             match *arg {
                 MemoArg::Scalar => {
-                    let Some(&r) = cells.next() else {
+                    let Some(v) = next() else {
                         return false;
                     };
-                    key.extend_from_slice(&self.r(r).to_le_bytes());
+                    key.extend_from_slice(&v.to_le_bytes());
                 }
                 MemoArg::Array(a) => {
-                    let (Some(&data), Some(&dope)) = (cells.next(), cells.next()) else {
+                    let (Some(data), Some(dope)) = (next(), next()) else {
                         return false;
                     };
-                    let Ok(d) = self.rd(self.r(dope), a.desc_bytes() as u64) else {
+                    let Ok(d) = self.rd(dope, a.desc_bytes() as u64) else {
                         return false;
                     };
                     let Some(n) = a.data_bytes(d) else {
@@ -358,7 +535,7 @@ impl Machine {
                         return false;
                     }
                     key.extend_from_slice(d);
-                    let Ok(b) = self.rd(self.r(data), n) else {
+                    let Ok(b) = self.rd(data, n) else {
                         return false;
                     };
                     key.extend_from_slice(b);

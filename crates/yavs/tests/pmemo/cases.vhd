@@ -2,7 +2,8 @@
 -- process: the memo of pure calls (#701) must change nothing but the work done. Covered: a
 -- recursive function, a function that reports (every call must report), the same bits under
 -- `to` and `downto` descriptors, slices, reversed ranges, real and integer-array arguments,
--- string and unsigned results, a package constant read in the body.
+-- string and unsigned results, a package constant read in the body, and memoised functions called
+-- from a function that is not memoised itself (calls between compiled functions).
 library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all;
 package ppmemo_cases_pkg is
   constant K : integer := 7;
@@ -90,6 +91,21 @@ architecture a of pmemo_cases is
   signal v : std_logic_vector(7 downto 0) := x"a5";
   signal w : std_logic_vector(0 to 7) := x"3c";
   signal done : boolean := false;
+  -- Reads a signal, so it is no candidate itself; its calls of memoised functions are.
+  -- (the allocation after a kept call needs the temporary area the call grew)
+  impure function peek(k : integer) return integer is
+    type str_ptr is access string;
+    variable p : str_ptr;
+    variable t : integer := 0;
+  begin
+    for i in 0 to k loop
+      t := t + lo(v) + lo(rev(w)) + to_integer(unsigned(chk(v, i)));
+      p := new string'(txt(v) & txt(w));
+      t := t + p'length;
+      deallocate(p);
+    end loop;
+    return t;
+  end function;
 begin
   clk <= not clk after 5 ns when not done else clk;
   process
@@ -115,6 +131,7 @@ begin
       if c mod 10 = 0 then report txt(v) & " " & txt(w(2 to 5)); end if;
       u := rep(c mod 4, u);
       acc := acc + to_integer(pw(u, c mod 5));
+      acc := acc + peek(c mod 4);
       big(c mod 300) := c;
       acc := acc + bigsum(big);
     end loop;

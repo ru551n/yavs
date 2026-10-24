@@ -7923,10 +7923,39 @@ loaded). The internal and head-to-head designs of `tools/bench` (25, `interp`): 
 1.005. An instruction count from one run after a change of the compilation cache can differ by tens of percent for a short test
 (`en_cl_fix_pkg` read 1.39 in the first run and 0.92 in the steady state): look at the steady state before believing a ratio above 1.
 
-What the memo does not reach: calls made by compiled code (`--tier=llvm` with everything compiled: the PoC run is
-unchanged there), records, access types and out parameters, and elaboration-time calls. Idea taken from the reference simulator: folding
+What the memo does not reach: calls that compiled code makes through the host's step (a callee without native code), records, access
+types and out parameters, and elaboration-time calls. Idea taken from the reference simulator: folding
 a pure call with constant arguments once (here a runtime memo, because the PoC registers' arguments are values that repeat, not constants);
 ours differs in keeping nothing across runs and verifying every hit by the argument bytes.
+
+### Memo of pure calls from compiled code (#701, 2026-10-24)
+
+Calls from compiled code to a native-callable function with a memo signature probe the memo through a callback before the call and keep
+the result through a second callback after it returns (decisions.md "Memo of pure calls", "Compiled code"); the interpreter also asks the
+memo before it offers a call to the compiled tier (`Tier::call`). No interpreter code runs inside a host step. Measured with bench builds
+(`tools/build-bench.sh --features llvm`, origin/main against main plus this change, `perf stat -e instructions:u`, `--threads 1`,
+instructions only, steady state: each binary run twice before the counted run, since a first run after a change of the binary fills the
+stage cache and counts tens of percent more). `--tier=auto` instruction counts vary by tens of percent between identical runs (the compile
+thread's timing), so only `interp` and `llvm` are quoted:
+
+| Run | before | after | |
+|---|---:|---:|---|
+| `poc_cache_cpu` llvm (`ffdre`, `mux`, `resize`; 688 000 hits, 16 600 runs, as `interp`) | 15.86 G | 12.13 G | -23.5 % |
+| `poc_cache_cpu` interp | 8.38 G | 8.38 G | 0 |
+| `grlib_leon3mp` 100 us llvm | 149.03 G | 145.09 G | -2.6 % |
+| `grlib_leon3mp` 100 us interp | 105.26 G | 105.29 G | 0 |
+| `vai_window_gen_interlock` llvm / interp | 217.89 / 447.50 G | 191.25 / 447.76 G | -12.2 % / 0 |
+| `osvvm_axis_random`, `uvvm_sb_slv`, `uvvm_util_rand` llvm | 15.75, 23.68, 42.53 G | 15.35, 23.04, 42.02 G | -2.5, -2.7, -1.2 % |
+| `neorv32_dual_full`, `neorv32_single_min`, `fletcher_bufferwriter_512` llvm | 42.21, 48.53, 64.56 G | 41.35, 48.30, 63.49 G | -2.0, -0.5, -1.7 % |
+| `poc_arith_addw` llvm / interp | 134.83 / 154.39 G | 134.61 / 154.45 G | 0 |
+| a memoisable function whose arguments never repeat (200 000 calls, memo gives up after 64) llvm / interp | 2.57 / 4.64 G | 2.45 / 4.64 G | 0 |
+
+`poc_cache_cpu` under `llvm` was 1.9 times the interpreter's count (the compiled calls bypassed the memo) and is now 1.45 times; the rest of
+the difference was not analysed (the llvm count includes compiling the functions). `pmemo_hits` under llvm equals the interpreter's.
+The cost of a probe that cannot hit (a function the memo gave up on, still asked on every compiled call) is not visible in the last row;
+an inline test of the global off flag was not built. A bug found by the window generator testbench (CI `generics` would not have seen
+it): the keep callback left `Mem::temp_seen` behind the length it had synced, so a later callback skipped the sync and `native_step`
+read past the end of the machine's temporary area.
 
 ## Package constants in specialised copies (yavs-ir `copies.rs`, `opt/decl.rs`, #708, 2026-10-24)
 

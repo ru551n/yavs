@@ -726,6 +726,41 @@ pub trait TierHost {
         temp_base: u64,
     ) -> NativeCall;
 
+    /// The memo of pure calls (`docs/decisions.md` "Memo of pure calls") for a call of `func`
+    /// ([`Program::memo_sig`]) with argument `cells` made by compiled code: from the native
+    /// frame `depth` (slots as for [`TierHost::native_direct`]) or, `None`, a frame-mode
+    /// function. Runs no VHDL code and collects nothing; a hit allocates only temporary memory
+    /// (`fr` is brought up to date). [`MemoLook::Miss`] says the call is to be made and its
+    /// result handed to [`TierHost::memo_keep`] with the number of reports it carries.
+    fn memo_probe(
+        &mut self,
+        fr: &mut TierFrame,
+        func: FuncId,
+        cells: &[u64],
+        depth: Option<u64>,
+        slots: &mut Option<Box<dyn NativeSlots>>,
+    ) -> MemoLook {
+        let _ = (fr, func, cells, depth, slots);
+        MemoLook::No
+    }
+
+    /// Keep the result `v` of a call that [`TierHost::memo_probe`] answered with
+    /// [`MemoLook::Miss`] (`reports`), when it ran to its end and made no report. Reads memory
+    /// only.
+    #[allow(clippy::too_many_arguments)]
+    fn memo_keep(
+        &mut self,
+        fr: &mut TierFrame,
+        func: FuncId,
+        cells: &[u64],
+        depth: Option<u64>,
+        slots: &mut Option<Box<dyn NativeSlots>>,
+        reports: u64,
+        v: u64,
+    ) {
+        let _ = (fr, func, cells, depth, slots, reports, v);
+    }
+
     /// `Inst::TempRoot` from a native frame: record the temporary at `addr` for the GC until
     /// its statement ends (`ty` its type and `desc` the descriptor bytes, or the fat pair at
     /// `addr` when `ty` is `None`). `false`: the interpreter must execute the instruction.
@@ -734,6 +769,17 @@ pub trait TierHost {
     /// `Inst::Stmt` of a native frame whose temporaries start at `base`, while temporaries are
     /// recorded: drop what the statement made.
     fn end_stmt(&mut self, fr: &mut TierFrame, base: u64);
+}
+
+/// What [`TierHost::memo_probe`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoLook {
+    /// The call is made as usual, and not kept.
+    No,
+    /// The call was made before: this is its result.
+    Hit(u64),
+    /// It was not: the number of reports so far.
+    Miss(u64),
 }
 
 /// A native frame of compiled code, recorded for [`TierHost::materialise`].

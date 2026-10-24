@@ -46,6 +46,7 @@ pub const NATIVE: &str = "yavs_rt_native";
 pub const TROOT: &str = "yavs_rt_troot";
 pub const ENDSTMT: &str = "yavs_rt_endstmt";
 pub const XSTEP: &str = "yavs_rt_xstep";
+pub const DRIVE_FLUSH: &str = "yavs_rt_drive_flush";
 
 /// The most plane blocks an inline `LCopy` reads or writes (`yavs_rt_lcopy`'s stack copy).
 pub const LCOPY_BLOCKS: u64 = 8;
@@ -862,6 +863,30 @@ extern "C" fn yavs_rt_drive_bit_slow(
         )
     }));
     unsafe { stepped(envp, mem, pc, r) }
+}
+
+/// The scalar logic assignments compiled code kept (`Batch`): `n` entries of two words, for
+/// `TierHost::drive_bits`. `GO`, or the pc of the `Drive` of an entry that failed.
+pub extern "C" fn yavs_rt_drive_flush(
+    env: *mut c_void,
+    _mem: *mut Mem,
+    entries: *const [u64; 2],
+    n: u32,
+) -> u32 {
+    cb(Cb::Drive);
+    // SAFETY: as in `yavs_rt_step`; compiled code passes `n` entries it wrote.
+    let envp = env as *mut Env<'_>;
+    let ents = unsafe { std::slice::from_raw_parts(entries, n as usize) };
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        (*envp).host.drive_bits(ents)
+    })) {
+        Ok(None) => GO,
+        Ok(Some(pc)) => pc,
+        Err(p) => {
+            unsafe { (*envp).panic = Some(p) };
+            0
+        }
+    }
 }
 
 /// `TierHost::wait_suspend` for the `WaitOn` at `pc` and the `Suspend` after it.

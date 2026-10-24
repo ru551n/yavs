@@ -2,8 +2,8 @@
 //! number of times on the same design (in-process restart, rule 4).
 
 use yavs_kernel::{
-    Builder, Config, DriverId, EdgeTrigger, PortConv, ProcFlags, Process, Resolution, SimControl,
-    SimError,
+    Builder, Config, DriverId, EdgeTrigger, PortConv, ProcFlags, Process, Range, Resolution,
+    SimControl, SimError,
 };
 
 use crate::hier::{Case, ImplicitKind, LeafRes};
@@ -39,6 +39,22 @@ impl Elaborated {
         n
     }
 
+    /// The kernel name of a pack of leaves `a .. z` (#686): the path of the innermost record
+    /// that holds them all.
+    fn pack_name(&self, a: crate::LeafId, z: crate::LeafId) -> String {
+        let (first, last) = (self.leaf_name(a), self.leaf_name(crate::LeafId(z.0 - 1)));
+        let mut n = 0;
+        for (i, (x, y)) in first.bytes().zip(last.bytes()).enumerate() {
+            if x != y {
+                break;
+            }
+            if x == b'.' {
+                n = i;
+            }
+        }
+        first[..n].to_string()
+    }
+
     /// The kernel model. `make` creates the process object of each process instance, given
     /// its kernel drivers (in `ProcInst::drivers` order).
     pub fn build_with(
@@ -65,10 +81,27 @@ impl Elaborated {
         let nets = &self.nets;
         for (k, &(a, z)) in nets.packs.iter().enumerate() {
             if z.0 != a.0 + 1 {
-                return Err(SimError::new(yavs_kernel::ErrorKind::Internal(format!(
-                    "kernel signal {k} holds {} leaves",
-                    z.0 - a.0
-                ))));
+                // A pack of record leaves (#686): logic, unresolved or `resolved`, no guard.
+                let len = nets.signal_len(yavs_kernel::SignalId(k as u32));
+                let mut init = yavs_kernel::Value::Logic(yavs_kernel::LogicVec::new(
+                    len as usize,
+                    yavs_logic::StdULogic::U,
+                ));
+                let mut resolved = false;
+                for l in a.0..z.0 {
+                    let leaf = nets.leaf(crate::LeafId(l));
+                    let base = nets.loc[l as usize].base;
+                    crate::collapse::put_init(&mut init, base, &leaf.init, leaf.ty.len);
+                    resolved |= matches!(leaf.resolution, Some(LeafRes::StdLogic));
+                }
+                let name = self.pack_name(a, z);
+                let ty = yavs_kernel::SignalType::logic(len);
+                let id = match resolved {
+                    true => b.resolved_signal(&name, ty, &init, Resolution::StdLogic),
+                    false => b.signal(&name, ty, &init),
+                };
+                debug_assert_eq!(id.0 as usize, k, "kernel signals in pack order");
+                continue;
             }
             let i = a.index();
             let leaf = nets.leaf(a);
@@ -149,14 +182,33 @@ impl Elaborated {
             b.port_parts(&f, &a, e.mode, pc);
         }
         for p in &self.procs {
-            let ds: Vec<DriverId> = p
-                .drivers
-                .iter()
-                .map(|&d| {
-                    let d = &self.nets.drivers[d];
-                    b.driver(nets.kref(d.leaf, d.range))
-                })
+            // Drivers of one process on adjacent elements of one kernel signal that one target
+            // names together (a whole record of a pack, #686) are one kernel driver; `ds` has
+            // one entry per declaration. Fields assigned one by one keep a driver each: a
+            // direct driver takes either single-element or vector entries in one run.
+            let mut ds: Vec<DriverId> = Vec::with_capacity(p.drivers.len());
+            let parts: Vec<_> = (p.drivers.iter())
+                .map(|&d| nets.kpart(nets.drivers[d].leaf, nets.drivers[d].range))
                 .collect();
+            let target_of = |d: usize| p.lsps.iter().position(|l| l.iter().any(|e| e.0 == d));
+            let mut i = 0;
+            while i < parts.len() {
+                let (s, mut r) = parts[i];
+                let mut j = i + 1;
+                while let Some(&(t, q)) = parts.get(j)
+                    && t == s
+                    && q.offset == r.offset + r.len
+                    && target_of(p.drivers[j]) == target_of(p.drivers[i])
+                {
+                    r.len += q.len;
+                    j += 1;
+                }
+                let id = b.driver(s.slice(r.offset, r.len));
+                ds.extend(std::iter::repeat_n(id, j - i));
+                i = j;
+            }
+            let mut own = ds.clone();
+            own.dedup();
             // A plain signal copy runs in the kernel when no one observes its activations
             // (coverage, a debugger, foreign callbacks: `Config::edge_triggers` is off then).
             let copy = p
@@ -165,10 +217,10 @@ impl Elaborated {
                 .filter(|_| cfg.edge_triggers)
                 .and_then(|src| {
                     (src.iter().zip(p.lsps.first()?))
-                        .map(|(&(sl, sr), &(k, _, dr))| {
+                        .map(|(&(sl, sr), &(k, dl, dr))| {
                             let src = nets.kref(sl, sr);
                             let d = ds[p.drivers.iter().position(|&x| x == k)?];
-                            Some((src, d, dr))
+                            Some((src, d, nets.kpart(dl, dr).1))
                         })
                         .collect::<Option<Vec<_>>>()
                 });
@@ -201,7 +253,7 @@ impl Elaborated {
                     several_waits: false,
                     concurrent_call: false,
                 },
-                &ds,
+                &own,
                 proc,
             );
             if let Some(reads) = &p.guard {
@@ -266,6 +318,22 @@ impl Elaborated {
             let idle = |_: &mut yavs_kernel::Ctx<'_>| Ok(());
             b.process(&p.name, ProcFlags::default(), &ds, idle);
         }
-        b.build(cfg)
+        let mut sim = b.build(cfg)?;
+        // Hang and loop reports name the fields of a pack, not the pack.
+        for (k, &(a, z)) in nets.packs.iter().enumerate() {
+            if z.0 > a.0 + 1 {
+                let parts = (a.0..z.0)
+                    .map(|l| {
+                        let l = crate::LeafId(l);
+                        (
+                            nets.kpart(l, Range::new(0, nets.leaf(l).ty.len)).1,
+                            self.leaf_name(l),
+                        )
+                    })
+                    .collect();
+                sim.name_parts(yavs_kernel::SignalId(k as u32), parts);
+            }
+        }
+        Ok(sim)
     }
 }

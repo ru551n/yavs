@@ -1,0 +1,11 @@
+warning[W3101]: the simulation ran out of events at 0 fs without `stop` or `finish` ending it
+  --> $DIR/stuck_record.vhd:14:5
+   |
+14 |     wait until r.b = '1';
+   |     ^^^^^^^^^^^^^^^^^^^^^ :stuck_record:w waits for :stuck_record:r.b
+   |
+   = note: at 0 fs, delta 1: 2 processes, 0 waiting for a timeout, 0 for signals that can still change, 1 that can never run again, 1 ended or at `wait;`
+   = note: process :stuck_record:w waits for an event on :stuck_record:r.b, which nothing can cause
+   = note: signal :stuck_record:r.b is '0' and never had an event; it has no driver
+   = help: find out why the signal never changes: is it driven, is its driver reached, did the process that should drive it end? `--hang-report` prints this at the end of a run
+

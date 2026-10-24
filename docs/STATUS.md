@@ -11,7 +11,7 @@
 | M7: waves | `yavs run --wave` writes an FST of the whole design (#129, #116): hierarchy, records/arrays as scopes, enum tables, globs and size cap, final value per time step, same file at any `--threads` and for any run speed (blocks end by size only; `YAVS_WAVE_FLUSH=5s` opts in to a wall-clock flush for killed runs, #666), finished on Ctrl-C; signals left out by globs or the cap cost nothing at run time; instances in generates, 2-D arrays; read back with wellen in `crates/yavs/tests/wave.rs`. integers carry the subtype name and the width of their range, generate alternatives keep their label (#306). `--wave-variables` records process and non-protected shared variables, records and arrays as scopes, integers with the width of their elaborated range, sampled at the end of each time step through the observer accessors (#305, #348, #321). Open: protected-type shared variables |
 | M3: full types and libraries | done per `docs/plan.md`: arrays, records, access and protected types, resolution (composite, access, protected and resolution groups in `tests/corpus/RESULTS.md`); `numeric_std`, fixed and float from source (#94); textio, `env`, package generics, external names; `--load` foreign subprograms (#95); bit-plane layout (user, 2026-10-18). Not done: the PSL natives, out of scope (`lib/NATIVE.md` section 4) |
 | M8: DAP server | first slice (#130): `yavs run --dap=PORT\|stdio` serves the Debug Adapter Protocol over the interpreter's debug session (`crates/yavs-dap`): threads per process, line breakpoints with hit counts, continue, pause (in a process or between cycles), run for or until a time, next delta and next time step (custom requests and VS Code commands, #324), signal breakpoints on a change or a value (DAP data breakpoints and `yavs/setSignalBreakpoints`, #322), force, deposit and release of signals and their fields, elements and slices (#364) and `setVariable` on signals and locals with values parsed as VHDL literals of the target type (`yavs_std::value::literal`, #323), conditions on line and data breakpoints (VHDL expressions evaluated by the server), composite variables expanded by field and index (paged), a Hierarchy scope and `yavs/hierarchy` (#326), step over/in/out, stack frames with source positions, locals, region signals and generics, evaluate for locals and signals by name or path, output events, exit status; one thread under `--dap`, so sessions are deterministic. Scripted sessions in `crates/yavs/tests/dap.rs`. VS Code extension `editors/vscode` (debugger type `yavs`, analyzes and launches over stdio): verified with the DAP test client (`test/client.js`) and in a real headless VS Code (`test/vscode`, breakpoint hit, frame, `setVariable`, force and release commands, a conditional breakpoint, scopes and an expanded array, continue to the end); not in CI. Live waves (#325): `yavs/waveSubscribe` records the client's selection (globs, array cap, variables) with the `--wave` recorder into a second sink and streams `yavs/waves` batches of completed time steps (values base64 of the recorder's bytes with `encoding` in the hierarchy, bounded queue, never blocks the simulation); `--wave` and `--vhpi` work under `--dap` (the FST equals a plain run's). Attach (#423): `--dap=PORT` prints `yavs: waiting for a debugger on port PORT` and holds the run until a client attaches (also from a response file); the extension has an "Attach to yavs" snippet and `docs/usage.rst` a recipe for debugging one test of an external test runner. A VHPI plugin's prints under `--dap=stdio` go to stderr (#389) |
-| M9: coverage | statement and branch coverage (#131): `yavs run --cov[=FILE]` writes a per-run database keyed by instance path and statement text hash, `yavs cov merge`, `yavs cov report` (text summary, Cobertura XML); no counters without `--cov`; counts identical at any `--threads`; pinned in `crates/yavs/tests/coverage.rs`. Exclusions (#351): `-- coverage off/on` pragmas, `cov report --uncovered` rows and `--exclude FILE`. Toggle coverage (#343): 0->1 and 1->0 per `bit`/`std_logic` scalar of signals and ports from the value-change bus, `--cov-kind`, `--cov-toggle-max` (W0115), `toggle` exclusion rows (optional `rise`/`fall`). YAML exclusion files (#687): `--exclude FILE.yaml`/`.yml`, `cov report --uncovered=yaml`. Per-test attribution (#353): `--cov-test`, tests per item kept through `cov merge`, `yavs cov rank` (greedy minimal set, unique items per test), `cov report --tests`; database version 4. HTML report (#344, #689): `cov report --html DIR [--root DIR]`, static pages with line counts, relative source paths, a hover/focus popup per line (per-instance counts, tests, click to pin), partial-instance lines marked `ran/total`, a missed-only page per file, missed items as exclusion rows with copy buttons (E0113 for an unreadable source; Windows-style paths made relative too, #693). Condition and expression coverage (#688): focused expression coverage per input and value of `if`/`elsif`/`when`/`while`/`exit`/`next` conditions and logic expressions of assignments (`--cov-kind=condition,expression`, `Inst::CoverIn`/`CoverCond`, `CovCond::hits`), inputs constant after elaboration have no rows, rows in text, HTML table and Cobertura, exclusion per row (text and YAML), database version 5; pinned in `crates/yavs/tests/coverage_fec.rs` Counter cost (#692): `Cover`, `CoverIn` and `CoverCond` are predecoded interpreter ops and inline in the LLVM tier (one atomic add on the instance's counters through `TierFrame::cov`); a statement counter went from about 130 to about 14 instructions, the LLVM tier no longer steps them; same counts in every tier (`tiers_agree` in `coverage.rs` and `coverage_fec.rs`). Per-instance specialised copies and inlining of functions with counters are open (#699). |
+| M9: coverage | statement and branch coverage (#131): `yavs run --cov[=FILE]` writes a per-run database keyed by instance path and statement text hash, `yavs cov merge`, `yavs cov report` (text summary, Cobertura XML); no counters without `--cov`; counts identical at any `--threads`; pinned in `crates/yavs/tests/coverage.rs`. Exclusions (#351): `-- coverage off/on` pragmas, `cov report --uncovered` rows and `--exclude FILE`. Toggle coverage (#343): 0->1 and 1->0 per `bit`/`std_logic` scalar of signals and ports from the value-change bus, `--cov-kind`, `--cov-toggle-max` (W0115), `toggle` exclusion rows (optional `rise`/`fall`). YAML exclusion files (#687): `--exclude FILE.yaml`/`.yml`, `cov report --uncovered=yaml`. Per-test attribution (#353): `--cov-test`, tests per item kept through `cov merge`, `yavs cov rank` (greedy minimal set, unique items per test), `cov report --tests`; database version 4. HTML report (#344, #689): `cov report --html DIR [--root DIR]`, static pages with line counts, relative source paths, a hover/focus popup per line (per-instance counts, tests, click to pin), partial-instance lines marked `ran/total`, a missed-only page per file, missed items as exclusion rows with copy buttons (E0113 for an unreadable source; Windows-style paths made relative too, #693). Condition and expression coverage (#688): focused expression coverage per input and value of `if`/`elsif`/`when`/`while`/`exit`/`next` conditions and logic expressions of assignments (`--cov-kind=condition,expression`, `Inst::CoverIn`/`CoverCond`, `CovCond::hits`), inputs constant after elaboration have no rows, rows in text, HTML table and Cobertura, exclusion per row (text and YAML), database version 5; pinned in `crates/yavs/tests/coverage_fec.rs` Counter cost (#692): `Cover`, `CoverIn` and `CoverCond` are predecoded interpreter ops and inline in the LLVM tier (one atomic add on the instance's counters through `TierFrame::cov`); a statement counter went from about 130 to about 14 instructions, the LLVM tier no longer steps them; same counts in every tier (`tiers_agree` in `coverage.rs` and `coverage_fec.rs`). Per-instance specialised copies, memoised blocks and inlining work with counters (#699): the counters of an arm a copy folds away are dropped (count 0), the rest count into the running instance's row, counts byte-identical to shared code in every tier and at any `--threads` (`copies_count_alike`, `tiers_agree` in `coverage.rs`); what is left of the `--cov` overhead is the toggle observer and the edge triggers that coverage turns off (#707). |
 | M6: JIT tier | in progress: `yavs run --tier=llvm` (feature `llvm`) compiles every function with LLVM 21 and passes the whole difftest corpus (348/348 at 1 and 4 threads, identical to the interpreter, rule 5); 96% of the compiled programs' instructions run as native code (memory, descriptors and layouts since #334/#335; simulation 2x to 5x faster than interpreted, compile time aside), the rest through the interpreter (side exits, `docs/decisions.md`); `--tier=auto` compiles only hot functions on a background thread with identical output (#125; opt-in: since the predecoded interpreter, #431, compiled code with its side exits is slower than interpreting on most benchmarks), functions over `--tier-max-size` stay interpreted (#126); compiled code is kept in the compilation cache and linked by later runs (#505); open: native lowering of the rest (#336 to #341); CI builds and tests the feature on Linux x86_64, aarch64 and Windows; llvm section |
 | Cranelift tier (#481 item 1) | `yavs run --tier=clift`, `--tier=clift-auto` (feature `clift`, off by default, no LLVM needed, crate `yavs-clift`) and `--tier=auto3` (both features: Cranelift for warm functions, LLVM O2 for those that stay hot) run the optimised IR on the LLVM tier's frame view, callbacks and side exits; the difftest corpus is identical to the interpreter at 1 and 4 threads and under the collection stress build; Cranelift translates at 31 to 62 us per IR instruction against 115 to 536 for LLVM; since 2026-10-24 it lowers the kernel-facing instructions, protected calls and heap code in native frames; on the window generator testbench it is 24 percent below the interpreter in instructions (LLVM `auto` 49 to 62 percent below), level or up to 8 percent above the interpreter on neorv32, fletcher, poc_arith_addw and grlib, so it is not the first level of `auto`; measurements and the gap list in the clift section |
 | M5, M10 | not started (M5: the `vhpi_*` export surface (#266), `yavs run --vhpi` (#267) and the design hierarchy object model (#269) are done; values and most callbacks are not; `yavs run` accepts `+plusargs` after the top level, readable through `vhpiArgcP` and the `vhpiArgvs` iterator (#298), `crates/yavs-vhpi`; M10: design `docs/design/gui.md` (#384, decisions answered 2026-10-19); slice G1 (#388): `gui/` workspace (EUPL-1.2) with `yavs-gui`, which starts `yavs run --dap=stdio` or attaches to a port, shows a dock layout of placeholder panels, a console of the run's output and Run/Pause/Stop, tested headless against a scripted DAP server (`gui/AGENTS.md`); `yavs run --gui` starts it (E0122 when missing); release archives ship it; slice G2 (#399): source view with breakpoint gutter (conditions, hit counts), call stack per process, locals and watch with lazy and paged expansion and edit, hover, step buttons, time and delta in the status bar, tested against a scripted DAP server and, ignored, the real `yavs`; G3 to G6 and the server slices S1 (#396), S2 (#397), S4 (#398) not started) |
@@ -4219,6 +4219,69 @@ elsewhere); a cheaper empty delta (28% of the cycles of `sc5_timestamp` but ~130
 `Machine::run_quick` (-4% instructions of `rtl_fan`, +0.3% of the CPU designs, cycles geometric mean worse); hoisting the storage
 look-up out of the per-word update of wide buses and a flat record list (-0.8% of the 512-bit design, no cycles).
 
+### Fletcher writer and reader against the reference simulator: the whole picture (#519, #523, 2026-10-24)
+
+Measured on `ae1826dd` plus the kernel round 20 below (bench builds with `--features llvm`; `perf record` of the whole run;
+`tools/stepcount` windows of 60 (writer) and 300 (reader) delta cycles for the exact shares; `YAVS_COUNTERS`; `op-census`; core 13
+for every timed run, the host at load 19 to 32). Under `--tier=auto` neither design compiles anything (`YAVS_AUTO_TRACE`: the hot
+processes are combinational and the policy takes none; `ctrl_comb_proc` of the reshaper, 2238 IR, is 10% of the run interpreted),
+so auto equals the interpreter.
+
+**What the design does** (writer): 795 K delta cycles for 69.5 K clock cycles (11.4 deltas a clock), 12 process runs and 64 plane-word
+updates (43 of them changing) a delta; about 35 wide signals (each a 512-bit bus or a record carrying one) change once a clock
+(some twice: concatenations), so 4.2 M bus changes in all. The reference simulator moves the same values: 2.9 K instructions a bus
+change with the kernel at 45% of its 26.7 G, the compiled processes 50%.
+
+Share of the instructions of one delta cycle (stepcount, user instructions of the program file; libc is another 2.5%):
+
+| layer | writer (99 K a delta) | reader (12.6 K a delta) |
+|---|---:|---:|
+| interpreter dispatch (`run_ops`) | 33.0% | 23.7% |
+| kernel: commit and finish of signals | 21.6% | 17.8% |
+| record layout, copies, gather and scatter in the interpreter (`layout_word(s)`, `lcopy`, `subtype_check`, `sig_gather/scatter`) | 15.9% | 14.7% |
+| kernel: cycle, wake-up, process dispatch (`cycle`, `run_batch`, `run_quick`, `arm_readers`, ...) | 11.6% | 27.9% |
+| process-side signal I/O (`assign_*`, `read_into`, `Buf::write_to`) | 10.6% | 10.0% |
+| native `ieee` calls | 3.7% | 1.7% |
+| hashing (record gather plans) | 0.3% | 0.7% |
+
+Against the reference simulator (writer, instructions): signal commit and finish 19 G (before round 20) against 9 G, cycle and
+wake-up 8.6 G against 2.8 G, processes 38 G interpreted against 13 G compiled. The op census of an 8 us writer window (12.2 M ops, the
+interpreter's side): `Stmt` 7.1%, `SigVal` 5.0%, `FieldOf` 4.9%, `DopeLen` 4.4%, `CmpBr` 4.1%, `NewPair` 3.7%, `SubtypeCheck` 3.5%,
+`BinRangeK` 3.2%, `LCopy` 2.9%, `FatRoot` 2.8%, `LayoutWord` 2.7%, `CallIeee` 2.4%; the pairs `FieldOf -> SubtypeCheck -> DopeLen -> LCopy`
+(a record variable with array fields copied field by field: `v := ctrl_r;`) and `NewPair -> FatRoot -> CallIeee` (the operand
+convention of the native `ieee` calls, #697) are 1.6 to 2.8% of the ops each. Records with generic-bounded array fields keep their
+layout in descriptors, so every access is a `LayoutOf`/`FieldOf` where the reference simulator has a constant offset: folding them
+in the specialised copies of processes (#678) is the largest item of the interpreter side (the layout layer alone is 14 to 16%).
+
+Measured and not taken (all with exact instruction counts, `perf stat` on core 13): fat LTO with one codegen unit (writer +0.6%
+instructions, cycles level; reader level), `-C target-cpu=x86-64-v3` (writer -2.8% instructions, -1 to 2% cycles; reader -0.1 to
+-2% instructions, cycles +5% in one set: not shippable for generic hosts and not a clear win), `--threads 2/4/8` (6.5 s to 7.6 / 8.3 /
+8.3 s: the 12 runs a delta, 0.6 us each, do not pay for a hand-off), a single-pass `canonical_changed` and an aligned `Buf::write_to`
+(each 0.0% instructions: the compiler's loops were as short), a skip of plane entries that hold the value (see "Kernel round 20").
+
+Totals against the reference simulator, `tools/realbench` with analysis (library part and own files), elaboration and run, core 13,
+medians of 5, warm and cold cache, the two sessions with sim1 timed in each (yavs / sim1; the wall times of the two sessions differ
+because of the host load, the ratio inside a session is the figure):
+
+| test | run phase before (warm / cold) | run phase after | total before (warm / cold) | total after |
+|---|---:|---:|---:|---:|
+| `fletcher_bufferwriter_512` | 3.20 / 3.29 | 3.07 / 3.22 | 1.90 / 2.04 | 1.79 / 1.98 |
+| `fletcher_bufferreader` | 1.96 / 1.87 | 1.82 / 1.82 | 0.94 / 1.01 | 1.01 / 1.11 |
+
+The reader's instruction count did not change in this round; its rows show session noise (the reference simulator's own run took
+1.15 s in the first session and 1.66 s in the second, yavs 2.25 s and 3.02 s), and the totals of the two sessions mix the reference's
+1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
+Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
+
+### Kernel round 20: a lean wide bus is finished in one pass (#519, 2026-10-24)
+
+(`docs/decisions.md` "Kernel round 20".) `Signal::finish_words_lean` finishes the pending words of a lean bus with no codes and no
+activity stamps in one loop, and a whole plane-word entry is committed without shifts. `fletcher_bufferwriter_512`, bench builds,
+core 13, minimum of 5 alternating runs: 83.8 G to 77.1 G instructions (0.918), 30.1 G to 28.6 G cycles (0.951); `realbench
+--compare` (auto, warm and cold, 5 runs): the writer 6.44 s to 6.25 s warm, the other five tests level (instructions 1.00; the host
+ran at load 19 to 32, so wall time of the others is noise); all 42 tests, interpreter: instructions geometric mean 0.98, only the
+wide-vector category moves. Skipping a plane entry that holds its value already was built and measured: it costs as much as it saves.
+
 ### Kernel round 19: single-bit drives, Signal layout, record leaves, skipping and observers (#676, #519, #677, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 19".) No speed-up landed: the three ranked ideas were built and measured and none lowered the
@@ -7266,6 +7329,14 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too.
 - Step 1: a leaf is stored at `NetGraph::loc` (kernel signal, base); the kernel build, instance
   signal tables, waves, coverage toggles, VHPI and DAP reach kernel signals only through it
   (`NetGraph::kref`, `kpart`, `kelem`). Every leaf still has a signal of its own.
+- Step 2: runs of logic leaves of a record signal (at most 64 elements, no port, guard, force or
+  implicit signal) share one kernel signal; idle-skip readers are armed by their elements.
+- Step 4: one kernel driver per pack a whole record assignment names; `SigScatter` assigns a pack in
+  one plane block, `SigGather` reads vector leaves from the planes. Instructions (interp, warm,
+  on top of #677): 233-leaf register record 5.20 G to 3.40 G, `grlib_leon3mp` 809.6 G to 801.4 G,
+  `neorv32_single_min` 42.79 G to 42.26 G. Step 3 (packs with ports) measured and not landed
+  (`docs/decisions.md`); step 5 measured, the cap stays 64. Not done: the whole-record wait, step 6
+  (byte leaves).
 
 ## `yavs_rt_host` a leaf, and no cliff in the instance-constant memoisation (#663, #662, 2026-10-24)
 
@@ -7299,6 +7370,12 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too.
   rest of the function twice for liveness). `olo_axi_master_full` at time 0 (interp, steady state): 703.5 M to 660.0 M instructions (-6.2 %),
   a generated process of 1600 assignments 64.7 M to 60.8 M; outputs and work counters unchanged (`docs/decisions.md` "Predecode: one scan
   per waveform").
+- #691 and the native `ieee` call path: `ieee::small` returns `Option` and reads with one bounds check per word, `put_small` appends the
+  72 bytes of its result to temporary memory in one go, `closure()` uses sets for files seen, done and on the DFS stack. Instructions,
+  bench build, warm cache, `realbench --compare` over all 42 tests (interp and llvm): `poc_arith_addw` interp 236.1 G to 220.2 G (-6.7 %),
+  llvm 224.7 G to 208.7 G; cycles on core 14 interp 70.8 G to 68.4 G (-3.4 %), `--tier=auto` 57.0 G to 53.4 G (-6.5 %); `poc_cache_cpu` interp
+  15.12 G to 14.51 G; `neorv32_single_min` 42.9 G to 42.3 G; `olo_axi_master_full` at time 0 623.4 M to 605.8 M; every other test within 1 %
+  (no instruction ratio above 1.01). `tools/bench --compare` (31 designs) CPU geomean 0.991 (`docs/decisions.md` "Native ieee calls").
 
 ## llvm: address spaces across blocks, enclosing frames from the view (#684, #685, #679, 2026-10-24)
 
@@ -7428,3 +7505,48 @@ latency is 13.6 percent of the dispatch slots with the default `--tier=auto` aga
 36.6, back-end 25.4 against 27.7; the compiled `comb` copy is 3.7 MB (158 bytes per IR instruction, a 319 KB stack frame) of which a
 sampled window touches about 150 KB, more than the L1i holds.
 Difftest 505/505 on `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0` at 1 and 4 threads, and with `YAVS_LLVM_ARENA=0`.
+
+## IR optimiser round 13: repeated drives, copies without the declarative part, conditional assignments that idle (#667, #678, #521, 2026-10-24)
+
+Three changes (`docs/decisions.md` "IR optimiser round 13", "Specialised copies start after the declarative part", "Idle skip, round 4"):
+
+- `opt/drives.rs`: in a process, a zero-delay drive (with the waveform it builds) that a later zero-delay drive of the same elements
+  deletes is delayed down the control flow and dropped on the paths that drive again (copies at the end of the paths that do not;
+  before any instruction that can see the driver's transactions; never into a cycle). `YAVS_NO_DRIVES=1` turns it off. Tests:
+  `crates/yavs/tests/drives.rs` (14 designs, output and exit status equal with and without the pass, fewer kernel drives), perf design
+  `drive_defaults`.
+- A specialised copy of a process jumps from its entry to the body (the declarative part is never run in it): the copies of the LEON3
+  run are 16 percent smaller in IR; no change in interpreter instructions. Test `a_copy_has_no_declarative_part`.
+- Idle skip for concurrent conditional assignments `t <= a when c else b;`, with conditions of generics worked out per instance
+  (`neorv32` `... when TRACE_PORT_EN else ...`, the PMP `... and NAP_EN else '0'`): an arm that cannot be taken leaves no read. Tests:
+  perf `idle_when`, `tests/corpus/delta/idle_when.vhd` (blessed from the reference simulator).
+
+Host instructions, bench builds, `--threads 1`, G, main at c9abf712 / with the three changes: `neorv32_single_min` interp 42.55 / 39.74
+(-6.6 %), llvm 55.99 / 52.91 (-5.5 %); `neorv32_dual_full` interp 28.40 / 28.02, llvm 45.81 / 45.76; `fletcher_bufferwriter_512` interp
+84.41 / 83.27, llvm 88.71 / 88.74; `fletcher_bufferreader` interp 26.01 / 26.11; `poc_cache_cpu` interp 15.00 / 14.91; `sc5_fifo_repack`,
+`sc5_timestamp`, `poc_stat_histogram` unchanged. One at a time on da793761 (before the record gather and scatter of #677): drives
+44.85 to 42.76, copies without the declarative part 42.78 (nothing, it is code size), idle skip 41.66; `poc_arith_addw` +0.2 percent
+(tracked assignments that never skip), `grlib_leon3mp` interp 891.98 / 892.53. Cycles (core 10, median of 3, interpreter):
+`neorv32_single_min` 20.4 to 19.6 G, `neorv32_dual_full` 15.3 to 14.6, `fletcher_bufferwriter_512` 38.6 to 38.1, `poc_cache_cpu` 5.29 to
+5.47 (+3 percent for -0.6 percent instructions, within the spread of a run of 5 G). Checked: the 505-test differential corpus (interp, llvm, auto
+at 1 and 4 threads), UVVM (131 pass, 6 skipped) and OSVVM (521 files, 314 tests pass) as on main, `YAVS_IDLE_SKIP=check` on five
+real-world designs, `cargo test --workspace` and `-p yavs-llvm -p yavs --features llvm`.
+
+What is left: the repeats behind a join (tail duplication), a repeat across a loop's iterations of dynamic offsets that are not one
+register, the `LayoutOf` and `Field` of the process variables in the copies (#678), PoC `ffdre` (#701), sharing the two `to_integer` of
+a check's condition and message (#520, a comment with the plan).
+
+## llvm: scalar drives kept for one host call (#676, 2026-10-24)
+
+A process that assigns the elements of a vector one by one in a loop (`state(i) <= x`, the usual shift register, bit reversal or sorting
+network) no longer makes a callback per element under `--tier=auto` and `--tier=llvm`: compiled code appends each zero-delay scalar logic drive
+to a stack buffer and hands the buffer to the kernel in one call before it waits, calls, drives another way or leaves the function
+(`docs/decisions.md` "Compiled clocked RTL processes, round 7"). Bench builds (`tools/build-bench.sh --features llvm`) of main before and
+after, `--tier=auto` warm, core 12, user instructions and cycles of the process tree:
+
+| test | instructions before | after | cycles before (median) | after |
+|---|---:|---:|---:|---:|
+| `hdlm_lfsr` | 28.09 G | 25.69 G (-8.5 %) | 8.53 G | 8.01 G (-6 %) |
+
+Instructions over all 42 realbench tests: geometric mean 0.99 (CPU time 0.99; the changes beyond 1 % elsewhere are `--tier=auto` noise,
+#673). The interpreter is unchanged (a deferred buffer there would save about 3 percent of `hdlm_lfsr`, recorded in the decision).

@@ -209,6 +209,9 @@ pub struct Lsp {
     pub span: Span,
 }
 
+/// The `pos` of a [`GuardLit`] on a condition of constants.
+pub const GUARD_CONST: u32 = u32::MAX;
+
 /// A signal a pure process reads (`Db::pure_comb_reads`, ...) and, when it reads it only under
 /// some conditions, those: `None` when it may read it in every activation, else a disjunction of
 /// conjunctions of literals, each of which has to hold for an activation to read the signal.
@@ -219,7 +222,9 @@ pub struct PureRead {
 }
 
 /// `x = c` (`eq`) or `x /= c` on a signal name `x`, `pos` the position of the literal `c` in
-/// `std_ulogic` numbering (BIT and BOOLEAN are stored with its codes).
+/// `std_ulogic` numbering (BIT and BOOLEAN are stored with its codes). With `pos` `GUARD_CONST`,
+/// `sig` is a boolean expression of constants and generics instead, and the literal says it is
+/// true (`eq`) or false: the elaborator evaluates it for each instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuardLit {
     pub sig: ExprId,

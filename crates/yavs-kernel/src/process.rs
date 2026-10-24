@@ -611,6 +611,15 @@ impl Ctx<'_> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
     }
 
+    /// The plane blocks of the current value of logic signal `s` and its element count: whole
+    /// record packs are read from them a block at a time (#686).
+    pub fn planes(&self, s: SignalId) -> Option<(&[yavs_logic::Block], u32)> {
+        match &self.sh.signals.get(s.0 as usize)?.cur {
+            crate::value::Buf::Planes { len, b } => Some((b, *len as u32)),
+            _ => None,
+        }
+    }
+
     /// The bytes of the current value of signal `s`, the element size and the element count
     /// (`Signal::bytes_view`).
     pub fn bytes_view(&self, s: SignalId) -> Option<(*const u8, usize, usize)> {
@@ -845,6 +854,24 @@ impl Ctx<'_> {
         Ok(s.drivers[info.slot as usize].value.to_value())
     }
 
+    /// [`Ctx::driving_value`] of elements `target` of driver `d` (the whole driver when `None`).
+    pub fn driving_value_of(&self, d: DriverId, target: Option<Range>) -> Result<Value, SimError> {
+        let v = self.driving_value(d)?;
+        let (_, r) = self.target(d, target)?;
+        let info = self.own(d)?;
+        if r == info.range {
+            return Ok(v);
+        }
+        let (at, n) = ((r.offset - info.range.offset) as usize, r.len as usize);
+        Ok(match v {
+            Value::Logic(l) => Value::Logic(l.slice(at, n)),
+            Value::Bytes(b) => {
+                let es = b.len() / info.range.len.max(1) as usize;
+                Value::Bytes(b[at * es..(at + n) * es].to_vec())
+            }
+        })
+    }
+
     /// `now + delay` after truncating `delay` to the resolution limit.
     pub fn after(&self, delay: Time) -> Result<Time, SimError> {
         let delay = delay.quantize(self.sh.resolution);
@@ -1050,6 +1077,52 @@ impl Ctx<'_> {
     #[inline]
     pub fn assign_code_now(&mut self, d: DriverId, r: Range, code: u8) -> bool {
         self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
+    }
+
+    /// `assign_code_now` for `n` elements, `run(k)` being the offset in the signal and the code of
+    /// the `k`th, in order, with the driver and its waveform looked up once: how many of them,
+    /// from the front, the usual fast case took (the caller runs `assign_code` for the next one).
+    /// A driver that is not direct takes one element at most: the first leaves a quick transaction.
+    pub fn assign_codes_now(
+        &mut self,
+        d: DriverId,
+        n: usize,
+        run: impl Fn(usize) -> (u32, u8),
+    ) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return 0;
+        };
+        if !info.direct {
+            let (elem, code) = run(0);
+            return usize::from(self.assign_code_now(d, Range::new(elem, 1), code));
+        }
+        let w = &self.st.waveforms[info.local as usize];
+        if info.owner != self.pid || !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 2)
+        {
+            return 0;
+        }
+        let (sig, slot, range) = (info.signal.0, info.slot, info.range);
+        let mut taken = 0;
+        while taken < n {
+            let (elem, code) = run(taken);
+            if code >= 9 || !range.contains(Range::new(elem, 1)) {
+                break;
+            }
+            self.st.out.push(Out {
+                sig,
+                slot,
+                elem,
+                code: u32::from(code),
+            });
+            taken += 1;
+        }
+        if taken > 0 {
+            self.mark_entries(info, 1);
+        }
+        taken
     }
 
     /// `assign_bytes` of one element with zero delay (transport or inertial without rejection):

@@ -1843,6 +1843,16 @@ impl Signal {
                 let d = &mut drivers[o.slot as usize];
                 d.put_planes((o.elem - d.range.offset) as usize, o.len as usize, o.planes);
             }
+            if o.elem % 64 == 0 && o.len == 64 {
+                // A whole plane word (the usual entry of a wide bus): no shifts or masks.
+                let w = o.elem as usize / 64;
+                drv[w] = o.planes;
+                if pend[w] == 0 {
+                    pend_words.push(w as u32);
+                }
+                pend[w] = !0;
+                continue;
+            }
             put_block(drv, o.elem as usize, o.len as usize, o.planes, !0);
             mark_bits(pend, pend_words, o.elem, o.len);
         }
@@ -1874,6 +1884,29 @@ impl Signal {
                 return Some(self.finish_code(e as usize, code, old, now, cycle));
             }
             self.spill_pend_one();
+        }
+        // A lean bus that keeps no codes and no activity stamps: the words in one pass.
+        if plain
+            && self.lean
+            && self.inactive
+            && self.codes.is_empty()
+            && matches!(
+                (&self.cur, &self.driving, &self.last_value),
+                (Buf::Planes { .. }, Buf::Planes { .. }, Buf::Planes { .. })
+            )
+        {
+            if self.pend_words.is_empty() {
+                return None;
+            }
+            let mut words = std::mem::take(&mut self.pend_words);
+            // Runs are listed in element order for the waiters of parts.
+            if self.fine && !words.is_sorted() {
+                words.sort_unstable();
+            }
+            let any = self.finish_words_lean(&words, now, cycle);
+            words.clear();
+            self.pend_words = words;
+            return Some(any);
         }
         // One word (a register, or one stage of a chain): no list to sort or walk.
         if let [w] = self.pend_words[..] {
@@ -2010,6 +2043,83 @@ impl Signal {
         set_event(&mut self.stamps, n, e, cycle, now);
         self.note_run(e, 1);
         true
+    }
+
+    /// `finish_word` of each pending word of a lean signal (`blk_last`) that keeps no codes and no
+    /// activity stamps, on a plain signal: `update_word` with what does not depend on the word
+    /// looked up once. The words are independent, so their order does not matter. Planes only.
+    fn finish_words_lean(&mut self, words: &[u32], now: Time, cycle: u64) -> bool {
+        let Signal {
+            cur,
+            driving,
+            last_value,
+            blk_last,
+            pend,
+            changed,
+            nruns,
+            watched,
+            fine,
+            ..
+        } = self;
+        let (Buf::Planes { b: cur, .. }, Buf::Planes { b: drv, .. }, Buf::Planes { b: last, .. }) =
+            (cur, &*driving, last_value)
+        else {
+            return false;
+        };
+        let (cur, drv, last): (&mut [Block], &[Block], &mut [Block]) = (cur, drv, last);
+        let t = stamp(now);
+        let (mut any, mut lo, mut hi, mut runs) = (false, usize::MAX, 0, 0);
+        for &w in words {
+            let w = w as usize;
+            let pm = std::mem::take(&mut pend[w]);
+            let (Some(cw), Some(&y), Some(lw)) = (cur.get_mut(w), drv.get(w), last.get_mut(w))
+            else {
+                continue;
+            };
+            let x = *cw;
+            let m = ((x[0] ^ y[0]) | (x[1] ^ y[1]) | (x[2] ^ y[2]) | (x[3] ^ y[3])) & pm;
+            if m == 0 {
+                continue;
+            }
+            let l = *lw;
+            *lw = std::array::from_fn(|p| l[p] & !m | x[p] & m);
+            *cw = std::array::from_fn(|p| x[p] & !m | y[p] & m);
+            if let Some(r) = blk_last.get_mut(w) {
+                if r.cycle == cycle {
+                    r.mask |= m;
+                } else {
+                    *r = EvRec {
+                        cycle,
+                        time: t,
+                        mask: m,
+                    };
+                }
+            }
+            any = true;
+            let base = w * 64;
+            if *watched && *fine {
+                let mut v = m;
+                while v != 0 {
+                    let s = v.trailing_zeros();
+                    let run = (v >> s).trailing_ones();
+                    note_run(changed, nruns, true, true, base + s as usize, run);
+                    v &= !(nmask(run as usize) << s);
+                }
+            } else {
+                runs += u64::from((m & !(m << 1)).count_ones());
+                lo = lo.min(base + m.trailing_zeros() as usize);
+                hi = hi.max(base + 64 - m.leading_zeros() as usize);
+            }
+        }
+        if any && !(*watched && *fine) {
+            // Whole-signal waiters: the cover of the changed elements tells them all they need.
+            if *watched {
+                cover(changed, nruns, lo, (hi - lo) as u32, runs);
+            } else {
+                *nruns += runs;
+            }
+        }
+        any
     }
 
     /// `finish_pend` of the elements `m` of word `w`.

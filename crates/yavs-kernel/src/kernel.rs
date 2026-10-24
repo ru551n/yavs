@@ -181,6 +181,8 @@ pub struct Stats {
     pub lean_signals: u64,
     /// Signals that allow skipping an assignment of the value they hold (`Signal::skip_ok`).
     pub skip_signals: u64,
+    /// Kernel signals (a pack of record leaves is one, #686).
+    pub signals: u64,
 }
 
 /// A pending observer wake-up (`Hook::wake_at`). Ordered by time, then registration.
@@ -832,8 +834,9 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
-    /// A reader and the index in `reader_guards` of the condition of its read, or `NO_GUARD`.
-    readers: Vec<(u32, u32)>,
+    /// A reader, the index in `reader_guards` of the condition of its read (or `NO_GUARD`) and
+    /// the elements it reads (the hull of its reads of the signal).
+    readers: Vec<(u32, u32, Range)>,
     reader_guards: Vec<ReaderGuard>,
     idle_active: bool,
     /// Processes with `idle_ok` now: `idle_active` is off when none is left, until `idle_reprobe`.
@@ -888,6 +891,8 @@ pub struct SimControl {
     indep_buf: Vec<(u32, u32)>,
     /// The distinct edge triggers of the processes (`ProcMeta::tid`).
     triggers: Vec<crate::EdgeTrigger>,
+    /// Named parts of signals (record packs) for hang and loop reports (`name_parts`).
+    part_names: HashMap<u32, Vec<(Range, String)>>,
 }
 
 /// Run a port conversion over the source parts `v` and check that its result fits the
@@ -1043,7 +1048,7 @@ impl SimControl {
         // event: pure ones (`Builder::idle_skip`) that drive signals allowing skipped assignments.
         let mut idle_active = false;
         let mut idle_live = 0u32;
-        let mut readers_of: Vec<Vec<(u32, Option<ReaderGuard>)>> = Vec::new();
+        let mut readers_of: Vec<Vec<(u32, Option<ReaderGuard>, Range)>> = Vec::new();
         if cfg.idle_skip && cfg.skip_unchanged && cfg.edge_triggers {
             let mut bad = vec![false; procs.len()];
             for d in &drivers {
@@ -1072,7 +1077,10 @@ impl SimControl {
                     match l.last_mut() {
                         // Read twice (two parts of the signal, or under two conditions): the
                         // read happens when either condition holds.
-                        Some((q, g)) if *q == p as u32 => {
+                        Some((q, g, h)) if *q == p as u32 => {
+                            let end = (h.offset + h.len).max(r.range.offset + r.range.len);
+                            h.offset = h.offset.min(r.range.offset);
+                            h.len = end - h.offset;
                             *g = match (g.take(), &r.guard) {
                                 (Some(mut a), Some(b)) => {
                                     a.extend(b.iter().cloned());
@@ -1081,7 +1089,7 @@ impl SimControl {
                                 _ => None,
                             }
                         }
-                        _ => l.push((p as u32, r.guard.clone())),
+                        _ => l.push((p as u32, r.guard.clone(), r.range)),
                     }
                 }
             }
@@ -1092,12 +1100,18 @@ impl SimControl {
         if idle_active {
             for l in readers_of {
                 readers_start.push(readers.len() as u32);
-                for (p, g) in l {
+                for (p, g, r) in l {
+                    // A read of part of the signal is armed by its changed runs: list them.
+                    let sig = &mut signals[readers_start.len() - 1];
+                    if r != Range::new(0, sig.ty.len) {
+                        sig.watched = true;
+                        sig.fine = true;
+                    }
                     let g = g.map_or(NO_GUARD, |g| {
                         reader_guards.push(g);
                         reader_guards.len() as u32 - 1
                     });
-                    readers.push((p, g));
+                    readers.push((p, g, r));
                 }
             }
             readers_start.push(readers.len() as u32);
@@ -1119,6 +1133,7 @@ impl SimControl {
         }
         let lean_signals = signals.iter().filter(|s| s.is_lean()).count() as u64;
         let skip_signals = signals.iter().filter(|s| s.skip_ok).count() as u64;
+        let nsignals = signals.len() as u64;
         let mut sim = SimControl {
             guard_procs,
             guard_readers,
@@ -1175,6 +1190,7 @@ impl SimControl {
             failed: None,
             observers: Vec::new(),
             live_sink: None,
+            part_names: HashMap::new(),
             live_mask: 0,
             phase_mask: 0,
             phase_always: 0,
@@ -1187,6 +1203,7 @@ impl SimControl {
             stats: Stats {
                 lean_signals,
                 skip_signals,
+                signals: nsignals,
                 ..Stats::default()
             },
             live: false,
@@ -1734,8 +1751,17 @@ impl SimControl {
             self.readers_start[s as usize + 1] as usize,
         );
         for i in a..b {
-            let (p, g) = self.readers[i];
-            if g == NO_GUARD || self.procs[p as usize].armed || self.guard_holds(g) {
+            let (p, g, r) = self.readers[i];
+            if self.procs[p as usize].armed {
+                continue;
+            }
+            // A read of part of the signal (a field of a record pack, #686) arms only for an
+            // event in it; a signal whose changed runs are not listed arms every reader.
+            let sig = &self.signals[s as usize];
+            let hit = (r.offset == 0 && r.len >= sig.ty.len)
+                || sig.changed.is_empty()
+                || sig.changed.iter().any(|c| c.overlaps(r));
+            if hit && (g == NO_GUARD || self.guard_holds(g)) {
                 self.procs[p as usize].armed = true;
             }
         }
@@ -3852,7 +3878,7 @@ fn commit_out(
         return;
     }
     let mut i = 0;
-    while let Some(&o) = outv.get(i) {
+    while let Some(o) = outv.get(i) {
         let n = if outv.get(i + 1).is_some_and(|x| x.sig == o.sig) {
             outv[i..].iter().take_while(|x| x.sig == o.sig).count()
         } else {

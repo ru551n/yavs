@@ -313,7 +313,7 @@ pub(crate) fn put_init(dst: &mut Value, off: u32, src: &Value, len: u32) {
 
 /// The signal objects a VHDL force or release names, directly, through an alias or through
 /// an external name; `None` when one names a signal parameter (any port may be its actual).
-fn forced(
+pub(crate) fn forced(
     db: &Db,
     sigs: &std::collections::HashMap<(crate::ScopeId, yavs_sem::DeclId), ObjId>,
 ) -> Option<HashSet<ObjId>> {

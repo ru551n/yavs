@@ -92,7 +92,7 @@ code), and it can be lazy.
 | Compile time | none extra in the interpreter; eager optimisation costs 0.7 M instructions per copy (neorv32: init 1.38 G to 2.3 G); lazy: only for processes that activate | LLVM per distinct copy; same per-IR-instruction cost as today | none | 815 k IR instructions of neorv32 today (#532; `--tier=llvm` cold 125 G instructions against 34 G warm for 60 us), times the growth of section 5; Cranelift would cut it, not remove it |
 | Cache and memory | content-addressed optimised copies in the stage cache; peak memory +50 percent at 3290 process instances in the prototype (an upper bound: eager, one raw clone per instance, and `with_spares` clones the whole `Program`; a real version needs one entry per distinct copy) | objects keyed by LLVM IR already dedupe equal copies | none | object size grows with section 5's factor (27 MB for neorv32 today) |
 | Complexity | medium: a function table that grows after the runtime exists (Runtime per-function tables, `Pre`, native flags, sampler slots are sized once), cache key, policy | medium: auto policy per copy; the compile unit and the process-to-copy map | low | high, and blocked by compiled-code size (#532) |
-| `--dap`, `--vhpi`, `--cov`, waves | Debugger breakpoints map a statement to a pc of the base function: keep shared code (memo is already off for a debugger). Coverage is static items plus per-instance `cov_base`, safe but keep shared to keep dead arms countable. `--vhpi` variables and `--wave-variables` use `external_variables` private copies: same rule. | same | none | whole-design compile is incompatible with a debugger session as it is today |
+| `--dap`, `--vhpi`, `--cov`, waves | Debugger breakpoints map a statement to a pc of the base function: keep shared code (memo is already off for a debugger). Coverage is static items plus the running instance's `cov_base` (read at run time, never baked into a copy): copies, memoised blocks and inlined functions keep their counters (#699); the counters of an arm a copy folds away are dropped with it (the count stays 0). `--vhpi` variables and `--wave-variables` use `external_variables` private copies: same rule. | same | none | whole-design compile is incompatible with a debugger session as it is today |
 | Cranelift fit | good: the folding is in the yavs IR, backend-neutral; Cranelift's mid-end does little constant propagation across our idioms, so it needs the IR already folded | good if the copies are IR-level, poor if the constants are baked into LLVM IR with guards | poor: depends on LLVM `invariant.load` | best fit with a fast backend: more compiling becomes affordable; still needs the compact-code work |
 
 Evidence behind the rows is in sections 6 and 7. (b) and (c) are estimates, labelled as such;
@@ -253,8 +253,8 @@ bytes to 0).
   1958 copies and an unused clone per instance; a lazy version is bounded by the activated
   copies.
 - Debugger, coverage, VHPI, waves: see the table in section 4; specialisation must be off when
-  `keep_variables` or `external_variables` is on and, by default, with coverage, the same switch
-  that turns the memo off.
+  `keep_variables` or `external_variables` is on. With coverage it stays on (#699): a copy is keyed by
+  instance data only and counts into the `cov_base` of the instance that runs it.
 
 ## 8. Recommendation
 
@@ -351,8 +351,7 @@ section 9 as proposed there. What exists, and where it differs from the prototyp
   process stays shared (`spec_capped`). It bound on two designs at 1.5 and binds on one of the realbench
   set at 2.5 (`poc_arith_addw`: 244 of 312 candidates; section 12, "The cap raised").
 - **Shared code is kept** under `--dap` and anything that keeps variables (`keep_variables`), with
-  `--vhpi` and `--wave-variables` (`external_variables`), with coverage counters (functions with
-  `HAS_COVER`), under `--tier=llvm` (the whole program is compiled before a copy exists),
+  `--vhpi` and `--wave-variables` (`external_variables`), under `--tier=llvm` (the whole program is compiled before a copy exists),
   with `YAVS_NO_IROPT`, and for serial processes (shared variables, protected objects).
 - **Tiers.** Under `--tier=auto` a copy is a function with its own id: the sampler sees it and the
   policy compiles it like any function, but every decision about it is the process's (#661, 2026-10-24):

@@ -1102,6 +1102,77 @@ impl Db {
         Some(self.coarse_reads(reads))
     }
 
+    /// The signals read by a concurrent conditional assignment `t <= a when c1 else b when c2
+    /// else d;` (not guarded or postponed, no `after`, the delay the default or `transport`,
+    /// expressions as for [`Db::pure_clocked_reads`]), each with the conditions it is read
+    /// under: the waveform of an alternative only when its own condition holds and the earlier
+    /// ones (single literals) do not, a condition only when the earlier ones do not. A
+    /// condition of constants and generics is a literal the elaborator works out for each
+    /// instance, so an arm that cannot be taken leaves no read. An activation with none of
+    /// the signals it reads changed since the last one assigns what that one did. `None` for
+    /// anything else, and for an assignment without a condition.
+    pub fn pure_cond_reads(&self, st: StmtId) -> Option<Vec<PureRead>> {
+        use crate::hir::Delay;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            delay: Delay::Default | Delay::Transport,
+            target,
+            rhs: Rhs::Conditional(alts),
+            ..
+        } = &self.stmts[st].kind
+        else {
+            return None;
+        };
+        if alts.iter().all(|(_, c)| c.is_none()) {
+            return None;
+        }
+        let mut reads = GReads::new();
+        if !self.pure_tree(target.expr) {
+            return None;
+        }
+        let mut r = Vec::new();
+        self.name_reads(target.expr, &mut r);
+        reads.extend(r.into_iter().map(|l| (l, Vec::new())));
+        let mut g: Vec<GuardLit> = Vec::new();
+        for (w, c) in alts.iter() {
+            let Waveform::Elements(els) = w else {
+                return None;
+            };
+            if !els.iter().all(|e| e.after.is_none() && e.value.is_some()) {
+                return None;
+            }
+            let mut mine = g.clone();
+            let mut next = None;
+            if let Some(c) = c {
+                if !self.pure_tree(*c) {
+                    return None;
+                }
+                let mut r = Vec::new();
+                self.reads(*c, &mut r);
+                reads.extend(r.into_iter().map(|l| (l, g.clone())));
+                mine.extend(self.cond_lits(*c, false).into_iter().flatten());
+                next = match self.cond_lits(*c, true).as_deref() {
+                    Some([l]) => Some(GuardLit {
+                        eq: !l.eq,
+                        ..l.clone()
+                    }),
+                    _ => None,
+                };
+            }
+            for e in els.iter().filter_map(|e| e.value) {
+                if !self.pure_tree(e) {
+                    return None;
+                }
+                let mut r = Vec::new();
+                self.reads(e, &mut r);
+                reads.extend(r.into_iter().map(|l| (l, mine.clone())));
+            }
+            g.extend(next);
+        }
+        Some(self.coarse_reads(reads))
+    }
+
     fn pure_stmts(
         &self,
         body: &[StmtId],
@@ -1162,9 +1233,12 @@ impl Db {
                 let mut r = Vec::new();
                 self.reads(*c, &mut r);
                 reads.extend(r.into_iter().map(|l| (l, g.clone())));
-                let lits = self.cond_lits(*c);
+                let lits = self.cond_lits(*c, true);
                 let at = g.len();
-                g.extend(lits.iter().flatten().cloned());
+                match &lits {
+                    Some(l) => g.extend(l.iter().cloned()),
+                    None => g.extend(self.cond_lits(*c, false).into_iter().flatten()),
+                }
                 let body_ok = self.pure_stmts(body, vars, g, reads);
                 g.truncate(at);
                 if !body_ok {
@@ -1197,10 +1271,19 @@ impl Db {
     }
 
     /// The literals whose conjunction `c` is, when it is made of `x = c`, `x /= c`, a BIT or
-    /// BOOLEAN signal name, `not` of one and `and`s of those (`x` a signal name).
-    fn cond_lits(&self, c: ExprId) -> Option<Vec<GuardLit>> {
+    /// BOOLEAN signal name, a boolean expression of constants and generics, `not` of one and
+    /// `and`s of those (`x` a signal name). With `exact` false, the literals that must hold
+    /// for `c` to be true: the parts of an `and` that are not literals are left out.
+    fn cond_lits(&self, c: ExprId, exact: bool) -> Option<Vec<GuardLit>> {
         if let Some((sig, pos, eq)) = self.level_cmp(c) {
             return Some(vec![GuardLit { sig, pos, eq }]);
+        }
+        if self.const_cond(c) {
+            return Some(vec![GuardLit {
+                sig: c,
+                pos: crate::hir::GUARD_CONST,
+                eq: true,
+            }]);
         }
         match &self.exprs[c].kind {
             ExprKind::Obj(_) | ExprKind::Index { .. } | ExprKind::Field { .. } => {
@@ -1226,16 +1309,27 @@ impl Db {
                     _ => None,
                 };
                 match (self.decls[*callee].name.key().as_str(), &args[..]) {
-                    ("\"not\"", [a]) => match self.cond_lits(arg(a)?)?.as_slice() {
+                    ("\"not\"", [a]) => match self.cond_lits(arg(a)?, true)?.as_slice() {
                         [l] => Some(vec![GuardLit {
                             eq: !l.eq,
                             ..l.clone()
                         }]),
                         _ => None,
                     },
+                    ("\"and\"", [a, b]) if exact => {
+                        let mut l = self.cond_lits(arg(a)?, true)?;
+                        l.extend(self.cond_lits(arg(b)?, true)?);
+                        Some(l)
+                    }
                     ("\"and\"", [a, b]) => {
-                        let mut l = self.cond_lits(arg(a)?)?;
-                        l.extend(self.cond_lits(arg(b)?)?);
+                        let mut l = arg(a)
+                            .and_then(|x| self.cond_lits(x, false))
+                            .unwrap_or_default();
+                        l.extend(
+                            arg(b)
+                                .and_then(|x| self.cond_lits(x, false))
+                                .unwrap_or_default(),
+                        );
                         Some(l)
                     }
                     _ => None,
@@ -1243,6 +1337,43 @@ impl Db {
             }
             _ => None,
         }
+    }
+
+    /// Is `c` a boolean expression of constants and generics declared outside the process (so
+    /// that the elaborator can work it out for an instance), with at least one name in it?
+    fn const_cond(&self, c: ExprId) -> bool {
+        if Some(self.base(self.exprs[c].subtype)) != self.well_known.boolean {
+            return false;
+        }
+        let (mut ok, mut named) = (true, false);
+        self.walk_expr(c, &mut |x| {
+            ok &= match &self.exprs[x].kind {
+                ExprKind::Const(_)
+                | ExprKind::Conv { .. }
+                | ExprKind::ImplicitConv { .. }
+                | ExprKind::Qualified { .. } => true,
+                ExprKind::Obj(d) => {
+                    named = true;
+                    matches!(&self.decls[*d].kind, DeclKind::Object(o) if o.class == ObjClass::Constant)
+                        && matches!(
+                            self.scopes[self.decls[*d].scope].kind,
+                            ScopeKind::Entity
+                                | ScopeKind::Architecture
+                                | ScopeKind::Block
+                                | ScopeKind::Generate
+                                | ScopeKind::Package
+                                | ScopeKind::PackageBody
+                        )
+                }
+                ExprKind::Call {
+                    callee,
+                    method_of: None,
+                    ..
+                } => self.decls[*callee].implicit,
+                _ => false,
+            };
+        });
+        ok && named
     }
 
     /// Every node of `e` is a constant, a signal, or a pure operation on them.

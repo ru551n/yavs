@@ -406,6 +406,8 @@ fn elaborate(
     let r = yavs_elab::find_top(&mut db, &work, &c.top).and_then(|t| {
         let cfg = yavs_elab::ElabConfig {
             collapse_ports: collapse_ports && !c.no_collapse_ports,
+            // Hidden test aid: `YAVS_PACKS=off` gives every leaf a kernel signal of its own.
+            packs: std::env::var("YAVS_PACKS").map_or(true, |v| v != "off"),
             ..yavs_elab::ElabConfig::default()
         };
         yavs_elab::elaborate(&mut db, t, &c.generics, &cfg)

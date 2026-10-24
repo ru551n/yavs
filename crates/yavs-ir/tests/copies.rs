@@ -7,6 +7,11 @@ use yavs_ir::*;
 /// A process that reads generic `G` (8 bytes at instance offset 0), and on each activation stores
 /// 1 or 2 in a frame slot depending on `G == 3`.
 fn process() -> (Program, FuncId) {
+    process_with(false)
+}
+
+/// `declarations`: the entry block holds a declarative part (a report, which stays).
+fn process_with(declarations: bool) -> (Program, FuncId) {
     let mut pb = ProgramBuilder::new();
     let f = pb.declare("p", FuncKind::Process, None);
     let mut fb = pb.define(f);
@@ -14,6 +19,14 @@ fn process() -> (Program, FuncId) {
     fb.stmt(StmtKind::Wait, Span::new(FileId(0), 0, 1));
     let (head, body, yes, no, end) = (fb.block(), fb.block(), fb.block(), fb.block(), fb.block());
     fb.body(head);
+    if declarations {
+        let (m, n, v) = (fb.addr(AddrSpace::Frame, 0), fb.int(0), fb.int(1));
+        fb.emit(Inst::Report {
+            msg: m,
+            len: n,
+            severity: v,
+        });
+    }
     fb.emit(Inst::Br { to: head });
     fb.at(head);
     fb.emit(Inst::Br { to: body });
@@ -135,4 +148,32 @@ fn a_copy_tag_does_not_depend_on_the_order_of_the_copies() {
     assert_ne!(p.copy_tag(a3), p.copy_tag(a4));
     assert!(p.copy_tag(a3).is_some());
     assert_eq!(p.copy_tag(f), None);
+}
+
+fn reports_of(p: &Program, f: FuncId) -> usize {
+    p.func(f)
+        .expect("f")
+        .code
+        .iter()
+        .filter(|i| matches!(i, Inst::Report { .. }))
+        .count()
+}
+
+/// A copy takes over between two activations of the shared code, so the declarative part (the
+/// blocks before the statements) is not in it.
+#[test]
+fn a_copy_has_no_declarative_part() {
+    if !yavs_ir::opt::specialise_on() {
+        return;
+    }
+    let (mut p, f) = process_with(true);
+    p.reserve_copies(1);
+    assert_eq!(
+        reports_of(&p, f),
+        1,
+        "the shared code has the declarative part"
+    );
+    let c = p.copy_of(f, &data(3, 0), &[]).expect("a copy");
+    assert_eq!(reports_of(&p, c), 0, "the copy has not");
+    assert_eq!(branches(&p, c), 0, "and folds the statements as before");
 }

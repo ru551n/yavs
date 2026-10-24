@@ -2,7 +2,7 @@ use crate::Result;
 use crate::error::err;
 use crate::library::Library;
 use crate::manifest::{Manifest, UnitKind, UnitLoc, UnitRecord, UnitRef, fold, hash_content};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Library name to directory mapping (`--work NAME:PATH`, `-P`, ...). Names are folded.
@@ -264,9 +264,10 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
     type FileKey = (String, PathBuf);
     let fkey = |n: &Node| -> FileKey { (n.0.clone(), units[n].file.clone()) };
     let mut files: Vec<FileKey> = Vec::new();
+    let mut seen: HashSet<FileKey> = HashSet::new();
     for n in &discovered {
         let f = fkey(n);
-        if !files.contains(&f) {
+        if seen.insert(f.clone()) {
             files.push(f);
         }
     }
@@ -287,8 +288,7 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             units[n].file.display()
         )
     };
-    let mut done: Vec<FileKey> = Vec::new();
-    let mut visiting: Vec<(FileKey, Option<(Node, Node)>)> = Vec::new();
+    let mut done = Walk::default();
     // Pull-only units (bodies, architectures) have no edge from their puller, so every
     // reachable file is a DFS root (top unit's file first). Only dependencies-first
     // order matters, so a body may follow the units that use its package.
@@ -311,6 +311,25 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
         v.sort();
         v.dedup();
     }
+    /// The files in post-order and the same set for membership tests, and the files being
+    /// visited (a stack with the edge that led to each, and the same set).
+    #[derive(Default)]
+    struct Walk {
+        order: Vec<FileKey>,
+        set: HashSet<FileKey>,
+        visiting: Vec<(FileKey, Option<(Node, Node)>)>,
+        on_stack: HashSet<FileKey>,
+    }
+    impl Walk {
+        fn contains(&self, f: &FileKey) -> bool {
+            self.set.contains(f)
+        }
+        fn push(&mut self, f: FileKey) {
+            if self.set.insert(f.clone()) {
+                self.order.push(f);
+            }
+        }
+    }
     /// The order edges of each file and the body files that follow a file.
     type Graph<'a> = (
         &'a HashMap<FileKey, Vec<(Node, Node)>>,
@@ -320,8 +339,7 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
         f: FileKey,
         via: Option<(Node, Node)>,
         graph: Graph,
-        done: &mut Vec<FileKey>,
-        visiting: &mut Vec<(FileKey, Option<(Node, Node)>)>,
+        done: &mut Walk,
         fkey: &dyn Fn(&Node) -> FileKey,
         label: &dyn Fn(&Node) -> String,
     ) -> Result<()> {
@@ -329,9 +347,11 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
         if done.contains(&f) {
             return Ok(());
         }
-        if let Some(pos) = visiting.iter().position(|(v, _)| *v == f) {
+        if done.on_stack.contains(&f)
+            && let Some(pos) = done.visiting.iter().position(|(v, _)| *v == f)
+        {
             let mut d = err("L0032", "dependency cycle between design units");
-            for (_, e) in visiting[pos + 1..]
+            for (_, e) in done.visiting[pos + 1..]
                 .iter()
                 .map(|(v, e)| (v, e.clone()))
                 .chain(std::iter::once((&f, via)))
@@ -341,19 +361,20 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
             }
             return Err(Box::new(d.with_help("break the cycle, for example by moving shared declarations into a separate package")));
         }
-        visiting.push((f.clone(), via));
+        done.visiting.push((f.clone(), via));
+        done.on_stack.insert(f.clone());
         for (a, b) in edges.get(&f).into_iter().flatten() {
             visit(
                 fkey(b),
                 Some((a.clone(), b.clone())),
                 graph,
                 done,
-                visiting,
                 fkey,
                 label,
             )?;
         }
-        visiting.pop();
+        done.visiting.pop();
+        done.on_stack.remove(&f);
         done.push(f.clone());
         for b in bodies_of.get(&f).into_iter().flatten() {
             if !done.contains(b)
@@ -369,20 +390,12 @@ pub fn closure(libs: &Libraries, top: &UnitRef) -> Result<Vec<ClosureFile>> {
         Ok(())
     }
     for r in roots {
-        visit(
-            r,
-            None,
-            (&edges, &bodies_of),
-            &mut done,
-            &mut visiting,
-            &fkey,
-            &label,
-        )?;
+        visit(r, None, (&edges, &bodies_of), &mut done, &fkey, &label)?;
     }
 
     // 4. Verify content hashes.
     let mut out = Vec::new();
-    for (lib, path) in done {
+    for (lib, path) in done.order {
         let fe = cx.manifests[&lib]
             .file(&path)
             .expect("file of a reachable unit");

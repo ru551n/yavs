@@ -2510,8 +2510,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   callback. A missing counter leaves to the interpreter, which reports it. A function with a
   `Cover` is still not native-frame code (`nat_inline`). Counts are the same in every tier and at
   any `--threads` (`coverage.rs` `tiers_agree`, `coverage_fec.rs` `tiers_agree`). Remaining cost of
-  coverage runs is mostly not the counters: processes with counters get no specialised per-instance
-  copies and functions with counters are not inlined (#699).
+  coverage runs is mostly not the counters: processes with counters got no specialised per-instance
+  copies and functions with counters were not inlined (done in #699, below).
   Measured as user-mode instructions (`perf stat`, bench builds; the LLVM tier minus its compile),
   in millions, before / after; plain run, default kinds, `condition,expression` alone:
   `fecbench` (a condition-dense loop, 300000 iterations) HEAVY=1 interp 414, 911 / 598, 1029 / 776,
@@ -2522,6 +2522,35 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   30 us, interp 5515, 17464 / 16425, llvm 3996, 13276 / 10053; one OSVVM AXI-stream test
   (`TbStream_AxiSendGetRandomParam2`) interp 3613, 4756 / 4429, llvm 3413, 4184 / 3141. Plain runs
   moved by 0.0 to 0.1 percent (interpreter) and 0.0 to 0.4 percent (LLVM). No cycles were taken.
+- **Counters in copies, memoised blocks and inlined functions (#699, user 2026-10-24):** a process
+  with counters may have per-instance specialised copies, a block with a `Cover` may be memoised
+  and a function with counters may be inlined. Counter identity stays exact because a counter is
+  `Cover { item }` against the `cov_base` of the instance that runs the code (interpreter:
+  `Machine::inst`, compiled code: `TierFrame::cov`), never part of the code or of a copy's key, so
+  equal-data instances that share a copy still count into their own rows, and a callee inlined
+  into a caller counts into the callee's items of the running instance, as the call did. The
+  counters of code a copy folds away (an arm of a generic test, a dead branch) go with it and
+  stay 0 for that instance, which is the correct count. Counters do not count against the size
+  limits of an inlined body, so a run with counters inlines what a run without them does. Counts
+  are byte-identical to the shared code's in every tier, at `--threads` 1 and 4 (`copies_count_alike`
+  and `tiers_agree` in `coverage.rs`, over `tests/cli/cov_copies.vhd`). `sink` and `drives` still
+  skip a function with counters (not part of this change). Measured as user-mode instructions
+  (`perf stat`, bench builds, default `--cov` kinds), in millions, plain / before / after, interpreter:
+  `rtl_ff` (CYC=500) 3111 / 6874 / 5310, `rtl_lfsr` (CYC=1000) 1353 / 3931 / 3743, `compute_loop`
+  1059 / 1694 / 1233, neorv32 single-core minimal 30 us 6998 / 16754 / 16670, `sc5_fifo_repack`
+  41926 / 77478 / 61754, `uvvm_sb_slv` 14923 / 21456 / 20947, `osvvm_axi4_random` 9294 / 9927 / 9966;
+  LLVM tier minus its compile: `rtl_ff` 2283 / 4544 / 3982, `rtl_lfsr` 927 / 3139 / 3126,
+  `sc5_fifo_repack` 28285 / 43519 / 42714, neorv32 3731 / 10262 / 9719. Plain runs execute none of the changed
+  code (interpreter identical to 0.1 percent; the LLVM figures differ by compile-time noise of up to
+  2 percent). `osvvm_axi4_random` is the one case that got 0.4 percent slower (9927 to 9966), within
+  what a few more inlined counter ops cost where nothing is specialisable. Databases of base and new
+  builds were compared with `cmp` for all five kinds on `cov_copies`, `rtl_ff`, `rtl_lfsr`,
+  `compute_loop` (interpreter and LLVM at 1 and 4 threads, auto at 1), `sc5_fifo_repack`, neorv32
+  30 us and `uvvm_sb_slv` (interpreter at 1 and 4 threads, auto at 1): all identical. The overhead left is not specialisation: the toggle observer (1.8 to 7.4 G
+  instructions alone on these designs) and the edge triggers that coverage switches off, which
+  makes every `rising_edge` process also run on the falling edge (#707). The OSVVM AXI-stream test
+  of the #692 numbers now ends in an interpreter internal error under `--cov` on main (#705), so
+  `osvvm_axi4_random` stands for OSVVM here.
 
 ## GUI (M10, #384, #388, user, 2026-10-19)
 
@@ -4497,6 +4526,48 @@ cycles for the design.
   signals: a further -0.9% instructions and -0.7% cycles of the writer, but edge tests read those planes and signal parameters reach
   `rising_edge`, so no static rule is sound.
 
+## Compiled clocked RTL processes, round 7: scalar drives kept for one host call (yavs-llvm, yavs-interp, yavs-kernel, #676, 2026-10-24)
+
+Decisions (agent drvbatch; the interpreter verdict is the open question at the end):
+
+- **A zero-delay scalar logic assignment in compiled code is appended to a buffer, not sent to the kernel.** `Gen::drive_bit` (the
+  `Drive` of a `yavs_interp::ScalarDrive` with a time register that is a constant 0) checks inline that the target is a one-element
+  reference into a signal the kernel offers (`TierSig::codes` or `planes` set, so a logic signal; the reference is not `MULTI`) and
+  that the code is at most 8, then writes `(reference word, driver | code << 16 | inertial << 24 | pc << 32)` to a per-activation
+  stack buffer (`Batch`, `yavs_interp::DRIVE_BATCH` = 32 entries) and increments a count. Anything else (a full buffer, a case the
+  kernel's fastest path does not know) hands the buffer over first and then drives as before, so the order of drives is the program's.
+- **The buffer is handed over by `yavs_rt_drive_flush` (`TierHost::drive_bits`, `Ctx::assign_codes_now`) before every instruction that
+  could look at a driver, drive another way, wait or run other code (`batch_pure` is the whitelist: constants, arithmetic, compares,
+  memory, `SigVal`, `SigReadScalar`, `SigRead`, `Edge`, the table natives) and at every exit of the function** (`ret_exit`: the exit
+  blocks `exit_for` makes, so a guard that leaves for the interpreter, a suspension and a fault all pass it). The kernel takes a run
+  of one driver in one pass: the driver, its waveform and the idle test once, then one `Out` entry per element, the entries
+  `assign_code_fast` would have made; an element the fast case refuses goes through the general entry as `drive_bit` did. No frame
+  is left at the flush, so only cases whose general path needs none are kept; `drive_bit_replay` stays for the unkept ones.
+- **A site is kept only when a second kept drive can follow it in the same activation** (`batched_drives`: it is in a loop, or another
+  kept site is reachable without passing a `Suspend`). A process that drives once per activation (`rtl_ff`) keeps the direct call: the
+  flush costs more than it saves for one entry.
+- **Why not coalescing adjacent drives or a Rust-side buffer.** The drives of `hdlm_lfsr` are one `Drive` in a loop (`state(i) <= x`),
+  with signal reads between the iterations, so no two are adjacent in the IR. A buffer in the compiled function's own stack needs no
+  layout shared with the host and no check in every callback; the flush points are the generator's, by instruction kind.
+- **Interpreter: not done** (considered, as the issue asks). `LSetDrive` is one op there already and the fast kernel entry is one call;
+  a deferred buffer would need a flush at every op that suspends, calls, reads a driver or ends the activation, and the saving is the
+  lookups of `assign_code_fast` (about 27 instructions an element, as measured for the compiled tier): about 3 percent of `hdlm_lfsr` in
+  the interpreter (22 drives per clock, 4.2 M clocks, 67 G instructions), less elsewhere. Not worth the flush points.
+- **Measured** (bench builds with `--features llvm`, `--tier=auto` warm, user instructions and cycles of the whole process tree, core 12,
+  the host at load 20 to 40, main before and after, three alternating pairs of five runs): `hdlm_lfsr` 28.09 G -> 25.69 G instructions
+  (-8.5 percent), median cycles 8.53 G -> 8.01 G (-6 percent). `perf` of the warm run: `Ctx::assign_code_fast`, `drive_bit_now` and
+  `yavs_rt_drive_bit` were 11.3 percent of the cycles, `assign_codes_now` and `drive_bits` are 4.3 percent now, and the compiled
+  process itself went from 20.5 to 16.5 percent. `tools/realbench/run.py --compare` over 42 tests (first version, before the
+  "second drive can follow" rule): instructions geometric mean 0.99 (`hdlm_lfsr` 0.91, the rest within `--tier=auto` noise,
+  #673), CPU time 0.99. `rtl_lfsr`, `lfsr64`, `lfsr64_xor`, `rtl_ram`, `sc5_fifo_repack`, `neorv32_single_min` do not change:
+  their processes drive once per activation or run interpreted under auto. `rtl_ff` (one drive per activation) is not
+  kept, by the rule above.
+- **Tried, not landed:** not counting kept drives as ways out in the policy (`auto::callbacks`, `too_many_callbacks`): instructions
+  geometric mean 1.00 over the 42 realbench tests (no process crossed the line), so the policy stays.
+- Tests: `compiled_drives::element_drives_in_loops_match_the_interpreter` (element drives in loops against vector drives, delayed
+  drives, a wait and a report in the loop, a procedure that drives the same signal, two drivers, a run longer than the buffer; with
+  the flush before non-pure instructions switched off it fails), `perf` `llvm_drive_batch` (`cb_drive`).
+
 ## Kernel round 19: single-bit drives, Signal layout, record leaves; assignment skipping and observers (yavs-kernel, #676, #519, #677, 2026-10-24)
 
 No kernel speed-up landed this round: each of the three ranked ideas was built and measured (bench builds, `tools/stepcount`
@@ -5818,7 +5889,6 @@ Decisions:
   generics as constants, so the slice bounds of an instance fold at elaboration. yavs keeps one function per unit (ir.md
   2) and computes the instance-constant parts once per instance instead.
 
-
 ## Host callbacks of compiled code: natives, concatenations, layouts, fat roots (yavs-llvm, yavs-ir, yavs-interp, #565, 2026-10-23)
 
 Counted on `poc_arith_addw` under `--tier=llvm` (callbacks by instruction kind, whole run): 117 million fat `TempRoot`
@@ -6458,7 +6528,6 @@ instance by pointer, which is what our one function per process of a design unit
   depends on the timing of the compile thread), so the cost above is not gated. `compiled_natives` checks the output of a
   record-heavy design under `--tier=auto --tier-heat=1,0,0`.
 
-
 ## Compiled protected-method accessors, round 2: closed frames (yavs-llvm, #626, 2026-10-23)
 
 Measured on `protected_queue` (`tools/bench`, `--tier=llvm` with the `LEAN` pipeline, so no inlining as in `--tier=auto`,
@@ -6501,8 +6570,6 @@ used by direct loads and stores to registers); ours differs in that a native fra
 - A closed frame must be decided on every operand: `Inst::visit` leaves out the operand lists of calls, natives and
   concatenations (`yavs_interp::inst_regs` has them). The first version missed `CallNative`'s argument list and the corpus
   caught it (`textio/std_logic_textio`, a frame address passed to a native `READ` helper).
-
-
 
 ## Compiled clocked RTL processes, round 5: the entry cost of a small process (yavs-interp, yavs-llvm, #634, 2026-10-23)
 
@@ -6622,8 +6689,6 @@ position check and the object lookup at every element: 95 instructions an elemen
   frame; native frames now do after a miss of the object table. `cb_host` 43.5 M to 5.3 M, main-thread instructions of the
   window generator (warm `--tier=auto`) about -2.5 percent. A table of 1024 objects instead of 256 halves `cb_fast`
   (13.7 M to 6.8 M) but moves `cb_host` by 8 percent and was not kept.
-
-
 
 ## `--tier=auto`: the callback count sees what leaves compiled code, and compiled code is measured and taken back (yavs-llvm, yavs-interp, yavs-kernel, #633, #596, #575, #573, 2026-10-23)
 
@@ -6775,7 +6840,6 @@ core 11, `perf stat --no-inherit` main-thread cycles and instructions, medians o
   loads 21 units outside its analysed closure while it elaborates: fixed by #671, see "Stage entries of a design that loads units late");
   `hdlm_lfsr` runs under a lowered library (`library_made`), whose closures have no entries of their own so that a suite does not fill the 96
   entries of a library directory, which a `spec` entry per long-running testbench would do too.
-
 
 ## A flat view of the heap slots for compiled `Deref`: built, measured, not landed (yavs-interp, yavs-llvm, #655, 2026-10-23)
 
@@ -6983,6 +7047,63 @@ Measured (bench builds, main thread; cycles of the simulation phase, minimum of 
 `--tier=auto --tier-heat=1,0,0`): see `docs/STATUS.md` "llvm: compiled clocked RTL, round 6". Fills from L3 of `rtl_fan`
 compiled 82 M to 65 M (interpreter 64 M to 59 M).
 
+## Record signals as packs of leaves, step 2 (yavs-elab, yavs-kernel, #686, user, 2026-10-24)
+
+- **Decision (user, 2026-10-24): option A of `docs/design/record-signal-layout.md`.** Runs of consecutive leaves of one signal object
+  share one kernel signal (a pack) when every signal-wide kernel property agrees; one byte blob per record in the IR layout (option B)
+  is not pursued, it would undo "bit-planes everywhere" (#83).
+- **The logical model stays:** `LeafId` per field, `NetGraph::select`, `DriverDecl` per leaf. A leaf is stored at `NetGraph::loc`
+  (kernel signal, base) and every consumer turns a leaf into a kernel reference through `NetGraph::kref`/`kpart`/`kelem`, never
+  `SignalId(leaf.0)`; `NetGraph::packs` lists the leaves of each kernel signal. Kernel signals are in first-leaf order.
+- **Which leaves pack (`NetGraph::packable`):** logic elements, unresolved or resolved by `resolved` (an unresolved leaf has at most one
+  source per element, elaboration checks it before, and `resolved` of one source is the identity), at most `PACK_MAX` = 64 elements in a
+  pack (one plane block: codes always kept, element stamps for compiled code, no block records or lean history), and none of: a guard, an
+  implicit signal on it or being one, a force or release target (no packs at all when one is untraceable), a port edge or converted port
+  (step 3), a composite resolved as a whole. A pack is named by the path of the innermost record holding all its leaves (hang reports).
+- **Drivers stay one per leaf** (several drivers of one process on disjoint ranges of a pack are one source per element as before), so a
+  whole-driver assignment (`Drive` without a target) still means the leaf. Merging them is step 4, with the bulk assignment.
+- **Idle skip reads carry their range:** a pure process is armed by an event in the elements it reads (the hull of its reads of the
+  signal), not by any event of the signal, so packing a record does not wake readers of one field for another; a signal whose changed
+  runs are not listed arms all its readers.
+- `YAVS_PACKS=off` (hidden test aid, `ElabConfig::packs`) gives every leaf a signal of its own; the work counter `signals` counts kernel
+  signals (`crates/yavs/tests/perf.rs` bounds it for the record designs).
+
+## Record signals as packs of leaves, step 4: one driver and one assignment per pack (yavs-elab, yavs-interp, yavs-kernel, #686, #677, 2026-10-24)
+
+- **Drivers of one process on adjacent elements of one kernel signal that one target names together** (the leaves of a pack in a whole
+  record assignment) are one kernel driver (`build.rs`); fields assigned one by one keep a driver each, because a direct driver takes
+  either single-element or vector entries in one run and a mix sends every assignment to the general path (measured: +3.7 percent
+  instructions on `grlib_leon3mp` when all adjacent drivers of a process were merged).
+- `ProcDriver::range` holds kernel elements (the leaf's base added once, at the build; not offset again by `InstSig::off`), and a `Drive`
+  without a target passes that range, since the kernel driver may be wider than the slot; `'driving_value` takes the slot's part
+  (`Ctx::driving_value_of`).
+- `SigScatter` (#677) collects logic leaves that are adjacent in one kernel driver into one plane block and assigns it once (one `OutV`
+  entry, one commit, one finish word per pack); `SigGather` reads a logic vector leaf inside one plane block from the signal's planes
+  (`Ctx::planes`); a scalar leaf keeps `elem_code` (a plane extract per scalar was slower).
+- Measured (bench builds, `--tier=interp`, instructions, warm): synthetic 233-leaf register record 5.20 G to 3.40 G; `grlib_leon3mp`
+  809.6 G to 801.4 G; `neorv32_single_min` 42.79 G to 42.26 G (steps 2 and 4 together on top of #677).
+- **Step 3 measured, not landed:** packing port leaves too (leaves with the same port edges: mode, side and the other side's object; no
+  conversion; their port components free of anything that stops skipping) with coalesced edges took `grlib_leon3mp` from 2516 to 1826
+  kernel signals but its idle skips from 2.09 M to 1.75 M (+2 percent instructions; `neorv32_single_min` level, 2021 to 1596 signals),
+  also with reader ranges kept apart per read. The processes that lost skips are the combinational TLB tag comparators that read a few
+  fields of a record in-port fed from an element of an array of records (not collapsed); why their arming grew is open.
+- **Step 5 measured: the cap stays 64.** `PACK_MAX` 256 (a pack beyond one plane block keeps no codes once a whole-record driver
+  covers it, and compiled code gets no element stamps) took the synthetic 233-leaf register record from 3.30 G to 3.46 G instructions
+  and `neorv32_single_min` from 41.94 G to 41.89 G.
+- **Idle skip reads carry their range:** a pure process is armed by an event in the elements it reads (the hull of its reads of the
+  signal), not by any event of the signal, so packing a record does not wake readers of one field for another; a signal whose changed
+  runs are not listed arms all its readers.
+- `YAVS_PACKS=off` (hidden test aid, `ElabConfig::packs`) gives every leaf a signal of its own; the work counter `signals` counts kernel
+  signals (`crates/yavs/tests/perf.rs` bounds it for the record designs).
+
+## Hang and loop reports per part of a signal (yavs-kernel `hang.rs`, yavs-elab, #704, 2026-10-24)
+
+- **Decision: the stuck report and the delta loop cause work on parts of signals, not whole signals.** The elaborator names the
+  leaves of a record pack as parts (`SimControl::name_parts`); waits, drivers, pending transactions, port links, values and the last
+  event are taken per part, and the report's `SignalId`s number the parts (`StuckReport::parts` maps them to the kernel signal and
+  elements). With whole signals, a process waiting for one field was reported against the whole pack, with another field's value,
+  event and driver. Output for designs without packs is unchanged.
+
 ## Composite signal reads: one copy per activation, scalar leaves read in place (yavs-lower, yavs-ir `FuncBuilder`, #630, #538, 2026-10-24)
 
 Shared layer: every tier and a second code generator see the smaller IR. Found with the LEON3 template of GRLIB (`grlib_leon3mp`,
@@ -7176,7 +7297,6 @@ percent between invocations, so the instruction counts are the reliable column a
   interpreter's object table and forgot the object again at the next host call (13 percent of `sc5_fifo_repack`). Native frames keep their
   own lookup (`Mem::nslots`). No alias tag: the bytes are the interpreter's own frame slots, reachable by other addresses too.
 
-
 ## Replayed entries: cells per page, decode ahead on reads in order (yavs-sem, #665, 2026-10-24)
 
 - **Decision: the entries of a replayed unit that are decoded one by one (`SlotPage`) live in one box of `PAGE` cells made when the
@@ -7191,7 +7311,6 @@ percent between invocations, so the instruction counts are the reliable column a
   `poc-2008` +0.2 % (the python runner is in the totals); peak RSS of that elab 78.7 to 77.2 MB. **Open:** the elaboration is still about 4
   percent above the whole-run decode of before #424; the rest is per-read cost (`Page::at` checks two cells) and the per-entry decode
   context in the kinds that read here and there; recovering it without costing cold analysis needs a hint from the caller.
-
 
 ## Predecode: one scan per waveform, not one per function (yavs-interp, #683, 2026-10-24)
 
@@ -7239,7 +7358,6 @@ instructions per leaf for a read and a drive (the integer unit of the GRLIB LEON
   internal error here, as the per-leaf code did); the plan cache takes a read lock per instruction; a gather reads every leaf (a
   per-leaf event stamp would skip the unchanged ones) and a scatter drives every leaf (dropping equal-value drives of unobserved
   signals is the kernel's, #677 comment of 2026-10-24).
-
 
 ## Window generator: no pass pipeline or forced compile changes the run; what is left is the accessor chain (#493, #679, #680, 2026-10-24)
 
@@ -7293,3 +7411,176 @@ Measurements in docs/STATUS.md "Window generator against sim1: where the time is
   the frame is 110 KB (one slot per value). Open: the small code model with position-independent code and RuntimeDyld stubs would
   make a call 5 bytes instead of 12 (the arena keeps code and data within 2 GiB); values that live across the guards of one IR
   instruction are what the fast register allocator spills at every block end.
+## IR optimiser round 13: repeated drives of one driver are done once (yavs-ir `opt/drives.rs`, #667, 2026-10-24)
+
+Decision (landed): **a process's zero-delay drive that a later zero-delay drive of the same elements deletes is delayed down the control
+flow and dropped on the paths that drive again** (partial dead code elimination, `opt/drives.rs`, after the walk and the loop motion of
+processes and before `memo`; processes only, off under a debugger, `YAVS_NO_DRIVES=1` turns it off, a switch of the fingerprint). The
+LRM reading (10.5.2.2): a new transaction deletes the transactions of its driver at or after its time, so with both drives at delay zero
+and the second reached in the same activation the first never reaches the update phase, whatever the modes (transport, inertial) and
+whatever pulse-rejection limit the second has (it only deletes more). Hence:
+
+- **What is dropped and copied.** The drive and the instructions that build its waveform (the allocated block, the stores and copies into
+  it, the temporaries and constants only they read; none of them can fail) move as a unit. A drive is a candidate when its waveform is one
+  element whose first word is a stored constant 0, it has no `reject`, and its target is a `SigVal` of a constant length and an offset
+  that is a constant or a register defined once (a loop over the elements of a signal array has its offsets in such registers: the
+  second drive of an iteration uses the same register). Registers defined once that the unit reads stay where they are. Two drives are
+  the same when instance signal, offset (the same constant or the same register) and length are, **without the driver slot**: a record
+  assigned whole and then by field gets two slots of one kernel driver.
+- **Where the copies go.** The blocks in which the drive is still delayed are found like a topological order (a block joins when every
+  predecessor joined and passes the drive on, so cycles and joins entered by an undelayed path never join); a block that ends with the drive
+  delayed into a block that did not join gets a copy at its end (a `CondBr` edge is split by a new block, a `Case` cannot be split, so
+  its arms all take the drive or the copy goes in front of the `Case`). The copy goes before the first instruction that can see or change
+  the driver's transactions: a drive onto elements that may overlap (different instance signals, or constant disjoint ranges, are passed),
+  `DriveSlot`, `SigScatter` (a whole record driven by one instruction, #677: a barrier, and not recognised as the drive that
+  deletes the earlier one, so a record default driven that way stays), `Disconnect`, `Force`, `Release`, `Driving`, `DrivingValue`, a call of a procedure, a protected method, an indirect or
+  foreign call; before a wait it goes in front of the wait's `Stmt` (`static_wait` wants the marker first). Reports and function calls do not
+  matter. At most six copies per drive, and the drive must be dropped on at least one path, so code never grows for nothing. Each path
+  still does the drive exactly once or not at all, and never later than the instruction that could tell.
+- **What stays.** Drives with a delay, a `reject` limit, several waveform elements, a target of a dynamic offset not held in a register
+  defined once, a drive after which the same block drives other elements through a shared waveform block, a drive whose statement reads
+  memory (a variable, a loaded value). A default followed by an override after a join (`if a then ..; end if; if b then x <= ..`) is
+  a mixed join: the drive is done on the path that did not skip it (tail duplication would be needed).
+- **Cost.** The pass runs on a process only when two drives of it have the same static target, over blocks that are cut into per-block
+  event lists (drives, barriers) so that a drive costs one walk over the blocks it is still delayed in: about +0.1 G host instructions in
+  start-up of `neorv32_dual_full` (4.5 G for 1 us of simulated time), none of it per activation.
+
+Host instructions (`perf stat` `instructions:u`, `--threads 1`, bench builds, warm world, deterministic), main at da793761 before / after, G:
+
+| design | interp | llvm |
+|---|---|---|
+| `neorv32_single_min` | 44.85 / 42.76 (-4.7 %) | 61.35 / 59.14 (-3.6 %) |
+| `neorv32_dual_full` | 29.94 / 29.61 (-1.1 %) | 50.59 / 50.77 (+0.4 %) |
+| `fletcher_bufferwriter_512` | 91.54 / 90.37 (-1.3 %) | 92.21 / 92.25 (0.0 %) |
+| `fletcher_bufferreader` | 36.48 / 36.37 (-0.3 %) | 38.07 / 38.04 (-0.1 %) |
+| `sc5_fifo_repack`, `sc5_timestamp`, `poc_stat_histogram` | 0.0 % | 0.0 % |
+| `poc_cache_cpu` | 15.10 / 15.01 (-0.6 %) | 16.85 / 16.81 (-0.2 %) |
+| `vai_window_gen_interlock` | 495.21 / 495.22 (0.0 %) | 236.45 / 236.43 (0.0 %) |
+| `poc_arith_addw` | 235.89 / 235.89 (0.0 %) | 224.18 / 224.16 (0.0 %) |
+| `grlib_leon3mp` | 891.98 / 892.53 (+0.1 %) | |
+
+(`--tier=llvm` of `neorv32_dual_full`: the 0.4 percent is in the tier's compile and run mix, the interpreter does 1.1 percent less.)
+
+Why less than the 2 to 4 percent #667 estimated: the 17 percent repeated drives it counted were by driver, not by element. In
+`neorv32_single_min` 5.6 M of the 5.7 M repeats are one process (the bus gateway's `request`, a loop over five ports with ten field
+drives each, enabled ports drive twice) and this pass removes them; `counter_increment` drives the elements of one vector driver one by
+one (not repeats, the kernel's marks cannot tell), `exec_comb` keeps the repeats behind joins. After the pass 4.8 M of 16 M scalar
+drives of `neorv32_single_min` still count as repeats by the kernel's marks, almost all of them element-wise drives of one vector driver.
+The kernel side (a pending-drive merge, option 2 of #667) was not touched: a repeat there already costs one push.
+
+## Specialised copies start after the declarative part (yavs-ir `opt.rs` `drop_declarations`, #678, 2026-10-24)
+
+Decision (landed): **the optimised copy of a process for one instance (`Program::copy_of`) jumps from its entry straight to the
+body; the blocks of the declarative part are one jump to themselves.** A copy takes over only between two activations of the shared
+code (`Machine::specialise`: the process waits at its one wait statement in its root frame, the variables are in their slots, the
+registers are the copy's own), so the declarative part never runs in it, and the optimiser's walk skips it anyway (`Opt::pass`:
+blocks before `Func::body` are not walked). For a process of records with generic bounds it was the largest part of the copy: the
+descriptors and initial values of the variables (the LEON3 integer unit's `comb`: 34 164 lines of IR dump in the copy, 24 486 without;
+`spec_copy_ir` of 72 copies at 20 us of the LEON3 run 143 387 to 120 115, 16 percent; `neorv32_dual_full` 39 013 to 38 262).
+Registers a frame starts with (defined once by a constant or an address) that the body reads keep their definition, moved to the
+entry block, since the frame template is built from the definitions. No instruction counts of the interpreter change (`docs/STATUS.md`): the gain is code the tiers need not compile and the predecoder need not scan, and a copy under the memo's 6000
+instructions.
+
+What this does **not** do (#678 stays open): the 1 127 `LayoutOf` and 1 570 `Field` that remain in the copy of the LEON3 `comb` are
+in the body. They read the descriptors of the process variables (`registers`, records with array fields whose bounds are generics)
+through frame slots the declarative part filled, so the walk knows nothing of their contents, and the instance data being frozen
+does not help. Folding them needs the declarative part evaluated for the instance: the frame slots it writes once and the body never
+writes (the descriptors) as constant facts at the body entry and after each suspension, and a layout of a record type from a
+descriptor whose words are known (`Ty::layout` takes the bytes). The interpreter's per-type layout memo and the `FieldOf` fusion
+already make a `LayoutOf` plus `Field` cheap, so the gain is mostly in the compiled code (the address checks).
+
+## Idle skip, round 4: concurrent conditional assignments, conditions of generics (yavs-sem, yavs-elab, #521, #678, 2026-10-24)
+
+Round 2 and 3 gave the pure processes the idle skip, with the conditions their reads are under, but `t <= a when c else b;` (a
+concurrent conditional assignment, a process with the sensitivity list of every signal of every arm) was left out, and a condition
+of generics (`... when TRACE_PORT_EN else ...`, `... and NAP_EN else '0'`, as the CPU designs write them for features a configuration
+leaves out) was no literal. `neorv32_single_min` woke those on every event of the signals their dead arms read (`cpu_trace`, `i_addr_i`
+of every PMP region) and assigned the constant again.
+
+- **`Db::pure_cond_reads`**: the reads of a concurrent conditional assignment (not guarded or postponed, delay default or `transport`,
+  no `after`, every waveform a value, the expressions of the pure shapes of round 2). A waveform is read under its own condition and the
+  negation of the earlier conditions that are one literal, a condition under those negations; the target's indices unconditionally.
+  A condition the walk cannot express adds no literal (a weaker condition only makes the read count more often).
+- **Conditions of constants** (`Db::const_cond`): a boolean expression of constants and generics declared outside the process (entity,
+  architecture, block, generate, package), predefined operators only, with at least one name in it, is a literal (`GuardLit` with `pos`
+  `GUARD_CONST`, `sig` the expression, `eq` whether it must be true). The elaborator evaluates it for the instance (`Walker::idle_parts`,
+  `Model::eval`, as `if generate` does): a conjunction with a literal that is false never holds and goes, a true literal drops out of
+  its conjunction, and a read with no conjunction left is no read, so an event on a signal only a dead arm reads arms nothing. A value
+  that cannot be worked out leaves the literal in place (weaker).
+- **`and` in a condition**: the literals of the parts that are literals are necessary for the condition to be true, so the body or arm
+  is read only under them (`cond_lits(c, false)`); the negation for the later arms still needs the exact form (`cond_lits(c, true)`,
+  one literal), since `not (a and b)` is not `not a`. This also lets `if sig_a = sig_b and GENERIC then` carry the generic.
+- **Why it is the same run**: as in round 3, an activation does what the last one did when every signal the last one read, under the
+  conditions it read it, is unchanged; a constant does not change, so an arm it rules out is never read. `YAVS_IDLE_SKIP=check`
+  runs the activations the kernel would skip and fails when one assigns something else: `perf.rs` `idle_skip_changes_nothing` with the
+  new `idle_when` (off, on, check equal; 586 of 2715 activations skipped), `tests/corpus/delta/idle_when.vhd` (blessed from the
+  reference simulator), and the real-world designs `neorv32_single_min`, `neorv32_dual_full`, `poc_cache_cpu`, `fletcher_bufferreader`
+  and `sc5_fifo_repack` in check mode print what main prints.
+- **Not covered**: selected assignments (`with s select`), simple concurrent assignments (every read is unconditional), an
+  assignment inside a generate whose condition is not a constant of the instance, conditions through a user function. `resize(INIT,
+  q'length)` in PoC's `ffdre` (the other item of the hand-off) is a per-call computation inside a subprogram, not a read: it needs the
+  call's constant arguments to reach the callee (#701).
+- **Measured**: see "IR optimiser round 13" in `docs/STATUS.md`.
+
+
+
+## Native ieee calls: one-word operands read and written in place (yavs-interp `ieee.rs`, `exec.rs`, yavs-lib `closure.rs`, #691, 2026-10-24)
+
+- **Decision: `ieee::small` (the one-word view of an array operand of 1 to 64 elements without a metavalue) returns `Option`, not
+  `R<Option>`, and reads the fat pair, the descriptor and the first plane block with `words` (three bounds-checked reads of the
+  common spaces, temporary memory tested before the jump table, `Machine::mem_temp_first`). `None` for anything unusual (unreadable
+  address, longer array, metavalue, a missing argument): the general path then reads the operand again and words the error, so the
+  fast path has no error plumbing and no `Fault` in its return value.** `put_small` writes the 72 bytes of the result (fat pair,
+  descriptor, one plane block) with one append to temporary memory (`Machine::temp_words`: the addresses follow from the start of
+  the block) instead of `temp_alloc` (zero fill), two address additions and a `wr` through `obj_mut`. Results and warnings are
+  unchanged (`ieee_native.rs` differential tests); the interpreter's op sequence and the work counters are unchanged.
+- Per call, stepped instructions of `a + b` on two 9-element `unsigned` (`poc_arith_addw`, interpreter): `ieee::add` with its two
+  operand reads, `fat_dim` and the result write 537 to 177; `to_integer` of one operand about 200 to 109. The rest of a native call
+  is outside the function: about 60 instructions of `Op::CallIeee` (argument cells, function lookup, result and flag handling) and, on
+  the compiled tier, about 190 of the callback layer (`yavs_rt_native`, `native_frame`) per call.
+- **#691: `closure()` keeps a `HashSet` next to the ordered `Vec` of files (discovered, done) and of the files on the DFS stack
+  (cycle check only when the file is on the stack).** The output order is unchanged. `olo_axi_master_full` at time 0 (interp, steady
+  state): 623.4 M to 605.8 M instructions (-2.8 %).
+- Not done, with the reason: (1) `std_match` and `to_hstring` as natives: none of the measured designs (`uvvm_util_rand`,
+  `osvvm_axis_random`, `sc5_fifo_repack`) spends time in them, their time is in the libraries' own VHDL string code and `textio`
+  natives. (2) The operand convention (a fat pair in temporary memory built by `NewDope` + `NewPair` from the `AllocReadVec` /
+  `AllocCat` result: `NewPair` and `NewDope` are 10 percent of the ops of `poc_arith_addw`): a native taking data address and
+  bounds in registers would save those ops and the two dependent reads in the native; that is an IR change (#697). The callback layer of the compiled tier is #698.
+
+## Kernel round 20: a lean wide bus is finished in one pass; whole-word entries; what a skip of unchanged plane entries costs (yavs-kernel, #519, 2026-10-24)
+
+Source of the numbers: `fletcher_bufferwriter_512` (512-bit buses through ~35 signals that each change about once a clock), bench
+builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction counts are exact, cycles are those of a host at load 20 to 30.
+
+- **Where the kernel time of a wide bus went.** Counters (a temporary build, not kept): 34 M plane words change over the run
+  (43 per delta cycle), 80% of them on a lean signal that keeps no codes and no activity stamps (`lean`, `codes` empty, `inactive`).
+  `finish_pend` finished each of them through `finish_word` and `update_word`: ~250 instructions a changed word, of which the real
+  work (xor, two blends, the block's event record) is ~40. The rest was per-word dispatch on flags that do not change within a bus
+  (`lean`, `watched`, `fine`, `codes.is_empty()`), three `SmallVec` derefs and `Option` bounds checks per word, a sort check of the
+  pending words, and a `cover` per word.
+- **Decision:** `Signal::finish_words_lean` finishes every pending word of such a signal in one loop (slices taken once, flags tested
+  once, the words in pending order unless a waiter of a part needs the runs in element order, one `cover` for the whole bus when
+  only whole-signal waiters exist; the runs of a part-waited bus are noted per word as before). The cover of the words is the hull
+  and the run counts add up, so `changed`, `nruns` (the `events` counter) and the wake-ups are those of the per-word path. A plane
+  word entry (element 64k, 64 elements) in `commit_planes_run` is stored and marked whole, without the shift and mask paths.
+  Test: `delta_paths::a_lean_wide_bus_wakes_and_changes_like_one_with_full_history` (changes, wake-ups of whole-bus, inner and
+  block-crossing waiters, at 1 and 4 threads, against a bus that keeps every element's history).
+- **Result:** writer 83.8 G to 77.1 G instructions (-8.2%), 30.1 G to 28.6 G cycles (-4.9%); the rest of the realbench set is
+  unchanged in instructions (geometric mean 0.99, only the wide-vector tests move). `lean` stays an elaboration decision (round 18).
+- **Measured and not taken: skipping a plane entry that holds the value already** (as `commit_code` does for one element, #420):
+  at commit time 37% of the writer's plane entries (21 M of 58 M) and 49% of the reader's find the driving and effective value equal
+  (`skip_ok` signals). Skipping them costs a block compare on every entry and saves little, because the `m == 0` path of
+  `update_word` was already cheap (~35 instructions): writer +0.8% instructions, reader -1.6%, cycles level. Not kept.
+- **Measured, not changed:** 6 M of the writer's 58 M plane entries repeat an entry of the same driver within one batch (10%; a
+  default and its override): removing them at commit is worth ~0.7%; at the source that is #667 (IR optimiser).
+- **Remaining kernel cost of a bus** (writer, per delta cycle of 100 K instructions): `finish_words_lean` 7.8%, `commit_planes_run` 4.0%,
+  `finish_direct` 3.1%, `cycle` 3.0%, `assign_wide_fast` 2.7%, `commit_out` 2.7%, `Buf::write_to` 2.5%, `canonical_changed` 1.8% (a
+  bus with a waiter on a part keeps a run list: ~8 runs a word with random data, sorted, merged and scanned by the waiters three
+  times a cycle; ~4% of the writer in all). Exact run lists could only be replaced by a split of the signal at the waiters'
+  boundaries (nexus splitting in the reference simulator), a larger change that also touches ports and observers: not started.
+- **Measured and not taken (whole-picture round, same designs):** fat LTO with one codegen unit (writer +0.6% instructions, cycles
+  level, reader level), `-C target-cpu=x86-64-v3` (writer -2.8% instructions and 1 to 2% cycles, reader level or +5% cycles: not
+  shippable to generic hosts, not a clear win), `--threads 2/4/8` (6.5 s to 7.6/8.3/8.3 s), a single-pass `canonical_changed` and an
+  aligned `Buf::write_to` (0.0% instructions each). Neither design compiles anything under `--tier=auto`; the layers of the
+  interpreter side (dispatch 24 to 33%, record layout and copies 15 to 16%) and the shares of the kernel are in `docs/STATUS.md`
+  "Fletcher writer and reader against the reference simulator".

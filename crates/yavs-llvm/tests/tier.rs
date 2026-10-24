@@ -2800,13 +2800,12 @@ fn compile_thread_keeps_the_affinity_of_the_process() {
         fn sched_getaffinity(pid: i32, size: usize, mask: *mut u64) -> i32;
         fn sched_setaffinity(pid: i32, size: usize, mask: *const u64) -> i32;
     }
-    let allowed = |tid: &str| -> String {
-        let s = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+    // (`None` for a task that ended meanwhile: other tests' compile threads come and go.)
+    let allowed = |tid: &str| -> Option<String> {
+        let s = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).ok()?;
         s.lines()
             .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
-            .unwrap()
-            .trim()
-            .to_string()
+            .map(|l| l.trim().to_string())
     };
     // Restrict this test thread (threads it starts inherit the mask) to one CPU it may use.
     let (mut old, mut one) = ([0u64; 16], [0u64; 16]);
@@ -2836,14 +2835,18 @@ fn compile_thread_keeps_the_affinity_of_the_process() {
             .file_name()
             .unwrap()
             .to_string_lossy(),
-    );
+    )
+    .unwrap();
     let mut found = 0;
     for e in std::fs::read_dir("/proc/self/task").unwrap() {
-        let tid = e.unwrap().file_name().to_string_lossy().into_owned();
-        let comm = std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")).unwrap();
+        let Ok(e) = e else { continue };
+        let tid = e.file_name().to_string_lossy().into_owned();
+        let Ok(comm) = std::fs::read_to_string(format!("/proc/self/task/{tid}/comm")) else {
+            continue;
+        };
         if comm.trim() == "yavs-tier-up" {
             // (Compile threads of tests running at the same time have the full mask.)
-            found += usize::from(allowed(&tid) == mine);
+            found += usize::from(allowed(&tid).as_deref() == Some(mine.as_str()));
         }
     }
     assert!(found >= 1, "no compile thread with the mask {mine}");

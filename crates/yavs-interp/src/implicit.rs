@@ -890,7 +890,7 @@ fn radix(
     // A `bit_vector` of up to 64 elements is one word.
     if nd == 1
         && logic_of(sc) == Some(LogicKind::Bit)
-        && let Some(v) = crate::ieee::small(m, a, 0)?
+        && let Some(v) = crate::ieee::small(m, a, 0)
     {
         return ret(m, &image::word_to_radix(v.bits, v.n, width));
     }

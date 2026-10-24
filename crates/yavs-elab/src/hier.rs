@@ -10,6 +10,8 @@
 //! is kernel offset `n - 1 - p`. [`NetGraph::select`] is the one place that applies this; the IR
 //! must agree with it when it computes offsets of non-static indices.
 
+use std::collections::HashSet;
+
 use yavs_kernel::{Elem, PortMode, Range, SignalType, Value};
 use yavs_sem::hir::Direction;
 use yavs_sem::{DeclId, StmtId, SubtypeId, TypeId, UnitId};
@@ -440,6 +442,10 @@ pub struct Whole {
     pub instances: Vec<Vec<(LeafId, Range)>>,
 }
 
+/// The most elements a pack of leaves holds: one plane block, so the kernel keeps its codes and
+/// element stamps and reads, drives and finishes it with word operations (#686).
+pub const PACK_MAX: u32 = 64;
+
 /// Where a leaf is stored: elements `base .. base + len` of kernel signal `signal`
 /// (docs/design/record-signal-layout.md, #686).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,17 +487,82 @@ impl NetGraph {
         &self.leaves[l.index()]
     }
 
-    /// Store every leaf in a kernel signal of its own. Run once the leaves are final (after
-    /// port collapsing).
-    pub(crate) fn place(&mut self) {
-        let n = self.leaves.len() as u32;
-        self.loc = (0..n)
-            .map(|i| LeafLoc {
-                signal: yavs_kernel::SignalId(i),
-                base: 0,
+    /// Store the leaves in kernel signals (docs/design/record-signal-layout.md, #686): runs of
+    /// consecutive leaves of one signal object that share every signal-wide kernel property
+    /// form one kernel signal (a pack, at most [`PACK_MAX`] elements); every other leaf has a
+    /// signal of its own. `forced`: the objects a force or release names (`None`: one names
+    /// something untraceable, so no packs). Run once the leaves are final (after port
+    /// collapsing).
+    pub(crate) fn place(&mut self, packs: bool, forced: Option<&HashSet<ObjId>>) {
+        let n = self.leaves.len();
+        let ok = match (packs, forced) {
+            (true, Some(f)) => self.packable(f),
+            _ => vec![false; n],
+        };
+        self.loc = Vec::with_capacity(n);
+        self.packs = Vec::new();
+        let mut l = 0;
+        while l < n {
+            let start = l;
+            let mut len = self.leaves[l].ty.len;
+            l += 1;
+            if ok[start] {
+                while l < n
+                    && ok[l]
+                    && self.leaves[l].obj == self.leaves[start].obj
+                    && len + self.leaves[l].ty.len <= PACK_MAX
+                {
+                    len += self.leaves[l].ty.len;
+                    l += 1;
+                }
+            }
+            let signal = yavs_kernel::SignalId(self.packs.len() as u32);
+            let mut base = 0;
+            for k in start..l {
+                self.loc.push(LeafLoc { signal, base });
+                base += self.leaves[k].ty.len;
+            }
+            self.packs.push((LeafId(start as u32), LeafId(l as u32)));
+        }
+    }
+
+    /// Per leaf: whether it may share a kernel signal with its neighbours (section 3.2 of the
+    /// design): logic elements, unresolved or resolved by `resolved` (one source each is the
+    /// identity, and elaboration refused several on an unresolved leaf), at most `PACK_MAX`
+    /// elements, and nothing that is signal-wide in the kernel: a guard, an implicit signal on
+    /// it or being one, a force or release, a port, a composite resolved as a whole.
+    fn packable(&self, forced: &HashSet<ObjId>) -> Vec<bool> {
+        let mut ok: Vec<bool> = (self.leaves.iter())
+            .map(|l| {
+                l.ty.elem == Elem::Logic
+                    && (1..=PACK_MAX).contains(&l.ty.len)
+                    && matches!(l.resolution, None | Some(LeafRes::StdLogic))
+                    && l.guard.is_none()
+                    && l.implicit.is_none()
             })
             .collect();
-        self.packs = (0..n).map(|i| (LeafId(i), LeafId(i + 1))).collect();
+        let mut no = |l: LeafId| ok[l.index()] = false;
+        for l in &self.leaves {
+            if let Some((_, src, _)) = l.implicit {
+                no(src);
+            }
+            l.implicit_more.iter().for_each(|&(s, _)| no(s));
+        }
+        for e in &self.ports {
+            no(e.formal.0);
+            no(e.actual.0);
+        }
+        for p in &self.conv_ports {
+            p.formal.iter().chain(&p.actual).for_each(|&(l, _)| no(l));
+        }
+        for w in &self.wholes {
+            w.instances.iter().flatten().for_each(|&(l, _)| no(l));
+        }
+        for &o in forced {
+            let (a, b) = self.obj(o).leaves;
+            (a.0..b.0).for_each(|l| no(LeafId(l)));
+        }
+        ok
     }
 
     /// The kernel signal that stores leaf `l`.

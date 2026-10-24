@@ -1,6 +1,6 @@
 # Record signal layout: packs of leaves in one kernel signal
 
-Status: design, 2026-10-24, #686. Phase 1 of the "struct layout for
+Status: design, 2026-10-24, #686; option A chosen (user, 2026-10-24); steps 1, 2 and 4 implemented (step 4 without `Ctx::codes` and the whole-record wait). Phase 1 of the "struct layout for
 record signals" task: what changes, what stays, and the steps to land it.
 
 ## 1. Problem
@@ -100,7 +100,8 @@ elements.
 - **Value planes.** Effective `cur`, `driving`, `last_value`, per-driver values, force and port
   layers are the signal's `Buf`s; a pack's leaves are element ranges of them. Codes
   (`Signal::codes`) are one byte per element, exactly the IR form of a scalar `std_ulogic` field.
-- **Drivers.** `DriverDecl` stays per leaf. At the build, the declarations of one process whose
+- **Drivers.** `DriverDecl` stays per leaf, and through step 3 so does the kernel driver (a drive
+  without a target names the leaf). From step 4, the declarations of one process whose
   leaves are adjacent in one pack become one kernel driver (`Builder::driver` of the run); each IR
   driver slot keeps its leaf range and names the merged `DriverId`, and a drive targets its leaf
   range inside it, as `s(i) <= x` already targets part of a driver. One convention for
@@ -150,9 +151,11 @@ All name objects and fields by the logical model, so only the lookups change, th
   (they ignore `SigObj::part` today; the same helper fixes that if it is a bug, see 7); DAP signal
   watches compare the leaf's range, not the whole kernel signal;
 - coverage toggles: per leaf base plus the bit, re-keyed to the kernel signal;
-- kernel names: a pack's kernel name is the object path; the elaborator maps `(signal, element)`
-  back to the leaf path wherever it renders a signal (hang and stuck reports, kernel error
-  context), so every rendered message and snapshot stays byte-identical.
+- kernel names: a pack's kernel name is the path of the innermost record holding its leaves; the
+  elaborator names its fields as parts (`SimControl::name_parts`), and the hang, stuck and delta
+  loop reports work per part (waits, drivers, values and events of the field), so they read as
+  before packs (#704). Kernel errors that print a signal's name do not reach a pack (they are
+  about user resolution functions, guards and ports with several sources, which do not pack).
 
 ### 3.6 Bulk access: what gather and scatter map onto (#677)
 
@@ -201,9 +204,9 @@ coverage, a debugger and VHPI keep the packs (nothing observable depends on them
 |---|---|---|
 | 0 | Measurement (section 1) and this document | none |
 | 1 | `LeafLoc` map with identity values; every consumer (build.rs call sites, `inst_data`, `actual_process`, collapse output, lean, wave, coverage, VHPI, DAP, hang and stuck names) goes through `kref`/`leaves_at`; `ProcDriver::range` convention | none (level instructions); prerequisite |
-| 2 | Packs of logic leaves of record signals with no port edge (internal registers such as `r`, `rin` of the integer unit); adjacent drivers of a process merged | rec233: kernel per-leaf commit and finish become per pack: estimate 10 to 15% of rec233. LEON3: iu, dctrl, ictrl register records: 2 to 4%. neorv32: internal control records, 1 to 3%. fletcher, OSVVM, UVVM: about 0 (wide vectors; user-resolved transaction records; testbench-bound) |
+| 2 | Packs of logic leaves of record signals with no port edge (internal registers such as `r`, `rin` of the integer unit; a port collapsed into them follows them); drivers stay one per leaf, idle-skip reads armed by their range | rec233: kernel per-leaf commit and finish become per pack: estimate 10 to 15% of rec233. LEON3: iu, dctrl, ictrl register records: 2 to 4%. neorv32: internal control records, 1 to 3%. fletcher, OSVVM, UVVM: about 0 (wide vectors; user-resolved transaction records; testbench-bound) |
 | 3 | Packs with port edges (the same edges and peers), coalesced edges | GRLIB AHB/APB record ports, the hdl-modules and Open Logic AXI record tests, fletcher's stream records: fewer port edges and port updates per cycle, estimate 2 to 8% on the `records` category, LEON3 1 to 3% |
-| 4 | Bulk access over runs: #677's gather/scatter tables of runs, `Ctx::codes`, one assignment per pack, one wait per run | rec233: kernel share 37% to under 5% of what remains after #677; LEON3: `comb`'s record work (19% of the run before #677) to 1 to 2%, together with #677 about 15% of LEON3 |
+| 4 | Bulk access over runs: #677's gather/scatter tables of runs, `Ctx::codes`, adjacent drivers of a process in a pack merged (a drive without a target then names its leaf range), one assignment per pack, one wait per run | rec233: kernel share 37% to under 5% of what remains after #677; LEON3: `comb`'s record work (19% of the run before #677) to 1 to 2%, together with #677 about 15% of LEON3 |
 | 5 | Measure, then decide: raise the 64-element cap (a 233-scalar pack would be one read of 233 codes, but loses the per-element stamps compiled code reads) | open; measured on LEON3 and neorv32 |
 | 6 | Byte leaves (enumerations, integers) in packs of one element size, with a multi-element byte fast path (today only one byte element has `bquick`/`OutB`) | small: LEON3's register records have few byte fields; FSM-heavy records more |
 

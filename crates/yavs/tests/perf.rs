@@ -450,6 +450,18 @@ case!(
 // The message of a check is built after the branch that reads it: images, lengths and the
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
 case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6540))]);
+// The defaults of a combinational process that a later drive deletes are not done on that path
+// (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass.
+case!(
+    drive_defaults,
+    "sum=260",
+    &[],
+    [
+        ("direct_codes", Max(312)),
+        ("direct_planes", Max(63)),
+        ("ops", Max(4300)),
+    ]
+);
 case!(
     static_chain,
     "acc=",
@@ -467,6 +479,7 @@ case!(
         ("events", Max(650)),
         ("update_general", Max(2)),
         ("ops", Max(4370)),
+        ("signals", Max(6)),
     ]
 );
 case!(
@@ -477,6 +490,8 @@ case!(
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
         ("ops", Max(30700)),
+        // The records `r` and `rin` are packs of leaves (#686), not one signal per leaf.
+        ("signals", Max(20)),
     ]
 );
 case!(
@@ -517,6 +532,18 @@ case!(
     ]
 );
 
+// Concurrent conditional assignments with arms that generics or a signal rule out skip the wakes
+// those arms' signals cause (586 of 2715 activations).
+case!(
+    idle_when,
+    "sum=1691",
+    &[],
+    [
+        ("process_runs", Max(2200)),
+        ("idle_skips", Min(560)),
+        ("ops", Max(34000)),
+    ]
+);
 case!(
     idle_comb,
     "o=",
@@ -566,6 +593,7 @@ fn idle_skip_changes_nothing() {
     let designs = [
         ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
         ("idle_comb", include_str!("perf/idle_comb.vhd"), 2700),
+        ("idle_when", include_str!("perf/idle_when.vhd"), 100),
     ];
     for (design, src, floor) in designs {
         let d = tempdir(&format!("idle_equal_{design}"));
@@ -883,6 +911,11 @@ mod llvm {
         ]
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
+    llvm_case!(
+        llvm_drive_batch,
+        "q=",
+        [("cb_drive", Max(158)), ("llvm_interpreted_insts", Max(32)),]
+    );
     llvm_case!(
         llvm_clocked,
         "q=",

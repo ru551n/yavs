@@ -114,6 +114,26 @@ impl Machine {
             let o = out
                 .get_mut(at..at + vs)
                 .ok_or_else(|| cold(|| ice("a leaf outside its record value")))?;
+            // A logic vector inside one plane block (every vector leaf of a record pack, #686):
+            // its bits straight from the signal's planes.
+            if l.kind == LeafKind::LogicVec
+                && s.ty.elem == Elem::Logic
+                && l.len > 0
+                && let Some((planes, n)) = c.planes(s.signal)
+                && s.off.checked_add(l.len).is_some_and(|e| e <= n)
+                && (s.off % 64) + l.len <= 64
+            {
+                let (blk, at) = (&planes[(s.off / 64) as usize], s.off % 64);
+                let mask = if l.len == 64 {
+                    u64::MAX
+                } else {
+                    (1 << l.len) - 1
+                };
+                for (i, w) in o.as_chunks_mut::<8>().0.iter_mut().take(4).enumerate() {
+                    *w = (blk[i] >> at & mask).to_le_bytes();
+                }
+                continue;
+            }
             match l.kind {
                 LeafKind::LogicScalar if s.ty.elem == Elem::Logic => {
                     let v = u64::from(c.elem_code(s.signal, s.off)?.wrapping_sub(l.bias));
@@ -162,6 +182,30 @@ impl Machine {
             .drivers
             .get(driver as usize..driver as usize + plan.leaves.len())
             .ok_or_else(|| cold(|| ice(format!("no driver slots from {driver}"))))?;
+        // Logic leaves next to each other in one kernel driver (a pack, #686) are collected into
+        // one plane block and assigned together.
+        let mut run: Option<(yavs_kernel::DriverId, Range, [u64; 4])> = None;
+        let flush =
+            |c: &mut Ctx<'_>, run: &mut Option<(yavs_kernel::DriverId, Range, [u64; 4])>| {
+                let Some((id, r, p)) = run.take() else {
+                    return Ok(());
+                };
+                if r.len == 1 {
+                    let code = (0..4).fold(0u8, |a, i| a | ((p[i] & 1) as u8) << i);
+                    if now && c.assign_code_now(id, r, code) {
+                        return Ok(());
+                    }
+                    return c.assign_code(id, Some(r), t, code, mode);
+                }
+                if now && c.assign_planes_now(id, Some(r), p) {
+                    return Ok(());
+                }
+                let mut b = [0u8; 32];
+                for (k, w) in p.iter().enumerate() {
+                    b[k * 8..k * 8 + 8].copy_from_slice(&w.to_le_bytes());
+                }
+                c.assign_blocks(id, Some(r), t, &b, mode)
+            };
         for (l, d) in plan.leaves.iter().zip(ds) {
             let s = self
                 .inst
@@ -173,6 +217,40 @@ impl Machine {
                 .get(at..at + vs)
                 .ok_or_else(|| cold(|| ice("a leaf outside its record value")))?;
             let r = Range::new(s.off, l.len);
+            if s.ty.elem == Elem::Logic
+                && matches!(l.kind, LeafKind::LogicScalar | LeafKind::LogicVec)
+                && (1..=64).contains(&l.len)
+            {
+                let joins = run.as_ref().is_some_and(|(id, q, _)| {
+                    *id == d.id && q.offset + q.len == r.offset && q.len + r.len <= 64
+                });
+                if !joins {
+                    flush(c, &mut run)?;
+                    run = Some((d.id, Range::new(r.offset, 0), [0; 4]));
+                }
+                let (_, q, p) = run.as_mut().expect("a run was just made");
+                let at = q.len;
+                let bits: [u64; 4] = match l.kind {
+                    LeafKind::LogicScalar => {
+                        let code = b[0].wrapping_add(l.bias);
+                        std::array::from_fn(|i| u64::from(code >> i & 1))
+                    }
+                    _ => std::array::from_fn(|i| {
+                        let w = u64::from_le_bytes(b[i * 8..i * 8 + 8].try_into().expect("8"));
+                        if l.len == 64 {
+                            w
+                        } else {
+                            w & ((1 << l.len) - 1)
+                        }
+                    }),
+                };
+                for i in 0..4 {
+                    p[i] |= bits[i] << at;
+                }
+                q.len += r.len;
+                continue;
+            }
+            flush(c, &mut run)?;
             match l.kind {
                 LeafKind::LogicScalar if s.ty.elem == Elem::Logic => {
                     let code = b[0].wrapping_add(l.bias);
@@ -192,6 +270,7 @@ impl Machine {
                 _ => return Err(cold(|| ice("a leaf table that does not match its signal"))),
             }
         }
+        flush(c, &mut run)?;
         Ok(())
     }
 }

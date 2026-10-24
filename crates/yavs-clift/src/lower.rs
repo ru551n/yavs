@@ -79,7 +79,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 8],
+    kernel: [ClifId; 9],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -162,6 +162,7 @@ impl Jit {
             (CODES, yavs_rt_codes as *const u8),
             (PLANES, yavs_rt_planes as *const u8),
             (NATIVE, yavs_rt_native as *const u8),
+            (FAST, yavs_rt_fast as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -201,6 +202,7 @@ impl Jit {
             imp(CODES, &[I64; 4], None)?,
             imp(PLANES, &[I64; 5], None)?,
             imp(NATIVE, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
+            imp(FAST, &[I64, I64, I64, I32, I32, I64, I64], Some(I32))?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -423,6 +425,9 @@ impl Jit {
             native: self
                 .module
                 .declare_func_in_func(self.kernel[7], &mut ctx.func),
+            fast: self
+                .module
+                .declare_func_in_func(self.kernel[8], &mut ctx.func),
             tables: tabs,
             natives,
         };
@@ -493,6 +498,7 @@ struct Imports {
     codes: FuncRef,
     planes: FuncRef,
     native: FuncRef,
+    fast: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     natives: HashMap<FuncId, NatRef>,
 }
@@ -1129,6 +1135,7 @@ fn gen_func(
                     g.wait_same(at as u32);
                 }
             }
+            Inst::Deref { dst, handle, .. } if g.nat.is_none() => g.deref(pc, &inst, dst, handle),
             Inst::Alloc { dst, size } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let sz = g.ld(size);
@@ -2789,6 +2796,46 @@ impl Gen<'_> {
         self.start(cont);
         self.join(join);
         Ok(())
+    }
+
+    /// `Inst::Deref` of an access value a `Deref` found before: its object's entry in `Mem::objs`
+    /// holds the value (bits 32 and up of it are the object's index) and the address is the
+    /// entry's, inline; else `yavs_rt_fast` finds the object and enters it with the value, and
+    /// where that fails the interpreter executes the instruction (its error).
+    fn deref(&mut self, pc: u32, i: &Inst, dst: Reg, handle: Reg) {
+        let (slow, join) = self.slow_path(pc, i);
+        let h = self.ld(handle);
+        let hi = self.b.ins().ushr_imm_s(h, 32);
+        let flag = self.b.ins().ushr_imm_s(hi, i64::from(KEY_SHIFT_HANDLE));
+        let flag = self.b.ins().band_imm_s(flag, KEY_FLAG as i64);
+        let key = self.b.ins().bxor(hi, flag);
+        let key = self.b.ins().band_imm_s(key, OBJS as i64 - 1);
+        let eo = self.b.ins().imul_imm_s(key, OBJ_SIZE as i64);
+        let ent = self.b.ins().iadd(self.mem, eo);
+        // An entry with an access value is writable, and a null handle is no entry's value.
+        let eh = self
+            .b
+            .ins()
+            .load(I64, self.mf, ent, (MEM_OBJS + OBJ_H) as i32);
+        let hit = self.b.ins().icmp(IntCC::Equal, eh, h);
+        let (fast, miss) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(miss);
+        self.branch(hit, fast, miss);
+        self.start(fast);
+        let ehi = self.b.ins().load(I64, self.mf, ent, MEM_OBJS as i32);
+        let v = self.b.ins().ishl_imm_s(ehi, 32);
+        self.st(dst, v);
+        self.b.ins().jump(join, &[]);
+        self.start(miss);
+        let (op, d, z) = (self.c32(FAST_DEREF), self.c32(dst.0), self.c64(0));
+        let call = self
+            .b
+            .ins()
+            .call(self.imp.fast, &[self.env, self.regs, self.mem, op, d, h, z]);
+        let st = self.b.inst_results(call)[0];
+        let failed = self.b.ins().icmp_imm_s(IntCC::Equal, st, 0);
+        self.b.ins().brif(failed, slow, &[], join, &[]);
+        self.start(join);
     }
 
     /// A `WaitOn` and the `Suspend` after it through `yavs_rt_wait` (`TierHost::wait_suspend`).

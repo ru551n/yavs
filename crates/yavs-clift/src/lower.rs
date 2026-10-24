@@ -61,6 +61,21 @@ extern "C" fn clift_deopt(
     unsafe { yavs_rt_deopt(env, mem, func, pc, temp_base, nregs, slen, link, regs) }
 }
 
+/// `n` copies of the `size` bytes at `src` from `dst` on (`Inst::Fill`, the pattern of a `NewFrame`);
+/// `src` must not overlap the target.
+extern "C" fn clift_fill(dst: *mut u8, src: *const u8, n: u64, size: u64) {
+    // SAFETY: compiled code passes `n * size` writable bytes at `dst` and `size` readable at `src`.
+    unsafe {
+        if size == 1 {
+            std::ptr::write_bytes(dst, *src, n as usize);
+        } else {
+            for k in 0..n as usize {
+                std::ptr::copy_nonoverlapping(src, dst.add(k * size as usize), size as usize);
+            }
+        }
+    }
+}
+
 /// `memmove` (`Inst::Copy`; ranges may overlap).
 extern "C" fn clift_move(d: *mut u8, s: *const u8, n: u64) {
     // SAFETY: compiled code passes ranges `Mem::find` bounded.
@@ -79,6 +94,7 @@ pub struct Jit {
     lcopy: ClifId,
     zero: ClifId,
     mov: ClifId,
+    fill: ClifId,
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
@@ -172,6 +188,7 @@ impl Jit {
             (DEOPT_END, yavs_rt_deopt_end as *const u8),
             ("clift_zero", clift_zero as *const u8),
             ("clift_move", clift_move as *const u8),
+            ("clift_fill", clift_fill as *const u8),
             (WAIT, yavs_rt_wait as *const u8),
             (WAIT_ON, yavs_rt_wait_on as *const u8),
             (WAIT_SAME, yavs_rt_wait_same as *const u8),
@@ -202,6 +219,7 @@ impl Jit {
         let lcopy = imp(LCOPY, &[I64; 7], None)?;
         let zero = imp("clift_zero", &[I64, I64], None)?;
         let mov = imp("clift_move", &[I64, I64, I64], None)?;
+        let fill = imp("clift_fill", &[I64, I64, I64, I64], None)?;
         let deopt = imp(
             DEOPT,
             &[I64, I64, I32, I32, I64, I64, I64, I64, I64],
@@ -248,6 +266,7 @@ impl Jit {
             lcopy,
             zero,
             mov,
+            fill,
             deopt,
             deopt_slots,
             deopt_end,
@@ -528,6 +547,7 @@ impl Jit {
             lcopy: self.module.declare_func_in_func(self.lcopy, &mut ctx.func),
             zero: self.module.declare_func_in_func(self.zero, &mut ctx.func),
             mov: self.module.declare_func_in_func(self.mov, &mut ctx.func),
+            fill: self.module.declare_func_in_func(self.fill, &mut ctx.func),
             deopt: self.module.declare_func_in_func(self.deopt, &mut ctx.func),
             deopt_slots: self
                 .module
@@ -673,6 +693,7 @@ struct Imports {
     lcopy: FuncRef,
     zero: FuncRef,
     mov: FuncRef,
+    fill: FuncRef,
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
@@ -771,6 +792,7 @@ fn via_signal(i: &Inst) -> bool {
 }
 
 /// A slow path left to emit after the function body: step `inst` at `pc` and go on at `join`.
+#[derive(Clone, Copy)]
 struct Slow {
     block: Block,
     join: Block,
@@ -781,6 +803,9 @@ struct Slow {
     /// In a native frame: `yavs_rt_endstmt` (the end of a statement that recorded temporaries)
     /// instead of leaving.
     endstmt: bool,
+    /// In a native frame: the interpreter executes the instruction on a frame of its own
+    /// (`native_step`) and the code goes on, instead of leaving.
+    xstep: bool,
 }
 
 struct Gen<'a> {
@@ -1782,6 +1807,102 @@ fn gen_func(
                 }
                 g.join(join);
             }
+            Inst::SlicePos {
+                dst,
+                dope,
+                left,
+                right,
+                dir,
+                ..
+            } => {
+                let (slow, join) = g.slow_path(pc, &inst);
+                let a = g.ld(dope);
+                let p = g.host(a, Some(dope), Op::C(0), Op::C(24), false, slow);
+                let (l, r, d) = g.dope_words(p);
+                let (x, y, w) = (g.ld(left), g.ld(right), g.ld(dir));
+                // A null slice names no element and checks nothing.
+                let wd = g.b.ins().icmp_imm_s(IntCC::Equal, w, 1);
+                let lt = g.b.ins().icmp(IntCC::SignedLessThan, x, y);
+                let gt = g.b.ins().icmp(IntCC::SignedGreaterThan, x, y);
+                let null = g.b.ins().select(wd, lt, gt);
+                // Both ends inside the array's range, and the slice's direction its own.
+                let down = g.b.ins().icmp_imm_s(IntCC::Equal, d, 1);
+                let lo = g.b.ins().select(down, r, l);
+                let hi = g.b.ins().select(down, l, r);
+                let dir_ok = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThanOrEqual, d, 1);
+                let same = g.b.ins().icmp(IntCC::Equal, w, d);
+                let nonempty = g.b.ins().icmp(IntCC::SignedLessThanOrEqual, lo, hi);
+                let span = g.b.ins().isub(hi, lo);
+                let (rx, ry) = (g.b.ins().isub(x, lo), g.b.ins().isub(y, lo));
+                let ix = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, rx, span);
+                let iy = g.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, ry, span);
+                let okv = g.b.ins().band(dir_ok, same);
+                let okv = g.b.ins().band(okv, nonempty);
+                let okv = g.b.ins().band(okv, ix);
+                let okv = g.b.ins().band(okv, iy);
+                let okv = g.b.ins().bor(null, okv);
+                g.guard(okv, slow);
+                let up = g.b.ins().isub(x, l);
+                let dn = g.b.ins().isub(l, x);
+                let pos = g.b.ins().select(down, dn, up);
+                let zero = g.c64(0);
+                let v = g.b.ins().select(null, zero, pos);
+                g.st(dst, v);
+                g.join(join);
+            }
+            // A run of 1 to 64 elements inside one plane block set to one code; any other run is
+            // the interpreter's.
+            Inst::LFill { base, idx, n, v } => {
+                let (slow, join) = g.slow_path_x(pc, &inst, f);
+                let code = g.ld(v);
+                let okc =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, code, 8);
+                g.guard(okc, slow);
+                let cnt = g.ld(n);
+                let n1 = g.b.ins().iadd_imm_s(cnt, -1);
+                let okn = g.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, n1, 64);
+                g.guard(okn, slow);
+                let (p, sh) = g.logic_word(base, idx, true, slow);
+                let end = g.b.ins().iadd(sh, cnt);
+                let oke =
+                    g.b.ins()
+                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, end, 64);
+                g.guard(oke, slow);
+                let one = g.c64(1);
+                let bit = g.b.ins().ishl(one, cnt);
+                let low = g.b.ins().iadd_imm_s(bit, -1);
+                let full = g.b.ins().icmp_imm_s(IntCC::Equal, cnt, 64);
+                let ones = g.c64(-1);
+                let low = g.b.ins().select(full, ones, low);
+                let mask = g.b.ins().ishl(low, sh);
+                let keep = g.b.ins().bnot(mask);
+                for k in 0..4 {
+                    let w = g.b.ins().load(I64, g.gf, p, k * 8);
+                    let w = g.b.ins().band(w, keep);
+                    let bit = g.b.ins().ushr_imm_s(code, i64::from(k));
+                    let bit = g.b.ins().band_imm_s(bit, 1);
+                    let neg = g.b.ins().ineg(bit);
+                    let set = g.b.ins().band(mask, neg);
+                    let w = g.b.ins().bor(w, set);
+                    g.b.ins().store(g.gf, w, p, k * 8);
+                }
+                g.join(join);
+            }
+            Inst::LogicOp { op, dst, a, b, n } if logic_inline(op) => {
+                g.logic_op(pc, &inst, f, op, dst, a, b, n)
+            }
+            Inst::NewFrame {
+                dst,
+                desc,
+                dsize,
+                data,
+                size,
+                fill,
+            } if g.nat.is_some() => g.new_frame(pc, &inst, dst, desc, dsize, data, size, fill),
+            Inst::Fill { dst, elem, n, size } if g.nat.is_some() => {
+                g.fill_inst(pc, &inst, dst, elem, n, size)
+            }
             Inst::Pos {
                 dst,
                 dope,
@@ -2123,12 +2244,20 @@ fn gen_func(
         // Falling off the end: the interpreter reports it.
         g.leave_at(n as u32);
     }
-    // The slow paths, after the body.
-    let slows = std::mem::take(&mut g.slows);
-    for s in slows {
+    // The slow paths, after the body (a slow path may add more).
+    let mut next_slow = 0;
+    while next_slow < g.slows.len() {
+        let s = g.slows[next_slow];
+        next_slow += 1;
         g.b.set_cold_block(s.block);
         g.b.switch_to_block(s.block);
         g.clear();
+        if s.xstep && g.nat.is_some() {
+            let inst = f.code[s.pc as usize];
+            g.native_step(s.pc, &inst, f);
+            g.b.ins().jump(s.join, &[]);
+            continue;
+        }
         if s.endstmt && g.nat.is_some() {
             let base = g.nat_temp_base();
             g.b.ins().call(g.imp.endstmt, &[g.env, g.mem, base]);
@@ -2766,7 +2895,21 @@ impl Gen<'_> {
             keep: keeps_objects(i),
             edge: via_signal(i).then_some(0),
             endstmt: false,
+            xstep: false,
         });
+        (block, join)
+    }
+
+    /// `slow_path` for an instruction a native frame can have the interpreter execute on a frame
+    /// of its own (`xstep_wide`): the code goes on after it instead of leaving.
+    fn slow_path_x(&mut self, pc: u32, i: &Inst, f: &Func) -> (Block, Block) {
+        let (block, join) = self.slow_path(pc, i);
+        if self.nat.is_some()
+            && xstep_wide(f, i)
+            && let Some(sl) = self.slows.last_mut()
+        {
+            sl.xstep = true;
+        }
         (block, join)
     }
 
@@ -3160,6 +3303,319 @@ impl Gen<'_> {
     }
 }
 
+/// Whether `LogicOp` of `op` is lowered here (the others are the interpreter's).
+fn logic_inline(op: yavs_ir::LOp) -> bool {
+    use yavs_ir::LOp::*;
+    matches!(
+        op,
+        And | Or | Nand | Nor | Xor | Xnor | Not | ToX01 | ToUx01
+    )
+}
+
+/// Bit-parallel std_ulogic classes of a block of 64 elements (`yavs-logic` planes: code bits 0 to
+/// 3 in planes 0 to 3).
+impl Gen<'_> {
+    fn not64(&mut self, x: Value) -> Value {
+        self.b.ins().bnot(x)
+    }
+    fn is_u(&mut self, x: [Value; 4]) -> Value {
+        let o = self.b.ins().bor(x[0], x[1]);
+        let o = self.b.ins().bor(o, x[2]);
+        let o = self.b.ins().bor(o, x[3]);
+        self.not64(o)
+    }
+    /// `0` or `L`: not bit 3, bit 1 and not bit 0.
+    fn is0(&mut self, x: [Value; 4]) -> Value {
+        let nd = self.b.ins().band_not(x[1], x[3]);
+        self.b.ins().band_not(nd, x[0])
+    }
+    /// `1` or `H`.
+    fn is1(&mut self, x: [Value; 4]) -> Value {
+        let nd = self.b.ins().band_not(x[1], x[3]);
+        self.b.ins().band(nd, x[0])
+    }
+
+    /// One block of `op`: planes 0 and 1 of the result (2 and 3 are zero).
+    fn logic_block(&mut self, op: yavs_ir::LOp, x: [Value; 4], y: [Value; 4]) -> [Value; 2] {
+        use yavs_ir::LOp::*;
+        let ins = |g: &mut Self| {
+            let (ux, uy) = (g.is_u(x), g.is_u(y));
+            g.b.ins().bor(ux, uy)
+        };
+        let and = |g: &mut Self| {
+            let (zx, zy) = (g.is0(x), g.is0(y));
+            let z = g.b.ins().bor(zx, zy);
+            let u = ins(g);
+            let (ox, oy) = (g.is1(x), g.is1(y));
+            let one = g.b.ins().band(ox, oy);
+            let nu = g.b.ins().bnot(u);
+            let nz = g.b.ins().band_not(nu, z);
+            [nz, g.b.ins().bor(z, one)]
+        };
+        let or = |g: &mut Self| {
+            let (ox, oy) = (g.is1(x), g.is1(y));
+            let o = g.b.ins().bor(ox, oy);
+            let u = ins(g);
+            let (zx, zy) = (g.is0(x), g.is0(y));
+            let zz = g.b.ins().band(zx, zy);
+            let nu = g.b.ins().bnot(u);
+            let a = g.b.ins().band_not(nu, zz);
+            let b = g.b.ins().band(nu, zz);
+            [g.b.ins().bor(o, a), g.b.ins().bor(o, b)]
+        };
+        let xor = |g: &mut Self| {
+            let u = ins(g);
+            let (zx, ox) = (g.is0(x), g.is1(x));
+            let (zy, oy) = (g.is0(y), g.is1(y));
+            let kx = g.b.ins().bor(zx, ox);
+            let ky = g.b.ins().bor(zy, oy);
+            let k = g.b.ins().band(kx, ky);
+            let v = g.b.ins().bxor(ox, oy);
+            let nk = g.b.ins().bnot(k);
+            let nu = g.b.ins().bnot(u);
+            let t = g.b.ins().bor(nk, v);
+            [g.b.ins().band(nu, t), g.b.ins().band(nu, k)]
+        };
+        let not = |g: &mut Self, r: [Value; 2]| {
+            // Not of the planes 0 and 1 (planes 2 and 3 are zero): `[!u & !one, zero | one]`.
+            let x2 = [r[0], r[1], g.c64(0), g.c64(0)];
+            let (u, o, z) = (g.is_u(x2), g.is1(x2), g.is0(x2));
+            let a = g.b.ins().bor(u, o);
+            [g.b.ins().bnot(a), g.b.ins().bor(z, o)]
+        };
+        match op {
+            And => and(self),
+            Or => or(self),
+            Xor => xor(self),
+            Nand => {
+                let r = and(self);
+                not(self, r)
+            }
+            Nor => {
+                let r = or(self);
+                not(self, r)
+            }
+            Xnor => {
+                let r = xor(self);
+                not(self, r)
+            }
+            Not => {
+                let (u, o, z) = (self.is_u(x), self.is1(x), self.is0(x));
+                let a = self.b.ins().bor(u, o);
+                [self.b.ins().bnot(a), self.b.ins().bor(z, o)]
+            }
+            ToX01 => {
+                let (o, z) = (self.is1(x), self.is0(x));
+                [self.b.ins().bnot(z), self.b.ins().bor(z, o)]
+            }
+            ToUx01 => {
+                let (o, z, u) = (self.is1(x), self.is0(x), self.is_u(x));
+                let a = self.b.ins().bor(z, u);
+                [self.b.ins().bnot(a), self.b.ins().bor(z, o)]
+            }
+            _ => unreachable!("not lowered inline"),
+        }
+    }
+
+    /// `Inst::LogicOp` of a logic array pair, block by block (64 elements, four planes of 8
+    /// bytes); the planes beyond the length are zero.
+    #[allow(clippy::too_many_arguments)]
+    fn logic_op(
+        &mut self,
+        pc: u32,
+        inst: &Inst,
+        f: &Func,
+        op: yavs_ir::LOp,
+        dst: Reg,
+        a: Reg,
+        b: Reg,
+        n: Reg,
+    ) {
+        let (slow, join) = self.slow_path_x(pc, inst, f);
+        let unary = matches!(
+            op,
+            yavs_ir::LOp::Not | yavs_ir::LOp::ToX01 | yavs_ir::LOp::ToUx01
+        );
+        let cnt = self.ld(n);
+        let small = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThan, cnt, 1 << 32);
+        self.guard(small, slow);
+        let c63 = self.b.ins().iadd_imm_s(cnt, 63);
+        let nblk = self.b.ins().ushr_imm_s(c63, 6);
+        let bytes = self.b.ins().ishl_imm_s(nblk, 5);
+        let av = self.ld(a);
+        let pa = self.host(av, Some(a), Op::C(0), Op::V(bytes), false, slow);
+        let pb = if unary {
+            pa
+        } else {
+            let bv = self.ld(b);
+            self.host(bv, Some(b), Op::C(0), Op::V(bytes), false, slow)
+        };
+        let dv = self.ld(dst);
+        let pd = self.host(dv, Some(dst), Op::C(0), Op::V(bytes), true, slow);
+        let (head, body, done) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let i = self.b.append_block_param(head, I64);
+        let zero = self.c64(0);
+        self.b.ins().jump(head, &[BlockArg::Value(zero)]);
+        self.b.switch_to_block(head);
+        let more = self.b.ins().icmp(IntCC::UnsignedLessThan, i, nblk);
+        self.b.ins().brif(more, body, &[], done, &[]);
+        self.b.switch_to_block(body);
+        let off = self.b.ins().ishl_imm_s(i, 5);
+        let (qa, qb, qd) = (
+            self.b.ins().iadd(pa, off),
+            self.b.ins().iadd(pb, off),
+            self.b.ins().iadd(pd, off),
+        );
+        let gf = self.gf;
+        let mut x = [zero; 4];
+        let mut y = [zero; 4];
+        for k in 0..4 {
+            x[k] = self.b.ins().load(I64, gf, qa, k as i32 * 8);
+            y[k] = if unary {
+                x[k]
+            } else {
+                self.b.ins().load(I64, gf, qb, k as i32 * 8)
+            };
+        }
+        let r = self.logic_block(op, x, y);
+        // The last block keeps its elements only.
+        let base = self.b.ins().ishl_imm_s(i, 6);
+        let rem = self.b.ins().isub(cnt, base);
+        let one = self.c64(1);
+        let bit = self.b.ins().ishl(one, rem);
+        let low = self.b.ins().iadd_imm_s(bit, -1);
+        let fullb = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedGreaterThanOrEqual, rem, 64);
+        let ones = self.c64(-1);
+        let mask = self.b.ins().select(fullb, ones, low);
+        let (r0, r1) = (self.b.ins().band(r[0], mask), self.b.ins().band(r[1], mask));
+        self.b.ins().store(gf, r0, qd, 0);
+        self.b.ins().store(gf, r1, qd, 8);
+        self.b.ins().store(gf, zero, qd, 16);
+        self.b.ins().store(gf, zero, qd, 24);
+        let next = self.b.ins().iadd_imm_s(i, 1);
+        self.b.ins().jump(head, &[BlockArg::Value(next)]);
+        self.b.switch_to_block(done);
+        self.join(join);
+    }
+
+    /// `Inst::NewFrame` on a native frame: a frame-pinned temporary of `dsize` descriptor bytes and
+    /// `size` data bytes (copied from `data`, or the `fill` bytes at `data` repeated), which the
+    /// frame's statements then keep (`temp_base`).
+    #[allow(clippy::too_many_arguments)]
+    fn new_frame(
+        &mut self,
+        pc: u32,
+        inst: &Inst,
+        dst: Reg,
+        desc: Reg,
+        dsize: u32,
+        data: Reg,
+        size: Reg,
+        fill: u32,
+    ) {
+        let (slow, join) = self.slow_path(pc, inst);
+        let sz = self.ld(size);
+        // Over 4 GiB is the interpreter's error; a size that is no multiple of the element is its
+        // internal error.
+        let mut okc = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, sz, 1 << 32);
+        if fill != 0 {
+            let r = self.b.ins().urem_imm_u(sz, i64::from(fill));
+            let rz = self.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
+            okc = self.b.ins().band(okc, rz);
+        }
+        self.guard(okc, slow);
+        // The sources before the allocation: a failure leaves nothing changed.
+        let pdesc = (dsize != 0).then(|| {
+            let dv = self.ld(desc);
+            self.host(
+                dv,
+                Some(desc),
+                Op::C(0),
+                Op::C(u64::from(dsize)),
+                false,
+                slow,
+            )
+        });
+        let n_src = if fill == 0 {
+            Op::V(sz)
+        } else {
+            Op::C(u64::from(fill))
+        };
+        let dv = self.ld(data);
+        let psrc = self.host(dv, Some(data), Op::C(0), n_src, false, slow);
+        let total = self.b.ins().iadd_imm_s(sz, i64::from(dsize));
+        let (at, p) = self.temp_alloc(total, slow);
+        if let Some(pd) = pdesc {
+            let ds = self.c64(i64::from(dsize));
+            self.b.ins().call(self.imp.mov, &[p, pd, ds]);
+        }
+        let val = self.b.ins().iadd_imm_s(p, i64::from(dsize));
+        if fill == 0 {
+            self.b.ins().call(self.imp.mov, &[val, psrc, sz]);
+        } else {
+            let count = self.b.ins().udiv_imm_u(sz, i64::from(fill));
+            let fv = self.c64(i64::from(fill));
+            self.b.ins().call(self.imp.fill, &[val, psrc, count, fv]);
+        }
+        // The frame's own statements must not free the object.
+        if let Some(TempBase::Cell(cell)) = self.nat.as_ref().map(|n| n.temp_base) {
+            let end = self.mem_ld(MEM_TEMP_LEN);
+            self.b.ins().store(MemFlagsData::trusted(), end, cell, 0);
+        }
+        self.st(dst, at);
+        self.join(join);
+    }
+
+    /// `Inst::Fill` on a native frame: `n` copies of the `size` bytes at `elem` from `dst` on.
+    fn fill_inst(&mut self, pc: u32, inst: &Inst, dst: Reg, elem: Reg, n: Reg, size: u32) {
+        let (slow, join) = self.slow_path(pc, inst);
+        let cnt = self.ld(n);
+        let sc = self.c64(i64::from(size));
+        let (total, o) = self.b.ins().umul_overflow(cnt, sc);
+        let no = self.b.ins().bxor_imm_s(o, 1);
+        self.guard(no, slow);
+        let ev = self.ld(elem);
+        let pe = self.host(
+            ev,
+            Some(elem),
+            Op::C(0),
+            Op::C(u64::from(size)),
+            false,
+            slow,
+        );
+        let dv = self.ld(dst);
+        let pd = self.host(dv, Some(dst), Op::C(0), Op::V(total), true, slow);
+        // The element is read before anything is written (it may lie in the target).
+        let src = if size == 1 {
+            pe
+        } else {
+            let ss = self.b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                size,
+                3,
+            ));
+            let stage = self.b.ins().stack_addr(I64, ss, 0);
+            self.b.ins().call(self.imp.mov, &[stage, pe, sc]);
+            stage
+        };
+        self.b.ins().call(self.imp.fill, &[pd, src, cnt, sc]);
+        self.join(join);
+    }
+}
+
 /// The kernel-facing instructions: signal reads, clock edges, drives and waits, inline or through
 /// the small callbacks of `rt.rs`, as the LLVM tier's generator does (`TierSig` table entries,
 /// `yavs_rt_drive*`, `yavs_rt_wait*`), instead of `yavs_rt_signal` for each.
@@ -3197,6 +3653,7 @@ impl Gen<'_> {
             keep: false,
             edge: Some(edge),
             endstmt: false,
+            xstep: false,
         });
         (block, join)
     }

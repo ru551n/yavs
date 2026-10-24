@@ -6775,6 +6775,101 @@ impl Drop for Gen {
     }
 }
 
+/// The scalar logic assignments of the process `f` (`yavs_interp::scalar_drives`) and the pcs of
+/// those `Gen::drive_bit` keeps for one host call (`Batch`): no delay, a driver index the entry has
+/// room for, and another such assignment (or itself, in a loop) can follow it within the
+/// activation. A process that drives once per activation gains nothing and keeps the direct call.
+pub(crate) fn batched_drives(
+    prog: &Program,
+    f: &Func,
+    fixed: &[Option<i64>],
+) -> (
+    Vec<yavs_interp::ScalarDrive>,
+    std::collections::HashSet<u32>,
+) {
+    let all = yavs_interp::scalar_drives(prog, f);
+    let cand: std::collections::HashSet<u32> = all
+        .iter()
+        .filter(|d| fixed.get(d.time.0 as usize) == Some(&Some(0)) && d.driver <= 0xffff)
+        .map(|d| d.drive)
+        .collect();
+    let n = f.code.len();
+    // ponytail: a search per candidate, quadratic; above the cap every candidate stays.
+    if cand.len() * n > 4_000_000 {
+        return (all, cand);
+    }
+    let kept = cand
+        .iter()
+        .copied()
+        .filter(|&d| {
+            let mut seen = vec![false; n];
+            let mut work = vec![d as usize];
+            let mut first = true;
+            while let Some(pc) = work.pop() {
+                if !std::mem::replace(&mut first, false) && cand.contains(&(pc as u32)) {
+                    return true;
+                }
+                if pc >= n || std::mem::replace(&mut seen[pc], true) {
+                    continue;
+                }
+                let i = &f.code[pc];
+                if matches!(i, Inst::Suspend { .. }) {
+                    continue;
+                }
+                match crate::regs::succs(prog, f, pc, i) {
+                    Some(s) => work.extend(s.into_iter().map(|t| t as usize)),
+                    None => return true,
+                }
+            }
+            false
+        })
+        .collect();
+    (all, kept)
+}
+
+/// Instructions that neither drive a signal, look at a driver, wait nor run other code, on any
+/// path (a slow path steps the same instruction): scalar drives kept in `Batch` stay kept
+/// across them. Everything else hands them over first.
+pub(crate) fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
+    match *i {
+        Inst::CallNative { native, args, dst } => native_kind(prog, f, native, args, dst).is_some(),
+        _ => matches!(
+            i,
+            Inst::Const { .. }
+                | Inst::ConstF { .. }
+                | Inst::Move { .. }
+                | Inst::Select { .. }
+                | Inst::Bin { .. }
+                | Inst::BinRange { .. }
+                | Inst::Un { .. }
+                | Inst::FBin { .. }
+                | Inst::FUn { .. }
+                | Inst::IToF { .. }
+                | Inst::Cmp { .. }
+                | Inst::FCmp { .. }
+                | Inst::Bool { .. }
+                | Inst::Check { .. }
+                | Inst::FCheck { .. }
+                | Inst::Index { .. }
+                | Inst::Pos { .. }
+                | Inst::AddrOf { .. }
+                | Inst::Load { .. }
+                | Inst::Store { .. }
+                | Inst::Alloc { .. }
+                | Inst::Br { .. }
+                | Inst::CondBr { .. }
+                | Inst::Case { .. }
+                | Inst::Stmt
+                | Inst::LGet { .. }
+                | Inst::LSet { .. }
+                | Inst::SigVal { .. }
+                | Inst::SigReadScalar { .. }
+                | Inst::SigRead { .. }
+                | Inst::Edge { .. }
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6889,100 +6984,5 @@ mod tests {
             step.contains("nounwind") && !step.contains("memory"),
             "{step}"
         );
-    }
-}
-
-/// The scalar logic assignments of the process `f` (`yavs_interp::scalar_drives`) and the pcs of
-/// those `Gen::drive_bit` keeps for one host call (`Batch`): no delay, a driver index the entry has
-/// room for, and another such assignment (or itself, in a loop) can follow it within the
-/// activation. A process that drives once per activation gains nothing and keeps the direct call.
-pub(crate) fn batched_drives(
-    prog: &Program,
-    f: &Func,
-    fixed: &[Option<i64>],
-) -> (
-    Vec<yavs_interp::ScalarDrive>,
-    std::collections::HashSet<u32>,
-) {
-    let all = yavs_interp::scalar_drives(prog, f);
-    let cand: std::collections::HashSet<u32> = all
-        .iter()
-        .filter(|d| fixed.get(d.time.0 as usize) == Some(&Some(0)) && d.driver <= 0xffff)
-        .map(|d| d.drive)
-        .collect();
-    let n = f.code.len();
-    // ponytail: a search per candidate, quadratic; above the cap every candidate stays.
-    if cand.len() * n > 4_000_000 {
-        return (all, cand);
-    }
-    let kept = cand
-        .iter()
-        .copied()
-        .filter(|&d| {
-            let mut seen = vec![false; n];
-            let mut work = vec![d as usize];
-            let mut first = true;
-            while let Some(pc) = work.pop() {
-                if !std::mem::replace(&mut first, false) && cand.contains(&(pc as u32)) {
-                    return true;
-                }
-                if pc >= n || std::mem::replace(&mut seen[pc], true) {
-                    continue;
-                }
-                let i = &f.code[pc];
-                if matches!(i, Inst::Suspend { .. }) {
-                    continue;
-                }
-                match crate::regs::succs(prog, f, pc, i) {
-                    Some(s) => work.extend(s.into_iter().map(|t| t as usize)),
-                    None => return true,
-                }
-            }
-            false
-        })
-        .collect();
-    (all, kept)
-}
-
-/// Instructions that neither drive a signal, look at a driver, wait nor run other code, on any
-/// path (a slow path steps the same instruction): scalar drives kept in `Batch` stay kept
-/// across them. Everything else hands them over first.
-pub(crate) fn batch_pure(prog: &Program, f: &Func, i: &Inst) -> bool {
-    match *i {
-        Inst::CallNative { native, args, dst } => native_kind(prog, f, native, args, dst).is_some(),
-        _ => matches!(
-            i,
-            Inst::Const { .. }
-                | Inst::ConstF { .. }
-                | Inst::Move { .. }
-                | Inst::Select { .. }
-                | Inst::Bin { .. }
-                | Inst::BinRange { .. }
-                | Inst::Un { .. }
-                | Inst::FBin { .. }
-                | Inst::FUn { .. }
-                | Inst::IToF { .. }
-                | Inst::Cmp { .. }
-                | Inst::FCmp { .. }
-                | Inst::Bool { .. }
-                | Inst::Check { .. }
-                | Inst::FCheck { .. }
-                | Inst::Index { .. }
-                | Inst::Pos { .. }
-                | Inst::AddrOf { .. }
-                | Inst::Load { .. }
-                | Inst::Store { .. }
-                | Inst::Alloc { .. }
-                | Inst::Br { .. }
-                | Inst::CondBr { .. }
-                | Inst::Case { .. }
-                | Inst::Stmt
-                | Inst::LGet { .. }
-                | Inst::LSet { .. }
-                | Inst::SigVal { .. }
-                | Inst::SigReadScalar { .. }
-                | Inst::SigRead { .. }
-                | Inst::Edge { .. }
-        ),
     }
 }

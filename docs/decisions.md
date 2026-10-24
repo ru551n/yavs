@@ -7237,6 +7237,14 @@ percent between invocations, so the instruction counts are the reliable column a
   `llvm` crate tests, the perf work-counter tests with and without `llvm`, and the 502-test differential corpus under
   `yavs-interp`, `yavs-auto`, `yavs-llvm` and `yavs-auto` with `--tier-heat=1,0,0` green.
 
+## `--tier=auto` without LLVM is the Cranelift policy (yavs, #481, user, 2026-10-24)
+
+- **Decision.** In a build with the `clift` feature and without `llvm`, `--tier=auto` means `--tier=clift-auto` (`Common::tier`).
+  The default tier of such a build stays `interp` (the user decision covers the explicit `auto` only; whether the default
+  becomes `auto` there waits for Cranelift beating the interpreter on the benchmark designs). `layout_slots` stays off for it
+  (Cranelift ignores the layout slots).
+- **Why.** The user asked that `auto` mean the real policy wherever it can run; the policy is generic over the generator.
+
 ## Tier-up policy generic over the code generator (yavs-llvm, #481, user, 2026-10-24)
 
 - **Decision.** `auto.rs` (the `Worker` and `AutoTier`) no longer needs LLVM: it drives `Generator`s (`generator.rs`: `open`,

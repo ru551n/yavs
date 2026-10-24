@@ -167,7 +167,8 @@ pub struct RunArgs {
     /// while the simulation runs; `llvm` to compile every function with LLVM before time 0; or
     /// `interp` for the interpreter alone. `llvm` and `auto` need a yavs built with the `llvm`
     /// feature. Default: `auto` with that feature, but `interp` with `--dap` and without it.
-    /// `clift` and `clift-auto` are `llvm` and `auto` with Cranelift (the `clift` feature);
+    /// `clift` and `clift-auto` are `llvm` and `auto` with Cranelift (the `clift` feature; in a
+    /// build with it and without `llvm`, `auto` is `clift-auto`);
     /// `auto3` has Cranelift compile warm functions and LLVM O2 those that stay hot.
     #[arg(long, value_enum)]
     tier: Option<TierArg>,
@@ -261,12 +262,19 @@ impl RunArgs {
     /// The tier of this run: the one asked for, else `auto` where it is built in and nothing
     /// needs the interpreter alone (a debugger reads frame slots).
     pub(crate) fn tier(&self) -> TierArg {
-        self.tier
+        let t = self
+            .tier
             .unwrap_or(if cfg!(feature = "llvm") && self.dap.is_none() {
                 TierArg::Auto
             } else {
                 TierArg::Interp
-            })
+            });
+        // Without LLVM, `auto` is the same policy with Cranelift (user, 2026-10-24).
+        if t == TierArg::Auto && !cfg!(feature = "llvm") && cfg!(feature = "clift") {
+            TierArg::CliftAuto
+        } else {
+            t
+        }
     }
 }
 

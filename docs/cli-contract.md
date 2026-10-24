@@ -532,7 +532,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   built with the `llvm` cargo feature (LLVM 21): otherwise asking for them explicitly is error `E0120` (exit 2); a
   design the tier cannot compile (or a compile thread that cannot start) is `E0121` (exit 3, a
   bug in yavs). `clift` and `clift-auto` are `llvm` and `auto` with the Cranelift code generator; they need a yavs built with
-  the `clift` cargo feature (no LLVM needed), otherwise `E0120`, and give the same output. `auto3` is `auto` with Cranelift as its first level: a function that becomes warm is translated by Cranelift, one that stays hot is compiled again by LLVM at O2 (a yavs built with both features, otherwise `E0120`); the output is the same. `--verbose` prints, on stderr, a note per function left to the
+  the `clift` cargo feature (no LLVM needed), otherwise `E0120`, and give the same output. In a build with `clift` and without `llvm`, `--tier=auto` is `clift-auto` (the default tier of such a build stays `interp`). `auto3` is `auto` with Cranelift as its first level: a function that becomes warm is translated by Cranelift, one that stays hot is compiled again by LLVM at O2 (a yavs built with both features, otherwise `E0120`); the output is the same. `--verbose` prints, on stderr, a note per function left to the
   interpreter and how many instructions were compiled (`llvm`), or a note per hot function as
   the compile thread takes it (`auto`, so their order and number depend on timing). The test
   runner passes neither; use `yavs.sim_flags`.

@@ -492,6 +492,9 @@ mod tests {
         assert!(tier(&[]) == auto);
         assert!(tier(&["--vhpi=plugin.so"]) == auto);
         assert!(tier(&["--dap=stdio"]) == elab::TierArg::Interp);
+        if cfg!(all(feature = "clift", not(feature = "llvm"))) {
+            assert!(tier(&["--tier=auto"]) == elab::TierArg::CliftAuto);
+        }
         assert!(tier(&["--vhpi=plugin.so", "--tier=interp"]) == elab::TierArg::Interp);
     }
 }

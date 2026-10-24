@@ -6984,3 +6984,30 @@ activation, #678) are the largest block of steps. `yavs_rt_host` is 2.5 percent 
 are fat pairs returned by calls and natives and pointers loaded from slots, which have no static space). Tried and dropped because they moved
 nothing: `Field` keeping the space of its base (reader 78 M to 68 M calls, instructions 0.995, writer level), constant tables read by a run-time
 index (`Known::ConstAny`: no site in these designs).
+
+## Whole record signals: `SigGather` and `SigScatter` (#677, 2026-10-24)
+
+A record signal whose fields are records, scalars or arrays of scalars is read as a whole by one `SigGather` (also the per-activation copy of #630) and
+driven as a whole by one waveform element by one `SigScatter` (`docs/decisions.md` "Whole record signals: gather and scatter"). Both are in the IR, so
+every tier and a later code generator run them; the interpreter does a Rust loop over a plan made from the leaf table and the signal's descriptor (kept
+per runtime), the compiled tier steps them. Parts of a record signal, arrays of records, signal parameters and drives of several waveform elements keep
+the per-leaf code. Bench builds (`tools/build-bench.sh --features llvm`) of the commit before and after, `--tier=interp --threads 1`, user instructions
+(`tools/realbench/run.py --compare`, one run each; the cycle and wall figures of that tool ran on a loaded host and are not used):
+
+| test | before | after | change |
+|---|---:|---:|---:|
+| synthetic record of 233 `std_logic` leaves, read and driven 20 000 times | 3 786 M | 1 735 M | -54 % |
+| `grlib_leon3mp`, whole run | 916.7 G | 815.6 G | -11.0 % |
+| `grlib_leon3mp`, first 150 us (cycles `perf stat`: 89.5 G to 82.0 G, -8.4 %) | 196.1 G | 182.2 G | -7.1 % |
+| `fletcher_bufferreader` | 36.79 G | 26.97 G | -26.7 % |
+| `neorv32_single_cache` | 42.33 G | 37.56 G | -11.3 % |
+| `neorv32_single_min` | 47.48 G | 43.25 G | -8.9 % |
+| `olo_axi_master_full` | 0.84 G | 0.77 G | -8.3 % |
+| `fletcher_bufferwriter_512` | 92.04 G | 86.78 G | -5.7 % |
+| `fletcher_bufferwriter_prim32` | 1.77 G | 1.65 G | -6.8 % |
+| `sc5_fifo_repack`, `osvvm_axis_random`, `osvvm_axi4_random`, `uvvm_axistream_vvc`, `poc_cache_cpu`, `hdlm_axi_fifo`, `hdlm_axi_crossbar`, `hdlm_register_file`, `vunit_axi_dma`, `vai_window_gen_interlock` | | | within 0.3 % |
+
+The LEON3 integer unit's `comb` (VHDL-level `--profile`, 100 us, a loaded host so a hint): 1281 to 1011 samples (-21 %), 26 018 to 19 181 IR instructions;
+what is left in it are the reads and drives of single fields of other records (495 reads, 93 drives). `sigrec_copy` ops 52 919 to 29 817. In the
+233-leaf design the interpreter's two loops are now 32 % of the instructions and the kernel's per-leaf work (`assign_code_fast`, `commit_code`,
+`run_batch`, `commit_out`) 54 %, which `docs/design/record-signal-layout.md` and the equal-value drop of the kernel lane address.

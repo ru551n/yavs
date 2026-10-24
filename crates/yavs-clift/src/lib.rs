@@ -84,16 +84,27 @@ impl First {
 }
 
 #[cfg(feature = "clift")]
-impl yavs_llvm::rt::FirstLevel for First {
+impl yavs_llvm::Generator for First {
+    fn start_us(&self) -> f64 {
+        45.0
+    }
+
     fn compile(
         &mut self,
         prog: &yavs_ir::Program,
         id: FuncId,
         f: &yavs_ir::Func,
-    ) -> Result<(RunFn, usize), String> {
+        _level: yavs_llvm::OptLevel,
+        _part: yavs_llvm::native::Part,
+    ) -> Result<yavs_llvm::native::Compiled, String> {
         let (cid, _) = self.0.define(prog, id, f)?;
         self.0.finalize()?;
-        Ok((self.0.entry(cid), f.reg_ty.len()))
+        Ok(yavs_llvm::native::Compiled {
+            run: Some(self.0.entry(cid)),
+            nregs: f.reg_ty.len(),
+            native: 0,
+            call: 0,
+        })
     }
 }
 

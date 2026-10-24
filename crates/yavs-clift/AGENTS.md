@@ -15,7 +15,7 @@ Spike for #481 item 1; measurements in `docs/STATUS.md` "clift", decision in `do
   `AutoTier` (`--tier=clift-auto`) translates the functions where the sampled interpreter time
   reaches their `Heat`, on one background thread (the scheme of `yavs-llvm`'s `AutoTier`, one
   level).
-- `First` (`FirstLevel`) is the Cranelift first level of `yavs-llvm`'s `AutoTier` (`yavs run --tier=auto3`, a yavs built with both features): interpreter, Cranelift for warm functions, LLVM O2 for those that stay hot.
+- `First` (`yavs_llvm::Generator`) is the Cranelift first level of `yavs-llvm`'s `AutoTier` (`yavs run --tier=auto3`, a yavs built with both features): interpreter, Cranelift for warm functions, LLVM O2 for those that stay hot.
 - Everything is behind the `clift` feature (off by default); `yavs --features clift`.
 - Depends on `yavs-llvm` (without its `llvm` feature) for `rt.rs`, which holds everything the two
   code generators share, `yavs-interp`, `yavs-ir`.
@@ -26,7 +26,7 @@ Spike for #481 item 1; measurements in `docs/STATUS.md` "clift", decision in `do
 |---|---|
 | `src/lower.rs` | `Jit` (a Cranelift JIT module with the runtime callbacks as symbols), `gen_func` (IR to Cranelift IR per function: register cache per block, side exits, slow paths emitted after the body), `compile`; native-frame variants (`Jit::native_of`, `try_native`, `build`, `Gen::native_call`, `record_frame`) and the `Inl` inliner |
 | `src/auto.rs` | `AutoTier`, `Heat` (sampling tier-up) |
-| `src/lib.rs` | `ClifTier`, `First` (the `FirstLevel` generator for `--tier=auto3`) |
+| `src/lib.rs` | `ClifTier`, `First` (the `Generator` for `--tier=auto3`) |
 | `tests/tier.rs` | The LLVM tier's tier-against-interpreter tests, run against this tier |
 
 ## 3. Design decisions that bind this module

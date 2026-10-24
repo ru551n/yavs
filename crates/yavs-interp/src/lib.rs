@@ -19,6 +19,7 @@ mod env;
 mod exec;
 mod foreign;
 mod gather;
+mod pmemo;
 mod pre;
 mod scan;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
@@ -53,6 +54,7 @@ pub use debug::{
 pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
+pub use pmemo::pmemo_stats;
 pub use pre::{ScalarDrive, light_ieee as light_native, scalar_drives, static_wait};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};

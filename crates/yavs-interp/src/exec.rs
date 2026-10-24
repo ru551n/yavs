@@ -582,6 +582,8 @@ pub(crate) struct Machine {
     /// The process may switch to a copy specialised to its instance data (`specialise`): the
     /// parameters of `for` generates in its data, which the copy does not fold.
     spec: Option<Arc<[(u32, u32)]>>,
+    /// The memo of pure calls this process keeps (`pmemo.rs`), made at its first memoised call.
+    pub(crate) pm: Option<Box<crate::pmemo::State>>,
 }
 
 /// The fields of a machine that `view_root` reads and the interpreter does not (see
@@ -1031,6 +1033,7 @@ impl Machine {
             root_process: false,
             quick_fault: None,
             spec: None,
+            pm: None,
             spec_at: u32::MAX,
             hot: false,
             execs: 0,
@@ -1460,6 +1463,11 @@ impl Machine {
         self.root_process = true;
     }
 
+    /// Whether a debugger is attached.
+    pub(crate) fn has_debugger(&self) -> bool {
+        self.dbg.is_some()
+    }
+
     /// Whether `run_quick` applies (no debugger).
     pub(crate) fn can_run_quick(&self) -> bool {
         self.dbg.is_none()
@@ -1848,7 +1856,7 @@ impl Machine {
     }
 
     #[inline(always)]
-    fn set(&mut self, r: Reg, v: u64) {
+    pub(crate) fn set(&mut self, r: Reg, v: u64) {
         self.regs[r.0 as usize] = v;
     }
 
@@ -4771,6 +4779,70 @@ impl Machine {
         {
             k = to as usize;
         }
+        // `Op::Call`, and `Op::CallM` for a callee the memo of pure calls may answer (`$memo`).
+        macro_rules! call_arm {
+            ($callee:expr, $start:expr, $len:expr, $dst:expr, $memo:expr) => {{
+                let (callee, start, len, dst) = ($callee, $start, $len, $dst);
+                self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
+                callee_look!(callee);
+                let args = yavs_ir::Regs { start, len };
+                let dst = (dst != pre::NONE).then_some(Reg(dst));
+                let cid = FuncId(callee);
+                let cf = prog
+                    .func(cid)
+                    .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
+                let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                // A function the compiled tier calls on a native frame (`Tier::call`).
+                if TIER
+                    && let Some(t) = tier
+                    && rt.native.callable(callee)
+                    && let Some(flow) = self.tier_call(t, rt, f, cid, cf, args, dst, None, ctx)?
+                {
+                    if let Flow::Next = flow {
+                        k = entry!(self.frames[top].pc + 1)? as usize;
+                        continue;
+                    }
+                    return Ok(flow);
+                }
+                if $memo
+                    && !cpre.memo_off.load(Ordering::Relaxed)
+                    && let Some(sig) = prog.memo_sig(cid)
+                {
+                    match t!(self.memo_call(prog, f, cid, sig, args, dst, ctx)) {
+                        crate::pmemo::Done::Yes => {
+                            k += 1;
+                            enter!();
+                            continue;
+                        }
+                        crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
+                        crate::pmemo::Done::No => {}
+                    }
+                }
+                if !TIER && cpre.lean {
+                    let regs = f
+                        .regs(args)
+                        .ok_or_else(|| ice_s!("operand list out of range"))?;
+                    self.call_lean(cf, cid, cpre, regs, dst, None)?;
+                } else {
+                    self.call_pre(f, cf, cid, cpre, args, dst, None)?;
+                }
+                save_caller!();
+                // The callee's ops go on in this loop.
+                top += 1;
+                func = cid;
+                f = cf;
+                code = &cpre.code;
+                ops = &code.ops;
+                k = match code.first {
+                    pre::NONE => entry!(0)? as usize,
+                    // The parameters are in their registers (`call_pre`): not loaded again.
+                    _ if !TIER && code.skip != pre::NONE => code.skip as usize,
+                    first => first as usize,
+                };
+                rebind!();
+                tick!();
+            }};
+        }
         enter!();
         loop {
             // Compiled out of a release build: even an empty call moved the loop's code (+9 percent of
@@ -5529,53 +5601,13 @@ impl Machine {
                     start,
                     len,
                     dst,
-                } => {
-                    self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                    callee_look!(callee);
-                    let args = yavs_ir::Regs { start, len };
-                    let dst = (dst != pre::NONE).then_some(Reg(dst));
-                    let cid = FuncId(callee);
-                    let cf = prog
-                        .func(cid)
-                        .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
-                    let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
-                    // A function the compiled tier calls on a native frame (`Tier::call`).
-                    if TIER
-                        && let Some(t) = tier
-                        && rt.native.callable(callee)
-                        && let Some(flow) =
-                            self.tier_call(t, rt, f, cid, cf, args, dst, None, ctx)?
-                    {
-                        if let Flow::Next = flow {
-                            k = entry!(self.frames[top].pc + 1)? as usize;
-                            continue;
-                        }
-                        return Ok(flow);
-                    }
-                    if !TIER && cpre.lean {
-                        let regs = f
-                            .regs(args)
-                            .ok_or_else(|| ice_s!("operand list out of range"))?;
-                        self.call_lean(cf, cid, cpre, regs, dst, None)?;
-                    } else {
-                        self.call_pre(f, cf, cid, cpre, args, dst, None)?;
-                    }
-                    save_caller!();
-                    // The callee's ops go on in this loop.
-                    top += 1;
-                    func = cid;
-                    f = cf;
-                    code = &cpre.code;
-                    ops = &code.ops;
-                    k = match code.first {
-                        pre::NONE => entry!(0)? as usize,
-                        // The parameters are in their registers (`call_pre`): not loaded again.
-                        _ if !TIER && code.skip != pre::NONE => code.skip as usize,
-                        first => first as usize,
-                    };
-                    rebind!();
-                    tick!();
-                }
+                } => call_arm!(callee, start, len, dst, false),
+                Op::CallM {
+                    func: callee,
+                    start,
+                    len,
+                    dst,
+                } => call_arm!(callee, start, len, dst, true),
                 Op::CallProt {
                     func: callee,
                     obj,
@@ -7828,6 +7860,7 @@ impl Machine {
     }
 
     /// `Inst::Call` of a function by its IR id (compiled code's calls, `TierHost::step`).
+    #[allow(clippy::too_many_arguments)]
     fn call_regs(
         &mut self,
         prog: &Program,
@@ -7836,7 +7869,15 @@ impl Machine {
         args: yavs_ir::Regs,
         dst: Option<Reg>,
         rt: &Runtime,
+        ctx: &mut Option<&mut Ctx<'_>>,
     ) -> R<Flow> {
+        if let Some(sig) = prog.memo_sig(func) {
+            match self.memo_call(prog, f, func, sig, args, dst, ctx)? {
+                crate::pmemo::Done::Yes => return Ok(Flow::Next),
+                crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
+                crate::pmemo::Done::No => {}
+            }
+        }
         let callee = prog
             .func(func)
             .ok_or_else(|| ice_f!("call of missing function {func}"))?;
@@ -7977,6 +8018,23 @@ impl Machine {
             .and_then(|()| self.call(prog, func, &cells, dst));
         self.cells = cells;
         r
+    }
+
+    /// Push the frame of the call `func(args)` and run it until it returns (`Outcome::Returned`
+    /// with its value, the frame popped but `dst` not written) or the process stops inside it
+    /// (a report at the stop severity: the frames stay).
+    pub(crate) fn call_to_end(
+        &mut self,
+        prog: &Program,
+        f: &Func,
+        func: FuncId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> R<Outcome> {
+        let base = self.frames.len();
+        self.call_with(prog, f, func, None, args, dst)?;
+        self.exec::<false>(ctx, base)
     }
 
     fn push_args(
@@ -8631,6 +8689,13 @@ impl Machine {
                 return rt_err(w);
             }
             Inst::Call { func, args, dst } => {
+                if let Some(sig) = prog.memo_sig(func) {
+                    match self.memo_call(prog, f, func, sig, args, dst, ctx)? {
+                        crate::pmemo::Done::Yes => return Ok(Flow::Next),
+                        crate::pmemo::Done::Suspend => return Ok(Flow::Suspend),
+                        crate::pmemo::Done::No => {}
+                    }
+                }
                 return self.call_with(prog, f, func, None, args, dst);
             }
             Inst::CallIndirect { func, args, dst } => {
@@ -8998,6 +9063,9 @@ impl Machine {
                 self.set(dst, v.into());
             }
             Inst::Report { msg, len, severity } => {
+                if let Some(p) = self.pm.as_mut() {
+                    p.reports += 1;
+                }
                 let s = sev(self.r(severity))?;
                 let text: String = self
                     .rd(self.r(msg), self.r(len))?
@@ -9359,7 +9427,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let r = match f.code.get(at as usize) {
             // As the fast loop calls (`Op::Call`).
             Some(&Inst::Call { func, args, dst }) => {
-                m.call_regs(self.prog, f, func, args, dst, self.rt)
+                m.call_regs(self.prog, f, func, args, dst, self.rt, self.ctx)
             }
             // Without the generic dispatch of `step`.
             Some(&Inst::CallNative { native, args, dst }) => {

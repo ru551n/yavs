@@ -44,6 +44,11 @@ pub(crate) struct Pre {
     /// A call writes these registers itself and goes on at `Code::skip`.
     pub pro: Box<[u32]>,
     pub nested: bool,
+    /// The memo of pure calls is off for this function in every process (`pmemo::State::look`
+    /// found too few repeats in several processes).
+    pub memo_off: std::sync::atomic::AtomicBool,
+    /// Processes that gave the memo of this function up.
+    pub memo_votes: std::sync::atomic::AtomicU32,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
     /// For each pc (and one past the end), the first pc at or after it that is not a
@@ -189,6 +194,8 @@ impl Pre {
             params,
             pro,
             nested: f.parent.is_some(),
+            memo_off: Default::default(),
+            memo_votes: Default::default(),
             frame,
             next,
             code,
@@ -907,6 +914,13 @@ pub(crate) enum Op {
     },
     /// `Inst::Call`; `dst` is `NONE` for a procedure.
     Call {
+        func: u32,
+        start: u32,
+        len: u32,
+        dst: u32,
+    },
+    /// `Inst::Call` of a function the memo of pure calls may answer (`pmemo.rs`).
+    CallM {
         func: u32,
         start: u32,
         len: u32,
@@ -4116,12 +4130,25 @@ impl Code {
                     dope: dope.0,
                     dim,
                 },
-                Inst::Call { func, args, dst } => Op::Call {
-                    func: func.0,
-                    start: args.start,
-                    len: args.len,
-                    dst: dst.map_or(NONE, |d| d.0),
-                },
+                Inst::Call { func, args, dst } => {
+                    let (func, start, len, dst) =
+                        (func.0, args.start, args.len, dst.map_or(NONE, |d| d.0));
+                    if prog.memo_sig(yavs_ir::FuncId(func)).is_some() {
+                        Op::CallM {
+                            func,
+                            start,
+                            len,
+                            dst,
+                        }
+                    } else {
+                        Op::Call {
+                            func,
+                            start,
+                            len,
+                            dst,
+                        }
+                    }
+                }
                 Inst::CallProt {
                     func,
                     obj,

@@ -7828,3 +7828,46 @@ value. After the message was sunk (round 16) the second chain and call were what
   through `ld`/`pend`; `layout_keep` takes the deferred value out for its length and puts it back** (the fast path redefines the register
   with `st`, which clears it, and may still read the old value as an input). The test is `cached_layout_replaces_a_deferred_value_of_its_register`
   (`crates/yavs-llvm/tests/tier.rs`).
+
+## Memo of pure calls (yavs-ir `memo_fn.rs`, yavs-interp `pmemo.rs`, #701, 2026-10-24)
+
+Found with the PoC cache testbench: `ffdre(q, d, rst, INIT)` and `mux(sel, a, b)` on 2-bit vectors cost 12 000 to 20 000 instructions a call
+(`resize(INIT, q'length)` alone is 60 percent of `ffdre`) and are called with the same few values over and over. Decision (user,
+2026-10-24, option 3 of #701): **the interpreter keeps a runtime memo of the pure calls it ran, keyed by the bytes of their arguments, and
+answers a repeat from it.** Options 1 (a function copy per constant facts of its arguments) and 2 (a once-per-site memo of `resize`) were
+not taken: the first needs a second kind of copy and reserved slots and only folds the lengths, the second a persistent place for result bytes.
+The reference simulator folds a pure call with constant arguments once, before the run; this memo also serves arguments that vary but repeat
+(register state), which no folding can.
+
+- **What qualifies** (`Program::memo_sig`, once per function, on the lowered code so the answer does not depend on which function ran first):
+  a `pure` function (`FuncFlags::PURE`) that is not nested, cannot suspend, touches no shared state and no coverage, has no signal
+  parameter, takes only `in` scalars of integer, physical, enumeration or real type and `in` arrays of those (descriptor and elements are the
+  key, `Param::arr` names the array type), and returns one of those; whose instructions, and those of every function it calls, are
+  computations, checks, frame, constant-pool and package-constant reads (`Inst::Alloc`, `NewFrame` and local heap objects included) with no
+  signal, instance-data, enclosing-frame, shared-variable, clock, file, foreign, indirect or protected access, calling only natives from
+  `native_is_pure` (the list package-initialisation caching uses); and that is worth the key: a loop, a call or 120 instructions (a
+  function of a few instructions runs faster than its key is built).
+- **Exactness.** The key holds every byte the call can read from its arguments (the argument words; for an array its descriptor, so bounds
+  and direction count, and its element bytes, whole blocks for bit-planes) and is compared whole on a hit: the hash only picks the slot.
+  Everything else the body reads is constant for the run (`Pkg` data are written during initialisation only, `Machine::wr` refuses
+  later). A hit hands out a copy (a fat pair in temporary memory for an array), never the stored bytes. **Reports**: a `Report` in the
+  body is allowed; `State::reports` counts the reports made (`Inst::Report`, `ieee::report`, before the severity filter), a call during which
+  it moved is not kept, so a function that reports reports on every call, and a call that fails or stops is never kept.
+- **Where.** Only simulation code in the interpreter: not elaboration-time evaluation (`ctx` is `None`), not under a debugger or with
+  coverage counters, and `YAVS_NO_PMEMO=1` turns it off. The predecoder makes `Op::CallM` of an `Inst::Call` whose callee qualifies and runs
+  every other call as before (one macro, `call_arm!`, is both arms, so an ordinary call has no test); `Machine::step` and `call_regs`
+  (calls from compiled code that the host steps) ask the memo too. A miss runs the call to its end from inside the call
+  (`Machine::call_to_end`: `exec` with the frame count as base), at most `NEST` = 8 deep (a recursive function memoises its top levels, the
+  rest run as usual and the native stack stays small).
+- **Bounds.** Per process and function a direct-mapped table of 32 entries that doubles up to 256 while keys evict each other; a key or
+  result over 1 KiB is not kept. The first 64 calls of a function in a process decide: fewer than one in eight repeating switches it off
+  for that process, and for every process when three have (`Pre::memo_off`); a function that is off costs a flag test in the call. Per
+  process and without locks, so hits and counters are the same at every thread count. `YAVS_COUNTERS` shows `pmemo_hits` and `pmemo_runs`.
+- **Not done.** A function the tier compiled for native frames is called directly from compiled code and bypasses the memo (making it
+  step the call would slow a function whose calls do not repeat, and the tier decides statically); the memo applies to every call the
+  interpreter makes, also from compiled callers that call interpreted code. Records, access types, signal parameters and out parameters
+  are not keyed. A table shared by the processes of one design unit would save the first call of each (about 4 percent of the PoC run is
+  misses).
+- **Measured** (bench builds, instructions of `--tier=interp`, `perf stat`): numbers in `docs/STATUS.md` "Memo of pure calls".
+  Work-counter case `pure_memo` (`crates/yavs/tests/perf.rs`), correctness case `crates/yavs/tests/pmemo.rs` (bit-identical runs with
+  and without the memo at 1 and 4 threads and with early specialised copies, a function that reports on every call).

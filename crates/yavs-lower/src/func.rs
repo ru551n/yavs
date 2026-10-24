@@ -1100,6 +1100,10 @@ pub(crate) fn subprogram(
         fx.fb.flag(FuncFlags::PURE);
     }
     fx.ret = sp.ret;
+    if let (SubprogramKind::Function { .. }, Some(r)) = (&sp.kind, sp.ret) {
+        let t = fx.ty(db.base(r), decl.span)?;
+        fx.fb.ret_ty(t);
+    }
     fx.stmt_start(StmtKind::Subprogram, decl.span);
     fx.method_prologue(d, *scope, depth, decl.span)?;
     // The body's own parameter declarations (a body completing a specification has its own
@@ -1244,6 +1248,8 @@ pub(crate) fn subprogram(
                 if dope != off + 8 {
                     return Err(fx.cx.ice(decl.span, "array parameter slots not adjacent"));
                 }
+                let t = fx.ty(db.base(p.subtype), decl.span)?;
+                fx.fb.param_array(off, t);
                 fx.fb.root(off, RootKind::Addr);
                 fx.fb.root(dope, RootKind::Addr);
                 Obj::Array {

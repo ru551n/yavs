@@ -230,6 +230,9 @@ fn signed_of(bits: u64, n: usize) -> i64 {
 /// A report from a native, as `Inst::Report` does it. The process ends after a report at the
 /// stop severity (`Machine::ieee_stop`).
 pub(crate) fn report(m: &mut Machine, ctx: Cx<'_, '_, '_>, s: Severity, text: &str) -> R<()> {
+    if let Some(p) = m.pm.as_mut() {
+        p.reports += 1;
+    }
     match ctx.as_deref_mut() {
         Some(c) => {
             if !m.rt.asserts.report(c, s) {

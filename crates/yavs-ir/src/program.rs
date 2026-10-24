@@ -401,6 +401,9 @@ pub struct Param {
     pub class: ParamClass,
     pub mode: Mode,
     pub ty: Option<TyId>,
+    /// The data cell of an array parameter passed by value: the array type (the next parameter
+    /// is its descriptor). `ty` stays `None` so the debugger shows no local for the cell.
+    pub arr: Option<TyId>,
 }
 
 /// A named object in a frame slot.
@@ -484,10 +487,16 @@ pub struct Func {
     /// the last functions of a program, never stored.
     #[serde(skip)]
     pub spare: bool,
+    /// A function: the base type of its result (`None` for a procedure, a process).
+    pub ret_ty: Option<TyId>,
     /// The optimised copy, made when [`Program::func`] first asks (`None`: the code is as
     /// lowered).
     #[serde(skip)]
     pub opt: std::sync::OnceLock<Option<Box<Func>>>,
+    /// What a call of this function can be memoised on ([`Program::memo_sig`]), worked out the
+    /// first time asked.
+    #[serde(skip)]
+    pub(crate) memo: std::sync::OnceLock<Option<Box<crate::MemoSig>>>,
     /// The body (`code`, `loc`, `operands`, `resume`) of a function read from a stored program
     /// (see [`lazy_bodies`]): these four are empty here and [`Func::full`] decodes them.
     #[serde(skip)]
@@ -716,7 +725,9 @@ impl Func {
             defined: self.defined,
             nested: self.nested,
             spare: false,
+            ret_ty: self.ret_ty,
             opt: Default::default(),
+            memo: Default::default(),
             lazy: None,
             fetches: Default::default(),
         }
@@ -747,7 +758,9 @@ impl Func {
             defined: false,
             nested: false,
             spare: true,
+            ret_ty: None,
             opt: Default::default(),
+            memo: Default::default(),
             lazy: None,
             fetches: Default::default(),
         }

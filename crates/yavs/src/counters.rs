@@ -35,6 +35,7 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     }
     let (hits, runs) = yavs_elab::call_cache_stats();
     let (reads, idle) = yavs_wave::var_counts();
+    let (memo_hits, memo_runs) = yavs_interp::pmemo_stats();
     let mut rows = vec![
         ("cycles", s.cycles),
         ("process_runs", s.process_runs),
@@ -57,6 +58,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
         ("opt_funcs", yavs_ir::optimised_functions()),
         ("elab_restarts", yavs_ir::restarted_calls()),
         ("gc_collections", yavs_interp::gc_collections()),
+        ("pmemo_hits", memo_hits),
+        ("pmemo_runs", memo_runs),
         ("wave_var_reads", reads),
         ("wave_var_idle_skips", idle),
     ];

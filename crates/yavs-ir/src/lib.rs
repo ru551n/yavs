@@ -14,6 +14,7 @@ mod dump;
 pub mod gather;
 pub mod ieee;
 mod inst;
+mod memo_fn;
 pub mod opt;
 mod program;
 mod ty;
@@ -26,6 +27,7 @@ pub use inst::{
     ForceKind, Inst, IntOp, IntUnOp, LNumOp, LOp, Part, PhysOp, Reg, RegTy, Regs, Role,
     SCATTER_PART, SCATTER_REJECT, SIG_PART_BYTES, Width,
 };
+pub use memo_fn::{MemoArg, MemoArr, MemoSig, native_is_pure};
 pub use program::COV_INPUTS;
 pub use program::{
     Block, CaseTable, CheckMsg, ConstData, CovCond, CovInfo, CovKind, CovNode, CovRow, Dir,

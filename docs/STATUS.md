@@ -7529,3 +7529,31 @@ the instructions ratio 1.00 in both, no test above 1.01 but `poc_arith_addw` (0.
   code (`AllocReadVec`, `SigReadVec`, `NewDope`, `MakeDope`, `AllocCat`, `Cat`, `NewPair`, two stores per call) is the
   calling convention of the natives (#697). A native whose arguments are not one fat pair (#697) is not shared until
   `shareable` and the pair test in `find_pairs` know its form.
+
+## Memo of pure calls (yavs-ir `memo_fn.rs`, yavs-interp `pmemo.rs`, #701, 2026-10-24)
+
+Calls of pure functions on plain scalars and vectors are answered from a per-process memo when their arguments repeat (decisions.md
+"Memo of pure calls"). Measured with bench builds (`tools/build-bench.sh --features llvm`, main at 4d53f7a4 against main plus the memo),
+`perf stat -e instructions:u`, no timing cores (instructions only: the cycle geomean the interpreter rule asks for is not measured),
+`--threads 1`:
+
+| Run | before | after | |
+|---|---:|---:|---|
+| `poc_cache_cpu` interp (`ffdre`, `mux`, `resize` on 2-bit vectors; 688 000 hits, 17 000 runs) | 14.32 G | 8.66 G | -40 % |
+| `poc_cache_cpu` auto | 13.45 G | 8.96 G | -33 % |
+| `grlib_leon3mp` 100 us, interp (10.9 M hits, 288 000 runs) | 137.47 G | 116.85 G | -15.0 % |
+| `grlib_leon3mp` whole run, interp (14.9 M hits, 421 000 runs) | 673.55 G | 631.39 G | -6.3 % |
+| `fletcher_bufferwriter_512` interp | 61.50 G | 59.58 G | -3 % |
+| `neorv32_single_min` / `neorv32_dual_full` interp | 37.71 / 25.28 G | 37.18 / 23.94 G | -1 % / -5 % |
+| `osvvm_axis_random`, `uvvm_sb_slv`, `uvvm_util_rand`, `olo_fix_cordic_rot` interp | 3.56, 12.73, 14.48, 3.62 G | 2.91, 10.75, 12.41, 2.88 G | -18, -16, -14, -20 % |
+
+The 41 tests of `tools/realbench` (all but `grlib_leon3mp`, measured above, and the excluded one), `--compare`, one counted run each:
+geometric mean of the instruction ratio 0.93 for `interp` and 0.93 for `auto` (wall and CPU ratios are not meaningful, the host was
+loaded). The internal and head-to-head designs of `tools/bench` (25, `interp`): 0.994, the largest change `calls` 0.96, none above
+1.005. An instruction count from one run after a change of the compilation cache can differ by tens of percent for a short test
+(`en_cl_fix_pkg` read 1.39 in the first run and 0.92 in the steady state): look at the steady state before believing a ratio above 1.
+
+What the memo does not reach: calls of functions the tier compiled for native frames (`--tier=llvm` with everything compiled: the PoC run is
+unchanged there), records, access types and out parameters, and elaboration-time calls. Idea taken from the reference simulator: folding
+a pure call with constant arguments once (here a runtime memo, because the PoC registers' arguments are values that repeat, not constants);
+ours differs in keeping nothing across runs and verifying every hit by the argument bytes.

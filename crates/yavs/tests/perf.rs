@@ -417,6 +417,18 @@ case!(
     ]
 );
 case!(memo_wide, "q=64442", &[], [("ops", Max(75700))]);
+// Pure functions on vectors called with repeating arguments (PoC ffdre, resize, mux): the memo of
+// pure calls (#701) answers 436 of the 448 calls (ops 72600 without it).
+case!(
+    pure_memo,
+    "q=9",
+    &[],
+    [
+        ("pmemo_hits", Min(420)),
+        ("pmemo_runs", Max(14)),
+        ("ops", Max(17800))
+    ]
+);
 case!(
     edge_forms,
     "edges=",

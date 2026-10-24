@@ -238,7 +238,9 @@ impl ProgramBuilder {
             defined: false,
             nested: false,
             spare: false,
+            ret_ty: None,
             opt: Default::default(),
+            memo: Default::default(),
             lazy: None,
             fetches: Default::default(),
         });
@@ -264,6 +266,7 @@ impl ProgramBuilder {
             operands: Vec::new(),
             flags: FuncFlags::default(),
             body: None,
+            ret_ty: None,
         }
     }
 
@@ -529,6 +532,7 @@ pub struct FuncBuilder<'a> {
     operands: Vec<Reg>,
     flags: FuncFlags,
     body: Option<BlockId>,
+    ret_ty: Option<TyId>,
 }
 
 impl FuncBuilder<'_> {
@@ -589,6 +593,7 @@ impl FuncBuilder<'_> {
             class,
             mode,
             ty,
+            arr: None,
         });
         if let Some(ty) = ty {
             self.locals.push(Local {
@@ -608,6 +613,19 @@ impl FuncBuilder<'_> {
 
     pub fn flag(&mut self, f: FuncFlags) {
         self.flags.insert(f);
+    }
+
+    /// The parameter at `slot` is an array passed by value of type `ty` (its descriptor is the
+    /// next parameter): what the memo of pure calls reads its bytes by (`Param::arr`).
+    pub fn param_array(&mut self, slot: u32, ty: TyId) {
+        if let Some(p) = self.params.iter_mut().find(|p| p.slot == slot) {
+            p.arr = Some(ty);
+        }
+    }
+
+    /// The function's result type (`Func::ret_ty`).
+    pub fn ret_ty(&mut self, ty: TyId) {
+        self.ret_ty = Some(ty);
     }
 
     /// The entry block is `BlockId(0)`.
@@ -729,6 +747,7 @@ impl FuncBuilder<'_> {
         f.operands = self.operands;
         f.flags = self.flags;
         f.body = self.body;
+        f.ret_ty = self.ret_ty;
         f.defined = true;
     }
 }

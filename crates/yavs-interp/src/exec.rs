@@ -537,6 +537,8 @@ pub(crate) struct Machine {
     /// which cost a design of thousands of processes three cache misses per activation).
     vc: ViewCache,
     pub heap: Heap,
+    /// The roots scan of the last `publish_shared`, kept for its buffers.
+    rscratch: heap::Refs,
     /// A native `ieee` subprogram made a report at the stop severity: the process ends after
     /// the call, as after `Inst::Report`.
     pub ieee_stop: bool,
@@ -1036,6 +1038,7 @@ impl Machine {
             pm: None,
             spec_at: u32::MAX,
             hot: false,
+            rscratch: heap::Refs::default(),
             execs: 0,
         }
     }
@@ -1654,11 +1657,20 @@ impl Machine {
     }
 
     fn refs_in(&self, regs: bool) -> Option<heap::Refs> {
-        let prog = &self.rt.prog;
         let mut r = heap::Refs::default();
+        self.refs_into(regs, &mut r).then_some(r)
+    }
+
+    /// [`Machine::refs_in`] into `r` (empty), which keeps its buffers: false when a root cannot be located.
+    fn refs_into(&self, regs: bool, r: &mut heap::Refs) -> bool {
+        self.refs_scan(regs, r).is_some()
+    }
+
+    fn refs_scan(&self, regs: bool, r: &mut heap::Refs) -> Option<()> {
+        let prog = &self.rt.prog;
         for (k, fr) in self.frames.iter().enumerate() {
             let f = prog.func(fr.func)?;
-            if !heap::slot_roots(prog, &f.roots, self.fslots(k)?, &mut r) {
+            if !heap::slot_roots(prog, &f.roots, self.fslots(k)?, r) {
                 return None;
             }
             if regs {
@@ -1692,7 +1704,7 @@ impl Machine {
                 }
             }
         }
-        Some(r)
+        Some(())
     }
 
     /// Whether `v` is the handle of a live object in this process's heaps (`gc-stress`).
@@ -1721,22 +1733,37 @@ impl Machine {
         }
         #[cfg(test)]
         ROOT_BUILDS.with(|c| c.set(c.get() + 1));
-        let mine = self.refs(false).map(|r| ProcRoots {
-            pinned: r.pinned(SHARED_HEAP),
-            handles: r
-                .handles
-                .into_iter()
-                .filter(|&h| heap::tag_of(h) == heap::SHARED)
-                .collect(),
-        });
+        // The buffers of the last scan and of this process's entry are reused: a serial process
+        // that wakes millions of times builds its roots at every one.
+        let mut r = std::mem::take(&mut self.rscratch);
+        r.handles.clear();
+        r.addrs.clear();
+        let ok = self.refs_into(false, &mut r);
+        if heap::STRESS && !ok && self.dbg.is_none() {
+            panic!("gc-stress: the roots of a process cannot be located");
+        }
         let Some(sh) = self.sh.as_mut() else {
+            self.rscratch = r;
             return;
         };
         let i = *slot.get_or_insert_with(|| {
             sh.procs.push(None);
             sh.procs.len() - 1
         });
-        sh.procs[i] = mine;
+        if ok {
+            let mine = sh.procs[i].get_or_insert_with(ProcRoots::default);
+            mine.handles.clear();
+            mine.handles.extend(
+                r.handles
+                    .iter()
+                    .copied()
+                    .filter(|&h| heap::tag_of(h) == heap::SHARED),
+            );
+            r.pinned_into(SHARED_HEAP, &mut mine.pinned);
+        } else {
+            sh.procs[i] = None;
+        }
+        self.rscratch = r;
         if sh.heap.as_deref().is_some_and(Heap::has_quarantine)
             && let Some(pinned) = sh.pinned()
             && let Some(h) = sh.heap.as_mut()

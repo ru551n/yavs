@@ -422,16 +422,23 @@ pub struct Refs {
 impl Refs {
     /// Slot indices of heap address space `space` that the addresses point into, sorted.
     pub fn pinned(&self, space: u8) -> Vec<u32> {
-        let mut v: Vec<u32> = self
-            .addrs
-            .iter()
-            .map(|&a| crate::exec::split(a))
-            .filter(|&(sp, _, _)| sp == space)
-            .map(|(_, i, _)| i)
-            .collect();
+        let mut v = Vec::new();
+        self.pinned_into(space, &mut v);
+        v
+    }
+
+    /// [`Refs::pinned`] into `v`, which keeps its buffer (a serial process publishes at every wake).
+    pub fn pinned_into(&self, space: u8, v: &mut Vec<u32>) {
+        v.clear();
+        v.extend(
+            self.addrs
+                .iter()
+                .map(|&a| crate::exec::split(a))
+                .filter(|&(sp, _, _)| sp == space)
+                .map(|(_, i, _)| i),
+        );
         v.sort_unstable();
         v.dedup();
-        v
     }
 }
 

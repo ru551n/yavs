@@ -6927,3 +6927,11 @@ evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, t
   analysed after their user: `fletcher_bufferwriter_512` 36 to 57 units) get entries. Instructions at time 0 (steady state, interp):
   `fletcher_bufferwriter_512` 497.1 M to 263.3 M, `fletcher_bufferreader` 364.9 M to 214.8 M; whole runs 91.94 G to 91.57 G and
   36.74 G to 36.50 G. `hdlm_lfsr` has no late units (it waits for its own entries on the second run as before).
+
+### Record signals as packs of leaves: design (#686, 2026-10-24)
+
+`docs/design/record-signal-layout.md`: runs of up to 64 logic leaves of one record signal in one
+kernel signal, the physical leaf map, which leaves may share a signal, what changes per consumer,
+and six landable steps with expected gains. Measured on a 233-leaf register record (interp): 55% of
+the instructions are IR execution (#677's gather and scatter), 37% per-leaf kernel work (the target
+of the packs). Finding: sim1 keeps one runtime signal per leaf too. Not implemented yet.

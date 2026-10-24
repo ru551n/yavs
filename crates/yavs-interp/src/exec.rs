@@ -593,6 +593,8 @@ struct ViewCache {
     inst_data: usize,
     inst_len: usize,
     nsigs: usize,
+    /// `Limits::max_depth` of the runtime (`TierFrame::max_depth`).
+    max_depth: u64,
 }
 
 /// Registers of a process's root frame up to which it keeps its working vectors
@@ -974,6 +976,7 @@ impl Machine {
                 inst_data: inst.data.as_ptr() as usize,
                 inst_len: inst.data.len(),
                 nsigs: inst.sigs.len(),
+                max_depth: u64::from(rt.limits.max_depth),
             },
             nwin: None,
             nwin_from: 0,
@@ -7255,11 +7258,17 @@ impl Machine {
         }
         let fr = &m.frames[0];
         let (rbase, slen, temp_base) = (fr.rbase as usize, fr.slen, fr.temp_base);
+        let shared_alloc = fr.shared_alloc;
         tf.slots = m.root.as_mut_ptr().wrapping_add(fr.sbase as usize);
         tf.slots_len = u64::from(slen);
-        tf.frame = 0;
-        tf.frame_hi = u64::from(FRAME) << 29;
-        tf.up = [u64::MAX; 2];
+        // `tier_view` writes these three together: the root frame's values stay until a deeper
+        // frame's view replaces them.
+        const ROOT: u64 = (FRAME as u64) << 29;
+        if tf.frame_hi != ROOT {
+            tf.frame = 0;
+            tf.frame_hi = ROOT;
+            tf.up = [u64::MAX; 2];
+        }
         tf.inst = m.vc.inst_data as *const u8;
         tf.inst_len = m.vc.inst_len as u64;
         tf.nsigs = m.vc.nsigs as u64;
@@ -7273,10 +7282,18 @@ impl Machine {
         tf.regs = m.regs.v.as_mut_ptr().wrapping_add(rbase);
         tf.nregs = (m.regs.v.len() - rbase) as u64;
         tf.stack = m.regs.v.as_ptr();
-        tf.max_depth = u64::from(m.rt.limits.max_depth);
-        tf.heap_epoch = m.heap_epochs();
-        tf.flags = m.tier_flags();
+        tf.max_depth = m.vc.max_depth;
         tf.owner = m.vc.owner;
+        // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
+        // process do not promise: its epoch and flags come from the heap and the frame alone.
+        if m.hot {
+            tf.heap_epoch = m.heap.epoch();
+            tf.flags = u64::from(shared_alloc) * crate::TIER_SHARED_ALLOC
+                + u64::from(STAMPS.load(Ordering::Relaxed)) * crate::TIER_STAMPS;
+        } else {
+            tf.heap_epoch = m.heap_epochs();
+            tf.flags = m.tier_flags();
+        }
         tf.cycle = c.cycle();
         tf.known = c.resumed_edge_key();
         true

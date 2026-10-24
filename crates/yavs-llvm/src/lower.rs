@@ -698,7 +698,7 @@ extern "C" fn yavs_rt_deopt_end(env: *mut c_void, mem: *mut Mem, pc: u32) -> u32
 /// caller) holds the time and the first block of planes of its one waveform element.
 extern "C" fn yavs_rt_drive(
     env: *mut c_void,
-    _regs: *mut u64,
+    regs: *mut u64,
     mem: *mut Mem,
     pc: u32,
     driver: u32,
@@ -711,21 +711,48 @@ extern "C" fn yavs_rt_drive(
     // SAFETY: as in `yavs_rt_step`; the caller checked 40 readable bytes at `wave`, 16 where
     // the target keeps bytes (bit 1 of `flags`: one scalar, whose cell is the first word).
     let envp = env as *mut Env<'_>;
+    if flags & 4 == 0 {
+        let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
+        let (delay, block) = if flags & 2 != 0 {
+            (word(0) as i64, [word(1), 0, 0, 0])
+        } else {
+            (word(0) as i64, [word(1), word(2), word(3), word(4)])
+        };
+        // The usual case, taken by the host without a frame view or a result.
+        if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
+            return GO;
+        }
+    }
+    yavs_rt_drive_slow(env, regs, mem, pc, driver, lo, len, wave, flags)
+}
+
+/// `yavs_rt_drive` for a wide target and for the assignments the kernel's fastest path does not
+/// take.
+#[cold]
+#[inline(never)]
+extern "C" fn yavs_rt_drive_slow(
+    env: *mut c_void,
+    _regs: *mut u64,
+    mem: *mut Mem,
+    pc: u32,
+    driver: u32,
+    lo: u64,
+    len: u64,
+    wave: *const u8,
+    flags: u32,
+) -> u32 {
+    // SAFETY: as in `yavs_rt_drive`.
+    let envp = env as *mut Env<'_>;
     let inertial = flags & 1;
     if flags & 4 != 0 {
         return yavs_rt_drive_wide(envp, mem, pc, driver, lo, len, wave, inertial);
     }
     let word = |k: usize| unsafe { std::ptr::read_unaligned(wave.add(k * 8).cast::<u64>()) };
-    let bytes = flags & 2 != 0;
-    let (delay, block) = if bytes {
+    let (delay, block) = if flags & 2 != 0 {
         (word(0) as i64, [word(1), 0, 0, 0])
     } else {
         (word(0) as i64, [word(1), word(2), word(3), word(4)])
     };
-    // The usual case, taken by the host without a frame view or a result.
-    if unsafe { (*envp).host.drive_now(driver, [lo, len], delay, block) } {
-        return GO;
-    }
     unsafe { (*mem).sync(&mut *(*envp).host) };
     let r = catch_unwind(AssertUnwindSafe(|| unsafe {
         (*envp).host.drive_block(
@@ -6146,7 +6173,10 @@ impl Gen {
                         // Up to 64 elements: at most two blocks each side, shifted in registers. A
                         // process does it per activation; in a subprogram the 225 LLVM
                         // instructions are not worth the call they save.
-                        if f.kind == FuncKind::Process {
+                        // A count known only at run time makes the inline body dead weight in
+                        // the wide-vector processes that never copy so few (#634, round 6).
+                        let inline_ok = self.kint(&c, n).is_some_and(|v| v <= 64);
+                        if f.kind == FuncKind::Process && inline_ok {
                             let few = self.icmp(IP::LLVMIntULE, k, self.c64(64));
                             let (inl, call) = (self.block(&c), self.block(&c));
                             LLVMBuildCondBr(self.b, few, inl, call);

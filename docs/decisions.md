@@ -6508,6 +6508,26 @@ activation (both tiers). Decisions, tagged shared (S, any code generator) or LLV
 - **`Mem::end` stores the owner and epoch only while objects are kept, and `nslots` is looked up once** (L): two stores and a
   thread-local read fewer per activation of a process that keeps no objects.
 
+- **`view_root` writes what changed** (S): the root frame's `frame`, `frame_hi` and `up` stay in the view until a deeper frame's view
+  replaces them (`tier_view` writes the three together), `max_depth` is in `vc`, and a `hot` process (no shared state) takes its
+  heap epoch and flags without looking at `sh`. 77 to 68 instructions per activation.
+- **`yavs_rt_drive` is a small hot function and a cold slow path** (L, `yavs_rt_drive_slow`: the wide target and the assignments
+  the kernel's fastest path does not take), as the scalar drive is: 143 to 125 instructions per activation of
+  `neorv32_single_min`.
+- **An `LCopy` is inline only where its count is a known constant of at most 64** (L): a count known only at run time had the inline
+  body (125 LLVM instructions) and the call both, and in the wide-vector processes of the fletcher designs (copies of 512
+  elements) the inline body is never taken: `LCopy` 67 K to 24 K of the 816 K LLVM instructions of `fletcher_bufferreader`, L1
+  instruction-cache misses -17 percent, fills from L3 -15 percent, cycles -2 percent on the reader and -8 on the writer (the host
+  is shared: the sign is consistent over three batches, the size is not). `neorv32_single_min` and the `rtl_*` designs keep their
+  inline copies (equal instructions: the counts are constants there). Forcing every known count of an `LCopy` or a `SigRead`
+  through the helpers was measured too and loses on `neorv32_single_min` (+3 to +8 percent cycles, fewer cache misses and more
+  instructions): the inline expansions pay where they run every activation.
+- **Measured and not taken**: warming the next process of a batch (a `Process::warm` that reads the next machine's first lines
+  while the current one runs: +50 instructions per activation, twice the fills from L3 and +15 percent cycles on `rtl_fan`); the
+  interpreter's fused vector assignment (`Op::LCopyDrive`) run by compiled code through the interpreter's own function
+  (`neorv32_single_min` +2.3 percent instructions: the function and the host lookup of the op cost more than the compiled
+  group they replace); a persistent per-process view in the tier's state (round 2 measured it, see above).
+
 Measured (bench builds, main thread; cycles of the simulation phase, minimum of 7 interleaved runs, core 12; `autoh` is
 `--tier=auto --tier-heat=1,0,0`): see `docs/STATUS.md` "llvm: compiled clocked RTL, round 6". Fills from L3 of `rtl_fan`
 compiled 82 M to 65 M (interpreter 64 M to 59 M).

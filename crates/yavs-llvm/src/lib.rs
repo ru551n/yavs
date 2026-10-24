@@ -13,6 +13,8 @@
 // `lower` and `spike` modules.
 #![allow(unsafe_code)]
 
+#[cfg(feature = "llvm")]
+mod arena;
 pub mod auto;
 mod census;
 pub mod generator;
@@ -30,6 +32,12 @@ pub mod rt;
 #[cfg(feature = "llvm")]
 pub mod spike;
 
+/// What the code arena has placed (`arena.rs`): code bytes, huge-page chunks made, collapses given
+/// up, sections that did not fit; `None` where the arena is not in use.
+#[cfg(feature = "llvm")]
+pub fn code_arena_stats() -> Option<[usize; 4]> {
+    arena::stats()
+}
 pub use auto::{AutoTier, Gens, Heat, Note, exit_now};
 pub use census::callback_counts;
 pub use generator::{Generator, OptLevel, StartError};

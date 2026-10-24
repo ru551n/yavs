@@ -35,6 +35,9 @@ pub(crate) enum Fault {
     Unbound(Box<(String, String)>),
     Internal(String),
     Kernel(SimError),
+    /// A call that only computed is abandoned to run again with a function optimised
+    /// (`Machine::back_budget`).
+    Restart,
 }
 
 pub(crate) type R<T> = Result<T, Fault>;
@@ -675,6 +678,18 @@ fn simple_words(n: u64, d: &[u8]) -> Option<[u64; 4]> {
     Some([n.checked_mul(count)?, n, n, count])
 }
 
+/// Word `k` of layout words.
+fn word_of(words: &[u8], k: u32) -> R<u64> {
+    let o = k as usize * 8;
+    match words.get(o..o + 8) {
+        Some(b) => Ok(le_bytes(b)),
+        None => Err(ice_f!(
+            "read of 8 bytes at {o} outside a temporary object of {} bytes",
+            words.len()
+        )),
+    }
+}
+
 fn sev(v: u64) -> R<Severity> {
     Ok(match v {
         0 => Severity::Note,
@@ -686,7 +701,7 @@ fn sev(v: u64) -> R<Severity> {
 }
 
 #[inline(always)]
-fn to_time(v: i64) -> R<Time> {
+pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
 }
 
@@ -1286,6 +1301,7 @@ impl Machine {
             }
             Fault::Internal(m) => mk(ErrorKind::Internal(format!("interpreter: {m}"))),
             Fault::Kernel(e) => e,
+            Fault::Restart => mk(ErrorKind::Runtime(crate::RESTART.into())),
         };
         if e.trace.is_empty() {
             e.trace = self.trace();
@@ -1819,7 +1835,7 @@ impl Machine {
     }
 
     #[inline]
-    fn ri(&self, r: Reg) -> i64 {
+    pub(crate) fn ri(&self, r: Reg) -> i64 {
         self.r(r) as i64
     }
 
@@ -1848,6 +1864,21 @@ impl Machine {
             .ok_or_else(|| ice_s!("shared state accessed by a process that is not marked serial"))
     }
 
+    /// Constant `idx` as bytes: stored as bytes, or once `obj` has expanded a compact one.
+    #[inline(always)]
+    fn const_mem(&self, idx: u32) -> Option<&[u8]> {
+        match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
+            Some(ConstData::Bytes(b)) => Some(b),
+            Some(_) => self
+                .rt
+                .expanded
+                .get(idx as usize)
+                .and_then(|c| c.get())
+                .map(Vec::as_slice),
+            None => None,
+        }
+    }
+
     /// The object of the spaces that are accessed all the time, without error paths.
     #[inline(always)]
     fn mem_fast(&self, sp: u8, idx: u32) -> Option<&[u8]> {
@@ -1857,16 +1888,7 @@ impl Machine {
             INST => Some(&self.inst.data),
             HEAP => self.heap.data(idx),
             // Constants stored as bytes; compact ones once `obj` has expanded them.
-            CONST => match self.rt.prog.consts.get(yavs_ir::ConstId(idx)) {
-                Some(ConstData::Bytes(b)) => Some(b),
-                Some(_) => self
-                    .rt
-                    .expanded
-                    .get(idx as usize)
-                    .and_then(|c| c.get())
-                    .map(Vec::as_slice),
-                None => None,
-            },
+            CONST => self.const_mem(idx),
             // The state of protected objects and shared variables, and package data.
             SHARED_HEAP => self.sh.as_ref()?.heap.as_ref()?.data(idx),
             SHARED => Some(&self.sh.as_ref()?.vars),
@@ -2062,9 +2084,34 @@ impl Machine {
         self.load_slow(a, w)
     }
 
-    /// `load` from the other spaces, and every error.
+    /// `load` from the instance data, package data, byte constants and shared variables
+    /// (dope pointers of unconstrained parameters point there): each checked in place, everything
+    /// else and every error in `load_cold`. Short on purpose: no error building, so no saved
+    /// registers (#674).
     #[inline(never)]
     fn load_slow(&self, a: u64, w: Width) -> R<u64> {
+        let (sp, idx, off) = split(a);
+        crate::census::slow_load(sp);
+        let mem = match sp {
+            INST => Some(&self.inst.data[..]),
+            PKG => match &self.pkg_init {
+                Some((p, data)) if *p == idx => Some(&data[..]),
+                _ => self.rt.pkgs.get(idx as usize).map(|p| &p.data[..]),
+            },
+            CONST => self.const_mem(idx),
+            SHARED => self.sh.as_ref().map(|s| &s.vars[..]),
+            _ => None,
+        };
+        let n = w.bytes().min(8) as usize;
+        match mem.and_then(|m| m.get(off as usize..off as usize + n)) {
+            Some(b) => Ok(cell_w(b, w)),
+            None => self.load_cold(a, w),
+        }
+    }
+
+    /// `load_slow` for the remaining spaces and every error.
+    #[inline(never)]
+    fn load_cold(&self, a: u64, w: Width) -> R<u64> {
         let n = w.bytes().min(8) as u64;
         let (sp, idx, off) = split(a);
         // Package data is not in `mem_fast`: read here.
@@ -2405,7 +2452,7 @@ impl Machine {
     }
 
     #[inline(always)]
-    fn delay_mode(&self, mode: DriveMode, reject: Option<Reg>) -> R<DelayMode> {
+    pub(crate) fn delay_mode(&self, mode: DriveMode, reject: Option<Reg>) -> R<DelayMode> {
         Ok(match mode {
             DriveMode::Transport => DelayMode::Transport,
             DriveMode::Inertial => DelayMode::Inertial {
@@ -2916,6 +2963,17 @@ impl Machine {
                 return Ok(&m.words);
             }
         }
+        self.layout_build(prog, ty, desc)
+    }
+
+    /// `layout_words` for a descriptor the memo of `ty` is known not to answer: the memo is made
+    /// again from it.
+    #[inline(never)]
+    fn layout_build(&mut self, prog: &Program, ty: TyId, desc: u64) -> R<&[u8]> {
+        let t = ty.0 as usize;
+        if self.layouts.len() <= t {
+            self.layouts.resize_with(t + 1, || None);
+        }
         let mut memo = self.layouts[t].take();
         let dsz = match &memo {
             Some(m) => m.dsz,
@@ -3006,24 +3064,35 @@ impl Machine {
         {
             return Ok(le_bytes(b));
         }
-        // A memoized array of scalars: the word straight from the bounds.
         if let Some(Some(m)) = self.layouts.get(ty.0 as usize)
-            && let Some(n) = m.simple
             && let Ok(d) = self.rd_hot(desc, m.dsz)
-            && let Some(w) = simple_words(n, d)
-            && let Some(&v) = w.get(k as usize)
         {
-            return Ok(v);
+            match m.simple {
+                // A memoized array of scalars: the word straight from the bounds.
+                Some(n) => {
+                    if let Some(w) = simple_words(n, d)
+                        && let Some(&v) = w.get(k as usize)
+                    {
+                        return Ok(v);
+                    }
+                }
+                // The same descriptor bytes as the memo: its word, without `layout_words`
+                // (a constant descriptor goes there once, to set `ckey`) (#518).
+                None if split(desc).0 != CONST => {
+                    if m.desc == d {
+                        if let Some(b) = m.words.get(k as usize * 8..k as usize * 8 + 8) {
+                            return Ok(le_bytes(b));
+                        }
+                    } else {
+                        // Another descriptor than the memo's: no second comparison.
+                        let words = self.layout_build(prog, ty, desc)?;
+                        return word_of(words, k);
+                    }
+                }
+                None => {}
+            }
         }
-        let words = self.layout_words(prog, ty, desc)?;
-        let o = k as usize * 8;
-        match words.get(o..o + 8) {
-            Some(b) => Ok(le_bytes(b)),
-            None => Err(ice_f!(
-                "read of 8 bytes at {o} outside a temporary object of {} bytes",
-                words.len()
-            )),
-        }
+        word_of(self.layout_words(prog, ty, desc)?, k)
     }
 
     /// `Inst::LGet`: the std_ulogic code of element `i` of the logic vector at `base`.
@@ -3543,14 +3612,50 @@ impl Machine {
     ) -> R<Flow> {
         // The jump back of a process that never suspends: a stop request (Ctrl-C) ends the
         // activation as a `wait;` would (`pre::Code::new` steps those jumps).
-        if let Inst::Br { .. } = inst
-            && ctx.as_deref().is_some_and(|c| c.stop_requested())
-            && f.kind == FuncKind::Process
-            && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
-        {
-            return Ok(Flow::Suspend);
+        if let Inst::Br { to } = inst {
+            if f.kind == FuncKind::Process {
+                if ctx.as_deref().is_some_and(|c| c.stop_requested())
+                    && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+                {
+                    return Ok(Flow::Suspend);
+                }
+            } else if let Some(fr) = self.frames.last()
+                && let Some(over) = prog.back_edge(fr.func)
+            {
+                // A jump back of a function that runs as lowered (`pre::count_back_edges`).
+                if over {
+                    self.back_budget()?;
+                }
+                return Ok(Flow::Jump(to));
+            }
         }
         self.step(prog, f, inst, ctx)
+    }
+
+    /// A lowered function took its budget of jumps back (`Program::back_edge`, #695): it is
+    /// listed to be optimised before the next call. A call that has only computed (a pure entry
+    /// function, no report, nothing tainted, no coverage) stops to run again with it.
+    #[cold]
+    #[inline(never)]
+    fn back_budget(&mut self) -> R<()> {
+        let flags = |f: FuncId| self.rt.prog.funcs.get(f).map(|f| f.flags);
+        let pure = self
+            .frames
+            .first()
+            .and_then(|fr| flags(fr.func))
+            .is_some_and(|fl| {
+                fl.contains(yavs_ir::FuncFlags::PURE)
+                    && !fl.contains(yavs_ir::FuncFlags::TOUCHES_SHARED)
+            });
+        if pure
+            && yavs_ir::ElabRaw::restartable()
+            && self.tainted.is_none()
+            && self.init_reports.as_ref().is_some_and(Vec::is_empty)
+            && self.rt.cov.is_empty()
+        {
+            return Err(Fault::Restart);
+        }
+        Ok(())
     }
 
     /// `Inst::DopeLen`: the element count of dimension `dim` of the descriptor at `dope`.
@@ -4686,6 +4791,24 @@ impl Machine {
                 }
                 Op::Stmt => {
                     self.end_stmt();
+                    k += 1;
+                }
+                Op::Cover { item } => {
+                    t!(self.op_cover(item));
+                    k += 1;
+                }
+                Op::CoverIn {
+                    dst,
+                    acc,
+                    src,
+                    shift,
+                    ulogic,
+                } => {
+                    self.op_cover_in(dst, acc, src, shift, ulogic);
+                    k += 1;
+                }
+                Op::CoverCond { cond, state } => {
+                    t!(self.op_cover_cond(prog, cond, state));
                     k += 1;
                 }
                 Op::Move { dst, src } => {
@@ -6380,6 +6503,72 @@ impl Machine {
         Ok(())
     }
 
+    /// `Inst::Cover`, out of line: one relaxed add on the counter of the instance.
+    #[inline(never)]
+    fn op_cover(&mut self, item: u32) -> R<()> {
+        let i = self.inst.cov_base as usize + item as usize;
+        self.rt
+            .cov
+            .get(i)
+            .ok_or_else(|| ice_f!("no coverage counter {i}"))?
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// `Inst::CoverIn`, out of line.
+    #[inline(never)]
+    fn op_cover_in(&mut self, dst: u32, acc: u32, src: u32, shift: u8, ulogic: bool) {
+        let p = self.regs[src as usize];
+        let code = match (ulogic, p) {
+            (true, 2 | 6) | (false, 0) => 1,
+            (true, 3 | 7) | (false, 1) => 2,
+            _ => 3,
+        };
+        let before = if shift == 0 {
+            0
+        } else {
+            self.regs[acc as usize]
+        };
+        self.regs[dst as usize] = before | code << shift;
+    }
+
+    /// `Inst::CoverCond`, out of line: count the rows the state covers.
+    #[inline(never)]
+    fn op_cover_cond(&mut self, prog: &Program, cond: u32, state: u32) -> R<()> {
+        let c = prog
+            .cov_conds
+            .get(cond as usize)
+            .ok_or_else(|| ice_f!("no coverage condition {cond}"))?;
+        let st = self.regs[state as usize];
+        let mut hits = match self
+            .rt
+            .cov_memo
+            .get(cond as usize)
+            .and_then(|m| m.get(st as usize))
+        {
+            Some(m) => match m.load(Ordering::Relaxed) {
+                u64::MAX => {
+                    let h = c.hits(st);
+                    m.store(h, Ordering::Relaxed);
+                    h
+                }
+                h => h,
+            },
+            None => c.hits(st),
+        };
+        while hits != 0 {
+            let row = hits.trailing_zeros();
+            hits &= hits - 1;
+            let i = self.inst.cov_base as usize + c.first.0 as usize + row as usize;
+            self.rt
+                .cov
+                .get(i)
+                .ok_or_else(|| ice_f!("no coverage counter {i}"))?
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// `Op::WaveBuf`, out of line.
     #[inline(never)]
     fn op_wave_buf(&mut self, w: u32, size: u32, time: u32, e: u32) -> R<()> {
@@ -7300,6 +7489,7 @@ impl Machine {
         tf.stack = m.regs.v.as_ptr();
         tf.max_depth = m.vc.max_depth;
         tf.owner = m.vc.owner;
+        m.tier_cov(tf);
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         if m.hot {
@@ -7338,6 +7528,21 @@ impl Machine {
             || shared.is_some_and(Heap::reclaim_due)
     }
 
+    /// The coverage counters of this machine's instance in the view.
+    fn tier_cov(&self, tf: &mut crate::TierFrame) {
+        // Compiled `Inst::Cover` exists only with counters, so without them the view is not read.
+        if self.rt.cov.is_empty() {
+            return;
+        }
+        let cov = self
+            .rt
+            .cov
+            .get(self.inst.cov_base as usize..)
+            .unwrap_or(&[]);
+        tf.cov = cov.as_ptr().cast();
+        tf.cov_len = cov.len() as u64;
+    }
+
     /// Make `tf` the top frame's view (`TierFrame`).
     fn tier_view(&mut self, tf: &mut crate::TierFrame) {
         let top = self.frames.len() - 1;
@@ -7362,11 +7567,26 @@ impl Machine {
         tf.heap_epoch = self.heap_epochs();
         tf.flags = self.tier_flags();
         tf.owner = self.vc.owner;
+        let cov = self
+            .rt
+            .cov
+            .get(self.inst.cov_base as usize..)
+            .unwrap_or(&[]);
+        tf.cov = cov.as_ptr().cast();
+        tf.cov_len = cov.len() as u64;
         let mut link = self.frames[top].link;
-        for u in &mut tf.up {
-            *u = match link {
+        for k in 0..2 {
+            tf.up_len[k] = 0;
+            tf.up[k] = match link {
                 Some(i) if i < 1 << 29 => {
                     link = self.frames.get(i as usize).and_then(|f| f.link);
+                    // Not the slots of a frame a native window holds elsewhere.
+                    let native = self.nwin.is_some()
+                        && (self.nwin_from..=self.nwin_to).contains(&(i as usize));
+                    if !native && let Some(s) = self.fslots_mut(i as usize) {
+                        tf.up_slots[k] = s.as_mut_ptr();
+                        tf.up_len[k] = s.len() as u64;
+                    }
                     u64::from(FRAME) << 29 | u64::from(i)
                 }
                 _ => {
@@ -8582,6 +8802,16 @@ impl Machine {
                 let v = self.sig_read_scalar(sig, ctx)?;
                 self.set(dst, v);
             }
+            Inst::SigGather { dst, desc, tab } => self.sig_gather(prog, dst, desc, tab, ctx)?,
+            Inst::SigScatter {
+                driver,
+                src,
+                desc,
+                tab,
+                after,
+                mode,
+                reject,
+            } => self.sig_scatter(prog, driver, src, desc, tab, after, mode, reject, ctx)?,
             Inst::Edge { dst, kind, sig } => {
                 let v = self.edge_inst(kind, sig, ctx)?;
                 self.set(dst, v);
@@ -8784,14 +9014,15 @@ impl Machine {
                 let b = self.rd(self.r(addr), self.r(len))?.to_vec();
                 kc!().output(&b);
             }
-            Inst::Cover { item } => {
-                let i = self.inst.cov_base as usize + item.0 as usize;
-                self.rt
-                    .cov
-                    .get(i)
-                    .ok_or_else(|| ice_f!("no coverage counter {i}"))?
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+            Inst::Cover { item } => self.op_cover(item.0)?,
+            Inst::CoverIn {
+                dst,
+                acc,
+                src,
+                shift,
+                ulogic,
+            } => self.op_cover_in(dst.0, acc.0, src.0, shift, ulogic),
+            Inst::CoverCond { cond, state } => self.op_cover_cond(prog, cond, state.0)?,
             Inst::Stmt => self.end_stmt(),
             Inst::Elab { op, .. } => {
                 return rt_err_f!(
@@ -9541,6 +9772,7 @@ impl crate::TierHost for Host<'_, '_, '_> {
                 m.tier_temp(tf);
                 Ok(())
             }
+            Some(&Inst::CoverCond { cond, state }) => m.op_cover_cond(self.prog, cond, state.0),
             Some(&Inst::NewFrame {
                 dst,
                 desc,

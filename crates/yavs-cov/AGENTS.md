@@ -12,7 +12,7 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
   keyed per plan rule 10, reads and writes its text form, merges databases, and renders the
   text summary and Cobertura XML.
 - Does not: emit counters (yavs-lower, `LowerOptions::coverage`), count them (yavs-interp
-  `Inst::Cover`), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
+  `Op::Cover*`, yavs-llvm compiled `Cover`, #692), lay out the counter rows (yavs-elab `Elaborated::cov_rows`), or parse options
   (the `yavs` CLI: `run --cov`, `cov merge`, `cov report`).
 - Depends on: `yavs-diag`, `yavs-elab`, `yavs-ir`, `yavs-kernel` (observer), `yavs-sem`.
   Called by: `yavs`.
@@ -23,8 +23,9 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 |---|---|
 | `src/lib.rs` | `Kind`, `Key`, `Entry` (with `tests`), `Database` (`tests`, `write`, `parse`, `merge`, `attribute`, `rank`, `summary`, `cobertura`), `collect` (items to keys: owning unit, statement text hash, occurrence; rows to instance paths) |
 | `src/toggle.rs` | `toggles` (signals and ports to named scalars, `--cov-toggle-max` cap), `Toggles` (value-change observer, `add_to` the database) |
-| `src/exclude.rs` | Exclusion file `parse`, `apply` (W0110, W0111, W0114), `Database::uncovered`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
-| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS, light/dark, no scripts, missed items carry their `exclude::miss_row`) |
+| `src/exclude.rs` | Exclusion file `parse` (text rows), `apply` (W0110, W0111, W0114), `Database::uncovered` and `uncovered_yaml`, `Database::hits_by_test` (`--tests`); `collect` also scans `-- coverage off/on/off-line` pragmas (W0112, W0113) |
+| `src/exclude/yaml.rs` | `parse_yaml`: `saphyr-parser` events to a small node tree to the same `Rule`s as the text rows; `quote` for `--uncovered=yaml`. A new rule kind: add its key lists and rule in `entry` (and its text row in `parse`) |
+| `src/html.rs` | `files` (sources a report needs), `pages` (`index.html`, `src-N.html` and `src-N-missed.html` (only lines with a missed or excluded item): static, inline CSS and one inline script (click-only popups, copy buttons), light/dark; a line's items are in a popup (groups of title + table), missed items carry their `exclude::miss_row` and `miss_yaml` with copy buttons) |
 | `../yavs/tests/coverage.rs` | End-to-end counts on `tests/cli/cov_run.vhd` and toggles on `tests/cli/cov_toggle.vhd`, thread identity, merge, reports |
 
 ## 3. Design decisions that bind this module
@@ -38,9 +39,14 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | Text format `yavs-coverage 4`: `test` lines, then items tab-separated (count, then the ids of the tests that hit it; the last field is the display text; toggle lines have none), sorted by key; test ids in name order; versions 2 and 3 still parsed; Cobertura with timestamp 0 and no toggles | Deterministic files at any `--threads` | `docs/cli-contract.md` 5 |
 | Toggles: `Kind::Toggle(rise)` with `Key::sig` the scalar name, hash and occ 0; '0'/'L' and '1'/'H' levels, anything else breaks a toggle; the observer compares with the last level, so repeated notifications count nothing twice | Same counts at any `--threads` | `docs/decisions.md` "Toggle coverage" |
 
+| Condition and expression rows: `Kind::Condition(row)`/`Expression(row)` (row = 2 * input + value), hash and occurrence of the *condition's* text (not the statement's), `Key::sig` the input's text, `Entry::text` = result char, space, whole condition; database lines `cN`/`eN` with the input before the text (version 5, 2 to 4 still read); `fec_text` formats a row for reports; Cobertura counts the rows as conditions of the line; inputs constant after elaboration have no rows (row numbers keep the input position, so a row number can skip) | An edit of an `if` body must keep its row exclusions | `docs/decisions.md` "Condition and expression coverage" |
+
 | Exclusions match by instance glob + kind/arm + hash prefix + occurrence, never by line; pragma-excluded items are skipped when the key is added, after occurrences are numbered, so a pragma never renumbers its neighbours | Rows stay valid when code moves or pragmas change | `docs/decisions.md` "Coverage exclusions" |
 
-| HTML report: static files, no scripts and no external resources, no timestamp; a line shows the largest statement count on it, items listed under it; sources read by the CLI (`E0113` if unreadable), the crate only formats | Opens from disk, reproducible, the report rows are the exclusion format (user) | `docs/decisions.md` "Code coverage" |
+| HTML report: static files, one small inline script, no external resources, no timestamp; a line shows the largest statement count on it, its items in a hover/focus popup (click pins), a line that ran in only some instances has its own class and a `ran/total` marker; sources read by the CLI (`E0113` if unreadable) and shown relative to the current directory or `--root` (the CLI rewrites `Entry::file` with `cov.rs::relative`, a lexical string compare that folds `\`, drive case, `\\?\` and `..`, unit-tested for Windows paths on every OS; the crate only formats) | Opens from disk, reproducible, the report rows are the exclusion format (user 2026-10-24, #689) | `docs/decisions.md` "Code coverage" |
+
+| YAML exclusion files read scalars as raw text through `saphyr-parser` events, never through a typed data model; unknown kinds, unknown keys (also of another kind), missing fields and duplicate keys are `E0112` with the line; `--uncovered=yaml` double-quotes every value | `no`, `on` and digit-only or float-like hashes must stay strings; line numbers in errors | `docs/decisions.md` "Coverage exclusions" |
+| A toggle exclusion has an optional direction (`rise`/`fall`); omitted is both; `W0114` per excluded direction that ran | Exclude exactly the missed direction | `docs/decisions.md` "Coverage exclusions" |
 
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
@@ -53,6 +59,8 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 - A new `Kind` needs its arm in `write`/`parse`, `summary`, `cobertura`, `exclude::head`/`matches`.
 - `html.rs` writes no timestamp and iterates only ordered maps: keep it byte-deterministic.
   Every source text goes through `esc`; a new field shown in a page must too.
+- A new item kind adds a group to `popup` (title + table), never inline rows; the script must
+  stay optional (hover and focus are CSS), with the copy buttons hidden until it runs.
 
 ## 5. How to work here
 

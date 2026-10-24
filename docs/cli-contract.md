@@ -336,7 +336,7 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   enum table, integers, reals and time as numbers (an integer with its subtype's name and
   the width its range needs; a generate alternative with a label is scope `label.alt`). Several deltas at one time step
   give one value change (the final value). The file is the same at any
-  `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed periodically, on normal end, on stop, and on SIGINT: the
+  `--threads`. Names that are the same value (a port collapsed into its actual, at any depth) share one value chain in the file (FST aliases). Signals and ports are recorded; process variables only with `--wave-variables`. Flushed when a block fills (or every `YAVS_WAVE_FLUSH` interval, off by default), on normal end, on stop, and on SIGINT: the
   first Ctrl-C ends the run between cycles, finishes the file, prints
   `simulation interrupted` and exits 1; a second Ctrl-C exits at once (the file is
   readable up to its last flush). An unwritable path is `E0801` (exit 2).
@@ -589,19 +589,26 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   `yavs.ycov`, relative to the working directory) after the simulation, whatever its exit
   status; an elaboration failure writes none. The file is overwritten, never appended to:
   one database per run, merged afterwards with `yavs cov merge A B ... -o OUT`. `yavs cov report
-  DB ... [--cobertura FILE.xml] [--html DIR] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
+  DB ... [--cobertura FILE.xml] [--html DIR [--root DIR]] [--exclude FILE] [--uncovered] [-W...]` prints a text summary on
   stdout and writes Cobertura XML. `--html DIR` writes a static HTML report (`index.html`,
-  `src-N.html` per source file in name order; inline CSS, no scripts, no external resources,
-  no timestamp, so equal databases give equal bytes); sources are read from the paths in the
+  `src-N.html` per source file in name order; inline CSS and one inline script, no external
+  resources, no timestamp, so equal databases give equal bytes; source paths shown relative to
+  the current directory or to `--root DIR`); sources are read from the paths in the
   database at report time and an unreadable one is `E0113` with nothing written. `--uncovered` prints instead one exclusion row per item that
-  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `toggle PATH SCALAR   # never
-  0->1|1->0 (FILE:LINE)`, or `# never toggled`); `--exclude FILE` takes the
+  never ran (`statement|branch INSTANCE ID FILE:LINE   # text`, `condition|expression INSTANCE HEX12.OCC ROW FILE:LINE   # input, value, result, condition`, `toggle PATH SCALAR rise|fall
+  # never 0->1|1->0 (FILE:LINE)`, or `toggle PATH SCALAR   # never toggled` when both
+  directions never happened); `--uncovered=yaml` prints the same items as a YAML exclusion file
+  (`exclude:` list of `kind`/`instance`/`hash`/`line` or `signal`/`direction` maps); `--exclude FILE` takes the
   items such a file lists out of the summary and the Cobertura report and lists them under
-  "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/usage.rst` "Code coverage").
+  "excluded" (format and warnings `W0110`, `W0111`, `W0114`: `docs/usage.rst` "Code coverage");
+  the file is read as YAML when its name ends in `.yaml` or `.yml` (any case), else as text rows,
+  with the same meaning (`E0112` names the line of a bad entry).
   Exclusions apply when reporting; databases keep raw counts. `--cov-exclude-translate-off`
   (`run`) also leaves `translate_off`/`translate_on` regions out; unbalanced `-- coverage`
-  pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle` (`run`, default all)
-  chooses what is counted; `--cov-toggle-max=N` (default 65536) leaves signals with more
+  pragmas are `W0112`/`W0113`. `--cov-kind=statement,branch,toggle,condition,expression` (`run`, default `statement,branch,toggle`)
+  chooses what is counted (`condition` and `expression` are focused expression coverage, #688:
+  one row per input and value of a boolean condition or logic expression with 2 or more inputs;
+  `docs/decisions.md` "Condition and expression coverage"); `--cov-toggle-max=N` (default 65536) leaves signals with more
   `bit`/`std_ulogic` scalars out of toggle coverage with `W0115`. `--cov-test=NAME` (`run`)
   names the run's test in the database; the default is the `enabled_test_cases` field of a
   `-grunner_cfg=...` generic (`,,` is a comma), else `TOP` or `TOP(g1=v1,g2=v2)` with the `-g`
@@ -612,13 +619,15 @@ The test runner passes everything after `run`/`elab` in a response file (Convent
   ...`) and per test its items and the items no other test hit. `yavs cov` exits 0, or 1 with `E0111` (a database cannot be
   read), `E0112` (an exclusion file cannot be read or has a malformed row) or `E0110` (a file
   cannot be written), or when `-Werror` makes a warning an error; `run` exits at least 1 when the database cannot be written (`E0110`). The
-  database format (a `yavs-coverage 4` line, a tests section of `test`, id, name lines with
+  database format (a `yavs-coverage 5` line, a tests section of `test`, id, name lines with
   ids numbering the names in sorted order, then one tab-separated item per line: kind `s` or
   `bN`, path, statement text hash, occurrence, count, tests, line, file, statement text for
-  display; toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, tests, line,
+  display; conditions and expressions: kind `cN` or `eN` (N = 2 * input + value), the same fields with the
+  input's text before the display text (the result the input decides alone, a space, the whole
+  condition); toggles: kind `t1` (0->1) or `t0` (1->0), path, scalar name, count, tests, line,
   file; tests is the comma-separated ids of the tests that hit the item, `-` for none) is
-  yavs's own and may change with its version line; versions 2 and 3 are still read (without
-  tests). Cobertura output has no toggles.
+  yavs's own and may change with its version line; versions 2 to 4 are still read (2 and 3 without
+  tests, 2 to 4 without conditions). Cobertura output has no toggles.
 
 ## 6. GUI and waves
 
@@ -648,7 +657,10 @@ tree (section 3). Simulator hooks from the test runner packages
 can add `elab_flags`, `run_flags` and run environment; the test runner applies
 `elab_flags` to both `run` and `elab`, and `run_flags` only to `run`. `YAVS_HUGE_HEAP=0` stops yavs
 from asking for transparent huge pages on its heap at start (Linux with glibc and the system's
-transparent huge pages in `madvise` mode only; on any other system it does nothing).
+transparent huge pages in `madvise` mode only; on any other system it does nothing). `--wave` ends a waveform block by size only, so the
+file's bytes depend on the recorded changes alone; `YAVS_WAVE_FLUSH=5s` (or `500ms`) also ends a
+block after that much run time, so a killed run leaves more of the file (the bytes then depend on
+the run's speed); `never` is the default; any other value is error E0801.
 
 ## 8. Not covered yet
 

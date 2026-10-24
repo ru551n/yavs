@@ -342,7 +342,7 @@ impl Elaborated {
         let session = self
             .start
             .take()
-            .filter(|s| !opts.coverage && s.pkgs == packages && !s.lowerer.externals_early());
+            .filter(|s| !opts.any_coverage() && s.pkgs == packages && !s.lowerer.externals_early());
         let key = self.lowering_key(db, &opts, &packages, &archs, session.as_ref());
         let (program, rest, start, learn, lib) =
             match key.as_ref().and_then(|k| k.get().map(|l| (k, l))) {
@@ -623,7 +623,7 @@ impl Elaborated {
         }
         let cache = db
             .stages()
-            .filter(|c| !opts.coverage && c.closure())?
+            .filter(|c| !opts.any_coverage() && c.closure())?
             .clone();
         // Everything `lower_cold` hands to the lowerer, in the order it does: the same requests
         // on the same analysis give the same program, ids and all.
@@ -694,7 +694,7 @@ impl Elaborated {
         ids(&mut p, b'h', &mut archs.iter().map(|u| u.index()));
         Some(LoweringKey {
             cache,
-            extent: db.extent(),
+            extent: db.stage_extent(),
             part: p,
         })
     }
@@ -1383,10 +1383,11 @@ impl Elaborated {
                 sig: inst.sigs.len() as u32,
                 range,
             });
+            let at = self.nets.loc[leaf.index()];
             inst.sigs.push(InstSig {
-                signal: yavs_kernel::SignalId(leaf.0),
+                signal: at.signal,
                 ty: self.nets.leaf(leaf).ty,
-                off: 0,
+                off: at.base,
             });
         }
         InterpProcess::new(rt.clone(), pir.func, Arc::new(inst), drivers, None)
@@ -1685,10 +1686,11 @@ impl Elaborated {
                 ty.len = r.len;
                 r.offset
             });
+            let at = self.nets.loc[leaf.index()];
             inst.sigs.push(InstSig {
-                signal: yavs_kernel::SignalId(leaf.0),
+                signal: at.signal,
                 ty,
-                off,
+                off: at.base + off,
             });
         }
         // Variable ports before the constants, whose thunks may call their methods. A port

@@ -203,6 +203,7 @@ has a `StmtId` in `Func.loc`.
 | signal read | `SigVal{dst, inst_sig, offset, len}` builds a signal reference; `SigParts{dst, parts, n}` one of several parts and `SigSlice{dst, sig, offset, len}` a slice of either form (1.8); `SigRead{dst_addr, sig}` (effective value), `SigReadScalar{dst, sig}`, `SigDriving{dst_addr, driver_slot}` (`'driving_value`, out-port read) |
 | attributes | `Edge{dst, kind: Rising\|Falling\|To1\|To0, sig}` (the one clock-edge test, #632: `rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...; `sig` one element of a `std_ulogic`, BIT or BOOLEAN signal), `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
 | signal write | `Drive{driver_slot, target: Option<sig>, waveform: Addr, n, mode: Transport\|Inertial{reject: Option<Reg>}}` (waveform = `n` `(time, value)` pairs in a temp, ascending); `Force{sig, mode: In\|Out, value}`, `Release{sig, mode}`; `Disconnect{driver_slot}` (null transaction, guarded, M3) |
+| whole record signal | `SigGather{dst, desc, tab}` (every leaf of a record signal into the record value), `SigScatter{driver, src, desc, tab, after, mode, reject}` (every leaf driven from the value with one waveform element, leaf `k` through slot `driver + k`); `tab` is a leaf table constant (`yavs_ir::gather`); same meaning as the per-leaf `SigRead`/`Drive`, independent of how the kernel stores the leaves (decisions.md "Whole record signals: gather and scatter") |
 | wait | `WaitOn{sig}` (adds to sensitivity), `WaitFor{t}`, `WaitAt{abs}`, `Suspend{resume}`; `TimedOut{dst}`, `Now{dst}`, `Delta{dst}` |
 | effects | `Report{msg: Addr, len, severity}` (assert = branch + `Report`); `Output{stream, addr, len}` is only used by natives |
 | coverage | `Cover{item: CovItem}` (statement/branch counter increment, rule 10), toggle coverage is an observer, not IR |
@@ -666,13 +667,14 @@ requires identical canonical output.
 | Consumer | Uses | From |
 |---|---|---|
 | CLI, DAP, VHPI | `SimControl` only (run_for, run_until, step_delta, pause, force, deposit, value, driving_value) | kernel |
-| waves (`yavs-wave`) | `Observer::value_change(SignalId, Range)`; `HierarchyBuilder` filled from `Elaborated.hier` + `nets.leaves` (record fields as scopes, logic arrays as `SigType::Vector`, values transposed from planes per changed range, enum names from `Ty::Enum` literals, original spelling); wave `SignalId` = `LeafId` | elab, kernel bus |
+| waves (`yavs-wave`) | `Observer::value_change(SignalId, Range)`; `HierarchyBuilder` filled from `Elaborated.hier` + `nets.leaves` (record fields as scopes, logic arrays as `SigType::Vector`, values transposed from planes per changed range, enum names from `Ty::Enum` literals, original spelling); wave entries are keyed by the kernel signal that stores the leaf (`NetGraph::kpart`) | elab, kernel bus |
 | VHPI (M5) | object model built from `hier`, `nets`, `Program.types` (records, arrays, generics, generates native, rule 9); handle = generational id over `ObjId`/`ScopeId`; values decoded with `Layout` (logic arrays transposed from planes); `vhpi_put_value` = `SimControl::force/deposit` through `SubElemMap`; callbacks = `Observer` | elab, kernel |
 | coverage (M9) | `Program.cov` items (path + span hash) and the counter array; toggle via `Observer` | ir, interp |
 | DAP (M8) | `Debugger` hook, `FrameView`, `Program.stmts` for stack frames, `hier` for the hierarchy view | interp, elab |
 
-Kernel `SignalId` order equals `LeafId` order, and `ProcId` equals elaboration order, so no
-translation table is needed between elab ids and kernel ids.
+A leaf is stored at `NetGraph::loc[leaf]`: a kernel signal and the element its range starts at
+(docs/design/record-signal-layout.md, #686); kernel signals are in the order of their first leaf.
+`ProcId` equals elaboration order.
 
 **Kernel asks** (none blocks slices 1 to 3 below):
 

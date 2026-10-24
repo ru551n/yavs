@@ -46,7 +46,8 @@ fn huge_code(addrs: impl Iterator<Item = usize>) {
         fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
     }
     const HUGE: usize = 2 << 20;
-    if std::env::var("YAVS_LLVM_HUGE").is_ok_and(|v| v == "0") {
+    // The arena (`arena.rs`) places and backs the code itself where it is available.
+    if crate::arena::enabled() || std::env::var("YAVS_LLVM_HUGE").is_ok_and(|v| v == "0") {
         return;
     }
     let (lo, hi) = addrs.fold((usize::MAX, 0), |(lo, hi), a| (lo.min(a), hi.max(a)));
@@ -1222,6 +1223,43 @@ impl Gen {
         unsafe { LLVMConstInt(self.i32, u64::from(v), 0) }
     }
 
+    /// The entry switch of frame-mode code: a tree of range compares over the sorted entry pcs,
+    /// at most `LEAF` cases per `switch`. The unoptimised code generator lowers a `switch` to a
+    /// chain of compares, and a large process is entered at one of thousands of pcs at every
+    /// resume (a third of the instructions of a LEON3 `comb` copy were that chain, #679).
+    /// The builder is at the end of `from`.
+    unsafe fn entry_dispatch(
+        &self,
+        c: &Cur,
+        from: LLVMBasicBlockRef,
+        pc: LLVMValueRef,
+        cases: &[(u32, LLVMBasicBlockRef)],
+        default: LLVMBasicBlockRef,
+    ) {
+        const LEAF: usize = 4;
+        // SAFETY: blocks and values are of the function being generated; the builder is at the
+        // end of the block being filled.
+        unsafe {
+            if cases.len() <= LEAF {
+                let sw = LLVMBuildSwitch(self.b, pc, default, cases.len() as u32);
+                for &(v, bb) in cases {
+                    LLVMAddCase(sw, self.c32(v), bb);
+                }
+                return;
+            }
+            let (lo, hi) = cases.split_at(cases.len() / 2);
+            let (below, above) = (self.block(c), self.block(c));
+            LLVMMoveBasicBlockAfter(above, from);
+            LLVMMoveBasicBlockAfter(below, from);
+            let lt = LLVMBuildICmp(self.b, IP::LLVMIntULT, pc, self.c32(hi[0].0), c"".as_ptr());
+            LLVMBuildCondBr(self.b, lt, below, above);
+            LLVMPositionBuilderAtEnd(self.b, below);
+            self.entry_dispatch(c, below, pc, lo, default);
+            LLVMPositionBuilderAtEnd(self.b, above);
+            self.entry_dispatch(c, above, pc, hi, default);
+        }
+    }
+
     unsafe fn block(&self, c: &Cur) -> LLVMBasicBlockRef {
         // SAFETY: c.f is a function of our context.
         unsafe { LLVMAppendBasicBlockInContext(self.ctx, c.f, c"".as_ptr()) }
@@ -2010,6 +2048,9 @@ impl Gen {
             // What the generator knows about registers holds until the next block: the
             // interpreter enters after a call only having run the block up to it.
             let block_start = leader.clone();
+            // Address spaces that hold at the start of a block, whatever path reached it (#684).
+            let space_facts = crate::regs::spaces(prog, f, &block_start)
+                .unwrap_or_else(|| vec![Vec::new(); n + 1]);
             for (i, inst) in f.code.iter().enumerate() {
                 if resumes(prog, f, inst) {
                     leader[i + 1] = true;
@@ -2234,8 +2275,7 @@ impl Gen {
                 LLVMPositionBuilderAtEnd(self.b, other);
                 LLVMBuildRet(self.b, pc_in);
                 LLVMPositionBuilderAtEnd(self.b, entry);
-                let nl = is_entry[..n].iter().filter(|&&l| l).count();
-                let sw = LLVMBuildSwitch(self.b, pc_in, other, nl as u32);
+                let mut cases = Vec::new();
                 for (i, &bb) in bbs.iter().enumerate() {
                     if !is_entry[i] {
                         continue;
@@ -2243,11 +2283,11 @@ impl Gen {
                     // The interpreter's registers are in the frame: a stub loads the ones the
                     // block takes as phis.
                     let Some(pl) = &plan else {
-                        LLVMAddCase(sw, self.c32(i as u32), bb);
+                        cases.push((i as u32, bb));
                         continue;
                     };
                     let stub = self.block(&c);
-                    LLVMAddCase(sw, self.c32(i as u32), stub);
+                    cases.push((i as u32, stub));
                     LLVMPositionBuilderAtEnd(self.b, stub);
                     for (&r, &phi) in pl.regs[i].iter().zip(&pl.phis[i]) {
                         let v = self.frame_load(&c, r);
@@ -2255,6 +2295,8 @@ impl Gen {
                     }
                     LLVMBuildBr(self.b, bb);
                 }
+                LLVMPositionBuilderAtEnd(self.b, entry);
+                self.entry_dispatch(&c, entry, pc_in, &cases, other);
             }
             if let Some(d) = &mut c.defer {
                 d.plan = plan;
@@ -2385,7 +2427,21 @@ impl Gen {
                 if block_start[i] {
                     match inherit[i].take() {
                         Some(k) if native && ways[i] == 1 => *c.known.borrow_mut() = k,
-                        _ => c.known.borrow_mut().clone_from(&base_known),
+                        _ => {
+                            let mut k = c.known.borrow_mut();
+                            k.clone_from(&base_known);
+                            for &(r, sp) in &space_facts[i] {
+                                if let Some(x) = k.get_mut(r as usize)
+                                    && x.is_none()
+                                {
+                                    *x = Some(match sp {
+                                        crate::regs::Sp::Inst => Known::InstAny,
+                                        crate::regs::Sp::Temp => Known::Temp,
+                                        crate::regs::Sp::Heap => Known::Heap(None),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 if native {
@@ -2501,6 +2557,58 @@ impl Gen {
                     Inst::Const { dst, v } => self.std(&c, dst, self.c64(v)),
                     Inst::ConstF { dst, v } => self.std(&c, dst, self.c64(v.to_bits() as i64)),
                     Inst::Move { dst, src } => self.std(&c, dst, self.ld(&c, src)),
+                    // Coverage counters: one atomic add on the instance's counters (the view's
+                    // pointer, so the module holds no address); a missing counter is the
+                    // interpreter's error.
+                    Inst::Cover { item } => {
+                        let len = self.mem_ld(&c, MEM_COV_LEN, self.i64);
+                        let bad = self.icmp(IP::LLVMIntULE, len, self.c64(i64::from(item.0)));
+                        self.exit_if(&c, bad, pc);
+                        let base = self.mem_ld(&c, MEM_COV, self.ptr);
+                        let p = self.gep(base, self.c64(8 * i64::from(item.0)));
+                        LLVMBuildAtomicRMW(
+                            self.b,
+                            llvm_sys::LLVMAtomicRMWBinOp::LLVMAtomicRMWBinOpAdd,
+                            p,
+                            self.c64(1),
+                            llvm_sys::LLVMAtomicOrdering::LLVMAtomicOrderingMonotonic,
+                            0,
+                        );
+                    }
+                    Inst::CoverIn {
+                        dst,
+                        acc,
+                        src,
+                        shift,
+                        ulogic,
+                    } => {
+                        // 1 for false, 2 for true, 3 for another value (`Inst::CoverIn`).
+                        let p = self.ld(&c, src);
+                        let (f0, t0) = if ulogic {
+                            let q = LLVMBuildOr(self.b, p, self.c64(4), c"".as_ptr());
+                            (
+                                self.icmp(IP::LLVMIntEQ, q, self.c64(6)),
+                                self.icmp(IP::LLVMIntEQ, q, self.c64(7)),
+                            )
+                        } else {
+                            (
+                                self.icmp(IP::LLVMIntEQ, p, self.c64(0)),
+                                self.icmp(IP::LLVMIntEQ, p, self.c64(1)),
+                            )
+                        };
+                        let hi =
+                            LLVMBuildSelect(self.b, t0, self.c64(2), self.c64(3), c"".as_ptr());
+                        let code = LLVMBuildSelect(self.b, f0, self.c64(1), hi, c"".as_ptr());
+                        let code =
+                            LLVMBuildShl(self.b, code, self.c64(i64::from(shift)), c"".as_ptr());
+                        let v = if shift == 0 {
+                            code
+                        } else {
+                            LLVMBuildOr(self.b, self.ld(&c, acc), code, c"".as_ptr())
+                        };
+                        // The state is read by the host's `CoverCond`: in the frame at once.
+                        self.st(&c, dst, v);
+                    }
                     Inst::Select { dst, c: cond, a, b } => {
                         let t = self.icmp(IP::LLVMIntNE, self.ld(&c, cond), self.c64(0));
                         let v = LLVMBuildSelect(
@@ -4439,6 +4547,7 @@ impl Gen {
             Inst::TempRoot { .. }
                 | Inst::NewFrame { .. }
                 | Inst::Stmt
+                | Inst::CoverCond { .. }
                 | Inst::Deref { .. }
                 | Inst::MemEq { .. }
                 | Inst::Cat { .. }
@@ -5738,6 +5847,16 @@ impl Gen {
     ) {
         // SAFETY: blocks of the function being built.
         unsafe {
+            // The unoptimised code generator fuses a compare into the branch and falls through to
+            // the next block, but a condition it has to test (`ok = a & b`) becomes `jcc t; jmp f`
+            // with `t` the next block: a taken branch over a jump on the hot path. Branching on
+            // the negation sends the rare edge to the `jcc` and the hot one falls through (#679).
+            if likely && LLVMIsAICmpInst(cond).is_null() && LLVMIsAFCmpInst(cond).is_null() {
+                let not = LLVMBuildNot(self.b, cond, c"".as_ptr());
+                let br = LLVMBuildCondBr(self.b, not, f, t);
+                self.weights(br, (1, 2000));
+                return;
+            }
             let br = LLVMBuildCondBr(self.b, cond, t, f);
             self.weights(br, if likely { (2000, 1) } else { (1, 2000) });
         }
@@ -6079,11 +6198,25 @@ impl Gen {
                 self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
                 return self.gep(self.tag(self.own_slots_cached(c), AA_SLOTS), o);
             }
+            // A variable of an enclosing subprogram, from the view (frame-mode code; a native
+            // frame finds the frames of its callers below).
+            if let (Some(Known::Up(d)), None) = (at, &c.nat) {
+                let k = 8 * u64::from(d - 1);
+                let base = self.mem_ld(c, MEM_UP_SLOTS + k, self.ptr);
+                let len = self.mem_ld(c, MEM_UP_LEN + k, self.i64);
+                let lo = LLVMBuildAnd(self.b, a, self.c64(0xffff_ffff), c"".as_ptr());
+                let o = LLVMBuildAdd(self.b, lo, extra, c"".as_ptr());
+                let fits = self.icmp(IP::LLVMIntULE, n, len);
+                let rest = LLVMBuildSub(self.b, len, n, c"".as_ptr());
+                let inside = self.icmp(IP::LLVMIntULE, o, rest);
+                self.guard(c, LLVMBuildAnd(self.b, fits, inside, c"".as_ptr()), slow);
+                return self.gep(base, o);
+            }
             // The temporary area and (reading) the instance data, whose space the generator
             // knows: the bytes the view holds, bounds checked, no call.
             let area = match at {
                 Some(Known::Temp) => Some((MEM_TEMP, MEM_TEMP_LEN)),
-                Some(Known::Inst(_)) if !write => Some((MEM_INST, MEM_INST_LEN)),
+                Some(Known::Inst(_) | Known::InstAny) if !write => Some((MEM_INST, MEM_INST_LEN)),
                 _ => None,
             };
             if let Some((base, len)) = area {

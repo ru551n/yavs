@@ -20,6 +20,8 @@ pub struct Program {
     pub natives: IdVec<NativeId, NativeRef>,
     pub foreign: IdVec<ForeignId, ForeignRef>,
     pub cov: IdVec<CovItem, CovInfo>,
+    /// The condition trees of `Inst::CoverCond`.
+    pub cov_conds: Vec<CovCond>,
     pub checks: IdVec<CheckMsgId, CheckMsg>,
     pub cases: IdVec<CaseTableId, CaseTable>,
     /// Subtype descriptions for `std.reflection` mirrors (`yavs.attr.reflect`).
@@ -47,6 +49,10 @@ pub struct Program {
     /// program starts without them.
     #[serde(skip)]
     pub copies: crate::Copies,
+    /// Functions elaboration-time code asked for often ([`ElabRaw`]).
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub hot: HotList,
 }
 
 /// An optimised copy of a function, serialised (see [`Program::export_optimized`]).
@@ -92,6 +98,30 @@ impl Program {
     #[cold]
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
+        if ELAB_RAW.with(std::cell::Cell::get) != 0
+            && matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
+            && !raw.flags.contains(FuncFlags::MAY_SUSPEND)
+            && !raw.spare
+        {
+            let n = raw
+                .fetches
+                .0
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == 0 {
+                self.verify_lazily(f, raw);
+            }
+            // A stored optimised copy costs a decode, less than running the lowered code.
+            if n > 0 || !self.stored_opt.map().contains_key(&f.0) {
+                if (n + 1).is_multiple_of(HOT) {
+                    self.hot
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(f);
+                }
+                return raw.full();
+            }
+        }
         let o = raw
             .opt
             .get_or_init(|| {
@@ -102,19 +132,14 @@ impl Program {
                 if raw.spare {
                     return None;
                 }
-                if self.lazy_verify.is_some_and(|from| f.0 >= from) {
-                    let mut errs = Vec::new();
-                    crate::verify::verify_func(self, f, raw.full(), &mut errs);
-                    // A producer bug: the kernel turns the panic into an internal error.
-                    assert!(
-                        errs.is_empty(),
-                        "internal error: {}; this is a bug in yavs",
-                        errs[0]
-                    );
+                // Verified already when elaboration-time code ran it as lowered.
+                if raw.fetches.0.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                    self.verify_lazily(f, raw);
                 }
-                let o = self
-                    .stored_copy(f)
-                    .or_else(|| crate::opt::optimize_func(self, f));
+                let o = self.stored_copy(f).or_else(|| {
+                    OPTIMISED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    crate::opt::optimize_func(self, f)
+                });
                 if raw.kind == FuncKind::Process {
                     self.copies
                         .shared(o.as_ref().map_or(raw.full().code.len(), |o| o.code.len()));
@@ -128,6 +153,60 @@ impl Program {
             eprintln!("{}", self.dump_func(f));
         }
         o
+    }
+
+    /// Does `f` run as lowered because elaboration-time code asked for it ([`ElabRaw`])?
+    pub fn runs_raw(&self, f: FuncId) -> bool {
+        self.funcs.get(f).is_some_and(|r| {
+            r.opt.get().is_none() && matches!(r.kind, FuncKind::Function | FuncKind::Procedure)
+        })
+    }
+
+    /// A jump back of function `f`: `None` unless it runs as lowered; `Some(true)` (and `f` listed
+    /// to be optimised before the next call) when its loops have taken [`BACK_BUDGET`] of them.
+    pub fn back_edge(&self, f: FuncId) -> Option<bool> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let r = self.funcs.get(f)?;
+        if r.opt.get().is_some() || !matches!(r.kind, FuncKind::Function | FuncKind::Procedure) {
+            return None;
+        }
+        let n = r.fetches.1.load(Relaxed).wrapping_add(1);
+        r.fetches.1.store(n, Relaxed);
+        if !n.is_multiple_of(BACK_BUDGET) {
+            return Some(false);
+        }
+        self.hot
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(f);
+        Some(true)
+    }
+
+    /// Verify `raw` (function `f`) when the program was not verified as a whole (`lazy_verify`).
+    fn verify_lazily(&self, f: FuncId, raw: &Func) {
+        if self.lazy_verify.is_some_and(|from| f.0 >= from) {
+            let mut errs = Vec::new();
+            crate::verify::verify_func(self, f, raw.full(), &mut errs);
+            // A producer bug: the kernel turns the panic into an internal error.
+            assert!(
+                errs.is_empty(),
+                "internal error: {}; this is a bug in yavs",
+                errs[0]
+            );
+        }
+    }
+
+    /// The functions elaboration-time code asked for [`HOT`] times since the last call, to
+    /// optimise before the next call ([`ElabRaw`]).
+    pub fn take_hot(&self) -> Vec<FuncId> {
+        std::mem::take(
+            &mut *self
+                .hot
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Is the optimised copy of `f` valid only while nothing outside writes process variables
@@ -413,6 +492,99 @@ pub struct Func {
     /// (see [`lazy_bodies`]): these four are empty here and [`Func::full`] decodes them.
     #[serde(skip)]
     pub(crate) lazy: Option<Box<LazyBody>>,
+    /// How often elaboration-time code asked for this function before it was optimised, and how
+    /// many jumps back it took as lowered ([`ElabRaw`]).
+    #[serde(skip)]
+    pub(crate) fetches: Fetches,
+}
+
+/// A counter that a clone of its function starts again.
+#[derive(Debug, Default)]
+pub(crate) struct Fetches(std::sync::atomic::AtomicU32, std::sync::atomic::AtomicU32);
+
+impl Clone for Fetches {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// The functions elaboration-time code asked for [`HOT`] times (`Program::take_hot`).
+#[derive(Debug, Default)]
+pub struct HotList(std::sync::Mutex<Vec<FuncId>>);
+
+impl Clone for HotList {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// Elaboration-time calls run a function as lowered, without the optimiser, until it has been
+/// asked for this many times ([`ElabRaw`]).
+const HOT: u32 = 64;
+
+/// Jumps back a function that runs as lowered may take (over all its calls) before it is
+/// optimised ([`Program::back_edge`]). The optimiser costs about as much as 2000 iterations of
+/// a lowered loop save; the iterations run before the switch are repeated when the call restarts.
+const BACK_BUDGET: u32 = 2048;
+
+static OPTIMISED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+static RESTARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Count a call abandoned and run again with a function optimised ([`ElabRaw::restartable`]).
+pub fn note_restart() {
+    RESTARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many calls restarted in this process (a work counter: `YAVS_COUNTERS`).
+pub fn restarted_calls() -> u64 {
+    RESTARTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many functions the optimiser ran on in this process (a work counter: `YAVS_COUNTERS`).
+pub fn optimised_functions() -> u64 {
+    OPTIMISED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+thread_local! {
+    /// 0: off, 1: on, 2: on and a call may not restart ([`ElabRaw::no_restart`]).
+    static ELAB_RAW: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// While alive, [`Program::func`] hands out a subprogram as lowered instead of optimising it at
+/// its first use (the call is a one-shot elaboration-time evaluation: most functions of a
+/// library run once or twice there and the optimiser costs more than it saves). Functions asked
+/// for [`HOT`] times are listed ([`Program::take_hot`]); the caller optimises them between two
+/// calls, when no frame runs their lowered code (`yavs_interp::Runtime::promote_hot`).
+///
+/// A function whose loops take [`BACK_BUDGET`] jumps back is listed too (`Program::back_edge`), and
+/// a call that has only computed may then be run again with it optimised ([`ElabRaw::restartable`]).
+///
+/// ponytail: the jumps back are counted at the jumps the predecoder leaves to the generic step
+/// (`yavs_interp::pre`); a call that printed or touched anything finishes lowered, and an element
+/// loop (`Op::Loop`) is not counted.
+pub struct ElabRaw(u8);
+
+impl ElabRaw {
+    pub fn on() -> ElabRaw {
+        ElabRaw(ELAB_RAW.with(|c| c.replace(c.get().max(1))))
+    }
+
+    /// Like [`ElabRaw::on`], and no call restarts while it is alive: the last attempt.
+    pub fn no_restart() -> ElabRaw {
+        ElabRaw(ELAB_RAW.with(|c| c.replace(2)))
+    }
+
+    /// Whether the call running now may be abandoned and run again (`Fault::Restart`).
+    pub fn restartable() -> bool {
+        ELAB_RAW.with(std::cell::Cell::get) == 1
+    }
+}
+
+impl Drop for ElabRaw {
+    fn drop(&mut self) {
+        ELAB_RAW.with(|c| c.set(self.0));
+    }
 }
 
 /// A function body not decoded yet.
@@ -546,6 +718,7 @@ impl Func {
             spare: false,
             opt: Default::default(),
             lazy: None,
+            fetches: Default::default(),
         }
     }
 
@@ -576,6 +749,7 @@ impl Func {
             spare: true,
             opt: Default::default(),
             lazy: None,
+            fetches: Default::default(),
         }
     }
 
@@ -866,12 +1040,126 @@ pub enum CovKind {
     /// Arm `n` of a branching statement, in source order (an `if` without `else` and a
     /// conditional assignment without a final `else` get one more arm: no choice taken).
     Branch(u32),
+    /// Row `row` of a condition (`if`, `elsif`, `when`, `while`, `exit`, `next`): row
+    /// `2 * i + v` is input `i` at value `v` (focused expression coverage).
+    Condition(u32),
+    /// The same for a logic expression on the right side of an assignment.
+    Expression(u32),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct CovInfo {
     pub stmt: StmtId,
     pub kind: CovKind,
+    /// A condition or expression row: what it is about.
+    pub row: Option<CovRow>,
+}
+
+/// The source of a condition or expression row.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct CovRow {
+    /// The whole condition or expression.
+    pub whole: Span,
+    /// The input.
+    pub input: Span,
+    /// `'0'` or `'1'` when the row's input at its value decides the result alone (no `xor`
+    /// between the input and the result), the result then; `'?'` when it depends on the
+    /// other inputs.
+    pub result: char,
+}
+
+/// A node of a condition tree in postfix order.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CovNode {
+    /// Input `n`.
+    Input(u8),
+    Not,
+    And,
+    Or,
+    Nand,
+    Nor,
+    Xor,
+    Xnor,
+}
+
+/// The tree of one condition: its first row's counter is `first`, the row of input `i` at
+/// value `v` is `first + 2 * k + v`, `k` the number of non-constant inputs before `i`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct CovCond {
+    pub first: CovItem,
+    /// The number of inputs, at most [`COV_INPUTS`].
+    pub inputs: u8,
+    /// Inputs that are constant after elaboration (bit `i`): evaluated, but they have no rows.
+    pub consts: u32,
+    pub nodes: Vec<CovNode>,
+}
+
+/// The most inputs of a condition that is measured (two bits of the state each).
+pub const COV_INPUTS: usize = 31;
+
+impl CovCond {
+    /// The rows (bit `2 * k + v`, `k` as in [`CovCond`]) one evaluation covers. `state` holds two bits per input:
+    /// 0 not evaluated (short-circuit), 1 false, 2 true, 3 another value (nothing is counted
+    /// then). Input `i` at value `v` is covered when flipping it alone changes the result
+    /// while the other evaluated inputs keep their values; an input not evaluated is masked:
+    /// it may take any value.
+    pub fn hits(&self, state: u64) -> u64 {
+        let n = usize::from(self.inputs);
+        let code = |i: usize| (state >> (2 * i)) & 3;
+        if (0..n).any(|i| code(i) == 3) {
+            return 0;
+        }
+        let r = self.reach(state, None);
+        if r != 1 && r != 2 {
+            return 0;
+        }
+        let mut hits = 0;
+        for (k, i) in (0..n).filter(|&i| self.consts >> i & 1 == 0).enumerate() {
+            if code(i) != 0 && self.reach(state, Some(i)) & (3 ^ r) != 0 {
+                hits |= 1 << (2 * k + usize::from(code(i) == 2));
+            }
+        }
+        hits
+    }
+
+    /// The results the tree can have: bit 0 false, bit 1 true. Input `flip` has the other
+    /// value, an input not evaluated either.
+    fn reach(&self, state: u64, flip: Option<usize>) -> u8 {
+        let mut st = [0u8; 64];
+        let mut sp = 0;
+        for &n in &self.nodes {
+            if let CovNode::Input(i) = n {
+                let c = (state >> (2 * u32::from(i))) & 3;
+                st[sp] = match c {
+                    0 => 3,
+                    _ if flip == Some(usize::from(i)) => 3 ^ c as u8,
+                    c => c as u8,
+                };
+                sp += 1;
+                continue;
+            }
+            let not = |a: u8| (a & 1) << 1 | (a >> 1) & 1;
+            if n == CovNode::Not {
+                st[sp - 1] = not(st[sp - 1]);
+                continue;
+            }
+            sp -= 1;
+            let (a, b) = (st[sp - 1], st[sp]);
+            let and = (a | b) & 1 | a & b & 2;
+            let or = a & b & 1 | (a | b) & 2;
+            let xor = u8::from((a & b & 1 != 0) || (a & b & 2 != 0))
+                | u8::from((a & 1 != 0 && b & 2 != 0) || (a & 2 != 0 && b & 1 != 0)) << 1;
+            st[sp - 1] = match n {
+                CovNode::And => and,
+                CovNode::Nand => not(and),
+                CovNode::Or => or,
+                CovNode::Nor => not(or),
+                CovNode::Xor => xor,
+                _ => not(xor),
+            };
+        }
+        st[0]
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -960,5 +1248,174 @@ mod lazy_verify_tests {
         }));
         assert!(caught.is_err(), "the broken function must not run");
         assert!(prog.verify_pending().is_err());
+    }
+}
+
+#[cfg(test)]
+mod cov_tests {
+    use super::*;
+
+    fn cond(nodes: &[CovNode], inputs: u8) -> CovCond {
+        CovCond {
+            first: CovItem(0),
+            inputs,
+            consts: 0,
+            nodes: nodes.to_vec(),
+        }
+    }
+
+    /// State of the inputs `v` (`None`: not evaluated), two bits each.
+    fn state(v: &[Option<bool>]) -> u64 {
+        v.iter().enumerate().fold(0, |s, (i, x)| {
+            s | match x {
+                None => 0,
+                Some(false) => 1,
+                Some(true) => 2,
+            } << (2 * i)
+        })
+    }
+
+    #[test]
+    fn and_or_rows() {
+        use CovNode::*;
+        // a and b
+        let c = cond(&[Input(0), Input(1), And], 2);
+        // Both true: each input flips the result.
+        assert_eq!(c.hits(state(&[Some(true), Some(true)])), 0b1010);
+        // a false, b true: a decides (row a=0), b does not.
+        assert_eq!(c.hits(state(&[Some(false), Some(true)])), 0b0001);
+        // a false, b not evaluated (short-circuit): b is masked, a decides.
+        assert_eq!(c.hits(state(&[Some(false), None])), 0b0001);
+        // Both false: neither flips alone.
+        assert_eq!(c.hits(state(&[Some(false), Some(false)])), 0);
+        // a true, b false: b decides (row b=0).
+        assert_eq!(c.hits(state(&[Some(true), Some(false)])), 0b0100);
+        // a or (b and c)
+        let c = cond(&[Input(0), Input(1), Input(2), And, Or], 3);
+        assert_eq!(
+            c.hits(state(&[Some(false), Some(true), Some(true)])),
+            1 << 3 | 1 << 5
+        );
+        // a true: the right side is not evaluated and masked; a decides.
+        assert_eq!(c.hits(state(&[Some(true), None, None])), 1 << 1);
+    }
+
+    #[test]
+    fn constant_inputs_have_no_rows() {
+        use CovNode::*;
+        // a and k and b, k constant true: rows are a, b only (k is evaluated, never reported).
+        let mut c = cond(&[Input(0), Input(1), And, Input(2), And], 3);
+        c.consts = 0b010;
+        let t = Some(true);
+        assert_eq!(c.hits(state(&[t, t, t])), 0b1010);
+        assert_eq!(c.hits(state(&[Some(false), t, t])), 0b0001);
+        assert_eq!(c.hits(state(&[t, t, Some(false)])), 0b0100);
+    }
+
+    #[test]
+    fn xor_not_and_other_values() {
+        use CovNode::*;
+        // not (a xor b): every input decides alone, in every evaluation.
+        let c = cond(&[Input(0), Input(1), Xor, Not], 2);
+        assert_eq!(c.hits(state(&[Some(true), Some(false)])), 0b0110);
+        assert_eq!(c.hits(state(&[Some(true), Some(true)])), 0b1010);
+        // An input with another value (code 3) counts nothing.
+        assert_eq!(c.hits(1 | 3 << 2), 0);
+        // nand and nor invert the result, not the rows.
+        let c = cond(&[Input(0), Input(1), Nand], 2);
+        assert_eq!(c.hits(state(&[Some(true), Some(true)])), 0b1010);
+        let c = cond(&[Input(0), Input(1), Nor], 2);
+        assert_eq!(c.hits(state(&[Some(false), Some(false)])), 0b0101);
+    }
+
+    /// The rows by brute force over the unevaluated inputs, for every tree shape and state of
+    /// three inputs.
+    #[test]
+    fn brute_force() {
+        use CovNode::*;
+        let ops = [And, Or, Nand, Nor, Xor, Xnor];
+        let mut trees = Vec::new();
+        for &o1 in &ops {
+            for &o2 in &ops {
+                trees.push(vec![Input(0), Input(1), o1, Input(2), o2]);
+                trees.push(vec![Input(0), Input(1), Input(2), o1, o2]);
+                trees.push(vec![Input(0), Input(1), o1, Not, Input(2), o2]);
+            }
+        }
+        let eval = |nodes: &[CovNode], v: [bool; 3]| {
+            let mut st: Vec<bool> = Vec::new();
+            for n in nodes {
+                match n {
+                    Input(i) => st.push(v[usize::from(*i)]),
+                    Not => {
+                        let a = st.pop().unwrap();
+                        st.push(!a);
+                    }
+                    _ => {
+                        let (b, a) = (st.pop().unwrap(), st.pop().unwrap());
+                        st.push(match n {
+                            And => a & b,
+                            Nand => !(a & b),
+                            Or => a | b,
+                            Nor => !(a | b),
+                            Xor => a ^ b,
+                            _ => !(a ^ b),
+                        });
+                    }
+                }
+            }
+            st[0]
+        };
+        for t in &trees {
+            let c = cond(t, 3);
+            for s in 0..4u64.pow(3) {
+                let code = |i: u32| (s >> (2 * i)) & 3;
+                let want = if (0..3).any(|i| code(i) == 3) {
+                    0
+                } else {
+                    // Free inputs: the result must not depend on them.
+                    let all = |f: &dyn Fn([bool; 3]) -> bool| {
+                        let mut r = Vec::new();
+                        for m in 0..8u32 {
+                            let v = [m & 1 != 0, m & 2 != 0, m & 4 != 0];
+                            // Inputs with a value keep it.
+                            if (0..3).all(|i| code(i) == 0 || v[i as usize] == (code(i) == 2)) {
+                                r.push(f(v));
+                            }
+                        }
+                        r
+                    };
+                    let orig = all(&|v| eval(t, v));
+                    if orig.iter().any(|&x| x != orig[0]) {
+                        0
+                    } else {
+                        let mut h = 0u64;
+                        for i in (0..3u32).filter(|&i| code(i) != 0) {
+                            // Flip input i, keep the other evaluated inputs.
+                            let mut r = Vec::new();
+                            for m in 0..8u32 {
+                                let v = [m & 1 != 0, m & 2 != 0, m & 4 != 0];
+                                let ok = (0..3).all(|j| {
+                                    code(j) == 0
+                                        || if j == i {
+                                            v[j as usize] != (code(j) == 2)
+                                        } else {
+                                            v[j as usize] == (code(j) == 2)
+                                        }
+                                });
+                                if ok {
+                                    r.push(eval(t, v));
+                                }
+                            }
+                            if r.iter().any(|&x| x != orig[0]) {
+                                h |= 1 << (2 * i + u32::from(code(i) == 2));
+                            }
+                        }
+                        h
+                    }
+                };
+                assert_eq!(c.hits(s), want, "{t:?} state {s:#b}");
+            }
+        }
     }
 }

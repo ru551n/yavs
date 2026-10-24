@@ -87,6 +87,7 @@ Other rows of the 2026-10-21 head-to-head tables map to existing benchmarks: row
 - The designs must stay deterministic and finish by themselves. Changing a design or `vc_tests.tsv` invalidates
   earlier JSON files: say so in the commit.
 - Do not add a benchmark that needs a manual install.
+- `perf record` writes an empty file ("increase perf_event_mlock_kb") when parallel sessions have used up the per-user buffer budget: add `-m 64`. Layers of one run: `YAVS_PERFMAP=1 YAVS_LLVM_PERFMAP=1 perf record -m 64 -e instructions:u -c 4000000 ...` then `perf report --no-children --sort comm,sym`; with `--tier=auto` the compile thread is the command `yavs-tier-up`, compiled code `f<id>_n_<name>`.
 
 ## 5. How to work here
 

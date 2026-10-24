@@ -48,9 +48,11 @@ pub struct WaveConfig {
     /// Time unit of the `time` argument of [`WaveWriter::change`]: 10^exponent seconds.
     /// Default -15 (femtoseconds, yavs's resolution).
     pub timescale_exponent: i8,
-    /// A block is flushed on the next time advance once this much wall-clock time has passed, so
-    /// a killed run still leaves a readable file.
-    pub flush_interval: Duration,
+    /// `Some(d)`: a block is also flushed on the next time advance once `d` of wall-clock time has
+    /// passed, so a killed run leaves a readable file (the bytes then depend on the run's speed).
+    /// `None` (default): blocks end only at `block_change_limit`, so the file's bytes depend on
+    /// the changes alone (#666).
+    pub flush_interval: Option<Duration>,
     /// Also flush after this many buffered changes (at least twice the number of signals).
     pub block_change_limit: usize,
     pub version: String,
@@ -60,7 +62,7 @@ impl Default for WaveConfig {
     fn default() -> Self {
         Self {
             timescale_exponent: -15,
-            flush_interval: Duration::from_secs(5),
+            flush_interval: None,
             block_change_limit: 250_000,
             version: format!("yavs {}", env!("CARGO_PKG_VERSION")),
         }
@@ -368,7 +370,10 @@ impl WaveWriter {
             self.since_check += 1;
             if self.since_check >= 256 {
                 self.since_check = 0;
-                self.flush_due |= self.last_flush.elapsed() >= self.cfg.flush_interval;
+                self.flush_due |= self
+                    .cfg
+                    .flush_interval
+                    .is_some_and(|i| self.last_flush.elapsed() >= i);
             }
             if self.flush_due {
                 fst.flush()?;

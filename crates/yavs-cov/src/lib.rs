@@ -34,6 +34,25 @@ pub enum Kind {
     Branch(u32),
     /// A `bit`/`std_ulogic` scalar of a signal or port went 0 -> 1 (`true`) or 1 -> 0.
     Toggle(bool),
+    /// Row `n` of a condition: input `n / 2` at value `n % 2` (focused expression coverage).
+    Condition(u32),
+    /// The same for a logic expression on the right side of an assignment.
+    Expression(u32),
+}
+
+impl Kind {
+    /// A condition or expression row.
+    pub fn is_fec(self) -> bool {
+        matches!(self, Kind::Condition(_) | Kind::Expression(_))
+    }
+
+    /// The row of a condition or expression: its input and value.
+    pub fn row(self) -> Option<(u32, bool)> {
+        match self {
+            Kind::Condition(r) | Kind::Expression(r) => Some((r / 2, r % 2 == 1)),
+            _ => None,
+        }
+    }
 }
 
 /// The identity of an item, the same in every run of the design.
@@ -47,7 +66,8 @@ pub struct Key {
     /// Among statements of one unit with the same text: the position in source order.
     pub occ: u32,
     /// Toggles: the scalar's name below `path` (`data(3)`, `r.valid`); hash and occ are 0.
-    /// Empty for statements and branches.
+    /// Conditions and expressions: the text of the row's input. Empty for statements and
+    /// branches.
     pub sig: String,
 }
 
@@ -58,7 +78,9 @@ pub struct Entry {
     pub line: u32,
     pub count: u64,
     /// First line of the statement, whitespace runs as one space, cut at 60 characters:
-    /// display only (reports), never part of the identity.
+    /// display only (reports), never part of the identity. A condition or expression row: the
+    /// result the row's input decides (`0`, `1`, or `?` when other inputs take part), a space
+    /// and the text of the whole condition.
     pub text: String,
     /// The tests that hit it: indices into [`Database::tests`], sorted.
     pub tests: Vec<u32>,
@@ -80,9 +102,11 @@ pub struct Database {
     pub tests: Vec<String>,
 }
 
-const MAGIC: &str = "yavs-coverage 4";
-/// Older versions [`Database::parse`] still reads.
+const MAGIC: &str = "yavs-coverage 5";
+/// Older versions [`Database::parse`] still reads: 2 has no toggles, 2 and 3 no tests, 4 no
+/// conditions.
 const OLD: &[&str] = &["yavs-coverage 2", "yavs-coverage 3"];
+const V4: &str = "yavs-coverage 4";
 
 fn fnv1a(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -108,6 +132,8 @@ struct Item {
     text: String,
     /// Inside a `-- coverage off` region: counted but left out of the database.
     skip: bool,
+    /// A condition row: the text of its input.
+    input: String,
 }
 
 /// First line of a statement's text, for display.
@@ -225,7 +251,11 @@ pub fn collect(
     let mut items = Vec::with_capacity(n);
     let mut owner = HashMap::new();
     for (_, c) in prog.cov.iter() {
-        let span = prog.stmts.get(c.stmt).map(|s| s.span).unwrap_or_default();
+        // A condition row belongs to the condition's text, not to its statement.
+        let span = match &c.row {
+            Some(r) => r.whole,
+            None => prog.stmts.get(c.stmt).map(|s| s.span).unwrap_or_default(),
+        };
         let unit = units
             .get(&span.file)
             .and_then(|v| v[..v.partition_point(|&(s, _)| s <= span.start)].last())
@@ -243,13 +273,28 @@ pub fn collect(
         let rg = regs
             .entry(span.file)
             .or_insert_with(|| regions(&f.path, f.text(), translate_off, &mut warns));
+        let at = |s: yavs_diag::Span| {
+            f.text()
+                .get(f.text_offset(s.start)..f.text_offset(s.end))
+                .unwrap_or("")
+        };
         items.push(Item {
-            text: display(text),
+            input: c
+                .row
+                .as_ref()
+                .map(|r| display(at(r.input)))
+                .unwrap_or_default(),
+            text: match &c.row {
+                Some(r) => format!("{} {}", r.result, display(text)),
+                None => display(text),
+            },
             skip: rg.iter().any(|&(a, b)| a <= line && line <= b),
             unit,
             kind: match c.kind {
                 yavs_ir::CovKind::Statement => Kind::Statement,
                 yavs_ir::CovKind::Branch(a) => Kind::Branch(a),
+                yavs_ir::CovKind::Condition(r) => Kind::Condition(r),
+                yavs_ir::CovKind::Expression(r) => Kind::Expression(r),
             },
             hash: fnv1a(text),
             start: span.start,
@@ -304,7 +349,7 @@ pub fn collect(
         kind: items[i].kind,
         hash: items[i].hash,
         occ: occ[i],
-        sig: String::new(),
+        sig: items[i].input.clone(),
     };
     let mut add = |k: Key, i: usize, c: u64| {
         if items[i].skip {
@@ -357,6 +402,8 @@ impl Database {
     /// The text form: a header line, the tests section (`test`, id, name; ids number the
     /// names in sorted order), then one tab-separated line per item, sorted by key.
     /// Statements and branches: kind, path, hash, occurrence, count, tests, line, file, text;
+    /// conditions (`c<row>`) and expressions (`e<row>`) the same with the row's input before
+    /// the text;
     /// toggles (`t1` rise, `t0` fall): kind, path, scalar name, count, tests, line, file.
     /// `tests` is the comma-separated ids of the tests that hit the item, `-` for none.
     pub fn write(&self) -> String {
@@ -379,6 +426,19 @@ impl Database {
             let kind = match k.kind {
                 Kind::Statement => "s".to_string(),
                 Kind::Branch(a) => format!("b{a}"),
+                Kind::Condition(r) | Kind::Expression(r) => {
+                    let c = if matches!(k.kind, Kind::Condition(_)) {
+                        'c'
+                    } else {
+                        'e'
+                    };
+                    let _ = writeln!(
+                        s,
+                        "{c}{r}\t{}\t{:016x}\t{}\t{}\t{t}\t{}\t{}\t{}\t{}",
+                        k.path, k.hash, k.occ, e.count, e.line, e.file, k.sig, e.text
+                    );
+                    continue;
+                }
                 Kind::Toggle(r) => {
                     let _ = writeln!(
                         s,
@@ -408,7 +468,7 @@ impl Database {
         let mut lines = text.lines();
         let head = lines.next();
         let old = head.is_some_and(|h| OLD.contains(&h));
-        if head != Some(MAGIC) && !old {
+        if head != Some(MAGIC) && head != Some(V4) && !old {
             return Err(format!("not a yavs coverage database (no `{MAGIC}` line)"));
         }
         let mut db = Database::default();
@@ -466,23 +526,34 @@ impl Database {
                 };
                 (key, entry)
             } else {
+                let fec = l.starts_with('c') || l.starts_with('e');
+                let (sig, f) = match (fec, &f[..]) {
+                    (true, [a, b, c, d, e, g, h, i, sig, text]) => {
+                        (*sig, vec![*a, *b, *c, *d, *e, *g, *h, *i, *text])
+                    }
+                    (false, _) => ("", f),
+                    _ => return Err(bad()),
+                };
                 let [kind, path, hash, occ, count, _, line, file, text] = f[..] else {
                     return Err(bad());
                 };
+                let row = |p: char| {
+                    kind.strip_prefix(p)
+                        .and_then(|a| a.parse().ok())
+                        .ok_or_else(bad)
+                };
                 let kind = match kind {
                     "s" => Kind::Statement,
-                    _ => Kind::Branch(
-                        kind.strip_prefix('b')
-                            .and_then(|a| a.parse().ok())
-                            .ok_or_else(bad)?,
-                    ),
+                    _ if fec && kind.starts_with('c') => Kind::Condition(row('c')?),
+                    _ if fec => Kind::Expression(row('e')?),
+                    _ => Kind::Branch(row('b')?),
                 };
                 let key = Key {
                     path: path.to_string(),
                     kind,
                     hash: u64::from_str_radix(hash, 16).map_err(|_| bad())?,
                     occ: occ.parse().map_err(|_| bad())?,
-                    sig: String::new(),
+                    sig: sig.to_string(),
                 };
                 let entry = Entry {
                     file: file.to_string(),
@@ -611,44 +682,73 @@ impl Database {
             }
         };
         let col = |h: usize, t: usize| format!("{h}/{t} {}", pct(h, t));
-        // Per path: statements, branches, toggles (hit, total each).
-        let mut per: BTreeMap<&str, [usize; 6]> = BTreeMap::new();
+        // Per path: statements, branches, toggles, conditions, expressions (hit, total each).
+        let mut per: BTreeMap<&str, [usize; 10]> = BTreeMap::new();
         for (k, e) in &self.items {
             let c = per.entry(&k.path).or_default();
             let o = match k.kind {
                 Kind::Statement => 0,
                 Kind::Branch(_) => 2,
                 Kind::Toggle(_) => 4,
+                Kind::Condition(_) => 6,
+                Kind::Expression(_) => 8,
             };
             c[o + 1] += 1;
             c[o] += usize::from(e.count > 0);
         }
-        let mut t = [0; 6];
+        let mut t = [0; 10];
         for c in per.values() {
             for (a, b) in t.iter_mut().zip(c) {
                 *a += b;
             }
         }
+        // Conditions and expressions show only when the database has them.
+        let (fc, fe) = (t[7] > 0, t[9] > 0);
         let mut s = format!(
-            "statements {}\nbranches   {}\ntoggles    {}\n\n",
+            "statements {}\nbranches   {}\ntoggles    {}\n",
             col(t[0], t[1]),
             col(t[2], t[3]),
             col(t[4], t[5])
         );
+        if fc {
+            let _ = writeln!(s, "conditions {}", col(t[6], t[7]));
+        }
+        if fe {
+            let _ = writeln!(s, "expressions {}", col(t[8], t[9]));
+        }
+        s.push('\n');
         let w = per.keys().map(|p| p.len()).max().unwrap_or(0).max(4);
-        let _ = writeln!(
+        // The toggles column is padded only when a column follows.
+        let pad = if fc || fe { 20 } else { 0 };
+        let _ = write!(
             s,
-            "{:w$}  {:<20}  {:<20}  toggles",
-            "path", "statements", "branches"
+            "{:w$}  {:<20}  {:<20}  {:<pad$}",
+            "path", "statements", "branches", "toggles"
         );
+        if fc {
+            let _ = write!(s, "  {:<20}", "conditions");
+        }
+        if fe {
+            let _ = write!(s, "  expressions");
+        }
+        s = s.trim_end().to_string();
+        s.push('\n');
         for (p, c) in &per {
-            let _ = writeln!(
+            let _ = write!(
                 s,
-                "{p:w$}  {:<20}  {:<20}  {}",
+                "{p:w$}  {:<20}  {:<20}  {:<pad$}",
                 col(c[0], c[1]),
                 col(c[2], c[3]),
                 col(c[4], c[5])
             );
+            if fc {
+                let _ = write!(s, "  {:<20}", col(c[6], c[7]));
+            }
+            if fe {
+                let _ = write!(s, "  {}", col(c[8], c[9]));
+            }
+            s = s.trim_end().to_string();
+            s.push('\n');
         }
         let mut missed: Vec<_> = self.items.iter().filter(|(_, e)| e.count == 0).collect();
         missed.sort_by(|a, b| (&a.1.file, a.1.line, a.0).cmp(&(&b.1.file, b.1.line, b.0)));
@@ -660,6 +760,14 @@ impl Database {
                 Kind::Statement => "statement".to_string(),
                 Kind::Branch(a) => format!("branch {a}"),
                 Kind::Toggle(r) => format!("toggle {} {}", k.sig, arrow(r)),
+                Kind::Condition(r) | Kind::Expression(r) => {
+                    let w = if matches!(k.kind, Kind::Condition(_)) {
+                        "condition"
+                    } else {
+                        "expression"
+                    };
+                    format!("{w} input {} is {}", k.sig, r % 2)
+                }
             };
             let _ = writeln!(s, "  {}:{}  {what}  {}", e.file, e.line, k.path);
         }
@@ -691,6 +799,19 @@ impl Database {
                     *c = c.saturating_add(e.count);
                 }
                 Kind::Branch(a) => {
+                    let c = line.arms.entry((k.hash, k.occ, a)).or_default();
+                    *c = c.saturating_add(e.count);
+                }
+                // A condition row is a condition of the line, apart from the branch arms
+                // (arm numbers from 2^31; an expression row from 2^30 more).
+                Kind::Condition(r) | Kind::Expression(r) => {
+                    let a = (1 << 31)
+                        | r
+                        | if matches!(k.kind, Kind::Expression(_)) {
+                            1 << 30
+                        } else {
+                            0
+                        };
                     let c = line.arms.entry((k.hash, k.occ, a)).or_default();
                     *c = c.saturating_add(e.count);
                 }
@@ -769,6 +890,19 @@ impl Database {
             br = rate(t[2], t[3]),
         )
     }
+}
+
+/// What a condition or expression row is about: `a is 1 (result 1) in a and b` (input, value,
+/// the result that input decides alone, the whole condition).
+pub fn fec_text(k: &Key, e: &Entry) -> String {
+    let (res, whole) = e.text.split_once(' ').unwrap_or(("?", &e.text));
+    let v = k.kind.row().map_or(0, |r| u8::from(r.1));
+    let res = if res == "?" {
+        String::new()
+    } else {
+        format!(" (result {res})")
+    };
+    format!("{} is {v}{res} in {whole}", k.sig)
 }
 
 /// `0->1` or `1->0`.

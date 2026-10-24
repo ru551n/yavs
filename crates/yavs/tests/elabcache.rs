@@ -24,6 +24,19 @@ const TB: &str = "use work.ec.all;\nentity tb is end;\narchitecture a of tb is\n
 const TBG: &str = "use work.ec.all;\nentity tbg is end;\narchitecture a of tbg is\n\
   constant c1 : integer := g(3);\n  signal s1 : bit_vector(1 to c1);\nbegin\n  process begin\n    report \"c=\" & integer'image(s1'length);\n    wait;\n  end process;\nend;\n";
 
+/// A table built by a function, read by a pure function (the shape of a board table in a
+/// configuration package): the call runs against the package state, the table is built once.
+const TPKG: &str = "package tp is\n  type iv is array (natural range <>) of integer;\n\
+  function pick (i : integer) return integer;\nend;\n\
+package body tp is\n  function mk (n : integer) return iv is\n    variable r : iv(0 to n - 1);\n  begin\n\
+    for i in r'range loop r(i) := i * i + 1; end loop;\n    return r;\n  end;\n  constant T : iv := mk(6);\n\
+  function pick (i : integer) return integer is begin return T(i); end;\nend;\n";
+
+const TTB: &str = "use work.tp.all;\nentity ttb is end;\narchitecture a of ttb is\n\
+  constant c1 : integer := pick(1);\n  constant c2 : integer := pick(2);\n  constant c3 : integer := pick(5);\n\
+  signal s1 : bit_vector(1 to c1);\n  signal s2 : bit_vector(1 to c2);\n  signal s3 : bit_vector(1 to c3);\nbegin\n\
+  process begin\n    report \"t=\" & integer'image(s1'length) & \" \" & integer'image(s2'length) & \" \" & integer'image(s3'length);\n    wait;\n  end process;\nend;\n";
+
 struct Env {
     tmp: common::Tmp,
 }
@@ -56,7 +69,13 @@ impl Out {
 impl Env {
     fn new(name: &str) -> Env {
         let e = Env { tmp: tempdir(name) };
-        for (f, t) in [("pkg.vhd", PKG), ("tb.vhd", TB), ("tbg.vhd", TBG)] {
+        for (f, t) in [
+            ("pkg.vhd", PKG),
+            ("tb.vhd", TB),
+            ("tbg.vhd", TBG),
+            ("tpkg.vhd", TPKG),
+            ("ttb.vhd", TTB),
+        ] {
             std::fs::write(e.tmp.join(f), t).expect("write");
             e.analyze(f);
         }
@@ -167,5 +186,25 @@ fn an_impure_function_is_run_every_time() {
         let o = e.run("tbg", &[]);
         assert_eq!(o.code, 0, "{}", o.stderr);
         assert!(!o.noted("ecall"), "{}", o.stderr);
+    }
+}
+
+#[test]
+fn a_function_reading_a_package_table_is_answered_from_the_package_state() {
+    let e = Env::new("ecall-table");
+    let plain = e.run("ttb", &["--no-cache"]);
+    assert_eq!(plain.code, 0, "{}", plain.stderr);
+    assert!(
+        format!("{}{}", plain.stdout, plain.stderr).contains("t=2 5 26"),
+        "{}",
+        plain.stderr
+    );
+    let first = e.run("ttb", &[]);
+    let second = e.run("ttb", &[]);
+    let third = e.run("ttb", &[]);
+    assert!(second.noted("store ecall"), "{}", second.stderr);
+    assert!(third.noted("hit ecall"), "{}", third.stderr);
+    for o in [&first, &second, &third] {
+        assert_eq!(o.visible(), plain.visible(), "{}", o.stderr);
     }
 }

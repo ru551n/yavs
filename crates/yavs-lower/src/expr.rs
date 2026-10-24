@@ -40,7 +40,7 @@ pub(crate) struct Rng {
 }
 
 /// [`Fx::leaf_facts`]: logic flag, plane code bias, scalar width and element (kernel) width.
-type LeafFacts = (bool, i64, Width, Width);
+pub(crate) type LeafFacts = (bool, i64, Width, Width);
 
 /// An assignment target.
 #[derive(Clone, Copy, Debug)]
@@ -97,6 +97,19 @@ pub(crate) struct SigPart {
     pub path: Vec<u32>,
     /// Each leaf below it, a reference to its selected elements and their count.
     pub leaves: Vec<(crate::RecLeaf, Reg, Reg)>,
+}
+
+impl SigPart {
+    /// The type and descriptor of a whole signal, with no leaves (`Fx::comp_head`).
+    fn head(t: TypeId, tid: TyId, desc: Reg) -> SigPart {
+        SigPart {
+            t,
+            tid,
+            desc,
+            path: Vec::new(),
+            leaves: Vec::new(),
+        }
+    }
 }
 
 fn dir_cell(d: Direction) -> i64 {
@@ -180,6 +193,14 @@ impl<'a> Fx<'a, '_> {
     }
 
     pub fn expr(&mut self, id: ExprId) -> R<V> {
+        let v = self.expr_value(id)?;
+        if !self.cov_inputs.is_empty() {
+            self.cov_input(id, v);
+        }
+        Ok(v)
+    }
+
+    fn expr_value(&mut self, id: ExprId) -> R<V> {
         let db = self.db;
         let e = &db.exprs[id];
         let span = e.span;
@@ -451,6 +472,17 @@ impl<'a> Fx<'a, '_> {
                 if let Some((data, desc)) = self.sigcopy_of(d, span)? {
                     return Ok(V::A(data, desc));
                 }
+                if let Some(tab) = self.rec_table(d, span)? {
+                    let p = self.comp_head(d, span)?;
+                    let size = self.size_of(p.tid, p.desc);
+                    let val = self.alloc(size);
+                    self.emit(Inst::SigGather {
+                        dst: val,
+                        desc: p.desc,
+                        tab,
+                    });
+                    return Ok(V::A(val, p.desc));
+                }
                 let p = self.comp_select(d, &[], span)?;
                 self.read_comp(&p, span)
             }
@@ -590,6 +622,25 @@ impl<'a> Fx<'a, '_> {
                         var: true,
                     });
                     self.read_obj(d, span)
+                }
+                // A package constant whose initialiser is not folded, read by a function lowered
+                // alone for an elaboration-time call: evaluating the initialiser at every read
+                // rebuilt a whole table per call. The call runs against the package state instead.
+                DeclKind::Object(o)
+                    if self.cx.capture_free
+                        && !self.cx.capture_vars
+                        && o.class == yavs_sem::decl::ObjClass::Constant
+                        && o.default.is_some_and(|e| db.exprs[e].value.is_none())
+                        && matches!(
+                            db.scopes[decl.scope].kind,
+                            yavs_sem::scope::ScopeKind::Package
+                                | yavs_sem::scope::ScopeKind::PackageBody
+                        ) =>
+                {
+                    Err(self.cx.unsupported(
+                        span,
+                        &format!("package constant `{}` without a folded value", decl.name),
+                    ))
                 }
                 // A constant without run-time data (locally static) is evaluated from its
                 // folded initialiser.
@@ -1293,6 +1344,14 @@ impl<'a> Fx<'a, '_> {
         Ok((param, root, w))
     }
 
+    /// The type and descriptor of record signal `d` as a whole, without its leaves (a read or
+    /// drive through a leaf table, `rec_table`).
+    pub(crate) fn comp_head(&mut self, d: DeclId, span: Span) -> R<SigPart> {
+        let (_, _, w) = self.comp_walk(d, &[], span)?;
+        let tid = self.ty(w.t, span)?;
+        Ok(SigPart::head(w.t, tid, w.desc))
+    }
+
     /// The part of composite signal `d` that `steps` select, with a reference to the selected
     /// elements of each leaf below it. Offsets follow the one sub-element map (rule 2, the
     /// rule of `yavs_elab::NetGraph::select`): a leaf holds its field of every element in row
@@ -1407,7 +1466,7 @@ impl<'a> Fx<'a, '_> {
     /// Logic flag, plane code bias and the widths of the elements of leaf `l`: as a scalar
     /// (a record field or a scalar leaf in memory) and as an array element, which is also
     /// the kernel's width (`Ty::elem_size`: narrow integers are 4 bytes there).
-    fn leaf_facts(&mut self, l: &crate::RecLeaf, span: Span) -> R<LeafFacts> {
+    pub(crate) fn leaf_facts(&mut self, l: &crate::RecLeaf, span: Span) -> R<LeafFacts> {
         let mut t = self.db.base(l.st);
         while let Some((e, _)) = ty::array_of(self.db, t) {
             t = self.db.base(e);
@@ -1645,7 +1704,8 @@ impl<'a> Fx<'a, '_> {
         self.fb.emit(Inst::Br { to: head });
         self.fb.at(head);
         self.live = true;
-        let p = self.comp_select(d, &[], span)?;
+        let table = self.rec_table(d, span)?;
+        let p = self.comp_head(d, span)?;
         let ds = self.desc_size(p.tid);
         let size = self.size_of(p.tid, p.desc);
         let h = self.reg(RegTy::Handle);
@@ -1683,9 +1743,18 @@ impl<'a> Fx<'a, '_> {
         self.fb.at(head);
         self.live = true;
         self.fb.stmt(yavs_ir::StmtKind::Implicit, pspan);
-        let p = self.comp_select(d, &[], span)?;
-        let (data, _) = self.copy_slot(off);
-        self.read_leaves_into(&p, false, data, span)?;
+        let (data, cdesc) = self.copy_slot(off);
+        match table {
+            Some(tab) => self.emit(Inst::SigGather {
+                dst: data,
+                desc: cdesc,
+                tab,
+            }),
+            None => {
+                let p = self.comp_select(d, &[], span)?;
+                self.read_leaves_into(&p, false, data, span)?;
+            }
+        }
         self.fb.emit(Inst::Br { to: rest });
         self.fb.set_stmt(old);
         self.fb.at(if here == top { rest } else { here });
@@ -2819,7 +2888,7 @@ impl<'a> Fx<'a, '_> {
             // unary operator (#531).
             Body::Hir { .. }
                 if !self.cx.opts.no_native_ieee
-                    && !self.cx.opts.coverage
+                    && !self.cx.opts.any_coverage()
                     && crate::reduce::reduction(db, callee).is_some() =>
             {
                 let gate = crate::reduce::reduction(db, callee)

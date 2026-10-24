@@ -85,6 +85,12 @@ impl ProgramBuilder {
         self.prog.cov.push(c)
     }
 
+    /// A condition tree for `Inst::CoverCond`: its index.
+    pub fn cov_cond(&mut self, c: crate::CovCond) -> u32 {
+        self.prog.cov_conds.push(c);
+        self.prog.cov_conds.len() as u32 - 1
+    }
+
     pub fn reflect(&mut self, r: Refl) -> ReflId {
         self.prog.reflect.push(r)
     }
@@ -193,6 +199,10 @@ impl ProgramBuilder {
         &self.prog.types
     }
 
+    pub fn consts(&self) -> &IdVec<ConstId, ConstData> {
+        &self.prog.consts
+    }
+
     /// [`Ty::layout`] against the types and constants built so far (static layouts of
     /// constants).
     pub fn layout(
@@ -230,6 +240,7 @@ impl ProgramBuilder {
             spare: false,
             opt: Default::default(),
             lazy: None,
+            fetches: Default::default(),
         });
         if let Some(p) = parent.and_then(|p| self.prog.funcs.get_mut(p)) {
             p.nested = true;
@@ -429,7 +440,9 @@ fn propagate(prog: &mut Program, first: usize) {
                 {
                     fl.insert(FuncFlags::TOUCHES_SHARED)
                 }
-                Inst::Cover { .. } => fl.insert(FuncFlags::HAS_COVER),
+                Inst::Cover { .. } | Inst::CoverIn { .. } | Inst::CoverCond { .. } => {
+                    fl.insert(FuncFlags::HAS_COVER)
+                }
                 _ => {}
             }
             if let Some(c) = callee(inst)

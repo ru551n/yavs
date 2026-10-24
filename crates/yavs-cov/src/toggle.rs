@@ -33,7 +33,7 @@ struct Name {
 }
 
 struct State {
-    /// Per kernel leaf (= kernel signal): the bit of its element at offset 0, if tracked.
+    /// Per kernel signal: the bit of its element at offset 0, if tracked.
     base: Vec<Option<u32>>,
     /// Per bit: 0, 1, or 2 for neither.
     prev: Vec<u8>,
@@ -59,7 +59,7 @@ fn level(code: u8) -> u8 {
 /// signals with more than `max` such scalars are left out and returned.
 pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
     let mut st = State {
-        base: vec![None; e.nets.leaves.len()],
+        base: vec![None; e.nets.signal_count()],
         prev: Vec::new(),
         counts: Vec::new(),
         names: Vec::new(),
@@ -103,9 +103,11 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
                 let n = e.nets.leaves[leaf as usize].ty.len;
                 // A port collapsed into part of its actual's leaf counts that part's bins.
                 let (off, own) = obj.part.map_or((0, n), |r| (r.offset, r.len));
-                let base = *st.base[leaf as usize].get_or_insert_with(|| {
+                let (ks, at) = e.nets.kelem(yavs_elab::LeafId(leaf), off);
+                let base = *st.base[ks.0 as usize].get_or_insert_with(|| {
                     let b = st.prev.len() as u32;
-                    st.prev.resize(st.prev.len() + n as usize, 2);
+                    st.prev
+                        .resize(st.prev.len() + e.nets.signal_len(ks) as usize, 2);
                     st.counts.resize(st.prev.len(), [0; 2]);
                     b
                 });
@@ -115,7 +117,7 @@ pub fn toggles(db: &Db, e: &Elaborated, max: u64) -> (Toggles, Vec<Skipped>) {
                     file: f.path.clone(),
                     line,
                     // Kernel offset 0 is the rightmost element.
-                    bit: base + off + (own as u64 - 1 - k) as u32,
+                    bit: base + at + (own as u64 - 1 - k) as u32,
                 });
             }
         }
@@ -172,12 +174,12 @@ fn index_image(dims: &[yavs_elab::Bounds], mut j: u64) -> String {
 }
 
 impl State {
-    /// Compare elements `off .. off + len` of `leaf` with their last level.
-    fn change(&mut self, hook: &Hook<'_>, leaf: u32, off: u32, len: u32, count: bool) {
-        let Some(base) = self.base.get(leaf as usize).copied().flatten() else {
+    /// Compare elements `off .. off + len` of kernel signal `sig` with their last level.
+    fn change(&mut self, hook: &Hook<'_>, sig: u32, off: u32, len: u32, count: bool) {
+        let Some(base) = self.base.get(sig as usize).copied().flatten() else {
             return;
         };
-        let r = yavs_kernel::SignalId(leaf).slice(off, len);
+        let r = yavs_kernel::SignalId(sig).slice(off, len);
         let Ok(Value::Logic(v)) = hook.value(r) else {
             return;
         };
@@ -205,13 +207,13 @@ impl Observer for Toggles {
             return;
         }
         let mut st = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        for leaf in 0..st.base.len() as u32 {
-            if st.base[leaf as usize].is_some() {
-                let len = match hook.value(yavs_kernel::SignalId(leaf)) {
+        for sig in 0..st.base.len() as u32 {
+            if st.base[sig as usize].is_some() {
+                let len = match hook.value(yavs_kernel::SignalId(sig)) {
                     Ok(Value::Logic(v)) => v.len() as u32,
                     _ => continue,
                 };
-                st.change(hook, leaf, 0, len, false);
+                st.change(hook, sig, 0, len, false);
             }
         }
     }

@@ -114,8 +114,9 @@ pub trait UnitStore: Send + Sync + std::fmt::Debug {
 
 /// A store for what later stages derive from an analyzed `Db` (#407): the lowered run-time
 /// packages. Entries belong to one analysis, whose key the implementation holds; `extent` is
-/// [`Db::extent`] of the `Db` the stage ran on, so that a `Db` that elaboration has grown
-/// since the analysis (instantiation) has no entries. A write failure is silent.
+/// [`Db::stage_extent`] of the `Db` the stage ran on: an entry holds for a `Db` of the same
+/// size made from the same files, however far elaboration has grown it since the analysis
+/// (instantiation, units loaded late, #671). A write failure is silent.
 pub trait StageCache: Send + Sync + std::fmt::Debug {
     fn get(&self, extent: &[usize], kind: &str, part: &[u8]) -> Option<yavs_diag::Buffer>;
     fn put(&self, extent: &[usize], kind: &str, part: &[u8], bytes: &[u8]);

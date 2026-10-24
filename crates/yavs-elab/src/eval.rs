@@ -813,6 +813,7 @@ impl Model {
             .or_insert_with(|| lower_one(db, callee, true))
         {
             Ok(l) => {
+                yavs_interp::Runtime::promote_hot(&mut l.rt);
                 let (rt, sig, free, size) =
                     (l.rt.clone(), l.sig.clone(), l.free.clone(), l.inst_size);
                 let inst = self.free_data(db, &rt, &free, size, scope, ex.span)?;
@@ -820,7 +821,18 @@ impl Model {
                 let Some(k) = key.filter(|_| free.is_empty()) else {
                     return crate::pkgcall::run(&rt, &sig, &vals, None, inst).map_err(failed);
                 };
-                let (r, trace) = crate::pkgcall::run_traced(&rt, &sig, &vals, inst);
+                // The traced call may restart with functions optimised, which needs the runtime
+                // to itself (`pkgcall::run_restarting`).
+                drop(rt);
+                let Some(Ok(l)) = self.funcs.get_mut(&callee) else {
+                    return Err(err(
+                        codes::INTERNAL,
+                        ex.span,
+                        "internal error: lowered call lost",
+                        "here",
+                    ));
+                };
+                let (r, trace) = crate::pkgcall::run_traced(&mut l.rt, &sig, &vals, inst);
                 let v = r.map_err(failed)?;
                 if trace.tainted.is_none() {
                     let hit = crate::callcache::Hit {
@@ -834,7 +846,7 @@ impl Model {
             // A function that uses package objects (shared variables, say) runs against the
             // elaborated packages, in elaboration order (LRM 14.4); one that reads shared
             // variables of its region runs there too, with their objects.
-            Err(_) => match self.session_call(db, callee, vals, scope, ex.span)? {
+            Err(_) => match self.session_call(db, callee, vals, scope, ex.span, key)? {
                 Ok(v) => Ok(v),
                 Err(f) => Err(failed(f)),
             },
@@ -851,13 +863,31 @@ impl Model {
         vals: Vec<Val>,
         scope: Option<ScopeId>,
         span: Span,
+        key: Option<Vec<u8>>,
     ) -> R<Result<Val, crate::pkgcall::Fail>> {
         let needs = match self.session.needs(db, callee) {
             Ok(n) => n,
             Err(f) => return Ok(Err(f)),
         };
         if needs.free.is_empty() {
-            return Ok(self.session.call(db, callee, vals));
+            // A pure function of a package reads nothing but its arguments and the package
+            // constants, which are the closure's: its result is kept like a lowered call's (#539).
+            let Some(k) = key else {
+                return Ok(self.session.call(db, callee, vals, None));
+            };
+            let mut trace = yavs_interp::CallTrace::default();
+            let r = self.session.call(db, callee, vals, Some(&mut trace));
+            if let Ok(v) = &r
+                && trace.tainted.is_none()
+                && self.session.state_is_pure()
+            {
+                let hit = crate::callcache::Hit {
+                    val: v.clone(),
+                    reports: trace.reports,
+                };
+                self.calls.put(db, k, &hit);
+            }
+            return Ok(r);
         }
         let items = match self.fill_items(db, &needs, scope, span) {
             Ok(Ok(items)) => items,

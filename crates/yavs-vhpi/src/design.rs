@@ -263,6 +263,8 @@ pub(crate) struct Design {
     pub(crate) types: Types,
     /// `vhpiFullNameP` of every region and declaration.
     by_name: HashMap<String, NodeId>,
+    /// Where each kernel leaf is stored (`yavs_elab::NetGraph::loc`).
+    pub(crate) locs: Vec<yavs_elab::LeafLoc>,
 }
 
 impl Default for Design {
@@ -314,6 +316,7 @@ impl Design {
             packages: Vec::new(),
             types: Types::default(),
             by_name: HashMap::new(),
+            locs: Vec::new(),
         }
     }
 
@@ -331,6 +334,7 @@ impl Design {
         b.region(ScopeId(0), None);
         b.packages();
         b.d.types = b.types.into_inner();
+        b.d.locs = e.nets.loc.clone();
         b.d
     }
 

@@ -188,6 +188,30 @@ fn plugin_callbacks_and_finish() {
     );
 }
 
+/// A plugin observes the run, so no assignment of the value a signal holds is dropped
+/// (`skip_signals`, `Config::skip_unchanged`).
+#[test]
+fn a_plugin_turns_assignment_skipping_off() {
+    let (lib, so) = setup();
+    let skip = |extra: &[String]| -> u64 {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .env("YAVS_COUNTERS", "1")
+            .args(["--color", "never", "run", &lib])
+            .args(extra)
+            .arg("tb")
+            .output()
+            .expect("run");
+        let err = String::from_utf8_lossy(&o.stderr).into_owned();
+        err.lines()
+            .find_map(|l| l.strip_prefix("counters: skip_signals="))
+            .unwrap_or_else(|| panic!("no counter: {err}"))
+            .parse()
+            .expect("number")
+    };
+    assert!(skip(&[]) > 0);
+    assert_eq!(skip(&[format!("--vhpi={}", so.display())]), 0);
+}
+
 #[test]
 fn plusargs_reach_the_plugin() {
     let (lib, so) = setup();

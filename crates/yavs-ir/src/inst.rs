@@ -702,6 +702,30 @@ pub enum Inst {
         kind: AttrKind,
         sig: Reg,
     },
+    /// Reads every leaf of a record signal into the record value at `dst`: the leaves are listed
+    /// in table `tab` (`gather`), one entry per leaf with the instance signal and how it is
+    /// stored; where it lies in the value follows from the record type and the signal's
+    /// descriptor at `desc`. The result is what `SigRead`/`SigReadScalar` of each leaf stored
+    /// into the value would give; how the kernel keeps the leaves does not show. One
+    /// instruction for a whole record (#677).
+    SigGather {
+        dst: Reg,
+        desc: Reg,
+        tab: ConstId,
+    },
+    /// Drives every leaf of a record signal from the record value at `src` (laid out by the
+    /// signal's descriptor at `desc`) with one waveform element at delay `after`: leaf `k` of
+    /// table `tab` through driver `driver + k`, in leaf order, as `Drive` of each leaf's
+    /// waveform would (#677).
+    SigScatter {
+        driver: u32,
+        src: Reg,
+        desc: Reg,
+        tab: ConstId,
+        after: Reg,
+        mode: DriveMode,
+        reject: Option<Reg>,
+    },
     /// The clock-edge test `kind` (0 or 1) of the one element `sig` refers to, a `std_ulogic`,
     /// BIT or BOOLEAN signal: the one instruction every clock-edge idiom lowers to
     /// (`rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...).
@@ -791,6 +815,24 @@ pub enum Inst {
     Cover {
         item: CovItem,
     },
+    /// Condition coverage, one input: `dst = acc | code(src) << shift`, where the code is
+    /// 1 for a false input, 2 for a true one and 3 for anything else (`ulogic`: a `std_ulogic`
+    /// position, `0`/`L` false, `1`/`H` true; else a `bit`/`boolean` position). An input
+    /// never evaluated leaves its two bits 0. With `shift` 0 (the first input of a condition,
+    /// which always runs) `acc` is not read: the state starts there.
+    CoverIn {
+        dst: Reg,
+        acc: Reg,
+        src: Reg,
+        shift: u8,
+        ulogic: bool,
+    },
+    /// Condition coverage, end of an evaluation: count the rows of condition `cond`
+    /// (`Program::cov_conds`) that the inputs collected in `state` cover.
+    CoverCond {
+        cond: u32,
+        state: Reg,
+    },
     /// Statement boundary: the debugger hook, and the end of the previous statement's
     /// temporaries.
     Stmt,
@@ -836,13 +878,13 @@ impl Inst {
 
     /// Every fixed register operand with its role and expected type (`None`: any cell that
     /// is not a signal; a `Handle` register is also an `I64`). List operands are not included (see [`Inst::list`]).
-    pub fn visit(&self, f: &mut dyn FnMut(Reg, Role, Option<RegTy>)) {
+    pub fn visit<F: FnMut(Reg, Role, Option<RegTy>) + ?Sized>(&self, f: &mut F) {
         let mut c = *self;
         c.visit_mut(&mut |r, role, t| f(*r, role, t));
     }
 
     /// [`Inst::visit`] with the operands writable (register renaming by the optimiser).
-    pub fn visit_mut(&mut self, f: &mut dyn FnMut(&mut Reg, Role, Option<RegTy>)) {
+    pub fn visit_mut<F: FnMut(&mut Reg, Role, Option<RegTy>) + ?Sized>(&mut self, f: &mut F) {
         use RegTy::*;
         use Role::*;
         let i = Some(I64);
@@ -1081,6 +1123,12 @@ impl Inst {
                 f(want, Use, p);
             }
             Inst::Br { .. } | Inst::Unreachable { .. } | Inst::Stmt | Inst::Cover { .. } => {}
+            Inst::CoverIn { dst, acc, src, .. } => {
+                d(dst, i);
+                f(acc, Use, i);
+                f(src, Use, i);
+            }
+            Inst::CoverCond { state, .. } => f(state, Use, i),
             Inst::CondBr { c, .. } => f(c, Use, i),
             Inst::Case { v, .. } => f(v, Use, i),
             Inst::Ret { v } => {
@@ -1176,6 +1224,24 @@ impl Inst {
             | Inst::Edge { dst, sig, .. } => {
                 d(dst, i);
                 f(sig, Use, s);
+            }
+            Inst::SigGather { dst, desc, .. } => {
+                f(dst, Use, p);
+                f(desc, Use, p);
+            }
+            Inst::SigScatter {
+                src,
+                desc,
+                after,
+                reject,
+                ..
+            } => {
+                f(src, Use, p);
+                f(desc, Use, p);
+                f(after, Use, i);
+                if let Some(r) = reject {
+                    f(r, Use, i);
+                }
             }
             Inst::Driving { dst, .. } => d(dst, i),
             Inst::DrivingValue { dst, .. } => f(dst, Use, p),

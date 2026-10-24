@@ -357,26 +357,32 @@ struct Src<T> {
     window: usize,
 }
 
-/// An entry of a [`SlotPage`]: decoded the first time it is read.
-struct Slot<T> {
-    cell: std::sync::OnceLock<Box<T>>,
-    /// Index into the page's `srcs` and offset into that source's bytes; unused once decoded.
+/// Where the bytes of an entry of a [`SlotPage`] are: index into the page's `srcs` and offset into
+/// that source's bytes.
+struct Slot {
     src: u32,
     off: u32,
 }
 
 /// Up to [`PAGE`] entries that stay bytes one by one until read: what the replay of a unit of the
-/// analysed-unit cache pushes (a package's thousand declarations are read a tenth at a time).
+/// analysed-unit cache pushes (a package's thousand declarations are read a tenth at a time). The
+/// decoded entries live in one box of cells, made when the page is first read (a box per entry
+/// cost an allocation and a free each, #665).
 struct SlotPage<T> {
-    slots: Vec<Slot<T>>,
+    slots: Vec<Slot>,
+    cells: std::sync::OnceLock<Box<[std::sync::OnceLock<T>]>>,
     srcs: Vec<std::sync::Arc<Src<T>>>,
+    /// The end of the last run of entries a read decoded, and its length (`SlotPage::fill`).
+    last: std::sync::atomic::AtomicU32,
 }
 
 impl<T> SlotPage<T> {
     fn new() -> Self {
         SlotPage {
             slots: Vec::with_capacity(PAGE),
+            cells: std::sync::OnceLock::new(),
             srcs: Vec::new(),
+            last: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -388,48 +394,80 @@ impl<T> SlotPage<T> {
         p
     }
 
+    fn cells(&self) -> &[std::sync::OnceLock<T>] {
+        self.cells
+            .get_or_init(|| (0..PAGE).map(|_| std::sync::OnceLock::new()).collect())
+    }
+
     fn push(&mut self, item: T) {
-        let cell = std::sync::OnceLock::new();
-        let _ = cell.set(Box::new(item));
-        self.slots.push(Slot {
-            cell,
-            src: 0,
-            off: 0,
-        });
+        let _ = self.cells()[self.slots.len()].set(item);
+        self.slots.push(Slot { src: 0, off: 0 });
     }
 
     fn get(&self, j: usize) -> &T {
-        match self.slots[j].cell.get() {
-            Some(b) => b,
+        match self.cells.get().and_then(|c| c[j].get()) {
+            Some(v) => v,
             None => self.fill(j),
         }
     }
 
-    /// Decode entry `j` and, when its bytes say so (`Src::window`), the entries after it that come
-    /// from the same bytes: the context of a decode costs as much as a small entry.
+    /// Decode entry `j` and the entries after it that come from the same bytes: `Src::window` of
+    /// them, or, for entries read here and there (window 1), twice as many as the last run while
+    /// reads follow each other directly (a lowering reads the declarations of a package in order,
+    /// an analysis a few of them here and there), up to the page: the context of a decode costs
+    /// as much as a small entry (#665). Windows that also took reads a few entries on cost cold
+    /// analysis more than they gave elaboration.
     #[cold]
     fn fill(&self, j: usize) -> &T {
+        use std::sync::atomic::Ordering::Relaxed;
         let s = &self.slots[j];
         let src = &self.srcs[s.src as usize];
+        let cells = self.cells();
+        let window = if src.window > 1 {
+            src.window
+        } else {
+            let last = self.last.load(Relaxed);
+            let (end, len) = ((last >> 16) as usize, (last & 0xffff) as usize);
+            if len > 0 && j == end {
+                (2 * len).min(PAGE)
+            } else {
+                1
+            }
+        };
+        let mut done = 0;
         src.ctx.run(|| {
             for (k, t) in self.slots[j..].iter().enumerate() {
-                if k >= src.window || t.src != s.src || (k > 0 && t.cell.get().is_some()) {
+                if k >= window || t.src != s.src || (k > 0 && cells[j + k].get().is_some()) {
                     break;
                 }
                 let v = (src.decode)(&src.data.get()[t.off as usize..]);
                 // Another thread may have decoded it meanwhile: both are the same entry.
-                let _ = t.cell.set(Box::new(v));
+                let _ = cells[j + k].set(v);
+                done = k + 1;
             }
         });
-        self.slots[j].cell.get().expect("entry decoded just now")
+        if src.window == 1 {
+            self.last.store(((j + done) << 16 | done) as u32, Relaxed);
+        }
+        cells[j].get().expect("entry decoded just now")
     }
 
     fn get_mut(&mut self, j: usize) -> &mut T {
         self.get(j);
-        self.slots[j]
-            .cell
+        self.cells
             .get_mut()
+            .and_then(|c| c[j].get_mut())
             .expect("entry decoded just now")
+    }
+
+    /// Drop the entries from `len` on.
+    fn truncate(&mut self, len: usize) {
+        if let Some(c) = self.cells.get_mut() {
+            for cell in &mut c[len.min(self.slots.len())..self.slots.len()] {
+                cell.take();
+            }
+        }
+        self.slots.truncate(len);
     }
 
     /// Decode everything and hand the entries over.
@@ -437,10 +475,17 @@ impl<T> SlotPage<T> {
         for j in 0..self.slots.len() {
             self.get(j);
         }
-        self.slots
-            .into_iter()
-            .map(|s| *s.cell.into_inner().expect("entry decoded just now"))
-            .collect()
+        let n = self.slots.len();
+        self.cells
+            .into_inner()
+            .map(|c| {
+                c.into_vec()
+                    .into_iter()
+                    .take(n)
+                    .map(|c| c.into_inner().expect("entry decoded just now"))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -493,7 +538,9 @@ impl<T> Page<T> {
         match self {
             Page::Eager(_) => 0,
             Page::Lazy(l) => usize::from(l.cell.get().is_none()),
-            Page::Slots(s) => s.slots.iter().filter(|s| s.cell.get().is_none()).count(),
+            Page::Slots(s) => (0..s.slots.len())
+                .filter(|&j| s.cells.get().is_none_or(|c| c[j].get().is_none()))
+                .count(),
         }
     }
 }
@@ -651,7 +698,6 @@ impl<I, T> Arena<I, T> {
                 page.srcs.push(src.clone());
             }
             page.slots.push(Slot {
-                cell: std::sync::OnceLock::new(),
                 src: page.srcs.len() as u32 - 1,
                 off,
             });
@@ -705,7 +751,7 @@ impl<I, T> Arena<I, T> {
             && let Some(p) = self.pages.last_mut()
         {
             match p {
-                Page::Slots(s) => s.slots.truncate(len % PAGE),
+                Page::Slots(s) => s.truncate(len % PAGE),
                 _ => p.make_eager().truncate(len % PAGE),
             }
         }
@@ -921,6 +967,37 @@ mod tests {
 
     /// Runs of bytes appended after eager entries, read one by one, written, truncated and grown
     /// again.
+    #[test]
+    fn reads_in_order_decode_ahead_and_scattered_reads_do_not() {
+        let mut a: Arena<DeclId, String> = Arena::new();
+        let (mut lens, mut bytes) = (Vec::new(), Vec::new());
+        for i in 0..PAGE {
+            let before = bytes.len();
+            bytes = postcard::to_extend(&format!("l{i}"), bytes).expect("write");
+            put_varint(&mut lens, (bytes.len() - before) as u32);
+        }
+        let ctx = PageCtx {
+            syms: None,
+            reloc: None,
+            files: None,
+        };
+        a.push_run(PAGE, &lens, yavs_diag::Slice::from(bytes), ctx, 1)
+            .expect("a run");
+        // Entries read here and there are decoded one by one.
+        for i in [40, 10, 25] {
+            assert_eq!(a[DeclId::from_index(i)], format!("l{i}"));
+        }
+        assert_eq!(a.undecoded_pages(), PAGE - 3);
+        // Entries read one after the other are decoded ahead (1 + 2 + 4 + 8 after the first).
+        for i in 50..54 {
+            assert_eq!(a[DeclId::from_index(i)], format!("l{i}"));
+        }
+        assert!(a.undecoded_pages() < PAGE - 3 - 4);
+        a.truncate(45);
+        assert_eq!(a.len(), 45);
+        assert_eq!(a[DeclId::from_index(44)], "l44");
+    }
+
     #[test]
     fn runs_of_bytes_mix_with_eager_entries() {
         let mut a: Arena<DeclId, String> = Arena::new();

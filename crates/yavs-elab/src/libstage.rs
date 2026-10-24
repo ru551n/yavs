@@ -96,7 +96,9 @@ pub(crate) fn lowerer<'a>(
     packages: &[UnitId],
     opts: LowerOptions,
 ) -> Option<Result<(Lowerer<'a>, LibUse), Vec<Diagnostic>>> {
-    let cache = db.stages().filter(|c| !c.closure() && !opts.coverage)?;
+    let cache = db
+        .stages()
+        .filter(|c| !c.closure() && !opts.any_coverage())?;
     if cache.analysed() != db.extent() {
         cache.note(&format!(
             "library prefix: the analysis grew {:?} -> {:?}",

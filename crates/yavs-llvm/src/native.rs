@@ -60,7 +60,10 @@ pub fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
         Inst::AddrOf { space, .. } => {
             addr_const(*space, 0).is_some() || matches!(space, AddrSpace::Up(1..=2))
         }
-        _ => !inline_regs(f, i).is_empty() || matches!(i, Inst::Br { .. } | Inst::Stmt),
+        _ => {
+            !inline_regs(f, i).is_empty()
+                || matches!(i, Inst::Br { .. } | Inst::Stmt | Inst::Cover { .. })
+        }
     }
 }
 

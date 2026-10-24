@@ -33,6 +33,8 @@ fn counts(db: &Database) -> Vec<(String, String, u32, u64)> {
                 Kind::Statement => "s".to_string(),
                 Kind::Branch(a) => format!("b{a}"),
                 Kind::Toggle(r) => format!("t{}", u8::from(r)),
+                Kind::Condition(r) => format!("c{r}"),
+                Kind::Expression(r) => format!("e{r}"),
             };
             assert!(e.file.ends_with("cov_run.vhd"), "{}", e.file);
             (kind, k.path.clone(), e.line, e.count)
@@ -199,6 +201,15 @@ fn cov_run(tmp: &Path, src: &str) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// A report without the `[reason]` ends of its excluded lines: `--uncovered=yaml` leaves the
+/// reason to the user, the text rows carry the item's text as one.
+fn no_reasons(s: &str) -> String {
+    s.lines()
+        .map(|l| l.split("  [").next().unwrap_or(l))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
 fn report(tmp: &Path, args: &[&str]) -> (Option<i32>, String, String) {
     let o = yavs(tmp, &[&["cov", "report", "a.ycov"][..], args].concat());
     (
@@ -273,6 +284,36 @@ fn exclusions() {
     assert_eq!(code, Some(1));
     assert!(
         err.contains("error[E0112]") && err.contains("line 1"),
+        "{err}"
+    );
+
+    // The YAML form of the same exclusions gives the same report; extension picks the parser.
+    let (_, text_out, _) = report(&tmp, &["--exclude", "ex.txt"]);
+    let (_, yaml, _) = report(&tmp, &["--uncovered=yaml"]);
+    assert!(yaml.starts_with("exclude:\n  - kind: "), "{yaml}");
+    assert_eq!(yaml.matches("hash: \"").count(), 2, "{yaml}");
+    for name in ["ex.yaml", "ex.YML"] {
+        std::fs::write(tmp.join(name), &yaml).expect("write");
+        let (code, out, err) = report(&tmp, &["--exclude", name]);
+        assert_eq!((code, err.as_str()), (Some(0), ""), "{name}");
+        assert_eq!(out, no_reasons(&text_out), "{name}");
+    }
+    // Coarse kinds, a reason, and a hand-written string-typing trap (`on`).
+    std::fs::write(
+        tmp.join("ex6.yml"),
+        "exclude:\n  - {kind: instance, instance: ':cov_excl', reason: on}\n",
+    )
+    .expect("write");
+    let (code, out, err) = report(&tmp, &["--exclude", "ex6.yml"]);
+    // Everything ran, so the exclusion warns (W0114) but applies.
+    assert!(code == Some(0) && err.contains("warning[W0114]"), "{err}");
+    assert!(out.contains("[on]"), "{out}");
+    // A malformed YAML file names the line.
+    std::fs::write(tmp.join("ex7.yaml"), "exclude:\n  - kind: frob\n").expect("write");
+    let (code, _, err) = report(&tmp, &["--exclude", "ex7.yaml"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("error[E0112]") && err.contains("ex7.yaml") && err.contains("line 2"),
         "{err}"
     );
 
@@ -372,7 +413,7 @@ fn toggle_coverage() {
     );
     assert!(
         rows.lines()
-            .any(|l| l.starts_with("toggle :cov_toggle s   # never 1->0")),
+            .any(|l| l.starts_with("toggle :cov_toggle s fall   # never 1->0")),
         "{rows}"
     );
     assert_eq!(toggle_rows.len(), 6, "{rows}");
@@ -383,11 +424,32 @@ fn toggle_coverage() {
         String::from_utf8_lossy(&o.stderr),
     );
     assert!(err.is_empty(), "{err}");
-    // A row takes both directions out, the half-toggled scalars with it.
-    assert!(out.contains("toggles    4/4 100.0%"), "{out}");
+    // Each row takes out the missed direction only; what ran stays.
+    assert!(out.contains("toggles    8/8 100.0%"), "{out}");
+    // The same as YAML.
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered=yaml"]);
+    let y = String::from_utf8(o.stdout).expect("utf-8");
+    assert!(y.starts_with("exclude:\n  - kind: toggle"), "{y}");
+    assert!(y.contains("    direction: fall\n"), "{y}");
+    std::fs::write(tmp.join("ex.yaml"), &y).expect("write");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex.yaml"]);
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(
+        no_reasons(&String::from_utf8_lossy(&o.stdout)),
+        no_reasons(&out)
+    );
     // A glob row over a scalar that toggled both ways warns.
     std::fs::write(tmp.join("ex2.txt"), "toggle * v(*)\n").expect("write");
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex2.txt"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(err.matches("warning[W0114]").count(), 2, "{err}");
+    // One direction: `s` fell never, so only the rise is excluded and it ran.
+    std::fs::write(tmp.join("ex3.txt"), "toggle * s rise\ntoggle * s fall\n").expect("write");
+    let o = yavs(&tmp, &["cov", "report", "a.ycov", "--exclude", "ex3.txt"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(err.matches("warning[W0114]").count(), 1, "{err}");
     let _ = std::fs::remove_dir_all(&tmp);
@@ -481,6 +543,14 @@ fn html(tmp: &Path, args: &[&str]) -> Output {
     yavs(tmp, &[&["cov", "report", "--html", "h"][..], args].concat())
 }
 
+/// The directory of the sources the tests run (`--root` strips it from the pages).
+fn cli_dir() -> String {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/cli")
+        .display()
+        .to_string()
+}
+
 fn page(tmp: &Path, name: &str) -> String {
     std::fs::read_to_string(tmp.join("h").join(name)).expect("page")
 }
@@ -498,7 +568,8 @@ fn html_report() {
     assert!(o.status.success());
     // Exclude the whole of u2 with a reason.
     std::fs::write(tmp.join("ex.txt"), "instance :cov_run:u2   # dead <b>\n").expect("write");
-    let o = html(&tmp, &["m.ycov", "--exclude", "ex.txt"]);
+    let root = cli_dir();
+    let o = html(&tmp, &["m.ycov", "--exclude", "ex.txt", "--root", &root]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let index = page(&tmp, "index.html");
     assert!(index.contains("<title>Coverage report</title>"), "{index}");
@@ -509,19 +580,49 @@ fn html_report() {
     );
     assert!(index.contains("2 tests: cov_run, cov_run(n=0)"), "{index}");
     let src = page(&tmp, "src-0.html");
-    // Line 56 never runs: a missed row with its copyable exclusion row; line 51 has a count.
-    assert!(src.contains("<tr id=\"L56\" class=\"miss\">"), "{src}");
+    // Paths are relative to the root: heading, index and exclusion rows.
     assert!(
-        src.contains("<code>statement :cov_run ") && src.contains("cov_run.vhd:56"),
+        src.contains("<h1>cov_run.vhd</h1>") && !src.contains("tests/cli"),
         "{src}"
     );
     assert!(
-        src.contains("branch arm 0 in :cov_run: 3 (hit by tests: cov_run)"),
+        index.contains(">cov_run.vhd</a>") && !index.contains("tests/cli"),
+        "{index}"
+    );
+    // Line 56 never runs: a hoverable missed line whose popup has the copyable exclusion row.
+    assert!(
+        src.contains("<tr id=\"L56\" class=\"miss\" tabindex=\"0\" aria-describedby=\"p56\">"),
+        "{src}"
+    );
+    assert!(
+        src.contains("<code>statement :cov_run ") && src.contains(" cov_run.vhd:56 "),
+        "{src}"
+    );
+    assert!(src.contains("class=\"cp\">copy row</button>"), "{src}");
+    // The same item as a YAML entry, with its own button.
+    assert!(
+        src.contains("<pre>  - kind: statement") && src.contains("class=\"cp\">copy YAML</button>"),
+        "{src}"
+    );
+    // Popups open only on click: no hover or focus rule shows one, Enter and Space toggle.
+    assert!(
+        src.contains("tr.pin .pop{display:block}")
+            && !src.contains("tr:hover .pop")
+            && !src.contains("focus-visible")
+            && src.contains("e.key==' '")
+            && src.contains("click a line"),
+        "{src}"
+    );
+    // No inline item lists, and a line without items is not focusable.
+    assert!(!src.contains("class=\"it ") && !src.contains("<tr id=\"L1\" class=\"\" tabindex"));
+    // Counts per instance and tests in the popup.
+    assert!(
+        src.contains("<h4>branch arm 0</h4><table><tr class=\"\"><td>:cov_run</td><td class=\"n\">3</td><td class=\"dim\">tests: cov_run</td>"),
         "{src}"
     );
     // Excluded items are greyed, with the (escaped) reason.
     assert!(
-        src.contains("class=\"it ex\"") && src.contains("excluded: dead &lt;b&gt;"),
+        src.contains("<tr class=\"ex\">") && src.contains("excluded: dead &lt;b&gt;"),
         "{src}"
     );
     // The missed-only page keeps the missed and excluded lines and drops the rest.
@@ -529,16 +630,17 @@ fn html_report() {
     assert!(index.contains("href=\"src-0-missed.html\""), "{index}");
     assert!(src.contains("href=\"src-0-missed.html\""), "{src}");
     assert!(miss.contains("href=\"src-0.html\""), "{miss}");
-    assert!(miss.contains("<tr id=\"L56\" class=\"miss\">"), "{miss}");
-    assert!(miss.contains("class=\"it ex\""), "{miss}");
+    assert!(miss.contains("<tr id=\"L56\" class=\"miss\""), "{miss}");
+    assert!(miss.contains("<tr class=\"ex\">"), "{miss}");
     assert!(src.contains("<tr id=\"L1\"") && !miss.contains("<tr id=\"L1\""));
     assert!(miss.len() < src.len());
-    // No external resources, no scripts; source text is escaped.
+    // No external resources (the one script is inline); source text is escaped.
     for p in [&index, &src, &miss] {
         assert!(
-            !p.contains("http") && !p.contains("<script") && !p.contains("src=\""),
+            !p.contains("http") && !p.contains("<script src") && !p.contains("src=\""),
             "{p}"
         );
+        assert_eq!(p.matches("<script>").count(), 1, "{p}");
     }
     assert!(src.contains("&lt;") && !src.contains("<=  "), "{src}");
     assert!(src.contains("prefers-color-scheme:dark"));
@@ -554,6 +656,8 @@ fn html_report() {
                 "ex.txt",
                 "--html",
                 d,
+                "--root",
+                &root,
             ],
         );
         assert!(o.status.success());
@@ -566,6 +670,38 @@ fn html_report() {
             std::fs::read_to_string(tmp.join("h2").join(n)).expect("h2")
         );
     }
+
+    // Without the exclusion u2 is a live instance: line 28 ran in u1 only, a partial line.
+    let o = yavs(
+        &tmp,
+        &["cov", "report", "m.ycov", "--html", "h3", "--root", &root],
+    );
+    assert!(o.status.success());
+    let part = std::fs::read_to_string(tmp.join("h3/src-0.html")).expect("h3");
+    assert!(part.contains("<tr id=\"L28\" class=\"inst\""), "{part}");
+    assert!(
+        part.contains("title=\"executed in 1 of 2 instances\">1/2</td>"),
+        "{part}"
+    );
+    assert!(
+        part.contains("<p>executed in 1 of 2 instances</p>"),
+        "{part}"
+    );
+    assert!(
+        part.contains("<tr class=\"\"><td>:cov_run:u1</td><td class=\"n\">2</td>"),
+        "{part}"
+    );
+    assert!(part.contains(".legend .inst{"), "{part}");
+    // Without --root the path is as the database has it.
+    let o = yavs(&tmp, &["cov", "report", "m.ycov", "--html", "h4"]);
+    assert!(o.status.success());
+    let abs = std::fs::read_to_string(tmp.join("h4/src-0.html")).expect("h4");
+    // Native separators on Windows.
+    assert!(
+        abs.replace('\\', "/")
+            .contains("tests/cli/cov_run.vhd</h1>"),
+        "{abs}"
+    );
 
     // A source the database names that cannot be read is E0113 and writes nothing.
     let text = std::fs::read_to_string(tmp.join("m.ycov")).expect("db");
@@ -587,7 +723,7 @@ fn html_toggles() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let src = page(&tmp, "src-0.html");
     assert!(
-        src.contains("toggle v(1) 0-&gt;1 in :cov_toggle: 0"),
+        src.contains("<h4>toggle v(1) 0-&gt;1</h4><table><tr class=\"miss\"><td>:cov_toggle</td><td class=\"n\">0</td>"),
         "{src}"
     );
     assert!(
@@ -630,4 +766,32 @@ fn toggles_of_collapsed_ports() {
         "{collapsed:?}"
     );
     assert_eq!(collapsed, run("b.ycov", &["--no-collapse-ports"]));
+}
+
+/// Every kind counts the same in the interpreter and the LLVM tier (compiled counters), at any
+/// number of threads.
+#[cfg(feature = "llvm")]
+#[test]
+fn tiers_agree() {
+    let tmp = tempdir("tiers");
+    let kinds = "--cov-kind=statement,branch,toggle,condition,expression";
+    cov_dbs(
+        &tmp,
+        "cov_run.vhd",
+        "cov_run",
+        &[
+            ("i.ycov", &["--tier=interp", kinds]),
+            ("l.ycov", &["--tier=llvm", kinds]),
+            ("l4.ycov", &["--tier=llvm", "--threads=4", kinds]),
+            ("a.ycov", &["--tier=auto", kinds]),
+        ],
+    );
+    let want = std::fs::read(tmp.join("i.ycov")).expect("i");
+    for db in ["l.ycov", "l4.ycov", "a.ycov"] {
+        assert!(
+            want == std::fs::read(tmp.join(db)).expect("db"),
+            "{db} differs from the interpreter's"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
 }

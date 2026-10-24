@@ -190,10 +190,15 @@ Waveforms
   are known only when the simulation runs (warning ``W0802``).
 * Arrays and vectors with more elements than ``--wave-max-array`` (default 65536) are left out
   with warning ``W0802``.
-* The file is written out periodically while simulating and finished at the end of the
-  simulation, at ``--stop-time`` and on Ctrl-C: the first Ctrl-C ends the run after the current
+* The file is written in blocks of 250000 changes and finished at the end of the simulation, at
+  ``--stop-time`` and on Ctrl-C or SIGTERM: the first Ctrl-C ends the run after the current
   cycle and exits with status 1, a second one exits at once (the file is then readable up to
-  its last periodic write). A path that cannot be written is error ``E0801``.
+  its last block). The bytes depend only on the recorded changes, so two runs of the same design
+  write identical files. To make a run that is killed (SIGKILL, a crash) leave more of the
+  file, set ``YAVS_WAVE_FLUSH`` to a duration such as ``5s`` or ``500ms``: a block then also ends
+  after that much run time, and the bytes depend on the speed of the run. ``YAVS_WAVE_FLUSH=never``
+  is the default; any other value is error ``E0801``. A path that cannot be written is error
+  ``E0801``.
 
 Code coverage
 -------------
@@ -209,7 +214,9 @@ Code coverage
 often every ``std_logic`` and ``bit`` signal toggled, and writes the counts to the coverage
 database ``FILE`` (default ``yavs.ycov``) at the end of the run, whatever its outcome. Without
 ``--cov`` there are no counters and no cost. ``--cov-kind=LIST`` counts only some kinds
-(``statement``, ``branch``, ``toggle``, comma separated; default all three).
+(``statement``, ``branch``, ``toggle``, ``condition``, ``expression``, comma separated; default
+``statement,branch,toggle``; ``condition`` and ``expression`` cost extra instructions in
+every evaluation of a multi-input condition, so they are asked for).
 
 * **Statements**: every sequential statement and every concurrent statement (each time it
   runs). Declarations are not counted.
@@ -228,6 +235,27 @@ database ``FILE`` (default ``yavs.ycov``) at the end of the run, whatever its ou
   ``library.package``) with their element name (``data(3)``, ``bus.valid``). Signals with more
   scalars than ``--cov-toggle-max`` (default 65536), such as large memories, are left out with
   warning ``W0115``. Toggle counting only runs with toggle coverage on.
+* **Conditions and expressions** (focused expression coverage): for every condition with two or
+  more inputs, one row per input and value. A *condition* is the boolean of an ``if``/``elsif``,
+  a conditional (``when ... else``) assignment, a ``while``, an ``exit when`` or a ``next when``;
+  an *expression* is the value of a signal or variable assignment. Both are trees of ``and``,
+  ``or``, ``nand``, ``nor``, ``xor``, ``xnor`` and ``not`` on ``boolean``, ``bit`` or
+  ``std_logic`` values; everything else in them (a comparison, a name, a function call,
+  ``rising_edge(clk)``) is one input. Input ``X`` at value ``v`` is covered when, in some
+  evaluation, flipping ``X`` alone would change the result while the other inputs keep their
+  values. In ``if a and (b or c)`` with ``a`` true, ``b`` false and ``c`` true the
+  condition is true, and flipping ``a`` or ``c`` alone makes it false, but flipping ``b`` does
+  not: that evaluation covers ``a = 1`` and ``c = 1``, not ``b = 0``.
+  An input that is constant after elaboration (a generic, a constant, a literal) is evaluated
+  but has no rows, and a condition with fewer than two other inputs has none at all.
+  An input that was not evaluated because the operator short-circuits (``and``/``or`` on
+  ``boolean`` and ``bit`` skip the right operand when the left decides) is masked: it can take
+  any value, so ``a and b`` with ``a`` false covers ``a = 0``. Counting never changes the order
+  of evaluation or evaluates anything extra, so a function call used as an input runs as often as
+  without coverage. For ``std_logic``, ``'0'`` and ``'L'`` are 0 and ``'1'`` and ``'H'`` are 1;
+  an evaluation in which an input has any other value (``'U'``, ``'X'``, ``'Z'``, ``'W'``,
+  ``'-'``) counts no row. Not measured: conditions of ``assert`` and ``wait until``, vector
+  operands, logic expressions nested inside other expressions, and trees of more than 31 inputs.
 * Code of an architecture is counted per instance and shown under its path (``:tb:u_dut``),
   blocks and generate iterations included. Code of a package is counted once under
   ``library.package``. The ``std`` and ``ieee`` libraries are not counted.
@@ -240,24 +268,33 @@ database per run (one ``--cov=FILE`` each) and merge them. ``yavs cov report DB 
 inputs, prints statement, branch and toggle totals, one line per instance or package, and every
 item that never ran with its file and line (for a toggle, the signal's declaration);
 ``--cobertura FILE.xml`` also writes a Cobertura XML report (one entry per source line: the hits
-of its most executed statement, and how many of its branches ran) for CI services that show
-coverage. Cobertura has no notion of toggles, so they are only in the text report. A database that cannot be read
+of its most executed statement, and how many of its branches and condition rows ran) for CI
+services that show coverage. Cobertura has no notion of toggles, so they are only in the text report. A database that cannot be read
 is error ``E0111``, a file that cannot be written ``E0110``.
 
-``--html DIR`` writes an HTML report into ``DIR``: static files with inline styles, no scripts
-and no external resources, so ``index.html`` opens straight from disk, in a light or dark
-theme as the browser asks. The index has the totals, one line per instance or package with its
-statement, branch and toggle percentages, and a link per source file. A file page shows the
-source with the hit count of each line, missed lines in red and lines with a missed branch arm
-or toggle in yellow; under a line, each of its items (statement, branch arm, toggle per signal
-and direction) with its instance, count and, when the database has test names, the tests that
-hit it. A missed item shows its ``--uncovered`` row, so it can be copied into an exclusion file.
+``--html DIR`` writes an HTML report into ``DIR``: static files with inline styles and one small
+inline script and no external resources, so ``index.html`` opens straight from disk, in a light or
+dark theme as the browser asks. The index has the totals, one line per instance or package with
+its statement, branch and toggle percentages, and a link per source file. A file page shows the
+source with the hit count of each line: missed lines in red, lines that ran in some instances
+and not in others in purple with a ``1/2`` marker (instances it ran in out of all), and lines
+with a missed branch arm or toggle in yellow; a legend explains the colours. Click a line, or
+focus it with the keyboard and press Enter or Space, to open a popup with its items (statement, branch arm, toggle per
+signal and direction) per instance with the count and, when the database has test names, the
+tests that hit it. The popup opens only on a click, never on hover; clicking another line moves
+it, clicking outside or pressing Escape closes it, and its text can be selected. It needs the
+inline script: with scripts disabled nothing opens. A condition or expression has a table of its
+rows in the popup (``row``, ``input``, the ``result`` the input decides alone, ``?`` when an
+``xor`` is in the way, and the ``hit`` count). A missed item
+shows its ``--uncovered`` row and its ``--uncovered=yaml`` entry, each with a copy button, ready
+for an exclusion file.
 Each file also has ``src-N-missed.html`` (linked from the index and the file page), the same page
-reduced to the lines with a missed or excluded item, to find the gaps in a big design without
-scripts. Items taken out by ``--exclude`` stay visible, greyed, with the reason of their row. The
-sources are read at report time from the paths in the database, so run the command where they
-resolve; a source that cannot be read is error ``E0113`` and nothing is written. The same
-database always gives the same bytes.
+reduced to the lines with a missed or excluded item, to find the gaps in a big design. Items
+taken out by ``--exclude`` stay visible, greyed, with the reason of their row. Source paths are
+shown relative to the current directory; ``--root DIR`` strips another prefix instead (a path
+without it is shown as it is). The sources are read at report time from the paths in the
+database, so run the command where they resolve; a source that cannot be read is error ``E0113``
+and nothing is written. The same database always gives the same bytes.
 
 Excluding code from coverage
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -275,7 +312,8 @@ ran, with the line number and the statement as a comment:
 
     statement :tb:dut:u_fsm  4d2f0a91c3be.0  src/fsm.vhd:61   # state <= idle;
     branch    :tb:dut:u_fsm  c41e09a7b3d2.0.3  src/fsm.vhd:88   # arm 3: case state is
-    toggle :tb:dut data(7)   # never 1->0 (src/dut.vhd:12)
+    toggle :tb:dut data(7) fall   # never 1->0 (src/dut.vhd:12)
+    condition :tb:dut 5e5f6d18d9f4.0 3  src/dut.vhd:37   # b is 1 (result 1) in a and (b or c)
 
 Copy the rows you want to exclude into a file, add a reason after ``#`` if you like, and give it
 to the report:
@@ -294,11 +332,49 @@ Cobertura report and lists them under "excluded" with their reasons. A row match
 stays excluded; the file and line are only there to read, and a line that is no longer right
 is warning ``W0110``. A row that matches nothing (the statement was edited) is ``W0111``, an
 excluded item that did run ``W0114``; ``-Werror`` makes them fail the report. Row types:
-``statement``, ``branch``, ``toggle PATH SCALAR`` (both directions of one scalar; ``*`` and
-``?`` allowed in both, so ``toggle :tb:dut data(*)`` takes the whole vector, and it warns
-``W0114`` only for a scalar that toggled both ways), ``instance`` (that instance and everything
-below), ``unit`` (a package) and ``file``; anything else is error ``E0112``. The database keeps
-the raw counts.
+``statement``, ``branch``, ``condition INSTANCE HEX12.OCC ROW`` and ``expression INSTANCE
+HEX12.OCC ROW`` (one row of a condition or expression; the hash is that of the condition's
+text, not of its statement, so editing the body of an ``if`` keeps its row exclusions; ROW is
+twice the input's position plus its value, as ``--uncovered`` prints it), ``toggle PATH SCALAR [rise|fall]`` (both directions of one scalar,
+or only the 0->1 or only the 1->0 one; ``*`` and ``?`` allowed in path and scalar, so ``toggle
+:tb:dut data(*)`` takes the whole vector; ``W0114`` for each excluded direction that ran),
+``instance`` (that instance and everything below), ``unit`` (a package) and ``file``; anything
+else is error ``E0112``. ``--uncovered`` names the direction when only one never happened. The
+database keeps the raw counts.
+
+An exclusion file whose name ends in ``.yaml`` or ``.yml`` is read as YAML instead (any other
+name as the rows above; both mean the same). It is a list of entries with a ``kind`` and the
+fields of that kind, plus an optional ``reason``:
+
+.. code-block:: yaml
+
+    # exclusions.yaml
+    exclude:
+      - kind: branch
+        instance: ":tb:dut:u_fsm"
+        hash: "c41e09a7b3d2.0.3"     # HEX12.OCC, branch: HEX12.OCC.ARM
+        line: "src/fsm.vhd:88"       # optional, only shown when it moved
+        reason: unreachable, state is one-hot
+      - kind: toggle
+        instance: ":tb:dut"
+        signal: "data(*)"
+        direction: fall              # optional: rise or fall, default both
+      - kind: instance
+        instance: ":tb:u_debug*"
+        reason: debug logic
+      - kind: file
+        file: "*/generated/*.vhd"
+      - kind: unit
+        unit: work.pkg_tools
+
+``statement`` and ``branch`` take ``instance``, ``hash``, ``line``; ``condition`` and
+``expression`` the same plus ``row: N`` with ``hash: "HEX12.OCC"``; ``toggle`` takes
+``instance``, ``signal``, ``direction``; ``instance``, ``unit`` and ``file`` take the key of
+the same name. Values are always read as text, so ``no``, ``on`` or a hash of digits only need
+no care, but quote globs that start with ``*`` or contain ``: ``. An unknown kind or key, a
+missing field or invalid YAML is error ``E0112`` with the line. ``yavs cov report --uncovered=yaml
+DB`` prints the misses as such a file (the statement as a comment, no reason); redirect it to
+a ``.yaml`` file and delete what must stay.
 
 Which tests cover what
 ~~~~~~~~~~~~~~~~~~~~~~

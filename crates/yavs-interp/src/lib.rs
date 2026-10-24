@@ -18,6 +18,7 @@ mod debug;
 mod env;
 mod exec;
 mod foreign;
+mod gather;
 mod pre;
 mod scan;
 pub use foreign::{ForeignModel, ModelArg, ModelCall, ModelSignal, ModelTxn, ScalarKind};
@@ -126,6 +127,12 @@ pub(crate) struct ProcRoots {
 }
 
 impl SharedState {
+    /// Whether code run on this state did more than compute (see `tainted`): what a pure call
+    /// reads of it may differ between runs.
+    pub fn is_tainted(&self) -> bool {
+        self.tainted.is_some()
+    }
+
     pub fn new(vars: Vec<u8>) -> SharedState {
         SharedState {
             vars,
@@ -759,6 +766,14 @@ pub struct TierFrame {
     /// Which machine the view is of (a number no other machine of the process has): the
     /// process heap, instance data and frames are that machine's.
     pub owner: u64,
+    /// The slots of the frames `up` names and their lengths (0: not offered, ask the host), so compiled
+    /// code reads a variable of an enclosing subprogram in place.
+    pub up_slots: [*mut u8; 2],
+    pub up_len: [u64; 2],
+    /// The coverage counters of this instance (`Inst::Cover`; `cov_len` of them, 8 bytes each),
+    /// null and 0 without coverage.
+    pub cov: *const u8,
+    pub cov_len: u64,
 }
 
 /// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
@@ -824,6 +839,8 @@ impl Default for TierFrame {
             frame: 0,
             stack: std::ptr::null(),
             up: [u64::MAX; 2],
+            up_slots: [std::ptr::null_mut(); 2],
+            up_len: [0; 2],
             sigtab: std::ptr::null(),
             sigtab_len: 0,
             known: u64::MAX,
@@ -832,6 +849,8 @@ impl Default for TierFrame {
             heap_epoch: 0,
             owner: 0,
             flags: 0,
+            cov: std::ptr::null(),
+            cov_len: 0,
         }
     }
 }
@@ -840,6 +859,9 @@ impl Default for TierFrame {
 pub mod space {
     pub use crate::exec::{CONST, FRAME, HEAP, INST, PKG, SHARED, SHARED_HEAP, TEMP};
 }
+
+/// The most inputs of a condition whose covered rows are remembered per state (4^n states).
+const COV_MEMO_INPUTS: u8 = 5;
 
 /// A program bound for execution, shared by all processes of a simulation.
 pub struct Runtime {
@@ -851,6 +873,9 @@ pub struct Runtime {
     pub(crate) searched: String,
     pub(crate) pkgs: Vec<Arc<InstData>>,
     pub(crate) cov: Vec<AtomicU64>,
+    /// The rows each state of a condition covers (`CovCond::hits`), for the conditions with few
+    /// inputs, filled as states occur (`u64::MAX`: not yet).
+    pub(crate) cov_memo: Vec<Box<[AtomicU64]>>,
     /// Compact constants expanded on first use by address.
     pub(crate) expanded: Vec<std::sync::OnceLock<Vec<u8>>>,
     /// Per-function facts, computed on the first call (`pre.rs`).
@@ -877,6 +902,8 @@ pub struct Runtime {
     native: Arc<NativeFlags>,
     /// Live registers at the safepoints of each function a collection met (`roots`).
     live: Vec<std::sync::OnceLock<roots::LiveRefs>>,
+    /// The places of the leaves of record signals, per leaf table and descriptor (`gather.rs`).
+    pub(crate) plans: gather::Plans,
 }
 
 /// Which functions have compiled code, for the fast loop (`Runtime::native_flags`).
@@ -1144,6 +1171,18 @@ impl Runtime {
             searched: b.searched,
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
+            cov_memo: prog
+                .cov_conds
+                .iter()
+                .map(|c| {
+                    let states = if c.inputs <= COV_MEMO_INPUTS && n > 0 {
+                        1usize << (2 * c.inputs)
+                    } else {
+                        0
+                    };
+                    (0..states).map(|_| AtomicU64::new(u64::MAX)).collect()
+                })
+                .collect(),
             expanded: (0..prog.consts.len()).map(|_| Default::default()).collect(),
             pre: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             limits: b.limits,
@@ -1167,6 +1206,7 @@ impl Runtime {
                 counting: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+            plans: Default::default(),
             prog,
         }))
     }
@@ -1214,13 +1254,32 @@ impl Runtime {
         Ok(())
     }
 
+    /// Optimise the functions that elaboration-time calls asked for often ([`yavs_ir::ElabRaw`])
+    /// and drop what was derived from their lowered code. Only between two calls, when no
+    /// frame runs that code; nothing happens while something else holds the runtime.
+    pub fn promote_hot(rt: &mut Arc<Runtime>) {
+        let Some(r) = Arc::get_mut(rt) else {
+            return;
+        };
+        for f in r.prog.take_hot() {
+            // Outside `ElabRaw`: this optimises.
+            let _ = r.prog.func(f);
+            if let Some(p) = r.pre.get_mut(f.0 as usize) {
+                *p = Default::default();
+            }
+            if let Some(l) = r.live.get_mut(f.0 as usize) {
+                *l = Default::default();
+            }
+        }
+    }
+
     /// The facts of function `id` (`f`), computed once.
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
         Some(
             self.pre
                 .get(id.0 as usize)?
-                .get_or_init(|| pre::Pre::new(f, &self.prog)),
+                .get_or_init(|| pre::Pre::new(f, &self.prog, self.prog.runs_raw(id))),
         )
     }
 
@@ -1688,6 +1747,7 @@ pub(crate) fn fault_text(e: exec::Fault) -> String {
         exec::Fault::Runtime(m) | exec::Fault::Internal(m) => m,
         exec::Fault::Unbound(b) => b.0,
         exec::Fault::Kernel(e) => format!("{e:?}"),
+        exec::Fault::Restart => RESTART.into(),
     }
 }
 
@@ -1998,6 +2058,16 @@ pub fn call_values_shared(
     call_values_inner(rt, func, inst, args, ret, shared, None)
 }
 
+/// The message of the runtime error a call ends with when it stops to run again with a function
+/// optimised ([`is_restart`], #695). Only a traced call under `yavs_ir::ElabRaw` can end so.
+const RESTART: &str = "call restarts with an optimised function";
+
+/// Did the call stop to be run again ([`call_values_traced`] under `yavs_ir::ElabRaw`)? The
+/// functions it asked to have optimised are optimised by [`Runtime::promote_hot`] first.
+pub fn is_restart(e: &SimError) -> bool {
+    matches!(&e.kind, ErrorKind::Runtime(m) if m == RESTART)
+}
+
 /// What a call did besides computing its value (`call_values_traced`).
 #[derive(Debug, Default)]
 pub struct CallTrace {
@@ -2017,9 +2087,10 @@ pub fn call_values_traced(
     inst: Arc<InstData>,
     args: &[CallVal],
     ret: Option<yavs_ir::TyId>,
+    shared: Option<&Arc<Mutex<SharedState>>>,
 ) -> (Result<Option<CallVal>, SimError>, CallTrace) {
     let mut t = CallTrace::default();
-    let r = call_values_inner(rt, func, inst, args, ret, None, Some(&mut t));
+    let r = call_values_inner(rt, func, inst, args, ret, shared, Some(&mut t));
     (r, t)
 }
 

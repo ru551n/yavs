@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 
 use yavs_diag::{ColorChoice, Diagnostic, MessageFormat, SourceMap, render};
-use yavs_kernel::{ForceMode, Range, SigRef, SignalId, SimError, Value};
+use yavs_kernel::{ForceMode, Range, SigRef, SimError, Value};
 use yavs_sem::stat::{ConstValue, Elems};
 
 use crate::abi::with_hook;
@@ -32,6 +32,8 @@ pub(crate) struct At<'a> {
     reps: u64,
     /// Generics and constants: the elaborated value.
     cv: Option<ConstValue>,
+    /// Where the leaves are stored.
+    locs: &'a [yavs_elab::LeafLoc],
 }
 
 impl At<'_> {
@@ -44,7 +46,8 @@ impl At<'_> {
         } else {
             first
         };
-        SignalId(self.leaf).slice(offset as u32, len as u32)
+        let at = self.locs[self.leaf as usize];
+        at.signal.slice(at.base + offset as u32, len as u32)
     }
 }
 
@@ -434,6 +437,7 @@ impl State {
             k,
             reps,
             cv,
+            locs: &self.design.locs,
         })
     }
 
@@ -688,10 +692,8 @@ impl State {
                     } else {
                         first
                     };
-                    (
-                        SignalId(at.leaf + j as u32),
-                        Range::new(offset as u32, m as u32),
-                    )
+                    let loc = at.locs[at.leaf as usize + j];
+                    (loc.signal, Range::new(loc.base + offset as u32, m as u32))
                 })
                 .collect(),
         )

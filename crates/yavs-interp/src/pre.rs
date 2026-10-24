@@ -22,6 +22,8 @@ use yavs_ir::{
     Width,
 };
 
+use std::collections::HashMap;
+
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
 pub(crate) struct Pre {
@@ -71,7 +73,9 @@ impl Pre {
         Ok(())
     }
 
-    pub(crate) fn new(f: &Func, prog: &Program) -> Pre {
+    /// `budget`: `f` runs as lowered under elaboration-time evaluation, and its jumps back are
+    /// counted ([`count_back_edges`]).
+    pub(crate) fn new(f: &Func, prog: &Program, budget: bool) -> Pre {
         let n = f.reg_ty.len();
         let mut defs = vec![0u8; n];
         for inst in &f.code {
@@ -159,7 +163,7 @@ impl Pre {
                 *n = *t;
             }
         }
-        let mut code = Code::new(f, prog, &skip, &known, &next);
+        let mut code = Code::new(f, prog, &skip, &known, &next, budget);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
         let lean = lean_params(f, prog, &code, &pro);
@@ -226,6 +230,23 @@ pub(crate) enum Op {
         tab: u32,
     },
     Stmt,
+    /// `Inst::Cover`: count item `item` of the instance (`Machine::op_cover`).
+    Cover {
+        item: u32,
+    },
+    /// `Inst::CoverIn`.
+    CoverIn {
+        dst: u32,
+        acc: u32,
+        src: u32,
+        shift: u8,
+        ulogic: bool,
+    },
+    /// `Inst::CoverCond`.
+    CoverCond {
+        cond: u32,
+        state: u32,
+    },
     Move {
         dst: u32,
         src: u32,
@@ -1604,47 +1625,69 @@ fn reads(f: &Func, i: &Inst, mut each: impl FnMut(yavs_ir::Reg)) {
 /// Whether register `r` may be read after the instruction at `pc` and before it is written,
 /// on some path (an instruction it cannot follow counts as a read).
 pub(crate) fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
-    let mut seen = vec![false; f.code.len() + 1];
+    live_within(f, pc, r, usize::MAX).unwrap_or(true)
+}
+
+/// [`live_after`] when the scan decides within `budget` instructions, else `None`.
+fn live_within(f: &Func, pc: usize, r: yavs_ir::Reg, mut budget: usize) -> Option<bool> {
+    // Made at the first branch: most scans end in the block.
+    let mut seen: Vec<bool> = Vec::new();
     let mut stack = vec![pc + 1];
     while let Some(mut p) = stack.pop() {
         loop {
             let Some(i) = f.code.get(p) else {
-                return true;
+                return Some(true);
             };
+            budget = budget.checked_sub(1)?;
             let (mut read, mut written) = (false, false);
             reads(f, i, |x| read |= x == r);
             i.visit(&mut |x, role, _| written |= role == Role::Def && x == r);
             if read {
-                return true;
+                return Some(true);
             }
             if written {
                 break;
             }
             let to = |b: yavs_ir::BlockId| f.blocks.get(b).map(|b| b.start as usize);
+            let mut push = |s: usize| {
+                seen.resize(f.code.len() + 1, false);
+                if !std::mem::replace(&mut seen[s], true) {
+                    stack.push(s);
+                }
+            };
             match *i {
                 Inst::Br { to: t } => {
-                    let Some(s) = to(t) else { return true };
-                    if !std::mem::replace(&mut seen[s], true) {
-                        stack.push(s);
-                    }
+                    let Some(s) = to(t) else { return Some(true) };
+                    push(s);
                     break;
                 }
                 Inst::CondBr { t, f: e, .. } => {
                     for b in [t, e] {
-                        let Some(s) = to(b) else { return true };
-                        if !std::mem::replace(&mut seen[s], true) {
-                            stack.push(s);
-                        }
+                        let Some(s) = to(b) else { return Some(true) };
+                        push(s);
                     }
                     break;
                 }
                 Inst::Ret { .. } | Inst::Unreachable { .. } => break,
-                Inst::Case { .. } => return true,
+                Inst::Case { .. } => return Some(true),
                 _ => p += 1,
             }
         }
     }
-    false
+    Some(false)
+}
+
+/// How often each register is read in `f`.
+fn read_counts(f: &Func) -> Vec<u32> {
+    let mut t = vec![0u32; f.reg_ty.len()];
+    for i in &f.code {
+        reads(f, i, |r| {
+            if let Some(c) = t.get_mut(r.0 as usize) {
+                *c += 1;
+            }
+        });
+    }
+    t
 }
 
 /// The waveform buffer made at IR pc `from` (register `wave`) and written through `base` is
@@ -1653,6 +1696,7 @@ pub(crate) fn live_after(f: &Func, pc: usize, r: yavs_ir::Reg) -> bool {
 fn waveform_is_private(
     f: &Func,
     block_start: &[bool],
+    total: &std::cell::OnceCell<Vec<u32>>,
     from: usize,
     to: usize,
     wave: u32,
@@ -1668,10 +1712,20 @@ fn waveform_is_private(
             nb += u32::from(r.0 == base);
         });
     }
-    nw == 3
-        && nb == 1
-        && !live_after(f, to, yavs_ir::Reg(wave))
-        && !live_after(f, to, yavs_ir::Reg(base))
+    // A scan that is not over after 256 instructions is replaced by a count: a register read only
+    // in the range is dead after it (nothing enters the range but at `from`, which defines `wave`,
+    // and `base` follows), so the rest of a very large function is not scanned for each waveform.
+    let dead = |r: u32, n: u32| {
+        let reg = yavs_ir::Reg(r);
+        match live_within(f, to, reg, 256) {
+            Some(live) => !live,
+            None => {
+                total.get_or_init(|| read_counts(f)).get(r as usize) == Some(&n)
+                    || !live_after(f, to, reg)
+            }
+        }
+    };
+    nw == 3 && nb == 1 && dead(wave, nw) && dead(base, nb)
 }
 
 /// Pairs and triples of adjacent ops that are one op (they never cross a block start: the
@@ -1715,6 +1769,8 @@ fn peephole(
             .and_then(|i| aff.get(i).map(|e| (e.1, e.2)))
     };
     let free = |k: usize| old_at.get(k).is_some_and(|&p| !block_start[p as usize]);
+    // The reads of each register in the function, found when a waveform needs them.
+    let total = std::cell::OnceCell::new();
     let mut i = 0;
     while i < old.len() {
         let here = ops.len() as u32;
@@ -1737,7 +1793,11 @@ fn peephole(
                 // (Compiled code may take over the frame after a call that is not run inline, and
                 // would find the waveform's registers undefined: the ops from here to the fused
                 // one are no entry for it, `Code::no_tier`.)
-                let pair = (i + 3..old.len()).take_while(|&j| free(j)).find_map(|j| {
+                // Only the first `Drive` of the waveform can be the one: a later one finds the
+                // waveform read four times, so the search ends at the first (#683).
+                let seen = std::cell::Cell::new(false);
+                let go = |j: usize| free(j) && !seen.get();
+                let pair = (i + 3..old.len()).take_while(|&j| go(j)).find_map(|j| {
                     let Some(&Op::Drive {
                         driver,
                         target,
@@ -1749,6 +1809,7 @@ fn peephole(
                     else {
                         return None;
                     };
+                    seen.set(wave == w);
                     let (from, to) = (*old_at.get(i)? as usize, *old_at.get(j + 1)? as usize);
                     let value = match old[j] {
                         Op::Copy { dst, src, bytes } if dst == e => Some(Val::Copy(src, bytes)),
@@ -1767,7 +1828,7 @@ fn peephole(
                     let clean = wave == w
                         && int(n) == Some(1)
                         && free(j + 1)
-                        && waveform_is_private(f, block_start, from, to, w, e)
+                        && waveform_is_private(f, block_start, &total, from, to, w, e)
                         && !(from + 3..to).any(|p| {
                             let mut def = false;
                             f.code[p].visit(&mut |r, role, _| {
@@ -2052,7 +2113,7 @@ pub struct ScalarDrive {
 
 /// The scalar logic assignments of `f` that the interpreter's predecoder fuses (`ScalarDrive`).
 pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
-    let pre = Pre::new(f, prog);
+    let pre = Pre::new(f, prog, false);
     let mut out = Vec::new();
     for (k, op) in pre.code.ops.iter().enumerate() {
         let Op::LSetDrive {
@@ -2228,6 +2289,99 @@ fn targets_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
         | Op::FlagBr { t, f, .. }
         | Op::EdgeBr { t, f, .. } => [Some(t), Some(f)],
         _ => [None, None],
+    }
+}
+
+/// Every branch target of an op that jumps back, for [`count_back_edges`].
+fn jumps_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
+    match op {
+        Op::CmpBrStep { t, head, .. } => [Some(t), Some(head)],
+        Op::PosIndexLoadCmpBr { t, f, .. } => [Some(t), Some(f)],
+        op => targets_mut(op),
+    }
+}
+
+/// A function that runs as lowered under elaboration-time evaluation counts its jumps back
+/// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
+/// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
+/// Loops are fused into ops that jump back themselves (`CmpBrStep`), so the counting is a
+/// trampoline, and the loop ops of every other function stay as they are. The jumps back are the
+/// retreating `Br`s of a depth-first walk of the blocks (a jump to a join the code lays out
+/// earlier is none). An element loop (`Op::Loop`) is not counted: its iterations run at once.
+fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, at: &mut Vec<u32>) {
+    let blocks = f.blocks.values();
+    let succ = |b: usize| -> Vec<usize> {
+        let bl = &blocks[b];
+        if bl.end <= bl.start {
+            return Vec::new();
+        }
+        match f.code[bl.end as usize - 1] {
+            Inst::Case { table, .. } => prog.cases.get(table).map_or_else(Vec::new, |t| {
+                t.arms
+                    .iter()
+                    .map(|a| a.2.0 as usize)
+                    .chain(std::iter::once(t.default.0 as usize))
+                    .collect()
+            }),
+            ref i => i.targets().iter().map(|t| t.0 as usize).collect(),
+        }
+    };
+    // (pc of the `Br`, pc of the head) of every jump back.
+    let mut back: Vec<(u32, u32)> = Vec::new();
+    let mut state = vec![0u8; blocks.len()];
+    let mut stack: Vec<(usize, Vec<usize>, usize)> = Vec::new();
+    if !blocks.is_empty() {
+        state[0] = 1;
+        stack.push((0, succ(0), 0));
+    }
+    while let Some((b, ss, i)) = stack.last_mut() {
+        let Some(&s) = ss.get(*i) else {
+            state[*b] = 2;
+            stack.pop();
+            continue;
+        };
+        *i += 1;
+        let from = *b;
+        match state.get(s) {
+            Some(0) => {
+                state[s] = 1;
+                stack.push((s, succ(s), 0));
+            }
+            Some(1) => {
+                let last = blocks[from].end - 1;
+                if matches!(f.code[last as usize], Inst::Br { .. }) {
+                    back.push((last, blocks[s].start));
+                }
+            }
+            _ => {}
+        }
+    }
+    // The ops in code order come first; the ones the passes appended (element loops) follow.
+    let main = at
+        .windows(2)
+        .position(|w| w[1] < w[0])
+        .map_or(at.len(), |p| p + 1);
+    let mut tramp: HashMap<u32, u32> = HashMap::new();
+    for (br, head) in back {
+        let Some(&h) = entry.get(head as usize).filter(|&&h| h != NONE) else {
+            continue;
+        };
+        let k = at[..main].partition_point(|&p| p <= br).saturating_sub(1);
+        let mut op = ops[k];
+        let mut changed = false;
+        for t in jumps_mut(&mut op).into_iter().flatten() {
+            if *t == h {
+                *t = *tramp.entry(h).or_insert_with(|| {
+                    ops.push(Op::Step(br));
+                    at.push(br);
+                    ops.len() as u32 - 1
+                });
+                changed = true;
+            }
+        }
+        if changed {
+            ops[k] = op;
+        }
     }
 }
 
@@ -3189,7 +3343,14 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
 }
 
 impl Code {
-    fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
+    fn new(
+        f: &Func,
+        prog: &Program,
+        skip: &[bool],
+        known: &[Known],
+        next: &[u32],
+        budget: bool,
+    ) -> Code {
         let n = f.code.len();
         // A block start stops a fusion only where something can jump to it: a block that
         // only a skipped jump (to where execution goes on anyway) or nothing reaches is run
@@ -3347,6 +3508,24 @@ impl Code {
                     aff.push((ops.len() as u32, pc as u32, tail.1));
                     tail.0
                 }
+                Inst::Cover { item } => Op::Cover { item: item.0 },
+                Inst::CoverIn {
+                    dst,
+                    acc,
+                    src,
+                    shift,
+                    ulogic,
+                } => Op::CoverIn {
+                    dst: dst.0,
+                    acc: acc.0,
+                    src: src.0,
+                    shift,
+                    ulogic,
+                },
+                Inst::CoverCond { cond, state } => Op::CoverCond {
+                    cond,
+                    state: state.0,
+                },
                 Inst::Move { dst, src } => match fusable {
                     Some(Inst::Br { to }) if target(to).is_some() => {
                         last = nx;
@@ -4232,6 +4411,9 @@ impl Code {
                 }
             }
         }
+        if budget {
+            count_back_edges(prog, f, &entry, &mut ops, &mut at);
+        }
         let first = entry.first().copied().unwrap_or(NONE);
         // Debug aid next to the IR dump of `YAVS_DUMPIR`.
         if std::env::var_os("YAVS_DUMPIR").is_some() {
@@ -4320,7 +4502,7 @@ mod tests {
     fn lean_parameter_address_register_is_unset() {
         let (prog, id) = depth();
         let f = prog.func(id).unwrap();
-        let pre = Pre::new(f, &prog);
+        let pre = Pre::new(f, &prog, false);
         assert!(pre.lean);
         // `finish` numbers the registers afresh: find the register in the code.
         let (def, at) = match f.code[0] {

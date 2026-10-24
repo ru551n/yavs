@@ -1,8 +1,8 @@
 //! The elaborated hierarchy and the signal net graph (docs/design/ir.md section 4).
 //!
 //! Ids are assigned in elaboration order (deterministic depth-first), so they are stable for one
-//! design, generics and configuration. Kernel `SignalId`s equal [`LeafId`]s and kernel `ProcId`s
-//! equal process indices.
+//! design, generics and configuration. A leaf is stored at [`LeafLoc`] (`NetGraph::loc`): a
+//! kernel signal and the element its range starts at; kernel `ProcId`s equal process indices.
 //!
 //! **Element order inside a leaf.** Elements of a composite are flattened row major, leftmost
 //! element first. A logic leaf (yavs-logic bit-planes) stores element 0 as the *rightmost*
@@ -36,7 +36,8 @@ id!(
     ScopeId,
     /// A VHDL signal object (signal, port, component port, guard).
     ObjId,
-    /// One kernel signal; equal to its `yavs_kernel::SignalId`.
+    /// A scalar or an array of scalars of a signal object (a record field): stored at its
+    /// [`LeafLoc`].
     LeafId,
     /// A process instance; equal to its `yavs_kernel::ProcId`.
     ProcIdx
@@ -439,6 +440,14 @@ pub struct Whole {
     pub instances: Vec<Vec<(LeafId, Range)>>,
 }
 
+/// Where a leaf is stored: elements `base .. base + len` of kernel signal `signal`
+/// (docs/design/record-signal-layout.md, #686).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeafLoc {
+    pub signal: yavs_kernel::SignalId,
+    pub base: u32,
+}
+
 #[derive(Default)]
 pub struct NetGraph {
     pub objs: Vec<SigObj>,
@@ -447,6 +456,10 @@ pub struct NetGraph {
     pub conv_ports: Vec<ConvPort>,
     pub drivers: Vec<DriverDecl>,
     pub wholes: Vec<Whole>,
+    /// Per leaf, where it is stored (`NetGraph::place`).
+    pub loc: Vec<LeafLoc>,
+    /// Per kernel signal, its leaves `.0 .. .1` (consecutive, ascending bases).
+    pub packs: Vec<(LeafId, LeafId)>,
 }
 
 /// One static selector of a name (sub-element map key).
@@ -466,6 +479,53 @@ impl NetGraph {
 
     pub fn leaf(&self, l: LeafId) -> &Leaf {
         &self.leaves[l.index()]
+    }
+
+    /// Store every leaf in a kernel signal of its own. Run once the leaves are final (after
+    /// port collapsing).
+    pub(crate) fn place(&mut self) {
+        let n = self.leaves.len() as u32;
+        self.loc = (0..n)
+            .map(|i| LeafLoc {
+                signal: yavs_kernel::SignalId(i),
+                base: 0,
+            })
+            .collect();
+        self.packs = (0..n).map(|i| (LeafId(i), LeafId(i + 1))).collect();
+    }
+
+    /// The kernel signal that stores leaf `l`.
+    pub fn signal_of(&self, l: LeafId) -> yavs_kernel::SignalId {
+        self.loc[l.index()].signal
+    }
+
+    /// The kernel reference of elements `r` of leaf `l` (leaf-relative offsets).
+    pub fn kref(&self, l: LeafId, r: Range) -> yavs_kernel::SigRef {
+        let (s, r) = self.kpart(l, r);
+        s.slice(r.offset, r.len)
+    }
+
+    /// The kernel signal and range of elements `r` of leaf `l`.
+    pub fn kpart(&self, l: LeafId, r: Range) -> (yavs_kernel::SignalId, Range) {
+        let at = self.loc[l.index()];
+        (at.signal, Range::new(at.base + r.offset, r.len))
+    }
+
+    /// The kernel signal and element of element `e` of leaf `l`.
+    pub fn kelem(&self, l: LeafId, e: u32) -> (yavs_kernel::SignalId, u32) {
+        let at = self.loc[l.index()];
+        (at.signal, at.base + e)
+    }
+
+    /// The number of kernel signals.
+    pub fn signal_count(&self) -> usize {
+        self.packs.len()
+    }
+
+    /// The element count of kernel signal `s`.
+    pub fn signal_len(&self, s: yavs_kernel::SignalId) -> u32 {
+        let (a, b) = self.packs[s.0 as usize];
+        (a.0..b.0).map(|l| self.leaves[l as usize].ty.len).sum()
     }
 
     /// The composite resolved as a whole that leaf `l` belongs to.

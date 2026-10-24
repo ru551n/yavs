@@ -112,7 +112,7 @@ impl Fx<'_, '_> {
                 let at = self.cur;
                 let j = self.block();
                 for (k, (c, body)) in branches.iter().enumerate() {
-                    let c = self.scalar_expr(*c)?;
+                    let c = self.cond_expr(*c)?;
                     let (t, f) = (self.block(), self.block());
                     self.branch(c, t, f);
                     self.at(t);
@@ -168,7 +168,7 @@ impl Fx<'_, '_> {
                 };
                 match when {
                     Some(c) => {
-                        let c = self.scalar_expr(*c)?;
+                        let c = self.cond_expr(*c)?;
                         let cont = self.block();
                         self.branch(c, to, cont);
                         self.at(cont);
@@ -778,7 +778,7 @@ impl Fx<'_, '_> {
                 for (k, &(e, c)) in alts.iter().enumerate() {
                     let next = self.block();
                     if let Some(c) = c {
-                        let c = self.scalar_expr(c)?;
+                        let c = self.cond_expr(c)?;
                         let t = self.block();
                         self.branch(c, t, next);
                         self.at(t);
@@ -817,7 +817,7 @@ impl Fx<'_, '_> {
     }
 
     fn assign(&mut self, target: ExprId, e: ExprId, what: &str, span: Span) -> R<()> {
-        let v = self.expr(e)?;
+        let v = self.value_expr(e)?;
         if let ExprKind::Aggregate { .. } = &self.db.exprs[target].kind {
             let t = self.db.base(self.db.exprs[e].subtype);
             return self.assign_aggregate(target, v, t, span);
@@ -1423,7 +1423,7 @@ impl Fx<'_, '_> {
                 for (k, (w, c)) in alts.iter().enumerate() {
                     let next = self.block();
                     if let Some(c) = c {
-                        let c = self.scalar_expr(*c)?;
+                        let c = self.cond_expr(*c)?;
                         let t = self.block();
                         self.branch(c, t, next);
                         self.at(t);
@@ -1524,7 +1524,28 @@ impl Fx<'_, '_> {
         span: Span,
     ) -> R<()> {
         let db = self.db;
-        let p = self.comp_select(d, steps, span)?;
+        // A whole record signal driven by one waveform element through its own drivers, one
+        // per leaf in leaf order: one `SigScatter` instead of a drive per leaf (#677).
+        let whole = match base {
+            Ok(_) if steps.is_empty() && elems.len() == 1 && !covered.is_empty() => {
+                let all = self.leaves_under(d, &[]);
+                match self.rec_table(d, span)? {
+                    Some(t)
+                        if all.len() == covered.len()
+                            && all.iter().zip(covered).all(|(a, b)| a.path == b.path) =>
+                    {
+                        Some(t)
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let p = if whole.is_some() {
+            self.comp_head(d, span)?
+        } else {
+            self.comp_select(d, steps, span)?
+        };
         let what = self.target_name(target.expr);
         let dims = ty::array_of(db, p.t).map(|x| x.1);
         let mut vals = Vec::new();
@@ -1562,6 +1583,18 @@ impl Fx<'_, '_> {
                 (DriveMode::Inertial, r)
             }
         };
+        if let (Some(tab), Ok(driver), [(after, (src, _))]) = (whole, base, vals.as_slice()) {
+            self.emit(Inst::SigScatter {
+                driver,
+                src: *src,
+                desc: p.desc,
+                tab,
+                after: *after,
+                mode,
+                reject,
+            });
+            return Ok(());
+        }
         for (leaf, sref, len) in &p.leaves {
             let pos = covered.iter().position(|l| l.path == leaf.path);
             let rel = &leaf.path[p.path.len()..];
@@ -2204,7 +2237,7 @@ impl Fx<'_, '_> {
                 }
                 _ => {
                     let (_, _, vw) = self.scalar(st, span)?;
-                    let r = self.scalar_expr(v)?;
+                    let r = self.value_scalar(v)?;
                     self.check_scalar(r, Some(db.exprs[v].subtype), st, what, span)?;
                     if logic {
                         let z = self.int(0);
@@ -2565,7 +2598,7 @@ impl Fx<'_, '_> {
                 let (head, b, exit) = (self.block(), self.block(), self.block());
                 self.jump(head);
                 self.at(head);
-                let c = self.scalar_expr(*c)?;
+                let c = self.cond_expr(*c)?;
                 self.branch(c, b, exit);
                 self.at(b);
                 self.cover_branch(self.cur, 0);

@@ -113,7 +113,7 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
         let Some(&v) = r.counters.get(name) else {
             // Counted in debug builds and with `op-census`; a plain release build has none (`ops`, `cb_*`).
             assert!(
-                name == "ops" || name.starts_with("cb_"),
+                name == "ops" || name == "ops_elab" || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",
                 r.counters
             );
@@ -170,6 +170,62 @@ macro_rules! case {
     };
 }
 
+case!(
+    pkg_table,
+    "sum=212",
+    &[],
+    [("ops_elab", Max(480)), ("ops", Max(50))]
+);
+case!(
+    elab_raw,
+    "n=",
+    &[],
+    [
+        ("opt_funcs", Max(3)),
+        ("opt_funcs", Min(2)),
+        ("ops_elab", Max(960))
+    ]
+);
+case!(
+    elab_restart,
+    "n=8506 2",
+    &[],
+    [
+        ("elab_restarts", Max(1)),
+        ("elab_restarts", Min(1)),
+        ("opt_funcs", Max(2)),
+        ("opt_funcs", Min(2)),
+        ("ops_elab", Max(60300)),
+    ]
+);
+
+/// A call that has reported does not restart; one that has not does, and its report is printed once.
+#[test]
+fn elab_restart_report() {
+    let d = tempdir("elab_restart_report");
+    let r = run_design(
+        &d,
+        "elab_restart_report",
+        include_str!("perf/elab_restart_report.vhd"),
+        "interp",
+        &[],
+    );
+    assert_eq!(r.code, 0, "{}", r.all());
+    let all = r.all();
+    assert!(all.contains("n=3757 3757"), "{all}");
+    for what in ["early report", "late report"] {
+        assert_eq!(all.matches(what).count(), 1, "`{what}` in:\n{all}");
+    }
+    check_bounds(
+        "elab_restart_report",
+        &r,
+        &[
+            ("elab_restarts", Max(1)),
+            ("elab_restarts", Min(1)),
+            ("ops_elab", Max(113000)),
+        ],
+    );
+}
 case!(
     clk_toggle,
     "q=",
@@ -420,7 +476,7 @@ case!(
     [
         ("cycles", Max(418)),
         ("process_runs", Max(525)),
-        ("ops", Max(54500)),
+        ("ops", Max(30700)),
     ]
 );
 case!(
@@ -564,6 +620,54 @@ fn lean_events_change_nothing() {
     assert_eq!(cov.code, 0, "{}", cov.all());
     assert_eq!(cov.stdout, on.stdout);
     assert_eq!(cov.counters["lean_signals"], 0);
+}
+
+/// An assignment of the value a signal holds is dropped only when nothing can observe the
+/// signal's activity (user, 2026-10-24): `skip_signals` counts the signals that allow it. Each
+/// observer of activity (a coverage run, a plugin, a debugger, `'active`, `'last_active`,
+/// `'transaction`, `'quiet`) takes it away; a waveform file records values only.
+#[test]
+fn skipping_follows_observers() {
+    let d = tempdir("skip_observers");
+    let src = include_str!("perf/skip_observers.vhd");
+    let run = |decl: &str, extra: &str, more: &[&str]| {
+        let src = src.replace("--EXTRA_DECL", decl).replace("--EXTRA", extra);
+        let r = run_design(&d, "skip_observers", &src, "interp", more);
+        assert_eq!(r.code, 0, "{}", r.all());
+        r.counters["skip_signals"]
+    };
+    // a, b and n, and nothing else.
+    assert_eq!(run("", "", &[]), 3);
+    // A waveform records values, not activity.
+    let fst = d.join("w.fst");
+    let wave = format!("--wave={}", fst.display());
+    assert_eq!(run("", "", &[&wave]), 3);
+    // Coverage: statement counters see every activation.
+    assert_eq!(run("", "", &["--cov"]), 0);
+    // `'active` and `'last_active` anywhere switch it off for the whole design.
+    assert_eq!(
+        run(
+            "",
+            "process (a) begin assert a'active or true; end process;",
+            &[]
+        ),
+        0
+    );
+    assert_eq!(
+        run(
+            "",
+            "process (a) begin assert a'last_active >= 0 ns; end process;",
+            &[]
+        ),
+        0
+    );
+    // An implicit signal makes its prefix an observer (`'transaction`, `'quiet`): that signal
+    // and the implicit one are out, the others stay.
+    assert_eq!(
+        run("", "process (a'transaction) begin null; end process;", &[]),
+        2
+    );
+    assert_eq!(run("signal q : boolean;", "q <= a'quiet(5 ns);", &[]), 3);
 }
 
 /// The third run of a design in one library (the first notes the closure, the second stores, the
@@ -778,6 +882,7 @@ mod llvm {
             ("llvm_native_frames", Min(3)),
         ]
     );
+    llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
     llvm_case!(
         llvm_clocked,
         "q=",

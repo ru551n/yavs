@@ -242,6 +242,8 @@ pub const MEM_TEMP_LEN: u64 = std::mem::offset_of!(Mem, fr.temp_len) as u64;
 pub const MEM_TEMP_CAP: u64 = std::mem::offset_of!(Mem, fr.temp_cap) as u64;
 pub const MEM_TEMP_BASE: u64 = std::mem::offset_of!(Mem, fr.temp_base) as u64;
 pub const MEM_UP: u64 = std::mem::offset_of!(Mem, fr.up) as u64;
+pub const MEM_UP_SLOTS: u64 = std::mem::offset_of!(Mem, fr.up_slots) as u64;
+pub const MEM_UP_LEN: u64 = std::mem::offset_of!(Mem, fr.up_len) as u64;
 pub const MEM_INST: u64 = std::mem::offset_of!(Mem, fr.inst) as u64;
 pub const MEM_INST_LEN: u64 = std::mem::offset_of!(Mem, fr.inst_len) as u64;
 pub const MEM_NSIGS: u64 = std::mem::offset_of!(Mem, fr.nsigs) as u64;
@@ -257,6 +259,8 @@ pub const MEM_NTAB: u64 = std::mem::offset_of!(Mem, ntab) as u64;
 pub const MEM_STACK_LO: u64 = std::mem::offset_of!(Mem, stack_lo) as u64;
 pub const MEM_NSLOTS: u64 = std::mem::offset_of!(Mem, nslots) as u64;
 pub const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
+pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
+pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 pub const MEM_OBJS: u64 = std::mem::offset_of!(Mem, objs) as u64;
 pub const OBJ_SIZE: u64 = std::mem::size_of::<Obj>() as u64;
 pub const OBJ_PTR: u64 = std::mem::offset_of!(Obj, ptr) as u64;
@@ -1974,6 +1978,7 @@ pub fn inline_regs(f: &Func, i: &Inst) -> Vec<Reg> {
         Inst::Const { dst, .. } | Inst::ConstF { dst, .. } => vec![dst],
         Inst::Move { dst, src } | Inst::IToF { dst, src } => vec![dst, src],
         Inst::Select { dst, c, a, b } => vec![dst, c, a, b],
+        Inst::CoverIn { dst, acc, src, .. } => vec![dst, acc, src],
         Inst::Bin { dst, a, b, .. }
         | Inst::FBin { dst, a, b, .. }
         | Inst::Cmp { dst, a, b, .. }
@@ -2108,6 +2113,8 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::Edge { .. }
             | Inst::Driving { .. }
             | Inst::DrivingValue { .. }
+            | Inst::SigGather { .. }
+            | Inst::SigScatter { .. }
             | Inst::Drive { .. }
             | Inst::DriveSlot { .. }
             | Inst::WaitOn { .. }
@@ -2117,6 +2124,8 @@ pub fn keeps_objects(i: &Inst) -> bool {
             | Inst::Now { .. }
             | Inst::Delta { .. }
             | Inst::Cover { .. }
+            | Inst::CoverIn { .. }
+            | Inst::CoverCond { .. }
             | Inst::Stmt
     )
 }
@@ -2224,6 +2233,12 @@ pub enum Known<V = ()> {
     Const(yavs_ir::ConstId, u64),
     /// The address of byte `.0` of the instance data.
     Inst(u64),
+    /// An address in the instance data at an offset the generator does not know (an `Index` by a
+    /// run-time position, or a fact carried from another block, `regs::spaces`).
+    InstAny,
+    /// An address in the slots of the frame `.0` static links up (1 or 2), at an offset the
+    /// generator does not track: frame-mode code reads them from the view (`TierFrame::up_slots`).
+    Up(u8),
     /// An address in the temporary area (`Alloc`, or an index into one).
     Temp,
     /// An address in a heap object (what a `Deref` makes, or an index into it): not in a frame, the
@@ -2356,6 +2371,11 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: 
             space: AddrSpace::Inst,
             off,
         } => Some((dst, Known::Inst(off.into()))),
+        Inst::AddrOf {
+            dst,
+            space: AddrSpace::Up(d @ 1..=2),
+            ..
+        } => Some((dst, Known::Up(d))),
         Inst::Alloc { dst, .. } => Some((dst, Known::Temp)),
         Inst::Deref { dst, .. } => Some((dst, Known::Heap(None))),
         Inst::Move { dst, src } => get(src).map(|k| (dst, k)),
@@ -2383,6 +2403,8 @@ pub fn track<V: Copy>(known: &mut [Option<Known<V>>], fixed: &[Option<i64>], i: 
                     at(o, p).map(|a| (dst, Known::Inst(a)))
                 }
                 // An offset past 4 GiB leaves the block through the instruction's own exit.
+                (Some(Known::Inst(_) | Known::InstAny), _) => Some((dst, Known::InstAny)),
+                (Some(Known::Up(d)), _) => Some((dst, Known::Up(d))),
                 (Some(Known::Temp), _) => Some((dst, Known::Temp)),
                 (Some(Known::Heap(_)), _) => Some((dst, Known::Heap(None))),
                 _ => None,
@@ -2613,53 +2635,6 @@ pub fn loops(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
     }
     false
 }
-
-/// Move the calling thread (the compile thread) off the CPUs the process was restricted to,
-/// when it was restricted to some (`taskset`, a pinned benchmark): there it would take turns
-/// with the simulation thread on one core every sampling period, and run the LLVM load and
-/// every compile on it (#525). Left as it is when the process may run anywhere, or when no
-/// other CPU is allowed (a cgroup cpuset).
-#[cfg(target_os = "linux")]
-pub fn off_simulation_cpus() {
-    // A `cpu_set_t` of glibc and musl: 1024 CPUs.
-    const WORDS: usize = 16;
-    unsafe extern "C" {
-        fn sched_getaffinity(pid: std::ffi::c_int, size: usize, mask: *mut u64) -> std::ffi::c_int;
-        fn sched_setaffinity(
-            pid: std::ffi::c_int,
-            size: usize,
-            mask: *const u64,
-        ) -> std::ffi::c_int;
-    }
-    let mut mask = [0u64; WORDS];
-    let size = std::mem::size_of_val(&mask);
-    // SAFETY: pid 0 is the calling thread; `mask` holds `size` bytes for both calls. The kernel
-    // ignores CPUs that do not exist and fails, changing nothing, when none of the rest is
-    // allowed.
-    unsafe {
-        if sched_getaffinity(0, size, mask.as_mut_ptr()) != 0 {
-            return;
-        }
-        let mut rest = mask.map(|w| !w);
-        // Measurement aid: `YAVS_COMPILE_CPUS=3,5-7` names the CPUs to move to (a host where
-        // the rest of the machine is not free).
-        if let Some(list) = std::env::var_os("YAVS_COMPILE_CPUS") {
-            rest = [0u64; WORDS];
-            for part in list.to_string_lossy().split(',') {
-                let (a, b) = part.split_once('-').unwrap_or((part, part));
-                if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
-                    for c in a..=b.min(WORDS * 64 - 1) {
-                        rest[c / 64] |= 1 << (c % 64);
-                    }
-                }
-            }
-        }
-        sched_setaffinity(0, size, rest.as_ptr());
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn off_simulation_cpus() {}
 
 /// Instructions a native frame has the interpreter execute on a frame of its own
 /// (`TierHost::native_step`): heap objects, vector fills and compares, layouts, reports.

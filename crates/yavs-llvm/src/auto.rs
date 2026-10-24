@@ -32,7 +32,7 @@ use yavs_ir::{FuncId, FuncKind};
 
 use crate::generator::{Generator, OptLevel, StartError};
 use crate::native::{Part, native_set, too_big};
-use crate::rt::{RunFn, back_edges, call, enter, loops, off_simulation_cpus};
+use crate::rt::{RunFn, back_edges, call, enter, loops};
 
 /// When a function is hot: once the sampler has seen the interpreter in it for `base`
 /// microseconds plus `per_instr` nanoseconds per IR instruction of the function (about the
@@ -1805,7 +1805,6 @@ impl AutoTier {
                     Ok(id) => asked.push_back(id),
                     Err(RecvTimeoutError::Timeout) => {}
                 }
-                off_simulation_cpus();
                 let mut running = Vec::new();
                 w.listed = w.main.as_ref().map(|m| m.cache_list()).unwrap_or_default();
                 let mut last = std::time::Instant::now();

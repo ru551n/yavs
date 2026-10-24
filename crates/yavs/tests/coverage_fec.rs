@@ -126,6 +126,19 @@ const EXPECTED: &[(&str, u32, &str, u64)] = &[
     ("c3", 66, "b", 0),
     ("c4", 66, "c", 0),
     ("c5", 66, "c", 0),
+    // Constant inputs (generic `gt`, constant `kf`, `true`) are evaluated but have no rows, and
+    // the row numbers keep the input's position: `(a and gt) or (b and not kf)` has rows for
+    // `a` (0, 1) and `b` (4, 5) only; `b` is never evaluated (`a and gt` is true).
+    ("c0", 71, "a", 0),
+    ("c1", 71, "a", 1),
+    ("c4", 71, "b", 0),
+    ("c5", 71, "b", 0),
+    // `a and gt`, `gt or kf` (line 74, 77) have a single or no non-constant input: no rows.
+    // `b and true and (a or kf)`: the inputs are `b`, `true`, `a`, `kf`.
+    ("c0", 80, "b", 0),
+    ("c1", 80, "b", 1),
+    ("c4", 80, "a", 0),
+    ("c5", 80, "a", 1),
 ];
 
 fn want() -> Vec<(String, u32, String, u64)> {
@@ -181,7 +194,7 @@ fn counts_threads_and_reports() {
     let o = yavs(&tmp, &["cov", "report", "a.ycov"]);
     let text = String::from_utf8(o.stdout).expect("utf-8");
     assert!(
-        text.starts_with("statements 0/0 -\nbranches   0/0 -\ntoggles    0/0 -\nconditions 26/36 72.2%\nexpressions 10/10 100.0%\n"),
+        text.starts_with("statements 0/0 -\nbranches   0/0 -\ntoggles    0/0 -\nconditions 29/44 65.9%\nexpressions 10/10 100.0%\n"),
         "{text}"
     );
     assert!(
@@ -190,7 +203,7 @@ fn counts_threads_and_reports() {
     );
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered"]);
     let miss = String::from_utf8(o.stdout).expect("utf-8");
-    assert_eq!(miss.lines().count(), 10, "{miss}");
+    assert_eq!(miss.lines().count(), 15, "{miss}");
     assert!(
         miss.contains("# y is 1 (result 1) in x and y")
             && miss.contains("# n > 1000 is 1 (result 0) in k < 4 and not (n > 1000)")

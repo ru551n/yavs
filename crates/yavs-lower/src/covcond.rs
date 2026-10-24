@@ -9,7 +9,7 @@
 use yavs_ir::{COV_INPUTS, CovCond, CovKind, CovNode, CovRow, Inst, Ty};
 use yavs_sem::ExprId;
 use yavs_sem::decl::Body;
-use yavs_sem::hir::{Actual, ExprKind};
+use yavs_sem::hir::{Actual, ExprKind, Staticness};
 use yavs_sem::implicit::Family;
 
 use crate::R;
@@ -98,7 +98,7 @@ impl Fx<'_, '_> {
     fn cov_tree(&mut self, e: ExprId, leaves: &mut Vec<(ExprId, bool)>) -> Option<T> {
         let u = self.cov_scalar(e)?;
         let db = self.db;
-        if db.exprs[e].value.is_none()
+        if db.exprs[e].stat == Staticness::None
             && db.edge_shape(e).is_none()
             && let Some((n, ops)) = self.cov_op(e)
         {
@@ -141,7 +141,14 @@ impl Fx<'_, '_> {
         }
         let mut leaves = Vec::new();
         let tree = self.cov_tree(e, &mut leaves)?;
-        if leaves.len() < 2 {
+        // Inputs that are constant after elaboration (generics, constants, folded values) are
+        // evaluated but get no rows; fewer than two others leave nothing to measure.
+        let consts = leaves
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| db.exprs[l.0].stat != Staticness::None)
+            .fold(0u32, |m, (i, _)| m | 1 << i);
+        if leaves.len() - (consts.count_ones() as usize) < 2 {
             return None;
         }
         let mut nodes = Vec::new();
@@ -149,6 +156,9 @@ impl Fx<'_, '_> {
         flatten(&tree, Some(false), &mut nodes, &mut parity);
         let mut first = None;
         for (i, &(l, _)) in leaves.iter().enumerate() {
+            if consts >> i & 1 == 1 {
+                continue;
+            }
             for v in 0..2usize {
                 let row = (2 * i + v) as u32;
                 let kind = if expr {
@@ -174,6 +184,7 @@ impl Fx<'_, '_> {
         let cond = self.fb.program().cov_cond(CovCond {
             first: first?,
             inputs: leaves.len() as u8,
+            consts,
             nodes,
         });
         // The first input is always evaluated and starts the state (`Inst::CoverIn`, shift 0).

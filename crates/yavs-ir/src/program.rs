@@ -911,12 +911,14 @@ pub enum CovNode {
 }
 
 /// The tree of one condition: its first row's counter is `first`, the row of input `i` at
-/// value `v` is `first + 2 * i + v`.
+/// value `v` is `first + 2 * k + v`, `k` the number of non-constant inputs before `i`.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct CovCond {
     pub first: CovItem,
     /// The number of inputs, at most [`COV_INPUTS`].
     pub inputs: u8,
+    /// Inputs that are constant after elaboration (bit `i`): evaluated, but they have no rows.
+    pub consts: u32,
     pub nodes: Vec<CovNode>,
 }
 
@@ -924,7 +926,7 @@ pub struct CovCond {
 pub const COV_INPUTS: usize = 31;
 
 impl CovCond {
-    /// The rows (bit `2 * i + v`) one evaluation covers. `state` holds two bits per input:
+    /// The rows (bit `2 * k + v`, `k` as in [`CovCond`]) one evaluation covers. `state` holds two bits per input:
     /// 0 not evaluated (short-circuit), 1 false, 2 true, 3 another value (nothing is counted
     /// then). Input `i` at value `v` is covered when flipping it alone changes the result
     /// while the other evaluated inputs keep their values; an input not evaluated is masked:
@@ -940,9 +942,9 @@ impl CovCond {
             return 0;
         }
         let mut hits = 0;
-        for i in (0..n).filter(|&i| code(i) != 0) {
-            if self.reach(state, Some(i)) & (3 ^ r) != 0 {
-                hits |= 1 << (2 * i + usize::from(code(i) == 2));
+        for (k, i) in (0..n).filter(|&i| self.consts >> i & 1 == 0).enumerate() {
+            if code(i) != 0 && self.reach(state, Some(i)) & (3 ^ r) != 0 {
+                hits |= 1 << (2 * k + usize::from(code(i) == 2));
             }
         }
         hits
@@ -1085,6 +1087,7 @@ mod cov_tests {
         CovCond {
             first: CovItem(0),
             inputs,
+            consts: 0,
             nodes: nodes.to_vec(),
         }
     }
@@ -1123,6 +1126,18 @@ mod cov_tests {
         );
         // a true: the right side is not evaluated and masked; a decides.
         assert_eq!(c.hits(state(&[Some(true), None, None])), 1 << 1);
+    }
+
+    #[test]
+    fn constant_inputs_have_no_rows() {
+        use CovNode::*;
+        // a and k and b, k constant true: rows are a, b only (k is evaluated, never reported).
+        let mut c = cond(&[Input(0), Input(1), And, Input(2), And], 3);
+        c.consts = 0b010;
+        let t = Some(true);
+        assert_eq!(c.hits(state(&[t, t, t])), 0b1010);
+        assert_eq!(c.hits(state(&[Some(false), t, t])), 0b0001);
+        assert_eq!(c.hits(state(&[t, t, Some(false)])), 0b0100);
     }
 
     #[test]

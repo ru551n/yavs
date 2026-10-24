@@ -3,14 +3,14 @@
 library ieee;
 use ieee.std_logic_1164.all;
 
-entity cov_fec is
+entity cov_fec is generic (gt : boolean := true);
 end entity;
 
 architecture sim of cov_fec is
   signal a, b, c : boolean := false;
   signal x, y    : std_logic := '0';
   signal q       : std_logic;
-  signal r       : boolean;
+  signal r       : boolean; constant kf : boolean := false;
   type lv is array (0 to 3) of std_logic;
   constant xs : lv := ('0', 'H', 'X', '1');
   constant ys : lv := ('1', 'L', '1', 'U');
@@ -65,6 +65,20 @@ begin
     -- A row that is never covered: `c` is never true while `a` is false and `b` true.
     if (not a and b) and c then
       n := n + 1000;
+    end if;
+    -- Inputs constant after elaboration (generic, constant, literal) have no rows; a condition
+    -- with fewer than two other inputs has no item at all.
+    if (a and gt) or (b and not kf) then
+      n := n + 1;
+    end if;
+    if a and gt then
+      n := n + 1;
+    end if;
+    if gt or kf then
+      n := n + 1;
+    end if;
+    if b and true and (a or kf) then
+      n := n + 1;
     end if;
     report "n=" & integer'image(n) & " calls=" & integer'image(calls);
     wait;

@@ -243,6 +243,9 @@ every evaluation of a multi-input condition, so they are asked for).
   values. In ``if a and (b or c)`` with ``a`` true, ``b`` false and ``c`` true the
   condition is true, and flipping ``a`` or ``c`` alone makes it false, but flipping ``b`` does
   not: that evaluation covers ``a = 1`` and ``c = 1``, not ``b = 0``.
+  An input that is constant after elaboration (a generic, a constant, a literal) is evaluated
+  but has no rows, and a condition with fewer than two other inputs has none at all, so no row
+  is unreachable.
   An input that was not evaluated because the operator short-circuits (``and``/``or`` on
   ``boolean`` and ``bit`` skip the right operand when the left decides) is masked: it can take
   any value, so ``a and b`` with ``a`` false covers ``a = 0``. Counting never changes the order

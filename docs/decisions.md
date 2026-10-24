@@ -2375,10 +2375,20 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   type `bit`, `boolean` or `std_ulogic`. Only a tree of `and`/`or`/`nand`/`nor`/`xor`/`xnor`/`not`
   (the predefined ones, and the `std_logic_1164` gates on `std_ulogic`) with 2 to 31 inputs
   counts; every operand that is not such an operator (relation, name, function call, edge idiom
-  such as `rising_edge(clk)` or `clk'event and clk = '1'`, literal) is one input. An inserted
+  such as `rising_edge(clk)` or `clk'event and clk = '1'`, literal) is one input (a constant one has no rows, see below). An inserted
   `??` is looked through. Vector operands, conditions of `assert`, `wait until`, 2019
   conditional expressions and logic expressions nested in other expressions (arguments, indices)
   are not measured.
+- **Constant inputs (user, 2026-10-24):** an input that is constant after elaboration (a
+  generic, a constant, a literal, any folded or globally static expression) is evaluated but
+  gets no rows, so no unreachable row exists; a condition with fewer than two other inputs has
+  no item at all. Why: a row on a constant can never be covered and would need an exclusion.
+  `CovCond::consts` marks them; counters are compact (`first + 2 * k + v`, `k` the number of
+  non-constant inputs before the input) while the row number in the key stays `2 * input +
+  value`, so adding a constant input never renumbers the exclusions of the others. Staticness is
+  the HIR's (`Expr::stat`), so a constant declared in a process or subprogram whose value
+  elaboration cannot know still counts as an input. Condition and expression coverage stay off
+  by default, and Cobertura keeps folding the rows into `condition-coverage` (user, 2026-10-24).
 - **Values:** `bit`/`boolean` false and true; `std_ulogic` `'0'`/`'L'` are 0 and `'1'`/`'H'` are 1.
   An evaluation in which an evaluated input has another value (`'U'`, `'X'`, `'Z'`, `'W'`, `'-'`)
   counts no row. Why: the focused definition needs two-valued inputs.

@@ -773,6 +773,10 @@ pub fn run(
         }
     }
     let kind = |k| a.cov.is_some() && a.cov_kind.contains(&k);
+    let lowering_counters = kind(CovKindArg::Statement)
+        || kind(CovKindArg::Branch)
+        || kind(CovKindArg::Condition)
+        || kind(CovKindArg::Expression);
     let lowering = yavs_elab::LowerOptions {
         coverage: kind(CovKindArg::Statement) || kind(CovKindArg::Branch),
         cov_condition: kind(CovKindArg::Condition),
@@ -860,7 +864,9 @@ pub fn run(
             }
         }
     }
-    let observed_free = a.cov.is_none() && a.dap.is_none() && a.vhpi.is_empty();
+    let others_free = a.dap.is_none() && a.vhpi.is_empty();
+    let observed_free = a.cov.is_none() && others_free;
+    let cov_counters = lowering_counters;
     // Wide signals nothing asks the history of keep only each block's last event, unless
     // something observes the run; hidden test aid: `YAVS_LEAN_EVENTS=off` keeps all histories.
     if !observed_free || std::env::var("YAVS_LEAN_EVENTS").is_ok_and(|v| v == "off") {
@@ -882,12 +888,13 @@ pub fn run(
         // through it and to foreign callbacks. Coverage accepts it: the statement of a pure
         // edge test counts the activations at its edge only (#707).
         edge_triggers: a.dap.is_none() && a.vhpi.is_empty(),
-        // Coverage observes activity (user, 2026-10-24): no assignment is skipped, no activation
-        // left out.
-        skip_unchanged: observed_free && !db.facts().reads_activity,
+        // Coverage keeps the count-neutral skips (user, 2026-10-24, #707): an unchanged assignment
+        // queues no transaction under every kind, but the idle skip leaves activations out and
+        // so is off when statement, branch, condition or expression counters count them.
+        skip_unchanged: others_free && !db.facts().reads_activity,
         // Hidden switches for comparing runs: `YAVS_IDLE_SKIP=off` runs every activation,
         // `check` runs the ones the kernel would skip and fails when one does something else.
-        idle_skip: idle_mode != "off",
+        idle_skip: idle_mode != "off" && !cov_counters,
         idle_check: idle_mode == "check",
     };
     if let Some(seed) = a.shuffle {

@@ -213,7 +213,11 @@ database ``FILE`` (default ``yavs.ycov``) at the end of the run, whatever its ou
 ``--cov`` there are no counters and no cost. ``--cov-kind=LIST`` counts only some kinds
 (``statement``, ``branch``, ``toggle``, ``condition``, ``expression``, comma separated; default
 ``statement,branch,toggle``; ``condition`` and ``expression`` cost extra instructions in
-every evaluation of a multi-input condition, so they are asked for).
+every evaluation of a multi-input condition, so they are asked for). Coverage never changes a
+count by skipping work: assignments of the value a signal already holds queue no transaction
+(as without ``--cov``), and a clocked process whose inputs did not change is left suspended
+only when no statement, branch, condition or expression counter is on, so toggle coverage alone
+runs nearly as fast as a plain run plus the toggle database.
 
 * **Statements**: every sequential statement and every concurrent statement (each time it
   runs). Declarations are not counted.

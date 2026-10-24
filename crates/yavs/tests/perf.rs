@@ -656,6 +656,21 @@ fn idle_skip_changes_nothing() {
             on.counters["idle_skips"], check.counters["idle_skips"],
             "{design}"
         );
+        // Coverage (user, 2026-10-24): counters count activations, so the skip is off with
+        // them; toggle coverage alone keeps it.
+        let cov = |kinds: &str| {
+            let kinds = format!("--cov-kind={kinds}");
+            run_design(&d, design, src, "interp", &["--cov=c.ycov", &kinds])
+        };
+        let (counted, toggle) = (cov("statement,branch,toggle"), cov("toggle"));
+        assert_eq!((counted.code, toggle.code), (0, 0), "{design}");
+        assert_eq!(counted.stdout, on.stdout, "{design}");
+        assert_eq!(toggle.stdout, on.stdout, "{design}");
+        assert_eq!(counted.counters["idle_skips"], 0, "{design}");
+        assert_eq!(
+            toggle.counters["idle_skips"], on.counters["idle_skips"],
+            "{design}"
+        );
     }
 }
 
@@ -689,8 +704,9 @@ fn lean_events_change_nothing() {
 
 /// An assignment of the value a signal holds is dropped only when nothing can observe the
 /// signal's activity (user, 2026-10-24): `skip_signals` counts the signals that allow it. Each
-/// observer of activity (a coverage run, a plugin, a debugger, `'active`, `'last_active`,
-/// `'transaction`, `'quiet`) takes it away; a waveform file records values only.
+/// observer of activity (a plugin, a debugger, `'active`, `'last_active`, `'transaction`,
+/// `'quiet`) takes it away; a waveform file records values only, and coverage keeps the skip
+/// (it changes no count: user, 2026-10-24, #707).
 #[test]
 fn skipping_follows_observers() {
     let d = tempdir("skip_observers");
@@ -707,8 +723,20 @@ fn skipping_follows_observers() {
     let fst = d.join("w.fst");
     let wave = format!("--wave={}", fst.display());
     assert_eq!(run("", "", &[&wave]), 3);
-    // Coverage: statement counters see every activation.
-    assert_eq!(run("", "", &["--cov"]), 0);
+    // Coverage of every kind: the skip changes no count.
+    assert_eq!(run("", "", &["--cov=c.ycov"]), 3);
+    assert_eq!(run("", "", &["--cov=c.ycov", "--cov-kind=toggle"]), 3);
+    assert_eq!(
+        run(
+            "",
+            "",
+            &[
+                "--cov=c.ycov",
+                "--cov-kind=statement,branch,condition,expression,toggle"
+            ]
+        ),
+        3
+    );
     // `'active` and `'last_active` anywhere switch it off for the whole design.
     assert_eq!(
         run(

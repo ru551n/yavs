@@ -51,7 +51,7 @@ pub struct Config {
     /// A zero-delay assignment that gives an unguarded, not user-resolved signal the value it
     /// already has, when its driver has nothing pending, queues no transaction (the delta
     /// still happens). Only set where nothing reads activity: the design uses neither
-    /// `'active` nor `'last_active`, and no observer, coverage run or debugger sees it
+    /// `'active` nor `'last_active`, and no plugin or debugger sees it (coverage runs keep it: it changes no count, #707)
     /// (`docs/design/performance.md` R2b).
     pub skip_unchanged: bool,
     /// Leave a clocked process whose activation depends on nothing but signals suspended at an

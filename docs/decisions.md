@@ -2488,9 +2488,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   of the #692 numbers now ends in an interpreter internal error under `--cov` on main (#705), so
   `osvvm_axi4_random` stands for OSVVM here.
 - **Edge triggers stay on under coverage (#707, user, 2026-10-24):** `Config::edge_triggers` is
-  off only with `--dap` and `--vhpi` (`observed_free` still keeps `skip_unchanged`, the idle
-  skip and the lean wide-signal events off with `--cov`: coverage observes activity, see
-  "Assignment skipping and observers"). A clocked process of any trigger shape (`rising_edge`,
+  off only with `--dap` and `--vhpi` (coverage and the skipping: see "Coverage keeps the
+  count-neutral skips"). A clocked process of any trigger shape (`rising_edge`,
   `falling_edge`, `x'event and x = '1'`, `not x'stable` which the analyser already reads as
   `x'event`, `wait until` on an edge or a level, with or without an asynchronous reset) is
   resumed at its edge, so the statement of a pure edge test counts one run at initialisation and
@@ -2524,12 +2523,37 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   writing the database (a `Key` and an `Entry` with three strings for each scalar and
   direction: about 1.7 G instructions for the 134 thousand scalars of neorv32, a 49 MB file),
   of which the bulk insert in `Toggles::add_to` and the unformatted `Database::write` of toggle
-  lines took about 130 M. The rest of what neorv32 and `sc5_fifo_repack` keep over a plain run
-  is the skipping that coverage switches off (`skip_unchanged`, hence the idle skip). Counts are byte-identical to the old observer (`cmp` of databases of
-  `rtl_ff`, `rtl_lfsr` and neorv32). Not done, for the user to decide: with toggle coverage
-  alone `skip_unchanged` and the idle skip could stay on (nothing counts activations), which
-  takes neorv32 30 us from 12.2 G to 8.8 G; it contradicts the 2026-10-24 rule that coverage
-  observes activity, so it was not made.
+  lines took about 130 M. The rest of what neorv32 and `sc5_fifo_repack` kept over a plain run
+  was the skipping that coverage switched off (`skip_unchanged`, hence the idle skip): see
+  "Coverage keeps the count-neutral skips". Counts are byte-identical to the old observer
+  (`cmp` of databases of `rtl_ff`, `rtl_lfsr` and neorv32).
+- **Coverage keeps the count-neutral skips (#707, user, 2026-10-24; replaces the earlier rule
+  "coverage observes activity").** Under `--cov`: (1) `Config::skip_unchanged` stays on (the
+  assignment of the value a driver holds queues no transaction) for every kind, because it
+  changes no count: the delta still happens, the process still runs, and no event exists
+  either way. (2) The idle skip (`Config::idle_skip`) stays on for toggle coverage alone and
+  is off when statement, branch, condition or expression counters are on
+  (`LowerOptions` counters; same test as `counters_off` in `build.rs`): it leaves activations
+  out, and the counters would miss them. (3) `observed_free` is now `--dap` and `--vhpi` only
+  for the skip (`others_free` in `elab.rs`); the lean wide-signal events stay off with
+  `--cov` (unchanged). Proof for (1): `cmp` of the databases (and the identical output) of
+  the old and new binary over `tests/cli/cov_{run,toggle,edge,copies,fec,replay}.vhd`,
+  `rtl_ff` (CYC=500), `rtl_lfsr` (CYC=1000), neorv32 single-core minimal 30 us,
+  `sc5_fifo_repack`, `osvvm_axi4_random` and `uvvm_sb_slv`, for the kinds `toggle`,
+  `statement,branch,toggle` and `statement,branch,condition,expression,toggle`, at 1 and 4
+  threads, on `--tier` interp, llvm and auto: 216 pairs of runs, all byte-identical.
+  Measured (interpreter, user-mode instructions in millions, 1 thread, before / after; plain
+  run in brackets): default kinds: `rtl_ff` 3393 / 3385 (3077), `rtl_lfsr` 1790 / 1757 (1310),
+  neorv32 30 us 14141 / 13644 (4855), `sc5_fifo_repack` 51891 / 50896 (41537),
+  `osvvm_axi4_random` 8646 / 8654 (7274), `uvvm_sb_slv` 19396 / 19397 (12640). Toggle alone:
+  `rtl_ff` 3103 / 3150, `rtl_lfsr` 1676 / 1651, neorv32 10046 / 6725, `sc5_fifo_repack`
+  46067 / 43186, `osvvm_axi4_random` 7355 / 7362, `uvvm_sb_slv` 12632 / 12634. Statement and
+  branch only: `rtl_ff` 3302 / 3294, `rtl_lfsr` 1454 / 1422, neorv32 12036 / 11541,
+  `sc5_fifo_repack` 50441 / 49448. Only the designs whose processes drive many unchanged
+  values gain; the idle skip needs toggle coverage alone and only fires where the process is
+  pure. Pinned by `skipping_follows_observers` (`skip_signals` is 3 under every cov kind set,
+  0 for a plugin, `'active`, `'last_active`) and `idle_skip_changes_nothing` (0 idle skips with
+  counters, the plain run's number with toggle alone, same output).
 
 ## GUI (M10, #384, #388, user, 2026-10-19)
 
@@ -2898,9 +2922,10 @@ user's performance priority:
   conversions and resolution functions). Static facts only, so the choice does not depend on
   `--threads`.
 - Off unless `yavs_elab::reads_activity` finds no `'active` or `'last_active` anywhere in the
-  analysed units (they are the only activity readers the kernel cannot see), and with `--cov`,
-  `--dap`, `--vhpi`. (The edge triggers are off with `--dap` and `--vhpi` only: they stay on with
-  `--cov`, #707.) A new observer of activity must switch it off.
+  analysed units (they are the only activity readers the kernel cannot see), and with `--dap`,
+  `--vhpi`. (The edge triggers are off with `--dap` and `--vhpi` only; `--cov` keeps both the
+  edge triggers and this skip, and the idle skip when it counts only toggles, #707.) A new
+  observer of activity must switch it off.
 
 ## Remembered results of user resolution functions (yavs-elab, #420, 2026-10-20)
 
@@ -4586,13 +4611,13 @@ the next round does not repeat it.
 - **Assignment skipping and observers (user decision of 2026-10-24: drop an assignment of the value a driver holds only when nobody
   observes the signal's activity).** The mechanism already exists and has been on by default since #420 ("Skipped unchanged
   assignments"): `Signal::skip_ok` (decided by `Builder::mark_skippable` from the signal's guard, resolution function, composite
-  group, implicit signals and port conversions) and `Config::skip_unchanged`, which `yavs` sets only when no coverage, debugger or
-  VHPI plugin is attached and no `'active` or `'last_active` exists in the analysed units; the direct paths (`commit_code`,
+  group, implicit signals and port conversions) and `Config::skip_unchanged`, which `yavs` sets only when no debugger or
+  VHPI plugin is attached (coverage keeps it since 2026-10-24, #707, see "Coverage keeps the count-neutral skips") and no `'active` or `'last_active` exists in the analysed units; the direct paths (`commit_code`,
   `assign_*_fast` phantoms) are those that drop. `grlib_leon3mp` runs with it on (`idle_skips` > 0). This round only adds the
   evidence: the counter `skip_signals` (signals that allow it, printed by `YAVS_COUNTERS=1`) and tests that show it goes to 0 with
-  `--cov`, a VHPI plugin (`vhpi_run.rs`) and `'active` or `'last_active`, and drops by the prefix and the implicit signal for
-  `'transaction` and `'quiet` (`perf.rs` `skipping_follows_observers`). A debugger session (`--dap`) shares the `observed_free`
-  expression with coverage and VHPI but cannot be tested this way: the DAP path ends without printing counters.
+  a VHPI plugin (`vhpi_run.rs`) and `'active` or `'last_active`, and drops by the prefix and the implicit signal for
+  `'transaction` and `'quiet` (`perf.rs` `skipping_follows_observers`). A debugger session (`--dap`) shares the `others_free`
+  expression with VHPI but cannot be tested this way: the DAP path ends without printing counters.
   **Open: waves.** A waveform file (`--wave`) is not in `observed_free` and keeps the skipping and the edge triggers: it records
   value changes, which an equal-value drop does not change (the FST of the design is identical). Making it an observer of
   activity, as the user's list of 2026-10-24 reads, is one condition (`a.wave.is_none()` in `skip_unchanged`) and costs wave runs

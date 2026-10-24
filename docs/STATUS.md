@@ -4054,6 +4054,16 @@ core 13, minimum of 5 alternating runs: 83.8 G to 77.1 G instructions (0.918), 3
 ran at load 19 to 32, so wall time of the others is noise); all 42 tests, interpreter: instructions geometric mean 0.98, only the
 wide-vector category moves. Skipping a plane entry that holds its value already was built and measured: it costs as much as it saves.
 
+### Coverage keeps the count-neutral skips (#707, 2026-10-24)
+
+(`docs/decisions.md` "Coverage keeps the count-neutral skips".) Under `--cov` the skipping of assignments of the held value
+(`skip_unchanged`) stays on for every kind, and the idle skip stays on for toggle coverage alone (off when statement, branch,
+condition or expression counters are on). The databases are byte-identical to the runs with both off (`tests/cli/cov_*.vhd`,
+`rtl_ff`, `rtl_lfsr`, neorv32 30 us, `sc5_fifo_repack`, `osvvm_axi4_random`, `uvvm_sb_slv`; 1 and 4 threads; interp, llvm, auto).
+Instructions (interpreter, millions, before / after): neorv32 30 us toggle alone 10046 / 6725, default kinds 14141 / 13644;
+`sc5_fifo_repack` default kinds 51891 / 50896; the small designs move by under 2%. This reverses the rule of the same day that
+coverage observes activity.
+
 ### Kernel round 19: single-bit drives, Signal layout, record leaves, skipping and observers (#676, #519, #677, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 19".) No speed-up landed: the three ranked ideas were built and measured and none lowered the
@@ -4062,7 +4072,7 @@ vector entry (`hdlm_lfsr` -0.9% instructions, `sc5_fifo_repack` +1.9%), the same
 entries (-0.25% / +0.15%), `Signal` fields ordered hot first with `repr(C)` (L1 data misses -3%, instructions +0.1 to 0.3%, cycles
 within the noise of a loaded host). The kernel is ~5% of the cycles of a `grlib_leon3mp` window; the 680 instructions a record
 leaf are interpreter work (gather and scatter instructions, #677). Added: the counter `skip_signals` and tests that the skipping
-of assignments of the held value follows the observers (`--cov`, a VHPI plugin, `'active`, `'last_active`, `'transaction`,
+of assignments of the held value follows the observers (a VHPI plugin, `'active`, `'last_active`, `'transaction`,
 `'quiet`; a waveform file does not observe activity and keeps it: open question for the user).
 
 ### Kernel round 18: lean event bookkeeping of wide signals, exact-instruction tools (#519, #440, 2026-10-24)

@@ -79,6 +79,29 @@ pub struct InstData {
     pub cov_base: u32,
 }
 
+impl AsRef<[u8]> for InstData {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+/// The package data a process copy is made with (`Program::copy_of_pkgs`).
+impl yavs_ir::PkgSource for Runtime {
+    fn package(&self, p: u32) -> Option<yavs_ir::PkgData> {
+        let d = self.pkgs.get(p as usize)?;
+        let digest = *self.pkg_digest.get(p as usize)?.get_or_init(|| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            d.data.hash(&mut h);
+            h.finish()
+        });
+        Some(yavs_ir::PkgData {
+            bytes: d.clone(),
+            digest,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstSig {
     pub signal: SignalId,
@@ -900,6 +923,8 @@ pub struct Runtime {
     /// Where unbound foreign symbols were looked for, for the error at their call.
     pub(crate) searched: String,
     pub(crate) pkgs: Vec<Arc<InstData>>,
+    /// A digest of each package's data, made when a copy of a process first asks (`PkgSource`).
+    pkg_digest: Vec<std::sync::OnceLock<u64>>,
     pub(crate) cov: Vec<AtomicU64>,
     /// The rows each state of a condition covers (`CovCond::hits`), for the conditions with few
     /// inputs, filled as states occur (`u64::MAX`: not yet).
@@ -1197,6 +1222,9 @@ impl Runtime {
             foreign,
             models,
             searched: b.searched,
+            pkg_digest: (0..b.packages.len())
+                .map(|_| std::sync::OnceLock::new())
+                .collect(),
             pkgs: b.packages,
             cov: (0..n).map(|_| AtomicU64::new(0)).collect(),
             cov_memo: prog

@@ -7557,3 +7557,25 @@ What the memo does not reach: calls of functions the tier compiled for native fr
 unchanged there), records, access types and out parameters, and elaboration-time calls. Idea taken from the reference simulator: folding
 a pure call with constant arguments once (here a runtime memo, because the PoC registers' arguments are values that repeat, not constants);
 ours differs in keeping nothing across runs and verifying every hit by the argument bytes.
+
+## Package constants in specialised copies (yavs-ir `copies.rs`, `opt/decl.rs`, #708, 2026-10-24)
+
+The declarative part of a process copy is run on the abstract machine of #678; a load from `AddrSpace::Pkg` (a package constant, written during
+initialisation only) now gives its value, taken from the package data the runtime hands `copy_of_pkgs`, and a digest of the data of the packages
+the part names is in the copy's key (decisions.md "Package constants in specialised copies").
+
+GRLIB LEON3 (`grlib_leon3mp`, `YAVS_SPEC_AFTER=2 YAVS_SPEC_CAP=0`, 2 us, the copies of the `comb` processes that branch on a package constant;
+IR instructions of the copy and `LayoutOf` / `Field` in it, main against main plus this change):
+
+| copy | before | after |
+|---|---:|---:|
+| `comb` 1214 | 3526, 20 / 19 | 3450, 0 / 0 |
+| `comb` 1251 | 3645, 47 / 45 | 3432, 0 / 0 |
+| `comb` 1252 | 3165, 48 / 41 | 3060, 42 / 38 |
+| `comb` 1253 | 4459, 200 / 156 | 3871, 9 / 20 |
+| `comb` 1259 | 2947, 47 / 42 | 2597, 1 / 0 |
+
+Instructions of the whole run (interp, memo of #701 off in both columns, so only this change and the call arm of #701 differ): 100 us 137.47 G
+to 137.79 G (+0.2 %), 1060.5 us 673.55 G to 670.57 G (-0.4 %): the processes it helps are a small part of the run, the memo of #701 is the
+larger change there. `comb` 1252 keeps 42 `LayoutOf` (its cause was not looked into); the unit case is
+`a_copy_knows_what_a_package_constant_made` (`crates/yavs-ir/tests/copies.rs`).

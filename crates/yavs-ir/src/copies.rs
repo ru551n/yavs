@@ -13,26 +13,54 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::{AddrSpace, Func, FuncFlags, FuncId, FuncKind, Inst, Program};
 
+/// The data of a package once it is initialised: constants and the objects it made (addressed by
+/// `AddrSpace::Pkg`), and a digest of it.
+#[derive(Clone)]
+pub struct PkgData {
+    pub bytes: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    pub digest: u64,
+}
+
+/// Where a copy finds the data of the packages its process reads (`Program::copy_of_pkgs`).
+pub trait PkgSource {
+    /// The data of package `p`, or `None` when it is not known (a copy does not fold its reads).
+    fn package(&self, p: u32) -> Option<PkgData>;
+}
+
+struct NoPkgs;
+
+impl PkgSource for NoPkgs {
+    fn package(&self, _: u32) -> Option<PkgData> {
+        None
+    }
+}
+
 /// One copy: the process it is a copy of and the data it was made for (the parameters of `for`
 /// generates, the `holes`, zeroed: they are not folded). Its function is the reserved slot of
-/// the same index, whose `opt` holds the optimised body once made.
+/// the same index, whose `opt` holds the optimised body once made. `pkgs` is the data of the
+/// packages the process's declarative part reads when the copy was asked for, and `digest`
+/// names them (it is part of the key: a package made another way is another copy).
 pub(crate) struct Copy {
     pub base: FuncId,
     pub data: Box<[u8]>,
     pub holes: Box<[(u32, u32)]>,
+    pub pkgs: Box<[(u32, PkgData)]>,
+    pub digest: u64,
 }
 
 /// An optimised copy as stored between runs (the stage cache, kind `spec`): the process, the
-/// data it is for (masked, as `Program::copy_of` keys it) and the serialised function.
+/// data it is for (masked, as `Program::copy_of` keys it), the digest of the package data it was
+/// made with and the serialised function.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct CopyBlob {
     pub base: FuncId,
     #[serde(with = "crate::bytes")]
     pub data: Vec<u8>,
+    pub digest: u64,
     pub bytes: yavs_diag::Slice,
 }
 
@@ -62,6 +90,8 @@ pub struct Copies {
     by_hash: Mutex<HashMap<u64, Vec<FuncId>>>,
     /// Which processes can have copies (`Program::specialisable`).
     suitable: Mutex<HashMap<FuncId, bool>>,
+    /// The packages the declarative part of each process reads (`Program::pkg_deps`).
+    deps: Mutex<HashMap<FuncId, Arc<[u32]>>>,
     shared_ir: AtomicU64,
     copy_ir: AtomicU64,
     capped: AtomicU64,
@@ -129,10 +159,11 @@ pub fn cap_percent() -> u64 {
     })
 }
 
-fn key_hash(base: FuncId, data: &[u8]) -> u64 {
+fn key_hash(base: FuncId, data: &[u8], digest: u64) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     base.hash(&mut h);
     data.hash(&mut h);
+    digest.hash(&mut h);
     h.finish()
 }
 
@@ -168,8 +199,14 @@ impl Copies {
         self.copy_ir.fetch_add(ir as u64, Ordering::Relaxed);
     }
 
-    /// The stored function of the copy (`base`, masked `data`) if an earlier run made it.
-    pub(crate) fn take_stored(&self, base: FuncId, data: &[u8]) -> Option<yavs_diag::Slice> {
+    /// The stored function of the copy (`base`, masked `data`, package `digest`) if an earlier
+    /// run made it.
+    pub(crate) fn take_stored(
+        &self,
+        base: FuncId,
+        data: &[u8],
+        digest: u64,
+    ) -> Option<yavs_diag::Slice> {
         let st = self.stored.get_or_init(|| {
             let blobs = self
                 .loader
@@ -180,7 +217,7 @@ impl Copies {
             let mut by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
             for (i, b) in blobs.iter().enumerate() {
                 by_hash
-                    .entry(key_hash(b.base, &b.data))
+                    .entry(key_hash(b.base, &b.data, b.digest))
                     .or_default()
                     .push(i);
             }
@@ -192,10 +229,13 @@ impl Copies {
         let mut st = st.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let i = st
             .by_hash
-            .get(&key_hash(base, data))?
+            .get(&key_hash(base, data, digest))?
             .iter()
             .copied()
-            .find(|&i| st.blobs[i].0.base == base && st.blobs[i].0.data == data)?;
+            .find(|&i| {
+                let b = &st.blobs[i].0;
+                b.base == base && b.data == data && b.digest == digest
+            })?;
         st.blobs[i].1 = true;
         self.loaded.fetch_add(1, Ordering::Relaxed);
         Some(st.blobs[i].0.bytes.clone())
@@ -262,19 +302,82 @@ impl Program {
         data: &[u8],
         holes: &[(u32, u32)],
     ) -> Result<FuncId, NoCopy> {
+        self.copy_of_pkgs(base, data, holes, &NoPkgs)
+    }
+
+    /// The packages (`AddrSpace::Pkg` numbers) whose data the declarative part of process
+    /// `base` reads.
+    pub fn pkg_deps(&self, base: FuncId) -> Arc<[u32]> {
+        let mut m = self
+            .copies
+            .deps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        m.entry(base)
+            .or_insert_with(|| {
+                let Some(raw) = self.funcs.get(base).map(Func::full) else {
+                    return Arc::new([]);
+                };
+                let end = raw
+                    .body
+                    .and_then(|b| raw.blocks.get(b))
+                    .map_or(0, |b| b.start as usize);
+                let mut v: Vec<u32> = raw.code[..end.min(raw.code.len())]
+                    .iter()
+                    .filter_map(|i| match *i {
+                        Inst::AddrOf {
+                            space: AddrSpace::Pkg(p),
+                            ..
+                        } => Some(p),
+                        _ => None,
+                    })
+                    .collect();
+                v.sort_unstable();
+                v.dedup();
+                v.into()
+            })
+            .clone()
+    }
+
+    /// [`Program::copy_of`] with the data of the packages the process's declarative part
+    /// reads (`pkg_deps`) taken from `pkgs`: the copy folds what that part makes of their
+    /// constants, and a digest of them is part of its key, so a run whose packages came out
+    /// otherwise (an initialiser that read the environment) makes, and reads from the stage
+    /// cache, another copy. Call it once package initialisation is over.
+    pub fn copy_of_pkgs(
+        &self,
+        base: FuncId,
+        data: &[u8],
+        holes: &[(u32, u32)],
+        pkgs: &dyn PkgSource,
+    ) -> Result<FuncId, NoCopy> {
         if !self.specialisable(base) {
             return Err(NoCopy::Unsuitable);
         }
         let c = &self.copies;
         let data = masked(data, holes);
-        let h = key_hash(base, &data);
+        let pkgs: Box<[(u32, PkgData)]> = self
+            .pkg_deps(base)
+            .iter()
+            .filter_map(|&p| Some((p, pkgs.package(p)?)))
+            .collect();
+        let digest = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for (p, d) in &*pkgs {
+                (p, d.digest).hash(&mut h);
+            }
+            h.finish()
+        };
+        let h = key_hash(base, &data, digest);
         let mut by = c
             .by_hash
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(&id) = by.get(&h).and_then(|v| {
-            v.iter()
-                .find(|&&id| c.get(id).is_some_and(|x| x.base == base && x.data == data))
+            v.iter().find(|&&id| {
+                c.get(id)
+                    .is_some_and(|x| x.base == base && x.data == data && x.digest == digest)
+            })
         }) {
             return Ok(id);
         }
@@ -298,6 +401,8 @@ impl Program {
             base,
             data,
             holes: holes.into(),
+            pkgs,
+            digest,
         });
         assert!(
             set.is_ok(),
@@ -317,7 +422,9 @@ impl Program {
     /// process and masked instance data (`None` for any other function). Copy ids depend on
     /// which process switched first, so compiled code is named and keyed by this.
     pub fn copy_tag(&self, f: FuncId) -> Option<u64> {
-        self.copies.get(f).map(|c| key_hash(c.base, &c.data))
+        self.copies
+            .get(f)
+            .map(|c| key_hash(c.base, &c.data, c.digest))
     }
 
     /// The function's lowered code and header: that of the process for a copy.
@@ -359,18 +466,21 @@ impl Program {
                 Some(CopyBlob {
                     base: e.base,
                     data: e.data.to_vec(),
+                    digest: e.digest,
                     bytes: bytes.into(),
                 })
             })
             .collect();
         if let Some(st) = c.stored.get() {
             let st = st.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let have: std::collections::HashSet<(FuncId, Vec<u8>)> =
-                out.iter().map(|b| (b.base, b.data.clone())).collect();
+            let have: std::collections::HashSet<(FuncId, Vec<u8>, u64)> = out
+                .iter()
+                .map(|b| (b.base, b.data.clone(), b.digest))
+                .collect();
             out.extend(
                 st.blobs
                     .iter()
-                    .filter(|(b, _)| !have.contains(&(b.base, b.data.clone())))
+                    .filter(|(b, _)| !have.contains(&(b.base, b.data.clone(), b.digest)))
                     .map(|(b, _)| b.clone()),
             );
         }
@@ -413,12 +523,17 @@ impl Program {
     /// The optimised body of copy `c`: an earlier run's if the stage cache had it, else made now.
     pub(crate) fn optimize_copy_of(&self, c: &Copy) -> Option<Box<Func>> {
         let stored = crate::opt::copies_are_portable()
-            .then(|| self.copies.take_stored(c.base, &c.data))
+            .then(|| self.copies.take_stored(c.base, &c.data, c.digest))
             .flatten()
             .and_then(|b| postcard::from_bytes::<Func>(b.get()).ok().map(Box::new));
         let o = stored.or_else(|| {
             self.copies.fresh.fetch_add(1, Ordering::Relaxed);
-            crate::opt::optimize_copy(self, c.base, &c.data, &c.holes)
+            let pkgs: Vec<(u32, &[u8])> = c
+                .pkgs
+                .iter()
+                .map(|(p, d)| (*p, (*d.bytes).as_ref()))
+                .collect();
+            crate::opt::optimize_copy(self, c.base, &c.data, &c.holes, &pkgs)
         });
         // A pass that left the process alone: the copy is the lowered code.
         let o = o.or_else(|| self.funcs.get(c.base).map(|f| Box::new(f.full().clone())))?;

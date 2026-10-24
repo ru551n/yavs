@@ -1382,7 +1382,7 @@ impl Machine {
             self.spec_at = u32::try_from(self.execs.saturating_mul(2)).unwrap_or(u32::MAX);
             return;
         }
-        let Ok(id) = prog.copy_of(base, &self.inst.data, &holes) else {
+        let Ok(id) = prog.copy_of_pkgs(base, &self.inst.data, &holes, &*rt) else {
             return;
         };
         let (Some(old), Some(new), Some(raw)) = (prog.func(base), prog.func(id), prog.raw(base))

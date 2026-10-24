@@ -158,7 +158,9 @@ impl Ev<'_, '_> {
         match a {
             Av::B(b, off) => self.blks.get(b as usize).map_or(unk, |k| k.m.get(off, n)),
             Av::A(AddrSpace::Frame, off) => self.fb.get(off, n),
-            Av::A(sp @ (AddrSpace::Inst | AddrSpace::Const(_)), off) if n as i64 <= MAX_BYTES => {
+            Av::A(sp @ (AddrSpace::Inst | AddrSpace::Const(_) | AddrSpace::Pkg(_)), off)
+                if n as i64 <= MAX_BYTES =>
+            {
                 let mut buf = vec![0u8; n];
                 match u32::try_from(off) {
                     Ok(off) if self.o.const_read(Opn::A(sp, off), &mut buf) => {

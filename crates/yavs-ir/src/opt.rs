@@ -317,7 +317,9 @@ fn optimize_func_with(
 
 /// The instance data a copy is made for and the byte ranges of it (offset, length) that are not
 /// folded.
-type InstView<'a> = (&'a [u8], &'a [(u32, u32)]);
+/// The instance data a copy is for, its `for` generate parameters (not folded) and the data of the
+/// packages its declarative part reads.
+type InstView<'a> = (&'a [u8], &'a [(u32, u32)], &'a [(u32, &'a [u8])]);
 
 /// The copy of process `id` for the instance data `data` (`holes` are not folded): the
 /// function optimised as [`optimize_func`] does, with reads of the data folded.
@@ -326,8 +328,9 @@ pub(crate) fn optimize_copy(
     id: FuncId,
     data: &[u8],
     holes: &[(u32, u32)],
+    pkgs: &[(u32, &[u8])],
 ) -> Option<Box<crate::Func>> {
-    optimize_func_with(prog, id, Some((data, holes)))
+    optimize_func_with(prog, id, Some((data, holes, pkgs)))
 }
 
 /// Is a debugger keeping the variables of subprograms in their slots?
@@ -2835,7 +2838,19 @@ impl<'a> Opt<'a> {
             }
             return true;
         }
-        if let (Opn::A(AddrSpace::Inst, o), Some((data, holes))) = (a, self.inst) {
+        if let (Opn::A(AddrSpace::Pkg(p), o), Some((_, _, pkgs))) = (a, self.inst) {
+            // Package data are written during initialisation only.
+            let (o, n) = (o as usize, out.len());
+            return pkgs
+                .iter()
+                .find(|&&(q, _)| q == p)
+                .and_then(|(_, d)| d.get(o..o.checked_add(n)?))
+                .is_some_and(|b| {
+                    out.copy_from_slice(b);
+                    true
+                });
+        }
+        if let (Opn::A(AddrSpace::Inst, o), Some((data, holes, _))) = (a, self.inst) {
             let (o, n) = (o as usize, out.len());
             if holes
                 .iter()

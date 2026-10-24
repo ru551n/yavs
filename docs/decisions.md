@@ -7653,9 +7653,9 @@ builds, `perf stat` on core 13, minimum of 5 alternating runs; instruction count
   check passed. Reads of the bytes of a `for` generate's parameter are unknown, as before. The one fact taken on the language's word is
   that the descriptor of a heap object (the constraint of an object) is never written after the object is made, and that of an array
   variable in the frame (`in_descriptor`) likewise; a pointer to either may go anywhere.
-- **Not done**: a branch on a package constant (`AddrSpace::Pkg`) stops the machine (6 of the 16 big processes of the GRLIB LEON3 system
-  have one); a value read from a package is not an instance fact. Calls are unknown, so a variable initialised by a function call has
-  no fact (its descriptor does when the bounds are known).
+- **Not done**: a branch on a package constant (`AddrSpace::Pkg`) stopped the machine (6 of the 16 big processes of the GRLIB LEON3 system
+  have one): done since, see "Package constants in specialised copies" (#708). Calls are unknown, so a variable initialised by a function
+  call has no fact (its descriptor does when the bounds are known).
 - **Measured**: `docs/STATUS.md` "Facts the declarative part leaves in a process copy". `spec_record_var` (`crates/yavs/tests/perf.rs`) is
   the work-counter case (239 313 ops with the shared code, 151 530 with copies), `crates/yavs-ir/tests/copies.rs` the unit cases.
 
@@ -7871,3 +7871,19 @@ The reference simulator folds a pure call with constant arguments once, before t
 - **Measured** (bench builds, instructions of `--tier=interp`, `perf stat`): numbers in `docs/STATUS.md` "Memo of pure calls".
   Work-counter case `pure_memo` (`crates/yavs/tests/perf.rs`), correctness case `crates/yavs/tests/pmemo.rs` (bit-identical runs with
   and without the memo at 1 and 4 threads and with early specialised copies, a function that reports on every call).
+
+## Package constants in specialised copies (yavs-ir `copies.rs`, `opt/decl.rs`, #708, 2026-10-24)
+
+Decision (user, 2026-10-24): **package constant values may become facts of process copies.** The six large processes of the GRLIB LEON3 system
+that branch on a package constant (`AddrSpace::Pkg`) in their declarative part had no frame facts because the abstract machine of #678 stopped
+at the unknown load. Package data are written during package initialisation only (`Machine::wr` refuses a store later), and a copy is made
+while the design runs, so the machine now reads them (`Opt::const_read` of `AddrSpace::Pkg`, only for the packages the process's declarative
+part names: `Program::pkg_deps`, the `AddrOf Pkg` of the blocks before the body).
+- **The key.** The packages' values are not instance data, and an initialiser may read the environment, so the same design can make other
+  values in another run. The data of the packages a copy depends on come from a `PkgSource` (`copy_of_pkgs`; the runtime's package data), a
+  digest of each (made once per package) is part of the copy's key, of `copy_tag` (compiled code of a copy is named and cached by it) and of
+  the stored `CopyBlob` of the stage cache (`spec`): a changed package makes, and reads, another copy. `Copy` keeps the data it was made with
+  for the lazy optimisation; `copy_of` is `copy_of_pkgs` without package data (no package fact, as before).
+- **Folds also in the body** of a copy for a read of the same packages' constants, into integer registers only (the rule for instance data).
+- **Measured**: `docs/STATUS.md` "Package constants in specialised copies"; unit case `a_copy_knows_what_a_package_constant_made`
+  (`crates/yavs-ir/tests/copies.rs`).

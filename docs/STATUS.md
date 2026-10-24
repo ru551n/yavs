@@ -8000,3 +8000,26 @@ Open (issues): processes with nested subprograms are never specialised, 25 perce
 of the S-record start-up (#722); vector drives of a wake that does nothing (#723); the cold activation path of serial processes (#724). Tried and not landed:
 the short-circuit clean-up of `opt/cfg.rs` on processes (decisions.md).
 
+## sc5_fifo_repack: where the time goes, and `uniform` in compiled code (#519, 2026-10-25)
+
+Profile of the satcat5 stream repacker (`fifo_repack_tb`: 5 instances of 1, 2, 3, 5 and 8 byte lanes, 45 clocked processes, 500 us at 10 ns: 50 000 clock
+periods, 223 980 delta cycles, 2.54 M process runs, 21.3 M element drives, 12.6 M events), bench build, core 12, warm world, run phase. The reference simulator
+runs it in 0.87 s and 12.6 G instructions: 17.4 us and 252 k instructions a clock period. Before this round: yavs `--tier=auto` 36.9 G (2.2 s, 738 k a clock), `--tier=llvm`
+27.9 G (1.49 s, 558 k a clock), `--tier=interp` 40.2 G (2.38 s).
+
+Share of the cycles by layer, `--tier=llvm` (`perf record` cycles, self time): generated code 40 percent (`p_col` 16.6, `p_sreg` 6.4, `rand_next` 6.4, `p_in` 3.4, `p_input` 3.3);
+the drive and commit path 27 (`assign_planes_fast` 4.9, `assign_codes_now` 4.1, `finish_direct` 3.7, `commit_planes_run` 3.0, `drive_bits` 2.7, `commit_codes` 1.9); the
+random numbers of the testbench 11 (8.3 M calls of `math_real.uniform` through `yavs_rt_native`, `native_frame` and the native); process entry 6; kernel cycle and batch 3.5. `--tier=interp` (`op-census`, 457 M ops): `BinRangeK` 8.6 percent of the ops, `Stmt` 8.5, `CmpBr` 8.2, `AffP` 8.0 (12 ns an op, 8 percent of the time of the ops),
+`SigVal` 5.8, `SigRead1` 5.7 (15 ns), `LoadUp` 4.3; by time `WaitSuspend` 8.6 percent (216 ns, kernel included). By process, default `--tier=auto`: `p_col` of the five instances 35 percent of the run,
+`p_in` 17 (interpreted, 713 IR instructions), `rand_next` 15 (compiled), `p_sreg` 10, `p_input` 6; `p_col`, `p_in` stay interpreted (above `RTL_MAX`, payback not reachable in a 2 s run: #673).
+
+Change 1 (`math_real.uniform` computed in the compiled code, `Mem::find` finds the slots of the enclosing frames; `docs/decisions.md` "Uniform in compiled code ..."), base c7f56056,
+medians of 3 (realbench `--compare`, run phase, core 12, per-binary worlds), wall / instructions:
+
+| design | `--tier=llvm` | `--tier=auto` (warm) |
+|---|---:|---:|
+| `sc5_fifo_repack` | 1.49 to 1.35 s (0.91), 27.95 to 24.80 G (0.89) | 2.46 to 2.15 s (0.87), 39.8 to 36.8 G (0.92) |
+| nine other designs (`poc_arith_addw`, `uvvm_sb_slv`, `uvvm_util_rand`, `osvvm_axi4_random`, `hdlm_lfsr`, `fletcher_bufferreader`, `poc_cache_cpu`, `hdlm_axi_fifo`, `sc5_timestamp`) | wall 0.99 to 1.02, instructions 0.99 to 1.00 | wall 0.98 to 1.03, instructions 1.00 to 1.01 |
+
+Interleaved pairs on one world (7 runs, user cycles): `--tier=llvm` 7.51 to 6.72 G (-10.5 percent), instructions 28.4 to 25.3 G (-11 percent); default `--tier=auto` changes
+little because only `rand_next` is compiled there and the plain policy's compile outcome moves the instructions by 10 percent between worlds (#673).

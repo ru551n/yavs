@@ -674,3 +674,80 @@ fn record_layouts_kept_in_the_frame_match_the_interpreter() {
         assert_eq!(go(tier), want, "{tier}");
     }
 }
+
+/// `uniform` computed in place in compiled code (`Gen::uniform_fast`): the seeds and the real in
+/// process variables, passed by reference to a nested procedure (frame mode) and to an
+/// architecture procedure (native frame), with the two out-of-range seeds the native reports.
+const UNIFORM: &str = r#"library ieee;
+use ieee.math_real.all;
+entity uni is end;
+architecture a of uni is
+  procedure draw(variable a, b : inout positive; variable x : inout real) is
+  begin
+    uniform(a, b, x);
+  end procedure;
+begin
+  process
+    variable s1 : positive := 123456;
+    variable s2 : positive := 987654;
+    variable x  : real := 0.0;
+    variable acc : real := 0.0;
+    procedure local is
+    begin
+      uniform(s1, s2, x);
+      acc := acc + x;
+    end procedure;
+  begin
+    for i in 1 to 500 loop
+      local;
+      draw(s1, s2, x);
+      acc := acc + x;
+    end loop;
+    report "acc=" & real'image(acc) & " s1=" & integer'image(s1) & " s2=" & integer'image(s2);
+    s1 := positive'high;
+    local;
+    report "bad seed1 x=" & real'image(x) & " s1=" & integer'image(s1);
+    s1 := 5;
+    s2 := positive'high;
+    draw(s1, s2, x);
+    report "bad seed2 x=" & real'image(x) & " s2=" & integer'image(s2);
+    wait;
+  end process;
+end;
+"#;
+
+#[test]
+fn uniform_in_compiled_code_matches_the_interpreter() {
+    let dir = tempdir("compiled_uniform");
+    std::fs::write(dir.join("uni.vhd"), UNIFORM).expect("write");
+    let a = yavs(
+        &dir,
+        &["analyze", "--std=2008", "--work=work:work", "uni.vhd"],
+    );
+    assert!(a.status.success(), "{a:?}");
+    let go = |tier: &str| {
+        // `auto` compiles at once.
+        let tier = format!("--tier={tier}");
+        let mut args = vec!["run", "--work=work:work", &tier];
+        if tier == "--tier=auto" {
+            args.push("--tier-heat=1,0,0");
+        }
+        args.push("uni");
+        let o = yavs(&dir, &args);
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        )
+    };
+    let want = go("interp");
+    for line in [
+        "acc=",
+        "SEED1 > 2147483562 in UNIFORM",
+        "SEED2 > 2147483398 in UNIFORM",
+    ] {
+        assert!(want.1.contains(line), "{want:?}");
+    }
+    for tier in ["llvm", "auto"] {
+        assert_eq!(go(tier), want, "{tier}");
+    }
+}

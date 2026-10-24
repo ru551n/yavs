@@ -8404,3 +8404,24 @@ compiling it is no win today (#679), so these are costs of the interpreter and t
   the pure-call memo costs 10 percent of the S-record start-up (#722); the vector drives of a wake that does nothing (#723); the cold
   activation path of serial processes (#724).
 
+## Uniform in compiled code, and `Mem::find` knows the enclosing frames (yavs-llvm `lower.rs`, `rt.rs`, #519, 2026-10-25)
+
+Profile of `sc5_fifo_repack` first (`--tier=llvm`, bench build, core 12; the design has 45 clocked processes, 50 000 clock periods, 2.54 M process
+runs, 21.3 M element drives): generated code 40 percent of the cycles, the drive and commit path 27, process entry 6, and the random numbers of the
+testbench (`rand_next`, 8.3 M calls of `math_real.uniform`) 11: `yavs_rt_native`, `native_frame`, the native and five `Machine::load`/`store` about 19 ns a call.
+
+- **Finding:** a compiled call of `uniform` went through `yavs_rt_native` into `TierHost::native_frame` (the same call as any `direct_native`), which
+  decodes three addresses again in the interpreter's `load`/`store`: 10.6 percent of the run.
+- **Decision:** `Gen::uniform_fast` computes it in the code: the three addresses through `host` (the seeds are variables of the enclosing process, passed by
+  reference to a nested procedure), the seeds compared against their limits, the generator's step in integers and one `fmul` (the arithmetic of
+  `yavs_interp::ieee::uniform_step`, which the interpreter's `Op::Uniform` and the native share), the seeds and the real written back in the native's order. A
+  seed out of range, which the native reports, or an address `host` does not find takes the slow path of the site, which is the unchanged
+  `native_direct` call (it has stored nothing by then). A second implementation of the generator, as `ieee_fast` is one for `numeric_std`; one function
+  (`uniform_regs`) decides it for the code generator, `is_inline` and the `--tier=auto` callback count (`leaves`), so the three agree. Tests: the
+  generator's sequence and both bad-seed reports in a process, a nested procedure and an architecture procedure (native frame), `--tier=llvm`, `auto` and the
+  interpreter equal (`compiled_natives.rs`); `perf.rs` `llvm_uniform` (400 calls, `cb_native` at most 4).
+- **Also:** `Mem::find` (what `yavs_rt_host` asks first) finds the slots of the first two enclosing frames, which the view carries
+  (`TierFrame::up`, `up_slots`, `up_len`). `rand_next(iseed1, iseed2)` passes the addresses of the process's variables, a frame address that is no `Up` address
+  of the generator's tracking: each access was a `host_miss`, `yavs_rt_obj` and `TierHost::object`, 3.7 and 2.8 percent of the cycles once the native was inline. Length 0 in the
+  view (a frame a native window holds) misses as before. Package and protected-object spaces stay #719's.
+- **Measured** (bench builds, core 12, `perf stat` user cycles and instructions, medians of 5 interleaved runs, base c7f56056): see docs/STATUS.md.

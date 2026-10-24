@@ -1008,6 +1008,12 @@ mod llvm {
         ]
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
+    // `uniform` is computed in compiled code (#519): 400 calls, no callback for them.
+    llvm_case!(
+        llvm_uniform,
+        "acc=",
+        [("cb_native", Max(4)), ("cb_host", Max(2))]
+    );
     // The memo of pure calls (#701) answers the compiled calls too: the same hits as the interpreter.
     #[test]
     fn llvm_pure_memo() {

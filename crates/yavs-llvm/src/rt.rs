@@ -1563,6 +1563,11 @@ impl Mem {
             (fr.temp, fr.temp_len)
         } else if !write && hi == u64::from(space::INST) << 29 {
             (fr.inst.cast_mut(), fr.inst_len)
+        } else if hi == fr.up[0] {
+            // A variable of the enclosing subprogram passed by reference (length 0: not offered).
+            (fr.up_slots[0], fr.up_len[0])
+        } else if hi == fr.up[1] {
+            (fr.up_slots[1], fr.up_len[1])
         } else {
             let o = &self.objs[obj_at(hi)];
             if o.hi != hi || write && o.w == 0 {

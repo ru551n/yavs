@@ -7811,9 +7811,20 @@ rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of
   - **A waiter of a signal of at most 64 elements keeps the elements it waits for as bits** (`Waiter::mask`) and the changed runs are folded to
     bits once per event (`Hits`): the hit test of the scan and of the small-list path is one `and` instead of a range overlap per waiter and run
     (-0.64%). Wider signals keep the range tests.
-  - Together: neorv32_single_min 37.60 G to 36.29 G (-3.5%), poc_arith_addw 154.81 G to 152.25 G (-1.7%), fletcher_bufferreader 22.73 G to
-    22.26 G (-2.1%), hdlm_lfsr 66.84 G to 66.48 G (-0.6%), rtl_chain 3.292 G to 3.288 G, rtl_fan level. Per delta cycle (stepcount windows): neorv32
-    73.3 K to 70.0 K, addw 46.4 K to 45.7 K, fletcher reader 12.3 K to 12.1 K; tables in `docs/STATUS.md` "Kernel round 22".
+  - **The `Ctx` callbacks of every signal read and drive are inlined into the interpreter** (-3.6%, -3.1%, -3.0% on neorv32_single_min,
+    poc_arith_addw, fletcher_bufferreader on top of the commits above; cycles -5.6%, -4.5%, -2.3% in all, see below): `Ctx::read_into` and
+    the fast paths `assign_code_fast`, `assign_planes_fast`, `assign_bytes_fast` are `#[inline(always)]`, the public entry points `assign_code`,
+    `assign_blocks` and `assign_bytes` are `#[inline]` with the slow remainder in `assign_*_slow` (`#[inline(never)]`), and `wake_sole` is
+    inlined into `finish_direct`. Each of these was a call of 85 to 130 instructions whose first and last 20 to 30 were pushes, pops and
+    argument marshalling (a `SigRef`, an `Option<Range>`, a `Time` and a `DelayMode` through memory); the profile of the round had them as
+    separate symbols (`read_into` 3.4%, `assign_planes_fast` 4.2% of the instructions of the windows). The binary grows 0.3%. The tier of
+    compiled code already inlined the `*_now` forms.
+  - Together: neorv32_single_min 37.60 G to 34.97 G (-7.0%), poc_arith_addw 154.81 G to 147.56 G (-4.7%), fletcher_bufferreader 22.73 G to
+    21.60 G (-5.0%), hdlm_lfsr 66.84 G to 66.04 G (-1.2%), rtl_chain 3.292 G to 3.242 G (-1.5%), rtl_fan level. Cycles, minimum of 4
+    alternating runs on one loaded core of the first CCD (no timing core was used, so these are indications): neorv32_single_min 16.05 G to
+    15.14 G (-5.6%), poc_arith_addw 45.4 G to 43.4 G (-4.5%), fletcher_bufferreader 8.59 G to 8.39 G (-2.3%), measured with the build before the
+    last inlining. Per delta cycle (stepcount windows): neorv32 73.3 K to 67.4 K, addw 46.4 K to 44.4 K, fletcher reader 12.3 K to 11.7 K;
+    tables in `docs/STATUS.md` "Kernel round 22".
 - **Measured and not taken:**
   - Splitting the plain readers (whole signal, no guard) of `arm_readers` into their own array that is armed without a test: only 48% of the
     readers of neorv32 are plain, `arm_readers` got dearer (+145 instructions a delta) and the fletcher reader +0.8%. The cost is in the guarded and
@@ -7823,7 +7834,8 @@ rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of
     instructions a changed element (0.6% of neorv32), but only 542 of its 2021 signals qualify under the elaborator's facts and the whole-run
     effect was -0.1% (neorv32), -0.2% (fletcher reader), -0.3% (hdlm_lfsr), against a wider reach of the lean promise (an internal error for
     a `'last_event` of a part that the facts missed). Not kept.
-  - `Signal::update_word` out of line (`#[inline(never)]`): +0.2% on neorv32 and addw; the call costs more than the spills it saves.
+  - `Signal::update_word` out of line (`#[inline(never)]`): +0.2% on neorv32 and addw; the call costs more than the spills it saves (the
+    opposite of the `Ctx` callbacks, which are small and called from many places).
   - One lookup of the process record and a hoisted `!init && !postponed` in the `run_batch` loop: -0.4% on rtl_fan (the per-activation loop is
     ~100 instructions, 38 to set up a run, 60 to commit it), level elsewhere. Not kept; a summary flag set by the `Ctx` push paths is the next
     step (#733).

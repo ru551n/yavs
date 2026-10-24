@@ -150,6 +150,10 @@ rule 24).
 - Wake order is not an interface: a path that appends processes to `ready` may do so in any order (`ProcMeta::ready` makes it idempotent and
   `order()` sorts the batch); only a shuffled run (`Config::shuffle`) sees it, so `take_woken` is `ordered` then. Do not rely on it, and do not
   rebuild an order that `order()` makes again.
+- The `Ctx` callbacks the interpreter calls on every signal read and drive are small and hot: `read_into` and the `assign_*_fast` bodies are
+  `#[inline(always)]`, `assign_code`, `assign_blocks` and `assign_bytes` are `#[inline]` with the rest in `assign_*_slow`, so they inline across
+  the crate boundary. Keep a new fast path in that shape (a call costs 20 to 30 instructions of push, pop and argument passing); a big function
+  that is called once a delta (`update_word` out of line: +0.2%) stays out of line.
 - A new `ErrorKind` needs its own code in `ErrorKind::code` (registry range `E3000`-`E3099`) and
   an entry in the yavs-diag registry table if it opens a new sub-range.
 

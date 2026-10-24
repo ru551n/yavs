@@ -4051,35 +4051,35 @@ Totals under 1 or near 1 for the reader come from the library analysis of yavs (
 `--no-cache`, bench builds with `--features llvm`, main at 2cf30ee4 against the round; windows of 100 delta cycles from cycle 20000 (rtl_fan
 20 cycles from 1000, rtl_chain 200 from 3000) with `tools/stepcount`. Kernel includes the `Ctx` callbacks of `process.rs`.
 
-Whole run, instructions in G:
+Whole run, instructions in G (cycles of the first three: minimum of 4 alternating runs on one loaded core of the first CCD, indications):
 
-| design | before | after | change |
-|---|---:|---:|---:|
-| neorv32_single_min | 37.60 | 36.29 | -3.5% |
-| poc_arith_addw | 154.81 | 152.25 | -1.7% |
-| fletcher_bufferreader | 22.73 | 22.26 | -2.1% |
-| hdlm_lfsr | 66.84 | 66.48 | -0.6% |
-| rtl_chain | 3.292 | 3.288 | -0.1% |
-| rtl_fan | 13.479 | 13.479 | 0.0% |
+| design | before | after | change | cycles |
+|---|---:|---:|---:|---:|
+| neorv32_single_min | 37.60 | 34.97 | -7.0% | -5.6% |
+| poc_arith_addw | 154.81 | 147.56 | -4.7% | -4.5% |
+| fletcher_bufferreader | 22.73 | 21.60 | -5.0% | -2.3% |
+| hdlm_lfsr | 66.84 | 66.04 | -1.2% | |
+| rtl_chain | 3.292 | 3.242 | -1.5% | |
+| rtl_fan | 13.479 | 13.479 | 0.0% | |
 
-One delta cycle, instructions before / after (window averages):
+One delta cycle, instructions before / after (stepcount windows). The `Ctx` callbacks (`read_into`, the assign fast paths) are inlined into the
+interpreter by the last commit, so their rows are summed with the interpreter's, and `wake_sole` is inlined into `finish_direct`:
 
 | stage | neorv32_single_min | poc_arith_addw | fletcher_bufferreader | hdlm_lfsr |
 |---|---:|---:|---:|---:|
-| interpreter | 34462 / 34462 | 33491 / 33491 | 5780 / 5780 | 12936 / 12936 |
-| `Ctx` reads and assigns, `CopyProcess` | 11274 / 11274 | 4071 / 4071 | 1391 / 1391 | 642 / 642 |
-| wake (`take_woken`, `arm_readers`, `wake_sole`) | 8083 / 5837 | 497 / 436 | 542 / 433 | 103 / 48 |
-| finish (`finish_direct`, `update_word`) | 5810 / 5431 | 2866 / 2615 | 1403 / 1325 | 426 / 396 |
+| interpreter and `Ctx` callbacks, `CopyProcess` | 45736 / 43308 | 37562 / 36266 | 7171 / 6881 | 13578 / 13481 |
+| wake and finish (`take_woken`, `arm_readers`, `wake_sole`, `finish_direct`, `update_word`) | 13893 / 11136 | 3363 / 2956 | 1945 / 1719 | 529 / 439 |
 | commit (`commit_out`, `commit_*`) | 5247 / 5246 | 1567 / 1572 | 748 / 751 | 371 / 371 |
-| `run_batch` and `order` | 4033 / 3255 | 1976 / 1762 | 724 / 700 | 245 / 244 |
+| `run_batch` and `order` | 4033 / 3254 | 1976 / 1761 | 724 / 699 | 245 / 243 |
 | `cycle` (wake loop, idle filter) | 3399 / 3520 | 1645 / 1526 | 1100 / 1094 | 403 / 404 |
-| other kernel (`update`, `last_delta`, `run_until`) | 815 / 815 | 257 / 258 | 525 / 523 | 464 / 464 |
-| total | 73283 / 69993 | 46389 / 45749 | 12297 / 12077 | 15608 / 15523 |
+| other kernel (`update`, `last_delta`, `run_until`) and libc | 976 / 967 | 276 / 279 | 609 / 604 | 482 / 482 |
+| total | 73283 / 67431 | 46389 / 44359 | 12297 / 11747 | 15608 / 15420 |
 
 The fixed costs of a delta (rtl_chain, one process, one bit, 1594 instructions: interpreter 708, `run_one` 193, `finish_direct` 176, `wake_sole`
 116, `cycle` 115, `update` and `last_delta` and `run_until` 104, `assign_code_fast` 94, `commit_code` 80) and of an activation (rtl_fan, 667
-instructions: about 100 in the `run_batch` loop, the rest the interpreter) did not move; they are already one load or compare each. What moved is the
-work per changed signal and per woken waiter: the wake order sort, the range tests of waiters and readers, the guard walk of `arm_readers`.
+instructions: about 100 in the `run_batch` loop, the rest the interpreter) hardly moved (rtl_chain 1594 to 1568 instructions: the callbacks and `wake_sole` inlined); they are already one load or compare each. What
+moved is the work per changed signal and per woken waiter (the wake order sort, the range tests of waiters and readers, the guard walk of
+`arm_readers`) and the call overhead of the process-side callbacks.
 The shares of the instructions of a whole run that are the kernel (including `Ctx`): 54% neorv32, 35% addw, 61% fletcher reader, 16% hdlm_lfsr,
 11% rtl_fan, 66% rtl_chain. Left, by whole-run share: `finish_direct` 7% (about 410 instructions per changed word of a narrow signal, `update_word`),
 `cycle` 6%, `assign_planes_fast` 4%, `commit_out` 4%, `run_batch` 4%, `Ctx::read_into` 3.4% (85 instructions a call, a third of them decoding

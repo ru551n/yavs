@@ -2381,13 +2381,16 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   are not measured.
 - **Constant inputs (user, 2026-10-24):** an input that is constant after elaboration (a
   generic, a constant, a literal, any folded or globally static expression) is evaluated but
-  gets no rows, so no unreachable row exists; a condition with fewer than two other inputs has
-  no item at all. Why: a row on a constant can never be covered and would need an exclusion.
+  gets no rows, so no row of a constant input is left to exclude; a condition with fewer than two
+  other inputs has no item at all. Open: a row of another input can still be unreachable because a
+  constant masks it (`(a or b) and kf` with `kf` false); not detected yet.
   `CovCond::consts` marks them; counters are compact (`first + 2 * k + v`, `k` the number of
   non-constant inputs before the input) while the row number in the key stays `2 * input +
-  value`, so adding a constant input never renumbers the exclusions of the others. Staticness is
-  the HIR's (`Expr::stat`), so a constant declared in a process or subprogram whose value
-  elaboration cannot know still counts as an input. Condition and expression coverage stay off
+  value`, so adding a constant input never renumbers the exclusions of the others. Constness is
+  `Fx::cov_const`: a folded value, or a static expression of literals, generics, generate
+  parameters and constants of those. Parameters of a subprogram are static to sem but new at
+  every call, so they stay inputs, as does a constant in a process or subprogram whose value
+  elaboration cannot know. Condition and expression coverage stay off
   by default, and Cobertura keeps folding the rows into `condition-coverage` (user, 2026-10-24).
 - **Values:** `bit`/`boolean` false and true; `std_ulogic` `'0'`/`'L'` are 0 and `'1'`/`'H'` are 1.
   An evaluation in which an evaluated input has another value (`'U'`, `'X'`, `'Z'`, `'W'`, `'-'`)

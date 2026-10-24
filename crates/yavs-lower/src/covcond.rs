@@ -8,7 +8,7 @@
 
 use yavs_ir::{COV_INPUTS, CovCond, CovKind, CovNode, CovRow, Inst, Ty};
 use yavs_sem::ExprId;
-use yavs_sem::decl::Body;
+use yavs_sem::decl::{Body, DeclKind, ObjRole};
 use yavs_sem::hir::{Actual, ExprKind, Staticness};
 use yavs_sem::implicit::Family;
 
@@ -94,11 +94,49 @@ impl Fx<'_, '_> {
         (ops.len() == if node == CovNode::Not { 1 } else { 2 }).then_some((node, ops))
     }
 
+    /// Whether `e` has the same value in every evaluation after elaboration: a folded value, or
+    /// a static expression of literals, generics, generate parameters and constants of those.
+    /// Parameters of a subprogram are static to sem but new at every call, so they are not.
+    fn cov_const(&self, e: ExprId) -> bool {
+        let db = self.db;
+        let x = &db.exprs[e];
+        if x.value.is_some() {
+            return true;
+        }
+        if x.stat == Staticness::None {
+            return false;
+        }
+        match &x.kind {
+            ExprKind::Const(_) => true,
+            ExprKind::Obj(d) => match &db.decls[*d].kind {
+                DeclKind::Object(o) => match o.role {
+                    ObjRole::Generic | ObjRole::GenerateParam => true,
+                    ObjRole::Plain | ObjRole::Deferred => {
+                        o.default.is_none_or(|i| self.cov_const(i))
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            ExprKind::Call {
+                args,
+                method_of: None,
+                ..
+            } => args
+                .iter()
+                .all(|a| matches!(a.actual, Actual::Expr(x) if self.cov_const(x))),
+            ExprKind::Qualified { operand, .. }
+            | ExprKind::Conv { operand, .. }
+            | ExprKind::ImplicitConv { operand } => self.cov_const(*operand),
+            _ => false,
+        }
+    }
+
     /// The tree below `e`, its inputs added to `leaves` (the expression, `std_ulogic`).
     fn cov_tree(&mut self, e: ExprId, leaves: &mut Vec<(ExprId, bool)>) -> Option<T> {
         let u = self.cov_scalar(e)?;
         let db = self.db;
-        if db.exprs[e].stat == Staticness::None
+        if !self.cov_const(e)
             && db.edge_shape(e).is_none()
             && let Some((n, ops)) = self.cov_op(e)
         {
@@ -146,7 +184,7 @@ impl Fx<'_, '_> {
         let consts = leaves
             .iter()
             .enumerate()
-            .filter(|(_, l)| db.exprs[l.0].stat != Staticness::None)
+            .filter(|(_, l)| self.cov_const(l.0))
             .fold(0u32, |m, (i, _)| m | 1 << i);
         if leaves.len() - (consts.count_ones() as usize) < 2 {
             return None;

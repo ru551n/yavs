@@ -14,6 +14,7 @@ architecture sim of cov_fec is
   type lv is array (0 to 3) of std_logic;
   constant xs : lv := ('0', 'H', 'X', '1');
   constant ys : lv := ('1', 'L', '1', 'U');
+  function both(p, q : boolean) return boolean is begin if p and q then return true; end if; return false; end function;
 begin
   -- Concurrent: a condition on booleans and an expression on std_logic.
   r <= true when a and b else false;
@@ -80,6 +81,13 @@ begin
     if b and true and (a or kf) then
       n := n + 1;
     end if;
+    -- A constant first input starts the state; subprogram formals are not constants.
+    if gt and a and b then
+      n := n + 1;
+    end if;
+    for i in 0 to 3 loop
+      v := both(i mod 2 = 1, i / 2 = 1);
+    end loop;
     report "n=" & integer'image(n) & " calls=" & integer'image(calls);
     wait;
   end process;

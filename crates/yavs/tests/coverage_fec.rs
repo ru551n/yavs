@@ -72,73 +72,83 @@ fn rows(db: &Database) -> Vec<(String, u32, String, u64)> {
 const EXPECTED: &[(&str, u32, &str, u64)] = &[
     // `r <= true when a and b else false`: evaluated with (a, b) = 00, 01, 10, 11. With a false
     // `b` is not evaluated and masked.
-    ("c0", 19, "a", 2),
-    ("c1", 19, "a", 1),
-    ("c2", 19, "b", 1),
-    ("c3", 19, "b", 1),
+    // Parameters of a function are inputs, not constants: `p and q` in `both`, called four times.
+    ("c0", 17, "p", 2),
+    ("c1", 17, "p", 1),
+    ("c2", 17, "q", 1),
+    ("c3", 17, "q", 1),
+    ("c0", 20, "a", 2),
+    ("c1", 20, "a", 1),
+    ("c2", 20, "b", 1),
+    ("c3", 20, "b", 1),
     // `q <= x xor y`: every input decides alone: (x, y) = 00, 'H' 'L' is 10, '1' '1' (X and U
     // evaluations count nothing).
-    ("e0", 20, "x", 2),
-    ("e1", 20, "x", 1),
-    ("e2", 20, "y", 2),
-    ("e3", 20, "y", 1),
+    ("e0", 21, "x", 2),
+    ("e1", 21, "x", 1),
+    ("e2", 21, "y", 2),
+    ("e3", 21, "y", 1),
     // `a and (b or c)` over the eight combinations; with `b` true `c` is not evaluated.
-    ("c0", 37, "a", 4),
-    ("c1", 37, "a", 3),
-    ("c2", 37, "b", 1),
-    ("c3", 37, "b", 2),
-    ("c4", 37, "c", 1),
-    ("c5", 37, "c", 1),
+    ("c0", 38, "a", 4),
+    ("c1", 38, "a", 3),
+    ("c2", 38, "b", 1),
+    ("c3", 38, "b", 2),
+    ("c4", 38, "c", 1),
+    ("c5", 38, "c", 1),
     // `not (a xor b) or c`.
-    ("e0", 40, "a", 3),
-    ("e1", 40, "a", 3),
-    ("e2", 40, "b", 3),
-    ("e3", 40, "b", 3),
-    ("e4", 40, "c", 2),
-    ("e5", 40, "c", 2),
+    ("e0", 41, "a", 3),
+    ("e1", 41, "a", 3),
+    ("e2", 41, "b", 3),
+    ("e3", 41, "b", 3),
+    ("e4", 41, "c", 2),
+    ("e5", 41, "c", 2),
     // `tick(a) and tick(b)`: the function-call inputs; `tick(b)` runs only when `tick(a)` is true.
-    ("c0", 42, "tick(a)", 4),
-    ("c1", 42, "tick(a)", 2),
-    ("c2", 42, "tick(b)", 2),
-    ("c3", 42, "tick(b)", 2),
+    ("c0", 43, "tick(a)", 4),
+    ("c1", 43, "tick(a)", 2),
+    ("c2", 43, "tick(b)", 2),
+    ("c3", 43, "tick(b)", 2),
     // `x and y` on std_logic: (x, y) = '0' '1', 'H' 'L', 'X' '1', '1' 'U'; metavalues count nothing.
-    ("c0", 51, "x", 1),
-    ("c1", 51, "x", 0),
-    ("c2", 51, "y", 1),
-    ("c3", 51, "y", 0),
+    ("c0", 52, "x", 1),
+    ("c1", 52, "x", 0),
+    ("c2", 52, "y", 1),
+    ("c3", 52, "y", 0),
     // `while k < 4 and not (n > 1000)`, `next when k = 1 or k = 3`, `exit when k = 2 and n > 1000`.
-    ("c0", 56, "k < 4", 1),
-    ("c1", 56, "k < 4", 4),
-    ("c2", 56, "n > 1000", 4),
-    ("c3", 56, "n > 1000", 0),
-    ("c0", 58, "k = 1", 2),
-    ("c1", 58, "k = 1", 1),
-    ("c2", 58, "k = 3", 2),
-    ("c3", 58, "k = 3", 1),
-    ("c0", 59, "k = 2", 1),
-    ("c1", 59, "k = 2", 0),
-    ("c2", 59, "n > 1000", 1),
-    ("c3", 59, "n > 1000", 0),
+    ("c0", 57, "k < 4", 1),
+    ("c1", 57, "k < 4", 4),
+    ("c2", 57, "n > 1000", 4),
+    ("c3", 57, "n > 1000", 0),
+    ("c0", 59, "k = 1", 2),
+    ("c1", 59, "k = 1", 1),
+    ("c2", 59, "k = 3", 2),
+    ("c3", 59, "k = 3", 1),
+    ("c0", 60, "k = 2", 1),
+    ("c1", 60, "k = 2", 0),
+    ("c2", 60, "n > 1000", 1),
+    ("c3", 60, "n > 1000", 0),
     // Never evaluated with `b` true and `a` false, and `a` on one input is no condition.
-    ("c0", 66, "a", 0),
-    ("c1", 66, "a", 1),
-    ("c2", 66, "b", 0),
-    ("c3", 66, "b", 0),
-    ("c4", 66, "c", 0),
-    ("c5", 66, "c", 0),
+    ("c0", 67, "a", 0),
+    ("c1", 67, "a", 1),
+    ("c2", 67, "b", 0),
+    ("c3", 67, "b", 0),
+    ("c4", 67, "c", 0),
+    ("c5", 67, "c", 0),
     // Constant inputs (generic `gt`, constant `kf`, `true`) are evaluated but have no rows, and
     // the row numbers keep the input's position: `(a and gt) or (b and not kf)` has rows for
     // `a` (0, 1) and `b` (4, 5) only; `b` is never evaluated (`a and gt` is true).
-    ("c0", 71, "a", 0),
-    ("c1", 71, "a", 1),
-    ("c4", 71, "b", 0),
-    ("c5", 71, "b", 0),
+    ("c0", 72, "a", 0),
+    ("c1", 72, "a", 1),
+    ("c4", 72, "b", 0),
+    ("c5", 72, "b", 0),
     // `a and gt`, `gt or kf` (line 74, 77) have a single or no non-constant input: no rows.
     // `b and true and (a or kf)`: the inputs are `b`, `true`, `a`, `kf`.
-    ("c0", 80, "b", 0),
-    ("c1", 80, "b", 1),
-    ("c4", 80, "a", 0),
-    ("c5", 80, "a", 1),
+    ("c0", 81, "b", 0),
+    ("c1", 81, "b", 1),
+    ("c4", 81, "a", 0),
+    ("c5", 81, "a", 1),
+    // A constant first input (`gt`) starts the state: rows for `a` (2, 3) and `b` (4, 5).
+    ("c2", 85, "a", 0),
+    ("c3", 85, "a", 1),
+    ("c4", 85, "b", 0),
+    ("c5", 85, "b", 1),
 ];
 
 fn want() -> Vec<(String, u32, String, u64)> {
@@ -194,7 +204,7 @@ fn counts_threads_and_reports() {
     let o = yavs(&tmp, &["cov", "report", "a.ycov"]);
     let text = String::from_utf8(o.stdout).expect("utf-8");
     assert!(
-        text.starts_with("statements 0/0 -\nbranches   0/0 -\ntoggles    0/0 -\nconditions 29/44 65.9%\nexpressions 10/10 100.0%\n"),
+        text.starts_with("statements 0/0 -\nbranches   0/0 -\ntoggles    0/0 -\nconditions 35/52 67.3%\nexpressions 10/10 100.0%\n"),
         "{text}"
     );
     assert!(
@@ -203,7 +213,7 @@ fn counts_threads_and_reports() {
     );
     let o = yavs(&tmp, &["cov", "report", "a.ycov", "--uncovered"]);
     let miss = String::from_utf8(o.stdout).expect("utf-8");
-    assert_eq!(miss.lines().count(), 15, "{miss}");
+    assert_eq!(miss.lines().count(), 17, "{miss}");
     assert!(
         miss.contains("# y is 1 (result 1) in x and y")
             && miss.contains("# n > 1000 is 1 (result 0) in k < 4 and not (n > 1000)")
@@ -234,9 +244,9 @@ fn counts_threads_and_reports() {
     let xml = std::fs::read_to_string(tmp.join("a.xml")).expect("xml");
     assert!(
         xml.contains(
-            "<line number=\"37\" hits=\"0\" branch=\"true\" condition-coverage=\"100% (6/6)\"/>"
+            "<line number=\"38\" hits=\"0\" branch=\"true\" condition-coverage=\"100% (6/6)\"/>"
         ) && xml.contains(
-            "<line number=\"66\" hits=\"0\" branch=\"true\" condition-coverage=\"16% (1/6)\"/>"
+            "<line number=\"67\" hits=\"0\" branch=\"true\" condition-coverage=\"16% (1/6)\"/>"
         ),
         "{xml}"
     );

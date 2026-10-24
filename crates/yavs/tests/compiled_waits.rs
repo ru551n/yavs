@@ -76,6 +76,10 @@ fn sensitivity_lists_wait_without_naming_their_signals() {
         vec!["--tier=llvm"],
         vec!["--tier=auto", "--tier-heat=1,0,0"],
         vec!["--tier=auto", "--tier-heat=1,0,0", "--threads=4"],
+        #[cfg(feature = "clift")]
+        vec!["--tier=clift"],
+        #[cfg(feature = "clift")]
+        vec!["--tier=auto3", "--tier-heat=1,0,0"],
     ] {
         let (o, census) = run(&dir, &flags);
         assert_eq!(String::from_utf8_lossy(&o.stdout), want, "{flags:?}");

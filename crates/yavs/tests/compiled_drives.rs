@@ -115,6 +115,10 @@ fn scalar_logic_assignments_in_compiled_code_match_the_interpreter() {
         vec!["--tier=llvm"],
         vec!["--tier=auto", "--tier-heat=1,0,0"],
         vec!["--tier=auto", "--tier-heat=1,0,0", "--threads=4"],
+        #[cfg(feature = "clift")]
+        vec!["--tier=clift"],
+        #[cfg(feature = "clift")]
+        vec!["--tier=auto3", "--tier-heat=1,0,0"],
     ] {
         let (got, census) = run(&dir, &flags);
         assert_eq!(got, want, "{flags:?}");

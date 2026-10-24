@@ -78,6 +78,8 @@ pub struct Jit {
     deopt: ClifId,
     deopt_slots: ClifId,
     deopt_end: ClifId,
+    /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
+    kernel: [ClifId; 8],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -152,6 +154,14 @@ impl Jit {
             (DEOPT_END, yavs_rt_deopt_end as *const u8),
             ("clift_zero", clift_zero as *const u8),
             ("clift_move", clift_move as *const u8),
+            (WAIT, yavs_rt_wait as *const u8),
+            (WAIT_ON, yavs_rt_wait_on as *const u8),
+            (WAIT_SAME, yavs_rt_wait_same as *const u8),
+            (DRIVE, yavs_rt_drive as *const u8),
+            (DRIVE_BIT, yavs_rt_drive_bit as *const u8),
+            (CODES, yavs_rt_codes as *const u8),
+            (PLANES, yavs_rt_planes as *const u8),
+            (NATIVE, yavs_rt_native as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -173,6 +183,25 @@ impl Jit {
         let deopt = imp(DEOPT, &[I64, I64, I32, I32, I64, I64, I64, I64], Some(I64))?;
         let deopt_slots = imp(DEOPT_SLOTS, &[I64], Some(I64))?;
         let deopt_end = imp(DEOPT_END, &[I64, I64, I32], Some(I32))?;
+        let wait_sig = [I64, I64, I64, I32, I64, I64];
+        let kernel = [
+            imp(WAIT, &wait_sig, Some(I32))?,
+            imp(WAIT_ON, &wait_sig, Some(I32))?,
+            imp(WAIT_SAME, &wait_sig, Some(I32))?,
+            imp(
+                DRIVE,
+                &[I64, I64, I64, I32, I32, I64, I64, I64, I32],
+                Some(I32),
+            )?,
+            imp(
+                DRIVE_BIT,
+                &[I64, I64, I64, I32, I32, I64, I64, I64, I64],
+                Some(I32),
+            )?,
+            imp(CODES, &[I64; 4], None)?,
+            imp(PLANES, &[I64; 5], None)?,
+            imp(NATIVE, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
+        ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
         sig.params.push(AbiParam::new(I32));
@@ -188,6 +217,7 @@ impl Jit {
             deopt,
             deopt_slots,
             deopt_end,
+            kernel,
             tables: HashMap::new(),
             sig,
             native_on,
@@ -369,6 +399,30 @@ impl Jit {
             deopt_end: self
                 .module
                 .declare_func_in_func(self.deopt_end, &mut ctx.func),
+            wait: self
+                .module
+                .declare_func_in_func(self.kernel[0], &mut ctx.func),
+            wait_on: self
+                .module
+                .declare_func_in_func(self.kernel[1], &mut ctx.func),
+            wait_same: self
+                .module
+                .declare_func_in_func(self.kernel[2], &mut ctx.func),
+            drive: self
+                .module
+                .declare_func_in_func(self.kernel[3], &mut ctx.func),
+            drive_bit: self
+                .module
+                .declare_func_in_func(self.kernel[4], &mut ctx.func),
+            codes: self
+                .module
+                .declare_func_in_func(self.kernel[5], &mut ctx.func),
+            planes: self
+                .module
+                .declare_func_in_func(self.kernel[6], &mut ctx.func),
+            native: self
+                .module
+                .declare_func_in_func(self.kernel[7], &mut ctx.func),
             tables: tabs,
             natives,
         };
@@ -431,6 +485,14 @@ struct Imports {
     deopt: FuncRef,
     deopt_slots: FuncRef,
     deopt_end: FuncRef,
+    wait: FuncRef,
+    wait_on: FuncRef,
+    wait_same: FuncRef,
+    drive: FuncRef,
+    drive_bit: FuncRef,
+    codes: FuncRef,
+    planes: FuncRef,
+    native: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     natives: HashMap<FuncId, NatRef>,
 }
@@ -489,12 +551,28 @@ impl Inline for Inl<'_> {
     }
 }
 
+/// Instructions that only change the temporary area or a register: the interpreter's own function
+/// for them (`TierHost::signal`) runs them without its generic dispatch.
+fn via_signal(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::TempRoot { .. }
+            | Inst::NewFrame { .. }
+            | Inst::Stmt
+            | Inst::Deref { .. }
+            | Inst::MemEq { .. }
+            | Inst::Cat { .. }
+    )
+}
+
 /// A slow path left to emit after the function body: step `inst` at `pc` and go on at `join`.
 struct Slow {
     block: Block,
     join: Block,
     pc: u32,
     keep: bool,
+    /// Through `yavs_rt_signal` with this edge argument instead of `yavs_rt_step`.
+    edge: Option<u32>,
 }
 
 struct Gen<'a> {
@@ -740,6 +818,23 @@ fn gen_func(
             .and_then(|bl| bbs.get(bl.start as usize).copied().flatten())
             .ok_or_else(|| format!("branch to missing block {}", bl.0))
     };
+    // The scalar logic assignments the interpreter runs as one op (their waveform is not made here
+    // either) and the waits that name the same signals every time (`yavs_rt_wait_same`).
+    let kernel_facing = !native && f.kind == FuncKind::Process;
+    let static_wait = if kernel_facing {
+        yavs_interp::static_wait(prog, f, 1)
+    } else {
+        Vec::new()
+    };
+    let scalar_drives = if kernel_facing {
+        yavs_interp::scalar_drives(prog, f)
+    } else {
+        Vec::new()
+    };
+    let skipped: HashSet<u32> = scalar_drives
+        .iter()
+        .flat_map(|d| [d.alloc, d.store, d.index, d.lset])
+        .collect();
     let mut open = false;
     let mut prev = None;
     for (i, &inst) in f.code.iter().enumerate() {
@@ -787,6 +882,10 @@ fn gen_func(
             continue;
         }
         match inst {
+            _ if skipped.contains(&pc) => {}
+            Inst::Drive { .. } if let Some(d) = scalar_drives.iter().find(|d| d.drive == pc) => {
+                g.drive_bit(pc, d)
+            }
             Inst::Const { dst, v } => {
                 let x = g.c64(v);
                 g.st(dst, x)
@@ -1026,6 +1125,9 @@ fn gen_func(
                 let v = g.b.ins().umin(base, len);
                 g.mem_st(MEM_TEMP_LEN, v);
                 g.join(join);
+                if let Some(&(_, at)) = static_wait.iter().find(|w| w.0 == i) {
+                    g.wait_same(at as u32);
+                }
             }
             Inst::Alloc { dst, size } => {
                 let (slow, join) = g.slow_path(pc, &inst);
@@ -1390,9 +1492,29 @@ fn gen_func(
                 g.b.ins().jump(d, &[]);
                 open = false;
             }
-            Inst::SigReadScalar { .. }
-            | Inst::SigRead { .. }
-            | Inst::WaitOn { .. }
+            Inst::SigReadScalar { dst, sig } => g.sig_read_scalar(pc, dst, sig),
+            Inst::Edge { dst, kind, sig } => g.edge(pc, kind, sig, dst, 0),
+            Inst::SigAttr {
+                dst,
+                kind: yavs_ir::AttrKind::Event,
+                sig,
+            } if g.nat.is_none() => g.sig_event(pc, dst, sig),
+            Inst::Drive {
+                driver,
+                target: Some(t),
+                wave,
+                n,
+                mode,
+                reject: None,
+            } if g.nat.is_none() => g.drive_block(pc, driver, t, wave, n, mode),
+            Inst::WaitOn { sig }
+                if g.nat.is_none() && matches!(f.code.get(i + 1), Some(Inst::Suspend { .. })) =>
+            {
+                g.wait_suspend(pc, sig)
+            }
+            Inst::WaitOn { sig } if g.nat.is_none() => g.wait_on(pc, sig),
+            Inst::SigRead { dst, sig } => g.sig_read(pc, dst, sig),
+            Inst::WaitOn { .. }
             | Inst::WaitFor { .. }
             | Inst::DriveSlot { .. }
             | Inst::Drive { .. }
@@ -1417,7 +1539,23 @@ fn gen_func(
                         g.st(d, v);
                         g.join(join);
                     }
-                    Some(NativeKind::Edge(rising)) => g.signal(pc, if rising { 1 } else { 2 }),
+                    Some(NativeKind::Edge(rising)) => {
+                        let e = if rising { 1 } else { 2 };
+                        match (f.regs(args), dst) {
+                            (Some(&[s]), Some(d)) => {
+                                let kind = if rising {
+                                    yavs_ir::EdgeKind::Rising
+                                } else {
+                                    yavs_ir::EdgeKind::Falling
+                                };
+                                g.edge(pc, kind, s, d, e)
+                            }
+                            _ => g.signal(pc, e),
+                        }
+                    }
+                    None if g.nat.is_none() && frame_direct(prog, f, &inst) => {
+                        g.native_direct(pc, &inst, f, native, args, dst)?
+                    }
                     None => g.step(pc, &inst),
                 }
             }
@@ -1442,6 +1580,12 @@ fn gen_func(
             // The interpreter executes the instruction in the materialised frame.
             let v = g.c32(s.pc);
             g.leave(v);
+            continue;
+        }
+        if let Some(e) = s.edge {
+            let (p, ev) = (g.c32(s.pc), g.c32(e));
+            g.call_go(g.imp.signal, &[p, ev], false);
+            g.b.ins().jump(s.join, &[]);
             continue;
         }
         let at = if s.keep { s.pc | KEEP } else { s.pc };
@@ -1803,6 +1947,11 @@ impl Gen<'_> {
         let d = format!("{i:?}");
         self.stepped
             .push(d.split([' ', '{', '(']).next().unwrap_or("").to_string());
+        if via_signal(i) {
+            let (p, e) = (self.c32(pc), self.c32(0));
+            self.call_go(self.imp.signal, &[p, e], true);
+            return;
+        }
         let at = if keeps_objects(i) { pc | KEEP } else { pc };
         let pcv = self.c32(at);
         self.call_go(self.imp.step, &[pcv], true);
@@ -1827,6 +1976,7 @@ impl Gen<'_> {
             join,
             pc,
             keep: keeps_objects(i),
+            edge: via_signal(i).then_some(0),
         });
         (block, join)
     }
@@ -2074,6 +2224,559 @@ impl Gen<'_> {
         };
         self.guard(okv, slow);
         vec![size, align, stride, count]
+    }
+}
+
+/// The kernel-facing instructions: signal reads, clock edges, drives and waits, inline or through
+/// the small callbacks of `rt.rs`, as the LLVM tier's generator does (`TierSig` table entries,
+/// `yavs_rt_drive*`, `yavs_rt_wait*`), instead of `yavs_rt_signal` for each.
+impl Gen<'_> {
+    /// A field of a `TierSig` entry (kernel memory: no alias region).
+    fn ent_ld(&mut self, ent: Value, field: i64) -> Value {
+        self.b
+            .ins()
+            .load(I64, MemFlagsData::trusted(), ent, field as i32)
+    }
+
+    /// The value register `r` holds when the generator knows it.
+    fn kint(&self, r: Reg) -> Option<i64> {
+        match self.known.get(r.0 as usize) {
+            Some(Some(Known::Int(v))) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Signal operations have no native-frame variant.
+    fn no_native(&mut self) -> bool {
+        if self.nat.is_some() {
+            self.bad = Some("signal operation".into());
+        }
+        self.nat.is_some()
+    }
+
+    /// `slow_path` for a signal operation: the slow block calls `yavs_rt_signal` (`edge`).
+    fn slow_signal(&mut self, pc: u32, edge: u32) -> (Block, Block) {
+        let (block, join) = (self.b.create_block(), self.b.create_block());
+        self.slows.push(Slow {
+            block,
+            join,
+            pc,
+            keep: false,
+            edge: Some(edge),
+        });
+        (block, join)
+    }
+
+    /// Start a block of a multi-block lowering.
+    fn start(&mut self, bb: Block) {
+        self.b.switch_to_block(bb);
+        self.clear();
+    }
+
+    /// `cond ? t : f` with block arguments `v`: a branch on `cond`.
+    fn branch(&mut self, cond: Value, t: Block, f: Block) {
+        self.b.ins().brif(cond, t, &[], f, &[]);
+    }
+
+    /// The `TierSig` entry of the instance signal that reference registers `sig`, `sig + 1` name,
+    /// and the element offset in it; takes `slow` unless the reference is a plain one of `len`
+    /// elements (any number but 0 for `None`) to an instance signal the table has.
+    fn sig_entry(&mut self, sig: Reg, len: Option<i64>, slow: Block) -> (Value, Value) {
+        let (v, l) = (self.ld(sig), self.ld(Reg(sig.0 + 1)));
+        let base = self.b.ins().ushr_imm_s(v, 32);
+        let off = self.b.ins().band_imm_s(v, 0xffff_ffff);
+        let n = self.mem_ld(MEM_SIGTAB_LEN);
+        let has = self.b.ins().icmp(IntCC::UnsignedLessThan, base, n);
+        let want = match len {
+            Some(k) => self.b.ins().icmp_imm_s(IntCC::Equal, l, k),
+            None => self.b.ins().icmp_imm_s(IntCC::NotEqual, l, 0),
+        };
+        let okc = self.b.ins().band(has, want);
+        self.guard(okc, slow);
+        let tab = self.mem_ld(MEM_SIGTAB);
+        let at = self.b.ins().imul_imm_s(base, SIG_ENT);
+        let ent = self.b.ins().iadd(tab, at);
+        (ent, off)
+    }
+
+    /// `Inst::SigReadScalar` of a logic signal: the byte of its codes, else the four plane bits of
+    /// the kernel's blocks; the bytes of an enumeration, integer, boolean or real signal; anything
+    /// else through `TierHost::signal`.
+    fn sig_read_scalar(&mut self, pc: u32, dst: Reg, sig: Reg) {
+        if self.no_native() {
+            return;
+        }
+        let (slow, join) = self.slow_signal(pc, 0);
+        let (ent, off) = self.sig_entry(sig, None, slow);
+        let len = self.ent_ld(ent, SIG_LEN);
+        let (bytes, planes) = (self.b.create_block(), self.b.create_block());
+        let in_codes = self.b.ins().icmp(IntCC::UnsignedLessThan, off, len);
+        self.branch(in_codes, bytes, planes);
+        self.start(bytes);
+        let codes = self.ent_ld(ent, SIG_CODES);
+        let p = self.b.ins().iadd(codes, off);
+        let byte = self.b.ins().uload8(I64, MemFlagsData::trusted(), p, 0);
+        self.st(dst, byte);
+        self.b.ins().jump(join, &[]);
+        self.start(planes);
+        let plen = self.ent_ld(ent, SIG_PLEN);
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, plen);
+        self.guard(inside, slow);
+        let blocks = self.ent_ld(ent, SIG_PLANES);
+        let (logic, other) = (self.b.create_block(), self.b.create_block());
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+        self.branch(has, logic, other);
+        // Elements of one, four or eight bytes, a four-byte one sign-extended.
+        self.start(other);
+        let data = self.ent_ld(ent, SIG_BYTES);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, data, 0);
+        self.guard(has, slow);
+        let es = self.ent_ld(ent, SIG_ES);
+        let first = self.ent_ld(ent, SIG_OFF);
+        let e = self.b.ins().iadd(first, off);
+        let at = self.b.ins().imul(e, es);
+        let p = self.b.ins().iadd(data, at);
+        let done = self.b.create_block();
+        let v = self.b.append_block_param(done, I64);
+        let (one, four, not1, not4) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let is1 = self.b.ins().icmp_imm_s(IntCC::Equal, es, 1);
+        self.branch(is1, one, not1);
+        self.start(not1);
+        let is4 = self.b.ins().icmp_imm_s(IntCC::Equal, es, 4);
+        self.branch(is4, four, not4);
+        self.start(not4);
+        let is8 = self.b.ins().icmp_imm_s(IntCC::Equal, es, 8);
+        self.guard(is8, slow);
+        let v8 = self.b.ins().load(I64, MemFlagsData::trusted(), p, 0);
+        self.b.ins().jump(done, &[BlockArg::Value(v8)]);
+        self.start(one);
+        let v1 = self.b.ins().uload8(I64, MemFlagsData::trusted(), p, 0);
+        self.b.ins().jump(done, &[BlockArg::Value(v1)]);
+        self.start(four);
+        let v4 = self.b.ins().sload32(MemFlagsData::trusted(), p, 0);
+        self.b.ins().jump(done, &[BlockArg::Value(v4)]);
+        self.start(done);
+        self.st(dst, v);
+        self.b.ins().jump(join, &[]);
+        // A logic signal wider than its codes: the four plane bits.
+        self.start(logic);
+        let first = self.ent_ld(ent, SIG_OFF);
+        let e = self.b.ins().iadd(first, off);
+        let blk = self.b.ins().ushr_imm_s(e, 6);
+        let at = self.b.ins().ishl_imm_s(blk, 5);
+        let pb = self.b.ins().iadd(blocks, at);
+        let sh = self.b.ins().band_imm_s(e, 63);
+        let mut code = self.c64(0);
+        for k in 0..4 {
+            let w = self.b.ins().load(I64, MemFlagsData::trusted(), pb, 8 * k);
+            let bit = self.b.ins().ushr(w, sh);
+            let bit = self.b.ins().band_imm_s(bit, 1);
+            let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
+            code = self.b.ins().bor(code, bit);
+        }
+        self.st(dst, code);
+        self.join(join);
+    }
+
+    /// The clock-edge test `kind` of one element (`Inst::Edge`, or the `rising_edge` /
+    /// `falling_edge` native, whose `TierHost::signal` entry is `edge` 1 or 2): true in place when
+    /// the kernel resumed the process for that edge (`TierFrame::known`), else from the event
+    /// stamp, the codes and, for the IEEE function, the `'last_value` planes; anything else
+    /// through `TierHost::signal`.
+    fn edge(&mut self, pc: u32, kind: yavs_ir::EdgeKind, sig: Reg, dst: Reg, edge: u32) {
+        if self.no_native() {
+            return;
+        }
+        let (slow, join) = self.slow_signal(pc, edge);
+        let (ent, off) = self.sig_entry(sig, Some(1), slow);
+        let signal = self.ent_ld(ent, SIG_SIGNAL);
+        let first = self.ent_ld(ent, SIG_OFF);
+        let elem = self.b.ins().iadd(first, off);
+        // `yavs_kernel::edge_key`.
+        let hi = self.b.ins().ishl_imm_s(signal, 32);
+        let mid = self.b.ins().ishl_imm_s(elem, 2);
+        let k = self.b.ins().bor(hi, mid);
+        let key = self.b.ins().bor_imm_s(k, i64::from(kind.code()));
+        let known = self.mem_ld(MEM_KNOWN);
+        let held = self.b.ins().icmp(IntCC::Equal, key, known);
+        let (fast, rest) = (self.b.create_block(), self.b.create_block());
+        self.branch(held, fast, rest);
+        self.start(fast);
+        let one = self.c64(1);
+        self.st(dst, one);
+        self.b.ins().jump(join, &[]);
+        self.start(rest);
+        let stamps = self.ent_ld(ent, SIG_STAMPS);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
+        self.guard(has, slow);
+        let last = self.ent_ld(ent, SIG_LAST);
+        if !kind.to_level() {
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, last, 0);
+            self.guard(has, slow);
+        }
+        let len = self.ent_ld(ent, SIG_LEN);
+        let inside = self.b.ins().icmp(IntCC::UnsignedLessThan, off, len);
+        self.guard(inside, slow);
+        let at = self.b.ins().ishl_imm_s(elem, 3);
+        let sp = self.b.ins().iadd(stamps, at);
+        let stamp = self.b.ins().load(I64, MemFlagsData::trusted(), sp, 0);
+        let cycle = self.mem_ld(MEM_CYCLE);
+        let (ev, none, merge) = (
+            self.b.create_block(),
+            self.b.create_block(),
+            self.b.create_block(),
+        );
+        let res = self.b.append_block_param(merge, I64);
+        let is_ev = self.b.ins().icmp(IntCC::Equal, stamp, cycle);
+        self.branch(is_ev, ev, none);
+        self.start(none);
+        let zero = self.c64(0);
+        self.b.ins().jump(merge, &[BlockArg::Value(zero)]);
+        self.start(ev);
+        let codes = self.ent_ld(ent, SIG_CODES);
+        let cp = self.b.ins().iadd(codes, off);
+        let cur = self.b.ins().uload8(I64, MemFlagsData::trusted(), cp, 0);
+        let r = if kind.to_level() {
+            // An event ending on the level: the code is exactly '1' (3) or '0' (2).
+            let e = self
+                .b
+                .ins()
+                .icmp_imm_s(IntCC::Equal, cur, if kind.rising() { 3 } else { 2 });
+            self.b.ins().uextend(I64, e)
+        } else {
+            let mut before = self.c64(0);
+            for k in 0..2 {
+                let w = self.b.ins().load(I64, MemFlagsData::trusted(), last, 8 * k);
+                let bit = self.b.ins().ushr(w, elem);
+                let bit = self.b.ins().band_imm_s(bit, 1);
+                let bit = self.b.ins().ishl_imm_s(bit, i64::from(k));
+                before = self.b.ins().bor(before, bit);
+            }
+            // `To_X01` of a code is '1' or '0' when its low two bits are 1 x (3 and 7 are '1' and
+            // 'H', 2 and 6 '0' and 'L'); the level is bit 0.
+            let (now_want, before_want) = if kind.rising() { (3, 2) } else { (2, 3) };
+            let c3 = self.b.ins().band_imm_s(cur, 3);
+            let a = self.b.ins().icmp_imm_s(IntCC::Equal, c3, now_want);
+            let b3 = self.b.ins().band_imm_s(before, 3);
+            let b2 = self.b.ins().icmp_imm_s(IntCC::Equal, b3, before_want);
+            let both = self.b.ins().band(a, b2);
+            self.b.ins().uextend(I64, both)
+        };
+        self.b.ins().jump(merge, &[BlockArg::Value(r)]);
+        self.start(merge);
+        self.st(dst, res);
+        self.join(join);
+    }
+
+    /// `Inst::SigAttr` `'event` of one element: its last event was in this cycle, from the
+    /// kernel's event stamp; anything else through `TierHost::signal`.
+    fn sig_event(&mut self, pc: u32, dst: Reg, sig: Reg) {
+        if self.no_native() {
+            return;
+        }
+        let (slow, join) = self.slow_signal(pc, 0);
+        let (ent, off) = self.sig_entry(sig, Some(1), slow);
+        let stamps = self.ent_ld(ent, SIG_STAMPS);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, stamps, 0);
+        self.guard(has, slow);
+        let first = self.ent_ld(ent, SIG_OFF);
+        let elem = self.b.ins().iadd(first, off);
+        let at = self.b.ins().ishl_imm_s(elem, 3);
+        let sp = self.b.ins().iadd(stamps, at);
+        let stamp = self.b.ins().load(I64, MemFlagsData::trusted(), sp, 0);
+        let cycle = self.mem_ld(MEM_CYCLE);
+        let e = self.b.ins().icmp(IntCC::Equal, stamp, cycle);
+        let v = self.b.ins().uextend(I64, e);
+        self.st(dst, v);
+        self.join(join);
+    }
+
+    /// `Inst::SigRead` of `l` elements from the kernel's plane blocks of the signal whose entry is
+    /// `ent` (`off` the first element in it), through `yavs_rt_planes`; `slow` when it offers
+    /// none or has fewer elements. The builder ends in a block that jumps to `join`.
+    fn sig_read_planes(
+        &mut self,
+        ent: Value,
+        off: Value,
+        l: Value,
+        dst: Reg,
+        slow: Block,
+        join: Block,
+    ) {
+        let blocks = self.ent_ld(ent, SIG_PLANES);
+        let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, blocks, 0);
+        self.guard(has, slow);
+        // A count and an offset are below 2^32 where the reference was made; checked, so the sum
+        // below cannot wrap.
+        let small = self
+            .b
+            .ins()
+            .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, l, i64::from(u32::MAX));
+        self.guard(small, slow);
+        let plen = self.ent_ld(ent, SIG_PLEN);
+        let used = self.b.ins().iadd(off, l);
+        let fits = self
+            .b
+            .ins()
+            .icmp(IntCC::UnsignedLessThanOrEqual, used, plen);
+        self.guard(fits, slow);
+        let first = self.ent_ld(ent, SIG_OFF);
+        let bit0 = self.b.ins().iadd(first, off);
+        let nelem = self.b.ins().iadd(first, plen);
+        let nelem = self.b.ins().iadd_imm_s(nelem, 63);
+        let nblk = self.b.ins().ushr_imm_s(nelem, 6);
+        let lb = self.b.ins().iadd_imm_s(l, 63);
+        let lb = self.b.ins().ushr_imm_s(lb, 6);
+        let bytes = self.b.ins().ishl_imm_s(lb, 5);
+        let a = self.ld(dst);
+        let pd = self.host(a, self.fk(dst), Op::C(0), Op::V(bytes), true, slow);
+        self.b
+            .ins()
+            .call(self.imp.planes, &[blocks, nblk, bit0, l, pd]);
+        self.b.ins().jump(join, &[]);
+    }
+
+    /// `Inst::SigRead`: up to 64 elements from the codes in place (a count known at compile time
+    /// builds the planes eight codes at a time, else `yavs_rt_codes`), more from the kernel's
+    /// plane blocks (`yavs_rt_planes`); anything else through `TierHost::signal`.
+    fn sig_read(&mut self, pc: u32, dst: Reg, sig: Reg) {
+        if self.no_native() {
+            return;
+        }
+        let known = self.kint(Reg(sig.0 + 1));
+        if let Some(l) = known
+            && !(1..=i64::from(u32::MAX)).contains(&l)
+        {
+            self.signal(pc, 0);
+            return;
+        }
+        let (slow, join) = self.slow_signal(pc, 0);
+        let (ent, off) = self.sig_entry(sig, known, slow);
+        let lv = self.ld(Reg(sig.0 + 1));
+        if known.is_some_and(|l| l > 64) {
+            self.sig_read_planes(ent, off, lv, dst, slow, join);
+            self.start(join);
+            return;
+        }
+        // Up to 64 elements from the codes, else (or without the codes) from the planes.
+        let alt = self.b.create_block();
+        let l1 = self.b.ins().iadd_imm_s(lv, -1);
+        let small = self.b.ins().icmp_imm_s(IntCC::UnsignedLessThan, l1, 64);
+        self.guard(small, alt);
+        let tl = self.ent_ld(ent, SIG_LEN);
+        let used = self.b.ins().iadd(off, lv);
+        let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, used, tl);
+        self.guard(fits, alt);
+        let groups = self.b.ins().iadd_imm_s(lv, 7);
+        let groups = self.b.ins().ushr_imm_s(groups, 3);
+        let gb = self.b.ins().ishl_imm_s(groups, 3);
+        let end = self.b.ins().iadd(off, gb);
+        let cap = self.ent_ld(ent, SIG_CAP);
+        let in_cap = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, end, cap);
+        self.guard(in_cap, alt);
+        let codes = self.ent_ld(ent, SIG_CODES);
+        let base = self.b.ins().iadd(codes, off);
+        // (1 << l) - 1, all ones for 64.
+        let ones = self.c64(-1);
+        let c64v = self.c64(64);
+        let sh = self.b.ins().isub(c64v, lv);
+        let mask = self.b.ins().ushr(ones, sh);
+        let a = self.ld(dst);
+        let pd = self.host(a, self.fk(dst), Op::C(0), Op::C(32), true, slow);
+        self.b.ins().call(self.imp.codes, &[base, groups, mask, pd]);
+        self.b.ins().jump(join, &[]);
+        self.start(alt);
+        self.sig_read_planes(ent, off, lv, dst, slow, join);
+        self.start(join);
+    }
+
+    /// A `Drive` of one waveform element to a single-range target through `yavs_rt_drive`
+    /// (`TierHost::drive_block`: at most 64 logic elements assigned from the element's first
+    /// plane block, a wider one a block of planes per 64, or one cell of an integer, enumeration
+    /// or real signal); the instruction through `yavs_rt_signal` unless `n` is 1 and the bytes of
+    /// the waveform are in memory compiled code reaches.
+    fn drive_block(
+        &mut self,
+        pc: u32,
+        driver: u32,
+        target: Reg,
+        wave: Reg,
+        n: Reg,
+        mode: yavs_ir::DriveMode,
+    ) {
+        if self.no_native() {
+            return;
+        }
+        let (slow, join) = self.slow_signal(pc, 0);
+        let nv = self.ld(n);
+        let one = self.b.ins().icmp_imm_s(IntCC::Equal, nv, 1);
+        self.guard(one, slow);
+        // A waveform element of 16 bytes (time and cell) for a signal of integer, enumeration or
+        // real elements, 40 (time and the first plane block) for a logic one, 8 and a block of
+        // planes per 64 elements beyond 64.
+        let (ent, _) = self.sig_entry(target, None, slow);
+        let es = self.ent_ld(ent, SIG_ES);
+        let bytes = self.b.ins().icmp_imm_s(IntCC::NotEqual, es, 0);
+        let len = self.ld(Reg(target.0 + 1));
+        let wide = self.b.ins().icmp_imm_s(IntCC::UnsignedGreaterThan, len, 64);
+        let small =
+            self.b
+                .ins()
+                .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, len, i64::from(u32::MAX));
+        self.guard(small, slow);
+        let blocks = self.b.ins().iadd_imm_s(len, 63);
+        let blocks = self.b.ins().ushr_imm_s(blocks, 6);
+        let wb = self.b.ins().ishl_imm_s(blocks, 5);
+        let wide_bytes = self.b.ins().iadd_imm_s(wb, 8);
+        let c40 = self.c64(40);
+        let logic = self.b.ins().select(wide, wide_bytes, c40);
+        let c16 = self.c64(16);
+        let want = self.b.ins().select(bytes, c16, logic);
+        let a = self.ld(wave);
+        let w = self.host(a, self.fk(wave), Op::C(0), Op::V(want), false, slow);
+        let (c2, c0, c4, cm) = (
+            self.c32(2),
+            self.c32(0),
+            self.c32(4),
+            self.c32(u32::from(mode == yavs_ir::DriveMode::Inertial)),
+        );
+        let b2 = self.b.ins().select(bytes, c2, c0);
+        let nb = self.b.ins().bxor_imm_s(bytes, 1);
+        let wnb = self.b.ins().band(wide, nb);
+        let w4 = self.b.ins().select(wnb, c4, c0);
+        let fl = self.b.ins().bor(b2, w4);
+        let flags = self.b.ins().bor(fl, cm);
+        let (pcv, drv) = (self.c32(pc), self.c32(driver));
+        let (lo, len) = (self.ld(target), self.ld(Reg(target.0 + 1)));
+        self.call_go(self.imp.drive, &[pcv, drv, lo, len, w, flags], false);
+        self.join(join);
+    }
+
+    /// The `Drive` of a scalar logic assignment the interpreter fuses
+    /// (`yavs_interp::ScalarDrive`): the waveform is never made, the delay and the code go to the
+    /// kernel in registers.
+    fn drive_bit(&mut self, pc: u32, s: &yavs_interp::ScalarDrive) {
+        if self.no_native() {
+            return;
+        }
+        let v = self.ld(s.value);
+        let code = if s.inertial {
+            self.b.ins().bor_imm_s(v, 0x100)
+        } else {
+            v
+        };
+        let (pcv, drv) = (self.c32(pc), self.c32(s.driver));
+        let (lo, len, time) = (
+            self.ld(s.target),
+            self.ld(Reg(s.target.0 + 1)),
+            self.ld(s.time),
+        );
+        self.call_go(self.imp.drive_bit, &[pcv, drv, lo, len, time, code], true);
+    }
+
+    /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, in a frame-mode
+    /// function: the argument cells go to `TierHost::native_frame` (`yavs_rt_native`), the
+    /// interpreter steps the call where that does not run it.
+    fn native_direct(
+        &mut self,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        dst: Option<Reg>,
+    ) -> Result<(), String> {
+        let rs = ok(f.regs(args), "operand list out of range")?;
+        let mut cells = Vec::new();
+        for &r in rs {
+            cells.push(r);
+            if f.reg_ty.get(r.0 as usize) == Some(&yavs_ir::RegTy::Sig) {
+                cells.push(Reg(r.0 + 1));
+            }
+        }
+        let (slow, join) = self.slow_path(pc, i);
+        let slot = |b: &mut FunctionBuilder<'_>, n: usize| {
+            let ss = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                (n.max(1) * 8) as u32,
+                3,
+            ));
+            b.ins().stack_addr(I64, ss, 0)
+        };
+        let buf = slot(&mut self.b, cells.len());
+        let scratch = slot(&mut self.b, 1);
+        for (k, &r) in cells.iter().enumerate() {
+            let v = self.ld(r);
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), v, buf, (k * 8) as i32);
+        }
+        let depth = self.c64((NATIVE_FRAME_MODE | u64::from(pc)) as i64);
+        let (nv, nn) = (self.c32(native.0), self.c32(cells.len() as u32));
+        let call = self.b.ins().call(
+            self.imp.native,
+            &[self.env, self.mem, nv, buf, nn, depth, scratch],
+        );
+        let st = self.b.inst_results(call)[0];
+        self.clear();
+        let kind = self.b.ins().band_imm_s(st, 0xff);
+        let mut okc = self.b.ins().icmp_imm_s(IntCC::NotEqual, kind, 0);
+        if dst.is_some() {
+            let has = self.b.ins().band_imm_s(st, 0x100);
+            let has = self.b.ins().icmp_imm_s(IntCC::NotEqual, has, 0);
+            okc = self.b.ins().band(okc, has);
+        }
+        self.guard(okc, slow);
+        if let Some(d) = dst {
+            let v = self.b.ins().load(I64, MemFlagsData::trusted(), scratch, 0);
+            self.st(d, v);
+        }
+        // The native ended the process: the frame suspends with its registers in place.
+        let (out, cont) = (self.b.create_block(), self.b.create_block());
+        let stop = self.b.ins().icmp_imm_s(IntCC::Equal, kind, 2);
+        self.b.set_cold_block(out);
+        self.branch(stop, out, cont);
+        self.start(out);
+        let v = self.c32(yavs_interp::TIER_SUSPEND);
+        self.leave(v);
+        self.start(cont);
+        self.join(join);
+        Ok(())
+    }
+
+    /// A `WaitOn` and the `Suspend` after it through `yavs_rt_wait` (`TierHost::wait_suspend`).
+    fn wait_suspend(&mut self, pc: u32, sig: Reg) {
+        if self.no_native() {
+            return;
+        }
+        let (pcv, lo, len) = (self.c32(pc), self.ld(sig), self.ld(Reg(sig.0 + 1)));
+        self.call_go(self.imp.wait, &[pcv, lo, len], false);
+    }
+
+    /// A `WaitOn` that is not the last of its wait: the kernel's registration of the waiter it
+    /// had at the last wait, else the instruction (`yavs_rt_wait_on`).
+    fn wait_on(&mut self, pc: u32, sig: Reg) {
+        if self.no_native() {
+            return;
+        }
+        let (pcv, lo, len) = (self.c32(pc), self.ld(sig), self.ld(Reg(sig.0 + 1)));
+        self.call_go(self.imp.wait_on, &[pcv, lo, len], true);
+    }
+
+    /// The wait that names the same signals every time, at its first statement: the process
+    /// suspends at the `Suspend` at `at` when the kernel still holds the last wait
+    /// (`yavs_rt_wait_same`).
+    fn wait_same(&mut self, at: u32) {
+        if self.no_native() {
+            return;
+        }
+        let (pcv, z) = (self.c32(at), self.c64(0));
+        self.call_go(self.imp.wait_same, &[pcv, z, z], true);
     }
 }
 

@@ -74,7 +74,14 @@ fn natives_in_compiled_code_match_the_interpreter() {
             severity == "failure",
             "{want:?}"
         );
-        for tier in ["llvm", "auto"] {
+        for tier in [
+            "llvm",
+            "auto",
+            #[cfg(feature = "clift")]
+            "clift",
+            #[cfg(feature = "clift")]
+            "auto3",
+        ] {
             assert_eq!(run(&dir, tier, severity), want, "{tier} at {severity}");
         }
     }
@@ -141,7 +148,14 @@ fn signal_reads_in_compiled_code_match_the_interpreter() {
     };
     let want = go("interp");
     assert!(want.1.contains("** Note"), "{want:?}");
-    for tier in ["llvm", "auto"] {
+    for tier in [
+        "llvm",
+        "auto",
+        #[cfg(feature = "clift")]
+        "clift",
+        #[cfg(feature = "clift")]
+        "auto3",
+    ] {
         assert_eq!(go(tier), want, "{tier}");
     }
 }
@@ -220,7 +234,14 @@ fn scalar_and_wide_signal_reads_in_compiled_code_match_the_interpreter() {
     };
     let want = go("interp");
     assert!(want.1.matches("** Note").count() >= 20, "{want:?}");
-    for tier in ["llvm", "auto"] {
+    for tier in [
+        "llvm",
+        "auto",
+        #[cfg(feature = "clift")]
+        "clift",
+        #[cfg(feature = "clift")]
+        "auto3",
+    ] {
         let got = go(tier);
         assert_eq!((got.0, &got.1), (want.0, &want.1), "{tier}");
         // The reads of all the kinds are answered in compiled code.
@@ -344,7 +365,14 @@ fn logic_equality_in_compiled_code_matches_the_interpreter() {
     };
     let want = go("interp");
     assert!(want.1.matches("** Note").count() >= 10, "{want:?}");
-    for tier in ["llvm", "auto"] {
+    for tier in [
+        "llvm",
+        "auto",
+        #[cfg(feature = "clift")]
+        "clift",
+        #[cfg(feature = "clift")]
+        "auto3",
+    ] {
         assert_eq!(go(tier), want, "{tier}");
     }
 }
@@ -414,7 +442,14 @@ fn record_layouts_kept_in_the_frame_match_the_interpreter() {
     };
     let want = go("interp");
     assert!(want.1.matches("** Note").count() >= 20, "{want:?}");
-    for tier in ["llvm", "auto"] {
+    for tier in [
+        "llvm",
+        "auto",
+        #[cfg(feature = "clift")]
+        "clift",
+        #[cfg(feature = "clift")]
+        "auto3",
+    ] {
         assert_eq!(go(tier), want, "{tier}");
     }
 }

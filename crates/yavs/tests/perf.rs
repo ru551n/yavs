@@ -716,3 +716,75 @@ mod llvm {
         ]
     );
 }
+
+/// Under the Cranelift tier (`--tier=clift`, compiled before the run): the callbacks compiled code
+/// makes, on the designs of the LLVM cases above. Run by the `clift` job of CI
+/// (`cargo test -p yavs --features clift`, debug build: the callbacks are counted).
+#[cfg(feature = "clift")]
+mod clift {
+    use super::*;
+
+    macro_rules! clift_case {
+        ($name:ident, $design:literal, $says:expr, [$(($c:literal, $b:expr)),* $(,)?]) => {
+            #[test]
+            fn $name() {
+                check(
+                    $design,
+                    include_str!(concat!("perf/", $design, ".vhd")),
+                    $says,
+                    "clift",
+                    &[],
+                    &[$(($c, $b)),*],
+                );
+            }
+        };
+    }
+
+    clift_case!(
+        clocked,
+        "llvm_clocked",
+        "q=",
+        [
+            ("cb_signal", Max(5)),
+            ("cb_step", Max(10)),
+            ("cb_native", Max(55)),
+            ("cb_drive", Max(998)),
+            ("cb_wait", Max(19)),
+            ("cb_wait_same", Max(1018)),
+        ]
+    );
+    clift_case!(
+        sigread,
+        "llvm_sigread",
+        "wide=",
+        [
+            ("cb_signal", Max(215)),
+            ("cb_step", Max(12)),
+            ("cb_native", Max(56)),
+            ("cb_drive", Max(263)),
+            ("cb_lcopy", Max(158)),
+        ]
+    );
+    clift_case!(
+        edge_forms,
+        "edge_forms",
+        "edges=",
+        [
+            ("cb_signal", Max(8)),
+            ("cb_step", Max(16)),
+            ("cb_drive", Max(1867)),
+            ("cb_wait_same", Max(1570)),
+        ]
+    );
+    clift_case!(
+        reg_planes,
+        "reg_planes",
+        "c=100",
+        [
+            ("cb_signal", Max(108)),
+            ("cb_step", Max(12)),
+            ("cb_drive", Max(416)),
+            ("cb_native", Max(107)),
+        ]
+    );
+}

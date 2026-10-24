@@ -13,7 +13,7 @@ use yavs_interp::{
     Called, NativeCall, NativeFrame, Stepped, TIER_SUSPEND, TIER_UNWIND, TierFrame, TierHost, space,
 };
 
-use yavs_ir::{AddrSpace, Func, FuncId, FuncKind, Inst, Program, Reg, Width};
+use yavs_ir::{AddrSpace, FOp, Func, FuncId, FuncKind, Inst, IntOp, Program, Reg, Width};
 
 use crate::census::{Cb, cb};
 /// The code of `f<id>_c` (`Gen::adapter`): a native-frame function called from the interpreter
@@ -2589,3 +2589,34 @@ pub fn off_simulation_cpus() {
 
 #[cfg(not(target_os = "linux"))]
 pub fn off_simulation_cpus() {}
+
+/// Instructions a native frame has the interpreter execute on a frame of its own
+/// (`TierHost::native_step`): heap objects, vector fills and compares, layouts, reports.
+pub fn xstep_ok(f: &Func, i: &Inst) -> bool {
+    let n = f.reg_ty.len() as u32;
+    matches!(
+        i,
+        Inst::New { .. }
+            | Inst::NewFill { .. }
+            | Inst::Free { .. }
+            | Inst::LayoutOf { .. }
+            | Inst::LFill { .. }
+            | Inst::LEq { .. }
+            | Inst::Report { .. }
+            | Inst::FToI { .. }
+            | Inst::FToIRange { .. }
+            | Inst::Phys { .. }
+            | Inst::LNum { .. }
+            | Inst::LogicOp { .. }
+            | Inst::Cat { logic: true, .. }
+            | Inst::Bin { op: IntOp::Pow, .. }
+            | Inst::BinRange { op: IntOp::Pow, .. }
+            | Inst::FBin {
+                op: FOp::Pow | FOp::PowI,
+                ..
+            }
+    ) && {
+        let (uses, defs) = yavs_interp::inst_regs(f, i);
+        uses.iter().chain(&defs).all(|r| r.0 < n)
+    }
+}

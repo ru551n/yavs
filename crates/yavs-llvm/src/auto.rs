@@ -1530,7 +1530,10 @@ impl AutoTier {
                 let mut later: Vec<FuncId> = Vec::new();
                 // Functions to look up in the compilation cache (`Worker::probe`).
                 let mut probes: Vec<FuncId> = Vec::new();
-                let upgrade = opt != OptLevel::O2;
+                // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
+                // recompile at O2 (code of the two does not call each other's native code).
+                let upgrade = opt != OptLevel::O2
+                    && !(w.first.is_some() && std::env::var_os("YAVS_FIRST_ONLY").is_some());
                 loop {
                     match rx.recv_timeout(period) {
                         Ok(id) => asked.push_back(id),

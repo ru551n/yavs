@@ -707,37 +707,6 @@ fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     }
 }
 
-/// Instructions a native frame has the interpreter execute on a frame of its own
-/// (`TierHost::native_step`): heap objects, vector fills and compares, layouts, reports.
-fn xstep_ok(f: &Func, i: &Inst) -> bool {
-    let n = f.reg_ty.len() as u32;
-    matches!(
-        i,
-        Inst::New { .. }
-            | Inst::NewFill { .. }
-            | Inst::Free { .. }
-            | Inst::LayoutOf { .. }
-            | Inst::LFill { .. }
-            | Inst::LEq { .. }
-            | Inst::Report { .. }
-            | Inst::FToI { .. }
-            | Inst::FToIRange { .. }
-            | Inst::Phys { .. }
-            | Inst::LNum { .. }
-            | Inst::LogicOp { .. }
-            | Inst::Cat { logic: true, .. }
-            | Inst::Bin { op: IntOp::Pow, .. }
-            | Inst::BinRange { op: IntOp::Pow, .. }
-            | Inst::FBin {
-                op: FOp::Pow | FOp::PowI,
-                ..
-            }
-    ) && {
-        let (uses, defs) = yavs_interp::inst_regs(f, i);
-        uses.iter().chain(&defs).all(|r| r.0 < n)
-    }
-}
-
 /// The most pieces (operand pairs) of a `Cat` a native frame lowers.
 const CAT_PARTS: usize = 64;
 

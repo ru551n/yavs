@@ -353,6 +353,7 @@ def gen_args(t, w):
 
 
 def yavs_script(Y, t, w, tier, sub="run", stop=None):
+    tier, *envs = tier.split("+")  # `tier+VAR=VALUE`: the tier with environment variables set (measurement knobs)
     a = [Y, sub, f"--std={t['std']}"] + (["--relaxed"] if t["relaxed"] else []) + [f"--work={t['toplib']}:{w}/{t['toplib']}"]
     a += [f"--map={l}:{w}/{l}" for l in libs_of(w) if l != t["toplib"]]
     if sub == "run":
@@ -361,7 +362,8 @@ def yavs_script(Y, t, w, tier, sub="run", stop=None):
         a += [f"--stop-time={stop}"] if stop else []
         a += [f"--exit-severity={t['severity']}"] if t.get("severity") else []
     a += [t["top"]] + gen_args(t, w)
-    return f"cd {shlex.quote(str(w))} && " + " ".join(shlex.quote(x) for x in a)
+    pre = "env " + " ".join(shlex.quote(e) for e in envs) + " " if envs else ""
+    return f"cd {shlex.quote(str(w))} && " + pre + " ".join(shlex.quote(x) for x in a)
 
 
 def ref_script(tool, t, w, what="both"):
@@ -604,7 +606,7 @@ def make_cells(binaries, refs, tiers, phases, compare=False):
         for p in phases:
             if p == "run":
                 for tk in tiers if yavs else ["run"]:
-                    if yavs and tk.removesuffix(COLD) not in TIERS_ALL:
+                    if yavs and tk.removesuffix(COLD).split("+")[0] not in TIERS_ALL:
                         raise Fail(f"unknown tier `{tk}` (interp, auto, llvm, clift, clift-auto, auto3, each also with {COLD})")
                     cells.append(Cell(nm(tk), tool, b, tk.removesuffix(COLD) if yavs else None, tk.endswith(COLD)))
                     ph[p].append(nm(tk))

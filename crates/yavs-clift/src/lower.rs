@@ -79,7 +79,7 @@ pub struct Jit {
     deopt_slots: ClifId,
     deopt_end: ClifId,
     /// The kernel-facing callbacks of `rt.rs`, in the order of `KERNEL`.
-    kernel: [ClifId; 9],
+    kernel: [ClifId; 12],
     tables: HashMap<Vec<u8>, DataId>,
     sig: Signature,
     /// Calls between compiled functions without a frame in the interpreter (`NatInfo`) and
@@ -163,6 +163,9 @@ impl Jit {
             (PLANES, yavs_rt_planes as *const u8),
             (NATIVE, yavs_rt_native as *const u8),
             (FAST, yavs_rt_fast as *const u8),
+            (TROOT, yavs_rt_troot as *const u8),
+            (ENDSTMT, yavs_rt_endstmt as *const u8),
+            (XSTEP, yavs_rt_xstep as *const u8),
         ] {
             b.symbol(n, p);
         }
@@ -203,6 +206,13 @@ impl Jit {
             imp(PLANES, &[I64; 5], None)?,
             imp(NATIVE, &[I64, I64, I32, I64, I32, I64, I64], Some(I32))?,
             imp(FAST, &[I64, I64, I64, I32, I32, I64, I64], Some(I32))?,
+            imp(TROOT, &[I64, I64, I64, I32, I64, I64], Some(I32))?,
+            imp(ENDSTMT, &[I64, I64, I64], None)?,
+            imp(
+                XSTEP,
+                &[I64, I64, I32, I32, I64, I64, I64, I32, I64, I64, I32, I64],
+                Some(I32),
+            )?,
         ];
         let mut sig = module.make_signature();
         sig.params.extend([AbiParam::new(I64); 3]);
@@ -266,6 +276,7 @@ impl Jit {
 
     fn try_native(&mut self, prog: &Program, id: FuncId) -> Option<Rc<NatInfo>> {
         let f = prog.func(id)?;
+        let dump = std::env::var_os("YAVS_CLIFT_DUMP").is_some();
         if !matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
             || f.parent.is_some()
             || f.code.is_empty()
@@ -274,6 +285,17 @@ impl Jit {
             || f.reg_ty.len() > NAT_MAX_REGS
             || bad_reg(f).is_some()
         {
+            if dump {
+                eprintln!(
+                    "no native variant of {id} {}: kind {:?}, parent {:?}, {} IR, frame {}, {} regs",
+                    f.name,
+                    f.kind,
+                    f.parent,
+                    f.code.len(),
+                    f.frame,
+                    f.reg_ty.len()
+                );
+            }
             return None;
         }
         // Value parameters of one word only; every return agrees on a value.
@@ -282,6 +304,16 @@ impl Jit {
                 && p.width != Width::Sig
                 && u64::from(p.slot) + u64::from(p.width.bytes()) <= u64::from(f.frame)
         }) {
+            if dump {
+                eprintln!(
+                    "no native variant of {id} {}: params {:?}",
+                    f.name,
+                    f.params
+                        .iter()
+                        .map(|p| (p.class, p.width))
+                        .collect::<Vec<_>>()
+                );
+            }
             return None;
         }
         let mut rets = f.code.iter().filter_map(|i| match i {
@@ -332,7 +364,7 @@ impl Jit {
         // The callees that have a native variant.
         let mut nats: HashMap<FuncId, Rc<NatInfo>> = HashMap::new();
         for i in &f.code {
-            if let Inst::Call { func, .. } = *i
+            if let Inst::Call { func, .. } | Inst::CallProt { func, .. } = *i
                 && !nats.contains_key(&func)
                 && let Some(n) = self.native_of(prog, func)
             {
@@ -428,6 +460,15 @@ impl Jit {
             fast: self
                 .module
                 .declare_func_in_func(self.kernel[8], &mut ctx.func),
+            troot: self
+                .module
+                .declare_func_in_func(self.kernel[9], &mut ctx.func),
+            endstmt: self
+                .module
+                .declare_func_in_func(self.kernel[10], &mut ctx.func),
+            xstep: self
+                .module
+                .declare_func_in_func(self.kernel[11], &mut ctx.func),
             tables: tabs,
             natives,
         };
@@ -499,6 +540,9 @@ struct Imports {
     planes: FuncRef,
     native: FuncRef,
     fast: FuncRef,
+    troot: FuncRef,
+    endstmt: FuncRef,
+    xstep: FuncRef,
     tables: HashMap<Vec<u8>, GlobalValue>,
     natives: HashMap<FuncId, NatRef>,
 }
@@ -579,6 +623,9 @@ struct Slow {
     keep: bool,
     /// Through `yavs_rt_signal` with this edge argument instead of `yavs_rt_step`.
     edge: Option<u32>,
+    /// In a native frame: `yavs_rt_endstmt` (the end of a statement that recorded temporaries)
+    /// instead of leaving.
+    endstmt: bool,
 }
 
 struct Gen<'a> {
@@ -620,45 +667,28 @@ struct Nat {
     /// The frame's slots on the native stack.
     slots: Value,
     /// The temporary area's length at entry: where `Stmt` trims to.
+    /// The cell (a stack address) holding the temporary area's length the frame's statements trim
+    /// to: the length at entry, raised by a `NewFrame` the frame's own statements must not free.
     temp_base: Value,
-    /// Registers that may hold an address in this frame's slots: a callee on a native frame
-    /// cannot reach them, so a call passing one is left to the interpreter (`frame_addrs`).
-    frame_addr: Vec<bool>,
 }
 
-/// The registers that may hold an address of the function's own frame: defined by `AddrOf` of
-/// the frame, or derived from such a register by `Move`, `Select`, `Index` or `Field`.
-fn frame_addrs(f: &Func) -> Vec<bool> {
-    let mut t = vec![false; f.reg_ty.len()];
-    loop {
-        let mut changed = false;
-        for i in &f.code {
-            let (dst, from): (Reg, Vec<Reg>) = match *i {
-                Inst::AddrOf {
-                    dst,
-                    space: AddrSpace::Frame,
-                    ..
-                } => {
-                    if !t[dst.0 as usize] {
-                        t[dst.0 as usize] = true;
-                        changed = true;
-                    }
-                    continue;
-                }
-                Inst::Move { dst, src } => (dst, vec![src]),
-                Inst::Select { dst, a, b, .. } => (dst, vec![a, b]),
-                Inst::Index { dst, base, .. } | Inst::Field { dst, base, .. } => (dst, vec![base]),
-                _ => continue,
-            };
-            if !t[dst.0 as usize] && from.iter().any(|r| t[r.0 as usize]) {
-                t[dst.0 as usize] = true;
-                changed = true;
-            }
+/// The instructions a native frame has the interpreter execute on a frame of its own: those of the
+/// LLVM tier (`xstep_ok`) and the ones it lowers inline that this tier does not (`TierHost::native_step`
+/// steps any instruction that needs only registers and memory the host reaches).
+fn xstep_wide(f: &Func, i: &Inst) -> bool {
+    xstep_ok(f, i)
+        || matches!(
+            i,
+            Inst::NewFrame { .. }
+                | Inst::Fill { .. }
+                | Inst::Cat { .. }
+                | Inst::SlicePos { .. }
+                | Inst::MemEq { .. }
+        ) && {
+            let n = f.reg_ty.len() as u32;
+            let (uses, defs) = yavs_interp::inst_regs(f, i);
+            uses.iter().chain(&defs).all(|r| r.0 < n)
         }
-        if !changed {
-            return t;
-        }
-    }
 }
 
 /// A size or offset operand of `host`: known at compile time or in a value.
@@ -707,16 +737,19 @@ fn gen_func(
         ));
         let regs = b.ins().stack_addr(I64, rs, 0);
         let slots = b.ins().stack_addr(I64, ss, 0);
-        let temp_base = b
+        let len0 = b
             .ins()
             .load(I64, MemFlagsData::trusted(), mem, MEM_TEMP_LEN as i32);
+        let tcell =
+            b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+        let temp_base = b.ins().stack_addr(I64, tcell, 0);
+        b.ins().store(MemFlagsData::trusted(), len0, temp_base, 0);
         nat = Some(Nat {
             func: nat_id.unwrap_or(0),
             nregs,
             depth: pc_in,
             slots,
             temp_base,
-            frame_addr: frame_addrs(f),
         });
         regs
     } else {
@@ -1120,12 +1153,18 @@ fn gen_func(
             },
             Inst::Stmt => {
                 let (slow, join) = g.slow_path(pc, &inst);
+                // In a native frame the host's own function drops the recorded temporaries.
+                if g.nat.is_some()
+                    && let Some(sl) = g.slows.last_mut()
+                {
+                    sl.endstmt = true;
+                }
                 let roots = g.mem_ld(MEM_TEMP_ROOTS);
                 let z = g.b.ins().icmp_imm_s(IntCC::Equal, roots, 0);
                 g.guard(z, slow);
                 let len = g.mem_ld(MEM_TEMP_LEN);
                 let base = match &g.nat {
-                    Some(n) => n.temp_base,
+                    Some(_) => g.nat_temp_base(),
                     None => g.mem_ld(MEM_TEMP_BASE),
                 };
                 let v = g.b.ins().umin(base, len);
@@ -1135,7 +1174,8 @@ fn gen_func(
                     g.wait_same(at as u32);
                 }
             }
-            Inst::Deref { dst, handle, .. } if g.nat.is_none() => g.deref(pc, &inst, dst, handle),
+            Inst::Deref { dst, handle, .. } => g.deref(pc, &inst, dst, handle),
+            Inst::TempRoot { addr, desc, ty } => g.temp_root(prog, pc, &inst, addr, desc, ty)?,
             Inst::Alloc { dst, size } => {
                 let (slow, join) = g.slow_path(pc, &inst);
                 let sz = g.ld(size);
@@ -1462,7 +1502,26 @@ fn gen_func(
                 let rs = f.regs(args);
                 match (nr, rs) {
                     (Some(nr), Some(rs)) if nr.nparams == rs.len() && nr.ret == dst.is_some() => {
-                        g.native_call(pc, &inst, nr, rs, dst)
+                        g.native_call(pc, &inst, nr, rs, dst, None)
+                    }
+                    _ => g.step(pc, &inst),
+                }
+            }
+            Inst::CallProt {
+                func,
+                obj,
+                args,
+                dst,
+            } => {
+                let nr = g.imp.natives.get(&func).copied();
+                let rs = f.regs(args);
+                match (nr, rs) {
+                    (Some(nr), Some(rs))
+                        if nr.nparams == rs.len() + 1
+                            && nr.ret == dst.is_some()
+                            && obj.0 < f.reg_ty.len() as u32 =>
+                    {
+                        g.native_call(pc, &inst, nr, rs, dst, Some(obj))
                     }
                     _ => g.step(pc, &inst),
                 }
@@ -1560,12 +1619,22 @@ fn gen_func(
                             _ => g.signal(pc, e),
                         }
                     }
-                    None if g.nat.is_none() && frame_direct(prog, f, &inst) => {
+                    None if frame_direct(prog, f, &inst) => {
                         g.native_direct(pc, &inst, f, native, args, dst)?
+                    }
+                    // Cold natives leave a native frame for the interpreter: what they do.
+                    None if g.nat.is_some()
+                        && prog
+                            .natives
+                            .get(native)
+                            .is_some_and(|n| yavs_interp::cold_native(&n.symbol)) =>
+                    {
+                        g.deopt_here(pc)
                     }
                     None => g.step(pc, &inst),
                 }
             }
+            _ if g.nat.is_some() && xstep_wide(f, &inst) => g.native_step(pc, &inst, f),
             _ => g.step(pc, &inst),
         }
     }
@@ -1583,6 +1652,12 @@ fn gen_func(
         g.b.set_cold_block(s.block);
         g.b.switch_to_block(s.block);
         g.clear();
+        if s.endstmt && g.nat.is_some() {
+            let base = g.nat_temp_base();
+            g.b.ins().call(g.imp.endstmt, &[g.env, g.mem, base]);
+            g.b.ins().jump(s.join, &[]);
+            continue;
+        }
         if g.nat.is_some() {
             // The interpreter executes the instruction in the materialised frame.
             let v = g.c32(s.pc);
@@ -1700,6 +1775,14 @@ impl Gen<'_> {
             Some(n) => (n.nregs * 8, n.slots),
             None => return Ok(()),
         };
+        // Callees reach these slots through their frame index (`Mem::nslots`).
+        let depth = self.nat.as_ref().map_or(self.regs, |n| n.depth);
+        let tab = self.mem_ld(MEM_NSLOTS);
+        let eo = self.b.ins().imul_imm_s(depth, 16);
+        let ent = self.b.ins().iadd(tab, eo);
+        self.b.ins().store(MemFlagsData::trusted(), slots, ent, 0);
+        let fl = self.c64(i64::from(f.frame));
+        self.b.ins().store(MemFlagsData::trusted(), fl, ent, 8);
         let regs_ptr = self.regs;
         for (ptr, bytes, fl) in [
             (regs_ptr, regs, self.rf),
@@ -1774,7 +1857,8 @@ impl Gen<'_> {
     /// its registers from the register array, its slots are copied to the buffer it hands out.
     fn record_frame(&mut self, f: &Func, pc: Value) {
         let Some(n) = &self.nat else { return };
-        let (func, nregs, slots, tb) = (n.func, n.nregs, n.slots, n.temp_base);
+        let (func, nregs, slots) = (n.func, n.nregs, n.slots);
+        let tb = self.nat_temp_base();
         let fu = self.c32(func);
         let nr = self.c64(nregs as i64);
         let sl = self.c64(i64::from(f.frame));
@@ -1794,14 +1878,37 @@ impl Gen<'_> {
     /// `Inst::Call` of a function that has a native-frame variant: a direct call one frame
     /// deeper, with no frame in the interpreter; the interpreter makes the call when the depth
     /// limit is near, and the frames are materialised when the callee cannot finish.
-    fn native_call(&mut self, pc: u32, inst: &Inst, nr: NatRef, args: &[Reg], dst: Option<Reg>) {
-        if let Some(n) = &self.nat
-            && args.iter().any(|r| n.frame_addr[r.0 as usize])
-        {
-            self.bad = Some("a call passes an address in the frame".into());
-            return;
-        }
+    fn native_call(
+        &mut self,
+        pc: u32,
+        inst: &Inst,
+        nr: NatRef,
+        args: &[Reg],
+        dst: Option<Reg>,
+        obj: Option<Reg>,
+    ) {
         let (slow, join) = self.slow_path(pc, inst);
+        // A protected call: the process must be allowed the shared state (else the interpreter's
+        // error), and the callee allocates in the shared heap when the object is there
+        // (`Machine::call_prot`).
+        let flags = self.mem_ld(MEM_FLAGS);
+        if let Some(o) = obj {
+            let serial = self
+                .b
+                .ins()
+                .band_imm_s(flags, yavs_interp::TIER_SERIAL as i64);
+            let allowed = self.b.ins().icmp_imm_s(IntCC::NotEqual, serial, 0);
+            self.guard(allowed, slow);
+            let ov = self.ld(o);
+            let tag = self.b.ins().ushr_imm_s(ov, 56);
+            let shared =
+                self.b
+                    .ins()
+                    .icmp_imm_s(IntCC::Equal, tag, i64::from(yavs_interp::SHARED_TAG));
+            let shared = self.b.ins().uextend(I64, shared);
+            let inner = self.b.ins().bor(flags, shared);
+            self.mem_st(MEM_FLAGS, inner);
+        }
         let depth = match &self.nat {
             Some(n) => n.depth,
             None => self.mem_ld(MEM_FRAME_IDX),
@@ -1821,6 +1928,9 @@ impl Gen<'_> {
         let okc = self.b.ins().band(okc, room);
         self.guard(okc, slow);
         let mut cargs = vec![self.env, self.mem, d1];
+        if let Some(o) = obj {
+            cargs.push(self.ld(o));
+        }
         for &r in args {
             cargs.push(self.ld(r));
         }
@@ -1829,6 +1939,9 @@ impl Gen<'_> {
             let rs = self.b.inst_results(call);
             (rs[0], rs[1])
         };
+        if obj.is_some() {
+            self.mem_st(MEM_FLAGS, flags);
+        }
         let (out, cont) = (self.b.create_block(), self.b.create_block());
         self.b.set_cold_block(out);
         self.b.ins().brif(status, out, &[], cont, &[]);
@@ -1984,6 +2097,7 @@ impl Gen<'_> {
             pc,
             keep: keeps_objects(i),
             edge: via_signal(i).then_some(0),
+            endstmt: false,
         });
         (block, join)
     }
@@ -2085,6 +2199,55 @@ impl Gen<'_> {
         let p1 = self.b.ins().iadd(base, off);
         self.b.ins().jump(done, &[BlockArg::Value(p1)]);
         self.b.switch_to_block(call);
+        if self.nat.is_some() {
+            // A native frame's own slots, and the slots of the native frames below it, registered
+            // at their entry in `Mem::nslots` (a frame above the interpreter's top frame and
+            // below this one).
+            let (depth, slots) = self.nat.as_ref().map(|n| (n.depth, n.slots)).expect("nat");
+            let flen = self.c64(self.frame_len as i64);
+            let (own, other, up, rest) = (
+                self.b.create_block(),
+                self.b.create_block(),
+                self.b.create_block(),
+                self.b.create_block(),
+            );
+            let is_own = self.b.ins().icmp(IntCC::Equal, hi, depth);
+            self.b.ins().brif(is_own, own, &[], other, &[]);
+            self.b.switch_to_block(own);
+            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, flen);
+            let orest = self.b.ins().isub(flen, n);
+            let inside = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, off, orest);
+            let okc = self.b.ins().band(fits, inside);
+            self.guard(okc, slow);
+            let pown = self.b.ins().iadd(slots, off);
+            self.b.ins().jump(done, &[BlockArg::Value(pown)]);
+            self.b.switch_to_block(other);
+            let top = self.mem_ld(MEM_FRAME_IDX);
+            let above = self.b.ins().icmp(IntCC::UnsignedGreaterThan, hi, top);
+            let below = self.b.ins().icmp(IntCC::UnsignedLessThan, hi, depth);
+            let between = self.b.ins().band(above, below);
+            self.b.ins().brif(between, up, &[], rest, &[]);
+            self.b.switch_to_block(up);
+            let tab = self.mem_ld(MEM_NSLOTS);
+            let eo = self.b.ins().imul_imm_s(hi, 16);
+            let ent = self.b.ins().iadd(tab, eo);
+            let sp = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 0);
+            let len = self.b.ins().load(I64, MemFlagsData::trusted(), ent, 8);
+            let fits = self.b.ins().icmp(IntCC::UnsignedLessThanOrEqual, n, len);
+            let urest = self.b.ins().isub(len, n);
+            let inside = self
+                .b
+                .ins()
+                .icmp(IntCC::UnsignedLessThanOrEqual, off, urest);
+            let okc = self.b.ins().band(fits, inside);
+            self.guard(okc, slow);
+            let pup = self.b.ins().iadd(sp, off);
+            self.b.ins().jump(done, &[BlockArg::Value(pup)]);
+            self.b.switch_to_block(rest);
+        }
         // The object's entry of `Mem::objs` (the objects found before: heap objects a `Deref`
         // found, a process's heap variables): one load and compare, as the LLVM generator does;
         // else `yavs_rt_host` (`Mem::find`, then the interpreter is asked for the object).
@@ -2312,6 +2475,7 @@ impl Gen<'_> {
             pc,
             keep: false,
             edge: Some(edge),
+            endstmt: false,
         });
         (block, join)
     }
@@ -2728,6 +2892,188 @@ impl Gen<'_> {
         self.call_go(self.imp.drive_bit, &[pcv, drv, lo, len, time, code], true);
     }
 
+    /// The temporary area's length the native frame's statements trim to.
+    fn nat_temp_base(&mut self) -> Value {
+        let cell = self.nat.as_ref().map_or(self.mem, |n| n.temp_base);
+        self.b.ins().load(I64, MemFlagsData::trusted(), cell, 0)
+    }
+
+    /// Materialise a native frame at `pc` (its exit block); the builder goes on in a new block,
+    /// which nothing reaches.
+    fn deopt_here(&mut self, pc: u32) {
+        let v = self.c32(pc);
+        self.leave(v);
+        let dead = self.b.create_block();
+        self.start(dead);
+    }
+
+    /// `Inst::TempRoot`: a fat pair is recorded only when a word points into a heap
+    /// (`Machine::fat_root`), checked in place; a typed temporary (native frames) and the pair
+    /// that does point into a heap go to `yavs_rt_troot`, the interpreter's `TierHost::temp_root`,
+    /// which says 0 where the interpreter must execute the instruction.
+    fn temp_root(
+        &mut self,
+        prog: &Program,
+        pc: u32,
+        i: &Inst,
+        addr: Reg,
+        desc: Option<Reg>,
+        ty: Option<yavs_ir::TyId>,
+    ) -> Result<(), String> {
+        if ty.is_some() && self.nat.is_none() {
+            // A frame-mode function steps the typed temporary.
+            self.step(pc, i);
+            return Ok(());
+        }
+        let (slow, join) = self.slow_path(pc, i);
+        match ty {
+            None => {
+                let rec = self.b.create_block();
+                self.b.set_cold_block(rec);
+                let a = self.ld(addr);
+                let p = self.host(a, self.fk(addr), Op::C(0), Op::C(16), false, rec);
+                let nf = self.gf;
+                let (w0, w1) = (
+                    self.b.ins().load(I64, nf, p, 0),
+                    self.b.ins().load(I64, nf, p, 8),
+                );
+                let mut heap = None;
+                for w in [w0, w1] {
+                    let sp = self.b.ins().ushr_imm_s(w, 61);
+                    let h = self
+                        .b
+                        .ins()
+                        .icmp_imm_s(IntCC::Equal, sp, i64::from(space::HEAP));
+                    let sh =
+                        self.b
+                            .ins()
+                            .icmp_imm_s(IntCC::Equal, sp, i64::from(space::SHARED_HEAP));
+                    let any = self.b.ins().bor(h, sh);
+                    heap = Some(match heap {
+                        Some(x) => self.b.ins().bor(x, any),
+                        None => any,
+                    });
+                }
+                let none = self.b.ins().bxor_imm_s(heap.expect("two words"), 1);
+                self.b.ins().brif(none, join, &[], rec, &[]);
+                self.start(rec);
+                let (ty, z, n) = (self.c32(u32::MAX), self.c64(0), self.c64(0));
+                let call = self
+                    .b
+                    .ins()
+                    .call(self.imp.troot, &[self.env, self.mem, a, ty, z, n]);
+                let ok = self.b.inst_results(call)[0];
+                self.b.ins().brif(ok, join, &[], slow, &[]);
+                self.start(join);
+            }
+            Some(t) if self.nat.is_some() => {
+                let n = ok(yavs_ir::Ty::desc_size(&prog.types, t), "no descriptor size")?;
+                let dp = match (n, desc) {
+                    (0, _) => self.c64(0),
+                    (_, Some(d)) => {
+                        let dv = self.ld(d);
+                        self.host(dv, self.fk(d), Op::C(0), Op::C(n), false, slow)
+                    }
+                    _ => return Err("recorded temporary without its descriptor".into()),
+                };
+                let a = self.ld(addr);
+                let (tv, nv) = (self.c32(t.0), self.c64(n as i64));
+                let call = self
+                    .b
+                    .ins()
+                    .call(self.imp.troot, &[self.env, self.mem, a, tv, dp, nv]);
+                let okv = self.b.inst_results(call)[0];
+                self.clear();
+                self.guard(okv, slow);
+                self.join(join);
+            }
+            Some(_) => unreachable!("handled above"),
+        }
+        Ok(())
+    }
+
+    /// An instruction of a native frame the interpreter executes on a frame of its own
+    /// (`TierHost::native_step`, `xstep_ok`); the registers it reads go in, those it writes come
+    /// back.
+    fn native_step(&mut self, pc: u32, i: &Inst, f: &Func) {
+        let Some(n) = &self.nat else { return };
+        let (func, depth) = (n.func, n.depth);
+        let temp_base = self.nat_temp_base();
+        let (uses, defs) = yavs_interp::inst_regs(f, i);
+        let (slow, join) = self.slow_path(pc, i);
+        let slot = |b: &mut FunctionBuilder<'_>, n: usize| {
+            let ss = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                (n.max(1) * 8) as u32,
+                3,
+            ));
+            b.ins().stack_addr(I64, ss, 0)
+        };
+        let (ins, outs) = (slot(&mut self.b, uses.len()), slot(&mut self.b, defs.len()));
+        // The register numbers, as `u32`s in a slot of their own.
+        let (iu, od) = (
+            slot(&mut self.b, uses.len().div_ceil(2)),
+            slot(&mut self.b, defs.len().div_ceil(2)),
+        );
+        for (k, &r) in uses.iter().enumerate() {
+            let v = self.ld(r);
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), v, ins, (k * 8) as i32);
+            let idx = self.b.ins().iconst(I32, i64::from(r.0));
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), idx, iu, (k * 4) as i32);
+        }
+        for (k, &r) in defs.iter().enumerate() {
+            let idx = self.b.ins().iconst(I32, i64::from(r.0));
+            self.b
+                .ins()
+                .store(MemFlagsData::trusted(), idx, od, (k * 4) as i32);
+        }
+        let (fv, pv, nin, nout) = (
+            self.c32(func),
+            self.c32(pc),
+            self.c32(uses.len() as u32),
+            self.c32(defs.len() as u32),
+        );
+        let call = self.b.ins().call(
+            self.imp.xstep,
+            &[
+                self.env, self.mem, fv, pv, depth, iu, ins, nin, od, outs, nout, temp_base,
+            ],
+        );
+        let st = self.b.inst_results(call)[0];
+        self.clear();
+        let okv = self.b.ins().icmp_imm_s(IntCC::NotEqual, st, 0);
+        self.guard(okv, slow);
+        for (k, &r) in defs.iter().enumerate() {
+            let v = self
+                .b
+                .ins()
+                .load(I64, MemFlagsData::trusted(), outs, (k * 8) as i32);
+            self.st(r, v);
+        }
+        // The frame's own statements must not free what a `NewFrame` made.
+        if matches!(i, Inst::NewFrame { .. }) {
+            let len = self.mem_ld(MEM_TEMP_LEN);
+            let cell = self.nat.as_ref().map(|n| n.temp_base);
+            if let Some(cell) = cell {
+                self.b.ins().store(MemFlagsData::trusted(), len, cell, 0);
+            }
+        }
+        // The instruction ended the process: the frame is materialised after it.
+        let (out, cont) = (self.b.create_block(), self.b.create_block());
+        let stop = self.b.ins().icmp_imm_s(IntCC::Equal, st, 2);
+        self.b.set_cold_block(out);
+        self.branch(stop, out, cont);
+        self.start(out);
+        let v = self.c32(pc + 1);
+        self.leave(v);
+        self.start(cont);
+        self.join(join);
+    }
+
     /// `Inst::CallNative` of a native `yavs_interp::direct_native` allows, in a frame-mode
     /// function: the argument cells go to `TierHost::native_frame` (`yavs_rt_native`), the
     /// interpreter steps the call where that does not run it.
@@ -2765,7 +3111,10 @@ impl Gen<'_> {
                 .ins()
                 .store(MemFlagsData::trusted(), v, buf, (k * 8) as i32);
         }
-        let depth = self.c64((NATIVE_FRAME_MODE | u64::from(pc)) as i64);
+        let depth = match &self.nat {
+            Some(n) => n.depth,
+            None => self.c64((NATIVE_FRAME_MODE | u64::from(pc)) as i64),
+        };
         let (nv, nn) = (self.c32(native.0), self.c32(cells.len() as u32));
         let call = self.b.ins().call(
             self.imp.native,
@@ -2785,13 +3134,18 @@ impl Gen<'_> {
             let v = self.b.ins().load(I64, MemFlagsData::trusted(), scratch, 0);
             self.st(d, v);
         }
-        // The native ended the process: the frame suspends with its registers in place.
+        // The native ended the process: a native frame is materialised after the call, a
+        // frame-mode function suspends with its registers in place.
         let (out, cont) = (self.b.create_block(), self.b.create_block());
         let stop = self.b.ins().icmp_imm_s(IntCC::Equal, kind, 2);
         self.b.set_cold_block(out);
         self.branch(stop, out, cont);
         self.start(out);
-        let v = self.c32(yavs_interp::TIER_SUSPEND);
+        let v = if self.nat.is_some() {
+            self.c32(pc + 1)
+        } else {
+            self.c32(yavs_interp::TIER_SUSPEND)
+        };
         self.leave(v);
         self.start(cont);
         self.join(join);

@@ -2790,6 +2790,121 @@ fn natives_strings_and_layouts_in_frame_mode() {
     }
 }
 
+/// A loop that redefines a register with a cached `LayoutOf` right after a deferred definition
+/// of it (#710): the layout the interpreter made must be what the frame keeps, not the value
+/// the earlier definition deferred.
+fn redefined_by_cached_layout() -> (Program, FuncId) {
+    let mut pb = ProgramBuilder::new();
+    let byte = pb.ty(Ty::Int { lo: 0, hi: 255 });
+    let arr = pb.ty(Ty::Array {
+        elem: byte,
+        elem_desc: None,
+        dims: 1,
+    });
+    let f = pb.declare("f", FuncKind::Function, None);
+    let mut fb = pb.define(f);
+    let sn = fb.param("n", Width::B8, ParamClass::Value, Mode::In, None);
+    // The kept layout: a flag word, the 24-byte descriptor, the four layout words.
+    let kept = fb.slot(64, 8);
+    let sz = fb.param("z", Width::B8, ParamClass::Value, Mode::In, None);
+    let (head, body, done) = (fb.block(), fb.block(), fb.block());
+    stmt(&mut fb);
+    let pn = fb.addr(AddrSpace::Frame, sn);
+    let n = load(&mut fb, pn, Width::B8);
+    let pz = fb.addr(AddrSpace::Frame, sz);
+    let z = load(&mut fb, pz, Width::B8);
+    let (zero, one, dir, sixty4) = (fb.int(0), fb.int(1), fb.int(0), fb.int(64));
+    // Four words the layout is not, for the register to point at.
+    let junk = alloc(&mut fb, sixty4);
+    let junk_word = fb.int(7777);
+    for k in 0..4 {
+        let at = fb.int(8 * k);
+        let to = index(&mut fb, junk, at);
+        fb.emit(Inst::Store {
+            addr: to,
+            src: junk_word,
+            w: Width::B8,
+        });
+    }
+    let eight = fb.int(8);
+    let junk8 = index(&mut fb, junk, eight);
+    let last = fb.reg(RegTy::I64);
+    fb.emit(Inst::Bin {
+        op: IntOp::Sub,
+        dst: last,
+        a: n,
+        b: one,
+    });
+    let desc = dope(&mut fb, zero, last, dir);
+    let (i, acc, three) = (fb.int(0), fb.int(0), fb.int(2));
+    let lay = fb.reg(RegTy::Ptr);
+    fb.emit(Inst::Br { to: head });
+    fb.at(head);
+    let c = fb.reg(RegTy::I64);
+    fb.emit(Inst::Cmp {
+        op: CmpOp::Le,
+        dst: c,
+        a: i,
+        b: three,
+    });
+    fb.emit(Inst::CondBr {
+        c,
+        t: body,
+        f: done,
+    });
+    fb.at(body);
+    fb.emit(Inst::Select {
+        dst: lay,
+        c: z,
+        a: junk8,
+        b: junk,
+    });
+    // The register is live here, so its definition stays.
+    let jv = load(&mut fb, lay, Width::B8);
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: acc,
+        a: acc,
+        b: jv,
+    });
+    fb.emit(Inst::LayoutOf {
+        dst: lay,
+        ty: arr,
+        desc,
+        cache: Some(kept),
+    });
+    let size = load(&mut fb, lay, Width::B8);
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: acc,
+        a: acc,
+        b: size,
+    });
+    fb.emit(Inst::Bin {
+        op: IntOp::Add,
+        dst: i,
+        a: i,
+        b: one,
+    });
+    fb.emit(Inst::Br { to: head });
+    fb.at(done);
+    fb.emit(Inst::Ret { v: Some(acc) });
+    fb.finish();
+    (pb.finish().unwrap(), f)
+}
+
+#[test]
+fn cached_layout_replaces_a_deferred_value_of_its_register() {
+    let (prog, f) = redefined_by_cached_layout();
+    let p = Both::new(prog);
+    for n in [1u64, 5, 100] {
+        let (a, b, entries) = p.both(f, &[n, 0]);
+        assert_ne!(a, Ok(6 * 7777), "n {n}");
+        assert_eq!(a, b, "n {n}");
+        assert_eq!(entries, 1, "n {n}");
+    }
+}
+
 /// The compile thread keeps the CPU mask the process was started with (#681): it is not moved to
 /// the CPUs outside it, which on a shared host belong to other pinned runs.
 #[cfg(target_os = "linux")]

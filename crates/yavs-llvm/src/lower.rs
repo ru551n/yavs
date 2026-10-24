@@ -8993,6 +8993,12 @@ impl Gen {
     ) {
         // SAFETY: well-formed blocks of c.f; the frame has the slot (`layout_cache`).
         unsafe {
+            // The step wrote `dst` to the frame: a value deferred for an earlier definition of
+            // it is stale here (#710).
+            let stale = c
+                .defer
+                .as_ref()
+                .and_then(|d| d.pend.borrow_mut()[dst.0 as usize].take());
             self.reg_in(c, dst);
             // Kept once: the address of a kept layout is handed out and lives as long as the
             // process, so a slot is never written again.
@@ -9029,6 +9035,9 @@ impl Gen {
             let w0 = self.gep(slot, self.c64(8 + i64::from(dsz)));
             LLVMBuildMemCpy(self.b, w0, 1, pw, 1, self.c64(8 * i64::from(nw)));
             self.store(self.c64(1), slot);
+            if let (Some(d), Some(v)) = (&c.defer, stale) {
+                d.pend.borrow_mut()[dst.0 as usize] = Some(v);
+            }
         }
     }
 

@@ -7452,7 +7452,7 @@ Measurements in docs/STATUS.md "Window generator against sim1: where the time is
   deferred register stores (`regs.rs` `Live`, the suspect of #679) are not the source** for this process: they are off for a function
   whose liveness matrix is over `MAX_WORDS`, so every register is stored to the frame; where they are on (`exec_comb` of neorv32,
   4 531 IR instructions) they save: 29 248 stack accesses and 90 901 instructions against 33 308 and 95 577 with them off
-  (`YAVS_NODEFER`, a temporary switch, not kept). Raising the cap makes the 20 000-instruction process read outside a heap object (#710).
+  (`YAVS_NODEFER`, a temporary switch, not kept). Raising the cap made the 20 000-instruction process read outside a heap object (#710, see "llvm: a stepped definition is read back from the frame").
   The spills that are left are values of the guards themselves (a checked offset, an address) that cross the branch of each guard, one
   new block per guard: the levers left are fewer blocks per IR instruction (guards that share a slow path, redundant bounds checks of the
   temporary area: the same `len` and constant bounds are tested instruction after instruction) or a block-local allocator that keeps the
@@ -7814,3 +7814,17 @@ value. After the message was sunk (round 16) the second chain and call were what
 - **Coordination (#697, #520):** the pass takes a native with one argument that is a fat pair the block allocated and stored
   the data address and the descriptor into. A native whose arguments are in registers (#697) is not shared until
   `Sink::shareable` and the argument test in `find_pairs` know that form; nothing else in the pass depends on the pair layout.
+
+
+## llvm: a stepped definition is read back from the frame (yavs-llvm, #710, 2026-10-24)
+
+- **Root cause of #710.** The slow path of a `LayoutOf` with a frame cache is generated at the start of the instruction, with the
+  deferred registers (`Defer::pend`) as they are then. After the interpreter stepped the instruction, `layout_keep` reads the layout it made
+  through `Gen::ld(dst)`, which returns a value deferred for an EARLIER definition of the same register when there is one: LEON3 reuses a
+  register for a descriptor and later for the layout, so the layout words were copied from the descriptor's address into the kept
+  slot, every later `Field` of that type used wrong offsets and the interpreter read outside the object. Not a limit of the deferral
+  itself: it needs a register that a loop defines (deferred) and uses, and that a cached `LayoutOf` then redefines; the cap hid it for the
+  large processes only. **Rule: code generated after a step in a slow path must not read a register the stepped instruction defines
+  through `ld`/`pend`; `layout_keep` takes the deferred value out for its length and puts it back** (the fast path redefines the register
+  with `st`, which clears it, and may still read the old value as an input). The test is `cached_layout_replaces_a_deferred_value_of_its_register`
+  (`crates/yavs-llvm/tests/tier.rs`).

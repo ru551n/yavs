@@ -6845,3 +6845,19 @@ percent between invocations, so the instruction counts are the reliable column a
   `poc-2008` +0.2 % (the python runner is in the totals); peak RSS of that elab 78.7 to 77.2 MB. **Open:** the elaboration is still about 4
   percent above the whole-run decode of before #424; the rest is per-read cost (`Page::at` checks two cells) and the per-entry decode
   context in the kinds that read here and there; recovering it without costing cold analysis needs a hint from the caller.
+
+
+## Predecode: one scan per waveform, not one per function (yavs-interp, #683, 2026-10-24)
+
+- **Decision: the peephole that fuses a waveform build, its `Copy` and its `Drive` (`pre.rs` `peephole`) stops looking for the `Drive`
+  at the first `Drive` of that waveform, and `waveform_is_private` decides "nothing reads the registers after the `Drive`" by a scan of at
+  most 256 instructions, else by a count of the reads of the register in the whole function (computed once per function),
+  else by the full scan.** Before, every waveform of a large process searched on to the end of its block and scanned the rest of the
+  function twice (`live_after`, which also cleared a flag array of the function's length per call): quadratic in the size of the process,
+  which is why doubling the code of three processes of `olo_axi_master_full` cost 118 M instructions (#683). Nothing enters the
+  range between the waveform's `Alloc` and its `Drive` but at the `Alloc` (no block start inside, checked), which defines the waveform
+  register, so a register read only inside the range is dead after it. A later `Drive` of the same waveform is never fused (the
+  waveform would be read four times), so ending the search at the first loses no fusion; the work counters and outputs are unchanged.
+- Measured (bench build, `--tier=interp --stop-time=0fs`, steady state, instructions): `olo_axi_master_full` 703.5 M to 660.0 M (-6.2 %;
+  `Pre::new` was 15.8 % of the run, 7.9 % after); a generated process of 1600 vector assignments in a row 64.7 M to 60.8 M. The
+  remaining `live_after` callers in `Code::new` scan once per candidate too and were not measurable on these designs.

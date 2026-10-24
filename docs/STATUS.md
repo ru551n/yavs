@@ -6947,3 +6947,7 @@ of the packs). Finding: sim1 keeps one runtime signal per leaf too. Not implemen
   twice as many entries (`ids.rs` `SlotPage`). Cold `elab` of `neorv32_single_min` 685.6 M to 674.7 M instructions (-1.6 %); cold analysis
   of `hdl-modules-2008` -0.2 %, `osvvm-2008` +0.3 %, `poc-2008` +0.2 %. About 4 percent of the #424 loss is still open (`docs/decisions.md`
   "Replayed entries: cells per page").
+- #683: predecode of a very large process was quadratic in its waveform builds (each searched on to the end of its block and scanned the
+  rest of the function twice for liveness). `olo_axi_master_full` at time 0 (interp, steady state): 703.5 M to 660.0 M instructions (-6.2 %),
+  a generated process of 1600 assignments 64.7 M to 60.8 M; outputs and work counters unchanged (`docs/decisions.md` "Predecode: one scan
+  per waveform").

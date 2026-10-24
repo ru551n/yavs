@@ -6751,3 +6751,19 @@ percent between invocations, so the instruction counts are the reliable column a
   frame-mode code reads and writes a variable of an enclosing subprogram in place (`Known::Up`), where it asked `yavs_rt_host` and the
   interpreter's object table and forgot the object again at the next host call (13 percent of `sc5_fifo_repack`). Native frames keep their
   own lookup (`Mem::nslots`). No alias tag: the bytes are the interpreter's own frame slots, reachable by other addresses too.
+
+
+## Replayed entries: cells per page, decode ahead on reads in order (yavs-sem, #665, 2026-10-24)
+
+- **Decision: the entries of a replayed unit that are decoded one by one (`SlotPage`) live in one box of `PAGE` cells made when the
+  page is first read, not in a `Box` each; and a read that directly follows the last run decoded on that page decodes twice as many
+  entries (up to the page).** Cold `yavs elab` of `neorv32_single_min`, whose lowering reads nearly every entry it replays, paid an
+  allocation, a free and a decode context per entry (#424 took it from 0.634 G to 0.669 G instructions). Reads that follow each other
+  directly are a lowering walking a package; the analysis of a file reads a twelfth of the entries here and there and stays at one.
+  Tried: also counting a read up to 4, 8 or 64 entries past the last run as following it: the same elaboration (-0.1 %) and +0.5 to
+  +4 % cold analysis (`hdl-modules-2008`), so only the entry directly after counts.
+- Measured (bench build, instructions, children included): cold `elab` of `neorv32_single_min` 685.6 M to 674.7 M (-1.6 %; -0.8 % of it the
+  cells, the rest the decode ahead); cold per-file analysis of the corpus manifests `hdl-modules-2008` -0.2 %, `osvvm-2008` +0.3 %,
+  `poc-2008` +0.2 % (the python runner is in the totals); peak RSS of that elab 78.7 to 77.2 MB. **Open:** the elaboration is still about 4
+  percent above the whole-run decode of before #424; the rest is per-read cost (`Page::at` checks two cells) and the per-entry decode
+  context in the kinds that read here and there; recovering it without costing cold analysis needs a hint from the caller.

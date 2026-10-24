@@ -6935,3 +6935,7 @@ kernel signal, the physical leaf map, which leaves may share a signal, what chan
 and six landable steps with expected gains. Measured on a 233-leaf register record (interp): 55% of
 the instructions are IR execution (#677's gather and scatter), 37% per-leaf kernel work (the target
 of the packs). Finding: sim1 keeps one runtime signal per leaf too. Not implemented yet.
+- #665: replayed entries decoded one by one now live in a box of cells per page and a read directly after the last decoded run decodes
+  twice as many entries (`ids.rs` `SlotPage`). Cold `elab` of `neorv32_single_min` 685.6 M to 674.7 M instructions (-1.6 %); cold analysis
+  of `hdl-modules-2008` -0.2 %, `osvvm-2008` +0.3 %, `poc-2008` +0.2 %. About 4 percent of the #424 loss is still open (`docs/decisions.md`
+  "Replayed entries: cells per page").

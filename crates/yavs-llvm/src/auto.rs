@@ -1516,14 +1516,10 @@ impl Worker {
             .flatten();
         let short = (sampled && !o2)
             .then(|| {
-                if via_first {
-                    crate::rt::too_short(&self.prog, f)
-                } else {
-                    too_short(&self.prog, f, id)
-                }
-                .or_else(|| fused_search(&self.prog, f))
-                .or_else(|| too_many_callbacks(&self.prog, f, id))
-                .or(few)
+                too_short(&self.prog, f, id)
+                    .or_else(|| fused_search(&self.prog, f))
+                    .or_else(|| too_many_callbacks(&self.prog, f, id))
+                    .or(few)
             })
             .flatten();
         let short_only = short.is_some() && too_big(f, self.max_size).is_none();

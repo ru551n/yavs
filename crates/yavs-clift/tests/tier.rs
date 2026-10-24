@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use yavs_clift::{ClifTier, First};
-use yavs_llvm::{AutoTier, Gens, Heat, Note, OptLevel};
 use yavs_diag::{FileId, Span};
 use yavs_interp::{Bindings, InstData, Runtime, Tier, TierHost};
 use yavs_ir::*;
+use yavs_llvm::{AutoTier, Gens, Heat, Note, OptLevel};
 
 /// Counts the entries into compiled code.
 struct Counting(ClifTier, AtomicUsize);

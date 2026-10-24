@@ -96,6 +96,9 @@ pub struct Jit {
     building: HashSet<FuncId>,
     /// `native_set` of a function alone, once asked.
     nsets: HashMap<FuncId, Rc<HashSet<FuncId>>>,
+    /// Every call of a native-frame function goes through `Mem::ntab`, none is direct or inlined
+    /// (`YAVS_CLIFT_NTAB=1`: tests of the mixed tiers, where the callee may be LLVM's).
+    via_ntab: bool,
 }
 
 /// The native-frame variant `n<id>` of a function, in the calling convention of the LLVM tier
@@ -253,6 +256,7 @@ impl Jit {
             natives: HashMap::new(),
             building: HashSet::new(),
             nsets: HashMap::new(),
+            via_ntab: flag("YAVS_CLIFT_NTAB", "0") == "1",
         })
     }
 
@@ -454,6 +458,10 @@ impl Jit {
             let prot = matches!(i, Inst::CallProt { .. });
             let Some(g) = prog.func(func) else { continue };
             if nats.contains_key(&func) || !nc.contains(&func) || !call_fits(f, id, g, args, prot) {
+                continue;
+            }
+            if self.via_ntab {
+                nats.insert(func, None);
                 continue;
             }
             match self.native_of(prog, func) {

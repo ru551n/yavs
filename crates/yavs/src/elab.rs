@@ -749,6 +749,26 @@ fn use_auto3(
         }
     });
     let first = yavs_clift::First::new().map_err(bug)?;
+    // `YAVS_MIXED=1`, for tests: LLVM compiles the functions of even id and Cranelift the others
+    // (as the only generator), so compiled callers and callees of both kinds call each other.
+    if std::env::var_os("YAVS_MIXED").is_some() {
+        let t = yavs_llvm::AutoTier::start_with(
+            rt,
+            yavs_llvm::OptLevel::O2,
+            a.tier_max_size,
+            heat,
+            note,
+            yavs_llvm::Gens {
+                main: Some(Box::new(Mixed {
+                    llvm: yavs_llvm::LlvmGenerator::new(),
+                    clift: first,
+                })),
+                first: None,
+            },
+        )
+        .map_err(|e| bug(e.to_string()))?;
+        return Ok(Some(StopTierUp::Llvm(t)));
+    }
     let t = yavs_llvm::AutoTier::start(
         rt,
         yavs_llvm::OptLevel::O0,
@@ -759,6 +779,40 @@ fn use_auto3(
     )
     .map_err(|e| bug(e.to_string()))?;
     Ok(Some(StopTierUp::Llvm(t)))
+}
+
+/// The generator of `YAVS_MIXED=1` (`use_auto3`): LLVM for the functions of even id, Cranelift for
+/// the others.
+#[cfg(all(feature = "llvm", feature = "clift"))]
+struct Mixed {
+    llvm: yavs_llvm::LlvmGenerator,
+    clift: yavs_clift::First,
+}
+
+#[cfg(all(feature = "llvm", feature = "clift"))]
+impl yavs_llvm::Generator for Mixed {
+    fn open(&mut self) -> Result<(), String> {
+        self.llvm.open()
+    }
+
+    fn start_us(&self) -> f64 {
+        self.llvm.start_us()
+    }
+
+    fn compile(
+        &mut self,
+        prog: &yavs_ir::Program,
+        id: yavs_ir::FuncId,
+        f: &yavs_ir::Func,
+        level: yavs_llvm::OptLevel,
+        part: yavs_llvm::native::Part,
+    ) -> Result<yavs_llvm::native::Compiled, String> {
+        if id.0 % 2 == 0 {
+            self.llvm.compile(prog, id, f, level, part)
+        } else {
+            self.clift.compile(prog, id, f, level, part)
+        }
+    }
 }
 
 /// Set up the compiled tier (`--tier`): compile the program now or start tier-up, stopped when

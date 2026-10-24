@@ -15,6 +15,7 @@ Python 3 stdlib only.
     tools/difftest/difftest.py --candidate yavs-clift-auto  # `--tier=clift-auto` (the same build)
     tools/difftest/difftest.py --candidate yavs-auto3        # `--tier=auto3` (a yavs built with `--features llvm,clift`)
     tools/difftest/difftest.py --candidate yavs-auto3-eager  # the same with `--tier-heat=0,0,0`
+    tools/difftest/difftest.py --candidate yavs-mixed        # LLVM and Cranelift compile half of the functions each and call each other
     tools/difftest/difftest.py --bless              # regenerate .expected from the reference simulator
     tools/difftest/difftest.py --filter 'report/|env/' --jobs 4 -v
 

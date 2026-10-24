@@ -465,15 +465,31 @@ case!(
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
 case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6234))]);
 // The defaults of a combinational process that a later drive deletes are not done on that path
-// (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass.
+// (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass (the scalar
+// drives that change nothing are skipped when they are made, `Ctx::assign_code_fast`, and not
+// counted: 133 of them are committed; `ops` is the bound that sees the pass).
 case!(
     drive_defaults,
     "sum=260",
     &[],
     [
-        ("direct_codes", Max(312)),
+        ("direct_codes", Max(137)),
         ("direct_planes", Max(63)),
         ("ops", Max(4300)),
+    ]
+);
+// A run of scalar drives of variables that hold what the signals have is one op (`pre.rs`
+// `drive_runs`); the drives that change are made, in the middle of a run too: 1811 direct
+// code commits without the run, and the same cycles (the skipped drives keep their delta).
+case!(
+    drive_run,
+    "ev=126 h=2002",
+    &[],
+    [
+        ("cycles", Max(402)),
+        ("cycles", Min(402)),
+        ("direct_codes", Max(275)),
+        ("ops", Max(16800)),
     ]
 );
 // A one-element aggregate choice is straight code and conversion copies run in the kernel.

@@ -8354,3 +8354,53 @@ shows the misses of new objects.
   on the main thread (the analysed image holds more per declaration: `Decl`, `Symbol` and `Span` decoding), 12a37bc7 about
   +80 k of which the main thread's functions show +5 k (not located); 0.03 ms. Position-independent linking costs 0.2 to 0.3 ms per process start: #727 (a
   decision for the user).
+
+- **Not fixed here:** +171 k user instructions (5.7 percent of a 3 M-instruction run) since 4b80445d: 12a37bc7 +80 k
+  (`stage_extent` keys of the stage cache), ae1826dd +156 k (idle skip analysis of concurrent conditional assignments).
+
+## Cold path of serial processes, port propagation, same-value drives (yavs-interp, yavs-kernel, #720, 2026-10-24)
+
+Whole-run profile of `grlib_leon3mp` (`--tier=auto`, warm, `docs/STATUS.md` "grlib_leon3mp whole-run profile"). Nothing big is compiled and
+compiling it is no win today (#679), so these are costs of the interpreter and the kernel that are in every tier.
+
+- **Decision: a serial process builds its shared-heap roots into reused buffers (`Machine::rscratch`, the vectors of its `SharedState::procs`
+  entry; `Refs::pinned_into`).** A serial process publishes at every suspension. With the four SDRAM models of the system waking 8.4 M times the
+  fresh vectors were 3.8 percent of the cycles plus the reallocations (2.2 percent in `grow_one`). The roots are the same; the collector
+  and the gc-stress corpus see no difference (gc-stress corpus and the first 3 us of the system pass).
+- **Decision: an in-port edge with one actual, one formal and no conversion passes the value down by copying storage to storage
+  (`SimControl::push_down`).** The general edge still builds values and runs `convert`. Idea of the reference simulator used: the signals of a
+  port are linked records and the resolved value is copied between their storage directly, with no buffer; ours still copies (a formal is a
+  signal of its own, `--no-collapse-ports` and the `inout` ports are not collapsed), but without allocating: the `inout` data and clock nets
+  of the system reach about 30 formals each (1.82 M pushes in the first 200 us).
+- **Decision: a zero-delay assignment of one logic element that changes nothing, to a direct driver, is not made (`Ctx::assign_code_fast`,
+  `Ctx::skip_code_now`, `Signal::direct_same`).** The conditions are those under which `Signal::commit_code` would have returned `None`: the signal
+  allows skipping (nothing reads its activity), it and its driving value hold the code, and the driver has no entry of this run, so the last
+  assignment still wins. The run's delta stays: `SKIPPED` in `ProcState::phantoms` makes `take_phantoms` report it (the kernel's `empty_delta`),
+  `cycles` and the delta structure of every test are unchanged. It is not a phantom on the driver's waveform: a phantom sends a second
+  assignment of the same run to the same driver down the general path (first version: the LEON3 interpreter run went from 248 G to 291 G
+  instructions) and `flush_phantoms` reads the lagging driver value of a direct driver. 92 percent of the 133 M direct code commits of the
+  LEON3 run changed nothing.
+- **Decision: a run of two or more scalar drives of frame slots in consecutive statements is guarded by one op (`Op::DriveRun`, `pre::drive_runs`,
+  `Machine::drive_run`).** The statement is `[Stmt, SigVal, LoadSlot, Aff1?, LSetDrive]` after the predecoder's fusion; the first `Stmt` of the run
+  becomes the op, which ends that statement like the `Stmt` and then skips, from the front, the drives that change nothing (`skip_code_now`:
+  the checks of the fast path, with the zero delay, the scalar logic signal and the code at most 8 tested first) while setting the registers
+  the skipped ops would write (the signal reference pair, the loaded byte, the mapped code), so a later reader of those registers sees what
+  the ops left. It goes on after the run when all were skipped, else at the `Stmt` of the first drive that is not, which runs its ops as before;
+  nothing is rolled back. The IR is not changed (compiled code and the IR dump are as before; a compiled frame that returns to the
+  interpreter at the `Stmt` pc runs the op). Why: the SDRAM model `state_register` wakes on a clock that toggles every 0.5 ns (4 instances,
+  8.4 M wakes) and ends every wake with 13 scalar and 3 vector drives of process variables; 90 percent of the wakes are not a clock edge and
+  assign what the signals hold. A drive was 460 instructions (a microbenchmark: `Stmt`, `SigVal`, `LoadSlot`, `Aff1`, `LSetDrive` is 300 in the
+  loop, 90 in the assignment, 110 in the commit), a skipped one in a run is about 150. Not covered: vector drives (`CopyDrive`, #723), a drive from
+  a register or a signal read, a run broken by another statement.
+- **Decision: `Host::push_native` takes the preloaded registers from `Pre::preloaded`.** It walked the callee's IR at each materialisation of a native
+  frame (13 percent of the S-record start-up of the system, 0.9 percent of the steady state).
+- **Tried, not landed: the clean-up of `opt/cfg.rs` (threading through short-circuit chains) on processes.** On the LEON3 system it takes the
+  chains `a and b and c` of the SDRAM model from `EdgeBr, Const, CondBr, Const, CondBr` to one branch (-0.8 percent of the interpreter's
+  instructions). In five work-counter designs `ops` rose by 2.7 to 9 percent (`inline_calls`, `elem_loops`, `reduce_idiom`, `wide_vec`,
+  `sink_msg`): a loop entered from a copy of its test is no longer the fused `CmpBrStep` latch (the test is copied into the entry and the step
+  stays a `Bin`, `Br`), and a block that suspends gets code behind its `Suspend` (the verifier's "live across a suspension point"). A version
+  that threads only the `Const`-then-`CondBr` joins and leaves loops alone is untried.
+- **Found, filed:** processes with nested subprograms are never specialised (#721: `state_register` keeps its layout work, 25 percent of its ops);
+  the pure-call memo costs 10 percent of the S-record start-up (#722); the vector drives of a wake that does nothing (#723); the cold
+  activation path of serial processes (#724).
+

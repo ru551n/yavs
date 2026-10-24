@@ -7946,3 +7946,57 @@ step: about 400 of the 620 instructions, not started). Left alone on purpose: a 
 would have to give `Inst::Cat` parts an offset: cross-crate), unchecked register access (tried and dropped in round 10).
 Not verified: cold tiny numbers after the change (only warm), Windows and aarch64 start-up, whether a non-PIE binary changes
 `--tier=auto` instruction counts (it did not change the cycles of the head-to-head designs).
+
+## grlib_leon3mp whole-run profile and the unowned costs (#720, 2026-10-24)
+
+Profile of `grlib_leon3mp` (std 1993) on main at 3df7bc44, `tools/build-bench.sh --features llvm`, `--tier=auto` warm, core 10 (the compile thread
+shares it), `perf record --call-graph fp` (a bench build with `-C force-frame-pointers=yes`, seconds 20 to 36 of the run, `cycles:u`), `--profile`,
+`YAVS_COUNTERS=1`, `op-census` (interpreter, the first 300 us), `YAVS_AUTO_TRACE=1`. The run is 57 to 59 s (49 s in the quiet runs below), 634 G
+user instructions, IPC 2.1; the reference simulator needs 13 to 15 s and 171 G.
+
+| layer (steady state, inclusive) | share of cycles |
+|---|---:|
+| kernel `update` (ports, effective values, commits) | 15 |
+| processes on the hot path (`run_quick`) | 56 |
+| processes on the cold path (`run_cold`: serial processes) | 18, of which activation overhead 5.5 (roots 3.8) |
+| `--profile` view: kernel / processes | 21 / 79 |
+| start-up (S-record load of the 12 memory models, first 1 us) | 8 (4.6 s; the reference simulator 1.5 s) |
+
+By process (`--profile`): `iu:comb` 14.7 percent, the four SDRAM `state_register` 17.6 (they wake on a clock that toggles every 0.5 ns: 8.4 M wakes,
+227 ops each; 90 percent are not a clock edge and assign 13 scalar and 3 vector signals the values they hold), `dctrl` 7.9, the two TLB processes 7.7,
+`ictrl` 3.4, memory controller 2.3, AHB controller 2.2, MMU 2.1, the rest below 1.5 each.
+
+- **Nothing big is compiled.** `YAVS_AUTO_TRACE`: `HRead` (247 and 36 IR) and `To_bitvector` are the only compiles of the run, 25 ms. The policy does not
+  refuse the big processes (no refusal lines); `YAVS_AUTO_FORCE=state_register` makes the run slower (65.2 and 68.9 s against 56.9 and 58.8 s).
+  That is #679 (frame-mode code of large processes does not execute fewer instructions than the interpreter) and the auto policy's #675, both
+  reported there. The remaining gap to the reference simulator is the compiled code of the large processes, not these items.
+- **92 percent of the 133 M direct code commits and 93 percent of the plane commits that went through `commit_planes` changed nothing**, nearly all of them
+  the SDRAM models' tail drives.
+- **Port edges**: 716 of 922 ports pushed in 200 us, 1.82 M pushes, all with one actual, one formal and no conversion; 1.65 M of them on `inout` nets (the
+  data bus and the clock nets, about 30 formals each).
+- Op census, steady state of 200 us: `Stmt` 9.7 percent of the ops, `SigVal` 7.0, `Aff1` 5.4, `CondBr` 4.5, `CmpBr` 4.3, `LSetDrive` 4.1, `LoadSlot8` 4.0,
+  `SigRead1` 3.3, `Const` 3.1; per activation: `iu:comb` 4530 ops, `dctrl` 2442, `state_register` 227. `sig_gather`/`sig_scatter` visit
+  about 19 leaves per call, 2.2 M and 2.4 M calls in 300 us (a quarter of the scatters with parts).
+
+What changed (commits of #720; `docs/decisions.md` "Cold path of serial processes, port propagation, same-value drives"): the roots of a serial process
+go into reused buffers; in-port values pass down without temporaries; an unchanged scalar assignment to a direct driver is skipped when it is made; a run of
+scalar drives of process variables is one guard op; materialising a native frame no longer walks the callee's IR. Interpreter, LEON3, 400 us, instructions,
+bench builds, steady state: 257.5 G, 250.9 G (roots), 248.3 G (+ ports), 240.9 G (+ same-value drives and runs); whole run `--tier=auto` 625.7 G to 589.5 G.
+Microbenchmark (one process, 8 scalar drives of unchanged variables per activation): 460 instructions a drive, about 150 in a run; start-up (first 1 us) 4.6 s to 3.65 s.
+
+Before and after, `tools/realbench/run.py --compare`, `--tier=auto`, run phase (elaboration plus run), core 10, medians of 3, cells interleaved, host load 9 to 15:
+
+| | warm | cold | instructions (warm / cold) |
+|---|---:|---:|---:|
+| main (3df7bc44) | 48.98 s | 50.14 s | 636.6 G / 645.1 G |
+| this change | 45.02 s (0.92) | 47.03 s (0.94) | 578.3 G / 589.9 G (0.91 / 0.91) |
+
+Against the reference simulator (`--ref sim1`, same method, this change): run 45.23 s warm and 46.31 s cold against 13.18 s (3.43 and 3.51 times, instructions
+3.38 and 3.45). Totals (analysis of the 458 files one call each, elaboration and run; the analysis is unchanged by this work): reference simulator 20.1 s warm
+(6.88 + 13.18) and 20.4 s cold (7.19 + 13.18), yavs 46.2 s (0.99 + 45.23) and 48.7 s (2.37 + 46.31): 2.30 times warm and 2.39 cold (2.49 and 2.58 on main
+at the same load; 3.71 and 3.77 at the first measurement of this test).
+
+Open (issues): processes with nested subprograms are never specialised, 25 percent of the ops of `state_register` (#721); the pure-call memo costs 10 percent
+of the S-record start-up (#722); vector drives of a wake that does nothing (#723); the cold activation path of serial processes (#724). Tried and not landed:
+the short-circuit clean-up of `opt/cfg.rs` on processes (decisions.md).
+

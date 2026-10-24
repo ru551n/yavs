@@ -1690,6 +1690,21 @@ impl Signal {
         true
     }
 
+    /// Whether `commit_code` of `code` to element `elem` through the direct driver in `slot` would
+    /// find the driver and the signal holding it already, on a signal that allows skipping.
+    #[inline]
+    pub(crate) fn direct_same(&self, slot: u32, elem: u32, code: u8) -> bool {
+        if !self.skip_ok || self.codes.get(elem as usize) != Some(&code) {
+            return false;
+        }
+        if self.exact {
+            let d = &self.drivers[slot as usize];
+            matches!(&d.value, Buf::Planes { b, .. } if plane_code(b, (elem - d.range.offset) as usize) == code)
+        } else {
+            matches!(&self.driving, Buf::Planes { b, .. } if plane_code(b, elem as usize) == code)
+        }
+    }
+
     /// A zero-delay transaction of one element of a direct driver (`DriverInfo::direct`),
     /// committed: the driver value and the driving value now (the update phase is over, and
     /// nothing reads them before the next one), the element waiting in `pend` for the next

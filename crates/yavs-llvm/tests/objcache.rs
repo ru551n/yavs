@@ -219,6 +219,18 @@ fn compiled_code_is_kept_and_linked_again() {
         let (more, again) = cache_stats();
         assert_eq!(again, stored, "the other order compiles nothing");
         assert!(more >= hits + 2, "and links both copies");
+
+        // Copies whose modules are the same up to their names (here G = 4, 5 and 6: data the code
+        // does not read) are one module: the cache has it from G = 4, found under the name its
+        // content gives, and the second copy of the run is that code without asking the cache.
+        compile_copies([5, 6]);
+        let (twin_hits, twin_stored) = cache_stats();
+        assert_eq!(twin_stored, again, "nothing new to compile");
+        assert_eq!(
+            twin_hits,
+            more + 2,
+            "one linked from the cache, one the same code"
+        );
     }
 
     // A directory that cannot be written: compiled, nothing kept, no error.

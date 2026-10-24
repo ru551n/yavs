@@ -476,6 +476,8 @@ case!(
         ("ops", Max(4300)),
     ]
 );
+// A one-element aggregate choice is straight code and conversion copies run in the kernel.
+case!(agg_carry, "acc=", &[], [("ops", Max(7860))]);
 case!(
     static_chain,
     "acc=",
@@ -960,9 +962,9 @@ mod llvm {
             ("cb_drive", Max(263)),
             ("cb_troot", Max(53)),
             ("cb_endstmt", Max(53)),
-            ("cb_lcopy", Max(106)),
+            ("cb_lcopy", Max(53)),
             ("cb_fast", Max(1)),
-            ("llvm_inline_insts", Min(612)),
+            ("llvm_inline_insts", Min(586)),
             ("llvm_interpreted_insts", Max(50)),
             ("llvm_native_frames", Min(1)),
         ]

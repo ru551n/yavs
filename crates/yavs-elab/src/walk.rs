@@ -15,6 +15,7 @@ use yavs_sem::hir::{
 };
 use yavs_sem::loader::UnitKind;
 use yavs_sem::stat::Staticness;
+use yavs_sem::types::{Constrainedness, TypeKind};
 use yavs_sem::{Db, DeclId, ExprId, StmtId, UnitId};
 use yavs_syntax::Symbol;
 use yavs_syntax::ast::{ExternalClass, Ident};
@@ -2581,9 +2582,29 @@ impl Elab<'_> {
             return None;
         };
         let (e, t) = (*e, target.expr);
-        let (src, sshape) = self.static_signal_parts(s, e)?;
+        // A conversion between arrays of one element type (`std_logic_vector(u(7 downto 0))`) moves
+        // no value: the copy is positional.
+        let conv = match &db.exprs[e].kind {
+            ExprKind::Conv { to, operand }
+                if matches!(db.types[db.base(*to)].kind, TypeKind::Array { .. })
+                    && matches!(
+                        db.types[db.base(db.exprs[*operand].subtype)].kind,
+                        TypeKind::Array { .. }
+                    )
+                    && db.constrainedness(*to) == Constrainedness::Unconstrained =>
+            {
+                Some(*operand)
+            }
+            _ => None,
+        };
+        let (src, sshape) = self.static_signal_parts(s, conv.unwrap_or(e))?;
         let (_, tshape) = self.static_signal_parts(s, t)?;
-        if !same_values(&sshape, &tshape) {
+        let same = if conv.is_some() {
+            same_array_values(&sshape, &tshape)
+        } else {
+            same_values(&sshape, &tshape)
+        };
+        if !same {
             return None;
         }
         let p = self.procs.last()?;
@@ -4661,6 +4682,26 @@ fn port_mode(m: Mode) -> PortMode {
         Mode::Out => PortMode::Out,
         Mode::Inout => PortMode::Inout,
         Mode::Buffer => PortMode::Buffer,
+    }
+}
+
+/// `same_values` of two arrays that may be of different types (the operand and the result of a
+/// conversion between arrays): the same lengths per dimension and elements of the same values.
+fn same_array_values(a: &Shape, b: &Shape) -> bool {
+    match (a, b) {
+        (
+            Shape::Array {
+                dims: da, elem: ea, ..
+            },
+            Shape::Array {
+                dims: db, elem: eb, ..
+            },
+        ) => {
+            da.len() == db.len()
+                && da.iter().zip(db).all(|(x, y)| x.len() == y.len())
+                && same_values(ea, eb)
+        }
+        _ => false,
     }
 }
 

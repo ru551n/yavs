@@ -45,6 +45,11 @@ pub fn cache_stats() -> (usize, usize) {
     (HITS.load(Ordering::Relaxed), STORED.load(Ordering::Relaxed))
 }
 
+/// A module that is the code of one linked before counts as linked from the cache.
+pub(crate) fn note_twin() {
+    HITS.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Whether compiled code is kept in a cache.
 pub(crate) fn enabled() -> bool {
     STORE

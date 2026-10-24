@@ -2291,7 +2291,7 @@ fn signal_copies_run_in_the_kernel() {
       architecture a of inner is begin
         o <= i;
       end;
-      library ieee; use ieee.std_logic_1164.all; use work.p.all;
+      library ieee; use ieee.std_logic_1164.all; use ieee.numeric_std.all; use work.p.all;
       entity t is end; architecture a of t is
         signal s, x, y : rec := ('0', x\"00\", 0);
         signal ar : arr;
@@ -2299,6 +2299,8 @@ fn signal_copies_run_in_the_kernel() {
         signal w, z : std_logic_vector(7 downto 0);
         signal n1, n2 : integer := 0;
         signal nn : natural;
+        signal un : unsigned(7 downto 0);
+        signal zz : std_logic_vector(3 downto 0);
       begin
         u : entity work.inner port map (i => s, o => x);
         ar(2) <= x;
@@ -2309,13 +2311,16 @@ fn signal_copies_run_in_the_kernel() {
         n2 <= s.n after 1 ns;
         z(1 downto 0) <= w(3 downto 2);
         nn <= n1;
+        un <= unsigned(w);
+        zz <= std_logic_vector(un(5 downto 2));
         process begin
           for i in 1 to 4 loop
             s <= (std_logic'val(2 + i mod 2), x\"A5\", i);
             v <= not v;
             wait for 2 ns;
             report std_logic'image(x.a) & to_string(x.b) & integer'image(ar(2).n)
-              & to_string(w) & integer'image(n1) & integer'image(n2) & to_string(y.b) & to_string(z);
+              & to_string(w) & integer'image(n1) & integer'image(n2) & to_string(y.b) & to_string(z)
+              & to_string(std_logic_vector(un)) & to_string(zz);
           end loop;
           wait;
         end process;
@@ -2326,7 +2331,7 @@ fn signal_copies_run_in_the_kernel() {
     assert_eq!(
         copies,
         [
-            true, true, true, true, true, false, false, true, false, false
+            true, true, true, true, true, false, false, true, false, true, true, false
         ]
     );
     e.lower(&mut db).expect("lower");

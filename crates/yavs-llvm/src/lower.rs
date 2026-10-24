@@ -221,10 +221,15 @@ pub(crate) fn compile_one(
         || format!("f{}", id.0),
         |t| format!("f{}c{t:016x}", prog.base_of(id).0),
     );
-    let nname = format!("{stem}_n");
+    // A copy is generated under a fixed name and named by its module afterwards: another copy of
+    // the process whose module is the same up to its names (instances that differ in data the code
+    // does not read) is that code, in this run and in the compilation cache.
+    let twin = prog.copy_tag(id).is_some();
+    let gname = if twin { "ftwin" } else { stem.as_str() };
+    let nname = format!("{gname}_n");
     let llvm = |e: Error| format!("LLVM: {e} (a bug in yavs)");
-    let cname = format!("{stem}_c");
-    let name = stem;
+    let cname = format!("{gname}_c");
+    let name = gname.to_string();
     let mut native = nc.contains(&id) && part != Part::Frame;
     if part == Part::Native && !native {
         return Err("no native-frame code for the function".into());
@@ -262,6 +267,29 @@ pub(crate) fn compile_one(
     let t1 = std::time::Instant::now();
     let ninst = if times { m.instruction_count() } else { 0 };
     let full = crate::auto::compute(prog, f);
+    let mut m = m;
+    let (mut name, mut nname, mut cname) = (name, nname, cname);
+    let twin_key = twin.then(|| {
+        let mut k = yavs_cache::KeyBuilder::new("twin");
+        k.text(&format!("{opt:?} {full} {part:?} {native}"))
+            .part(&m.bitcode());
+        k.finish().hex()
+    });
+    if let Some(key) = &twin_key {
+        if let Some(&(run, naddr, caddr)) = jit.twins.get(key) {
+            crate::objcache::note_twin();
+            return Ok(Compiled {
+                // SAFETY: `run` is the entry of a module equal to the one just generated.
+                run: (run != 0).then(|| unsafe { std::mem::transmute::<usize, RunFn>(run) }),
+                nregs: f.reg_ty.len(),
+                native: naddr,
+                call: caddr,
+            });
+        }
+        let stem = format!("t{}", &key[..16]);
+        m.rename(&name, &stem);
+        (name, nname, cname) = (stem.clone(), format!("{stem}_n"), format!("{stem}_c"));
+    }
     let (mut t2, mut t3, mut nopt) = (t1, t1, 0);
     // Verified and optimised only when it is not linked from the compilation cache (#505).
     crate::objcache::add(jit, m, opt, full, |m| {
@@ -290,6 +318,10 @@ pub(crate) fn compile_one(
     } else {
         0
     };
+    if let Some(key) = twin_key {
+        jit.twins
+            .insert(key, (run.map_or(0, |r| r as usize), naddr, caddr));
+    }
     perf_map(&[
         (run.map_or(0, |r| r as usize), &f.name, &name),
         (naddr, &f.name, &nname),

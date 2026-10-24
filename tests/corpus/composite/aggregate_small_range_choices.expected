@@ -1,0 +1,6 @@
+exit	0
+diag	note	0	0	:aggregate_small_range_choices:_p0	a 1 0 HZZX 11000 1111111
+diag	note	0	0	:aggregate_small_range_choices:_p0	b 7788 1100
+diag	note	0	0	:aggregate_small_range_choices:_p0	c 0000 WWWWW
+diag	note	0	0	:aggregate_small_range_choices:_p0	d 1111100
+diag	note	0	0	:aggregate_small_range_choices:_p0	e 14140

@@ -467,6 +467,30 @@ impl Module {
         }
     }
 
+    /// Give the functions `{from}`, `{from}_n` and `{from}_c` (those it has) and the module
+    /// itself the names `{to}...`.
+    pub fn rename(&mut self, from: &str, to: &str) {
+        let set = |v: LLVMValueRef, n: &str| {
+            // SAFETY: `v` is a live value of this module; the name is copied.
+            unsafe { LLVMSetValueName2(v, n.as_ptr().cast(), n.len()) }
+        };
+        for suffix in ["", "_n", "_c"] {
+            let Ok(old) = CString::new(format!("{from}{suffix}")) else {
+                continue;
+            };
+            // SAFETY: the module is live.
+            let f = unsafe { LLVMGetNamedFunction(self.module, old.as_ptr()) };
+            if !f.is_null() {
+                set(f, &format!("{to}{suffix}"));
+            }
+        }
+        // SAFETY: the module is live; the names are copied.
+        unsafe {
+            LLVMSetModuleIdentifier(self.module, to.as_ptr().cast(), to.len());
+            LLVMSetSourceFileName(self.module, to.as_ptr().cast(), to.len());
+        }
+    }
+
     /// The module as bitcode: what its machine code is made from (the key of the object cache).
     pub fn bitcode(&self) -> Vec<u8> {
         // SAFETY: the module is live; the buffer is copied and disposed.
@@ -535,6 +559,9 @@ pub struct Jit {
     /// unresolved symbols behind a failed materialization. `lookup` attaches
     /// them to its error so the cause is never lost.
     session_errors: Box<Mutex<Vec<String>>>,
+    /// Code compiled for a module by its key (`lower::compile_one`): another function whose
+    /// module is the same up to its names is that code.
+    pub(crate) twins: std::collections::HashMap<String, (usize, usize, usize)>,
 }
 
 extern "C" fn report_session_error(ctx: *mut c_void, err: LLVMErrorRef) {
@@ -573,6 +600,7 @@ impl Jit {
             let jit = Jit {
                 raw,
                 session_errors: Box::default(),
+                twins: Default::default(),
             };
             LLVMOrcExecutionSessionSetErrorReporter(
                 LLVMOrcLLJITGetExecutionSession(raw),

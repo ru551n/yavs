@@ -529,6 +529,18 @@ case!(
     ]
 );
 
+// Concurrent conditional assignments with arms that generics or a signal rule out skip the wakes
+// those arms' signals cause (586 of 2715 activations).
+case!(
+    idle_when,
+    "sum=1691",
+    &[],
+    [
+        ("process_runs", Max(2200)),
+        ("idle_skips", Min(560)),
+        ("ops", Max(34000)),
+    ]
+);
 case!(
     idle_comb,
     "o=",
@@ -578,6 +590,7 @@ fn idle_skip_changes_nothing() {
     let designs = [
         ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
         ("idle_comb", include_str!("perf/idle_comb.vhd"), 2700),
+        ("idle_when", include_str!("perf/idle_when.vhd"), 100),
     ];
     for (design, src, floor) in designs {
         let d = tempdir(&format!("idle_equal_{design}"));

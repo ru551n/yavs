@@ -7231,23 +7231,24 @@ whatever pulse-rejection limit the second has (it only deletes more). Hence:
   memory (a variable, a loaded value). A default followed by an override after a join (`if a then ..; end if; if b then x <= ..`) is
   a mixed join: the drive is done on the path that did not skip it (tail duplication would be needed).
 - **Cost.** The pass runs on a process only when two drives of it have the same static target, over blocks that are cut into per-block
-  event lists (drives, barriers) so that a drive costs one walk over the blocks it is still delayed in: +0.08 G host instructions in
+  event lists (drives, barriers) so that a drive costs one walk over the blocks it is still delayed in: about +0.1 G host instructions in
   start-up of `neorv32_dual_full` (4.5 G for 1 us of simulated time), none of it per activation.
 
-Host instructions (`perf stat` `instructions:u`, `--threads 1`, bench builds, warm world, deterministic), main at 4b80445d before / after:
+Host instructions (`perf stat` `instructions:u`, `--threads 1`, bench builds, warm world, deterministic), main at da793761 before / after, G:
 
 | design | interp | llvm |
 |---|---|---|
-| `neorv32_single_min` | 47.42 / 45.08 G (-4.9 %) | 61.96 / 60.11 (-3.0 %) |
-| `neorv32_dual_full` | 34.67 / 34.27 (-1.1 %) | 51.97 / 51.88 (-0.2 %) |
-| `fletcher_bufferwriter_512` | 92.05 / 90.82 (-1.3 %) | 92.31 / 92.40 (+0.1 %) |
-| `fletcher_bufferreader` | 36.83 / 36.81 (-0.1 %) | 38.06 / 38.15 (+0.2 %) |
-| `sc5_fifo_repack` | 41.89 / 41.62 (-0.7 %) | 34.46 / 34.46 (0.0 %) |
-| `sc5_timestamp` | 6.844 / 6.844 (0.0 %) | 5.690 / 5.690 (0.0 %) |
-| `poc_cache_cpu` | 15.63 / 14.80 (-5.3 %) | 16.83 / 16.79 (-0.2 %) |
-| `poc_stat_histogram` | 25.53 / 25.22 (-1.2 %) | 31.19 / 31.20 (0.0 %) |
-| `vai_window_gen_interlock` | 497.73 / 495.32 (-0.5 %) | 237.69 / 237.72 (0.0 %) |
-| `poc_arith_addw` | 236.38 / 235.91 (-0.2 %) | 225.12 / 225.11 (0.0 %) |
+| `neorv32_single_min` | 44.85 / 42.76 (-4.7 %) | 61.35 / 59.14 (-3.6 %) |
+| `neorv32_dual_full` | 29.94 / 29.61 (-1.1 %) | 50.59 / 50.77 (+0.4 %) |
+| `fletcher_bufferwriter_512` | 91.54 / 90.37 (-1.3 %) | 92.21 / 92.25 (0.0 %) |
+| `fletcher_bufferreader` | 36.48 / 36.37 (-0.3 %) | 38.07 / 38.04 (-0.1 %) |
+| `sc5_fifo_repack`, `sc5_timestamp`, `poc_stat_histogram` | 0.0 % | 0.0 % |
+| `poc_cache_cpu` | 15.10 / 15.01 (-0.6 %) | 16.85 / 16.81 (-0.2 %) |
+| `vai_window_gen_interlock` | 495.21 / 495.22 (0.0 %) | 236.45 / 236.43 (0.0 %) |
+| `poc_arith_addw` | 235.89 / 235.89 (0.0 %) | 224.18 / 224.16 (0.0 %) |
+| `grlib_leon3mp` | 891.98 / 892.53 (+0.1 %) | |
+
+(`--tier=llvm` of `neorv32_dual_full`: the 0.4 percent is in the tier's compile and run mix, the interpreter does 1.1 percent less.)
 
 Why less than the 2 to 4 percent #667 estimated: the 17 percent repeated drives it counted were by driver, not by element. In
 `neorv32_single_min` 5.6 M of the 5.7 M repeats are one process (the bus gateway's `request`, a loop over five ports with ten field
@@ -7255,3 +7256,58 @@ drives each, enabled ports drive twice) and this pass removes them; `counter_inc
 one (not repeats, the kernel's marks cannot tell), `exec_comb` keeps the repeats behind joins. After the pass 4.8 M of 16 M scalar
 drives of `neorv32_single_min` still count as repeats by the kernel's marks, almost all of them element-wise drives of one vector driver.
 The kernel side (a pending-drive merge, option 2 of #667) was not touched: a repeat there already costs one push.
+
+## Specialised copies start after the declarative part (yavs-ir `opt.rs` `drop_declarations`, #678, 2026-10-24)
+
+Decision (landed): **the optimised copy of a process for one instance (`Program::copy_of`) jumps from its entry straight to the
+body; the blocks of the declarative part are one jump to themselves.** A copy takes over only between two activations of the shared
+code (`Machine::specialise`: the process waits at its one wait statement in its root frame, the variables are in their slots, the
+registers are the copy's own), so the declarative part never runs in it, and the optimiser's walk skips it anyway (`Opt::pass`:
+blocks before `Func::body` are not walked). For a process of records with generic bounds it was the largest part of the copy: the
+descriptors and initial values of the variables (the LEON3 integer unit's `comb`: 34 164 lines of IR dump in the copy, 24 486 without;
+`spec_copy_ir` of 72 copies at 20 us of the LEON3 run 143 387 to 120 115, 16 percent; `neorv32_dual_full` 39 013 to 38 262).
+Registers a frame starts with (defined once by a constant or an address) that the body reads keep their definition, moved to the
+entry block, since the frame template is built from the definitions. No instruction counts of the interpreter change (c1 / c2 in
+`docs/STATUS.md`): the gain is code the tiers need not compile and the predecoder need not scan, and a copy under the memo's 6000
+instructions.
+
+What this does **not** do (#678 stays open): the 1 127 `LayoutOf` and 1 570 `Field` that remain in the copy of the LEON3 `comb` are
+in the body. They read the descriptors of the process variables (`registers`, records with array fields whose bounds are generics)
+through frame slots the declarative part filled, so the walk knows nothing of their contents, and the instance data being frozen
+does not help. Folding them needs the declarative part evaluated for the instance: the frame slots it writes once and the body never
+writes (the descriptors) as constant facts at the body entry and after each suspension, and a layout of a record type from a
+descriptor whose words are known (`Ty::layout` takes the bytes). The interpreter's per-type layout memo and the `FieldOf` fusion
+already make a `LayoutOf` plus `Field` cheap, so the gain is mostly in the compiled code (the address checks).
+
+## Idle skip, round 4: concurrent conditional assignments, conditions of generics (yavs-sem, yavs-elab, #521, #678, 2026-10-24)
+
+Round 2 and 3 gave the pure processes the idle skip, with the conditions their reads are under, but `t <= a when c else b;` (a
+concurrent conditional assignment, a process with the sensitivity list of every signal of every arm) was left out, and a condition
+of generics (`... when TRACE_PORT_EN else ...`, `... and NAP_EN else '0'`, as the CPU designs write them for features a configuration
+leaves out) was no literal. `neorv32_single_min` woke those on every event of the signals their dead arms read (`cpu_trace`, `i_addr_i`
+of every PMP region) and assigned the constant again.
+
+- **`Db::pure_cond_reads`**: the reads of a concurrent conditional assignment (not guarded or postponed, delay default or `transport`,
+  no `after`, every waveform a value, the expressions of the pure shapes of round 2). A waveform is read under its own condition and the
+  negation of the earlier conditions that are one literal, a condition under those negations; the target's indices unconditionally.
+  A condition the walk cannot express adds no literal (a weaker condition only makes the read count more often).
+- **Conditions of constants** (`Db::const_cond`): a boolean expression of constants and generics declared outside the process (entity,
+  architecture, block, generate, package), predefined operators only, with at least one name in it, is a literal (`GuardLit` with `pos`
+  `GUARD_CONST`, `sig` the expression, `eq` whether it must be true). The elaborator evaluates it for the instance (`Walker::idle_parts`,
+  `Model::eval`, as `if generate` does): a conjunction with a literal that is false never holds and goes, a true literal drops out of
+  its conjunction, and a read with no conjunction left is no read, so an event on a signal only a dead arm reads arms nothing. A value
+  that cannot be worked out leaves the literal in place (weaker).
+- **`and` in a condition**: the literals of the parts that are literals are necessary for the condition to be true, so the body or arm
+  is read only under them (`cond_lits(c, false)`); the negation for the later arms still needs the exact form (`cond_lits(c, true)`,
+  one literal), since `not (a and b)` is not `not a`. This also lets `if sig_a = sig_b and GENERIC then` carry the generic.
+- **Why it is the same run**: as in round 3, an activation does what the last one did when every signal the last one read, under the
+  conditions it read it, is unchanged; a constant does not change, so an arm it rules out is never read. `YAVS_IDLE_SKIP=check`
+  runs the activations the kernel would skip and fails when one assigns something else: `perf.rs` `idle_skip_changes_nothing` with the
+  new `idle_when` (off, on, check equal; 586 of 2715 activations skipped), `tests/corpus/delta/idle_when.vhd` (blessed from the
+  reference simulator), and the real-world designs `neorv32_single_min`, `neorv32_dual_full`, `poc_cache_cpu`, `fletcher_bufferreader`
+  and `sc5_fifo_repack` in check mode print what main prints.
+- **Not covered**: selected assignments (`with s select`), simple concurrent assignments (every read is unconditional), an
+  assignment inside a generate whose condition is not a constant of the instance, conditions through a user function. `resize(INIT,
+  q'length)` in PoC's `ffdre` (the other item of the hand-off) is a per-call computation inside a subprogram, not a read: it needs the
+  call's constant arguments to reach the callee (#701).
+- **Measured**: see "IR optimiser round 13" in `docs/STATUS.md`.

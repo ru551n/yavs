@@ -146,6 +146,8 @@ pub(crate) struct Elab<'d> {
     /// `idle_reads` of a process statement (the same for every instance of it): the signals
     /// read, or `None` where the process is not pure.
     idle_cache: HashMap<StmtId, Option<Vec<PureRead>>>,
+    /// `idle_parts` left out a read that no condition of the instance can meet.
+    idle_dead: bool,
     /// Processes whose drivers are rooted at external names: their drivers are elaborated
     /// once the whole hierarchy is (#93).
     deferred: Vec<(ProcIdx, ScopeId, Vec<Lsp>)>,
@@ -508,6 +510,7 @@ pub(crate) fn elaborate(
         stmt: None,
         pending: Vec::new(),
         idle_cache: HashMap::new(),
+        idle_dead: false,
         deferred: Vec::new(),
         pkg_uses,
         units_seen: 0,
@@ -2867,7 +2870,20 @@ impl Elab<'_> {
             ..
         } = &db.stmts[st].kind
         else {
-            return None;
+            // `t <= a when c else b;`: the arms its conditions can take.
+            let lsps = match self.idle_cache.get(&st) {
+                Some(c) => c.clone()?,
+                None => {
+                    let r = self.db.pure_cond_reads(st);
+                    self.idle_cache.insert(st, r.clone());
+                    r?
+                }
+            };
+            // Only worth tracking when a read is conditional or left out: with every read
+            // unconditional each wake is by a signal the assignment reads.
+            self.idle_dead = false;
+            let parts = self.idle_parts(s, lsps)?;
+            return (self.idle_dead || parts.iter().any(|p| p.guard.is_some())).then_some(parts);
         };
         let lsps = match self.idle_cache.get(&st) {
             Some(c) => c.clone()?,
@@ -2887,7 +2903,42 @@ impl Elab<'_> {
     fn idle_parts(&mut self, s: ScopeId, reads: Vec<PureRead>) -> Option<Vec<crate::IdleRead>> {
         let mut out: Vec<crate::IdleRead> = Vec::new();
         for r in reads {
-            let guard = r.guard.and_then(|alts| {
+            // Conditions of constants and generics hold or not for this instance: a conjunction
+            // with a false one is never met, a true one drops out; a read that no conjunction
+            // can meet is no read.
+            let mut dead = false;
+            let r_guard = r.guard.as_ref().map(|alts| {
+                let mut live: Vec<Vec<yavs_sem::hir::GuardLit>> = Vec::new();
+                for conj in alts {
+                    let mut keep = Vec::new();
+                    let mut never = false;
+                    for l in conj {
+                        if l.pos != yavs_sem::hir::GUARD_CONST {
+                            keep.push(l.clone());
+                            continue;
+                        }
+                        let v = self
+                            .m
+                            .eval(self.db, l.sig, Some(s))
+                            .ok()
+                            .and_then(|v| v.as_int());
+                        match v {
+                            Some(v) if (v == 1) != l.eq => never = true,
+                            _ => {}
+                        }
+                    }
+                    if !never {
+                        live.push(keep);
+                    }
+                }
+                dead = live.is_empty();
+                live
+            });
+            if dead {
+                self.idle_dead = true;
+                continue;
+            }
+            let guard = r_guard.and_then(|alts| {
                 let alts = alts
                     .iter()
                     .map(|conj| {

@@ -7185,11 +7185,29 @@ latency is 13.6 percent of the dispatch slots with the default `--tier=auto` aga
 sampled window touches about 150 KB, more than the L1i holds.
 Difftest 505/505 on `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0` at 1 and 4 threads, and with `YAVS_LLVM_ARENA=0`.
 ## IR optimiser round 13: repeated drives (#667, 2026-10-24)
+## IR optimiser round 13: repeated drives, copies without the declarative part, conditional assignments that idle (#667, #678, #521, 2026-10-24)
 
-`opt/drives.rs`: in a process, a zero-delay drive (with the waveform it builds) that a later zero-delay drive of the same elements deletes
-is delayed down the control flow and dropped on the paths that drive again (copies at the end of the paths that do not; before any
-instruction that can see the driver's transactions; never into a cycle). `YAVS_NO_DRIVES=1` turns it off. Host instructions, bench builds,
-`--threads 1`, main at 4b80445d (`docs/decisions.md` "IR optimiser round 13" has the table and the limits):
-`neorv32_single_min` -4.9 % interpreter / -3.0 % llvm, `poc_cache_cpu` -5.3 %, `fletcher_bufferwriter_512` -1.3 %, `neorv32_dual_full`
--1.1 %, `poc_stat_histogram` -1.2 %, `sc5_fifo_repack` -0.7 %, the others within 0.5 %. Tests: `crates/yavs/tests/drives.rs` (14 designs,
-output and exit status equal with and without the pass, fewer kernel drives), perf design `drive_defaults`.
+Three changes (`docs/decisions.md` "IR optimiser round 13", "Specialised copies start after the declarative part", "Idle skip, round 4"):
+
+- `opt/drives.rs`: in a process, a zero-delay drive (with the waveform it builds) that a later zero-delay drive of the same elements
+  deletes is delayed down the control flow and dropped on the paths that drive again (copies at the end of the paths that do not;
+  before any instruction that can see the driver's transactions; never into a cycle). `YAVS_NO_DRIVES=1` turns it off. Tests:
+  `crates/yavs/tests/drives.rs` (14 designs, output and exit status equal with and without the pass, fewer kernel drives), perf design
+  `drive_defaults`.
+- A specialised copy of a process jumps from its entry to the body (the declarative part is never run in it): the copies of the LEON3
+  run are 16 percent smaller in IR; no change in interpreter instructions. Test `a_copy_has_no_declarative_part`.
+- Idle skip for concurrent conditional assignments `t <= a when c else b;`, with conditions of generics worked out per instance
+  (`neorv32` `... when TRACE_PORT_EN else ...`, the PMP `... and NAP_EN else '0'`): an arm that cannot be taken leaves no read. Tests:
+  perf `idle_when`, `tests/corpus/delta/idle_when.vhd` (blessed from the reference simulator).
+
+Host instructions, bench builds, `--threads 1`, G, main at da793761 / drives / drives and copies / all three (`neorv32_single_min`
+interp 44.85 / 42.76 / 42.78 / 41.66, llvm 61.35 / 59.14 / 59.16 / 57.7; `neorv32_dual_full` interp 29.94 / 29.61 / 29.62 / 29.23,
+llvm 50.59 / 50.77 / 50.59 / 50.07; `fletcher_bufferwriter_512` interp 91.54 / 90.37 / 90.40 / 90.44; `poc_cache_cpu` interp 15.10 /
+15.01 / 15.00 / 15.0; `poc_arith_addw` interp 235.89 / 235.89 / 235.89 / 236.4 (+0.2 percent: tracked assignments that never skip);
+`grlib_leon3mp` interp 891.98 / 892.53; the others within 0.1 percent). Checked: the 505-test differential corpus (interp, llvm, auto
+at 1 and 4 threads), UVVM (131 pass, 6 skipped) and OSVVM (521 files, 314 tests pass) as on main, `YAVS_IDLE_SKIP=check` on five
+real-world designs, `cargo test --workspace` and `-p yavs-llvm -p yavs --features llvm`.
+
+What is left: the repeats behind a join (tail duplication), a repeat across a loop's iterations of dynamic offsets that are not one
+register, the `LayoutOf` and `Field` of the process variables in the copies (#678), PoC `ffdre` (#701), sharing the two `to_integer` of
+a check's condition and message (#520, a comment with the plan).

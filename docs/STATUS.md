@@ -6807,3 +6807,20 @@ What is left, by cost: the interpreter's dispatch and the signal drive path (abo
 cycles including its commit); the kernel's per-event work; nothing of these designs is compiled; per-bit drives of vector
 signals; process variables read from compiled code (`Host::object`); `mux`/`ffdre`-style functions of unconstrained vectors
 (5 000 instructions an activation).
+
+Real-world suite after #630 (`tools/realbench/run.py --ref sim1 --cores 10 --runs 2 --phases elab,run --tiers interp,auto,auto-cold`, bench build
+with `llvm` at 20264d5e, medians of 2, host load 22 to 77 so the wall times are indicative and the instruction ratios are the reliable part;
+elaboration of the reference 0.42 to 0.47 s on the LEON3 and neorv32, yavs 0.05 to 0.25 s):
+
+| test | reference run (s, G instr) | interp | auto warm | auto cold |
+|---|---|---|---|---|
+| `grlib_leon3mp` | 14.09, 171.1 | 79.65 s (5.65x, ins 5.45) | 82.64 s (5.87x, ins 5.51) | 94.58 s (6.71x, ins 5.71) |
+| `neorv32_single_min` | 3.88, 38.7 | 5.30 s (1.37x, ins 1.45) | 5.79 s (1.50x, ins 1.47) | 5.33 s (1.38x, ins 1.51) |
+| `vai_window_gen_interlock` | 5.91, 70.5 | 29.59 s (5.01x, ins 7.03) | 11.10 s (1.88x, ins 2.48) | 13.48 s (2.28x, ins 3.50) |
+
+The LEON3 was 150.2 s warm and 146.5 s cold under `--tier=auto` (11.25 times the reference's instructions) when #630 was filed. `--tier=llvm` on the
+whole design: 84 s of code generation (9.8 M LLVM instructions: generation 5.8 s, passes 50.6 s, code generation about 25 s), the run 174 s against 91 s
+interpreted (1520 G instructions against 993 G): the compiled frame-mode code of the design's processes does not execute fewer instructions than
+the interpreter (#679). What is left of the LEON3 gap is spread: `iu:comb` 18.9 percent of the interpreted run (record signal reads and drives, #677),
+`dctrl` 9.7, the four `state_register` processes of the SDRAM model 14, the two TLB processes 7.5, `ictrl` 3.7, the kernel 16.5.
+

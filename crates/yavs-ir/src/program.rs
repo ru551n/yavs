@@ -98,7 +98,7 @@ impl Program {
     #[cold]
     #[inline(never)]
     fn optimized<'a>(&'a self, raw: &'a Func, f: FuncId) -> &'a Func {
-        if ELAB_RAW.with(std::cell::Cell::get)
+        if ELAB_RAW.with(std::cell::Cell::get) != 0
             && matches!(raw.kind, FuncKind::Function | FuncKind::Procedure)
             && !raw.flags.contains(FuncFlags::MAY_SUSPEND)
             && !raw.spare
@@ -153,6 +153,34 @@ impl Program {
             eprintln!("{}", self.dump_func(f));
         }
         o
+    }
+
+    /// Does `f` run as lowered because elaboration-time code asked for it ([`ElabRaw`])?
+    pub fn runs_raw(&self, f: FuncId) -> bool {
+        self.funcs.get(f).is_some_and(|r| {
+            r.opt.get().is_none() && matches!(r.kind, FuncKind::Function | FuncKind::Procedure)
+        })
+    }
+
+    /// A jump back of function `f`: `None` unless it runs as lowered; `Some(true)` (and `f` listed
+    /// to be optimised before the next call) when its loops have taken [`BACK_BUDGET`] of them.
+    pub fn back_edge(&self, f: FuncId) -> Option<bool> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let r = self.funcs.get(f)?;
+        if r.opt.get().is_some() || !matches!(r.kind, FuncKind::Function | FuncKind::Procedure) {
+            return None;
+        }
+        let n = r.fetches.1.load(Relaxed).wrapping_add(1);
+        r.fetches.1.store(n, Relaxed);
+        if !n.is_multiple_of(BACK_BUDGET) {
+            return Some(false);
+        }
+        self.hot
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(f);
+        Some(true)
     }
 
     /// Verify `raw` (function `f`) when the program was not verified as a whole (`lazy_verify`).
@@ -464,15 +492,15 @@ pub struct Func {
     /// (see [`lazy_bodies`]): these four are empty here and [`Func::full`] decodes them.
     #[serde(skip)]
     pub(crate) lazy: Option<Box<LazyBody>>,
-    /// How often elaboration-time code asked for this function before it was optimised
-    /// ([`ElabRaw`]).
+    /// How often elaboration-time code asked for this function before it was optimised, and how
+    /// many jumps back it took as lowered ([`ElabRaw`]).
     #[serde(skip)]
     pub(crate) fetches: Fetches,
 }
 
 /// A counter that a clone of its function starts again.
 #[derive(Debug, Default)]
-pub(crate) struct Fetches(std::sync::atomic::AtomicU32);
+pub(crate) struct Fetches(std::sync::atomic::AtomicU32, std::sync::atomic::AtomicU32);
 
 impl Clone for Fetches {
     fn clone(&self) -> Self {
@@ -494,7 +522,24 @@ impl Clone for HotList {
 /// asked for this many times ([`ElabRaw`]).
 const HOT: u32 = 64;
 
+/// Jumps back a function that runs as lowered may take (over all its calls) before it is
+/// optimised ([`Program::back_edge`]). The optimiser costs about as much as 2000 iterations of
+/// a lowered loop save; the iterations run before the switch are repeated when the call restarts.
+const BACK_BUDGET: u32 = 2048;
+
 static OPTIMISED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+static RESTARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Count a call abandoned and run again with a function optimised ([`ElabRaw::restartable`]).
+pub fn note_restart() {
+    RESTARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many calls restarted in this process (a work counter: `YAVS_COUNTERS`).
+pub fn restarted_calls() -> u64 {
+    RESTARTED.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// How many functions the optimiser ran on in this process (a work counter: `YAVS_COUNTERS`).
 pub fn optimised_functions() -> u64 {
@@ -502,7 +547,8 @@ pub fn optimised_functions() -> u64 {
 }
 
 thread_local! {
-    static ELAB_RAW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// 0: off, 1: on, 2: on and a call may not restart ([`ElabRaw::no_restart`]).
+    static ELAB_RAW: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
 /// While alive, [`Program::func`] hands out a subprogram as lowered instead of optimising it at
@@ -511,14 +557,27 @@ thread_local! {
 /// for [`HOT`] times are listed ([`Program::take_hot`]); the caller optimises them between two
 /// calls, when no frame runs their lowered code (`yavs_interp::Runtime::promote_hot`).
 ///
-/// ponytail: a function with a long loop that runs once stays as lowered (the interpreter runs
-/// it about 1.75 times slower than optimised); counting loop iterations would need a switch of
-/// the running frame.
-pub struct ElabRaw(bool);
+/// A function whose loops take [`BACK_BUDGET`] jumps back is listed too (`Program::back_edge`), and
+/// a call that has only computed may then be run again with it optimised ([`ElabRaw::restartable`]).
+///
+/// ponytail: the jumps back are counted at the jumps the predecoder leaves to the generic step
+/// (`yavs_interp::pre`); a call that printed or touched anything finishes lowered, and an element
+/// loop (`Op::Loop`) is not counted.
+pub struct ElabRaw(u8);
 
 impl ElabRaw {
     pub fn on() -> ElabRaw {
-        ElabRaw(ELAB_RAW.with(|c| c.replace(true)))
+        ElabRaw(ELAB_RAW.with(|c| c.replace(c.get().max(1))))
+    }
+
+    /// Like [`ElabRaw::on`], and no call restarts while it is alive: the last attempt.
+    pub fn no_restart() -> ElabRaw {
+        ElabRaw(ELAB_RAW.with(|c| c.replace(2)))
+    }
+
+    /// Whether the call running now may be abandoned and run again (`Fault::Restart`).
+    pub fn restartable() -> bool {
+        ELAB_RAW.with(std::cell::Cell::get) == 1
     }
 }
 

@@ -1279,7 +1279,7 @@ impl Runtime {
         Some(
             self.pre
                 .get(id.0 as usize)?
-                .get_or_init(|| pre::Pre::new(f, &self.prog)),
+                .get_or_init(|| pre::Pre::new(f, &self.prog, self.prog.runs_raw(id))),
         )
     }
 
@@ -1747,6 +1747,7 @@ pub(crate) fn fault_text(e: exec::Fault) -> String {
         exec::Fault::Runtime(m) | exec::Fault::Internal(m) => m,
         exec::Fault::Unbound(b) => b.0,
         exec::Fault::Kernel(e) => format!("{e:?}"),
+        exec::Fault::Restart => RESTART.into(),
     }
 }
 
@@ -2055,6 +2056,16 @@ pub fn call_values_shared(
     shared: Option<&Arc<Mutex<SharedState>>>,
 ) -> Result<Option<CallVal>, SimError> {
     call_values_inner(rt, func, inst, args, ret, shared, None)
+}
+
+/// The message of the runtime error a call ends with when it stops to run again with a function
+/// optimised ([`is_restart`], #695). Only a traced call under `yavs_ir::ElabRaw` can end so.
+const RESTART: &str = "call restarts with an optimised function";
+
+/// Did the call stop to be run again ([`call_values_traced`] under `yavs_ir::ElabRaw`)? The
+/// functions it asked to have optimised are optimised by [`Runtime::promote_hot`] first.
+pub fn is_restart(e: &SimError) -> bool {
+    matches!(&e.kind, ErrorKind::Runtime(m) if m == RESTART)
 }
 
 /// What a call did besides computing its value (`call_values_traced`).

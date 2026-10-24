@@ -35,6 +35,9 @@ pub(crate) enum Fault {
     Unbound(Box<(String, String)>),
     Internal(String),
     Kernel(SimError),
+    /// A call that only computed is abandoned to run again with a function optimised
+    /// (`Machine::back_budget`).
+    Restart,
 }
 
 pub(crate) type R<T> = Result<T, Fault>;
@@ -1298,6 +1301,7 @@ impl Machine {
             }
             Fault::Internal(m) => mk(ErrorKind::Internal(format!("interpreter: {m}"))),
             Fault::Kernel(e) => e,
+            Fault::Restart => mk(ErrorKind::Runtime(crate::RESTART.into())),
         };
         if e.trace.is_empty() {
             e.trace = self.trace();
@@ -3608,14 +3612,50 @@ impl Machine {
     ) -> R<Flow> {
         // The jump back of a process that never suspends: a stop request (Ctrl-C) ends the
         // activation as a `wait;` would (`pre::Code::new` steps those jumps).
-        if let Inst::Br { .. } = inst
-            && ctx.as_deref().is_some_and(|c| c.stop_requested())
-            && f.kind == FuncKind::Process
-            && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
-        {
-            return Ok(Flow::Suspend);
+        if let Inst::Br { to } = inst {
+            if f.kind == FuncKind::Process {
+                if ctx.as_deref().is_some_and(|c| c.stop_requested())
+                    && !f.flags.contains(yavs_ir::FuncFlags::MAY_SUSPEND)
+                {
+                    return Ok(Flow::Suspend);
+                }
+            } else if let Some(fr) = self.frames.last()
+                && let Some(over) = prog.back_edge(fr.func)
+            {
+                // A jump back of a function that runs as lowered (`pre::count_back_edges`).
+                if over {
+                    self.back_budget()?;
+                }
+                return Ok(Flow::Jump(to));
+            }
         }
         self.step(prog, f, inst, ctx)
+    }
+
+    /// A lowered function took its budget of jumps back (`Program::back_edge`, #695): it is
+    /// listed to be optimised before the next call. A call that has only computed (a pure entry
+    /// function, no report, nothing tainted, no coverage) stops to run again with it.
+    #[cold]
+    #[inline(never)]
+    fn back_budget(&mut self) -> R<()> {
+        let flags = |f: FuncId| self.rt.prog.funcs.get(f).map(|f| f.flags);
+        let pure = self
+            .frames
+            .first()
+            .and_then(|fr| flags(fr.func))
+            .is_some_and(|fl| {
+                fl.contains(yavs_ir::FuncFlags::PURE)
+                    && !fl.contains(yavs_ir::FuncFlags::TOUCHES_SHARED)
+            });
+        if pure
+            && yavs_ir::ElabRaw::restartable()
+            && self.tainted.is_none()
+            && self.init_reports.as_ref().is_some_and(Vec::is_empty)
+            && self.rt.cov.is_empty()
+        {
+            return Err(Fault::Restart);
+        }
+        Ok(())
     }
 
     /// `Inst::DopeLen`: the element count of dimension `dim` of the descriptor at `dope`.

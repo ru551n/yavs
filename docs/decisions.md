@@ -5435,15 +5435,28 @@ every elaboration, and again for every instance. Decisions:
   A function whose first request finds an optimised copy stored by an earlier run (`libopt`, the stage cache) takes it
   as before. Verification at first use is kept (`verify_lazily`). The run that follows elaboration optimises what it
   calls at its first call, as before.
-- **Why not everywhere, why not on a loop count:** the version of a function must not change while a frame of it
-  exists (frames hold a pc into one version, and `Runtime::pre` is a `OnceLock` per function), so a switch can only
-  happen between two calls. Package initialisation and the thunks of the design's own build run as before (one
-  machine runs them all: a function called thousands of times inside it could not be promoted, which a first
-  measurement of running everything lowered showed as 2.5 times the instructions of `poc_uart_rx` before #539's fix).
-  A loop that runs a long time inside one call of a function nothing asked for before stays lowered: the interpreter
-  runs the code about 1.75 times slower than optimised (a 60-operation loop body, 1 000 000 iterations: 763 M to
-  1334 M instructions; 4096 iterations: +9 percent). `ponytail:` in `program.rs`; the way out would be a switch of the
-  running frame at a back edge.
+- **Why not everywhere:** the version of a function must not change while a frame of it exists (frames hold a pc into one
+  version, and `Runtime::pre` is a `OnceLock` per function), so a switch can only happen between two calls. Package
+  initialisation and the thunks of the design's own build run as before (one machine runs them all: a function called
+  thousands of times inside it could not be promoted, which a first measurement of running everything lowered showed as 2.5
+  times the instructions of `poc_uart_rx` before #539's fix).
+- **A long loop in one call (#695, 2026-10-24):** the interpreter runs lowered code about 1.5 to 2.3 times slower than
+  optimised (a table generator of a million iterations cost +570 M to +800 M instructions). The jumps back of a lowered
+  function are counted: `pre::count_back_edges` sends each jump back to a loop head (the retreating `Br`s of a depth-first
+  walk of the blocks, also when fused into `CmpBrStep`, `StoreSlotBr` and `MoveBr`) through an `Op::Step` of that `Br`
+  placed after the end of the code, and `Machine::step_out` calls `Program::back_edge`. At 2048 jumps back (over all calls
+  of the function) the function is listed as hot; if the call has only computed (`Machine::back_budget`: the entry
+  function is `PURE` and does not touch shared state, no report was made, nothing tainted, no coverage, a traced call under
+  `ElabRaw`, which is what the call cache requires too) it stops with `Fault::Restart`, `pkgcall::run_restarting` (which
+  owns the runtime again, no clone alive) optimises the listed functions with `Runtime::promote_hot` and runs the call again
+  from its arguments. At most 2 restarts per call (`RESTARTS`, then `ElabRaw::no_restart`); any other call finishes
+  lowered and the function is optimised before its next call. 2048 is about the break-even: the optimiser costs about 1.7 M
+  instructions for a function of this size and a lowered iteration of the measured loop costs 0.8 k more than an optimised one.
+  The price of a restart is the iterations run lowered before it (at most 2048 of them) plus the optimiser; the price of
+  counting is about 8 percent on the iterations of a lowered loop (a stepped jump instead of the fused one), nothing on
+  any other code. Why the fused ops are redirected, not the dispatch loop changed: a new arm or a check in the jump macro
+  moves the codegen of `run_ops` for every design (#583). Not counted: element loops (`Op::Loop`, they run at once), and
+  jumps back that are conditional branches (the lowering emits none).
 - **Measured** (`tools/realbench` worlds of 40 tests, `yavs elab` user instructions, bench builds, cold = empty cache,
   warm = third run; main with the package-constant change before, after): geometric mean cold 0.974, warm 0.918;
   `poc_uart_rx` cold 0.217 G to 0.182 G, `olo_base_cam` 0.991 G to 0.949 G and warm 0.380 G to 0.299 G,
@@ -5453,6 +5466,15 @@ every elaboration, and again for every instance. Decisions:
   1 us byte-identical on all 40. Work counters: `opt_funcs` (functions the optimiser ran on), design `elab_raw`.
 - **Test changes:** `cache_prefix.rs` got its `libopt` from functions optimised by an elaboration-time call; its
   testbenches now call a library function with a loop at run time.
+- **Measured, the budget (#695, `yavs elab` user instructions, bench builds, a package function of a 30-operation loop body called
+  once from a generic, main before, after):** 1000 iterations 13.48 M to 13.60 M, 2000 14.90 M to 15.14 M (under the budget: the
+  counting), 3000 16.32 M to 18.09 M (+11.9 percent, the worst case: a restart just after the budget), 4096 17.88 M to 18.76 M,
+  8000 23.44 M to 21.14 M, 20000 40.5 M to 28.5 M, 50000 83.2 M to 46.8 M, 1 000 000 1435 M to 626 M. Budgets of 1024, 4096, 16384
+  and 65536 were swept the same way: 4096 lost 47 percent at 5000 iterations, 1024 lost 36 percent at 2000, 2048 is the
+  break-even of the optimiser's cost. The 42 `tools/realbench` tests (`yavs elab`, own copies of the worlds): cold geometric mean
+  1.0001 (largest +0.12 percent), warm 1.0005 (largest +0.29 percent, `fletcher_bufferwriter_prim32`), no call restarted, `yavs elab`
+  and a run to 1 us byte-identical on all. Work counter `elab_restarts`; designs `elab_restart` and `elab_restart_report` (a call
+  that has reported finishes lowered, one that has not restarts and reports once).
 - Ideas from the reference simulator (read, nothing copied): it too does not generate code for what elaboration runs
   once; it evaluates it in its interpreter.
 

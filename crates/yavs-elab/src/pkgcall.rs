@@ -183,32 +183,70 @@ pub(crate) fn run(
     shared: Option<&Arc<Mutex<SharedState>>>,
     inst: Option<InstData>,
 ) -> Result<Val, Fail> {
-    run_with(rt, s, args, shared, inst, None)
+    match run_with(rt, s, args, shared, inst, None)? {
+        Ran::Val(v) => Ok(v),
+        Ran::Restart => Err(Fail::Runtime(
+            "internal error: an untraced call restarted".into(),
+        )),
+    }
 }
 
 /// [`run`] without shared state, saying what the call did besides computing (`CallTrace`).
 pub(crate) fn run_traced(
-    rt: &Arc<Runtime>,
+    rt: &mut Arc<Runtime>,
     s: &Sig,
     args: &[Val],
     inst: Option<InstData>,
 ) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
-    let mut t = yavs_interp::CallTrace::default();
-    let r = run_with(rt, s, args, None, inst, Some(&mut t));
-    (r, t)
+    run_restarting(rt, s, args, None, inst)
 }
 
 /// [`run_traced`] against the package state `shared` (a call of the session).
 fn run_traced_shared(
-    rt: &Arc<Runtime>,
+    rt: &mut Arc<Runtime>,
     s: &Sig,
     args: &[Val],
     shared: &Arc<Mutex<SharedState>>,
     inst: Option<InstData>,
 ) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
-    let mut t = yavs_interp::CallTrace::default();
-    let r = run_with(rt, s, args, Some(shared), inst, Some(&mut t));
-    (r, t)
+    run_restarting(rt, s, args, Some(shared), inst)
+}
+
+/// Times a call may stop to run again with the functions its loops made hot (#695): each stop
+/// repeats at most the work of one budget of jumps back, and the last run does not stop.
+const RESTARTS: u32 = 2;
+
+/// A traced call. One that has only computed and whose loops outgrew the budget of lowered code
+/// stops (`Ran::Restart`); the functions it listed are optimised ([`Runtime::promote_hot`], which
+/// needs the runtime to itself, so no clone of `rt` outlives a run) and it runs again.
+fn run_restarting(
+    rt: &mut Arc<Runtime>,
+    s: &Sig,
+    args: &[Val],
+    shared: Option<&Arc<Mutex<SharedState>>>,
+    inst: Option<InstData>,
+) -> (Result<Val, Fail>, yavs_interp::CallTrace) {
+    let mut tries = 0;
+    loop {
+        Runtime::promote_hot(rt);
+        let _last = (tries == RESTARTS).then(yavs_ir::ElabRaw::no_restart);
+        let mut t = yavs_interp::CallTrace::default();
+        match run_with(rt, s, args, shared, inst.clone(), Some(&mut t)) {
+            Ok(Ran::Restart) => {
+                yavs_ir::note_restart();
+                tries += 1;
+            }
+            Ok(Ran::Val(v)) => return (Ok(v), t),
+            Err(f) => return (Err(f), t),
+        }
+    }
+}
+
+/// What a call ended with.
+enum Ran {
+    Val(Val),
+    /// It stopped to run again ([`run_restarting`]).
+    Restart,
 }
 
 fn run_with(
@@ -218,7 +256,7 @@ fn run_with(
     shared: Option<&Arc<Mutex<SharedState>>>,
     inst: Option<InstData>,
     trace: Option<&mut yavs_interp::CallTrace>,
-) -> Result<Val, Fail> {
+) -> Result<Ran, Fail> {
     let prog = rt.prog.clone();
     // A one-shot evaluation: functions run as lowered until they prove hot (`promote_hot`).
     let _raw = yavs_ir::ElabRaw::on();
@@ -249,10 +287,14 @@ fn run_with(
             r
         }
         None => yavs_interp::call_values_shared(rt.clone(), s.func, inst, &cvs, ret_ty, shared),
-    }
-    .map_err(runtime)?
-    .ok_or(Fail::Unsupported("no result"))?;
-    crate::value::decode(&prog, ret, &r).ok_or(Fail::Unsupported("a result of this type"))
+    };
+    let r = match r {
+        Err(e) if yavs_interp::is_restart(&e) => return Ok(Ran::Restart),
+        r => r.map_err(runtime)?.ok_or(Fail::Unsupported("no result"))?,
+    };
+    crate::value::decode(&prog, ret, &r)
+        .map(Ran::Val)
+        .ok_or(Fail::Unsupported("a result of this type"))
 }
 
 /// Where the package state after initialisation is kept (#407, stage 2 step 2): next to the lowered
@@ -895,7 +937,7 @@ impl Session {
         }
         let live = self
             .live
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| Fail::Runtime("internal error: no package state".into()))?;
         let s = live
             .items
@@ -915,7 +957,7 @@ impl Session {
         };
         let r = match trace {
             Some(t) => {
-                let (r, tr) = run_traced_shared(&live.rt, s, args, &live.shared, inst);
+                let (r, tr) = run_traced_shared(&mut live.rt, s, args, &live.shared, inst);
                 *t = tr;
                 r
             }

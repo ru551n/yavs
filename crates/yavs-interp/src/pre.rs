@@ -22,6 +22,8 @@ use yavs_ir::{
     Width,
 };
 
+use std::collections::HashMap;
+
 use crate::exec::{CONST, FRAME, INST, PKG, R, SHARED, mk_addr};
 
 pub(crate) struct Pre {
@@ -71,7 +73,9 @@ impl Pre {
         Ok(())
     }
 
-    pub(crate) fn new(f: &Func, prog: &Program) -> Pre {
+    /// `budget`: `f` runs as lowered under elaboration-time evaluation, and its jumps back are
+    /// counted ([`count_back_edges`]).
+    pub(crate) fn new(f: &Func, prog: &Program, budget: bool) -> Pre {
         let n = f.reg_ty.len();
         let mut defs = vec![0u8; n];
         for inst in &f.code {
@@ -159,7 +163,7 @@ impl Pre {
                 *n = *t;
             }
         }
-        let mut code = Code::new(f, prog, &skip, &known, &next);
+        let mut code = Code::new(f, prog, &skip, &known, &next, budget);
         let params: Box<[(u32, Width)]> = f.params.iter().map(|p| (p.slot, p.width)).collect();
         let pro = prologue(&mut code, &params);
         let lean = lean_params(f, prog, &code, &pro);
@@ -2109,7 +2113,7 @@ pub struct ScalarDrive {
 
 /// The scalar logic assignments of `f` that the interpreter's predecoder fuses (`ScalarDrive`).
 pub fn scalar_drives(prog: &Program, f: &Func) -> Vec<ScalarDrive> {
-    let pre = Pre::new(f, prog);
+    let pre = Pre::new(f, prog, false);
     let mut out = Vec::new();
     for (k, op) in pre.code.ops.iter().enumerate() {
         let Op::LSetDrive {
@@ -2285,6 +2289,99 @@ fn targets_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
         | Op::FlagBr { t, f, .. }
         | Op::EdgeBr { t, f, .. } => [Some(t), Some(f)],
         _ => [None, None],
+    }
+}
+
+/// Every branch target of an op that jumps back, for [`count_back_edges`].
+fn jumps_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
+    match op {
+        Op::CmpBrStep { t, head, .. } => [Some(t), Some(head)],
+        Op::PosIndexLoadCmpBr { t, f, .. } => [Some(t), Some(f)],
+        op => targets_mut(op),
+    }
+}
+
+/// A function that runs as lowered under elaboration-time evaluation counts its jumps back
+/// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
+/// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
+/// Loops are fused into ops that jump back themselves (`CmpBrStep`), so the counting is a
+/// trampoline, and the loop ops of every other function stay as they are. The jumps back are the
+/// retreating `Br`s of a depth-first walk of the blocks (a jump to a join the code lays out
+/// earlier is none). An element loop (`Op::Loop`) is not counted: its iterations run at once.
+fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, at: &mut Vec<u32>) {
+    let blocks = f.blocks.values();
+    let succ = |b: usize| -> Vec<usize> {
+        let bl = &blocks[b];
+        if bl.end <= bl.start {
+            return Vec::new();
+        }
+        match f.code[bl.end as usize - 1] {
+            Inst::Case { table, .. } => prog.cases.get(table).map_or_else(Vec::new, |t| {
+                t.arms
+                    .iter()
+                    .map(|a| a.2.0 as usize)
+                    .chain(std::iter::once(t.default.0 as usize))
+                    .collect()
+            }),
+            ref i => i.targets().iter().map(|t| t.0 as usize).collect(),
+        }
+    };
+    // (pc of the `Br`, pc of the head) of every jump back.
+    let mut back: Vec<(u32, u32)> = Vec::new();
+    let mut state = vec![0u8; blocks.len()];
+    let mut stack: Vec<(usize, Vec<usize>, usize)> = Vec::new();
+    if !blocks.is_empty() {
+        state[0] = 1;
+        stack.push((0, succ(0), 0));
+    }
+    while let Some((b, ss, i)) = stack.last_mut() {
+        let Some(&s) = ss.get(*i) else {
+            state[*b] = 2;
+            stack.pop();
+            continue;
+        };
+        *i += 1;
+        let from = *b;
+        match state.get(s) {
+            Some(0) => {
+                state[s] = 1;
+                stack.push((s, succ(s), 0));
+            }
+            Some(1) => {
+                let last = blocks[from].end - 1;
+                if matches!(f.code[last as usize], Inst::Br { .. }) {
+                    back.push((last, blocks[s].start));
+                }
+            }
+            _ => {}
+        }
+    }
+    // The ops in code order come first; the ones the passes appended (element loops) follow.
+    let main = at
+        .windows(2)
+        .position(|w| w[1] < w[0])
+        .map_or(at.len(), |p| p + 1);
+    let mut tramp: HashMap<u32, u32> = HashMap::new();
+    for (br, head) in back {
+        let Some(&h) = entry.get(head as usize).filter(|&&h| h != NONE) else {
+            continue;
+        };
+        let k = at[..main].partition_point(|&p| p <= br).saturating_sub(1);
+        let mut op = ops[k];
+        let mut changed = false;
+        for t in jumps_mut(&mut op).into_iter().flatten() {
+            if *t == h {
+                *t = *tramp.entry(h).or_insert_with(|| {
+                    ops.push(Op::Step(br));
+                    at.push(br);
+                    ops.len() as u32 - 1
+                });
+                changed = true;
+            }
+        }
+        if changed {
+            ops[k] = op;
+        }
     }
 }
 
@@ -3246,7 +3343,14 @@ fn superops(ops: &mut [Op], at: &[u32], f: &Func, known: &[Known], uses: &[u32])
 }
 
 impl Code {
-    fn new(f: &Func, prog: &Program, skip: &[bool], known: &[Known], next: &[u32]) -> Code {
+    fn new(
+        f: &Func,
+        prog: &Program,
+        skip: &[bool],
+        known: &[Known],
+        next: &[u32],
+        budget: bool,
+    ) -> Code {
         let n = f.code.len();
         // A block start stops a fusion only where something can jump to it: a block that
         // only a skipped jump (to where execution goes on anyway) or nothing reaches is run
@@ -4307,6 +4411,9 @@ impl Code {
                 }
             }
         }
+        if budget {
+            count_back_edges(prog, f, &entry, &mut ops, &mut at);
+        }
         let first = entry.first().copied().unwrap_or(NONE);
         // Debug aid next to the IR dump of `YAVS_DUMPIR`.
         if std::env::var_os("YAVS_DUMPIR").is_some() {
@@ -4395,7 +4502,7 @@ mod tests {
     fn lean_parameter_address_register_is_unset() {
         let (prog, id) = depth();
         let f = prog.func(id).unwrap();
-        let pre = Pre::new(f, &prog);
+        let pre = Pre::new(f, &prog, false);
         assert!(pre.lean);
         // `finish` numbers the registers afresh: find the register in the code.
         let (def, at) = match f.code[0] {

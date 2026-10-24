@@ -821,7 +821,18 @@ impl Model {
                 let Some(k) = key.filter(|_| free.is_empty()) else {
                     return crate::pkgcall::run(&rt, &sig, &vals, None, inst).map_err(failed);
                 };
-                let (r, trace) = crate::pkgcall::run_traced(&rt, &sig, &vals, inst);
+                // The traced call may restart with functions optimised, which needs the runtime
+                // to itself (`pkgcall::run_restarting`).
+                drop(rt);
+                let Some(Ok(l)) = self.funcs.get_mut(&callee) else {
+                    return Err(err(
+                        codes::INTERNAL,
+                        ex.span,
+                        "internal error: lowered call lost",
+                        "here",
+                    ));
+                };
+                let (r, trace) = crate::pkgcall::run_traced(&mut l.rt, &sig, &vals, inst);
                 let v = r.map_err(failed)?;
                 if trace.tainted.is_none() {
                     let hit = crate::callcache::Hit {

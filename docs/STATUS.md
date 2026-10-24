@@ -629,9 +629,14 @@ Functions called while elaborating run as lowered and are optimised only when as
 (`docs/decisions.md` "Elaboration-time calls run as lowered; a function asked for often is optimised between two calls").
 `yavs elab` user instructions, 40 `tools/realbench` tests, bench builds, main with the package-constant change before and
 after: geometric mean cold 0.974, warm 0.918; `olo_base_cam` warm 0.380 G to 0.299 G, `hdlm_axi_fifo` warm 0.360 G to
-0.264 G, `osvvm_axis_random` cold 0.598 G to 0.565 G; output unchanged on all 40. Open: a long loop in a function nothing
-asked for before runs 1.75 times slower than optimised (an elaboration-time table generator of a million iterations
-costs +570 M instructions; 4096 iterations +9 percent).
+0.264 G, `osvvm_axis_random` cold 0.598 G to 0.565 G; output unchanged on all 40.
+
+A long loop in a function nothing asked for before (an elaboration-time table generator) no longer stays lowered (#695): a
+function whose loops take 2048 jumps back is optimised, and a call that only computed (pure, no report, nothing tainted) restarts
+with it. A million iterations cost 1435 M instructions of `yavs elab` before and 626 M after; 3000 iterations, just over the
+budget, cost 12 percent more (the worst case), loops under it 1 to 2 percent more (the counting). The 42 `tools/realbench`
+tests: geometric mean cold 1.0001, warm 1.0005, no restart, output identical (`docs/decisions.md` "Elaboration-time calls run
+as lowered").
 
 ### Compilation cache (#407)
 

@@ -33,7 +33,7 @@ pub use program::{
     NativeRef, OptCopy, Param, ParamClass, Program, RootKind, StmtInfo, StmtKind, VhpiIndex,
     VhpiModel, VhpiParam, ViaNode,
 };
-pub use program::{bytes, lazy_bodies, optimised_functions};
+pub use program::{bytes, lazy_bodies, note_restart, optimised_functions, restarted_calls};
 pub use ty::{DOPE_DIM_BYTES, Field, Layout, LayoutError, LogicKind, Refl, ReflKind, Ty, dim_len};
 pub use verify::VerifyError;
 pub use yavs_kernel::StmtId;

@@ -187,6 +187,46 @@ case!(
     ]
 );
 case!(
+    elab_restart,
+    "n=8506 2",
+    &[],
+    [
+        ("elab_restarts", Max(1)),
+        ("elab_restarts", Min(1)),
+        ("opt_funcs", Max(2)),
+        ("opt_funcs", Min(2)),
+        ("ops_elab", Max(60300)),
+    ]
+);
+
+/// A call that has reported does not restart; one that has not does, and its report is printed once.
+#[test]
+fn elab_restart_report() {
+    let d = tempdir("elab_restart_report");
+    let r = run_design(
+        &d,
+        "elab_restart_report",
+        include_str!("perf/elab_restart_report.vhd"),
+        "interp",
+        &[],
+    );
+    assert_eq!(r.code, 0, "{}", r.all());
+    let all = r.all();
+    assert!(all.contains("n=3757 3757"), "{all}");
+    for what in ["early report", "late report"] {
+        assert_eq!(all.matches(what).count(), 1, "`{what}` in:\n{all}");
+    }
+    check_bounds(
+        "elab_restart_report",
+        &r,
+        &[
+            ("elab_restarts", Max(1)),
+            ("elab_restarts", Min(1)),
+            ("ops_elab", Max(113000)),
+        ],
+    );
+}
+case!(
     clk_toggle,
     "q=",
     &[],

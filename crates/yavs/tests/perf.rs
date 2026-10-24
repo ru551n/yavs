@@ -360,6 +360,7 @@ case!(
         ("ops", Max(6934)),
     ]
 );
+case!(memo_wide, "q=64442", &[], [("ops", Max(75700))]);
 case!(
     edge_forms,
     "edges=",

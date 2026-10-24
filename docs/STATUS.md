@@ -6843,6 +6843,7 @@ interpreter run, before / after (bench builds, user instructions of the process 
 (0.917), `neorv32_single_cache` 46.27 / 43.25 (0.935), `neorv32_dual_full` 37.42 / 35.40 (0.946), `osvvm_axis_random` 3.82 / 3.62
 (0.948), `osvvm_axi4_random` 7.54 / 7.38 (0.979), `fletcher_bufferreader` 0.996; every other real-world design within 0.6%
 (`poc_cache_cpu` 1.004: the guard tests of its registers cost a little where nothing is saved), the 11 head-to-head designs 1.000.
+
 ## `--tier=auto`: callees with their caller, band wait 0.25 s, trials of looping processes (#652, 2026-10-24)
 
 A callee that every call of a hot function makes is compiled with it (`must_calls`); a clocked process outside the 160 to 300
@@ -6852,3 +6853,18 @@ Warm, instructions of auto against interp, main before / after: `rtl_ff` 1.041 /
 `sc5_fifo_repack` 1.019 / 0.951; the window generator, `poc_arith_addw` and the other designs of the short set equal.
 `fused_search` stays: `uvvm_sb_slv` without it 1.05 to 1.12 of the interpreter's cycles (1.22 before). Table, method and the
 evidence in docs/decisions.md ("callees with their caller, `band_wait` 0.25 s, trials of looping processes").
+
+
+## `yavs_rt_host` a leaf, and no cliff in the instance-constant memoisation (#663, #662, 2026-10-24)
+
+- #663: `hdlm_lfsr` under `--tier=auto` (warm, instructions of the process tree, bench builds, 8 fresh worlds interleaved) was 31.1 G before the
+  two #634 commits, 32.7 G after: its hot loop reads a table of the instance data through the one `yavs_rt_host` call frame-mode code makes for an
+  address of unknown space, and that call saved and restored 7 registers on every hit. The lookup is now a leaf and the interpreter's object table a
+  cold function behind it: 30.7 G (cycles level with before: medians of 14 interleaved samples 9.26 G against 9.45 G, 9.63 G for the call).
+  `fletcher_bufferreader`, `fletcher_bufferwriter_512`, `neorv32_single_min` unchanged, `sc5_fifo_repack` within the bimodal noise (#670).
+- #662: the memoisation of instance-constant values (`opt/memo.rs`) gave up at 40 values or 800 instructions in a block, so one more xor tap
+  than 32 in a clocked process cost 2.7 times the instructions of the whole run (interpreter, 1024 instances, 4000 cycles: 22.6 G at 32 taps,
+  60.9 G at 40, 92.7 G at 64). Caps now 256 values and 4096 instructions, a block over 800 instructions copied only when the fast copy saves a
+  fifth of it: 22.5 G, 26.7 G, 39.3 G, 73.8 G at 128 taps (linear, 0.53 G a tap). Every real-world and head-to-head design
+  executes the same instructions as before (within 1 percent); with the caps alone `olo_axi_master_full` executed 12 percent more (its three
+  processes of 1400 to 1600 instructions save 9 to 15 percent of their block and the predecoder pays for the second copy), hence the fifth.

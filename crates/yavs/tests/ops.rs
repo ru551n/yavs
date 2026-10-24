@@ -284,3 +284,102 @@ fn a_constant_field_driven_onto_a_signal_is_one_op() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `=` of two logic vectors is one op (`LEq`): the same answer as an element-by-element compare
+/// for lengths on both sides of the 64-element blocks and for every std_ulogic value.
+const VECTOR_EQ: &str = "
+library ieee;
+use ieee.std_logic_1164.all;
+entity ve is end;
+architecture a of ve is
+  procedure check(n : natural; seed : natural; bad : inout integer) is
+    variable a, b : std_ulogic_vector(0 to 199);
+    variable same : boolean;
+    variable eq : boolean;
+  begin
+    for i in a'range loop
+      a(i) := std_ulogic'val((i * 7 + seed) mod 9);
+      b(i) := a(i);
+    end loop;
+    for round in 0 to 3 loop
+      -- Equal in the first n elements, different after them: only the first n count.
+      if n < 200 then
+        b(n) := std_ulogic'val((std_ulogic'pos(a(n)) + 1) mod 9);
+      end if;
+      same := true;
+      for i in 0 to n - 1 loop
+        if a(i) /= b(i) then same := false; end if;
+      end loop;
+      eq := a(0 to n - 1) = b(0 to n - 1);
+      if eq /= same then bad := bad + 1; end if;
+      -- Now one element inside differs.
+      if n > 0 then
+        b(n - 1) := std_ulogic'val((std_ulogic'pos(a(n - 1)) + 1 + round) mod 9);
+        same := true;
+        for i in 0 to n - 1 loop
+          if a(i) /= b(i) then same := false; end if;
+        end loop;
+        eq := a(0 to n - 1) = b(0 to n - 1);
+        if eq /= same then bad := bad + 1; end if;
+        b(n - 1) := a(n - 1);
+      end if;
+    end loop;
+  end procedure;
+begin
+  process
+    variable bad : integer := 0;
+  begin
+    for n in 0 to 140 loop
+      check(n, n, bad);
+    end loop;
+    check(63, 5, bad);
+    check(64, 5, bad);
+    check(65, 5, bad);
+    check(128, 3, bad);
+    check(129, 3, bad);
+    report \"vector eq bad=\" & integer'image(bad);
+    wait;
+  end process;
+end;
+";
+
+#[test]
+fn vector_equality_is_one_op() {
+    let d = tmp("vector_eq");
+    std::fs::write(d.join("ve.vhd"), VECTOR_EQ).expect("write");
+    let work = format!("work:{}", d.join("lib").display());
+    let yavs = env!("CARGO_BIN_EXE_yavs");
+    let a = Command::new(yavs)
+        .current_dir(&d)
+        .args(["analyze", "--std=2008", "--work", &work, "ve.vhd"])
+        .output()
+        .expect("analyze");
+    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+    let o = Command::new(yavs)
+        .current_dir(&d)
+        .env("YAVS_DUMPIR", "1")
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--no-cache",
+            "--std=2008",
+            "--work",
+            &work,
+        ])
+        .args(["--tier=interp", "ve"])
+        .output()
+        .expect("run");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(text.contains("vector eq bad=0"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.contains(" pc") && l.contains(" LEq {")),
+        "no op LEq\n{text}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

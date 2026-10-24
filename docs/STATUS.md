@@ -6380,6 +6380,8 @@ core of the quiet CCD, per-binary copies of the worlds, two untimed runs, median
 - `LCopyDrive` (interpreter only): a constant, or anything else copied element by element into a waveform, goes to the
   kernel without the waveform. Instructions of `neorv32_single_min` 0.946, `fletcher_bufferreader` 0.977, `sc5_fifo_repack`
   0.956, `fletcher_bufferwriter_512` 0.995; the others within 0.2 percent.
+- `LEq` (interpreter only): `=` of logic vectors compares the planes in place instead of making both vectors:
+  `osvvm_axis_random` 0.949, `fletcher_bufferwriter_512` 0.965, `neorv32_single_min` 0.982 of the instructions.
 
 ## Cold analysis: table writes are tracked, not hashed (#603, 2026-10-23)
 

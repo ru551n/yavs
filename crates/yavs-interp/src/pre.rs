@@ -561,6 +561,13 @@ pub(crate) enum Op {
     },
     /// `Inst::Cat` (read from the IR at the op's pc).
     Cat,
+    /// `Inst::LEq` (equal logic vectors of `n` elements), out of line.
+    LEq {
+        dst: u32,
+        a: u32,
+        b: u32,
+        n: u32,
+    },
     /// `Inst::LCopy`.
     LCopy {
         dst: u32,
@@ -3796,6 +3803,12 @@ impl Code {
                     doff: dst_off.0,
                     src: src.0,
                     soff: src_off.0,
+                    n: n.0,
+                },
+                Inst::LEq { dst, a, b, n } => Op::LEq {
+                    dst: dst.0,
+                    a: a.0,
+                    b: b.0,
                     n: n.0,
                 },
                 Inst::Cat { .. } => Op::Cat,

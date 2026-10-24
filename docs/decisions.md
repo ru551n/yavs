@@ -5605,6 +5605,13 @@ cycle geometric mean over the 32 designs of `tools/bench` and `tools/realbench` 
   anything else (a delay, a longer vector, one element, a reference of several parts) is the three instructions as
   the IR has them, made from the registers of the dropped ones. The arm calls an out-of-line function.
 
+- **`LEq` (interpreter only).** `=` of two logic vectors was a generic step (a copy of the instruction, `step_out`, and
+  both vectors made as heap objects before they were compared): 100 to 220 ns, 1.6 percent of the time of
+  `sc5_fifo_repack` and 1.7 of `neorv32_single_min` for 0.03 and 0.8 percent of their ops. It is an op that compares the
+  plane words of the two blocks in place (bits beyond the length are not compared, as `Planes::from_blocks` clears
+  them) in an out-of-line function. `osvvm_axis_random` 0.949 of the instructions, `fletcher_bufferwriter_512` 0.965,
+  `neorv32_single_min` 0.982, the others within 1 percent.
+
 ## A process that never suspends polls for a stop request (yavs-interp, yavs-kernel, #583, 2026-10-23)
 
 The kernel looks at `Interrupt` between cycles, so a process without a wait statement (W3102) kept a run that

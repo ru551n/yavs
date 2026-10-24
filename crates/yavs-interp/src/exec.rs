@@ -5226,6 +5226,10 @@ impl Machine {
                     k += 1;
                     enter!();
                 }
+                Op::LEq { dst, a, b, n } => {
+                    self.regs[dst as usize] = t!(self.op_leq(a, b, n));
+                    k += 1;
+                }
                 Op::Cat => {
                     let pc = code.at.get(k).copied().unwrap_or(0);
                     let Some(&Inst::Cat {
@@ -6527,6 +6531,31 @@ impl Machine {
     fn fault_at(&mut self, top: usize, code: &pre::Code, k: usize, e: Fault) -> Fault {
         self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
         e
+    }
+
+    /// `Op::LEq`, out of line: the planes of the `n` elements at the two addresses equal, without
+    /// making either vector (bits beyond `n` are not compared).
+    #[inline(never)]
+    fn op_leq(&self, a: u32, b: u32, n: u32) -> R<u64> {
+        let n = self.regs[n as usize];
+        let bytes = n.div_ceil(64) * 32;
+        let (x, y) = (
+            self.rd(self.regs[a as usize], bytes)?,
+            self.rd(self.regs[b as usize], bytes)?,
+        );
+        let tail = match n % 64 {
+            0 => !0,
+            r => (1u64 << r) - 1,
+        };
+        let last = bytes as usize / 32;
+        let eq = (0..last).all(|blk| {
+            let mask = if blk + 1 == last { tail } else { !0 };
+            (0..4).all(|p| {
+                let o = blk * 32;
+                (plane_word(&x[o..], p) ^ plane_word(&y[o..], p)) & mask == 0
+            })
+        });
+        Ok(eq.into())
     }
 
     /// `Op::LCopy`, out of line.

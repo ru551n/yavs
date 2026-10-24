@@ -21,6 +21,7 @@ use crate::signal::{
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
+use yavs_logic::wide::nmask;
 
 mod hang;
 pub use hang::{DeadClock, LoopCause, LoopLink, ProcWait, StuckProc, StuckReport, StuckSignal};
@@ -839,9 +840,7 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
-    /// A reader, the index in `reader_guards` of the condition of its read (or `NO_GUARD`) and
-    /// the elements it reads (the hull of its reads of the signal).
-    readers: Vec<(u32, u32, Range)>,
+    readers: Vec<Reader>,
     reader_guards: Vec<ReaderGuard>,
     idle_active: bool,
     /// Processes with `idle_ok` now: `idle_active` is off when none is left, until `idle_reprobe`.
@@ -1066,7 +1065,7 @@ impl SimControl {
         // event: pure ones (`Builder::idle_skip`) that drive signals allowing skipped assignments.
         let mut idle_active = false;
         let mut idle_live = 0u32;
-        let mut readers_of: Vec<Vec<(u32, Option<ReaderGuard>, Range)>> = Vec::new();
+        let mut readers_of: Vec<Vec<(u32, Option<Alts>, Range)>> = Vec::new();
         if cfg.idle_skip && cfg.skip_unchanged && cfg.edge_triggers {
             let mut bad = vec![false; procs.len()];
             for d in &drivers {
@@ -1121,15 +1120,25 @@ impl SimControl {
                 for (p, g, r) in l {
                     // A read of part of the signal is armed by its changed runs: list them.
                     let sig = &mut signals[readers_start.len() - 1];
+                    let whole = r.offset == 0 && r.len >= sig.ty.len;
                     if r != Range::new(0, sig.ty.len) {
                         sig.watched = true;
                         sig.watch_part(r, cfg.cells);
                     }
                     let g = g.map_or(NO_GUARD, |g| {
-                        reader_guards.push(g);
+                        reader_guards.push(match &g[..] {
+                            [c] if c.len() == 1 => ReaderGuard::One(c[0]),
+                            _ => ReaderGuard::Any(g),
+                        });
                         reader_guards.len() as u32 - 1
                     });
-                    readers.push((p, g, r));
+                    let mask = if sig.ty.len <= 64 && !whole {
+                        nmask(r.len as usize) << r.offset
+                    } else {
+                        0
+                    };
+                    let r = if whole { Range::new(0, u32::MAX) } else { r };
+                    readers.push(Reader { p, g, r, mask });
                 }
             }
             readers_start.push(readers.len() as u32);
@@ -1797,40 +1806,48 @@ impl SimControl {
     }
 
     /// Signal `s` had an event: the clocked processes that read it must run at their next edge.
-    #[inline]
+    #[inline(always)]
     fn arm_readers(&mut self, s: u32) {
+        if self.readers_start[s as usize] != self.readers_start[s as usize + 1] {
+            self.arm_readers_of(s);
+        }
+    }
+
+    #[inline(never)]
+    fn arm_readers_of(&mut self, s: u32) {
         let (a, b) = (
             self.readers_start[s as usize] as usize,
             self.readers_start[s as usize + 1] as usize,
         );
-        for i in a..b {
-            let (p, g, r) = self.readers[i];
-            if self.procs[p as usize].armed {
+        let sig = &self.signals[s as usize];
+        let changed = &sig.changed;
+        // A signal whose changed runs are not listed arms every reader.
+        let any = changed.is_empty();
+        // The elements of a signal of at most 64 that changed, when a reader of a part asks.
+        let mut bits: Option<u64> = None;
+        for rd in &self.readers[a..b] {
+            let m = &mut self.procs[rd.p as usize];
+            if m.armed {
                 continue;
             }
             // A read of part of the signal (a field of a record pack, #686) arms only for an
-            // event in it; a signal whose changed runs are not listed arms every reader.
-            let sig = &self.signals[s as usize];
-            let hit = (r.offset == 0 && r.len >= sig.ty.len)
-                || sig.changed.is_empty()
-                || sig.changed.iter().any(|c| c.overlaps(r));
-            if hit && (g == NO_GUARD || self.guard_holds(g)) {
-                self.procs[p as usize].armed = true;
+            // event in it.
+            let hit = rd.r.len == u32::MAX
+                || any
+                || if rd.mask != 0 {
+                    *bits.get_or_insert_with(|| {
+                        changed
+                            .iter()
+                            .fold(0, |m, c| m | nmask(c.len as usize) << c.offset)
+                    }) & rd.mask
+                        != 0
+                } else {
+                    changed.iter().any(|c| c.overlaps(rd.r))
+                };
+            if hit && (rd.g == NO_GUARD || self.reader_guards[rd.g as usize].holds(&self.signals)) {
+                m.armed = true;
             }
         }
-    }
-
-    /// Whether one of the conjunctions of reader guard `g` holds now. A literal on a signal that
-    /// is not logic holds (the read counts), so does one on an element out of range.
-    fn guard_holds(&self, g: u32) -> bool {
-        self.reader_guards[g as usize].iter().any(|conj| {
-            conj.iter().all(|l| {
-                let s = &self.signals[l.signal.0 as usize];
-                !matches!(s.ty.elem, Elem::Logic)
-                    || l.elem >= s.ty.len
-                    || (s.cur_code(l.elem as usize) == l.code) == l.eq
-            })
-        })
     }
 
     /// Take the clocked processes out of `pids` that need not run at this edge: none of the
@@ -3973,8 +3990,44 @@ fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
             .is_some_and(|(r, e, c)| signals[r.0 as usize].cur_code(e as usize) == c)
 }
 
-/// The condition of a read: alternatives of conjunctions of literals.
-type ReaderGuard = Vec<Vec<crate::builder::IdleLit>>;
+/// Alternatives of conjunctions of literals (`IdleRead::guard`).
+type Alts = Vec<Vec<crate::builder::IdleLit>>;
+
+/// The condition of a read: one literal, or alternatives of conjunctions of literals.
+enum ReaderGuard {
+    One(crate::builder::IdleLit),
+    Any(Alts),
+}
+
+impl ReaderGuard {
+    /// Whether the condition holds now. A literal on a signal that is not logic holds (the read
+    /// counts), so does one on an element out of range.
+    #[inline(always)]
+    fn holds(&self, signals: &[Signal]) -> bool {
+        let lit = |l: &crate::builder::IdleLit| {
+            let s = &signals[l.signal.0 as usize];
+            !matches!(s.ty.elem, Elem::Logic)
+                || l.elem >= s.ty.len
+                || (s.cur_code(l.elem as usize) == l.code) == l.eq
+        };
+        match self {
+            ReaderGuard::One(l) => lit(l),
+            ReaderGuard::Any(alts) => alts.iter().any(|conj| conj.iter().all(lit)),
+        }
+    }
+}
+
+/// A process that reads a signal (`SimControl::readers`): the index in `reader_guards` of the
+/// condition of its read (or `NO_GUARD`) and the elements it reads (the hull of its reads of the
+/// signal; length `u32::MAX` for all of it). `mask` is those elements as bits when the signal
+/// has at most 64 and it is a part, else 0.
+#[derive(Clone, Copy)]
+struct Reader {
+    p: u32,
+    g: u32,
+    r: Range,
+    mask: u64,
+}
 
 /// `SimControl::readers`: the read has no condition.
 const NO_GUARD: u32 = u32::MAX;

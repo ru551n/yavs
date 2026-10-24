@@ -1,0 +1,1 @@
+Interpreted processes of generic instances that index arrays of vectors (stage-by-stage byte networks, register banks) run a few percent faster: the index checks of an instance's own array bounds are made once per index value.

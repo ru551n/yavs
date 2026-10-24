@@ -8023,3 +8023,9 @@ medians of 3 (realbench `--compare`, run phase, core 12, per-binary worlds), wal
 
 Interleaved pairs on one world (7 runs, user cycles): `--tier=llvm` 7.51 to 6.72 G (-10.5 percent), instructions 28.4 to 25.3 G (-11 percent); default `--tier=auto` changes
 little because only `rand_next` is compiled there and the plain policy's compile outcome moves the instructions by 10 percent between worlds (#673).
+
+Change 2 (a copy splits `Pos` of an ascending instance descriptor into `Check` and `Bin Sub`; `docs/decisions.md` "A copy splits the position of an index ...", base c7f56056 plus change 1),
+`--tier=interp` (copies are made there too; shared code under `--tier=llvm` is unchanged): `sc5_fifo_repack` instructions 40.19 to 38.31 G (-4.7 percent), user cycles 11.31 to 10.95 G (-3.2 percent), medians of 5
+interleaved runs, core 12. Instructions of 17 other realbench designs, `--tier=interp`, one run each (the run is deterministic): `poc_cache_cpu`, `neorv32_single_min`, `fletcher_bufferwriter_512`, `fletcher_bufferreader`,
+`hdlm_lfsr`, `uvvm_sb_slv`, `osvvm_axi4_random`, `sc5_timestamp` 1.00 (within 0.1 percent), the small designs `hdlm_fifo_sync` 0.95, `poc_uart_rx` 0.98, `hdlm_ring_buffer` 0.98, `hdlm_axi_crossbar` 0.99 (their
+processes run too few activations to matter, the saving is in initialisation), `hdlm_register_file` 1.02, `olo_axi_master_full` 1.01 (a few thousand instructions).

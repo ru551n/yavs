@@ -8425,3 +8425,24 @@ testbench (`rand_next`, 8.3 M calls of `math_real.uniform`) 11: `yavs_rt_native`
   of the generator's tracking: each access was a `host_miss`, `yavs_rt_obj` and `TierHost::object`, 3.7 and 2.8 percent of the cycles once the native was inline. Length 0 in the
   view (a frame a native window holds) misses as before. Package and protected-object spaces stay #719's.
 - **Measured** (bench builds, core 12, `perf stat` user cycles and instructions, medians of 5 interleaved runs, base c7f56056): see docs/STATUS.md.
+
+## A copy splits the position of an index into a check and a subtraction (yavs-ir `opt.rs` `pos_to_check`, `tidy`, #519, 2026-10-25)
+
+- **Finding:** in the specialised copies of `sc5_fifo_repack` the descriptors of the signal arrays are instance data and fold (`DopeLen` is a constant, the
+  lengths in the index arithmetic are constants), but every `Pos` of a non-constant index stays one: the interpreter's `AffP` loads the three words of the descriptor
+  and computes the length at every execution (12 ns in the census, 8 percent of the time of the ops; 36 M of 457 M ops), and compiled code decodes it with about 20 instructions. No
+  pass could see the bounds: they were data behind an address.
+- **Decision:** in a copy, a `Pos` in an ascending descriptor of instance data whose first reader in the block is an add, subtract or multiply (an index into the
+  linear position of a multi-dimensional array) becomes `Check { Index, idx, left, right }` and `Bin Sub idx, left`. The `Check` is inserted
+  before the `Pos` (`inserts`), so it is in the code only after `compact`; a second walk of the finished code (`tidy`, now with the instance view) lets
+  the value numbering see it, which drops the repeated checks of one index (`Key::Check` keys a register defined more than once at its version now, as
+  every other key does: the loop variable of a `for` loop). The failure is the one of `Pos`: `check_fail` of an index prints `index X outside of range L to R for NAME` with the
+  name of the same check message, as `pos_fail` does (`tests/spec.rs` `index_failures_in_a_copy_are_those_of_the_shared_code`: shared code and copy, same text). `dce` counts the registers
+  the inserted instructions read (the constants of the bounds were dropped as unread, which made `Check` read undefined registers) and applies the renames to them.
+- **Not done:** a descending range stays a `Pos`: the message of an index check says `to` (the lowering gives every `Pos` the check message `Dir::To`, `Pos` itself prints the descriptor's
+  direction) and the optimiser cannot add messages to the program; a check message per direction at lowering would admit them. `Pos` whose result an `Index` reads
+  stays one, so as not to lose the fused `PosIndex*` ops.
+- **Measured:** `sc5_fifo_repack` `--tier=interp` (copies are made there too) instructions 40.19 to 38.31 G (-4.7 percent), user cycles 11.31 to 10.95 G (-3.2 percent), medians of 5
+  interleaved runs, core 12; 17 other realbench designs within 0.1 percent in instructions, the small designs by their initialisation (docs/STATUS.md). Shared code is unchanged (`--tier=llvm`,
+  and `--tier=auto` while the shared code runs); a compiled copy has the checks and subtractions instead of the descriptor decode of `Pos`.
+

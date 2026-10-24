@@ -3308,9 +3308,10 @@ impl SimControl {
                 // as a failed run does.
                 _ => {
                     let now = self.now;
-                    let mut i = 0;
+                    let (mut i, mut at) = (0, 0);
                     let caught = catch_unwind(AssertUnwindSafe(|| {
                         while let Some(&p) = pids.get(i) {
+                            at = i;
                             let s = slot_mut(&mut self.slots[p as usize]);
                             if !init {
                                 resumption(&self.procs, p, &mut s.st);
@@ -3385,7 +3386,8 @@ impl SimControl {
                         }
                     }));
                     if let Err(panic) = caught {
-                        let p = pids[i];
+                        // The process that was running or being committed (`i` is past it by then).
+                        let p = pids[at];
                         late.push(p);
                         slot_mut(&mut self.slots[p as usize]).result =
                             Err(process_panic(&sh, p, &*panic));

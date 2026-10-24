@@ -50,6 +50,22 @@ fn run_in(
     extra: usize,
     noise: bool,
 ) -> (Vec<String>, Stats) {
+    run_g(skip, every, ops, values, threads, extra, noise, 0)
+}
+
+/// `run_in` where `reg_en` declares its read of `d` conditional on `en = '1'` (`guard` 1: one
+/// literal, 2: two alternatives), as `Builder::idle_skip_guarded` takes it.
+#[allow(clippy::too_many_arguments)]
+fn run_g(
+    skip: Skip,
+    every: u64,
+    ops: &[(u64, &str)],
+    values: bool,
+    threads: usize,
+    extra: usize,
+    noise: bool,
+    guard: u8,
+) -> (Vec<String>, Stats) {
     let mut b = Builder::new();
     let clk = logic(&mut b, "clk", StdULogic::Zero);
     let dclk = b.driver(clk);
@@ -165,6 +181,27 @@ fn run_in(
     for (pid, reads) in regs {
         b.edge_trigger(pid, edge);
         b.idle_skip(pid, &reads);
+    }
+    if guard == 9 {
+        // A wrong declaration: `reg` reads `d` but says it reads only `en`.
+        b.idle_skip(p1, &[(en, one)]);
+    } else if guard != 0 {
+        let lit = |code: StdULogic| IdleLit {
+            signal: en,
+            elem: 0,
+            code: code as u8,
+            eq: true,
+        };
+        let alts = match guard {
+            1 => vec![vec![lit(StdULogic::One)]],
+            _ => vec![vec![lit(StdULogic::One)], vec![lit(StdULogic::H)]],
+        };
+        let read = |signal, guard| IdleRead {
+            signal,
+            range: one,
+            guard,
+        };
+        b.idle_skip_guarded(p2, vec![read(en, None), read(d, Some(alts))]);
     }
     let mut sim = b
         .build(Config {
@@ -298,4 +335,50 @@ fn events_on_other_elements_do_not_arm() {
         assert_eq!(st.idle_skips, quiet.idle_skips);
         assert_eq!(st.idle_skips, stc.idle_skips);
     }
+}
+
+/// A read under a condition (`if en = '1' then q <= d`) arms its process only while the condition
+/// holds: the register is skipped for the changes of `d` that happen while `en` is low, and the
+/// run is that of the unconditional reads and of no skipping (`Check` asserts every skip).
+#[test]
+fn guarded_reads_arm_only_while_the_condition_holds() {
+    for guard in [1, 2] {
+        for every in [3, 8] {
+            let (_, plain) = run_in(Skip::On, every, &[], true, 1, 0, false);
+            let (off, _) = run_g(Skip::Off, every, &[], true, 1, 0, false, guard);
+            let (on, st) = run_g(Skip::On, every, &[], true, 1, 0, false, guard);
+            let (check, stc) = run_g(Skip::Check, every, &[], true, 1, 0, false, guard);
+            assert_eq!(on, off);
+            assert_eq!(on, check);
+            assert_eq!(st.idle_skips, stc.idle_skips);
+            assert!(
+                st.idle_skips > plain.idle_skips,
+                "guard {guard}, every {every}: {} skips against {} without a condition",
+                st.idle_skips,
+                plain.idle_skips
+            );
+        }
+    }
+}
+
+/// A read list that leaves out a signal the process reads is a bug in the caller; `idle_check`
+/// stops the run at the skip that is wrong and names the process (the panic of the check was
+/// attributed to the next process of the batch, or to none).
+#[test]
+fn a_wrong_read_list_is_caught_by_the_check_and_names_the_process() {
+    let r = std::panic::catch_unwind(|| run_g(Skip::Check, 3, &[], true, 1, 0, false, 9));
+    let msg = match r {
+        Ok(_) => panic!("the check missed a skip that is wrong"),
+        Err(p) => p
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    };
+    assert!(
+        msg.contains("idle skip: process reg would not have done what its last activation did"),
+        "{msg}"
+    );
+    // The error is that of `reg`, not of `reg_en` after it in the batch.
+    assert!(msg.contains("\"reg\")"), "{msg}");
 }

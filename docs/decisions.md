@@ -6794,3 +6794,19 @@ percent between invocations, so the instruction counts are the reliable column a
   trials), not a heat-only copy. The policy is host-independent logic, only the compile call and the cache are LLVM's.
 - **Effect on LLVM.** None by construction: the same calls in the same order on the compile thread; the generated code
   and the work counters (`perf` tests with `llvm`) are unchanged.
+
+## One native-frame calling convention for both generators (yavs-clift, yavs-llvm, #481, user, 2026-10-24)
+
+- **Decision.** The native-frame variants of Cranelift use the LLVM generator's convention: `(env, mem, depth, [up1, up2],
+  cells...) -> i64` (the static links of a nested function after the frame index, a cell per parameter, two for a signal,
+  a protected object first), the value in the result and `Mem::ndeopt` set by `yavs_rt_deopt` for a callee that recorded
+  its frames; callers test `ndeopt` after every call. Which functions have a variant is `native_set` (one rule for both),
+  published in `Mem::ntab` with the `CallFn` adapter in `ctab`. A Cranelift caller calls a callee of its module directly
+  (and inlines it when small) and every other one, cycles and LLVM's included, through `ntab`; a null entry materialises the
+  frame. A change of `native_ty` in `yavs-llvm/src/lower.rs` is a change of `native_sig` in `yavs-clift/src/lower.rs`.
+- **Why.** A compiled caller of one generator stepped a call to a variant of the other (different conventions), so the
+  hybrid was slower than Cranelift alone (window generator 452 G against 365 G) and Cranelift variants were unreachable from
+  the interpreter. Alternatives: a status word in the result (cheaper to test, but an LLVM caller reads the first result
+  register as the value); a second table per generator (callers would choose by generator).
+- **Checks.** `tests/compiled_mixed.rs`, difftest candidate `yavs-mixed`, `yavs-auto3-eager` (both swap variants of the two
+  generators during a run), gc-stress runs of both.

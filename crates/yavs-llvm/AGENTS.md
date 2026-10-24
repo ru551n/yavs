@@ -140,6 +140,7 @@ Module-local decisions go in this section in the same commit (root `AGENTS.md` r
 
 ## 4. Invariants and pitfalls
 
+- The native-frame calling convention is shared with `yavs-clift` (decisions.md "One native-frame calling convention for both generators"): `f<id>_n(env, mem, depth, [up1, up2], cells...) -> i64`, recorded frames signalled by `Mem::ndeopt`, variants in `Mem::ntab`. A change of `native_ty` or of the deopt protocol is a change of `native_sig` and `Gen::native_call` in `crates/yavs-clift/src/lower.rs`; `tests/compiled_mixed.rs` and `difftest.py --candidate yavs-mixed` catch a mismatch. `auto.rs`, `native.rs`, `regs.rs` and `generator.rs` are built without LLVM and take no `llvm_sys` type.
 - A frame's registers when compiled code enters at any pc: the preloaded `Const`/`ConstF`/`AddrOf` values of `Pre`, zero elsewhere, and the registers holding a `lean` function's parameter slot address are zero too (`Pre::next` skips their `AddrOf`; #566). Never read them: address preloaded frame slots by the known offset (`Known::Frame`, `base_known` in `Gen::func`). A second code generator read the caller's parameter this way. Contract and test: `crates/yavs-interp/AGENTS.md` (`Pre::lean`).
 - Compile cost is measured with `--no-cache` (or a fresh work library): with the cache a second run
   links what the first compiled, and `YAVS_LLVM_TIMES` then shows the generation and the link only.

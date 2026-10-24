@@ -2446,8 +2446,8 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   callback. A missing counter leaves to the interpreter, which reports it. A function with a
   `Cover` is still not native-frame code (`nat_inline`). Counts are the same in every tier and at
   any `--threads` (`coverage.rs` `tiers_agree`, `coverage_fec.rs` `tiers_agree`). Remaining cost of
-  coverage runs is mostly not the counters: processes with counters get no specialised per-instance
-  copies and functions with counters are not inlined (#699).
+  coverage runs is mostly not the counters: processes with counters got no specialised per-instance
+  copies and functions with counters were not inlined (done in #699, below).
   Measured as user-mode instructions (`perf stat`, bench builds; the LLVM tier minus its compile),
   in millions, before / after; plain run, default kinds, `condition,expression` alone:
   `fecbench` (a condition-dense loop, 300000 iterations) HEAVY=1 interp 414, 911 / 598, 1029 / 776,
@@ -2458,6 +2458,35 @@ scalars; the on-disk format is implementation-defined, so it is fixed here (yavs
   30 us, interp 5515, 17464 / 16425, llvm 3996, 13276 / 10053; one OSVVM AXI-stream test
   (`TbStream_AxiSendGetRandomParam2`) interp 3613, 4756 / 4429, llvm 3413, 4184 / 3141. Plain runs
   moved by 0.0 to 0.1 percent (interpreter) and 0.0 to 0.4 percent (LLVM). No cycles were taken.
+- **Counters in copies, memoised blocks and inlined functions (#699, user 2026-10-24):** a process
+  with counters may have per-instance specialised copies, a block with a `Cover` may be memoised
+  and a function with counters may be inlined. Counter identity stays exact because a counter is
+  `Cover { item }` against the `cov_base` of the instance that runs the code (interpreter:
+  `Machine::inst`, compiled code: `TierFrame::cov`), never part of the code or of a copy's key, so
+  equal-data instances that share a copy still count into their own rows, and a callee inlined
+  into a caller counts into the callee's items of the running instance, as the call did. The
+  counters of code a copy folds away (an arm of a generic test, a dead branch) go with it and
+  stay 0 for that instance, which is the correct count. Counters do not count against the size
+  limits of an inlined body, so a run with counters inlines what a run without them does. Counts
+  are byte-identical to the shared code's in every tier, at `--threads` 1 and 4 (`copies_count_alike`
+  and `tiers_agree` in `coverage.rs`, over `tests/cli/cov_copies.vhd`). `sink` and `drives` still
+  skip a function with counters (not part of this change). Measured as user-mode instructions
+  (`perf stat`, bench builds, default `--cov` kinds), in millions, plain / before / after, interpreter:
+  `rtl_ff` (CYC=500) 3111 / 6874 / 5310, `rtl_lfsr` (CYC=1000) 1353 / 3931 / 3743, `compute_loop`
+  1059 / 1694 / 1233, neorv32 single-core minimal 30 us 6998 / 16754 / 16670, `sc5_fifo_repack`
+  41926 / 77478 / 61754, `uvvm_sb_slv` 14923 / 21456 / 20947, `osvvm_axi4_random` 9294 / 9927 / 9966;
+  LLVM tier minus its compile: `rtl_ff` 2283 / 4544 / 3982, `rtl_lfsr` 927 / 3139 / 3126,
+  `sc5_fifo_repack` 28285 / 43519 / 42714, neorv32 3731 / 10262 / 9719. Plain runs execute none of the changed
+  code (interpreter identical to 0.1 percent; the LLVM figures differ by compile-time noise of up to
+  2 percent). `osvvm_axi4_random` is the one case that got 0.4 percent slower (9927 to 9966), within
+  what a few more inlined counter ops cost where nothing is specialisable. Databases of base and new
+  builds were compared with `cmp` for all five kinds on `cov_copies`, `rtl_ff`, `rtl_lfsr`,
+  `compute_loop` (interpreter and LLVM at 1 and 4 threads, auto at 1), `sc5_fifo_repack`, neorv32
+  30 us and `uvvm_sb_slv` (interpreter at 1 and 4 threads, auto at 1): all identical. The overhead left is not specialisation: the toggle observer (1.8 to 7.4 G
+  instructions alone on these designs) and the edge triggers that coverage switches off, which
+  makes every `rising_edge` process also run on the falling edge (#707). The OSVVM AXI-stream test
+  of the #692 numbers now ends in an interpreter internal error under `--cov` on main (#705), so
+  `osvvm_axi4_random` stands for OSVVM here.
 
 ## GUI (M10, #384, #388, user, 2026-10-19)
 

@@ -793,5 +793,73 @@ fn tiers_agree() {
             "{db} differs from the interpreter's"
         );
     }
+    // The design with copies, memoised blocks and inlined functions.
+    cov_dbs(
+        &tmp,
+        "cov_copies.vhd",
+        "cov_copies",
+        &[
+            ("ci.ycov", &["--tier=interp", kinds]),
+            ("cl.ycov", &["--tier=llvm", kinds]),
+            ("cl4.ycov", &["--tier=llvm", "--threads=4", kinds]),
+            ("ca.ycov", &["--tier=auto", kinds]),
+        ],
+    );
+    let want = std::fs::read(tmp.join("ci.ycov")).expect("ci");
+    for db in ["cl.ycov", "cl4.ycov", "ca.ycov"] {
+        assert!(
+            want == std::fs::read(tmp.join(db)).expect("db"),
+            "{db} differs from the interpreter's (cov_copies)"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Per-instance copies, memoised blocks and inlined functions count exactly what the shared
+/// code counts: byte-identical databases for every kind, at one and four threads (#699).
+#[test]
+fn copies_count_alike() {
+    let tmp = tempdir("copies");
+    let kinds = "--cov-kind=statement,branch,toggle,condition,expression";
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/cli/cov_copies.vhd");
+    let lib = format!("--work=work:{}/lib", tmp.display());
+    assert!(
+        yavs(&tmp, &["analyze", &lib, src.to_str().expect("utf-8")])
+            .status
+            .success()
+    );
+    let go = |db: &str, threads: &str, env: &[(&str, &str)]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_yavs"))
+            .args(["--color", "never", "run", &lib, "cov_copies"])
+            .args([&format!("--cov={db}"), kinds, "--tier=interp"])
+            .args(["--no-cache", "--threads", threads])
+            .envs(env.iter().copied())
+            .env("YAVS_COUNTERS", "1")
+            .current_dir(&tmp)
+            .output()
+            .expect("run");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let shared = [
+        ("YAVS_NO_SPEC", "1"),
+        ("YAVS_NO_INLINE", "1"),
+        ("YAVS_NO_MEMO", "1"),
+    ];
+    go("shared.ycov", "1", &shared);
+    let want = std::fs::read(tmp.join("shared.ycov")).expect("shared");
+    for threads in ["1", "4"] {
+        let db = format!("copy{threads}.ycov");
+        let err = go(&db, threads, &[("YAVS_SPEC_AFTER", "2")]);
+        let switched = err
+            .lines()
+            .find_map(|l| l.strip_prefix("counters: spec_switched="))
+            .and_then(|v| v.parse::<u64>().ok());
+        assert!(switched.is_some_and(|n| n > 0), "no copy ran: {err}");
+        assert!(
+            want == std::fs::read(tmp.join(&db)).expect("db"),
+            "{db} differs from the shared code's counts"
+        );
+    }
     let _ = std::fs::remove_dir_all(&tmp);
 }

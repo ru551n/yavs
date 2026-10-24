@@ -48,10 +48,15 @@ coverage"; the CLI side in `docs/cli-contract.md` section 5.
 | YAML exclusion files read scalars as raw text through `saphyr-parser` events, never through a typed data model; unknown kinds, unknown keys (also of another kind), missing fields and duplicate keys are `E0112` with the line; `--uncovered=yaml` double-quotes every value | `no`, `on` and digit-only or float-like hashes must stay strings; line numbers in errors | `docs/decisions.md` "Coverage exclusions" |
 | A toggle exclusion has an optional direction (`rise`/`fall`); omitted is both; `W0114` per excluded direction that ran | Exclude exactly the missed direction | `docs/decisions.md` "Coverage exclusions" |
 
+| A counter is `Cover { item }` plus the `cov_base` of the instance that runs it, never part of code or of a copy's key; per-instance copies, memoised blocks and inlined functions keep their counters, a copy that folds an arm away drops that arm's counters (count 0 for that instance) | Specialisation, memoisation and inlining stay on under `--cov`; counts are byte-identical to the shared code's | `docs/decisions.md` "Code coverage" (#699) |
+
 Module-local decisions go in this section in the same commit (root `AGENTS.md` rule 24).
 
 ## 4. Invariants and pitfalls
 
+- A new optimiser pass must keep every `Cover`, `CoverIn` and `CoverCond` of code that can still run
+  and must not read or write `cov_base` (it is the running instance's); `copies_count_alike` in
+  `crates/yavs/tests/coverage.rs` compares a run with copies, memo and inlining against shared code.
 - `counts` must come from a design lowered with coverage on; its length is
   `cov_rows() * program.cov.len()` and `collect` walks it in rows of `program.cov.len()`.
 - A new branch kind in lowering needs no change here as long as it is `CovKind::Branch(arm)`;

@@ -219,7 +219,7 @@ impl Copies {
 
 impl Program {
     /// Can process `base` have copies: a process that is not nested, touches no shared state,
-    /// counts no coverage, has one wait statement (the resume point of a suspended process maps
+    /// has one wait statement (the resume point of a suspended process maps
     /// to the copy's one, `Machine::specialise`) and reads instance data; and the optimiser's
     /// specialisation is on (`opt::specialise_on`).
     pub fn specialisable(&self, base: FuncId) -> bool {
@@ -237,7 +237,6 @@ impl Program {
             };
             raw.kind == FuncKind::Process
                 && !raw.nested
-                && !raw.flags.contains(FuncFlags::HAS_COVER)
                 && !raw.flags.contains(FuncFlags::TOUCHES_SHARED)
                 && self.single_suspend(base)
                 && raw.code.iter().any(|i| {

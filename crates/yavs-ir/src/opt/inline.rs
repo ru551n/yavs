@@ -146,12 +146,11 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         || raw.parent.is_some()
         || raw.body.is_some()
         || raw.flags.contains(crate::FuncFlags::MAY_SUSPEND)
-        || raw.flags.contains(crate::FuncFlags::HAS_COVER)
         || raw
             .params
             .iter()
             .any(|p| p.width != Width::B8 || p.width == Width::Sig)
-        || raw.full().code.len() > if wide { 4 } else { 2 } * MAX_MULTI
+        || size(&raw.full().code) > if wide { 4 } else { 2 } * MAX_MULTI
     {
         return None;
     }
@@ -165,7 +164,7 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
         run(prog, callee, &mut c, level - 1);
     }
     if c.reg_ty.contains(&RegTy::Sig)
-        || c.code.len() > 4 * MAX_MULTI
+        || size(&c.code) > 4 * MAX_MULTI
         || c.blocks.len() > 4 * MAX_BLOCKS
     {
         return None;
@@ -280,7 +279,10 @@ fn make(prog: &crate::Program, callee: FuncId, level: u8, wide: bool) -> Option<
             }
         }
     }
-    let total: usize = kept.iter().map(Vec::len).sum();
+    let total: usize = kept
+        .iter()
+        .map(|b| b.iter().filter(|e| !is_cov(&e.0)).count())
+        .sum();
     let limit = if kept.len() == 1 { MAX_BODY } else { MAX_MULTI };
     if total > limit || kept.len() > MAX_BLOCKS || total == 0 {
         return None;
@@ -409,6 +411,20 @@ fn case_chain(
     Some(())
 }
 
+/// The instructions of a body that count against the size limits: not the coverage counters, so a
+/// run with counters inlines what a run without them does.
+fn size(code: &[Inst]) -> usize {
+    code.iter().filter(|i| !is_cov(i)).count()
+}
+
+/// A coverage counter instruction.
+fn is_cov(i: &Inst) -> bool {
+    matches!(
+        i,
+        Inst::Cover { .. } | Inst::CoverIn { .. } | Inst::CoverCond { .. }
+    )
+}
+
 /// Instructions an inlined body may have: reads, computations, checks, calls, branches.
 fn allowed(prog: &crate::Program, i: &Inst) -> bool {
     match *i {
@@ -441,6 +457,8 @@ fn allowed(prog: &crate::Program, i: &Inst) -> bool {
         | Inst::CondBr { .. }
         | Inst::Unreachable { .. }
         | Inst::Ret { .. } => true,
+        // (Counters add to the instance's row at run time, so inlined they count the same.)
+        _ if is_cov(i) => true,
         Inst::AddrOf { space, .. } => !matches!(space, AddrSpace::Frame | AddrSpace::Up(_)),
         Inst::Load { w, .. } | Inst::Store { w, .. } => w != Width::Sig,
         // (A native runs the same in the caller's frame; the record of the inlined call keeps

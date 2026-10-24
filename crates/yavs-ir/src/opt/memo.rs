@@ -610,9 +610,6 @@ fn plan_block(f: &crate::Func, flow: &Flow, b: usize, live_out: &[u64]) -> Optio
         return None;
     }
     let insts = &f.code[s..e];
-    if insts.iter().any(|i| matches!(i, Inst::Cover { .. })) {
-        return None;
-    }
     let nregs = f.reg_ty.len();
     let sizes = flow.sizes(f, b);
     let kind = classify_block(f, b, &mut inv, &mut ro, &flow.fused, Some(&sizes));

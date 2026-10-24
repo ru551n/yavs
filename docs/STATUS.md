@@ -3960,7 +3960,7 @@ the cost to remove (an upper bound with no records and no `last_value` blend: -6
 
 | Change | Commit | Instructions | Cycles |
 |---|---|---:|---:|
-| A wide signal that no `'last_event`/`'last_value` can ask the history of single elements of keeps only each block's last event | LEAN_COMMIT | `fletcher_bufferwriter_512` 0.963, `fletcher_bufferreader` 0.999, `sc5_fifo_repack` 0.996, `neorv32_single_min` 1.001 | 0.921, 1.000, 1.017, 0.972 |
+| A wide signal that no `'last_event`/`'last_value` can ask the history of single elements of keeps only each block's last event | 2cb97aca | `fletcher_bufferwriter_512` 0.963, `fletcher_bufferreader` 0.999, `sc5_fifo_repack` 0.996, `neorv32_single_min` 1.001 | 0.921, 1.000, 1.017, 0.972 |
 
 Core 8 (bench builds, minimum of 5 alternating runs; the host was loaded, cycles of single designs move by a few percent between
 runs: `sc5_fifo_repack` +1.7% and `sc5_timestamp` +1.0% are within that, with equal instructions): `sc5_timestamp` 1.000 / 1.010,

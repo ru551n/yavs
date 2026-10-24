@@ -3482,39 +3482,45 @@ Gap list after this round (days of one person; the first two items of the earlie
 | Test sharing | `yavs-clift/tests/tier.rs` is still a trimmed copy | S, 2 | no |
 | Maintenance | Cranelift pinned `=0.137.0`; +57 s clean release build, +5 MB binary | S per bump | the reason for doing it |
 
-### clift: round 3, frame-mode host accesses, first-level rules per generator (2026-10-24, #481)
+### clift: round 3, frame-mode host accesses, first-level rules per generator, the memo (2026-10-24, #481)
 
-`spike/clift2` merged with main at f838c299 (the build with `llvm` needed one line: the twin path of `compile_one` reports no
-`extra`). Decisions: `docs/decisions.md` "Cranelift tier, round 3". Method: instructions of the whole process tree (`perf stat`,
-compile thread included), `--no-cache` so that every run is as cold as the first and the numbers repeat, one release binary per
-row from `tools/build-bench.sh`, simulation and compile thread on two cores of CCD0 (no timing cores: cycles were not measured, so
-nothing here says how the changed code runs, only how much it executes), the panel is 51 designs of `tools/bench` and
-`tools/realbench` of 1 G instructions or more. Instructions in G (ratio to the interpreter of this main):
+`spike/clift2` merged with main at a670c3c1 (the build with `llvm` needed one line after the first merge: the twin path of
+`compile_one` reports no `extra`; the merge with a670c3c1 follows the new guesses of frame-mode accesses, `OBJ_SHIFT` and
+`track` taking the function). Decisions: `docs/decisions.md` "Cranelift tier, round 3". Method: instructions of the whole
+process tree (`perf stat`, compile thread included), one release binary per row from `tools/build-bench.sh`, simulation and compile
+thread on two cores of CCD0 (no timing cores: cycles were not measured, so nothing here says how the changed code runs, only how much
+it executes). Cold = `--no-cache` (every run as cold as the first, the interpreter's figures repeat exactly), medians of 5 runs
+(7 for `poc_arith_addw`); warm = stage cache and LLVM object cache populated, medians of 5. The panel is 51 designs of
+`tools/bench` and `tools/realbench` of 1 G instructions or more, single cold runs. Instructions in G (ratio to the interpreter):
 
 | design | interp | clift-auto before | clift-auto now | auto3 now | LLVM `auto` cold |
 |---|---:|---:|---:|---:|---:|
-| window generator | 450.4 | 194.1 (0.431) | 189.1 (0.420) | 191.0 (0.424) | 230.1 (0.511) |
-| neorv32_single_min | 37.7 | 40.9 (1.086) | 38.3 (1.015) | 38.3 (1.016) | 38.3 (1.016) |
-| fletcher_bufferwriter_512 | 55.6 | 56.7 (1.020) | 54.9 (0.988) | 55.0 (0.989) | 56.5 (1.016) |
-| poc_arith_addw | 154.9 | 124.9 (0.806) | 113.7 (0.734) | 113.9 (0.735) | 115.9 (0.748) |
+| window generator | 450.3 | 194.1 (0.431) | 173.9 (0.386) | 174.1 (0.387) | 208.8 (0.464) |
+| neorv32_single_min | 37.7 | 40.9 (1.086) | 38.3 (1.016) | 38.2 (1.013) | 38.3 (1.016) |
+| fletcher_bufferwriter_512 | 55.6 | 56.7 (1.020) | 53.6 (0.964) | 54.7 (0.984) | 56.5 (1.016) |
+| poc_arith_addw | 154.9 | 124.9 (0.806) | 112.5 (0.726) | 114.0 (0.736) | 119.8 (0.773) |
 | geometric mean of the panel | | 0.931 | 0.912 | | |
 
-(Warm LLVM `auto`, three runs with a populated cache, on the previous binary: 190.9 / 38.4 / 56.5 / 115.0.) Level or below the
-interpreter on three of the four, 57 percent below it on the window generator and 27 percent on `poc_arith_addw`, which is
-at warm LLVM `auto`. `neorv32_single_min` stays 1.5 percent above: with nothing compiled the same run is 38.2 G (0.43 G in the
-interpreter loop of a run with a tier, 0.07 G on the tier-up thread, #544), so the floor is above the interpreter by the tier
-itself; compiling single functions moves it by at most 0.3 G and only `counter_increment` pays (-0.6 G), which the callback rule
-refuses (53 of its 399 IR instructions leave the compiled code; the limit is one in ten).
+Warm (interp / `clift-auto` / LLVM `auto`): window generator 447.7 / 171.9 / 155.5, neorv32 35.6 / 36.2 / 36.2, fletcher 55.1 / 54.2 / 56.1,
+poc 154.3 / 113.5 / 112.4. `clift-auto` is 61 percent below the interpreter on the window generator (LLVM 65), 26 percent on
+`poc_arith_addw` (level with LLVM), 2 percent on fletcher (LLVM: 2 percent above), and 1.7 percent above on `neorv32_single_min`, the
+same as warm LLVM `auto`: with nothing compiled the same run is 38.2 G cold (0.43 G in the interpreter loop of a run with a tier, 0.07 G on
+the tier-up thread, #544), so the floor is above the interpreter by the tier itself; compiling single functions moves it by at most
+0.3 G and only `counter_increment` pays (-0.6 G), which the callback rule refuses (53 of its 399 IR instructions leave the compiled
+code; the limit is one in ten). `poc_arith_addw` has a second mode: one run in four to six lands at 119 to 151 G, when the trial of
+the 262-instruction process `_p8` measures 1.04 instead of 1.13 to 1.19 (the limit is 1.05) and takes it back, with all its copies
+(#673).
 
 What changed: (1) frame-mode accesses of unknown address space call `yavs_rt_host` instead of testing frame, temporary area and
-instance data inline (fletcher: 69 000 to 49 000 Cranelift instructions, compile thread 2.89 to 2.36 G; panel 0.920 to 0.912).
-(2) `Tune`: the clocked-process rules per generator (64 IR instructions, no wait outside the band, four instances, a thirty-second
-of the run; second level after 300 times the first-level threshold). (3) The policy tells the generator which functions it compiles
-(`Generator::tree`) and charges the variants a root's compile made (`peek` of a verification library: 112 ms for 26 variants
-never seen running). (4) A Cranelift error is a panic in debug builds (`tests/verifier.rs`). (5) A measuring aid:
-`YAVS_CLIFT_CODEDIR` also writes `<name>.srcmap`, the IR pc of every stretch of machine code, and with `perf script` addresses
-gives the instructions executed per IR instruction (`perf record -e instructions:u` samples land on the instruction after a slow one,
-so they weigh stalls: use counts as a guide and `perf stat` for totals).
+instance data inline, with the one inline test the reference lowering has for a guess (fletcher: 69 000 to 49 000 Cranelift
+instructions, compile thread 2.89 to 2.36 G; panel 0.920 to 0.912). (2) `Tune`: the clocked-process rules per generator (64 IR
+instructions, no wait outside the band, four instances, a thirty-second of the run; second level after 300 times the first-level
+threshold). (3) The policy tells the generator which functions it compiles (`Generator::tree`) and charges the variants a root's
+compile made (`peek` of a verification library: 112 ms for 26 variants never seen running). (4) Compiled calls of memoised pure
+functions ask the memo (the window generator -8 percent, `pure_memo` 0 to 435 hits). (5) A Cranelift error is a panic in debug builds
+(`tests/verifier.rs`). (6) A measuring aid: `YAVS_CLIFT_CODEDIR` also writes `<name>.srcmap`, the IR pc of every stretch of machine
+code, and with `perf script` addresses gives the instructions executed per IR instruction (`perf record -e instructions:u` samples
+land on the instruction after a slow one, so they weigh stalls: use counts as a guide and `perf stat` for totals).
 
 Panel remainder. Designs that run above the interpreter under `clift-auto` in the final binary, ratio to the interpreter's
 instructions: `rtl_fan` 1.09 (processes of 160 to 300 IR instructions made many times, level in the trial), `uvvm_sb_slv`

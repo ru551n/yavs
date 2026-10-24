@@ -8353,6 +8353,9 @@ one and the figures repeat), one `clift`-only release binary built with `tools/b
   that those two processes ran 2.5 times the instructions of the LLVM code compared the generated code only: the reference
   lowering makes such accesses in a callback (and `Cat` of unknown length, which Cranelift does inline), which that count did not
   include; in whole-run instructions `poc_arith_addw` was 125 G before this round, 114 G after, and 115 G for warm LLVM `auto`.
+  Since the merge with #711 the guesses of the shared `track` (`LikelyTemp`: a call's result and the words loaded from it;
+  `LikelyHeap`: a pointer loaded from a variable's slot) are tested inline first in frame-mode code, as there: the temporary area
+  by its address tag and length, the heap guess by the object table, and the runtime when it was wrong.
 - **Decision: the clocked-process rules that depend on what the code costs to make are one struct (`Tune`), `Tune::MAIN` with the
   LLVM values and `Tune::FIRST` for a first-level generator: at least 64 IR instructions (was 120), no wait outside the 160 to 300
   band (was a quarter of a second), four instances (was 16) and a thirty-second of the run (was an eighth).** Why: Cranelift

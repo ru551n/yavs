@@ -1008,6 +1008,16 @@ mod llvm {
         ]
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
+    // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.
+    llvm_case!(
+        llvm_sigfun,
+        "acc=",
+        [
+            ("cb_step", Max(4)),
+            ("cb_signal", Max(4)),
+            ("llvm_native_frames", Min(2))
+        ]
+    );
     // `uniform` is computed in compiled code (#519): 400 calls, no callback for them.
     llvm_case!(
         llvm_uniform,

@@ -1065,6 +1065,9 @@ fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
                 && (yavs_interp::direct_native(sym) || yavs_interp::cold_native(sym))
         }
         Inst::CallProt { obj, .. } => fits(&[obj]),
+        // Read from the view's signal table; where that has no answer the frame is materialised
+        // (`Gen::signal`).
+        Inst::SigReadScalar { dst, sig } => fits(&[dst, sig, Reg(sig.0.saturating_add(1))]),
         // Cold: leaving to the interpreter is what they do.
         Inst::Unreachable { .. } => true,
         _ => xstep_ok(f, i),

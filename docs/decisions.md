@@ -8446,3 +8446,18 @@ testbench (`rand_next`, 8.3 M calls of `math_real.uniform`) 11: `yavs_rt_native`
   interleaved runs, core 12; 17 other realbench designs within 0.1 percent in instructions, the small designs by their initialisation (docs/STATUS.md). Shared code is unchanged (`--tier=llvm`,
   and `--tier=auto` while the shared code runs); a compiled copy has the checks and subtractions instead of the descriptor decode of `Pos`.
 
+## Functions that read signals run on native frames (yavs-llvm `lower.rs` `nat_inline`, #519, 2026-10-25)
+
+- **Finding:** a call from compiled code to a procedure or function that reads a signal was a step of the interpreter (`Host::step` `Call`, a frame pushed, the
+  callee's frame-mode code entered from the callback, `ret`): 77 ns a call against 7 ns for a callee on a native frame (3 M calls of a nested procedure `v := (v + s) mod 1000`:
+  0.27 s against 0.06 s without the read of `s`; #730), because `SigReadScalar` was not among the instructions a native frame lowers (`native_local` wants every instruction
+  inline). `rand_next` of `sc5_fifo_repack` (a nested procedure that draws a `real` and compares it with a `real` signal) is called 1.9 M times in 400 us: about 5 percent of the compiled run.
+- **Decision:** `SigReadScalar` is a native-frame instruction (`nat_inline`; `SigVal` already was). The code is the frame mode's (`Gen::sig_read_scalar`: the byte of the
+  codes, the plane bits, or the bytes of a scalar element from the view's `TierSig` table, which a native frame reaches through the `Mem` it is given); where the table has
+  no answer (no kernel, a signal beyond the table, a signal that keeps neither) `Gen::signal` on a native frame materialises it and the interpreter reads, as for every
+  native-frame instruction with a slow path. `perf.rs` `llvm_sigfun` (a function and a procedure reading a logic and a real signal, 900 calls: `cb_step` 904 to 4, `llvm_native_frames` 0 to 3).
+- **Measured** (`--tier=llvm`, bench builds, core 12, medians of 7 interleaved runs, user cycles / instructions): `sc5_fifo_repack` 6.68 to 6.23 G (-6.6 percent) / 24.77 to 23.22 G (-6.2 percent);
+  the micro design 0.27 to 0.07 s.
+- **Found on the way (#729):** under `--tier=auto --tier-heat=1,0,0` the native-frame code of a function is made once, at the first level (O0), and the O2 recompile gives
+  the frame-mode code only: a function that now runs on native frames keeps O0 code in the heat mode (`sc5_fifo_repack` 25.0 to 27.6 G there, though the llvm tier gains). The default policy
+  compiles at O2 at once and is not affected; the differential tests use the heat mode.

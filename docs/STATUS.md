@@ -8029,3 +8029,6 @@ Change 2 (a copy splits `Pos` of an ascending instance descriptor into `Check` a
 interleaved runs, core 12. Instructions of 17 other realbench designs, `--tier=interp`, one run each (the run is deterministic): `poc_cache_cpu`, `neorv32_single_min`, `fletcher_bufferwriter_512`, `fletcher_bufferreader`,
 `hdlm_lfsr`, `uvvm_sb_slv`, `osvvm_axi4_random`, `sc5_timestamp` 1.00 (within 0.1 percent), the small designs `hdlm_fifo_sync` 0.95, `poc_uart_rx` 0.98, `hdlm_ring_buffer` 0.98, `hdlm_axi_crossbar` 0.99 (their
 processes run too few activations to matter, the saving is in initialisation), `hdlm_register_file` 1.02, `olo_axi_master_full` 1.01 (a few thousand instructions).
+
+Change 3 (functions and procedures that read signals run on native frames; "Functions that read signals run on native frames"), `--tier=llvm`, medians of 7 interleaved runs, user cycles / instructions:
+`sc5_fifo_repack` 7.25 to 6.15 G (-15.1 percent) / 27.91 to 23.22 G (-16.8 percent) with changes 1 and 3 together (base c7f56056); change 3 alone 6.68 to 6.23 G / 24.77 to 23.22 G.

@@ -6601,7 +6601,7 @@ What was measured and not landed (all deterministic instruction counts, `--threa
 The entry plumbing of round 5 was measured in instructions; this round measured it in cache lines, because `rtl_fan` (4000
 near-idle processes) ran 1.2 times the interpreter's cycles with the same instructions. `perf record -e ibs_op// -d` (the
 data source of each sampled load: L1, L2, L3) showed where the compiled activation waits: loads that hit L3 in `view_again`
-and `run_quick` (92 and 93 samples against 20 for the whole interpreted activation), and
+and `run_quick` (94 and 93 samples of loads that missed L1 in those two functions; 100 in the whole interpreted run against 222 compiled), and
 `ls_any_fills_from_sys.local_ccx` (fills from L3) 82 M against 64 M. `view_root` read machine state from five cache lines that
 nothing else in an activation touches (the heap's epoch line, `owner`, `troots`, `tier_sigs` and the instance data's vectors,
 reached through the `Arc`), and `InterpProcess::run` read `spec_at` from the thirteenth line of the machine at every
@@ -6629,11 +6629,16 @@ activation (both tiers). Decisions, tagged shared (S, any code generator) or LLV
 - **An `LCopy` is inline only where its count is a known constant of at most 64** (L): a count known only at run time had the inline
   body (125 LLVM instructions) and the call both, and in the wide-vector processes of the fletcher designs (copies of 512
   elements) the inline body is never taken: `LCopy` 67 K to 24 K of the 816 K LLVM instructions of `fletcher_bufferreader`, L1
-  instruction-cache misses -17 percent, fills from L3 -15 percent, cycles -2 percent on the reader and -8 on the writer (the host
-  is shared: the sign is consistent over three batches, the size is not). `neorv32_single_min` and the `rtl_*` designs keep their
-  inline copies (equal instructions: the counts are constants there). Forcing every known count of an `LCopy` or a `SigRead`
+  instruction-cache misses -5 to -17 percent, fills from L3 -15 percent in the first batches. Cycles on a quiet host (nine
+  interleaved runs, minimum): -1.7 percent on the reader (14.10 G to 13.85 G), -0.6 percent on the writer, +0.6 percent
+  instructions there (the helper call); a loaded host showed -2 to -8 percent in two batches, which was noise. `neorv32_single_min`
+  and the `rtl_*` designs keep their inline copies (equal instructions: the counts are constants there). Forcing every known count of an `LCopy` or a `SigRead`
   through the helpers was measured too and loses on `neorv32_single_min` (+3 to +8 percent cycles, fewer cache misses and more
   instructions): the inline expansions pay where they run every activation.
+- **The native call of a `hot` process reads no cold machine state** (S, `native_frame`, `heap_epochs`, `reclaim_pending`): the two
+  fields of package initialisation (`pkg_init`, `init_reports`, two lines of their own) and the shared state are not looked at for a
+  process that is `hot` (no shared state, not initialising). Cycles of `autoh`: writer -1.0, reader -1.1, `neorv32_single_min` level
+  (minimum of 7 runs, quiet host); the small designs make no native call and are level.
 - **Measured and not taken**: warming the next process of a batch (a `Process::warm` that reads the next machine's first lines
   while the current one runs: +50 instructions per activation, twice the fills from L3 and +15 percent cycles on `rtl_fan`); the
   interpreter's fused vector assignment (`Op::LCopyDrive`) run by compiled code through the interpreter's own function

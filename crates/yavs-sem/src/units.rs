@@ -1250,10 +1250,11 @@ impl Db {
                 put(&mut body, &entry_rel(self, k, i as usize)?)?;
             }
             // Table changes not made by the units it loaded. A unit adds keys of its own and may
-            // remove those of a set (a package body, the generics its declaration made); one that
-            // changes a key another unit made, or removes one of a map, is not stored.
+            // remove keys of a set (a package body, the generics its declaration made, whether the
+            // declaration was loaded before the body or inside it: the removals are read from the
+            // log, not from the net change); one that changes a key another unit made, or removes
+            // one of a map, is not stored.
             let mut keys: FxHashMap<u8, FxHashSet<H>> = FxHashMap::default();
-            let mut gone: FxHashMap<u8, FxHashSet<H>> = FxHashMap::default();
             let mut vals = Vec::new();
             for c in changes {
                 let name = tables()[c.t as usize].name;
@@ -1267,9 +1268,7 @@ impl Db {
                 }
                 match &c.val {
                     Some(v) => vals.push((c.t, v)),
-                    None if c.pre.is_some() && c.post.is_none() => {
-                        gone.entry(c.t).or_default().insert(c.key);
-                    }
+                    None if c.pre.is_some() && c.post.is_none() && tables()[c.t as usize].set => {}
                     None if c.pre.is_some() => {
                         return Err(format!("a key of table {name} that existed changed"));
                     }
@@ -1278,29 +1277,25 @@ impl Db {
                     }
                 }
             }
-            let n = keys
-                .values()
-                .chain(gone.values())
-                .map(|k| k.len())
-                .sum::<usize>()
-                + vals.len();
-            put(&mut body, &(n as u32))?;
+            let mut n = keys.values().map(|k| k.len()).sum::<usize>() + vals.len();
+            let mut tab = Vec::new();
             let mut ts: Vec<u8> = keys.keys().copied().collect();
             ts.sort_unstable();
             for t in ts {
-                (tables()[t as usize].write)(self, t, Some(&keys[&t]), None, &mut body)?;
+                (tables()[t as usize].write)(self, t, Some(&keys[&t]), None, &mut tab)?;
             }
-            let mut ts: Vec<u8> = gone.keys().copied().collect();
-            ts.sort_unstable();
-            for t in ts {
-                let Some(TabSnap::Mark(m)) = f.snap.as_ref().map(|s| &s.tabs[t as usize]) else {
-                    return Err("a removed key without a log position".into());
-                };
-                (tables()[t as usize].write_removed)(self, t, *m, &gone[&t], &mut body)?;
+            for (t, d) in tables().iter().enumerate() {
+                if let Some(TabSnap::Mark(m)) = f.snap.as_ref().map(|s| &s.tabs[t])
+                    && d.set
+                {
+                    n += (d.write_removed)(self, t as u8, *m, &mut tab)?;
+                }
             }
             for (t, v) in vals {
-                (tables()[t as usize].write)(self, t, None, Some(v), &mut body)?;
+                (tables()[t as usize].write)(self, t, None, Some(v), &mut tab)?;
             }
+            put(&mut body, &(n as u32))?;
+            body.extend_from_slice(&tab);
             put(&mut body, &facts)?;
             Ok(())
         })();
@@ -2601,10 +2596,11 @@ struct Desc {
         Option<&(Vec<u8>, Vec<u8>)>,
         &mut Vec<u8>,
     ) -> Result<(), String>,
-    /// Write the removal of the keys of a set with these hashes, which were there at a log
-    /// position and are gone now, as `write` writes a change.
-    #[allow(clippy::type_complexity)]
-    write_removed: fn(&Db, u8, usize, &FxHashSet<H>, &mut Vec<u8>) -> Result<(), String>,
+    /// Whether the table is a set: its removals are written by `write_removed`.
+    set: bool,
+    /// Write the removal of every key of a set that was there at a log position and is gone
+    /// now, as `write` writes a change; how many.
+    write_removed: fn(&Db, u8, usize, &mut Vec<u8>) -> Result<usize, String>,
     /// Read a change written by `write` and make it, if the table holds the value before; the
     /// undo, and the raw key and value set when asked (`raw`).
     #[allow(clippy::type_complexity)]
@@ -2723,6 +2719,11 @@ where
     }
 }
 
+/// Whether the table `acc` reaches is a set.
+fn set_of<M: MapLike>(_: fn(&Db) -> &M) -> bool {
+    M::removed_value().is_some()
+}
+
 fn map_snap<M: MapLike>(m: &M) -> TabSnap {
     let mut buf = Vec::new();
     TabSnap::Map(
@@ -2759,32 +2760,26 @@ fn map_write<M: MapLike>(
     Ok(())
 }
 
-/// The keys of a set with these hashes that the unit removed (they were there at log position
-/// `mark`): each as table, key, the value it had and none.
+/// The keys of a set that were there at log position `mark` and are gone now: each as table,
+/// key, the value it had and none. How many.
 fn map_write_removed<M: MapLike>(
     acc: fn(&Db) -> &M,
     db: &Db,
     t: u8,
     mark: usize,
-    keys: &FxHashSet<H>,
     out: &mut Vec<u8>,
-) -> Result<(), String> {
-    let v = M::removed_value().ok_or("a key of a map that existed changed")?;
-    let mut buf = Vec::new();
-    let mut found = 0;
-    for k in acc(db).removed_since(mark) {
-        if keys.contains(&hash_raw(&k, &mut buf)) {
-            found += 1;
-            put(&t, out)?;
-            put(&k, out)?;
-            put(&Some(&v), out)?;
-            put(&None::<&M::V>, out)?;
-        }
+) -> Result<usize, String> {
+    let Some(v) = M::removed_value() else {
+        return Ok(0);
+    };
+    let removed = acc(db).removed_since(mark);
+    for k in &removed {
+        put(&t, out)?;
+        put(k, out)?;
+        put(&Some(&v), out)?;
+        put(&None::<&M::V>, out)?;
     }
-    if found != keys.len() {
-        return Err("a removed key is not in the log".into());
-    }
-    Ok(())
+    Ok(removed.len())
 }
 
 fn map_replay<M: MapLike>(
@@ -2894,8 +2889,9 @@ macro_rules! tables {
             loglen: |db| db.$($f).+.mark(),
             touched: |db, m| db.$($f).+.touched_since(m),
             write: |db, t, k, v, out| map_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
-            write_removed: |db, t, m, k, out| {
-                map_write_removed(|db: &Db| &db.$($f).+, db, t, m, k, out)
+            set: set_of(|db: &Db| &db.$($f).+),
+            write_removed: |db, t, m, out| {
+                map_write_removed(|db: &Db| &db.$($f).+, db, t, m, out)
             },
             replay: |db, rest, raw| map_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| map_canon(&db.$($f).+),
@@ -2911,7 +2907,8 @@ macro_rules! tables {
             loglen: |_| 0,
             touched: |_, _| Vec::new(),
             write: |db, t, k, v, out| val_write(|db: &Db| &db.$($f).+, db, t, k, v, out),
-            write_removed: |_, _, _, _, _| Err("a value table has no removed keys".into()),
+            set: false,
+            write_removed: |_, _, _, _| Ok(0),
             replay: |db, rest, raw| val_replay(|db: &mut Db| &mut db.$($f).+, db, rest, raw),
             canon: |db| canon::canon(&db.$($f).+),
         }

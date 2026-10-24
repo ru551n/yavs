@@ -6631,3 +6631,21 @@ Instructions, same warm world and `--tier=auto`, before to after: poc_stat_histo
 runs of the realbench A/B on loaded cores; `--tier=auto` instruction counts move by several percent
 between two runs of the same binary because the compile thread finishes at another time: poc_arith_addw
 262 to 288 G for both binaries, and 327.9 G for both under `--tier=llvm`, which has no such timing).
+
+## Library index: spliced when written, read without lines; removals of a set read from its log (#424, #664, 2026-10-24)
+
+`yavs analyze` of one file into a library of a few hundred files read the index (`yavs-lib.toml`, 100 KB for satcat5) line by line
+and wrote it whole again: a quarter and a tenth of a warm call. The index is now written by copying the entry of every file that did
+not change (`Manifest::render`, `adopt`; a debug build writes it whole as well and asserts the same text), the reader scans for
+the end of a string eight bytes at a time and reads unit kinds and numbers without allocating, and the session no longer reads the
+index a second time to compare with the disk. Decision: `docs/decisions.md` "Library layout".
+
+Warm analysis (the same files again, one per call, instructions in G): satcat5 (246 files) 1.45 to 0.90, Open Logic (386) 3.06 to
+2.56, hdl-modules 0.21 to 0.20, UVVM 2.15 to 2.11; cold analysis of satcat5 3.97 to 3.70, grlib 14.76 to 14.29.
+
+Also in this round: `YAVS_UNIT_CHECK=1` over the `yavs-lib` corpora found a package body in a file of its own, whose declaration is loaded
+inside it, stored without the removal of the declaration's generics from `GenericState::unused` (the net change of the body is
+nothing, so its entry recorded nothing and a replay left the keys in; #664, the same on main before this work). The removals of a
+set are read from its write log now (`TrackedSet::removed_since`), whatever the net change; two tests in `tests/units.rs`.
+`YAVS_UNIT_CHECK=1` cold and warm over 34 corpus selections (the 21 of the previous section, grlib-2008, vests-1993, the tool-check, ideas,
+interfaces, vunit-tests, yavs-lib and compliance sets) is as expected.

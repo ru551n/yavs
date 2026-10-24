@@ -209,6 +209,9 @@ struct IFile {
     partial: bool,
     /// The record (`RECORD_DIR`) of the file, named by this digest of its text.
     record: u128,
+    /// Where the text of the file's entry is in [`Manifest::src`] while the entry is as written
+    /// there: what [`Manifest::render`] copies instead of writing the entry again.
+    block: Option<(u32, u32)>,
 }
 
 /// A unit the index knows, with the position of its file in `files`.
@@ -234,6 +237,15 @@ pub struct Manifest {
     files: Vec<IFile>,
     /// In analysis order: the units of the first file, then of the second, ...
     units: Vec<IUnit>,
+    /// The text of the index on disk, which `files[..].block` point into (empty for a library
+    /// that is not on disk).
+    src: String,
+}
+
+/// The index text of a manifest and where the entry of each file is in it.
+pub(crate) struct Rendered {
+    pub(crate) text: String,
+    blocks: Vec<Option<(u32, u32)>>,
 }
 
 /// A source file of the library.
@@ -380,8 +392,14 @@ impl Manifest {
             .map(|u| self.loc(u))
     }
 
-    /// Read the index text `to_text` wrote. A library of another format version is `L0004`.
+    /// Read the index text `render` wrote. A library of another format version is `L0004`.
+    #[cfg(test)]
     pub(crate) fn parse(text: &str, origin: &Path) -> Result<Self> {
+        Self::parse_owned(text.to_owned(), origin)
+    }
+
+    /// [`Manifest::parse`] of a text the caller has no more use for: the manifest keeps it.
+    pub(crate) fn parse_owned(text: String, origin: &Path) -> Result<Self> {
         let first = text.lines().next().unwrap_or("");
         if let Some(v) = first.strip_prefix("format = ")
             && let Ok(v) = v.parse::<u32>()
@@ -398,61 +416,118 @@ impl Manifest {
                 )),
             ));
         }
-        parse_index(text, origin.parent().unwrap_or(Path::new(""))).map_err(|(line, why)| {
-            Box::new(
-                err(
-                    "L0003",
-                    format!("library manifest `{}` is corrupt", origin.display()),
+        let mut m = parse_index(&text, origin.parent().unwrap_or(Path::new(""))).map_err(
+            |(line, why)| {
+                Box::new(
+                    err(
+                        "L0003",
+                        format!("library manifest `{}` is corrupt", origin.display()),
+                    )
+                    .with_note(format!("line {line}: {why}"))
+                    .with_help(format!(
+                        "delete the library directory `{}` and analyze its files again",
+                        origin.parent().unwrap_or(Path::new("")).display()
+                    )),
                 )
-                .with_note(format!("line {line}: {why}"))
-                .with_help(format!(
-                    "delete the library directory `{}` and analyze its files again",
-                    origin.parent().unwrap_or(Path::new("")).display()
-                )),
-            )
-        })
+            },
+        )?;
+        m.src = text;
+        Ok(m)
     }
 
-    pub(crate) fn to_text(&self) -> String {
+    /// The text of the index on disk, as last read or [adopted](Manifest::adopt).
+    pub(crate) fn src(&self) -> &str {
+        &self.src
+    }
+
+    /// The index text of the manifest as it is now. The entry of a file that is as it was in
+    /// [`Manifest::src`] is copied from there, so writing the index of a library of hundreds of
+    /// files after one more file costs a copy and one entry (debug builds also write the whole
+    /// text and compare).
+    pub(crate) fn render(&self) -> Rendered {
+        let mut o = String::with_capacity(self.src.len() + 1024);
+        put_num(&mut o, "format", FORMAT);
+        put_line(&mut o, "name", &self.name);
+        let mut blocks = Vec::with_capacity(self.files.len());
+        let mut at = 0;
+        for (i, f) in self.files.iter().enumerate() {
+            let start = o.len() as u32;
+            match f.block {
+                Some((a, b)) => {
+                    o.push_str(&self.src[a as usize..b as usize]);
+                    // The units of the file are together, in file order.
+                    while self.units.get(at).is_some_and(|u| u.file as usize == i) {
+                        at += 1;
+                    }
+                }
+                None => self.put_file(&mut o, i, f, &mut at),
+            }
+            blocks.push(Some((start, o.len() as u32)));
+        }
+        debug_assert_eq!(o, self.render_whole(), "a spliced index is the whole one");
+        Rendered { text: o, blocks }
+    }
+
+    /// The index text with every entry written afresh.
+    fn render_whole(&self) -> String {
         let mut o = String::with_capacity(self.files.len() * 400 + self.units.len() * 60 + 64);
         put_num(&mut o, "format", FORMAT);
         put_line(&mut o, "name", &self.name);
         let mut at = 0;
         for (i, f) in self.files.iter().enumerate() {
-            o.push_str("\n[[file]]\n");
-            put_line(&mut o, "path", self.s(f.path));
-            put_line(&mut o, "hash", self.s(f.hash));
-            put_line(&mut o, "std", self.s(f.std));
-            if let Some(n) = f.size {
-                put_num(&mut o, "size", n);
-            }
-            if let Some(n) = f.mtime_ns {
-                put_num(&mut o, "mtime_ns", n);
-            }
-            if f.partial {
-                o.push_str("partial = true\n");
-            }
-            put_line(&mut o, "record", &format!("{:032x}", f.record));
-            o.push_str("units = [");
-            // The units of a file are together, in file order.
-            while let Some(u) = self.units.get(at).filter(|u| u.file as usize == i) {
-                if at > 0 && self.units[at - 1].file as usize == i {
-                    o.push_str(", ");
-                }
-                o.push('[');
-                put_str(&mut o, u.kind.text());
-                o.push_str(", ");
-                put_str(&mut o, self.s(u.key));
-                if let Some(p) = u.primary {
-                    o.push_str(", ");
-                    put_str(&mut o, self.s(p));
-                }
-                o.push(']');
-                at += 1;
-            }
-            o.push_str("]\n");
+            self.put_file(&mut o, i, f, &mut at);
         }
         o
+    }
+
+    /// The entry of file `i`; `at` is the position of its first unit and moves past its units.
+    fn put_file(&self, o: &mut String, i: usize, f: &IFile, at: &mut usize) {
+        o.push_str("\n[[file]]\n");
+        put_line(o, "path", self.s(f.path));
+        put_line(o, "hash", self.s(f.hash));
+        put_line(o, "std", self.s(f.std));
+        if let Some(n) = f.size {
+            put_num(o, "size", n);
+        }
+        if let Some(n) = f.mtime_ns {
+            put_num(o, "mtime_ns", n);
+        }
+        if f.partial {
+            o.push_str("partial = true\n");
+        }
+        put_line(o, "record", &format!("{:032x}", f.record));
+        o.push_str("units = [");
+        // The units of a file are together, in file order.
+        while let Some(u) = self.units.get(*at).filter(|u| u.file as usize == i) {
+            if *at > 0 && self.units[*at - 1].file as usize == i {
+                o.push_str(", ");
+            }
+            o.push('[');
+            put_str(o, u.kind.text());
+            o.push_str(", ");
+            put_str(o, self.s(u.key));
+            if let Some(p) = u.primary {
+                o.push_str(", ");
+                put_str(o, self.s(p));
+            }
+            o.push(']');
+            *at += 1;
+        }
+        o.push_str("]\n");
+    }
+
+    /// Take `r` for the text on disk (it was written): the entries are in it from now on.
+    pub(crate) fn adopt(&mut self, r: Rendered) {
+        for (f, b) in self.files.iter_mut().zip(r.blocks) {
+            f.block = b;
+        }
+        self.src = r.text;
+    }
+
+    /// `render` as text (tests).
+    #[cfg(test)]
+    pub(crate) fn to_text(&self) -> String {
+        self.render().text
     }
 
     /// The digest of the record of `path`.
@@ -489,6 +564,7 @@ impl Manifest {
             if hit && !lost.contains(&u.file) {
                 lost.push(u.file);
                 files[u.file as usize].partial = true;
+                files[u.file as usize].block = None;
             }
             !hit
         });
@@ -521,6 +597,7 @@ impl Manifest {
             mtime_ns: stamp.map(|s| s.mtime_ns),
             partial: false,
             record,
+            block: None,
         };
         self.files.push(f);
         for u in units {
@@ -559,7 +636,19 @@ fn parse_index(text: &str, dir: &Path) -> std::result::Result<Manifest, (usize, 
         partial: bool,
         record: Option<u128>,
         units: bool,
+        /// Where the entry starts in the text: at the blank line before `[[file]]`, if there is one.
+        start: Option<u32>,
+        /// Where the line of the units ends.
+        end: u32,
     }
+    let b = text.as_bytes();
+    // The line a byte is on (only asked for on an error).
+    let line_of = |pos: usize| {
+        1 + b[..pos.min(b.len())]
+            .iter()
+            .filter(|&&c| c == b'\n')
+            .count()
+    };
     let mut m = Manifest {
         dir: dir.into(),
         arena: String::with_capacity(text.len()),
@@ -568,16 +657,44 @@ fn parse_index(text: &str, dir: &Path) -> std::result::Result<Manifest, (usize, 
     if text.is_empty() {
         return Err((1, "expected `format = N` first"));
     }
+    let first_end = text.find('\n').unwrap_or(b.len());
+    let first = &text[..first_end];
+    if first
+        .strip_suffix('\r')
+        .unwrap_or(first)
+        .strip_prefix("format = ")
+        .and_then(|v| v.parse::<u32>().ok())
+        != Some(FORMAT)
+    {
+        return Err((1, "expected `format = N` first"));
+    }
+    // The start of the line after the one that ends at `from`: a newline with a carriage return
+    // before it allowed, or the end of the text.
+    let eol = |from: usize| -> Option<usize> {
+        match b.get(from) {
+            None => Some(from),
+            Some(b'\n') => Some(from + 1),
+            Some(b'\r') if b.get(from + 1) == Some(&b'\n') => Some(from + 2),
+            _ => None,
+        }
+    };
+    let mut pos = (first_end + 1).min(b.len());
     let mut at: Option<Pending> = None;
     let mut name = false;
+    // The entry being read is complete, and the next one (or the end of the text) is at `$next`.
     macro_rules! finish {
-        ($n:expr) => {
+        ($line:expr, $next:expr) => {
             if let Some(p) = at.take() {
                 let (Some(path), Some(hash), Some(std), Some(record), true) =
                     (p.path, p.hash, p.std, p.record, p.units)
                 else {
-                    return Err(($n, "a file lacks a field"));
+                    return Err((line_of($line), "a file lacks a field"));
                 };
+                // Its text can be copied when it is the whole entry up to the next one.
+                let block = p
+                    .start
+                    .filter(|_| p.end as usize == $next)
+                    .map(|s| (s, p.end));
                 m.files.push(IFile {
                     path,
                     hash,
@@ -586,91 +703,119 @@ fn parse_index(text: &str, dir: &Path) -> std::result::Result<Manifest, (usize, 
                     mtime_ns: p.mtime_ns,
                     partial: p.partial,
                     record,
+                    block,
                 });
             }
         };
     }
-    for (n, line) in text.lines().enumerate() {
-        let n = n + 1;
-        if n == 1 {
-            if line
-                .strip_prefix("format = ")
-                .and_then(|v| v.parse::<u32>().ok())
-                != Some(FORMAT)
-            {
-                return Err((n, "expected `format = N` first"));
-            }
+    while pos < b.len() {
+        let line_start = pos;
+        let n = || line_of(line_start);
+        if b[pos] == b'\n' {
+            pos += 1;
             continue;
         }
-        if line.is_empty() {
+        let rest = &text[pos..];
+        if rest.starts_with("[[file]]")
+            && let Some(next) = eol(pos + 8)
+        {
+            // The blank line before the entry belongs to it (`put_file` starts with it).
+            let blank = line_start >= 1 && b[line_start - 1] == b'\n';
+            finish!(line_start, if blank { line_start - 1 } else { line_start });
+            at = Some(Pending {
+                start: blank.then(|| line_start as u32 - 1),
+                ..Pending::default()
+            });
+            pos = next;
             continue;
         }
-        if line == "[[file]]" {
-            finish!(n);
-            at = Some(Pending::default());
-            continue;
-        }
-        let Some(sp) = line.bytes().position(|b| b == b' ') else {
-            return Err((n, "expected `key = value`"));
+        // `key = ` of a line.
+        let key_end = rest
+            .bytes()
+            .position(|c| c == b' ' || c == b'\n')
+            .filter(|&i| b[pos + i] == b' ');
+        let Some(key_end) = key_end.filter(|&i| rest[i..].starts_with(" = ")) else {
+            return Err((n(), "expected `key = value`"));
         };
-        let (key, Some(val)) = (&line[..sp], line[sp..].strip_prefix(" = ")) else {
-            return Err((n, "expected `key = value`"));
-        };
-        let mut c = Cur::new(val);
-        // A string value, into the buffer.
+        let key = &rest[..key_end];
+        let vstart = pos + key_end + 3;
+        let mut c = Cur::new(&text[vstart..]);
+        // A string value, into the buffer; the line ends after it.
         macro_rules! string {
             () => {{
                 let start = m.arena.len() as u32;
-                c.string(&mut m.arena).ok_or((n, "bad string"))?;
-                if !c.done() {
-                    return Err((n, "text after the value"));
-                }
+                c.string(&mut m.arena).ok_or_else(|| (n(), "bad string"))?;
+                pos = eol(vstart + c.pos()).ok_or_else(|| (n(), "text after the value"))?;
                 Span(start, m.arena.len() as u32)
             }};
         }
+        // The text of the value up to the end of the line, for the numbers.
+        let line_value = || {
+            let e = text[vstart..].find('\n').map_or(b.len(), |i| vstart + i);
+            text[vstart..e]
+                .strip_suffix('\r')
+                .unwrap_or(&text[vstart..e])
+        };
         match (&mut at, key) {
             (None, "name") if !name => {
                 let mut s = String::new();
-                c.string(&mut s).ok_or((n, "bad string"))?;
+                c.string(&mut s).ok_or_else(|| (n(), "bad string"))?;
                 m.name = s;
                 name = true;
+                pos = eol(vstart + c.pos()).ok_or_else(|| (n(), "text after the value"))?;
             }
             (Some(p), "path") => p.path = Some(string!()),
             (Some(p), "hash") => p.hash = Some(string!()),
             (Some(p), "std") => p.std = Some(string!()),
-            (Some(p), "size") => p.size = Some(val.parse().map_err(|_| (n, "bad number"))?),
-            (Some(p), "mtime_ns") => p.mtime_ns = Some(val.parse().map_err(|_| (n, "bad number"))?),
-            (Some(p), "partial") if val == "true" => p.partial = true,
+            (Some(p), "size") => {
+                p.size = Some(digits(line_value()).ok_or_else(|| (n(), "bad number"))?);
+                pos = vstart + line_value().len();
+                pos = eol(pos).ok_or_else(|| (n(), "bad number"))?;
+            }
+            (Some(p), "mtime_ns") => {
+                p.mtime_ns = Some(
+                    digits(line_value())
+                        .and_then(|v| i64::try_from(v).ok())
+                        .ok_or_else(|| (n(), "bad number"))?,
+                );
+                pos = vstart + line_value().len();
+                pos = eol(pos).ok_or_else(|| (n(), "bad number"))?;
+            }
+            (Some(p), "partial") if line_value() == "true" => {
+                p.partial = true;
+                pos = eol(vstart + 4).ok_or_else(|| (n(), "unexpected line"))?;
+            }
             (Some(p), "record") => {
                 let sp = string!();
                 p.record = Some(
-                    u128::from_str_radix(&m.arena[sp.0 as usize..sp.1 as usize], 16)
-                        .map_err(|_| (n, "bad digest"))?,
+                    hex128(&m.arena[sp.0 as usize..sp.1 as usize])
+                        .ok_or_else(|| (n(), "bad digest"))?,
                 );
             }
             (Some(p), "units") if !p.units => {
                 p.units = true;
                 let file = m.files.len() as u32;
                 let sep = |c: &mut Cur| c.eat(b',').and_then(|()| c.eat(b' '));
-                c.eat(b'[').ok_or((n, "expected ["))?;
+                c.eat(b'[').ok_or_else(|| (n(), "expected ["))?;
                 while c.peek() != Some(b']') {
-                    c.eat(b'[').ok_or((n, "expected ["))?;
-                    let mut k = String::new();
-                    c.string(&mut k).ok_or((n, "bad string"))?;
-                    let kind = UnitKind::from_text(&k).ok_or((n, "unknown unit kind"))?;
-                    sep(&mut c).ok_or((n, "expected a comma"))?;
+                    c.eat(b'[').ok_or_else(|| (n(), "expected ["))?;
+                    let kind = {
+                        let k = c.plain().ok_or_else(|| (n(), "bad string"))?;
+                        UnitKind::from_text(k).ok_or_else(|| (n(), "unknown unit kind"))?
+                    };
+                    sep(&mut c).ok_or_else(|| (n(), "expected a comma"))?;
                     let start = m.arena.len() as u32;
-                    c.string(&mut m.arena).ok_or((n, "bad string"))?;
+                    c.string(&mut m.arena).ok_or_else(|| (n(), "bad string"))?;
                     let ukey = Span(start, m.arena.len() as u32);
                     let primary = if c.peek() == Some(b',') {
-                        sep(&mut c).ok_or((n, "expected a comma"))?;
+                        sep(&mut c).ok_or_else(|| (n(), "expected a comma"))?;
                         let start = m.arena.len() as u32;
-                        c.string(&mut m.arena).ok_or((n, "bad string"))?;
+                        c.string(&mut m.arena).ok_or_else(|| (n(), "bad string"))?;
                         Some(Span(start, m.arena.len() as u32))
                     } else {
                         None
                     };
-                    c.eat(b']').ok_or((n, "expected ]"))?;
+                    c.eat(b']').ok_or_else(|| (n(), "expected ]"))?;
                     m.units.push(IUnit {
                         file,
                         kind,
@@ -678,22 +823,44 @@ fn parse_index(text: &str, dir: &Path) -> std::result::Result<Manifest, (usize, 
                         primary,
                     });
                     if c.peek() == Some(b',') {
-                        sep(&mut c).ok_or((n, "expected a comma"))?;
+                        sep(&mut c).ok_or_else(|| (n(), "expected a comma"))?;
                     }
                 }
-                c.eat(b']').ok_or((n, "expected ]"))?;
-                if !c.done() {
-                    return Err((n, "text after the units"));
+                c.eat(b']').ok_or_else(|| (n(), "expected ]"))?;
+                pos = eol(vstart + c.pos()).ok_or_else(|| (n(), "text after the units"))?;
+                if let Some(p) = at.as_mut() {
+                    p.end = pos as u32;
                 }
             }
-            _ => return Err((n, "unexpected line")),
+            _ => return Err((n(), "unexpected line")),
         }
     }
-    finish!(text.lines().count());
+    finish!(b.len(), b.len());
     if !name {
         return Err((text.lines().count(), "no name"));
     }
     Ok(m)
+}
+
+/// The value of `s`, decimal digits only.
+fn digits(s: &str) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+    s.bytes().try_fold(0u64, |v, c| {
+        let d = c.checked_sub(b'0').filter(|&d| d < 10)?;
+        v.checked_mul(10)?.checked_add(u64::from(d))
+    })
+}
+
+/// The value of `s`, 1 to 32 hexadecimal digits.
+fn hex128(s: &str) -> Option<u128> {
+    if s.is_empty() || s.len() > 32 {
+        return None;
+    }
+    s.bytes().try_fold(0u128, |v, c| {
+        Some(v << 4 | u128::from((c as char).to_digit(16)?))
+    })
 }
 
 #[cfg(test)]
@@ -844,6 +1011,41 @@ mod tests {
     }
 
     #[test]
+    fn a_rendered_index_copies_the_entries_that_did_not_change() {
+        let p = Path::new("/l/yavs-lib.toml");
+        let mut m = Manifest::parse(&sample("/x/a.vhd").to_text(), p).unwrap();
+        // Parsed from canonical text: both entries are copied.
+        assert!(m.files.iter().all(|f| f.block.is_some()));
+        let text = m.src().to_string();
+        assert_eq!(m.render().text, text);
+        // A file that lost a unit is written afresh, the other one copied; a new file is appended.
+        m.take_units(&[UnitRecord::new(UnitKind::Package, "Pkg_A", "2008")]);
+        assert!(m.files[0].block.is_none() && m.files[1].block.is_some());
+        m.push_file("/x/c.vhd", "sha256:ef", "2008", None, 9, &[]);
+        let r = m.render();
+        assert!(r.text.contains("partial = true") && r.text.contains("/x/c.vhd"));
+        assert_eq!(r.text, m.render_whole());
+        let back = Manifest::parse(&r.text, p).unwrap();
+        same(&m, &back);
+        // Once the text is adopted every entry is a copy, also after a file moves to the end.
+        m.adopt(r);
+        assert!(m.files.iter().all(|f| f.block.is_some()));
+        let before = m.render().text;
+        m.remove_file("/x/b.vhd");
+        m.push_file("/x/b.vhd", "sha256:cd", "2019", None, 5, &[]);
+        let after = m.render();
+        assert_ne!(after.text, before);
+        assert_eq!(after.text, m.render_whole());
+        m.adopt(after);
+        // Text that is not canonical (no blank line between entries) is still read; its entries
+        // are written afresh where they cannot be copied.
+        let tight = m.src().replace("\n\n[[file]]", "\n[[file]]");
+        let t = Manifest::parse(&tight, p).unwrap();
+        assert_eq!(t.render().text, t.render_whole());
+        same(&m, &t);
+    }
+
+    #[test]
     fn corrupt_text_is_named() {
         let good = sample("/x/a.vhd").to_text();
         let p = Path::new("/l/yavs-lib.toml");
@@ -869,6 +1071,14 @@ mod tests {
         let cut = &good[..good.len() - 7];
         let d = line_of(cut);
         assert!(d.contains("line"), "{d}");
+        assert!(line_of(&good.replace("size = 12", "size = 1x")).contains("bad number"));
+        assert!(line_of(&good.replace("size = 12", "size = ")).contains("bad number"));
+        assert!(line_of(&good.replace("size = 12", "size = -12")).contains("bad number"));
+        assert!(line_of(&good.replace("mtime_ns = 17", "mtime_ns = x7")).contains("bad number"));
+        assert!(
+            line_of(&good.replace("record = ", "partial = false\nrecord = "))
+                .contains("unexpected")
+        );
         // A string that is not closed, or has a bad escape.
         assert!(
             line_of(&good.replace("hash = \"sha256:ab\"", "hash = \"sha256:ab"))

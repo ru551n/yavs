@@ -467,3 +467,39 @@ begin\n  process\n  begin\n    report \"twice=\" & integer'image(ip.twice(5));\n
     assert_eq!(strip(&r, &e), strip(&p, &plain));
     assert_eq!(r.stdout, p.stdout);
 }
+
+#[test]
+fn a_package_body_in_a_file_of_its_own_removes_the_generics_too() {
+    // The declaration is loaded inside the analysis of the body here, so the generics it made are
+    // put in and taken out again within one unit: the entry of the body still has to take them
+    // out after the declaration is replayed (the check mode compares the two analyses).
+    let e = Env::new("units_generic_body_split");
+    let decl = "package gp is\n  generic (used : integer; unused : integer := 0);\n  \
+function twice (x : integer) return integer;\nend;\n";
+    let body = "package body gp is\n  function twice (x : integer) return integer is begin return x * used; end;\nend;\n";
+    let tb = "entity gtb is end;\narchitecture a of gtb is\n  package ip is new work.gp generic map (used => 3);\n\
+begin\n  process\n  begin\n    report \"twice=\" & integer'image(ip.twice(5));\n    wait;\n  end process;\nend;\n";
+    for (f, t) in [("gp.vhd", decl), ("gpb.vhd", body), ("gtb.vhd", tb)] {
+        std::fs::write(e.tmp.join(f), t).expect("write");
+    }
+    let paths: Vec<String> = ["gp.vhd", "gpb.vhd", "gtb.vhd"]
+        .iter()
+        .map(|f| e.tmp.join(f).display().to_string())
+        .collect();
+    let files: Vec<&str> = paths.iter().map(String::as_str).collect();
+    e.analyze(&files, &[]);
+    for _ in 0..2 {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_yavs"));
+        c.current_dir(&e.tmp)
+            .env_remove("YAVS_STDLIB")
+            .env("YAVS_UNIT_CHECK", "1")
+            .args(["analyze", "--work", &e.lib("work")])
+            .args(&files);
+        let o = c.output().expect("run");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let work = e.lib("work");
+    let r = e.yavs(&["run", "--work", &work, "gtb"]);
+    assert_eq!(r.code, 0, "{r:?}");
+    assert!(r.stdout.contains("twice=15"), "{r:?}");
+}

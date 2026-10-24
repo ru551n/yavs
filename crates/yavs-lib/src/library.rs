@@ -182,7 +182,7 @@ impl Library {
                 io("L0002", "read", &p, &e)
             }
         })?;
-        let m = Arc::new(Manifest::parse(&text, &p)?);
+        let m = Arc::new(Manifest::parse_owned(text, &p)?);
         if let Some(f) = fresh {
             *self.parsed.lock().unwrap() = Some((f, m.clone()));
         }
@@ -250,12 +250,12 @@ pub struct Session {
 }
 
 /// What a session keeps between records: the manifest (nobody else can write it while the
-/// exclusive lock is held, so it is read and parsed once, not once per file) and the text
-/// of the manifest file as last read or written (a record that changes nothing skips the write).
+/// exclusive lock is held, so it is read and parsed once, not once per file), which also holds
+/// the text of the manifest file as last read or written (a record that changes nothing skips
+/// the write).
 #[derive(Default)]
 struct SessionState {
     manifest: Option<Manifest>,
-    disk_text: Option<String>,
 }
 
 impl Drop for Session {
@@ -306,23 +306,22 @@ impl Session {
         if st.manifest.is_none() {
             // The index `read` parsed under this lock, if it did (once, not twice per call).
             let held = self.lib.parsed.lock().unwrap().take();
-            let (m, text) = match fs::read_to_string(&mp) {
-                Ok(t) => match held {
-                    Some((Fresh::Held(g), m))
-                        if g == WRITES.load(std::sync::atomic::Ordering::SeqCst) =>
-                    {
-                        (Arc::unwrap_or_clone(m), Some(t))
-                    }
-                    _ => (Manifest::parse(&t, &mp)?, Some(t)),
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    self.lib.reject_old_manifest()?;
-                    (Manifest::new(&self.lib.name, &self.lib.dir), None)
+            let m = match held {
+                Some((Fresh::Held(g), m))
+                    if g == WRITES.load(std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    Arc::unwrap_or_clone(m)
                 }
-                Err(e) => return Err(io("L0002", "read", &mp, &e)),
+                _ => match fs::read_to_string(&mp) {
+                    Ok(t) => Manifest::parse_owned(t, &mp)?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        self.lib.reject_old_manifest()?;
+                        Manifest::new(&self.lib.name, &self.lib.dir)
+                    }
+                    Err(e) => return Err(io("L0002", "read", &mp, &e)),
+                },
             };
             st.manifest = Some(m);
-            st.disk_text = text;
         }
         // No fsync (user, 2026-10-23, #561): every file is renamed into place, so a reader or a
         // crash sees each of them whole, old or new; the record goes first, so the index never
@@ -346,23 +345,22 @@ impl Session {
             .collect();
         dead.extend(m.take_units(&units));
         m.push_file(path_s, hash, standard, stamp, digest, &units);
-        let itext = m.to_text();
-        if st.disk_text.as_deref() == Some(itext.as_str()) {
+        let rendered = m.render();
+        if rendered.text == m.src() {
             return Ok(());
         }
         // What `read` parsed (of this or another name of the directory) is the old index from here on:
         // bumped before the rename (so a parse of the old file made now is stale) and after it (so no
         // parse of the old file made in between stays current under the new value, #635).
         WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let r = write_new(&mp, &itext);
+        let r = write_new(&mp, &rendered.text);
         WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Err(e) = r {
             // The in-memory index has the file now; the next record must start from the disk.
             st.manifest = None;
-            st.disk_text = None;
             return Err(io("L0002", "write", &mp, &e));
         }
-        st.disk_text = Some(itext);
+        st.manifest.as_mut().unwrap().adopt(rendered);
         // Records nothing names any more (the file's earlier one, files that lost every unit).
         for d in dead {
             let _ = fs::remove_file(rdir.join(record::file_name(d)));

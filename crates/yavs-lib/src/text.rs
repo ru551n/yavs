@@ -58,6 +58,23 @@ impl<'a> Cur<'a> {
         self.i == self.s.len()
     }
 
+    /// The offset of the next byte to read.
+    pub(crate) fn pos(&self) -> usize {
+        self.i
+    }
+
+    /// A double-quoted string with nothing to unescape, as it is in the text (`None`: not a
+    /// string, or one with an escape, which `string` reads).
+    pub(crate) fn plain(&mut self) -> Option<&'a str> {
+        let b = self.s.as_bytes();
+        (b.get(self.i) == Some(&b'"')).then_some(())?;
+        let from = self.i + 1;
+        let n = plain_len(&b[from..]);
+        (b.get(from + n) == Some(&b'"')).then_some(())?;
+        self.i = from + n + 1;
+        Some(&self.s[from..from + n])
+    }
+
     /// A double-quoted string, appended to `out` without its quotes and escapes.
     pub(crate) fn string(&mut self, out: &mut String) -> Option<()> {
         self.eat(b'"')?;
@@ -65,6 +82,8 @@ impl<'a> Cur<'a> {
         let mut run = self.i;
         let mut j = self.i;
         loop {
+            // The plain bytes of the string in one go.
+            j += plain_len(&b[j..]);
             match *b.get(j)? {
                 b'"' => {
                     out.push_str(&s[run..j]);
@@ -83,11 +102,33 @@ impl<'a> Cur<'a> {
                     j += if b[j + 1] == b'u' { 6 } else { 2 };
                     run = j;
                 }
-                c if c < b' ' => return None,
-                _ => j += 1,
+                _ => return None,
             }
         }
     }
+}
+
+/// How many bytes of `b` come before the first quote, backslash or control character (all of
+/// them when there is none): eight at a time while none of the eight is one.
+fn plain_len(b: &[u8]) -> usize {
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    // Whether some byte of `x` is zero.
+    let zero = |x: u64| x.wrapping_sub(LO) & !x & HI != 0;
+    let mut i = 0;
+    while let Some(w) = b.get(i..i + 8) {
+        let w = u64::from_le_bytes(w.try_into().expect("eight bytes"));
+        // A byte below a space is a control character (a byte of 0x80 or more is never "below").
+        let ctl = w.wrapping_sub(LO * 0x20) & !w & HI != 0;
+        if ctl || zero(w ^ (LO * 0x22)) || zero(w ^ (LO * 0x5c)) {
+            break;
+        }
+        i += 8;
+    }
+    i + b[i..]
+        .iter()
+        .take_while(|&&c| c != b'"' && c != b'\\' && c >= b' ')
+        .count()
 }
 
 #[cfg(test)]
@@ -116,6 +157,29 @@ mod tests {
             assert_eq!(c.string(&mut back), Some(()));
             assert!(c.done());
             assert_eq!(back, s);
+        }
+    }
+
+    #[test]
+    fn plain_strings_and_where_they_end() {
+        assert_eq!(Cur::new("\"abc\" x").plain(), Some("abc"));
+        assert_eq!(Cur::new("\"\"").plain(), Some(""));
+        for s in ["x", "\"open", "\"a\\\"b\"", "\"a\tb\"", "\"\\u0041\""] {
+            assert_eq!(Cur::new(s).plain(), None, "{s:?}");
+        }
+        // A special byte anywhere among plain ones, also past a multi-byte character.
+        for len in 0..40 {
+            for at in 0..len {
+                for special in [b'"', b'\\', 0x1f, 0] {
+                    let mut b = vec![b'a'; len];
+                    b[at] = special;
+                    assert_eq!(plain_len(&b), at, "{len} {at} {special}");
+                    let mut b = "\u{e9}".repeat(len).into_bytes();
+                    b.insert(at, special);
+                    assert_eq!(plain_len(&b), at, "{len} {at} {special} (e-acute)");
+                }
+            }
+            assert_eq!(plain_len(&vec![b'z'; len]), len);
         }
     }
 

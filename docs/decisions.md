@@ -4808,8 +4808,12 @@ dependencies; this overrides "no incremental compilation cache" for analysis too
   fails when a new serialized field of `Db` or `GenericState` is not listed). A unit stores the keys it added and the keys it removed
   from a set (`GenericState::unused`: the body of a generic package takes out the generics its declaration put in; five
   units of the UVVM and OSVVM libraries were never stored and so analysed from source at every first `elab`/`run`, a
-  quarter of that call for a UVVM scoreboard testbench, #424); one that changes a key another unit made, or removes one
-  of a map, is not stored. A change it shares with a unit loaded inside it, work left pending, an error, or an id it
+  quarter of that call for a UVVM scoreboard testbench, #424); the removals are read from the set's log
+  (`TrackedSet::removed_since`) and written after the added keys, and replayed after the units the entry loads, because
+  the net change hides a key the unit's own loads put in and it took out again (a body in a file of its own, whose
+  declaration is loaded inside it; the entry recorded nothing and a replay left the key in, found by
+  `YAVS_UNIT_CHECK` on the `yavs-lib` corpus, #664); one that changes a key another unit made, or removes one of a
+  map, is not stored. A change it shares with a unit loaded inside it, work left pending, an error, or an id it
   cannot name makes it not stored too (`YAVS_LOG=debug` says why). **Reasoning:** the unit's own writes are few, the
   tables are large, so finding them by comparison paid for the whole database per unit; the log costs one append on a write
   and nothing on a read. The risk of a log is a missed write, which would store an entry that replays wrongly; that is why the
@@ -5049,12 +5053,25 @@ Decisions:
   (satcat5 0.57 to 0.65, Open Logic 0.72 to 0.78, hdl-modules 0.84, PoC 0.74 to 0.77), warm wall 0.87; cold (a
   library built from nothing, dominated by the analysis itself) instructions 0.97, wall 0.96. What is left of
   the library layer in a warm call is rendering and parsing the index, about 40 percent of its user-mode
-  time (the rest being startup and the analysis); a later step could write the index by splicing the text of
-  the changed file. `Manifest::parse_written` and the `toml` fallback of "Per-run overhead" (#426) and #581 are
+  time (the rest being startup and the analysis); the index is written by splicing the text of the changed
+  file (below, #424). `Manifest::parse_written` and the `toml` fallback of "Per-run overhead" (#426) and #581 are
   gone with the single file.
 - **Considered:** splicing the text of one manifest (the analyzer still parses all of it); a `depends_on`
   parsed lazily (the text is still read and written whole); records addressed by path (a record is rewritten
   in place, so an index and a record can disagree after a crash); a database file (an unlisted dependency).
+
+- **The index is written by splicing, and read without lines (#424, 2026-10-24).** `Manifest` keeps the index text it was
+  read from or last wrote (`src`) and, per file, where that file's entry is in it (`IFile::block`, set only when the entry
+  is the whole text from its blank line to the next one, so a hand-edited index is still read and its entries are written
+  afresh). `render` copies the entry of a file that did not change and writes the others (a file analysed again, a
+  `partial` one, a new one), so the index of a 400-file library after one more file is a copy and one entry; `adopt` takes
+  the text for the one on disk once it is written, so a batch splices too. A debug build writes the whole index as well
+  and asserts the two are the same text (all of `cargo test` does). The session no longer reads the index a second time
+  to compare the new text with the one on disk: that is `src`. The reader does not split into lines: it reads
+  `key = value` where it stands, finds the end of a string eight bytes at a time (`text::plain_len`), and reads unit
+  kinds and numbers without allocating; the errors and their line numbers are those of before (the line is counted only
+  when there is an error). Measured on a warm `analyze`, one file per call, instructions (G): satcat5 (246 files)
+  1.45 to 0.90, Open Logic (386) 3.06 to 2.56, hdl-modules 0.21 to 0.20; cold satcat5 3.97 to 3.70.
 
 ## Elaboration-time call cache (yavs-elab `callcache.rs`, yavs-interp, #539; user decision 2026-10-22: build it)
 

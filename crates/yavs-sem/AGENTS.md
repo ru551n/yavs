@@ -128,7 +128,10 @@ Module-local decisions go in this section and in the matching sem.md section, LR
   `every_field_is_covered` fails. A map or set of it is a `TrackedMap`/`TrackedSet` (`tracked.rs`), written only
   through `insert`, `remove` or `edit` (no `DerefMut`): its write log is how a recorded unit's changes are found
   (#603, `docs/decisions.md` "Table writes are tracked"). Debug builds and `YAVS_UNIT_CHECK=1` also compare every
-  table (`Options::unit_audit`) and panic when a write was not logged. A question a unit's analysis asks about the libraries without loading a
+  table (`Options::unit_audit`) and panic when a write was not logged. The keys a unit removes from a set
+  (`GenericState::unused`) are read from the set's log when its entry is written (`TrackedSet::removed_since`), not
+  from the net change: a key the unit's own loads put in and it took out again is no change of the unit, and its
+  replay still has to take it out (#664). A question a unit's analysis asks about the libraries without loading a
   unit (does it exist, is it an entity, which architecture is last) must go through `unit_known`,
   `has_entity` or `last_architecture`, which record it; reading `libs[l].units` or a manifest directly from
   analysis makes a cached unit answer from another session. Never iterate a `std` hash map or set where

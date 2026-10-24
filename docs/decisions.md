@@ -7258,6 +7258,36 @@ percent between invocations, so the instruction counts are the reliable column a
 - **Effect on LLVM.** None by construction: the same calls in the same order on the compile thread; the generated code
   and the work counters (`perf` tests with `llvm`) are unchanged.
 
+## Cranelift code quality, round 1: variables, closed frames, held objects (yavs-clift, yavs-llvm, #481, user, 2026-10-24)
+
+The user asked for Cranelift code quality next (gap row 1): tiny native functions first. A native-frame variant of the
+window generator's `get` (an accessor of the test runner's pointer tables) spent most of its instructions on a 0x260-byte
+prologue, a store per register definition, a lookup per memory access and `umul_overflow` on constants.
+
+- **The registers of a variant are Cranelift variables** (`Gen::vars`): the register array of the native stack is written only
+  where the frame is recorded for the interpreter (`leave_at`: the registers live there, from `regs::Live`; the exit block
+  stores the preloaded ones). The interpreter's preloads (a constant defined once, a frame address) are never variables:
+  `var_ld` makes them where they are used, so they hold on a path that did not run the definition (a first version used
+  the facts of `track`, which forgets the register after a neighbour's definition, and read 0 for a constant on the
+  other arm of a branch). `Known` facts of preloads are restored after every instruction (`always`).
+- **Closed frames** (`native::closed_frame`, moved from the LLVM generator, same rule and the same three details): the frame
+  is not registered in `Mem::nslots` (length 0 is written), only the bytes in use are zeroed and handed to the interpreter,
+  and a slot read and written at one width through its own address register is a variable (`slot_vars`), stored back where
+  the frame is recorded. No address of a closed frame is of unknown space, so the object lookup skips the own-frame test.
+- **Held objects** (`Known::Heap(Some(ObjRef))` as in the LLVM generator): after a `Deref` of a variant the object's pointer and
+  length are values; `Index`, `Move` carry them; an access through such a register is the bounds test and a load. They
+  live up to an instruction outside `keeps_objects` and now across blocks: a block with a single way in takes what its
+  predecessor knew at the jump (a fall-through keeps it; a jump from further down the code brings nothing), and a block
+  start takes the address spaces `regs::spaces` found (`Heap(None)` skips the frame, temporary and instance tests).
+- **Index, Pos, Field**: the offset of an `Index` with a known position is added at compile time and checked only where the base
+  offset is not known; the others test `(pos | sum) >> 32` as the LLVM generator does; `Pos` is two compares and a
+  select; low halves are `uextend(ireduce)` (a 64-bit mask is a constant load on x86).
+- **Measured** (`--tier=clift` eager, instructions of the whole process, window generator): 389.5 G to 275.1 G.
+  Profiling aid: `YAVS_CLIFT_PERFMAP=1` writes `/tmp/perf-<pid>.map` for `perf report`; `YAVS_CLIFT_CLIF=<id|all>` prints the
+  Cranelift IR of a function; `yavs_interp` counts `xstep` entries by instruction kind (`YAVS_COUNTERS=kinds|pc`).
+- **Checks.** `cargo test -p yavs-clift --features clift` (the LLVM tier's tests against this tier), difftest for `yavs-clift`,
+  `-clift-auto`, `-auto3`, `-mixed` at 1 and 4 threads.
+
 ## One native-frame calling convention for both generators (yavs-clift, yavs-llvm, #481, user, 2026-10-24)
 
 - **Decision.** The native-frame variants of Cranelift use the LLVM generator's convention: `(env, mem, depth, [up1, up2],

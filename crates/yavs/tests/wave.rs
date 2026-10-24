@@ -574,6 +574,12 @@ fn corpus_wave(f: &Path) -> bool {
         !stderr.contains("E0801") && !stderr.contains("internal compiler error"),
         "{f:?}: {stderr}"
     );
+    // A crash (a signal, a stack overflow) leaves an unfinished file: name it (#731).
+    assert!(
+        matches!(out.status.code(), Some(0..=125)),
+        "{f:?}: the run ended with {:?}\n{stderr}",
+        out.status
+    );
     if !fst.exists() {
         // Elaboration not supported yet (exit 2, no simulation).
         assert_eq!(out.status.code(), Some(2), "{f:?}: {stderr}");

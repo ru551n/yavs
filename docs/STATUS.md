@@ -186,7 +186,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1 on the total-wall basis, 2026-10-23"; geomean of the 41 realbench totals 0.30 warm, 0.60 cold (0.35 and 0.70 without the library analysis; 0.98 and 1.14 at 65b7f573), tiny-test corpus 0.12 and 0.27, the h2h designs 0.69 and 0.83. The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 3, 2026-10-24"; geomean of the 41 realbench totals (libraries analysed too) 0.26 warm, 0.49 cold (own files + elab + run 0.32 and 0.59; 0.30 and 0.60 at 9a8d8f50, most of the move is sim1 running slower in the later run), tiny-test corpus 0.12 and 0.26, the h2h designs 0.65 and 0.80. The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -4932,9 +4932,61 @@ designs and four internal benchmarks print the same under interp, llvm, auto and
 
 Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI; wall times on an idle host.
 
+## Real-world performance suite: yavs against sim1, head-to-head 3, 2026-10-24 (`tools/realbench`)
+
+This is the current headline (`4b80445d`, bench build with the `llvm` feature; the previous run, `9a8d8f50`, is in brackets). Basis (root rule 23): `--tier=auto` only, TOTAL wall as a user runs it, analysis of
+every file of the compile order (one tool call per file) plus elaboration and run, against sim1's analysis plus elaboration plus run; cold = empty compilation cache and fresh libraries, warm = cache present.
+Interpreter times are never compared with sim1. Ratios are yavs / sim1, below 1 means yavs is faster. Method as in the previous run: 5 timed runs per cell, interleaved, two complete passes, the lower pass median per
+cell for both tools; pinned to physical cores 12 to 15 of a Ryzen 9 7950X3D, host load average 25 to 33. Raw results are not committed.
+
+Geometric mean over the same 41 tests (the full total first, own files + elaboration + run beside it):
+
+| category | n | total warm | total cold | own+elab+run warm | own+elab+run cold |
+|---|---:|---:|---:|---:|---:|
+| **overall** | 41 | 0.26 (0.30) | 0.49 (0.60) | 0.32 (0.35) | 0.59 (0.70) |
+| bus-tristate | 1 | 0.16 (0.18) | 0.33 (0.46) | 0.13 (0.11) | 0.45 (0.39) |
+| cpu | 3 | 0.74 (1.00) | 0.82 (1.06) | 0.88 (1.19) | 0.97 (1.21) |
+| fsm | 4 | 0.25 (0.30) | 0.43 (0.55) | 0.55 (0.65) | 1.10 (1.31) |
+| memory | 4 | 0.19 (0.21) | 0.42 (0.53) | 0.22 (0.27) | 0.52 (0.64) |
+| numeric | 8 | 0.24 (0.25) | 0.48 (0.56) | 0.27 (0.26) | 0.51 (0.57) |
+| protected | 8 | 0.22 (0.26) | 0.45 (0.54) | 0.29 (0.32) | 0.48 (0.59) |
+| records | 7 | 0.21 (0.22) | 0.41 (0.48) | 0.24 (0.23) | 0.44 (0.48) |
+| rtl-datapath | 2 | 0.40 (0.53) | 0.67 (0.98) | 0.41 (0.56) | 0.71 (1.08) |
+| strings-textio | 2 | 0.16 (0.17) | 0.34 (0.43) | 0.06 (0.07) | 0.23 (0.25) |
+| wide-vectors | 2 | 1.12 (1.69) | 1.33 (1.93) | 3.05 (4.22) | 3.10 (4.32) |
+
+| basis | warm | cold |
+|---|---:|---:|
+| total, libraries analysed too | 0.26 (0.30) | 0.49 (0.60) |
+| own files + elab + run | 0.32 (0.35) | 0.59 (0.70) |
+| elab + run only | 0.30 (0.34) | 0.61 (0.68) |
+
+Summed over the 41 tests the full total is 90 s (yavs) against 228 s (sim1) warm and 130 s against 224 s cold (102 against 200 s and 152 against 202 s before); 37 tests are faster than sim1 warm and cold (35 and 34
+before). The h2h designs: 0.65 warm, 0.80 cold (0.70, 0.83); the tiny-test corpus (368 tests): 0.12 warm, 0.26 cold (0.12, 0.27). The suite has 42 tests now: `grlib_leon3mp` (new, VHDL-93 mode) is left out of the
+means above to keep the basis; with it the full total is 0.28 warm and 0.51 cold. Caveat: most of the move from 0.30 to 0.26 is sim1 running slower in this run (its total wall x1.12 on the same tests, yavs x0.98; the
+host was busier and the timing cores differ), so within the repeatability of the method (about 10 percent) the ratio did not change. The load-independent gain is in the instruction ratio (yavs / sim1, geomean
+0.43, 0.48 before; the yavs sum fell from 1117 G to 805 G at unchanged sim1 instructions).
+
+Worst 10 by warm total ratio, with `grlib_leon3mp` (seconds are medians; run = elaboration + run, yavs vs sim1; the ratio at `9a8d8f50` in brackets, instruction ratio yavs / sim1 in the fifth column):
+
+| test | warm | cold | run s | instr | dominant cost | issue |
+|---|---:|---:|---|---:|---|---|
+| grlib_leon3mp | 3.71 | 3.77 | 90.45 vs 15.25 | 5.4 | LEON3 template, VHDL-93 mode (new in the suite): record-signal leaf cost | #677 |
+| fletcher_bufferwriter_512 | 2.03 (2.94) | 2.12 (3.09) | 6.84 (9.63) vs 2.02 (2.05) | 3.5 (4.24) | 512-bit buses, interpreter and kernel signal path | #519 |
+| poc_arith_addw | 1.45 (2.07) | 1.59 (2.39) | 11.62 (16.96) vs 5.88 (6.14) | 1.9 (3.27) | exhaustive operand loops, interpreted | #520 |
+| fletcher_bufferreader | 1.27 (1.43) | 1.36 (1.55) | 3.77 (3.28) vs 1.68 (1.15) | 2.4 (2.77) | records, wide vectors | #519, #523 |
+| vai_window_gen_interlock | 1.04 (1.83) | 1.36 (2.23) | 12.54 (15.14) vs 6.63 (4.14) | 2.4 (3.46) | long pipelined array-heavy RTL | #520 |
+| neorv32_single_min | 0.89 (1.24) | 0.93 (1.32) | 4.51 (5.42) vs 4.18 (3.58) | 1.2 (1.71) | concurrent signal-copy processes interpreted | #521, #529 |
+| neorv32_single_cache | 0.80 (1.08) | 1.00 (1.10) | 4.39 (5.26) vs 4.66 (4.11) | 1.0 (1.46) | as neorv32_single_min | #521, #529 |
+| sc5_fifo_repack | 0.61 (0.98) | 0.83 (1.21) | 2.67 (3.49) vs 0.95 (0.91) | 3.6 (4.62) | wide std_logic_vector slicing; its library analysis (yavs 0.88 s vs 4.81 s) hides most of it warm | #519 |
+| neorv32_dual_full | 0.58 (0.75) | 0.60 (0.80) | 3.18 (4.28) vs 4.72 (4.89) | 0.8 (1.07) | faster than sim1 on the run phase (3.18 vs 4.72 s) | #521 |
+| uvvm_axistream_vvc | 0.57 (0.82) | 0.69 (0.92) | 3.42 (3.75) vs 5.06 (3.73) | 1.3 (1.86) | run 3.42 vs 5.06 s (sim1 3.73 s at 9a8d8f50): yavs ahead on analysis and run | none specific |
+
+Slower than sim1 are only run-bound tests; the analysis of every test is faster than sim1's. Every cell was measured with the same bench binary.
+
 ## Real-world performance suite: yavs against sim1 on the total-wall basis, 2026-10-23 (`tools/realbench`)
 
-This is the current headline (second run, `9a8d8f50`; the first, at `65b7f573`, is quoted as "before"). Basis (root rule 23, user decision 2026-10-22): `--tier=auto` only,
+This was the headline of the second run (`9a8d8f50`; the first, at `65b7f573`, is quoted as "before"); the third run is above. Basis (root rule 23, user decision 2026-10-22): `--tier=auto` only,
 TOTAL wall as a user runs it, analysis of every file of the compile order (one tool call per file, never batched) plus elaboration and run, against sim1's analysis plus
 elaboration plus run. Cold = empty compilation cache and fresh libraries; warm = cache present, unchanged sources. Interpreter times are only compared with earlier interpreter
 times, never with sim1. Ratios are yavs / sim1, below 1 means yavs is faster.

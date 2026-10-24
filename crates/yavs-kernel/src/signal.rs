@@ -1705,6 +1705,36 @@ impl Signal {
         }
     }
 
+    /// [`Signal::direct_same`] for `len` elements from `elem` (at most 64): `planes`, masked to
+    /// `len`, is what `cur` and the driving value (the driver's, after a deposit) hold there.
+    #[inline]
+    pub(crate) fn direct_same_planes(
+        &self,
+        slot: u32,
+        elem: u32,
+        len: u32,
+        planes: [u64; 4],
+    ) -> bool {
+        let (e, n) = (elem as usize, len as usize);
+        if !self.skip_ok {
+            return false;
+        }
+        let Buf::Planes { b: cur, .. } = &self.cur else {
+            return false;
+        };
+        if yavs_logic::wide::get_block(cur, e, n) != planes {
+            return false;
+        }
+        if self.exact {
+            let d = &self.drivers[slot as usize];
+            matches!(&d.value, Buf::Planes { b, .. }
+                if yavs_logic::wide::get_block(b, e - d.range.offset as usize, n) == planes)
+        } else {
+            matches!(&self.driving, Buf::Planes { b, .. }
+                if yavs_logic::wide::get_block(b, e, n) == planes)
+        }
+    }
+
     /// A zero-delay transaction of one element of a direct driver (`DriverInfo::direct`),
     /// committed: the driver value and the driving value now (the update phase is over, and
     /// nothing reads them before the next one), the element waiting in `pend` for the next

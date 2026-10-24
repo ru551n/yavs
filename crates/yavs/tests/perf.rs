@@ -492,6 +492,19 @@ case!(
         ("ops", Max(16800)),
     ]
 );
+// Vector assignments that change nothing are skipped when they are made (605 direct plane
+// commits without the skip), except behind an assignment of the same activation to the driver.
+case!(
+    drive_vec,
+    "ev=70 h=39957",
+    &[],
+    [
+        ("cycles", Max(242)),
+        ("cycles", Min(242)),
+        ("direct_planes", Max(180)),
+        ("ops", Max(19900)),
+    ]
+);
 // A one-element aggregate choice is straight code and conversion copies run in the kernel.
 case!(agg_carry, "acc=", &[], [("ops", Max(7860))]);
 case!(

@@ -1395,13 +1395,22 @@ impl Ctx<'_> {
             if self.has_entries(info, 1) {
                 return false;
             }
+            let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
+            // Nothing of this run on the driver and the signal and its driving value have the
+            // value: the commit would only set the elements pending (`direct_same_planes`).
+            if !self.has_entries(info, 2)
+                && self.sh.signals[sig as usize].direct_same_planes(slot, r.offset, len, planes)
+            {
+                self.note_skipped();
+                return true;
+            }
             self.mark_entries(info, 2);
             self.st.outv.push(OutV {
                 sig,
                 slot,
                 elem: r.offset,
                 len,
-                planes: planes.map(|p| p & yavs_logic::wide::nmask(len as usize)),
+                planes,
             });
             return true;
         }

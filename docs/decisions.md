@@ -8392,6 +8392,10 @@ compiling it is no win today (#679), so these are costs of the interpreter and t
   assign what the signals hold. A drive was 460 instructions (a microbenchmark: `Stmt`, `SigVal`, `LoadSlot`, `Aff1`, `LSetDrive` is 300 in the
   loop, 90 in the assignment, 110 in the commit), a skipped one in a run is about 150. Not covered: vector drives (`CopyDrive`, #723), a drive from
   a register or a signal read, a run broken by another statement.
+- **Decision: a zero-delay vector assignment of up to 64 elements that changes nothing is skipped the same way (`assign_planes_fast`,
+  `Signal::direct_same_planes`).** The condition adds that the driver has no entry of this run of either kind: an earlier assignment to the same
+  elements must still be overridden by this one (perf case `drive_vec`: `w(7 downto 0) <= lo; w(7 downto 0) <= x"00";`). 83 percent of the
+  direct plane commits of the first 400 us of the LEON3 run were skipped; cycles are unchanged. Interpreter instructions 240.9 G to 237.4 G.
 - **Decision: `Host::push_native` takes the preloaded registers from `Pre::preloaded`.** It walked the callee's IR at each materialisation of a native
   frame (13 percent of the S-record start-up of the system, 0.9 percent of the steady state).
 - **Tried, not landed: the clean-up of `opt/cfg.rs` (threading through short-circuit chains) on processes.** On the LEON3 system it takes the
@@ -8400,6 +8404,11 @@ compiling it is no win today (#679), so these are costs of the interpreter and t
   `sink_msg`): a loop entered from a copy of its test is no longer the fused `CmpBrStep` latch (the test is copied into the entry and the step
   stays a `Bin`, `Br`), and a block that suspends gets code behind its `Suspend` (the verifier's "live across a suspension point"). A version
   that threads only the `Const`-then-`CondBr` joins and leaves loops alone is untried.
+- **Tried, not landed: runs of logic scalar leaves in `SigGather`/`SigScatter`.** A plan-level run (leaves next to each other in one kernel signal and in
+  the value, read as a slice of the signal's codes, driven through `planes_of` of the bytes) works, but the records of the LEON3 system mix scalars
+  with vectors: the runs are 2 to 16 leaves, the plans have 9 to 79 leaves, and the interpreter's instructions did not move (241.7 G against
+  240.9 G). The per-call cost of the two instructions (about 2500 instructions for 19 leaves) is the plan lookup with its descriptor comparison and
+  the vector leaves, not the scalar ones.
 - **Found, filed:** processes with nested subprograms are never specialised (#721: `state_register` keeps its layout work, 25 percent of its ops);
   the pure-call memo costs 10 percent of the S-record start-up (#722); the vector drives of a wake that does nothing (#723); the cold
   activation path of serial processes (#724).

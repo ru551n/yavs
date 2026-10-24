@@ -391,17 +391,15 @@ impl Builder {
         }
     }
 
-    /// Process `p`, which has an edge trigger, does nothing but assign signals without delay
-    /// as a function of `reads` (and constants) when it runs. The kernel may then leave it
-    /// suspended at an edge when none of those had an event since its last activation
-    /// (`Config::idle_skip`); the caller guarantees the shape (`Db::pure_clocked_reads`).
+    /// Process `p` does nothing but assign signals without delay as a function of `reads` (and
+    /// constants) when it runs. The kernel may then leave it suspended when it is woken and
+    /// none of those had an event since its last activation (`Config::idle_skip`; a clocked
+    /// process, with an edge trigger, at an edge); the caller guarantees the shape
+    /// (`Db::pure_clocked_reads`, `Db::pure_comb_reads`, `Db::pure_conc_reads`).
     pub fn idle_skip(&mut self, p: ProcId, reads: &[(SignalId, Range)]) {
         match self.procs.get_mut(p.0 as usize) {
-            Some(d) if d.trigger.is_some() => d.idle = Some(reads.to_vec()),
-            _ => self.usage(format!(
-                "idle skip of process {} without an edge trigger",
-                p.0
-            )),
+            Some(d) => d.idle = Some(reads.to_vec()),
+            None => self.usage(format!("idle skip of process {} that does not exist", p.0)),
         }
     }
 

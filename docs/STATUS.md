@@ -6761,3 +6761,49 @@ part, filled at the start of each activation); a `std_ulogic` field of a record 
 build, `--tier=interp --threads 1`, core 10): 1685.8 G instructions and 150.8 s before, 993.3 G and 91.3 s after; the integer unit's
 `comb` process 147 760 to 30 605 IR instructions. `sigrec_copy` in the work-counter tests: ops 105 380 to 52 919.
 
+## CPU designs against the reference simulator: where the time goes, and idle skip round 2 (#521, #523, #529, 2026-10-24)
+
+The three neorv32 processor tests, `poc_cache_cpu`, `sc5_fifo_repack` and `hdlm_lfsr` profiled on main at cf32383b (`--tier=auto`,
+warm cache, release bench build, core 9 for the profiles, `perf record` cycles:u flat, `--profile`, `YAVS_COUNTERS=1`, a temporary
+per-process timer and the `op-census` feature). Elaboration and initialisation are 1 to 2% of a run (7% in `neorv32_dual_full`,
+0.3 s of 4.1 s); the rest is the simulation thread. Share of the cycles by layer:
+
+| design | interpreter dispatch (`run_ops`) | interpreter other (ops, `copy_bits`, process glue) | kernel (cycle, commit, wake) | signal callbacks (`Ctx` read, assign) | compiled code and its callbacks | libc copy and allocation | native ieee ops | compile thread, load |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `neorv32_single_min` | 38.0% | 11.8% | 24.9% (+0.9 sorts) | 16.1% | 0 | 4.6% | 2.7% | 0.8% |
+| `neorv32_single_cache` | 39.3% | 14.1% | 20.4% | 13.4% | 0 | 7.2% | 3.1% | 1.9% |
+| `neorv32_dual_full` | 37.7% | 14.6% | 19.8% | 12.6% | 0 | 8.2% | 3.5% | 2.0% |
+| `poc_cache_cpu` | 51.3% | 13.0% | 15.9% | 9.3% | 0 | 4.3% | 4.6% | 1.0% |
+| `sc5_fifo_repack` | 50.8% | 7.9% | 10.8% | 7.4% | 17.6% (callbacks 17.0) | 3.8% | 1.3% | 0.2% |
+| `hdlm_lfsr` | 5.3% | 17.3% | 36.0% | 8.0% | 29.0% (callbacks 6.3) | 2.0% | 1.1% | 0.4% |
+
+Nothing is compiled in the neorv32 and poc runs (the compile thread is 0.4% of the samples): the tier leaves the processes
+interpreted ("a clocked process seen for 11768 of 268962 us ...", and the three biggest, `counter_increment`, `exec_comb` of 4479 IR
+instructions and `request`, are neither compiled nor named in the notes). By process (neorv32_single_min, 300 us, 9.85 M activations):
+`exec_comb` 12% of the time inside processes (6.0 us an activation, about 150 per-leaf record drives), `counter_increment` 10% (7.1 us,
+woken by every event on `ctrl_i`, which has 41 leaves of which it reads two), `bus_gateway.request` 9% (5.3 us), `counter_core` of the
+29 counters 5% (0.3 us, 652 k activations), then a tail of 2400 processes of at most 2.5% each. The kernel is 20 to 25% of the
+cycles; the commit path (`finish_direct`, `commit_out`) holds 22% of the L1 data misses (a `Signal` is over 700 bytes). In
+`poc_cache_cpu` 85% of the process time is two concurrent statements of the 32-element LRU (`mux` and `ffdre` calls on
+unconstrained vectors, 1.6 and 0.95 us), 58% of the runs of the second being wakes on data inputs while the clock edge was false.
+In `hdlm_lfsr` the testbench `main` (serial, a file, 22 operations an activation) is 16% of the run and is never compiled; the DUT
+process `main` is interpreted for 190 ms before its specialised copy is compiled; the 22 single-bit drives of `state(i) <= ...`
+cost `drive_bit_now`, `assign_code_fast`, `commit_codes` and `finish_direct` together 18%. In `sc5_fifo_repack` 11% is
+`Host::object` and `yavs_rt_obj` (compiled code reaching the process variables of a procedure through the up-level chain) and
+the interpreted `AddrUp -> Load` pairs are 5% of the ops.
+
+Against the reference simulator (elaboration plus run, `--tier=auto` warm, wall of one thread on core 15, medians of 5; before
+this change / after): `poc_cache_cpu` 2.00x / 1.42x (instructions 2.89x / 1.93x), `neorv32_single_min` 1.49x / 1.37x,
+`neorv32_single_cache` 1.24x / 1.15x, `neorv32_dual_full` 0.93x / 0.80x (faster than the reference), `sc5_fifo_repack` 2.75x /
+2.8x to 3.1x (the compile thread's timing moves it by 15% between runs), `hdlm_lfsr` 1.80x / 1.81x.
+
+What changed (`docs/decisions.md` "Idle skip, round 2"): the idle skip of round 16 covers combinational processes (a wake nobody read
+for is skipped), clocked concurrent assignments `q <= d when <edge>;` (edge trigger and idle skip), process variables assigned
+before they are read, and pure functions of architectures; processes up to 4096 registers stay resident. Wall of the run phase,
+main against the change (interpreter / auto): `poc_cache_cpu` 0.67 / 0.67, `neorv32_dual_full` 0.88 / 0.86,
+`neorv32_single_min` 0.91 / 0.91, `neorv32_single_cache` 0.89 / 0.88; instructions 0.63, 0.84, 0.90, 0.85.
+
+What is left, by cost: the interpreter's dispatch and the signal drive path (about 60% of the neorv32 cycles, a drive is about 190
+cycles including its commit); the kernel's per-event work; nothing of these designs is compiled; per-bit drives of vector
+signals; process variables read from compiled code (`Host::object`); `mux`/`ffdre`-style functions of unconstrained vectors
+(5 000 instructions an activation).

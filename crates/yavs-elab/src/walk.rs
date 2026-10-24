@@ -2531,7 +2531,10 @@ impl Elab<'_> {
         }
         self.process_refs(s, st, name, postponed, refs)?;
         let trigger = self.edge_trigger(s, st);
-        let idle = trigger.and_then(|_| self.idle_reads(s, st));
+        let idle = match trigger {
+            Some(_) => self.idle_reads(s, st),
+            None => self.idle_comb_reads(s, st),
+        };
         let copy = self.copy_source(s, st);
         let toggle = self.toggle_source(s, st);
         if let Some(p) = self.procs.last_mut() {
@@ -2644,18 +2647,30 @@ impl Elab<'_> {
     /// and the reset need a `std_ulogic` signal.
     fn edge_trigger(&mut self, s: ScopeId, st: StmtId) -> Option<crate::ProcTrigger> {
         let db: &Db = &*self.db;
-        let StmtKind::Process {
-            postponed: false,
-            sensitivity,
-            body,
-            ..
-        } = &db.stmts[st].kind
-        else {
-            return None;
+        let (sensitivity, body) = match &db.stmts[st].kind {
+            StmtKind::Process {
+                postponed: false,
+                sensitivity,
+                body,
+                ..
+            } => (sensitivity, &body[..]),
+            // `q <= d when <edge>;` does nothing on a false edge, as `if <edge> then q <= d; end if`.
+            StmtKind::ConcSignalAssign {
+                postponed: false,
+                guarded: false,
+                rhs: Rhs::Conditional(alts),
+                ..
+            } => {
+                let [(_, Some(cond))] = &alts[..] else {
+                    return None;
+                };
+                return self.trigger_of(s, *cond, None, false, None);
+            }
+            _ => return None,
         };
         // `wait until x = '1'`: the whole condition is the level (its `on` list must be `x`).
         let mut plain = None;
-        let (cond, reset, wait) = match (sensitivity, &body[..]) {
+        let (cond, reset, wait) = match (sensitivity, body) {
             (Sensitivity::List(sens), [only]) if !sens.is_empty() => {
                 let StmtKind::If {
                     branches,
@@ -2685,6 +2700,19 @@ impl Elab<'_> {
             }
             _ => return None,
         };
+        self.trigger_of(s, cond, reset, wait, plain)
+    }
+
+    /// The trigger of a clocked process whose edge condition is `cond` (`wait`: the `wait until`
+    /// form with the `on` list `plain`), after the shape was recognised by `edge_trigger`.
+    fn trigger_of(
+        &mut self,
+        s: ScopeId,
+        cond: ExprId,
+        reset: Option<ExprId>,
+        wait: bool,
+        plain: Option<Vec<Lsp>>,
+    ) -> Option<crate::ProcTrigger> {
         let (rising, arg, level) = self.edge_of(cond, plain.is_some())?;
         // The level form (`level` is `arg` itself) resumes on the events of its `on` list
         // (implicit: the signals of the condition), which must be this element alone.
@@ -2758,9 +2786,30 @@ impl Elab<'_> {
             ..
         } = &db.stmts[st].kind
         else {
-            return None;
+            // `q <= d when <edge>;`
+            let StmtKind::ConcSignalAssign {
+                rhs: Rhs::Conditional(alts),
+                ..
+            } = &db.stmts[st].kind
+            else {
+                return None;
+            };
+            let [(_, Some(edge))] = &alts[..] else {
+                return None;
+            };
+            let lsps = match self.idle_cache.get(&st) {
+                Some(c) => c.clone()?,
+                None => {
+                    let r = self
+                        .edge_extras(*edge)
+                        .and_then(|ex| self.db.pure_conc_reads(st, &ex));
+                    self.idle_cache.insert(st, r.clone());
+                    r?
+                }
+            };
+            return self.idle_parts(s, lsps);
         };
-        let (mut conds, stmts, edge): (Vec<ExprId>, Vec<StmtId>, ExprId) =
+        let (mut conds, bodies, edge): (Vec<ExprId>, Vec<&[StmtId]>, ExprId) =
             match (sensitivity, &body[..]) {
                 (Sensitivity::List(_), [only]) => {
                     let StmtKind::If {
@@ -2771,10 +2820,8 @@ impl Elab<'_> {
                         return None;
                     };
                     match &branches[..] {
-                        [(c, b)] => (Vec::new(), b.to_vec(), *c),
-                        [(r, a), (c, b)] => {
-                            (vec![*r], a.iter().chain(b.iter()).copied().collect(), *c)
-                        }
+                        [(c, b)] => (Vec::new(), vec![&b[..]], *c),
+                        [(r, a), (c, b)] => (vec![*r], vec![&a[..], &b[..]], *c),
                         _ => return None,
                     }
                 }
@@ -2787,7 +2834,7 @@ impl Elab<'_> {
                     else {
                         return None;
                     };
-                    (Vec::new(), rest.to_vec(), *c)
+                    (Vec::new(), vec![rest], *c)
                 }
                 _ => return None,
             };
@@ -2797,12 +2844,52 @@ impl Elab<'_> {
                 // What the edge test also reads (`rising_edge(c) and en = '1'`).
                 let r = self.edge_extras(edge).and_then(|ex| {
                     conds.extend(ex);
-                    self.db.pure_clocked_reads(*scope, &conds, &stmts)
+                    self.db.pure_clocked_reads(*scope, &conds, &bodies)
                 });
                 self.idle_cache.insert(st, r.clone());
                 r?
             }
         };
+        self.idle_parts(s, lsps)
+    }
+
+    /// The signal parts a combinational process (`process (a, b) begin ... end process;`, also
+    /// `process (all)`) reads, when an activation of it is a function of those and constants
+    /// alone (`Db::pure_comb_reads`).
+    fn idle_comb_reads(
+        &mut self,
+        s: ScopeId,
+        st: StmtId,
+    ) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+        let db: &Db = self.db;
+        let StmtKind::Process {
+            postponed: false,
+            sensitivity: Sensitivity::List(_) | Sensitivity::All,
+            body,
+            scope,
+            ..
+        } = &db.stmts[st].kind
+        else {
+            return None;
+        };
+        let lsps = match self.idle_cache.get(&st) {
+            Some(c) => c.clone()?,
+            None => {
+                let r = self.db.pure_comb_reads(*scope, body);
+                self.idle_cache.insert(st, r.clone());
+                r?
+            }
+        };
+        self.idle_parts(s, lsps)
+    }
+
+    /// The kernel signal parts of the reads `lsps` of a process in region `s`.
+    fn idle_parts(
+        &mut self,
+        s: ScopeId,
+        lsps: Vec<Lsp>,
+    ) -> Option<Vec<(LeafId, yavs_kernel::Range)>> {
+        let db: &Db = self.db;
         let mut out = Vec::new();
         for l in lsps {
             let (o, sels) = self.m.lsp_ref(db, &l, s).ok()?;

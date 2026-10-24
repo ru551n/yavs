@@ -4095,6 +4095,44 @@ activations, 41% of `fletcher_bufferreader`'s, 22% of the writer's, 63% of `poc_
   `fletcher_bufferreader` 0.80 / 0.82, `fletcher_bufferwriter_512` 0.97 / 0.96, `sc5_fifo_repack` 0.96 / 0.96, `poc_cache_cpu` 1.00 /
   0.99, `sc5_timestamp` 1.01 / 1.00, `rtl_ff` 1.006 / 1.007, `rtl_lfsr` 1.002 / 1.000.
 
+## Idle skip, round 2: combinational processes, clocked concurrent assignments, variables (yavs-sem, yavs-elab, yavs-kernel, #521, #523, 2026-10-24)
+
+The profile of the CPU designs of the real-world suite (`neorv32_*`, `poc_cache_cpu`) put most of the interpreter's time into
+activations that did what the last one did: a process with a wide sensitivity list woken by an event on a part of a record it never
+reads (`counter_increment` of neorv32, `ctrl_i` has 41 leaves and the body reads two), and the registers of `poc_cache_cpu`, written
+as concurrent assignments `q <= f(d) when rising_edge(clk);`, which had no edge trigger (58% of their wakes were events on the
+data inputs, the edge was false) and, as a spelling of a clocked process, no idle skip (round 16 knew only `process`).
+
+- **Edge trigger for a concurrent conditional assignment** `target <= wave when <edge>;` (one waveform, no `else`, not guarded or
+  postponed): it does nothing on a false edge, as `if <edge> then target <= wave; end if`, so the kernel need not resume it
+  (`Walker::edge_trigger`, the same edge spellings as for a process). `poc_cache_cpu`: 0.7 M of 1.2 M activations of these gone.
+- **Idle skip for it** (`Db::pure_conc_reads`): the reads are those of the waveform and the target's indices, not the edge; the
+  delay is the default or `transport` and there is no `after`.
+- **Idle skip for combinational processes** (`Db::pure_comb_reads`, `Walker::idle_comb_reads`): `process (list)` and `process (all)`
+  of the pure shape of round 16 (no `wait`). A wake that no signal the body reads had an event for, since the last activation,
+  leaves the process suspended: the activation would assign what the last one did. `Builder::idle_skip` no longer needs an edge
+  trigger, nor does the kernel (`SimControl` builds the readers of a process that has `idle`).
+- **Variables**: a process variable is allowed in the pure shapes when each branch that one activation runs assigns all of it
+  before anything else mentions it (the first statement of the branch that does is a top-level `v := ...;` that does not read
+  it: `Db::vars_assigned_first`), so that no value is kept from one activation to the next. A process that counts in a variable, or
+  assigns it in one arm of an `if` and reads it after, is not pure and runs every time (`tests/corpus/delta/idle_comb.vhd`).
+- **Functions**: a pure function declared in an entity, architecture, block or generate is accepted like a package function when
+  the run is not `--relaxed` (E1830 stops a pure function from reading a signal or variable outside it; under `--relaxed` it is only
+  a warning, and then such a function is not trusted).
+- **The same run**: `YAVS_IDLE_SKIP=check` runs the activations the kernel would skip and fails when one assigns something else;
+  the corpus (503 tests; interpreter, `--tier=auto`, `--tier=llvm`; 1 and 4 threads; checked) and the output of the 41
+  real-world testbenches (also checked) are the same as without. `tests/corpus/delta/idle_comb.vhd` (blessed from the reference
+  simulator) and `perf.rs` `idle_comb`, `idle_skip_changes_nothing` (off, on and checked on both designs).
+- **Measured** (`tools/realbench --compare` of main and the change, core 15, medians of 5, run phase, interpreter / `--tier=auto`;
+  instruction ratio in brackets): `poc_cache_cpu` 1.64 to 1.10 s (0.67, 0.63) / 1.59 to 1.06, `neorv32_dual_full` 4.16 to 3.66
+  (0.88, 0.84) / 4.17 to 3.58, `neorv32_single_min` 5.25 to 4.79 (0.91, 0.90) / 5.27 to 4.80, `neorv32_single_cache` 4.95 to 4.39
+  (0.89, 0.85) / 4.95 to 4.38; `hdlm_lfsr` and `sc5_fifo_repack` unchanged (instructions 1.00, 0.99). Instructions over the 41
+  real-world designs, geometric mean 0.979 (every design but those four within 0.5%), over the 11 head-to-head designs 1.000: a
+  tracked process nobody skips costs nothing visible (`IDLE_WINDOW` stops tracking it).
+- **Not covered**: a pure process whose branch reads a signal it does not always use (`counter_core` of neorv32 reads `data_i` in
+  one arm: the CPU bus changes it every instruction), user functions that are not pure or take a signal, `report`, `assert`, and
+  the rest of round 16's list.
+
 ## Kernel round 17: coincident timed entries (yavs-kernel, #440, 2026-10-23)
 
 The baseline of this round (exact per-function counts from a ptrace single-stepper over `examples/clk.rs` and over windows of

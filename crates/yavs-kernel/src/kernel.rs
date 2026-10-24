@@ -1049,7 +1049,6 @@ impl SimControl {
                 let Some(reads) = reads else { continue };
                 let m = &mut procs[p];
                 if bad[p]
-                    || m.trigger.is_none()
                     || m.flags.postponed
                     || m.flags.several_waits
                     || m.flags.serial

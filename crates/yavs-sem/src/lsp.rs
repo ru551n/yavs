@@ -891,27 +891,49 @@ impl Db {
         ProcessInfo { drivers, reads_all }
     }
 
-    /// The signals read by a clocked process (a branch of its statement, `conds` the other
-    /// branches' conditions, such as a reset) when what an activation does is a function of
-    /// those signals and constants alone: no variable or file in `scope`, only signal
-    /// assignments without delay, `if`, `case`, `for` loops and `null`, and expressions of
-    /// constants, signals, predefined operators and pure package functions without signal
-    /// parameters. `None` for anything else. An activation of such a process with none of the
-    /// signals changed since the last one does what that one did.
+    /// The signals read by a clocked process (`bodies` the branches of its statement that one
+    /// activation can run, `conds` the other branches' conditions, such as a reset) when what an
+    /// activation does is a function of those signals and constants alone: no shared variable or
+    /// file in `scope`, only signal and variable assignments without delay, `if`, `case`, `for`
+    /// loops and `null`, and expressions of constants, signals, variables, predefined operators
+    /// and pure package functions without signal parameters. A variable of the process is
+    /// allowed when each branch assigns all of it before anything else mentions it (the first
+    /// statement of the branch that does is a top-level `v := ...;` that does not read it), so
+    /// that no value is kept from one activation to the next. `None` for anything else. An
+    /// activation of such a process with none of the signals changed since the last one does
+    /// what that one did.
     pub fn pure_clocked_reads(
         &self,
         scope: ScopeId,
         conds: &[ExprId],
-        body: &[StmtId],
+        bodies: &[&[StmtId]],
     ) -> Option<Vec<Lsp>> {
+        self.pure_process_reads(scope, conds, bodies)
+    }
+
+    /// The signals read by a combinational process (`process (a, b) begin ... end process;` or
+    /// `process (all)`) when what an activation does is a function of those signals and
+    /// constants alone, as for [`Db::pure_clocked_reads`]. An activation of such a process with
+    /// none of the signals it reads changed since the last one does what that one did, which a
+    /// wider sensitivity list does not see.
+    pub fn pure_comb_reads(&self, scope: ScopeId, body: &[StmtId]) -> Option<Vec<Lsp>> {
+        self.pure_process_reads(scope, &[], &[body])
+    }
+
+    fn pure_process_reads(
+        &self,
+        scope: ScopeId,
+        conds: &[ExprId],
+        bodies: &[&[StmtId]],
+    ) -> Option<Vec<Lsp>> {
+        let mut vars = Vec::new();
         for &d in &self.scopes[scope].order {
-            if let DeclKind::Object(o) = &self.decls[d].kind
-                && matches!(
-                    o.class,
-                    ObjClass::Variable | ObjClass::SharedVariable | ObjClass::File
-                )
-            {
-                return None;
+            if let DeclKind::Object(o) = &self.decls[d].kind {
+                match o.class {
+                    ObjClass::Variable => vars.push(d),
+                    ObjClass::SharedVariable | ObjClass::File => return None,
+                    _ => {}
+                }
             }
         }
         let mut reads = Vec::new();
@@ -921,11 +943,70 @@ impl Db {
             }
             self.reads(c, &mut reads);
         }
-        if !self.pure_stmts(body, &mut reads) {
-            return None;
+        for body in bodies {
+            if !self.vars_assigned_first(body, &vars) || !self.pure_stmts(body, &vars, &mut reads) {
+                return None;
+            }
         }
-        // Whole objects and record fields: an index or a slice would be worked out once per
-        // instance of the process, for little (the reader wakes for a change anywhere in the array).
+        Some(self.coarse_reads(reads))
+    }
+
+    /// Whether every variable of `vars` that `body` mentions is assigned as a whole by a
+    /// top-level statement before any statement mentions it otherwise.
+    fn vars_assigned_first(&self, body: &[StmtId], vars: &[DeclId]) -> bool {
+        let mut defined: Vec<DeclId> = Vec::new();
+        for &s in body {
+            // The target of a whole-variable assignment is not a mention that reads.
+            let def = match &self.stmts[s].kind {
+                StmtKind::VarAssign { target, .. } => match self.exprs[target.expr].kind {
+                    ExprKind::Obj(v) if vars.contains(&v) => Some((v, target.expr)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let mut used = Vec::new();
+            self.stmt_var_uses(s, vars, def.map(|(_, e)| e), &mut used);
+            // What the statement mentions (the target of a defining one apart) is assigned.
+            if !used.iter().all(|u| defined.contains(u)) {
+                return false;
+            }
+            if let Some((v, _)) = def
+                && !defined.contains(&v)
+            {
+                defined.push(v);
+            }
+        }
+        true
+    }
+
+    /// The variables of `vars` named in `s` and its nested statements, except in the expression
+    /// `skip`.
+    fn stmt_var_uses(
+        &self,
+        s: StmtId,
+        vars: &[DeclId],
+        skip: Option<ExprId>,
+        out: &mut Vec<DeclId>,
+    ) {
+        self.stmt_exprs(s, &mut |e, _| {
+            if Some(e) != skip {
+                self.walk_expr(e, &mut |x| {
+                    if let ExprKind::Obj(d) = self.exprs[x].kind
+                        && vars.contains(&d)
+                    {
+                        out.push(d);
+                    }
+                });
+            }
+        });
+        for c in self.stmt_children(s) {
+            self.stmt_var_uses(c, vars, None, out);
+        }
+    }
+
+    /// Whole objects and record fields: an index or a slice would be worked out once per
+    /// instance of the process, for little (the reader wakes for a change anywhere in the array).
+    fn coarse_reads(&self, reads: Vec<Lsp>) -> Vec<Lsp> {
         let mut coarse = Vec::new();
         for mut l in reads {
             let k = l
@@ -936,14 +1017,63 @@ impl Db {
             l.path = l.path[..k].into();
             push_unique(self, &mut coarse, l);
         }
-        Some(coarse)
+        coarse
     }
 
-    fn pure_stmts(&self, body: &[StmtId], reads: &mut Vec<Lsp>) -> bool {
-        body.iter().all(|&s| self.pure_stmt(s, reads))
+    /// The signals read by a concurrent clocked assignment `target <= wave when <edge>;` (no
+    /// `else`, not guarded or postponed; `conds` what the edge test also reads) when what an
+    /// activation does is a function of those signals and constants alone: the waveform has no
+    /// `after`, the delay is the default or `transport`, and the expressions are as for
+    /// [`Db::pure_clocked_reads`]. The edge itself is not one of them. `None` for anything else.
+    pub fn pure_conc_reads(&self, st: StmtId, conds: &[ExprId]) -> Option<Vec<Lsp>> {
+        use crate::hir::Delay;
+        let StmtKind::ConcSignalAssign {
+            postponed: false,
+            guarded: false,
+            delay: Delay::Default | Delay::Transport,
+            rhs: Rhs::Conditional(alts),
+            ..
+        } = &self.stmts[st].kind
+        else {
+            return None;
+        };
+        let [(Waveform::Elements(els), Some(edge))] = &alts[..] else {
+            return None;
+        };
+        if !els.iter().all(|e| e.after.is_none() && e.value.is_some()) {
+            return None;
+        }
+        let mut reads = Vec::new();
+        for &c in conds {
+            if !self.pure_tree(c) {
+                return None;
+            }
+            self.reads(c, &mut reads);
+        }
+        let mut uses = Vec::new();
+        self.stmt_exprs(st, &mut |e, u| {
+            if e != *edge {
+                uses.push((e, u));
+            }
+        });
+        for (e, u) in uses {
+            if !self.pure_tree(e) {
+                return None;
+            }
+            match u {
+                Use::Value => self.reads(e, &mut reads),
+                Use::Target => self.name_reads(e, &mut reads),
+                Use::Actual(_) => return None,
+            }
+        }
+        Some(self.coarse_reads(reads))
     }
 
-    fn pure_stmt(&self, s: StmtId, reads: &mut Vec<Lsp>) -> bool {
+    fn pure_stmts(&self, body: &[StmtId], vars: &[DeclId], reads: &mut Vec<Lsp>) -> bool {
+        body.iter().all(|&s| self.pure_stmt(s, vars, reads))
+    }
+
+    fn pure_stmt(&self, s: StmtId, vars: &[DeclId], reads: &mut Vec<Lsp>) -> bool {
         use crate::hir::Delay;
         let kind_ok = match &self.stmts[s].kind {
             StmtKind::SignalAssign { delay, rhs, .. } => {
@@ -961,6 +1091,7 @@ impl Db {
                     }
             }
             StmtKind::If { .. } | StmtKind::Case { .. } | StmtKind::Null => true,
+            StmtKind::VarAssign { .. } => !vars.is_empty(),
             StmtKind::Loop {
                 scheme: LoopScheme::For { .. },
                 ..
@@ -972,16 +1103,21 @@ impl Db {
             return false;
         }
         let mut ok = true;
-        self.stmt_exprs(s, &mut |e, _| ok &= self.pure_tree(e));
+        self.stmt_exprs(s, &mut |e, _| ok &= self.pure_tree_in(e, vars));
         if !ok {
             return false;
         }
         self.stmt_reads(s, reads);
-        self.pure_stmts(&self.stmt_children(s), reads)
+        self.pure_stmts(&self.stmt_children(s), vars, reads)
     }
 
     /// Every node of `e` is a constant, a signal, or a pure operation on them.
     fn pure_tree(&self, e: ExprId) -> bool {
+        self.pure_tree_in(e, &[])
+    }
+
+    /// [`Db::pure_tree`] where the variables `vars` of the process are allowed too.
+    fn pure_tree_in(&self, e: ExprId, vars: &[DeclId]) -> bool {
         use PredefAttr::*;
         let mut ok = true;
         self.walk_expr(e, &mut |x| {
@@ -999,6 +1135,7 @@ impl Db {
                     DeclKind::Object(o) => match o.class {
                         ObjClass::Constant => true,
                         ObjClass::Signal => matches!(o.role, ObjRole::Plain | ObjRole::Port),
+                        ObjClass::Variable => vars.contains(d),
                         _ => false,
                     },
                     _ => false,
@@ -1013,10 +1150,19 @@ impl Db {
                         || d.kind.subprogram().is_some_and(|sp| {
                             matches!(sp.kind, SubprogramKind::Function { pure: true })
                                 && !sp.params.iter().any(|p| p.class == ObjClass::Signal)
-                                && matches!(
+                                // In a package, or in a design unit or block (which a pure
+                                // function cannot read signals of, E1830, but under `--relaxed`).
+                                && (matches!(
                                     self.scopes[d.scope].kind,
                                     ScopeKind::Package | ScopeKind::PackageBody
-                                )
+                                ) || !self.opts.relaxed
+                                    && matches!(
+                                        self.scopes[d.scope].kind,
+                                        ScopeKind::Entity
+                                            | ScopeKind::Architecture
+                                            | ScopeKind::Block
+                                            | ScopeKind::Generate
+                                    ))
                         })
                 }
                 ExprKind::Attr { attr, .. } => matches!(

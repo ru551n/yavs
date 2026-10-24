@@ -460,6 +460,17 @@ case!(
     ]
 );
 
+case!(
+    idle_comb,
+    "o=",
+    &[],
+    [
+        ("process_runs", Max(2600)),
+        ("idle_skips", Min(1750)),
+        ("ops", Max(31000)),
+    ]
+);
+
 /// Processes of instances with their own generics switch to copies specialised to their instance
 /// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
 /// processes (the iterations of a generate and the instances with equal generics share one).
@@ -491,36 +502,39 @@ fn spec_copies() {
 
 /// The idle skip changes nothing a run shows: the same output (values, times and deltas of the
 /// reports) with it off, on and checked (a skipped activation run and compared), and it skips.
+/// `idle_regs`: clocked processes, `idle_comb`: combinational ones, clocked concurrent
+/// assignments and variables.
 #[test]
 fn idle_skip_changes_nothing() {
-    let d = tempdir("idle_equal");
-    let src = include_str!("perf/idle_regs.vhd");
-    let run = |mode: &str| {
-        run_design_env(
-            &d,
-            "idle_regs",
-            src,
-            "interp",
-            &[],
-            &[("YAVS_IDLE_SKIP", mode)],
-        )
-    };
-    let (off, on, check) = (run("off"), run("on"), run("check"));
-    assert_eq!(
-        (off.code, on.code, check.code),
-        (0, 0, 0),
-        "{}",
-        check.all()
-    );
-    assert_eq!(off.stdout, on.stdout);
-    assert_eq!(off.stdout, check.stdout);
-    assert_eq!(off.counters["idle_skips"], 0);
-    assert!(
-        on.counters["idle_skips"] > 4000,
-        "the skip did not fire: {:?}",
-        on.counters
-    );
-    assert_eq!(on.counters["idle_skips"], check.counters["idle_skips"]);
+    let designs = [
+        ("idle_regs", include_str!("perf/idle_regs.vhd"), 4000),
+        ("idle_comb", include_str!("perf/idle_comb.vhd"), 1700),
+    ];
+    for (design, src, floor) in designs {
+        let d = tempdir(&format!("idle_equal_{design}"));
+        let run = |mode: &str| {
+            run_design_env(&d, design, src, "interp", &[], &[("YAVS_IDLE_SKIP", mode)])
+        };
+        let (off, on, check) = (run("off"), run("on"), run("check"));
+        assert_eq!(
+            (off.code, on.code, check.code),
+            (0, 0, 0),
+            "{design}: {}",
+            check.all()
+        );
+        assert_eq!(off.stdout, on.stdout, "{design}");
+        assert_eq!(off.stdout, check.stdout, "{design}");
+        assert_eq!(off.counters["idle_skips"], 0, "{design}");
+        assert!(
+            on.counters["idle_skips"] > floor,
+            "{design}: the skip did not fire: {:?}",
+            on.counters
+        );
+        assert_eq!(
+            on.counters["idle_skips"], check.counters["idle_skips"],
+            "{design}"
+        );
+    }
 }
 
 /// Wide signals that keep only each block's last event give the report of the full history.

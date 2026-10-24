@@ -341,6 +341,7 @@ case!(
     [("process_runs", Max(2)), ("ops", Max(2098)),]
 );
 case!(elem_loops, "acc=", &[], [("ops", Max(35600))]);
+case!(wide_vec, "wide=0", &[], [("ops", Max(1873000))]);
 case!(
     licm_loop,
     "acc=",

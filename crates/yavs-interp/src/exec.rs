@@ -2240,6 +2240,35 @@ impl Machine {
         })
     }
 
+    /// Whether the byte ranges `dlen` at `dst + dat` and `slen` at `src + sat` share no byte
+    /// (different objects, or one object and ranges that do not meet).
+    fn disjoint(&self, dst: u64, dat: u64, dlen: u64, src: u64, sat: u64, slen: u64) -> bool {
+        let ((dsp, didx, doff), (ssp, sidx, soff)) = (split(dst), split(src));
+        if (dsp, didx) != (ssp, sidx) {
+            return true;
+        }
+        let (d, s) = (doff + dat, soff + sat);
+        d + dlen <= s || s + slen <= d
+    }
+
+    /// `lcopy` of a wide range whose two sides start at the same bit of a block and do not
+    /// overlap: a partial block at each end, the whole blocks between them as bytes.
+    #[inline(never)]
+    fn lcopy_aligned(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
+        let head = (64 - doff % 64) % 64;
+        let whole = (n - head) / 64;
+        if head > 0 {
+            self.lcopy(dst, doff, src, soff, head)?;
+        }
+        let (dm, sm) = (
+            add_addr(dst, (doff + head) / 64 * 32)?,
+            add_addr(src, (soff + head) / 64 * 32)?,
+        );
+        self.copy_mem(dm, sm, whole * 32)?;
+        let done = head + whole * 64;
+        self.lcopy(dst, doff + done, src, soff + done, n - done)
+    }
+
     #[inline(never)]
     fn lcopy(&mut self, dst: u64, doff: u64, src: u64, soff: u64, n: u64) -> R<()> {
         if n == 0 {
@@ -2309,10 +2338,20 @@ impl Machine {
             }
             return self.put(da, &out[..dn * 32]);
         }
+        if n >= 1024
+            && s0 == d0
+            && self.disjoint(dst, db0 * 32, dn as u64 * 32, src, sb0 * 32, sn as u64 * 32)
+        {
+            return self.lcopy_aligned(dst, doff, src, soff, n);
+        }
         let sw = blocks_of(self.rd(add_addr(src, sb0 * 32)?, sn as u64 * 32)?);
         let mut dw = blocks_of(self.rd(da, dn as u64 * 32)?);
         copy_bits(&sw, &mut dw, s0, d0, n);
-        self.put(da, &bytes_of(&dw))
+        let out = self.wr(da, dn as u64 * 32)?;
+        for (c, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened()) {
+            *c = w.to_le_bytes();
+        }
+        Ok(())
     }
 
     /// `Inst::SigRead` of a reference of one range: the signal's value into the memory at `dst`.
@@ -2985,6 +3024,9 @@ impl Machine {
         if code > 8 {
             return Err(ice_f!("std_ulogic code {code}"));
         }
+        if n >= 512 {
+            return self.lfill_wide(base, i, n, code);
+        }
         while n > 0 {
             let s = i % 64;
             let take = (64 - s).min(n);
@@ -3004,6 +3046,27 @@ impl Machine {
             n -= take;
         }
         Ok(())
+    }
+
+    /// `lfill` of 512 elements or more: a partial block at each end by the plane words, the
+    /// whole blocks between them as one slice of the same 32 bytes.
+    #[inline(never)]
+    fn lfill_wide(&mut self, base: u64, i: u64, n: u64, code: u64) -> R<()> {
+        let head = (64 - i % 64) % 64;
+        if head > 0 {
+            self.lfill(base, i, head, code)?;
+        }
+        let whole = (n - head) / 64;
+        let mut pat = [0u8; 32];
+        for p in 0..4 {
+            if code >> p & 1 == 1 {
+                pat[p * 8..p * 8 + 8].fill(0xff);
+            }
+        }
+        let b = self.wr(add_addr(base, (i + head) / 64 * 32)?, whole * 32)?;
+        b.as_chunks_mut::<32>().0.fill(pat);
+        let done = head + whole * 64;
+        self.lfill(base, i + done, n - done, code)
     }
 
     /// `Inst::Cat`: the pieces `ps` (pairs of an address or element and a count) one after

@@ -6683,3 +6683,28 @@ grlib-1993 19.14 / 14.21. Warm analysis: satcat5 1.51 / 0.90, Open Logic 3.06 / 
 Cold `elab`: `uvvm_sb_slv` 0.40 / 0.28, `osvvm_axis_random` 0.65 / 0.60, `olo_base_cam` 1.09 / 1.04, `hdlm_fifo_sync` 0.64 / 0.58, `en_cl_fix_pkg`
 0.50 / 0.43, `vunit_logging` 0.20 / 0.16, `neorv32_single_min` 0.63 / 0.67 (#665), `poc_uart_rx` 1.78 / 1.77 (90 percent of it evaluates
 constants in the interpreter, a quarter of that in the IR optimiser at the first call of each function: not front end).
+
+## Wide logic vectors: fills and copies as bytes (2026-10-24)
+
+Found while looking for run-time instructions outside the dispatch loop of the worst realbench
+tests (perf record of the main thread, `--tier=auto`, warm): `uvvm_axistream_vvc` spent 7 percent in
+`bytes_of`, 6 percent in `Machine::lfill` and 3 percent in `obj_mut`. The verification component
+fills and copies logic vectors of 131072 and 524288 elements per command; `lfill` did one address
+lookup and four plane read-modify-writes per 64 elements, and a wide `lcopy` read both sides into
+two block vectors, copied the bits and wrote a third vector back.
+Change: `lfill_wide` (512 elements or more) writes the whole blocks as one slice of one 32-byte
+pattern; `lcopy_aligned` (1024 elements or more, both sides at the same bit of a block, no shared
+byte, checked by `disjoint`) is a partial block at each end and one `copy_mem` of the whole
+blocks; the generic wide copy writes the result into the destination without the third vector.
+The thresholds keep the new test off the small paths: a first version with the branches at 128 and
+256 elements cost 0.1 to 0.3 percent of instructions on tests without wide vectors.
+Instructions (`--tier=interp`, deterministic, warm world, main thread): uvvm_axistream_vvc 48.18 to
+38.87 G (-19 percent); poc_fifo_ic_assembly 2.2606 to 2.2639 G, osvvm_axi4_random 7.6138 to 7.6178 G,
+fletcher_bufferreader 38.37 to 38.44 G (+0.1 to +0.2 percent, the code layout of the loop, not the
+new paths); uvvm_util_rand, uvvm_sb_slv, uvvm_func_cov, hdlm_lfsr, sc5_fifo_repack unchanged.
+New work-counter design `wide_vec` (every alignment of fills and copies, overlapping shifts, each
+element checked): the correctness test of the new paths. What sim1 does: it keeps one byte per
+element, so a fill is a `memset` and a copy a `memmove`; ours are the same on the whole blocks and
+the plane words only at the ends. Compiled code (`yavs_rt_lcopy`, up to `LCOPY_BLOCKS` blocks) steps
+wider copies into this same function.
+

@@ -698,7 +698,8 @@ fn html_report() {
     let abs = std::fs::read_to_string(tmp.join("h4/src-0.html")).expect("h4");
     // Native separators on Windows.
     assert!(
-        abs.replace('\\', "/").contains("tests/cli/cov_run.vhd</h1>"),
+        abs.replace('\\', "/")
+            .contains("tests/cli/cov_run.vhd</h1>"),
         "{abs}"
     );
 

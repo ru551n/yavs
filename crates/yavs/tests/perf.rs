@@ -111,7 +111,12 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
     let mut failed = Vec::new();
     for &(name, bound) in bounds {
         let Some(&v) = r.counters.get(name) else {
-            // Counted in debug builds and with `op-census`; a plain release build has none (`ops`, `cb_*`).
+            // A plain release build without `op-census` collects no `ops` or `cb_*`
+            // counters; those bounds are skipped there. In a debug build they are
+            // collected, so a missing counter is a failure, not a vacuous pass (#732).
+            if cfg!(debug_assertions) {
+                panic!("design `{design}`: no counter `{name}` in {:?}", r.counters);
+            }
             assert!(
                 name == "ops" || name == "ops_elab" || name.starts_with("cb_"),
                 "design `{design}`: no counter `{name}` in {:?}",

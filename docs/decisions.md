@@ -8978,7 +8978,8 @@ the cache.
   window generator 0.388 (round 4: 0.383), `neorv32_single_min` 1.025 (1.025), `fletcher_bufferwriter_512` 0.996 (0.978),
   `poc_arith_addw` 0.680 (0.714).
 - **The Cranelift lowering keeps step with main**: the head of a fused scalar drive is `ScalarDrive::head` (#668), `Inst::Zero`
-  is zeroed in place, a process that never suspends polls `TierFrame::stop` at its retreating `Br` (#737), and `Drive`,
+  is zeroed in place, a process that never suspends leaves compiled code at its retreating `Br` for the interpreter, which
+  polls the stop request and bounds the activation (#737, #583, as the LLVM lowering since cd611e21), and `Drive`,
   `DriveSlot` and `SigRead` are lowered in native variants (`yavs_rt_drive_nat`), since the shared `native_set` takes functions
   with them (#730); without that their callers lost their variants under Cranelift.
 - **The cache is Cranelift's own incremental cache over the work library's objects store** (`src/cache.rs`,

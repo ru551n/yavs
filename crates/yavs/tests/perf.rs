@@ -112,8 +112,10 @@ fn check_bounds(design: &str, r: &Run, bounds: &[(&str, Bound)]) {
     for &(name, bound) in bounds {
         let Some(&v) = r.counters.get(name) else {
             // Counted in debug builds and with `op-census`; a plain release build has none (`ops`, `cb_*`).
+            // Where they are counted, a missing one is a bound that guards nothing (#732).
+            let counted = cfg!(debug_assertions) || cfg!(feature = "op-census");
             assert!(
-                name == "ops" || name == "ops_elab" || name.starts_with("cb_"),
+                !counted && (name == "ops" || name == "ops_elab" || name.starts_with("cb_")),
                 "design `{design}`: no counter `{name}` in {:?}",
                 r.counters
             );
@@ -1113,9 +1115,10 @@ mod clift {
         "q=",
         [
             ("cb_signal", Max(5)),
-            ("cb_step", Max(10)),
-            ("cb_native", Max(55)),
+            ("cb_step", Max(8)),
+            ("cb_native", Max(5)),
             ("cb_drive", Max(998)),
+            ("cb_drive", Min(900)),
             ("cb_wait", Max(19)),
             ("cb_wait_same", Max(1018)),
         ]
@@ -1125,11 +1128,12 @@ mod clift {
         "llvm_sigread",
         "wide=",
         [
-            ("cb_signal", Max(215)),
-            ("cb_step", Max(12)),
+            ("cb_signal", Max(60)),
+            ("cb_step", Max(9)),
             ("cb_native", Max(56)),
             ("cb_drive", Max(263)),
-            ("cb_lcopy", Max(158)),
+            ("cb_drive", Min(230)),
+            ("cb_lcopy", Max(55)),
         ]
     );
     clift_case!(
@@ -1140,6 +1144,7 @@ mod clift {
             ("cb_signal", Max(8)),
             ("cb_step", Max(16)),
             ("cb_drive", Max(1867)),
+            ("cb_drive", Min(1700)),
             ("cb_wait_same", Max(1570)),
         ]
     );
@@ -1152,17 +1157,26 @@ mod clift {
             ("pmemo_hits", Min(420)),
             ("pmemo_runs", Max(14)),
             ("cb_memo", Max(470)),
+            ("cb_memo", Min(430)),
         ]
+    );
+    // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.
+    clift_case!(
+        sigfun,
+        "llvm_sigfun",
+        "acc=",
+        [("cb_step", Max(4)), ("cb_signal", Max(4))]
     );
     clift_case!(
         reg_planes,
         "reg_planes",
         "c=100",
         [
-            ("cb_signal", Max(108)),
-            ("cb_step", Max(12)),
+            ("cb_signal", Max(5)),
+            ("cb_step", Max(10)),
             ("cb_drive", Max(416)),
-            ("cb_native", Max(107)),
+            ("cb_drive", Min(380)),
+            ("cb_native", Max(4)),
         ]
     );
 }

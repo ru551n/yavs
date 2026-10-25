@@ -92,8 +92,8 @@ pub fn report(s: yavs_kernel::Stats, rt: Option<&yavs_interp::Runtime>) {
     for (name, v) in rows {
         eprintln!("counters: {name}={v}");
     }
-    // The callbacks of compiled code, by kind (debug builds and `op-census`).
-    #[cfg(feature = "llvm")]
+    // The callbacks of compiled code, by kind (debug builds and `op-census`; both generators).
+    #[cfg(any(feature = "llvm", feature = "clift"))]
     for (name, v) in yavs_llvm::callback_counts().into_iter().flatten() {
         eprintln!("counters: cb_{name}={v}");
     }

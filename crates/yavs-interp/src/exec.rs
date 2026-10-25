@@ -1463,7 +1463,8 @@ impl Machine {
         if self.dbg.is_none() && self.rt.prog.specialisable(self.entry) {
             self.rt.prog.note_planned();
             self.spec = Some(holes);
-            self.spec_at = u32::try_from(at).unwrap_or(u32::MAX);
+            // First stop at the second activation (`specialise`): it tells the tier the process runs again.
+            self.spec_at = u32::try_from(at.min(2)).unwrap_or(u32::MAX);
         }
     }
 
@@ -1476,6 +1477,13 @@ impl Machine {
     #[cold]
     #[inline(never)]
     pub(crate) fn specialise(&mut self) {
+        if self.spec.is_some() && self.execs < crate::spec_after() {
+            if let Some(n) = self.rt.native.resumed.get(self.entry.0 as usize) {
+                n.store(true, Ordering::Relaxed);
+            }
+            self.spec_at = u32::try_from(crate::spec_after()).unwrap_or(u32::MAX);
+            return;
+        }
         let Some(holes) = self.spec.take() else {
             return;
         };

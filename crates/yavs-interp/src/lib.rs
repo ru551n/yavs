@@ -1084,6 +1084,9 @@ pub struct NativeFlags {
     func: Box<[std::sync::atomic::AtomicU8]>,
     /// Per process function: the processes made of it (`InterpProcess::new`).
     instances: Box<[std::sync::atomic::AtomicU32]>,
+    /// Per process function: some process made of it ran a second activation
+    /// (`Machine::specialise`), so it can reach the switch to its copy at all (#749).
+    resumed: Box<[std::sync::atomic::AtomicBool]>,
     /// Activations of the one process function a trial of the tier counts (`count_on`).
     entered: std::sync::atomic::AtomicU64,
     /// Some function is counted (`NAT_COUNT`).
@@ -1096,6 +1099,15 @@ impl NativeFlags {
         self.instances
             .get(func.0 as usize)
             .map_or(0, |n| n.load(Ordering::Relaxed))
+    }
+
+    /// Whether a process of `func` has run a second activation: until then none of them has
+    /// come back from its first wait, and a process that never does (one loop and a final wait)
+    /// never switches to a copy.
+    pub fn resumed(&self, func: FuncId) -> bool {
+        self.resumed
+            .get(func.0 as usize)
+            .is_some_and(|n| n.load(Ordering::Relaxed))
     }
 
     /// Count the activations of the process function `func` from now on (`entries`). One function
@@ -1395,6 +1407,7 @@ impl Runtime {
                 any: Default::default(),
                 func: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 instances: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
+                resumed: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 entered: Default::default(),
                 counting: Default::default(),
             }),

@@ -186,7 +186,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.23 warm, 0.43 cold (own files + elab + run 0.25 and 0.49; head-to-head 4 had 0.25 and 0.46 for the total, 0.27 and 0.52 for own + elab + run), executed instructions yavs / sim1 0.32 (0.35 before), tiny-test corpus 0.12 and 0.26, the h2h designs 0.71 and 0.83 (three designs lost their warm speedup, #749). The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 5, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.23 warm, 0.43 cold (own files + elab + run 0.25 and 0.49; head-to-head 4 had 0.25 and 0.46 for the total, 0.27 and 0.52 for own + elab + run), executed instructions yavs / sim1 0.32 (0.35 before), tiny-test corpus 0.12 and 0.26, the h2h designs 0.71 and 0.83 (three designs lost their warm speedup, #749; fixed, section "`--tier=auto` warm runs of one-loop processes"). The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -8560,3 +8560,37 @@ All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, c
 warm) and 0.99 (auto-cold), instructions 0.99 and 0.99, sum of the walls 0.99 and 0.98; per category 0.95 (fsm) to 1.10 (memory, four runs of
 0.01 to 0.03 s) warm and 0.97 to 1.00 cold; slowdowns flagged by the tool: none. Largest: `hdlm_lfsr` 1.44 to 1.36 s warm, `poc_fifo_ic_assembly`
 0.09 to 0.08 s, `fletcher_bufferreader` 1.55 to 1.52, `leon3mp` 36.4 to 36.1 s.
+
+## `--tier=auto` warm runs of one-loop processes (yavs-interp, yavs-llvm, #749, 2026-10-25)
+
+Decisions and cause: `docs/decisions.md` "`--tier=auto`: a process that never comes back from its first wait is not waited for". Head-to-head 5
+found `compute_h2h`, `xor_types` and `xor_sig` as slow warm as cold; `6d2f237f` (the shared code of a process that can have a copy waits for the
+switch, 400 ms of sampled work) was the cause: those processes run one loop in their only activation, so the switch never comes. Fixed: the
+interpreter reports the second activation of such a process (`NativeFlags::resumed`) and the tier waits only while one may still come.
+
+Method: bench builds with the `llvm` feature of main (`93b2a89e`, A) and of the fix (B), `--tier=auto`, default threads, the default generics of
+`tools/bench/designs`, one claimed core (the compile thread shares it), medians of 5 interleaved runs, warm = third run of the work library, cold = a
+fresh copy of the analysed library per run; wall ms (CPU equals wall within 1 ms in every cell).
+
+| design | warm A | warm B | B/A | cold A | cold B | B/A |
+|---|---:|---:|---:|---:|---:|---:|
+| `compute_h2h` | 450 | 140 | 0.31 | 519 | 374 | 0.72 |
+| `xor_sig` | 357 | 145 | 0.41 | 414 | 303 | 0.73 |
+| `xor_types` | 358 | 123 | 0.34 | 420 | 403 | 0.96 |
+| `rtl_ff` | 599 | 602 | 1.00 | 729 | 725 | 0.99 |
+| `rtl_lfsr` | 371 | 356 | 0.96 | 384 | 366 | 0.95 |
+| `rtl_chain` | 193 | 194 | 1.01 | 193 | 189 | 0.98 |
+| `rtl_fan` | 817 | 824 | 1.01 | 821 | 829 | 1.01 |
+| `rtl_bus` | 193 | 194 | 1.01 | 194 | 194 | 1.00 |
+| `rtl_ram` | 63 | 63 | 1.00 | 65 | 65 | 1.00 |
+| `lfsr64_xor` | 63 | 63 | 0.99 | 65 | 64 | 0.99 |
+| `lfsr64` | 168 | 171 | 1.02 | 169 | 172 | 1.01 |
+
+Bisect (`compute_h2h`, `--tier=auto`, core 9, bench builds): `00b506e8`, the parent of `6d2f237f`, 0.43 s cold and 0.16 s warm; main before the fix 0.47 s warm. The trace of the fixed warm run links `_p0` from the cache after 17 to 21 ms of sampled work (400 085 us before). The ratio against
+sim1 (head-to-head 5: 0.15 warm for `compute_h2h`, 0.40 `xor_types`) is not re-measured here; at sim1's 3168 ms the warm run is 140 ms (0.04 again).
+
+`tools/realbench --compare` (all 42 tests, run phase, `--tiers auto,auto-cold`, cores 9 and 10, default runs): wall geometric mean B/A 1.00 (auto) and 1.00
+(auto-cold), instructions 1.00 and 1.00, sum of walls 0.99 and 1.05 (the cold sum is `vai_window_gen_interlock` 11.8 s to 12.8 s in that pass and 12.7 s to 12.1 s in a
+second pass of three tests, instructions 1.00 both: its decisions differ between worlds by sampling, #673). Flagged and re-run alone (9 runs): `osvvm_axis_random` and
+`hdlm_ring_buffer` 1.00 / 0.84 and 1.00 / 0.89 (noise of the first pass). Not explained: `fletcher_bufferwriter_512` 1.01 to 1.08 warm and 1.06 to 1.15 cold wall at
+equal instructions (52.2 G) in two passes, cycles not measured (code layout, #576, or the load of the host); no `--tier=auto` decision of that test was traced.

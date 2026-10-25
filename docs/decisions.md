@@ -9491,3 +9491,32 @@ a binary is named. Tables: docs/STATUS.md "`--tier=auto` round 5".
   the window generator about -15 (every kind compiled at its first call, warm: 0.29 of the interpreter's wall against 0.35), but also
   compile the hot losers (`uvvm_*` 1.3 to 1.9 times the interpreter's wall, `olo_fix_cordic_rot` 1.67) that only a trial can take back,
   which it can for processes seen for an eighth of the run only.
+
+## `--tier=auto`: a process that never comes back from its first wait is not waited for (yavs-interp, yavs-llvm, #749, 2026-10-25)
+
+- **Decision: the shared code of a process that can have a copy waits for the switch only while the switch can still come**
+  (`Worker::awaits_switch`, `SPEC_STALL` 10 ms). The wait of 400 ms of sampled work (`SPEC_WAIT`, #673) assumes the process activates
+  again, because the switch is tried at an activation (`Machine::specialise`, between two activations). A process that runs one
+  loop and a final `wait` (`compute_h2h`, `xor_sig`, `xor_types`: every sequential micro-benchmark, a testbench with one long
+  stimulus loop) has one activation, so the wait only delayed its code: a warm run linked its cached object after 400 ms of a run
+  of 450, as slow as a cold one. The interpreter now stops at the second activation of a process that may have a copy, before the
+  switch's own count (`spec_after()`, 1024): `Machine::specialise` sets `NativeFlags::resumed` for the process function and moves on
+  to `spec_after()`. The tier stops waiting once the process has been sampled for `SPEC_STALL` with no instance resumed. A process
+  that comes back from its first wait (every clocked process, a testbench that waits) is flagged within microseconds and waits as
+  before. No cost on the activation path: one more `#[cold]` call per machine, at its second activation.
+  Why 10 ms and "second activation": the first activation of a process ends at its first wait, which is sooner than that in every
+  process that waits at all; a process that stays in its first activation for 10 ms of sampled work cannot reach the switch for
+  that long, and an initialiser of that length followed by many short activations loses the copy (the compiled shared code runs
+  about a third slower than the compiled copy for the rest of the run): accepted, the opposite error (waiting 400 ms for a switch
+  that never comes) cost three of the h2h designs 2.5 to 3 times their warm wall.
+- **Cause found by bisecting** `--tier=auto` warm wall of `compute_h2h` on bench builds: `00b506e8` (the parent of `6d2f237f`) 0.16 s,
+  `6d2f237f` ("work clock, shared code waits for its copy") 0.43 to 0.48 s; `YAVS_AUTO_TRACE` showed the function first probed
+  when it had been seen for 400 085 us. The other suspects of the issue (cached objects priced as links, the deferred compile
+  thread, the sampler start, the class rules) are not involved: with the fix the same hit is linked 31 to 50 ms into the run.
+- **Left (not changed):** a process with a long first activation and a later switch, and the wait itself: since `compiles_copies`
+  (#679) a process whose shared code is compiled moves to its copy at its next activation, so `SPEC_WAIT` may no longer be needed
+  for processes that resume. Not measured here (`hdlm_lfsr`, `poc_arith_addw` do not move with this change).
+- **Test:** `crates/yavs/tests/auto_warm.rs` (`--features llvm`): a one-loop process run twice in one work library with
+  `YAVS_AUTO_TRACE=1`: the first run compiles it, the second must link it from the cache having seen it for under 100 ms of the work
+  clock (400 ms before the fix; the work is instructions, not time). Fails without `SPEC_STALL`.
+- **Measured** (docs/STATUS.md "`--tier=auto` warm runs of one-loop processes"): the 11 h2h designs warm and cold, `tools/realbench --compare`.

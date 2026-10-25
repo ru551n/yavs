@@ -1122,6 +1122,11 @@ const SPEC_WAIT: u64 = 400_000;
 /// 20 percent warm by waiting on a run of 300 ms.
 const SPEC_INSTANCES: u32 = 64;
 
+/// The sampled microseconds of a process after which, if none of its instances has run a second
+/// activation (`NativeFlags::resumed`), its shared code is not waited for: a process that runs one
+/// loop and a final wait never reaches the switch, so the wait only delays its code (#749).
+const SPEC_STALL: u64 = 10_000;
+
 /// How long a run lasts before the compile thread is wanted: it samples nothing earlier (not for
 /// eager tiers). [`AutoTier::start_deferred`] leaves the start to the caller, who calls
 /// [`AutoTier::launch`] after this time.
@@ -1326,11 +1331,13 @@ impl Worker {
     /// instance data (`Program::specialisable`) and the run is younger than `SPEC_WAIT`: the
     /// processes switch at their 1024th activation (`yavs_interp` `spec_after`). The compiled
     /// copy runs a third faster than the compiled shared code (the lfsr testbench's process: 459 ms
-    /// against 878 ms), so the shared code of a process of few instances waits for the switch (#673).
+    /// against 878 ms), so the shared code of a process of few instances waits for the switch (#673),
+    /// unless no instance came back from its first wait within `SPEC_STALL` of its sampled time (#749).
     fn awaits_switch(&self, id: FuncId) -> bool {
         self.total < SPEC_WAIT
             && self.prog.base_of(id) == id
             && self.native.instances(id) < SPEC_INSTANCES
+            && (self.group[id.0 as usize] < SPEC_STALL || self.native.resumed(id))
             && self.prog.specialisable(id)
     }
 

@@ -201,6 +201,7 @@ const PASS: &[&str] = &[
     "generics/unelaborated_generate_constant",
     "hierarchy/entity_statements",
     "hierarchy/label_path_name",
+    "hierarchy/instance_name_generic",
     "hierarchy/component_binding",
     "hierarchy/config_block_component",
     "hierarchy/config_generate_range_name",

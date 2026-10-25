@@ -2479,6 +2479,43 @@ impl Machine {
         if n == 0 {
             return Ok(());
         }
+        // The usual copy: at most 64 elements, one block on each side. Found and shifted in
+        // place; anything unusual (another space, a bad address) goes on to the general code.
+        let (s0, d0) = (soff & 63, doff & 63);
+        if n <= 64 - s0 && n <= 64 - d0 {
+            let (ssp, sidx, sbase) = split(src);
+            let (dsp, didx, dbase) = split(dst);
+            if let Some(so) = sbase
+                .checked_add((soff >> 6) * 32)
+                .filter(|&o| o <= u64::from(u32::MAX))
+                && let Some(dof) = dbase
+                    .checked_add((doff >> 6) * 32)
+                    .filter(|&o| o <= u64::from(u32::MAX))
+                && let Some(sb) = self
+                    .mem_fast(ssp, sidx)
+                    .and_then(|m| m.get(so as usize..))
+                    .and_then(|m| m.first_chunk::<32>())
+            {
+                let sw: [u64; 4] = std::array::from_fn(|p| plane_word(sb, p));
+                let mem = match dsp {
+                    FRAME => self.fslots_mut(didx as usize),
+                    TEMP => Some(&mut self.temp[..]),
+                    HEAP => self.heap.data_mut(didx),
+                    _ => None,
+                };
+                if let Some(db) = mem
+                    .and_then(|m| m.get_mut(dof as usize..))
+                    .and_then(|m| m.first_chunk_mut::<32>())
+                {
+                    let mask = if n == 64 { !0 } else { (1u64 << n) - 1 };
+                    for (p, c) in db.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                        let d = u64::from_le_bytes(*c);
+                        *c = (d & !(mask << d0) | ((sw[p] >> s0) & mask) << d0).to_le_bytes();
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let last = |off: u64| {
             off.checked_add(n - 1)
                 .ok_or_else(|| ice_f!("logic copy of {n} elements at {off}"))

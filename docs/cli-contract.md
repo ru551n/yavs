@@ -221,6 +221,10 @@ identical to a run without it, at any `--threads`.
   of compiling it. Same rules: identical results, damaged or foreign entries ignored and compiled
   again, atomic writes, nothing stored into a directory that cannot be written, `--no-cache`, `yavs
   cache clean`. The directory keeps at most 4096 objects and 256 MiB, apart from the 96 entries.
+  With `--tier=clift`, `--tier=clift-auto` or `--tier=auto3` the machine code of every function
+  Cranelift translates goes to the same directory as `clif-<key>.img` (the function's translated
+  body, the target and the yavs build; #481), under the same rules and limits; `--tier=auto3` keeps
+  its LLVM modules there too.
 - **Analysed units** (#537, #539, user decision 2026-10-22, `docs/decisions.md` "Analysed-unit
   cache"): `yavs analyze` keeps the analysis of every design unit it analyses from source in
   `<dir>/yavs-cache/units/unit-<key>.img` of the unit's library (`std` and `ieee` units in the work

@@ -8963,6 +8963,38 @@ and `uvvm_util_rand`.
   `reg_planes` was bounded at 108 and is 4). The bounds are the numbers of the Cranelift code now, each case has a floor on its
   drives or memo calls, and `llvm_sigfun` runs under `clift`.
 
+## Cranelift tier, round 5: merge with main, a compiled-code cache (yavs-clift, yavs-llvm, #481, user, 2026-10-26)
+
+The user decided to continue Cranelift toward replacing LLVM: a Cranelift-only build was level cold (0.46 of sim1's full total against
+0.45 for LLVM `auto`) and 10 percent behind warm (0.28 against 0.25) because it had no compiled-code cache. Order: merge main, then
+the cache.
+
+- **Prices after the merge.** Main replaced the flat price per IR instruction and the `PAYBACK*` multipliers by a `Model` per `Kind`
+  (price and speedup; the seen time before a compile is the price times `speedup / (speedup - 1)`). A first-level generator now
+  prices every kind at `FIRST_US_PER_INSTR` (45 us an IR instruction, what Cranelift takes) with the speedups of `MODELS`; `Tune`
+  stays the per-generator part: `Kind::RtlFew` is a clocked process of fewer than `Tune::instances` instances (4 for Cranelift,
+  16 for LLVM), `cold` uses `Tune::share`, and `payback_rtl` and `tree_payback` come on top of the kind's need. Why: the merge
+  should not move what Cranelift compiles. Measured cold on this tree (instructions, ratio to the interpreter, medians of 3):
+  window generator 0.388 (round 4: 0.383), `neorv32_single_min` 1.025 (1.025), `fletcher_bufferwriter_512` 0.996 (0.978),
+  `poc_arith_addw` 0.680 (0.714).
+- **The Cranelift lowering keeps step with main**: the head of a fused scalar drive is `ScalarDrive::head` (#668), `Inst::Zero`
+  is zeroed in place, a process that never suspends polls `TierFrame::stop` at its retreating `Br` (#737), and `Drive`,
+  `DriveSlot` and `SigRead` are lowered in native variants (`yavs_rt_drive_nat`), since the shared `native_set` takes functions
+  with them (#730); without that their callers lost their variants under Cranelift.
+- **The cache is Cranelift's own incremental cache over the work library's objects store** (`src/cache.rs`,
+  `Jit::define_code`), one entry per Cranelift function (`clif-<key>.img`). The key is Cranelift's hash of the function body and
+  the target, which leaves out the names of the functions and data the body refers to (relocations resolved when the code is
+  linked), plus the yavs build and `yavs_ir::opt::fingerprint`. Why: a key over the CLIF text would have to rename the module's
+  function and data ids, which depend on the order of the compiles, and hashing the text costs more than the hash of the
+  structure; Cranelift's serialisation and relocation fix-up come with it. The body is generated again on a hit (the lowering
+  and the inliner): neorv32 eager translates in 4 079 ms cold and links in 536 ms warm (1 804 functions). The callees a body
+  calls are declared in id order, so a body is the same every run (one function in 1 804 missed every warm run before).
+- **Policy.** The cache the policy probes, lists and notes is the one of the generator that makes a function's first code
+  (`Worker::lead`). A probe's cached-only compile makes nothing the store lacks and does not remember a variant that failed so;
+  a frame-mode body is defined once. A link from a first-level generator's cache is priced at `FIRST_HIT` (4 us an IR
+  instruction, from the neorv32 figures), LLVM's at `HIT`. `--tier=auto3` uses the Cranelift store for its first level and the
+  LLVM store for its O2 compiles. Not with `--no-cache`.
+
 ## Frame-mode code tests the temporary area and the object cache inline for addresses it can guess (yavs-llvm `Gen::host`, `rt::track`, #711, 2026-10-24)
 
 - **Finding:** the `yavs_rt_host` calls of `llvm_ieee` (`cb_host` 1416, then 2019 after the in-place `numeric_std`

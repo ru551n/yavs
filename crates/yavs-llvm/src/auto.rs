@@ -353,7 +353,8 @@ struct Tune {
     /// optimising generator makes it again (`Heat::o2_threshold`).
     o2_after: u64,
     /// How many times the price of the callees a compile makes with its root (`Worker::tree`) the
-    /// root must have been seen interpreted (`repaid`), on top of the payback of its own price; 0:
+    /// root must have been seen interpreted (`repaid`), on top of the payback of its own price (not
+    /// for a nested subprogram entered in frame mode, which has no native variant); 0:
     /// the callees are not counted. A first-level generator makes a root's callees cheaply and
     /// they gained nothing in instructions on the verification libraries (#718).
     tree_payback: u64,
@@ -1580,7 +1581,8 @@ impl Worker {
             let mut wait = u64::MAX;
             ready.retain(|&k| {
                 let id = cands[order[k]];
-                if self.is_rtl(id) {
+                // (A nested subprogram entered in frame mode has no native variant to pay for.)
+                if self.is_rtl(id) || matches!(trees[k].first(), Some((_, Part::Frame))) {
                     return true;
                 }
                 let own = trees[k].first().map_or(0, |&(i, p)| self.price(i, p));

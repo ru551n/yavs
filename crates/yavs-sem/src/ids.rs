@@ -730,9 +730,13 @@ impl<I, T> Arena<I, T> {
             window,
         });
         let mut off = 0u32;
-        for _ in 0..n {
-            let len = take_varint(&mut lens).ok_or("entry lengths")?;
+        let mut left = n;
+        if n > 0 {
             self.note_owner(self.len);
+        }
+        // A page at a time: its source list is checked once, not once per entry.
+        while left > 0 {
+            let take = left.min(PAGE - self.len % PAGE);
             let page = self.slots_tail();
             if page
                 .srcs
@@ -741,12 +745,29 @@ impl<I, T> Arena<I, T> {
             {
                 page.srcs.push(src.clone());
             }
-            page.slots.push(Slot {
-                src: page.srcs.len() as u32 - 1,
-                off,
-            });
-            off = off.checked_add(len).ok_or("entry lengths")?;
-            self.len += 1;
+            let from = page.srcs.len() as u32 - 1;
+            let mut done = 0;
+            let mut bad = false;
+            for _ in 0..take {
+                let Some(len) = take_varint(&mut lens) else {
+                    bad = true;
+                    break;
+                };
+                page.slots.push(Slot { src: from, off });
+                done += 1;
+                match off.checked_add(len) {
+                    Some(o) => off = o,
+                    None => {
+                        bad = true;
+                        break;
+                    }
+                }
+            }
+            self.len += done;
+            if bad {
+                return Err("entry lengths");
+            }
+            left -= take;
         }
         if off as usize != src.data.len() {
             return Err("entry lengths do not add up");

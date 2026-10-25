@@ -1418,6 +1418,9 @@ struct Enc {
     /// Each file of an allowed load: the load's owner and the file's position among its steps.
     files: Rc<FxHashMap<FileId, (Owner, u32)>>,
     failed: Rc<std::cell::RefCell<Option<String>>>,
+    /// Per kind the last run of one owner an id was found in: `(first index, end, owner number,
+    /// offset of the first)`. Ids come in clusters, so most are in the run of the one before.
+    hot: [std::cell::Cell<(u32, u32, u32, u32)>; KINDS],
 }
 
 /// `(first index, length, offset of the first among the owner's entries)` of each run.
@@ -1482,6 +1485,7 @@ impl Enc {
             by_owner: Default::default(),
             files: Rc::new(files),
             failed: Default::default(),
+            hot: std::array::from_fn(|_| std::cell::Cell::new((0, 0, 0, 0))),
         }
     }
 
@@ -1499,17 +1503,27 @@ impl Enc {
     fn file_map(&self) -> yavs_diag::FileIdMap {
         let (files, owners, failed) =
             (self.files.clone(), self.owners.clone(), self.failed.clone());
-        Rc::new(move |id: FileId| match files.get(&id) {
-            Some((o, k)) => {
-                let o = owners.get(o.clone());
-                (o < 1 << 24).then_some(FileId((o << 8) | k))
+        let last = std::cell::Cell::new(None);
+        Rc::new(move |id: FileId| {
+            if let Some((from, to)) = last.get()
+                && from == id
+            {
+                return to;
             }
-            None => {
-                failed
-                    .borrow_mut()
-                    .get_or_insert_with(|| "a file of a unit it did not load".into());
-                None
-            }
+            let to = match files.get(&id) {
+                Some((o, k)) => {
+                    let o = owners.get(o.clone());
+                    (o < 1 << 24).then_some(FileId((o << 8) | k))
+                }
+                None => {
+                    failed
+                        .borrow_mut()
+                        .get_or_insert_with(|| "a file of a unit it did not load".into());
+                    None
+                }
+            };
+            last.set(Some((id, to)));
+            to
         })
     }
 
@@ -1521,6 +1535,10 @@ impl Enc {
 
 impl Reloc for Enc {
     fn enc(&self, kind: Kind, index: u32) -> Option<(u32, u32)> {
+        let hot = self.hot[kind as usize].get();
+        if index.wrapping_sub(hot.0) < hot.1 - hot.0 {
+            return Some((hot.2, hot.3 + index - hot.0));
+        }
         let s = self.owner_of(kind, index);
         if s == SESSION {
             if index < BASE[kind as usize] {
@@ -1563,6 +1581,7 @@ impl Reloc for Enc {
         if index >= start + len {
             return self.fail("an entry outside its owner's runs".into());
         }
+        self.hot[kind as usize].set((start, start + len, o, base));
         Some((o, base + index - start))
     }
 

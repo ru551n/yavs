@@ -620,6 +620,19 @@ impl Parser<'_> {
             match self.peek() {
                 Tok::Dot => n = self.selected(n)?,
                 Tok::Tick if self.nth(1) != Tok::LParen => n = self.attribute(n)?,
+                // `arr(0)'subtype`: the parentheses index or slice the object name,
+                // they are not an index constraint (which never has a `'` after it).
+                Tok::LParen if self.toks[self.after_matching_paren(self.pos)].kind == Tok::Tick => {
+                    let args = self.assoc_list()?;
+                    let span = self.span_from(n.span);
+                    n = Name {
+                        kind: NameKind::Apply {
+                            prefix: Box::new(n),
+                            args,
+                        },
+                        span,
+                    };
+                }
                 Tok::LParen if matches!(&n.kind, NameKind::Attribute { attr, .. } if attr.key.as_str() == "index") =>
                 {
                     let args = self.assoc_list()?;

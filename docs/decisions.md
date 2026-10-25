@@ -7946,6 +7946,66 @@ rtl_chain), where "kernel" counts `yavs-kernel` including the `Ctx` callbacks of
   keeps the index of the process it was running (`idle_skip::a_wrong_read_list_is_caught_by_the_check_and_names_the_process`).
 
 
+## Kernel round 23: assignments in pieces stay direct entries, a quiet activation commits nothing (yavs-kernel, #521, #733, #735, 2026-10-25)
+
+Task (orchestrator): the follow-ups of round 22 (#733 the `run_batch` loop per activation, #734 narrow-signal event masks, #735 the GC observer per
+delta) and the next structural item of the fixed cost of a delta cycle. Instruction counts only (bench builds with `llvm`, `--threads 1`
+`--no-cache`, `perf stat instructions:u` of whole runs, `tools/stepcount` windows of 100 delta cycles from cycle 20000), main at 27842f12
+against the round.
+
+- **Found: a record assigned field by field left the direct path (neorv32: 6 percent of a delta cycle, the largest item of the round).** `port_req(i)
+  <= req_i; port_req(i).stb <= ...` is a run of assignments to the elements of one driver: a vector field, a scalar field, a vector field. A direct
+  driver keeps its zero-delay entries of the run in `ProcState::out` (one element), `outv` (up to 64) and `outb`; the commit applies `out` before
+  `outv`. `assign_planes_fast` and `assign_wide_fast` refused a vector after a one-element entry of the driver (they could not tell whether the skip
+  test `direct_same_planes` was right with a pending entry in front of it) and `assign_code_fast` refused a scalar after a vector entry (`out` would
+  be applied before it); the general path then moved every entry of the driver into its waveform (`spill_out`) and every later assignment of the run
+  stayed there: `Waveform::schedule`, `apply_driver`, `compute_driving`, `update_effective`, about 1800 instructions per assignment, 2.4 of them a
+  delta cycle of `neorv32_single_min`.
+- **Decision: the order of a driver's entries in a run is "all `out`, then all `outv`", kept by `Ctx`.** A vector after a scalar needs no refusal (`out`
+  is applied first, as made); it only gets no skip test while the driver has an entry in the run. A scalar after a vector entry becomes an `OutV` of
+  one element (`planes` from the code), so it is applied after the vector it follows. `spill_out` already moves `out` first and `outv` after, which
+  is the same order. The entry marks of a process of more than `MARKED_DRIVERS` drivers hold one kind per driver (the last made): every test of kind 1
+  (the skip decisions) is made together with a test of kind 2 or after one, so the lossy mark is enough (`tests/direct_paths.rs` `mixed_direct_entry_kinds_apply_in_assignment_order`
+  applies random mixes of scalar, vector and wide assignments with and without marks and compares the signal with a model; breaking the order
+  fails it). `perf/mixed_entries.vhd` pins `update_general` at 0 and the direct commits.
+  `realbench --compare` (run phase, interpreter and llvm, all 42 tests, one run per cell, instructions): geometric mean 1.00 (interpreter) and
+  0.99 (llvm); `cpu` 0.97 and 0.95 (neorv32_single_min -10.1% and -11.3%); every other test within 1.00 +- 0.03 (warm-cache cells of the short
+  tests move by a few percent between two builds; with `--no-cache` the cells above 1.02, checked one by one, are equal within 0.05%).
+  Instructions of whole runs, main against the round: neorv32_single_min 36.90 G to 33.05 G (-10.4%; a delta cycle 70.4 K to 63.7 K in the
+  program file, libc 1.3 K to 0.4 K), fletcher_bufferreader -0.8%, poc_arith_addw -0.5%.
+- **#733: `ProcState::act` (`ACT_SLOW`: a timeout or an effect; `ACT_ASSIGNED`: a scheduled transaction, a direct entry or a phantom).** Every push
+  path of `Ctx` sets its bit, `resumption` clears the byte, and the batch loop tests the byte instead of `sens`, `deadline`, `effects`, `scheduled`,
+  `out`, `outv`, `outb` and `phantoms`: a quiet activation (a clocked process that assigned nothing) commits with two byte tests. A run also leaves
+  the slot's `result` alone unless it failed (a store dropped the old value). `ProcState::check_flags` asserts in debug builds that no push path
+  forgot its bit. `run_one` keeps the list tests (a single activation is nearly always an assigning one: the byte test cost 3 instructions
+  there). rtl_fan 13.66 G to 13.18 G (-3.5%, 24 instructions an activation), rtl_chain -0.4%.
+- **#735: `Observer::phase_due(phase)`, asked before the kernel makes a `Hook`.** `SharedGc` answers `NextCycle` from the shared heap
+  (`gc_due`) without a hook: the 15-field hook was about 50 of the 80 instructions a delta that a serial process in a busy loop paid. hdlm_lfsr
+  -0.2%. The lock stays (an atomic gauge in the heap would put a branch in every allocation of every heap). `phase`, `poll_end` keep their
+  inlined fast path and the slow remainder out of line (`phase_observed` first version: +4% on rtl_chain, the call of a function that used to be
+  inlined).
+- **`SimControl::armed` is a dense `Vec<bool>`** (it was `ProcMeta::armed`, 72-byte records): the readers' loop of an event touches one byte per
+  reader. -0.06% instructions on neorv32 (the loop costs 8 instructions a reader either way), fewer cache lines.
+- **Measured and not taken:**
+  - **Skipping the empty delta cycle after an activation whose assignments were all skipped** (asked by the LEON lane): the cycle is kept
+    on purpose (delta numbers in reports, phases, `'last_event`, `docs/decisions.md` "Skipped unchanged assignments", #420), so deleting it is a
+    decision for the user, not a kernel optimisation. Its cost, `tools/stepcount` on a clock and a register that re-assigns its value (3 cycles
+    a period): the empty delta is 389 instructions against 2400 for each of the cycles with an activation (7.5 percent of a period). A guarded
+    shortcut of `cycle` (no `update`, no change loop when nothing is due, nothing changed and nobody watches changes) made it 319 and the other
+    cycles 40 dearer each (code motion in `cycle`): a net loss. The remaining 319 are `cycle` 129, `last_delta` 57, `next_queued` and `live` 85
+    (the next time), `run_until` 25, `commit_callouts` 23.
+  - **#734 (narrow-signal event masks):** with the profile of this round the parts are small: the folds of the changed runs to bits (`Hits::of`,
+    the arm loop) are about 0.3 percent of neorv32 together, `canonical_changed` 0.5 percent (called 3.3 times a delta, 115 instructions a call), the
+    per-element event stamps of `update_word` 0.76 percent. Keeping a mask next to the run list needs every producer (`note_run`, `cover`, `note_cells`,
+    `finish_words_lean`) and every `changed.clear()` to keep it in step, and a stale bit is a spurious wake; dropping the list for masked signals
+    saves the pushes (8 instructions a run) and still needs runs for `take_woken`. Not built; the stamps need the elaborator's facts (round 22).
+  - `Shared` built once per batch: it holds slices of `SimControl`'s own fields, so it cannot persist; moving the rarely used fields (`names`,
+    `live`, `interrupt`, `resolution`, `stop_severity`) behind one pointer saves about 12 instructions a batch (0.8 percent of rtl_chain, nothing
+    on neorv32); not built.
+  - The arm loop (`arm_readers_of`, 414 readers examined a delta cycle of neorv32, about 2.6 K instructions in `cycle` and `finish_direct`) and
+    `CopyProcess::run` (2.65 runs a delta, 956 instructions each, about 10 parts): skipping a copied part whose source had no event would change
+    what a deposit or a force on the target sees at the next activation; not built.
+
 ## Facts the declarative part leaves in a process copy (yavs-ir `opt/decl.rs`, #678, 2026-10-24)
 
 - **Decision**: a copy of a process (`copies.rs`) takes over between two activations, so what its declarative part made is in the frame

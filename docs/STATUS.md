@@ -4045,6 +4045,32 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Kernel round 23: assignments in pieces stay direct entries (#521, #733, #735, 2026-10-25)
+
+(`docs/decisions.md` "Kernel round 23".) Instruction counts only (no timing cores): whole runs under `perf stat instructions:u`, one thread,
+`--no-cache`, bench builds with `--features llvm`; main at 27842f12 against the round; windows of 100 delta cycles from cycle 20000 with
+`tools/stepcount`.
+
+| design | before (G) | after (G) | change |
+|---|---:|---:|---:|
+| neorv32_single_min | 36.900 | 33.051 | -10.4% |
+| fletcher_bufferreader | 20.853 | 20.685 | -0.8% |
+| poc_arith_addw | 149.297 | 148.496 | -0.5% |
+| hdlm_lfsr | 64.248 | 64.098 | -0.2% |
+| rtl_fan | 13.656 | 13.175 | -3.5% |
+| rtl_chain | 3.360 | 3.348 | -0.4% |
+
+One delta cycle of neorv32_single_min, program file: 70.4 K to 63.7 K instructions (libc, the `memcpy` of the general assignment path, 1.3 K to
+0.4 K); the stages that are the kernel, `Ctx` and `CopyProcess` included, 31.7 K to 25.8 K. What went: the assignments of `port_req(i)` (a record of
+an array assigned whole, then its `stb` field) that left the direct path 2.4 times a delta cycle (`Waveform::schedule`, `apply_driver`,
+`compute_driving`, `update_effective`, `spill_out`: about 1800 instructions each). `realbench --compare` (run phase, interpreter and llvm,
+all 42 tests, instructions): geometric mean 1.00 and 0.99, the `cpu` category 0.97 and 0.95, no other test beyond noise.
+
+Left, by share of a neorv32 delta cycle (instructions a delta cycle): `finish_direct` 5.6 K (of which the arm loop `arm_readers_of` inlined
+about 0.9 K), `cycle` 4.5 K (the arm loop about 1.7 K), `CopyProcess::run` 2.5 K (2.65 runs of about 10 parts),
+`run_batch` 1.9 K, `commit_out` 1.5 K, `take_woken` 2.5 K (12 calls), `commit_planes_run` 1.3 K. The empty delta cycle after skipped
+assignments is 389 instructions of a 2400-instruction cycle (kept, see the decisions entry).
+
 ### Kernel round 22: the per-delta bookkeeping of CPU-style designs (#519, #521, 2026-10-25)
 
 (`docs/decisions.md` "Kernel round 22".) Instruction counts only (no timing cores): whole runs under `perf stat instructions:u`, one thread,

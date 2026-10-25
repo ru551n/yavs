@@ -3309,11 +3309,14 @@ impl Machine {
     #[inline(always)]
     fn lget(&self, base: u64, i: u64) -> R<u64> {
         let (sp, idx, off) = split(base);
-        if let Some(b) = self.mem_fast(sp, idx).and_then(|m| {
-            let o = (off + i / 64 * 32) as usize;
-            m.get(o..o + 32)
-        }) {
-            return Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p));
+        if let Some(b) = self
+            .mem_fast(sp, idx)
+            .and_then(|m| m.get((off + i / 64 * 32) as usize..))
+            .and_then(|m| m.first_chunk::<32>())
+        {
+            let (w, s) = (b.as_chunks::<8>().0, i % 64);
+            let bit = |p: usize| u64::from_le_bytes(w[p]) >> s & 1;
+            return Ok(bit(0) | bit(1) << 1 | bit(2) << 2 | bit(3) << 3);
         }
         let b = self.rd(add_addr(base, i / 64 * 32)?, 32)?;
         Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p))
@@ -6547,15 +6550,12 @@ impl Machine {
                     if cnt != 0 && cnt <= 64 && so % 64 + cnt <= 64 && d0 < 64 && d0 + cnt <= 64 {
                         let sa = t!(add_addr(self.regs[src as usize], so / 64 * 32));
                         if let Ok(b) = self.rd_hot(sa, 32) {
-                            let mut sw = [[0u64; 4]; 1];
-                            fill_blocks(b, &mut sw);
-                            let mut dw = [[0u64; 4]; 1];
-                            copy_bits(&sw, &mut dw, so % 64, d0, cnt);
+                            // The new block is zero but for the copied elements.
+                            let (s0, mask) =
+                                (so % 64, if cnt == 64 { !0 } else { (1u64 << cnt) - 1 });
                             let mut out = [0u8; 32];
-                            for (c, w) in
-                                out.as_chunks_mut::<8>().0.iter_mut().zip(dw.as_flattened())
-                            {
-                                *c = w.to_le_bytes();
+                            for (p, c) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                                *c = ((plane_word(b, p) >> s0 & mask) << d0).to_le_bytes();
                             }
                             self.regs[dst as usize] = t!(self.temp_push32(&out));
                             done = true;

@@ -167,13 +167,17 @@ pub struct Key([u8; 32]);
 
 impl Key {
     pub fn hex(&self) -> String {
+        String::from_utf8_lossy(&self.hex_bytes()).into_owned()
+    }
+
+    fn hex_bytes(&self) -> [u8; 64] {
         const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let mut s = String::with_capacity(64);
-        for b in self.0 {
-            s.push(DIGITS[usize::from(b >> 4)] as char);
-            s.push(DIGITS[usize::from(b & 15)] as char);
+        let mut out = [0; 64];
+        for (i, b) in self.0.iter().enumerate() {
+            out[2 * i] = DIGITS[usize::from(b >> 4)];
+            out[2 * i + 1] = DIGITS[usize::from(b & 15)];
         }
-        s
+        out
     }
 }
 
@@ -263,8 +267,30 @@ impl Store {
         &self.dir
     }
 
+    /// `dir/kind-<key>.img` in one allocation (a run asks for a hundred entries).
     fn file(&self, kind: &str, key: &Key) -> PathBuf {
-        self.dir.join(format!("{kind}-{}.img", key.hex()))
+        let name = |p: &mut std::ffi::OsString| {
+            p.push(kind);
+            p.push("-");
+            p.push(std::str::from_utf8(&key.hex_bytes()).expect("hex digits"));
+            p.push(".img");
+        };
+        let dir = self.dir.as_os_str();
+        if dir.is_empty()
+            || self
+                .dir
+                .to_str()
+                .is_some_and(|d| d.ends_with(std::path::is_separator))
+        {
+            let mut n = std::ffi::OsString::new();
+            name(&mut n);
+            return self.dir.join(n);
+        }
+        let mut p = std::ffi::OsString::with_capacity(dir.len() + kind.len() + 72);
+        p.push(dir);
+        p.push(std::path::MAIN_SEPARATOR_STR);
+        name(&mut p);
+        PathBuf::from(p)
     }
 
     /// The entry, or `None` for anything that is not a complete, intact entry for this key.

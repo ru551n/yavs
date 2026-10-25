@@ -249,12 +249,14 @@ fn with_stages(
 /// entries of a library's units in its directory, those of std/ieee in the work library's.
 #[derive(Debug)]
 pub struct Units {
-    dirs: std::collections::HashMap<String, std::path::PathBuf>,
-    work: std::path::PathBuf,
+    /// The unit store of each mapped library.
+    stores: std::collections::HashMap<String, Store>,
+    /// The work library's, which holds the entries of std/ieee.
+    work: Store,
     writable: bool,
-    /// The mapped libraries but the work library, in path order: where a `std`/`ieee` unit the
-    /// work library lacks may have been stored.
-    others: Vec<std::path::PathBuf>,
+    /// The stores of the mapped libraries but the work library, in path order: where a
+    /// `std`/`ieee` unit the work library lacks may have been stored.
+    others: Vec<Store>,
     /// The one of `others` that last had such a unit, which the next is looked for in first.
     hit: std::sync::atomic::AtomicUsize,
 }
@@ -276,26 +278,31 @@ impl Units {
             .names()
             .filter_map(|n| Some((n.to_string(), opts.libraries.get(n)?.dir.clone())))
             .collect();
-        let mut others: Vec<std::path::PathBuf> =
-            dirs.values().filter(|d| *d != work).cloned().collect();
+        let mut others: Vec<&std::path::PathBuf> = dirs.values().filter(|d| *d != work).collect();
         others.sort();
         Some(std::sync::Arc::new(Units {
-            dirs,
-            work: work.to_path_buf(),
+            work: Store::units_of_library(work),
+            others: others
+                .into_iter()
+                .map(|d| Store::units_of_library(d))
+                .collect(),
+            stores: dirs
+                .iter()
+                .map(|(n, d)| (n.clone(), Store::units_of_library(d)))
+                .collect(),
             writable,
-            others,
             hit: Default::default(),
         }))
     }
 
-    fn store(&self, lib: &str, identity: &[u8; 32]) -> Option<(Store, Key)> {
-        let dir = match lib {
+    fn store(&self, lib: &str, identity: &[u8; 32]) -> Option<(&Store, Key)> {
+        let store = match lib {
             "std" | "ieee" => &self.work,
-            _ => self.dirs.get(lib)?,
+            _ => self.stores.get(lib)?,
         };
         let mut k = KeyBuilder::new("unit");
         k.text(lib).part(identity);
-        Some((Store::units_of_library(dir), k.finish()))
+        Some((store, k.finish()))
     }
 }
 
@@ -315,7 +322,7 @@ impl yavs_sem::UnitStore for Units {
         let n = self.others.len();
         let from = self.hit.load(std::sync::atomic::Ordering::Relaxed);
         (0..n).map(|i| (from + i) % n.max(1)).find_map(|i| {
-            let e = Store::units_of_library(&self.others[i]).get("unit", &k)?;
+            let e = self.others[i].get("unit", &k)?;
             self.hit.store(i, std::sync::atomic::Ordering::Relaxed);
             Some(yavs_diag::Buffer::new(e))
         })
@@ -325,7 +332,12 @@ impl yavs_sem::UnitStore for Units {
         let Some((s, k)) = self.store(lib, identity) else {
             return false;
         };
-        s.payload_len("unit", &k).is_some() || self.get(lib, identity).is_some()
+        s.payload_len("unit", &k).is_some()
+            || (matches!(lib, "std" | "ieee")
+                && self
+                    .others
+                    .iter()
+                    .any(|o| o.payload_len("unit", &k).is_some()))
     }
 
     fn put(&self, lib: &str, identity: &[u8; 32], bytes: &[u8]) {

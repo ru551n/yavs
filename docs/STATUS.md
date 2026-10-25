@@ -8937,3 +8937,20 @@ statement markers). Checked on this commit: fmt, clippy with and without `llvm`,
 differential corpus on `yavs-interp`, `yavs`, `yavs-llvm` and `yavs-auto --tier-heat=1,0,0` at 1
 and 4 threads: 530/531 on each (the difference is the stderr warning of `process/no_wait_infinite`,
 a test of another commit).
+
+## A process that never suspends stays compiled under a 10^9 bound; the entry leak (yavs-llvm, yavs-interp, yavs-kernel, #583, #761, 2026-10-26)
+
+- The bound on the jumps back of a process without a wait is 10^9 in the interpreter and in compiled code (`YAVS_SPIN_LIMIT` lowers
+  it for tests); compiled code no longer leaves at every jump back but keeps a register-held count, stored back at every exit, and
+  leaves every 2^20 jumps (`docs/decisions.md` "stays in compiled code under a bound"). `E3009`, exit status and the finished wave file are the
+  interpreter's, as before.
+- #761: the memory growth (about 24 bytes per assignment in both tiers) was the direct entries one activation lists until it ends;
+  `Ctx::trim_run` keeps the last of identical ones at each of those exits. 12 million `a <= not a` stay near 60 MB (interpreter) and 125 MB
+  (compiled) instead of +290 MB.
+- Cost against the stop poll alone, release bench build, `--tier=llvm`, core 10: compute loop of 10^8 iterations (real arithmetic) 0.56 s to
+  0.58 s (+3.6 percent), integer loop of 3x10^8 iterations 1.23 s to 1.24 s (within noise).
+- The full default bound on `process/no_wait_infinite` (release bench build): `--tier=llvm` 6.4 s and 104 MB peak, `--tier=interp` 27.6 s and 40 MB.
+- New tests: `stuck` (exact limit per tier, a 3-million loop to `finish`), `rss` (flat memory), perf `llvm_nowait`; the
+  `sigint_ends_a_process_that_never_suspends*` tests set the bound out of reach instead of assuming the run lasts 1.5 s.
+  Difftest header key `spin=N`; `process/no_wait_infinite` uses it.
+

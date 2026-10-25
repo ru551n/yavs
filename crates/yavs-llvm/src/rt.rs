@@ -362,6 +362,7 @@ pub const MEM_FLAGS: u64 = std::mem::offset_of!(Mem, fr.flags) as u64;
 pub const MEM_COV: u64 = std::mem::offset_of!(Mem, fr.cov) as u64;
 
 pub const MEM_STOP: u64 = std::mem::offset_of!(Mem, fr.stop) as u64;
+pub const MEM_SPIN: u64 = std::mem::offset_of!(Mem, fr.spin) as u64;
 
 pub const MEM_COV_LEN: u64 = std::mem::offset_of!(Mem, fr.cov_len) as u64;
 

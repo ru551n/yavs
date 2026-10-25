@@ -73,3 +73,65 @@ fn a_zero_filled_array_costs_only_the_pages_touched() {
         "peak resident size {peak} kB for a 512 MiB array"
     );
 }
+
+/// A process without a wait lists an entry per assignment for its whole activation unless it is
+/// trimmed (#761): 12 million assignments of `a <= not a` stay within a few tens of MB.
+#[test]
+fn a_loop_without_a_wait_keeps_memory_flat() {
+    let src = "
+entity flat is end;
+architecture a of flat is
+  signal a : bit := '0';
+begin
+  process
+    variable n : natural := 0;
+  begin
+    a <= not a;
+    n := n + 1;
+    assert n < 12000000 report \"done\" severity failure;
+  end process;
+end;
+";
+    let tiers: &[&str] = if cfg!(feature = "llvm") {
+        &["--tier=interp", "--tier=llvm"]
+    } else {
+        &["--tier=interp"]
+    };
+    for tier in tiers {
+        let d = tmp("flat");
+        std::fs::write(d.join("flat.vhd"), src).expect("write");
+        let work = format!("work:{}", d.join("lib").display());
+        let yavs = env!("CARGO_BIN_EXE_yavs");
+        let a = Command::new(yavs)
+            .current_dir(&*d)
+            .args(["analyze", "--work", &work, "flat.vhd"])
+            .output()
+            .expect("analyze");
+        assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+        let mut c = Command::new(yavs)
+            .current_dir(&*d)
+            .args([
+                "--color",
+                "never",
+                "run",
+                "--no-cache",
+                tier,
+                "--work",
+                &work,
+                "flat",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("run");
+        let mut peak = 0;
+        while c.try_wait().expect("wait").is_none() {
+            peak = peak.max(rss_kb(c.id()).unwrap_or(0));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        c.wait().expect("wait");
+        assert!(peak > 0, "{tier}: peak resident size never read");
+        // Untrimmed, the entries alone add 290 MB.
+        assert!(peak < 220_000, "{tier}: peak resident size {peak} kB");
+    }
+}

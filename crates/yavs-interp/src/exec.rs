@@ -43,9 +43,35 @@ pub(crate) enum Fault {
 pub(crate) type R<T> = Result<T, Fault>;
 
 /// Jumps back of a process that never suspends before its activation is reported as
-/// infinite (#583): high enough that a long first-iteration computation is not mistaken
-/// for a hang, low enough that a genuinely stuck run is diagnosed promptly.
-const SPIN_LIMIT: u64 = 10_000_000;
+/// infinite (#583, user decision 2026-10-26): high enough that a long legitimate loop without
+/// a wait is not mistaken for a hang (seconds of compiled code), low enough that a stuck run is
+/// diagnosed. `YAVS_SPIN_LIMIT` replaces it (tests that must reach it quickly).
+pub const SPIN_LIMIT: u64 = 1_000_000_000;
+
+/// Every this many jumps back (a power of two) such a process is trimmed (`Ctx::trim_run`: its
+/// run lists would otherwise grow by an entry per assignment, #761), and compiled code leaves
+/// for the interpreter, which also reports the activation at the limit.
+pub const SPIN_CHECK: u64 = 1 << 20;
+
+/// `Machine::spin` counts jumps back from the first to the second of `spin_range()`: the limit
+/// in force (`SPIN_LIMIT` or `YAVS_SPIN_LIMIT`) rounded up to a multiple of `SPIN_CHECK`, so
+/// compiled code needs only the test "a multiple of `SPIN_CHECK`" to leave at every trim and at
+/// the limit.
+fn spin_range() -> (u64, u64) {
+    static R: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+    *R.get_or_init(|| {
+        let limit = match std::env::var("YAVS_SPIN_LIMIT") {
+            Ok(v) => v
+                .parse()
+                .ok()
+                .filter(|&n: &u64| n > 0)
+                .unwrap_or_else(|| panic!("YAVS_SPIN_LIMIT={v}: expected a positive integer")),
+            Err(_) => SPIN_LIMIT,
+        };
+        let end = limit.next_multiple_of(SPIN_CHECK);
+        (end - limit, end)
+    })
+}
 
 /// Runs `f` out of line. Every error of the interpreter is built by `cold`, through the
 /// macros below: an error constructor that is inlined into the loop of an op puts its message
@@ -1213,7 +1239,7 @@ impl Machine {
             hot: false,
             rscratch: heap::Refs::default(),
             execs: 0,
-            spin: 0,
+            spin: spin_range().0,
         }
     }
 
@@ -4173,10 +4199,15 @@ impl Machine {
                         return Ok(Flow::Suspend);
                     }
                     self.spin += 1;
-                    if self.spin >= SPIN_LIMIT {
+                    if self.spin >= spin_range().1 {
                         return rt_err_s!(
                             "process has no wait statement and no sensitivity list: it never suspends, so simulation time cannot advance (an infinite activation)"
                         );
+                    }
+                    if self.spin.is_multiple_of(SPIN_CHECK)
+                        && let Some(c) = ctx.as_deref_mut()
+                    {
+                        c.trim_run();
                     }
                 }
             } else if let Some(fr) = self.frames.last()
@@ -8373,6 +8404,7 @@ impl Machine {
         tf.owner = m.vc.owner;
         m.tier_cov(tf);
         tf.stop = c.interrupt_flags();
+        tf.spin = &raw mut m.spin;
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         if m.hot {
@@ -10237,9 +10269,11 @@ impl crate::TierHost for Host<'_, '_, '_> {
             tf.sigtab_len = 0;
             tf.known = u64::MAX;
             tf.stop = crate::NO_STOP.as_ptr();
+            tf.spin = &raw mut m.spin;
             return;
         };
         tf.stop = c.interrupt_flags();
+        tf.spin = &raw mut m.spin;
         if m.vc.tier_sigs.len() != m.vc.nsigs {
             m.vc.tier_sigs = m
                 .inst

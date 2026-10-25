@@ -9743,6 +9743,8 @@ bodies would have worked on the half that already beat the interpreter, so neith
 
 ## A process that never suspends leaves compiled code at its jump back (yavs-llvm, #583, #737, #759, 2026-10-25)
 
+(Superseded 2026-10-26 by "stays in compiled code under a bound of 10^9 jumps back" below.)
+
 Compiled code polled only the stop bit at the retreating `Br` of a process without `MAY_SUSPEND` (#737), so the activation bound
 of #583 (`SPIN_LIMIT`, interpreter only) did not hold under `--tier=auto` or `--tier=llvm`: the `process/no_wait_infinite` corpus
 file ran until the host ran out of memory (the compiled loop queues a transaction every iteration), which turned the llvm CI jobs
@@ -9869,3 +9871,35 @@ read or written per element), where the interpreter does the same loop as one op
   `--tier=llvm` and `--tier=auto --tier-heat=1,0,0`: same output and exit status as the interpreter, also
   for the loop that leaves its vector), `perf/llvm_eloop.vhd` (`cb_eloop` floor, no step or deopt), unit
   tests of the runtime against the plain loop in `eloop.rs`.
+
+## A process that never suspends stays in compiled code under a bound of 10^9 jumps back (yavs-llvm, yavs-interp, yavs-kernel, #583, #761, 2026-10-26)
+
+Supersedes the "leaves compiled code at its jump back" decision above (user, 2026-10-26): the bound on a process that never
+suspends is **10^9 jumps back** (was 10^7, interpreter only) and compiled code keeps running compiled under it.
+
+- **One counter, in the machine** (`Machine::spin`, reached by compiled code through `TierFrame::spin`). Compiled code of such a
+  process keeps it in a local that LLVM holds in a register across the loop (loaded at the entry, stored back in every exit
+  block, `Gen::spin_out`), adds one at each retreating `Br` next to the stop poll and leaves to the interpreter, which steps the
+  `Br` and counts it as before, at every `SPIN_CHECK` (2^20) th jump and on a stop request. The count starts at
+  `end - limit`, `end` being the limit rounded up to a multiple of `SPIN_CHECK`, so the one test "a multiple of `SPIN_CHECK`"
+  serves the trim and the limit in both tiers and they report the activation at the same jump. At the limit the interpreter
+  reports `E3009` exactly as before (message, exit status 1, wave file finished). A counter kept only in memory cost 23 percent
+  of a compute loop (the store to load chain); the register-held one costs 0 to 4 percent (below), a counter test per iteration
+  being the floor.
+- **`YAVS_SPIN_LIMIT=N`** replaces 10^9 (tests and the `spin=N` difftest header: 10^9 jumps take seconds compiled but minutes in a debug
+  interpreter). An unparsable value stops the run with a message naming it.
+- **The leak of #761 was not in compiled code**: a process that never suspends lists one direct entry per assignment for its
+  whole activation (`ProcState::out`, `outv`, `outb`, `scheduled`, `phantoms`, a waveform's `phantom` ranges: the kernel
+  commits them when the activation ends), about 24 bytes per assignment in both tiers (the interpreter's 250 MB at 10^7 was this
+  too). At 10^9 that is 24 GB. `Ctx::trim_run` now keeps of identical entries only the last (what the commit would leave),
+  called by the interpreter's `Br` step at every `SPIN_CHECK` jumps, so the lists stay below about 25 MB per assigning statement.
+  Not covered: a loop of a process that does suspend (it lists the same entries until its next wait), and a body that assigns
+  very many distinct elements per jump.
+- **Measured** (compute loop of 10^8 iterations with real arithmetic and a tight integer loop of 3x10^8, `--tier=llvm`,
+  aligned release build, core 10, 5 runs each): against the stop poll alone the counter costs +3.6 percent (0.56 s to 0.58 s) on the
+  first and 0 on the second; a process that exits at every jump back (the previous state) ran at interpreter speed plus an exit per jump.
+- Tests: `stuck::a_process_that_never_suspends_ends_with_an_error` (E3009 in every tier, one side or the other of an exact limit),
+  `stuck::a_long_loop_without_a_wait_runs_to_its_finish`, ignored `stuck::the_default_bound_is_a_billion_jumps_back`,
+  `rss::a_loop_without_a_wait_keeps_memory_flat`, perf case `llvm_nowait` (2 exits for 2.5 million jumps),
+  corpus `process/no_wait_infinite` (`spin=3000000`, `ignore=stderr`: only yavs prints the W3102 warning).
+

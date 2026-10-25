@@ -1103,6 +1103,12 @@ mod llvm {
             ("llvm_native_frames", Min(3)),
         ]
     );
+    // A process without a wait runs its jumps back in compiled code, leaving every 2^20th (#583).
+    llvm_case!(
+        llvm_nowait,
+        "jumps=",
+        [("cb_step", Max(4)), ("cb_signal", Max(2))]
+    );
     // Constants found once stay for the run (#679).
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(2))]);
     // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.

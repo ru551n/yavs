@@ -1597,7 +1597,13 @@ const AA_TEMP: usize = 1;
 const AA_INST: usize = 2;
 const AA_CONST: usize = 3;
 const AA_CODES: usize = 4;
-const AA_N: usize = 5;
+/// The jump count and the stop flag a process that never suspends polls at its jumps back: kept
+/// in registers across a loop that makes no call.
+const AA_SPIN: usize = 5;
+const AA_STOP: usize = 6;
+/// The fields of `Mem` that hold those two pointers.
+const AA_MEM: usize = 7;
+const AA_N: usize = 8;
 
 struct AaNodes {
     scope: [LLVMValueRef; AA_N],
@@ -1654,6 +1660,10 @@ struct Cur<'p> {
     objnew: std::cell::Cell<Option<(Reg, ObjRef)>>,
     /// The scalar drives of this activation kept for one host call, when the function has any.
     batch: Option<Batch>,
+    /// The jump count of a process that never suspends (`TierFrame::spin`) while compiled code
+    /// runs: a local that LLVM keeps in a register across the loop, loaded at the entry and stored
+    /// back at every exit (`exit_for`).
+    spin: Option<LLVMValueRef>,
     /// The regions the address parameters of a native frame point into (`param_addrs`), resolved at
     /// the entry: `Known::Param(k)` is `pres[k]`.
     pres: std::cell::RefCell<Vec<PRes>>,
@@ -2239,6 +2249,7 @@ impl Gen {
                 if c.batch.is_some() {
                     self.ret_exit(c, phi);
                 } else if c.nat.is_none() {
+                    self.spin_out(c);
                     LLVMBuildRet(self.b, phi);
                 } else {
                     // The native frame's one exit (materialisation) takes the chunks' values.
@@ -2256,12 +2267,26 @@ impl Gen {
         }
     }
 
+    /// Hand the jump count of a process that never suspends back to the machine, before a return.
+    unsafe fn spin_out(&self, c: &Cur) {
+        // SAFETY: `spin` is the entry block's local; the builder is in a block of c.f.
+        unsafe {
+            if let Some(local) = c.spin {
+                let n = LLVMBuildLoad2(self.b, self.i64, local, c"".as_ptr());
+                let at = self.tag(self.mem_ptr(c, MEM_SPIN), AA_MEM);
+                let p = self.tag(self.load(self.ptr, at), AA_SPIN);
+                self.store(n, p);
+            }
+        }
+    }
+
     /// End the exit block the builder is in (its phi `v`): hand over the kept scalar drives, if
     /// any, then return `v`, or the pc of a drive the kernel refused when that failed.
     unsafe fn ret_exit(&self, c: &Cur, v: LLVMValueRef) {
         // SAFETY: well-formed blocks of c.f; `batch` is set.
         unsafe {
             let b = c.batch.expect("batch");
+            self.spin_out(c);
             let (here, flush, done) = (LLVMGetInsertBlock(self.b), self.block(c), self.block(c));
             let n = self.load(self.i32, b.count);
             let any = self.icmp(IP::LLVMIntNE, n, self.c32(0));
@@ -2957,8 +2982,24 @@ impl Gen {
                 cold: Default::default(),
                 objnew: Default::default(),
                 batch: None,
+                spin: None,
                 pres: Default::default(),
             };
+            if !backs.is_empty() {
+                let local = LLVMBuildAlloca(self.b, self.i64, c"".as_ptr());
+                let at = self.tag(self.mem_ptr(&c, MEM_SPIN), AA_MEM);
+                let p = self.tag(self.load(self.ptr, at), AA_SPIN);
+                let n = self.load(self.i64, p);
+                LLVMBuildStore(self.b, n, local);
+                c.spin = Some(local);
+                if batched.is_empty() {
+                    // The first exit block returns at once (built above).
+                    let ret = LLVMGetBasicBlockTerminator(exit);
+                    LLVMPositionBuilderBefore(self.b, ret);
+                    self.spin_out(&c);
+                    LLVMPositionBuilderAtEnd(self.b, entry);
+                }
+            }
             if !batched.is_empty() {
                 // At the start of the entry block: every way in passes it.
                 let entries = LLVMBuildAlloca(
@@ -4984,14 +5025,44 @@ impl Gen {
                     }
                     Inst::Br { to } => {
                         let bb = block_bb(to)?;
-                        // A process that never suspends leaves compiled code at every jump
-                        // back: the interpreter steps this `Br`, polls the stop request (#737)
-                        // and bounds the activation (#583). The retreating `Br`s only (a `Br`
-                        // to a join laid out earlier is no loop), and as the interpreter steps
-                        // only those that jump back in the code.
+                        // A process that never suspends polls the stop request (#737) and
+                        // counts its jumps back in the machine (`TierFrame::spin`, #583) at
+                        // every retreating `Br`: at a request, at every `SPIN_CHECK`th jump
+                        // (trim, limit) it leaves at this `Br`, whose interpreter step suspends,
+                        // trims or reports the process.
+                        // The retreating `Br`s only (a `Br` to a join laid out earlier is no
+                        // loop), and as the interpreter steps only those that jump back.
                         if backs.contains(&pc) && start_of(to)? <= pc as usize {
-                            let always = LLVMConstInt(LLVMInt1TypeInContext(self.ctx), 1, 0);
-                            self.exit_if(&c, always, pc);
+                            let at = self.tag(self.mem_ptr(&c, MEM_STOP), AA_MEM);
+                            let flags = self.load(self.ptr, at);
+                            let byte = LLVMBuildLoad2(self.b, self.i8, flags, c"".as_ptr());
+                            self.tag(flags, AA_STOP);
+                            self.scope(byte, flags);
+                            LLVMSetOrdering(
+                                byte,
+                                llvm_sys::LLVMAtomicOrdering::LLVMAtomicOrderingMonotonic,
+                            );
+                            let hit = LLVMBuildAnd(
+                                self.b,
+                                byte,
+                                LLVMConstInt(self.i8, u64::from(yavs_interp::STOP_BIT), 0),
+                                c"".as_ptr(),
+                            );
+                            let stop = self.icmp(IP::LLVMIntNE, hit, LLVMConstInt(self.i8, 0, 0));
+                            let local = c.spin.expect("spin local");
+                            let n = LLVMBuildLoad2(self.b, self.i64, local, c"".as_ptr());
+                            let n = LLVMBuildAdd(self.b, n, self.c64(1), c"".as_ptr());
+                            // Leaves before it stores: the interpreter's step counts this jump.
+                            let low = LLVMBuildAnd(
+                                self.b,
+                                n,
+                                self.c64(yavs_interp::SPIN_CHECK as i64 - 1),
+                                c"".as_ptr(),
+                            );
+                            let check = self.icmp(IP::LLVMIntEQ, low, self.c64(0));
+                            let bad = LLVMBuildOr(self.b, stop, check, c"".as_ptr());
+                            self.exit_if(&c, bad, pc);
+                            LLVMBuildStore(self.b, n, local);
                         }
                         let snap = self.edge_prep(&c, &[start_of(to)?]);
                         self.edge_to(&c, &snap, start_of(to)?);
@@ -8186,7 +8257,9 @@ impl Gen {
                 };
                 let name = |s: &str| LLVMMDStringInContext2(self.ctx, s.as_ptr().cast(), s.len());
                 let domain = md(&mut [name("yavs memory")]);
-                let names = ["slots", "temp", "inst", "const", "codes"];
+                let names = [
+                    "slots", "temp", "inst", "const", "codes", "spin", "stop", "mem",
+                ];
                 let scopes: Vec<LLVMMetadataRef> =
                     names.iter().map(|n| md(&mut [name(n), domain])).collect();
                 let v = |m| LLVMMetadataAsValue(self.ctx, m);

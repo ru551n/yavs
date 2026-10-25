@@ -64,7 +64,7 @@ HDR = re.compile(r"^--\s*difftest:\s*(.*)$")
 
 def parse_header(path):
     h = {"top": None, "std": "2008", "stop": "", "exit": 0, "ref": "sim1", "ignore": "", "res": "",
-         "relaxed": None, "psl": None}
+         "relaxed": None, "psl": None, "spin": ""}
     for line in path.read_text().splitlines()[:15]:
         m = HDR.match(line)
         if m:
@@ -94,6 +94,8 @@ def run(template, vhd, hdr, work, threads, shuffle, sandbox=True):
         work=shlex.quote(str(work / "lib")), threads=threads, shuffle=shuffle or "",
         shuffle_flag=f"--shuffle={shuffle}" if shuffle else "",
         shuffle_on="--shuffle" if shuffle else "")
+    if hdr["spin"]:  # the references do not read it
+        script = f"export YAVS_SPIN_LIMIT={int(hdr['spin'])}; {script}"
     cmd = ["timeout", str(TIMEOUT)]
     if sandbox:
         cmd += ["systemd-run", "--user", "--scope", "-q", "-p", "MemoryMax=2G"]

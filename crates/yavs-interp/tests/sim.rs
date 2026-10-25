@@ -606,6 +606,55 @@ fn checked_overflow_stack_trace() {
     assert_eq!(e.exit_status(), 1);
 }
 
+/// A 4-byte load of a negative value sign-extends, through the fused `LoadSlot`
+/// and `LoadInst` ops as through the generic `Load` (#746).
+#[test]
+fn narrow_loads_sign_extend() {
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let frame = pb.declare("frame", FuncKind::Function, None);
+    let inst = pb.declare("inst", FuncKind::Function, None);
+    {
+        // `frame(x)`: store the parameter as B4 in a local, load it back (LoadSlot).
+        let mut fb = pb.define(frame);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        let slot = fb.local("slot", int, 8, 8);
+        stmt(&mut fb, StmtKind::VarAssign);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        store(&mut fb, AddrSpace::Frame, slot, v, Width::B4);
+        let got = load(&mut fb, AddrSpace::Frame, slot, Width::B4);
+        fb.emit(Inst::Ret { v: Some(got) });
+        fb.finish();
+    }
+    {
+        // `inst()`: a constant B4 load of instance data (LoadInst).
+        let mut fb = pb.define(inst);
+        stmt(&mut fb, StmtKind::Return);
+        let got = load(&mut fb, AddrSpace::Inst, 0, Width::B4);
+        fb.emit(Inst::Ret { v: Some(got) });
+        fb.finish();
+    }
+    let prog = std::sync::Arc::new(pb.finish().unwrap());
+    let rt = Runtime::new(prog, Bindings::default()).unwrap();
+    for v in [-1i32, i32::MIN] {
+        let want = Some(i64::from(v) as u64);
+        let got = yavs_interp::call(
+            rt.clone(),
+            frame,
+            std::sync::Arc::new(yavs_interp::InstData::default()),
+            &[i64::from(v) as u64],
+        )
+        .unwrap();
+        assert_eq!(got, want, "frame {v}");
+        let data = std::sync::Arc::new(yavs_interp::InstData {
+            data: v.to_le_bytes().to_vec(),
+            ..Default::default()
+        });
+        let got = yavs_interp::call(rt.clone(), inst, data, &[]).unwrap();
+        assert_eq!(got, want, "inst {v}");
+    }
+}
+
 /// A function `lin(x, y) = y - (x * 16 + 3) - 1`: the fast loop runs the four `Bin`s as one
 /// linear op for operands within 2^30 and as the checked instructions beyond, with the same
 /// results and the same overflow error at the failing statement.

@@ -665,6 +665,15 @@ impl Model {
             }
             _ => {}
         }
+        // `now` is 0 fs during elaboration, as without a kernel (decisions.md
+        // "Elaboration-time calls"): a constant that bounds a subtype may read it (#620).
+        if let ExprKind::Call { callee, .. } = &ex.kind
+            && let Some(sp) = db.decls[*callee].kind.subprogram()
+            && let yavs_sem::decl::Body::Native(sym) = &sp.body
+            && sym.as_str().starts_with("yavs.standard.now.")
+        {
+            return Ok(Val::Phys(0));
+        }
         if let ExprKind::Call {
             callee,
             args,

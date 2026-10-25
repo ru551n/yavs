@@ -413,6 +413,7 @@ const PASS: &[&str] = &[
     "scalar/string_attrs",
     "scalar/subtype_range",
     "scalar/subtype_range_compat",
+    "scalar/now_in_bounds",
     "scalar/integer_literal_outside",
     "scalar/time_attrs",
     "scalar/time_bounds",

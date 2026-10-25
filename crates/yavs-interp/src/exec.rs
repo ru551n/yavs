@@ -731,6 +731,18 @@ pub(crate) fn to_time(v: i64) -> R<Time> {
     Time::from_vhdl(v).map_err(|_| runtime_f!("negative time value {v} fs"))
 }
 
+/// The length of a dimension (bounds and direction word, `dim_of`) in `u64` arithmetic, `None`
+/// where it would overflow (the general code then decides).
+#[inline(always)]
+fn dim_len63((l, r, dir): (i64, i64, u64)) -> Option<u64> {
+    let (lo, hi) = if dir == 1 { (r, l) } else { (l, r) };
+    if hi < lo {
+        Some(0)
+    } else {
+        hi.checked_sub(lo).and_then(|d| (d as u64).checked_add(1))
+    }
+}
+
 /// The eight bytes at `off` of a memory object of `len` bytes, when they are inside it.
 #[inline(always)]
 fn slot_range(len: usize, off: u64) -> Option<std::ops::Range<usize>> {
@@ -3270,12 +3282,38 @@ impl Machine {
         Ok((0..4).fold(0u64, |c, p| c | (plane_word(b, p) >> (i % 64) & 1) << p))
     }
 
-    /// `Inst::LSet`: set element `i` of the logic vector at `base` to `code`.
+    /// `Inst::LSet`: set element `i` of the logic vector at `base` to `code`. The block in a
+    /// frame, temporary memory or a heap object is found without the general lookup.
     #[inline(always)]
     fn lset(&mut self, base: u64, i: u64, code: u64) -> R<()> {
         if code > 8 {
             return Err(ice_f!("std_ulogic code {code}"));
         }
+        let (sp, idx, off) = split(base);
+        let mem = match sp {
+            FRAME => self.fslots_mut(idx as usize),
+            TEMP => Some(&mut self.temp[..]),
+            HEAP => self.heap.data_mut(idx),
+            SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
+            _ => None,
+        };
+        if let Some(o) = off.checked_add(i / 64 * 32).filter(|&o| o <= u64::from(u32::MAX))
+            && let Some(b) = mem
+                .and_then(|m| m.get_mut(o as usize..))
+                .and_then(|m| m.first_chunk_mut::<32>())
+        {
+            let s = i % 64;
+            for (p, c) in b.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                let w = u64::from_le_bytes(*c) & !(1 << s) | (code >> p & 1) << s;
+                *c = w.to_le_bytes();
+            }
+            return Ok(());
+        }
+        self.lset_slow(base, i, code)
+    }
+
+    #[inline(never)]
+    fn lset_slow(&mut self, base: u64, i: u64, code: u64) -> R<()> {
         let a = add_addr(base, i / 64 * 32)?;
         let b = self.wr(a, 32)?;
         let s = i % 64;
@@ -3677,9 +3715,24 @@ impl Machine {
     }
 
     /// `Inst::SubtypeCheck`: the length of each dimension of the descriptor at `dope` against
-    /// the one at `want`.
-    #[inline(always)]
+    /// the one at `want`. Out of line, with the usual case (one dimension, both descriptors in
+    /// memory, equal bounds or lengths that fit 63 bits) before the general loop.
+    #[inline(never)]
     fn subtype_check(&self, dope: u64, want: u64, dims: u8, what: yavs_ir::CheckMsgId) -> R<()> {
+        if dims == 1
+            && let (Ok(a), Ok(b)) = (self.dim_of(dope, 0), self.dim_of(want, 0))
+        {
+            if a == b {
+                return Ok(());
+            }
+            if let (Some(x), Some(y)) = (dim_len63(a), dim_len63(b)) {
+                return if x == y {
+                    Ok(())
+                } else {
+                    self.subtype_fail(x, y, 0, 1, what)
+                };
+            }
+        }
         for k in 0..u64::from(dims) {
             let len = |base: u64| -> R<u64> {
                 let (l, r, dir) = self.dim_of(base, k)?;
@@ -5335,8 +5388,8 @@ impl Machine {
                     cp,
                     c0,
                 } => {
-                    match self.pos_len(self.regs[dope as usize], self.regs[idx as usize] as i64) {
-                        Some((p, _)) if aff_ok(p) => {
+                    match self.pos_first(self.regs[dope as usize], self.regs[idx as usize] as i64) {
+                        Some(p) if aff_ok(p) => {
                             self.regs[dst as usize] = (i64::from(c0) + i64::from(cp) * p) as u64;
                         }
                         _ => {
@@ -7528,6 +7581,19 @@ impl Machine {
     fn dope_len_of(&self, dope: u64) -> Option<i64> {
         let (l, rr, dir) = self.dim_of(dope, 0).ok()?;
         Some(yavs_ir::dim_len(l, rr, dir == 1).filter(|&n| n <= i64::MAX as u64)? as i64)
+    }
+
+    /// The position of index `i` in the first dimension of the descriptor at `dope` (`pos_len`
+    /// without the length, which a position does not depend on); `None` when the index is
+    /// outside the range or the descriptor cannot be read.
+    #[inline(always)]
+    fn pos_first(&self, dope: u64, i: i64) -> Option<i64> {
+        let (l, rr, dir) = self.dim_of(dope, 0).ok()?;
+        match dir {
+            0 if l <= i && i <= rr => Some(i.wrapping_sub(l)),
+            1 if rr <= i && i <= l => Some(l.wrapping_sub(i)),
+            _ => None,
+        }
     }
 
     /// The position of index `i` in the first dimension of the descriptor at `dope` and its

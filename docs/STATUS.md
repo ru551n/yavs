@@ -7980,7 +7980,7 @@ By process (`--profile`): `iu:comb` 14.7 percent, the four SDRAM `state_register
 
 What changed (commits of #720; `docs/decisions.md` "Cold path of serial processes, port propagation, same-value drives"): the roots of a serial process
 go into reused buffers; in-port values pass down without temporaries; an unchanged scalar assignment to a direct driver is skipped when it is made; a run of
-scalar drives of process variables is one guard op; an unchanged vector assignment to a direct driver is skipped as the scalar one (83 percent of the direct plane commits of the first 400 us); materialising a native frame no longer walks the callee's IR. Interpreter, LEON3, 400 us, instructions,
+scalar drives of process variables is one guard op; an unchanged vector assignment to a direct driver is skipped as the scalar one (direct plane commits of the whole run 83.4 M to 14.9 M; interpreter, whole run, instructions 574.1 G to 554.9 G, 0.967); materialising a native frame no longer walks the callee's IR. Interpreter, LEON3, 400 us, instructions,
 bench builds, steady state: 257.5 G, 250.9 G (roots), 248.3 G (+ ports), 240.9 G (+ same-value drives and runs); whole run `--tier=auto` 625.7 G to 589.5 G.
 Microbenchmark (one process, 8 scalar drives of unchanged variables per activation): 460 instructions a drive, about 150 in a run; start-up (first 1 us) 4.6 s to 3.65 s.
 

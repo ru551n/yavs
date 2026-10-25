@@ -3297,7 +3297,9 @@ impl Machine {
             SHARED_HEAP | SHARED => self.shared_mem_mut(sp, idx),
             _ => None,
         };
-        if let Some(o) = off.checked_add(i / 64 * 32).filter(|&o| o <= u64::from(u32::MAX))
+        if let Some(o) = off
+            .checked_add(i / 64 * 32)
+            .filter(|&o| o <= u64::from(u32::MAX))
             && let Some(b) = mem
                 .and_then(|m| m.get_mut(o as usize..))
                 .and_then(|m| m.first_chunk_mut::<32>())
@@ -3877,9 +3879,12 @@ impl Machine {
     #[inline(always)]
     fn dope_len(&self, dope: u64, dim: u8) -> R<u64> {
         let (l, rr, dir) = self.dim_of(dope, u64::from(dim))?;
-        yavs_ir::dim_len(l, rr, dir == 1)
-            .filter(|&n| n <= i64::MAX as u64)
-            .ok_or_else(|| runtime_f!("range {l} .. {rr} too long"))
+        match dim_len63((l, rr, dir)) {
+            Some(n) if n <= i64::MAX as u64 => Ok(n),
+            _ => yavs_ir::dim_len(l, rr, dir == 1)
+                .filter(|&n| n <= i64::MAX as u64)
+                .ok_or_else(|| runtime_f!("range {l} .. {rr} too long")),
+        }
     }
 
     /// `Inst::SigVal`: the two registers of a reference to elements `o .. o + l` of instance
@@ -4372,7 +4377,10 @@ impl Machine {
             && let Some(wa) = slot_range(m.len(), oa)
             && let Some(wb) = slot_range(m.len(), ob)
             && let Some(wx) = slot_range(m.len(), ox)
-            && let (a, b) = (le_bytes(&m[wa.clone()]) as i64, le_bytes(&m[wb.clone()]) as i64)
+            && let (a, b) = (
+                le_bytes(&m[wa.clone()]) as i64,
+                le_bytes(&m[wb.clone()]) as i64,
+            )
             && a <= 2147483562
             && b <= 2147483398
         {
@@ -7579,8 +7587,8 @@ impl Machine {
     /// The length of the first dimension of the descriptor at `dope` (`pos_len`).
     #[inline(always)]
     fn dope_len_of(&self, dope: u64) -> Option<i64> {
-        let (l, rr, dir) = self.dim_of(dope, 0).ok()?;
-        Some(yavs_ir::dim_len(l, rr, dir == 1).filter(|&n| n <= i64::MAX as u64)? as i64)
+        let d = self.dim_of(dope, 0).ok()?;
+        Some(dim_len63(d).filter(|&n| n <= i64::MAX as u64)? as i64)
     }
 
     /// The position of index `i` in the first dimension of the descriptor at `dope` (`pos_len`
@@ -7602,7 +7610,7 @@ impl Machine {
     #[inline(always)]
     fn pos_len(&self, dope: u64, i: i64) -> Option<(i64, i64)> {
         let (l, rr, dir) = self.dim_of(dope, 0).ok()?;
-        let n = yavs_ir::dim_len(l, rr, dir == 1).filter(|&n| n <= i64::MAX as u64)? as i64;
+        let n = dim_len63((l, rr, dir)).filter(|&n| n <= i64::MAX as u64)? as i64;
         let pos = match dir {
             0 if l <= i && i <= rr => i.wrapping_sub(l),
             1 if rr <= i && i <= l => l.wrapping_sub(i),
@@ -8423,6 +8431,33 @@ impl Machine {
             return Ok(0);
         }
         let dp = self.r(dope);
+        // Both ends inside the range and the slice in the array's direction: one look at the
+        // descriptor. Anything else is checked, and reported, by the general sequence.
+        if let Ok((dl, dr, dd)) = self.dim_of(dp, 0)
+            && dd == w as u64
+        {
+            let pos = |i: i64| match dd {
+                0 if dl <= i && i <= dr => Some(i.wrapping_sub(dl)),
+                1 if dr <= i && i <= dl => Some(dl.wrapping_sub(i)),
+                _ => None,
+            };
+            if let (Some(p), Some(_)) = (pos(l), pos(r)) {
+                return Ok(p as u64);
+            }
+        }
+        self.slice_pos_checked(dp, l, r, w, what, dir_what)
+    }
+
+    #[inline(never)]
+    fn slice_pos_checked(
+        &self,
+        dp: u64,
+        l: i64,
+        r: i64,
+        w: i64,
+        what: yavs_ir::CheckMsgId,
+        dir_what: yavs_ir::CheckMsgId,
+    ) -> R<u64> {
         let p = self.pos_of(dp, 0, l, what)?;
         self.pos_of(dp, 0, r, what)?;
         let (_, _, d) = self.dim_of(dp, 0)?;

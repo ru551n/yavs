@@ -23,6 +23,8 @@ for an agent that tunes performance or measures a performance change on real tes
 | `run.py` | The runner: `--list`, `BIN --ref sim1 --cores 6,7 [--phases analyze,elab,codegen,run]`, `--compare A B`, `--report JSON`, `--self-test` |
 | `tests.toml` | One `[[test]]` per testbench: source, path, top, library, generics, why it is in the set, category (field list in its header) |
 
+`YAVS_BENCH_TIERFLAGS` (extra arguments after `--tier=` of every yavs run cell, e.g. `--tier-heat=1,0,0` to compile every function at its first call) is not part of the cell name: set it for both binaries of a `--compare`.
+
 Categories (`--category`): `rtl-datapath`, `fsm`, `numeric`, `memory`, `records`, `wide-vectors`, `bus-tristate`, `strings-textio`,
 `protected`, `cpu`. Run `run.py --list` for the current selection.
 

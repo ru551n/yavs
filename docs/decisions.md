@@ -9010,3 +9010,76 @@ cycles a call, the pop 10 to 25, the callee look-ups 5 to 13, the slot zeroing 4
   of the cycles; the drive inside it (`yavs_rt_drive`, `assign_bytes_fast`, `commit_out`) is about 20 percent. Making
   `Drive` a native-frame instruction is the next cut and is shared with the process-entry work of the other lanes
   (`cgdirect`) and the parameter-address work (#726); not touched here.
+
+## Compiled clocked RTL processes, round 7: the direct entry, and constants that outlive a machine (yavs-interp, yavs-llvm, #634, 2026-10-25)
+
+The brief was a process-direct compiled entry: the kernel enters the compiled activation function with one state pointer, a persistent
+per-process view and `Mem`, no per-activation view rebuild. **It is not built in that shape**, for three measured or structural reasons:
+(1) `Mem` carries the 1 024 entry object table (64 KB): one per process is 256 MB at 4 096 processes, and the view alone is a persistent
+copy that round 2 measured (`rtl_fan` +3 percent cycles, +14 M L2 misses: about seven cold lines per process, where the rebuilt view writes
+lines that are hot); (2) `yavs-interp` forbids `unsafe` (root rule 11), so it cannot keep a pointer to the thread's `Mem` or a `Host` across
+activations: the `Host` borrows the machine and the kernel's `Ctx` for one activation; (3) the stack frames and the stores that fill them were
+the cost, not the work behind them: what remained of the entry after rounds 5 and 6 was 703 instructions of 1 390 in `rtl_lfsr`
+(`tools/stepcount`, per activation: `run_quick` 174, `begin_kept` 159, `enter` 139, `view_again` 72, `Process::run` 60, `load_objs` 56,
+`run_cached` 28, `save_objs` 16). The shape taken keeps the thread's hot `Mem` and removes the layers and the churn around it. A real
+persistent per-process state needs `unsafe` in `yavs-interp` (a decision for the user) and a per-process object table.
+
+- **Constants belong to the runtime, not the machine** (L, `rt.rs`): `Life::Runtime` is `space::CONST`. `TierFrame::owner` carries the
+  runtime's id in bits `OWNER_RT_SHIFT` (32) and up, the machine's number below (S, `Machine::new`). When another machine of the same runtime
+  runs, `Mem::begin` keeps the constants (`Mem::rt_live` counts them; `settle` drops the rest) and `save_objs` leaves them out of the process
+  record, so `load_objs` has nothing to put back. `rtl_lfsr` carried one constant (the reset value) from process to process and, at every
+  activation, dropped it (`retain`), loaded it from the record and saved it again: 230 instructions. Instance data, package data and
+  shared variables stay per machine (a package being initialised has a buffer of the machine's own), heap objects per machine and epoch.
+  `begin_kept` is not called when only a few constants of this runtime are kept. **At most `RT_KEEP` (16) constants are kept for the next
+  machine**: with more, every walk of the table pays for each (a first version without the cap made `neorv32_single_min` under
+  `--tier-heat=1,0,0` 1.3 times slower in wall time and 1.47 times the instructions; a machine that uses many constants drops them all at a
+  change of machine and restores its own from its record, as before). The record holds what the activation itself entered or found in its
+  record (`Mem::mine`, up to four table indices, `nmine`), not whatever other machines left in the table. `Mem::occ_any` has a bit per non-empty word of `occ`, so the walks
+  (`retain`, `in_use`) skip the empty ones (sixteen words were scanned for one object: 62 instructions), and `load_objs` stops at the first
+  empty record entry.
+- **A compiled activation passes through one function frame of the interpreter's** (S, `Machine::run_direct`, called by `InterpProcess::run`
+  for a process that is `hot`): `Direct::No` (not compiled code: `run_quick` as before), `Direct::Continue` (compiled code ran and left frames
+  or an instruction to the interpreter: `run_quick(.., cont = true)` goes on from the frames' pcs without looking at the tier again) and
+  `Direct::Done(Quick)`. `run_quick` and `run_compiled` were two functions with the tier loop's frame (216 bytes of locals, six callee-saved
+  registers) between them; the compiled part is now the first thing `Process::run` does, and `run_quick` keeps the interpreted activation
+  (its instructions are unchanged). Kept as they were, because the tier's policy reads them and difftest does not see them: the sampling slot
+  (`slot()`: the after-swap measurement of the policy), `NativeFlags::activated` (the entry count of a trial, #652), one acquire load of the
+  function's `NAT_CODE | NAT_ASK` byte per activation (a swap or a withdrawal is seen at the next activation), `frames.len() == 1` and `pause`,
+  the exact mapping of the result (`TIER_SUSPEND` advances the pc, `TIER_UNWIND`, `None` and a pc continue in the interpreter, a fault is
+  `Quick::Fault`), and the panic carried out of a callback (`resume_unwind` in `enter`).
+- **`rt::enter` is `#[inline(always)]`** (L): `Tier::run_cached` is one frame, not two.
+- **Nothing here depends on LLVM except `rt.rs`'s `Mem`**, which any code generator that reuses `rt.rs` shares; the `Tier` trait is unchanged.
+
+Measured (bench builds with `llvm`, `tools/stepcount` windows of 1 000 to 3 000 activations, `--threads 1`, instructions per activation):
+
+| design (`--tier=llvm`) | entry plumbing before | after | everything else in the program file |
+|---|---:|---:|---:|
+| `rtl_lfsr` (`run_quick` 174, `enter` 139 + `run_cached` 28, `begin_kept` 159, `load_objs` 56, `save_objs` 16, `view_again` 72, `Process::run` 60) | 703 | 441 | 688 to 681 |
+| `rtl_fan` | 468 | 431 | 152 |
+| `rtl_ff` | 468 | 431 | 393 |
+| `lfsr64` (a heap variable: its object is dropped and loaded at every activation) | 700 | 624 | 802 to 812 |
+
+What is left of the entry is `Process::run` 182 (the `Host`, the sampling slot, the result), `run_cached` with `enter` 140 to 150 (the `Env`, the
+thread's `Mem`, the call), `view_again` 72 (25 fields, no call overhead to remove), and for a process with a heap variable `begin_kept` 104 and
+`load_objs` 66. Measured and not taken: a lazy `Host::f` (`Program::func` is 13 instructions; its `tier_census` uses want the name),
+one cold box for `Env::pending`, `windows` and `panic` (about 12 instructions; 39 uses), the thread's `Mem` without the take and put (6),
+`run_compiled` as a function of its own (+11 instructions: the call is the cost it was meant to save).
+
+Cycles and instructions of the simulation phase (full run minus a `--stop-time=0fs` run, minimum of 5 to 7 interleaved runs, core 14, bench
+builds with `llvm`; base is main at a133e50c), `--tier=auto --tier-heat=1,0,0` (every function compiled at its first call):
+
+| design | cycles | instructions |
+|---|---:|---:|
+| `rtl_ff` | 2.92 to 2.81 G (0.96) | 9.34 to 8.84 G (0.95) |
+| `rtl_lfsr` | 1.38 to 1.22 G (0.88) | 4.91 to 4.17 G (0.85) |
+| `rtl_chain` | 0.91 to 0.86 G (0.94) | 3.26 to 3.14 G (0.96) |
+| `rtl_fan` | 4.38 to 3.84 G (0.88) | 13.91 to 12.69 G (0.91) |
+| `lfsr64` | 0.67 to 0.65 G (0.97) | 2.74 to 2.61 G (0.95) |
+
+The default policy (`--tier=auto`) and the interpreter are level (the policy compiles little of these designs); the interpreter's
+instructions are equal to the instruction. `tools/realbench --compare` of the rebased tree, run phase, core 14, the 38 designs, medians of 3 to 5:
+geometric mean of wall 0.98 (interpreter) and 0.98 (`--tier=auto`), of instructions 1.01 and 0.99; no design above noise except `poc_strings`
+(a 0.04 G instruction test, interpreter instructions x1.63 from the start-up of a run of a few milliseconds, which the change does not touch).
+The ten designs where compiled code runs most, again with `--tier-heat=1,0,0` (`YAVS_BENCH_TIERFLAGS`, new in `tools/realbench/run.py`; neorv32 x3,
+fletcher x2, `sc5_fifo_repack`, `hdlm_lfsr`, `hdlm_axi_fifo`, `poc_cache_cpu`, `osvvm_axis_random`): wall 0.99 to 1.04 and instructions 0.99 to 1.00 (a single
+1.2 on `hdlm_lfsr` at equal instructions did not repeat in a run of seven).

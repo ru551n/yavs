@@ -119,6 +119,16 @@ pub(crate) enum Quick {
     Fault,
 }
 
+/// What [`Machine::run_direct`] did with an activation.
+pub(crate) enum Direct {
+    /// Not an activation of compiled code: nothing was done, `run_quick` runs it.
+    No,
+    /// Compiled code ran and left the process for the interpreter (`run_quick` with `cont`).
+    Continue,
+    /// Compiled code ended the activation.
+    Done(Quick),
+}
+
 pub(crate) enum Outcome {
     Suspended,
     Returned(Option<u64>),
@@ -1032,7 +1042,8 @@ impl Machine {
         Machine {
             vc: ViewCache {
                 tier_sigs: Vec::new(),
-                owner: OWNERS.fetch_add(1, Ordering::Relaxed),
+                owner: u64::from(rt.id) << crate::OWNER_RT_SHIFT
+                    | OWNERS.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX),
                 inst_data: inst.data.as_ptr() as usize,
                 inst_len: inst.data.len(),
                 nsigs: inst.sigs.len(),
@@ -1562,20 +1573,16 @@ impl Machine {
         self.dbg.is_none()
     }
 
-    /// `run` without a debugger and with base 0, the outcome as a `Quick`.
-    pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Quick {
+    /// `run` without a debugger and with base 0, the outcome as a `Quick`. `cont`: compiled code
+    /// has run this activation already ([`Machine::run_direct`] said [`Direct::Continue`]) and
+    /// the interpreter goes on from the frames' pcs.
+    pub(crate) fn run_quick(&mut self, ctx: &mut Option<&mut Ctx<'_>>, cont: bool) -> Quick {
         let rt = self.rt_run.take().unwrap_or_else(|| self.rt.clone());
         let r = match rt.tier.get() {
-            Some(tier) if self.tiered(&rt) => {
+            Some(tier) if cont || self.tiered(&rt) => {
                 let slot = crate::slot();
-                if let Some(fr) = self.frames.first() {
+                if !cont && let Some(fr) = self.frames.first() {
                     rt.native.activated(fr.func);
-                }
-                if let Some(q) = self.run_compiled(&rt, &**tier, slot, ctx) {
-                    // Nothing interpreted on this thread until the next run.
-                    slot.store(0, Ordering::Relaxed);
-                    self.rt_run = Some(rt);
-                    return q;
                 }
                 let r = self.exec_fast::<true, false>(&rt, Some(&**tier), None, ctx, 0);
                 slot.store(0, Ordering::Relaxed);
@@ -1620,29 +1627,40 @@ impl Machine {
 
     /// The activation of a process whose root function has compiled code, entered where it
     /// suspended without `exec_fast`'s and `run_ops`' set-up (nothing returned by value
-    /// but the outcome: a copy of a result the callee stored in pieces stalls). `Some` when
-    /// the compiled code suspends the process or a fault ends the run; `None` when the
-    /// interpreter must go on (the compiled code left frames or an instruction to it:
-    /// `exec_fast` continues from the frames' pcs, as after `tier_go`).
-    #[inline]
-    fn run_compiled(
-        &mut self,
-        rt: &Runtime,
-        tier: &dyn crate::Tier,
-        slot: &std::sync::atomic::AtomicU64,
-        ctx: &mut Option<&mut Ctx<'_>>,
-    ) -> Option<Quick> {
-        if self.frames.len() != 1 || self.pause.is_some() {
-            return None;
+    /// but the outcome: a copy of a result the callee stored in pieces stalls). The first thing
+    /// `InterpProcess::run` does for a process that is `hot`, so a compiled activation passes
+    /// through one function frame of the interpreter's.
+    #[inline(always)]
+    pub(crate) fn run_direct(&mut self, ctx: &mut Option<&mut Ctx<'_>>) -> Direct {
+        // Compiled code ready for the root function (one look at its flags, which the tier
+        // changes when it swaps code); the activation is `run_quick`'s otherwise.
+        if !self.rt.native.any.load(Ordering::Acquire) {
+            return Direct::No;
         }
-        let func = self.frames[0].func;
-        // Compiled code ready; a function still to be compiled (`NAT_ASK`) is `run_ops`'.
-        if rt.native.func.get(func.0 as usize)?.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK)
-            != NAT_CODE
+        let [fr] = &self.frames[..] else {
+            return Direct::No;
+        };
+        let func = fr.func;
+        let Some(flags) = self.rt.native.func.get(func.0 as usize) else {
+            return Direct::No;
+        };
+        if flags.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != NAT_CODE || self.pause.is_some()
         {
-            return None;
+            return Direct::No;
         }
-        let f = rt.prog.func(func)?;
+        let Some(rt) = self.rt_run.take() else {
+            return Direct::No;
+        };
+        let Some(tier) = rt.tier.get() else {
+            self.rt_run = Some(rt);
+            return Direct::No;
+        };
+        let slot = crate::slot();
+        rt.native.activated(func);
+        let Some(f) = rt.prog.func(func) else {
+            self.rt_run = Some(rt);
+            return Direct::No;
+        };
         slot.store(
             u64::from(rt.id) << 32 | u64::from(func.0),
             Ordering::Relaxed,
@@ -1651,7 +1669,7 @@ impl Machine {
         let mut state = self.tier_state.take();
         let mut host = Host {
             m: self,
-            rt,
+            rt: &rt,
             prog: &rt.prog,
             f,
             up: Vec::new(),
@@ -1662,19 +1680,22 @@ impl Machine {
         let ran = tier.run_cached(func, pc, &mut host, &mut state);
         let fault = host.fault;
         self.tier_state = state;
+        self.rt_run = Some(rt);
         if let Some(e) = fault {
+            slot.store(0, Ordering::Relaxed);
             self.quick_fault = Some(e);
-            return Some(Quick::Fault);
+            return Direct::Done(Quick::Fault);
         }
         match ran {
             Some(crate::TIER_SUSPEND) => {
                 self.top().pc += 1;
-                Some(Quick::Suspended)
+                slot.store(0, Ordering::Relaxed);
+                Direct::Done(Quick::Suspended)
             }
-            Some(crate::TIER_UNWIND) | None => None,
+            Some(crate::TIER_UNWIND) | None => Direct::Continue,
             Some(p) => {
                 self.top().pc = p;
-                None
+                Direct::Continue
             }
         }
     }

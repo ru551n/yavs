@@ -863,7 +863,8 @@ pub struct TierFrame {
     /// needs.
     pub flags: u64,
     /// Which machine the view is of (a number no other machine of the process has): the
-    /// process heap, instance data and frames are that machine's.
+    /// process heap, instance data and frames are that machine's. Bits `OWNER_RT_SHIFT` and up
+    /// are the runtime's id: what machines of one runtime share (constants) compares there.
     pub owner: u64,
     /// The slots of the frames `up` names and their lengths (0: not offered, ask the host), so compiled
     /// code reads a variable of an enclosing subprogram in place.
@@ -875,6 +876,8 @@ pub struct TierFrame {
     pub cov_len: u64,
 }
 
+/// The bit of `TierFrame::owner` at which the runtime's id starts.
+pub const OWNER_RT_SHIFT: u32 = 32;
 /// `TierFrame::flags`: allocators allocate in the shared heap (`Frame::shared_alloc`).
 pub const TIER_SHARED_ALLOC: u64 = 1;
 /// `TierFrame::flags`: the process may use the shared state, as a protected call needs.
@@ -1948,7 +1951,13 @@ impl Process for InterpProcess {
             if let Err(e) = self.m.borrow_scratch() {
                 return Err(self.m.error(e, Some(ctx)));
             }
-            return self.run_quick(ctx);
+            let mut c = Some(&mut *ctx);
+            let q = match self.m.run_direct(&mut c) {
+                exec::Direct::Done(q) => q,
+                exec::Direct::Continue => self.m.run_quick(&mut c, true),
+                exec::Direct::No => self.m.run_quick(&mut c, false),
+            };
+            return self.finish_quick(q, ctx);
         }
         self.run_cold(ctx)
     }
@@ -1958,7 +1967,7 @@ impl InterpProcess {
     /// The outcome of `Machine::run_quick`.
     #[inline(always)]
     fn run_quick(&mut self, ctx: &mut Ctx<'_>) -> Result<(), SimError> {
-        let q = self.m.run_quick(&mut Some(&mut *ctx));
+        let q = self.m.run_quick(&mut Some(&mut *ctx), false);
         self.finish_quick(q, ctx)
     }
 

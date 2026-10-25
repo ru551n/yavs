@@ -356,7 +356,7 @@ def yavs_script(Y, t, w, tier, sub="run", stop=None):
     a = [Y, sub, f"--std={t['std']}"] + (["--relaxed"] if t["relaxed"] else []) + [f"--work={t['toplib']}:{w}/{t['toplib']}"]
     a += [f"--map={l}:{w}/{l}" for l in libs_of(w) if l != t["toplib"]]
     if sub == "run":
-        a += [f"--tier={tier}"]
+        a += [f"--tier={tier}"] + os.environ.get("YAVS_BENCH_TIERFLAGS", "").split()
         stop = stop or t["stop"]
         a += [f"--stop-time={stop}"] if stop else []
         a += [f"--exit-severity={t['severity']}"] if t.get("severity") else []

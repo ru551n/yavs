@@ -8267,3 +8267,26 @@ cycle after an activation whose drives were all skipped (kernel lane), the cold 
 Where a frame-mode call goes was measured in both tiers (`docs/decisions.md` "Calls: where the 50 to 80 ns go"): no piece is more than a tenth of a call.
 Taken: `Machine::pop_ret` on `Op::Ret`, the saved caller without its return op, and no slots for a lean callee's unused locals. Measured and not taken: a larger inliner budget (window generator interpreter -9 percent, `--tier=auto` +6 percent), a pool of register files per depth.
 Left: `Drive`, `Wait` and vector `SigRead` as native-frame instructions (the compiled frame-mode call is `Host::step` 18 percent, `tier_view` 13 percent), and by-reference and nested parameters in the lean path.
+
+## llvm: compiled clocked RTL, round 7: the direct entry (#634, 2026-10-25)
+
+Decisions: `docs/decisions.md` "Compiled clocked RTL processes, round 7". The process-direct entry that was left as the next step (the kernel
+calling the compiled activation with one state pointer and a persistent per-process view) was designed and **not built in that shape**: a `Mem`
+carries a 64 KB object table, a persistent view per process is the cold-lines cost round 2 measured, and `yavs-interp` forbids `unsafe`. What was
+built is the same saving by removing the layers and the churn: `Machine::run_direct` is the first thing `InterpProcess::run` does for a compiled
+process (one function frame instead of `Process::run`, `run_quick`, `run_compiled`), `rt::enter` is inlined into `Tier::run_cached`, and the
+constants a process uses (`Life::Runtime`, at most 16, runtime id in the high bits of `TierFrame::owner`) stay in the thread's table from one
+process to the next instead of being dropped, loaded from the process's record and saved again at every activation (230 instructions in
+`rtl_lfsr`); the walks over the table skip empty words (`Mem::occ_any`). Entry plumbing per activation (`tools/stepcount`, `--tier=llvm`): `rtl_lfsr`
+703 to 441 of 1 391 instructions, `rtl_ff` and `rtl_fan` 468 to 431, `lfsr64` 700 to 624.
+
+Simulation phase, bench builds, core 14, `--tier=auto --tier-heat=1,0,0`, cycles and instructions (minimum of 5, interleaved), main before and after on the rebased tree:
+`rtl_ff` 3.02 to 2.83 G and 9.11 to 8.83 G; `rtl_lfsr` 1.32 to 1.18 and 4.81 to 4.14; `rtl_chain` 0.90 to 0.86 and 3.15 to 3.09; `rtl_fan` 4.38 to 3.82 and 13.85 to 13.16;
+`lfsr64` 0.67 to 0.65 and 2.68 to 2.58. The default `--tier=auto` is level with the interpreter on these designs (the policy compiles little of them; its
+cycles move by noise only), the interpreter is unchanged to the instruction. Whole-run ratios to the reference simulator of the last head-to-head (rtl_lfsr 1.57,
+lfsr64 1.43, rtl_ff 1.25, rtl_chain 1.21) were not re-measured here: the compiled body and the kernel and drive path (550 of 1 800 instructions in `rtl_lfsr`),
+not the entry, are what is left, and with `--tier=auto` the policy decides whether these designs run compiled at all (#728, #675).
+
+Left (ranked): the kernel and drive path per activation (`finish_direct`, `assign_planes_fast`, `commit_planes_run`: #521); `Process::run` 182
+instructions (the `Host`, the sampling slot and the result, 60 before the split, the rest moved here from `run_quick`); `run_cached` 150; `view_again` 72;
+a persistent per-process state needs `unsafe` in `yavs-interp` and a per-process object table (a decision for the user).

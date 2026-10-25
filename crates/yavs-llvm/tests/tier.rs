@@ -228,7 +228,7 @@ fn auto_tier_stops_without_waiting_for_the_sampler() {
             period: 30_000_000,
             ..Heat::DEFAULT
         };
-        let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+        let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note, None).unwrap();
         std::thread::sleep(wait);
         let t0 = Instant::now();
         tier.stop(true);
@@ -291,7 +291,7 @@ fn auto_tier_recompiles_a_big_function_at_fast_ra() {
     let notes = Arc::new(Mutex::new(Vec::new()));
     let seen = notes.clone();
     let note: Note = Box::new(move |f, level, why| seen.lock().unwrap().push((f, level, why)));
-    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
+    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note, None).unwrap();
     let n = 20_000u64;
     let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
     let t0 = Instant::now();

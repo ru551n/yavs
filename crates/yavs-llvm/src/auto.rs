@@ -3159,6 +3159,7 @@ mod tests {
     /// A function that ran at `Fast` is compiled again at `FastRa` once it was seen running compiled
     /// for `PAYBACK_RA` times that compile, in a run that does not recompile at O2 (#715); one that
     /// did not run at `Fast` is not.
+    #[cfg(feature = "llvm")]
     #[test]
     fn a_fast_function_is_recompiled_when_the_register_allocator_repays() {
         let (mut w, f) = worker(1_600);

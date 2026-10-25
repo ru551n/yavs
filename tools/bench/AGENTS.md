@@ -117,7 +117,7 @@ Method (the same for every number quoted in `docs/STATUS.md`):
 - Pin every timed run, of every tool, to the performance cores of the host (`--cores`, default read from the CPU topology;
   on a hybrid host pass a subset when other agents use some of them). Run builds, analysis and test suites elsewhere
   (`taskset -c <efficiency cores> cargo ...`) so they do not disturb the timings. Say which cores were used.
-- Analysis is excluded: libraries are analysed once per tool before timing; the timed part is elaborate + initialise + run
+- Analysis is excluded: libraries are analysed once per tool before timing (the untimed preparation batches consecutive files of a library in one call like the integrations, #745: `analyse_files`, a failing call repeated file by file); the timed part is elaborate + initialise + run
   (references that need a separate elaboration command are summed).
 - Interleave the tools inside each round and swap the order every round; take the median of `--runs` (use 5 for a decision).
 - Report wall, CPU and peak RSS. When the host is loaded, wall time is noise: also pass `--instructions` and quote cycles

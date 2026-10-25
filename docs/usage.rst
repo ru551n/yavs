@@ -22,7 +22,8 @@ Analyze
 
     yavs analyze --std=2019 --work=lib:out/lib pkg.vhd tb.vhd
 
-The files are analyzed in order; the first failing file stops the batch. ``--std`` is the
+The files are analyzed in order; the first failing file stops the batch. Pass the consecutive files of one library and standard in one call: the call shares its parsed dependencies and the library index,
+which makes the cold analysis of a whole library 26 to 50 percent cheaper in user instructions than one call per file, and a failing call is repeated file by file when each file's own result is needed. ``--std`` is the
 standard of these files (``2008`` by default). ``-D NAME=VALUE`` defines a conditional analysis
 identifier. An argument ``@FILE`` is replaced by the arguments in FILE, one per line.
 

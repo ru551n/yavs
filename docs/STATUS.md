@@ -186,7 +186,7 @@ suite's pass list).
 ## performance (`tools/bench`, #387)
 
 The shared benchmark harness (`tools/bench/AGENTS.md`) measures every performance change the same way:
-`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 4, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.25 warm, 0.46 cold (own files + elab + run 0.27 and 0.52; head-to-head 3 had 0.26 and 0.49 for the total, 0.32 and 0.59 for own + elab + run), executed instructions yavs / sim1 0.35 (0.43 before), tiny-test corpus 0.14 and 0.28, the h2h designs 0.59 and 0.82. The tables below are older measurements on the earlier host.
+`python3 -I tools/bench/run.py --compare A B`. Phase times come from `yavs run --time-report`. Testbenches of real projects (41, against sim1 and between binaries): `tools/realbench`. Analysis cells are batched calls since #745 (section "Analysis in batched calls"; tables before it are one call per file and not comparable). Current comparison with sim1 (rule 23: `--tier=auto`, total wall incl. analysis, cold and warm): section "Real-world performance suite: yavs against sim1, head-to-head 4, 2026-10-25"; geomean of the 41 realbench totals (libraries analysed too) 0.25 warm, 0.46 cold (own files + elab + run 0.27 and 0.52; head-to-head 3 had 0.26 and 0.49 for the total, 0.32 and 0.59 for own + elab + run), executed instructions yavs / sim1 0.35 (0.43 before), tiny-test corpus 0.14 and 0.28, the h2h designs 0.59 and 0.82. The tables below are older measurements on the earlier host.
 
 Baseline of main at the commit that added the harness (release build, Intel Core Ultra 9 275HX, 24 CPUs,
 host shared with other agents; median CPU seconds of 3 runs, phase CPU in 10 ms steps, `--threads 1`):
@@ -5146,6 +5146,38 @@ Compile CPU of the same 54 functions of `vai_window_gen_interlock` 2 292 to 1 66
 gave 17.5 G). Warm runs: instructions equal on every test (window generator 147.2 / 146.4 G), wall within the noise of the loaded host.
 Not done, the larger cuts: the cold analysis of the libraries (a policy and a start-up question: #738, #553), a cheaper first compile level (1 to 3 percent slower code, `FastRa` pattern), the price constant
 `US_PER_INSTR` (800) against 260 to 670 measured per IR instruction (posted to #728). Not verified: the full head-to-head basis (the loaded host made 41-test cold totals meaningless at this size).
+
+## Analysis in batched calls: integrations, tools and the head-to-head method (#745, 2026-10-25)
+
+User decision: integrations analyse consecutive files of one library and standard in one `yavs analyze F1 F2 ...` call by default (`docs/decisions.md` "Batched analysis calls"). Changed: `tools/corpus/run.py`
+(yavs batches, a failing call is repeated file by file, `--per-file` for the old form; all 34 manifests give identical results and output either way; whole corpus 34 s against 47 s on a busy host),
+`tools/realbench` analysis cells (both tools, `--analyze-calls batched|per-file`), `tools/bench/run.py` preparation, `docs/usage.rst`, `docs/cli-contract.md`. `tools/suites` already batched; `tools/difftest`,
+`tools/discrepancies`, `tiny.py` and the release smoke test analyze one file by construction. The VUnit simulator interface for yavs (the `rsim-integration` branch, described in `docs/test-runner-requirements.md`) is not in the repository, on this host or on the VUnit fork, so it is unchanged; the generic
+`--batch-compile` is the open VUnit pull request #1236 (opt-in flag).
+
+Method for the head-to-head (root rule 23): the analysis cells call BOTH tools the same way, consecutive files of one library, standard and flag set per call, with one rule more: a file that defines a unit an earlier file of the call
+defined starts a new call (the corpus manifests put several projects into one library and the reference rejects a unit replaced within one call). The reference is called through its multi-file form (`{file}` expands to the files
+in its untracked `corpus_cmd`); its own integration in the runner is one file per call, so the old basis (head-to-head 1 to 5) was one call per file for both tools. The two bases are not comparable; a table says which it is
+(`--analyze-calls per-file` reproduces the old one). The untimed set-up of the worlds stays one file per call. The same note is kept with the head-to-head results outside the repository.
+
+Realbench analysis cells, 8 tests (`hdlm_fifo_sync`, `neorv32_single_min`, `olo_base_cam`, `osvvm_axis_random`, `poc_strings`, `sc5_timestamp`, `uvvm_util_rand`, `vunit_logging`), same bench build (no `llvm` feature), core 12, 5 runs per
+cell, two passes per mode with the lower one kept, host load 12 to 14. Wall seconds, one call per file / batched:
+
+| test | yavs cold | yavs warm | sim1 cold |
+|---|---|---|---|
+| `hdlm_fifo_sync` | 1.15 / 0.45 | 0.55 / 0.20 | 4.09 / 0.77 |
+| `neorv32_single_min` | 0.28 / 0.14 | 0.11 / 0.02 | 0.89 / 0.11 |
+| `olo_base_cam` | 1.97 / 0.65 | 1.01 / 0.17 | 6.61 / 0.74 |
+| `osvvm_axis_random` | 3.55 / 0.78 | 1.92 / 0.92 | 11.05 / 1.60 |
+| `poc_strings` | 0.64 / 0.28 | 0.34 / 0.08 | 2.13 / 0.24 |
+| `sc5_timestamp` | 1.05 / 0.31 | 0.54 / 0.11 | 3.00 / 0.27 |
+| `uvvm_util_rand` | 0.41 / 0.26 | 0.09 / 0.02 | 1.01 / 0.49 |
+| `vunit_logging` | 0.98 / 0.50 | 0.52 / 0.24 | 3.29 / 0.70 |
+
+Geometric mean of batched / one call per file: yavs 0.40 cold and 0.27 warm in wall time (instructions 0.48 and 0.34), sim1 0.16 cold and warm (instructions 0.26). So the reference gains more than yavs, and the analysis
+ratio yavs / sim1 (geometric mean of the 8) rises from 0.32 to 0.80 cold and from 0.14 to 0.23 warm; yavs cold is behind sim1 on `neorv32_single_min`, `poc_strings` and `sc5_timestamp` (#747); the warm cell of `osvvm_axis_random` (0.92 s) is as slow as its cold cell (0.78 s) because the OSVVM testbench libraries redefine units (#748). Not verified: the other 34
+realbench tests' analysis cells timed (their batched call lists were built and ran without a failing call for both tools, untimed), the full head-to-head basis, the effect on the run phases (none expected: libraries are
+the same).
 
 ## Real-world performance suite: yavs against sim1, head-to-head 4, 2026-10-25 (`tools/realbench`)
 

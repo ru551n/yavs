@@ -3,14 +3,17 @@
 
   tools/corpus/run.py MANIFEST.toml [--tool yavs|sim1] [--cmd TEMPLATE] [--keep-going] [--bless]
 
-MANIFEST is a path or a bare name (vunit-2008 -> tools/corpus/vunit-2008.toml). Files are analyzed one per
-call, in manifest order. The result of every file (PASS = exit 0) is compared with <name>.expected (yavs) or
+MANIFEST is a path or a bare name (vunit-2008 -> tools/corpus/vunit-2008.toml). Files are analyzed in manifest
+order. For yavs, consecutive files of one library and standard go in one call by default (#745: one analysis
+session, as integrations call it); a failing call is repeated file by file, so every file still gets its own
+exact result and output (a call that fails while every file passes alone is a DIFF of its own). --per-file (and every reference label) makes one call per file. The result of every file (PASS = exit 0) is compared with <name>.expected (yavs) or
 <name>.<suffix>.expected (a reference label), one `PASS|FAIL <lib> <source>/<path>` line per manifest entry in order. Any
 difference fails, until the list is updated (--bless rewrites it from this run, which then covers every file).
 Without --keep-going the run stops at the first difference (without an expected list: the first FAIL).
 
 Command template words: {std} {lib} {dir} {file}; {map} (one --map=LIB:DIR/LIB per library but std/ieee unless the flags have --bootstrap) and
-{flags} (the manifest's [flags] for --tool) expand to several arguments when they are a word of their own.
+{flags} (the manifest's [flags] for --tool) expand to several arguments when they are a word of their own; so does {file}
+(the files of a call, one for a call per file).
 Default templates:
   yavs: yavs analyze --std={std} --work={lib}:{dir}/{lib} {map} {flags} {file}
 A reference label (sim1, ...) takes its template, expected-file suffix and optional
@@ -69,6 +72,7 @@ def main():
     ap.add_argument("--bless", action="store_true", help="write the expected list from this (complete) run")
     ap.add_argument("--log", help="write the full output of every failed file here")
     ap.add_argument("--no-wrap", action="store_true")
+    ap.add_argument("--per-file", action="store_true", help="one call per file (the default for a reference label)")
     a = ap.parse_args()
     ref = a.tool != "yavs"
     if ref and not (a.cmd or simconf.get(a.tool, "corpus_cmd")):
@@ -116,26 +120,51 @@ def main():
     results, bad, stopped = [], 0, False
     log = open(a.log, "w") if a.log else None
 
-    for i, f in enumerate(m["file"]):
-        key = f"{f['lib']} {f['source']}/{f['path']}"
-        path = base[f["source"]] / f["path"]
-        extra = []
-        if fixup:
-            extra, path = std_fixup(f, path, out)
+    batch = not ref and not a.per_file and "{file}" in tmpl  # a template with {file} inside a longer word cannot take several files
+    prep = []  # per manifest entry: (path, extra args)
+    for f in m["file"]:
+        extra, path = std_fixup(f, base[f["source"]] / f["path"], out) if fixup else ([], base[f["source"]] / f["path"])
+        prep.append((path, extra))
+        (out / f["lib"]).parent.mkdir(parents=True, exist_ok=True)
+
+    def gkey(j):  # entries with the same key can share a call
+        return m["file"][j]["lib"], m["file"][j]["std"], tuple(prep[j][1])
+
+    def call(ids):
+        """One tool call for the entries ids (same library, standard and extra args): (exit status, output)."""
+        f0, extra = m["file"][ids[0]], prep[ids[0]][1]
         argv = []
         for t in tmpl:
             if t == "{map}":
                 argv += [f"--map={l}:{out}/{l}" for l in libs] + [f"--map={x}" for x in a.extra_map]
             elif t == "{flags}":
                 argv += flags + (extra if fixup else [])
+            elif t == "{file}":
+                argv += [str(prep[i][0]) for i in ids]
             else:
-                argv.append(t.format(std=f["std"], lib=f["lib"], dir=out, file=path))
-        (out / f["lib"]).parent.mkdir(parents=True, exist_ok=True)
+                argv.append(t.format(std=f0["std"], lib=f0["lib"], dir=out, file=prep[ids[0]][0]))
         try:
             p = subprocess.run(argv if a.no_wrap else WRAP + argv, capture_output=True, text=True, errors="replace")
-            rc, text = p.returncode, p.stdout + p.stderr
         except OSError as e:
             die(f"cannot run {argv[0]}: {e}")
+        return p.returncode, p.stdout + p.stderr
+
+    result = {}  # entry -> (exit status, output), filled a group at a time
+    for i, f in enumerate(m["file"]):
+        key = f"{f['lib']} {f['source']}/{f['path']}"
+        if i not in result:
+            ids = [i]
+            while batch and i + len(ids) < len(m["file"]) and gkey(i + len(ids)) == gkey(i):
+                ids.append(i + len(ids))
+            rc, text = call(ids)
+            if rc == 0:
+                result.update({j: (0, text) for j in ids})
+            else:  # a failing call stops at its first failing file: repeat file by file for the exact result of each
+                result.update({j: (call([j]) if len(ids) > 1 else (rc, text)) for j in ids})
+                if len(ids) > 1 and all(result[j][0] == 0 for j in ids):  # a failure of the session itself (state kept between files, a cap, an ICE)
+                    bad += 1
+                    print(f"DIFF: the call of entries {ids[0] + 1} to {ids[-1] + 1} failed (exit {rc}) but every file passes alone:\n   " + "\n   ".join(text.strip().splitlines()[:6]))
+        rc, text = result.pop(i)
         res = "PASS" if rc == 0 else "FAIL"
         results.append((res, key))
         diff = None

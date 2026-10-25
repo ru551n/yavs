@@ -255,6 +255,10 @@ yavs analyze --std=FILE_STD --work=NAME:PATH [--map=NAME:PATH ...] [--color=alwa
   soon as it is done (visible to readers at once; they are renamed into place without an fsync, so a power loss may lose the last call's files, which the next `analyze` records again), so concurrent calls into the same library serialize per
   call and never lose each other's files. A call reads the index and writes the records and the index of its
   own files, not the whole library.
+- Integrations pass the consecutive files of one library and standard in one call by default (user decision
+  2026-10-25, #745: fewer process starts and one loaded index; cold analysis of the verification libraries
+  costs 26 to 50 percent fewer user instructions and about 85 percent fewer kernel instructions); where each
+  file's own result is needed, a failing call is repeated file by file.
 - Exit 0: every file was analyzed and recorded in the work library. Warnings go
   to stderr/stdout and do not change the exit code (unless `-Werror`).
 - Exit 1: a file has errors. The call stops at the first failing file (fail

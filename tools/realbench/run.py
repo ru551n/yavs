@@ -17,12 +17,13 @@ reference (--ref, label sim1) runs elaboration plus run, analysis excluded. Ever
 core of --cores (one test at a time per core), under systemd-run MemoryMax=2G and timeout 300, wall, CPU,
 peak RSS and (perf) instructions as in tools/bench/run.py --ref, which supplies the timing code.
 Phases (--phases, default all four), each timed apart for yavs and the reference, with a ratio yavs / reference per test, per category
-and overall: `analyze` (the test's whole compile order, ONE FILE PER CALL; library part and own files apart; cold = fresh libraries, warm =
+and overall: `analyze` (the test's whole compile order, consecutive files of one library and standard in ONE CALL by default, for both tools
+(#745; --analyze-calls per-file: one call per file); library part and own files apart; cold = fresh libraries, warm =
 the same files again into the populated libraries), `elab` (elaboration only, cold and warm cache), `codegen` (yavs `--tier=llvm` minus
 `--tier=interp`, both stopped at time 0; cold and warm cache; the reference generates code inside its elaboration), `run` (the --tiers cells).
 Python is stdlib only; run with `python3 -I`. See AGENTS.md.
 """
-import argparse, concurrent.futures as cf, importlib.util, json, math, os, re, shlex, shutil, statistics, subprocess, sys, threading, time, tomllib
+import argparse, concurrent.futures as cf, functools, importlib.util, json, math, os, re, shlex, shutil, statistics, subprocess, sys, tempfile, threading, time, tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -38,6 +39,7 @@ CACHE = Path(os.environ.get("YAVS_REALBENCH_CACHE", "~/.cache/yavs-realbench")).
 CORPUS = Path(os.environ.get("YAVS_CORPUS", "~/.cache/rsim-corpus")).expanduser()
 SPECIAL = {"vhdl-ai-test": "YAVS_BENCH_VHDL_AI_TEST"}  # source id -> environment variable naming its checkout
 COLD = "-cold"
+ANALYZE_CALLS = "batched"  # analysis cells and replays: "batched" (consecutive files of a library and standard per call) or "per-file"
 RECORDER = (None, None)  # (binary, key) that records the suite drivers for the reference worlds
 TIERS_ALL = ("interp", "auto", "llvm")
 
@@ -221,12 +223,14 @@ def relaxed_flag(tool):
 
 
 def analyse_cmd(tool, Y, t, w, lib, file, flags=None, libs=None, std=None):
-    """One analysis call. flags: the extra arguments (default: --relaxed when the test is), libs: the --map libraries (default: the directories of the world)."""
+    """One analysis call. file: one path or a list of paths (one call, in order). flags: the extra arguments (default: --relaxed when the
+    test is), libs: the --map libraries (default: the directories of the world)."""
     std = std or t["std"]
+    files = [str(f) for f in file] if isinstance(file, (list, tuple)) else [str(file)]
     if flags is None:
         flags = relaxed_flag(tool) if t["relaxed"] else []
     if tool == "yavs":
-        return [Y, "analyze", f"--std={std}", f"--work={lib}:{w}/{lib}"] + [f"--map={l}:{w}/{l}" for l in (libs or libs_of(w))] + flags + [file]
+        return [Y, "analyze", f"--std={std}", f"--work={lib}:{w}/{lib}"] + [f"--map={l}:{w}/{l}" for l in (libs or libs_of(w))] + flags + files
     tmpl = simconf.get(tool, "corpus_cmd")
     if not tmpl:
         raise Fail(f"{tool}: key corpus_cmd not configured (tools/sims.local.conf)")
@@ -234,7 +238,12 @@ def analyse_cmd(tool, Y, t, w, lib, file, flags=None, libs=None, std=None):
     for x in shlex.split(tmpl):
         if x == "{map}":
             continue
-        out += flags if x == "{flags}" else [x.format(std=std, lib=lib, dir=w, file=file)]
+        if x == "{file}":
+            out += files
+        elif "{file}" in x and len(files) > 1:
+            raise Fail(f"{tool}: corpus_cmd needs {{file}} as a word of its own to take several files")
+        else:
+            out += flags if x == "{flags}" else [x.format(std=std, lib=lib, dir=w, file=files[0])]
     return out
 
 
@@ -336,7 +345,7 @@ def _pristine_driver(t, tool, Y, key, dest):
 def replay_calls(t, tool, Y, calls, dest):
     for std, rel, lib, files in calls:
         (dest / lib).mkdir(exist_ok=True)
-        for f in files:
+        for f in files:  # untimed set-up: one file per call (a recorded call can define a unit twice, which the reference rejects within one call)
             p = sh(analyse_cmd(tool, Y, dict(t, std=std, relaxed=rel), dest, lib, f), cwd=dest)
             if p.returncode:
                 errs = [l for l in (p.stdout + p.stderr).splitlines() if "rror" in l][:2]
@@ -377,7 +386,7 @@ def ref_script(tool, t, w, what="both"):
     return f"cd {shlex.quote(str(w))} && {f(el)}" + (f" || exit 98; {f(rn)}" if what == "both" else "")
 
 
-# ---- the analysis phase: the compile order of a test, one file per call ----
+# ---- the analysis phase: the compile order of a test, consecutive files of a library and standard per call (#745) ----
 
 def pass_keys(tool, manifest, key):
     """`lib source/path` of the manifest files that analysed (PASS) in the cached library build of this tool."""
@@ -415,19 +424,53 @@ def analysis_plan(t, tools):
     return plan
 
 
-def item_cmd(tool, Y, t, w, item, libs):
+def item_flags(tool, t, item):
     fl = item["flags"]
     if fl is None:
-        fl = relaxed_flag(tool) if t["relaxed"] else []
-    elif isinstance(fl, dict):  # a manifest's [flags]: by tool key
-        fl = fl.get(tool, [])  # [flags] keys are the labels
-    return analyse_cmd(tool, Y, t, w, item["lib"], str(item["file"]), flags=fl, libs=libs, std=item["std"])
+        return relaxed_flag(tool) if t["relaxed"] else []
+    return fl.get(tool, []) if isinstance(fl, dict) else fl  # a manifest's [flags]: by tool key (the keys are the labels)
+
+
+def item_cmd(tool, Y, t, w, items, libs):
+    """The analysis call of items (a list of plan items of one library, standard and flags, or one item)."""
+    items = items if isinstance(items, list) else [items]
+    return analyse_cmd(tool, Y, t, w, items[0]["lib"], [i["file"] for i in items], flags=item_flags(tool, t, items[0]), libs=libs, std=items[0]["std"])
+
+
+UNIT = re.compile(r"^\s*(?:(entity)\s+(\w+)\s+is|(architecture)\s+(\w+)\s+of\s+(\w+)\s+is|(package\s+body)\s+(\w+)\s+is|(package)\s+(\w+)\s+is"
+                  r"|(configuration)\s+(\w+)\s+of|(context)\s+(\w+)\s+is)", re.I | re.M)
+
+
+@functools.lru_cache(maxsize=None)
+def units_of(path):
+    """The design units a source file defines, as (kind, names...) keys (a scan, not a parse: a false hit only ends a call early)."""
+    text = Path(path).read_text(errors="replace")
+    return frozenset(tuple(" ".join(g.lower().split()) for g in m.groups() if g) for m in UNIT.finditer(text))
+
+
+def item_calls(tool, t, items):
+    """The items as calls (ANALYZE_CALLS "batched"): consecutive items of one library, standard and flags together; a file that defines a unit
+    an earlier file of the call defined starts a new call (the corpus manifests put several projects into one library, and the reference
+    rejects a unit replaced within one call). Otherwise one call per item."""
+    if ANALYZE_CALLS != "batched":
+        return [[i] for i in items]
+    calls, seen = [], set()
+    for i in items:
+        u = units_of(str(i["file"]))
+        if calls and (calls[-1][0]["lib"], calls[-1][0]["std"], item_flags(tool, t, calls[-1][0])) == (i["lib"], i["std"], item_flags(tool, t, i)) and not seen & u:
+            calls[-1].append(i)
+            seen |= u
+        else:
+            calls.append([i])
+            seen = set(u)
+    return calls
 
 
 def analysis_script(tool, Y, t, w, plan, part, path):
-    """A bash script of one analysis call per file; the exit status is 1 if any call failed. Returns the command that runs it."""
+    """A bash script of one analysis call per run of files (per file with --analyze-calls per-file); the exit status is 1 if any call failed.
+    Returns the command that runs it."""
     L = [f"cd {shlex.quote(str(w))}", "f=0"]
-    L += [" ".join(map(shlex.quote, item_cmd(tool, Y, t, w, i, plan["libs"]))) + " >/dev/null 2>&1 || f=$((f+1))" for i in plan[part]]
+    L += [" ".join(map(shlex.quote, item_cmd(tool, Y, t, w, c, plan["libs"]))) + " >/dev/null 2>&1 || f=$((f+1))" for c in item_calls(tool, t, plan[part])]
     L.append("exit $((f > 0))")
     Path(path).write_text("\n".join(L) + "\n")
     return f"bash {shlex.quote(str(path))}"
@@ -439,11 +482,11 @@ def make_libs_world(t, tool, Y, key, plan, dest):
     dest.mkdir(parents=True)
     (dest / "out").mkdir()
     if "driver" in t:
-        for i in plan[tool]["lib"]:
-            (dest / i["lib"]).mkdir(exist_ok=True)
-            p = sh(item_cmd(tool, Y, t, dest, i, plan[tool]["libs"]), cwd=dest)
+        for c in item_calls(tool, t, plan[tool]["lib"]):
+            (dest / c[0]["lib"]).mkdir(exist_ok=True)
+            p = sh(item_cmd(tool, Y, t, dest, c, plan[tool]["libs"]), cwd=dest)
             if p.returncode:
-                raise Fail(f"{t['name']}: {tool} could not analyse {Path(i['file']).name} (library part of the recorded driver)")
+                raise Fail(f"{t['name']}: {tool} could not analyse {Path(c[0]['file']).name} or a later file of its call (library part of the recorded driver)")
     else:
         copy_corpus_libs(t, tool, Y, key, dest)
     return dest
@@ -871,6 +914,23 @@ def self_test():
     md3 = markdown({"meta": meta3, "tests": {"a": {"category": "c1", "cells": cs}}})
     assert "## Phase: analyze" in md3 and "| analyze-cold | 1 | **2.00**" in md3 and "| codegen-cold | 1 | **10.00**" in md3 and "Analysis per file" in md3 and "100.0" in md3
     assert "hidden" not in md3 and "analyze-cold-lib | " in md3
+    # analysis calls (#745): consecutive files of one library, standard and flags share a call; --analyze-calls per-file splits them
+    it = lambda lib, f, std="2008", fl=None: dict(lib=lib, std=std, file=f, flags=fl)
+    items = [it("a", "1"), it("a", "2"), it("b", "3"), it("a", "4"), it("a", "5", "2019"), it("a", "6", "2019", ["--relaxed"])]
+    tt = {"relaxed": False, "std": "2008"}
+    items = [dict(i, file=REPO / "lib" / "ORDER.md") for i in items]  # no unit definitions: only library, standard and flags split the calls
+    assert [len(c) for c in item_calls("yavs", tt, items)] == [2, 1, 1, 1, 1]
+    with tempfile.TemporaryDirectory() as d:  # a unit defined twice in a run starts a new call
+        fs = []
+        for n, src in enumerate(["entity E is end;\narchitecture A of E is begin end;\n", "-- entity E is\npackage P is end;\n", "entity E is end;\n"]):
+            (Path(d) / f"{n}.vhd").write_text(src)
+            fs.append(dict(lib="a", std="2008", file=Path(d) / f"{n}.vhd", flags=None))
+        assert [len(c) for c in item_calls("yavs", tt, fs)] == [2, 1]
+    assert analyse_cmd("yavs", "/y", tt, "/w", "a", ["1", "2"], libs=["a"])[-2:] == ["1", "2"]
+    global ANALYZE_CALLS
+    ANALYZE_CALLS = "per-file"
+    assert len(item_calls("yavs", tt, items)) == 6
+    ANALYZE_CALLS = "batched"
     print(f"self-test ok ({len(tests)} tests listed)")
 
 
@@ -879,8 +939,10 @@ def main():
     ap.add_argument("bin", nargs="?", help="yavs binary")
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
     ap.add_argument("--ref", default="", help="reference labels, e.g. sim1")
-    ap.add_argument("--phases", default=",".join(PHASES), help="comma separated: analyze (the compile order, one call per file, cold and warm), elab (elaboration only), "
+    ap.add_argument("--phases", default=",".join(PHASES), help="comma separated: analyze (the compile order, cold and warm; see --analyze-calls), elab (elaboration only), "
                     "codegen (llvm tier minus interp up to time 0), run (the --tiers cells)")
+    ap.add_argument("--analyze-calls", choices=("batched", "per-file"), default="batched",
+                    help="analysis cells, both tools: consecutive files of a library and standard in one call (default, #745) or one call per file")
     ap.add_argument("--tiers", default="interp,auto,auto-cold", help="run phase: comma separated: interp, auto, llvm, each also as <tier>-cold")
     ap.add_argument("--tests", default="", help="comma separated test names")
     ap.add_argument("--category", default="", help="only this category")
@@ -948,7 +1010,8 @@ def run(a):
         for k in ("corpus_cmd", "real_elab", "real_run"):
             if not simconf.get(r, k):
                 raise Fail(f"{r}: key {k} not configured (tools/sims.local.conf, see tools/realbench/AGENTS.md)")
-    global RECORDER
+    global RECORDER, ANALYZE_CALLS
+    ANALYZE_CALLS = a.analyze_calls
     RECORDER = (binaries[0]["path"], binaries[0]["key"])
     pins = check_sources(tests)
     if a.prepare:
@@ -999,7 +1062,7 @@ def run(a):
     meta = {"time": time.strftime("%Y-%m-%dT%H:%M:%S"), "cores": a.cores, "runs": runs, "instr_event": instr, "refs": refs, "compare": bool(a.compare),
             "tiers": tiers, "phase_list": phases, "phases": spec["phases"], "basis": spec["basis"], "hidden": spec["hidden"],
             "cells": [n for v in spec["phases"].values() for n in v], "binaries": {b["label"]: b["key"] for b in binaries}, "binary_paths": {b["label"]: b["path"] for b in binaries},
-            "sources": pins, "host_cpus": os.cpu_count()}
+            "sources": pins, "host_cpus": os.cpu_count(), "analyze_calls": a.analyze_calls}
     res = {"meta": meta, "tests": {n: results[n] for n in order}}
     outdir = Path(a.out).expanduser() / "results"
     outdir.mkdir(parents=True, exist_ok=True)

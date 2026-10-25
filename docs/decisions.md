@@ -9287,3 +9287,38 @@ that ran copies had fewer instructions than the compiled shared code had.
   (`awaits_switch`, #673) owns that wait; left to it. A frame address for the cached layout of `LayoutOf`: the interpreter's step after a
   failed cache test leaves the layout in the temporary area, so the address is in two places and the shared code of subprograms keeps the
   `LikelyTemp` lookup (`LayoutOf` and `Field` are 12 percent of the bytes of the writer's compiled code that is still shared).
+
+## Batched analysis calls: consecutive files of one library and standard in one `yavs analyze` (tools, docs, #745, 2026-10-25, user decision)
+
+`yavs analyze F1 F2 ...` analyzes the files of one call in one session (`docs/cli-contract.md` section 4): the dependencies are loaded once and the library index is read once. Measured on a
+base build of 2026-10-25, cold analysis of a whole manifest, one call per file against one call per run of consecutive files of one library and standard (user / kernel G instructions): UVVM
+9.36 / 2.38 to 6.08 / 0.36, OSVVM 5.41 / 2.07 to 2.73 / 0.25, hdl-modules 0.92 / 0.46 to 0.68 / 0.22 (process start and exit, page faults, and the dependencies read again for every file are what goes).
+
+- **Decision (user, 2026-10-25): integrations analyse consecutive files of one library and standard in one call by default.** What batching changes, and how each is kept: the call stops at its
+  first failing file, so a caller that needs each file's own result repeats a failing call file by file (the exit status of the whole is the same; the files before the failure stay recorded and
+  analysing a file again replaces its units, `docs/cli-contract.md`); the caller groups by library, standard and flags (a call has one of each); the analysed-unit cache and the library index are
+  written per file as before, so a warm call finds the same units.
+- **What was changed.** `tools/corpus/run.py` (yavs: batches by default, a failing call repeated file by file, `--per-file` for the old form; references stay one call per file because their
+  expected lists record per-file verdicts and a reference that replaces a unit within one call rejects it); all 34 manifests give identical PASS/FAIL lists and identical output either way,
+  and the whole corpus takes 34 s instead of 47 s (busy host). `tools/realbench` (analysis cells, both tools, `--analyze-calls batched|per-file`, default batched); `tools/bench/run.py`
+  (`analyse_files` for the untimed preparation of the verification-component testbenches and the vhdl-ai-test tree); the documentation (`docs/usage.rst`, `docs/cli-contract.md`).
+  `tools/suites` (`pro.py`, `uvvm.py`) already batched with the same repeat; `tools/difftest` has one file per test (and `external.py` passes the files of a script step in one call),
+  `tools/discrepancies`, `tools/bench/tiny.py` and `tools/vhpi-conformance` analyze one file by construction, the release smoke test one file.
+- **The VUnit simulator interface for yavs is not in this repository, on this host or on the maintainer's VUnit fork.** `docs/test-runner-requirements.md` describes it (the `rsim-integration` branch
+  of the test runner that sets `supports_batch_compile`, `batch_file_list_arguments = ("@{}",)` and `supports_concurrent_compiles_into_library`); no clone here and no branch of the fork has it, and
+  VUnit's master has no yavs interface. The generic feature is the open VUnit pull request #1236 (`--batch-compile`, branch `batch-compile` of the fork: it groups the files ready at the same time by library
+  and compile options, passes a file list, and compiles a failing batch file by file; the flag is opt-in and an interface sets `supports_batch_compile`). Making it the default for yavs is a change in
+  the missing interface branch, so nothing is changed here; it is the first item to do when that branch is found (flag default for `--simulator yavs`, or the interface passing `batch=True`).
+- **Realbench groups with one more rule, the same for both tools: a file that defines a design unit an earlier file of the call defined starts a new call** (`item_calls`, a regular-expression
+  scan of the unit headers, not a parse). The corpus manifests put several projects into one library (the runner's examples define `tb_example` in several directories), and the reference rejects a
+  unit that is replaced within one call ("depends on an obsolete version of ..."); yavs accepts it. A real project has no such files, and the rule keeps both tools on the same grouping.
+  The untimed set-up of a world (the fixed point that finds the order of a test's own files, the reference's replay of a recorded driver) stays one file per call: it needs each file's own result.
+- **Head-to-head method (root rule 23).** Both tools get the same grouping in the analysis cells, the reference through its multi-file form (`{file}` as a word of its own in the untracked
+  `corpus_cmd`). The reference gains far more from batching than yavs does (its per-call cost is a process start that loads the standard libraries): on eight realbench tests the cold analysis
+  wall falls to 0.40 (yavs) and 0.16 (reference) of one call per file (geometric mean), warm to 0.27 and 0.16, so the ratio yavs / reference rises from 0.32 to 0.80 cold and from 0.14 to 0.23 warm.
+  Tables of the head-to-head up to 5 are one call per file for both and are not comparable with batched cells; a table says which it is, and `--analyze-calls per-file` reproduces the old basis. The
+  reference's own integration in the runner is one file per call, which is why the old basis was kept until now; the batched basis measures the tools, not the callers.
+- **Not done.** Batching the untimed fixed-point of `make_pristine` (needs each file's result); batching the reference's corpus validation (`gen_external.py`, the per-file expected lists of the
+  references); the exit-code and `analyzed` report of `docs/test-runner-requirements.md` section 1 (a failing batch is repeated file by file by the caller). Cold batched analysis of small libraries
+  is slower than the reference (#747); a warm call of a library whose units are redefined by later files (OSVVM testbench libraries) costs more than the cold call (#748). The corpus runner reports a batched call
+  that fails while every file passes alone as a `DIFF` of its own, so the retry cannot hide a failure of the session itself.

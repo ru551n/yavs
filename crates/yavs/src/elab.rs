@@ -640,6 +640,15 @@ impl StopTierUp {
     }
 }
 
+/// A name for this run in the profile of `--tier=auto`: a digest of the command line.
+#[cfg(feature = "llvm")]
+fn run_id() -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    std::env::args_os().skip(1).for_each(|a| a.hash(&mut h));
+    format!("{:016x}", h.finish())
+}
+
 /// Set up `--tier=llvm` (compile the program now) or `--tier=auto` (start tier-up, stopped
 /// when the returned guard drops).
 #[cfg(feature = "llvm")]
@@ -662,6 +671,8 @@ fn use_tier(
     let work = a.common.work.split_once(':').map_or("", |(_, d)| d);
     if a.tier() != TierArg::Interp && !a.common.no_cache && !work.is_empty() {
         yavs_llvm::set_cache(Some(std::path::Path::new(work)));
+        // The run-to-run profile of `--tier=auto` is of this command line (#754).
+        yavs_llvm::set_run_id(Some(&run_id()));
     }
     match a.tier() {
         TierArg::Interp => Ok(None),

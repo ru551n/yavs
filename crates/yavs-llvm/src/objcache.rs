@@ -203,3 +203,106 @@ pub(crate) fn add_compiled(name: &str, len: u32) {
     }
     store.put(LIST, &list_key(), text.as_bytes());
 }
+
+/// The kind of the run-to-run profile of a program (`profile_key`, #754).
+const PROFILE: &str = "prof";
+
+/// What the profile of a run is keyed by besides the program: the command line (the generics, the
+/// stop time, the test case a runner names), set by the CLI.
+static RUN_ID: Mutex<Option<String>> = Mutex::new(None);
+
+/// Name the run for its profile (`--tier=auto` keeps one per program and run). Without it there is
+/// no profile.
+pub fn set_run_id(id: Option<&str>) {
+    *RUN_ID.lock().unwrap_or_else(PoisonError::into_inner) = id.map(str::to_string);
+}
+
+/// The key of the profile of `prog` in the store: the build, the optimiser switches, the run's id
+/// and a digest of every function's identity in id order (name, kind, parent and size as lowered;
+/// the reserved slots of copies are left out, they are filled in as the run goes), so the profile
+/// of a run is never read for another one. `None` without a store or a run id.
+pub(crate) fn profile_key(prog: &yavs_ir::Program) -> Option<Key> {
+    use std::hash::{Hash, Hasher};
+    let id = RUN_ID
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()?;
+    if !enabled() {
+        return None;
+    }
+    let mut h = std::hash::DefaultHasher::new();
+    for (_, f) in prog.funcs.iter().filter(|(_, f)| !f.spare) {
+        (&f.name, f.kind, f.parent, f.size).hash(&mut h);
+    }
+    let mut k = KeyBuilder::new(PROFILE);
+    k.text(&yavs_ir::opt::fingerprint())
+        .text(&id)
+        .part(&h.finish().to_le_bytes());
+    Some(k.finish())
+}
+
+/// The profile stored under `key`, if any.
+pub(crate) fn profile_load(key: &Key) -> Option<String> {
+    let store = STORE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()?;
+    let e = store.get(PROFILE, key)?;
+    String::from_utf8(e.to_vec()).ok()
+}
+
+/// Store the profile (atomically; a run that writes after another one replaces its profile).
+pub(crate) fn profile_store(key: &Key, text: &str) {
+    let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    if let Some(store) = store {
+        store.put(PROFILE, key, text.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The profile of a run is kept per program and per run id (the command line), is read back
+    /// whole, and exists only with a store and an id.
+    #[test]
+    fn the_profile_is_kept_per_program_and_run() {
+        let (prog, _) = {
+            let mut pb = yavs_ir::ProgramBuilder::new();
+            let f = pb.declare("p", yavs_ir::FuncKind::Process, None);
+            let mut fb = pb.define(f);
+            let body = fb.block();
+            fb.stmt(
+                yavs_ir::StmtKind::Wait,
+                yavs_diag::Span::new(yavs_diag::FileId(0), 0, 1),
+            );
+            fb.emit(yavs_ir::Inst::Br { to: body });
+            fb.at(body);
+            fb.emit(yavs_ir::Inst::Suspend { resume: 0 });
+            fb.emit(yavs_ir::Inst::Br { to: body });
+            fb.finish();
+            (pb.finish().unwrap(), f)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        set_cache(None);
+        set_run_id(Some("a"));
+        assert!(profile_key(&prog).is_none(), "no store");
+        set_cache(Some(dir.path()));
+        set_run_id(None);
+        assert!(profile_key(&prog).is_none(), "no run id");
+        set_run_id(Some("a"));
+        let a = profile_key(&prog).expect("a key");
+        set_run_id(Some("b"));
+        let b = profile_key(&prog).expect("a key");
+        assert_ne!(a, b);
+        assert_eq!(profile_load(&a), None);
+        profile_store(&a, "yavs-auto-profile 2\nbase 5\n");
+        assert_eq!(
+            profile_load(&a).as_deref(),
+            Some("yavs-auto-profile 2\nbase 5\n")
+        );
+        assert_eq!(profile_load(&b), None);
+        set_cache(None);
+        set_run_id(None);
+    }
+}

@@ -8548,6 +8548,47 @@ Left (ranked): the kernel and drive path per activation (`finish_direct`, `assig
 instructions (the `Host`, the sampling slot and the result, 60 before the split, the rest moved here from `run_quick`); `run_cached` 150; `view_again` 72;
 a persistent per-process state needs `unsafe` in `yavs-interp` and a per-process object table (a decision for the user).
 
+### `--tier=auto` run-to-run profile (yavs-llvm, yavs, #754, #755, 2026-10-25)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` run-to-run profile". A run leaves a small profile next to the compiled code (hot
+processes, processes a trial took back, the simulation CPU time); the next run of the same program and command line compiles the listed
+processes at their first look, and the run after it keeps them if the run as a whole took 3 percent less simulation CPU time, else loses
+them for good. `YAVS_AUTO_PROFILE=off` turns it off; the first run, `--tier-heat`, `--no-cache` and runs under 100 ms decide as before. The wait of the
+shared code of a process for its copy (`SPEC_WAIT`) is gone with it.
+
+Method: bench builds of main (d3123c88 for these tables, "main") and of this change ("new"); per world a fresh copy of the pristine world, the analysis caches of the
+binary filled by two untimed runs, the compiled-code cache emptied, then consecutive `--tier=auto` runs pinned to core 8 (the compile thread shares
+it); medians of 6 worlds (4 for the window generator), wall and `perf stat` user cycles and instructions. Ratios new / main of the Nth run of a world
+(below 1 is faster):
+
+| design | 1st (no profile) | 2nd | 3rd | 4th |
+|---|---|---|---|---|
+| `sc5_fifo_repack` | 1.02 | 1.08 | 0.73 | 0.73 |
+| `poc_arith_addw` | 1.00 | 0.98 | 1.00 | 0.99 |
+| `vai_window_gen_interlock` | 1.04 | 1.00 | 0.98 | 0.96 |
+| `uvvm_util_rand`, `uvvm_sb_slv`, `olo_fix_cordic_rot`, `neorv32_single_min` | 0.98 to 1.00 | 0.97 to 1.01 | 0.97 to 1.00 | 0.98 to 1.01 |
+
+`sc5_fifo_repack` main: 2.40 s first, 2.35 second, 2.43 third (its own cache keeps changing the set the policy compiles); new 2.46, 2.54, 1.76 and 1.68 s
+(cycles 12.0, 12.3, 8.5 and 7.7 G against 11.7, 11.5, 11.7 and 11.2 G). The first run with the profile compiles about twenty processes cold (40 to 65 ms of
+CPU each) on the simulation's own core, which is the +8 percent. With the first threshold (a sixteenth of the sampled time) the third run was 0.89.
+`poc_arith_addw` ended 5 percent faster in an earlier set of worlds (0.94 to 0.95 from the second run) and 1 to 2 percent in the later one: the
+difference is main's own spread. The four last rows never compile a process early (the hot ones are functions, or kinds the model says do not gain),
+their profile lists nothing and instructions are equal; the loss path was seen on `neorv32_single_min` when the kind filter was not there: one
+large combinational process compiled early, the run 30 percent slower, lost for good by the end of that run.
+
+Head-to-head designs (`tools/bench --compare`, 8 and 15 runs, core 8): geometric mean of CPU new / main 0.969 over the 11, `lfsr64` 0.82 (0.87 to 0.91
+with the profile off: a process of fewer than 64 instances in a 170 ms run no longer waits 400 ms of sampled work for a switch its compiled shared
+code makes at once), `rtl_ff` 0.99 to 1.02, `rtl_fan` 1.00 to 1.03 (the same with the profile off: layout spread), `rtl_lfsr` and `rtl_chain` 0.96.
+The wait's removal alone: no change on any of the 42 designs of `tools/realbench`, nor on `sc5_fifo_repack` (32.06 against 32.06 G instructions).
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 8, default runs): wall geometric mean new / main 1.02 (auto, warm: the ten-millisecond tests move by whole hundredths; 0.98 over the 11 tests of 1 s or more; sum
+of the walls 1.01) and 1.00 (auto-cold, sum 1.01), instructions 0.99 and 1.00. Per test only `sc5_fifo_repack` moves: 1.82 to 1.43 s (instructions 0.80);
+the others are host noise (load average 30 to 39 from other agents: `uvvm_axistream_vvc` 1.12 at equal instructions, `poc_arith_addw` 0.95 at
+instructions 1.10, `leon3mp` 40.4 to 41.6 s). Cold equals main on every design (the profile of a first run is written at its end).
+
+#755: `tier.rs::auto_tier_compiles_a_long_loop_of_one_call` waits (60 s at most) for the compile the call started instead of racing it; it
+failed once under `gc-stress` on a loaded host (load average 8).
+
 ## Value movement: lcopy, wide copies, in-place concatenation (#519, 2026-10-25)
 
 Gapscan item 2 (no timing cores: exact instruction counts, `perf stat instructions:u`, core 6, bench build with `llvm`, `--tier=interp --threads 1`; decision and numbers in

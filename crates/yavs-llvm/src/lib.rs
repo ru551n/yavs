@@ -27,6 +27,8 @@ mod lower;
 #[cfg(feature = "llvm")]
 mod objcache;
 #[cfg(feature = "llvm")]
+mod profile;
+#[cfg(feature = "llvm")]
 mod regs;
 pub mod rt;
 #[cfg(feature = "llvm")]
@@ -48,4 +50,4 @@ pub use jit::{Error, Jit, Module, OptLevel, portable_cpu};
 #[cfg(feature = "llvm")]
 pub use lower::{LlvmTier, compile};
 #[cfg(feature = "llvm")]
-pub use objcache::{cache_stats, set_cache};
+pub use objcache::{cache_stats, set_cache, set_run_id};

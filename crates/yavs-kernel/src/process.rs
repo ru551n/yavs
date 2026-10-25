@@ -432,6 +432,13 @@ impl Ctx<'_> {
         crate::kernel::Interrupt::stopped(self.sh.interrupt)
     }
 
+    /// The flag byte `stop_requested` reads (`Interrupt::STOP` set: stop), for compiled code that
+    /// polls it itself. Valid for the whole run.
+    #[inline]
+    pub fn interrupt_flags(&self) -> *const u8 {
+        self.sh.interrupt.as_ptr()
+    }
+
     /// An error with this process, time and delta attached. The interpreter adds its call
     /// stack to `trace`.
     pub fn error(&self, kind: ErrorKind) -> SimError {

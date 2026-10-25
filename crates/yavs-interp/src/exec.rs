@@ -8062,6 +8062,7 @@ impl Machine {
         tf.max_depth = m.vc.max_depth;
         tf.owner = m.vc.owner;
         m.tier_cov(tf);
+        tf.stop = c.interrupt_flags();
         // A process that is `hot` has no shared state (`sh`), which the call paths of a serial
         // process do not promise: its epoch and flags come from the heap and the frame alone.
         if m.hot {
@@ -9903,8 +9904,10 @@ impl crate::TierHost for Host<'_, '_, '_> {
         let Some(c) = self.ctx.as_deref() else {
             tf.sigtab_len = 0;
             tf.known = u64::MAX;
+            tf.stop = crate::NO_STOP.as_ptr();
             return;
         };
+        tf.stop = c.interrupt_flags();
         if m.vc.tier_sigs.len() != m.vc.nsigs {
             m.vc.tier_sigs = m
                 .inst

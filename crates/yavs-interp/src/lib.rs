@@ -55,7 +55,9 @@ pub use exec::copy_bits;
 pub use heap::{Heap, collections as gc_collections};
 pub use ieee::{code_table, edge_native};
 pub use pmemo::pmemo_stats;
-pub use pre::{ScalarDrive, light_ieee as light_native, scalar_drives, static_wait};
+pub use pre::{
+    ScalarDrive, light_ieee as light_native, retreating_brs, scalar_drives, static_wait,
+};
 pub use state::{restore_state, restore_state_prefix};
 pub use textio::{FILE_INPUT, FILE_OUTPUT};
 pub use tier_census::report as tier_census;
@@ -874,7 +876,16 @@ pub struct TierFrame {
     /// null and 0 without coverage.
     pub cov: *const u8,
     pub cov_len: u64,
+    /// The kernel's interrupt flag byte (`Ctx::interrupt_flags`; `NO_STOP` without a kernel):
+    /// a process that never suspends polls `Interrupt::STOP` at its jumps back, as the interpreter does.
+    pub stop: *const u8,
 }
+
+/// The bit of the byte `TierFrame::stop` points at that asks the run to stop.
+pub const STOP_BIT: u8 = yavs_kernel::Interrupt::STOP;
+
+/// `TierFrame::stop` of a view without a kernel: never set.
+pub static NO_STOP: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// The bit of `TierFrame::owner` at which the runtime's id starts.
 pub const OWNER_RT_SHIFT: u32 = 32;
@@ -953,6 +964,7 @@ impl Default for TierFrame {
             flags: 0,
             cov: std::ptr::null(),
             cov_len: 0,
+            stop: NO_STOP.as_ptr(),
         }
     }
 }

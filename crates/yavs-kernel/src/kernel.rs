@@ -503,7 +503,8 @@ pub struct Interrupt(Arc<AtomicU8>);
 
 impl Interrupt {
     const PAUSE: u8 = 1;
-    const STOP: u8 = 2;
+    /// The stop bit of the flag byte `Ctx::interrupt_flags` points at.
+    pub const STOP: u8 = 2;
 
     pub fn pause(&self) {
         self.0.fetch_or(Self::PAUSE, Ordering::AcqRel);

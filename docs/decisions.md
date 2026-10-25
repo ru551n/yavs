@@ -6314,11 +6314,31 @@ had to end cleanly (the first Ctrl-C with `--wave`, which finishes the file) ins
   attempt with a check in the `Br` and `BrBody` arms moved the instructions of unrelated designs by +1 to +9 percent
   (`calls` +8.8, `compute_loop` +6.8, `protected_queue` +4.7: one more arm moves the loop's register allocation, as
   `docs/decisions.md` "The shape of the interpreter's op loop" found), so the check lives outside it.
-- **Not covered:** a loop without a wait inside a process that does wait, loops in compiled code and under the debugger,
+- **Not covered:** a loop without a wait inside a process that does wait, loops under the debugger (compiled code: done in #737, see below),
   and `SIGUSR1` (the hang report reads kernel state that an activation in progress holds) and pause (the process
   would have to be resumable at the jump back, which needs its resume point exposed). Each needs a poll in the loops of
   every process or kernel support, which is not free on the dispatch loop (a check at every jump back is a load, a compare and a
   branch on the hottest path).
+
+## Compiled code polls the stop request at the jump back of a process that never suspends (yavs-llvm, yavs-interp, #737, 2026-10-25)
+
+#583 gave the interpreter the check; compiled code ran the same process without it, so `--tier=auto` (once it had compiled the
+spinning process) and `--tier=llvm` could not be stopped with Ctrl-C. Decisions:
+
+- **Same rule, narrower in the IR:** a retreating `Br` (`yavs_interp::retreating_brs`, the jumps back of a depth-first walk of
+  the blocks, which `count_back_edges` uses too) that also jumps back in the code, in a non-native `FuncKind::Process` function
+  without `MAY_SUSPEND` (`Gen::func`, arm `Inst::Br`). The interpreter's rule is positional (every `Br` back in the code); the
+  compiled loop of a design with joins laid out earlier has several of those per iteration, and polling them all cost +15
+  percent of instructions in a 20 M iteration loop against +3.7 for the retreating ones. Subprograms and native frames pay
+  nothing, as in the interpreter; loops that end in `CondBr`/`Case` stay uncovered.
+- **The poll only decides, the interpreter acts:** compiled code loads the kernel's flag byte (`TierFrame::stop`, filled by
+  `Host::view` and `view_root` from `Ctx::interrupt_flags`; `NO_STOP` without a kernel, so never set) through a relaxed atomic
+  load, tests `yavs_interp::STOP_BIT` and leaves to the interpreter at the pc of that `Br` (`exit_if`, a cold block). The
+  interpreter steps the `Br`, finds the request in `Machine::step_out` and suspends the process as `wait;` does. So what is
+  reported, the exit status and the finished wave file are the interpreter's, with no second implementation. The load is atomic so
+  LLVM cannot hoist it out of a loop without calls.
+- **Not covered, as before:** SIGUSR1 (the hang report of a process that never suspends), pause, loops in a process that does
+  wait, and the Cranelift lowering (spike/clift2: noted on #481).
 
 ## Huge pages for the heap (yavs-cache `map.rs`, yavs CLI `main`, #556; user decision 2026-10-22: in-process, no re-exec)
 
@@ -8123,7 +8143,7 @@ lifted:
   300 ms).
 - **#717.** `window` and `run_trial` take the wall clock and the nap (`Pace`), so the tests of the trial run in virtual time (`Sim`
   in `auto.rs`): the number of pairs a trial takes no longer depends on scheduling.
-- **Found on the way:** the test `stuck::sigint_ends_a_process_that_never_suspends` hangs once the tier has compiled the spinning process (#737: compiled code does not poll the stop request); with the earlier compile of this change it fails every time under `--features llvm`, so it runs `--tier=interp` until #737 is fixed.
+- **Found on the way:** the test `stuck::sigint_ends_a_process_that_never_suspends` hangs once the tier has compiled the spinning process (#737: compiled code does not poll the stop request); with the earlier compile of this change it fails every time under `--features llvm`, so it ran `--tier=interp` until #737 was fixed (it runs every tier now).
 - **Measured** (docs/STATUS.md "`--tier=auto` work clock"): the clock itself, the decisions idle and loaded, the cold and warm totals.
 - **Left:** which function a thread is in at a look is sampling, so the decisions of a design near a threshold still differ between
   worlds (the window generator: 6 to 8 different sets in 8 worlds, the same functions within a few milliseconds of seen time);

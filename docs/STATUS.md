@@ -17,7 +17,7 @@
 
 ### Stuck and hung simulations (#582)
 
-E3002 names the processes and signals of the loop and `--max-deltas` raises the limit; `--hang-report` and SIGUSR1 print what the waiting processes wait for (W3101, with stuck signals, their drivers and a stopped clock); W3102 warns about a process that can never suspend; `--shuffle` prints its seed. Tests: `crates/yavs/tests/stuck.rs`, `tests/cli/stuck_*`. Not done: the wait statement's place, the silent hang itself (#583).
+E3002 names the processes and signals of the loop and `--max-deltas` raises the limit; `--hang-report` and SIGUSR1 print what the waiting processes wait for (W3101, with stuck signals, their drivers and a stopped clock); W3102 warns about a process that can never suspend; `--shuffle` prints its seed. Tests: `crates/yavs/tests/stuck.rs`, `tests/cli/stuck_*`. Not done: the wait statement's place.
 
 ### Elaboration fixes (#494, #495, #498, #499)
 
@@ -8311,3 +8311,13 @@ cycles) are untouched.
 Left, measured: `sig_gather` and `sig_scatter` per leaf (signal lookup, kind dispatch, code read) and per call (plan lookup compares descriptor bytes); they want a plan that knows runs of leaves in one
 signal (record packs, #686, #677). `layout_word` (1.7 percent of grlib cycles, about 100 instructions per call) belongs to #518. The compiled tier keeps its own inline copies for one and two blocks; `CatLCopy` and `lcopy_wide` are interpreter code, so
 `fletcher_bufferwriter_512` under `--tier=llvm` (above the interpreter) is not helped by this change.
+
+## Compiled code polls the stop request (#737, 2026-10-25)
+
+A process that never suspends now ends on Ctrl-C or SIGTERM whichever tier runs it: compiled code (`--tier=llvm`, and `--tier=auto` once it has compiled the process) polls
+`TierFrame::stop` at the retreating `Br`s of such a process and leaves to the interpreter at that `Br`, which suspends the process as before (`docs/decisions.md` "Compiled code
+polls the stop request"). Tests: `stuck::sigint_ends_a_process_that_never_suspends` in the default, `--tier=interp` and (llvm feature) `--tier=llvm` variants, each also checking the
+exit status 1, "simulation interrupted" and the wave file; the llvm variant fails without the poll. Cost, user instructions of `--tier=llvm` runs on bench builds (warm object cache, minimum of 3), before to after:
+`compute_h2h` 2 733.70 M to 2 733.72 M, `poc_arith_addw` 124.28 G to 124.34 G (+0.05 percent), the window generator 160.33 G to 160.33 G, because their processes wait and carry no poll. The worst case, a 20 M iteration compute loop in a process
+without any wait that ends in `finish`: 2 714 M to 2 814 M (+3.7 percent, 5 instructions an iteration). Polling every `Br` that jumps back in the code (not only the retreating ones) cost +15 percent there: the
+loop has several such `Br`s to joins laid out earlier. Not covered: SIGUSR1 (the hang report of a process that never suspends), loops ended by a `CondBr`, the Cranelift lowering (#481).

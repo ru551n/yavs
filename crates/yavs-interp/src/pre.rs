@@ -2470,14 +2470,10 @@ fn jumps_mut(op: &mut Op) -> [Option<&mut u32>; 2] {
     }
 }
 
-/// A function that runs as lowered under elaboration-time evaluation counts its jumps back
-/// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
-/// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
-/// Loops are fused into ops that jump back themselves (`CmpBrStep`), so the counting is a
-/// trampoline, and the loop ops of every other function stay as they are. The jumps back are the
-/// retreating `Br`s of a depth-first walk of the blocks (a jump to a join the code lays out
-/// earlier is none). An element loop (`Op::Loop`) is not counted: its iterations run at once.
-fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, at: &mut Vec<u32>) {
+/// (pc of the `Br`, pc of the head block) of every jump back of `f`: the retreating `Br`s of a
+/// depth-first walk of its blocks (a jump to a join the code lays out earlier is none). Every loop
+/// that goes round by a `Br` has one.
+pub fn retreating_brs(prog: &Program, f: &Func) -> Vec<(u32, u32)> {
     let blocks = f.blocks.values();
     let succ = |b: usize| -> Vec<usize> {
         let bl = &blocks[b];
@@ -2495,7 +2491,6 @@ fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, 
             ref i => i.targets().iter().map(|t| t.0 as usize).collect(),
         }
     };
-    // (pc of the `Br`, pc of the head) of every jump back.
     let mut back: Vec<(u32, u32)> = Vec::new();
     let mut state = vec![0u8; blocks.len()];
     let mut stack: Vec<(usize, Vec<usize>, usize)> = Vec::new();
@@ -2525,6 +2520,18 @@ fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, 
             _ => {}
         }
     }
+    back
+}
+
+/// A function that runs as lowered under elaboration-time evaluation counts its jumps back
+/// (`Program::back_edge`, #695): the jump back to the head of a loop goes to a new `Op::Step` of
+/// that `Br` of the IR, placed after the end of the code, where `Machine::step_out` counts it.
+/// Loops are fused into ops that jump back themselves (`CmpBrStep`), so the counting is a
+/// trampoline, and the loop ops of every other function stay as they are. The jumps back are the
+/// retreating `Br`s of a depth-first walk of the blocks (a jump to a join the code lays out
+/// earlier is none). An element loop (`Op::Loop`) is not counted: its iterations run at once.
+fn count_back_edges(prog: &Program, f: &Func, entry: &[u32], ops: &mut Vec<Op>, at: &mut Vec<u32>) {
+    let back = retreating_brs(prog, f);
     // The ops in code order come first; the ones the passes appended (element loops) follow.
     let main = at
         .windows(2)

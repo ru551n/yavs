@@ -49,6 +49,10 @@ pub(crate) struct Pre {
     pub memo_off: std::sync::atomic::AtomicBool,
     /// Processes that gave the memo of this function up.
     pub memo_votes: std::sync::atomic::AtomicU32,
+    /// Some flag of `NativeFlags::func` is set for this function (compiled, asked, called by the
+    /// tier or counted; never cleared). The watching loop looks at this byte of the callee's
+    /// `Pre`, which the call has loaded, instead of the flag table (`Runtime::sync_native`).
+    pub native: std::sync::atomic::AtomicBool,
     /// Registers defined once by a constant or an address (not of an up-level frame): the
     /// frame starts with their values, the interpreter never executes their definitions.
     pub preloaded: Box<[bool]>,
@@ -217,6 +221,7 @@ impl Pre {
             nested: f.parent.is_some(),
             memo_off: Default::default(),
             memo_votes: Default::default(),
+            native: Default::default(),
             preloaded: preloaded.into(),
             frame,
             next,

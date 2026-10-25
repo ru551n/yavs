@@ -1091,9 +1091,29 @@ pub struct NativeFlags {
     entered: std::sync::atomic::AtomicU64,
     /// Some function is counted (`NAT_COUNT`).
     counting: std::sync::atomic::AtomicBool,
+    /// Functions flagged since the last `Runtime::sync_native`, which sets `Pre::native` of each.
+    fresh: Mutex<Vec<u32>>,
+    /// `fresh` is not empty.
+    dirty: std::sync::atomic::AtomicBool,
 }
 
 impl NativeFlags {
+    /// `func` got a flag: `Runtime::sync_native` tells its `Pre`.
+    fn note(&self, func: u32) {
+        self.fresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(func);
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    /// Whether any flag of `func` is set.
+    fn flagged(&self, func: u32) -> bool {
+        self.func
+            .get(func as usize)
+            .is_some_and(|n| n.load(Ordering::Acquire) != 0)
+    }
+
     /// The processes made of process function `func` so far.
     pub fn instances(&self, func: FuncId) -> u32 {
         self.instances
@@ -1118,6 +1138,7 @@ impl NativeFlags {
             self.entered.store(0, Ordering::Relaxed);
             self.counting.store(true, Ordering::Release);
             n.fetch_or(NAT_COUNT, Ordering::Release);
+            self.note(func.0);
             self.any.store(true, Ordering::Release);
         }
     }
@@ -1171,6 +1192,7 @@ impl NativeFlags {
     pub fn set_call(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_or(NAT_CALL, Ordering::Release);
+            self.note(func.0);
         }
     }
 
@@ -1202,6 +1224,7 @@ impl NativeFlags {
     pub fn set(&self, func: FuncId) {
         if let Some(n) = self.func.get(func.0 as usize) {
             n.fetch_or(NAT_CODE, Ordering::Release);
+            self.note(func.0);
         }
         self.any.store(true, Ordering::Release);
     }
@@ -1410,6 +1433,8 @@ impl Runtime {
                 resumed: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
                 entered: Default::default(),
                 counting: Default::default(),
+                fresh: Default::default(),
+                dirty: Default::default(),
             }),
             live: (0..prog.funcs.len()).map(|_| Default::default()).collect(),
             plans: Default::default(),
@@ -1499,11 +1524,42 @@ impl Runtime {
     /// The facts of function `id` (`f`), computed once.
     #[inline(always)]
     pub(crate) fn pre(&self, id: yavs_ir::FuncId, f: &yavs_ir::Func) -> Option<&pre::Pre> {
-        Some(
-            self.pre
-                .get(id.0 as usize)?
-                .get_or_init(|| pre::Pre::new(f, &self.prog, self.prog.runs_raw(id))),
-        )
+        Some(self.pre.get(id.0 as usize)?.get_or_init(|| {
+            let mut p = pre::Pre::new(f, &self.prog, self.prog.runs_raw(id));
+            p.native = self.native.flagged(id.0).into();
+            p
+        }))
+    }
+
+    /// Set `Pre::native` of the functions flagged since the last call. The fast loops call it where
+    /// they look for compiled code anyway (an activation starts, every `WATCH` events), so a
+    /// call of a function the tier just flagged is seen within that many events.
+    #[inline(always)]
+    pub(crate) fn sync_native(&self) {
+        if self.native.dirty.load(Ordering::Acquire) {
+            self.sync_native_slow();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sync_native_slow(&self) {
+        self.native.dirty.store(false, Ordering::Relaxed);
+        let ids = std::mem::take(
+            &mut *self
+                .native
+                .fresh
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for id in ids {
+            let id = FuncId(id);
+            if let Some(f) = self.prog.func(id)
+                && let Some(p) = self.pre(id, f)
+            {
+                p.native.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     /// The `Handle` and `Ptr` registers live at each safepoint of `id`, computed when first
@@ -1638,6 +1694,10 @@ impl Runtime {
             let _ = n.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 (v & NAT_CODE == 0).then_some(v | NAT_ASK)
             });
+        }
+        // Every function has a flag now: the facts made so far (`Pre::native`) say so at once.
+        for p in self.pre.iter().filter_map(|p| p.get()) {
+            p.native.store(true, Ordering::Relaxed);
         }
         self.native.any.store(true, Ordering::Release);
     }

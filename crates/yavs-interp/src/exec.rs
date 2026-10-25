@@ -244,6 +244,9 @@ const TIER_GO_SUSPEND: u64 = u64::MAX - 1;
 const RECHECK: u32 = 256;
 /// Events (jumps, calls, returns) between two looks of the loop that has no compiled code yet.
 const WATCH: u32 = 128;
+/// Iterations of a fused loop op (`Op::Loop`, the search loop) per dispatch in the watching loop,
+/// so a loop that stays in one op is still looked at (the plain loop runs them in one go).
+const WATCH_CHUNK: u32 = 128;
 
 /// Every `WATCH` jumps back and calls of the watching loop: name the running function for the
 /// sampler; true when it has compiled code or is to be compiled. Out of line on purpose: inlined,
@@ -251,6 +254,7 @@ const WATCH: u32 = 128;
 #[cold]
 #[inline(never)]
 fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
+    rt.sync_native();
     crate::slot().store(
         u64::from(rt.id) << 32 | u64::from(func.0),
         Ordering::Relaxed,
@@ -260,6 +264,26 @@ fn watch_tick(rt: &Runtime, func: FuncId, pc: u32) -> bool {
         .func
         .get(func.0 as usize)
         .is_some_and(|n| n.load(Ordering::Acquire) & (NAT_CODE | NAT_ASK) != 0)
+}
+
+/// Whether `callee` has a flag set now (`Pre::native` says it had one once). Out of line: it runs
+/// only for functions the tier has touched, and inlined its loads cost the loop registers.
+#[cold]
+#[inline(never)]
+fn callee_flagged(rt: &Runtime, callee: u32) -> bool {
+    rt.native.flagged(callee)
+}
+
+/// Zeroes the sampling slot when dropped (`Machine::exec_fast`).
+struct SlotIdle<'a>(Option<&'a std::sync::atomic::AtomicU64>);
+
+impl Drop for SlotIdle<'_> {
+    #[inline(always)]
+    fn drop(&mut self) {
+        if let Some(s) = self.0 {
+            s.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 /// The body of `Machine::push_frame` and `push_frame_pre`.
@@ -1622,9 +1646,7 @@ impl Machine {
                 if let Some(fr) = self.frames.first() {
                     rt.native.activated(fr.func);
                 }
-                let r = self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0);
-                slot.store(0, Ordering::Relaxed);
-                r
+                self.exec_fast::<false, true>(&rt, None, Some(slot), ctx, 0)
             }
             None => self.exec_fast::<false, false>(&rt, None, None, ctx, 0),
         };
@@ -1647,6 +1669,7 @@ impl Machine {
     fn tiered(&self, rt: &Runtime) -> bool {
         rt.native.any.load(Ordering::Acquire)
             && self.frames.last().is_some_and(|fr| {
+                rt.sync_native();
                 rt.native
                     .func
                     .get(fr.func.0 as usize)
@@ -4670,9 +4693,7 @@ impl Machine {
                 }
                 Some(_) => {
                     let slot = crate::slot();
-                    let r = self.exec_fast::<false, true>(rt, None, Some(slot), ctx, base);
-                    slot.store(0, Ordering::Relaxed);
-                    r
+                    self.exec_fast::<false, true>(rt, None, Some(slot), ctx, base)
                 }
                 None => self.exec_fast::<false, false>(rt, None, None, ctx, base),
             };
@@ -4907,6 +4928,9 @@ impl Machine {
         base: usize,
     ) -> R<Outcome> {
         let prog = &rt.prog;
+        // Nothing interpreted on this thread after the loop (a store in the caller, between the
+        // call and the match on the result, made it copy the result).
+        let _idle = W.then(|| SlotIdle(slot));
         // `W`: this thread's sampling `slot` names the function the loop goes on in; `run_ops`
         // names it again only every `WATCH` calls and jumps back (#525).
         let tag = u64::from(rt.id) << 32;
@@ -5075,14 +5099,8 @@ impl Machine {
         // `watch`: a call of a function with compiled code, one the tier calls on a native frame
         // or one to be compiled is made by the loop with the tier (the frame's pc is the call's).
         macro_rules! callee_look {
-            ($callee:expr) => {
-                if watch
-                    && rt
-                        .native
-                        .func
-                        .get($callee as usize)
-                        .is_some_and(|n| n.load(Ordering::Acquire) != 0)
-                {
+            ($callee:expr, $cpre:expr) => {
+                if watch && $cpre.native.load(Ordering::Relaxed) && callee_flagged(rt, $callee) {
                     return Ok(Flow::Retier);
                 }
             };
@@ -5229,7 +5247,6 @@ impl Machine {
             ($callee:expr, $start:expr, $len:expr, $dst:expr, $memo:expr) => {{
                 let (callee, start, len, dst) = ($callee, $start, $len, $dst);
                 self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                callee_look!(callee);
                 let args = yavs_ir::Regs { start, len };
                 let dst = (dst != pre::NONE).then_some(Reg(dst));
                 let cid = FuncId(callee);
@@ -5237,6 +5254,7 @@ impl Machine {
                     .func(cid)
                     .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                 let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                callee_look!(callee, cpre);
                 // The memo of pure calls answers a repeated call before the call is made, by the
                 // compiled tier or not (out of line: it keeps this loop's frame as it was).
                 if $memo
@@ -5835,8 +5853,8 @@ impl Machine {
                     {
                         // A search loop: run its iterations here, off the dispatch.
                         let other = if sa == idx { sb } else { sa };
-                        let mut limit = 1 << 16;
-                        if (TIER && !native) || watch {
+                        let mut limit = if watch { WATCH_CHUNK } else { 1 << 16 };
+                        if TIER && !native {
                             limit = limit.min(recheck.saturating_sub(1));
                         }
                         let sc = self.scan_loop(
@@ -5859,7 +5877,7 @@ impl Machine {
                         if sc.iters > 0 {
                             self.regs[dst as usize] = sc.ch;
                             self.regs[idx as usize] = sc.i as u64;
-                            if (TIER && !native) || watch {
+                            if TIER && !native {
                                 recheck -= sc.iters.min(recheck - 1);
                             }
                             match sc.hit {
@@ -6010,12 +6028,16 @@ impl Machine {
                 Op::Br { to } => go!(to),
                 Op::Loop { id, to } => {
                     // Iterations the kernel may run before the loop goes back to counting.
-                    let mut limit = i64::MAX as u64;
-                    if (TIER && !native) || watch {
+                    let mut limit = if watch {
+                        u64::from(WATCH_CHUNK)
+                    } else {
+                        i64::MAX as u64
+                    };
+                    if TIER && !native {
                         limit = limit.min(u64::from(recheck.saturating_sub(1)));
                     }
                     let n = t!(self.op_loop(code, top, id, limit));
-                    if n > 0 && ((TIER && !native) || watch) {
+                    if n > 0 && TIER && !native {
                         recheck -= (n as u32).min(recheck - 1);
                     }
                     go!(to);
@@ -6069,7 +6091,6 @@ impl Machine {
                     dst,
                 } => {
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
-                    callee_look!(callee);
                     t!(self.shared());
                     let h = self.regs[obj as usize];
                     let args = yavs_ir::Regs { start, len };
@@ -6079,6 +6100,7 @@ impl Machine {
                         .func(cid)
                         .ok_or_else(|| ice_f!("call of missing function {cid}"))?;
                     let cpre = rt.pre(cid, cf).ok_or_else(|| ice_f!("no function {cid}"))?;
+                    callee_look!(callee, cpre);
                     // A function the compiled tier calls on a native frame (`Tier::call`).
                     if TIER
                         && let Some(t) = tier

@@ -136,6 +136,85 @@ fn activations_of_a_process_are_counted_while_a_trial_asks() {
     assert_eq!(flags.entries(), n);
 }
 
+/// A function the tier flags while an interpreted process runs is entered through the tier at
+/// the process's next calls (`Pre::native`, seen by the watching loop within an activation or
+/// `WATCH` events), and not before it is flagged (#750).
+#[test]
+fn a_callee_flagged_later_is_entered_through_the_tier() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // Compiled code for `.0` once `.2` is set; counts the entries.
+    struct Count(FuncId, AtomicU32, std::sync::atomic::AtomicBool);
+    impl yavs_interp::Tier for Count {
+        fn run(&self, f: FuncId, _: u32, _: &mut dyn yavs_interp::TierHost) -> Option<u32> {
+            if f == self.0 {
+                self.1.fetch_add(1, Ordering::Relaxed);
+            }
+            None
+        }
+        fn ready(&self, f: FuncId) -> bool {
+            f == self.0 && self.2.load(Ordering::Relaxed)
+        }
+    }
+    let mut pb = ProgramBuilder::new();
+    let int = integer(&mut pb);
+    let sq = pb.declare("square", FuncKind::Function, None);
+    let proc_ = pb.declare("p", FuncKind::Process, None);
+    {
+        let mut fb = pb.define(sq);
+        let x = fb.param("x", Width::B8, ParamClass::Value, Mode::In, None);
+        // Longer than the optimiser inlines (it would leave no call to flag).
+        stmt(&mut fb, StmtKind::Return);
+        let v = load(&mut fb, AddrSpace::Frame, x, Width::B8);
+        let mut r = v;
+        for _ in 0..30 {
+            r = bin(&mut fb, IntOp::Add, r, v);
+        }
+        fb.emit(Inst::Ret { v: Some(r) });
+        fb.finish();
+    }
+    {
+        // A new argument each time: the memo of pure calls would answer a repeated one.
+        let mut fb = pb.define(proc_);
+        let n = fb.local("n", int, 8, 8);
+        wait_for(&mut fb, 10 * NS);
+        stmt(&mut fb, StmtKind::Call);
+        let v = load(&mut fb, AddrSpace::Frame, n, Width::B8);
+        let one = fb.int(1);
+        let v1 = bin(&mut fb, IntOp::Add, v, one);
+        store(&mut fb, AddrSpace::Frame, n, v1, Width::B8);
+        let args = fb.regs(&[v1]);
+        let r = fb.reg(RegTy::I64);
+        fb.emit(Inst::Call {
+            func: sq,
+            args,
+            dst: Some(r),
+        });
+        fb.emit(Inst::Br { to: BlockId(0) });
+        fb.finish();
+    }
+    let mut d = Design::new(pb);
+    d.procs = vec![ProcSpec {
+        name: "p",
+        func: proc_,
+        drives: vec![],
+    }];
+    let rt = Runtime::new(d.prog.clone(), Default::default()).unwrap();
+    let tier = std::sync::Arc::new(Count(sq, AtomicU32::new(0), Default::default()));
+    assert!(rt.set_tier(tier.clone()));
+    let flags = rt.native_flags();
+    let (mut sim, _, _) = d.build_rt(1, rt, |p, _| p);
+    sim.run_until(Time::ns(100)).unwrap();
+    assert_eq!(tier.1.load(Ordering::Relaxed), 0);
+    tier.2.store(true, Ordering::Relaxed);
+    flags.set(sq);
+    sim.run_until(Time::ns(200)).unwrap();
+    assert!(
+        tier.1.load(Ordering::Relaxed) >= 9,
+        "{}",
+        tier.1.load(Ordering::Relaxed)
+    );
+}
+
 /// Counters of rising edges, one small (its registers stay with the process between
 /// activations) and one whose temporaries outgrow what a process keeps (it hands its vectors
 /// to the thread's scratch), both run for many activations with identical results.

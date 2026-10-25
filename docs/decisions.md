@@ -6204,6 +6204,70 @@ cycle geometric mean over the designs of `tools/bench` and `tools/realbench` (32
   the same time, same list), and, to make `poc_arith_addw` cheaper, `to_integer` of the message (its warning for a vector
   with `U` is an effect at every call: not skipped, not shared with the identical call of the condition).
 
+## Interpreter round 20: the watching loop costs less (yavs-interp, #750, #544, 2026-10-25)
+
+Question (#750): a `--tier=auto` run that compiles nothing (`--tier-heat=2000000000,0,16000`) runs 1 to 3 percent more
+instructions than `--tier=interp`. The suspected cause (the loop with the tier, `run_ops::<true>`, takes no lean call and no
+parameter skip) is not it: that loop only runs for functions with compiled code. Everything is in `run_ops::<false, true>`
+(`W`, the watching loop, which runs every interpreted function while a tier is set) and in the per-activation set-up of
+`run_quick`. It does take lean calls and the parameter skip.
+
+Method: main-thread instructions only (`perf stat --no-inherit`, `--threads 1`, warm world, deterministic to 0.05 percent, so the
+compile and sampler threads are out), `tools/stepcount --ops` per op between the two variants (`--ops-fn 'run_ops::<false, true>'`),
+`objdump` of both functions, bench builds (`tools/build-bench.sh`), seven designs. `--tier=auto` against `--tier=interp`,
+geometric mean 1.0137 before.
+
+What the counts said:
+
+- The watching code is not where the instructions are: the per-op differences are spread over ops that contain none of it
+  (`AffP` +5, `DerefImm` +4, `Load` +2, 2 to 5 percent each). In the plain loop four callee-saved registers hold `self` and three
+  hoisted field addresses (`&self.regs.v.ptr`, `.len`, `.base`); in the watching loop one of the three is on the stack, so every
+  register access of every arm pays a load. Which code is present decides this, by its block frequencies and its calls, not
+  by its instruction count: removing the callee look made `Load` and `DerefImm` as cheap as in the plain loop again.
+- A call in the loop's hot path costs the loop its registers even when it is never taken: the look at a callee
+  (`rt.native.func.get(callee)`, then an out-of-line `callee_flagged(rt, callee)`) cost 0.5 percent of all instructions.
+  One load of a byte in the callee's `Pre`, which the call has loaded anyway, with the out-of-line check marked `#[cold]`
+  behind it, costs nothing measurable.
+- `recheck` in `Machine` (a `Cell`, `decl mem; jne`), the tick out of line (`watch_look`), a cold hint on the hand-over branch, ticking
+  on every taken jump (worse: 1.0157 against 1.0143 then) and ticking calls only changed nothing or lost. Not landed.
+- `run_quick` copied the result of `exec_fast::<false, true>` because the sampling slot was cleared between the call and the
+  match on it (13 instructions per activation); a guard dropped inside `exec_fast` clears it without the copy. Moving the
+  slot code of `run_quick`'s watching arm into its own function, or wrapping `exec_fast`, made the plain arm worse (+0.5 percent
+  on `poc_cache_cpu` with identical `run_ops::<false, false>` code): the plain loop's `run_quick` is as sensitive as the loop.
+
+Landed (`exec.rs`, `lib.rs`, `pre.rs`; the plain loop's `run_ops` is byte for byte the old code):
+
+- **`Pre::native`**: a byte of the callee's `Pre` says some flag of `NativeFlags::func` is set for it (compiled, asked, called by
+  the tier, counted; never cleared). `callee_look!` reads it after the call has loaded the `Pre`; only when it is set does it
+  ask the flag table (`callee_flagged`, cold) whether the flag is still there. `NativeFlags::set`, `set_call` and `count_on`
+  list the function in `fresh`; `Runtime::sync_native` (a load of `dirty` where `Machine::tiered` and `watch_tick` look for compiled
+  code anyway) sets the byte, `Runtime::pre` reads the flags when it makes a `Pre`, `set_eager` sets every existing byte. A call of a
+  function the tier just flagged is therefore seen at the next activation or within `WATCH` events, not at once (the test
+  `a_callee_flagged_later_is_entered_through_the_tier`).
+- **The fused loop ops (`Op::Loop`, the search loop) no longer read `recheck` in the watching loop**: they run `WATCH_CHUNK` (128)
+  iterations per dispatch there, as the budget left used to bound them at 127 at most. The loop with the tier keeps its `recheck`.
+- **`SlotIdle`**: the guard that clears the sampling slot when `exec_fast::<false, true>` returns.
+
+Measured (main-thread instructions, `--tier=auto` nothing compiled over `--tier=interp`, before to after): `osvvm_axis_random`
+1.0151 to 1.0053, `poc_cache_cpu` 1.0185 to 1.0102, `neorv32_single_min` 1.0152 to 1.0084, `fletcher_bufferwriter_512` 1.0109 to
+1.0052, `uvvm_util_rand` 1.0091 to 1.0030, `uvvm_sb_slv` 1.0261 to 1.0056, `hdlm_axi_fifo` 1.0011 to 0.9998; geometric mean 1.0137 to
+1.0054. `--tier=interp` instructions of the same seven designs moved by -0.0 to +0.1 percent (layout of `run_quick`, no code
+of the plain loop changed).
+
+Checks: `tools/realbench --compare` (12 tests, run phase, `interp` and `auto`, cores 12 and 13, host load 5 to 7): instructions 1.00 for
+`interp`, 0.98 to 1.02 for `auto` (0.99 for the long runs, whose compile threads are in the count), wall geometric mean 1.00 for both; no
+slowdown flagged. `tools/bench --compare` (14 internal designs, `interp`): CPU geometric mean 0.996. Cycles of single designs move by
+several percent between runs on this host (the same binary twice: neorv32 1.01 to 1.07 for auto over interp), so the cycle effect of
+0.8 percent of instructions is not resolved; the rule of 2026-10-23 (instructions drop, the cycle geometric mean not worse) holds on
+the medians. Difftest `^(arith|delta|generics)/` for yavs, yavs-interp, yavs-llvm and `yavs-auto --tier-heat=1,0,0 --threads 4` (with
+`ieee`) all pass.
+
+Left (0.5 percent): the per-activation set-up of the watching arm of `run_quick` is about 20 instructions more than the plain one
+(thread-local slot, `activated`, the slot store naming the function, the `tiered` test), 1.0 percent of `poc_cache_cpu` and 0.8
+of `neorv32_single_min`, whose activations are short; and the tick of a jump back (4 instructions: the compare with the target
+and the countdown) plus the one hoisted address that is spilled (`AffP` +5 instructions). The second needs the register file
+accessed through fewer hoisted addresses (one `Regs` view instead of `ptr`, `len` and `base`), which is a change of every arm.
+
 ## Interpreter round 19: statement markers by a forward dataflow, callee `NO_TEMPS` (yavs-ir, #520, 2026-10-25)
 
 Method as in round 18 (`tools/stepcount --ops`, aligned bench builds, `--tier=interp --threads 1`), warm instruction counts of

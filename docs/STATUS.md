@@ -6866,6 +6866,16 @@ load average 38 while measuring, so the ratios are inflated): `poc_arith_addw` 3
   dropped buffer and the op that drives it. `olo_axi_master_full` 0.865, `neorv32_single_min` 0.974, `poc_cache_cpu`
   0.981, geometric mean over 45 designs 0.9935.
 
+## Interpreter round 20: the watching loop (#750, #544, 2026-10-25)
+
+Details in `docs/decisions.md` "Interpreter round 20". The cost of a `--tier=auto` run that compiles nothing sat in the loop for
+uncompiled functions while a tier is set (`run_ops::<false, true>`) and in `run_quick`'s set-up for it, not in the loop with the tier.
+The look at a callee reads `Pre::native` (a byte mirrored from `NativeFlags`, set by `Runtime::sync_native`) instead of the flag table,
+the fused loop ops run 128 iterations per dispatch there, and `exec_fast` clears the sampling slot with a guard. Main-thread
+instructions of `--tier=auto` with nothing compiled over `--tier=interp`, seven designs, geometric mean 1.0137 to 1.0054 (from 1.0011
+to 1.0261 per design before, 0.9998 to 1.0102 after); `--tier=interp` unchanged within 0.1 percent. Left: the per-activation set-up
+(about 20 instructions) and the tick of a jump back.
+
 ## Interpreter round 19: statement markers by a forward dataflow (#520, 2026-10-25)
 
 Details in `docs/decisions.md` "Interpreter round 19". `Stmt` markers stay only where a path reaches them through an instruction

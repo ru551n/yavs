@@ -5109,6 +5109,18 @@ designs and four internal benchmarks print the same under interp, llvm, auto and
 
 Not verified: `--threads` above 1 for the timings; aarch64 and Windows beyond CI; wall times on an idle host.
 
+## llvm: cold compiles, where cold minus warm goes (#740, 2026-10-25)
+
+Breakdown of head-to-head 4 (41 tests, summed seconds, 192 cold against 139 warm): library analysis one call per file 37 (cold parses, warm finds the units; about 13 M user instructions a file at the median,
+flat profile), run phase 13.6 (two tests), elaboration 2.0. Compile cost of `--tier=auto` (window generator, 55 compiles): code generation 62 percent, the `LEAN` passes 34 (of them `instcombine` 78: quadratic in the
+register buffer of the exits), the rest 4; the store of an object costs nothing measurable (no `fsync`). Changes: the passes without the alloca walk, exits that store fewer registers (decisions.md "Cold compiles").
+Compile CPU of the same 54 functions of `vai_window_gen_interlock` 2 292 to 1 667 ms (-27 percent). Wall of cold runs, medians of 5 interleaved runs, core 12, host load 20 to 28, before / after: window generator
+14.87 / 14.12 s (instructions 207 / 200 G), `poc_stat_histogram` 1.60 / 1.47 s, `fletcher_bufferwriter_512` 5.37 / 4.96 s, `poc_arith_addw` 9.58 / 9.37 s, neorv32 single min and cache, `hdlm_lfsr` within noise;
+`uvvm_util_rand` 1.15 / 1.30 s (instructions 14.0 / 15.6 G: which functions the run compiles by the time it ends depends on when the compiles finish, #673; a variant that prices compiles at half
+gave 17.5 G). Warm runs: instructions equal on every test (window generator 147.2 / 146.4 G), wall within the noise of the loaded host.
+Not done, the larger cuts: the cold analysis of the libraries (a policy and a start-up question: #738, #553), a cheaper first compile level (1 to 3 percent slower code, `FastRa` pattern), the price constant
+`US_PER_INSTR` (800) against 260 to 670 measured per IR instruction (posted to #728). Not verified: the full head-to-head basis (the loaded host made 41-test cold totals meaningless at this size).
+
 ## Real-world performance suite: yavs against sim1, head-to-head 4, 2026-10-25 (`tools/realbench`)
 
 This is the current headline (`479463c1`, bench build with the `llvm` feature; the previous run, head-to-head 3 at `4b80445d`, is in brackets). Basis (root rule 23): `--tier=auto` only, TOTAL wall as a user runs

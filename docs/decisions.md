@@ -8766,3 +8766,41 @@ is thousands of tiny blocks (one per guard). Most of the bytes were values alive
   2.41 / 2.50 / 2.41 G, `olo_base_cam` 2.68 / 2.81 / 2.68 G. Test: `a_function_below_the_base_threshold_is_not_analysed`.
 - Left (#544): the floor of the large runs, the watching form of the interpreter loop (`neorv32_single_min` 0.5 G), and the analysis a
   function above the base still needs (everything it can call is optimised once).
+
+## Cold compiles: the passes without the quadratic alloca walk, exits that record less (yavs-llvm, #740, 2026-10-25)
+
+- **Finding (where cold minus warm goes):** head-to-head 4, 41 tests, seconds summed: 52 of 192 s cold against 139 s warm. Analysis of the libraries one call per file 37 s (70 percent;
+  per file about 13 M user instructions at the median, 4 M of them the floor of a process, a flat profile; the unit cache already saves three quarters of it), the run phase 13.6 s
+  (`vai_window_gen_interlock` 4.9 s, `poc_arith_addw` 3.3 s before the addw rounds, neorv32 0.2 to 0.35 s, `sc5_fifo_repack` 0.16 s), elaboration 2.0 s. For `vai_window_gen_interlock` the cold run
+  executes 63 G instructions more than the warm one (210 against 147 G): 14 G of compiling on the compile thread and the rest code that runs in the interpreter until the compiled code
+  arrives. `sc5_fifo_repack` compiles one function (34 ms of CPU) and the warm run has it from 80 ms where the cold run first sees it hot at 2 s: policy, not compile cost.
+- **Finding (what a compile costs, `YAVS_LLVM_TIMES`, 55 compiles of window_gen, wall on a shared core):** generation 1.5 percent, verifier 2, key 1.3, passes 34, code generation 62, store
+  and link under 1 (13 ms of writes, no `fsync`). Of the passes, `instcombine` was 78 percent. `opt -time-passes` and a profile show `ValueHandleBase` list traffic: `instcombine`
+  walks all users of an alloca (`isAllocSiteRemovable`, a vector of tracking handles) each time one of its users changes, which is quadratic for a buffer of thousands of stores
+  (4 000 stores through constant byte offsets of one alloca that escapes to a call: 3.9 G instructions, 500 stores 0.1 G; the same stores through an argument pointer 0.13 G). The
+  buffer is the one a native frame's exits record the registers live at their pc in (`Nat::spill`): one module, `golden_window`, had 3 800 users of it.
+- **Decision: `LEAN` runs in two stages** (`jit.rs` `optimize_as`): `sroa,early-cse`; then every alloca that is left and has `HIDE_MIN` (32) users or more is put behind
+  `llvm.launder.invariant.group` (`hide_allocas`), so that `instcombine` sees a call result; then `instcombine,simplifycfg,adce` (`dce` for the huge modules, as before), and the calls are
+  taken out again (`unhide_allocas`) before code generation, so the codegen sees the alloca as before. The machine code is byte for byte the same (58 dumped modules of the window generator run
+  compared object by object), the passes take about 15 percent of what they took (all 85 modules, `instcombine` alone: 13.7 G instructions to 2.0 G net of the 2.1 G start-up of the 85 `opt` runs). A `Fast` or `FastRa` module and `LEAN_HUGE` take the same path; the full `default<O2>` of compute loops and `YAVS_LLVM_PIPELINE` are unchanged. Test: `tests/jit.rs`
+  `a_big_escaping_buffer_survives_the_lean_passes`.
+- **Decision: an exit does not store the registers the interpreter preloads** (`Nat::pre`, `regs::preloaded`): `TierHost::materialise` keeps the preload of such a register and ignores the recorded word
+  (`exec.rs` `push_native`, since #720), the stores were dead. 37 percent of the stores to the buffer in the window generator run stored a constant.
+- **Decision: the exits record the core registers in one block** (`regs::entry_core`, `Gen::core_stub`): the registers defined once by an instruction of the function's first block (which no
+  jump leads back to), live at 8 or more later instructions, are not stored by each exit but by a block (one per `EXIT_PHI` exits, with a phi of the pcs) that the exits from the pc after the
+  last such definition branch to. They dominate every such exit and have no other definition, so the value is the same wherever the block is reached; the exits before that pc store everything as
+  before. After the passes the buffer of `golden_window` had 2 905 stores of 95 different values (each register stored again at every one of 116 exits); the stores fell by 44 percent over the
+  run and native modules by 19 percent in instructions. Not done: the same with stubs along the dominator tree for the registers defined later (the 6 100 stores that are left are 1 190 different
+  values, 3 000 of them repeated 16 times or more); the gain measured for the entry block was 5 percent of the compile CPU for 19 percent of the instructions, because the stores are the
+  cheapest instructions to select.
+- **Measured** (`vai_window_gen_interlock` cold, 54 compiles that all binaries made, sum of the least CPU of three runs, loaded host): 2 292 ms before, 1 833 hidden allocas, 1 749 with the preloaded
+  registers, 1 667 with the core block (-27 percent); instructions of the whole cold run 209 G to 200 G; warm instructions level (147.2, 147.2, 146.9 G). The pricing constants of `--tier=auto` (800 us per IR
+  instruction, `US_PER_INSTR`) are 1.2 to 3 times the CPU the compiles took (median 260 to 670 us per IR instruction by size, native and frame modules alike) and now a quarter higher still:
+  posted to #728 for the work clock round, not changed here.
+- **Measured, not kept** (offline, the 85 dumped modules through `opt` and `llc`, instructions of the compile and object size; where a run speed is given, five realbench tests warm with
+  the option in `YAVS_LLVM_ARGS`): no `instcombine` (passes 18.4 to 4.1 G instructions, but `vai_window_gen_interlock` warm +5 percent instructions); `-fast-isel` for every function (code
+  generation -38 percent, warm +1 to 3 percent instructions, code 2.6 percent larger); `-regalloc=basic` (-12 percent, warm +2 to 3 percent instructions); `-disable-cgp` (-13 percent, code 1.1 percent
+  larger, run speed not measured); `-O1` code generation (no fewer instructions to compile, 11 percent more cycles); `-pre-RA-sched=fast`, `-enable-shrink-wrap=false`, `-x86-cmov-converter=false`,
+  `-disable-tail-duplicate`, `-disable-branch-fold`, `-split-spill-mode=size` (each under 1.5 percent). A cheaper level for the first compile of a function, recompiled at `O2` when it repays,
+  is a policy question (the payback rule of `FastRa` is the pattern); it would have to win more than the 1 to 3 percent the cheaper code costs a warm run.
+

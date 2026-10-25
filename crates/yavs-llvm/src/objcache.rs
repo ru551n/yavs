@@ -103,7 +103,9 @@ pub(crate) fn add(
             jit.add(m)
         };
     };
+    let t0 = std::time::Instant::now();
     let k = key(&m, opt, full);
+    let t1 = std::time::Instant::now();
     // An object ORC does not take is a miss like any other bad entry.
     if let Some(obj) = store.get(KIND, &k)
         && jit.add_object(&obj).is_ok()
@@ -115,8 +117,11 @@ pub(crate) fn add(
     if CACHED_ONLY.get() {
         return Err(Error("not in the compilation cache".into()));
     }
+    let t2 = std::time::Instant::now();
     prepare(&mut m)?;
+    let t3 = std::time::Instant::now();
     let obj = m.emit(opt)?;
+    let t4 = std::time::Instant::now();
     if let Some(dir) = std::env::var_os("YAVS_LLVM_OBJ") {
         // Tuning aid: the object files, for `objdump` next to a `perf` profile.
         static N: AtomicUsize = AtomicUsize::new(0);
@@ -124,9 +129,27 @@ pub(crate) fn add(
         let _ = std::fs::write(Path::new(&dir).join(format!("{n}.o")), &obj);
     }
     store.put(KIND, &k, &obj);
+    let t5 = std::time::Instant::now();
     STORED.fetch_add(1, Ordering::Relaxed);
     debug("stored", &k);
-    jit.add_object(&obj)
+    let r = jit.add_object(&obj);
+    static TIMES: OnceLock<bool> = OnceLock::new();
+    if *TIMES.get_or_init(|| std::env::var_os("YAVS_LLVM_TIMES").is_some()) {
+        // Tuning aid next to `compile_one`'s line: the microseconds of the key, the look-up,
+        // the passes, the code generator, the store and the link of a module that was compiled.
+        let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();
+        eprintln!(
+            "objtimes key={} get={} prepare={} emit={} put={} link={} obj={}",
+            us(t0, t1),
+            us(t1, t2),
+            us(t2, t3),
+            us(t3, t4),
+            us(t4, t5),
+            t5.elapsed().as_micros(),
+            obj.len()
+        );
+    }
+    r
 }
 
 /// The kind of the list of compiled functions (`compiled_list`).

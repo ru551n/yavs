@@ -151,6 +151,16 @@ const FULL_MAX: usize = 3000;
 const LEAN: &CStr =
     c"function(sroa,early-cse,instcombine<max-iterations=1;no-verify-fixpoint>,simplifycfg,adce)";
 
+/// `LEAN` in two runs (`optimize_as`): the part before `instcombine`, then the rest. The big
+/// allocas that are left after `sroa` are hidden from the second run (`hide_allocas`).
+const LEAN_A: &CStr = c"function(sroa,early-cse)";
+const LEAN_B: &CStr =
+    c"function(instcombine<max-iterations=1;no-verify-fixpoint>,simplifycfg,adce)";
+const LEAN_HUGE_B: &CStr = c"function(instcombine<max-iterations=1;no-verify-fixpoint>,dce)";
+
+/// An alloca with at least this many users is hidden from `instcombine`.
+const HIDE_MIN: usize = 32;
+
 /// `LEAN` without the two passes whose time grows faster than the module for the modules that
 /// are all one function: `simplifycfg` (66 s) and `adce` (31 s) of the 115 s the 7 million LLVM
 /// instructions of a process of 147 000 IR instructions took, `dce` instead of them: 12 s, the
@@ -221,6 +231,80 @@ fn model() -> (LLVMRelocMode, LLVMCodeModel) {
             LLVMRelocMode::LLVMRelocDefault,
             LLVMCodeModel::LLVMCodeModelJITDefault,
         )
+    }
+}
+
+const LAUNDER: &CStr = c"llvm.launder.invariant.group";
+
+/// Puts every alloca of at least `HIDE_MIN` users behind `llvm.launder.invariant.group`, so that
+/// the passes see a call result instead of an alloca (`instcombine` re-examines all users of an
+/// alloca each time one of them is edited). Returns whether any was hidden; `unhide_allocas`
+/// takes the calls out again.
+unsafe fn hide_allocas(module: LLVMModuleRef) -> bool {
+    // SAFETY: plain walks over a module that is finished; the calls are made at the alloca and
+    // take over its uses.
+    unsafe {
+        let ctx = LLVMGetModuleContext(module);
+        let ptr = LLVMPointerTypeInContext(ctx, 0);
+        let mut found = Vec::new();
+        let mut f = LLVMGetFirstFunction(module);
+        while !f.is_null() {
+            if LLVMCountBasicBlocks(f) > 0 {
+                let mut i = LLVMGetFirstInstruction(LLVMGetEntryBasicBlock(f));
+                while !i.is_null() {
+                    if !LLVMIsAAllocaInst(i).is_null() {
+                        let (mut n, mut u) = (0, LLVMGetFirstUse(i));
+                        while !u.is_null() && n < HIDE_MIN {
+                            (n, u) = (n + 1, LLVMGetNextUse(u));
+                        }
+                        if n >= HIDE_MIN {
+                            found.push(i);
+                        }
+                    }
+                    i = LLVMGetNextInstruction(i);
+                }
+            }
+            f = LLVMGetNextFunction(f);
+        }
+        if found.is_empty() {
+            return false;
+        }
+        let id = LLVMLookupIntrinsicID(LAUNDER.as_ptr(), LAUNDER.count_bytes());
+        assert_ne!(id, 0, "unknown intrinsic {LAUNDER:?}");
+        let mut tys = [ptr];
+        let decl = LLVMGetIntrinsicDeclaration(module, id, tys.as_mut_ptr(), 1);
+        let fty = LLVMIntrinsicGetType(ctx, id, tys.as_mut_ptr(), 1);
+        let bld = LLVMCreateBuilderInContext(ctx);
+        for a in found {
+            LLVMPositionBuilderBefore(bld, LLVMGetNextInstruction(a));
+            let mut args = [a];
+            let call = LLVMBuildCall2(bld, fty, decl, args.as_mut_ptr(), 1, c"".as_ptr());
+            LLVMReplaceAllUsesWith(a, call);
+            LLVMSetOperand(call, 0, a);
+        }
+        LLVMDisposeBuilder(bld);
+        true
+    }
+}
+
+/// Takes the calls of `hide_allocas` out again.
+unsafe fn unhide_allocas(module: LLVMModuleRef) {
+    // SAFETY: the calls are the users of the declaration; each is replaced by its operand.
+    unsafe {
+        let decl = LLVMGetNamedFunction(module, c"llvm.launder.invariant.group.p0".as_ptr());
+        if decl.is_null() {
+            return;
+        }
+        let mut calls = Vec::new();
+        let mut u = LLVMGetFirstUse(decl);
+        while !u.is_null() {
+            calls.push(LLVMGetUser(u));
+            u = LLVMGetNextUse(u);
+        }
+        for c in calls {
+            LLVMReplaceAllUsesWith(c, LLVMGetOperand(c, 0));
+            LLVMInstructionEraseFromParent(c);
+        }
     }
 }
 
@@ -578,12 +662,36 @@ impl Module {
             } else {
                 pipeline
             };
-            let err = LLVMRunPasses(
-                self.module,
-                custom.as_deref().unwrap_or(pipeline).as_ptr(),
-                tm,
-                opts,
-            );
+            let run = |p: &CStr| LLVMRunPasses(self.module, p.as_ptr(), tm, opts);
+            let second = if custom.is_some() {
+                None
+            } else if pipeline == LEAN {
+                Some(LEAN_B)
+            } else if pipeline == LEAN_HUGE {
+                Some(LEAN_HUGE_B)
+            } else {
+                None
+            };
+            let err = match second {
+                Some(second) => {
+                    // `instcombine` walks all users of an alloca whenever one of them changes:
+                    // a materialisation buffer with thousands of stores took 90 percent of the
+                    // time of the passes (quadratic). The allocas `sroa` leaves are hidden
+                    // behind a no-op call for it; the machine code is the same.
+                    let err = run(LEAN_A);
+                    if err.is_null() {
+                        let hidden = hide_allocas(self.module);
+                        let err = run(second);
+                        if hidden {
+                            unhide_allocas(self.module);
+                        }
+                        err
+                    } else {
+                        err
+                    }
+                }
+                None => run(custom.as_deref().unwrap_or(pipeline)),
+            };
             // The unoptimised code generator does not do this itself.
             if opt.codegen() == LLVMCodeGenOptLevel::LLVMCodeGenLevelNone || opt == OptLevel::FastRa
             {

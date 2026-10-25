@@ -1558,6 +1558,9 @@ struct Cur<'p> {
     exits: std::cell::RefCell<Vec<(LLVMBasicBlockRef, LLVMValueRef, usize)>>,
     /// The native frame's exit block (`exit_for`) and its phi.
     exit: (LLVMBasicBlockRef, LLVMValueRef),
+    /// The blocks that record the core registers for the exits that share them (`core_stub`):
+    /// block, phi of the pc, predecessors.
+    cores: std::cell::RefCell<Vec<(LLVMBasicBlockRef, LLVMValueRef, usize)>>,
     /// The frame's size in bytes (`Func::frame`): the slots of every frame of the function.
     frame_len: u64,
     /// The native frame, when this is a function's native-frame code (`f<id>_n`).
@@ -1663,6 +1666,14 @@ struct Nat {
     spill: LLVMValueRef,
     /// The registers live before each instruction (none: every register is recorded).
     live: Option<crate::regs::Live>,
+    /// The registers the interpreter starts a frame with (`regs::preloaded`): `materialise`
+    /// keeps their preload and ignores the recorded word, so an exit does not store them.
+    pre: Vec<bool>,
+    /// The registers every exit from pc `core_from` on records the same way (`regs::entry_core`),
+    /// and which they are (`is_core`): `core_stub` stores them for those exits together.
+    core: Vec<u32>,
+    is_core: Vec<bool>,
+    core_from: u32,
     /// No address of the frame's slots ever leaves the function's own loads and stores
     /// (`closed_frame`, the ranges of its slots in use): the slots are not registered in
     /// `Mem::nslots` and LLVM may keep them in registers.
@@ -2031,33 +2042,75 @@ impl Gen {
     unsafe fn leave(&self, c: &Cur, v: LLVMValueRef) {
         // SAFETY: the builder is in a block of c.f; the phi is the exit block's.
         unsafe {
-            if let Some(n) = &c.nat {
-                self.spill_live(c, n, v);
-            }
-            let exit = self.exit_for(c, v);
-            LLVMBuildBr(self.b, exit);
+            let shared = match &c.nat {
+                Some(n) => self.spill_live(c, n, v),
+                None => false,
+            };
+            let to = if shared {
+                self.core_stub(c, v)
+            } else {
+                self.exit_for(c, v)
+            };
+            LLVMBuildBr(self.b, to);
         }
     }
 
     /// A native frame leaves to be materialised at the pc `v`: store the registers the
     /// interpreter reads from there (all of them when `v` is no constant or liveness is not
     /// known) in the spill buffer. Only these are live up to this exit, so the other registers
-    /// need not stay in machine registers or stack slots up to every guard.
-    unsafe fn spill_live(&self, c: &Cur, n: &Nat, v: LLVMValueRef) {
+    /// need not stay in machine registers or stack slots up to every guard. Not stored: the
+    /// registers the interpreter preloads, and, after the first block, the core registers,
+    /// which `core_stub` stores for the exit (the result is true then).
+    unsafe fn spill_live(&self, c: &Cur, n: &Nat, v: LLVMValueRef) -> bool {
         // SAFETY: the builder is in a block of c.f; `spill` has one word per register.
         unsafe {
-            let row = (!LLVMIsAConstantInt(v).is_null())
-                .then(|| LLVMConstIntGetZExtValue(v) as usize)
-                .zip(n.live.as_ref())
-                .map(|(pc, l)| l.row(pc));
+            let pc =
+                (!LLVMIsAConstantInt(v).is_null()).then(|| LLVMConstIntGetZExtValue(v) as usize);
+            let row = pc.zip(n.live.as_ref()).map(|(pc, l)| l.row(pc));
+            let shared = !n.core.is_empty() && pc.is_some_and(|pc| pc >= n.core_from as usize);
             let nregs = c.known.borrow().len();
             for r in 0..nregs {
-                if row.is_some_and(|w| w[r / 64] >> (r % 64) & 1 == 0) {
+                if row.is_some_and(|w| w[r / 64] >> (r % 64) & 1 == 0)
+                    || n.pre[r]
+                    || shared && n.is_core[r]
+                {
                     continue;
                 }
                 let at = self.gep(n.spill, self.c64(r as i64 * 8));
                 self.store(self.ld(c, Reg(r as u32)), at);
             }
+            shared
+        }
+    }
+
+    /// The block that records the core registers and goes on to the exit with the pc `v`, for
+    /// the exit being generated: one block for up to `EXIT_PHI` exits, with a phi of their pcs.
+    /// The core registers are defined in the first block, which dominates every such exit, and
+    /// have no other definition, so their current value is the one they have there.
+    unsafe fn core_stub(&self, c: &Cur, v: LLVMValueRef) -> LLVMBasicBlockRef {
+        // SAFETY: well-formed blocks of c.f; a native frame, so `nat` is set.
+        unsafe {
+            let n = c.nat.as_ref().expect("native frame");
+            let from = LLVMGetInsertBlock(self.b);
+            let mut cs = c.cores.borrow_mut();
+            if cs.last().is_none_or(|x| x.2 >= EXIT_PHI) {
+                let blk = self.block(c);
+                LLVMPositionBuilderAtEnd(self.b, blk);
+                let phi = LLVMBuildPhi(self.b, self.i32, c"".as_ptr());
+                for &r in &n.core {
+                    let val = LLVMBuildLoad2(self.b, self.i64, self.slot(c, Reg(r)), c"".as_ptr());
+                    let at = self.gep(n.spill, self.c64(i64::from(r) * 8));
+                    self.store(val, at);
+                }
+                let exit = self.exit_for(c, phi);
+                LLVMBuildBr(self.b, exit);
+                LLVMPositionBuilderAtEnd(self.b, from);
+                cs.push((blk, phi, 0));
+            }
+            let x = cs.last_mut().expect("core block");
+            LLVMAddIncoming(x.1, &mut { v }, &mut { from }, 1);
+            x.2 += 1;
+            x.0
         }
     }
 
@@ -2705,6 +2758,15 @@ impl Gen {
                 } else {
                     (self.c64(-1), self.c64(-1))
                 };
+                let live = crate::regs::Live::new(prog, f, None);
+                let pre = crate::regs::preloaded(f);
+                let (core, core_from) = live.as_ref().map_or((Vec::new(), 0), |l| {
+                    crate::regs::entry_core(prog, f, l, &pre)
+                });
+                let mut is_core = vec![false; nregs];
+                for &r in &core {
+                    is_core[r as usize] = true;
+                }
                 let nat = Nat {
                     slots,
                     fhi,
@@ -2714,7 +2776,11 @@ impl Gen {
                     scratch,
                     id,
                     spill,
-                    live: crate::regs::Live::new(prog, f, None),
+                    live,
+                    pre,
+                    core,
+                    is_core,
+                    core_from,
                     closed: closed_frame(prog, f, id),
                 };
                 (regs, LLVMGetParam(fv, 1), Some(nat))
@@ -2747,6 +2813,7 @@ impl Gen {
                     vec![(exit, exit_pc, 0)]
                 }),
                 exit: (exit, exit_pc),
+                cores: Default::default(),
                 frame_len: u64::from(f.frame),
                 nat,
                 defer: None,

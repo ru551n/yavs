@@ -804,7 +804,17 @@ pub struct AutoTier {
     queued: Box<[AtomicBool]>,
     queue: Mutex<Option<Sender<Msg>>>,
     shared: Arc<Shared>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    /// The compile thread: not started until [`AutoTier::launch`] (a run of a few milliseconds
+    /// never needs it).
+    worker: Mutex<Thread>,
+}
+
+/// The state of the compile thread: how it is started (the argument says whether it waits
+/// `START_AFTER` first), the thread, or neither any more.
+enum Thread {
+    Idle(Box<dyn FnOnce(bool) -> Result<JoinHandle<()>, StartError> + Send>),
+    Running(JoinHandle<()>),
+    Ended,
 }
 
 /// What the compile thread is told.
@@ -893,8 +903,10 @@ const FIRST_US_PER_INSTR: f64 = 45.0;
 /// quarter of it.
 const PAYBACK: u64 = 4;
 
-/// How long the compile thread waits before it samples (not for eager tiers).
-const START_AFTER: Duration = Duration::from_millis(5);
+/// How long a run lasts before the compile thread is wanted: it samples nothing earlier (not for
+/// eager tiers). [`AutoTier::start_deferred`] leaves the start to the caller, who calls
+/// [`AutoTier::launch`] after this time.
+pub const START_AFTER: Duration = Duration::from_millis(5);
 
 /// A compute loop runs five to ten times faster compiled, so seen for twice its compile time
 /// it has repaid it (`Worker::threshold`).
@@ -2195,8 +2207,25 @@ impl AutoTier {
     /// compiling the functions `heat` finds hot at `opt`, and those that stay hot compiled
     /// again at O2 (`Heat::o2_threshold`, `Tune::o2_after`; at once with an eager `heat`); functions over
     /// `max_size` IR instructions stay interpreted. `note` is called on the compile thread for
-    /// every compile.
+    /// every compile. The thread waits [`START_AFTER`] before it does anything.
     pub fn start_with(
+        rt: &Runtime,
+        opt: OptLevel,
+        max_size: usize,
+        heat: Heat,
+        note: Note,
+        gens: Gens,
+    ) -> Result<Arc<AutoTier>, StartError> {
+        let tier = Self::start_deferred_with(rt, opt, max_size, heat, note, gens)?;
+        tier.start_thread(true)?;
+        Ok(tier)
+    }
+
+    /// Like [`AutoTier::start_with`], but the compile thread is not started: a thread costs a twentieth
+    /// of a run of a millisecond, and most runs end before it would look at anything. The caller
+    /// calls [`AutoTier::launch`] once the run has lasted [`START_AFTER`] (from a thread it has
+    /// anyway); [`AutoTier::stop`] needs no launch. An eager `heat` (tests) starts it at once.
+    pub fn start_deferred_with(
         rt: &Runtime,
         opt: OptLevel,
         max_size: usize,
@@ -2242,48 +2271,54 @@ impl AutoTier {
             first,
             note,
         );
-        let worker = std::thread::Builder::new()
-            .name("yavs-tier-up".into())
-            .spawn(move || {
-                // Nothing a run of a few milliseconds samples pays for a compile, and moving the
-                // thread, reading the cache's list and waking every millisecond cost a tenth of
-                // such a run: do none of it before `START_AFTER` (#426). `stop` ends the wait.
-                sh.compile_clock.store(own_cpu_clock(), Ordering::Release);
-                let mut pending = Pending::default();
-                let mut looks: Vec<Look> = Vec::new();
-                let t0 = std::time::Instant::now();
-                match rx.recv_timeout(if heat.eager() {
-                    Duration::ZERO
-                } else {
-                    START_AFTER
-                }) {
-                    Err(RecvTimeoutError::Disconnected) => return,
-                    Ok(Msg::Hot(id)) => pending.asked.push_back(id),
-                    Ok(Msg::Looks(l)) => looks = l,
-                    Err(RecvTimeoutError::Timeout) => {}
-                }
-                // The sampler of a run that ends within `START_AFTER` is never started.
-                let sampler = (!heat.eager() && !sh.halt.load(Ordering::SeqCst)).then(|| {
-                    let sh = sh.clone();
-                    std::thread::Builder::new()
-                        .name("yavs-sampler".into())
-                        .spawn(move || {
-                            nap(&sh, START_AFTER.saturating_sub(t0.elapsed()));
-                            if !sh.halt.load(Ordering::SeqCst) {
-                                sampler_loop(sample, sample_every, sampler_tx, &sh);
-                            }
-                        })
-                        .unwrap_or_else(|e| panic!("cannot start the sampler thread: {e}"))
-                });
-                w.listed = w.main.as_ref().map(|m| m.cache_list()).unwrap_or_default();
-                // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
-                // recompile at O2 (code of the two does not call each other's native code).
-                let upgrade = opt != OptLevel::O2
-                    && w.main.is_some()
-                    && !(w.first.is_some() && std::env::var_os("YAVS_FIRST_ONLY").is_some());
-                // Batches of looks not worked through yet, oldest first.
-                let mut inbox: std::collections::VecDeque<Vec<Look>> = Default::default();
-                let route =
+        let spawn = move |wait: bool| {
+            std::thread::Builder::new()
+                .name("yavs-tier-up".into())
+                .spawn(move || {
+                    // Nothing a run of a few milliseconds samples pays for a compile, and moving the
+                    // thread, reading the cache's list and waking every millisecond cost a tenth of
+                    // such a run: do none of it before `START_AFTER` (#426). `stop` ends the wait.
+                    sh.compile_clock.store(own_cpu_clock(), Ordering::Release);
+                    let mut pending = Pending::default();
+                    let mut looks: Vec<Look> = Vec::new();
+                    let t0 = std::time::Instant::now();
+                    match rx.recv_timeout(if heat.eager() || !wait {
+                        Duration::ZERO
+                    } else {
+                        START_AFTER
+                    }) {
+                        Err(RecvTimeoutError::Disconnected) => return,
+                        Ok(Msg::Hot(id)) => pending.asked.push_back(id),
+                        Ok(Msg::Looks(l)) => looks = l,
+                        Err(RecvTimeoutError::Timeout) => {}
+                    }
+                    // The sampler of a run that ends within `START_AFTER` is never started.
+                    let sampler = (!heat.eager() && !sh.halt.load(Ordering::SeqCst)).then(|| {
+                        let sh = sh.clone();
+                        std::thread::Builder::new()
+                            .name("yavs-sampler".into())
+                            .spawn(move || {
+                                if wait {
+                                    nap(&sh, START_AFTER.saturating_sub(t0.elapsed()));
+                                }
+                                if !sh.halt.load(Ordering::SeqCst) {
+                                    sampler_loop(sample, sample_every, sampler_tx, &sh);
+                                }
+                            })
+                            .unwrap_or_else(|e| panic!("cannot start the sampler thread: {e}"))
+                    });
+                    // (The end of the run wakes this thread: nothing to list then.)
+                    if !sh.halt.load(Ordering::SeqCst) {
+                        w.listed = w.main.as_ref().map(|m| m.cache_list()).unwrap_or_default();
+                    }
+                    // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
+                    // recompile at O2 (code of the two does not call each other's native code).
+                    let upgrade = opt != OptLevel::O2
+                        && w.main.is_some()
+                        && !(w.first.is_some() && std::env::var_os("YAVS_FIRST_ONLY").is_some());
+                    // Batches of looks not worked through yet, oldest first.
+                    let mut inbox: std::collections::VecDeque<Vec<Look>> = Default::default();
+                    let route =
                     |m: Msg,
                      pending: &mut Pending,
                      inbox: &mut std::collections::VecDeque<Vec<Look>>| match m
@@ -2291,127 +2326,131 @@ impl AutoTier {
                         Msg::Hot(id) => pending.asked.push_back(id),
                         Msg::Looks(l) => inbox.push_back(l),
                     };
-                if !looks.is_empty() {
-                    inbox.push_back(std::mem::take(&mut looks));
-                }
-                loop {
-                    while let Ok(m) = rx.try_recv() {
-                        route(m, &mut pending, &mut inbox);
-                    }
-                    if inbox.is_empty() && pending.asked.is_empty() {
-                        match rx.recv_timeout(period) {
-                            Ok(m) => route(m, &mut pending, &mut inbox),
-                            Err(RecvTimeoutError::Timeout) => {}
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        }
-                    }
-                    // One batch at a time, each followed by the decisions: what is decided depends
-                    // on the looks in order and not on how long a compile took (#670).
-                    for look in inbox.pop_front().unwrap_or_default() {
-                        w.see(&look, upgrade, &mut pending);
+                    if !looks.is_empty() {
+                        inbox.push_back(std::mem::take(&mut looks));
                     }
                     loop {
                         while let Ok(m) = rx.try_recv() {
                             route(m, &mut pending, &mut inbox);
                         }
-                        let probe = if pending.asked.is_empty() {
-                            pending.probes.pop()
-                        } else {
-                            None
-                        };
-                        let Some((ids, o2, sampled)) = probe
-                            .map(|id| (vec![(id, Part::Both)], false, true))
-                            .or_else(|| {
-                                pending
-                                    .asked
-                                    .pop_front()
-                                    .map(|id| (vec![(id, Part::Both)], false, false))
-                            })
-                            .or_else(|| {
-                                pending
-                                    .later
-                                    .pop()
-                                    .map(|id| (w.upgrade_tree(id), true, false))
-                            })
-                            .or_else(|| w.pick(&mut pending.cands).map(|ids| (ids, false, true)))
-                        else {
-                            break;
-                        };
-                        // `busy` before `halt` here and `halt` before `busy` in `stop` (both
-                        // SeqCst): either this thread sees the halt or `stop` sees it busy.
-                        sh.busy.store(true, Ordering::SeqCst);
-                        if sh.halt.load(Ordering::SeqCst) {
-                            break;
+                        if inbox.is_empty() && pending.asked.is_empty() {
+                            match rx.recv_timeout(period) {
+                                Ok(m) => route(m, &mut pending, &mut inbox),
+                                Err(RecvTimeoutError::Timeout) => {}
+                                Err(RecvTimeoutError::Disconnected) => break,
+                            }
                         }
-                        if let Some(id) = probe {
-                            if w.probe(id) {
-                                pending.cands.retain(|&c| c != id);
+                        // One batch at a time, each followed by the decisions: what is decided depends
+                        // on the looks in order and not on how long a compile took (#670).
+                        for look in inbox.pop_front().unwrap_or_default() {
+                            w.see(&look, upgrade, &mut pending);
+                        }
+                        loop {
+                            while let Ok(m) = rx.try_recv() {
+                                route(m, &mut pending, &mut inbox);
+                            }
+                            let probe = if pending.asked.is_empty() {
+                                pending.probes.pop()
+                            } else {
+                                None
+                            };
+                            let Some((ids, o2, sampled)) = probe
+                                .map(|id| (vec![(id, Part::Both)], false, true))
+                                .or_else(|| {
+                                    pending
+                                        .asked
+                                        .pop_front()
+                                        .map(|id| (vec![(id, Part::Both)], false, false))
+                                })
+                                .or_else(|| {
+                                    pending
+                                        .later
+                                        .pop()
+                                        .map(|id| (w.upgrade_tree(id), true, false))
+                                })
+                                .or_else(|| {
+                                    w.pick(&mut pending.cands).map(|ids| (ids, false, true))
+                                })
+                            else {
+                                break;
+                            };
+                            // `busy` before `halt` here and `halt` before `busy` in `stop` (both
+                            // SeqCst): either this thread sees the halt or `stop` sees it busy.
+                            sh.busy.store(true, Ordering::SeqCst);
+                            if sh.halt.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            if let Some(id) = probe {
+                                if w.probe(id) {
+                                    pending.cands.retain(|&c| c != id);
+                                    sh.trial.store(true, Ordering::SeqCst);
+                                    w.trial(id, &sh.halt);
+                                    sh.trial.store(false, Ordering::SeqCst);
+                                }
+                                sh.busy.store(false, Ordering::SeqCst);
+                                continue;
+                            }
+                            let first = ids.first().map(|&(id, _)| id);
+                            w.announce(&ids);
+                            let mut root_done = false;
+                            for (i, (id, part)) in ids.into_iter().enumerate() {
+                                let done = w.compile(id, o2, sampled && i == 0, part);
+                                root_done |= done && i == 0;
+                                // Its callees compile for its sake only.
+                                if !done && i == 0 {
+                                    break;
+                                }
+                                // Eager (tests): swap the O2 code in during the run too.
+                                if done && heat.eager() && (upgrade || w.fast[id.0 as usize]) && !o2
+                                {
+                                    pending.later.push(id);
+                                }
+                            }
+                            if let (Some(id), true) = (first, root_done && sampled && !o2) {
                                 sh.trial.store(true, Ordering::SeqCst);
                                 w.trial(id, &sh.halt);
                                 sh.trial.store(false, Ordering::SeqCst);
                             }
+                            if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
+                                f.store(true, Ordering::Release);
+                            }
                             sh.busy.store(false, Ordering::SeqCst);
-                            continue;
                         }
-                        let first = ids.first().map(|&(id, _)| id);
-                        w.announce(&ids);
-                        let mut root_done = false;
-                        for (i, (id, part)) in ids.into_iter().enumerate() {
-                            let done = w.compile(id, o2, sampled && i == 0, part);
-                            root_done |= done && i == 0;
-                            // Its callees compile for its sake only.
-                            if !done && i == 0 {
-                                break;
+                        if sh.halt.load(Ordering::SeqCst) {
+                            break;
+                        }
+                    }
+                    if let Some(s) = sampler {
+                        s.thread().unpark();
+                        if let Err(p) = s.join() {
+                            resume_unwind(p);
+                        }
+                    }
+                    if let Some(tr) = &w.trace {
+                        let mut v: Vec<usize> = (0..w.time.len()).collect();
+                        v.sort_by_key(|&k| std::cmp::Reverse(w.time[k][0] + w.time[k][1]));
+                        for &k in v.iter().take(40) {
+                            if let Some(f) = w.prog.func(FuncId(k as u32)) {
+                                tr.line(format!(
+                                    "seen f{k} `{}` ({} IR): interpreted {} us, compiled {} us",
+                                    f.name,
+                                    f.code.len(),
+                                    w.time[k][0],
+                                    w.time[k][1],
+                                ));
                             }
-                            // Eager (tests): swap the O2 code in during the run too.
-                            if done && heat.eager() && (upgrade || w.fast[id.0 as usize]) && !o2 {
-                                pending.later.push(id);
-                            }
                         }
-                        if let (Some(id), true) = (first, root_done && sampled && !o2) {
-                            sh.trial.store(true, Ordering::SeqCst);
-                            w.trial(id, &sh.halt);
-                            sh.trial.store(false, Ordering::SeqCst);
-                        }
-                        if let Some(f) = first.and_then(|id| sh.finished.get(id.0 as usize)) {
-                            f.store(true, Ordering::Release);
-                        }
-                        sh.busy.store(false, Ordering::SeqCst);
+                        tr.line(format!(
+                            "sampled {} us, compiled for {} us",
+                            w.total, w.spent
+                        ));
                     }
-                    if sh.halt.load(Ordering::SeqCst) {
-                        break;
-                    }
-                }
-                if let Some(s) = sampler {
-                    s.thread().unpark();
-                    if let Err(p) = s.join() {
-                        resume_unwind(p);
-                    }
-                }
-                if let Some(tr) = &w.trace {
-                    let mut v: Vec<usize> = (0..w.time.len()).collect();
-                    v.sort_by_key(|&k| std::cmp::Reverse(w.time[k][0] + w.time[k][1]));
-                    for &k in v.iter().take(40) {
-                        if let Some(f) = w.prog.func(FuncId(k as u32)) {
-                            tr.line(format!(
-                                "seen f{k} `{}` ({} IR): interpreted {} us, compiled {} us",
-                                f.name,
-                                f.code.len(),
-                                w.time[k][0],
-                                w.time[k][1],
-                            ));
-                        }
-                    }
-                    tr.line(format!(
-                        "sampled {} us, compiled for {} us",
-                        w.total, w.spent
-                    ));
-                }
-                *sh.gens.lock().unwrap_or_else(PoisonError::into_inner) =
-                    w.main.into_iter().chain(w.first).collect();
-                sh.busy.store(false, Ordering::SeqCst);
-            })
-            .map_err(|e| StartError(format!("cannot start the compile thread: {e}")))?;
+                    *sh.gens.lock().unwrap_or_else(PoisonError::into_inner) =
+                        w.main.into_iter().chain(w.first).collect();
+                    sh.busy.store(false, Ordering::SeqCst);
+                })
+                .map_err(|e| StartError(format!("cannot start the compile thread: {e}")))
+        };
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
@@ -2419,7 +2458,7 @@ impl AutoTier {
             ctab,
             queue: Mutex::new(Some(tx)),
             shared,
-            worker: Mutex::new(Some(worker)),
+            worker: Mutex::new(Thread::Idle(Box::new(spawn))),
         });
         if !rt.set_tier(tier.clone()) {
             tier.stop(true);
@@ -2429,6 +2468,8 @@ impl AutoTier {
         }
         if heat.eager() {
             rt.set_eager();
+            // `Tier::hot` of an eager tier waits for the compile: the thread cannot wait for the run.
+            tier.start_thread(false)?;
         }
         Ok(tier)
     }
@@ -2451,6 +2492,23 @@ impl AutoTier {
         AutoTier::start_with(rt, opt, max_size, heat, note, gens)
     }
 
+    /// `start_deferred_with` LLVM as the optimising generator (see [`AutoTier::start`]).
+    #[cfg(feature = "llvm")]
+    pub fn start_deferred(
+        rt: &Runtime,
+        opt: OptLevel,
+        max_size: usize,
+        heat: Heat,
+        note: Note,
+        first: Option<Box<dyn Generator>>,
+    ) -> Result<Arc<AutoTier>, StartError> {
+        let gens = Gens {
+            main: Some(Box::new(crate::LlvmGenerator::new())),
+            first,
+        };
+        AutoTier::start_deferred_with(rt, opt, max_size, heat, note, gens)
+    }
+
     /// End tier-up: functions still queued stay interpreted, and compiled code stays usable.
     /// Call it when the simulation is over. Returns `true` once the compile thread has ended;
     /// `false` if it is compiling a function and `wait` is false: it then finishes that on its
@@ -2470,16 +2528,38 @@ impl AutoTier {
         if !wait && self.shared.busy.load(Ordering::SeqCst) {
             return false;
         }
-        let worker = self
-            .worker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        // (The compile thread ends the sampler.)
-        if let Some(Err(p)) = worker.map(JoinHandle::join) {
+        let worker = std::mem::replace(
+            &mut *self.worker.lock().unwrap_or_else(PoisonError::into_inner),
+            Thread::Ended,
+        );
+        // (The compile thread ends the sampler.) One that was never started has nothing to end.
+        if let Thread::Running(h) = worker
+            && let Err(p) = h.join()
+        {
             resume_unwind(p);
         }
         true
+    }
+
+    /// Start the compile thread of [`AutoTier::start_deferred`], which then begins at once; does
+    /// nothing if it has been started or the run is over. Call it once the run has lasted
+    /// [`START_AFTER`].
+    pub fn launch(&self) -> Result<(), StartError> {
+        self.start_thread(false)
+    }
+
+    fn start_thread(&self, wait: bool) -> Result<(), StartError> {
+        let mut state = self.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        // (`stop` sets `halt` before it takes the state: a launch after it finds `halt`, one
+        // before it is joined.)
+        if self.shared.halt.load(Ordering::SeqCst) || !matches!(*state, Thread::Idle(_)) {
+            return Ok(());
+        }
+        let Thread::Idle(spawn) = std::mem::replace(&mut *state, Thread::Ended) else {
+            return Ok(());
+        };
+        *state = Thread::Running(spawn(wait)?);
+        Ok(())
     }
 
     /// The functions compiled so far.
@@ -2575,12 +2655,10 @@ impl Tier for AutoTier {
         let done = &self.shared.finished[func.0 as usize];
         while !done.load(Ordering::Acquire) && !self.shared.halt.load(Ordering::SeqCst) {
             // A compile thread that died (a panic) never finishes it.
-            let dead = self
-                .worker
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_ref()
-                .is_none_or(JoinHandle::is_finished);
+            let dead = match &*self.worker.lock().unwrap_or_else(PoisonError::into_inner) {
+                Thread::Running(h) => h.is_finished(),
+                _ => true,
+            };
             if dead {
                 break;
             }

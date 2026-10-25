@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Claims on GitHub issues (shared across harnesses) and host-local core/build locks.
+
+  tools/claim take <issue> <who>            claim an issue (oldest claim wins)
+  tools/claim release <issue> <who> [note]  give it back
+  tools/claim list                          open issues with active claims
+  tools/claim stale [hours]                 active claims older than N hours (default 24)
+  tools/claim core [-- cmd...]              free timing core 8-15; with cmd: run it pinned, lock held
+  tools/claim build -- cmd...               heavy build under 4 host-wide slots, needs 50 GB free
+  tools/claim selftest
+
+`who` is <harness>/<agent>, e.g. cc-host1/kern23. Claims are issue comments (GitHub is the
+source of truth); core/build locks are flock files and protect THIS HOST only.
+`list` and `stale` read GitHub's label index, which lags by up to ~10 s after a take.
+Env: YAVS_REPO (default ru551n/yavs), YAVS_LOCK_DIR (default ~/.cache/yavs-agents/locks).
+"""
+import fcntl, json, os, re, shutil, subprocess, sys, time
+from datetime import datetime, timezone
+
+REPO = os.environ.get("YAVS_REPO", "ru551n/yavs")
+LOCKS = os.environ.get("YAVS_LOCK_DIR") or os.path.expanduser("~/.cache/yavs-agents/locks")
+LABEL = "claimed"
+LINE = re.compile(r"^(CLAIM|RELEASE) (\S+)", re.M)
+
+
+def die(msg, code=2):
+    print(f"claim: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def gh(*args):
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(f"gh {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def api(path, method="GET", **fields):
+    a = ["api", "-X", method, f"repos/{REPO}/{path}"]
+    for k, v in fields.items():
+        a += ["-f", f"{k}={v}"]
+    out = gh(*a)
+    return json.loads(out) if out.strip() else None
+
+
+def comments(n):
+    res, page = [], 1
+    while True:
+        got = api(f"issues/{n}/comments?per_page=100&page={page}")
+        res += got
+        if len(got) < 100:
+            return res
+        page += 1
+
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def active(cs):
+    """Active claims [(id, who, created_at)] oldest first: CLAIM without a later RELEASE by who."""
+    live = {}
+    for c in sorted(cs, key=lambda c: c["id"]):
+        for kind, who in LINE.findall(c["body"] or ""):
+            if kind == "CLAIM":
+                live.setdefault(who, (c["id"], who, c["created_at"]))
+            else:
+                live.pop(who, None)
+    return sorted(live.values())
+
+
+def post(n, who, text):
+    return api(f"issues/{n}/comments", "POST", body=f"Written by an agent ({who}).\n{text}")
+
+
+def ensure_label():
+    try:
+        api(f"labels/{LABEL}")
+    except RuntimeError:
+        api("labels", "POST", name=LABEL, color="fbca04", description="An agent is working on this")
+
+
+def take(n, who):
+    held = active(comments(n))
+    if held:
+        die(f"#{n} already claimed by {held[0][1]} since {held[0][2]}", 1)
+    ensure_label()
+    mine = post(n, who, f"CLAIM {who} {now()}")["id"]
+    api(f"issues/{n}/labels", "POST", **{"labels[]": LABEL})
+    first = active(comments(n))[0]
+    if first[0] != mine:
+        post(n, who, f"RELEASE {who} {now()} (lost race)")
+        die(f"#{n}: lost race to {first[1]}", 1)
+    print(f"claimed #{n} as {who}")
+
+
+def release(n, who, note=""):
+    if who not in [c[1] for c in active(comments(n))]:
+        die(f"#{n}: no active claim by {who}", 1)
+    post(n, who, f"RELEASE {who} {now()} {note}".rstrip())
+    if not active(comments(n)):
+        try:
+            api(f"issues/{n}/labels/{LABEL}", "DELETE")
+        except RuntimeError:
+            pass  # label already gone
+    print(f"released #{n} as {who}")
+
+
+def claims(hours=0):
+    cut = time.time() - hours * 3600
+    for i in api(f"issues?labels={LABEL}&state=open&per_page=100"):
+        for _, who, since in active(comments(i["number"])):
+            if datetime.fromisoformat(since).timestamp() <= cut:
+                yield i["number"], who, since, i["title"]
+
+
+def show(rows):
+    for n, who, since, title in rows:
+        print(f"#{n}\t{who}\t{since}\t{title}")
+
+
+def lock(prefix, slots):
+    """flock the first free slot; returns (slot, fd) or None."""
+    os.makedirs(LOCKS, exist_ok=True)
+    for s in slots:
+        fd = os.open(f"{LOCKS}/{prefix}-{s}", os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return s, fd
+        except OSError:
+            os.close(fd)
+    return None
+
+
+def run(cmd, fd, pre=()):
+    if not cmd:
+        die("missing command after --")
+    return subprocess.run([*pre, *cmd], pass_fds=[fd]).returncode
+
+
+def split(argv):
+    return (argv[: argv.index("--")], argv[argv.index("--") + 1 :]) if "--" in argv else (argv, [])
+
+
+def core(cmd):
+    got = lock("core", range(8, 16))
+    if not got:
+        die("no free timing core (8-15)", 1)
+    if not cmd:
+        print(got[0])  # lock is released on exit: advisory only; use -- cmd to hold it
+        return 0
+    return run(cmd, got[1], ["taskset", "-c", str(got[0])])
+
+
+def build(cmd):
+    free = shutil.disk_usage(os.path.expanduser("~")).free / 2**30
+    if free < 50:
+        die(f"only {free:.0f} GB free in $HOME, need 50 GB: not building", 1)
+    waited = False
+    while not (got := lock("build", range(4))):
+        if not waited:
+            print("claim: all 4 build slots busy, waiting", file=sys.stderr)
+            waited = True
+        time.sleep(5)
+    return run(cmd, got[1])
+
+
+def selftest():
+    c = lambda i, b: {"id": i, "body": b, "created_at": f"2026-01-01T00:00:0{i}Z"}
+    cs = [c(1, "Written by an agent (a/x).\nCLAIM a/x t"), c(2, "CLAIM b/y t"),
+          c(3, "> CLAIM q/q quoted"), c(4, "RELEASE a/x t note")]
+    assert [w for _, w, _ in active(cs)] == ["b/y"]
+    assert active(cs[:1])[0][1] == "a/x"
+    cs.append(c(5, "CLAIM a/x t"))  # re-claim after release is active again
+    assert [w for _, w, _ in active(cs)] == ["b/y", "a/x"]
+    assert active([c(1, "RELEASE a/x t"), c(2, "CLAIM a/x t")])[0][1] == "a/x"
+    assert active([c(1, "CLAIM a/x t"), c(2, "RELEASE b/y t")])[0][1] == "a/x"
+    print("selftest ok")
+
+
+def main(a):
+    try:
+        if a[:1] == ["take"] and len(a) == 3:
+            take(int(a[1]), a[2])
+        elif a[:1] == ["release"] and len(a) >= 3:
+            release(int(a[1]), a[2], " ".join(a[3:]))
+        elif a[:1] == ["list"]:
+            show(claims())
+        elif a[:1] == ["stale"]:
+            show(claims(float(a[1]) if len(a) > 1 else 24))
+        elif a[:1] == ["core"]:
+            return core(split(a[1:])[1])
+        elif a[:1] == ["build"]:
+            return build(split(a[1:])[1])
+        elif a == ["selftest"]:
+            selftest()
+        else:
+            print(__doc__)
+            return 2
+    except RuntimeError as e:
+        die(str(e))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

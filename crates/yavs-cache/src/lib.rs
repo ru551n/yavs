@@ -270,12 +270,14 @@ impl Store {
     /// The entry, or `None` for anything that is not a complete, intact entry for this key.
     pub fn get(&self, kind: &str, key: &Key) -> Option<Entry> {
         let path = self.file(kind, key);
-        let bytes = map::open(&path)?;
+        let bytes = map::open(&path, self.touch)?;
         if !check(&bytes, key) {
             debug(format!("{} is not a valid entry", path.display()));
             return None;
         }
-        // Recently used entries survive pruning; failing to say so is harmless.
+        // Recently used entries survive pruning; failing to say so is harmless. (Unix: `open`
+        // did it, through the file it had open.)
+        #[cfg(not(unix))]
         if self.touch
             && let Ok(f) = fs::File::options().write(true).open(&path)
         {
@@ -751,6 +753,28 @@ mod tests {
         // The newest stays even when it alone is over the limit.
         s.prune_to(96, 5);
         assert_eq!(s.entries().len(), 1);
+    }
+
+    /// A read refreshes the time of the entry (through the file it has open, Unix).
+    #[cfg(unix)]
+    #[test]
+    fn a_read_refreshes_the_entry() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::of_library(d.path());
+        s.put("t", &key("a"), b"x");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(s.file("t", &key("a")))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert!(s.get("t", &key("a")).is_some());
+        let t = fs::metadata(s.file("t", &key("a")))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(t.elapsed().unwrap() < std::time::Duration::from_secs(60));
     }
 
     #[test]

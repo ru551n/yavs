@@ -801,6 +801,15 @@ pub enum Inst {
     WaitOn {
         sig: Reg,
     },
+    /// Before the `WaitOn`s of a `wait until` whose condition is true only in a cycle where the
+    /// edge `kind` of the one element `sig` refers to holds (an `and` conjunct of the condition
+    /// is that edge): the wait resumes the process only in such a cycle. The kernel then leaves
+    /// the process suspended for events of the other signals of the wait in cycles without the
+    /// edge, which would only have evaluated the condition false and waited again.
+    WaitEdge {
+        sig: Reg,
+        kind: EdgeKind,
+    },
     WaitFor {
         t: Reg,
     },
@@ -1320,7 +1329,9 @@ impl Inst {
                 f(sig, Use, s);
                 f(value, Use, p);
             }
-            Inst::Release { sig, .. } | Inst::WaitOn { sig } => f(sig, Use, s),
+            Inst::Release { sig, .. } | Inst::WaitOn { sig } | Inst::WaitEdge { sig, .. } => {
+                f(sig, Use, s)
+            }
             Inst::WaitFor { t } | Inst::WaitAt { t } => f(t, Use, i),
             Inst::Suspend { .. } => {}
             Inst::TimedOut { dst } | Inst::Now { dst } | Inst::Delta { dst } => d(dst, i),

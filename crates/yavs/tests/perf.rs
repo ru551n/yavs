@@ -616,6 +616,19 @@ case!(
     ]
 );
 
+// A `wait until` with a clock edge as a conjunct resumes its process only in a cycle with the
+// edge (1507 process runs without).
+case!(
+    wait_edge,
+    "hits=100 falls=100",
+    &[],
+    [
+        ("process_runs", Max(1245)),
+        ("wakes", Max(1245)),
+        ("ops", Max(16800)),
+    ]
+);
+
 /// Processes of instances with their own generics switch to copies specialised to their instance
 /// data (`docs/design/specialisation.md`): the same report, fewer ops, three copies for the six
 /// processes (the iterations of a generate and the instances with equal generics share one).
@@ -664,6 +677,33 @@ fn spec_record_var() {
         "spec_record_var",
         &copies,
         &[("spec_switched", Min(3)), ("ops", Max(163500))],
+    );
+}
+
+/// A process with subprograms nested in it, holding an access object and a line (so it runs on the
+/// serial path), switches to a copy too: the nested subprograms reach the frame the copy keeps,
+/// and the copy folds the layouts they do not write (#721): the same report, fewer ops.
+#[test]
+fn spec_nested() {
+    let d = tempdir("spec_nested");
+    let src = include_str!("perf/spec_nested.vhd");
+    let run = |env: &[(&str, &str)]| run_design_env(&d, "spec_nested", src, "interp", &[], env);
+    let (shared, copies) = (
+        run(&[("YAVS_NO_SPEC", "1")]),
+        run(&[("YAVS_SPEC_AFTER", "2")]),
+    );
+    assert_eq!((shared.code, copies.code), (0, 0), "{}", copies.all());
+    assert!(copies.all().contains("sum="), "{}", copies.all());
+    assert_eq!(shared.stdout, copies.stdout);
+    assert!(
+        copies.counters["ops"] < shared.counters["ops"],
+        "{:?}",
+        copies.counters
+    );
+    check_bounds(
+        "spec_nested",
+        &copies,
+        &[("spec_switched", Min(3)), ("ops", Max(318_000))],
     );
 }
 

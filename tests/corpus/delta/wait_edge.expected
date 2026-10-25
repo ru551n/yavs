@@ -1,0 +1,55 @@
+exit	0
+diag	note	5000000	0	:wait_edge:p3	p3 1 at 5000000 fs
+diag	note	7000000	0	:wait_edge:p4	p4 1 at 7000000 fs timeout true
+diag	note	14000000	0	:wait_edge:p4	p4 2 at 14000000 fs timeout true
+diag	note	15000000	0	:wait_edge:p3	p3 2 at 15000000 fs
+diag	note	15000000	0	:wait_edge:p9	p9 clk 15000000 fs
+diag	note	18000000	0	:wait_edge:p12	p12 1 at 18000000 fs
+diag	note	21000000	0	:wait_edge:p4	p4 3 at 21000000 fs timeout true
+diag	note	21000000	0	:wait_edge:p7	p7 proc at 21000000 fs n=2
+diag	note	21000000	0	:wait_edge:p9	p9 clk2 21000000 fs
+diag	note	25000000	0	:wait_edge:p8	p8 1 at 25000000 fs
+diag	note	25000000	0	:wait_edge:p1	p1 1 at 25000000 fs
+diag	note	25000000	0	:wait_edge:p2	p2 rise 25000000 fs
+diag	note	25000000	0	:wait_edge:p3	p3 3 at 25000000 fs
+diag	note	25000000	0	:wait_edge:p4	p4 4 at 25000000 fs timeout false
+diag	note	25000000	0	:wait_edge:p6	p6 proc at 25000000 fs n=2
+diag	note	25000000	0	:wait_edge:p9	p9 clk 25000000 fs
+diag	note	25000000	0	:wait_edge:p11	p11 1 at 25000000 fs
+diag	note	25000000	0	:wait_edge:p5	p5 1 at 25000000 fs
+diag	note	28000000	0	:wait_edge:p12	p12 2 at 28000000 fs
+diag	note	32000000	0	:wait_edge:p4	p4 5 at 32000000 fs timeout true
+diag	note	33000000	0	:wait_edge:p3	p3 4 at 33000000 fs
+diag	note	35000000	0	:wait_edge:p1	p1 2 at 35000000 fs
+diag	note	35000000	0	:wait_edge:p3	p3 5 at 35000000 fs
+diag	note	35000000	0	:wait_edge:p4	p4 6 at 35000000 fs timeout false
+diag	note	35000000	0	:wait_edge:p6	p6 proc at 35000000 fs n=3
+diag	note	35000000	0	:wait_edge:p8	p8 2 at 35000000 fs
+diag	note	35000000	0	:wait_edge:p11	p11 2 at 35000000 fs
+diag	note	35000000	0	:wait_edge:p5	p5 2 at 35000000 fs
+diag	note	35000000	0	:wait_edge:p7	p7 proc at 35000000 fs n=3
+diag	note	35000000	0	:wait_edge:p9	p9 clk2 35000000 fs
+diag	note	38000000	0	:wait_edge:p12	p12 3 at 38000000 fs
+diag	note	40000000	0	:wait_edge:p2	p2 fall 40000000 fs
+diag	note	45000000	0	:wait_edge:p5	p5 3 at 45000000 fs
+diag	note	55000000	0	:wait_edge:p1	p1 3 at 55000000 fs
+diag	note	55000000	0	:wait_edge:p2	p2 rise 55000000 fs
+diag	note	55000000	0	:wait_edge:p6	p6 proc at 55000000 fs n=5
+diag	note	55000000	0	:wait_edge:p8	p8 3 at 55000000 fs
+diag	note	55000000	0	:wait_edge:p11	p11 3 at 55000000 fs
+diag	note	63000000	0	:wait_edge:p7	p7 proc at 63000000 fs n=6
+diag	note	65000000	0	:wait_edge:p11	p11 4 at 65000000 fs
+diag	note	65000000	0	:wait_edge:p8	p8 4 at 65000000 fs
+diag	note	65000000	0	:wait_edge:p1	p1 4 at 65000000 fs
+diag	note	65000000	0	:wait_edge:p9	p9 clk 65000000 fs
+diag	note	70000000	0	:wait_edge:p2	p2 fall 70000000 fs
+diag	note	77000000	0	:wait_edge:p9	p9 clk2 77000000 fs
+diag	note	85000000	0	:wait_edge:p1	p1 5 at 85000000 fs
+diag	note	85000000	0	:wait_edge:p2	p2 rise 85000000 fs
+diag	note	85000000	0	:wait_edge:p8	p8 5 at 85000000 fs
+diag	note	85000000	0	:wait_edge:p9	p9 clk 85000000 fs
+diag	note	90000000	0	:wait_edge:p2	p2 fall 90000000 fs
+diag	note	91000000	0	:wait_edge:p9	p9 clk2 91000000 fs
+diag	note	95000000	0	:wait_edge:p1	p1 6 at 95000000 fs
+diag	note	95000000	0	:wait_edge:p2	p2 rise 95000000 fs
+diag	note	100000000	0	:wait_edge:p2	p2 fall 100000000 fs

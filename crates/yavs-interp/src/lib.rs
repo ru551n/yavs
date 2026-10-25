@@ -818,6 +818,8 @@ pub struct TierFrame {
     /// `temp_base`.
     pub temp: *mut u8,
     pub temp_len: u64,
+    /// The capacity, at most `u32::MAX`: an offset in the area is 32 bits, so one bound does for
+    /// compiled code.
     pub temp_cap: u64,
     pub temp_base: u64,
     /// Temporaries recorded for the GC (`Inst::TempRoot`): while there are any, compiled
@@ -1573,7 +1575,7 @@ impl InterpProcess {
         if f.kind != FuncKind::Process {
             return Err(usage(format!("{func} `{}` is not a process", f.name)));
         }
-        if rt.prog.is_serial(func) && shared.is_none() {
+        if rt.prog.uses_shared_state(func) && shared.is_none() {
             return Err(usage(format!(
                 "process `{}` touches shared state: give it the SharedState and build it \
                  serial",
@@ -1606,9 +1608,7 @@ impl InterpProcess {
     /// the copy does not fold (iterations of a generate share a copy). A process the copy
     /// cannot stand in for stays as it is.
     pub fn specialise_later(&mut self, holes: Arc<[(u32, u32)]>) {
-        if self.shared.is_none() {
-            self.m.specialise_at(spec_after(), holes);
-        }
+        self.m.specialise_at(spec_after(), holes);
     }
 
     /// Attach a debug session (ir.md 3.4); `name` appears in the session's process table.
@@ -1986,6 +1986,9 @@ impl InterpProcess {
     /// Runs the machine with the shared state locked, until it suspends or returns.
     fn exec(&mut self, ctx: Option<&mut Ctx<'_>>) -> Result<Outcome, Fault> {
         self.m.execs += 1;
+        if self.m.execs == u64::from(self.m.spec_at) {
+            self.m.specialise();
+        }
         let shared = self.shared.clone();
         let mut guard = match &shared {
             Some(s) => Some(

@@ -204,7 +204,7 @@ has a `StmtId` in `Func.loc`.
 | attributes | `Edge{dst, kind: Rising\|Falling\|To1\|To0, sig}` (the one clock-edge test, #632: `rising_edge`, `x'event and x = '1'`, the level of a `wait until`, ...; `sig` one element of a `std_ulogic`, BIT or BOOLEAN signal), `SigAttr{dst, kind: Event\|Active\|LastEvent\|LastActive\|LastValue\|Driving, sig}`; `'stable/'quiet/'delayed/'transaction` are implicit signals made by elab and read with `SigRead` |
 | signal write | `Drive{driver_slot, target: Option<sig>, waveform: Addr, n, mode: Transport\|Inertial{reject: Option<Reg>}}` (waveform = `n` `(time, value)` pairs in a temp, ascending); `Force{sig, mode: In\|Out, value}`, `Release{sig, mode}`; `Disconnect{driver_slot}` (null transaction, guarded, M3) |
 | record signal | `SigGather{dst, desc, tab, part}` (every leaf of a record signal, or of an array of records, into the value), `SigScatter{driver, src, desc, tab, ops, mode, has}` (every leaf driven from the value with one waveform element, leaf `k` through slot `driver + k`; `ops` = delay, reject limit, part); `tab` is a leaf table constant (`yavs_ir::gather`), `part` the first element and element count of the outermost array when a name selects a part of the signal; same meaning as the per-leaf `SigRead`/`Drive`, independent of how the kernel stores the leaves (decisions.md "Whole record signals: gather and scatter") |
-| wait | `WaitOn{sig}` (adds to sensitivity), `WaitFor{t}`, `WaitAt{abs}`, `Suspend{resume}`; `TimedOut{dst}`, `Now{dst}`, `Delta{dst}` |
+| wait | `WaitOn{sig}` (adds to sensitivity), `WaitEdge{sig, kind}` (before the `WaitOn`s of a `wait until` with an edge as an `and` conjunct: the wait resumes the process only in a cycle with that edge), `WaitFor{t}`, `WaitAt{abs}`, `Suspend{resume}`; `TimedOut{dst}`, `Now{dst}`, `Delta{dst}` |
 | effects | `Report{msg: Addr, len, severity}` (assert = branch + `Report`); `Output{stream, addr, len}` is only used by natives |
 | coverage | `Cover{item: CovItem}` (statement/branch counter increment, rule 10), toggle coverage is an observer, not IR |
 | debug | `Stmt{id}`: statement boundary; a nop in the fast dispatch loop, the breakpoint/step hook in the debug loop |
@@ -407,6 +407,7 @@ impl yavs_kernel::Process for InterpProcess {
 | `Drive` | `ctx.assign(drivers[slot], target, waveform, DelayMode)` |
 | `Force`/`Release` | `ctx.force/release(r, ForceMode::Effective\|Driving)` |
 | `WaitOn`/`WaitFor`/`WaitAt`/`TimedOut` | `ctx.wait_on/wait_for/wait_at/timed_out` |
+| `WaitEdge` | `ctx.wait_edge(sig, kind code)` |
 | `Report` | `ctx.report(sev, msg)` (message formatting is yavs's, the kernel only buffers) |
 | `Now`/`Delta` | `ctx.now()/delta()` |
 | natives `env.stop/finish` | `ctx.stop/finish` |

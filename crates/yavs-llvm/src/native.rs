@@ -323,7 +323,8 @@ pub fn native_set(
 /// instruction. The ranges are the parameters and what those loads and stores touch, merged;
 /// the rest of the slots stay zero.
 pub fn closed_frame(prog: &Program, f: &Func, id: FuncId) -> Option<Vec<(u64, u64)>> {
-    if prog.funcs.iter().any(|(_, g)| g.parent == Some(id)) {
+    let base = prog.base_of(id);
+    if prog.funcs.iter().any(|(_, g)| g.parent == Some(base)) {
         return None;
     }
     let n = f.reg_ty.len();

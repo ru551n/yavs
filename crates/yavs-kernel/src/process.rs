@@ -303,6 +303,9 @@ pub(crate) struct ProcState {
     pub known_edge: Option<(SignalId, u32, u8)>,
     pub known_key: u64,
     pub known: u64,
+    /// The edge (`edge_key`) the coming wait resumes the process for (`Ctx::wait_edge`),
+    /// `NO_EDGE` for none; the commit takes it and puts `NO_EDGE` back.
+    pub wait_key: u64,
     /// The run's number (from 1, bumped at every resumption), and per driver (local index) which
     /// kind of direct entry it has in this run: `epoch << 2 | kind`, kind 1 `out`, 2 `outv`,
     /// 3 `outb`. A mark of an older run means none, so the entries need no scan and no clearing.
@@ -400,26 +403,31 @@ pub struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    #[inline]
     pub fn now(&self) -> Time {
         self.sh.now
     }
 
+    #[inline]
     pub fn delta(&self) -> u32 {
         self.sh.delta
     }
 
     /// `Config::stop_severity`: a report at this severity ends the simulation after the
     /// current cycle, so the process should not execute past it.
+    #[inline]
     pub fn stop_severity(&self) -> Severity {
         self.sh.stop_severity
     }
 
+    #[inline]
     pub fn process(&self) -> ProcId {
         self.pid
     }
 
     /// `Interrupt::stop` was called (Ctrl-C): a process that never suspends polls it at the
     /// jump back of its loop, because the kernel only looks between cycles.
+    #[inline]
     pub fn stop_requested(&self) -> bool {
         crate::kernel::Interrupt::stopped(self.sh.interrupt)
     }
@@ -466,7 +474,7 @@ impl Ctx<'_> {
     /// Current value of `r` copied into `out` without allocating: the bytes of a byte signal,
     /// or the bit-plane blocks of a logic signal (four little-endian `u64` planes per 64
     /// elements, unused bits zero, as `LogicVec`'s blocks). `out` must be exactly that size.
-    #[inline]
+    #[inline(always)]
     pub fn read_into(&self, r: impl Into<SigRef>, out: &mut [u8]) -> Result<(), SimError> {
         let (s, r) = self.sig(r)?;
         // A logic value of one word (a register read): copied here, no call.
@@ -601,6 +609,7 @@ impl Ctx<'_> {
     /// itself. `None` for a signal that keeps no codes (bytes, over `CODES_MAX` elements, or a bus: `CODES_SOURCE_MAX`).
     /// The pointer stays valid for the whole simulation; the bytes change only in the update
     /// phase, while no process runs.
+    #[inline]
     pub fn code_view(&self, s: SignalId) -> Option<(*const u8, usize)> {
         let sig = self.sh.signals.get(s.0 as usize)?;
         sig.codes_view()
@@ -608,18 +617,21 @@ impl Ctx<'_> {
 
     /// The event stamps of signal `s` (`Signal::event_view`) for `'event` and `rising_edge` of
     /// compiled code.
+    #[inline]
     pub fn event_view(&self, s: SignalId) -> Option<*const u64> {
         self.sh.signals.get(s.0 as usize)?.event_view()
     }
 
     /// The plane blocks of the current value of signal `s` and its element count
     /// (`Signal::planes_view`).
+    #[inline]
     pub fn planes_view(&self, s: SignalId) -> Option<(*const yavs_logic::Block, usize)> {
         self.sh.signals.get(s.0 as usize)?.planes_view()
     }
 
     /// The plane blocks of the current value of logic signal `s` and its element count: whole
     /// record packs are read from them a block at a time (#686).
+    #[inline]
     pub fn planes(&self, s: SignalId) -> Option<(&[yavs_logic::Block], u32)> {
         match &self.sh.signals.get(s.0 as usize)?.cur {
             crate::value::Buf::Planes { len, b } => Some((b, *len as u32)),
@@ -629,21 +641,25 @@ impl Ctx<'_> {
 
     /// The bytes of the current value of signal `s`, the element size and the element count
     /// (`Signal::bytes_view`).
+    #[inline]
     pub fn bytes_view(&self, s: SignalId) -> Option<(*const u8, usize, usize)> {
         self.sh.signals.get(s.0 as usize)?.bytes_view()
     }
 
     /// The plane block of the `'last_value` of signal `s` (`Signal::last_view`).
+    #[inline]
     pub fn last_view(&self, s: SignalId) -> Option<*const yavs_logic::Block> {
         self.sh.signals.get(s.0 as usize)?.last_view()
     }
 
     /// The number of the current simulation cycle (an event stamp equal to it is an event now).
+    #[inline]
     pub fn cycle(&self) -> u64 {
         self.sh.cycle
     }
 
     /// The bytes of `code_view(s)` that may be read (`Signal::codes_cap`), 0 without codes.
+    #[inline]
     pub fn code_cap(&self, s: SignalId) -> usize {
         self.sh
             .signals
@@ -653,6 +669,7 @@ impl Ctx<'_> {
 
     /// The edge the kernel resumed this process for in this activation as an `edge_key`
     /// (`u64::MAX`: none).
+    #[inline]
     pub fn resumed_edge_key(&self) -> u64 {
         self.st.known
     }
@@ -831,6 +848,7 @@ impl Ctx<'_> {
     }
 
     /// `'driving`: false if any element of this process's driver is disconnected.
+    #[inline]
     pub fn driving(&self, d: DriverId) -> Result<bool, SimError> {
         let info = self.own(d)?;
         let slot = &self.sh.signals[info.signal.0 as usize].drivers[info.slot as usize];
@@ -965,6 +983,7 @@ impl Ctx<'_> {
 
     /// `assign` of one `std_ulogic` code (`std_ulogic'pos`) with one waveform element: the
     /// scalar case without building a value or a waveform list.
+    #[inline]
     pub fn assign_code(
         &mut self,
         d: DriverId,
@@ -976,6 +995,18 @@ impl Ctx<'_> {
         if self.assign_code_fast(d, target, delay, code, mode) {
             return Ok(());
         }
+        self.assign_code_slow(d, target, delay, code, mode)
+    }
+
+    #[inline(never)]
+    fn assign_code_slow(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        code: u8,
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
         let mut one = self
             .st
             .one
@@ -991,7 +1022,7 @@ impl Ctx<'_> {
     /// element to a driver with nothing pending (and nothing skipped) has nothing to preempt,
     /// so the transaction is appended as it is. False when the general path must run (it also
     /// produces every error).
-    #[inline]
+    #[inline(always)]
     fn assign_code_fast(
         &mut self,
         d: DriverId,
@@ -1211,6 +1242,7 @@ impl Ctx<'_> {
     /// `assign` of a logic value of at most 64 elements given as the plane blocks `read_into`
     /// produces for it: four little-endian `u64` planes (`blocks` is exactly 32 bytes for up to
     /// 64 elements, 32 per 64 more), unused bits zero. No `LogicVec` or `Value` is needed.
+    #[inline]
     pub fn assign_blocks(
         &mut self,
         d: DriverId,
@@ -1226,6 +1258,18 @@ impl Ctx<'_> {
         {
             return Ok(());
         }
+        self.assign_blocks_slow(d, target, delay, blocks, mode)
+    }
+
+    #[inline(never)]
+    fn assign_blocks_slow(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        blocks: &[u8],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
         if blocks.len() > 32 && self.assign_wide_fast(d, target, delay, blocks, mode) {
             return Ok(());
         }
@@ -1245,6 +1289,7 @@ impl Ctx<'_> {
     /// `assign` of one element of a byte signal (an enum, an integer, a boolean, a real: at
     /// most 8 bytes) with one waveform element, given as its bytes: the usual scalar assignment
     /// without building a value or a waveform list.
+    #[inline]
     pub fn assign_bytes(
         &mut self,
         d: DriverId,
@@ -1256,13 +1301,25 @@ impl Ctx<'_> {
         if self.assign_bytes_fast(d, target, delay, bytes, mode) {
             return Ok(());
         }
+        self.assign_bytes_slow(d, target, delay, bytes, mode)
+    }
+
+    #[inline(never)]
+    fn assign_bytes_slow(
+        &mut self,
+        d: DriverId,
+        target: Option<Range>,
+        delay: Time,
+        bytes: &[u8],
+        mode: DelayMode,
+    ) -> Result<(), SimError> {
         self.assign(d, target, &[(delay, bytes)], mode)
     }
 
     /// The common scalar byte case of `assign` in one pass: one element to a driver with nothing
     /// pending is kept as a `BQuick` (an unchanged zero-delay one is skipped as in `assign`).
     /// False when the general path must run (it also produces every error).
-    #[inline]
+    #[inline(always)]
     fn assign_bytes_fast(
         &mut self,
         d: DriverId,
@@ -1339,7 +1396,7 @@ impl Ctx<'_> {
     /// logic elements (`planes`, `len` elements) to a driver with nothing pending is kept as a
     /// `VQuick`, no list entry and no value buffer. False when the general path must run (it
     /// also produces every error).
-    #[inline]
+    #[inline(always)]
     fn assign_planes_fast(
         &mut self,
         d: DriverId,
@@ -1749,6 +1806,23 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// The coming wait resumes this process only in a cycle where the edge `kind` of the one
+    /// element `r` refers to holds (`Inst::WaitEdge`): the kernel leaves it suspended for
+    /// events of the other signals of the wait in other cycles. Ignored for a process whose
+    /// edge trigger the elaborator made (it has one already) and for a range of more or fewer
+    /// than one element.
+    #[inline(always)]
+    pub fn wait_edge(&mut self, r: impl Into<SigRef>, kind: u8) {
+        let r = r.into();
+        if self.st.known_edge.is_none()
+            && let Some(x) = r.range
+            && x.len == 1
+            && x.offset < 1 << 30
+        {
+            self.st.wait_key = edge_key(r.signal, x.offset, kind);
+        }
+    }
+
     /// `wait_on` of one range, when it is the next of the ranges the last wait named, in the
     /// same order, with no timeout, and nothing was added to this one: the commit keeps the
     /// registered waiters and `sens` stays empty (a wait that ends after a part of them takes
@@ -1786,6 +1860,7 @@ impl Ctx<'_> {
 
     /// Timeout of the coming wait, relative to now.
     /// A timeout past TIME'HIGH never expires (lrm-checks.md).
+    #[inline]
     pub fn wait_for(&mut self, delay: Time) -> Result<(), SimError> {
         self.st.deadline = self.after(delay).ok();
         Ok(())
@@ -1793,6 +1868,7 @@ impl Ctx<'_> {
 
     /// Timeout of the coming wait as an absolute time, to re-suspend a `wait until` with its
     /// original deadline.
+    #[inline]
     pub fn wait_at(&mut self, deadline: Time) -> Result<(), SimError> {
         if deadline < self.sh.now {
             return Err(self.error(ErrorKind::DeadlineInPast { deadline }));
@@ -1802,6 +1878,7 @@ impl Ctx<'_> {
     }
 
     /// The process resumed because its timeout expired.
+    #[inline]
     pub fn timed_out(&self) -> bool {
         self.st.timed_out
     }

@@ -4410,6 +4410,63 @@ The reader's instruction count did not change in the kernel round; its rows show
 1.5 s of library analysis with run times that moved by 40%. Only the writer's rows are an effect of the change (instructions 0.92).
 Totals under 1 or near 1 for the reader come from the library analysis of yavs (0.2 s warm) against the reference's 1.5 s.
 
+### Kernel round 22: the per-delta bookkeeping of CPU-style designs (#519, #521, 2026-10-25)
+
+(`docs/decisions.md` "Kernel round 22".) Instruction counts only (no timing cores): whole runs under `perf stat instructions:u`, one thread,
+`--no-cache`, bench builds with `--features llvm`, main at 2cf30ee4 against the round; windows of 100 delta cycles from cycle 20000 (rtl_fan
+20 cycles from 1000, rtl_chain 200 from 3000) with `tools/stepcount`. Kernel includes the `Ctx` callbacks of `process.rs`.
+
+Whole run, instructions in G (main at a133e50c against the rebased round; the windows and the cycles were measured on 2cf30ee4 before the rebase); cycles are the minimum of 4 alternating runs on one loaded core of the first CCD (indications, no timing core
+was used), main against the last commit:
+
+| design | before | after | change | cycles |
+|---|---:|---:|---:|---:|
+| neorv32_single_min | 39.82 | 37.12 | -6.8% | -6.9% |
+| poc_arith_addw | 156.74 | 149.61 | -4.5% | -4.5% |
+| fletcher_bufferreader | 22.60 | 21.33 | -5.6% | -4.3% |
+| hdlm_lfsr | 67.21 | 66.41 | -1.2% | -0.9% |
+| rtl_chain | 3.369 | 3.288 | -2.4% | |
+| rtl_fan | 13.479 | 13.479 | 0.0% | |
+
+One delta cycle, instructions before / after (stepcount windows). The `Ctx` callbacks (`read_into`, the assign fast paths, `commit_code`,
+`wake_sole`, `arm_readers_of`) are inlined into their callers by the last commits, so the per-function rows of the table before no longer
+exist; the stages are summed into the interpreter with its `Ctx` callbacks and `CopyProcess`, and the kernel proper:
+
+| stage | neorv32_single_min | poc_arith_addw | fletcher_bufferreader | hdlm_lfsr |
+|---|---:|---:|---:|---:|
+| interpreter, `Ctx` callbacks, `CopyProcess` | 45736 / 43216 | 37562 / 36266 | 7171 / 6845 | 13578 / 13481 |
+| kernel (wake, finish, commit, `run_batch`, `cycle`, `update`, ...) | 27547 / 23781 | 8827 / 8079 | 5126 / 4767 | 2030 / 1940 |
+| total | 73283 / 66997 | 46389 / 44345 | 12297 / 11612 | 15608 / 15421 |
+
+Before, by stage (neorv32 / addw / fletcher reader / lfsr): `Ctx` reads and assigns and `CopyProcess` 11274 / 4071 / 1391 / 642, wake
+(`take_woken`, `arm_readers`, `wake_sole`) 8083 / 497 / 542 / 103, finish (`finish_direct`, `update_word`) 5810 / 2866 / 1403 / 426, commit
+5247 / 1567 / 748 / 371, `run_batch` and `order` 4033 / 1976 / 724 / 245, the `cycle` wake loop and idle filter 3399 / 1645 / 1100 / 403,
+`update`, `last_delta`, `run_until` and libc 976 / 276 / 609 / 482.
+
+The fixed costs of a delta (rtl_chain, one process, one bit, 1594 instructions: interpreter 708, `run_one` 193, `finish_direct` 176, `wake_sole`
+116, `cycle` 115, `update` and `last_delta` and `run_until` 104, `assign_code_fast` 94, `commit_code` 80) and of an activation (rtl_fan, 667
+instructions: about 100 in the `run_batch` loop, the rest the interpreter) hardly moved (rtl_chain 1594 to 1553 instructions: the callbacks, `wake_sole` and `commit_code` inlined); they are already one load or compare each. What
+moved is the work per changed signal and per woken waiter (the wake order sort, the range tests of waiters and readers, the guard walk of
+`arm_readers`) and the call overhead of the process-side callbacks.
+The shares of the instructions of a whole run that are the kernel (including `Ctx`): 54% neorv32, 35% addw, 61% fletcher reader, 16% hdlm_lfsr,
+11% rtl_fan, 66% rtl_chain. Left, by whole-run share: `finish_direct` 7% (about 410 instructions per changed word of a narrow signal, `update_word`),
+`cycle` 6%, `assign_planes_fast` 4%, `commit_out` 4%, `run_batch` 4%, `Ctx::read_into` 3.4% (85 instructions a call, a third of them decoding
+the `SigRef`).
+
+### Waits on a clock edge, and what the idle skip leaves (#519, 2026-10-25)
+
+(`docs/decisions.md` "Waits on a clock edge".) Fresh profile of `fletcher_bufferwriter_512` (interpreter, bench build, core 13; per-process
+time from a local patch, not committed): `reg_proc`-style clocked processes 19% of process time at ~500 ns a run, the padder `comb` 12%,
+the testbench's `bus_proc` and `input_proc` 11% each, the reshaper `ctrl_comb_proc` 9%, `last_stage_proc` 5%. `perf`: `run_ops` 31%,
+`finish_words_lean` 6.5%, `cycle` 4%, `commit_planes_run` 3.8%. Over all 42 realbench designs the processes the idle skip refuses
+and that mostly drive nothing are checkers with variables kept between activations (~0.5% of process time): no new idle-skip rule
+pays. Built instead: `Inst::WaitEdge`, so `wait until rising_edge(clk) and x` wakes only on the edge. Instructions
+(interpreter): `hdlm_lfsr` 0.98 (auto 0.94), `fletcher_bufferreader` 0.98, `fletcher_bufferwriter_512` 0.99, the rest 1.00;
+`realbench --compare` of 42 tests: instruction and wall geometric mean 1.00 in interpreter and auto. Difftest 524 of 524 (interp, llvm,
+auto, auto heat 1,0,0 at 4 threads, interp shuffled); new corpus test `delta/wait_edge`, perf design `wait_edge`.
+Writer total against the reference simulator is unchanged (about 1.4x warm): the remaining gap is the interpreter dispatch, kernel
+commit and record layout items of the whole-picture table above.
+
 ### Kernel round 21: cells for a wide bus with a waiter on a part (#519, 2026-10-24)
 
 (`docs/decisions.md` "Kernel round 21".) The split of such a bus into kernel signals at the waiters' boundaries (the user's task) was
@@ -8312,6 +8369,22 @@ would have to give `Inst::Cat` parts an offset: cross-crate), unchecked register
 Not verified: cold tiny numbers after the change (only warm), Windows and aarch64 start-up, whether a non-PIE binary changes
 `--tier=auto` instruction counts (it did not change the cycles of the head-to-head designs).
 
+## performance: floor of a run, round 4 (#426, 2026-10-25)
+
+The fixed cost of a tiny test after #725: no compile thread in a run under 5 ms, fewer system calls per cache entry (`docs/decisions.md` "Floor of a run, round 4").
+Tiny corpus, every fifth test (100), warm, bench builds with `llvm`, the binaries copied fresh and interleaved per test, `perf stat -r 6`:
+
+| per test, geometric mean against before | user instructions | kernel instructions | page faults | task-clock (hint) |
+|---|---:|---:|---:|---:|
+| `run` | 0.993 | 0.935 | 0.989 | 0.939 |
+| `run`, `array_attrs` / `concat_chain` | 0.990 / 0.994 | 0.917 / 0.923 | 0.984 / 0.996 | 0.923 / 0.905 |
+| `analyze` (warm) | 0.999 | 1.007 | 1.004 | 1.017 |
+
+Median test 2.14 ms to 2.00 ms of CPU (cores 0-7, load 16: a hint; counts are what is reliable). `analyze` and `--version` do not start the threads this round removes.
+What the rest of a tiny `run` is made of, and what was measured and rejected (heap pre-fault, section sorting, `arena_max`), is in the decision. The stack probe of the Rust
+runtime (about 5 percent of a `run` and of an `analyze`) is a decision for the user, #738. Not verified: Windows and aarch64 start-up, cold numbers, a run between 5 and 6 ms
+(where the compile thread now starts 5 ms in, from the signal thread: `--verbose` notes of `rtl_ff`, `compute_h2h` and `bench_lfsr64` show the same compiles as before).
+
 ## grlib_leon3mp whole-run profile and the unowned costs (#720, 2026-10-24)
 
 Profile of `grlib_leon3mp` (std 1993) on main at 3df7bc44, `tools/build-bench.sh --features llvm`, `--tier=auto` warm, core 10 (the compile thread
@@ -8345,7 +8418,7 @@ By process (`--profile`): `iu:comb` 14.7 percent, the four SDRAM `state_register
 
 What changed (commits of #720; `docs/decisions.md` "Cold path of serial processes, port propagation, same-value drives"): the roots of a serial process
 go into reused buffers; in-port values pass down without temporaries; an unchanged scalar assignment to a direct driver is skipped when it is made; a run of
-scalar drives of process variables is one guard op; an unchanged vector assignment to a direct driver is skipped as the scalar one (83 percent of the direct plane commits of the first 400 us); materialising a native frame no longer walks the callee's IR. Interpreter, LEON3, 400 us, instructions,
+scalar drives of process variables is one guard op; an unchanged vector assignment to a direct driver is skipped as the scalar one (direct plane commits of the whole run 83.4 M to 14.9 M; interpreter, whole run, instructions 574.1 G to 554.9 G, 0.967); materialising a native frame no longer walks the callee's IR. Interpreter, LEON3, 400 us, instructions,
 bench builds, steady state: 257.5 G, 250.9 G (roots), 248.3 G (+ ports), 240.9 G (+ same-value drives and runs); whole run `--tier=auto` 625.7 G to 589.5 G.
 Microbenchmark (one process, 8 scalar drives of unchanged variables per activation): 460 instructions a drive, about 150 in a run; start-up (first 1 us) 4.6 s to 3.65 s.
 
@@ -8410,3 +8483,60 @@ Left, for the lanes (comments on the issues): the policy (#675, #673); the drive
 not native-frame calls cost 50 to 80 ns (#730); the native-frame code under `--tier-heat` stays at O0 (#729). Not done: a fused op for the element copy `sort_data(col + 1)(row) <= sort_data(col)(row)`
 (`SigVal`, `AllocReadVec`, `CopyDrive`: 2 to 4 percent of the interpreter, nothing compiled), loop-invariant signal reads (`reset_p` read per row, `SigRead1 -> NotL`: 2 percent of the ops), descending ranges in
 `pos_to_check` (needs a check message per direction at lowering).
+
+## General gaps towards sim1: attribution across all designs (#519, 2026-10-25)
+
+Cross-design attribution on main at 9171b609, bench build with `llvm`, `--tier=auto`: the 42 realbench tests and the 10 bench h2h designs that run on sim1
+(52 tests), warm and cold. Per test `perf stat` (minimum of 2 to 3 runs) and a flat `perf record` of yavs and sim1 classified into layers; layer seconds are
+the layer's share of main-thread samples times the CPU seconds of the run. No timing cores were used (cores 1 to 3, shared with builds), so the ranking is
+reliable and the per-test seconds are not. Full tables and the ranked list with evidence: comment on #519 (agent gapscan).
+
+Geomean against sim1, warm: instructions 0.41, wall 0.33; cold: 0.73 and 0.60. yavs is slower in 15 tests (summed main-thread excess 48.1 s, of which
+`grlib_leon3mp` 36.1 s) and ahead by 25.4 s on the rest; sim1 spends 35 percent of its time generating code in the run, yavs 0.9 s of 107 s starting up.
+
+| # | general item | weight (excess in slower tests, without grlib) | lane |
+|---|---|---|---|
+| 1 | interpreter execution of what stays interpreted under auto | 32.2 s (11.7) | interp6 |
+| 2 | value movement of wide vectors, records, composites (gather, scatter, lcopy, copy_bits, cat, memmove); also the floor under compiled code | 15.1 s helpers + 2.4 bulk (3.2 + 0.4) | unowned |
+| 3 | kernel per-activation orchestration: cycle, commit, event bookkeeping | 10.4 s (5.0) | kern22 |
+| 4 | compiled code of processes over 1 000 IR is not faster than the interpreter (#679) | `grlib_leon3mp` forced compile 67.8 s against 52.4 s | unowned |
+| 5 | auto policy: priced out or never considered (#675, #728, #673) | interpreted-only seconds 36.6 of 40.2 (grlib), 2.5 of 2.7 (`fletcher_bufferwriter_512`) | autoclk |
+| 6 | process to kernel boundary: entry, scalar drives and waits, signal reads | 13 to 42 percent of small RTL under llvm; reads 2.0 s | cgdirect, reads unowned |
+| 7 | cold start: tier-up latency and cache-miss start-up | cold minus warm 22 s over 52 tests | coldc, startup |
+| 8 | calls, frames, pure-call memo | 0.7 s (0.3) | calls730 |
+
+Facts worth keeping: full `--tier=llvm` removes no instructions on `fletcher_bufferwriter_512` (57.4 G against 54.4 G interpreted, net of the load cost) or
+`fletcher_bufferreader` (23.9 G against 22.3 G): the cost there is the value path of items 2 and 3, not op dispatch. Natives, allocation, warm start-up, wake and
+drive are already ahead of sim1. A layer that is 0 for sim1 (cycle driver, signal reads, helpers) is structural: its generated code or one runtime function does that
+work, so compare group totals.
+
+## llvm: address parameters of native frames resolved once (#726, 2026-10-25)
+
+A native frame resolves the region each address parameter points into once, at its entry, when the function uses it as an address three times or more with one use in a loop
+(`yavs_rt_region`, `docs/decisions.md` "Address parameters of native frames are resolved once per activation"). Window generator (bench builds, fresh world per binary and tier, 12 untimed runs,
+medians of 5 interleaved runs, core 9, host load 17 to 20): `--tier=llvm` 179.6 to 176.0 G instructions (-2.0 percent), 66.4 to 63.2 G cycles; `--tier=auto` warm 147.0 to 143.4 G, cycles level
+(-3.3 percent on a quiet host); `decode` of the codec 6.6 to 3.5 percent of the instructions. Realbench `--compare` over all 42 tests (auto warm and cold): wall geomean 1.00 / 1.00, instructions 1.00 / 0.99;
+only the window generator moves (warm 9.89 to 9.37 s). New: `crates/yavs/tests/compiled_param_regions.rs`; counter `cb_region`.
+
+## llvm: smaller frame-mode code (#679, 2026-10-25)
+
+(`docs/decisions.md` "llvm: smaller frame-mode code ...".) Bench builds, `--tier-heat=1,0,0`, core 7 (CCD0, shared with builds: cycles carry a
+large spread, so instructions, L1i and iTLB misses, branch misses and frontend stall cycles from `perf stat --no-inherit` of the simulation
+thread are the evidence; medians of 5 interleaved runs, base = main at 9171b609), the measuring aid `YAVS_LLVM_KINDLOC`.
+
+Machine code of the cold-cache run of neorv32 (30 us), all objects: 8.42 MB to 5.38 MB (-36 %); `exec_comb` 301 769 to 174 253 bytes
+(-42 %). LEON3 60 us window with `iu:comb` forced: 24.4 MB to 14.9 MB of code over the objects it compiles.
+
+| case (base to change) | instructions | cycles (min) | L1i misses | iTLB misses | branch misses | frontend stall cycles |
+|---|---:|---:|---:|---:|---:|---:|
+| `neorv32_single_min` | 35.42 G to 35.06 G | -16 % (-6.8) | -19 % | -54 % | -7 % | -17 % |
+| `fletcher_bufferreader` | 23.01 G to 22.61 G | -11.5 % (-12.1) | -21 % | -7 % | -2 % | -18 % |
+| `fletcher_bufferwriter_512` | 52.72 G to 51.67 G | -6.6 % (+13.9) | -23 % | -28 % | -29 % | -20 % |
+| `sc5_fifo_repack` | 27.01 G to 26.15 G | -0.6 % (+0.5) | -40 % | -29 % | level | level |
+| LEON3 60 us, `iu:comb` forced (3 runs) | 74.3 G to 72.2 G | +5 % (+8.6) | -6 % | +80 % | +9 % | +6 % |
+
+The interpreter against heat mode (same binary, 60 us LEON3): 82.2 G instructions against 71.5 G, cycles level (34.5 G against 35.5 G);
+L1i misses +50 %, branch misses +56 %. So the goal "heat cycles at or below the interpreter" is met by instructions and by code bytes on every
+design but not yet by cycles on LEON3 (the L1i and branch misses of the 15 MB of code) and `fletcher_bufferwriter_512`; the remaining bytes are
+`LayoutOf` (10 %), `LCopy` (7 %), `Field` and `Load` in the LEON3 copy (per-kind table with `YAVS_LLVM_KINDLOC`).
+Difftest 523/523 on `yavs-interp`, `yavs-llvm`, `yavs-auto` and `yavs-auto` with `--tier-heat=1,0,0`, 1 and 4 threads.

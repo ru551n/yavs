@@ -613,6 +613,41 @@ impl StopTierUp {
             _ => {}
         }
     }
+
+    /// Starts the compile thread. It does not exist at first: a run of a few milliseconds ends
+    /// before it would look at anything, and a thread is a twentieth of such a run. The helper
+    /// thread of the signal handlers calls this after `START_AFTER` (`Handlers::after`).
+    fn launcher(
+        &self,
+        format: MessageFormat,
+        color: bool,
+    ) -> (std::time::Duration, Arc<dyn Fn() + Send + Sync>) {
+        match self {
+            #[cfg(any(feature = "llvm", feature = "clift"))]
+            StopTierUp::Llvm(t) => {
+                let tier = t.clone();
+                (
+                    yavs_llvm::START_AFTER,
+                    Arc::new(move || {
+                        if let Err(e) = tier.launch() {
+                            crate::stdout::flush();
+                            let d = Diagnostic::warning(
+                                "W0117",
+                                "cannot start the compile thread of `--tier=auto`",
+                            )
+                            .with_note(e.to_string());
+                            eprint!(
+                                "{}",
+                                yavs_diag::render(&SourceMap::default(), &d, format, color)
+                            );
+                        }
+                    }),
+                )
+            }
+            #[cfg(not(any(feature = "llvm", feature = "clift")))]
+            _ => unreachable!("no tier-up without a compiled tier"),
+        }
+    }
 }
 
 impl Drop for StopTierUp {
@@ -713,7 +748,7 @@ fn use_clift(
         }
     });
     let first = yavs_clift::First::new().map_err(bug)?;
-    let t = yavs_llvm::AutoTier::start_with(
+    let t = yavs_llvm::AutoTier::start_deferred_with(
         rt,
         yavs_llvm::OptLevel::O2,
         a.tier_max_size,
@@ -777,7 +812,7 @@ fn use_auto3(
     // `YAVS_MIXED=1`, for tests: LLVM compiles the functions of even id and Cranelift the others
     // (as the only generator), so compiled callers and callees of both kinds call each other.
     if std::env::var_os("YAVS_MIXED").is_some() {
-        let t = yavs_llvm::AutoTier::start_with(
+        let t = yavs_llvm::AutoTier::start_deferred_with(
             rt,
             yavs_llvm::OptLevel::O2,
             a.tier_max_size,
@@ -794,7 +829,7 @@ fn use_auto3(
         .map_err(|e| bug(e.to_string()))?;
         return Ok(Some(StopTierUp::Llvm(t)));
     }
-    let t = yavs_llvm::AutoTier::start(
+    let t = yavs_llvm::AutoTier::start_deferred(
         rt,
         yavs_llvm::OptLevel::O0,
         a.tier_max_size,
@@ -933,7 +968,7 @@ fn use_llvm_tier(
                     }
                 }
             });
-            let t = yavs_llvm::AutoTier::start(
+            let t = yavs_llvm::AutoTier::start_deferred(
                 rt,
                 // The hidden `--tier-heat` is for tests and tuning: O0 first, O2 for the hot ones.
                 if a.tier_heat.is_some() {
@@ -1317,6 +1352,10 @@ pub fn run(
     if crate::stdout::is_on() {
         hooks.tick = Some((crate::stdout::TICK, Box::new(crate::stdout::flush)));
     }
+    let launch = tier_up.as_ref().map(|t| t.launcher(format, color));
+    hooks.after = launch
+        .clone()
+        .map(|(after, f)| (after, Box::new(move || f()) as _));
     let keep_exit = !a.load.is_empty() || !a.vhpi.is_empty();
     if recorder.is_some() || cfg_profile.is_some() {
         let flag = if recorder.is_some() {
@@ -1335,6 +1374,10 @@ pub fn run(
         if recorder.is_some() {
             out.emit(&none, &handler_error(err));
             return out.finish(2);
+        }
+        // No helper thread to start it later.
+        if let Some((_, f)) = &launch {
+            f();
         }
         crate::stdout::unbuffer();
         out.emit(

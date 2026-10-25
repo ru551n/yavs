@@ -38,7 +38,7 @@ pub mod spike;
 pub fn code_arena_stats() -> Option<[usize; 4]> {
     arena::stats()
 }
-pub use auto::{AutoTier, Gens, Heat, Note, exit_now};
+pub use auto::{AutoTier, Gens, Heat, Note, START_AFTER, exit_now};
 pub use census::callback_counts;
 pub use generator::{Generator, OptLevel, StartError};
 #[cfg(feature = "llvm")]

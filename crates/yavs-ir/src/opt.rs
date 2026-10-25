@@ -369,6 +369,7 @@ fn optimize_body_with(
         &mut layouts,
     );
     o.inst = inst;
+    o.fid = Some(id);
     let had_inst = o.inst.is_some();
     o.run();
     let split = o.split;
@@ -972,6 +973,8 @@ struct Opt<'a> {
     inst: Option<InstView<'a>>,
     /// What the declarative part of the process left in its frame (`decl.rs`), for a copy.
     wf: Option<decl::Facts>,
+    /// The function being optimised, when its nested subprograms are to be found (`decl.rs`).
+    fid: Option<FuncId>,
     /// Registers that point into the descriptor of a heap object whose bytes are known: the
     /// bytes and the pointer's offset in them.
     rdesc: FxMap<Reg, (Rc<[u8]>, u32)>,
@@ -1071,6 +1074,7 @@ impl<'a> Opt<'a> {
             f,
             inst: None,
             wf: None,
+            fid: None,
             rdesc: FxMap::default(),
             code,
             operands,
@@ -2718,6 +2722,7 @@ impl<'a> Opt<'a> {
             | Inst::Force { .. }
             | Inst::Release { .. }
             | Inst::WaitOn { .. }
+            | Inst::WaitEdge { .. }
             | Inst::WaitFor { .. }
             | Inst::WaitAt { .. }
             | Inst::TimedOut { .. }
@@ -4564,6 +4569,13 @@ fn fold_int(op: IntOp, x: i64, y: i64) -> Option<i64> {
         IntOp::Sub => x.checked_sub(y),
         IntOp::Mul => x.checked_mul(y),
         IntOp::Div if y != 0 => x.checked_div(y),
+        // (A negative exponent or an overflow is the interpreter's error to raise.)
+        IntOp::Pow if y >= 0 => match x {
+            0 => Some(i64::from(y == 0)),
+            1 => Some(1),
+            -1 => Some(if y % 2 == 0 { 1 } else { -1 }),
+            _ => u32::try_from(y).ok().and_then(|e| x.checked_pow(e)),
+        },
         IntOp::Rem if y != 0 => Some(x.checked_rem(y).unwrap_or(0)),
         IntOp::Mod if y != 0 => {
             let r = x.checked_rem(y).unwrap_or(0);

@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::{AddrSpace, Func, FuncFlags, FuncId, FuncKind, Inst, Program};
+use crate::{AddrSpace, Func, FuncId, FuncKind, Inst, Program};
 
 /// The data of a package once it is initialised: constants and the objects it made (addressed by
 /// `AddrSpace::Pkg`), and a digest of it.
@@ -258,10 +258,12 @@ impl Copies {
 }
 
 impl Program {
-    /// Can process `base` have copies: a process that is not nested, touches no shared state,
-    /// has one wait statement (the resume point of a suspended process maps
-    /// to the copy's one, `Machine::specialise`) and reads instance data; and the optimiser's
-    /// specialisation is on (`opt::specialise_on`).
+    /// Can process `base` have copies: a process that has one wait statement (the resume point
+    /// of a suspended process maps to the copy's one, `Machine::specialise`) and reads instance
+    /// data; and the optimiser's specialisation is on (`opt::specialise_on`). Subprograms nested
+    /// in the process and shared state (files, the shared heap) do not matter: the copy keeps the
+    /// frame layout, so a nested subprogram reaches its variables, and the optimiser assumes
+    /// nothing about frame bytes they write (`opt/decl.rs`).
     pub fn specialisable(&self, base: FuncId) -> bool {
         if !crate::opt::specialise_on() {
             return false;
@@ -276,8 +278,6 @@ impl Program {
                 return false;
             };
             raw.kind == FuncKind::Process
-                && !raw.nested
-                && !raw.flags.contains(FuncFlags::TOUCHES_SHARED)
                 && self.single_suspend(base)
                 && raw.code.iter().any(|i| {
                     matches!(

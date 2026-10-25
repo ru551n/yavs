@@ -23,7 +23,7 @@ use super::*;
 
 /// Most instructions of the declarative part run; a block of bytes tracked at most `MAX_BYTES`.
 const MAX_STEPS: usize = 50_000;
-const MAX_BYTES: i64 = 1 << 16;
+const MAX_BYTES: i64 = 1 << 18;
 
 /// Frame ranges: offset and length.
 type Ranges = Vec<(i64, i64)>;
@@ -759,79 +759,163 @@ impl Opt<'_> {
             Opn::A(AddrSpace::Frame, o) => Some(i64::from(o)),
             _ => None,
         };
+        let k = |r: Reg| match self.opn(r) {
+            Opn::K(n) => Some(n),
+            _ => None,
+        };
         for b in 0..self.blocks.len() {
-            let in_body = b >= body;
             for pc in self.range(b) {
-                let i = &self.code[pc];
-                let mut escape = |o: i64| {
-                    if !self.in_descriptor(o) {
-                        esc.push(self.frame_range(o, None));
+                self.classify(
+                    self.f,
+                    &self.code[pc],
+                    &fa,
+                    &k,
+                    b >= body,
+                    &mut wr,
+                    &mut esc,
+                );
+            }
+        }
+        (wr, esc)
+    }
+
+    /// What instruction `i` of `g` does to the frame of this process: `fa` gives the frame
+    /// offset a register holds the address of, `k` the constant it holds. A write goes to `wr`
+    /// (only when `writes`: the declarative part's own are no fact against the frame it made),
+    /// any other use of an address to `esc`.
+    #[allow(clippy::too_many_arguments)]
+    fn classify(
+        &self,
+        g: &crate::Func,
+        i: &Inst,
+        fa: &dyn Fn(Reg) -> Option<i64>,
+        k: &dyn Fn(Reg) -> Option<i64>,
+        writes: bool,
+        wr: &mut Ranges,
+        esc: &mut Ranges,
+    ) {
+        let mut escape = |o: i64| {
+            if !self.in_descriptor(o) {
+                esc.push(self.frame_range(o, None));
+            }
+        };
+        match *i {
+            Inst::Load { .. } => {}
+            Inst::Store { addr, src, w } => {
+                if let Some(o) = fa(addr)
+                    && writes
+                {
+                    wr.push((o, i64::from(w.bytes())));
+                }
+                if let Some(o) = fa(src) {
+                    escape(o);
+                }
+            }
+            Inst::Copy { dst, bytes, .. } => {
+                if let Some(o) = fa(dst)
+                    && writes
+                {
+                    wr.push(match k(bytes) {
+                        Some(n) => (o, n),
+                        None => self.frame_range(o, None),
+                    });
+                }
+            }
+            Inst::MakeDope { at, parts } => {
+                if let Some(o) = fa(at)
+                    && writes
+                {
+                    wr.push((o, 8 * i64::from(parts.len)));
+                }
+                for &r in g.regs(parts).unwrap_or(&[]) {
+                    if let Some(o) = fa(r) {
+                        escape(o);
                     }
-                };
-                match *i {
-                    Inst::Load { .. } => {}
-                    Inst::Store { addr, src, w } => {
-                        if let Some(o) = fa(addr)
-                            && in_body
-                        {
-                            wr.push((o, i64::from(w.bytes())));
-                        }
-                        if let Some(o) = fa(src) {
+                }
+            }
+            _ => {
+                i.visit(&mut |r, role, _| {
+                    if role == Role::Use
+                        && let Some(o) = fa(r)
+                    {
+                        escape(o);
+                    }
+                });
+                if let Some(l) = i.list() {
+                    for &r in g.regs(l).unwrap_or(&[]) {
+                        if let Some(o) = fa(r) {
                             escape(o);
-                        }
-                    }
-                    Inst::Copy { dst, bytes, .. } => {
-                        if let Some(o) = fa(dst)
-                            && in_body
-                        {
-                            wr.push(match self.opn(bytes) {
-                                Opn::K(n) => (o, n),
-                                _ => self.frame_range(o, None),
-                            });
-                        }
-                    }
-                    Inst::MakeDope { at, parts } => {
-                        if let Some(o) = fa(at)
-                            && in_body
-                        {
-                            wr.push((o, 8 * i64::from(parts.len)));
-                        }
-                        for &r in self.f.regs(parts).unwrap_or(&[]) {
-                            if let Some(o) = fa(r) {
-                                escape(o);
-                            }
-                        }
-                    }
-                    _ => {
-                        i.visit(&mut |r, role, _| {
-                            if role == Role::Use
-                                && let Some(o) = fa(r)
-                            {
-                                escape(o);
-                            }
-                        });
-                        if let Some(l) = i.list() {
-                            for &r in self.f.regs(l).unwrap_or(&[]) {
-                                if let Some(o) = fa(r) {
-                                    escape(o);
-                                }
-                            }
                         }
                     }
                 }
             }
         }
-        (wr, esc)
+    }
+
+    /// What the subprograms nested in process `id` do to its frame, added to `wr` and `esc`:
+    /// they reach it by `AddrOf { space: Up(depth) }`, so their writes and their uses of such an
+    /// address (a derived address too: the whole object it is in) are the same as the process's
+    /// own. An address register defined twice gives up on the whole frame.
+    fn nested_writes(&self, id: FuncId, wr: &mut Ranges, esc: &mut Ranges) {
+        for (_, g) in self.prog.funcs.iter() {
+            let (mut depth, mut p) = (0u8, g.parent);
+            while let Some(q) = p
+                && q != id
+                && depth < 32
+            {
+                depth += 1;
+                p = self.prog.funcs.get(q).and_then(|h| h.parent);
+            }
+            if p != Some(id) {
+                continue;
+            }
+            depth += 1;
+            let g = g.full();
+            let (mut up, mut defs) = (FxMap::<u32, i64>::default(), vec![0u8; g.reg_ty.len()]);
+            for i in &g.code {
+                for_defs_fast(i, |d| {
+                    if let Some(n) = defs.get_mut(d.0 as usize) {
+                        *n = n.saturating_add(1);
+                    }
+                });
+                if let Inst::AddrOf {
+                    dst,
+                    space: AddrSpace::Up(d),
+                    off,
+                } = *i
+                    && d == depth
+                {
+                    up.insert(dst.0, i64::from(off));
+                }
+            }
+            if up.keys().any(|&r| defs.get(r as usize) != Some(&1)) {
+                esc.push((0, i64::MAX));
+                continue;
+            }
+            let fa = |r: Reg| up.get(&r.0).copied();
+            let kc = |r: Reg| {
+                g.code.iter().find_map(|i| match *i {
+                    Inst::Const { dst, v } if dst == r && defs[r.0 as usize] == 1 => Some(v),
+                    _ => None,
+                })
+            };
+            for i in &g.code {
+                self.classify(g, i, &fa, &kc, true, wr, esc);
+            }
+        }
     }
 
     /// The facts of a process copy's declarative part (see the module), or `None`.
     pub(super) fn decl_facts(&self) -> Option<Facts> {
         let f = self.f;
         let body = f.body?.0 as usize;
-        if self.nested || body == 0 || body >= self.blocks.len() || f.frame > MAX_BYTES as u32 {
+        if body == 0 || body >= self.blocks.len() || f.frame > MAX_BYTES as u32 {
             return None;
         }
-        let (wr, esc) = self.frame_writes();
+        let (mut wr, mut esc) = self.frame_writes();
+        if self.nested {
+            self.nested_writes(self.fid?, &mut wr, &mut esc);
+        }
         let mut ev = Ev {
             o: self,
             regs: vec![Av::Unk; f.reg_ty.len()],

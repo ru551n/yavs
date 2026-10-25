@@ -280,6 +280,102 @@ unsafe fn narrow_masks(module: LLVMModuleRef) {
     }
 }
 
+/// Gives each block its own copy of the address arithmetic it uses (`getelementptr` with constant
+/// indices, off a base available there), after the passes: they merge the copies of a block with
+/// the first one in a dominating block (EarlyCSE), and then the address is a value alive across
+/// blocks, which the unoptimised code generator keeps in a stack slot (a store at the definition,
+/// a load at every use) and cannot fold into the load or store that uses it (it does not look for
+/// an address in another block). The copy folds into the access: no register, no reload.
+unsafe fn remat_geps(module: LLVMModuleRef) {
+    use llvm_sys::LLVMOpcode;
+    use std::collections::HashMap;
+    // The value to use in `blk` in place of `v`: a copy of `v` made before `at` when `v` is such an
+    // address from another block (its base made local the same way).
+    unsafe fn local(
+        b: LLVMBuilderRef,
+        blk: LLVMBasicBlockRef,
+        at: LLVMValueRef,
+        v: LLVMValueRef,
+        made: &mut HashMap<(usize, usize), LLVMValueRef>,
+    ) -> LLVMValueRef {
+        // SAFETY: values and blocks of one live function; a clone is built before `at`.
+        unsafe {
+            if LLVMIsAGetElementPtrInst(v).is_null() || LLVMGetInstructionParent(v) == blk {
+                return v;
+            }
+            let n = LLVMGetNumOperands(v) as u32;
+            if (1..n).any(|k| LLVMIsAConstantInt(LLVMGetOperand(v, k)).is_null()) {
+                return v;
+            }
+            if let Some(&c) = made.get(&(blk as usize, v as usize)) {
+                return c;
+            }
+            let base = local(b, blk, at, LLVMGetOperand(v, 0), made);
+            let mut idx: Vec<LLVMValueRef> = (1..n).map(|k| LLVMGetOperand(v, k)).collect();
+            LLVMPositionBuilderBefore(b, at);
+            let g = LLVMBuildGEP2(
+                b,
+                LLVMGetGEPSourceElementType(v),
+                base,
+                idx.as_mut_ptr(),
+                idx.len() as u32,
+                c"".as_ptr(),
+            );
+            made.insert((blk as usize, v as usize), g);
+            g
+        }
+    }
+    // SAFETY: plain walks over a module that is finished; operands are replaced by equal values.
+    unsafe {
+        let ctx = LLVMGetModuleContext(module);
+        let bld = LLVMCreateBuilderInContext(ctx);
+        let mut f = LLVMGetFirstFunction(module);
+        while !f.is_null() {
+            let mut made = HashMap::new();
+            let mut gone = Vec::new();
+            let mut bb = LLVMGetFirstBasicBlock(f);
+            while !bb.is_null() {
+                let mut i = LLVMGetFirstInstruction(bb);
+                while !i.is_null() {
+                    let next = LLVMGetNextInstruction(i);
+                    let op = LLVMGetInstructionOpcode(i);
+                    // (A phi's operand belongs to the end of its predecessor; a copy there is no gain.)
+                    if op != LLVMOpcode::LLVMPHI && op != LLVMOpcode::LLVMGetElementPtr {
+                        // (The copies carry the user's line in a build with line tables.)
+                        let loc = llvm_sys::debuginfo::LLVMInstructionGetDebugLoc(i);
+                        llvm_sys::core::LLVMSetCurrentDebugLocation2(bld, loc);
+                        for k in 0..LLVMGetNumOperands(i) as u32 {
+                            let v = LLVMGetOperand(i, k);
+                            let w = local(bld, bb, i, v, &mut made);
+                            if w != v {
+                                LLVMSetOperand(i, k, w);
+                                gone.push(v);
+                            }
+                        }
+                    }
+                    i = next;
+                }
+                bb = LLVMGetNextBasicBlock(bb);
+            }
+            // The originals nothing uses any more, a chain of them from the last.
+            let mut erased = std::collections::HashSet::new();
+            while let Some(v) = gone.pop() {
+                if !erased.contains(&(v as usize))
+                    && !LLVMIsAGetElementPtrInst(v).is_null()
+                    && LLVMGetFirstUse(v).is_null()
+                {
+                    let base = LLVMGetOperand(v, 0);
+                    erased.insert(v as usize);
+                    LLVMInstructionEraseFromParent(v);
+                    gone.push(base);
+                }
+            }
+            f = LLVMGetNextFunction(f);
+        }
+        LLVMDisposeBuilder(bld);
+    }
+}
+
 /// Marks every function `optnone noinline`: the machine passes that `Less` adds over `None` (block
 /// placement, tail merging, peepholes) skip them, and the instruction selection stays the fast one,
 /// so `OptLevel::FastRa` differs from `Fast` in the register allocator alone (#715).
@@ -477,6 +573,7 @@ impl Module {
             if opt.codegen() == LLVMCodeGenOptLevel::LLVMCodeGenLevelNone || opt == OptLevel::FastRa
             {
                 narrow_masks(self.module);
+                remat_geps(self.module);
             }
             if opt == OptLevel::FastRa {
                 no_opt(self.module);

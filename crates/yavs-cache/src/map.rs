@@ -32,9 +32,19 @@ impl std::ops::Deref for Data {
 }
 
 /// The file's bytes, or `None` when it cannot be opened. A file that cannot be mapped (an empty
-/// one, a file system without mapping) is read instead.
-pub(crate) fn open(path: &Path) -> Option<Data> {
+/// one, a file system without mapping) is read instead. With `touch` (Unix) the entry's time is
+/// refreshed through the open file (the old way opened it again for writing: three system calls);
+/// failing is harmless.
+pub(crate) fn open(path: &Path, touch: bool) -> Option<Data> {
     let mut f = fs::File::open(path).ok()?;
+    // One question to the system serves the length of the mapping.
+    let meta = f.metadata().ok()?;
+    #[cfg(unix)]
+    if touch {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    #[cfg(not(unix))]
+    let _ = touch;
     // SAFETY: entries are never written in place: a writer fills a temporary file and renames it
     // over the entry, a prune or clean removes the name, and an open mapping keeps its pages
     // either way (Unix; on Windows removing a mapped file fails and is ignored). The bytes a
@@ -42,7 +52,12 @@ pub(crate) fn open(path: &Path) -> Option<Data> {
     // truncates an entry in place could invalidate them (a signal on access, the same
     // exposure any mapped file has). `Entry::get` verifies the length and the checksum of what
     // it maps before anything is decoded from it.
-    if let Ok(m) = unsafe { memmap2::MmapOptions::new().populate().map(&f) } {
+    if let Ok(m) = unsafe {
+        memmap2::MmapOptions::new()
+            .len(usize::try_from(meta.len()).ok()?)
+            .populate()
+            .map(&f)
+    } {
         return Some(Data::Mapped(m));
     }
     let mut v = Vec::new();
@@ -89,9 +104,13 @@ pub(crate) fn huge_heap() {
     if std::env::var_os("YAVS_HUGE_HEAP").is_some_and(|v| v == "0") {
         return;
     }
-    if !std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
-        .is_ok_and(|s| s.contains("[madvise]"))
-    {
+    // One read into a small buffer ("always [madvise] never" is 23 bytes): `read_to_string`
+    // also asks for the size and reads again to find the end.
+    let mut mode = [0u8; 64];
+    let n = std::fs::File::open("/sys/kernel/mm/transparent_hugepage/enabled")
+        .and_then(|mut f| std::io::Read::read(&mut f, &mut mode))
+        .unwrap_or(0);
+    if !mode[..n].windows(9).any(|w| w == b"[madvise]") {
         return;
     }
     // SAFETY: `mallopt`, `sbrk(0)` and `madvise` on the heap's own range take no pointers

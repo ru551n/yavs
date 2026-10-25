@@ -170,6 +170,8 @@ pub(crate) struct Waiter {
     pub tid: u32,
     /// Registration number on its signal: the order in which waiters wake.
     seq: u64,
+    /// The elements it waits for as bits, on a signal of at most 64 elements (else 0).
+    mask: u64,
 }
 
 /// What a waiter takes from its process when it is registered.
@@ -192,6 +194,48 @@ const MAX_TIDS: usize = 32;
 
 /// The most buckets a waiter is copied into before it goes to the wide list instead.
 const WAIT_NARROW: u32 = 4;
+
+/// The changed runs of an event, ready to be tested against waiters: as bits on a signal of at
+/// most 64 elements, else as the sorted runs.
+pub(crate) enum Hits<'a> {
+    Mask(u64),
+    Runs(&'a [Range]),
+}
+
+impl<'a> Hits<'a> {
+    #[inline(always)]
+    pub(crate) fn of(len: u32, runs: &'a [Range]) -> Hits<'a> {
+        if len <= 64 {
+            Hits::Mask(
+                runs.iter()
+                    .fold(0, |m, r| m | nmask(r.len as usize) << r.offset),
+            )
+        } else {
+            Hits::Runs(runs)
+        }
+    }
+
+    /// Whether the event touches an element `w` waits for.
+    #[inline(always)]
+    pub(crate) fn hit(&self, w: &Waiter) -> bool {
+        match self {
+            Hits::Mask(m) => w.mask & m != 0,
+            Hits::Runs(runs) => runs_hit(runs, w.range),
+        }
+    }
+}
+
+/// Whether a range of `runs` (sorted, disjoint) shares an element with `r`.
+#[inline(always)]
+pub(crate) fn runs_hit(runs: &[Range], r: Range) -> bool {
+    match runs {
+        [x] => x.overlaps(r),
+        _ => {
+            let i = runs.partition_point(|x| x.end() <= r.offset);
+            runs.get(i).is_some_and(|x| x.overlaps(r))
+        }
+    }
+}
 
 /// The processes waiting on one signal, bucketed by chunk of 8 elements (64 for a signal over
 /// 4096 elements, one bucket for one of at most 8), so an event looks only at the waiters of
@@ -452,6 +496,11 @@ impl Waiters {
                 perm,
                 tid,
                 seq,
+                mask: if self.len <= 64 {
+                    nmask(range.len as usize) << range.offset
+                } else {
+                    0
+                },
             });
         }
     }
@@ -493,14 +542,10 @@ impl Waiters {
         live: impl Fn(&Waiter) -> bool,
         hold: impl Fn(&Waiter) -> bool,
         out: &mut Vec<(u64, u32)>,
+        ordered: bool,
     ) {
-        let hit = |r: Range| match runs {
-            [x] => x.overlaps(r),
-            _ => {
-                let i = runs.partition_point(|x| x.end() <= r.offset);
-                runs.get(i).is_some_and(|x| x.overlaps(r))
-            }
-        };
+        let hit = |r: Range| runs_hit(runs, r);
+        let hits = Hits::of(self.len, runs);
         out.clear();
         let Some(wide) = self.lists.len().checked_sub(1) else {
             return;
@@ -531,6 +576,8 @@ impl Waiters {
         }
         let shift = self.shift;
         let mut scanned = 0;
+        // A list that went empty: the index of chunks with waiters is out of date.
+        let mut emptied = false;
         // One list: the waiters hit are taken in list order.
         let mut scan = |(l, n): &mut (SmallVec<[Waiter; 1]>, usize)| {
             if l.is_empty() {
@@ -543,7 +590,7 @@ impl Waiters {
             // touched for it.
             let mut remove = false;
             for w in l.iter() {
-                if !hit(w.range) {
+                if !hits.hit(w) {
                     continue;
                 }
                 if !live(w) {
@@ -554,7 +601,8 @@ impl Waiters {
                 }
             }
             if remove {
-                l.retain(|w| !hit(w.range) || (live(w) && (hold(w) || w.perm != 0)));
+                l.retain(|w| !hits.hit(w) || (live(w) && (hold(w) || w.perm != 0)));
+                emptied |= l.is_empty();
             }
             *n = l.len();
         };
@@ -581,8 +629,10 @@ impl Waiters {
                 }
             }
             scan(&mut self.lists[wide]);
-            ix.retain(|&mut c| !self.lists[c as usize].0.is_empty());
-            self.chunked = !ix.is_empty();
+            if emptied {
+                ix.retain(|&mut c| !self.lists[c as usize].0.is_empty());
+                self.chunked = !ix.is_empty();
+            }
             self.chunk_ix = ix;
         } else {
             let mut last = usize::MAX;
@@ -610,7 +660,10 @@ impl Waiters {
         {
             self.build_cache();
         }
-        if scanned > 1 && out.len() > 1 {
+        // `ordered`: the wake order is the registration order, each waiter once. Otherwise a waiter in
+        // several lists comes up once per list and the order is that of the scan: waking is
+        // idempotent and the batch is ordered by process, whatever order it was woken in.
+        if ordered && scanned > 1 && out.len() > 1 && !out.is_sorted_by(|a, b| a.0 < b.0) {
             out.sort_unstable();
             out.dedup_by_key(|w| w.0);
         }
@@ -871,6 +924,26 @@ const SPREAD: [u64; 256] = {
     }
     t
 };
+
+/// `codes` of the groups of eight elements of block `c` (elements `base ..`) that hold a changed
+/// element `m`: a sparse change leaves the groups between its ends alone.
+#[inline]
+fn refresh_changed_codes(codes: &mut [u8], c: &Block, base: usize, m: u64) {
+    if codes.is_empty() {
+        return;
+    }
+    let Some(out) = codes.get_mut(base..base + 64) else {
+        return;
+    };
+    let mut left = m;
+    while left != 0 {
+        let sh = (left.trailing_zeros() & !7) as usize;
+        left &= !(0xff << sh);
+        let at = |p: usize| SPREAD[(c[p] >> sh & 0xff) as usize] << p;
+        let v = at(0) | at(1) | at(2) | at(3);
+        out[sh..sh + 8].copy_from_slice(&v.to_le_bytes());
+    }
+}
 
 /// Recompute `codes` for elements `lo .. hi` of `cur`, in groups of eight.
 #[inline]
@@ -1684,8 +1757,7 @@ impl Signal {
                     | (c[3] >> i & 1) << 3) as u8;
             }
         } else {
-            let (lo, hi) = (m.trailing_zeros() as usize, 64 - m.leading_zeros() as usize);
-            refresh_block_codes(&mut self.codes, cur, base + lo, base + hi);
+            refresh_changed_codes(&mut self.codes, &c, base, m);
         }
         true
     }
@@ -1741,7 +1813,7 @@ impl Signal {
     /// update (`finish_pend`). True for the signal's first one. `None`: the driver and the
     /// signal already have the value and the signal allows skipping (`skip_ok`): nothing to
     /// write or finish, only the delta it causes.
-    #[inline]
+    #[inline(always)]
     pub(crate) fn commit_code(&mut self, slot: u32, elem: u32, code: u8) -> Option<bool> {
         if self.exact {
             let d = &mut self.drivers[slot as usize];
@@ -3187,14 +3259,15 @@ mod tests {
             all,
             none,
             &mut out,
+            true,
         );
         assert_eq!(procs(&out), [1, 2, 3]);
         // The woken processes resumed (their other copies are stale), and so did 4.
         let live = |w: &Waiter| w.proc > 4;
-        w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
+        w.take_woken(&[Range::new(0, 300)], live, none, &mut out, true);
         assert!(out.is_empty());
         w.add(6, Range::new(299, 1), Reg::default(), all);
-        w.take_woken(&[Range::new(0, 300)], live, none, &mut out);
+        w.take_woken(&[Range::new(0, 300)], live, none, &mut out, true);
         assert_eq!(procs(&out), [6]);
     }
 
@@ -3214,7 +3287,7 @@ mod tests {
         w.add(2, Range::new(0, 1), Reg::default(), all);
         let mut out = Vec::new();
         for want in [vec![1, 2], vec![1]] {
-            w.take_woken(&[Range::new(0, 1)], all, |_| false, &mut out);
+            w.take_woken(&[Range::new(0, 1)], all, |_| false, &mut out, true);
             assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), want);
         }
         // Its process waited for something else: the resident waiter is stale.
@@ -3223,6 +3296,7 @@ mod tests {
             |w: &Waiter| w.perm == 0,
             |_| false,
             &mut out,
+            true,
         );
         assert!(out.is_empty());
     }
@@ -3237,10 +3311,43 @@ mod tests {
         w.add(2, Range::new(0, 8), Reg::default(), all);
         w.add(3, Range::new(5, 0), Reg::default(), all); // null: never woken
         let mut out = Vec::new();
-        w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out);
+        w.take_woken(&[Range::new(2, 1)], all, |_| false, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2]);
-        w.take_woken(&[Range::new(6, 1)], all, |_| false, &mut out);
+        w.take_woken(&[Range::new(6, 1)], all, |_| false, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn unordered_wake_list_holds_the_same_processes() {
+        let all = |_: &Waiter| true;
+        let mut w = Waiters::new(300);
+        for (p, r) in [
+            (1, Range::new(200, 1)),
+            (2, Range::new(0, 300)),
+            (3, Range::new(60, 10)),
+        ] {
+            w.add(p, r, Reg::default(), all);
+        }
+        let runs = [Range::new(65, 1), Range::new(200, 2)];
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        w.take_woken(&runs, all, |_| false, &mut a, true);
+        let mut w = Waiters::new(300);
+        for (p, r) in [
+            (1, Range::new(200, 1)),
+            (2, Range::new(0, 300)),
+            (3, Range::new(60, 10)),
+        ] {
+            w.add(p, r, Reg::default(), all);
+        }
+        w.take_woken(&runs, all, |_| false, &mut b, false);
+        let set = |o: &[(u64, u32)]| {
+            let mut v: Vec<u32> = o.iter().map(|x| x.1).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        assert_eq!(set(&a), set(&b));
+        assert_eq!(set(&a), [1, 2, 3]);
     }
 
     #[test]
@@ -3251,14 +3358,20 @@ mod tests {
         w.add(1, Range::new(0, 300), Reg::default(), all);
         let runs: Vec<Range> = (0..100).map(|i| Range::new(3 * i, 1)).collect();
         let mut out = Vec::new();
-        w.take_woken(&runs, all, none, &mut out);
+        w.take_woken(&runs, all, none, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [1]);
         // A waiter for one element: the lists of the runs are scanned again.
         w.add(2, Range::new(1, 299), Reg::default(), all);
         w.add(3, Range::new(150, 1), Reg::default(), all);
-        w.take_woken(&runs, all, none, &mut out);
+        w.take_woken(&runs, all, none, &mut out, true);
         assert_eq!(out.iter().map(|x| x.1).collect::<Vec<_>>(), [2, 3]);
-        w.take_woken(&[Range::new(0, 1), Range::new(2, 1)], all, none, &mut out);
+        w.take_woken(
+            &[Range::new(0, 1), Range::new(2, 1)],
+            all,
+            none,
+            &mut out,
+            true,
+        );
         assert!(out.is_empty());
     }
 

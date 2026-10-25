@@ -2579,6 +2579,7 @@ impl Fx<'_, '_> {
         let (top, exit) = (self.block(), self.block());
         self.jump(top);
         self.at(top);
+        self.wait_edge(until)?;
         self.wait_on(&sens)?;
         if let Some(off) = deadline {
             let a = self.addr(Space::Frame(self.depth), off);

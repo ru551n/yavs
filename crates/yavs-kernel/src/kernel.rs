@@ -16,11 +16,12 @@ use crate::process::{
     Severity, Shared, SignalOp, check_ref, make_op,
 };
 use crate::signal::{
-    DelayMode, DriverId, ForceMode, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
+    DelayMode, DriverId, ForceMode, Hits, Range, Reg, SigRef, Signal, SignalId, Waiter, Waiters,
 };
 use crate::time::{Time, Unit};
 use crate::value::{Buf, Elem, SignalType, Value, ValueRef, fill_bits};
 use yavs_logic::StdULogic;
+use yavs_logic::wide::nmask;
 
 mod hang;
 pub use hang::{DeadClock, LoopCause, LoopLink, ProcWait, StuckProc, StuckReport, StuckSignal};
@@ -544,6 +545,9 @@ pub(crate) struct ProcMeta {
     pub perm: u64,
     /// 1 + index in `SimControl::triggers` of `trigger` (0: none).
     pub tid: u32,
+    /// The edge (`edge_key`) of the dynamic trigger the process's waiters were registered with
+    /// (`Ctx::wait_edge`), `NO_EDGE` for none (always, with a `trigger`).
+    pub wkey: u64,
     /// An activation can be skipped when `armed` is false (`Builder::idle_skip`, set by
     /// `SimControl::new` for the processes that qualify).
     pub idle_ok: bool,
@@ -839,9 +843,7 @@ pub struct SimControl {
     /// Per signal, the processes of `idle_ok` that read it: `readers[readers_start[s]..
     /// readers_start[s + 1]]` (empty without such a process).
     readers_start: Vec<u32>,
-    /// A reader, the index in `reader_guards` of the condition of its read (or `NO_GUARD`) and
-    /// the elements it reads (the hull of its reads of the signal).
-    readers: Vec<(u32, u32, Range)>,
+    readers: Vec<Reader>,
     reader_guards: Vec<ReaderGuard>,
     idle_active: bool,
     /// Processes with `idle_ok` now: `idle_active` is off when none is left, until `idle_reprobe`.
@@ -854,6 +856,8 @@ pub struct SimControl {
     last_ran: Vec<u32>,
     /// The commit list of `run_batch`, kept between batches.
     late: Vec<u32>,
+    /// The sort keys of `order`, kept between batches.
+    order_keys: Vec<u64>,
     now: Time,
     delta: u32,
     cycle: u64,
@@ -896,6 +900,8 @@ pub struct SimControl {
     indep_buf: Vec<(u32, u32)>,
     /// The distinct edge triggers of the processes (`ProcMeta::tid`).
     triggers: Vec<crate::EdgeTrigger>,
+    /// `triggers` by trigger: the elaborator's and the ones waits made (`Ctx::wait_edge`).
+    trig_ids: std::collections::HashMap<crate::EdgeTrigger, u32>,
     /// Named parts of signals (record packs) for hang and loop reports (`name_parts`).
     part_names: HashMap<u32, Vec<(Range, String)>>,
 }
@@ -1064,7 +1070,7 @@ impl SimControl {
         // event: pure ones (`Builder::idle_skip`) that drive signals allowing skipped assignments.
         let mut idle_active = false;
         let mut idle_live = 0u32;
-        let mut readers_of: Vec<Vec<(u32, Option<ReaderGuard>, Range)>> = Vec::new();
+        let mut readers_of: Vec<Vec<(u32, Option<Alts>, Range)>> = Vec::new();
         if cfg.idle_skip && cfg.skip_unchanged && cfg.edge_triggers {
             let mut bad = vec![false; procs.len()];
             for d in &drivers {
@@ -1119,15 +1125,25 @@ impl SimControl {
                 for (p, g, r) in l {
                     // A read of part of the signal is armed by its changed runs: list them.
                     let sig = &mut signals[readers_start.len() - 1];
+                    let whole = r.offset == 0 && r.len >= sig.ty.len;
                     if r != Range::new(0, sig.ty.len) {
                         sig.watched = true;
                         sig.watch_part(r, cfg.cells);
                     }
                     let g = g.map_or(NO_GUARD, |g| {
-                        reader_guards.push(g);
+                        reader_guards.push(match &g[..] {
+                            [c] if c.len() == 1 => ReaderGuard::One(c[0]),
+                            _ => ReaderGuard::Any(g),
+                        });
                         reader_guards.len() as u32 - 1
                     });
-                    readers.push((p, g, r));
+                    let mask = if sig.ty.len <= 64 && !whole {
+                        nmask(r.len as usize) << r.offset
+                    } else {
+                        0
+                    };
+                    let r = if whole { Range::new(0, u32::MAX) } else { r };
+                    readers.push(Reader { p, g, r, mask });
                 }
             }
             readers_start.push(readers.len() as u32);
@@ -1197,6 +1213,7 @@ impl SimControl {
             postponed: Vec::new(),
             last_ran: Vec::new(),
             late: Vec::new(),
+            order_keys: Vec::new(),
             now: Time::ZERO,
             delta: 0,
             cycle: 1,
@@ -1229,6 +1246,7 @@ impl SimControl {
             woken_buf: Vec::new(),
             indep_buf: Vec::new(),
             triggers,
+            trig_ids: ids,
         };
         for (m, slot) in sim.procs.iter().zip(&mut sim.slots) {
             if let Some(t) = m.trigger {
@@ -1794,40 +1812,48 @@ impl SimControl {
     }
 
     /// Signal `s` had an event: the clocked processes that read it must run at their next edge.
-    #[inline]
+    #[inline(always)]
     fn arm_readers(&mut self, s: u32) {
+        if self.readers_start[s as usize] != self.readers_start[s as usize + 1] {
+            self.arm_readers_of(s);
+        }
+    }
+
+    #[inline(always)]
+    fn arm_readers_of(&mut self, s: u32) {
         let (a, b) = (
             self.readers_start[s as usize] as usize,
             self.readers_start[s as usize + 1] as usize,
         );
-        for i in a..b {
-            let (p, g, r) = self.readers[i];
-            if self.procs[p as usize].armed {
+        let sig = &self.signals[s as usize];
+        let changed = &sig.changed;
+        // A signal whose changed runs are not listed arms every reader.
+        let any = changed.is_empty();
+        // The elements of a signal of at most 64 that changed, when a reader of a part asks.
+        let mut bits: Option<u64> = None;
+        for rd in &self.readers[a..b] {
+            let m = &mut self.procs[rd.p as usize];
+            if m.armed {
                 continue;
             }
             // A read of part of the signal (a field of a record pack, #686) arms only for an
-            // event in it; a signal whose changed runs are not listed arms every reader.
-            let sig = &self.signals[s as usize];
-            let hit = (r.offset == 0 && r.len >= sig.ty.len)
-                || sig.changed.is_empty()
-                || sig.changed.iter().any(|c| c.overlaps(r));
-            if hit && (g == NO_GUARD || self.guard_holds(g)) {
-                self.procs[p as usize].armed = true;
+            // event in it.
+            let hit = rd.r.len == u32::MAX
+                || any
+                || if rd.mask != 0 {
+                    *bits.get_or_insert_with(|| {
+                        changed
+                            .iter()
+                            .fold(0, |m, c| m | nmask(c.len as usize) << c.offset)
+                    }) & rd.mask
+                        != 0
+                } else {
+                    changed.iter().any(|c| c.overlaps(rd.r))
+                };
+            if hit && (rd.g == NO_GUARD || self.reader_guards[rd.g as usize].holds(&self.signals)) {
+                m.armed = true;
             }
         }
-    }
-
-    /// Whether one of the conjunctions of reader guard `g` holds now. A literal on a signal that
-    /// is not logic holds (the read counts), so does one on an element out of range.
-    fn guard_holds(&self, g: u32) -> bool {
-        self.reader_guards[g as usize].iter().any(|conj| {
-            conj.iter().all(|l| {
-                let s = &self.signals[l.signal.0 as usize];
-                !matches!(s.ty.elem, Elem::Logic)
-                    || l.elem >= s.ty.len
-                    || (s.cur_code(l.elem as usize) == l.code) == l.eq
-            })
-        })
     }
 
     /// Take the clocked processes out of `pids` that need not run at this edge: none of the
@@ -1984,9 +2010,8 @@ impl SimControl {
                 sig.changed.sort_unstable_by_key(|r| r.offset);
             }
             let waiters = &mut self.waiters[s as usize];
-            let (procs, signals) = (&self.procs, &self.signals);
+            let signals = &self.signals;
             let runs = &signals[s as usize].changed;
-            let live = |w: &Waiter| alive(procs, w);
             // All waiters share one edge trigger: it holds for all or for none of them.
             let uniform = if self.cfg.edge_triggers {
                 waiters
@@ -2018,7 +2043,7 @@ impl SimControl {
             if let [r] = runs[..]
                 && r.len == 1
                 && let Some(w) = waiters.sole_resident(r.offset)
-                && live(w)
+                && alive(&self.procs, w)
             {
                 let (p, held) = (w.proc, uniform.is_none() && hold(w));
                 self.signals[s as usize].changed.clear();
@@ -2027,30 +2052,37 @@ impl SimControl {
                 }
                 continue;
             }
-            // One event on a signal with a few waiters, all resident and alive: the same wake as
-            // the scan below makes, in list order, with nothing to remove from the list.
-            if let [r] = runs[..]
+            // Events on a signal with a few waiters, those they hit resident and alive: the same wake
+            // as the scan below makes, in list order, with nothing to remove from the list. A waiter
+            // that is not (a plain one, a stale one) leaves the rest to the scan: waking is idempotent
+            // and in list order, so the scan wakes the others in the same order.
+            if !runs.is_empty()
                 && let Some(list) = waiters.small_list(8)
             {
-                let plain = list
-                    .iter()
-                    .filter(|w| w.range.overlaps(r))
-                    .all(|w| w.perm != 0 && live(w));
-                if plain {
-                    for w in list.iter().filter(|w| w.range.overlaps(r)) {
-                        if !(uniform.is_none() && hold(w)) {
-                            wake_proc(
-                                &mut self.procs,
-                                &mut self.postponed,
-                                &mut self.ready_several,
-                                &mut self.ready_mono,
-                                &mut self.ready,
-                                &mut self.stats.wakes,
-                                w.proc,
-                                false,
-                            );
-                        }
+                let mut plain = true;
+                let hits = Hits::of(signals[s as usize].ty.len, runs);
+                for w in list {
+                    if !hits.hit(w) {
+                        continue;
                     }
+                    if w.perm == 0 || !alive(&self.procs, w) {
+                        plain = false;
+                        break;
+                    }
+                    if !(uniform.is_none() && hold(w)) {
+                        wake_proc(
+                            &mut self.procs,
+                            &mut self.postponed,
+                            &mut self.ready_several,
+                            &mut self.ready_mono,
+                            &mut self.ready,
+                            &mut self.stats.wakes,
+                            w.proc,
+                            false,
+                        );
+                    }
+                }
+                if plain {
                     self.signals[s as usize].changed.clear();
                     continue;
                 }
@@ -2133,9 +2165,19 @@ impl SimControl {
                 continue;
             }
             let mut woken = std::mem::take(&mut self.woken_buf);
+            // A shuffled run takes the order the processes are woken in.
+            let ordered = self.rng.is_some();
             match uniform {
-                Some(_) => waiters.take_woken(runs, live, |_| false, &mut woken),
-                None => waiters.take_woken(runs, live, hold, &mut woken),
+                Some(_) => waiters.take_woken(
+                    runs,
+                    |w| alive(&self.procs, w),
+                    |_| false,
+                    &mut woken,
+                    ordered,
+                ),
+                None => {
+                    waiters.take_woken(runs, |w| alive(&self.procs, w), hold, &mut woken, ordered)
+                }
             }
             self.signals[s as usize].changed.clear();
             for &(_, p) in &woken {
@@ -2735,7 +2777,7 @@ impl SimControl {
     /// chain), as the reference simulator wakes the waiters of a value when it changes. False
     /// (nothing done) otherwise: `cycle` looks at the signal. Only with no observer of value
     /// changes, which must see the change before any process is resumed.
-    #[inline]
+    #[inline(always)]
     fn wake_sole(&mut self, s: u32) -> bool {
         // A GUARD that other guards read stays in `changed_sigs` (`run_guards`).
         if !self.guard_readers.is_empty() && self.guard_readers.contains_key(&s) {
@@ -3114,7 +3156,7 @@ impl SimControl {
     /// 2026-10-19): at initialisation elaboration order; afterwards the processes with one
     /// suspension point in elaboration order, then the others in reverse elaboration order,
     /// those resumed by a signal before those resumed by a timeout.
-    fn order(&self, pids: &mut [u32], init: bool) {
+    fn order(&mut self, pids: &mut [u32], init: bool) {
         if pids.len() < 2 {
             return;
         }
@@ -3127,10 +3169,12 @@ impl SimControl {
         }
         // One packed word per process, looked up once (not per comparison): the flags in the
         // high bits, then the hierarchy depth (settled processes), the elaboration index
-        // (reversed for several-wait processes except the settled ones) in the low 32.
+        // (reversed for several-wait processes except the settled ones) in the low 32. A key
+        // names its process, so equal keys are equal processes and the sort need not be stable.
         const SETTLED: u64 = 1;
+        let procs = &self.procs;
         let key = |p: u32| {
-            let m = &self.procs[p as usize];
+            let m = &procs[p as usize];
             if !m.flags.several_waits {
                 return u64::from(p);
             }
@@ -3147,19 +3191,20 @@ impl SimControl {
             };
             1 << 51 | u64::from(m.by_timeout) << 50 | rank << 48 | depth << 32 | u64::from(idx)
         };
-        if pids.is_sorted_by_key(|&p| key(p)) {
-            return;
+        let mut keyed = std::mem::take(&mut self.order_keys);
+        keyed.clear();
+        keyed.extend(pids.iter().map(|&p| key(p)));
+        if !keyed.is_sorted() {
+            keyed.sort_unstable();
+            for (p, &k) in pids.iter_mut().zip(&keyed) {
+                *p = if k >> 51 != 0 && (k >> 48) & 3 != SETTLED {
+                    !(k as u32)
+                } else {
+                    k as u32
+                };
+            }
         }
-        let mut keyed: Vec<u64> = pids.iter().map(|&p| key(p)).collect();
-        // Stable sort: it follows the sorted runs a batch mostly consists of.
-        keyed.sort();
-        for (p, k) in pids.iter_mut().zip(keyed) {
-            *p = if k >> 51 != 0 && (k >> 48) & 3 != SETTLED {
-                !(k as u32)
-            } else {
-                k as u32
-            };
-        }
+        self.order_keys = keyed;
     }
 
     /// Run `pids` (in parallel where allowed), then commit their effects and waits in
@@ -3269,9 +3314,10 @@ impl SimControl {
                 // as a failed run does.
                 _ => {
                     let now = self.now;
-                    let mut i = 0;
+                    let (mut i, mut at) = (0, 0);
                     let caught = catch_unwind(AssertUnwindSafe(|| {
                         while let Some(&p) = pids.get(i) {
+                            at = i;
                             let s = slot_mut(&mut self.slots[p as usize]);
                             if !init {
                                 resumption(&self.procs, p, &mut s.st);
@@ -3298,6 +3344,7 @@ impl SimControl {
                                 && !postponed
                                 && st.again
                                 && meta.perm != 0
+                                && st.wait_key == meta.wkey
                                 && st.sens.is_empty()
                                 && st.deadline.is_none()
                                 && st.effects.is_empty()
@@ -3305,6 +3352,7 @@ impl SimControl {
                             {
                                 st.again = false;
                                 st.matched = 0;
+                                st.wait_key = crate::process::NO_EDGE;
                                 meta.ready = false;
                                 meta.resumed = true;
                                 self.serial_ran |= meta.flags.serial;
@@ -3346,7 +3394,8 @@ impl SimControl {
                         }
                     }));
                     if let Err(panic) = caught {
-                        let p = pids[i];
+                        // The process that was running or being committed (`i` is past it by then).
+                        let p = pids[at];
                         late.push(p);
                         slot_mut(&mut self.slots[p as usize]).result =
                             Err(process_panic(&sh, p, &*panic));
@@ -3389,6 +3438,7 @@ impl SimControl {
         // The usual clocked process (see `run_batch`): committed here.
         if !(st.again
             && meta.perm != 0
+            && st.wait_key == meta.wkey
             && st.sens.is_empty()
             && st.deadline.is_none()
             && st.effects.is_empty()
@@ -3400,6 +3450,7 @@ impl SimControl {
         }
         st.again = false;
         st.matched = 0;
+        st.wait_key = crate::process::NO_EDGE;
         meta.ready = false;
         meta.resumed = true;
         self.serial_ran |= meta.flags.serial;
@@ -3477,9 +3528,25 @@ impl SimControl {
             meta.ready = false;
             meta.resumed |= !init;
             self.serial_ran |= meta.flags.serial;
-            let (generation, trigger, tid) = (meta.generation, meta.trigger, meta.tid);
+            let (generation, mut trigger, mut tid) = (meta.generation, meta.trigger, meta.tid);
             let slot = slot_mut(&mut self.slots[p as usize]);
             let st = &mut slot.st;
+            // A wait that resumes the process only on an edge (`Ctx::wait_edge`): its waiters
+            // carry that edge's trigger, and a wait with another one registers them again.
+            let wkey = std::mem::replace(&mut st.wait_key, crate::process::NO_EDGE);
+            let wkey = if tid != 0 || !self.cfg.edge_triggers {
+                crate::process::NO_EDGE
+            } else {
+                wkey
+            };
+            if wkey != crate::process::NO_EDGE {
+                let t = dyn_trigger(wkey);
+                tid = *self.trig_ids.entry(t).or_insert_with(|| {
+                    self.triggers.push(t);
+                    self.triggers.len() as u32
+                });
+                trigger = Some(t);
+            }
             // A plain activation (below) of a clocked process the idle skip tracks: record what
             // it did, as the batch loop does, before the commit takes its lists.
             if meta.idle_ok
@@ -3505,6 +3572,7 @@ impl SimControl {
             if st.again
                 && !postponed
                 && meta.perm != 0
+                && wkey == meta.wkey
                 && st.sens.is_empty()
                 && st.deadline.is_none()
                 && st.effects.is_empty()
@@ -3577,7 +3645,17 @@ impl SimControl {
                 st.sens = all;
                 again = false;
             }
-            let same = !timed && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
+            // The resident waiters carry the trigger of the last wait: another one names the
+            // wait in full and registers them again.
+            let moved = wkey != meta.wkey;
+            if moved && again {
+                st.sens = st.sens_prev.clone();
+                again = false;
+            }
+            meta.wkey = wkey;
+            let same = !timed
+                && !moved
+                && (again || !st.sens.is_empty() && st.sens[..] == st.sens_prev[..]);
             let mut perm = 0;
             // The ranges to register: `sens`, or `sens_prev` when they are the same or the new
             // wait became the previous one (the buffers swap, nothing is copied).
@@ -3960,8 +4038,56 @@ fn fires(signals: &[Signal], t: crate::EdgeTrigger, cycle: u64) -> bool {
             .is_some_and(|(r, e, c)| signals[r.0 as usize].cur_code(e as usize) == c)
 }
 
-/// The condition of a read: alternatives of conjunctions of literals.
-type ReaderGuard = Vec<Vec<crate::builder::IdleLit>>;
+/// The trigger of a wait that resumes its process only on the edge `edge_key` made
+/// (`Ctx::wait_edge`).
+fn dyn_trigger(key: u64) -> crate::EdgeTrigger {
+    crate::EdgeTrigger {
+        signal: SignalId((key >> 32) as u32),
+        elem: ((key & 0xffff_ffff) >> 2) as u32,
+        rising: key & 1 != 0,
+        legacy: key & u64::from(crate::EDGE_LEVEL) != 0,
+        reset: None,
+    }
+}
+
+/// Alternatives of conjunctions of literals (`IdleRead::guard`).
+type Alts = Vec<Vec<crate::builder::IdleLit>>;
+
+/// The condition of a read: one literal, or alternatives of conjunctions of literals.
+enum ReaderGuard {
+    One(crate::builder::IdleLit),
+    Any(Alts),
+}
+
+impl ReaderGuard {
+    /// Whether the condition holds now. A literal on a signal that is not logic holds (the read
+    /// counts), so does one on an element out of range.
+    #[inline(always)]
+    fn holds(&self, signals: &[Signal]) -> bool {
+        let lit = |l: &crate::builder::IdleLit| {
+            let s = &signals[l.signal.0 as usize];
+            !matches!(s.ty.elem, Elem::Logic)
+                || l.elem >= s.ty.len
+                || (s.cur_code(l.elem as usize) == l.code) == l.eq
+        };
+        match self {
+            ReaderGuard::One(l) => lit(l),
+            ReaderGuard::Any(alts) => alts.iter().any(|conj| conj.iter().all(lit)),
+        }
+    }
+}
+
+/// A process that reads a signal (`SimControl::readers`): the index in `reader_guards` of the
+/// condition of its read (or `NO_GUARD`) and the elements it reads (the hull of its reads of the
+/// signal; length `u32::MAX` for all of it). `mask` is those elements as bits when the signal
+/// has at most 64 and it is a part, else 0.
+#[derive(Clone, Copy)]
+struct Reader {
+    p: u32,
+    g: u32,
+    r: Range,
+    mask: u64,
+}
 
 /// `SimControl::readers`: the read has no condition.
 const NO_GUARD: u32 = u32::MAX;

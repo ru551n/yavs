@@ -1110,7 +1110,7 @@ impl Elaborated {
             let rt = rt.clone();
             // A function touching shared variables runs with the shared state.
             let serial = rt.prog.is_serial(f);
-            let sh = serial.then(|| shared.clone());
+            let sh = rt.prog.uses_shared_state(f).then(|| shared.clone());
             let inst = res_inst.get(&leaf).cloned().unwrap_or_default();
             let index = *ir
                 .res_index
@@ -1257,31 +1257,30 @@ impl Elaborated {
                         range: self.nets.kpart(*leaf, *range).1,
                     });
                 }
-                let serial = ir.program.is_serial(pir.func);
                 let mut proc = InterpProcess::new(
                     rt.clone(),
                     pir.func,
                     inst,
                     drivers,
-                    serial.then(|| shared.clone()),
+                    ir.program
+                        .uses_shared_state(pir.func)
+                        .then(|| shared.clone()),
                 )?;
-                if !serial {
-                    let holes = match holes_of.get(&arch) {
-                        Some(h) => h.clone(),
-                        None => {
-                            let mut holes = Vec::new();
-                            for v in u.values.iter().filter(|v| gen_params.contains(&v.decl)) {
-                                let n = rt.prog.types.get(v.ty).and_then(|t| t.scalar_size());
-                                let n = n.ok_or_else(|| {
-                                    sim_err("a generate parameter is not a scalar".into())
-                                })?;
-                                holes.push((v.off, n as u32));
-                            }
-                            holes_of.entry(arch).or_insert(holes.into()).clone()
+                let holes = match holes_of.get(&arch) {
+                    Some(h) => h.clone(),
+                    None => {
+                        let mut holes = Vec::new();
+                        for v in u.values.iter().filter(|v| gen_params.contains(&v.decl)) {
+                            let n = rt.prog.types.get(v.ty).and_then(|t| t.scalar_size());
+                            let n = n.ok_or_else(|| {
+                                sim_err("a generate parameter is not a scalar".into())
+                            })?;
+                            holes.push((v.off, n as u32));
                         }
-                    };
-                    proc.specialise_later(holes);
-                }
+                        holes_of.entry(arch).or_insert(holes.into()).clone()
+                    }
+                };
+                proc.specialise_later(holes);
                 Ok(Box::new(attach(proc, p)))
             },
             res,

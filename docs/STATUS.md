@@ -8045,3 +8045,29 @@ Left, for the lanes (comments on the issues): the policy (#675, #673); the drive
 not native-frame calls cost 50 to 80 ns (#730); the native-frame code under `--tier-heat` stays at O0 (#729). Not done: a fused op for the element copy `sort_data(col + 1)(row) <= sort_data(col)(row)`
 (`SigVal`, `AllocReadVec`, `CopyDrive`: 2 to 4 percent of the interpreter, nothing compiled), loop-invariant signal reads (`reset_p` read per row, `SigRead1 -> NotL`: 2 percent of the ops), descending ranges in
 `pos_to_check` (needs a check message per direction at lowering).
+
+## General gaps towards sim1: attribution across all designs (#519, 2026-10-25)
+
+Cross-design attribution on main at 9171b609, bench build with `llvm`, `--tier=auto`: the 42 realbench tests and the 10 bench h2h designs that run on sim1
+(52 tests), warm and cold. Per test `perf stat` (minimum of 2 to 3 runs) and a flat `perf record` of yavs and sim1 classified into layers; layer seconds are
+the layer's share of main-thread samples times the CPU seconds of the run. No timing cores were used (cores 1 to 3, shared with builds), so the ranking is
+reliable and the per-test seconds are not. Full tables and the ranked list with evidence: comment on #519 (agent gapscan).
+
+Geomean against sim1, warm: instructions 0.41, wall 0.33; cold: 0.73 and 0.60. yavs is slower in 15 tests (summed main-thread excess 48.1 s, of which
+`grlib_leon3mp` 36.1 s) and ahead by 25.4 s on the rest; sim1 spends 35 percent of its time generating code in the run, yavs 0.9 s of 107 s starting up.
+
+| # | general item | weight (excess in slower tests, without grlib) | lane |
+|---|---|---|---|
+| 1 | interpreter execution of what stays interpreted under auto | 32.2 s (11.7) | interp6 |
+| 2 | value movement of wide vectors, records, composites (gather, scatter, lcopy, copy_bits, cat, memmove); also the floor under compiled code | 15.1 s helpers + 2.4 bulk (3.2 + 0.4) | unowned |
+| 3 | kernel per-activation orchestration: cycle, commit, event bookkeeping | 10.4 s (5.0) | kern22 |
+| 4 | compiled code of processes over 1 000 IR is not faster than the interpreter (#679) | `grlib_leon3mp` forced compile 67.8 s against 52.4 s | unowned |
+| 5 | auto policy: priced out or never considered (#675, #728, #673) | interpreted-only seconds 36.6 of 40.2 (grlib), 2.5 of 2.7 (`fletcher_bufferwriter_512`) | autoclk |
+| 6 | process to kernel boundary: entry, scalar drives and waits, signal reads | 13 to 42 percent of small RTL under llvm; reads 2.0 s | cgdirect, reads unowned |
+| 7 | cold start: tier-up latency and cache-miss start-up | cold minus warm 22 s over 52 tests | coldc, startup |
+| 8 | calls, frames, pure-call memo | 0.7 s (0.3) | calls730 |
+
+Facts worth keeping: full `--tier=llvm` removes no instructions on `fletcher_bufferwriter_512` (57.4 G against 54.4 G interpreted, net of the load cost) or
+`fletcher_bufferreader` (23.9 G against 22.3 G): the cost there is the value path of items 2 and 3, not op dispatch. Natives, allocation, warm start-up, wake and
+drive are already ahead of sim1. A layer that is 0 for sim1 (cycle driver, signal reads, helpers) is structural: its generated code or one runtime function does that
+work, so compare group totals.

@@ -1127,9 +1127,21 @@ impl Ctx<'_> {
         }
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
-            // The driver's vector entries keep the order: the general path moves them.
+            // The driver has vector entries in this run (a record assigned whole, then one of its
+            // fields): the commit applies `out` before `outv`, so the element joins the vector
+            // entries, in order, as an entry of one element. No skip: the entries before it
+            // decide what the signal holds.
             if self.has_entries(info, 2) {
-                return false;
+                let c = u64::from(code);
+                self.st.act |= ACT_ASSIGNED;
+                self.st.outv.push(OutV {
+                    sig,
+                    slot,
+                    elem: r.offset,
+                    len: 1,
+                    planes: [c & 1, c >> 1 & 1, c >> 2 & 1, c >> 3 & 1],
+                });
+                return true;
             }
             // The signal and the driver have the code and nothing of this run is pending: the
             // commit would find no change (`Signal::commit_code`), so the entry is not made.
@@ -1514,14 +1526,13 @@ impl Ctx<'_> {
         }
         if info.direct {
             let (sig, slot) = (info.signal.0, info.slot);
-            // The driver's one-element entries keep the order: the general path moves them.
-            if self.has_entries(info, 1) {
-                return false;
-            }
             let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
+            // One-element entries of the driver (the fields of a record before this one) are
+            // applied before the vector entries, which is the order they were made in.
             // Nothing of this run on the driver and the signal and its driving value have the
             // value: the commit would only set the elements pending (`direct_same_planes`).
-            if !self.has_entries(info, 2)
+            if !self.has_entries(info, 1)
+                && !self.has_entries(info, 2)
                 && self.sh.signals[sig as usize].direct_same_planes(slot, r.offset, len, planes)
             {
                 self.note_skipped();
@@ -1596,8 +1607,7 @@ impl Ctx<'_> {
             return false;
         }
         let w = &self.st.waveforms[info.local as usize];
-        // The driver's one-element entries keep the order: the general path moves them.
-        if !w.idle() || !w.phantom.is_empty() || self.has_entries(info, 1) {
+        if !w.idle() || !w.phantom.is_empty() {
             return false;
         }
         self.mark_entries(info, 2);

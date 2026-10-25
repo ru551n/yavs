@@ -4039,7 +4039,10 @@ fn finish_dirty(sig: &mut Signal, now: Time, cycle: u64) -> Result<bool, ErrorKi
 
 /// Commit the direct transactions `out` and `outv` of a process (`Ctx::assign_code`, `Out`) to
 /// their signals (`Signal::commit_code`, `commit_planes`), listing each signal once in
-/// `direct_sigs` for the next update. The entries of one driver are all in one of the lists.
+/// `direct_sigs` for the next update. The entries of one driver are in the order they were made in
+/// when all of its `out` entries come before its `outv` ones (`Ctx` keeps it so: a one-element
+/// assignment after a vector entry of the same run is an `OutV` of one element); `outb` is for byte
+/// drivers only.
 #[inline]
 fn commit_out(
     stats: &mut Stats,

@@ -532,6 +532,20 @@ case!(
         ("ops", Max(19900)),
     ]
 );
+// Bits and slices of one register assigned in turn in one activation (the fields of a record) stay
+// direct entries in order: no assignment goes through the driver's waveform (`update_general`).
+case!(
+    mixed_entries,
+    "ev=168 h=59167",
+    &[],
+    [
+        ("cycles", Max(415)),
+        ("update_general", Max(0)),
+        ("direct_planes", Min(1400)),
+        ("direct_codes", Min(400)),
+        ("events", Max(870)),
+    ]
+);
 // A one-element aggregate choice is straight code and conversion copies run in the kernel.
 case!(agg_carry, "acc=", &[], [("ops", Max(7860))]);
 case!(

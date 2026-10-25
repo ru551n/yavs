@@ -187,6 +187,13 @@ fn auto_tier_compiles_hot_functions() {
         assert_eq!(call().unwrap(), Some(5_000_050_000));
     }
     assert_eq!(call().unwrap(), Some(5_000_050_000));
+    // The policy's clock is the instructions of the simulation threads, or the platform says why not.
+    if let Some(why) = tier.clock_note() {
+        assert!(
+            why.contains("perf_event_open") || why.contains("no instruction counter"),
+            "{why}"
+        );
+    }
     tier.stop(true);
     // A note per module: its native-frame code and its frame-mode code (#510).
     let notes = notes.lock().unwrap();

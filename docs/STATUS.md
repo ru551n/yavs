@@ -7684,6 +7684,51 @@ Calibration data (cold, `YAVS_AUTO_TRACE` lines "cpu"): CPU per IR instruction o
 to 340 (full pipeline), native-frame code 445 (lean) to 620 (full), `Fast` code 90 to 115, cache hit 12 (frame) and 26 (native); native-frame
 compile time per IR instruction grows with the size of the function (360 at 15 IR, 570 at 100, 1160 at 300).
 
+### `--tier=auto` work clock, kinds of function, cached objects (yavs-llvm, #670, #673, #675, #717, #728, 2026-10-25)
+
+Decisions and causes: `docs/decisions.md` "`--tier=auto` work clock, kinds of function, cached objects, shared code that waits for its copy".
+Method: the bench builds of main (40cffec3, "before") and of this change ("after"), a fresh copy of the pristine world per sample,
+default threads, pinned to core 8 (the compile thread shares it), `perf stat -e instructions:u` of the whole process tree, cold = the
+first run of the world, warm = the third, 8 worlds per cell, the two binaries interleaved per world, `YAVS_AUTO_TRACE=1` for the
+decisions. Loaded = a busy loop on core 8 and one on its SMT sibling for the whole sample. Cells: median G instructions (spread =
+(max - min) / median), median wall, the median of the sampled work the policy saw (`sampled`, the clock of its decisions) and the number
+of different sets of compiles (and trial verdicts) in the 8 worlds.
+
+| design, run | idle before | idle after | loaded before | loaded after |
+|---|---|---|---|---|
+| `hdlm_lfsr` cold | 27.69 (6.8%), 1.87 s, 0.82 s, 2 | 27.66 (0.4%), 1.85 s, 1.13 s, 2 | 27.21 (2.2%), 5.14 s, 1.10 s, 1 | 27.53 (0.9%), 5.11 s, 1.23 s, 1 |
+| `hdlm_lfsr` warm | 25.14 (6.4%), 1.75 s, 0.73 s, 1 | 25.12 (0.5%), 1.66 s, 1.00 s, 1 | 24.34 (3.1%), 4.56 s, 1.02 s, 2 | 24.03 (2.0%), 4.54 s, 1.18 s, 1 |
+| `sc5_fifo_repack` cold | 41.55 (1.5%), 2.65 s, 2.21 s, 1 | 41.47 (0.4%), 2.61 s, 2.46 s, 1 | 42.56 (4.9%), 7.78 s, -, 4 | 41.29 (0.3%), 7.51 s, 2.48 s, 1 |
+| `sc5_fifo_repack` warm | 39.50 (0.2%), 2.42 s, 2.04 s, 1 | 39.50 (0.2%), 2.43 s, 2.36 s, 1 | 38.02 (13.2%), 6.80 s, 2.66 s, 3 | 39.21 (0.1%), 6.88 s, 2.37 s, 1 |
+| `neorv32_single_min` cold | 37.09 (0.0%), 3.44 s, 1.80 s, 1 | 37.07 (0.0%), 3.36 s, 1.85 s, 1 | 37.16 (0.1%), 9.17 s, 2.38 s, 1 | 37.08 (0.0%), 9.18 s, 2.03 s, 1 |
+| `neorv32_single_min` warm | 35.57 (0.0%), 3.21 s, 1.75 s, 1 | 35.55 (0.0%), 3.26 s, 1.86 s, 1 | 35.63 (0.0%), 8.81 s, 2.35 s, 1 | 35.55 (0.1%), 8.56 s, 2.00 s, 1 |
+| `poc_arith_addw` cold | 121.95 (1.3%), 7.92 s, 4.32 s, 2 | 108.69 (1.2%), 7.35 s, 4.85 s, 1 | 116.06 (1.7%), 21.68 s, 6.25 s, 1 | 106.79 (1.3%), 20.16 s, 5.55 s, 2 |
+| `poc_arith_addw` warm | 112.52 (7.9%), 7.31 s, 3.94 s, 2 | 92.80 (2.7%), 6.23 s, 4.02 s, 1 | 122.91 (9.5%), 23.04 s, 6.98 s, 2 | 91.68 (1.6%), 17.47 s, 4.71 s, 1 |
+| `vai_window_gen_interlock` cold | 210.57 (3.8%), 14.37 s, 10.26 s, 8 | 204.09 (2.3%), 13.99 s, 10.81 s, 8 | 202.52 (1.9%), 36.65 s, 14.54 s, 8 | 202.98 (2.5%), 36.66 s, 10.83 s, 7 |
+| `vai_window_gen_interlock` warm | 149.85 (3.6%), 9.80 s, 8.74 s, 8 | 148.89 (1.1%), 9.88 s, 9.02 s, 6 | 146.40 (6.5%), 27.94 s, 11.85 s, 8 | 150.82 (1.6%), 28.15 s, 9.16 s, 7 |
+
+What the numbers say. The clock: the work the policy saw moves from idle to loaded by 0 to 18 percent after (window generator cold
+10.81 s to 10.83 s; `hdlm_lfsr` and `poc_arith_addw` +8 to +18 percent: the sampler takes its looks at other points of the run) where
+the CPU-time clock moved it by 32 to 45 percent (window generator cold 10.26 s to 14.55 s; the cell without a number is a run that
+ended inside a compile, which the trace does not print). The spread of instructions over 8 worlds is 0.0 to 2.7 percent (before 0.0 to
+13.2). The sets of compiles: `sc5_fifo_repack` 1 set idle and loaded (before 1 and 3 or 4), `poc_arith_addw` warm 1 and 1 (before 2 and
+2). What is left in the window generator (6 to 8 sets in 8 worlds, also idle) is sampling: the functions that differ are within a few
+milliseconds of seen time of their thresholds. Wall: `poc_arith_addw` cold -7 percent (loaded -7), warm -15 (loaded -24), from the
+processes that switch to their copies before they are compiled (`awaits_switch`) and the carry-chain process (`RtlFew`); the rest
+within the spread of the wall (3 to 8 percent on this host), at most 2 percent either way.
+
+Head-to-head designs (`tools/bench/designs`, warm, wall median of 8, core 8): `rtl_ff` 0.665 s to 0.623 s, `rtl_lfsr` 0.288 s to 0.281 s,
+`lfsr64` and `rtl_chain` unchanged. The window generator under the benefit table alone (clock of the base): cold -0.5 to +2.6 percent
+wall over 16 worlds in four batches, warm -6 to +3. `rtl_lfsr` with the shared code of processes of 64 instances or more waiting: warm
+0.283 s to 0.351 s, the reason of `SPEC_INSTANCES`.
+
+All 42 of `tools/realbench` (`--compare`, `--tiers auto,auto-cold`, run phase, core 8, default runs): geometric mean of the wall
+ratio after/before 1.00 (auto, warm) and 0.97 (auto-cold), of the instructions 0.99 and 0.98, sum of the walls 0.97 and 0.94; per
+category within 0.94 to 1.04. Largest changes: `poc_arith_addw` 0.89 / 0.90 (instructions 0.84 / 0.89), `hdlm_axi_fifo` cold 0.89,
+`olo_intf_i2c_master` cold 0.87. The tests that came out +7 to +16 percent in the first pass (`neorv32_single_min`,
+`neorv32_single_cache`, `osvvm_axis_random`, `fletcher_bufferwriter_512`, equal instructions) were run again with 7 runs: 0.97, 1.03,
+1.07, 1.02 warm and 1.00, 1.00, 1.02, 1.02 cold, in the spread of the host.
+
 ## IR optimiser round 14: a repeated `to_integer` is made once (#520, 2026-10-24)
 
 `docs/decisions.md` "IR optimiser round 14". A check such as `simAssertion(to_integer(unsigned(c & s)) = x, "..." &

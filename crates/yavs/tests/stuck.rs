@@ -248,7 +248,16 @@ fn sigint_ends_a_process_that_never_suspends() {
             .success()
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_yavs"))
-        .args(["--color", "never", "run", &lib, &wave, "stuck_spin"])
+        // (The interpreter polls the request; compiled code does not yet, #737.)
+        .args([
+            "--color",
+            "never",
+            "run",
+            "--tier=interp",
+            &lib,
+            &wave,
+            "stuck_spin",
+        ])
         .current_dir(dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

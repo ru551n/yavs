@@ -1458,10 +1458,9 @@ impl Machine {
         {
             return;
         }
-        // With a tier the shared code of a process that takes much of the run is about to be
-        // compiled (a compiled process beats its interpreted copy by far, and the copies of a
-        // process of many instances would each be too small a share for the tier to take): give
-        // it `SPEC_TIER_WAIT`, then try again later.
+        // With a tier give the processes `SPEC_TIER_WAIT` before the first try, then try again
+        // later: the tier compiles no shared code of a process that can have a copy before then
+        // (`yavs-llvm` `Worker::awaits_switch`), and compiled shared code is not switched.
         if !crate::spec_forced()
             && rt
                 .tier_at

@@ -45,7 +45,7 @@ pub struct Heat {
     pub period: u32,
     /// The compile thread may spend at most this percent of the time the simulation was seen
     /// running (0: no limit). With a limit a function is compiled only when it was seen
-    /// interpreted for `PAYBACK` times as long as compiling it takes.
+    /// interpreted for `Model::payback` times as long as compiling it takes.
     pub budget: u32,
 }
 
@@ -481,11 +481,13 @@ fn rtl(prog: &yavs_ir::Program, f: &yavs_ir::Func) -> bool {
 /// "round 3").
 const RTL_MIN: usize = 120;
 
-/// A clocked process (`rtl`) of fewer instances than this stays interpreted: compiled, the
+/// A clocked process (`rtl`) of fewer instances than this is `Kind::RtlFew`: compiled, the
 /// processes of a CPU design (most made once) ran 6 to 8 percent slower in cycles at the same
 /// instructions, those of designs with many instances of one process 7 to 34 percent faster
-/// (#510). ponytail: the instance count stands for how much an activation's code is reused;
-/// a measured comparison per process if a design sits near the line.
+/// (#510). So it is expected to gain little (eleven times its price in samples before it is
+/// compiled, not the sampled time of `RTL_SHARE` alone as it was a refusal of any number of samples
+/// before) and the measure after the swap (`Worker::trial`) takes the code back when it does not
+/// pay. ponytail: the instance count stands for how much an activation's code is reused.
 const RTL_INSTANCES: u32 = 16;
 
 /// A clocked process (`rtl`) seen for less than this part of the sampled time stays interpreted
@@ -497,22 +499,15 @@ const RTL_INSTANCES: u32 = 16;
 /// measured comparison per process if a design sits near the line.
 const RTL_SHARE: u64 = 8;
 
-/// Why an `rtl` process made `n` times and seen for `seen` of `total` sampled microseconds would
-/// run its compiled code cold, so slower than interpreted (`RTL_INSTANCES`, `RTL_SHARE`).
-fn cold(n: u32, seen: u64, total: u64) -> Option<String> {
-    if n < RTL_INSTANCES {
-        Some(format!(
-            "a clocked process made {n} times: compiled code of few instances ran slower (its \
-             code does not stay in the caches)"
-        ))
-    } else if seen.saturating_mul(RTL_SHARE) < total {
-        Some(format!(
+/// Why an `rtl` process seen for `seen` of `total` sampled microseconds would run its compiled code
+/// cold, so slower than interpreted (`RTL_SHARE`).
+fn cold(seen: u64, total: u64) -> Option<String> {
+    (seen.saturating_mul(RTL_SHARE) < total).then(|| {
+        format!(
             "a clocked process seen for {seen} of {total} us: compiled code of a process that is \
              a small part of the run ran slower (its code does not stay in the caches)"
-        ))
-    } else {
-        None
-    }
+        )
+    })
 }
 
 /// The largest process `rtl` takes.
@@ -704,6 +699,13 @@ fn sim_cpu_sampler(_: i32) -> Option<Duration> {
     None
 }
 
+/// The wall clock and the pause between two reads of a trial's windows: the real ones, or a test's
+/// own (#717: the number of pairs a trial takes must not depend on scheduling).
+struct Pace<'a> {
+    nap: &'a dyn Fn(),
+    wall: &'a dyn Fn() -> Duration,
+}
+
 /// The progress per CPU second of the simulation threads in one window (per second of wall time
 /// where `cpu` has no clock), `None` when it ended with too little progress to say or the tier
 /// stopped.
@@ -711,15 +713,16 @@ fn window(
     progress: &dyn Fn() -> u64,
     cpu: &dyn Fn() -> Option<Duration>,
     halt: &dyn Fn() -> bool,
+    pace: &Pace,
     min: Duration,
     max: Duration,
     min_runs: u64,
 ) -> Option<f64> {
-    let (t0, p0, c0) = (std::time::Instant::now(), progress(), cpu());
+    let (t0, p0, c0) = ((pace.wall)(), progress(), cpu());
     let (mut last, mut step) = (p0, 0);
     loop {
-        std::thread::sleep(Duration::from_millis(1));
-        let (wall, p) = (t0.elapsed(), progress());
+        (pace.nap)();
+        let (wall, p) = ((pace.wall)() - t0, progress());
         if halt() {
             return None;
         }
@@ -757,9 +760,20 @@ fn run_trial(
     progress: &dyn Fn() -> u64,
     cpu: &dyn Fn() -> Option<Duration>,
     halt: &dyn Fn() -> bool,
+    pace: &Pace,
     rule: &Rule,
 ) -> Trial {
-    let w = || window(progress, cpu, halt, TRIAL_WINDOW, TRIAL_MAX, rule.runs);
+    let w = || {
+        window(
+            progress,
+            cpu,
+            halt,
+            pace,
+            TRIAL_WINDOW,
+            TRIAL_MAX,
+            rule.runs,
+        )
+    };
     let mut t = Trial::default();
     if w().is_none() {
         return t;
@@ -780,10 +794,6 @@ fn run_trial(
     t
 }
 
-/// Microseconds of compile time per IR instruction of a clocked process (`rtl`; 130 to 270 IR
-/// instructions took 31 to 92 ms at O2, 360 to 500 took 28 to 34 ms with the `Fast` level).
-const US_PER_INSTR_RTL: f64 = 200.0;
-
 /// A compute loop gets this many times the budget: it runs five to ten times faster compiled
 /// (the interpreter's time goes to dispatch), so the payback rule alone limits it, and the
 /// compile is on another thread (#432).
@@ -792,7 +802,7 @@ const COMPUTE_BUDGET: u64 = 50;
 /// A function the interpreter calls on a native frame (`called_natively`) gets this many times
 /// the budget: its compiled code runs about two to three times faster than the interpreter
 /// (`Tier::call`, the object table; #510), so the payback rule limits it. Sixteen times is
-/// 32 percent of the sampled time: with `PAYBACK_NATIVE` at 2 the former eight (16 percent) was
+/// 32 percent of the sampled time: with a payback of 2 for native functions the former eight (16 percent) was
 /// what the class ran into in the first seconds of a cold run (#572).
 const NATIVE_BUDGET: u64 = 16;
 
@@ -923,13 +933,21 @@ enum Msg {
     Looks(Vec<Look>),
 }
 
-/// One look of the sampler thread: the CPU time the simulation threads used since the last look
-/// (microseconds) and what they were running. The compile thread works through the looks in order
-/// whenever it is free, so what it decides depends on the sequence of looks and not on how long a
-/// compile or a trial took (#670).
+/// One look of the sampler thread: what the simulation threads were running, each with the work it
+/// did since the last look (microseconds: `work`, else CPU time shared by the running threads). The
+/// compile thread works through the looks in order whenever it is free, so what it decides depends
+/// on the sequence of looks and not on how long a compile or a trial took (#670).
 struct Look {
-    dt: u64,
-    running: Vec<(FuncId, bool)>,
+    running: Vec<(FuncId, bool, u64)>,
+}
+
+/// The look of `total` microseconds shared equally by the running functions (the CPU time of the
+/// simulation threads is one number for all of them).
+fn shared_look(total: u64, running: &[(usize, FuncId, bool)]) -> Look {
+    let n = running.len().max(1) as u64;
+    Look {
+        running: running.iter().map(|&(_, f, c)| (f, c, total / n)).collect(),
+    }
 }
 
 /// What the looks have found for the compile thread to do.
@@ -960,6 +978,13 @@ struct Shared {
     /// The CPU clock of the compile thread (`pthread_getcpuclockid`; 0 until it is set), which the
     /// sampler subtracts from the process's to get the simulation's.
     compile_clock: std::sync::atomic::AtomicI32,
+    /// Why the sampler counts CPU time and not instructions (`work::activate`), once it started;
+    /// `None` while the work clock counts.
+    clock_off: Mutex<Option<String>>,
+    /// What the sampler has read so far, for the trace and the calibration of `work::INSTR_PER_US`:
+    /// CPU microseconds and instructions of the simulation threads.
+    read_cpu_us: std::sync::atomic::AtomicU64,
+    read_instr: std::sync::atomic::AtomicU64,
     /// Eager mode: per function, its compile (or the decision to leave it interpreted) is over,
     /// `Tier::hot` returns then.
     finished: Vec<AtomicBool>,
@@ -967,19 +992,115 @@ struct Shared {
     jit: Mutex<Vec<Jit>>,
 }
 
-/// Microseconds of compile time per IR instruction of a function, as the policy prices it. Fixed
-/// numbers, not learned from the compiles the run makes: what the compile thread measures depends on
-/// the load of the host and on whether the compilation cache hit, and a policy that prices by it
-/// decides differently from run to run (#670, #673, #680). 800 is the price the learned rate started
-/// at and stayed near when the compile thread shared a core: the wall time of a cold compile of a
-/// function that runs on native frames, both modules (docs/STATUS.md "`--tier=auto` decisions").
-const US_PER_INSTR: f64 = 800.0;
-/// `OptLevel::Fast` (`FAST_MIN` IR instructions or more that are not compute loops) costs 70 to 130
-/// per IR instruction, which the single learned rate never saw (#680). Only the budget uses it
-/// (`Worker::price`); the payback rule keeps `US_PER_INSTR` (`Worker::payback_cost`).
-const US_PER_INSTR_FAST: f64 = 110.0;
-/// A module linked from the compilation cache (generation, key and link), per IR instruction.
-const US_PER_INSTR_HIT: f64 = 20.0;
+/// The kinds of function the policy prices and judges apart (#673, user decision 2026-10-24: a price
+/// per kind only together with the benefit expected of the kind).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// A function called on native frames, under `SHORT` IR instructions, without a loop.
+    Tiny,
+    /// A function called on native frames, without a loop (native-frame code only).
+    Native,
+    /// A function called on native frames with a loop that is not a compute loop (frame-mode code
+    /// too, for the interpreter to enter again after a materialisation).
+    Loop,
+    /// A compute loop (`compute`): full pipeline.
+    Compute,
+    /// Any other function or process, frame-mode code (the nested subprograms, the processes that
+    /// are no clocked process, whatever has a loop and is not called on native frames).
+    Frame,
+    /// A clocked process (`rtl`) made of `RTL_INSTANCES` or more instances.
+    Rtl,
+    /// A clocked process made of fewer instances: its compiled code starts cold more often (few
+    /// activations share it) and gains little, but a big part of the run (the carry chain of an
+    /// adder made 8 times) still pays (docs/decisions.md).
+    RtlFew,
+    /// A function compiled at `OptLevel::Fast` (`lower::level_for`), the large combinational
+    /// processes among them.
+    Big,
+}
+
+/// What the policy expects of compiling a kind of function: the CPU microseconds a compile costs
+/// (`fixed` plus `per_ir` per IR instruction: measured from the cold compiles of tools/realbench,
+/// CPU time of the compile thread, which shares the simulation's core) and how many times faster its
+/// compiled code runs than the interpreter (`speedup`). Seen interpreted for `price * speedup /
+/// (speedup - 1)` microseconds a function is expected to have repaid its compile if the rest of the
+/// run is like the part seen: the saving is `(speedup - 1) / speedup` of the time.
+#[derive(Clone, Copy, Debug)]
+struct Model {
+    fixed: f64,
+    per_ir: f64,
+    speedup: f64,
+}
+
+impl Model {
+    fn price(&self, n: usize) -> u64 {
+        (self.fixed + self.per_ir * n as f64) as u64
+    }
+
+    /// How many times its price a function must be seen interpreted before it is compiled.
+    fn payback(&self) -> f64 {
+        self.speedup / (self.speedup - 1.0)
+    }
+}
+
+const fn model(fixed: f64, per_ir: f64, speedup: f64) -> Model {
+    Model {
+        fixed,
+        per_ir,
+        speedup,
+    }
+}
+
+/// The models, by `Kind` (`MODELS[kind as usize]`). Prices: cold compiles of tools/realbench
+/// (CPU of the compile thread: a function of 20 IR instructions 6 to 9 ms, `get` of 61 14 ms, `push`
+/// of 263 193 ms, native-frame code 450 to 620 us an IR instruction and rising with the size,
+/// frame-mode code 210 to 340, `Fast` 90 to 115, #673). Speedups: what the thresholds of the flat
+/// price had (`Tiny` 1.2: the benefit of a small native function is lower than the factor 2 of the
+/// others, a compile that costs 3 to 9 ms for it is more than it saves; the rest as `PAYBACK*` were:
+/// 2 for functions called on native frames and compute loops, 4/3 for the rest), `Big` pinned to
+/// the old threshold of 3 200 us an IR instruction (compiled code of the large processes is level
+/// with the interpreter, #679; whether they compile is the user's decision, no size cap).
+const MODELS: [Model; 8] = [
+    model(2500.0, 200.0, 1.2),
+    model(2000.0, 550.0, 1.55),
+    model(4000.0, 800.0, 2.1),
+    model(4000.0, 900.0, 2.4),
+    model(2000.0, 250.0, 1.09),
+    model(0.0, 200.0, 1.5),
+    model(0.0, 200.0, 1.1),
+    model(4000.0, 110.0, 1.037),
+];
+
+/// `MODELS`, with `YAVS_AUTO_MODEL=kind=fixed,per_ir,speedup/..` (a tuning aid) applied.
+fn models() -> &'static [Model; 8] {
+    static M: std::sync::OnceLock<[Model; 8]> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        let mut m = MODELS;
+        let names = [
+            "tiny", "native", "loop", "compute", "frame", "rtl", "rtlfew", "big",
+        ];
+        for part in std::env::var("YAVS_AUTO_MODEL")
+            .unwrap_or_default()
+            .split('/')
+        {
+            let Some((k, v)) = part.split_once('=') else {
+                continue;
+            };
+            let v: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+            if let (Some(i), [fixed, per_ir, speedup]) =
+                (names.iter().position(|n| *n == k.trim()), v.as_slice())
+            {
+                m[i] = model(*fixed, *per_ir, *speedup);
+            }
+        }
+        m
+    })
+}
+
+/// A module linked from the compilation cache (generation, key and link): about 3 ms for a process of
+/// 200 IR instructions. A function whose object is in the cache is priced so (`Worker::price`, user,
+/// 2026-10-25: a warm run uses cached code as soon as it is seen), not at what compiling it costs.
+const HIT: Model = model(1000.0, 10.0, 1.0);
 
 /// Microseconds of opening the LLVM library (about 40 million cycles), counted with the first
 /// compile or look-up in the compilation cache: a run too short to pay for it loads nothing.
@@ -989,23 +1110,22 @@ const LOAD_US: u64 = 10_000;
 /// compile (generation and the key: 10 to 20 us per IR instruction).
 const PROBE_PART: u64 = 50;
 
-/// A function must have been seen interpreted this many times as long as compiling it takes:
-/// its remaining time is expected to be about its past time and compiled code saves about a
-/// quarter of it.
-const PAYBACK: u64 = 4;
+/// The sampled microseconds before the shared code of a process that can have a copy may be compiled
+/// or linked from the cache (`Worker::awaits_switch`): two and a half times the wait of the
+/// interpreter's first try (150 ms) for the next try, at doubled activations, to have switched it.
+const SPEC_WAIT: u64 = 400_000;
+
+/// A process of this many instances or more is not waited for (`Worker::awaits_switch`): each copy is
+/// too small a share for the tier to take, so the shared code is compiled for all of them at once,
+/// as the interpreter's wait for it intends (`exec.rs` `specialise`). Processes of 16 to 63
+/// instances gain from the copy as those of fewer do (`poc_arith_addw`); `rtl_lfsr` (512) loses
+/// 20 percent warm by waiting on a run of 300 ms.
+const SPEC_INSTANCES: u32 = 64;
 
 /// How long a run lasts before the compile thread is wanted: it samples nothing earlier (not for
 /// eager tiers). [`AutoTier::start_deferred`] leaves the start to the caller, who calls
 /// [`AutoTier::launch`] after this time.
 pub const START_AFTER: Duration = Duration::from_millis(5);
-
-/// A compute loop runs five to ten times faster compiled, so seen for twice its compile time
-/// it has repaid it (`Worker::threshold`).
-const PAYBACK_COMPUTE: u64 = 2;
-
-/// A function the interpreter calls on a native frame runs two to three times faster compiled,
-/// so it is compiled once seen for twice its compile time (four times before #572).
-const PAYBACK_NATIVE: u64 = 2;
 
 /// A callee of a hot function that was never seen running and has more IR instructions than this
 /// is left out of the compile (`left_out`).
@@ -1069,6 +1189,8 @@ struct Worker {
     spent: u64,
     /// `compute` per function, once asked.
     compute: Vec<std::cell::OnceCell<bool>>,
+    /// `kind` per function, once asked.
+    kinds: Vec<std::cell::OnceCell<Kind>>,
     /// `native_set` of each function alone, once asked (`nset`).
     nsets: Vec<std::cell::OnceCell<std::collections::HashSet<FuncId>>>,
     /// The sampled time `pick` waits for: the cheapest candidate it last refused fits the budget
@@ -1138,8 +1260,7 @@ impl Worker {
         if look.running.is_empty() {
             return;
         }
-        let dt = look.dt / look.running.len() as u64;
-        for &(id, compiled) in &look.running {
+        for &(id, compiled, dt) in &look.running {
             let id = if compiled { id } else { self.charge(id) };
             let Some(t) = self.time.get_mut(id.0 as usize) else {
                 continue;
@@ -1184,7 +1305,10 @@ impl Worker {
             if self.wants_probe(id, now) {
                 pending.probes.push(id);
             }
-            if now >= at && !std::mem::replace(&mut self.asked_for[id.0 as usize], true) {
+            if now >= at
+                && !self.awaits_switch(id)
+                && !std::mem::replace(&mut self.asked_for[id.0 as usize], true)
+            {
                 pending.cands.push(id);
                 self.pick_at = 0;
                 if let Some(tr) = &mut self.trace {
@@ -1193,6 +1317,20 @@ impl Worker {
                 }
             }
         }
+    }
+
+    /// Whether `id` is the shared code of a process that can switch to a copy specialised to its
+    /// instance data (`Program::specialisable`) and the run is younger than `SPEC_WAIT`: the
+    /// processes switch within a few hundred milliseconds of the tier being set
+    /// (`yavs_interp::SPEC_TIER_WAIT`, then at the next doubled activation count), and a process
+    /// whose shared code is compiled, or linked from the compilation cache, does not switch. The
+    /// compiled copy runs a third faster than the compiled shared code (the lfsr testbench's
+    /// process: 459 ms against 878 ms), so the shared code waits for the switch (#673).
+    fn awaits_switch(&self, id: FuncId) -> bool {
+        self.total < SPEC_WAIT
+            && self.prog.base_of(id) == id
+            && self.native.instances(id) < SPEC_INSTANCES
+            && self.prog.specialisable(id)
     }
 
     /// A worker with nothing seen yet.
@@ -1232,6 +1370,7 @@ impl Worker {
             total: 0,
             spent: 0,
             compute: vec![Default::default(); nfuncs],
+            kinds: vec![Default::default(); nfuncs],
             nsets: vec![Default::default(); nfuncs],
             pick_at: 0,
             note,
@@ -1322,44 +1461,93 @@ impl Worker {
         self.price(id, self.natural_part(id))
     }
 
-    /// The microseconds per IR instruction of `id` for the budget (`fast`: `Fast` code at its
-    /// own rate) or for the payback rule.
-    fn rate(&self, id: FuncId, fast: bool) -> f64 {
+    /// The kind of `id` (a copy of a process counts as the process it is a copy of), worked out once.
+    fn kind(&self, id: FuncId) -> Kind {
+        *self.kinds[id.0 as usize].get_or_init(|| self.kind_of(id))
+    }
+
+    fn kind_of(&self, id: FuncId) -> Kind {
+        let Some(f) = self.prog.func(id) else {
+            return Kind::Frame;
+        };
         if self.is_rtl(id) {
-            US_PER_INSTR_RTL
-        } else if fast
-            && self.prog.func(id).is_some_and(|f| {
-                crate::lower::level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast
-            })
-        {
-            US_PER_INSTR_FAST
+            if self.native.instances(self.prog.base_of(id)) < RTL_INSTANCES {
+                Kind::RtlFew
+            } else {
+                Kind::Rtl
+            }
+        } else if crate::lower::level_for(&self.prog, f, OptLevel::O2) == OptLevel::Fast {
+            Kind::Big
+        } else if self.is_compute(id) {
+            Kind::Compute
+        } else if self.natively(id) {
+            if loops(&self.prog, f) {
+                Kind::Loop
+            } else if f.code.len() < SHORT {
+                Kind::Tiny
+            } else {
+                Kind::Native
+            }
         } else {
-            US_PER_INSTR
+            Kind::Frame
         }
     }
 
-    /// The compile time the payback rule and the order of the candidates go by (`threshold`,
-    /// `pick`): the price of `id` with `Fast` code at the rate of the other code, so that a big
-    /// process, which the code generator compiles in a seventh of the time, is compiled as late as
-    /// it always was. Whether big processes compile is the user's decision (#679), not a side
-    /// effect of pricing them right for the budget (#680).
-    fn payback_cost(&self, id: FuncId) -> u64 {
-        (self.rate(id, false) * self.prog.func(id).map_or(0, |f| f.code.len()) as f64) as u64
+    /// The model of `id`'s kind.
+    fn model(&self, id: FuncId) -> &'static Model {
+        &models()[self.kind(id) as usize]
     }
 
     /// The microseconds of compile time to expect for the modules `part` of `id` (the budget's
     /// price): the price of the function, shared by the two modules of a function that has both.
     fn price(&self, id: FuncId, part: Part) -> u64 {
+        self.price_of(id, part, self.cached(id))
+    }
+
+    /// Whether the compilation cache holds the object of `id`: an earlier run compiled a function
+    /// of its name and size (`listed`). A function of the cache costs `HIT`, whatever its kind.
+    fn cached(&self, id: FuncId) -> bool {
+        crate::objcache::enabled()
+            && self
+                .prog
+                .func(id)
+                .is_some_and(|f| self.listed.contains(&(f.name.clone(), f.code.len() as u32)))
+    }
+
+    /// `price` of a function in the cache (`cached`) or compiled by the model of its kind.
+    fn price_of(&self, id: FuncId, part: Part, cached: bool) -> u64 {
         let Some(f) = self.prog.func(id) else {
             return 0;
         };
-        let whole = self.rate(id, true) * f.code.len() as f64;
+        let whole = if cached {
+            HIT.price(f.code.len())
+        } else {
+            self.model(id).price(f.code.len())
+        };
         let both = self.natural_part(id) == Part::Both;
-        (if part != Part::Both && both {
-            whole / 2.0
+        if part != Part::Both && both {
+            whole / 2
         } else {
             whole
-        }) as u64
+        }
+    }
+
+    /// `band_wait` of the clocked process `id`, none when its object is in the cache (#728): the wait
+    /// keeps a run from paying the compile and the trial of a process outside the band that may lose,
+    /// and linking it costs 3 ms.
+    fn band(&self, id: FuncId) -> u64 {
+        if self.cached(id) {
+            0
+        } else {
+            band_wait(self.base_len(id))
+        }
+    }
+
+    /// The sampled microseconds `id` must have been seen interpreted before it is compiled, by the
+    /// payback of its kind (`Model::payback`): the price of the function times what its compiled
+    /// code is expected to save.
+    fn need(&self, id: FuncId) -> u64 {
+        (self.cost(id) as f64 * self.model(id).payback()) as u64
     }
 
     /// `native_set` of `id` alone (the functions it reaches on native frames, `id` among them
@@ -1412,13 +1600,14 @@ impl Worker {
         if self.heat.budget == 0 {
             at
         } else if self.is_rtl(id) {
-            at.max(band_wait(self.base_len(id)))
-        } else if self.is_compute(id) {
-            at.max(PAYBACK_COMPUTE * self.payback_cost(id))
-        } else if self.natively(id) {
-            at.max(PAYBACK_NATIVE * self.payback_cost(id))
+            let few = if self.kind(id) == Kind::RtlFew {
+                self.need(id)
+            } else {
+                0
+            };
+            at.max(self.band(id)).max(few)
         } else {
-            at.max(PAYBACK * self.payback_cost(id))
+            at.max(self.need(id))
         }
     }
 
@@ -1596,7 +1785,7 @@ impl Worker {
             return None;
         }
         let heat = |w: &Self, id: FuncId| {
-            let cost = w.payback_cost(id).max(1);
+            let cost = w.need(id).max(1);
             w.time[id.0 as usize][0] * 1000 / cost
         };
         let mut order: Vec<usize> = (0..cands.len()).collect();
@@ -1666,12 +1855,11 @@ impl Worker {
         let Some(f) = self.prog.func(id) else {
             return false;
         };
+        if self.awaits_switch(id) {
+            return false;
+        }
         let k = id.0 as usize;
-        let wait = if self.is_rtl(id) {
-            band_wait(self.base_len(id))
-        } else {
-            0
-        };
+        let wait = if self.is_rtl(id) { self.band(id) } else { 0 };
         let at = self
             .prog
             .func(self.prog.base_of(id))
@@ -1806,12 +1994,18 @@ impl Worker {
         let t0 = std::time::Instant::now();
         let counts = self.native.clone();
         let halted = || halt.load(Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        let pace = Pace {
+            nap: &|| std::thread::sleep(Duration::from_millis(1)),
+            wall: &|| start.elapsed(),
+        };
         let t = if clocked {
             run_trial(
                 &mut swap,
                 &yavs_interp::sim_progress,
                 &sim_cpu,
                 &halted,
+                &pace,
                 &BY_RUNS,
             )
         } else {
@@ -1821,6 +2015,7 @@ impl Worker {
                 &|| counts.entries(),
                 &sim_cpu,
                 &halted,
+                &pace,
                 &BY_ENTRIES,
             );
             counts.count_off(id);
@@ -1924,11 +2119,7 @@ impl Worker {
             .is_rtl(id)
             .then(|| {
                 let seen = self.group[self.prog.base_of(id).0 as usize];
-                cold(
-                    self.native.instances(self.prog.base_of(id)),
-                    seen,
-                    self.total,
-                )
+                cold(seen, self.total)
             })
             .flatten();
         let short = (sampled && !o2)
@@ -1987,23 +2178,23 @@ impl Worker {
                     .map_or(0, |d| d.as_micros());
                 let hit = crate::objcache::cache_stats().0 != hits;
                 // Charged by the model, not by the time it took (#670).
-                self.spent += if hit {
-                    let per = US_PER_INSTR_HIT;
-                    (per * f.code.len() as f64) as u64
-                } else {
-                    self.price(id, part)
-                };
+                self.spent += self.price_of(id, part, hit);
                 if let Some(tr) = &self.trace {
                     let seen = self.time.get(id.0 as usize).map_or([0, 0], |t| *t);
+                    let base = match self.prog.base_of(id) {
+                        b if b != id => format!(", copy of {b}"),
+                        _ => String::new(),
+                    };
                     let leave = (f.kind == FuncKind::Process)
                         .then(|| callbacks(&self.prog, f))
                         .map_or(String::new(), |(o, t)| format!(", {o} of {t} leave"));
                     tr.line(format!(
-                        "{id} compiled `{}` ({} IR{leave}) {level:?} {part:?}{} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
+                        "{id} compiled `{}` ({} IR{leave}{base}) {level:?} {part:?}{} {:?} in {} us, cpu {} us (model {}), first seen {} ms and candidate {} ms ago, \
                          seen {}/{} us, spent {} of {} us",
                         f.name,
                         f.code.len(),
                         if hit { " hit" } else { "" },
+                        self.kind(id),
                         took.as_micros(),
                         cpu,
                         self.cost(id),
@@ -2094,48 +2285,147 @@ fn nap(sh: &Shared, d: Duration) {
     }
 }
 
-/// The sampler thread (#670): every `period` it reads which function each simulation thread runs and
-/// the CPU time they used since the last look, and sends the looks to the compile thread in batches
-/// of `BATCH`. It runs while the compile thread compiles or measures a trial (no looks are sent
-/// during a trial), so the compile thread's view of the run does not depend on how long it was busy.
-/// The CPU time of the simulation threads is the clock of the sampling, not the wall time: a host
-/// under load, and the compile thread sharing the core, do not make a function look hot sooner.
-/// The compile thread starts it after `START_AFTER` (#426) and ends it.
+/// The sampler thread (#670): at every look it reads which function each simulation thread runs and
+/// the work it did since the last look, and sends the looks to the compile thread in batches of
+/// `BATCH`. It runs while the compile thread compiles or measures a trial (no looks are sent during a
+/// trial), so the compile thread's view of the run does not depend on how long it was busy.
+///
+/// The work is the instructions each simulation thread retired (`work`), charged to the function in
+/// that thread's slot; a look is taken when the busiest running thread has done `period` microseconds
+/// of work, not after a wall time, so a loaded host moves the looks in time and not in the program
+/// (the polls that find the point are a fraction of a period apart). Without the counters the clock
+/// is the CPU time of the simulation threads, shared by the running functions, and the wall time
+/// between looks without that.
 fn sampler_loop(
-    sample: impl Fn(&mut Vec<(FuncId, bool)>),
+    sample: impl Fn(&mut Vec<(usize, FuncId, bool)>),
     period: Duration,
     tx: Sender<Msg>,
     sh: &Shared,
 ) {
+    timer_slack_1us();
+    // (The counters are opened here, after START_AFTER: a run under 5 ms opens none.)
+    let work = match crate::work::activate() {
+        Ok(()) => true,
+        Err(why) => {
+            if std::env::var_os("YAVS_AUTO_TRACE").is_some() {
+                eprintln!("trace: work clock off, CPU time instead: {why}");
+            }
+            *sh.clock_off.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
+            false
+        }
+    };
     let clock = || sim_cpu_sampler(sh.compile_clock.load(Ordering::Acquire));
-    // Without a CPU clock (not Linux) the wall time between looks is the time.
     let (mut last_cpu, mut last_wall) = (clock(), std::time::Instant::now());
+    let mut last: Vec<(usize, u64)> = Vec::new();
+    crate::work::per_thread(&mut last);
+    let target = u64::try_from(period.as_micros())
+        .unwrap_or(u64::MAX)
+        .saturating_mul(crate::work::per_us());
     let mut batch = Vec::with_capacity(BATCH);
+    let mut running = Vec::new();
+    let mut counts = Vec::new();
+    let mut slots = Vec::new();
     while !sh.halt.load(Ordering::SeqCst) {
-        nap(sh, period);
-        if sh.halt.load(Ordering::SeqCst) {
-            return;
+        let since = |counts: &[(usize, u64)], last: &[(usize, u64)], i: usize| {
+            let at = |v: &[(usize, u64)]| v.iter().find(|e| e.0 == i).map_or(0, |e| e.1);
+            at(counts).saturating_sub(at(last))
+        };
+        if work {
+            // Poll until the busiest running thread has done a period of work: the first sleep a
+            // little short of a period, the next ones as long as the rate seen says is left.
+            let t0 = std::time::Instant::now();
+            let mut step = period.mul_f64(0.95);
+            loop {
+                nap(sh, step);
+                running.clear();
+                sample(&mut running);
+                slots.clear();
+                slots.extend(running.iter().map(|r| r.0));
+                counts.clear();
+                crate::work::of_threads(&slots, &mut counts);
+                let busiest = running
+                    .iter()
+                    .map(|r| since(&counts, &last, r.0))
+                    .max()
+                    .unwrap_or(0);
+                let waited = t0.elapsed();
+                if busiest >= target || waited >= period * 4 || sh.halt.load(Ordering::SeqCst) {
+                    break;
+                }
+                let rate = busiest as f64 / waited.as_micros().max(1) as f64;
+                step = if rate > 0.0 {
+                    Duration::from_micros(((target - busiest) as f64 / rate * 0.95) as u64)
+                        .max(Duration::from_micros(150))
+                        .min(period)
+                } else {
+                    period
+                };
+            }
+        } else {
+            nap(sh, period);
+            if sh.halt.load(Ordering::SeqCst) {
+                return;
+            }
+            running.clear();
+            sample(&mut running);
+            counts.clear();
         }
         let (cpu, wall) = (clock(), std::time::Instant::now());
-        let dt = match (cpu, last_cpu) {
-            (Some(c), Some(l)) => c.saturating_sub(l),
-            _ => wall - last_wall,
+        sh.read_instr
+            .store(counts.iter().map(|e| e.1).sum::<u64>(), Ordering::Relaxed);
+        sh.read_cpu_us.store(
+            cpu.map_or(0, |c| u64::try_from(c.as_micros()).unwrap_or(u64::MAX)),
+            Ordering::Relaxed,
+        );
+        let look = if work {
+            Look {
+                running: running
+                    .iter()
+                    .map(|&(i, f, c)| {
+                        // (A worker that spun before it got to run counts for at most two periods.)
+                        let d = since(&counts, &last, i).min(2 * target);
+                        (f, c, crate::work::work_us(d))
+                    })
+                    .collect(),
+            }
+        } else {
+            let dt = match (cpu, last_cpu) {
+                (Some(c), Some(l)) => c.saturating_sub(l),
+                _ => wall - last_wall,
+            };
+            shared_look(u64::try_from(dt.as_micros()).unwrap_or(u64::MAX), &running)
         };
         (last_cpu, last_wall) = (cpu, wall);
+        for &(i, c) in &counts {
+            match last.iter_mut().find(|e| e.0 == i) {
+                Some(e) => e.1 = c,
+                None => last.push((i, c)),
+            }
+        }
         if sh.trial.load(Ordering::SeqCst) {
             continue;
         }
-        let mut running = Vec::new();
-        sample(&mut running);
-        batch.push(Look {
-            dt: u64::try_from(dt.as_micros()).unwrap_or(u64::MAX),
-            running,
-        });
+        batch.push(look);
         if batch.len() == BATCH && tx.send(Msg::Looks(std::mem::take(&mut batch))).is_err() {
             return;
         }
     }
 }
+
+/// The calling thread's timer slack to 1 us (the default 50 us late-wakes every sleep): the
+/// sampler's polls land close to the work they wait for.
+#[cfg(target_os = "linux")]
+fn timer_slack_1us() {
+    unsafe extern "C" {
+        fn prctl(option: i32, ...) -> i32;
+    }
+    const PR_SET_TIMERSLACK: i32 = 29;
+    // SAFETY: a plain prctl of the calling thread; a failure leaves the default slack.
+    unsafe { prctl(PR_SET_TIMERSLACK, 1000u64) };
+}
+
+#[cfg(not(target_os = "linux"))]
+fn timer_slack_1us() {}
 
 impl AutoTier {
     /// Start the compile thread and make the tier the runtime's (`Runtime::set_tier`),
@@ -2179,8 +2469,13 @@ impl AutoTier {
         });
         let ntab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let ctab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
+        // Threads that get a sampling slot note their ids; the sampler opens their counters later
+        // (`work`), so a run of a few milliseconds pays one system call per thread.
+        if !heat.eager() {
+            crate::work::install();
+        }
         let (table, sh) = (funcs.clone(), shared.clone());
-        let (sample, sampler_tx) = (rt.sampler(), tx.clone());
+        let (sample, sampler_tx) = (rt.thread_sampler(), tx.clone());
         let native = rt.native_flags();
         // How long the compile thread waits for news before it looks at `halt`.
         let period = if heat.eager() {
@@ -2356,17 +2651,24 @@ impl AutoTier {
                         for &k in v.iter().take(40) {
                             if let Some(f) = w.prog.func(FuncId(k as u32)) {
                                 tr.line(format!(
-                                    "seen f{k} `{}` ({} IR): interpreted {} us, compiled {} us",
+                                    "seen f{k} `{}` ({} IR{}): interpreted {} us, compiled {} us",
                                     f.name,
                                     f.code.len(),
+                                    match w.prog.base_of(FuncId(k as u32)) {
+                                        b if b.0 as usize != k => format!(", copy of {b}"),
+                                        _ => String::new(),
+                                    },
                                     w.time[k][0],
                                     w.time[k][1],
                                 ));
                             }
                         }
                         tr.line(format!(
-                            "sampled {} us, compiled for {} us",
-                            w.total, w.spent
+                            "sampled {} us, compiled for {} us (clock: {} instructions, {} us of CPU time, process CPU less the sampler's and the compile thread's)",
+                            w.total,
+                            w.spent,
+                            sh.read_instr.load(Ordering::Relaxed),
+                            sh.read_cpu_us.load(Ordering::Relaxed),
                         ));
                     }
                     *sh.jit.lock().unwrap_or_else(PoisonError::into_inner) = w
@@ -2401,6 +2703,16 @@ impl AutoTier {
             tier.start_thread(false)?;
         }
         Ok(tier)
+    }
+
+    /// Why the policy's clock is the CPU time of the simulation threads and not their instructions
+    /// retired (`work.rs`), when it is; `None` with the work clock.
+    pub fn clock_note(&self) -> Option<String> {
+        self.shared
+            .clock_off
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// End tier-up: functions still queued stay interpreted, and compiled code stays usable.
@@ -2564,9 +2876,9 @@ impl Tier for AutoTier {
 #[cfg(test)]
 mod tests {
     use super::{
-        BY_ENTRIES, BY_RUNS, COMPUTE_BUDGET, NATIVE_BUDGET, UNSEEN_MIN, band_wait, cold, compute,
-        decide, first_fit, fused_search, left_out, loops, must_calls, run_trial,
-        too_many_callbacks, within_budget,
+        BY_ENTRIES, BY_RUNS, COMPUTE_BUDGET, NATIVE_BUDGET, Pace, Rule, Trial, UNSEEN_MIN,
+        band_wait, cold, compute, decide, first_fit, fused_search, left_out, loops, must_calls,
+        run_trial, too_many_callbacks, within_budget,
     };
     use yavs_diag::{FileId, Span};
     use yavs_ir::{Inst, ProgramBuilder, StmtKind};
@@ -2988,34 +3300,82 @@ mod tests {
         assert_eq!(entries(93.0), Some(Drop(0.93)));
     }
 
+    /// A run that exists in virtual time (#717): a nap is a millisecond of its clock, and the
+    /// progress between two reads is the time passed at the rate of the code that runs.
+    struct Sim {
+        /// (progress, microseconds now, microseconds at the last read of the progress)
+        s: std::cell::Cell<(f64, u64, u64)>,
+        compiled: std::cell::Cell<bool>,
+        rate_compiled: f64,
+    }
+
+    impl Sim {
+        fn new(rate_compiled: f64) -> Sim {
+            Sim {
+                s: std::cell::Cell::new((0.0, 0, 0)),
+                compiled: std::cell::Cell::new(true),
+                rate_compiled,
+            }
+        }
+
+        fn progress(&self) -> u64 {
+            let (p, now, last) = self.s.get();
+            let rate = if self.compiled.get() {
+                self.rate_compiled
+            } else {
+                1.0e6
+            };
+            let p = p + rate * (now - last) as f64 / 1e6;
+            self.s.set((p, now, now));
+            p as u64
+        }
+
+        fn nap(&self) {
+            let (p, now, last) = self.s.get();
+            self.s.set((p, now + 1000, last));
+        }
+
+        fn wall(&self) -> std::time::Duration {
+            std::time::Duration::from_micros(self.s.get().1)
+        }
+
+        /// `run_trial` over the run.
+        fn trial(&self, rule: &Rule) -> Trial {
+            let mut swap = |on: bool| {
+                self.progress();
+                self.compiled.set(on);
+            };
+            run_trial(
+                &mut swap,
+                &|| self.progress(),
+                &|| None,
+                &|| false,
+                &Pace {
+                    nap: &|| self.nap(),
+                    wall: &|| self.wall(),
+                },
+                rule,
+            )
+        }
+    }
+
     /// The windows of a trial swap the code in turn and measure the run's progress each time: with
     /// progress that depends on the code, the verdict follows; without progress there is none.
     #[test]
     fn a_trial_swaps_in_turn_and_measures_the_run() {
         use super::Verdict;
-        use std::cell::Cell;
-        use std::time::Instant;
         for (rate_compiled, keep) in [(1.5e6, true), (0.7e6, false)] {
-            let compiled = Cell::new(true);
-            let acc = Cell::new((0.0f64, Instant::now()));
-            let progress = || {
-                let (p, t) = acc.get();
-                let now = Instant::now();
-                let rate = if compiled.get() { rate_compiled } else { 1.0e6 };
-                let p = p + (now - t).as_secs_f64() * rate;
-                acc.set((p, now));
-                p as u64
-            };
-            let mut swap = |on: bool| {
-                progress();
-                compiled.set(on);
-            };
-            let r = run_trial(&mut swap, &progress, &|| None, &|| false, &BY_RUNS).verdict;
+            let r = Sim::new(rate_compiled).trial(&BY_RUNS).verdict;
             assert_eq!(matches!(r, Some(Verdict::Keep(_))), keep, "{r:?}");
             assert!(r.is_some());
         }
+        let sim = Sim::new(1.0e6);
         let mut swap = |_: bool| {};
-        let t = run_trial(&mut swap, &|| 0, &|| None, &|| true, &BY_RUNS);
+        let pace = Pace {
+            nap: &|| sim.nap(),
+            wall: &|| sim.wall(),
+        };
+        let t = run_trial(&mut swap, &|| 0, &|| None, &|| true, &pace, &BY_RUNS);
         assert!(t.verdict.is_none());
     }
 
@@ -3023,24 +3383,8 @@ mod tests {
     /// clear the first one is: its windows vary with the burst they fall in.
     #[test]
     fn a_trial_of_entries_takes_three_pairs() {
-        use std::cell::Cell;
-        use std::time::Instant;
         for (rule, pairs) in [(&BY_RUNS, 1), (&BY_ENTRIES, 3)] {
-            let compiled = Cell::new(true);
-            let acc = Cell::new((0.0f64, Instant::now()));
-            let progress = || {
-                let (p, t) = acc.get();
-                let now = Instant::now();
-                let rate = if compiled.get() { 2.0e6 } else { 1.0e6 };
-                let p = p + (now - t).as_secs_f64() * rate;
-                acc.set((p, now));
-                p as u64
-            };
-            let mut swap = |on: bool| {
-                progress();
-                compiled.set(on);
-            };
-            let t = run_trial(&mut swap, &progress, &|| None, &|| false, rule);
+            let t = Sim::new(2.0e6).trial(rule);
             assert_eq!(t.compiled.len(), pairs);
             assert!(matches!(t.verdict, Some(super::Verdict::Keep(_))));
         }
@@ -3050,10 +3394,9 @@ mod tests {
     /// the run: the processes of a CPU design are a few percent of it each (#532).
     #[test]
     fn a_clocked_process_that_is_a_small_part_of_the_run_stays_interpreted() {
-        assert!(cold(4096, 44_000, 44_000).is_none());
-        assert!(cold(64, 23_000, 44_000).is_none());
-        assert!(cold(32, 11_700, 310_000).is_some());
-        assert!(cold(1, 44_000, 44_000).is_some());
+        assert!(cold(44_000, 44_000).is_none());
+        assert!(cold(23_000, 44_000).is_none());
+        assert!(cold(11_700, 310_000).is_some());
     }
 
     /// A clocked process outside the band of bodies that gained is tried only in a run that used it
@@ -3145,17 +3488,14 @@ mod tests {
     #[test]
     fn what_is_hot_depends_on_the_looks_only() {
         let look = |ms: u64| super::Look {
-            dt: ms * 1000,
-            running: vec![(yavs_ir::FuncId(0), false)],
+            running: vec![(yavs_ir::FuncId(0), false, ms * 1000)],
         };
         let hot_after = |pause: bool| {
             let (mut w, f) = worker(100);
-            let price = w.prog.func(f).unwrap().code.len() as u64 * 800;
-            assert_eq!(w.cost(f), price, "a compute loop has a fixed price");
-            assert_eq!(
-                w.payback_cost(f),
-                w.prog.func(f).unwrap().code.len() as u64 * 800
-            );
+            let price = w.cost(f);
+            assert_eq!(w.kind(f), super::Kind::Compute);
+            let n = w.prog.func(f).unwrap().code.len();
+            assert_eq!(price, super::MODELS[super::Kind::Compute as usize].price(n));
             let mut pending = super::Pending::default();
             for n in 1.. {
                 if pause && n % 7 == 0 {
@@ -3165,7 +3505,7 @@ mod tests {
                 if !pending.cands.is_empty() {
                     assert_eq!(pending.cands, [f]);
                     assert_eq!(w.cost(f), price, "{n}");
-                    return (n, w.total, w.payback_cost(f));
+                    return (n, w.total, w.need(f));
                 }
                 assert!(n < 100_000);
             }
@@ -3173,9 +3513,37 @@ mod tests {
         };
         let (a, b) = (hot_after(false), hot_after(true));
         assert_eq!(a, b);
-        // A compute loop is compiled once seen for twice what the payback rule holds it to cost.
-        assert!((2 * a.2..2 * a.2 + 1000).contains(&a.1), "{a:?}");
+        // A compute loop is compiled once seen for what its price and the payback of its kind say.
+        assert!((a.2..a.2 + 1000).contains(&a.1), "{a:?}");
         assert_eq!(a.0 * 1000, a.1);
+    }
+
+    /// The kinds of function are priced and judged apart (#673): a function of the size of a large
+    /// process is compiled as late as the flat price made it (the user's decision of 2026-10-24
+    /// leaves no size cap, so its payback is pinned, not derived), a tiny function pays for the
+    /// fixed cost of a compile, and a better speedup means an earlier compile.
+    #[test]
+    fn kinds_are_priced_and_judged_apart() {
+        use super::{HIT, Kind, MODELS, Part};
+        let (w, f) = worker(1_600);
+        assert_eq!(w.kind(f), Kind::Big);
+        let n = 1_600.0;
+        let need = w.need(f) as f64;
+        assert!((3000.0 * n..3400.0 * n).contains(&need), "{need}");
+        let (w2, f2) = worker(100);
+        assert_eq!(w2.kind(f2), Kind::Compute);
+        let m = |k: Kind| MODELS[k as usize];
+        // The fixed cost of a compile is most of a tiny function's price.
+        assert!(m(Kind::Tiny).price(8) > 5 * 8 * 200 / 2);
+        // The better the speedup, the fewer times its price a function must be seen.
+        assert!(m(Kind::Compute).payback() < m(Kind::Frame).payback());
+        assert!(m(Kind::Big).payback() > m(Kind::Frame).payback());
+        // A function whose object is in the cache is priced at what linking it costs, a process of 200
+        // IR instructions at about 3 ms, whatever its kind (#728).
+        assert_eq!(HIT.price(200), 3_000);
+        let n2 = w2.prog.func(f2).unwrap().code.len();
+        assert_eq!(w2.price_of(f2, Part::Both, true), HIT.price(n2));
+        assert!(w2.price_of(f2, Part::Both, true) * 10 < w2.price_of(f2, Part::Both, false));
     }
 
     /// The CPU time of a look is shared by the functions running in it, and the time seen running
@@ -3184,14 +3552,12 @@ mod tests {
     fn a_look_shares_its_time_between_the_running_functions() {
         let (mut w, f) = worker(100);
         let mut pending = super::Pending::default();
-        let look = super::Look {
-            dt: 1000,
-            running: vec![(f, false), (f, true)],
-        };
+        let look = super::shared_look(1000, &[(0, f, false), (1, f, true)]);
         w.see(&look, false, &mut pending);
         assert_eq!(w.time[f.0 as usize], [500, 500]);
         assert_eq!(w.total, 1000);
     }
+
     /// The class rules of the threshold analyse what a function can call; one below the base
     /// threshold gets none of that (#544).
     #[test]
@@ -3199,8 +3565,7 @@ mod tests {
         let (mut w, f) = worker(100);
         let at = super::Heat::DEFAULT.threshold(w.prog.func(f).unwrap());
         let look = |us: u64| super::Look {
-            dt: us,
-            running: vec![(f, false)],
+            running: vec![(f, false, us)],
         };
         let mut pending = super::Pending::default();
         w.see(&look(at - 1), false, &mut pending);
@@ -3218,8 +3583,7 @@ mod tests {
         let (mut w, f) = worker(1_600);
         let at = super::PAYBACK_RA * super::ra_cost(w.prog.func(f).unwrap().code.len());
         let look = |us: u64| super::Look {
-            dt: us,
-            running: vec![(f, true)],
+            running: vec![(f, true, us)],
         };
         let mut pending = super::Pending::default();
         w.see(&look(at), false, &mut pending);

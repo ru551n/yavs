@@ -8056,11 +8056,79 @@ lifted:
   cache: what the first run compiled is linked early in the next ones, so a flip in the first run is amplified (window generator warm: 178
   to 198 G with the same code); (c) the compile that is still running when the run ends is lost; (d) trial verdicts near their keep line. The
   way to remove (a) and so (b) is a work clock (instructions retired of the simulation threads, `perf_event_open`, with the CPU time where
-  it is denied); it is not built: Linux only, a counter per simulation thread registered by the interpreter, and a warning where it is
-  refused. Open question for the user.
+  it is denied); built on 2026-10-25 (user decision of 2026-10-24): see "`--tier=auto` work clock, kinds of function" below.
 - Tests: `what_is_hot_depends_on_the_looks_only`, `a_look_shares_its_time_between_the_running_functions` (`auto.rs`),
   `compile_thread_keeps_the_affinity_of_the_process` (`tests/tier.rs`); the 510-test differential corpus under `yavs-auto`, with
   `--tier-heat=1,0,0` and with 4 threads, passes.
+
+## `--tier=auto` work clock, kinds of function, cached objects, shared code that waits for its copy (yavs-llvm, yavs-interp, #670, #673, #675, #717, #728, 2026-10-25)
+
+- **Decision (user, 2026-10-24): the clock of the policy is the work of the simulation threads, not time.** Work is user-mode
+  instructions retired, one `perf_event_open` counter per simulation thread (`yavs-llvm` `work.rs`; the interpreter tells a hook when a
+  thread gets its sampling slot, `yavs_interp::on_simulation_thread`, so the main thread and every kernel worker note their thread ids;
+  the sampler thread opens the counters when it starts, after `START_AFTER`, so a run under 5 ms pays one system call per thread),
+  converted to the time units of the policy's constants by one fixed number, `INSTR_PER_US` (16 000, the median of what the five designs
+  of #673 retire per CPU microsecond of the simulation threads on the development host: 10 000 for `neorv32_single_min` to 18 000
+  for `hdlm_lfsr`; `YAVS_AUTO_IPUS` overrides it, a tuning aid). Where the kernel refuses the counter, and on other systems, the clock
+  is the CPU time of the simulation threads as before (`AutoTier::clock_note` says why; `YAVS_AUTO_TRACE=1` prints it). The trial of a compiled function (`Worker::trial`) stays on CPU time: it compares the progress per second of two kinds of
+  code, which retire different numbers of instructions for the same progress.
+- **Each thread's instructions are charged to the function in that thread's slot** (`Runtime::thread_sampler`), not summed and split by
+  the number of running functions: a worker that spins or waits has no function and adds nothing (the CPU-time clock counted the
+  spinning), and a worker that spun before it ran is charged at most two periods. A look is taken when the busiest running thread has
+  retired a period (`Heat::period`, 1 ms) of work, polled in steps of at least 150 us from 0.95 periods on, with the timer slack of the
+  sampler at 1 us (`timer_slack_1us`), so a loaded host moves the looks in time and not in the program. Only the counters of the
+  running threads are read at a poll (a read is a system call on the simulation's core: all four threads at every poll cost the
+  window generator 3 percent of its wall time). A look at a fixed wall time gave 6 to 10 percent more instructions in a cold run of the
+  window generator.
+- **Decision: kinds of function, a price and a benefit each** (`Kind`, `Model`, `MODELS`; user, 2026-10-24: prices per class only
+  together with a benefit estimate per class). A function is `Tiny` (called on native frames, under 64 IR instructions, no loop),
+  `Native`, `Loop` (native with a loop), `Compute`, `Frame`, `Rtl`, `RtlFew` (a clocked process of fewer than `RTL_INSTANCES`
+  instances) or `Big` (`OptLevel::Fast`). A kind has a price (fixed microseconds plus microseconds an IR instruction, compile CPU
+  measured in cold runs of tools/realbench: `Tiny` 2.5 ms + 200, `Native` 2 ms + 550, `Loop` 4 ms + 800, `Compute` 4 ms + 900,
+  `Frame` 2 ms + 250, `Rtl` 200, `Big` 4 ms + 110) and the speedup compiled code is expected to have (1.2, 1.55, 2.1, 2.4, 1.09, 1.5,
+  1.1, 1.037). A function is a candidate once it was seen interpreted for price x speedup / (speedup - 1), the time its compile pays
+  back if the rest of the run is like the part seen; the budget is charged the price and the candidates go in the order of seen time
+  over that threshold. The speedups are the payback factors that were `PAYBACK` (4), `PAYBACK_COMPUTE` and `PAYBACK_NATIVE` (2)
+  turned around and calibrated so that at the typical size of a kind the threshold is the one of the flat 800 us an IR instruction:
+  the measured prices are 2 to 3 times lower for frame-mode code and for tiny functions, and a function of 8 IR instructions costs
+  3 ms whatever its size says, so those kinds carry a benefit that is lower than the factor 2 the flat price assumed (a native
+  function 1.55, a tiny one 1.2, frame-mode code 1.09). `Big` (the large combinational processes: compiled code level with the
+  interpreter, #679) is pinned at 1.037 so that it is seen for 3 200 us an IR instruction as before; whether it compiles is the user's
+  decision (no size cap), not a side effect of its price.
+  **What the measurements did not give:** no table of prices and speedups won back the cold wall time the learned rate before d65e7a74
+  had on the window generator (15.2 s against 16.5; interleaved on core 8, 8 to 16 worlds): tiny functions later (speedup 1.05 to
+  1.2, fixed price), native functions earlier (3) or later (1.33), a native budget of 8 instead of 16 changed the cold median by
+  less than the spread (3 percent) and the warm one by up to 7 percent either way. The model is therefore calibrated to the old
+  thresholds where it has no measurement against them.
+- **A function whose object is in the cache is priced as linking it** (`HIT`, 1 ms + 10 us an IR instruction: 3 ms for a process of
+  200; user, 2026-10-25, #728), in the budget and in the payback rule (`Worker::cached`: an earlier run compiled a function of its name
+  and size, `listed`), and a clocked process outside the band of bodies that gained does not wait `BAND_WAIT` for it (`Worker::band`).
+  What a warm run compiles depends on the cache as well as on the looks, deterministically for a given cache. `rtl_ff` warm -6
+  percent wall (its process was compiled at 260 ms), `rtl_lfsr` at 61 ms where it was 79 ms; `lfsr64` stays as it was (it is
+  seen for 172 ms of a 165 ms run, a process outside the band whose object was never listed: it is compiled in no run).
+- **`RtlFew` (#675).** A clocked process of fewer than 16 instances was refused (`cold`) however much of the run it was: the carry
+  chain of `poc_arith_addw` (8 copies, 14 percent of the samples) stayed interpreted. It is a kind with a low benefit (1.1: eleven
+  times its price in samples), the share rule of an eighth stays, and the measure after the swap (`Worker::trial`) takes the code
+  back when it does not pay.
+- **The shared code of a process that can have a copy waits for the switch** (`Worker::awaits_switch`, `SPEC_WAIT` 400 ms of sampled
+  work, only for fewer than `SPEC_INSTANCES` (64) instances). The interpreter switches a process to its specialised copy at its first
+  try 150 ms after the tier is set and at doubled activation counts after that, and does not switch a process whose shared code is
+  compiled. A warm run linked the shared code from the cache at 12 ms (the process was listed), and a cold run could compile it before
+  the switch, so the process never got its copy: the process of `hdlm_lfsr` ran the compiled shared code for 878 ms where the
+  compiled copy needs 459 (30.6 G instructions against 25.5 G, +14 percent wall); which one it was depended on the clock (the CPU
+  clock stayed on the good side by luck, an instruction clock at 14 000 did not). The shared code of such a process is now neither a
+  candidate nor linked before 400 ms were seen. `poc_arith_addw` (processes of 8 to 63 instances): cold -10 percent wall, warm -15
+  percent. Not for 64 instances or more: each copy is a share too small for the tier to take and the shared code is compiled for all
+  of them, as `exec.rs` `specialise` intends (`rtl_lfsr`, 512 instances, was 20 percent slower warm when it waited: its run is
+  300 ms).
+- **#717.** `window` and `run_trial` take the wall clock and the nap (`Pace`), so the tests of the trial run in virtual time (`Sim`
+  in `auto.rs`): the number of pairs a trial takes no longer depends on scheduling.
+- **Found on the way:** the test `stuck::sigint_ends_a_process_that_never_suspends` hangs once the tier has compiled the spinning process (#737: compiled code does not poll the stop request); with the earlier compile of this change it fails every time under `--features llvm`, so it runs `--tier=interp` until #737 is fixed.
+- **Measured** (docs/STATUS.md "`--tier=auto` work clock"): the clock itself, the decisions idle and loaded, the cold and warm totals.
+- **Left:** which function a thread is in at a look is sampling, so the decisions of a design near a threshold still differ between
+  worlds (the window generator: 6 to 8 different sets in 8 worlds, the same functions within a few milliseconds of seen time);
+  trial verdicts (CPU time); the compile that is running when the run ends; through the cache a flip in a first run reaches the later
+  ones. `Worker::fast` and `ra_cost` (#715, the second compile of frame-mode code) are still priced and judged by their own constants.
 
 ## IR optimiser round 14: a repeated `to_integer` is made once, the second call replays only when it can warn (yavs-ir `opt/sink/calls.rs`, `opt/sink.rs`, #520, 2026-10-24)
 

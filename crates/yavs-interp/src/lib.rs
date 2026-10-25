@@ -1150,7 +1150,31 @@ static SLOTS: Mutex<
     )>,
 > = Mutex::new(Vec::new());
 
+/// What runs on a thread when it gets its sampling slot (`on_simulation_thread`).
+static ON_NEW_SLOT: std::sync::OnceLock<fn(usize)> = std::sync::OnceLock::new();
+
+/// Register `f` to run once on every thread that becomes a simulation thread (the first time it runs
+/// the fast loop), before it interprets anything, with the index of the thread's slot
+/// (`Runtime::thread_sampler`): `--tier=auto` opens a work counter for the thread there. The calling
+/// thread is told at once when it has its slot already (it ran elaboration code); other threads that
+/// have theirs are not. The first call wins.
+pub fn on_simulation_thread(f: fn(usize)) {
+    let f = *ON_NEW_SLOT.get_or_init(|| f);
+    if let Some(s) = SLOT.get()
+        && !TOLD.replace(true)
+    {
+        let slots = SLOTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(i) = slots.iter().position(|(a, _)| std::ptr::eq(*a, s)) {
+            f(i);
+        }
+    }
+}
+
 thread_local! {
+    /// The hook of `on_simulation_thread` has run on this thread.
+    static TOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Where the watching loop was at its last look: `function << 32 | IR pc` (`pc_slot`).
     static PC_SLOT: std::cell::Cell<Option<&'static std::sync::atomic::AtomicU64>> =
         const { std::cell::Cell::new(None) };
@@ -1183,12 +1207,19 @@ pub(crate) fn pc_slot() -> &'static std::sync::atomic::AtomicU64 {
 fn new_slot() -> &'static std::sync::atomic::AtomicU64 {
     let s: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
     let pc: &'static std::sync::atomic::AtomicU64 = Box::leak(Box::default());
-    SLOTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((s, pc));
+    let index = {
+        let mut slots = SLOTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slots.push((s, pc));
+        slots.len() - 1
+    };
     SLOT.set(Some(s));
     PC_SLOT.set(Some(pc));
+    if let Some(f) = ON_NEW_SLOT.get() {
+        TOLD.set(true);
+        f(index);
+    }
     s
 }
 
@@ -1479,12 +1510,24 @@ impl Runtime {
     /// appends the functions the simulation threads run at that moment, and whether they run
     /// compiled code.
     pub fn sampler(&self) -> impl Fn(&mut Vec<(FuncId, bool)>) + Send + 'static {
+        let sample = self.thread_sampler();
+        move |out| {
+            let mut v = Vec::new();
+            sample(&mut v);
+            out.extend(v.into_iter().map(|(_, f, c)| (f, c)));
+        }
+    }
+
+    /// `sampler` with the index of the sampled thread's slot (what `on_simulation_thread` told its
+    /// hook), to pair each thread with its own work counter.
+    pub fn thread_sampler(&self) -> impl Fn(&mut Vec<(usize, FuncId, bool)>) + Send + 'static {
         let (id, native) = (u64::from(self.id), self.native.clone());
         move |out| {
-            for (s, _) in SLOTS
+            for (i, (s, _)) in SLOTS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .iter()
+                .enumerate()
             {
                 let v = s.load(Ordering::Relaxed);
                 if v >> 32 == id {
@@ -1493,7 +1536,7 @@ impl Runtime {
                         .func
                         .get(func as usize)
                         .is_some_and(|n| n.load(Ordering::Relaxed) & NAT_CODE != 0);
-                    out.push((FuncId(func), compiled));
+                    out.push((i, FuncId(func), compiled));
                 }
             }
         }

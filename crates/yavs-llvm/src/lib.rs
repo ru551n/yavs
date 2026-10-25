@@ -31,6 +31,8 @@ mod regs;
 pub mod rt;
 #[cfg(feature = "llvm")]
 pub mod spike;
+#[cfg(feature = "llvm")]
+mod work;
 
 /// What the code arena has placed (`arena.rs`): code bytes, huge-page chunks made, collapses given
 /// up, sections that did not fit; `None` where the arena is not in use.

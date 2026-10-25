@@ -352,6 +352,14 @@ struct Tune {
     /// `O2_AFTER`: how many times its first-level threshold a function runs compiled before the
     /// optimising generator makes it again (`Heat::o2_threshold`).
     o2_after: u64,
+    /// How many times the price of the callees a compile makes with its root (`Worker::tree`) the
+    /// root must have been seen interpreted (`repaid`), on top of the payback of its own price; 0:
+    /// the callees are not counted. A first-level generator makes a root's callees cheaply and
+    /// they gained nothing in instructions on the verification libraries (#718).
+    tree_payback: u64,
+    /// How many times its price a clocked process (`rtl`) is seen interpreted before it compiles,
+    /// on top of `band_wait`: its compiled code gained 5 percent in the trials that kept it.
+    payback_rtl: u64,
 }
 
 impl Tune {
@@ -361,6 +369,8 @@ impl Tune {
         instances: RTL_INSTANCES,
         share: RTL_SHARE,
         o2_after: O2_AFTER,
+        tree_payback: 0,
+        payback_rtl: 0,
     };
     const FIRST: Tune = Tune {
         rtl_min: 64,
@@ -368,10 +378,12 @@ impl Tune {
         instances: 4,
         share: 32,
         o2_after: 300,
+        tree_payback: 8,
+        payback_rtl: 16,
     };
 
-    /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,o2_after=N` changes of
-    /// it (a measuring aid; an entry that is not understood is ignored).
+    /// `FIRST`, or what `YAVS_FIRST_TUNE=rtl_min=N,band=0|1,instances=N,share=N,o2_after=N,
+    /// tree_payback=N,payback_rtl=N` changes of it (a measuring aid; an entry that is not understood is ignored).
     fn first() -> Tune {
         static T: std::sync::OnceLock<Tune> = std::sync::OnceLock::new();
         *T.get_or_init(|| {
@@ -384,6 +396,8 @@ impl Tune {
                     ("instances", Ok(n)) => t.instances = n as u32,
                     ("share", Ok(n)) => t.share = n,
                     ("o2_after", Ok(n)) => t.o2_after = n,
+                    ("tree_payback", Ok(n)) => t.tree_payback = n,
+                    ("payback_rtl", Ok(n)) => t.payback_rtl = n,
                     _ => {}
                 }
             }
@@ -690,6 +704,16 @@ fn left_out(budget: u32, seen: u64, size: usize) -> bool {
 /// is no limit.
 fn within_budget(budget: u32, factor: u64, spent: u64, cost: u64, total: u64) -> bool {
     budget == 0 || (spent + cost) * 100 <= total * u64::from(budget) * factor
+}
+
+/// The seen time still owed before a candidate may compile with its callees: it must have been seen
+/// `payback` times its own price and `tree_payback` times the price of the callees compiled with
+/// it (`Tune::tree_payback`); 0 when it has.
+fn repaid(payback: u64, own: u64, tree_payback: u64, extra: u64, seen: u64) -> u64 {
+    payback
+        .saturating_mul(own)
+        .saturating_add(tree_payback.saturating_mul(extra))
+        .saturating_sub(seen)
 }
 
 /// The first of the candidates, given as `(compile cost, factor)` in the order to try them, that
@@ -1045,7 +1069,18 @@ impl Worker {
             // its copies together are, and each copy that runs is a candidate then.
             let g = self.prog.base_of(id).0 as usize;
             self.group[g] += dt;
-            let (now, at) = (self.group[g], self.threshold(id, false));
+            // The class rules of `threshold` only raise the base, and they analyse everything the
+            // function can call (`natively`): not for one still below the base (#544).
+            let now = self.group[g];
+            let base = self
+                .prog
+                .func(self.prog.base_of(id))
+                .map_or(u64::MAX, |b| self.heat.threshold(b));
+            let at = if now < base {
+                base
+            } else {
+                self.threshold(id, false)
+            };
             if self.wants_probe(id, now) {
                 pending.probes.push(id);
             }
@@ -1281,6 +1316,17 @@ impl Worker {
             .map_or(0, |f| f.code.len())
     }
 
+    /// How many times its compile price `id` must have been seen interpreted (`threshold`).
+    fn payback_mult(&self, id: FuncId) -> u64 {
+        if self.is_compute(id) {
+            PAYBACK_COMPUTE
+        } else if self.natively(id) {
+            PAYBACK_NATIVE
+        } else {
+            PAYBACK
+        }
+    }
+
     /// The time `id` must be seen at its level before it is compiled (again).
     fn threshold(&self, id: FuncId, compiled: bool) -> u64 {
         let Some(f) = self.prog.func(id) else {
@@ -1302,12 +1348,9 @@ impl Worker {
             at
         } else if self.is_rtl(id) {
             at.max(self.band_wait(self.base_len(id)))
-        } else if self.is_compute(id) {
-            at.max(PAYBACK_COMPUTE * self.payback_cost(id))
-        } else if self.natively(id) {
-            at.max(PAYBACK_NATIVE * self.payback_cost(id))
+                .max(self.tune.payback_rtl * self.payback_cost(id))
         } else {
-            at.max(PAYBACK * self.payback_cost(id))
+            at.max(self.payback_mult(id) * self.payback_cost(id))
         }
     }
 
@@ -1530,14 +1573,46 @@ impl Worker {
             prices.push((cost, self.factor(cands[i])));
             trees.push(ids);
         }
-        match first_fit(&prices, self.heat.budget, self.spent, self.total) {
-            Ok(k) => {
+        // The payback rule counts what the callees cost too (`Tune::tree_payback`).
+        let mut ready: Vec<usize> = (0..order.len()).collect();
+        if self.tune.tree_payback != 0 {
+            let load = self.load_cost();
+            let mut wait = u64::MAX;
+            ready.retain(|&k| {
+                let id = cands[order[k]];
+                if self.is_rtl(id) {
+                    return true;
+                }
+                let own = trees[k].first().map_or(0, |&(i, p)| self.price(i, p));
+                let extra = (prices[k].0 - load).saturating_sub(own);
+                let seen = self.time[id.0 as usize][0];
+                let owed = repaid(
+                    self.payback_mult(id),
+                    own,
+                    self.tune.tree_payback,
+                    extra,
+                    seen,
+                );
+                wait = wait.min(owed);
+                owed == 0
+            });
+            if ready.is_empty() {
+                // (Seen time cannot grow faster than the sampled total.)
+                self.pick_at = self.total.saturating_add(wait);
+                return None;
+            }
+        }
+        let fit: Vec<(u64, u64)> = ready.iter().map(|&k| prices[k]).collect();
+        match first_fit(&fit, self.heat.budget, self.spent, self.total) {
+            Ok(j) => {
+                let k = ready[j];
                 cands.swap_remove(order[k]);
                 Some(trees.swap_remove(k))
             }
             Err(waits) => {
                 self.pick_at = waits.iter().copied().min().unwrap_or(0);
-                for (k, at) in waits.into_iter().enumerate() {
+                for (j, at) in waits.into_iter().enumerate() {
+                    let k = ready[j];
                     let id = cands[order[k]];
                     // Said once per function (`--verbose`), so a hot function that never compiles
                     // says why.
@@ -3156,6 +3231,35 @@ mod tests {
         assert_eq!(w.time[f.0 as usize], [500, 500]);
         assert_eq!(w.total, 1000);
     }
+    /// A candidate owes the seen time of its own payback and of its callees' (`Tune::tree_payback`).
+    #[test]
+    fn a_root_owes_the_payback_of_its_callees() {
+        assert_eq!(super::repaid(2, 10_000, 0, 50_000, 30_000), 0);
+        assert_eq!(super::repaid(2, 10_000, 0, 50_000, 5_000), 15_000);
+        assert_eq!(super::repaid(2, 10_000, 8, 50_000, 30_000), 390_000);
+        assert_eq!(super::repaid(2, 10_000, 8, 50_000, 420_000), 0);
+        assert_eq!(super::repaid(2, 10_000, 8, 0, 20_000), 0, "no callees");
+    }
+
+    /// The class rules of the threshold analyse what a function can call; one below the base
+    /// threshold gets none of that (#544).
+    #[cfg(feature = "llvm")]
+    #[test]
+    fn a_function_below_the_base_threshold_is_not_analysed() {
+        let (mut w, f) = worker(100);
+        let at = super::Heat::DEFAULT.threshold(w.prog.func(f).unwrap());
+        let look = |us: u64| super::Look {
+            dt: us,
+            running: vec![(f, false)],
+        };
+        let mut pending = super::Pending::default();
+        w.see(&look(at - 1), false, &mut pending);
+        assert!(w.compute[f.0 as usize].get().is_none());
+        assert!(pending.cands.is_empty());
+        w.see(&look(1), false, &mut pending);
+        assert!(w.compute[f.0 as usize].get().is_some());
+    }
+
     /// A function that ran at `Fast` is compiled again at `FastRa` once it was seen running compiled
     /// for `PAYBACK_RA` times that compile, in a run that does not recompile at O2 (#715); one that
     /// did not run at `Fast` is not.

@@ -1322,6 +1322,34 @@ impl Db {
                 .with_primary(self.exprs[id].span, "not allowed here"),
             ));
         }
+        // 6.5.6.3: a formal that is written (out, inout, buffer, linkage) needs an
+        // actual that can be written; an `in` port or parameter cannot (#654).
+        if matches!(
+            mode,
+            Some(Mode::Out | Mode::Inout | Mode::Buffer | Mode::Linkage)
+        ) {
+            let mut e = id;
+            while let Some((_, operand)) = self.actual_conversion(e) {
+                e = operand;
+            }
+            if let Some(ObjRoot::Decl(d)) = self.lsp(e).map(|l| l.root)
+                && let DeclKind::Object(o) = &self.decls[d].kind
+                && o.mode == Some(Mode::In)
+                && matches!(o.role, ObjRole::Port | ObjRole::Param)
+            {
+                let (an, am) = (self.decls[d].name, mode_str(o.mode));
+                let (fname, fm) = (self.decls[f].name, mode_str(mode));
+                return Err(self.error(
+                    Diagnostic::error(
+                        diag::CLASS_MISUSE,
+                        format!("{an} with mode {am} cannot be associated with formal {fname} with mode {fm}"),
+                    )
+                    .with_primary(self.exprs[id].span, format!("mode {am} cannot be written"))
+                    .with_secondary(self.decls[f].span, "formal declared here")
+                    .with_note("LRM 6.5.6.3: the actual of a formal that is written must itself be writable"),
+                ));
+            }
+        }
         if mode != Some(Mode::In) && !self.is_signal_name(id) {
             let what = match self.lsp(id).map(|l| l.root) {
                 Some(ObjRoot::Decl(d)) => match &self.decls[d].kind {

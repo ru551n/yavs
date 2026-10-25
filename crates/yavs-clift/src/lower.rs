@@ -4573,9 +4573,7 @@ impl Gen<'_> {
     /// the kernel's blocks; the bytes of an enumeration, integer, boolean or real signal; anything
     /// else through `TierHost::signal`.
     fn sig_read_scalar(&mut self, pc: u32, dst: Reg, sig: Reg) {
-        if self.no_native() {
-            return;
-        }
+        // (A native frame is materialised where the table has no answer: `slow_signal`.)
         let (slow, join) = self.slow_signal(pc, 0);
         let (ent, off) = self.sig_entry(sig, None, slow);
         let len = self.ent_ld(ent, SIG_LEN);

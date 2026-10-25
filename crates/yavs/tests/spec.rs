@@ -285,3 +285,70 @@ fn compiled_copies_are_cached_by_content() {
         assert!(count(&again, "hit") >= count(&first, "stored"));
     }
 }
+
+/// A copy knows the bounds of a signal array in the instance data and splits the position of an
+/// index of an ascending range into a check and a subtraction (`pos_to_check`): an index outside
+/// the bounds fails with the shared code's text, for ascending and descending ranges, and in
+/// range it addresses the same elements.
+#[test]
+fn index_failures_in_a_copy_are_those_of_the_shared_code() {
+    for (tag, rng) in [("to", "0 to W - 1"), ("downto", "W - 1 downto 0")] {
+        let design = format!("idx_{tag}");
+        let src = format!(
+            "entity {design} is generic (W : positive := 3); end;
+architecture a of {design} is
+  type row_t is array ({rng}) of bit_vector(3 downto 0);
+  type mat_t is array ({rng}) of row_t;
+  signal m : mat_t := (others => (others => x\"0\"));
+  signal clk : bit := '0';
+begin
+  clk <= not clk after 5 ns when now < 400 ns;
+  process (clk)
+    variable i : integer := 0;
+  begin
+    if clk = '1' then
+      i := i + 1;
+      m(i mod 4)(i mod 3) <= x\"5\";
+      m(0)((i * 2) mod 4) <= m(0)(i mod 3) xor x\"1\";
+    end if;
+  end process;
+end;
+"
+        );
+        let d = tempdir(&design);
+        std::fs::write(d.join(format!("{design}.vhd")), src).expect("write");
+        let work = format!("work:{}", d.join("lib").display());
+        let a = yavs(
+            &d,
+            &[],
+            &["analyze", "--work", &work, &format!("{design}.vhd")],
+        );
+        assert_eq!(a.code, 0, "analyze {design}: {}", a.stderr);
+        let shared = run(&d, &design, "1", &[("YAVS_NO_SPEC", "1")]);
+        let copy = run(&d, &design, "1", &[("YAVS_SPEC_AFTER", "2")]);
+        assert!(
+            shared.stderr.contains("outside of range"),
+            "{design}: {}",
+            shared.stderr
+        );
+        assert_eq!(shared.code, copy.code, "{design}: exit status");
+        assert_eq!(shared.stdout, copy.stdout, "{design}: stdout");
+        assert_eq!(shared.stderr, copy.stderr, "{design}: stderr");
+        assert!(copy.counters["spec_switched"] > 0, "{design}: no copy");
+        // The copy has the split checks the shared code lacks (an ascending range only: the check
+        // message of an index says `to`).
+        let checks = |env: &[(&str, &str)]| {
+            let mut e = env.to_vec();
+            e.push(("YAVS_DUMPIR", "1"));
+            run(&d, &design, "1", &e)
+                .stderr
+                .matches("kind: Index")
+                .count()
+        };
+        assert_eq!(
+            checks(&[("YAVS_SPEC_AFTER", "2")]) > checks(&[("YAVS_NO_SPEC", "1")]),
+            tag == "to",
+            "{design}: checks in the copy"
+        );
+    }
+}

@@ -465,15 +465,44 @@ case!(
 // concatenation stay out of the 270 passing calls (inlining of the check and `opt/sink.rs`).
 case!(sink_msg, "failed=10 acc=14850", &[], [("ops", Max(6234))]);
 // The defaults of a combinational process that a later drive deletes are not done on that path
-// (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass.
+// (`opt/drives.rs`): 303 scalar and 61 vector drives, 378 and 92 without the pass (the scalar
+// drives that change nothing are skipped when they are made, `Ctx::assign_code_fast`, and not
+// counted: 133 of them are committed; `ops` is the bound that sees the pass).
 case!(
     drive_defaults,
     "sum=260",
     &[],
     [
-        ("direct_codes", Max(312)),
+        ("direct_codes", Max(137)),
         ("direct_planes", Max(63)),
         ("ops", Max(4300)),
+    ]
+);
+// A run of scalar drives of variables that hold what the signals have is one op (`pre.rs`
+// `drive_runs`); the drives that change are made, in the middle of a run too: 1811 direct
+// code commits without the run, and the same cycles (the skipped drives keep their delta).
+case!(
+    drive_run,
+    "ev=126 h=2002",
+    &[],
+    [
+        ("cycles", Max(402)),
+        ("cycles", Min(402)),
+        ("direct_codes", Max(275)),
+        ("ops", Max(16800)),
+    ]
+);
+// Vector assignments that change nothing are skipped when they are made (605 direct plane
+// commits without the skip), except behind an assignment of the same activation to the driver.
+case!(
+    drive_vec,
+    "ev=70 h=39957",
+    &[],
+    [
+        ("cycles", Max(242)),
+        ("cycles", Min(242)),
+        ("direct_planes", Max(180)),
+        ("ops", Max(19900)),
     ]
 );
 // A one-element aggregate choice is straight code and conversion copies run in the kernel.
@@ -992,6 +1021,22 @@ mod llvm {
         ]
     );
     llvm_case!(llvm_hostless, "acc=", [("cb_host", Max(7))]);
+    // Functions and procedures that read signals run on native frames (#519): 900 calls, no step.
+    llvm_case!(
+        llvm_sigfun,
+        "acc=",
+        [
+            ("cb_step", Max(4)),
+            ("cb_signal", Max(4)),
+            ("llvm_native_frames", Min(2))
+        ]
+    );
+    // `uniform` is computed in compiled code (#519): 400 calls, no callback for them.
+    llvm_case!(
+        llvm_uniform,
+        "acc=",
+        [("cb_native", Max(4)), ("cb_host", Max(2))]
+    );
     // The memo of pure calls (#701) answers the compiled calls too: the same hits as the interpreter.
     #[test]
     fn llvm_pure_memo() {

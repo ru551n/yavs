@@ -69,7 +69,9 @@ the only thing that drives simulation; the CLI, DAP and VHPI all call it.
 - **Direct transactions**: a driver that is the only source of its elements of a logic signal
   with no port, composite group, guard or resolution function (std_logic resolution of one
   source is the identity) is a direct driver (`DriverInfo::direct`, set by `SimControl::new`).
-  A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
+  A zero-delay assignment of one element, or of up to 64, that changes nothing (the signal allows skipping, the driver
+  has no entry of this run, the signal and the driving value have the value) is not an entry: it only
+  keeps the run's delta (`SKIPPED` in `ProcState::phantoms`, #720). A zero-delay assignment of at most 64 elements to it, with nothing pending on its waveform, is
   an entry in the process's `ProcState::out` (signal, source slot, element, code) or, for more
   elements, `outv` (first element, length, plane words; the entries of one driver are in one of
   the two, so their order is kept), not a waveform entry, a `scheduled` time or a queue entry; a later assignment to the same driver in

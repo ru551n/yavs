@@ -8510,3 +8510,203 @@ So both the length of the chain and the number of instructions matter, and what 
   memory-aware CSE in the pass pipeline, which costs compile time); the address of a by-reference parameter in a native frame
   (a variable of a caller) is looked up again at every access (about 25 instructions), a held-pointer fact for registers that hold such an address
   is the next candidate.
+
+## llvm: `OptLevel::FastRa`, the optimised register allocator for hot large frame-mode functions (yavs-llvm, #715, 2026-10-24)
+
+- **Decision (maintainer, 2026-10-24):** a large frame-mode function that `--tier=auto` compiled at `Fast` (FastISel and the fast register
+  allocator) is compiled again in the background with the optimised register allocator (greedy, FastISel kept) once it has run compiled long
+  enough to repay the compile (payback rule); only those functions, never the first compile and never a short run.
+- **How it is made: per target machine, not by an LLVM option.** `-optimize-regalloc` and `-regalloc` are process-wide command line options,
+  and `-optimize-regalloc` is tri-state: a later parse can set it true or false but not back to "unset", which the other levels need (unset
+  means "by code generation level"). Toggling them would also need a lock around every code generation of the process. `OptLevel::FastRa`
+  instead is a target machine at code generation level `Less` (the optimised allocator is chosen by the level) with `LLVMSetTargetMachineFastISel`
+  on, and `Module::optimize_as` marks every function `optnone noinline` after the passes (`jit::no_opt`) so that the machine passes `Less`
+  adds over `None` (block placement, tail merging, peepholes) skip it. Without `optnone` `Less` was worse: 27 s of code generation for the
+  17 600-instruction function and +5 percent instructions against `Fast` on the LEON3 window (the extra passes lengthen the hot path), with it
+  15.9 s and the same instructions as the option route (whole LEON3 program: 122.7 G and 127.4 G instructions in two runs against 122.8 G and
+  127.0 G with the options on; `llc` object 4.80 MB against 5.14 MB). ORC cannot be given the FastISel setting, so a `FastRa` module is always
+  emitted to an object (`Module::emit`) and added with `Jit::add_object` (`objcache::add`), also without a compilation cache; the object is
+  stored under its own key (`{opt:?}` is in it), so a warm run links it. A `FastRa` module has its own `Jit` in the worker (`jitr`): the O2 and
+  `Fast` modules of a function use the same symbol names.
+- **Policy hook (auto.rs; constants are autoclk's to tune with the pricing, #670):** `Worker::fast[id]` is set when a frame-mode function
+  that does not run on native frames (`natively`) was compiled at `Fast`; `Worker::threshold(id, true)` for it is `PAYBACK_RA` (12) times
+  `ra_cost` of its IR instructions (`n * (100 + 0.05 n)` microseconds of CPU time), in microseconds of CPU time seen running compiled: the 6
+  to 13 percent the allocator gives is expected for the rest of the run, which is expected to be as long as the past, so the compile repays at
+  about twelve times its cost. For a 17 600-instruction process that is about 210 s of compiled running; for 400 instructions 0.6 s. The look
+  that crosses it asks for the second compile (`pending.later`, the O2 recompile's queue), `compile(.., o2 = true)` makes it `FastRa`
+  instead of `Fast`. With a heat of budget 0 (`--tier-heat`, tests) the O2 threshold applies as before and every second compile of a function
+  of `FAST_MIN` IR instructions or more is `FastRa` (it was `Fast` again, a wasted compile): the differential tests with
+  `--tier-heat=1,0,0` run the new level on every big process. `spent` is charged the `Fast` price as before (the budget is for first
+  compiles; the payback rule is the stricter test here).
+- **Cost (CPU time of the compile thread, `YAVS_AUTO_TRACE`, LEON3 with every function compiled, host loaded so SMT-shared; these fit
+  `ra_cost`):** 350 to 700 IR instructions 13 to 90 ms; 1 000 to 1 900 0.11 to 0.33 s; 3 600 to 7 000 1.2 to 2.3 s; 9 000 to 13 000 2.6 to
+  5.7 s; 17 500 to 19 900 17.5 s (`Fast` for the 17 500: 2.6 s on that host, #715 measured 1.2 s against 10.8 s unloaded). One function of 1 767 instructions took
+  2.2 s that the model does not see.
+- **Gain (forced: `--tier=auto --tier-heat=1,0,0`, bench builds, core 11, medians of 5 interleaved, simulation thread `perf stat --no-inherit`,
+  warm cache; `FastRa` against `Fast` for every function of 300 IR instructions or more):**
+  `neorv32_single_min` cycles -3.8 percent (instructions -1.5), `fletcher_bufferreader` -5.0 (-0.9), `fletcher_bufferwriter_512` -4.3 (-2.0),
+  `grlib_leon3mp` whole run -7.8 (-2.2), `vai_window_gen_interlock` -2.0 (-0.5), `sc5_fifo_repack` and `poc_arith_addw` +0.6 and +1.7
+  (no function over the size: noise). The 6 to 13 percent of #715 were measured with the option on from the start and with only the hot
+  function forced; here every big function is recompiled and the hot ones are a part of the run.
+- **Default `--tier=auto`:** a run that does not keep a big process compiled for the payback time compiles exactly what it did before
+  (nothing of the realbench tests above reaches a payback of 12 times the compile within its length); the gain is for long simulations
+  of big processes. Comparison of default `--tier=auto` before and after: see docs/STATUS.md "llvm: FastRa".
+- **Not done:** the warm run does not look the `FastRa` object up before the payback time (that generates the module a second time, 0.3 s for the
+  largest process); a `Part::Native` function does not get it (it runs its native-frame code); the compile is not charged at its true price
+  to `spent`.
+
+## llvm: 1 024 entries in the object table (yavs-llvm `rt.rs`, #719, 2026-10-24)
+
+The host calls for package (`PKG`) and shared-heap addresses (#719) are conflict misses of the direct-mapped table, not a space the
+lookup does not hold: counted by the space of the address at `host_miss` and by the spaces of the old and new entry at every
+`put_obj` (a temporary instrumentation), the window generator makes 1.2 M misses of shared-heap and 0.3 to 0.55 M of package
+addresses in a run, with 5 M replacements of one shared object by another and 0.45 M by each other between a package and a shared object. A
+buffer the queue allocates whose index agrees with the pointer table's in the low eight bits makes every access of the table miss
+for as long as the buffer is read (about 3 of 256 buffers meet one of the four hot objects), and a package variable (space 2, no flag bit)
+shares entries with private and shared heap objects of the same low index. With 1 024 entries (64 KiB per machine, one per thread
+and one per nested activation) the misses fall to a third (shared heap 0.3 to 0.38 M, package 0.09 to 0.17 M) and with 4 096 to
+a sixth (the rest first touches of new objects); the same run needs fewer callbacks: `--tier=auto` warm (12 untimed runs, 5
+interleaved) 149.3 to 148.3 G instructions and 44.1 to 43.4 G cycles, `--tier=llvm` 181.8 to 180.8 G with cycles level; 4 096 gave
+180.7 G (not taken: 256 KiB to clear for every nested activation). A key that separates the spaces (package, shared, private) needs
+more operations in every look-up of an address of unknown space and every `Deref`; ways or a victim entry are the next step if a profile
+shows the misses of new objects.
+
+## The sampler thread starts after `START_AFTER` and ends with the compile thread (`yavs-llvm` `auto.rs`, #725, 2026-10-25)
+
+- **Finding:** since #670 `--tier=auto` ran a sampler thread that slept in 1 ms steps for the first 5 ms and then for the
+  sampling period, and `AutoTier::stop` joined it: a run that ended while the sampler slept waited for the sleep (up to
+  1 ms of wall time with no CPU use). On the tiny-test corpus that is 0.4 ms of 5.3 ms per test on average, and 1 ms of
+  1.9 ms for a test that runs 1 ms. `perf stat` showed it as equal `task-clock` and a longer elapsed time.
+- **Decision:** the compile thread starts the sampler once its first wait (`START_AFTER`) is over and the run has not
+  ended, so a run shorter than that never creates the thread (about 0.1 ms less: a `clone3`, a stack and a context
+  switch); the sampler waits with `park_timeout` (`nap`), and the compile thread unparks and joins it when it ends. `stop`
+  joins the compile thread only. Test: `auto_tier_stops_without_waiting_for_the_sampler` (a sampling period of half a
+  minute).
+- **Measured** (warm `tests/corpus/delta/concurrent_assign.vhd`, `perf stat -r 300`, core 14, bench builds): elapsed
+  3.23 ms to 1.87 ms; `task-clock` 1.81 to 1.44 ms; user instructions equal (3.20 M). The binary of head-to-head 3
+  (4b80445d) takes 2.30 ms on the same core and test.
+- **Tiny-test corpus** (456 tests of `tests/corpus`, warm analyze plus run per test, 15 interleaved rounds, cores 13 and
+  14, `true` subtracted, bench builds with `llvm`): geometric mean of the per-test time 1.065 for the build of head-to-head
+  4 (46e827ad) against the one of head-to-head 3 (4b80445d), 0.916 with this change; median test 5.1 ms to 4.3 ms. The
+  head-to-head 4 figure of 5.7 ms against 5.3 ms was this, not a slower start-up: process start (the dynamic loader,
+  about 460 page faults) is 1.0 of the 1.9 ms of a `run`.
+- **Not fixed here:** +171 k user instructions (5.7 percent of a 3 M-instruction run) since 4b80445d: ae1826dd about +90 k
+  on the main thread (the analysed image holds more per declaration: `Decl`, `Symbol` and `Span` decoding), 12a37bc7 about
+  +80 k of which the main thread's functions show +5 k (not located); 0.03 ms. Position-independent linking costs 0.2 to 0.3 ms per process start: #727 (a
+  decision for the user).
+
+- **Not fixed here:** +171 k user instructions (5.7 percent of a 3 M-instruction run) since 4b80445d: 12a37bc7 +80 k
+  (`stage_extent` keys of the stage cache), ae1826dd +156 k (idle skip analysis of concurrent conditional assignments).
+
+## Cold path of serial processes, port propagation, same-value drives (yavs-interp, yavs-kernel, #720, 2026-10-24)
+
+Whole-run profile of `grlib_leon3mp` (`--tier=auto`, warm, `docs/STATUS.md` "grlib_leon3mp whole-run profile"). Nothing big is compiled and
+compiling it is no win today (#679), so these are costs of the interpreter and the kernel that are in every tier.
+
+- **Decision: a serial process builds its shared-heap roots into reused buffers (`Machine::rscratch`, the vectors of its `SharedState::procs`
+  entry; `Refs::pinned_into`).** A serial process publishes at every suspension. With the four SDRAM models of the system waking 8.4 M times the
+  fresh vectors were 3.8 percent of the cycles plus the reallocations (2.2 percent in `grow_one`). The roots are the same; the collector
+  and the gc-stress corpus see no difference (gc-stress corpus and the first 3 us of the system pass).
+- **Decision: an in-port edge with one actual, one formal and no conversion passes the value down by copying storage to storage
+  (`SimControl::push_down`).** The general edge still builds values and runs `convert`. Idea of the reference simulator used: the signals of a
+  port are linked records and the resolved value is copied between their storage directly, with no buffer; ours still copies (a formal is a
+  signal of its own, `--no-collapse-ports` and the `inout` ports are not collapsed), but without allocating: the `inout` data and clock nets
+  of the system reach about 30 formals each (1.82 M pushes in the first 200 us).
+- **Decision: a zero-delay assignment of one logic element that changes nothing, to a direct driver, is not made (`Ctx::assign_code_fast`,
+  `Ctx::skip_code_now`, `Signal::direct_same`).** The conditions are those under which `Signal::commit_code` would have returned `None`: the signal
+  allows skipping (nothing reads its activity), it and its driving value hold the code, and the driver has no entry of this run, so the last
+  assignment still wins. The run's delta stays: `SKIPPED` in `ProcState::phantoms` makes `take_phantoms` report it (the kernel's `empty_delta`),
+  `cycles` and the delta structure of every test are unchanged. It is not a phantom on the driver's waveform: a phantom sends a second
+  assignment of the same run to the same driver down the general path (first version: the LEON3 interpreter run went from 248 G to 291 G
+  instructions) and `flush_phantoms` reads the lagging driver value of a direct driver. 92 percent of the 133 M direct code commits of the
+  LEON3 run changed nothing.
+- **Decision: a run of two or more scalar drives of frame slots in consecutive statements is guarded by one op (`Op::DriveRun`, `pre::drive_runs`,
+  `Machine::drive_run`).** The statement is `[Stmt, SigVal, LoadSlot, Aff1?, LSetDrive]` after the predecoder's fusion; the first `Stmt` of the run
+  becomes the op, which ends that statement like the `Stmt` and then skips, from the front, the drives that change nothing (`skip_code_now`:
+  the checks of the fast path, with the zero delay, the scalar logic signal and the code at most 8 tested first) while setting the registers
+  the skipped ops would write (the signal reference pair, the loaded byte, the mapped code), so a later reader of those registers sees what
+  the ops left. It goes on after the run when all were skipped, else at the `Stmt` of the first drive that is not, which runs its ops as before;
+  nothing is rolled back. The IR is not changed (compiled code and the IR dump are as before; a compiled frame that returns to the
+  interpreter at the `Stmt` pc runs the op). Why: the SDRAM model `state_register` wakes on a clock that toggles every 0.5 ns (4 instances,
+  8.4 M wakes) and ends every wake with 13 scalar and 3 vector drives of process variables; 90 percent of the wakes are not a clock edge and
+  assign what the signals hold. A drive was 460 instructions (a microbenchmark: `Stmt`, `SigVal`, `LoadSlot`, `Aff1`, `LSetDrive` is 300 in the
+  loop, 90 in the assignment, 110 in the commit), a skipped one in a run is about 150. Not covered: vector drives (`CopyDrive`, #723), a drive from
+  a register or a signal read, a run broken by another statement.
+- **Decision: a zero-delay vector assignment of up to 64 elements that changes nothing is skipped the same way (`assign_planes_fast`,
+  `Signal::direct_same_planes`).** The condition adds that the driver has no entry of this run of either kind: an earlier assignment to the same
+  elements must still be overridden by this one (perf case `drive_vec`: `w(7 downto 0) <= lo; w(7 downto 0) <= x"00";`). 83 percent of the
+  direct plane commits of the first 400 us of the LEON3 run were skipped; cycles are unchanged. Interpreter instructions 240.9 G to 237.4 G.
+- **Decision: `Host::push_native` takes the preloaded registers from `Pre::preloaded`.** It walked the callee's IR at each materialisation of a native
+  frame (13 percent of the S-record start-up of the system, 0.9 percent of the steady state).
+- **Tried, not landed: the clean-up of `opt/cfg.rs` (threading through short-circuit chains) on processes.** On the LEON3 system it takes the
+  chains `a and b and c` of the SDRAM model from `EdgeBr, Const, CondBr, Const, CondBr` to one branch (-0.8 percent of the interpreter's
+  instructions). In five work-counter designs `ops` rose by 2.7 to 9 percent (`inline_calls`, `elem_loops`, `reduce_idiom`, `wide_vec`,
+  `sink_msg`): a loop entered from a copy of its test is no longer the fused `CmpBrStep` latch (the test is copied into the entry and the step
+  stays a `Bin`, `Br`), and a block that suspends gets code behind its `Suspend` (the verifier's "live across a suspension point"). A version
+  that threads only the `Const`-then-`CondBr` joins and leaves loops alone is untried.
+- **Tried, not landed: runs of logic scalar leaves in `SigGather`/`SigScatter`.** A plan-level run (leaves next to each other in one kernel signal and in
+  the value, read as a slice of the signal's codes, driven through `planes_of` of the bytes) works, but the records of the LEON3 system mix scalars
+  with vectors: the runs are 2 to 16 leaves, the plans have 9 to 79 leaves, and the interpreter's instructions did not move (241.7 G against
+  240.9 G). The per-call cost of the two instructions (about 2500 instructions for 19 leaves) is the plan lookup with its descriptor comparison and
+  the vector leaves, not the scalar ones.
+- **Found, filed:** processes with nested subprograms are never specialised (#721: `state_register` keeps its layout work, 25 percent of its ops);
+  the pure-call memo costs 10 percent of the S-record start-up (#722); the vector drives of a wake that does nothing (#723); the cold
+  activation path of serial processes (#724).
+
+## Uniform in compiled code, and `Mem::find` knows the enclosing frames (yavs-llvm `lower.rs`, `rt.rs`, #519, 2026-10-25)
+
+Profile of `sc5_fifo_repack` first (`--tier=llvm`, bench build, core 12; the design has 45 clocked processes, 50 000 clock periods, 2.54 M process
+runs, 21.3 M element drives): generated code 40 percent of the cycles, the drive and commit path 27, process entry 6, and the random numbers of the
+testbench (`rand_next`, 8.3 M calls of `math_real.uniform`) 11: `yavs_rt_native`, `native_frame`, the native and five `Machine::load`/`store` about 19 ns a call.
+
+- **Finding:** a compiled call of `uniform` went through `yavs_rt_native` into `TierHost::native_frame` (the same call as any `direct_native`), which
+  decodes three addresses again in the interpreter's `load`/`store`: 10.6 percent of the run.
+- **Decision:** `Gen::uniform_fast` computes it in the code: the three addresses through `host` (the seeds are variables of the enclosing process, passed by
+  reference to a nested procedure), the seeds compared against their limits, the generator's step in integers and one `fmul` (the arithmetic of
+  `yavs_interp::ieee::uniform_step`, which the interpreter's `Op::Uniform` and the native share), the seeds and the real written back in the native's order. A
+  seed out of range, which the native reports, or an address `host` does not find takes the slow path of the site, which is the unchanged
+  `native_direct` call (it has stored nothing by then). A second implementation of the generator, as `ieee_fast` is one for `numeric_std`; one function
+  (`uniform_regs`) decides it for the code generator, `is_inline` and the `--tier=auto` callback count (`leaves`), so the three agree. Tests: the
+  generator's sequence and both bad-seed reports in a process, a nested procedure and an architecture procedure (native frame), `--tier=llvm`, `auto` and the
+  interpreter equal (`compiled_natives.rs`); `perf.rs` `llvm_uniform` (400 calls, `cb_native` at most 4).
+- **Also:** `Mem::find` (what `yavs_rt_host` asks first) finds the slots of the first two enclosing frames, which the view carries
+  (`TierFrame::up`, `up_slots`, `up_len`). `rand_next(iseed1, iseed2)` passes the addresses of the process's variables, a frame address that is no `Up` address
+  of the generator's tracking: each access was a `host_miss`, `yavs_rt_obj` and `TierHost::object`, 3.7 and 2.8 percent of the cycles once the native was inline. Length 0 in the
+  view (a frame a native window holds) misses as before. Package and protected-object spaces stay #719's.
+- **Measured** (bench builds, core 12, `perf stat` user cycles and instructions, medians of 5 interleaved runs, base c7f56056): see docs/STATUS.md.
+
+## A copy splits the position of an index into a check and a subtraction (yavs-ir `opt.rs` `pos_to_check`, `tidy`, #519, 2026-10-25)
+
+- **Finding:** in the specialised copies of `sc5_fifo_repack` the descriptors of the signal arrays are instance data and fold (`DopeLen` is a constant, the
+  lengths in the index arithmetic are constants), but every `Pos` of a non-constant index stays one: the interpreter's `AffP` loads the three words of the descriptor
+  and computes the length at every execution (12 ns in the census, 8 percent of the time of the ops; 36 M of 457 M ops), and compiled code decodes it with about 20 instructions. No
+  pass could see the bounds: they were data behind an address.
+- **Decision:** in a copy, a `Pos` in an ascending descriptor of instance data whose first reader in the block is an add, subtract or multiply (an index into the
+  linear position of a multi-dimensional array) becomes `Check { Index, idx, left, right }` and `Bin Sub idx, left`. The `Check` is inserted
+  before the `Pos` (`inserts`), so it is in the code only after `compact`; a second walk of the finished code (`tidy`, now with the instance view) lets
+  the value numbering see it, which drops the repeated checks of one index (`Key::Check` keys a register defined more than once at its version now, as
+  every other key does: the loop variable of a `for` loop). The failure is the one of `Pos`: `check_fail` of an index prints `index X outside of range L to R for NAME` with the
+  name of the same check message, as `pos_fail` does (`tests/spec.rs` `index_failures_in_a_copy_are_those_of_the_shared_code`: shared code and copy, same text). `dce` counts the registers
+  the inserted instructions read (the constants of the bounds were dropped as unread, which made `Check` read undefined registers) and applies the renames to them.
+- **Not done:** a descending range stays a `Pos`: the message of an index check says `to` (the lowering gives every `Pos` the check message `Dir::To`, `Pos` itself prints the descriptor's
+  direction) and the optimiser cannot add messages to the program; a check message per direction at lowering would admit them. `Pos` whose result an `Index` reads
+  stays one, so as not to lose the fused `PosIndex*` ops.
+- **Measured:** `sc5_fifo_repack` `--tier=interp` (copies are made there too) instructions 40.19 to 38.31 G (-4.7 percent), user cycles 11.31 to 10.95 G (-3.2 percent), medians of 5
+  interleaved runs, core 12; 17 other realbench designs within 0.1 percent in instructions, the small designs by their initialisation (docs/STATUS.md). Shared code is unchanged (`--tier=llvm`,
+  and `--tier=auto` while the shared code runs); a compiled copy has the checks and subtractions instead of the descriptor decode of `Pos`.
+
+## Functions that read signals run on native frames (yavs-llvm `lower.rs` `nat_inline`, #519, 2026-10-25)
+
+- **Finding:** a call from compiled code to a procedure or function that reads a signal was a step of the interpreter (`Host::step` `Call`, a frame pushed, the
+  callee's frame-mode code entered from the callback, `ret`): 77 ns a call against 7 ns for a callee on a native frame (3 M calls of a nested procedure `v := (v + s) mod 1000`:
+  0.27 s against 0.06 s without the read of `s`; #730), because `SigReadScalar` was not among the instructions a native frame lowers (`native_local` wants every instruction
+  inline). `rand_next` of `sc5_fifo_repack` (a nested procedure that draws a `real` and compares it with a `real` signal) is called 1.9 M times in 400 us: about 5 percent of the compiled run.
+- **Decision:** `SigReadScalar` is a native-frame instruction (`nat_inline`; `SigVal` already was). The code is the frame mode's (`Gen::sig_read_scalar`: the byte of the
+  codes, the plane bits, or the bytes of a scalar element from the view's `TierSig` table, which a native frame reaches through the `Mem` it is given); where the table has
+  no answer (no kernel, a signal beyond the table, a signal that keeps neither) `Gen::signal` on a native frame materialises it and the interpreter reads, as for every
+  native-frame instruction with a slow path. `perf.rs` `llvm_sigfun` (a function and a procedure reading a logic and a real signal, 900 calls: `cb_step` 904 to 4, `llvm_native_frames` 0 to 3).
+- **Measured** (`--tier=llvm`, bench builds, core 12, medians of 7 interleaved runs, user cycles / instructions): `sc5_fifo_repack` 6.68 to 6.23 G (-6.6 percent) / 24.77 to 23.22 G (-6.2 percent);
+  the micro design 0.27 to 0.07 s.
+- **Found on the way (#729):** under `--tier=auto --tier-heat=1,0,0` the native-frame code of a function is made once, at the first level (O0), and the O2 recompile gives
+  the frame-mode code only: a function that now runs on native frames keeps O0 code in the heat mode (`sc5_fifo_repack` 25.0 to 27.6 G there, though the llvm tier gains). The default policy
+  compiles at O2 at once and is not affected; the differential tests use the heat mode.

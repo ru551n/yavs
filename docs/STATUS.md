@@ -8207,3 +8207,170 @@ and the wide-vector designs: instructions within 1 percent, wall within the spre
 Not taken, with the numbers in decisions.md: LLVM inlining of the native callee (instructions -2.5 to -4.7 percent, cycles level), an
 inline limit above 60 in the IR inliner, the full `O2` pipeline for the accessors. A protected `get` waits for a chain of dependent
 loads (four object look-ups, three positions); the call and return are about 55 of its instructions and overlap with the chain.
+
+## llvm: FastRa, the optimised register allocator for hot large frame-mode functions (#715, 2026-10-24)
+
+- `OptLevel::FastRa` (user decision 2026-10-24): `Fast` code generation with the greedy register allocator, made per target machine
+  (level `Less`, FastISel on, functions `optnone` after the passes), not by a process-wide LLVM option. A frame-mode function that
+  `--tier=auto` compiled at `Fast` is compiled again in the background once it was seen running compiled for `PAYBACK_RA` (12) times the
+  modelled cost of that compile (`ra_cost`, about 17 s of CPU time for a 17 500-instruction process); the O2 recompile queue carries the
+  request. With `--tier-heat` every second compile of a function of 300 IR instructions or more is `FastRa` (it was a second `Fast` compile).
+  Details, the rejected ways (the LLVM options; `Less` without `optnone`) and the cost table: decisions.md "llvm: `OptLevel::FastRa` ...".
+- Forced (every function of 300 IR instructions or more compiled `FastRa` after `Fast`, `--tier=auto --tier-heat=1,0,0`, bench builds, core 11,
+  medians of 5 interleaved, simulation thread, warm): cycles `neorv32_single_min` -3.8 percent, `fletcher_bufferreader` -5.0,
+  `fletcher_bufferwriter_512` -4.3, `grlib_leon3mp` (whole run) -7.8, `vai_window_gen_interlock` -2.0, `sc5_fifo_repack` +0.6 and
+  `poc_arith_addw` +1.7 (nothing over the size: noise); the LEON3 window alone (#715): -12.8 percent with the option route.
+- Default `--tier=auto` (`realbench --compare`, `--phases run --tiers auto,auto-cold`, 7 tests, medians of 5, core 11, main at 3df7bc44 against
+  the same plus this): geometric mean of wall 1.00 warm and 0.99 cold, instructions 0.99 and 1.00; per test warm `grlib_leon3mp` 1.03 (cold
+  0.93), `fletcher_bufferwriter_512` 1.03, `vai_window_gen_interlock` 0.93, the others 0.99 to 1.01. The default runs compile nothing at `Fast` or
+  `FastRa` in these tests (LEON3: 6 compiles, none of them over 300 instructions at `Fast`), so the differences are the host (load 12 to 15, other
+  agents on the neighbouring cores). The gain is for runs that keep a big process compiled for minutes: with the threshold at 1 instead of 12 a
+  LEON3 run with `YAVS_AUTO_FORCE` on its big `comb` processes compiled `f1222` (7 785 IR instructions) at `FastRa` after 4.8 s of compiled
+  running, output identical.
+- Checks: difftest 523/523 at 1 and 4 threads for `yavs-interp`, `yavs-llvm`, `yavs-auto`, `yavs-auto` with `--tier-heat=1,0,0`, and `yavs-llvm`,
+  `yavs-auto`, `yavs-auto` with `--tier-heat=1,0,0` under `YAVS_LLVM_ARENA=0`; `cargo test --workspace` and `-p yavs-llvm -p yavs --features
+  llvm` green; new tests `fast_ra_makes_smaller_correct_code`, `auto_tier_recompiles_a_big_function_at_fast_ra`,
+  `a_fast_function_is_recompiled_when_the_register_allocator_repays`.
+- Not done: a warm run waits for the payback time before it links the `FastRa` object from the cache; no trial after the swap (the first
+  compile's trial measures the `Fast` code only); the price in `spent` is that of `Fast`; autoclk's pricing (#670) may want `ra_cost` and
+  `PAYBACK_RA` in its own constants.
+
+The object table has 1 024 entries (#719): the shared-heap and package host calls of the window generator were conflict misses; `--tier=auto` warm 149.3 to 148.3 G instructions, 44.1 to 43.4 G cycles (decisions.md "llvm: 1 024 entries in the object table").
+
+## Short clocked RTL runs and the fixed cost of tiny tests (#725, 2026-10-25)
+
+Two gaps of head-to-head 4 that no lane owned. Bench builds with `llvm`, tiny and designs on cores 13 and 14 (SMT siblings idle),
+`tools/stepcount` for exact instructions, `perf stat` for the rest; the numbers are of cf616672 unless stated.
+
+**Tiny corpus 5.3 to 5.7 ms per test (yavs warm).** Fixed. A bisect by user instructions and a look at `perf stat` found two
+things. (1) Wall time, not CPU: since #670 the sampler thread slept in 1 ms steps and the end of the run joined it, so a short run
+waited for the rest of a sleep (equal `task-clock`, longer elapsed time; `tests/corpus/delta/concurrent_assign.vhd` warm: 3.2 ms
+elapsed to 1.9 ms). The compile thread now starts the sampler after `START_AFTER` and unparks and joins it when it ends (cf616672;
+a run under 5 ms creates no sampler thread at all). (2) User instructions +171 k of 3.0 M (5.7 percent): the image decoding of a
+bigger analysed unit (ae1826dd, 12a37bc7), 0.03 ms. Corpus (456 tests, warm analyze plus run, interleaved, geometric mean of the
+per-test time): 4b80445d 1.00, head-to-head 4 build 1.065, with the fix 0.916; median test 5.1 ms to 4.3 ms. What is left of the
+1.9 ms of a `run` is process start: `yavs --version` takes 1.1 ms against 0.67 ms for `true`; the kernel has 70 percent of the
+cycles (exec, 435 page faults, thread creation); the dynamic loader is 0.05 ms by `LD_DEBUG=statistics`. Linking without PIE
+saves 0.2 to 0.3 ms per process (-66 page faults, -7.7 percent of the corpus, no change in runs of 0.1 to 0.7 s): a decision for
+the user, #727.
+
+**h2h designs still slower than sim1 warm** (rtl_lfsr 1.63, lfsr64 1.44, rtl_ff 1.33, rtl_chain 1.20, medians of 10, total wall;
+unchanged by this work). Nothing in the start-up dominates: analysis, elaboration and init are 2 to 4 percent of the wall of each
+(`--time-report`), the clock generator is 2000 to 20000 edges. The simulate phase is the whole difference, per process activation:
+
+| design | yavs instructions per activation | sim1 | where (exact, `--threads 1`) |
+|---|---:|---:|---|
+| rtl_ff (4096 one-bit processes) interpreted | 1511 (run_ops 930 for 12 ops, 17 per op in the dispatch alone) | 960 | kernel and drive about 400, run_quick and Process::run 170 |
+| lfsr64 interpreted | 2460 (run_ops 1369, `cat_words` + `cat_block` 320) | 1300 | the slice is copied to a temporary and concatenated: three block copies per shift |
+| rtl_lfsr, `--tier=llvm` | 1800 (compiled body 565) | 1100 | entry plumbing 620 (run_quick 175, enter 140, begin_kept 76, view_again 72, Process::run 60, load_objs 54, run_cached 28, save_objs 16), kernel and drive 550 |
+| rtl_chain interpreted (per delta) | 1600 (run_ops 544 for 10 ops) | 1020 | kernel 830 (run_batch 193, finish_direct 176, wake_sole 118, cycle 113, assign_code_fast 96, commit_code 82) |
+
+Wall of `--tier=auto` against all-compiled-at-first-call (`--tier-heat=1,0,0`, warm cache): rtl_ff 0.659 s to 0.593, lfsr64 0.170
+to 0.143, rtl_lfsr 0.281 to 0.275, rtl_chain 0.188 to 0.202 (compiled is slower there). The default compiles rtl_ff at 370 ms of 647,
+rtl_lfsr at 79 ms of 306 (refused at 23 ms by a price of 50.6 ms for a compile that is a 3 ms cache hit) and lfsr64 never: the
+price of a function whose object is in the cache is the open question #728 (decision for the user). Every other lever is in a lane:
+the kernel numbers are on #521, the policy on #675, the compiled-entry plumbing was taken to its floor for this structure in rounds
+5 and 6 of #634 (a process-direct entry that skips the interpreter's `Machine`, `view` and the thread's object cache would be the next
+step: about 400 of the 620 instructions, not started). Left alone on purpose: a `Cat` of a slice copied to a temporary (the optimiser
+would have to give `Inst::Cat` parts an offset: cross-crate), unchecked register access (tried and dropped in round 10).
+Not verified: cold tiny numbers after the change (only warm), Windows and aarch64 start-up, whether a non-PIE binary changes
+`--tier=auto` instruction counts (it did not change the cycles of the head-to-head designs).
+
+## grlib_leon3mp whole-run profile and the unowned costs (#720, 2026-10-24)
+
+Profile of `grlib_leon3mp` (std 1993) on main at 3df7bc44, `tools/build-bench.sh --features llvm`, `--tier=auto` warm, core 10 (the compile thread
+shares it), `perf record --call-graph fp` (a bench build with `-C force-frame-pointers=yes`, seconds 20 to 36 of the run, `cycles:u`), `--profile`,
+`YAVS_COUNTERS=1`, `op-census` (interpreter, the first 300 us), `YAVS_AUTO_TRACE=1`. The run is 57 to 59 s (49 s in the quiet runs below), 634 G
+user instructions, IPC 2.1; the reference simulator needs 13 to 15 s and 171 G.
+
+| layer (steady state, inclusive) | share of cycles |
+|---|---:|
+| kernel `update` (ports, effective values, commits) | 15 |
+| processes on the hot path (`run_quick`) | 56 |
+| processes on the cold path (`run_cold`: serial processes) | 18, of which activation overhead 5.5 (roots 3.8) |
+| `--profile` view: kernel / processes | 21 / 79 |
+| start-up (S-record load of the 12 memory models, first 1 us) | 8 (4.6 s; the reference simulator 1.5 s) |
+
+By process (`--profile`): `iu:comb` 14.7 percent, the four SDRAM `state_register` 17.6 (they wake on a clock that toggles every 0.5 ns: 8.4 M wakes,
+227 ops each; 90 percent are not a clock edge and assign 13 scalar and 3 vector signals the values they hold), `dctrl` 7.9, the two TLB processes 7.7,
+`ictrl` 3.4, memory controller 2.3, AHB controller 2.2, MMU 2.1, the rest below 1.5 each.
+
+- **Nothing big is compiled.** `YAVS_AUTO_TRACE`: `HRead` (247 and 36 IR) and `To_bitvector` are the only compiles of the run, 25 ms. The policy does not
+  refuse the big processes (no refusal lines); `YAVS_AUTO_FORCE=state_register` makes the run slower (65.2 and 68.9 s against 56.9 and 58.8 s).
+  That is #679 (frame-mode code of large processes does not execute fewer instructions than the interpreter) and the auto policy's #675, both
+  reported there. The remaining gap to the reference simulator is the compiled code of the large processes, not these items.
+- **92 percent of the 133 M direct code commits and 93 percent of the plane commits that went through `commit_planes` changed nothing**, nearly all of them
+  the SDRAM models' tail drives.
+- **Port edges**: 716 of 922 ports pushed in 200 us, 1.82 M pushes, all with one actual, one formal and no conversion; 1.65 M of them on `inout` nets (the
+  data bus and the clock nets, about 30 formals each).
+- Op census, steady state of 200 us: `Stmt` 9.7 percent of the ops, `SigVal` 7.0, `Aff1` 5.4, `CondBr` 4.5, `CmpBr` 4.3, `LSetDrive` 4.1, `LoadSlot8` 4.0,
+  `SigRead1` 3.3, `Const` 3.1; per activation: `iu:comb` 4530 ops, `dctrl` 2442, `state_register` 227. `sig_gather`/`sig_scatter` visit
+  about 19 leaves per call, 2.2 M and 2.4 M calls in 300 us (a quarter of the scatters with parts).
+
+What changed (commits of #720; `docs/decisions.md` "Cold path of serial processes, port propagation, same-value drives"): the roots of a serial process
+go into reused buffers; in-port values pass down without temporaries; an unchanged scalar assignment to a direct driver is skipped when it is made; a run of
+scalar drives of process variables is one guard op; an unchanged vector assignment to a direct driver is skipped as the scalar one (83 percent of the direct plane commits of the first 400 us); materialising a native frame no longer walks the callee's IR. Interpreter, LEON3, 400 us, instructions,
+bench builds, steady state: 257.5 G, 250.9 G (roots), 248.3 G (+ ports), 240.9 G (+ same-value drives and runs); whole run `--tier=auto` 625.7 G to 589.5 G.
+Microbenchmark (one process, 8 scalar drives of unchanged variables per activation): 460 instructions a drive, about 150 in a run; start-up (first 1 us) 4.6 s to 3.65 s.
+
+Before and after, `tools/realbench/run.py --compare`, `--tier=auto`, run phase (elaboration plus run), core 10, medians of 3, cells interleaved, host load 9 to 15:
+
+| | warm | cold | instructions (warm / cold) |
+|---|---:|---:|---:|
+| main (3df7bc44) | 48.98 s | 50.14 s | 636.6 G / 645.1 G |
+| this change | 45.02 s (0.92) | 47.03 s (0.94) | 578.3 G / 589.9 G (0.91 / 0.91) |
+
+Against the reference simulator (`--ref sim1`, same method, this change): run 45.23 s warm and 46.31 s cold against 13.18 s (3.43 and 3.51 times, instructions
+3.38 and 3.45). Totals (analysis of the 458 files one call each, elaboration and run; the analysis is unchanged by this work): reference simulator 20.1 s warm
+(6.88 + 13.18) and 20.4 s cold (7.19 + 13.18), yavs 46.2 s (0.99 + 45.23) and 48.7 s (2.37 + 46.31): 2.30 times warm and 2.39 cold (2.49 and 2.58 on main
+at the same load; 3.71 and 3.77 at the first measurement of this test).
+
+Open (issues): processes with nested subprograms are never specialised, 25 percent of the ops of `state_register` (#721); the pure-call memo costs 10 percent
+of the S-record start-up (#722); vector drives of a wake that does nothing (#723); the cold activation path of serial processes (#724). Tried and not landed:
+the short-circuit clean-up of `opt/cfg.rs` on processes (decisions.md).
+
+## sc5_fifo_repack: where the time goes, and `uniform` in compiled code (#519, 2026-10-25)
+
+Profile of the satcat5 stream repacker (`fifo_repack_tb`: 5 instances of 1, 2, 3, 5 and 8 byte lanes, 45 clocked processes, 500 us at 10 ns: 50 000 clock
+periods, 223 980 delta cycles, 2.54 M process runs, 21.3 M element drives, 12.6 M events), bench build, core 12, warm world, run phase. The reference simulator
+runs it in 0.87 s and 12.6 G instructions: 17.4 us and 252 k instructions a clock period. Before this round: yavs `--tier=auto` 36.9 G (2.2 s, 738 k a clock), `--tier=llvm`
+27.9 G (1.49 s, 558 k a clock), `--tier=interp` 40.2 G (2.38 s).
+
+Share of the cycles by layer, `--tier=llvm` (`perf record` cycles, self time): generated code 40 percent (`p_col` 16.6, `p_sreg` 6.4, `rand_next` 6.4, `p_in` 3.4, `p_input` 3.3);
+the drive and commit path 27 (`assign_planes_fast` 4.9, `assign_codes_now` 4.1, `finish_direct` 3.7, `commit_planes_run` 3.0, `drive_bits` 2.7, `commit_codes` 1.9); the
+random numbers of the testbench 11 (8.3 M calls of `math_real.uniform` through `yavs_rt_native`, `native_frame` and the native); process entry 6; kernel cycle and batch 3.5. `--tier=interp` (`op-census`, 457 M ops): `BinRangeK` 8.6 percent of the ops, `Stmt` 8.5, `CmpBr` 8.2, `AffP` 8.0 (12 ns an op, 8 percent of the time of the ops),
+`SigVal` 5.8, `SigRead1` 5.7 (15 ns), `LoadUp` 4.3; by time `WaitSuspend` 8.6 percent (216 ns, kernel included). By process, default `--tier=auto`: `p_col` of the five instances 35 percent of the run,
+`p_in` 17 (interpreted, 713 IR instructions), `rand_next` 15 (compiled), `p_sreg` 10, `p_input` 6; `p_col`, `p_in` stay interpreted (above `RTL_MAX`, payback not reachable in a 2 s run: #673).
+
+Change 1 (`math_real.uniform` computed in the compiled code, `Mem::find` finds the slots of the enclosing frames; `docs/decisions.md` "Uniform in compiled code ..."), base c7f56056,
+medians of 3 (realbench `--compare`, run phase, core 12, per-binary worlds), wall / instructions:
+
+| design | `--tier=llvm` | `--tier=auto` (warm) |
+|---|---:|---:|
+| `sc5_fifo_repack` | 1.49 to 1.35 s (0.91), 27.95 to 24.80 G (0.89) | 2.46 to 2.15 s (0.87), 39.8 to 36.8 G (0.92) |
+| nine other designs (`poc_arith_addw`, `uvvm_sb_slv`, `uvvm_util_rand`, `osvvm_axi4_random`, `hdlm_lfsr`, `fletcher_bufferreader`, `poc_cache_cpu`, `hdlm_axi_fifo`, `sc5_timestamp`) | wall 0.99 to 1.02, instructions 0.99 to 1.00 | wall 0.98 to 1.03, instructions 1.00 to 1.01 |
+
+Interleaved pairs on one world (7 runs, user cycles): `--tier=llvm` 7.51 to 6.72 G (-10.5 percent), instructions 28.4 to 25.3 G (-11 percent); default `--tier=auto` changes
+little because only `rand_next` is compiled there and the plain policy's compile outcome moves the instructions by 10 percent between worlds (#673).
+
+Change 2 (a copy splits `Pos` of an ascending instance descriptor into `Check` and `Bin Sub`; `docs/decisions.md` "A copy splits the position of an index ...", base c7f56056 plus change 1),
+`--tier=interp` (copies are made there too; shared code under `--tier=llvm` is unchanged): `sc5_fifo_repack` instructions 40.19 to 38.31 G (-4.7 percent), user cycles 11.31 to 10.95 G (-3.2 percent), medians of 5
+interleaved runs, core 12. The 17 realbench designs of the last table, `--tier=interp` (the run is deterministic): instructions 0.99 to 1.00 for every design that runs longer than 0.1 s (`poc_arith_addw`, `poc_cache_cpu`,
+`fletcher_bufferwriter_512`, `fletcher_bufferreader`, `hdlm_lfsr`, `uvvm_sb_slv`, `sc5_timestamp`); 0.96 to 1.03 for the small designs, whose initialisation is all there is to measure.
+
+Change 3 (functions and procedures that read signals run on native frames; "Functions that read signals run on native frames"), `--tier=llvm`, medians of 7 interleaved runs, user cycles / instructions:
+`sc5_fifo_repack` 7.25 to 6.15 G (-15.1 percent) / 27.91 to 23.22 G (-16.8 percent) with changes 1 and 3 together (base c7f56056); change 3 alone 6.68 to 6.23 G / 24.77 to 23.22 G.
+
+All three changes together, base c7f56056 (realbench `--compare`, 17 designs, run phase, core 12, medians of 3; wall ratio / instructions ratio, below 1 is faster):
+`sc5_fifo_repack` `--tier=interp` 0.98 / 0.95, `--tier=llvm` 0.84 / 0.83 (1.46 to 1.22 s, 27.95 to 23.25 G), default `--tier=auto` warm 0.91 / 0.89 (2.26 to 2.06 s), `auto-cold` 0.98 / 0.95; all 17 together: geometric mean wall 0.99 to
+1.01 in every tier, instructions 0.99 to 1.00 (`hdlm_lfsr` auto 1.06 is the compile outcome of #673).
+
+Against the reference simulator, `sc5_fifo_repack`, `--tier=auto`, medians of 5, core 12, whole phases of the realbench (analysis of the compile order one call per file, then elaboration plus run): run phase 2.71 to 2.47
+times (warm), 2.92 to 2.81 (cold); instructions 3.16 to 2.81 and 3.30 to 3.14 times. Total (analysis plus run; reference simulator 2.55 + 0.83 s warm, 2.50 + 0.83 s cold): warm 0.79 to 0.74, cold 1.00 to 0.98.
+The default `--tier=auto` is still 2.5 times the reference simulator's run: 60 percent of its time is the interpreted clocked processes `p_col`, `p_in`, `p_sreg`, `p_input`, `p_pre`, `p_pack`, which the policy does
+not compile (#675: the model price of `p_in` and `p_col` is 0.5 s against a 2 s run, and a world that never ran `--tier=llvm` never stores their code); compiled the run is 1.22 s.
+
+Left, for the lanes (comments on the issues): the policy (#675, #673); the drive and commit path, 27 percent of the compiled run (#521, #440, #676); the generated code of the processes, 40 percent (#715, #679); calls that are
+not native-frame calls cost 50 to 80 ns (#730); the native-frame code under `--tier-heat` stays at O0 (#729). Not done: a fused op for the element copy `sort_data(col + 1)(row) <= sort_data(col)(row)`
+(`SigVal`, `AllocReadVec`, `CopyDrive`: 2 to 4 percent of the interpreter, nothing compiled), loop-invariant signal reads (`reset_p` read per row, `SigRead1 -> NotL`: 2 percent of the ops), descending ranges in
+`pos_to_check` (needs a check message per direction at lowering).

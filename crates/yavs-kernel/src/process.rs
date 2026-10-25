@@ -332,12 +332,19 @@ pub fn edge_key(signal: SignalId, elem: u32, kind: u8) -> u64 {
 /// level (`x'event and x = '1'`), not the IEEE function.
 pub const EDGE_LEVEL: u8 = 2;
 
+/// In `ProcState::phantoms`: a skipped assignment to a direct driver (no waveform entry).
+const SKIPPED: u32 = u32::MAX;
+
 impl ProcState {
     /// End of a run: whether skipped assignments are left, which the kernel must replace by an
     /// empty delta.
     pub fn take_phantoms(&mut self) -> bool {
         let mut any = false;
         for l in self.phantoms.drain(..) {
+            if l == SKIPPED {
+                any = true;
+                continue;
+            }
             let p = &mut self.waveforms[l as usize].phantom;
             any |= !p.is_empty();
             p.clear();
@@ -1037,6 +1044,14 @@ impl Ctx<'_> {
             if self.has_entries(info, 2) {
                 return false;
             }
+            // The signal and the driver have the code and nothing of this run is pending: the
+            // commit would find no change (`Signal::commit_code`), so the entry is not made.
+            if !self.has_entries(info, 1)
+                && self.sh.signals[sig as usize].direct_same(slot, r.offset, code)
+            {
+                self.note_skipped();
+                return true;
+            }
             self.mark_entries(info, 1);
             self.st.out.push(Out {
                 sig,
@@ -1077,6 +1092,57 @@ impl Ctx<'_> {
     #[inline]
     pub fn assign_code_now(&mut self, d: DriverId, r: Range, code: u8) -> bool {
         self.assign_code_fast(d, Some(r), Time::ZERO, code, DelayMode::Transport)
+    }
+
+    /// `assign_code_now` where the assignment would change nothing (the driver and the signal
+    /// have `code`, the signal allows skipping, nothing is pending): it is skipped as
+    /// `assign_code_fast` skips it. False, nothing done, otherwise: `assign_code_now` must run.
+    #[inline]
+    pub fn skip_code_now(&mut self, d: DriverId, r: Range, code: u8) -> bool {
+        let Some(info) = self.sh.drivers.get(d.0 as usize) else {
+            return false;
+        };
+        if code >= 9 || info.owner != self.pid || r.len != 1 || !info.range.contains(r) {
+            return false;
+        }
+        let w = &self.st.waveforms[info.local as usize];
+        if !w.idle() || !w.phantom.is_empty() {
+            return false;
+        }
+        let s = &self.sh.signals[info.signal.0 as usize];
+        if info.direct {
+            let same = !self.has_entries(info, 1)
+                && !self.has_entries(info, 2)
+                && s.direct_same(info.slot, r.offset, code);
+            if same {
+                self.note_skipped();
+            }
+            return same;
+        }
+        let same = matches!(s.ty.elem, crate::value::Elem::Logic)
+            && s.skip_ok
+            && s.cur_code(r.offset as usize) == code
+            && {
+                let ds = &s.drivers[info.slot as usize];
+                ds.value.code((r.offset - ds.range.offset) as usize) == code
+                    && (!ds.shared || s.sole(r))
+            };
+        if same {
+            self.st.waveforms[info.local as usize].phantom.push(r);
+            self.st.phantoms.push(info.local);
+        }
+        same
+    }
+
+    /// An assignment to a direct driver was skipped: the run's delta stays (the kernel's
+    /// `empty_delta`), the driver's waveform does not change, so later assignments of the run
+    /// still take the fast path (a skipped assignment of a direct driver leaves nothing to
+    /// preempt: the entries of the run are the last assignment that wins).
+    #[inline]
+    fn note_skipped(&mut self) {
+        if self.st.phantoms.last() != Some(&SKIPPED) {
+            self.st.phantoms.push(SKIPPED);
+        }
     }
 
     /// `assign_code_now` for `n` elements, `run(k)` being the offset in the signal and the code of
@@ -1329,13 +1395,22 @@ impl Ctx<'_> {
             if self.has_entries(info, 1) {
                 return false;
             }
+            let planes = planes.map(|p| p & yavs_logic::wide::nmask(len as usize));
+            // Nothing of this run on the driver and the signal and its driving value have the
+            // value: the commit would only set the elements pending (`direct_same_planes`).
+            if !self.has_entries(info, 2)
+                && self.sh.signals[sig as usize].direct_same_planes(slot, r.offset, len, planes)
+            {
+                self.note_skipped();
+                return true;
+            }
             self.mark_entries(info, 2);
             self.st.outv.push(OutV {
                 sig,
                 slot,
                 elem: r.offset,
                 len,
-                planes: planes.map(|p| p & yavs_logic::wide::nmask(len as usize)),
+                planes,
             });
             return true;
         }

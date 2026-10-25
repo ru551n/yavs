@@ -236,6 +236,8 @@ pub struct LlvmGenerator {
     jit: Option<Jit>,
     jit2: Option<Jit>,
     jitf: Option<Jit>,
+    /// For functions recompiled at `OptLevel::FastRa`.
+    jitr: Option<Jit>,
 }
 
 impl LlvmGenerator {
@@ -267,6 +269,7 @@ impl Generator for LlvmGenerator {
     ) -> Result<Compiled, String> {
         let j = match level {
             OptLevel::Fast => &mut self.jitf,
+            OptLevel::FastRa => &mut self.jitr,
             OptLevel::O2 => &mut self.jit2,
             _ => &mut self.jit,
         };
@@ -4043,6 +4046,9 @@ impl Gen {
                                 }
                                 _ => self.signal(&c, pc, if rising { 1 } else { 2 }),
                             },
+                            None if let Some(v) = uniform_regs(prog, f, native, args, dst) => {
+                                self.uniform_fast(&c, pc, &inst, f, native, args, v)?
+                            }
                             None if c.nat.is_some()
                                 && prog
                                     .natives
@@ -5857,6 +5863,77 @@ impl Gen {
                 c.cold.borrow_mut().push(out);
             }
             LLVMPositionBuilderAtEnd(self.b, cont);
+            self.join(c, join);
+            Ok(())
+        }
+    }
+
+    /// `math_real.uniform` computed in place: both seeds read and the generator's step made
+    /// in integers (`yavs_interp::ieee::uniform_step`), the new seeds and the real written
+    /// back. A seed out of range, which the native reports, or an address `host` does not
+    /// find takes `slow`: the native, which has changed nothing by then.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn uniform_fast(
+        &self,
+        c: &Cur,
+        pc: u32,
+        i: &Inst,
+        f: &Func,
+        native: yavs_ir::NativeId,
+        args: yavs_ir::Regs,
+        v: [Reg; 3],
+    ) -> Result<(), String> {
+        // SAFETY: integer arithmetic, reads and writes through `host`; well-formed blocks of c.f.
+        unsafe {
+            let mut called = Ok(());
+            let (slow, join) = self.slow_path_with(c, pc, i, true, |g, _| {
+                called = g.native_direct(c, pc, i, f, native, args, None, false);
+            });
+            called?;
+            let b = self.b;
+            let fk = |r: Reg| self.known_addr(c, r);
+            let n8 = self.c64(8);
+            let p: Vec<LLVMValueRef> = v
+                .iter()
+                .map(|&r| self.host(c, self.ld(c, r), fk(r), self.c64(0), n8, true, slow))
+                .collect();
+            let s1 = self.load(self.i64, p[0]);
+            let s2 = self.load(self.i64, p[1]);
+            let ok1 = self.icmp(IP::LLVMIntSLE, s1, self.c64(2147483562));
+            let ok2 = self.icmp(IP::LLVMIntSLE, s2, self.c64(2147483398));
+            self.guard(c, LLVMBuildAnd(b, ok1, ok2, c"".as_ptr()), slow);
+            // One generator: k = s / q; t = a * (s - k * q) - k * r; t + m when negative.
+            let lane = |s, q: i64, a: i64, r: i64, m: i64| {
+                let k = LLVMBuildSDiv(b, s, self.c64(q), c"".as_ptr());
+                let rem = LLVMBuildSub(
+                    b,
+                    s,
+                    LLVMBuildMul(b, k, self.c64(q), c"".as_ptr()),
+                    c"".as_ptr(),
+                );
+                let t = LLVMBuildSub(
+                    b,
+                    LLVMBuildMul(b, rem, self.c64(a), c"".as_ptr()),
+                    LLVMBuildMul(b, k, self.c64(r), c"".as_ptr()),
+                    c"".as_ptr(),
+                );
+                let neg = self.icmp(IP::LLVMIntSLT, t, self.c64(0));
+                let wrapped = LLVMBuildAdd(b, t, self.c64(m), c"".as_ptr());
+                LLVMBuildSelect(b, neg, wrapped, t, c"".as_ptr())
+            };
+            let t1 = lane(s1, 53668, 40014, 12211, 2147483563);
+            let t2 = lane(s2, 52774, 40692, 3791, 2147483399);
+            let z = LLVMBuildSub(b, t1, t2, c"".as_ptr());
+            let small = self.icmp(IP::LLVMIntSLT, z, self.c64(1));
+            let zw = LLVMBuildAdd(b, z, self.c64(2147483562), c"".as_ptr());
+            let z = LLVMBuildSelect(b, small, zw, z, c"".as_ptr());
+            let zf = LLVMBuildSIToFP(b, z, self.f64, c"".as_ptr());
+            let x = LLVMBuildFMul(b, zf, LLVMConstReal(self.f64, 4.656613e-10), c"".as_ptr());
+            let bits = LLVMBuildBitCast(b, x, self.i64, c"".as_ptr());
+            // The native's order: the seeds, then the real.
+            self.store(t1, p[0]);
+            self.store(t2, p[1]);
+            self.store(bits, p[2]);
             self.join(c, join);
             Ok(())
         }

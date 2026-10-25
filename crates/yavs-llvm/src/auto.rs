@@ -719,6 +719,21 @@ fn first_fit(
 /// See `Heat::o2_threshold`.
 const O2_AFTER: u64 = 30;
 
+/// The microseconds of CPU time a compile at `OptLevel::FastRa` takes (the optimised register
+/// allocator over thousands of blocks is more than linear): 100 per IR instruction and 0.05 more
+/// for every instruction of the function. 400 instructions took 50 ms, 4 500 1.4 s, 17 500 17 s
+/// (`Fast`: 0.1 to 0.15 s per thousand; #715).
+fn ra_cost(ir: usize) -> u64 {
+    let n = ir as f64;
+    (n * (100.0 + 0.05 * n)) as u64
+}
+
+/// A function that ran at `OptLevel::Fast` is compiled again at `FastRa` once it was seen running
+/// compiled for this many times that compile: its code is 6 to 13 percent faster, and the rest of
+/// the run is expected to be as long as the past (`PAYBACK`), so the compile repays at about
+/// twelve times its cost. A run too short for that never pays for it.
+const PAYBACK_RA: u64 = 12;
+
 /// What happened to a hot function: compiled at that level (with the time it took), or why
 /// it stays interpreted (or at its first level).
 pub type Note = Box<dyn FnMut(FuncId, OptLevel, Result<std::time::Duration, String>) + Send>;
@@ -765,7 +780,6 @@ pub struct AutoTier {
     queue: Mutex<Option<Sender<Msg>>>,
     shared: Arc<Shared>,
     worker: Mutex<Option<JoinHandle<()>>>,
-    sampler: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// What the compile thread is told.
@@ -907,6 +921,8 @@ struct Worker {
     first: Option<Box<dyn Generator>>,
     /// Per function: compiled at the first level, at O2.
     done: Vec<[bool; 2]>,
+    /// Per function: its first-level code is `OptLevel::Fast`, so the second compile is `FastRa`.
+    fast: Vec<bool>,
     /// Per function: the address of its native-frame code once compiled (0: none), and whether
     /// `ntab` names it. Published once everything it calls natively is compiled too: a missing
     /// callee would materialise the frames at every call.
@@ -1020,7 +1036,7 @@ impl Worker {
             }
             if compiled {
                 let (now, at) = (*t, self.threshold(id, true));
-                if was < at && now >= at && upgrade {
+                if was < at && now >= at && (upgrade || self.fast[id.0 as usize]) {
                     pending.later.push(id);
                 }
                 continue;
@@ -1070,6 +1086,7 @@ impl Worker {
             group: vec![0; nfuncs],
             asked_for: vec![false; nfuncs],
             done: vec![[false; 2]; nfuncs],
+            fast: vec![false; nfuncs],
             nat: vec![(0, false); nfuncs],
             nat_by: vec![0; nfuncs],
             calls: vec![0; nfuncs],
@@ -1270,6 +1287,10 @@ impl Worker {
             return u64::MAX;
         };
         if compiled {
+            // A function that ran at `Fast` is compiled again at `FastRa` once it repays (#715).
+            if self.fast[id.0 as usize] && self.heat.budget != 0 {
+                return PAYBACK_RA.saturating_mul(ra_cost(f.code.len()));
+            }
             return self.heat.o2_threshold(f, self.tune.o2_after);
         }
         // (A copy's seen time is its process's, `Worker::group`: its threshold is the process's too.)
@@ -1844,6 +1865,12 @@ impl Worker {
             Some(m) if !via_first => m.level_for(&self.prog, f, level),
             _ => level,
         };
+        // The second compile of a function that ran at `Fast` (#715).
+        let level = if o2 && level == OptLevel::Fast {
+            OptLevel::FastRa
+        } else {
+            level
+        };
         let few = self
             .is_rtl(id)
             .then(|| {
@@ -1868,6 +1895,7 @@ impl Worker {
         let refused = too_big(f, self.max_size).or(short);
         let (model, model_cost) = (self.price(id, part), self.cost(id));
         let k = usize::from(via_first);
+        let natively = self.natively(id);
         let Some(gen_) = (if via_first {
             &mut self.first
         } else {
@@ -1936,6 +1964,11 @@ impl Worker {
                         self.spent,
                         self.total
                     ));
+                }
+                // Only frame-mode code is recompiled (#715): a function called natively runs its
+                // native-frame code.
+                if level == OptLevel::Fast && part != Part::Native && !natively {
+                    self.fast[id.0 as usize] = true;
                 }
                 let key = (f.name.clone(), f.code.len() as u32);
                 if !hit && !via_first && gen_.cache_enabled() && self.listed.insert(key) {
@@ -2024,32 +2057,41 @@ fn forced(prog: &yavs_ir::Program, id: FuncId) -> bool {
         })
 }
 
+/// Sleep for `d`, or until the thread is unparked and `halt` is set (the compile thread does that when
+/// it ends): ending a run must not wait out a sampling period.
+fn nap(sh: &Shared, d: Duration) {
+    let end = std::time::Instant::now() + d;
+    while !sh.halt.load(Ordering::SeqCst) {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::park_timeout(left);
+    }
+}
+
 /// The sampler thread (#670): every `period` it reads which function each simulation thread runs and
 /// the CPU time they used since the last look, and sends the looks to the compile thread in batches
 /// of `BATCH`. It runs while the compile thread compiles or measures a trial (no looks are sent
 /// during a trial), so the compile thread's view of the run does not depend on how long it was busy.
 /// The CPU time of the simulation threads is the clock of the sampling, not the wall time: a host
 /// under load, and the compile thread sharing the core, do not make a function look hot sooner.
+/// The compile thread starts it after `START_AFTER` (#426) and ends it.
 fn sampler_loop(
     sample: impl Fn(&mut Vec<(FuncId, bool)>),
     period: Duration,
     tx: Sender<Msg>,
     sh: &Shared,
 ) {
-    // Nothing a run of a few milliseconds samples pays for a compile (#426).
-    let start = std::time::Instant::now();
-    while start.elapsed() < START_AFTER {
-        if sh.halt.load(Ordering::SeqCst) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
     let clock = || sim_cpu_sampler(sh.compile_clock.load(Ordering::Acquire));
     // Without a CPU clock (not Linux) the wall time between looks is the time.
     let (mut last_cpu, mut last_wall) = (clock(), std::time::Instant::now());
     let mut batch = Vec::with_capacity(BATCH);
     while !sh.halt.load(Ordering::SeqCst) {
-        std::thread::sleep(period);
+        nap(sh, period);
+        if sh.halt.load(Ordering::SeqCst) {
+            return;
+        }
         let (cpu, wall) = (clock(), std::time::Instant::now());
         let dt = match (cpu, last_cpu) {
             (Some(c), Some(l)) => c.saturating_sub(l),
@@ -2101,7 +2143,7 @@ impl AutoTier {
         let ntab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let ctab: Arc<[AtomicUsize]> = (0..prog.funcs.len()).map(|_| AtomicUsize::new(0)).collect();
         let (table, sh) = (funcs.clone(), shared.clone());
-        let (sample, sampler_tx, sampler_sh) = (rt.sampler(), tx.clone(), shared.clone());
+        let (sample, sampler_tx) = (rt.sampler(), tx.clone());
         let native = rt.native_flags();
         // How long the compile thread waits for news before it looks at `halt`.
         let period = if heat.eager() {
@@ -2132,6 +2174,7 @@ impl AutoTier {
                 sh.compile_clock.store(own_cpu_clock(), Ordering::Release);
                 let mut pending = Pending::default();
                 let mut looks: Vec<Look> = Vec::new();
+                let t0 = std::time::Instant::now();
                 match rx.recv_timeout(if heat.eager() {
                     Duration::ZERO
                 } else {
@@ -2142,6 +2185,19 @@ impl AutoTier {
                     Ok(Msg::Looks(l)) => looks = l,
                     Err(RecvTimeoutError::Timeout) => {}
                 }
+                // The sampler of a run that ends within `START_AFTER` is never started.
+                let sampler = (!heat.eager() && !sh.halt.load(Ordering::SeqCst)).then(|| {
+                    let sh = sh.clone();
+                    std::thread::Builder::new()
+                        .name("yavs-sampler".into())
+                        .spawn(move || {
+                            nap(&sh, START_AFTER.saturating_sub(t0.elapsed()));
+                            if !sh.halt.load(Ordering::SeqCst) {
+                                sampler_loop(sample, sample_every, sampler_tx, &sh);
+                            }
+                        })
+                        .unwrap_or_else(|e| panic!("cannot start the sampler thread: {e}"))
+                });
                 w.listed = w.main.as_ref().map(|m| m.cache_list()).unwrap_or_default();
                 // `YAVS_FIRST_ONLY=1`: a first-level generator (Cranelift) is the only one, no
                 // recompile at O2 (code of the two does not call each other's native code).
@@ -2231,7 +2287,7 @@ impl AutoTier {
                                 break;
                             }
                             // Eager (tests): swap the O2 code in during the run too.
-                            if done && heat.eager() && upgrade && !o2 {
+                            if done && heat.eager() && (upgrade || w.fast[id.0 as usize]) && !o2 {
                                 pending.later.push(id);
                             }
                         }
@@ -2247,6 +2303,12 @@ impl AutoTier {
                     }
                     if sh.halt.load(Ordering::SeqCst) {
                         break;
+                    }
+                }
+                if let Some(s) = sampler {
+                    s.thread().unpark();
+                    if let Err(p) = s.join() {
+                        resume_unwind(p);
                     }
                 }
                 if let Some(tr) = &w.trace {
@@ -2273,16 +2335,6 @@ impl AutoTier {
                 sh.busy.store(false, Ordering::SeqCst);
             })
             .map_err(|e| StartError(format!("cannot start the compile thread: {e}")))?;
-        let sampler = (!heat.eager())
-            .then(|| {
-                std::thread::Builder::new()
-                    .name("yavs-sampler".into())
-                    .spawn(move || {
-                        sampler_loop(sample, sample_every, sampler_tx, &sampler_sh);
-                    })
-                    .map_err(|e| StartError(format!("cannot start the sampler thread: {e}")))
-            })
-            .transpose()?;
         let tier = Arc::new(AutoTier {
             queued: (0..funcs.len()).map(|_| AtomicBool::new(false)).collect(),
             funcs,
@@ -2291,7 +2343,6 @@ impl AutoTier {
             queue: Mutex::new(Some(tx)),
             shared,
             worker: Mutex::new(Some(worker)),
-            sampler: Mutex::new(sampler),
         });
         if !rt.set_tier(tier.clone()) {
             tier.stop(true);
@@ -2347,20 +2398,9 @@ impl AutoTier {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let sampler = self
-            .sampler
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        // (The sampler sees `halt` within a period; the compile thread reads its clock no more then.)
-        let ended = [sampler, worker]
-            .into_iter()
-            .flatten()
-            .map(JoinHandle::join);
-        for r in ended {
-            if let Err(p) = r {
-                resume_unwind(p);
-            }
+        // (The compile thread ends the sampler.)
+        if let Some(Err(p)) = worker.map(JoinHandle::join) {
+            resume_unwind(p);
         }
         true
     }
@@ -3115,5 +3155,29 @@ mod tests {
         w.see(&look, false, &mut pending);
         assert_eq!(w.time[f.0 as usize], [500, 500]);
         assert_eq!(w.total, 1000);
+    }
+    /// A function that ran at `Fast` is compiled again at `FastRa` once it was seen running compiled
+    /// for `PAYBACK_RA` times that compile, in a run that does not recompile at O2 (#715); one that
+    /// did not run at `Fast` is not.
+    #[test]
+    fn a_fast_function_is_recompiled_when_the_register_allocator_repays() {
+        let (mut w, f) = worker(1_600);
+        let at = super::PAYBACK_RA * super::ra_cost(w.prog.func(f).unwrap().code.len());
+        let look = |us: u64| super::Look {
+            dt: us,
+            running: vec![(f, true)],
+        };
+        let mut pending = super::Pending::default();
+        w.see(&look(at), false, &mut pending);
+        assert!(pending.later.is_empty(), "not a function that ran at Fast");
+        w.time[f.0 as usize] = [0, 0];
+        w.fast[f.0 as usize] = true;
+        assert_eq!(w.threshold(f, true), at);
+        w.see(&look(at - 1), false, &mut pending);
+        assert!(pending.later.is_empty());
+        w.see(&look(1), false, &mut pending);
+        assert_eq!(pending.later, [f]);
+        w.see(&look(at), false, &mut pending);
+        assert_eq!(pending.later, [f], "asked once");
     }
 }

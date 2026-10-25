@@ -93,7 +93,12 @@ pub(crate) fn add(
     let store = STORE.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let Some(store) = store else {
         prepare(&mut m)?;
-        return jit.add(m);
+        // ORC makes its own target machine, which has no FastISel setting for `FastRa`.
+        return if opt == OptLevel::FastRa {
+            jit.add_object(&m.emit(opt)?)
+        } else {
+            jit.add(m)
+        };
     };
     let k = key(&m, opt, full);
     // An object ORC does not take is a miss like any other bad entry.

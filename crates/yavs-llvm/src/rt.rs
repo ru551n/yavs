@@ -206,9 +206,11 @@ const _: () = assert!(std::mem::size_of::<Obj>() == 1 << OBJ_SHIFT);
 /// are two objects of one protected-type library function), two objects whose keys agree there
 /// evict each other. 16 entries missed three heap objects in four on a test runner's queue
 /// code (95 million `Deref` callbacks in a 16 s run, 12 million at 256: objects of the pointer
-/// tables, their data and the queues' buffers), and a walk visits only the entries in use
-/// (`Mem::occ`); ways if a profile shows conflicts again.
-pub const OBJS: usize = 256;
+/// tables, their data and the queues' buffers; a new buffer that shares an entry with a pointer
+/// table makes every access of the table miss, 1 024 entries make that three times rarer), and a
+/// walk visits only the entries in use (`Mem::occ`); ways if a profile shows conflicts again.
+pub const OBJS: usize = 1024;
+
 const _: () = assert!(OBJS.is_power_of_two() && OBJS >= 64 && OBJS <= 1 << 24);
 
 /// The entry of `Mem::objs` for the object whose addresses have high half `hi`: the low bits of
@@ -1522,6 +1524,11 @@ impl Mem {
             (fr.temp, fr.temp_len)
         } else if !write && hi == u64::from(space::INST) << 29 {
             (fr.inst.cast_mut(), fr.inst_len)
+        } else if hi == fr.up[0] {
+            // A variable of the enclosing subprogram passed by reference (length 0: not offered).
+            (fr.up_slots[0], fr.up_len[0])
+        } else if hi == fr.up[1] {
+            (fr.up_slots[1], fr.up_len[1])
         } else {
             let o = &self.objs[obj_at(hi)];
             if o.hi != hi || write && o.w == 0 {
@@ -1931,7 +1938,7 @@ pub fn enter(
     }
 }
 
-/// A new `Mem` (out of line: its 10 KB would otherwise be a stack probe in every `enter`).
+/// A new `Mem` (out of line: its 64 KB would otherwise be a stack probe in every `enter`).
 #[inline(never)]
 fn new_mem() -> Box<Mem> {
     Box::new(Mem::of(TierFrame::default()))

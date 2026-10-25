@@ -574,10 +574,32 @@ fn corpus_wave(f: &Path) -> bool {
         !stderr.contains("E0801") && !stderr.contains("internal compiler error"),
         "{f:?}: {stderr}"
     );
+    // A crash (a signal, a stack overflow) leaves an unfinished file: name it (#731).
+    assert!(
+        matches!(out.status.code(), Some(0..=125)),
+        "{f:?}: the run ended with {:?}\n{stderr}",
+        out.status
+    );
     if !fst.exists() {
         // Elaboration not supported yet (exit 2, no simulation).
         assert_eq!(out.status.code(), Some(2), "{f:?}: {stderr}");
         return false;
+    }
+    // A file that cannot be read says how the run ended (#731).
+    if let Err(e) = read(&fst) {
+        let dir: Vec<_> = std::fs::read_dir(&d)
+            .map(|r| {
+                r.flatten()
+                    .map(|f| (f.file_name(), f.metadata().map(|m| m.len())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        panic!(
+            "{f:?}: wellen: {e:?}; run {:?}; open {:?}; dir {dir:?}\nstderr: {stderr}\nstdout: {}",
+            out.status,
+            std::fs::File::open(&fst).map(|_| ()),
+            String::from_utf8_lossy(&out.stdout)
+        );
     }
     let collapsed = dump(&fst);
     // Ports collapsed into their actuals (the default) show the same waves as ports kept

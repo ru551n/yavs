@@ -274,7 +274,7 @@ fn background_compile_swaps_function_pointer() {
 /// `movabs` of the mask (its immediate would be `ff ff ff ff 00 00 00 00` in the object).
 #[test]
 fn low_half_of_a_load_is_a_narrow_load() {
-    for opt in [OptLevel::O0, OptLevel::Fast] {
+    for opt in [OptLevel::O0, OptLevel::Fast, OptLevel::FastRa] {
         let mut m = Module::new("lowhalf");
         spike::add_low_half(&m);
         m.optimize(opt).expect("passes run");
@@ -293,4 +293,37 @@ fn low_half_of_a_load_is_a_narrow_load() {
         // SAFETY: x is valid for the call.
         assert_eq!(unsafe { f(&x) }, 0x8899_aabb);
     }
+}
+
+/// `FastRa` (the optimised register allocator on the unoptimised selector, per target machine, #715)
+/// makes other code than `Fast`, smaller where values live across many blocks, that gives the
+/// reference's results.
+#[test]
+fn fast_ra_makes_smaller_correct_code() {
+    const STMTS: usize = 600;
+    let mut sizes = Vec::new();
+    for opt in [OptLevel::Fast, OptLevel::FastRa] {
+        let mut m = Module::new("chain");
+        spike::add_chain(&m, STMTS);
+        m.verify().unwrap();
+        m.optimize(opt).unwrap();
+        let obj = m.emit(opt).unwrap();
+        sizes.push(obj.len());
+        let mut jit = Jit::new(opt, &runtime_symbols()).unwrap();
+        jit.add_object(&obj).unwrap();
+        // SAFETY: the symbol has the ChainFn signature.
+        let f: ChainFn = unsafe { std::mem::transmute(jit.lookup("chain").unwrap()) };
+        let init: [i64; CHAIN_FIELDS] = std::array::from_fn(|i| (i as i64) * 1_000_003 - 7);
+        let (mut got, mut want) = (init, init);
+        // SAFETY: got has CHAIN_FIELDS elements.
+        assert_eq!(unsafe { f(got.as_mut_ptr()) }, 0, "{opt:?}");
+        assert_eq!(spike::chain_reference(&mut want, STMTS), Ok(()));
+        assert_eq!(got, want, "{opt:?}");
+    }
+    assert!(
+        sizes[1] < sizes[0],
+        "Fast {} bytes, FastRa {}",
+        sizes[0],
+        sizes[1]
+    );
 }

@@ -537,6 +537,8 @@ pub(crate) struct Machine {
     /// which cost a design of thousands of processes three cache misses per activation).
     vc: ViewCache,
     pub heap: Heap,
+    /// The roots scan of the last `publish_shared`, kept for its buffers.
+    rscratch: heap::Refs,
     /// A native `ieee` subprogram made a report at the stop severity: the process ends after
     /// the call, as after `Inst::Report`.
     pub ieee_stop: bool,
@@ -1036,6 +1038,7 @@ impl Machine {
             pm: None,
             spec_at: u32::MAX,
             hot: false,
+            rscratch: heap::Refs::default(),
             execs: 0,
         }
     }
@@ -1654,11 +1657,20 @@ impl Machine {
     }
 
     fn refs_in(&self, regs: bool) -> Option<heap::Refs> {
-        let prog = &self.rt.prog;
         let mut r = heap::Refs::default();
+        self.refs_into(regs, &mut r).then_some(r)
+    }
+
+    /// [`Machine::refs_in`] into `r` (empty), which keeps its buffers: false when a root cannot be located.
+    fn refs_into(&self, regs: bool, r: &mut heap::Refs) -> bool {
+        self.refs_scan(regs, r).is_some()
+    }
+
+    fn refs_scan(&self, regs: bool, r: &mut heap::Refs) -> Option<()> {
+        let prog = &self.rt.prog;
         for (k, fr) in self.frames.iter().enumerate() {
             let f = prog.func(fr.func)?;
-            if !heap::slot_roots(prog, &f.roots, self.fslots(k)?, &mut r) {
+            if !heap::slot_roots(prog, &f.roots, self.fslots(k)?, r) {
                 return None;
             }
             if regs {
@@ -1692,7 +1704,7 @@ impl Machine {
                 }
             }
         }
-        Some(r)
+        Some(())
     }
 
     /// Whether `v` is the handle of a live object in this process's heaps (`gc-stress`).
@@ -1721,22 +1733,37 @@ impl Machine {
         }
         #[cfg(test)]
         ROOT_BUILDS.with(|c| c.set(c.get() + 1));
-        let mine = self.refs(false).map(|r| ProcRoots {
-            pinned: r.pinned(SHARED_HEAP),
-            handles: r
-                .handles
-                .into_iter()
-                .filter(|&h| heap::tag_of(h) == heap::SHARED)
-                .collect(),
-        });
+        // The buffers of the last scan and of this process's entry are reused: a serial process
+        // that wakes millions of times builds its roots at every one.
+        let mut r = std::mem::take(&mut self.rscratch);
+        r.handles.clear();
+        r.addrs.clear();
+        let ok = self.refs_into(false, &mut r);
+        if heap::STRESS && !ok && self.dbg.is_none() {
+            panic!("gc-stress: the roots of a process cannot be located");
+        }
         let Some(sh) = self.sh.as_mut() else {
+            self.rscratch = r;
             return;
         };
         let i = *slot.get_or_insert_with(|| {
             sh.procs.push(None);
             sh.procs.len() - 1
         });
-        sh.procs[i] = mine;
+        if ok {
+            let mine = sh.procs[i].get_or_insert_with(ProcRoots::default);
+            mine.handles.clear();
+            mine.handles.extend(
+                r.handles
+                    .iter()
+                    .copied()
+                    .filter(|&h| heap::tag_of(h) == heap::SHARED),
+            );
+            r.pinned_into(SHARED_HEAP, &mut mine.pinned);
+        } else {
+            sh.procs[i] = None;
+        }
+        self.rscratch = r;
         if sh.heap.as_deref().is_some_and(Heap::has_quarantine)
             && let Some(pinned) = sh.pinned()
             && let Some(h) = sh.heap.as_mut()
@@ -2641,6 +2668,62 @@ impl Machine {
         };
         s.ty.elem == Elem::Logic
             && c.assign_code_now(d.id, yavs_kernel::Range::new(s.off + v as u32, 1), code)
+    }
+
+    /// The drives of `run`, from the front, that change nothing: each is skipped as `LSetDrive`
+    /// would skip it, with the registers its ops write set. Returns how many; the next one, or
+    /// the whole run when the count is short or the process has no kernel, is left to its ops.
+    #[inline(never)]
+    fn drive_run(
+        &mut self,
+        run: &pre::DriveRun,
+        top: usize,
+        ctx: &mut Option<&mut Ctx<'_>>,
+    ) -> usize {
+        let (Some(c), Some(slots)) = (
+            ctx.as_deref_mut(),
+            slots_of(&self.frames, &self.root, &self.sstack, top),
+        ) else {
+            return 0;
+        };
+        let (drivers, sigs, regs) = (&self.drivers, &self.inst.sigs, &mut self.regs);
+        for (j, d) in run.drives.iter().enumerate() {
+            let (o, l) = (regs[d.offset as usize], regs[d.len as usize]);
+            let (Ok(o), 1) = (u32::try_from(o), l) else {
+                return j;
+            };
+            let (Some(dr), Some(s)) = (drivers.get(d.driver as usize), sigs.get(d.sig as usize))
+            else {
+                return j;
+            };
+            if s.ty.elem != Elem::Logic || regs[d.time as usize] != 0 {
+                return j;
+            }
+            let (at, n) = (d.off as usize, d.w.bytes() as usize);
+            let Some(b) = slots.get(at..at + n) else {
+                return j;
+            };
+            let x = le_bytes(b);
+            let code = match d.aff {
+                Some((_, ca, c0)) if aff_ok(x as i64) => {
+                    (i64::from(c0) + i64::from(ca) * x as i64) as u64
+                }
+                Some(_) => return j,
+                None => x,
+            };
+            if code > 8
+                || !c.skip_code_now(dr.id, yavs_kernel::Range::new(s.off + o, 1), code as u8)
+            {
+                return j;
+            }
+            regs[d.sv as usize] = u64::from(d.sig) << 32 | u64::from(o);
+            regs[d.sv as usize + 1] = 1;
+            regs[d.ld as usize] = x;
+            if let Some((dst, ..)) = d.aff {
+                regs[dst as usize] = code;
+            }
+        }
+        run.drives.len()
     }
 
     /// `drive_bit` with the delay itself instead of the waveform.
@@ -5928,6 +6011,20 @@ impl Machine {
                     };
                     enter!();
                 }
+                Op::DriveRun { run } => {
+                    self.end_stmt();
+                    let r = code
+                        .runs
+                        .get(run as usize)
+                        .ok_or_else(|| ice_f!("no drive run {run}"))?;
+                    let done = self.drive_run(r, top, ctx);
+                    k = match done {
+                        0 => k + 1,
+                        d if d == r.drives.len() => r.end as usize,
+                        d => r.starts[d] as usize,
+                    };
+                    enter!();
+                }
                 Op::Suspend => {
                     self.frames[top].pc = code.at.get(k).copied().unwrap_or(0);
                     self.suspend(prog, f, ctx)?;
@@ -9205,22 +9302,8 @@ impl Host<'_, '_, '_> {
             }
             // A register defined once by a constant or an address is preloaded (`Pre`): the
             // interpreter never executes its definition, compiled code may not have yet.
-            let mut defs = vec![0u8; regs.len()];
-            let mut fixed = vec![false; regs.len()];
-            for inst in &g.code {
-                let preload = matches!(inst, Inst::Const { .. } | Inst::ConstF { .. })
-                    || matches!(inst, Inst::AddrOf { space, .. } if !matches!(space, yavs_ir::AddrSpace::Up(_)));
-                inst.visit(&mut |r, role, _| {
-                    if role == yavs_ir::Role::Def
-                        && let Some(d) = defs.get_mut(r.0 as usize)
-                    {
-                        *d = d.saturating_add(1);
-                        fixed[r.0 as usize] = preload;
-                    }
-                });
-            }
             for (k, (d, &v)) in regs.iter_mut().zip(&nf.regs).enumerate() {
-                if !(defs[k] == 1 && fixed[k]) {
+                if !pre.preloaded.get(k).copied().unwrap_or(false) {
                     *d = v;
                 }
             }

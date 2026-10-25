@@ -900,6 +900,17 @@ pub struct SimControl {
     part_names: HashMap<u32, Vec<(Range, String)>>,
 }
 
+/// Signal `a` to read and signal `b` to write (distinct).
+fn signal_pair(v: &mut [Signal], a: usize, b: usize) -> (&Signal, &mut Signal) {
+    if a < b {
+        let (x, y) = v.split_at_mut(b);
+        (&x[a], &mut y[0])
+    } else {
+        let (x, y) = v.split_at_mut(a);
+        (&y[0], &mut x[b])
+    }
+}
+
 /// Run a port conversion over the source parts `v` and check that its result fits the
 /// target parts. Without a conversion both sides are one part of the same type (`build`).
 fn convert(
@@ -1364,12 +1375,45 @@ impl SimControl {
     /// Pass the actual's effective value down to the formals of its in-ports. Returns the
     /// signals to update next: the formals, and the actual part of a multi-part port that
     /// passes the values down once all its parts are updated (`PortEdge::down_at`).
-    fn push_down(&mut self, s: u32, active: bool) -> Result<Vec<u32>, ErrorKind> {
-        let mut touched = Vec::new();
+    fn push_down(&mut self, s: u32, active: bool) -> Result<SmallVec<[u32; 4]>, ErrorKind> {
+        let mut touched = SmallVec::new();
         for &e in &self.ports_down[s as usize] {
             let p = &self.ports[e as usize];
             let is_active =
                 |(a, r): &(SignalId, Range)| self.signals[a.0 as usize].active_in(*r, self.cycle);
+            // The usual port: one actual, one formal, no conversion. The value is copied from
+            // the actual's storage into the formal's, with no buffer in between.
+            if p.conv.to_formal.is_none()
+                && let ([(a, ar)], [(f, fr)]) = (&p.actual[..], &p.formal[..])
+                && a != f
+            {
+                if active && !is_active(&(*a, *ar)) {
+                    continue;
+                }
+                let idle = match active && fr.len == ar.len {
+                    true => self.signals[a.0 as usize].idle_elems(*ar, self.cycle),
+                    false => None,
+                };
+                let (src, formal) = signal_pair(&mut self.signals, a.0 as usize, f.0 as usize);
+                let layer = formal.port_in.as_mut().ok_or_else(|| {
+                    ErrorKind::Internal(format!("in-port {} without a port layer", formal.name))
+                })?;
+                layer.value.copy(
+                    fr.offset as usize,
+                    &src.cur,
+                    ar.offset as usize,
+                    fr.len as usize,
+                );
+                if active {
+                    match idle {
+                        Some(idle) => formal.mark_active_except(*fr, &idle, self.now, self.cycle),
+                        None => formal.mark_active(*fr, self.now, self.cycle),
+                    }
+                    formal.eff_dirty.push(*fr);
+                }
+                touched.push(f.0);
+                continue;
+            }
             if p.down_at != s {
                 if active && p.actual.iter().any(|a| a.0.0 == s && is_active(a)) {
                     touched.push(p.down_at);

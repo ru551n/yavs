@@ -43,14 +43,48 @@ pub struct Compiled {
     pub extra: Vec<(FuncId, usize, usize)>,
 }
 
+/// The seed and result address registers of a `math_real.uniform` call that `Gen::uniform_fast`
+/// computes in place: three scalar registers of the frame, no result.
+pub fn uniform_regs(
+    prog: &Program,
+    f: &Func,
+    native: yavs_ir::NativeId,
+    args: yavs_ir::Regs,
+    dst: Option<Reg>,
+) -> Option<[Reg; 3]> {
+    if dst.is_some() {
+        return None;
+    }
+    let sym = &prog.natives.get(native)?.symbol;
+    // (The native itself is the slow path: the same instruction `native_direct` runs.)
+    if !yavs_interp::direct_native(sym) {
+        return None;
+    }
+    let key = yavs_ir::ieee::symbol_key(sym)?;
+    let op = yavs_ir::ieee::parse(key.split_once('@').map_or(key, |k| k.0))?;
+    let n = f.reg_ty.len() as u32;
+    match (op, f.regs(args)?) {
+        (yavs_ir::ieee::Op::Uniform, &[a, b, x])
+            if [a, b, x]
+                .iter()
+                .all(|r| r.0 < n && f.reg_ty.get(r.0 as usize) != Some(&yavs_ir::RegTy::Sig)) =>
+        {
+            Some([a, b, x])
+        }
+        _ => None,
+    }
+}
+
 /// Instructions the compiled code executes itself on its fast path (keep in step with
 /// `Gen::func`).
 pub fn is_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
     match i {
-        Inst::CallNative { native, args, dst } => matches!(
-            native_kind(prog, f, *native, *args, *dst),
-            Some(NativeKind::Table(..))
-        ),
+        Inst::CallNative { native, args, dst } => {
+            matches!(
+                native_kind(prog, f, *native, *args, *dst),
+                Some(NativeKind::Table(..))
+            ) || uniform_regs(prog, f, *native, *args, *dst).is_some()
+        }
         Inst::LayoutOf { ty, cache, .. } => {
             static_layout(prog, *ty).is_some()
                 || cache.is_some() && layout_shape(prog, *ty).is_some()
@@ -86,6 +120,13 @@ pub fn leaves(prog: &Program, f: &Func, pc: usize, nc: &std::collections::HashSe
             kind: yavs_ir::AttrKind::Event,
             ..
         } => false,
+        // Computed in place on its usual operands (`Gen::uniform_fast`).
+        Inst::CallNative { native, args, dst }
+            if frame_direct(prog, f, i)
+                && uniform_regs(prog, f, *native, *args, *dst).is_some() =>
+        {
+            false
+        }
         // Computed in place on its usual operands (each generator's `ieee_fast`).
         Inst::CallNative { native, args, dst }
             if frame_direct(prog, f, i)
@@ -161,6 +202,9 @@ pub fn nat_inline(prog: &Program, f: &Func, i: &Inst) -> bool {
                 && (yavs_interp::direct_native(sym) || yavs_interp::cold_native(sym))
         }
         Inst::CallProt { obj, .. } => fits(&[obj]),
+        // Read from the view's signal table; where that has no answer the frame is materialised
+        // (`Gen::signal`).
+        Inst::SigReadScalar { dst, sig } => fits(&[dst, sig, Reg(sig.0.saturating_add(1))]),
         // Cold: leaving to the interpreter is what they do.
         Inst::Unreachable { .. } => true,
         _ => xstep_ok(f, i),

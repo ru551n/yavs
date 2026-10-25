@@ -49,6 +49,9 @@ pub(crate) struct Pre {
     pub memo_off: std::sync::atomic::AtomicBool,
     /// Processes that gave the memo of this function up.
     pub memo_votes: std::sync::atomic::AtomicU32,
+    /// Registers defined once by a constant or an address (not of an up-level frame): the
+    /// frame starts with their values, the interpreter never executes their definitions.
+    pub preloaded: Box<[bool]>,
     /// Registers holding an address in the frame itself: (register, offset).
     frame: Vec<(u32, u64)>,
     /// For each pc (and one past the end), the first pc at or after it that is not a
@@ -93,6 +96,18 @@ impl Pre {
                     *d = d.saturating_add(1);
                 }
             });
+        }
+        let mut preloaded = vec![false; n];
+        for inst in &f.code {
+            if matches!(inst, Inst::Const { .. } | Inst::ConstF { .. })
+                || matches!(inst, Inst::AddrOf { space, .. } if !matches!(space, AddrSpace::Up(_)))
+            {
+                inst.visit(&mut |r, role, _| {
+                    if role == Role::Def && defs.get(r.0 as usize) == Some(&1) {
+                        preloaded[r.0 as usize] = true;
+                    }
+                });
+            }
         }
         let mut init = vec![0u64; n];
         let mut frame = Vec::new();
@@ -196,6 +211,7 @@ impl Pre {
             nested: f.parent.is_some(),
             memo_off: Default::default(),
             memo_votes: Default::default(),
+            preloaded: preloaded.into(),
             frame,
             next,
             code,
@@ -719,6 +735,12 @@ pub(crate) enum Op {
     WaitStatic {
         to: u32,
     },
+    /// The `Stmt` of the first of a run of scalar drives from frame slots (`drive_runs`): it ends
+    /// the statement, and when each drive of run `run` would change nothing it goes on after the
+    /// run (`Machine::drive_run`), else at the first drive that would.
+    DriveRun {
+        run: u32,
+    },
     /// `StmtLoadSlot8` and the `CondBr` on the register it loaded (which is also written).
     FlagBr {
         dst: u32,
@@ -1091,6 +1113,111 @@ pub(crate) struct Code {
     /// The op a call goes on at when it has written `Pre::pro` itself: after the ops that
     /// only load parameters (`NONE`: there are none).
     pub skip: u32,
+    /// The runs of drives of the `Op::DriveRun`s.
+    pub runs: Vec<DriveRun>,
+}
+
+/// A run of scalar drives, each `[Stmt, SigVal, LoadSlot, Aff1?, LSetDrive]`, in consecutive ops.
+pub(crate) struct DriveRun {
+    /// The op of each drive's `Stmt`.
+    pub starts: Vec<u32>,
+    /// The op after the run.
+    pub end: u32,
+    pub drives: Vec<RunDrive>,
+}
+
+/// The operands of one drive of a `DriveRun`.
+pub(crate) struct RunDrive {
+    pub sv: u32,
+    pub sig: u32,
+    pub offset: u32,
+    pub len: u32,
+    pub ld: u32,
+    pub off: u32,
+    pub w: Width,
+    /// The `Aff1` between the load and the drive: its register, factor and constant.
+    pub aff: Option<(u32, i16, i32)>,
+    pub driver: u16,
+    pub time: u16,
+}
+
+/// The drive at the start of `ops` (and how many ops it is), if it is of the shape `DriveRun` takes.
+fn run_drive(ops: &[Op]) -> Option<(RunDrive, usize)> {
+    let [
+        Op::Stmt,
+        Op::SigVal {
+            dst: sv,
+            sig,
+            offset,
+            len,
+        },
+        Op::LoadSlot { dst: ld, off, w },
+        rest @ ..,
+    ] = ops
+    else {
+        return None;
+    };
+    let (aff, v, last) = match rest {
+        [Op::Aff1 { dst, a, ca, c0 }, last, ..] if a == ld => (Some((*dst, *ca, *c0)), *dst, last),
+        [last, ..] => (None, *ld, last),
+        [] => return None,
+    };
+    let Op::LSetDrive {
+        v: lv,
+        driver,
+        target,
+        time,
+        ..
+    } = *last
+    else {
+        return None;
+    };
+    (lv == v && u32::from(target) == *sv).then_some((
+        RunDrive {
+            sv: *sv,
+            sig: *sig,
+            offset: *offset,
+            len: *len,
+            ld: *ld,
+            off: *off,
+            w: *w,
+            aff,
+            driver,
+            time,
+        },
+        4 + usize::from(aff.is_some()),
+    ))
+}
+
+/// Runs of at least two drives like [`run_drive`] in a row: the first `Stmt` becomes an
+/// `Op::DriveRun`. A process that assigns its outputs one by one at the end of every
+/// activation mostly assigns what they hold, and the run is then one op.
+fn drive_runs(ops: &mut [Op]) -> Vec<DriveRun> {
+    let mut runs = Vec::new();
+    let mut k = 0;
+    while k < ops.len() {
+        let (mut starts, mut drives) = (Vec::new(), Vec::new());
+        let mut j = k;
+        while let Some((d, n)) = run_drive(&ops[j..]) {
+            starts.push(j as u32);
+            drives.push(d);
+            j += n;
+        }
+        if drives.len() >= 2 {
+            ops[k] = Op::DriveRun {
+                run: runs.len() as u32,
+            };
+            runs.push(DriveRun {
+                starts,
+                end: j as u32,
+                drives,
+            });
+            k = j;
+        } else {
+            k += 1;
+        }
+    }
+    runs
 }
 
 /// Is every parameter handed over in the register the prologue loads it into, and read from
@@ -4438,6 +4565,7 @@ impl Code {
         }
         superops(&mut ops, &at, f, known, &uses);
         static_waits(prog, f, &mut ops, &at, &entry);
+        let runs = drive_runs(&mut ops);
         let loops = elem_loops(&mut ops, &mut at);
         // A process that never suspends polls for a stop request at every jump back: the jump
         // is stepped (`Machine::step_out`), so no other function pays for the check.
@@ -4472,6 +4600,7 @@ impl Code {
             loops,
             trace: std::env::var_os("YAVS_DUMPIR").is_some(),
             skip: NONE,
+            runs,
         }
     }
 }

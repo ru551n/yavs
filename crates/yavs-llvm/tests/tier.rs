@@ -215,6 +215,30 @@ fn auto_tier_compiles_within_its_budget() {
     tier.stop(true);
 }
 
+/// Ending the tier does not wait for the sampler to wake: a sampling period of half a minute
+/// costs a stop right after the start, and one after the sampler began to sleep, no time at all
+/// (a short run ended up to a period late).
+#[test]
+fn auto_tier_stops_without_waiting_for_the_sampler() {
+    for wait in [Duration::ZERO, Duration::from_millis(300)] {
+        let (prog, _) = sum();
+        let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+        let note: Note = Box::new(|_, _, _| {});
+        let heat = Heat {
+            period: 30_000_000,
+            ..Heat::DEFAULT
+        };
+        let tier = AutoTier::start(&rt, OptLevel::O2, usize::MAX, heat, note).unwrap();
+        std::thread::sleep(wait);
+        let t0 = Instant::now();
+        tier.stop(true);
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "stop waited for the sampler (after {wait:?})"
+        );
+    }
+}
+
 /// One call that never returns to the kernel (a process that runs its loop to the end without
 /// suspending) is seen by the sampler only, and the big loop is still compiled within the
 /// default budget and swapped in while it runs (#432). The budget decision itself is tested
@@ -256,6 +280,36 @@ fn auto_tier_recompiles_hot_compiled_code_at_o2() {
     // A note per module (native-frame and frame-mode code, #510).
     levels.dedup();
     assert_eq!(levels, [(f, OptLevel::O0, true), (f, OptLevel::O2, true)]);
+}
+
+/// A function of `COMPUTE_MAX` IR instructions or more is compiled again at `FastRa` (not O2) when
+/// it stays hot, and swapped in; the results never change (#715).
+#[test]
+fn auto_tier_recompiles_a_big_function_at_fast_ra() {
+    let (prog, f) = sum_padded(1_600);
+    let rt = Runtime::new(Arc::new(prog), Bindings::default()).unwrap();
+    let notes = Arc::new(Mutex::new(Vec::new()));
+    let seen = notes.clone();
+    let note: Note = Box::new(move |f, level, why| seen.lock().unwrap().push((f, level, why)));
+    let tier = AutoTier::start(&rt, OptLevel::O0, usize::MAX, HOT, note).unwrap();
+    let n = 20_000u64;
+    let call = || yavs_interp::call(rt.clone(), f, Arc::new(InstData::default()), &[n]);
+    let t0 = Instant::now();
+    while !notes
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|x| x.1 == OptLevel::FastRa)
+    {
+        assert!(t0.elapsed() < Duration::from_secs(120), "never recompiled");
+        assert_eq!(call().unwrap(), Some(n * (n + 1) / 2));
+    }
+    assert_eq!(call().unwrap(), Some(n * (n + 1) / 2));
+    tier.stop(true);
+    let notes = notes.lock().unwrap();
+    let levels: Vec<_> = notes.iter().map(|n| (n.1, n.2.is_ok())).collect();
+    assert!(levels.contains(&(OptLevel::FastRa, true)), "{levels:?}");
+    assert!(!levels.iter().any(|l| l.0 == OptLevel::O2), "{levels:?}");
 }
 
 /// A short function without a loop that runs on native frames is compiled (at O2) when hot,

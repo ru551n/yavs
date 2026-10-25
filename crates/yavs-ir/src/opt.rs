@@ -296,7 +296,7 @@ fn optimize_func_with(
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            tidy(prog, &mut f, &mut layouts);
+            tidy(prog, &mut f, &mut layouts, None);
         }
         // What the inlined callees read only on one branch is computed there.
         sink::run(prog, &mut f);
@@ -371,6 +371,7 @@ fn optimize_body_with(
     o.inst = inst;
     let had_inst = o.inst.is_some();
     o.run();
+    let split = o.split;
     let mut loc = raw.loc.clone();
     let blocks = o.changed.then(|| o.compact(&mut loc, None));
     let mut f = raw.shell();
@@ -386,6 +387,9 @@ fn optimize_body_with(
     f.loc = loc;
     f.operands = o.operands;
     f.reg_ty.extend(o.new_regs);
+    if split {
+        tidy(prog, &mut f, &mut layouts, inst);
+    }
     if cfg_enabled()
         && matches!(f.kind, FuncKind::Function | FuncKind::Procedure)
         && f.body.is_none()
@@ -394,7 +398,7 @@ fn optimize_body_with(
     {
         let threaded = cfg::run(prog, &mut f);
         if licm::run(prog, &mut f) | threaded {
-            tidy(prog, &mut f, &mut layouts);
+            tidy(prog, &mut f, &mut layouts, None);
         }
     } else if cfg_enabled() && f.kind == FuncKind::Process {
         // Loops of a process that do not suspend (#541).
@@ -437,7 +441,12 @@ fn optimize_body_with(
 
 /// Walk the finished code of `f` once more after the clean-up copied blocks into their
 /// predecessors: a value known where a block is entered now decides the branches of its copy.
-fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Vec<u64>>>) {
+fn tidy(
+    prog: &Program,
+    f: &mut crate::Func,
+    layouts: &mut FxMap<TyId, Option<Vec<u64>>>,
+    inst: Option<InstView<'_>>,
+) {
     let done = {
         let mut o = Opt::new(
             prog,
@@ -447,6 +456,7 @@ fn tidy(prog: &Program, f: &mut crate::Func, layouts: &mut FxMap<TyId, Option<Ve
             f.nested,
             layouts,
         );
+        o.inst = inst;
         o.analyse();
         o.pass();
         let mut again = 0;
@@ -1041,6 +1051,9 @@ struct Opt<'a> {
     /// A branch on a constant was replaced by a jump: the join after it has one predecessor
     /// less, which the next walk can use.
     pruned: bool,
+    /// A `Pos` was split into a check and a subtraction (`pos_to_check`): the checks are only in
+    /// the finished code, where `tidy` walks it again.
+    split: bool,
 }
 
 impl<'a> Opt<'a> {
@@ -1108,6 +1121,7 @@ impl<'a> Opt<'a> {
             pend: None,
             changed: false,
             pruned: false,
+            split: false,
         }
     }
 
@@ -3042,6 +3056,83 @@ impl<'a> Opt<'a> {
             .then(|| vec![l.size, l.align, l.stride, l.count])
     }
 
+    /// A `Pos` in a copy, in an ascending descriptor of instance data with known bounds, of an index
+    /// that is no constant and whose result goes into arithmetic: the index check and the
+    /// subtraction apart (`Check` of the bounds, `idx - left`), so that the checks of one value
+    /// are made once and a range proof can drop one (`Pos` reads the descriptor at every
+    /// execution). The failure is the one of `Pos`: the check message of the same name. (A
+    /// descending range stays a `Pos`: the message of an index check says `to`.)
+    // ponytail: ascending ranges only; descending ones need a message with the other direction,
+    // and the optimiser cannot add messages to the program.
+    fn pos_to_check(&mut self, pc: usize, dst: Reg, dope: Reg, dim: u8, idx: Reg) -> bool {
+        let Inst::Pos { what, .. } = self.code[pc] else {
+            return false;
+        };
+        let Opn::A(AddrSpace::Inst, _) = self.opn(dope) else {
+            return false;
+        };
+        let Some((l, r, 0)) = self.const_dim(self.opn(dope), dim) else {
+            return false;
+        };
+        // The distance of an index inside the bounds is an `i64` (`Pos` allows a `u64`).
+        if self.prog.checks.get(what).map(|c| c.dir) != Some(crate::Dir::To)
+            || i128::from(r) - i128::from(l) > i128::from(i64::MAX)
+            || !self.feeds_arith(pc, dst)
+        {
+            return false;
+        }
+        let (lo, hi) = (
+            self.const_reg(self.cur, pc, l),
+            self.const_reg(self.cur, pc, r),
+        );
+        self.inserts.push((
+            pc,
+            Inst::Check {
+                kind: CheckKind::Index,
+                v: idx,
+                lo,
+                hi,
+                what,
+            },
+        ));
+        self.code[pc] = Inst::Bin {
+            op: crate::IntOp::Sub,
+            dst,
+            a: idx,
+            b: lo,
+        };
+        self.changed = true;
+        self.split = true;
+        self.simplify(pc);
+        true
+    }
+
+    /// Is the first instruction after `pc` in its block that reads `r` an add, subtract or
+    /// multiply?
+    fn feeds_arith(&self, pc: usize, r: Reg) -> bool {
+        for q in pc + 1..self.range(self.cur).end {
+            let i = &self.code[q];
+            let mut read = false;
+            i.visit(&mut |x, role, _| read |= role == Role::Use && x == r);
+            if let Some(l) = i.list() {
+                read |= self
+                    .operands
+                    .get(l.start as usize..(l.start + l.len) as usize)
+                    .is_some_and(|rs| rs.contains(&r));
+            }
+            if read {
+                return matches!(
+                    i,
+                    Inst::Bin {
+                        op: crate::IntOp::Add | crate::IntOp::Sub | crate::IntOp::Mul,
+                        ..
+                    }
+                );
+            }
+        }
+        false
+    }
+
     fn simplify(&mut self, pc: usize) {
         let inst = self.code[pc];
         match inst {
@@ -3253,6 +3344,8 @@ impl<'a> Opt<'a> {
                     Length => (nl, Opn::K(0)),
                     _ => (nl, nh),
                 };
+                // (A loop variable defined more than once is keyed at its current version.)
+                let nv = self.kopn(v).unwrap_or(nv);
                 if self.key_ok(nv) && self.key_ok(nl) && self.key_ok(nh) {
                     self.cse(pc, None, Key::Check(kind, nv, nl, nh));
                 }
@@ -3366,6 +3459,9 @@ impl<'a> Opt<'a> {
                     if let Some(p) = pos {
                         return self.make_const(pc, dst, p);
                     }
+                }
+                if self.pos_to_check(pc, dst, dope, dim, idx) {
+                    return;
                 }
                 if let (Some(d), Some(i)) = (self.kopn(dope), self.kopn(idx)) {
                     self.cse(pc, Some(dst), Key::Pos(d, dim, i));
@@ -4187,6 +4283,19 @@ impl<'a> Opt<'a> {
                     }
                 }
             }
+        }
+        // The instructions to be inserted read registers too (a check on an index, its bounds).
+        for (_, i) in &mut self.inserts {
+            i.visit_mut(&mut |r, role, _| {
+                if role == Role::Use {
+                    if rename {
+                        *r = res(*r);
+                    }
+                    if let Some(u) = uses.get_mut(r.0 as usize) {
+                        *u += 1;
+                    }
+                }
+            });
         }
         // One backward sweep removes whole chains: a user comes after its operands.
         for pc in (0..self.code.len()).rev() {

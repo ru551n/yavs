@@ -19,6 +19,11 @@ pub enum OptLevel {
     /// instruction at a time, no live-variable analysis): for functions so large that
     /// optimised code generation takes longer than linear time (`lower::level_for`).
     Fast,
+    /// `Fast` with the optimised register allocator (#715): for the hot large functions that ran
+    /// at `Fast`. Made per target machine, not by a command line option (those are process-wide):
+    /// the machine is created at `Less` (greedy allocation) with FastISel on, and the functions
+    /// are `optnone` (`Module::optimize_as`) so the passes `Less` adds over `None` skip them.
+    FastRa,
 }
 
 /// The compile thread could not be started.

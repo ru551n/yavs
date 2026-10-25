@@ -70,10 +70,14 @@ fn main() {
         "windows" => {
             let def = var("DEP_YAVS_VHPI_DEF");
             println!("cargo:rustc-env=YAVS_VHPI_DEF={def}");
+            // The main thread of a Windows executable has 1 MB; a run that nests memoised calls
+            // needs more in a debug build (#731). 8 MB is the Linux default.
             if var("CARGO_CFG_TARGET_ENV") == "msvc" {
                 println!("cargo:rustc-link-arg-bins=/DEF:{def}");
+                println!("cargo:rustc-link-arg-bins=/STACK:8388608");
             } else {
                 println!("cargo:rustc-link-arg-bins={def}");
+                println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608");
             }
         }
         "macos" | "ios" => {}
